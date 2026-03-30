@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "dendrarchy",
-  "project_id": "b34e2ca8-5115-4bd5-b857-cfd5e1780a3f"
-}

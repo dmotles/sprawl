@@ -9,8 +9,3 @@ dendra
 .vscode/
 *.swp
 *.swo
-
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
