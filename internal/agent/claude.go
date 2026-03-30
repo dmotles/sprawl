@@ -4,12 +4,13 @@ import "os/exec"
 
 // LaunchOpts holds the options for launching a Claude Code instance.
 type LaunchOpts struct {
-	SystemPrompt              string
-	Tools                     []string
-	AllowedTools              []string
-	DisallowedTools           []string
-	Name                      string
-	Bare                      bool
+	SystemPrompt               string
+	InitialPrompt              string
+	Tools                      []string
+	AllowedTools               []string
+	DisallowedTools            []string
+	Name                       string
+	Bare                       bool
 	DangerouslySkipPermissions bool
 }
 
@@ -63,6 +64,10 @@ func (r *RealLauncher) BuildArgs(opts LaunchOpts) []string {
 
 	if opts.DangerouslySkipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
+	}
+
+	if opts.InitialPrompt != "" {
+		args = append(args, "-p", opts.InitialPrompt)
 	}
 
 	return args

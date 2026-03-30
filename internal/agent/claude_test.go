@@ -9,6 +9,7 @@ func TestBuildArgs_AllOptions(t *testing.T) {
 	launcher := &RealLauncher{}
 	opts := LaunchOpts{
 		SystemPrompt:    "test prompt",
+		InitialPrompt:   "start working",
 		Tools:           []string{"Bash", "Read"},
 		AllowedTools:    []string{"Bash"},
 		DisallowedTools: []string{"Edit"},
@@ -19,6 +20,7 @@ func TestBuildArgs_AllOptions(t *testing.T) {
 	args := launcher.BuildArgs(opts)
 
 	assertContains(t, args, "--system-prompt", "test prompt")
+	assertContains(t, args, "-p", "start working")
 	assertContains(t, args, "--tools", "Bash")
 	assertContains(t, args, "--tools", "Read")
 	assertContains(t, args, "--allowed-tools", "Bash")
@@ -33,6 +35,26 @@ func TestBuildArgs_Empty(t *testing.T) {
 
 	if len(args) != 0 {
 		t.Errorf("expected no args for empty opts, got %v", args)
+	}
+}
+
+func TestBuildArgs_InitialPrompt(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{
+		InitialPrompt: "You have been assigned a task. Read your system prompt and begin working immediately.",
+	})
+
+	assertContains(t, args, "-p", "You have been assigned a task. Read your system prompt and begin working immediately.")
+}
+
+func TestBuildArgs_NoInitialPrompt(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{Name: "test"})
+
+	for _, a := range args {
+		if a == "-p" {
+			t.Error("expected no -p flag when InitialPrompt is empty")
+		}
 	}
 }
 
