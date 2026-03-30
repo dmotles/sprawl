@@ -95,7 +95,7 @@ Use --force to retire alice only (children become orphans).
 
 **`--cascade` flag:** Retires the agent and all descendants, bottom-up. Children are retired first (leaf nodes first, then their parents, then the target agent). This is the "clean shutdown of a subtree" operation.
 
-**`--force` flag:** Retires only the target agent, ignoring children. Children become orphans — their parent field points to a non-existent agent. This is an escape hatch for broken state, not normal operation. The parent (manager) of the retired agent should notice and reassign orphans.
+**`--force` flag:** Overrides two safety checks: (1) ignores active children (children become orphans), and (2) discards uncommitted changes in the worktree. This is an escape hatch for broken state, not normal operation.
 
 For `kill`, children are **not** affected. Killing a manager doesn't kill its engineers. The engineers will just get no response when they try to report — which is the correct behavior, since the manager might be respawned momentarily.
 
@@ -145,15 +145,16 @@ dendra kill <agent-name> --force    # Immediate SIGKILL, handle wedged state
 Full teardown. Stop process, close tmux, remove worktree, delete state, free name.
 
 ```
-dendra retire <agent-name>              # Retire agent (fails if has children)
+dendra retire <agent-name>              # Retire agent (fails if has children or dirty worktree)
 dendra retire <agent-name> --cascade    # Retire agent + all descendants
-dendra retire <agent-name> --force      # Retire agent only, orphan children
+dendra retire <agent-name> --force      # Override safety checks (orphan children, discard uncommitted work)
 ```
 
 **Exit codes:**
 - 0: Agent retired successfully
 - 1: Agent not found
 - 1: Agent has active children (suggest --cascade or --force)
+- 1: Agent has uncommitted changes in worktree (suggest committing or --force)
 
 ### `dendra respawn <agent-name>`
 
@@ -206,20 +207,34 @@ retire(agent):
     4. Kill process (SIGTERM → wait → SIGKILL)
     5. Close tmux window
     6. Mark state as "retiring" (write to state file)  ← crash-safe checkpoint
-    7. Remove git worktree (git worktree remove --force)
-    8. Remove agent from parent's children list
-    9. Delete state file  ← name is now free
+    7. Check worktree for uncommitted changes
+       └─ Run `git -C <worktree> status --porcelain`
+       └─ If output is non-empty AND --force is not set:
+          abort with: "<name> has uncommitted changes in worktree.
+                       Commit first or use --force to discard."
+          (state remains "retiring" — safe to re-run after committing)
+       └─ If clean or --force: proceed
+    8. Remove git worktree
+       └─ If clean: `git worktree remove <path>`
+       └─ If --force: `git worktree remove --force <path>`
+    9. Remove agent from parent's children list
+   10. Delete state file  ← name is now free
 ```
 
-Step 6 is the crash-safety checkpoint. If we crash after step 6 but before step 9, the agent is in `"retiring"` state. On next `retire` attempt, we skip steps 1-6 and resume from step 7. The state file is the last thing deleted because it's what tells us the agent exists.
+Step 6 is the crash-safety checkpoint. If we crash after step 6 but before step 10, the agent is in `"retiring"` state. On next `retire` attempt, we skip steps 1-6 and resume from step 7. The state file is the last thing deleted because it's what tells us the agent exists.
+
+Note that the dirty worktree check (step 7) happens *after* the process is killed (step 4). This is intentional — we don't want to check while the agent is still running and potentially making changes. The check catches work the agent did but didn't commit before being stopped.
 
 ## Edge Cases
 
 **Agent process already dead but state says "running":**
 Steps 4-5 of retire are no-ops (nothing to kill, window may already be closed). Continue with cleanup. Same for kill — update state to "killed" even if there's nothing to kill.
 
+**Dirty worktree (uncommitted changes):**
+The agent did work but didn't commit. Without the check, `git worktree remove --force` would silently destroy that work. The dirty check catches this: retire aborts, the manager (or user) can respawn the agent to commit, or use `--force` to discard. In `--cascade` mode, a dirty child worktree aborts the entire cascade (unless `--force` is also set).
+
 **Worktree already removed:**
-Step 7 of retire is a no-op. `git worktree remove` on a non-existent path is handled gracefully.
+Step 8 of retire is a no-op. `git worktree remove` on a non-existent path is handled gracefully.
 
 **tmux session itself is gone:**
 If the entire `dendra-<parent>-children` session is gone (e.g., tmux crashed), window cleanup is a no-op. Continue.
@@ -240,8 +255,9 @@ The current DESCRIPTION.md mentions `kill` and `respawn`. This design adds `reti
 ```
 dendra kill <agent-name>                Kill an agent (preserves state for respawn)
 dendra kill <agent-name> --force        Force-kill a wedged agent
-dendra retire <agent-name>              Full teardown (process, tmux, worktree, state)
+dendra retire <agent-name>              Full teardown (fails if children or dirty worktree)
 dendra retire <agent-name> --cascade    Retire agent and all descendants
+dendra retire <agent-name> --force      Override safety checks (orphans children, discards uncommitted work)
 dendra respawn <agent-name>             Kill + restart with same session ID
 ```
 
