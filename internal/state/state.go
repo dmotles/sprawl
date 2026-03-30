@@ -88,6 +88,18 @@ func ListAgents(dendraRoot string) ([]*AgentState, error) {
 	return agents, nil
 }
 
+// DeleteAgent removes the agent state file, freeing the name.
+func DeleteAgent(dendraRoot string, name string) error {
+	path := filepath.Join(AgentsDir(dendraRoot), name+".json")
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil // already gone
+		}
+		return fmt.Errorf("removing agent state for %q: %w", name, err)
+	}
+	return nil
+}
+
 // UsedNames returns a set of agent names that have state files.
 func UsedNames(dendraRoot string) (map[string]bool, error) {
 	agents, err := ListAgents(dendraRoot)

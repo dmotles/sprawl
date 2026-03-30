@@ -57,6 +57,14 @@ func (m *spawnMockRunner) NewWindow(sessionName, windowName string, env map[stri
 	return m.newWindowErr
 }
 
+func (m *spawnMockRunner) KillWindow(sessionName, windowName string) error {
+	return nil
+}
+
+func (m *spawnMockRunner) ListWindowPIDs(sessionName, windowName string) ([]int, error) {
+	return nil, nil
+}
+
 func (m *spawnMockRunner) Attach(name string) error {
 	return nil
 }
