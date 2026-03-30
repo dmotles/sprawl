@@ -367,4 +367,18 @@ func TestSpawn_SystemPromptContent(t *testing.T) {
 	if !strings.Contains(cmd, "dendra/"+expectedName) {
 		t.Errorf("shell command should contain branch name dendra/%s", expectedName)
 	}
+
+	// The shell command should contain an initial prompt so Claude starts
+	// working immediately instead of sitting idle at the prompt.
+	if !strings.Contains(cmd, "begin working immediately") {
+		t.Error("shell command should contain initial prompt with 'begin working immediately'")
+	}
+	if !strings.Contains(cmd, "dendra report done") {
+		t.Error("shell command should contain initial prompt with 'dendra report done' instruction")
+	}
+
+	// Must NOT contain -p/--print flag (that's non-interactive exit mode)
+	if strings.Contains(cmd, "'-p'") || strings.Contains(cmd, "'--print'") {
+		t.Error("shell command must not use -p/--print flag (non-interactive mode)")
+	}
 }
