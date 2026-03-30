@@ -72,7 +72,6 @@ func runInit(deps *initDeps) error {
 		AllowedTools: []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
 		DisallowedTools: []string{"Edit", "Write", "NotebookEdit"},
 		Name:         "dendra-root",
-		Bare:         true,
 	}
 
 	claudeArgs := deps.claudeLauncher.BuildArgs(opts)

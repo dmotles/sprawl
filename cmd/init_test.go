@@ -77,7 +77,7 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{"--bare", "--name", "dendra-root"},
+		args:   []string{"--name", "dendra-root"},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher}
@@ -104,7 +104,7 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 	}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{"--bare"},
+		args:   []string{},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher}
