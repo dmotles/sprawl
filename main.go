@@ -1,7 +1,7 @@
 package main
 
-import "fmt"
+import "github.com/dmotles/dendrarchy/cmd"
 
 func main() {
-	fmt.Println("dendra - tree-governance for AI agents")
+	cmd.Execute()
 }
