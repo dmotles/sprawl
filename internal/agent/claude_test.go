@@ -20,7 +20,11 @@ func TestBuildArgs_AllOptions(t *testing.T) {
 	args := launcher.BuildArgs(opts)
 
 	assertContains(t, args, "--system-prompt", "test prompt")
-	assertContains(t, args, "-p", "start working")
+	// InitialPrompt should be the last positional argument, not a -p flag
+	lastArg := args[len(args)-1]
+	if lastArg != "start working" {
+		t.Errorf("expected last arg to be initial prompt, got %q", lastArg)
+	}
 	assertContains(t, args, "--tools", "Bash")
 	assertContains(t, args, "--tools", "Read")
 	assertContains(t, args, "--allowed-tools", "Bash")
@@ -40,22 +44,59 @@ func TestBuildArgs_Empty(t *testing.T) {
 
 func TestBuildArgs_InitialPrompt(t *testing.T) {
 	launcher := &RealLauncher{}
+	prompt := "You have been assigned a task. Read your system prompt and begin working immediately."
 	args := launcher.BuildArgs(LaunchOpts{
-		InitialPrompt: "You have been assigned a task. Read your system prompt and begin working immediately.",
+		SystemPrompt:  "system",
+		InitialPrompt: prompt,
+		Name:          "test",
 	})
 
-	assertContains(t, args, "-p", "You have been assigned a task. Read your system prompt and begin working immediately.")
+	// InitialPrompt must be the LAST arg (positional), after all flags
+	lastArg := args[len(args)-1]
+	if lastArg != prompt {
+		t.Errorf("expected last arg to be initial prompt, got %q", lastArg)
+	}
+
+	// Must NOT use -p/--print (that's non-interactive exit mode)
+	for _, a := range args {
+		if a == "-p" || a == "--print" {
+			t.Errorf("InitialPrompt must not use -p/--print flag (non-interactive mode), got %v", args)
+		}
+	}
 }
 
 func TestBuildArgs_NoInitialPrompt(t *testing.T) {
 	launcher := &RealLauncher{}
 	args := launcher.BuildArgs(LaunchOpts{Name: "test"})
 
+	// With no InitialPrompt, there should be no stray positional arg
+	// and no -p flag
 	for _, a := range args {
-		if a == "-p" {
-			t.Error("expected no -p flag when InitialPrompt is empty")
+		if a == "-p" || a == "--print" {
+			t.Error("expected no -p/--print flag when InitialPrompt is empty")
 		}
 	}
+}
+
+func TestBuildArgs_InitialPromptComesLast(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{
+		SystemPrompt:  "sys",
+		Name:          "agent",
+		Bare:          true,
+		InitialPrompt: "begin work",
+	})
+
+	// The positional prompt must come after all flags
+	lastArg := args[len(args)-1]
+	if lastArg != "begin work" {
+		t.Errorf("InitialPrompt should be the last argument, got %q; full args: %v", lastArg, args)
+	}
+
+	// Verify flags are present before it
+	assertContains(t, args, "--system-prompt", "sys")
+	assertContains(t, args, "--name", "agent")
+	assertContainsFlag(t, args, "--bare")
 }
 
 func TestBuildArgs_NoBare(t *testing.T) {
