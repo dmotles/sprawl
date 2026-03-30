@@ -16,6 +16,8 @@ type Runner interface {
 	NewSession(name string, env map[string]string, shellCmd string) error
 	NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
 	NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
+	KillWindow(sessionName, windowName string) error
+	ListWindowPIDs(sessionName, windowName string) ([]int, error)
 	Attach(name string) error
 }
 
@@ -84,6 +86,34 @@ func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]st
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// KillWindow closes a tmux window by name.
+func (r *RealRunner) KillWindow(sessionName, windowName string) error {
+	target := sessionName + ":" + windowName
+	cmd := exec.Command(r.TmuxPath, "kill-window", "-t", target)
+	return cmd.Run()
+}
+
+// ListWindowPIDs returns the PIDs of processes running in the given tmux window.
+func (r *RealRunner) ListWindowPIDs(sessionName, windowName string) ([]int, error) {
+	target := sessionName + ":" + windowName
+	cmd := exec.Command(r.TmuxPath, "list-panes", "-t", target, "-F", "#{pane_pid}")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		var pid int
+		if _, err := fmt.Sscanf(line, "%d", &pid); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids, nil
 }
 
 // Attach connects to the named tmux session. If called from inside an
