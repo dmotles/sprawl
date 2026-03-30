@@ -53,6 +53,7 @@ Agents come in five types. The system's philosophy is to keep rules simple and l
 | **Manager** | No | Yes | Own worktree + integration branch | Dormant between tasks, reusable, lives until goal complete |
 | **Engineer** | Yes | No | Own worktree + branch | Dormant between tasks, reusable for follow-up work |
 | **Researcher** | No | No | Own worktree | Dormant between tasks, reusable for follow-up work |
+| **Tester** | Yes (tests only) | No | Own worktree + branch | Dormant between tasks, reusable for follow-up work |
 | **Code Merger** | Merge only | No | Parent manager's worktree | Ephemeral — lives for one merge, dies when done |
 
 #### Root
@@ -87,6 +88,10 @@ When an engineer is spawned, the system:
 #### Researcher (IC)
 
 An individual contributor without code editing permissions. They can read code, execute commands, and search the web. Useful for investigation, research, documentation, review, and analysis tasks. Like engineers, they are leaf nodes and cannot spawn agents.
+
+#### Tester
+
+A quality-focused individual contributor that writes and runs tests, verifies correctness, and validates that work meets specifications. Testers have code editing permissions (for writing test code) and their own worktree. Like engineers and researchers, they are leaf nodes and cannot spawn agents.
 
 #### Code Merger
 
@@ -139,7 +144,7 @@ dendra init                          Launch the root agent
 ```
 dendra spawn \
   --family <product|engineering|qa> \
-  --type <manager|engineer|researcher|merger> \
+  --type <manager|engineer|researcher|tester|code-merger> \
   --prompt "<task description>"
 
 dendra kill <agent-name>             Kill an unresponsive agent

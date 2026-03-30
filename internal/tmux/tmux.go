@@ -14,6 +14,8 @@ const RootSessionName = "dendra-root"
 type Runner interface {
 	HasSession(name string) bool
 	NewSession(name string, env map[string]string, shellCmd string) error
+	NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
+	NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
 	Attach(name string) error
 }
 
@@ -50,6 +52,40 @@ func (r *RealRunner) NewSession(name string, env map[string]string, shellCmd str
 	return cmd.Run()
 }
 
+// NewSessionWithWindow creates a new detached tmux session with a named first window.
+func (r *RealRunner) NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	args := []string{"new-session", "-d", "-s", sessionName, "-n", windowName}
+
+	for k, v := range env {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	}
+
+	args = append(args, shellCmd)
+
+	cmd := exec.Command(r.TmuxPath, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// NewWindow adds a new named window to an existing tmux session.
+func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	args := []string{"new-window", "-t", sessionName, "-n", windowName}
+
+	for k, v := range env {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	}
+
+	args = append(args, shellCmd)
+
+	cmd := exec.Command(r.TmuxPath, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // Attach connects to the named tmux session. If called from inside an
 // existing tmux session (TMUX env var is set), it uses switch-client to
 // avoid nesting. Otherwise it replaces the current process with
@@ -72,15 +108,15 @@ func IsInsideTmux() bool {
 // suitable for passing to tmux new-session.
 func BuildShellCmd(binary string, args []string) string {
 	parts := make([]string, 0, 1+len(args))
-	parts = append(parts, shellQuote(binary))
+	parts = append(parts, ShellQuote(binary))
 	for _, a := range args {
-		parts = append(parts, shellQuote(a))
+		parts = append(parts, ShellQuote(a))
 	}
 	return strings.Join(parts, " ")
 }
 
-// shellQuote wraps a string in single quotes, escaping any embedded single quotes.
-func shellQuote(s string) string {
+// ShellQuote wraps a string in single quotes, escaping any embedded single quotes.
+func ShellQuote(s string) string {
 	if s == "" {
 		return "''"
 	}

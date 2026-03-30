@@ -10,6 +10,9 @@ dendra
 *.swp
 *.swo
 
+# Dendra runtime state
+.dendra/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

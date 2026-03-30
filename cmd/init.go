@@ -77,8 +77,14 @@ func runInit(deps *initDeps) error {
 	claudeArgs := deps.claudeLauncher.BuildArgs(opts)
 	shellCmd := tmux.BuildShellCmd(claudePath, claudeArgs)
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting current directory: %w", err)
+	}
+
 	env := map[string]string{
 		"DENDRA_AGENT_IDENTITY": "root",
+		"DENDRA_ROOT":           cwd,
 	}
 
 	fmt.Fprintln(os.Stderr, "Spawning root agent...")

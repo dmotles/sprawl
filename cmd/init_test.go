@@ -31,6 +31,14 @@ func (m *mockRunner) NewSession(name string, env map[string]string, shellCmd str
 	return m.newSessionErr
 }
 
+func (m *mockRunner) NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	return nil
+}
+
+func (m *mockRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	return nil
+}
+
 func (m *mockRunner) Attach(name string) error {
 	m.attachCalled = true
 	m.attachName = name

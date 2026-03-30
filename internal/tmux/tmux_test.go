@@ -53,6 +53,11 @@ func TestIsInsideTmux(t *testing.T) {
 	}
 }
 
+// testableRunner is a RealRunner that captures the command args instead of executing.
+// We test the arg-building logic by inspecting what would be passed to tmux.
+// Note: RealRunner methods use exec.Command which we can't easily mock,
+// so we test the interface contract through the mock used in cmd tests.
+
 func TestShellQuote(t *testing.T) {
 	tests := []struct {
 		input string
@@ -66,9 +71,9 @@ func TestShellQuote(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := shellQuote(tt.input)
+		got := ShellQuote(tt.input)
 		if got != tt.want {
-			t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("ShellQuote(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

@@ -66,6 +66,52 @@ func TestRootSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_DangerouslySkipPermissions(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{
+		Name:                       "test",
+		DangerouslySkipPermissions: true,
+	})
+	assertContainsFlag(t, args, "--dangerously-skip-permissions")
+}
+
+func TestBuildArgs_DangerouslySkipPermissions_False(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{
+		Name:                       "test",
+		DangerouslySkipPermissions: false,
+	})
+	for _, a := range args {
+		if a == "--dangerously-skip-permissions" {
+			t.Error("expected no --dangerously-skip-permissions flag when false")
+		}
+	}
+}
+
+func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
+	prompt := BuildEngineerPrompt("frank", "root", "dendra/frank", "implement login page")
+	phrases := []string{
+		"frank",
+		"root",
+		"dendra/frank",
+		"implement login page",
+		"dendra report done",
+		"dendra report problem",
+		"dendra messages send",
+	}
+	for _, phrase := range phrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("engineer system prompt missing key phrase: %q", phrase)
+		}
+	}
+}
+
+func TestRootSystemPrompt_ContainsTesterType(t *testing.T) {
+	if !strings.Contains(RootSystemPrompt, "--type tester") {
+		t.Error("root system prompt missing --type tester")
+	}
+}
+
 func assertContains(t *testing.T, args []string, flag, value string) {
 	t.Helper()
 	for i, a := range args {

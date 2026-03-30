@@ -4,12 +4,13 @@ import "os/exec"
 
 // LaunchOpts holds the options for launching a Claude Code instance.
 type LaunchOpts struct {
-	SystemPrompt   string
-	Tools          []string
-	AllowedTools   []string
-	DisallowedTools []string
-	Name           string
-	Bare           bool
+	SystemPrompt              string
+	Tools                     []string
+	AllowedTools              []string
+	DisallowedTools           []string
+	Name                      string
+	Bare                      bool
+	DangerouslySkipPermissions bool
 }
 
 // Launcher builds claude CLI arguments and finds the binary.
@@ -58,6 +59,10 @@ func (r *RealLauncher) BuildArgs(opts LaunchOpts) []string {
 
 	if opts.Bare {
 		args = append(args, "--bare")
+	}
+
+	if opts.DangerouslySkipPermissions {
+		args = append(args, "--dangerously-skip-permissions")
 	}
 
 	return args
