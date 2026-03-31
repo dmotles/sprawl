@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/dendra/internal/messages"
+	"github.com/dmotles/dendra/internal/tmux"
 )
 
 func newTestMessagesDeps(t *testing.T) (*messagesDeps, string) {
@@ -662,5 +663,101 @@ func writeTestMessage(t *testing.T, dir, filename string, msg *messages.Message)
 	}
 	if err := os.WriteFile(filepath.Join(dir, filename+".json"), data, 0644); err != nil {
 		t.Fatalf("writing message file: %v", err)
+	}
+}
+
+// mockTmuxRunner records calls to SendKeys for test assertions.
+type mockTmuxRunner struct {
+	sendKeysCalls []sendKeysCall
+}
+
+type sendKeysCall struct {
+	sessionName string
+	windowName  string
+	keys        string
+}
+
+func (m *mockTmuxRunner) HasSession(name string) bool                       { return false }
+func (m *mockTmuxRunner) NewSession(name string, env map[string]string, shellCmd string) error {
+	return nil
+}
+func (m *mockTmuxRunner) NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	return nil
+}
+func (m *mockTmuxRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	return nil
+}
+func (m *mockTmuxRunner) KillWindow(sessionName, windowName string) error { return nil }
+func (m *mockTmuxRunner) ListWindowPIDs(sessionName, windowName string) ([]int, error) {
+	return nil, nil
+}
+func (m *mockTmuxRunner) SendKeys(sessionName, windowName string, keys string) error {
+	m.sendKeysCalls = append(m.sendKeysCalls, sendKeysCall{sessionName, windowName, keys})
+	return nil
+}
+func (m *mockTmuxRunner) Attach(name string) error { return nil }
+
+func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
+	tmpDir := t.TempDir()
+	mock := &mockTmuxRunner{}
+	deps := &messagesDeps{
+		getenv: func(key string) string {
+			switch key {
+			case "DENDRA_ROOT":
+				return tmpDir
+			case "DENDRA_AGENT_IDENTITY":
+				return "worker-1"
+			}
+			return ""
+		},
+		tmuxRunner: mock,
+	}
+
+	err := runMessagesSend(deps, "root", "build done", "all tests pass")
+	if err != nil {
+		t.Fatalf("runMessagesSend() unexpected error: %v", err)
+	}
+
+	if len(mock.sendKeysCalls) != 1 {
+		t.Fatalf("expected 1 SendKeys call, got %d", len(mock.sendKeysCalls))
+	}
+
+	call := mock.sendKeysCalls[0]
+	if call.sessionName != tmux.RootSessionName {
+		t.Errorf("SendKeys session = %q, want %q", call.sessionName, tmux.RootSessionName)
+	}
+	if call.windowName != tmux.RootWindowName {
+		t.Errorf("SendKeys window = %q, want %q", call.windowName, tmux.RootWindowName)
+	}
+
+	wantNotification := "[inbox] Message from worker-1: build done"
+	if !strings.Contains(call.keys, wantNotification) {
+		t.Errorf("SendKeys keys = %q, want it to contain %q", call.keys, wantNotification)
+	}
+}
+
+func TestRunMessagesSend_NonRootNoTmuxNotification(t *testing.T) {
+	tmpDir := t.TempDir()
+	mock := &mockTmuxRunner{}
+	deps := &messagesDeps{
+		getenv: func(key string) string {
+			switch key {
+			case "DENDRA_ROOT":
+				return tmpDir
+			case "DENDRA_AGENT_IDENTITY":
+				return "worker-1"
+			}
+			return ""
+		},
+		tmuxRunner: mock,
+	}
+
+	err := runMessagesSend(deps, "bob", "hello", "world")
+	if err != nil {
+		t.Fatalf("runMessagesSend() unexpected error: %v", err)
+	}
+
+	if len(mock.sendKeysCalls) != 0 {
+		t.Errorf("expected 0 SendKeys calls for non-root recipient, got %d", len(mock.sendKeysCalls))
 	}
 }

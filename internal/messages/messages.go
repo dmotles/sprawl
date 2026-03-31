@@ -28,8 +28,26 @@ func MessagesDir(dendraRoot string) string {
 	return filepath.Join(dendraRoot, ".dendra", "messages")
 }
 
+// NotifyFunc is called after successful delivery when the recipient is "root".
+// It is best-effort — errors and panics are swallowed.
+type NotifyFunc func(from, subject string)
+
+type sendOptions struct {
+	notify NotifyFunc
+}
+
+// SendOption configures optional behavior for Send.
+type SendOption func(*sendOptions)
+
+// WithNotify registers a notification callback invoked when the recipient is "root".
+func WithNotify(fn NotifyFunc) SendOption {
+	return func(o *sendOptions) {
+		o.notify = fn
+	}
+}
+
 // Send delivers a message from one agent to another using Maildir-style atomic writes.
-func Send(dendraRoot, from, to, subject, body string) error {
+func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error {
 	if from == "" {
 		return fmt.Errorf("sender (from) must not be empty")
 	}
@@ -87,6 +105,18 @@ func Send(dendraRoot, from, to, subject, body string) error {
 	}
 	if err := os.WriteFile(filepath.Join(sentDir, filename), data, 0644); err != nil {
 		return fmt.Errorf("writing sent copy: %w", err)
+	}
+
+	// Best-effort root notification
+	var sopts sendOptions
+	for _, o := range opts {
+		o(&sopts)
+	}
+	if to == "root" && sopts.notify != nil {
+		func() {
+			defer func() { recover() }()
+			sopts.notify(from, subject)
+		}()
 	}
 
 	return nil
