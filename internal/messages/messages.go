@@ -266,13 +266,14 @@ func Archive(dendraRoot, agent, msgID string) error {
 	return nil
 }
 
-// ReadMessage reads a message from any directory (new/, cur/, archive/), returns it.
+// ReadMessage reads a message from any directory (new/, cur/, archive/, sent/), returns it.
 // If found in new/, auto-marks as read by moving to cur/.
+// Messages in sent/ are returned as-is (no auto-mark-read).
 func ReadMessage(dendraRoot, agent, msgID string) (*Message, error) {
 	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
 	filename := msgID + ".json"
 
-	for _, dir := range []string{"new", "cur", "archive"} {
+	for _, dir := range []string{"new", "cur", "archive", "sent"} {
 		filePath := filepath.Join(agentDir, dir, filename)
 		data, err := os.ReadFile(filePath)
 		if err != nil {

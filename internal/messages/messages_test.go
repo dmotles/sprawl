@@ -1003,6 +1003,44 @@ func TestReadMessage_FromArchive(t *testing.T) {
 	}
 }
 
+func TestReadMessage_FromSent(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	sentDir := filepath.Join(agentDir, "sent")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	msg := &Message{
+		ID: "1000.bob.ccdd", From: "bob", To: "alice",
+		Subject: "outgoing", Body: "sent message", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, sentDir, msg.ID, msg)
+
+	got, err := ReadMessage(tmpDir, agent, "1000.bob.ccdd")
+	if err != nil {
+		t.Fatalf("ReadMessage() unexpected error: %v", err)
+	}
+
+	if got.Dir != "sent" {
+		t.Errorf("Dir = %q, want %q", got.Dir, "sent")
+	}
+
+	// File should still be in sent/ (no auto-mark-read move)
+	if _, err := os.Stat(filepath.Join(sentDir, "1000.bob.ccdd.json")); err != nil {
+		t.Errorf("expected file to remain in sent/: %v", err)
+	}
+
+	// File should NOT appear in cur/ (no mark-read behavior)
+	curPath := filepath.Join(agentDir, "cur", "1000.bob.ccdd.json")
+	if _, err := os.Stat(curPath); !os.IsNotExist(err) {
+		t.Errorf("expected file NOT to be in cur/, but it exists")
+	}
+}
+
 func TestReadMessage_NotFound(t *testing.T) {
 	tmpDir := t.TempDir()
 	agent := "bob"
