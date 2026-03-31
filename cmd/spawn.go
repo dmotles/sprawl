@@ -195,6 +195,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		TmuxWindow:  agentName,
 		Status:      "active",
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
+		SessionID:   "dendra-" + agentName,
 	}
 	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)

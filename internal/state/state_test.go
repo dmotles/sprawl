@@ -18,6 +18,8 @@ func TestSaveAndLoadAgent(t *testing.T) {
 		TmuxWindow:  "frank",
 		Status:      "active",
 		CreatedAt:   "2026-03-30T12:00:00Z",
+		SessionID:   "dendra-frank",
+		Subagent:    true,
 	}
 
 	if err := SaveAgent(dir, agent); err != nil {
@@ -61,6 +63,37 @@ func TestSaveAndLoadAgent(t *testing.T) {
 	}
 	if loaded.CreatedAt != agent.CreatedAt {
 		t.Errorf("CreatedAt = %q, want %q", loaded.CreatedAt, agent.CreatedAt)
+	}
+	if loaded.SessionID != agent.SessionID {
+		t.Errorf("SessionID = %q, want %q", loaded.SessionID, agent.SessionID)
+	}
+	if loaded.Subagent != agent.Subagent {
+		t.Errorf("Subagent = %v, want %v", loaded.Subagent, agent.Subagent)
+	}
+}
+
+func TestSaveAndLoadAgent_OmitemptyDefaults(t *testing.T) {
+	dir := t.TempDir()
+	agent := &AgentState{
+		Name:   "bob",
+		Type:   "engineer",
+		Status: "active",
+	}
+
+	if err := SaveAgent(dir, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "bob")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+
+	if loaded.SessionID != "" {
+		t.Errorf("SessionID = %q, want empty string", loaded.SessionID)
+	}
+	if loaded.Subagent != false {
+		t.Errorf("Subagent = %v, want false", loaded.Subagent)
 	}
 }
 

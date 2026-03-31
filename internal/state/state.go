@@ -21,6 +21,8 @@ type AgentState struct {
 	TmuxWindow  string `json:"tmux_window"`
 	Status      string `json:"status"`
 	CreatedAt   string `json:"created_at"`
+	SessionID   string `json:"session_id,omitempty"`
+	Subagent    bool   `json:"subagent,omitempty"`
 
 	// Report fields — populated by "dendra report" subcommands.
 	LastReportType    string `json:"last_report_type,omitempty"`    // status, done, problem
