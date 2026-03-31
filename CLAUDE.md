@@ -27,6 +27,17 @@ This repo IS Dendrarchy. The `.dendra/` directory at the repo root stores agent 
 
 **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way.
 
+## Linear Issue Tracking
+
+This project tracks work in Linear. All issues belong to the **Dendra** project in team **Qumulo-dmotles** (prefix: `QUM`).
+
+When creating, managing, or querying issues, use the `/linear-issues` skill for conventions, required fields, and MCP tool usage.
+
+**Issue lifecycle** — if you are working on a Linear issue:
+1. **Start**: Set the issue state to "In Progress" via `save_issue`. Add a comment via `save_comment` noting you're picking it up (include your agent name/identity if you have one).
+2. **Progress**: As you work, post comments on the issue with notable findings, decisions, or blockers. Keep the issue thread as a living log — especially for research or investigation tasks. Don't let useful context stay only in your head.
+3. **Finish**: Set the issue state to "Done" via `save_issue`. Add a comment summarizing what was done, linking to any relevant commits or PRs.
+
 ## Validating Changes
 
 1. `go test ./...` — all tests pass
