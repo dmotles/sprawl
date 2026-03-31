@@ -100,13 +100,13 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 		return fmt.Errorf("moving message to new/: %w", err)
 	}
 
-	// Write a copy to sender's sent/ directory for outbox tracking.
+	// Best-effort copy to sender's sent/ directory for outbox tracking.
+	// The sent copy is advisory — delivery already succeeded above, so we
+	// silently ignore errors to avoid returning a misleading failure that
+	// could cause callers to retry (and duplicate) a delivered message.
 	sentDir := filepath.Join(MessagesDir(dendraRoot), from, "sent")
-	if err := os.MkdirAll(sentDir, 0755); err != nil {
-		return fmt.Errorf("creating sender sent directory: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(sentDir, filename), data, 0644); err != nil {
-		return fmt.Errorf("writing sent copy: %w", err)
+	if err := os.MkdirAll(sentDir, 0755); err == nil {
+		_ = os.WriteFile(filepath.Join(sentDir, filename), data, 0644)
 	}
 
 	// Best-effort wake file to notify the recipient agent.

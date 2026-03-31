@@ -1652,3 +1652,45 @@ func TestSend_NotifyPanicDoesNotBreakSend(t *testing.T) {
 		t.Fatalf("expected 1 file in new/, got %d", len(entries))
 	}
 }
+
+func TestSend_SentCopyFailureDoesNotReturnError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Pre-create the sender's messages directory as a read-only directory
+	// so that MkdirAll for sent/ will fail.
+	senderDir := filepath.Join(MessagesDir(tmpDir), "alice")
+	if err := os.MkdirAll(senderDir, 0755); err != nil {
+		t.Fatalf("setup: creating sender dir: %v", err)
+	}
+	// Make sender dir read-only so creating sent/ subdirectory fails.
+	if err := os.Chmod(senderDir, 0555); err != nil {
+		t.Fatalf("setup: chmod sender dir: %v", err)
+	}
+	t.Cleanup(func() {
+		// Restore permissions so t.TempDir() cleanup can remove it.
+		os.Chmod(senderDir, 0755)
+	})
+
+	// Send should succeed (delivery to recipient) even though sent copy fails.
+	err := Send(tmpDir, "alice", "bob", "hello", "world")
+	if err != nil {
+		t.Fatalf("Send() returned error %v; want nil (sent copy failure should be ignored)", err)
+	}
+
+	// Verify the message was delivered to the recipient's new/ directory.
+	recipientNewDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(recipientNewDir)
+	if err != nil {
+		t.Fatalf("reading recipient new/ dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in recipient new/, got %d", len(entries))
+	}
+
+	// Verify no sent copy was created (since the directory was read-only).
+	sentDir := filepath.Join(senderDir, "sent")
+	_, err = os.Stat(sentDir)
+	if err == nil {
+		t.Error("expected sent/ directory to not exist (should have failed to create)")
+	}
+}
