@@ -1,6 +1,7 @@
 package messages
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -181,6 +182,120 @@ func TestSend_ConcurrentSends(t *testing.T) {
 		}
 		ids[msg.ID] = true
 	}
+
+	// Sender's sent/ directory should contain exactly n files with distinct IDs
+	sentDir := filepath.Join(MessagesDir(tmpDir), "alice", "sent")
+	sentEntries, err := os.ReadDir(sentDir)
+	if err != nil {
+		t.Fatalf("reading sent dir: %v", err)
+	}
+	if len(sentEntries) != n {
+		t.Errorf("expected %d files in alice/sent/, got %d", n, len(sentEntries))
+	}
+
+	sentIDs := make(map[string]bool)
+	for _, e := range sentEntries {
+		data, err := os.ReadFile(filepath.Join(sentDir, e.Name()))
+		if err != nil {
+			t.Fatalf("reading sent file: %v", err)
+		}
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatalf("unmarshaling sent message: %v", err)
+		}
+		if sentIDs[msg.ID] {
+			t.Errorf("duplicate sent message ID: %s", msg.ID)
+		}
+		sentIDs[msg.ID] = true
+	}
+}
+
+func TestSend_CreatesSentCopy(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "subj", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	sentDir := filepath.Join(MessagesDir(tmpDir), "alice", "sent")
+	entries, err := os.ReadDir(sentDir)
+	if err != nil {
+		t.Fatalf("reading sent dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in alice/sent/, got %d", len(entries))
+	}
+
+	data, err := os.ReadFile(filepath.Join(sentDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading sent message file: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshaling sent message: %v", err)
+	}
+
+	if msg.From != "alice" {
+		t.Errorf("From = %q, want %q", msg.From, "alice")
+	}
+	if msg.To != "bob" {
+		t.Errorf("To = %q, want %q", msg.To, "bob")
+	}
+	if msg.Subject != "subj" {
+		t.Errorf("Subject = %q, want %q", msg.Subject, "subj")
+	}
+	if msg.Body != "body" {
+		t.Errorf("Body = %q, want %q", msg.Body, "body")
+	}
+	if msg.ID == "" {
+		t.Error("ID should not be empty")
+	}
+	if msg.Timestamp == "" {
+		t.Error("Timestamp should not be empty")
+	}
+}
+
+func TestSend_SentCopyMatchesDelivered(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "subj", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	// Read the delivered copy from bob/new/
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	newEntries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(newEntries) != 1 {
+		t.Fatalf("expected 1 file in bob/new/, got %d", len(newEntries))
+	}
+	deliveredData, err := os.ReadFile(filepath.Join(newDir, newEntries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading delivered message: %v", err)
+	}
+
+	// Read the sent copy from alice/sent/
+	sentDir := filepath.Join(MessagesDir(tmpDir), "alice", "sent")
+	sentEntries, err := os.ReadDir(sentDir)
+	if err != nil {
+		t.Fatalf("reading sent dir: %v", err)
+	}
+	if len(sentEntries) != 1 {
+		t.Fatalf("expected 1 file in alice/sent/, got %d", len(sentEntries))
+	}
+	sentData, err := os.ReadFile(filepath.Join(sentDir, sentEntries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading sent message: %v", err)
+	}
+
+	if !bytes.Equal(deliveredData, sentData) {
+		t.Errorf("sent copy does not match delivered copy\ndelivered: %s\nsent: %s", deliveredData, sentData)
+	}
 }
 
 func TestInbox_Empty(t *testing.T) {
@@ -337,6 +452,15 @@ func TestSend_CreatesDirectories(t *testing.T) {
 		if !info.IsDir() {
 			t.Errorf("expected %s to be a directory", sub)
 		}
+	}
+
+	// Sender's sent/ directory should also be created
+	senderSentDir := filepath.Join(MessagesDir(tmpDir), "alice", "sent")
+	info, err := os.Stat(senderSentDir)
+	if err != nil {
+		t.Errorf("expected sender's sent/ directory to exist: %v", err)
+	} else if !info.IsDir() {
+		t.Errorf("expected alice/sent/ to be a directory")
 	}
 }
 
