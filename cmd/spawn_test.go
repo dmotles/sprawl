@@ -190,6 +190,9 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if agentState.Status != "active" {
 		t.Errorf("state Status = %q, want %q", agentState.Status, "active")
 	}
+	if agentState.SessionID != "dendra-"+expectedName {
+		t.Errorf("state SessionID = %q, want %q", agentState.SessionID, "dendra-"+expectedName)
+	}
 }
 
 func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
