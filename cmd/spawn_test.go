@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/dendrarchy/internal/agent"
-	"github.com/dmotles/dendrarchy/internal/state"
+	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/state"
 )
 
 // spawnMockRunner implements tmux.Runner for spawn tests.

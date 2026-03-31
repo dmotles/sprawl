@@ -6,8 +6,10 @@ build:
 test:
 	go test ./...
 
+GOBIN ?= $(HOME)/.local/bin
+
 install:
-	go install .
+	GOBIN=$(GOBIN) go install .
 
 clean:
 	rm -f dendra

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendrarchy/internal/state"
+	"github.com/dmotles/dendra/internal/state"
 )
 
 // reportMockRunner implements tmux.Runner for report tests.

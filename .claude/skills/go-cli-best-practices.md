@@ -347,7 +347,7 @@ _ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
 
 ## Go Module & Dependencies
 
-- **Module path:** `github.com/dmotles/dendrarchy`
+- **Module path:** `github.com/dmotles/dendra`
 - **Go version:** 1.25.0
 - **Dependencies:**
   - `github.com/spf13/cobra v1.10.2` — CLI framework

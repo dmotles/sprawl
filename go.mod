@@ -1,4 +1,4 @@
-module github.com/dmotles/dendrarchy
+module github.com/dmotles/dendra
 
 go 1.25.0
 

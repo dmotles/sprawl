@@ -6,8 +6,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dmotles/dendrarchy/internal/state"
-	"github.com/dmotles/dendrarchy/internal/tmux"
+	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
 )
 

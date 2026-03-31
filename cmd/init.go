@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dmotles/dendrarchy/internal/agent"
-	"github.com/dmotles/dendrarchy/internal/tmux"
+	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
 )
 

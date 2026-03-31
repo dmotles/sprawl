@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendrarchy/internal/state"
+	"github.com/dmotles/dendra/internal/state"
 )
 
 // retireMockRunner extends killMockRunner for retire tests.

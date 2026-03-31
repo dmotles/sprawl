@@ -6,10 +6,10 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/dmotles/dendrarchy/internal/agent"
-	"github.com/dmotles/dendrarchy/internal/state"
-	"github.com/dmotles/dendrarchy/internal/tmux"
-	"github.com/dmotles/dendrarchy/internal/worktree"
+	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/dendra/internal/worktree"
 	"github.com/spf13/cobra"
 )
 

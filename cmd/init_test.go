@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/dmotles/dendrarchy/internal/agent"
-	"github.com/dmotles/dendrarchy/internal/tmux"
+	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/tmux"
 )
 
 // mockRunner implements tmux.Runner for testing.
