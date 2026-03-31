@@ -33,7 +33,7 @@ type mockProcessManager struct {
 	configs     []agentloop.ProcessConfig
 }
 
-func (m *mockProcessManager) Start(ctx context.Context) error {
+func (m *mockProcessManager) Start(ctx context.Context, initialPrompt string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCalled = true

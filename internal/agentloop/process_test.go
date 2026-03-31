@@ -184,7 +184,7 @@ func TestProcess_Start_HappyPath(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	err := p.Start(context.Background())
+	err := p.Start(context.Background(), "test prompt")
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestProcess_Start_EOF(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	err := p.Start(context.Background())
+	err := p.Start(context.Background(), "test prompt")
 	if err == nil {
 		t.Fatal("Start() expected error when reader returns EOF before init, got nil")
 	}
@@ -224,7 +224,7 @@ func TestProcess_SendPrompt_HappyPath(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -242,12 +242,15 @@ func TestProcess_SendPrompt_HappyPath(t *testing.T) {
 		t.Error("result.IsError = true, want false")
 	}
 
-	// Verify the writer received the prompt.
-	if len(writer.promptsSent) != 1 {
-		t.Fatalf("writer.promptsSent has %d entries, want 1", len(writer.promptsSent))
+	// Verify the writer received the initial prompt (from Start) and the SendPrompt prompt.
+	if len(writer.promptsSent) != 2 {
+		t.Fatalf("writer.promptsSent has %d entries, want 2", len(writer.promptsSent))
 	}
-	if writer.promptsSent[0] != "do something" {
-		t.Errorf("writer.promptsSent[0] = %q, want %q", writer.promptsSent[0], "do something")
+	if writer.promptsSent[0] != "test prompt" {
+		t.Errorf("writer.promptsSent[0] = %q, want %q", writer.promptsSent[0], "test prompt")
+	}
+	if writer.promptsSent[1] != "do something" {
+		t.Errorf("writer.promptsSent[1] = %q, want %q", writer.promptsSent[1], "do something")
 	}
 
 	// State should be back to idle after result.
@@ -270,7 +273,7 @@ func TestProcess_SendPrompt_WithControlRequest(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -307,7 +310,7 @@ func TestProcess_SendPrompt_MultipleControlRequests(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -346,7 +349,7 @@ func TestProcess_SendPrompt_Observer(t *testing.T) {
 	obs := &mockObserver{}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter, WithObserver(obs))
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -386,7 +389,7 @@ func TestProcess_SendPrompt_ReaderError(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -413,7 +416,7 @@ func TestProcess_SendPrompt_ErrorResult(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -446,7 +449,7 @@ func TestProcess_MultiTurn(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -474,15 +477,18 @@ func TestProcess_MultiTurn(t *testing.T) {
 		t.Errorf("State() after second turn = %q, want %q", p.State(), StateIdle)
 	}
 
-	// Verify both prompts were sent.
-	if len(writer.promptsSent) != 2 {
-		t.Fatalf("writer.promptsSent has %d entries, want 2", len(writer.promptsSent))
+	// Verify all prompts were sent: initial (from Start) + two SendPrompt calls.
+	if len(writer.promptsSent) != 3 {
+		t.Fatalf("writer.promptsSent has %d entries, want 3", len(writer.promptsSent))
 	}
-	if writer.promptsSent[0] != "first prompt" {
-		t.Errorf("promptsSent[0] = %q, want %q", writer.promptsSent[0], "first prompt")
+	if writer.promptsSent[0] != "test prompt" {
+		t.Errorf("promptsSent[0] = %q, want %q", writer.promptsSent[0], "test prompt")
 	}
-	if writer.promptsSent[1] != "second prompt" {
-		t.Errorf("promptsSent[1] = %q, want %q", writer.promptsSent[1], "second prompt")
+	if writer.promptsSent[1] != "first prompt" {
+		t.Errorf("promptsSent[1] = %q, want %q", writer.promptsSent[1], "first prompt")
+	}
+	if writer.promptsSent[2] != "second prompt" {
+		t.Errorf("promptsSent[2] = %q, want %q", writer.promptsSent[2], "second prompt")
 	}
 }
 
@@ -502,7 +508,7 @@ func TestProcess_Stop(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -538,7 +544,7 @@ func TestProcess_Kill(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 
@@ -573,7 +579,7 @@ func TestProcess_IsRunning(t *testing.T) {
 		t.Error("IsRunning() = true before Start(), want false")
 	}
 
-	if err := p.Start(context.Background()); err != nil {
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 

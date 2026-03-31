@@ -98,8 +98,9 @@ func NewProcess(config ProcessConfig, starter CommandStarter, opts ...Option) *P
 	return p
 }
 
-// Start launches the Claude Code subprocess and waits for the init message.
-func (p *Process) Start(ctx context.Context) error {
+// Start launches the Claude Code subprocess, sends the initial prompt to
+// trigger the system/init message, and waits for init before returning.
+func (p *Process) Start(ctx context.Context, initialPrompt string) error {
 	p.mu.Lock()
 	p.state = StateStarting
 	p.mu.Unlock()
@@ -118,6 +119,14 @@ func (p *Process) Start(ctx context.Context) error {
 	p.waitFn = waitFn
 	p.cancelFn = cancelFn
 	p.mu.Unlock()
+
+	// Send the initial user message to trigger system/init from Claude.
+	if err := writer.SendUserMessage(initialPrompt); err != nil {
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+		return fmt.Errorf("sending initial prompt: %w", err)
+	}
 
 	// Read messages until we get system/init.
 	for {

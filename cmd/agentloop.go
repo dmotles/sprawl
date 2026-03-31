@@ -22,7 +22,7 @@ import (
 
 // processManager is the interface for managing a Claude Code subprocess.
 type processManager interface {
-	Start(ctx context.Context) error
+	Start(ctx context.Context, initialPrompt string) error
 	SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error)
 	Stop(ctx context.Context) error
 	IsRunning() bool
@@ -150,9 +150,9 @@ func init() {
 
 // startProcess creates and starts a process. On failure it reports to parent and calls exit(1).
 // Returns (proc, true) on success, or (nil, false) on failure (after reporting and exiting).
-func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.ProcessConfig, observer agentloop.Observer, dendraRoot, agentName, parent, reason string) (processManager, bool) {
+func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.ProcessConfig, observer agentloop.Observer, dendraRoot, agentName, parent, reason, initialPrompt string) (processManager, bool) {
 	proc := deps.newProcess(config, observer)
-	if err := proc.Start(ctx); err != nil {
+	if err := proc.Start(ctx, initialPrompt); err != nil {
 		fmt.Fprintf(deps.stdout, "[agent-loop] %s: %v\n", reason, err)
 		_ = deps.sendMessage(dendraRoot, agentName, parent, "[PROBLEM] agent-loop failure", fmt.Sprintf("%s: %v", reason, err))
 		deps.exit(1)
@@ -196,7 +196,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	observer := &tmuxObserver{w: deps.stdout}
 
 	// Create and start the initial process.
-	proc, ok := startProcess(ctx, deps, config, observer, dendraRoot, agentName, agentState.Parent, "failed to start process")
+	proc, ok := startProcess(ctx, deps, config, observer, dendraRoot, agentName, agentState.Parent, "failed to start process", agentState.Prompt)
 	if !ok {
 		return nil
 	}
@@ -214,7 +214,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		resumeConfig := config
 		resumeConfig.Resume = true
 		var ok bool
-		proc, ok = startProcess(ctx, deps, resumeConfig, observer, dendraRoot, agentName, agentState.Parent, "failed to restart process after crash")
+		proc, ok = startProcess(ctx, deps, resumeConfig, observer, dendraRoot, agentName, agentState.Parent, "failed to restart process after crash", agentState.Prompt)
 		return ok
 	}
 
