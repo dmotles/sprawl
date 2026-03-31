@@ -39,10 +39,7 @@ var reportStatusCmd = &cobra.Command{
 	Short: "Report a status update",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		deps, err := resolveReportDeps()
-		if err != nil {
-			return err
-		}
+		deps := resolveReportDeps()
 		message := strings.Join(args, " ")
 		return runReport(deps, "status", message)
 	},
@@ -53,10 +50,7 @@ var reportDoneCmd = &cobra.Command{
 	Short: "Report that your task is complete",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		deps, err := resolveReportDeps()
-		if err != nil {
-			return err
-		}
+		deps := resolveReportDeps()
 		message := strings.Join(args, " ")
 		return runReport(deps, "done", message)
 	},
@@ -67,18 +61,15 @@ var reportProblemCmd = &cobra.Command{
 	Short: "Report a problem or blocker",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		deps, err := resolveReportDeps()
-		if err != nil {
-			return err
-		}
+		deps := resolveReportDeps()
 		message := strings.Join(args, " ")
 		return runReport(deps, "problem", message)
 	},
 }
 
-func resolveReportDeps() (*reportDeps, error) {
+func resolveReportDeps() *reportDeps {
 	if defaultReportDeps != nil {
-		return defaultReportDeps, nil
+		return defaultReportDeps
 	}
 	deps := &reportDeps{
 		getenv:  os.Getenv,
@@ -87,7 +78,7 @@ func resolveReportDeps() (*reportDeps, error) {
 	if tmuxPath, err := tmux.FindTmux(); err == nil {
 		deps.tmuxRunner = &tmux.RealRunner{TmuxPath: tmuxPath}
 	}
-	return deps, nil
+	return deps
 }
 
 func runReport(deps *reportDeps, reportType, message string) error {
