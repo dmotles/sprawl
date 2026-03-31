@@ -142,8 +142,8 @@ func TestReportDone_HappyPath(t *testing.T) {
 	if runner.sendKeysSession != "dendra-root" {
 		t.Errorf("sendKeysSession = %q, want %q", runner.sendKeysSession, "dendra-root")
 	}
-	if runner.sendKeysWindow != "dendra-root" {
-		t.Errorf("sendKeysWindow = %q, want %q", runner.sendKeysWindow, "dendra-root")
+	if runner.sendKeysWindow != "root" {
+		t.Errorf("sendKeysWindow = %q, want %q", runner.sendKeysWindow, "root")
 	}
 	if !strings.Contains(runner.sendKeysText, "alice") {
 		t.Errorf("sendKeysText should contain agent name, got: %q", runner.sendKeysText)

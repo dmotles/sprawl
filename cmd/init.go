@@ -88,7 +88,7 @@ func runInit(deps *initDeps) error {
 	}
 
 	fmt.Fprintln(os.Stderr, "Spawning root agent...")
-	if err := deps.tmuxRunner.NewSession(tmux.RootSessionName, env, shellCmd); err != nil {
+	if err := deps.tmuxRunner.NewSessionWithWindow(tmux.RootSessionName, tmux.RootWindowName, env, shellCmd); err != nil {
 		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
 

@@ -9,6 +9,7 @@ import (
 )
 
 const RootSessionName = "dendra-root"
+const RootWindowName = "root"
 
 // Runner abstracts tmux operations for testability.
 type Runner interface {

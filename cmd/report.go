@@ -148,7 +148,7 @@ func notifyParent(deps *reportDeps, agentState *state.AgentState, reportType, me
 	if parent == "root" {
 		// Send to root's tmux session via send-keys
 		notification := fmt.Sprintf("Agent %s reports %s: %s", agentState.Name, reportType, message)
-		return deps.tmuxRunner.SendKeys(tmux.RootSessionName, tmux.RootSessionName, notification)
+		return deps.tmuxRunner.SendKeys(tmux.RootSessionName, tmux.RootWindowName, notification)
 	}
 
 	// TODO: For non-root parents, the non-interactive wrapper loop (future work)
