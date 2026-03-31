@@ -62,6 +62,8 @@ func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (M
 	}
 	cmd.Env = env
 
+	cmd.Stderr = os.Stderr
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("creating stdin pipe: %w", err)
