@@ -772,6 +772,108 @@ func TestFormatInboxTable_SubjectNotBody(t *testing.T) {
 	}
 }
 
+func TestFormatInboxTable_ColumnsAlignWithVaryingNames(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{ID: "1", From: "a", To: "alice", Subject: "subj-a", Body: "body", Timestamp: "2026-03-31T10:00:00Z", Dir: "new"},
+		{ID: "2", From: "engineering-lead", To: "alice", Subject: "subj-eng", Body: "body", Timestamp: "2026-03-31T11:00:00Z", Dir: "new"},
+		{ID: "3", From: "root", To: "alice", Subject: "subj-root", Body: "body", Timestamp: "2026-03-31T12:00:00Z", Dir: "new"},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d:\n%s", len(lines), output)
+	}
+
+	subjects := []string{"subj-a", "subj-eng", "subj-root"}
+	offsets := make([]int, 3)
+	for i, line := range lines {
+		idx := strings.Index(line, subjects[i])
+		if idx < 0 {
+			t.Fatalf("line %d: expected to find subject %q in %q", i, subjects[i], line)
+		}
+		offsets[i] = idx
+	}
+
+	// All subject columns must start at the same byte offset for proper alignment.
+	// With fixed-width %-12s, "engineering-lead" (16 chars) overflows the field,
+	// pushing its subject column further right than the others.
+	if offsets[0] != offsets[1] || offsets[1] != offsets[2] {
+		t.Errorf("subject columns are not aligned: offsets = %v\noutput:\n%s", offsets, output)
+	}
+}
+
+func TestFormatInboxTable_SingleMessage_NoExcessivePadding(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{ID: "1", From: "bob", To: "alice", Subject: "important subject", Body: "body", Timestamp: "2026-03-31T10:00:00Z", Dir: "new"},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	// With dynamic column widths, the gap between "bob" and "important subject"
+	// should be reasonable (not padded to a fixed 12-char field width).
+	// The old %-12s format produces "bob         important subject" (9 extra spaces).
+	// With tabwriter, there should be no run of 6+ consecutive spaces between them.
+	bobIdx := strings.Index(output, "bob")
+	subjIdx := strings.Index(output, "important subject")
+	if bobIdx < 0 || subjIdx < 0 {
+		t.Fatalf("expected both 'bob' and 'important subject' in output, got:\n%q", output)
+	}
+	gap := subjIdx - (bobIdx + len("bob"))
+	if gap > 5 {
+		t.Errorf("excessive padding between From and Subject: %d spaces (expected ≤5), got:\n%q", gap, output)
+	}
+}
+
+func TestFormatInboxTable_AllColumnsPresent(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{ID: "1", From: "alice", To: "bob", Subject: "first topic", Body: "body1", Timestamp: "2026-03-31T09:30:00Z", Dir: "new"},
+		{ID: "2", From: "charlie", To: "bob", Subject: "second topic", Body: "body2", Timestamp: "2026-03-31T14:45:00Z", Dir: "cur"},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d:\n%s", len(lines), output)
+	}
+
+	// Line 1: NEW status, formatted timestamp, from, subject
+	if !strings.Contains(lines[0], "NEW") {
+		t.Errorf("line 0: expected status 'NEW', got:\n%s", lines[0])
+	}
+	if !strings.Contains(lines[0], "2026-03-31 09:30") {
+		t.Errorf("line 0: expected formatted timestamp '2026-03-31 09:30', got:\n%s", lines[0])
+	}
+	if !strings.Contains(lines[0], "alice") {
+		t.Errorf("line 0: expected from 'alice', got:\n%s", lines[0])
+	}
+	if !strings.Contains(lines[0], "first topic") {
+		t.Errorf("line 0: expected subject 'first topic', got:\n%s", lines[0])
+	}
+
+	// Line 2: read status, formatted timestamp, from, subject
+	if !strings.Contains(lines[1], "read") {
+		t.Errorf("line 1: expected status 'read', got:\n%s", lines[1])
+	}
+	if !strings.Contains(lines[1], "2026-03-31 14:45") {
+		t.Errorf("line 1: expected formatted timestamp '2026-03-31 14:45', got:\n%s", lines[1])
+	}
+	if !strings.Contains(lines[1], "charlie") {
+		t.Errorf("line 1: expected from 'charlie', got:\n%s", lines[1])
+	}
+	if !strings.Contains(lines[1], "second topic") {
+		t.Errorf("line 1: expected subject 'second topic', got:\n%s", lines[1])
+	}
+}
+
 func TestMessagesInbox_OutputRouting(t *testing.T) {
 	deps, tmpDir := newTestMessagesDeps(t)
 

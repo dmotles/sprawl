@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"text/tabwriter"
 	"time"
 
 	"github.com/dmotles/dendra/internal/messages"
@@ -83,6 +84,7 @@ func resolveMessagesDeps() *messagesDeps {
 }
 
 func formatInboxTable(w io.Writer, msgs []*messages.Message) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, msg := range msgs {
 		status := msg.Dir
 		if msg.Dir == "new" {
@@ -94,8 +96,9 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 		if t, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
 			ts = t.Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(w, "  %-4s  %-16s  %-12s  %s\n", status, ts, msg.From, msg.Subject)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", status, ts, msg.From, msg.Subject)
 	}
+	tw.Flush()
 }
 
 func runMessagesInboxDisplay(deps *messagesDeps) error {
