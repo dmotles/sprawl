@@ -189,8 +189,9 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if agentState.Status != "active" {
 		t.Errorf("state Status = %q, want %q", agentState.Status, "active")
 	}
-	if agentState.SessionID != "dendra-"+expectedName {
-		t.Errorf("state SessionID = %q, want %q", agentState.SessionID, "dendra-"+expectedName)
+	// SessionID should be a valid UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
+	if len(agentState.SessionID) != 36 || agentState.SessionID[8] != '-' || agentState.SessionID[13] != '-' || agentState.SessionID[18] != '-' || agentState.SessionID[23] != '-' {
+		t.Errorf("state SessionID = %q, want valid UUID format", agentState.SessionID)
 	}
 }
 

@@ -26,8 +26,8 @@ func TasksDir(dendraRoot, agentName string) string {
 	return filepath.Join(dendraRoot, ".dendra", "agents", agentName, "tasks")
 }
 
-// generateUUID creates a random UUID v4 string using crypto/rand.
-func generateUUID() (string, error) {
+// GenerateUUID creates a random UUID v4 string using crypto/rand.
+func GenerateUUID() (string, error) {
 	var buf [16]byte
 	if _, err := rand.Read(buf[:]); err != nil {
 		return "", fmt.Errorf("generating UUID: %w", err)
@@ -45,7 +45,7 @@ func EnqueueTask(dendraRoot, agentName, prompt string) (*Task, error) {
 		return nil, fmt.Errorf("creating tasks directory: %w", err)
 	}
 
-	id, err := generateUUID()
+	id, err := GenerateUUID()
 	if err != nil {
 		return nil, err
 	}

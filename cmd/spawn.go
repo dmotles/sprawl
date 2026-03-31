@@ -171,6 +171,12 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		}
 	}
 
+	// Generate a UUID for the Claude session ID
+	sessionID, err := state.GenerateUUID()
+	if err != nil {
+		return fmt.Errorf("generating session ID: %w", err)
+	}
+
 	// Save agent state
 	agentState := &state.AgentState{
 		Name:        agentName,
@@ -184,7 +190,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		TmuxWindow:  agentName,
 		Status:      "active",
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		SessionID:   "dendra-" + agentName,
+		SessionID:   sessionID,
 	}
 	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)
