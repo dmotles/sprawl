@@ -8,13 +8,13 @@ import (
 
 // NamePool is the pre-set pool of agent names. Names are allocated in order.
 var NamePool = []string{
-	"alice", "bob", "carol", "dave", "eve", "frank", "grace", "hank",
-	"iris", "june", "karl", "luna", "mike", "nora", "omar", "petra",
-	"quinn", "rosa", "sam", "tara", "uma", "vera", "walt", "xena",
-	"yuri", "zara", "amber", "blake", "corey", "diana", "ellis", "felix",
-	"gina", "hugo", "ivy", "jake", "kira", "leo", "mona", "neil",
-	"olive", "pat", "reed", "sky", "tess", "uri", "val", "wade",
-	"yara", "zeke",
+	"ash", "elm", "fig", "oak", "yew", "palm", "pine", "teak",
+	"alder", "aspen", "beech", "birch", "cedar", "ebony", "elder", "hazel",
+	"holly", "larch", "maple", "olive", "rowan", "sumac", "willow", "acacia",
+	"bamboo", "banyan", "baobab", "buckeye", "cherry", "cypress", "hemlock", "hickory",
+	"juniper", "laurel", "linden", "myrtle", "pecan", "poplar", "spruce", "walnut",
+	"magnolia", "mangrove", "redwood", "sequoia", "tamarack", "chestnut", "cottonwood", "dogwood",
+	"sassafras", "sycamore",
 }
 
 // AllocateName returns the first unused name from the pool.
