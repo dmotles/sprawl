@@ -48,14 +48,20 @@ var messagesSendCmd = &cobra.Command{
 	},
 }
 
+var inboxNewOnly bool
+
 var messagesInboxCmd = &cobra.Command{
 	Use:   "inbox",
 	Short: "Show messages in your inbox",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
-		return runMessagesInboxDisplay(deps)
+		return runMessagesInboxDisplay(deps, inboxNewOnly)
 	},
+}
+
+func init() {
+	messagesInboxCmd.Flags().BoolVar(&inboxNewOnly, "new", false, "Show only unread (new) messages")
 }
 
 var messagesBroadcastCmd = &cobra.Command{
@@ -101,13 +107,22 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 	tw.Flush()
 }
 
-func runMessagesInboxDisplay(deps *messagesDeps) error {
+func runMessagesInboxDisplay(deps *messagesDeps, filterNew bool) error {
 	msgs, newCount, readCount, err := runMessagesInbox(deps)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(deps.stderr, "Inbox: %d new, %d read (%d total)\n", newCount, readCount, len(msgs))
-	formatInboxTable(deps.stdout, msgs)
+	displayMsgs := msgs
+	if filterNew {
+		displayMsgs = nil
+		for _, msg := range msgs {
+			if msg.Dir == "new" {
+				displayMsgs = append(displayMsgs, msg)
+			}
+		}
+	}
+	formatInboxTable(deps.stdout, displayMsgs)
 	return nil
 }
 

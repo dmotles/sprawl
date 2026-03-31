@@ -889,7 +889,7 @@ func TestMessagesInbox_OutputRouting(t *testing.T) {
 	})
 
 	// runMessagesInboxDisplay should write summary to stderr and table to stdout
-	err := runMessagesInboxDisplay(deps)
+	err := runMessagesInboxDisplay(deps, false)
 	if err != nil {
 		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
 	}
@@ -921,6 +921,107 @@ func TestMessagesInbox_OutputRouting(t *testing.T) {
 	}
 	if strings.Contains(stderrOutput, "hello body") {
 		t.Errorf("message body should not appear on stderr, got:\n%s", stderrOutput)
+	}
+}
+
+func TestMessagesInbox_NewFlag_FiltersTableButKeepsSummary(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Pre-populate messages for alice: 2 new, 1 read
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+	if err := os.MkdirAll(curDir, 0755); err != nil {
+		t.Fatalf("creating cur dir: %v", err)
+	}
+
+	writeTestMessage(t, newDir, "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "urgent-new", Body: "body1", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeTestMessage(t, newDir, "2000.charlie.aa02", &messages.Message{
+		ID: "2000.charlie.aa02", From: "charlie", To: "alice",
+		Subject: "also-new", Body: "body2", Timestamp: "2026-03-31T11:00:00Z",
+	})
+	writeTestMessage(t, curDir, "500.dave.aa03", &messages.Message{
+		ID: "500.dave.aa03", From: "dave", To: "alice",
+		Subject: "already-read", Body: "body3", Timestamp: "2026-03-31T09:00:00Z",
+	})
+
+	// Call with filterNew=true
+	err := runMessagesInboxDisplay(deps, true)
+	if err != nil {
+		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
+	}
+
+	stdoutOutput := deps.stdout.(*bytes.Buffer).String()
+	stderrOutput := deps.stderr.(*bytes.Buffer).String()
+
+	// Table should contain the two new messages
+	if !strings.Contains(stdoutOutput, "urgent-new") {
+		t.Errorf("expected new message 'urgent-new' in table, got stdout:\n%s", stdoutOutput)
+	}
+	if !strings.Contains(stdoutOutput, "also-new") {
+		t.Errorf("expected new message 'also-new' in table, got stdout:\n%s", stdoutOutput)
+	}
+
+	// Table should NOT contain the read message
+	if strings.Contains(stdoutOutput, "already-read") {
+		t.Errorf("read message 'already-read' should not appear in table with --new flag, got stdout:\n%s", stdoutOutput)
+	}
+
+	// Summary should still show full counts
+	if !strings.Contains(stderrOutput, "2 new") {
+		t.Errorf("summary should show '2 new', got stderr:\n%s", stderrOutput)
+	}
+	if !strings.Contains(stderrOutput, "1 read") {
+		t.Errorf("summary should show '1 read', got stderr:\n%s", stderrOutput)
+	}
+	if !strings.Contains(stderrOutput, "3 total") {
+		t.Errorf("summary should show '3 total', got stderr:\n%s", stderrOutput)
+	}
+}
+
+func TestMessagesInbox_NoNewFlag_ShowsAllMessages(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Pre-populate messages for alice: 1 new, 1 read
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+	if err := os.MkdirAll(curDir, 0755); err != nil {
+		t.Fatalf("creating cur dir: %v", err)
+	}
+
+	writeTestMessage(t, newDir, "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "new-msg", Body: "body1", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeTestMessage(t, curDir, "500.dave.aa03", &messages.Message{
+		ID: "500.dave.aa03", From: "dave", To: "alice",
+		Subject: "read-msg", Body: "body2", Timestamp: "2026-03-31T09:00:00Z",
+	})
+
+	// Call with filterNew=false (default behavior)
+	err := runMessagesInboxDisplay(deps, false)
+	if err != nil {
+		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
+	}
+
+	stdoutOutput := deps.stdout.(*bytes.Buffer).String()
+
+	// Table should contain both messages
+	if !strings.Contains(stdoutOutput, "new-msg") {
+		t.Errorf("expected 'new-msg' in table, got stdout:\n%s", stdoutOutput)
+	}
+	if !strings.Contains(stdoutOutput, "read-msg") {
+		t.Errorf("expected 'read-msg' in table, got stdout:\n%s", stdoutOutput)
 	}
 }
 
