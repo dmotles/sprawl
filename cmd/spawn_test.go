@@ -410,6 +410,40 @@ func TestSpawn_EngineerType_UsesEngineerPrompt(t *testing.T) {
 	}
 }
 
+func TestSpawn_ResearcherType_NoSubAgents(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	// Use a real launcher so we can inspect the shell command
+	deps.claudeLauncher = &agent.RealLauncher{}
+
+	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := runner.newSessionWithWindowCmd
+	if strings.Contains(cmd, "--agents") {
+		t.Error("researcher should not have --agents flag (TDD sub-agents are for engineers only)")
+	}
+}
+
+func TestSpawn_EngineerType_HasSubAgents(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	// Use a real launcher so we can inspect the shell command
+	deps.claudeLauncher = &agent.RealLauncher{}
+
+	err := runSpawn(deps, "engineering", "engineer", "build login page")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := runner.newSessionWithWindowCmd
+	if !strings.Contains(cmd, "--agents") {
+		t.Error("engineer should have --agents flag for TDD sub-agents")
+	}
+}
+
 func TestSpawn_ResearcherInSupportedTypes(t *testing.T) {
 	if !supportedTypes["researcher"] {
 		t.Error("researcher should be in supportedTypes")
