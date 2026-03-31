@@ -58,6 +58,24 @@ func TestIsInsideTmux(t *testing.T) {
 // Note: RealRunner methods use exec.Command which we can't easily mock,
 // so we test the interface contract through the mock used in cmd tests.
 
+func TestExactTarget(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"dendra-root", "=dendra-root"},
+		{"dendra-root-children", "=dendra-root-children"},
+		{"", "="},
+	}
+
+	for _, tt := range tests {
+		got := exactTarget(tt.input)
+		if got != tt.want {
+			t.Errorf("exactTarget(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	tests := []struct {
 		input string

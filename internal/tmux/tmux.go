@@ -32,9 +32,15 @@ func FindTmux() (string, error) {
 	return exec.LookPath("tmux")
 }
 
+// exactTarget returns a tmux target string that forces exact session name matching.
+// Without this, tmux performs prefix matching on -t arguments.
+func exactTarget(name string) string {
+	return "=" + name
+}
+
 // HasSession returns true if a tmux session with the given name exists.
 func (r *RealRunner) HasSession(name string) bool {
-	cmd := exec.Command(r.TmuxPath, "has-session", "-t", name)
+	cmd := exec.Command(r.TmuxPath, "has-session", "-t", exactTarget(name))
 	return cmd.Run() == nil
 }
 
@@ -74,7 +80,7 @@ func (r *RealRunner) NewSessionWithWindow(sessionName, windowName string, env ma
 
 // NewWindow adds a new named window to an existing tmux session.
 func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
-	args := []string{"new-window", "-t", sessionName, "-n", windowName}
+	args := []string{"new-window", "-t", exactTarget(sessionName), "-n", windowName}
 
 	for k, v := range env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
@@ -91,14 +97,14 @@ func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]st
 
 // KillWindow closes a tmux window by name.
 func (r *RealRunner) KillWindow(sessionName, windowName string) error {
-	target := sessionName + ":" + windowName
+	target := exactTarget(sessionName) + ":" + windowName
 	cmd := exec.Command(r.TmuxPath, "kill-window", "-t", target)
 	return cmd.Run()
 }
 
 // ListWindowPIDs returns the PIDs of processes running in the given tmux window.
 func (r *RealRunner) ListWindowPIDs(sessionName, windowName string) ([]int, error) {
-	target := sessionName + ":" + windowName
+	target := exactTarget(sessionName) + ":" + windowName
 	cmd := exec.Command(r.TmuxPath, "list-panes", "-t", target, "-F", "#{pane_pid}")
 	out, err := cmd.Output()
 	if err != nil {
@@ -119,7 +125,7 @@ func (r *RealRunner) ListWindowPIDs(sessionName, windowName string) ([]int, erro
 
 // SendKeys sends text to a specific tmux window, followed by Enter.
 func (r *RealRunner) SendKeys(sessionName, windowName string, keys string) error {
-	target := sessionName + ":" + windowName
+	target := exactTarget(sessionName) + ":" + windowName
 	cmd := exec.Command(r.TmuxPath, "send-keys", "-t", target, keys, "Enter")
 	return cmd.Run()
 }
@@ -130,10 +136,10 @@ func (r *RealRunner) SendKeys(sessionName, windowName string, keys string) error
 // tmux attach-session via syscall.Exec.
 func (r *RealRunner) Attach(name string) error {
 	if IsInsideTmux() {
-		args := []string{"tmux", "switch-client", "-t", name}
+		args := []string{"tmux", "switch-client", "-t", exactTarget(name)}
 		return syscall.Exec(r.TmuxPath, args, os.Environ())
 	}
-	args := []string{"tmux", "attach-session", "-t", name}
+	args := []string{"tmux", "attach-session", "-t", exactTarget(name)}
 	return syscall.Exec(r.TmuxPath, args, os.Environ())
 }
 
