@@ -138,6 +138,26 @@ func TestBuildArgs_DangerouslySkipPermissions(t *testing.T) {
 	assertContainsFlag(t, args, "--dangerously-skip-permissions")
 }
 
+func TestBuildArgs_Agents(t *testing.T) {
+	launcher := &RealLauncher{}
+	agentsJSON := `{"oracle":{"description":"Plans","prompt":"You plan"}}`
+	args := launcher.BuildArgs(LaunchOpts{
+		Name:   "test",
+		Agents: agentsJSON,
+	})
+	assertContains(t, args, "--agents", agentsJSON)
+}
+
+func TestBuildArgs_Agents_Empty(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{Name: "test"})
+	for _, a := range args {
+		if a == "--agents" {
+			t.Error("expected no --agents flag when Agents is empty")
+		}
+	}
+}
+
 func TestBuildArgs_DangerouslySkipPermissions_False(t *testing.T) {
 	launcher := &RealLauncher{}
 	args := launcher.BuildArgs(LaunchOpts{
@@ -161,6 +181,14 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 		"dendra report done",
 		"dendra report problem",
 		"dendra messages send",
+		"TDD WORKFLOW",
+		"oracle",
+		"test-writer",
+		"test-critic",
+		"implementer",
+		"code-reviewer",
+		"qa-validator",
+		"sub-agents",
 	}
 	for _, phrase := range phrases {
 		if !strings.Contains(prompt, phrase) {

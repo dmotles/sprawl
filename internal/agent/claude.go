@@ -10,6 +10,7 @@ type LaunchOpts struct {
 	AllowedTools               []string
 	DisallowedTools            []string
 	Name                       string
+	Agents                     string
 	Bare                       bool
 	DangerouslySkipPermissions bool
 }
@@ -56,6 +57,10 @@ func (r *RealLauncher) BuildArgs(opts LaunchOpts) []string {
 
 	if opts.Name != "" {
 		args = append(args, "--name", opts.Name)
+	}
+
+	if opts.Agents != "" {
+		args = append(args, "--agents", opts.Agents)
 	}
 
 	if opts.Bare {

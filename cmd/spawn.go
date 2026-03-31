@@ -147,6 +147,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		SystemPrompt:               systemPrompt,
 		InitialPrompt:              "You have been assigned a task. Read your system prompt and begin working immediately. When finished, run: dendra report done",
 		Name:                       "dendra-" + agentName,
+		Agents:                     agent.TDDSubAgentsJSON(),
 		DangerouslySkipPermissions: true,
 	}
 	claudeArgs := deps.claudeLauncher.BuildArgs(opts)
