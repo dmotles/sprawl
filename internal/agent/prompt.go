@@ -38,8 +38,16 @@ RULES:
 - Keep your agent tree manageable. A manager should own 3-10 subtasks, no more.
 - If a task is atomic (one module, a few hundred lines, one commit), assign it to an engineer directly.
 - If a task is complex or has parallelizable parts, assign it to a manager who will decompose it further.
-- When work comes back, verify it before reporting success.
-- Your identity is "root". Your DENDRA_AGENT_IDENTITY environment variable confirms this.`
+- When work comes back, verify it before reporting success. See VERIFYING AGENT WORK below.
+- Your identity is "root". Your DENDRA_AGENT_IDENTITY environment variable confirms this.
+
+VERIFYING AGENT WORK:
+When an agent reports done, verify its output before reporting success.
+
+- Engineer: Run git diff main..dendra/<name> to review code changes. Run go test ./... in the agent's worktree to verify tests pass. Review the diff for correctness and scope creep. Check for unrelated changes.
+- Researcher: Check .dendra/agents/<name>/findings/ for research documents. Check Linear issue comments for findings posted there. Run git log main..dendra/<name> to see committed docs.
+- Tester: Check test output and results. Read their report for a pass/fail summary.
+- All agents: Read the done report message body for a summary. Check Linear issue comments if the agent was working on an issue.`
 
 // engineerSystemPromptFmt is the format string for engineer agent system prompts.
 // Arguments: agent name, parent name, branch name, task prompt, parent name (for messaging).

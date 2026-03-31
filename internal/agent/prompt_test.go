@@ -194,6 +194,24 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	}
 }
 
+func TestRootSystemPrompt_VerificationGuidance(t *testing.T) {
+	keyPhrases := []string{
+		"VERIFYING AGENT WORK",
+		"git diff main..dendra/<name>",
+		"go test ./...",
+		".dendra/agents/<name>/findings/",
+		"scope creep",
+		"pass/fail summary",
+		"Linear issue comments",
+		"done report",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(RootSystemPrompt, phrase) {
+			t.Errorf("RootSystemPrompt missing verification guidance phrase: %q", phrase)
+		}
+	}
+}
+
 func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "investigate auth libraries")
 
