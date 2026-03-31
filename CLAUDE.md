@@ -38,6 +38,16 @@ When creating, managing, or querying issues, use the `/linear-issues` skill for 
 2. **Progress**: As you work, post comments on the issue with notable findings, decisions, or blockers. Keep the issue thread as a living log — especially for research or investigation tasks. Don't let useful context stay only in your head.
 3. **Finish**: Set the issue state to "Done" via `save_issue`. Add a comment summarizing what was done, linking to any relevant commits or PRs.
 
+## Spawning Agents
+
+When spawning an agent to work on a Linear issue, keep the prompt short. Point the agent at the issue — don't repeat the issue contents in the prompt. Example:
+
+```
+dendra spawn --family engineering --type engineer --prompt "Work on QUM-42. Read the issue for details."
+```
+
+The issue is the source of truth. The agent can read it via Linear MCP tools (`get_issue`).
+
 ## Validating Changes
 
 1. `go test ./...` — all tests pass
