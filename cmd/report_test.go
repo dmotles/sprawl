@@ -1,55 +1,21 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/state"
 )
 
-// reportMockRunner implements tmux.Runner for report tests.
-type reportMockRunner struct {
-	sendKeysCalled  bool
-	sendKeysSession string
-	sendKeysWindow  string
-	sendKeysText    string
-	sendKeysErr     error
-}
-
-func (m *reportMockRunner) HasSession(name string) bool { return false }
-func (m *reportMockRunner) NewSession(name string, env map[string]string, shellCmd string) error {
-	return nil
-}
-func (m *reportMockRunner) NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
-	return nil
-}
-func (m *reportMockRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
-	return nil
-}
-func (m *reportMockRunner) KillWindow(sessionName, windowName string) error { return nil }
-func (m *reportMockRunner) ListWindowPIDs(sessionName, windowName string) ([]int, error) {
-	return nil, nil
-}
-func (m *reportMockRunner) Attach(name string) error { return nil }
-
-func (m *reportMockRunner) SendKeys(sessionName, windowName string, keys string) error {
-	m.sendKeysCalled = true
-	m.sendKeysSession = sessionName
-	m.sendKeysWindow = windowName
-	m.sendKeysText = keys
-	return m.sendKeysErr
-}
-
-func newTestReportDeps(t *testing.T) (*reportDeps, *reportMockRunner, string) {
+func newTestReportDeps(t *testing.T) (*reportDeps, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	runner := &reportMockRunner{}
 
 	deps := &reportDeps{
-		tmuxRunner: runner,
 		getenv: func(key string) string {
 			switch key {
 			case "DENDRA_ROOT":
@@ -65,11 +31,11 @@ func newTestReportDeps(t *testing.T) (*reportDeps, *reportMockRunner, string) {
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
-	return deps, runner, tmpDir
+	return deps, tmpDir
 }
 
 func TestReportStatus_HappyPath(t *testing.T) {
-	deps, runner, tmpDir := newTestReportDeps(t)
+	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "alice",
@@ -100,14 +66,25 @@ func TestReportStatus_HappyPath(t *testing.T) {
 	if agentState.Status != "active" {
 		t.Errorf("Status = %q, want %q (should not change for status report)", agentState.Status, "active")
 	}
-	// Should NOT notify parent for status reports
-	if runner.sendKeysCalled {
-		t.Error("SendKeys should not be called for status reports")
+
+	// Status reports should now also send a message to parent
+	inbox, err := messages.Inbox(tmpDir, "root")
+	if err != nil {
+		t.Fatalf("reading root inbox: %v", err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("expected 1 message in root inbox, got %d", len(inbox))
+	}
+	if !strings.Contains(inbox[0].Subject, "[STATUS]") {
+		t.Errorf("subject should contain [STATUS], got: %q", inbox[0].Subject)
+	}
+	if inbox[0].Body != "working on tests" {
+		t.Errorf("body = %q, want %q", inbox[0].Body, "working on tests")
 	}
 }
 
 func TestReportDone_HappyPath(t *testing.T) {
-	deps, runner, tmpDir := newTestReportDeps(t)
+	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "alice",
@@ -135,29 +112,34 @@ func TestReportDone_HappyPath(t *testing.T) {
 		t.Errorf("Status = %q, want %q", agentState.Status, "done")
 	}
 
-	// Should notify parent via tmux SendKeys
-	if !runner.sendKeysCalled {
-		t.Fatal("expected SendKeys to be called for done report")
+	// Should send message to parent via messaging system
+	inbox, err := messages.Inbox(tmpDir, "root")
+	if err != nil {
+		t.Fatalf("reading root inbox: %v", err)
 	}
-	if runner.sendKeysSession != "dendra-root" {
-		t.Errorf("sendKeysSession = %q, want %q", runner.sendKeysSession, "dendra-root")
+	if len(inbox) != 1 {
+		t.Fatalf("expected 1 message in root inbox, got %d", len(inbox))
 	}
-	if runner.sendKeysWindow != "root" {
-		t.Errorf("sendKeysWindow = %q, want %q", runner.sendKeysWindow, "root")
+	msg := inbox[0]
+	if msg.From != "alice" {
+		t.Errorf("From = %q, want %q", msg.From, "alice")
 	}
-	if !strings.Contains(runner.sendKeysText, "alice") {
-		t.Errorf("sendKeysText should contain agent name, got: %q", runner.sendKeysText)
+	if !strings.Contains(msg.Subject, "[DONE]") {
+		t.Errorf("subject should contain [DONE], got: %q", msg.Subject)
 	}
-	if !strings.Contains(runner.sendKeysText, "done") {
-		t.Errorf("sendKeysText should contain 'done', got: %q", runner.sendKeysText)
+	if !strings.Contains(msg.Subject, "alice") {
+		t.Errorf("subject should contain agent name, got: %q", msg.Subject)
 	}
-	if !strings.Contains(runner.sendKeysText, "finished implementing feature") {
-		t.Errorf("sendKeysText should contain message, got: %q", runner.sendKeysText)
+	if !strings.Contains(msg.Subject, "done") {
+		t.Errorf("subject should contain 'done', got: %q", msg.Subject)
+	}
+	if msg.Body != "finished implementing feature" {
+		t.Errorf("body = %q, want %q", msg.Body, "finished implementing feature")
 	}
 }
 
 func TestReportProblem_HappyPath(t *testing.T) {
-	deps, runner, tmpDir := newTestReportDeps(t)
+	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "alice",
@@ -181,17 +163,24 @@ func TestReportProblem_HappyPath(t *testing.T) {
 		t.Errorf("Status = %q, want %q", agentState.Status, "problem")
 	}
 
-	// Should notify parent
-	if !runner.sendKeysCalled {
-		t.Fatal("expected SendKeys to be called for problem report")
+	// Should send message to parent via messaging system
+	inbox, err := messages.Inbox(tmpDir, "root")
+	if err != nil {
+		t.Fatalf("reading root inbox: %v", err)
 	}
-	if !strings.Contains(runner.sendKeysText, "problem") {
-		t.Errorf("sendKeysText should contain 'problem', got: %q", runner.sendKeysText)
+	if len(inbox) != 1 {
+		t.Fatalf("expected 1 message in root inbox, got %d", len(inbox))
+	}
+	if !strings.Contains(inbox[0].Subject, "[PROBLEM]") {
+		t.Errorf("subject should contain [PROBLEM], got: %q", inbox[0].Subject)
+	}
+	if inbox[0].Body != "blocked on API access" {
+		t.Errorf("body = %q, want %q", inbox[0].Body, "blocked on API access")
 	}
 }
 
-func TestReportDone_NonRootParent_NoSendKeys(t *testing.T) {
-	deps, runner, tmpDir := newTestReportDeps(t)
+func TestReportDone_NonRootParent_SendsMessage(t *testing.T) {
+	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "alice",
@@ -213,14 +202,28 @@ func TestReportDone_NonRootParent_NoSendKeys(t *testing.T) {
 		t.Errorf("Status = %q, want %q", agentState.Status, "done")
 	}
 
-	// Should NOT send keys for non-root parent
-	if runner.sendKeysCalled {
-		t.Error("SendKeys should not be called for non-root parent")
+	// Message should be delivered to bob's inbox
+	inbox, err := messages.Inbox(tmpDir, "bob")
+	if err != nil {
+		t.Fatalf("reading bob inbox: %v", err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("expected 1 message in bob's inbox, got %d", len(inbox))
+	}
+	msg := inbox[0]
+	if msg.From != "alice" {
+		t.Errorf("From = %q, want %q", msg.From, "alice")
+	}
+	if !strings.Contains(msg.Subject, "[DONE]") {
+		t.Errorf("subject should contain [DONE], got: %q", msg.Subject)
+	}
+	if msg.Body != "task complete" {
+		t.Errorf("body = %q, want %q", msg.Body, "task complete")
 	}
 }
 
 func TestReport_MissingAgentIdentity(t *testing.T) {
-	deps, _, _ := newTestReportDeps(t)
+	deps, _ := newTestReportDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "DENDRA_ROOT" {
 			return "/tmp/test"
@@ -238,7 +241,7 @@ func TestReport_MissingAgentIdentity(t *testing.T) {
 }
 
 func TestReport_MissingDendraRoot(t *testing.T) {
-	deps, _, _ := newTestReportDeps(t)
+	deps, _ := newTestReportDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "DENDRA_AGENT_IDENTITY" {
 			return "alice"
@@ -256,7 +259,7 @@ func TestReport_MissingDendraRoot(t *testing.T) {
 }
 
 func TestReport_AgentNotFound(t *testing.T) {
-	deps, _, _ := newTestReportDeps(t)
+	deps, _ := newTestReportDeps(t)
 
 	err := runReport(deps, "status", "test")
 	if err == nil {
@@ -267,9 +270,8 @@ func TestReport_AgentNotFound(t *testing.T) {
 	}
 }
 
-func TestReportDone_SendKeysFailure_NonFatal(t *testing.T) {
-	deps, runner, tmpDir := newTestReportDeps(t)
-	runner.sendKeysErr = fmt.Errorf("tmux session not found")
+func TestReportDone_MessageFailure_NonFatal(t *testing.T) {
+	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "alice",
@@ -277,7 +279,15 @@ func TestReportDone_SendKeysFailure_NonFatal(t *testing.T) {
 		Status: "active",
 	})
 
-	// Should NOT return error even if SendKeys fails
+	// Make the parent's messages directory unwritable so Send fails
+	parentMsgDir := filepath.Join(messages.MessagesDir(tmpDir), "root")
+	os.MkdirAll(parentMsgDir, 0755)
+	os.Chmod(parentMsgDir, 0000)
+	t.Cleanup(func() {
+		os.Chmod(parentMsgDir, 0755)
+	})
+
+	// Should NOT return error even if messaging fails
 	err := runReport(deps, "done", "finished")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -294,7 +304,7 @@ func TestReportDone_SendKeysFailure_NonFatal(t *testing.T) {
 }
 
 func TestReportStatus_PreservesExistingFields(t *testing.T) {
-	deps, _, tmpDir := newTestReportDeps(t)
+	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
@@ -335,5 +345,73 @@ func TestReportStatus_PreservesExistingFields(t *testing.T) {
 	}
 	if agentState.CreatedAt != "2026-01-01T00:00:00Z" {
 		t.Errorf("CreatedAt = %q, want %q", agentState.CreatedAt, "2026-01-01T00:00:00Z")
+	}
+}
+
+func TestReport_NoParent_NoMessage(t *testing.T) {
+	deps, tmpDir := newTestReportDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "alice",
+		Parent: "", // no parent
+		Status: "active",
+	})
+
+	err := runReport(deps, "done", "all done")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// State should still be updated
+	agentState, err := state.LoadAgent(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("loading agent state: %v", err)
+	}
+	if agentState.Status != "done" {
+		t.Errorf("Status = %q, want %q", agentState.Status, "done")
+	}
+
+	// No messages directory should exist at all since no messages were sent
+	msgDir := messages.MessagesDir(tmpDir)
+	entries, err := os.ReadDir(msgDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("unexpected error reading messages dir: %v", err)
+	}
+	if len(entries) > 0 {
+		t.Errorf("expected no message directories, got %d entries", len(entries))
+	}
+}
+
+func TestReportStatus_SendsMessageToParent(t *testing.T) {
+	deps, tmpDir := newTestReportDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "alice",
+		Parent: "bob",
+		Status: "active",
+	})
+
+	err := runReport(deps, "status", "making progress")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify that status reports now also send messages (unlike old tmux behavior)
+	inbox, err := messages.Inbox(tmpDir, "bob")
+	if err != nil {
+		t.Fatalf("reading bob inbox: %v", err)
+	}
+	if len(inbox) != 1 {
+		t.Fatalf("expected 1 message in bob's inbox, got %d", len(inbox))
+	}
+	msg := inbox[0]
+	if msg.From != "alice" {
+		t.Errorf("From = %q, want %q", msg.From, "alice")
+	}
+	if !strings.Contains(msg.Subject, "[STATUS]") {
+		t.Errorf("subject should contain [STATUS], got: %q", msg.Subject)
+	}
+	if msg.Body != "making progress" {
+		t.Errorf("body = %q, want %q", msg.Body, "making progress")
 	}
 }

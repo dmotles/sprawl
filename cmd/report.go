@@ -6,16 +6,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 // reportDeps holds the dependencies for the report command, enabling testability.
 type reportDeps struct {
-	tmuxRunner tmux.Runner
-	getenv     func(string) string
-	nowFunc    func() time.Time
+	getenv  func(string) string
+	nowFunc func() time.Time
 }
 
 var defaultReportDeps *reportDeps
@@ -80,15 +79,9 @@ func resolveReportDeps() (*reportDeps, error) {
 		return defaultReportDeps, nil
 	}
 
-	tmuxPath, err := tmux.FindTmux()
-	if err != nil {
-		return nil, fmt.Errorf("tmux is required but not found")
-	}
-
 	return &reportDeps{
-		tmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
-		getenv:     os.Getenv,
-		nowFunc:    time.Now,
+		getenv:  os.Getenv,
+		nowFunc: time.Now,
 	}, nil
 }
 
@@ -126,33 +119,23 @@ func runReport(deps *reportDeps, reportType, message string) error {
 		return fmt.Errorf("saving agent state: %w", err)
 	}
 
-	// Notify parent for done/problem
-	if reportType == "done" || reportType == "problem" {
-		if err := notifyParent(deps, agentState, reportType, message); err != nil {
-			// Notification failure is non-fatal — state is already persisted
-			fmt.Fprintf(os.Stderr, "Warning: failed to notify parent: %v\n", err)
-		}
+	// Notify parent for all report types
+	if err := notifyParent(dendraRoot, agentState, reportType, message); err != nil {
+		// Notification failure is non-fatal — state is already persisted
+		fmt.Fprintf(os.Stderr, "Warning: failed to notify parent: %v\n", err)
 	}
 
 	fmt.Fprintf(os.Stderr, "Reported %s: %s\n", reportType, message)
 	return nil
 }
 
-// notifyParent sends a notification to the agent's parent.
-func notifyParent(deps *reportDeps, agentState *state.AgentState, reportType, message string) error {
+// notifyParent sends a notification to the agent's parent via the messaging system.
+func notifyParent(dendraRoot string, agentState *state.AgentState, reportType, message string) error {
 	parent := agentState.Parent
 	if parent == "" {
 		return nil
 	}
 
-	if parent == "root" {
-		// Send to root's tmux session via send-keys
-		notification := fmt.Sprintf("Agent %s reports %s: %s", agentState.Name, reportType, message)
-		return deps.tmuxRunner.SendKeys(tmux.RootSessionName, tmux.RootWindowName, notification)
-	}
-
-	// TODO: For non-root parents, the non-interactive wrapper loop (future work)
-	// will handle polling for state changes. The state file has already been
-	// updated above, so the parent's polling loop will pick up this report.
-	return nil
+	subject := fmt.Sprintf("[%s] Agent %s reports %s", strings.ToUpper(reportType), agentState.Name, reportType)
+	return messages.Send(dendraRoot, agentState.Name, parent, subject, message)
 }
