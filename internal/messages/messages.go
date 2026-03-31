@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/dmotles/dendra/internal/state"
 )
 
 // Message represents a message between agents.
@@ -88,6 +90,11 @@ func Send(dendraRoot, from, to, subject, body string) error {
 	if err := os.WriteFile(filepath.Join(sentDir, filename), data, 0644); err != nil {
 		return fmt.Errorf("writing sent copy: %w", err)
 	}
+
+	// Best-effort wake file to notify the recipient agent.
+	wakePath := filepath.Join(dendraRoot, ".dendra", "agents", to+".wake")
+	wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
+	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0644)
 
 	return nil
 }
@@ -321,4 +328,29 @@ func List(dendraRoot, agent, filter string) ([]*Message, error) {
 	})
 
 	return result, nil
+}
+
+// Broadcast sends a message to all active agents (excluding the sender).
+// Returns the number of recipients.
+func Broadcast(dendraRoot, sender, subject, body string) (int, error) {
+	if sender == "" {
+		return 0, fmt.Errorf("sender must not be empty")
+	}
+
+	agents, err := state.ListAgents(dendraRoot)
+	if err != nil {
+		return 0, fmt.Errorf("listing agents: %w", err)
+	}
+
+	count := 0
+	for _, agent := range agents {
+		if agent.Status != "active" || agent.Name == sender {
+			continue
+		}
+		if err := Send(dendraRoot, sender, agent.Name, subject, body); err != nil {
+			return count, fmt.Errorf("sending to %s: %w", agent.Name, err)
+		}
+		count++
+	}
+	return count, nil
 }
