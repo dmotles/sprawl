@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -125,6 +126,12 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 		listMessages: func(root, agent, filter string) ([]*messages.Message, error) {
 			return messages.List(root, agent, filter)
 		},
+		readMessage: func(root, agent, msgID string) (*messages.Message, error) {
+			return messages.ReadMessage(root, agent, msgID)
+		},
+		markRead: func(root, agent, msgID string) error {
+			return messages.MarkRead(root, agent, msgID)
+		},
 		sendMessage: func(root, from, to, subject, body string) error {
 			return messages.Send(root, from, to, subject, body)
 		},
@@ -145,6 +152,8 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 			sleepCalls++
 			sleepMu.Unlock()
 		},
+		mkdirAll:   func(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) },
+		createFile: func(path string) (*os.File, error) { return os.Create(path) },
 		stdout: &bytes.Buffer{},
 		exit: func(code int) {
 			exitCode = code
@@ -393,10 +402,126 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt when inbox has messages")
 	}
-	// The prompt should instruct the agent to check its inbox
+	// The prompt should contain the actual message content inline
 	prompt := mockProc.prompts[0]
-	if !strings.Contains(strings.ToLower(prompt), "inbox") {
-		t.Errorf("prompt should mention inbox, got: %q", prompt)
+	if !strings.Contains(prompt, "check this out") {
+		t.Errorf("prompt should contain message body, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "hey") {
+		t.Errorf("prompt should contain message subject, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "root") {
+		t.Errorf("prompt should contain sender name, got: %q", prompt)
+	}
+
+	// After delivery, messages should be marked read (moved from new/ to cur/)
+	unread, _ := messages.List(tmpDir, "ash", "unread")
+	if len(unread) != 0 {
+		t.Errorf("expected 0 unread messages after delivery, got %d", len(unread))
+	}
+}
+
+func TestRunAgentLoop_InboxTaskSignalsFiltered(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send only a [TASK] wake signal — should be silently consumed.
+	if err := messages.Send(tmpDir, "root", "ash", "[TASK] wake up", "internal signal"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) {
+		cancel()
+	}
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// No prompts should be sent to Claude for [TASK] signals.
+	if len(mockProc.prompts) != 0 {
+		t.Errorf("expected no prompts for [TASK] wake signal, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+
+	// The [TASK] message should be marked read.
+	unread, _ := messages.List(tmpDir, "ash", "unread")
+	if len(unread) != 0 {
+		t.Errorf("expected 0 unread messages after [TASK] consumed, got %d", len(unread))
+	}
+}
+
+func TestRunAgentLoop_InboxMixedMessages(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send a real message and a [TASK] wake signal.
+	if err := messages.Send(tmpDir, "other-agent", "ash", "Research findings", "I found that..."); err != nil {
+		t.Fatalf("sending real message: %v", err)
+	}
+	if err := messages.Send(tmpDir, "root", "ash", "[TASK] wake", "signal"); err != nil {
+		t.Fatalf("sending task signal: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "processed"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) {
+		cancel()
+	}
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// Should have exactly 1 prompt with only the real message.
+	if len(mockProc.prompts) != 1 {
+		t.Fatalf("expected 1 prompt, got %d", len(mockProc.prompts))
+	}
+	prompt := mockProc.prompts[0]
+	if !strings.Contains(prompt, "Research findings") {
+		t.Errorf("prompt should contain real message subject, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "I found that...") {
+		t.Errorf("prompt should contain real message body, got: %q", prompt)
+	}
+	if strings.Contains(prompt, "[TASK]") {
+		t.Errorf("prompt should NOT contain [TASK] signal, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, "1 new message") {
+		t.Errorf("prompt should say 1 new message (not 2), got: %q", prompt)
+	}
+
+	// All messages should be marked read.
+	unread, _ := messages.List(tmpDir, "ash", "unread")
+	if len(unread) != 0 {
+		t.Errorf("expected 0 unread messages, got %d", len(unread))
+	}
+}
+
+func TestRunAgentLoop_InboxNoRedelivery(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send a message.
+	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	// Run 2 loop iterations: first should deliver, second should find nothing.
+	ctx, cancel := context.WithCancel(context.Background())
+	iterCount := 0
+	deps.sleepFunc = func(d time.Duration) {
+		iterCount++
+		if iterCount >= 2 {
+			cancel()
+		}
+	}
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// Only 1 prompt should have been sent (not re-delivered on second poll).
+	if len(mockProc.prompts) != 1 {
+		t.Errorf("expected exactly 1 prompt (no re-delivery), got %d: %v", len(mockProc.prompts), mockProc.prompts)
 	}
 }
 

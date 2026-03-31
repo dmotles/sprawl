@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ type retireDeps struct {
 	sleepFunc      func(time.Duration)
 	worktreeRemove func(repoRoot, worktreePath string, force bool) error
 	gitStatus      func(worktreePath string) (string, error)
+	removeAll      func(string) error
 }
 
 var defaultRetireDeps *retireDeps
@@ -68,6 +70,7 @@ func resolveRetireDeps() (*retireDeps, error) {
 		sleepFunc:      time.Sleep,
 		worktreeRemove: realWorktreeRemove,
 		gitStatus:      realGitStatus,
+		removeAll:      os.RemoveAll,
 	}, nil
 }
 
@@ -160,6 +163,12 @@ func retireFromCheckpoint(deps *retireDeps, dendraRoot string, agentState *state
 	// Remove agent from parent's children list (parent state update)
 	// Note: in the current design, children are discovered dynamically by
 	// scanning state files for matching parent fields, so no parent update needed.
+
+	// Remove agent logs directory
+	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name, "logs")
+	if err := deps.removeAll(logsDir); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "Warning: could not remove logs directory: %v\n", err)
+	}
 
 	// Delete state file (name is now free)
 	if err := state.DeleteAgent(dendraRoot, agentState.Name); err != nil {

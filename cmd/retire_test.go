@@ -35,6 +35,7 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 		gitStatus: func(worktreePath string) (string, error) {
 			return "", nil // clean
 		},
+		removeAll: func(path string) error { return nil },
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
@@ -501,5 +502,50 @@ func TestRetire_Subagent_SkipsWorktreeCleanup(t *testing.T) {
 	_, err = state.LoadAgent(tmpDir, "sub-alice")
 	if err == nil {
 		t.Error("expected subagent state to be deleted")
+	}
+}
+
+func TestRetire_CleansUpLogsDirectory(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: "dendra-root-children",
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	// Create a logs directory with a fake log file.
+	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
+	if err := os.MkdirAll(logsDir, 0755); err != nil {
+		t.Fatalf("failed to create logs dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(logsDir, "agent.log"), []byte("log data"), 0644); err != nil {
+		t.Fatalf("failed to create log file: %v", err)
+	}
+
+	// Track what path removeAll is called with.
+	var removedPath string
+	deps.removeAll = func(path string) error {
+		removedPath = path
+		return os.RemoveAll(path)
+	}
+
+	err := runRetire(deps, "alice", false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify removeAll was called with the correct logs directory.
+	if removedPath != logsDir {
+		t.Errorf("removeAll called with %q, want %q", removedPath, logsDir)
+	}
+
+	// Verify the logs directory was actually removed.
+	if _, err := os.Stat(logsDir); !os.IsNotExist(err) {
+		t.Errorf("logs directory should have been removed, but still exists")
 	}
 }

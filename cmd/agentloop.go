@@ -36,12 +36,16 @@ type agentLoopDeps struct {
 	nextTask     func(string, string) (*state.Task, error)
 	updateTask   func(string, string, *state.Task) error
 	listMessages func(string, string, string) ([]*messages.Message, error)
+	readMessage  func(string, string, string) (*messages.Message, error)
+	markRead     func(string, string, string) error
 	sendMessage  func(string, string, string, string, string) error
 	findClaude   func() (string, error)
 	readFile     func(string) ([]byte, error)
 	removeFile   func(string) error
 	buildPrompt  func(*state.AgentState) string
 	sleepFunc    func(time.Duration)
+	mkdirAll   func(string, os.FileMode) error
+	createFile func(string) (*os.File, error)
 	stdout       io.Writer
 	exit         func(int)
 	newProcess   func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager
@@ -56,6 +60,12 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		updateTask: state.UpdateTask,
 		listMessages: func(root, ag, filter string) ([]*messages.Message, error) {
 			return messages.List(root, ag, filter)
+		},
+		readMessage: func(root, ag, msgID string) (*messages.Message, error) {
+			return messages.ReadMessage(root, ag, msgID)
+		},
+		markRead: func(root, ag, msgID string) error {
+			return messages.MarkRead(root, ag, msgID)
 		},
 		sendMessage: func(root, from, to, subject, body string) error {
 			return messages.Send(root, from, to, subject, body)
@@ -73,7 +83,9 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 				return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, a.Prompt)
 			}
 		},
-		sleepFunc: time.Sleep,
+		sleepFunc:  time.Sleep,
+		mkdirAll:   os.MkdirAll,
+		createFile: os.Create,
 		stdout:    os.Stdout,
 		exit:      os.Exit,
 		newProcess: func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
@@ -182,6 +194,20 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		return fmt.Errorf("finding claude binary: %w", err)
 	}
 
+	// Create log file
+	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agentName, "logs")
+	if err := deps.mkdirAll(logsDir, 0755); err != nil {
+		return fmt.Errorf("creating logs directory: %w", err)
+	}
+	logFile, err := deps.createFile(filepath.Join(logsDir, agentState.SessionID+".log"))
+	if err != nil {
+		return fmt.Errorf("creating log file: %w", err)
+	}
+	defer logFile.Close()
+
+	// Tee output to both stdout and log file
+	deps.stdout = io.MultiWriter(deps.stdout, logFile)
+
 	fmt.Fprintf(deps.stdout, "[agent-loop] starting for agent %q\n", agentName)
 
 	// Build process config
@@ -281,12 +307,36 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		// 2. Check inbox for unread messages.
 		msgs, err := deps.listMessages(dendraRoot, agentName, "unread")
 		if err == nil && len(msgs) > 0 {
-			fmt.Fprintf(deps.stdout, "[agent-loop] new messages in inbox, notifying agent\n")
-			_, sendErr := proc.SendPrompt(ctx, "You have new messages in your inbox. Please check your inbox and respond appropriately.")
-			if sendErr != nil {
-				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on inbox check, restarting: %v\n", sendErr)
-				if !restartWithResume() {
-					return nil
+			var promptParts []string
+			for _, msg := range msgs {
+				// Filter out [TASK] wake signals — these are internal signals.
+				if strings.HasPrefix(msg.Subject, "[TASK]") {
+					_ = deps.markRead(dendraRoot, agentName, msg.ID)
+					continue
+				}
+
+				// Read the full message content.
+				fullMsg, readErr := deps.readMessage(dendraRoot, agentName, msg.ID)
+				if readErr != nil {
+					// Mark read anyway to avoid re-delivery loop.
+					_ = deps.markRead(dendraRoot, agentName, msg.ID)
+					continue
+				}
+
+				// ReadMessage auto-marks as read (moves new/ -> cur/).
+				promptParts = append(promptParts, fmt.Sprintf("--- Message from %s ---\nSubject: %s\nBody: %s", fullMsg.From, fullMsg.Subject, fullMsg.Body))
+			}
+
+			// Only send a prompt if there are real (non-TASK) messages.
+			if len(promptParts) > 0 {
+				prompt := fmt.Sprintf("You have %d new message(s):\n\n%s", len(promptParts), strings.Join(promptParts, "\n\n"))
+				fmt.Fprintf(deps.stdout, "[agent-loop] delivering %d inbox message(s) to agent\n", len(promptParts))
+				_, sendErr := proc.SendPrompt(ctx, prompt)
+				if sendErr != nil {
+					fmt.Fprintf(deps.stdout, "[agent-loop] process crash on inbox delivery, restarting: %v\n", sendErr)
+					if !restartWithResume() {
+						return nil
+					}
 				}
 			}
 			deps.sleepFunc(3 * time.Second)
