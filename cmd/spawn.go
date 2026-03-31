@@ -19,7 +19,8 @@ var (
 
 	// supportedTypes are the types that are fully implemented.
 	supportedTypes = map[string]bool{
-		"engineer": true,
+		"engineer":   true,
+		"researcher": true,
 	}
 )
 
@@ -135,7 +136,13 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 	}
 
 	// Build system prompt
-	systemPrompt := agent.BuildEngineerPrompt(agentName, parentName, branchName, prompt)
+	var systemPrompt string
+	switch agentType {
+	case "researcher":
+		systemPrompt = agent.BuildResearcherPrompt(agentName, parentName, branchName, prompt)
+	default:
+		systemPrompt = agent.BuildEngineerPrompt(agentName, parentName, branchName, prompt)
+	}
 
 	// Build claude args
 	claudePath, err := deps.claudeLauncher.FindBinary()

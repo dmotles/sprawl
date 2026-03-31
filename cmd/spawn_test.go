@@ -344,6 +344,78 @@ func TestSpawn_InvalidType(t *testing.T) {
 	}
 }
 
+func TestSpawn_ResearcherType_HappyPath(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !runner.newSessionWithWindowCalled {
+		t.Error("expected NewSessionWithWindow to be called")
+	}
+
+	// Verify state was saved with researcher type
+	expectedName := agent.NamePool[0]
+	agentState, err := state.LoadAgent(tmpDir, expectedName)
+	if err != nil {
+		t.Fatalf("loading agent state: %v", err)
+	}
+	if agentState.Type != "researcher" {
+		t.Errorf("state Type = %q, want %q", agentState.Type, "researcher")
+	}
+}
+
+func TestSpawn_ResearcherType_UsesResearcherPrompt(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	// Use a real launcher so we can inspect the shell command
+	deps.claudeLauncher = &agent.RealLauncher{}
+
+	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := runner.newSessionWithWindowCmd
+	if !strings.Contains(cmd, "Researcher agent") {
+		t.Error("shell command should contain 'Researcher agent' for researcher type")
+	}
+	if !strings.Contains(cmd, "investigate auth libraries") {
+		t.Error("shell command should contain the task prompt")
+	}
+	if strings.Contains(cmd, "hands-on builder") {
+		t.Error("researcher should not use engineer prompt (contains 'hands-on builder')")
+	}
+}
+
+func TestSpawn_EngineerType_UsesEngineerPrompt(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	// Use a real launcher so we can inspect the shell command
+	deps.claudeLauncher = &agent.RealLauncher{}
+
+	err := runSpawn(deps, "engineering", "engineer", "build login page")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	cmd := runner.newSessionWithWindowCmd
+	if !strings.Contains(cmd, "Engineer agent") {
+		t.Error("shell command should contain 'Engineer agent' for engineer type")
+	}
+	if strings.Contains(cmd, "Researcher agent") {
+		t.Error("engineer should not use researcher prompt")
+	}
+}
+
+func TestSpawn_ResearcherInSupportedTypes(t *testing.T) {
+	if !supportedTypes["researcher"] {
+		t.Error("researcher should be in supportedTypes")
+	}
+}
+
 func TestSpawn_InvalidFamily(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
