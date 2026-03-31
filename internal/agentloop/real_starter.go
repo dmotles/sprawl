@@ -12,18 +12,14 @@ import (
 // RealCommandStarter launches a real Claude Code subprocess.
 type RealCommandStarter struct{}
 
-// Start builds the CLI args, launches the subprocess, and returns I/O handles.
-func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (MessageReader, MessageWriter, WaitFunc, CancelFunc, error) {
-	claudePath := config.ClaudePath
-	if claudePath == "" {
-		claudePath = "claude"
-	}
-
+// buildClaudeArgs constructs the CLI argument slice for a Claude Code subprocess.
+func buildClaudeArgs(config ProcessConfig) []string {
 	args := []string{
 		"-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
+		"--model", "opus[1m]",
 		"--permission-mode", "bypassPermissions",
 		"--session-id", config.SessionID,
 	}
@@ -37,6 +33,17 @@ func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (M
 	if config.SettingSources != "" {
 		args = append(args, "--setting-sources", config.SettingSources)
 	}
+	return args
+}
+
+// Start builds the CLI args, launches the subprocess, and returns I/O handles.
+func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (MessageReader, MessageWriter, WaitFunc, CancelFunc, error) {
+	claudePath := config.ClaudePath
+	if claudePath == "" {
+		claudePath = "claude"
+	}
+
+	args := buildClaudeArgs(config)
 
 	cmd := exec.CommandContext(ctx, claudePath, args...)
 	cmd.Dir = config.WorkDir
