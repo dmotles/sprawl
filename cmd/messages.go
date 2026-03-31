@@ -7,14 +7,16 @@ import (
 	"time"
 
 	"github.com/dmotles/dendra/internal/messages"
+	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 // messagesDeps holds the dependencies for the messages commands, enabling testability.
 type messagesDeps struct {
-	getenv func(string) string
-	stdout io.Writer
-	stderr io.Writer
+	getenv     func(string) string
+	stdout     io.Writer
+	stderr     io.Writer
+	tmuxRunner tmux.Runner
 }
 
 var defaultMessagesDeps *messagesDeps
@@ -69,11 +71,15 @@ func resolveMessagesDeps() *messagesDeps {
 	if defaultMessagesDeps != nil {
 		return defaultMessagesDeps
 	}
-	return &messagesDeps{
+	deps := &messagesDeps{
 		getenv: os.Getenv,
 		stdout: os.Stdout,
 		stderr: os.Stderr,
 	}
+	if tmuxPath, err := tmux.FindTmux(); err == nil {
+		deps.tmuxRunner = &tmux.RealRunner{TmuxPath: tmuxPath}
+	}
+	return deps
 }
 
 func formatInboxTable(w io.Writer, msgs []*messages.Message) {
@@ -113,7 +119,15 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
 	}
 
-	if err := messages.Send(dendraRoot, agentName, to, subject, body); err != nil {
+	var sendOpts []messages.SendOption
+	if deps.tmuxRunner != nil {
+		sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
+			notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
+			deps.tmuxRunner.SendKeys(tmux.RootSessionName, tmux.RootWindowName, notification)
+		}))
+	}
+
+	if err := messages.Send(dendraRoot, agentName, to, subject, body, sendOpts...); err != nil {
 		return err
 	}
 

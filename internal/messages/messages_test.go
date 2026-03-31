@@ -1507,3 +1507,110 @@ func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 		t.Fatalf("writing message file: %v", err)
 	}
 }
+
+func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var calledFrom, calledSubject string
+	notifyCalled := false
+	notify := func(from, subject string) {
+		notifyCalled = true
+		calledFrom = from
+		calledSubject = subject
+	}
+
+	err := Send(tmpDir, "alice", "root", "urgent", "please read", WithNotify(notify))
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	if !notifyCalled {
+		t.Fatal("expected notify callback to be called for root recipient")
+	}
+	if calledFrom != "alice" {
+		t.Errorf("notify from = %q, want %q", calledFrom, "alice")
+	}
+	if calledSubject != "urgent" {
+		t.Errorf("notify subject = %q, want %q", calledSubject, "urgent")
+	}
+
+	// Also verify the message was delivered
+	newDir := filepath.Join(MessagesDir(tmpDir), "root", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+}
+
+func TestSend_WithNotify_NonRootRecipientDoesNotCallNotify(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	notifyCalled := false
+	notify := func(from, subject string) {
+		notifyCalled = true
+	}
+
+	err := Send(tmpDir, "alice", "bob", "hello", "world", WithNotify(notify))
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	if notifyCalled {
+		t.Fatal("expected notify callback NOT to be called for non-root recipient")
+	}
+
+	// Verify message was still delivered
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+}
+
+func TestSend_WithoutNotify_StillWorks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Send to root WITHOUT any options -- backward compatibility
+	err := Send(tmpDir, "alice", "root", "hello", "world")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "root", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+}
+
+func TestSend_NotifyPanicDoesNotBreakSend(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	notify := func(from, subject string) {
+		panic("notification system exploded")
+	}
+
+	err := Send(tmpDir, "alice", "root", "urgent", "body", WithNotify(notify))
+	if err != nil {
+		t.Fatalf("Send() should return nil even when notify panics, got: %v", err)
+	}
+
+	// Verify message was still delivered despite panic
+	newDir := filepath.Join(MessagesDir(tmpDir), "root", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+}
