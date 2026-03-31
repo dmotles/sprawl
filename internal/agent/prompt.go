@@ -32,7 +32,6 @@ KEY COMMANDS:
   dendra messages send <agent-name> "<subject>" "<message>"
   dendra report status "<status>"
   dendra kill <agent-name>
-  dendra respawn <agent-name>
 
 RULES:
 - Keep your agent tree manageable. A manager should own 3-10 subtasks, no more.

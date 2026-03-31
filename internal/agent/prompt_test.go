@@ -194,6 +194,12 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	}
 }
 
+func TestRootSystemPrompt_DoesNotMentionRespawn(t *testing.T) {
+	if strings.Contains(RootSystemPrompt, "respawn") {
+		t.Error("RootSystemPrompt should not mention 'respawn' — the command was canceled (QUM-46)")
+	}
+}
+
 func TestRootSystemPrompt_VerificationGuidance(t *testing.T) {
 	keyPhrases := []string{
 		"VERIFYING AGENT WORK",
