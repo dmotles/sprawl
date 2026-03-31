@@ -80,6 +80,15 @@ func Send(dendraRoot, from, to, subject, body string) error {
 		return fmt.Errorf("moving message to new/: %w", err)
 	}
 
+	// Write a copy to sender's sent/ directory for outbox tracking.
+	sentDir := filepath.Join(MessagesDir(dendraRoot), from, "sent")
+	if err := os.MkdirAll(sentDir, 0755); err != nil {
+		return fmt.Errorf("creating sender sent directory: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(sentDir, filename), data, 0644); err != nil {
+		return fmt.Errorf("writing sent copy: %w", err)
+	}
+
 	return nil
 }
 
