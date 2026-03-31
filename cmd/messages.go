@@ -18,6 +18,7 @@ var defaultMessagesDeps *messagesDeps
 func init() {
 	messagesCmd.AddCommand(messagesSendCmd)
 	messagesCmd.AddCommand(messagesInboxCmd)
+	messagesCmd.AddCommand(messagesBroadcastCmd)
 	rootCmd.AddCommand(messagesCmd)
 }
 
@@ -51,6 +52,16 @@ var messagesInboxCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "  [%s] %s from %s: %s\n", msg.Dir, msg.Subject, msg.From, msg.Body)
 		}
 		return nil
+	},
+}
+
+var messagesBroadcastCmd = &cobra.Command{
+	Use:   "broadcast <subject> <body>",
+	Short: "Broadcast a message to all active agents",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		deps := resolveMessagesDeps()
+		return runMessagesBroadcast(deps, args[0], args[1])
 	},
 }
 
@@ -108,4 +119,25 @@ func runMessagesInbox(deps *messagesDeps) ([]*messages.Message, int, int, error)
 	}
 
 	return msgs, newCount, readCount, nil
+}
+
+// runMessagesBroadcast sends a broadcast message to all active agents.
+func runMessagesBroadcast(d *messagesDeps, subject, body string) error {
+	agentName := d.getenv("DENDRA_AGENT_IDENTITY")
+	if agentName == "" {
+		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
+	}
+
+	dendraRoot := d.getenv("DENDRA_ROOT")
+	if dendraRoot == "" {
+		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	}
+
+	count, err := messages.Broadcast(dendraRoot, agentName, subject, body)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "Broadcast sent to %d agents: %s\n", count, subject)
+	return nil
 }

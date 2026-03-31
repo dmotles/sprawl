@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/dendra/internal/messages"
+	"github.com/dmotles/dendra/internal/state"
 )
 
 func newTestMessagesDeps(t *testing.T) (*messagesDeps, string) {
@@ -193,6 +194,73 @@ func TestMessagesInbox_MissingDendraRoot(t *testing.T) {
 	}
 
 	_, _, _, err := runMessagesInbox(deps)
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_ROOT")
+	}
+	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
+		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	}
+}
+
+func TestMessagesBroadcast_HappyPath(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Create 2 active agents that are not the sender (alice)
+	for _, name := range []string{"bob", "charlie"} {
+		if err := state.SaveAgent(tmpDir, &state.AgentState{
+			Name:   name,
+			Status: "active",
+		}); err != nil {
+			t.Fatalf("saving agent %s: %v", name, err)
+		}
+	}
+
+	err := runMessagesBroadcast(deps, "announcement", "hello everyone")
+	if err != nil {
+		t.Fatalf("runMessagesBroadcast() unexpected error: %v", err)
+	}
+
+	// Verify both agents received the message
+	for _, name := range []string{"bob", "charlie"} {
+		newDir := filepath.Join(messages.MessagesDir(tmpDir), name, "new")
+		entries, err := os.ReadDir(newDir)
+		if err != nil {
+			t.Fatalf("reading new dir for %s: %v", name, err)
+		}
+		if len(entries) != 1 {
+			t.Errorf("expected 1 message for %s, got %d", name, len(entries))
+		}
+	}
+}
+
+func TestMessagesBroadcast_MissingAgentIdentity(t *testing.T) {
+	deps, _ := newTestMessagesDeps(t)
+	deps.getenv = func(key string) string {
+		if key == "DENDRA_ROOT" {
+			return "/tmp/test"
+		}
+		return ""
+	}
+
+	err := runMessagesBroadcast(deps, "subj", "body")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+	}
+	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
+		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	}
+}
+
+func TestMessagesBroadcast_MissingDendraRoot(t *testing.T) {
+	deps, _ := newTestMessagesDeps(t)
+	deps.getenv = func(key string) string {
+		if key == "DENDRA_AGENT_IDENTITY" {
+			return "alice"
+		}
+		return ""
+	}
+
+	err := runMessagesBroadcast(deps, "subj", "body")
 	if err == nil {
 		t.Fatal("expected error for missing DENDRA_ROOT")
 	}
