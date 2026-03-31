@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -50,7 +51,8 @@ func Send(dendraRoot, from, to, subject, body string) error {
 	}
 	hexSuffix := hex.EncodeToString(suffixBytes)
 
-	id := fmt.Sprintf("%d.%s.%s", time.Now().UnixNano(), from, hexSuffix)
+	now := time.Now()
+	id := fmt.Sprintf("%d.%s.%s", now.UnixNano(), from, hexSuffix)
 
 	msg := &Message{
 		ID:        id,
@@ -58,7 +60,7 @@ func Send(dendraRoot, from, to, subject, body string) error {
 		To:        to,
 		Subject:   subject,
 		Body:      body,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: now.UTC().Format(time.RFC3339),
 	}
 
 	data, err := json.MarshalIndent(msg, "", "  ")
@@ -99,7 +101,7 @@ func Inbox(dendraRoot, agent string) ([]*Message, error) {
 		}
 
 		for _, entry := range entries {
-			if entry.IsDir() {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 				continue
 			}
 			data, err := os.ReadFile(filepath.Join(dirPath, entry.Name()))

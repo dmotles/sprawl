@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -364,6 +365,90 @@ func TestSend_EmptySender(t *testing.T) {
 	}
 }
 
+func TestSend_ConsistentTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "timestamp test", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+
+	data, err := os.ReadFile(filepath.Join(newDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading message file: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshaling message: %v", err)
+	}
+
+	// Parse the nanosecond prefix from the ID (format: <unix-nano>.<sender>.<hex>)
+	parts := strings.SplitN(msg.ID, ".", 3)
+	if len(parts) < 3 {
+		t.Fatalf("unexpected ID format: %q", msg.ID)
+	}
+	nanos, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		t.Fatalf("parsing nanosecond prefix from ID: %v", err)
+	}
+	idTime := time.Unix(0, nanos)
+
+	tsTime, err := time.Parse(time.RFC3339, msg.Timestamp)
+	if err != nil {
+		t.Fatalf("parsing Timestamp field: %v", err)
+	}
+
+	// The ID nanosecond prefix and the Timestamp field must represent the same second.
+	// This contract ensures Send() uses a single time.Now() call for both.
+	if idTime.Unix() != tsTime.Unix() {
+		t.Errorf("ID time and Timestamp time differ: ID=%v (%d), Timestamp=%v (%d)",
+			idTime, idTime.Unix(), tsTime, tsTime.Unix())
+	}
+}
+
+func TestInbox_SkipsNonJSONFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
+	newDir := filepath.Join(agentDir, "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+
+	// Write a valid JSON message file with .json extension
+	validMsg := Message{
+		ID:        "1000.alice.aabb",
+		From:      "alice",
+		To:        "bob",
+		Subject:   "hello",
+		Body:      "world",
+		Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, newDir, "1000.alice.aabb", &validMsg)
+
+	// Write a junk non-JSON file that should be skipped
+	if err := os.WriteFile(filepath.Join(newDir, ".DS_Store"), []byte("\x00\x00\x00\x01Bud1"), 0644); err != nil {
+		t.Fatalf("writing .DS_Store: %v", err)
+	}
+
+	msgs, err := Inbox(tmpDir, "bob")
+	if err != nil {
+		t.Fatalf("Inbox() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 message, got %d", len(msgs))
+	}
+}
+
 // writeMessageFile is a test helper that writes a Message as JSON into the given directory.
 func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 	t.Helper()
@@ -371,7 +456,7 @@ func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 	if err != nil {
 		t.Fatalf("marshaling message: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, filename), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, filename+".json"), data, 0644); err != nil {
 		t.Fatalf("writing message file: %v", err)
 	}
 }

@@ -208,7 +208,7 @@ func writeTestMessage(t *testing.T, dir, filename string, msg *messages.Message)
 	if err != nil {
 		t.Fatalf("marshaling message: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, filename), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, filename+".json"), data, 0644); err != nil {
 		t.Fatalf("writing message file: %v", err)
 	}
 }
