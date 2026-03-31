@@ -99,6 +99,8 @@ Use `blocks` and `blockedBy` fields when creating/updating issues to express ord
 - Relations are **append-only** via MCP — you can add but not remove them.
 - When planning work, always check: does this issue depend on something that isn't done yet?
 
+When filing a batch of related issues, wire up dependencies at creation time. Create issues in dependency order (blockers first) so you have their IDs to reference in `blockedBy` on dependent issues. Do not file a set of sequenced issues without connecting them — disconnected issues lose the ordering context that motivated the breakdown.
+
 ### Finding Available Work
 
 To find issues that are ready to work on (unblocked):
@@ -114,6 +116,8 @@ Use milestones to group issues into meaningful project phases. Milestones live i
 - Create milestones with `save_milestone` (requires `project: "Dendra"`)
 - Assign issues to milestones via the `milestone` field on `save_issue`
 - Milestones can have target dates
+
+When creating issues as part of a milestone plan, always assign them to the milestone via the `milestone` field at creation time. Issues filed for a milestone but not linked to it create confusion about what work is actually tracked.
 
 ## Sub-Issues
 
