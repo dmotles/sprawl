@@ -70,7 +70,7 @@ A manager receives a task from its parent and decides how to execute it. Its cor
 4. **Integrate** — When an engineer reports done, the manager evaluates the work. If it's good (possibly after having a researcher or QA agent review it), it spawns a Code Merger to merge the engineer's branch into the manager's integration branch. If the work is bad, the manager has two choices:
    - **Abandon and respawn**: scrap the work and spawn a new engineer with corrected instructions based on what went wrong.
    - **Spawn forward**: if it's close but needs tweaks, send follow-up work to the same agent (who has context) or spawn a new one to fix the issues from where the previous one left off.
-5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context), kill unresponsive agents (`dendra kill <agent>`), or respawn them (`dendra respawn <agent>` — kills and restarts with the same session ID, preserving history).
+5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context) or kill unresponsive agents (`dendra kill <agent>`).
 6. **Report up** — When all subtasks are complete and merged into the manager's integration branch, report to the parent that the branch is ready to be merged up.
 
 The key design principle: **the manager decides how to handle every situation.** Your objective is X; figure out how to make it happen. These are the tools you have. This keeps the rules simple and lets emergent behavior handle the complexity.
@@ -148,7 +148,6 @@ dendra spawn \
   --prompt "<task description>"
 
 dendra kill <agent-name>             Kill an unresponsive agent
-dendra respawn <agent-name>          Kill + restart with same session ID
 ```
 
 The calling agent's identity is inferred from `DENDRA_AGENT_IDENTITY` — no `--parent` flag needed.

@@ -31,8 +31,8 @@ func init() {
 
 var killCmd = &cobra.Command{
 	Use:   "kill <agent-name>",
-	Short: "Kill an agent process (preserves state for respawn)",
-	Long:  "Stop an agent's process but preserve all state (worktree, branch, state file) for respawn or inspection.",
+	Short: "Kill an agent process (preserves state for inspection)",
+	Long:  "Stop an agent's process but preserve all state (worktree, branch, state file) for inspection.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps, err := resolveKillDeps()

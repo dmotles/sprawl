@@ -83,7 +83,6 @@ dendra spawn \
   --prompt "<task description>"
 
 dendra kill <agent-name>             # Kill an unresponsive agent
-dendra respawn <agent-name>          # Kill + restart, preserving session history
 ```
 
 ### Messaging
