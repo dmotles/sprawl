@@ -131,3 +131,83 @@ func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 		lastIdx = idx
 	}
 }
+
+func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement feature")
+
+	keyPhrases := []string{
+		"Reflect",
+		"out of scope",
+		"edge cases",
+		"Architectural observations",
+		"future agents",
+		"comment on the Linear issue",
+		"done report",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("engineer prompt missing reflection phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "investigate auth libraries")
+
+	keyPhrases := []string{
+		"REFLECTION",
+		"surprising",
+		"open questions",
+		"investigate next",
+		"comment on the Linear issue",
+		"done report",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("researcher prompt missing reflection phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement feature")
+
+	qaIdx := strings.Index(prompt, "qa-validator")
+	reflectIdx := strings.Index(prompt, "Reflect")
+	doneIdx := strings.Index(prompt, "Report done")
+
+	if qaIdx == -1 {
+		t.Fatal("engineer prompt missing 'qa-validator'")
+	}
+	if reflectIdx == -1 {
+		t.Fatal("engineer prompt missing 'Reflect'")
+	}
+	if doneIdx == -1 {
+		t.Fatal("engineer prompt missing 'Report done'")
+	}
+
+	if reflectIdx <= qaIdx {
+		t.Errorf("'Reflect' (idx %d) should appear after 'qa-validator' (idx %d)", reflectIdx, qaIdx)
+	}
+	if reflectIdx >= doneIdx {
+		t.Errorf("'Reflect' (idx %d) should appear before 'Report done' (idx %d)", reflectIdx, doneIdx)
+	}
+}
+
+func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "investigate auth libraries")
+
+	reflectIdx := strings.Index(prompt, "REFLECTION")
+	doneIdx := strings.Index(prompt, "dendra report done")
+
+	if reflectIdx == -1 {
+		t.Fatal("researcher prompt missing 'REFLECTION'")
+	}
+	if doneIdx == -1 {
+		t.Fatal("researcher prompt missing 'dendra report done'")
+	}
+
+	if reflectIdx >= doneIdx {
+		t.Errorf("'REFLECTION' (idx %d) should appear before 'dendra report done' (idx %d)", reflectIdx, doneIdx)
+	}
+}

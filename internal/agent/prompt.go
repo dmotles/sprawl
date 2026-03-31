@@ -75,7 +75,14 @@ These are NOT dendra agents — they are Claude sub-agents you invoke via the Ag
    Address any issues raised before proceeding.
 6. qa-validator — Validate all acceptance criteria are met end-to-end.
    All tests must pass and acceptance criteria must be verified.
-7. Report done via: dendra report done "<summary>"
+7. Reflect — Before reporting done, pause and capture what you noticed:
+   - Ideas or improvements that came up during implementation but were out of scope
+   - Potential issues, edge cases, or risks you noticed
+   - Architectural observations or patterns that could benefit other parts of the codebase
+   - Anything you learned that future agents working in this area should know
+   Post these reflections as a comment on the Linear issue (if applicable) AND include them in your done report.
+   Keep it concise and practical — just "what did you notice that someone should know about?"
+8. Report done via: dendra report done "<summary>"
 
 RULES:
 - Stay focused on your assigned task. Do not go beyond your scope.
@@ -119,6 +126,13 @@ DOCUMENTING FINDINGS:
 - For research reports or findings: write to .dendra/agents/%s/findings/ with a descriptive filename.
 - Use clear markdown formatting with sections, bullet points, and code examples where appropriate.
 - Before committing any markdown or documentation, check if there are format checks, linters, or static analysis tools configured in the repo (e.g., Makefile targets, CI configs, pre-commit hooks). Run them before committing.
+
+REFLECTION (before reporting done):
+Before reporting done, pause and reflect on your research:
+- What you found that was surprising or unexpected
+- What open questions remain unanswered
+- What you would investigate next if you had more time
+Post these reflections as a comment on the Linear issue (if applicable) AND include them in your done report.
 
 RULES:
 - Stay focused on your assigned research task. Do not go beyond your scope.
