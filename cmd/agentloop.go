@@ -65,7 +65,12 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		readFile:  os.ReadFile,
 		removeFile: os.Remove,
 		buildPrompt: func(a *state.AgentState) string {
-			return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, a.Prompt)
+			switch a.Type {
+			case "researcher":
+				return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch, a.Prompt)
+			default:
+				return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, a.Prompt)
+			}
 		},
 		sleepFunc: time.Sleep,
 		stdout:    os.Stdout,

@@ -9,6 +9,7 @@ import (
 
 	"github.com/dmotles/dendra/internal/agent"
 	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
 )
 
 // spawnMockRunner implements tmux.Runner for spawn tests.
@@ -18,7 +19,7 @@ type spawnMockRunner struct {
 	newWindowErr            error
 
 	// Recorded calls
-	newSessionWithWindowCalled bool
+	newSessionWithWindowCalled  bool
 	newSessionWithWindowSession string
 	newSessionWithWindowWindow  string
 	newSessionWithWindowEnv     map[string]string
@@ -108,15 +109,10 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 	tmpDir := t.TempDir()
 
 	runner := &spawnMockRunner{}
-	launcher := &mockLauncher{
-		binary: "/usr/bin/claude",
-		args:   []string{"--name", "dendra-test"},
-	}
 	creator := &mockWorktreeCreator{}
 
 	deps := &spawnDeps{
 		tmuxRunner:      runner,
-		claudeLauncher:  launcher,
 		worktreeCreator: creator,
 		getenv: func(key string) string {
 			switch key {
@@ -129,6 +125,9 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 		},
 		currentBranch: func(repoRoot string) (string, error) {
 			return "main", nil
+		},
+		findDendra: func() (string, error) {
+			return "/usr/local/bin/dendra", nil
 		},
 	}
 
@@ -370,83 +369,6 @@ func TestSpawn_ResearcherType_HappyPath(t *testing.T) {
 	}
 }
 
-func TestSpawn_ResearcherType_UsesResearcherPrompt(t *testing.T) {
-	deps, runner, _, _ := newTestSpawnDeps(t)
-
-	// Use a real launcher so we can inspect the shell command
-	deps.claudeLauncher = &agent.RealLauncher{}
-
-	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	cmd := runner.newSessionWithWindowCmd
-	if !strings.Contains(cmd, "Researcher agent") {
-		t.Error("shell command should contain 'Researcher agent' for researcher type")
-	}
-	if !strings.Contains(cmd, "investigate auth libraries") {
-		t.Error("shell command should contain the task prompt")
-	}
-	if strings.Contains(cmd, "hands-on builder") {
-		t.Error("researcher should not use engineer prompt (contains 'hands-on builder')")
-	}
-}
-
-func TestSpawn_EngineerType_UsesEngineerPrompt(t *testing.T) {
-	deps, runner, _, _ := newTestSpawnDeps(t)
-
-	// Use a real launcher so we can inspect the shell command
-	deps.claudeLauncher = &agent.RealLauncher{}
-
-	err := runSpawn(deps, "engineering", "engineer", "build login page")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	cmd := runner.newSessionWithWindowCmd
-	if !strings.Contains(cmd, "Engineer agent") {
-		t.Error("shell command should contain 'Engineer agent' for engineer type")
-	}
-	if strings.Contains(cmd, "Researcher agent") {
-		t.Error("engineer should not use researcher prompt")
-	}
-}
-
-func TestSpawn_ResearcherType_NoSubAgents(t *testing.T) {
-	deps, runner, _, _ := newTestSpawnDeps(t)
-
-	// Use a real launcher so we can inspect the shell command
-	deps.claudeLauncher = &agent.RealLauncher{}
-
-	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	cmd := runner.newSessionWithWindowCmd
-	if strings.Contains(cmd, "--agents") {
-		t.Error("researcher should not have --agents flag (TDD sub-agents are for engineers only)")
-	}
-}
-
-func TestSpawn_EngineerType_HasSubAgents(t *testing.T) {
-	deps, runner, _, _ := newTestSpawnDeps(t)
-
-	// Use a real launcher so we can inspect the shell command
-	deps.claudeLauncher = &agent.RealLauncher{}
-
-	err := runSpawn(deps, "engineering", "engineer", "build login page")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	cmd := runner.newSessionWithWindowCmd
-	if !strings.Contains(cmd, "--agents") {
-		t.Error("engineer should have --agents flag for TDD sub-agents")
-	}
-}
-
 func TestSpawn_ResearcherInSupportedTypes(t *testing.T) {
 	if !supportedTypes["researcher"] {
 		t.Error("researcher should be in supportedTypes")
@@ -465,41 +387,94 @@ func TestSpawn_InvalidFamily(t *testing.T) {
 	}
 }
 
-func TestSpawn_SystemPromptContent(t *testing.T) {
-	deps, runner, _, _ := newTestSpawnDeps(t)
+// TestSpawn_ShellCmd_ContainsDendraAgentLoop verifies the exact shape of the
+// shell command passed to tmux: cd '<worktree>' && '<dendra>' 'agent-loop' '<name>'
+// Also verifies the command does NOT reference claude directly.
+func TestSpawn_ShellCmd_ContainsDendraAgentLoop(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	// Use a real launcher so we can inspect the shell command
-	deps.claudeLauncher = &agent.RealLauncher{}
-
-	err := runSpawn(deps, "engineering", "engineer", "implement the login page")
+	err := runSpawn(deps, "engineering", "engineer", "build login page")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// The shell command passed to tmux should contain the system prompt with our task
 	cmd := runner.newSessionWithWindowCmd
-	if !strings.Contains(cmd, "implement the login page") {
-		t.Error("shell command should contain the task prompt")
-	}
 	expectedName := agent.NamePool[0]
-	if !strings.Contains(cmd, expectedName) {
-		t.Errorf("shell command should contain agent name %q", expectedName)
-	}
-	if !strings.Contains(cmd, "dendra/"+expectedName) {
-		t.Errorf("shell command should contain branch name dendra/%s", expectedName)
+	expectedWorktree := filepath.Join(tmpDir, ".dendra", "worktrees", expectedName)
+
+	// Verify the shell command structure:
+	// cd '<worktree>' && '<dendra_path>' 'agent-loop' '<name>'
+	expectedCmd := "cd " + tmux.ShellQuote(expectedWorktree) + " && " +
+		tmux.BuildShellCmd("/usr/local/bin/dendra", []string{"agent-loop", expectedName})
+
+	if cmd != expectedCmd {
+		t.Errorf("shell command mismatch\n  got:  %s\n  want: %s", cmd, expectedCmd)
 	}
 
-	// The shell command should contain an initial prompt so Claude starts
-	// working immediately instead of sitting idle at the prompt.
-	if !strings.Contains(cmd, "begin working immediately") {
-		t.Error("shell command should contain initial prompt with 'begin working immediately'")
+	// The shell command should NOT contain 'claude' -- we launch via dendra agent-loop now.
+	if strings.Contains(cmd, "claude") {
+		t.Error("shell command should NOT contain 'claude'; spawn now launches via dendra agent-loop")
 	}
-	if !strings.Contains(cmd, "dendra report done") {
-		t.Error("shell command should contain initial prompt with 'dendra report done' instruction")
+}
+
+// TestSpawnAgentCmd_Registered verifies that spawnAgentCmd is registered as a
+// child of spawnCmd. After the refactor, `dendra spawn agent` should be a valid
+// subcommand.
+func TestSpawnAgentCmd_Registered(t *testing.T) {
+	found := false
+	for _, sub := range spawnCmd.Commands() {
+		if sub.Name() == "agent" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected 'agent' to be a subcommand of 'spawn', but it was not found")
+	}
+}
+
+// TestSpawn_FindDendraFails verifies that when findDendra returns an error,
+// runSpawn propagates it.
+func TestSpawn_FindDendraFails(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+	deps.findDendra = func() (string, error) {
+		return "", errors.New("dendra binary not found")
 	}
 
-	// Must NOT contain -p/--print flag (that's non-interactive exit mode)
-	if strings.Contains(cmd, "'-p'") || strings.Contains(cmd, "'--print'") {
-		t.Error("shell command must not use -p/--print flag (non-interactive mode)")
+	err := runSpawn(deps, "engineering", "engineer", "task")
+	if err == nil {
+		t.Fatal("expected error when findDendra fails")
+	}
+	if !strings.Contains(err.Error(), "dendra") {
+		t.Errorf("error should mention dendra, got: %v", err)
+	}
+
+	// Tmux should not have been called
+	if runner.newSessionWithWindowCalled || runner.newWindowCalled {
+		t.Error("tmux should not be called when findDendra fails")
+	}
+}
+
+// TestSpawn_BareSpawnCmd_HasRunE verifies that `dendra spawn` (without the
+// "agent" subcommand) has a RunE handler for backward compatibility.
+// Both `dendra spawn --flags...` and `dendra spawn agent --flags...` should work.
+func TestSpawn_BareSpawnCmd_HasRunE(t *testing.T) {
+	// spawnCmd must have RunE so bare 'dendra spawn --family ...' still works
+	if spawnCmd.RunE == nil {
+		t.Fatal("spawnCmd.RunE should be set for backward-compatible bare 'dendra spawn' usage")
+	}
+
+	// Flags should be persistent (inherited by subcommands)
+	familyFlag := spawnCmd.PersistentFlags().Lookup("family")
+	if familyFlag == nil {
+		t.Error("expected 'family' to be a persistent flag on spawnCmd")
+	}
+	typeFlag := spawnCmd.PersistentFlags().Lookup("type")
+	if typeFlag == nil {
+		t.Error("expected 'type' to be a persistent flag on spawnCmd")
+	}
+	promptFlag := spawnCmd.PersistentFlags().Lookup("prompt")
+	if promptFlag == nil {
+		t.Error("expected 'prompt' to be a persistent flag on spawnCmd")
 	}
 }

@@ -751,3 +751,84 @@ func mustMarshal(t *testing.T, v interface{}) json.RawMessage {
 
 // Ensure the interfaces are used so the imports compile even without the implementation.
 var _ io.Writer = (*bytes.Buffer)(nil)
+
+// TestDefaultBuildPrompt_ResearcherType verifies that defaultAgentLoopDeps().buildPrompt
+// dispatches to the researcher prompt when the agent type is "researcher".
+func TestDefaultBuildPrompt_ResearcherType(t *testing.T) {
+	deps := defaultAgentLoopDeps()
+
+	agentState := &state.AgentState{
+		Name:   "ash",
+		Type:   "researcher",
+		Parent: "root",
+		Branch: "dendra/ash",
+		Prompt: "investigate auth libraries",
+	}
+
+	prompt := deps.buildPrompt(agentState)
+
+	if !strings.Contains(prompt, "Researcher agent") {
+		t.Error("buildPrompt for researcher type should contain 'Researcher agent'")
+	}
+	if strings.Contains(prompt, "hands-on builder") {
+		t.Error("buildPrompt for researcher type should NOT contain 'hands-on builder' (that is engineer prompt text)")
+	}
+	if !strings.Contains(prompt, "deep investigator") {
+		t.Error("buildPrompt for researcher type should contain 'deep investigator'")
+	}
+	if !strings.Contains(prompt, "investigate auth libraries") {
+		t.Error("buildPrompt for researcher type should contain the task prompt")
+	}
+}
+
+// TestDefaultBuildPrompt_EngineerType verifies that defaultAgentLoopDeps().buildPrompt
+// returns the engineer prompt content when agent type is "engineer".
+// NOTE: This test passes against the current code (already green) — it serves as
+// a regression test for the new dispatch logic.
+func TestDefaultBuildPrompt_EngineerType(t *testing.T) {
+	deps := defaultAgentLoopDeps()
+
+	agentState := &state.AgentState{
+		Name:   "ash",
+		Type:   "engineer",
+		Parent: "root",
+		Branch: "dendra/ash",
+		Prompt: "build login page",
+	}
+
+	prompt := deps.buildPrompt(agentState)
+
+	if !strings.Contains(prompt, "Engineer agent") {
+		t.Error("buildPrompt for engineer type should contain 'Engineer agent'")
+	}
+	if !strings.Contains(prompt, "hands-on builder") {
+		t.Error("buildPrompt for engineer type should contain 'hands-on builder'")
+	}
+	if !strings.Contains(prompt, "build login page") {
+		t.Error("buildPrompt for engineer type should contain the task prompt")
+	}
+}
+
+// TestDefaultBuildPrompt_UnknownType verifies that an unknown agent type
+// defaults to the engineer prompt (safe fallback).
+func TestDefaultBuildPrompt_UnknownType(t *testing.T) {
+	deps := defaultAgentLoopDeps()
+
+	agentState := &state.AgentState{
+		Name:   "ash",
+		Type:   "tester",
+		Parent: "root",
+		Branch: "dendra/ash",
+		Prompt: "test something",
+	}
+
+	prompt := deps.buildPrompt(agentState)
+
+	// Unknown types should default to engineer prompt
+	if !strings.Contains(prompt, "Engineer agent") {
+		t.Error("buildPrompt for unknown type should default to engineer prompt containing 'Engineer agent'")
+	}
+	if !strings.Contains(prompt, "test something") {
+		t.Error("buildPrompt for unknown type should contain the task prompt")
+	}
+}

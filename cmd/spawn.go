@@ -13,6 +13,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var spawnAgentCmd = &cobra.Command{
+	Use:   "agent",
+	Short: "Spawn a new agent",
+	Long:  "Spawn a new agent with the given family, type, and task prompt.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		deps, err := resolveSpawnDeps()
+		if err != nil {
+			return err
+		}
+		return runSpawn(deps, spawnFamily, spawnType, spawnPrompt)
+	},
+}
+
 var (
 	validTypes    = []string{"manager", "researcher", "engineer", "tester", "code-merger"}
 	validFamilies = []string{"engineering", "product", "qa"}
@@ -27,10 +40,10 @@ var (
 // spawnDeps holds the dependencies for the spawn command, enabling testability.
 type spawnDeps struct {
 	tmuxRunner      tmux.Runner
-	claudeLauncher  agent.Launcher
 	worktreeCreator worktree.Creator
 	getenv          func(string) string
 	currentBranch   func(repoRoot string) (string, error)
+	findDendra      func() (string, error)
 }
 
 var defaultSpawnDeps *spawnDeps
@@ -42,12 +55,13 @@ var (
 )
 
 func init() {
-	spawnCmd.Flags().StringVar(&spawnFamily, "family", "", "agent family: engineering, product, qa")
-	spawnCmd.Flags().StringVar(&spawnType, "type", "", "agent type: manager, researcher, engineer, tester, code-merger")
-	spawnCmd.Flags().StringVar(&spawnPrompt, "prompt", "", "task description for the agent")
-	spawnCmd.MarkFlagRequired("family")
-	spawnCmd.MarkFlagRequired("type")
-	spawnCmd.MarkFlagRequired("prompt")
+	spawnCmd.PersistentFlags().StringVar(&spawnFamily, "family", "", "agent family: engineering, product, qa")
+	spawnCmd.PersistentFlags().StringVar(&spawnType, "type", "", "agent type: manager, researcher, engineer, tester, code-merger")
+	spawnCmd.PersistentFlags().StringVar(&spawnPrompt, "prompt", "", "task description for the agent")
+	spawnCmd.MarkPersistentFlagRequired("family")
+	spawnCmd.MarkPersistentFlagRequired("type")
+	spawnCmd.MarkPersistentFlagRequired("prompt")
+	spawnCmd.AddCommand(spawnAgentCmd)
 	rootCmd.AddCommand(spawnCmd)
 }
 
@@ -74,17 +88,12 @@ func resolveSpawnDeps() (*spawnDeps, error) {
 		return nil, fmt.Errorf("tmux is required but not found")
 	}
 
-	claudeLauncher := &agent.RealLauncher{}
-	if _, err := claudeLauncher.FindBinary(); err != nil {
-		return nil, fmt.Errorf("claude CLI is required but not found")
-	}
-
 	return &spawnDeps{
 		tmuxRunner:      &tmux.RealRunner{TmuxPath: tmuxPath},
-		claudeLauncher:  claudeLauncher,
 		worktreeCreator: &worktree.RealCreator{},
 		getenv:          os.Getenv,
 		currentBranch:   gitCurrentBranch,
+		findDendra:      os.Executable,
 	}, nil
 }
 
@@ -94,7 +103,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		return fmt.Errorf("invalid agent type %q; valid types: %v", agentType, validTypes)
 	}
 	if !supportedTypes[agentType] {
-		return fmt.Errorf("agent type %q is not yet supported; currently supported: engineer", agentType)
+		return fmt.Errorf("agent type %q is not yet supported; currently supported: engineer, researcher", agentType)
 	}
 
 	// Validate family
@@ -135,34 +144,14 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		return fmt.Errorf("creating worktree for %s: %w", agentName, err)
 	}
 
-	// Build system prompt
-	var systemPrompt string
-	switch agentType {
-	case "researcher":
-		systemPrompt = agent.BuildResearcherPrompt(agentName, parentName, branchName, prompt)
-	default:
-		systemPrompt = agent.BuildEngineerPrompt(agentName, parentName, branchName, prompt)
-	}
-
-	// Build claude args
-	claudePath, err := deps.claudeLauncher.FindBinary()
+	// Find dendra binary
+	dendraPath, err := deps.findDendra()
 	if err != nil {
-		return fmt.Errorf("claude CLI not found: %w", err)
+		return fmt.Errorf("finding dendra binary: %w", err)
 	}
 
-	opts := agent.LaunchOpts{
-		SystemPrompt:               systemPrompt,
-		InitialPrompt:              "You have been assigned a task. Read your system prompt and begin working immediately. When finished, run: dendra report done",
-		Name:                       "dendra-" + agentName,
-		DangerouslySkipPermissions: true,
-	}
-	if agentType != "researcher" {
-		opts.Agents = agent.TDDSubAgentsJSON()
-	}
-	claudeArgs := deps.claudeLauncher.BuildArgs(opts)
-
-	// Build shell command: cd to worktree, then run claude
-	shellCmd := fmt.Sprintf("cd %s && %s", tmux.ShellQuote(worktreePath), tmux.BuildShellCmd(claudePath, claudeArgs))
+	// Build shell command: cd to worktree, then run dendra agent-loop
+	shellCmd := fmt.Sprintf("cd %s && %s", tmux.ShellQuote(worktreePath), tmux.BuildShellCmd(dendraPath, []string{"agent-loop", agentName}))
 
 	// Set environment for the child agent
 	env := map[string]string{
