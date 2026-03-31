@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -24,6 +25,8 @@ func newTestMessagesDeps(t *testing.T) (*messagesDeps, string) {
 			}
 			return ""
 		},
+		stdout: &bytes.Buffer{},
+		stderr: &bytes.Buffer{},
 	}
 	return deps, tmpDir
 }
@@ -700,6 +703,121 @@ func TestMessagesUnread_MissingEnvVars(t *testing.T) {
 	err = runMessagesUnread(deps, "1000")
 	if err == nil {
 		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+	}
+}
+
+func TestFormatInboxTable_MixedNewAndRead(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{ID: "1", From: "bob", To: "alice", Subject: "subj1", Body: "body1", Timestamp: "2026-03-31T10:00:00Z", Dir: "new"},
+		{ID: "2", From: "charlie", To: "alice", Subject: "subj2", Body: "body2", Timestamp: "2026-03-31T11:00:00Z", Dir: "cur"},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	if !strings.Contains(output, "NEW") {
+		t.Errorf("expected output to contain 'NEW' for dir=new, got:\n%s", output)
+	}
+	if !strings.Contains(output, "read") {
+		t.Errorf("expected output to contain 'read' for dir=cur, got:\n%s", output)
+	}
+}
+
+func TestFormatInboxTable_IncludesTimestamp(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{ID: "1", From: "bob", To: "alice", Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:05:00Z", Dir: "new"},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	// Should contain human-readable timestamp, not raw RFC3339
+	if !strings.Contains(output, "2026-03-31 10:05") {
+		t.Errorf("expected formatted timestamp '2026-03-31 10:05' in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "T10:05:00Z") {
+		t.Errorf("output should not contain raw RFC3339 timestamp, got:\n%s", output)
+	}
+}
+
+func TestFormatInboxTable_EmptyList(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	if output != "" {
+		t.Errorf("expected no output for empty message list, got:\n%q", output)
+	}
+}
+
+func TestFormatInboxTable_SubjectNotBody(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{ID: "1", From: "bob", To: "alice", Subject: "important subject", Body: "secret body content", Timestamp: "2026-03-31T10:00:00Z", Dir: "new"},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	if !strings.Contains(output, "important subject") {
+		t.Errorf("expected output to contain subject, got:\n%s", output)
+	}
+	if strings.Contains(output, "secret body content") {
+		t.Errorf("output should not contain message body, got:\n%s", output)
+	}
+}
+
+func TestMessagesInbox_OutputRouting(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Pre-populate a message for alice
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	newDir := filepath.Join(agentDir, "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+	writeTestMessage(t, newDir, "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "hello subject", Body: "hello body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	// runMessagesInboxDisplay should write summary to stderr and table to stdout
+	err := runMessagesInboxDisplay(deps)
+	if err != nil {
+		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
+	}
+
+	stdoutBuf := deps.stdout.(*bytes.Buffer)
+	stderrBuf := deps.stderr.(*bytes.Buffer)
+
+	stdoutOutput := stdoutBuf.String()
+	stderrOutput := stderrBuf.String()
+
+	// Message table lines should be on stdout
+	if !strings.Contains(stdoutOutput, "hello subject") {
+		t.Errorf("expected message table on stdout, got stdout:\n%s", stdoutOutput)
+	}
+
+	// Summary should be on stderr
+	if !strings.Contains(stderrOutput, "Inbox:") {
+		t.Errorf("expected summary line on stderr, got stderr:\n%s", stderrOutput)
+	}
+
+	// Summary should NOT be on stdout
+	if strings.Contains(stdoutOutput, "Inbox:") {
+		t.Errorf("summary line should not be on stdout, got:\n%s", stdoutOutput)
+	}
+
+	// Message body should not appear anywhere in output
+	if strings.Contains(stdoutOutput, "hello body") {
+		t.Errorf("message body should not appear on stdout, got:\n%s", stdoutOutput)
+	}
+	if strings.Contains(stderrOutput, "hello body") {
+		t.Errorf("message body should not appear on stderr, got:\n%s", stderrOutput)
 	}
 }
 
