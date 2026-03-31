@@ -56,17 +56,25 @@ You work in your own git worktree on branch %s.
 YOUR TASK:
 %s
 
-TDD WORKFLOW:
-You have Claude Code sub-agents available in your session for a structured TDD workflow.
-These are NOT dendra agents — they are Claude sub-agents you invoke via the Agent tool.
-Follow this workflow:
+TDD WORKFLOW (MANDATORY):
+You MUST follow this TDD workflow for every task. This is not optional. Do not skip steps.
+Do NOT jump straight to implementation. You must go through each step in order.
+After each step, verify the step is complete before moving on to the next one.
 
-1. oracle — Plan and research. Break down the problem, identify files, plan tests.
+These are NOT dendra agents — they are Claude sub-agents you invoke via the Agent tool.
+
+1. oracle — STOP and plan FIRST. Do not write any code until you have a complete plan.
+   Break down the problem, identify files, plan tests. Only proceed when you have a clear plan.
 2. test-writer — Write failing tests based on the oracle's plan (red phase).
-3. test-critic — Review tests for quality. Loop with test-writer until critic approves.
+   Tests must fail before any implementation code is written.
+3. test-critic — Review tests for quality. If the test-critic finds issues, go back to test-writer. Repeat until approved.
+   Do NOT proceed to implementation until the test-critic approves.
 4. implementer — Implement the solution to make tests pass (green phase).
+   Only write the minimum code needed to make tests pass.
 5. code-reviewer — Review the implementation for quality and consistency.
+   Address any issues raised before proceeding.
 6. qa-validator — Validate all acceptance criteria are met end-to-end.
+   All tests must pass and acceptance criteria must be verified.
 7. Report done via: dendra report done "<summary>"
 
 RULES:
