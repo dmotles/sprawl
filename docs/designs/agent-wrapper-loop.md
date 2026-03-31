@@ -1,6 +1,17 @@
 # Design: Non-Interactive Agent Wrapper Loop
 
-## Status: Draft
+> **⚠️ SUPERSEDED** — This design document has been superseded by the Go
+> implementation of the agent wrapper loop, delivered as part of **M2: Agent
+> Wrapper Loop**. See the implementation in:
+>
+> - [`cmd/agentloop.go`](../../cmd/agentloop.go) — CLI subcommand
+> - [`internal/agentloop/`](../../internal/agentloop/) — loop logic
+> - [`internal/protocol/`](../../internal/protocol/) — messaging protocol
+>
+> For milestone context, see the **M2: Agent Wrapper Loop** milestone in Linear.
+> The content below is preserved for historical reference.
+
+## Status: Superseded
 
 ## Context
 
