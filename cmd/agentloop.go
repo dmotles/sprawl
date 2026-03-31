@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -184,14 +185,33 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	fmt.Fprintf(deps.stdout, "[agent-loop] starting for agent %q\n", agentName)
 
 	// Build process config
+	systemPrompt := deps.buildPrompt(agentState)
 	config := agentloop.ProcessConfig{
 		AgentName:    agentName,
 		WorkDir:      agentState.Worktree,
 		SessionID:    agentState.SessionID,
 		ClaudePath:   claudePath,
-		SystemPrompt: deps.buildPrompt(agentState),
+		SystemPrompt: systemPrompt,
 		DendraRoot:   dendraRoot,
 	}
+
+	// Debug: print full configuration being passed to Claude
+	fmt.Fprintf(deps.stdout, "[agent-loop] === SYSTEM PROMPT ===\n")
+	for _, line := range strings.Split(systemPrompt, "\n") {
+		fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
+	}
+	fmt.Fprintf(deps.stdout, "[agent-loop] === INITIAL PROMPT/TASK ===\n")
+	fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", agentState.Prompt)
+	fmt.Fprintf(deps.stdout, "[agent-loop] === PROCESS CONFIG ===\n")
+	fmt.Fprintf(deps.stdout, "[agent-loop]   agent-name:      %s\n", config.AgentName)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   session-id:      %s\n", config.SessionID)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   work-dir:        %s\n", config.WorkDir)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   claude-path:     %s\n", config.ClaudePath)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   setting-sources: %s\n", config.SettingSources)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   dendra-root:     %s\n", config.DendraRoot)
+	fmt.Fprintf(deps.stdout, "[agent-loop] === KEY ENV VARS ===\n")
+	fmt.Fprintf(deps.stdout, "[agent-loop]   DENDRA_AGENT_IDENTITY=%s\n", deps.getenv("DENDRA_AGENT_IDENTITY"))
+	fmt.Fprintf(deps.stdout, "[agent-loop]   DENDRA_ROOT=%s\n", deps.getenv("DENDRA_ROOT"))
 
 	observer := &tmuxObserver{w: deps.stdout}
 

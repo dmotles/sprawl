@@ -840,6 +840,84 @@ func mustMarshal(t *testing.T, v interface{}) json.RawMessage {
 	return json.RawMessage(data)
 }
 
+func TestRunAgentLoop_DebugConfigOutput(t *testing.T) {
+	deps, tmpDir, _ := newTestAgentLoopDeps(t)
+
+	var out bytes.Buffer
+	deps.stdout = &out
+
+	// Set up env vars to be printed
+	deps.getenv = func(key string) string {
+		switch key {
+		case "DENDRA_ROOT":
+			return tmpDir
+		case "DENDRA_AGENT_IDENTITY":
+			return "ash"
+		default:
+			return ""
+		}
+	}
+
+	// Cancel after first sleep
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+	deps.nextTask = func(root, name string) (*state.Task, error) { return nil, nil }
+	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
+	deps.readFile = func(path string) ([]byte, error) { return nil, errors.New("not found") }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	output := out.String()
+
+	// (1) System prompt section with full prompt content
+	if !strings.Contains(output, "=== SYSTEM PROMPT ===") {
+		t.Error("expected system prompt section header in debug output")
+	}
+	if !strings.Contains(output, "system prompt for ash") {
+		t.Error("expected full system prompt content in debug output")
+	}
+
+	// (2) Initial prompt/task
+	if !strings.Contains(output, "=== INITIAL PROMPT/TASK ===") {
+		t.Error("expected initial prompt section header in debug output")
+	}
+	if !strings.Contains(output, "do stuff") {
+		t.Error("expected task prompt 'do stuff' in debug output")
+	}
+
+	// (3) ProcessConfig fields
+	if !strings.Contains(output, "=== PROCESS CONFIG ===") {
+		t.Error("expected process config section header in debug output")
+	}
+	if !strings.Contains(output, "session-id") {
+		t.Error("expected session-id field in process config debug output")
+	}
+	if !strings.Contains(output, "work-dir") {
+		t.Error("expected work-dir field in process config debug output")
+	}
+
+	// (4) Key env vars
+	if !strings.Contains(output, "=== KEY ENV VARS ===") {
+		t.Error("expected env vars section header in debug output")
+	}
+	if !strings.Contains(output, "DENDRA_AGENT_IDENTITY") {
+		t.Error("expected DENDRA_AGENT_IDENTITY in env vars debug output")
+	}
+	if !strings.Contains(output, "DENDRA_ROOT") {
+		t.Error("expected DENDRA_ROOT in env vars debug output")
+	}
+
+	// All lines should have [agent-loop] prefix
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "[agent-loop]") {
+			t.Errorf("expected all output lines to have [agent-loop] prefix, got: %q", line)
+		}
+	}
+}
+
 // Ensure the interfaces are used so the imports compile even without the implementation.
 var _ io.Writer = (*bytes.Buffer)(nil)
 
