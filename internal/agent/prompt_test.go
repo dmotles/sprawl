@@ -212,6 +212,49 @@ func TestRootSystemPrompt_VerificationGuidance(t *testing.T) {
 	}
 }
 
+func TestRootSystemPrompt_ParallelismGuidance(t *testing.T) {
+	keyPhrases := []string{
+		"PARALLELISM VS. SERIALIZATION",
+		"overlapping files",
+		"merge conflicts",
+		"Parallelize freely",
+		"different packages",
+		"Serialize when",
+		"refactor",
+		"sequential execution",
+		"merge order",
+		"smaller and more isolated",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(RootSystemPrompt, phrase) {
+			t.Errorf("RootSystemPrompt missing parallelism guidance phrase: %q", phrase)
+		}
+	}
+}
+
+func TestRootSystemPrompt_ParallelismSectionOrdering(t *testing.T) {
+	rulesIdx := strings.Index(RootSystemPrompt, "RULES:")
+	parallelismIdx := strings.Index(RootSystemPrompt, "PARALLELISM VS. SERIALIZATION:")
+	verifyIdx := strings.Index(RootSystemPrompt, "VERIFYING AGENT WORK:")
+
+	if rulesIdx == -1 {
+		t.Fatal("RootSystemPrompt missing 'RULES:'")
+	}
+	if parallelismIdx == -1 {
+		t.Fatal("RootSystemPrompt missing 'PARALLELISM VS. SERIALIZATION:'")
+	}
+	if verifyIdx == -1 {
+		t.Fatal("RootSystemPrompt missing 'VERIFYING AGENT WORK:'")
+	}
+
+	if parallelismIdx <= rulesIdx {
+		t.Errorf("PARALLELISM (idx %d) should appear after RULES (idx %d)", parallelismIdx, rulesIdx)
+	}
+	if parallelismIdx >= verifyIdx {
+		t.Errorf("PARALLELISM (idx %d) should appear before VERIFYING AGENT WORK (idx %d)", parallelismIdx, verifyIdx)
+	}
+}
+
 func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "investigate auth libraries")
 

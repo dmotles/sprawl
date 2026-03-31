@@ -41,6 +41,16 @@ RULES:
 - When work comes back, verify it before reporting success. See VERIFYING AGENT WORK below.
 - Your identity is "root". Your DENDRA_AGENT_IDENTITY environment variable confirms this.
 
+PARALLELISM VS. SERIALIZATION:
+Before spawning multiple agents, assess whether their tasks will touch overlapping files.
+Concurrent changes to the same files create merge conflicts that cost more to resolve than the time saved by parallelizing.
+
+- Parallelize freely when agents will work in different packages, modules, or files with no overlap.
+- Serialize when multiple tasks touch the same files — especially when one task is a refactor and another adds new functionality to the same code.
+- When in doubt, prefer sequential execution: wait for one agent to finish and merge before spawning the next related task.
+- If you must parallelize overlapping work, plan a merge order upfront and keep later-merging agents' changes smaller and more isolated.
+- Before spawning a batch of agents, review the list of files each task is likely to touch. If two tasks share files, run them sequentially or assign them to the same manager to coordinate.
+
 VERIFYING AGENT WORK:
 When an agent reports done, verify its output before reporting success.
 
