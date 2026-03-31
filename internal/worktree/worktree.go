@@ -27,6 +27,17 @@ func (r *RealCreator) Create(repoRoot, agentName, baseBranch string) (string, st
 	worktreePath := filepath.Join(worktreesDir, agentName)
 	branchName := "dendra/" + agentName
 
+	// If the branch already exists (e.g. from a previously retired agent with the
+	// same name), delete it so we can reuse the name. The old work was either
+	// already merged or intentionally abandoned when the agent was retired.
+	if branchExists(repoRoot, branchName) {
+		delCmd := exec.Command("git", "branch", "-D", branchName)
+		delCmd.Dir = repoRoot
+		if out, err := delCmd.CombinedOutput(); err != nil {
+			return "", "", fmt.Errorf("deleting stale branch %s: %s: %w", branchName, out, err)
+		}
+	}
+
 	cmd := exec.Command("git", "worktree", "add", worktreePath, "-b", branchName, baseBranch)
 	cmd.Dir = repoRoot
 	cmd.Stdout = os.Stdout
@@ -36,4 +47,11 @@ func (r *RealCreator) Create(repoRoot, agentName, baseBranch string) (string, st
 	}
 
 	return worktreePath, branchName, nil
+}
+
+// branchExists checks whether a local git branch with the given name exists.
+func branchExists(repoRoot, branchName string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branchName)
+	cmd.Dir = repoRoot
+	return cmd.Run() == nil
 }
