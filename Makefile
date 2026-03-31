@@ -6,8 +6,8 @@ build:
 test:
 	go test ./...
 
-install: build
-	sudo cp ./dendra /usr/local/bin/dendra
+install:
+	go install .
 
 clean:
 	rm -f dendra
