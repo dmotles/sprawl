@@ -1,8 +1,8 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +28,7 @@ func newTestReportDeps(t *testing.T) (*reportDeps, string) {
 		nowFunc: func() time.Time {
 			return time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
 		},
+		sendMessage: messages.Send,
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
@@ -279,13 +280,10 @@ func TestReportDone_MessageFailure_NonFatal(t *testing.T) {
 		Status: "active",
 	})
 
-	// Make the parent's messages directory unwritable so Send fails
-	parentMsgDir := filepath.Join(messages.MessagesDir(tmpDir), "root")
-	os.MkdirAll(parentMsgDir, 0755)
-	os.Chmod(parentMsgDir, 0000)
-	t.Cleanup(func() {
-		os.Chmod(parentMsgDir, 0755)
-	})
+	// Inject a failing sendMessage to simulate messaging failure
+	deps.sendMessage = func(dendraRoot, from, to, subject, body string, opts ...messages.SendOption) error {
+		return fmt.Errorf("simulated send failure")
+	}
 
 	// Should NOT return error even if messaging fails
 	err := runReport(deps, "done", "finished")

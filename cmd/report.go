@@ -14,9 +14,10 @@ import (
 
 // reportDeps holds the dependencies for the report command, enabling testability.
 type reportDeps struct {
-	getenv     func(string) string
-	nowFunc    func() time.Time
-	tmuxRunner tmux.Runner
+	getenv      func(string) string
+	nowFunc     func() time.Time
+	tmuxRunner  tmux.Runner
+	sendMessage func(dendraRoot, from, to, subject, body string, opts ...messages.SendOption) error
 }
 
 var defaultReportDeps *reportDeps
@@ -72,8 +73,9 @@ func resolveReportDeps() *reportDeps {
 		return defaultReportDeps
 	}
 	deps := &reportDeps{
-		getenv:  os.Getenv,
-		nowFunc: time.Now,
+		getenv:      os.Getenv,
+		nowFunc:     time.Now,
+		sendMessage: messages.Send,
 	}
 	if tmuxPath, err := tmux.FindTmux(); err == nil {
 		deps.tmuxRunner = &tmux.RealRunner{TmuxPath: tmuxPath}
@@ -116,7 +118,7 @@ func runReport(deps *reportDeps, reportType, message string) error {
 	}
 
 	// Notify parent for all report types
-	if err := notifyParent(dendraRoot, agentState, reportType, message, deps.tmuxRunner); err != nil {
+	if err := notifyParent(deps, dendraRoot, agentState, reportType, message); err != nil {
 		// Notification failure is non-fatal — state is already persisted
 		fmt.Fprintf(os.Stderr, "Warning: failed to notify parent: %v\n", err)
 	}
@@ -126,7 +128,7 @@ func runReport(deps *reportDeps, reportType, message string) error {
 }
 
 // notifyParent sends a notification to the agent's parent via the messaging system.
-func notifyParent(dendraRoot string, agentState *state.AgentState, reportType, message string, tmuxRunner tmux.Runner) error {
+func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentState, reportType, message string) error {
 	parent := agentState.Parent
 	if parent == "" {
 		return nil
@@ -135,12 +137,12 @@ func notifyParent(dendraRoot string, agentState *state.AgentState, reportType, m
 	subject := fmt.Sprintf("[%s] Agent %s reports %s", strings.ToUpper(reportType), agentState.Name, reportType)
 
 	var sendOpts []messages.SendOption
-	if tmuxRunner != nil {
+	if deps.tmuxRunner != nil {
 		sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
 			notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
-			tmuxRunner.SendKeys(tmux.RootSessionName, tmux.RootWindowName, notification)
+			deps.tmuxRunner.SendKeys(tmux.RootSessionName, tmux.RootWindowName, notification)
 		}))
 	}
 
-	return messages.Send(dendraRoot, agentState.Name, parent, subject, message, sendOpts...)
+	return deps.sendMessage(dendraRoot, agentState.Name, parent, subject, message, sendOpts...)
 }
