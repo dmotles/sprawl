@@ -21,6 +21,11 @@ type AgentState struct {
 	TmuxWindow  string `json:"tmux_window"`
 	Status      string `json:"status"`
 	CreatedAt   string `json:"created_at"`
+
+	// Report fields — populated by "dendra report" subcommands.
+	LastReportType    string `json:"last_report_type,omitempty"`    // status, done, problem
+	LastReportMessage string `json:"last_report_message,omitempty"`
+	LastReportAt      string `json:"last_report_at,omitempty"`      // RFC3339
 }
 
 // AgentsDir returns the path to the agents state directory under the given dendra root.

@@ -65,6 +65,10 @@ func (m *spawnMockRunner) ListWindowPIDs(sessionName, windowName string) ([]int,
 	return nil, nil
 }
 
+func (m *spawnMockRunner) SendKeys(sessionName, windowName string, keys string) error {
+	return nil
+}
+
 func (m *spawnMockRunner) Attach(name string) error {
 	return nil
 }
