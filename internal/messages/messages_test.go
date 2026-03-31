@@ -573,6 +573,687 @@ func TestInbox_SkipsNonJSONFiles(t *testing.T) {
 	}
 }
 
+// --- ResolvePrefix tests ---
+
+func TestResolvePrefix_ExactMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, newDir, "1000.alice.aabb", msg)
+
+	got, err := ResolvePrefix(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("ResolvePrefix() unexpected error: %v", err)
+	}
+	if got != "1000.alice.aabb" {
+		t.Errorf("ResolvePrefix() = %q, want %q", got, "1000.alice.aabb")
+	}
+}
+
+func TestResolvePrefix_UniquePrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+	if err := os.MkdirAll(curDir, 0755); err != nil {
+		t.Fatalf("creating cur dir: %v", err)
+	}
+
+	msg1 := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "first", Body: "body1", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	msg2 := &Message{
+		ID: "2000.charlie.ccdd", From: "charlie", To: "bob",
+		Subject: "second", Body: "body2", Timestamp: "2026-03-31T11:00:00Z",
+	}
+	writeMessageFile(t, newDir, msg1.ID, msg1)
+	writeMessageFile(t, curDir, msg2.ID, msg2)
+
+	got, err := ResolvePrefix(tmpDir, agent, "1000")
+	if err != nil {
+		t.Fatalf("ResolvePrefix() unexpected error: %v", err)
+	}
+	if got != "1000.alice.aabb" {
+		t.Errorf("ResolvePrefix() = %q, want %q", got, "1000.alice.aabb")
+	}
+}
+
+func TestResolvePrefix_AmbiguousPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+
+	msg1 := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "first", Body: "body1", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	msg2 := &Message{
+		ID: "1000.alice.ccdd", From: "alice", To: "bob",
+		Subject: "second", Body: "body2", Timestamp: "2026-03-31T11:00:00Z",
+	}
+	writeMessageFile(t, newDir, msg1.ID, msg1)
+	writeMessageFile(t, newDir, msg2.ID, msg2)
+
+	_, err := ResolvePrefix(tmpDir, agent, "1000")
+	if err == nil {
+		t.Fatal("expected error for ambiguous prefix")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error should contain 'ambiguous', got: %v", err)
+	}
+}
+
+func TestResolvePrefix_NoMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	_, err := ResolvePrefix(tmpDir, agent, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for no match")
+	}
+	if !strings.Contains(err.Error(), "no message found") {
+		t.Errorf("error should contain 'no message found', got: %v", err)
+	}
+}
+
+// --- MarkRead tests ---
+
+func TestMarkRead_MovesFromNewToCur(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+	if err := os.MkdirAll(curDir, 0755); err != nil {
+		t.Fatalf("creating cur dir: %v", err)
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, newDir, msg.ID, msg)
+
+	err := MarkRead(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("MarkRead() unexpected error: %v", err)
+	}
+
+	// File should no longer be in new/
+	if _, err := os.Stat(filepath.Join(newDir, "1000.alice.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from new/")
+	}
+
+	// File should be in cur/
+	data, err := os.ReadFile(filepath.Join(curDir, "1000.alice.aabb.json"))
+	if err != nil {
+		t.Fatalf("expected file in cur/: %v", err)
+	}
+
+	// Content should be preserved
+	var got Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshaling message: %v", err)
+	}
+	if got.ID != "1000.alice.aabb" {
+		t.Errorf("ID = %q, want %q", got.ID, "1000.alice.aabb")
+	}
+	if got.Subject != "hello" {
+		t.Errorf("Subject = %q, want %q", got.Subject, "hello")
+	}
+}
+
+func TestMarkRead_NotInNew(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	err := MarkRead(tmpDir, agent, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error when message not in new/")
+	}
+}
+
+// --- MarkUnread tests ---
+
+func TestMarkUnread_MovesFromCurToNew(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+	if err := os.MkdirAll(curDir, 0755); err != nil {
+		t.Fatalf("creating cur dir: %v", err)
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, curDir, msg.ID, msg)
+
+	err := MarkUnread(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("MarkUnread() unexpected error: %v", err)
+	}
+
+	// File should no longer be in cur/
+	if _, err := os.Stat(filepath.Join(curDir, "1000.alice.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from cur/")
+	}
+
+	// File should be in new/
+	data, err := os.ReadFile(filepath.Join(newDir, "1000.alice.aabb.json"))
+	if err != nil {
+		t.Fatalf("expected file in new/: %v", err)
+	}
+
+	// Content should be preserved
+	var got Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshaling message: %v", err)
+	}
+	if got.ID != "1000.alice.aabb" {
+		t.Errorf("ID = %q, want %q", got.ID, "1000.alice.aabb")
+	}
+	if got.Subject != "hello" {
+		t.Errorf("Subject = %q, want %q", got.Subject, "hello")
+	}
+}
+
+func TestMarkUnread_NotInCur(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	err := MarkUnread(tmpDir, agent, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error when message not in cur/")
+	}
+}
+
+// --- Archive tests ---
+
+func TestArchive_FromNew(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	archiveDir := filepath.Join(agentDir, "archive")
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, newDir, msg.ID, msg)
+
+	err := Archive(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("Archive() unexpected error: %v", err)
+	}
+
+	// File should no longer be in new/
+	if _, err := os.Stat(filepath.Join(newDir, "1000.alice.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from new/")
+	}
+
+	// File should be in archive/
+	if _, err := os.Stat(filepath.Join(archiveDir, "1000.alice.aabb.json")); err != nil {
+		t.Errorf("expected file in archive/: %v", err)
+	}
+}
+
+func TestArchive_FromCur(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	curDir := filepath.Join(agentDir, "cur")
+	archiveDir := filepath.Join(agentDir, "archive")
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, curDir, msg.ID, msg)
+
+	err := Archive(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("Archive() unexpected error: %v", err)
+	}
+
+	// File should no longer be in cur/
+	if _, err := os.Stat(filepath.Join(curDir, "1000.alice.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from cur/")
+	}
+
+	// File should be in archive/
+	if _, err := os.Stat(filepath.Join(archiveDir, "1000.alice.aabb.json")); err != nil {
+		t.Errorf("expected file in archive/: %v", err)
+	}
+}
+
+func TestArchive_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	err := Archive(tmpDir, agent, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error when message not found")
+	}
+}
+
+// --- ReadMessage tests ---
+
+func TestReadMessage_FromNew_AutoMarksRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, newDir, msg.ID, msg)
+
+	got, err := ReadMessage(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("ReadMessage() unexpected error: %v", err)
+	}
+
+	if got.ID != "1000.alice.aabb" {
+		t.Errorf("ID = %q, want %q", got.ID, "1000.alice.aabb")
+	}
+	if got.Subject != "hello" {
+		t.Errorf("Subject = %q, want %q", got.Subject, "hello")
+	}
+	if got.Dir != "cur" {
+		t.Errorf("Dir = %q, want %q (should be auto-marked read)", got.Dir, "cur")
+	}
+
+	// File should have moved from new/ to cur/
+	if _, err := os.Stat(filepath.Join(newDir, "1000.alice.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from new/")
+	}
+	if _, err := os.Stat(filepath.Join(curDir, "1000.alice.aabb.json")); err != nil {
+		t.Errorf("expected file in cur/: %v", err)
+	}
+}
+
+func TestReadMessage_FromCur(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	curDir := filepath.Join(agentDir, "cur")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, curDir, msg.ID, msg)
+
+	got, err := ReadMessage(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("ReadMessage() unexpected error: %v", err)
+	}
+
+	if got.Dir != "cur" {
+		t.Errorf("Dir = %q, want %q", got.Dir, "cur")
+	}
+
+	// File should still be in cur/
+	if _, err := os.Stat(filepath.Join(curDir, "1000.alice.aabb.json")); err != nil {
+		t.Errorf("expected file to remain in cur/: %v", err)
+	}
+}
+
+func TestReadMessage_FromArchive(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	archiveDir := filepath.Join(agentDir, "archive")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, archiveDir, msg.ID, msg)
+
+	got, err := ReadMessage(tmpDir, agent, "1000.alice.aabb")
+	if err != nil {
+		t.Fatalf("ReadMessage() unexpected error: %v", err)
+	}
+
+	if got.Dir != "archive" {
+		t.Errorf("Dir = %q, want %q", got.Dir, "archive")
+	}
+}
+
+func TestReadMessage_NotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	_, err := ReadMessage(tmpDir, agent, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error when message not found")
+	}
+}
+
+// --- List tests ---
+
+func TestList_All(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeMessageFile(t, filepath.Join(agentDir, "new"), "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, filepath.Join(agentDir, "cur"), "2000.alice.aa02", &Message{
+		ID: "2000.alice.aa02", From: "alice", To: "bob",
+		Subject: "read msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+	writeMessageFile(t, filepath.Join(agentDir, "archive"), "3000.alice.aa03", &Message{
+		ID: "3000.alice.aa03", From: "alice", To: "bob",
+		Subject: "archived msg", Body: "body", Timestamp: "2026-03-31T12:00:00Z",
+	})
+	writeMessageFile(t, filepath.Join(agentDir, "sent"), "4000.bob.aa04", &Message{
+		ID: "4000.bob.aa04", From: "bob", To: "alice",
+		Subject: "sent msg", Body: "body", Timestamp: "2026-03-31T13:00:00Z",
+	})
+
+	// "all" or "" should return new/ + cur/ only, not archived or sent
+	msgs, err := List(tmpDir, agent, "all")
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("expected 2 messages for 'all', got %d", len(msgs))
+	}
+	for _, m := range msgs {
+		if m.Dir == "archive" || m.Dir == "sent" {
+			t.Errorf("List('all') should not include %s messages", m.Dir)
+		}
+	}
+}
+
+func TestList_Unread(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeMessageFile(t, filepath.Join(agentDir, "new"), "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, filepath.Join(agentDir, "cur"), "2000.alice.aa02", &Message{
+		ID: "2000.alice.aa02", From: "alice", To: "bob",
+		Subject: "read msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	msgs, err := List(tmpDir, agent, "unread")
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for 'unread', got %d", len(msgs))
+	}
+	if msgs[0].Dir != "new" {
+		t.Errorf("expected Dir='new', got %q", msgs[0].Dir)
+	}
+}
+
+func TestList_Read(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeMessageFile(t, filepath.Join(agentDir, "new"), "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, filepath.Join(agentDir, "cur"), "2000.alice.aa02", &Message{
+		ID: "2000.alice.aa02", From: "alice", To: "bob",
+		Subject: "read msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	msgs, err := List(tmpDir, agent, "read")
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for 'read', got %d", len(msgs))
+	}
+	if msgs[0].Dir != "cur" {
+		t.Errorf("expected Dir='cur', got %q", msgs[0].Dir)
+	}
+}
+
+func TestList_Archived(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeMessageFile(t, filepath.Join(agentDir, "archive"), "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "archived msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, filepath.Join(agentDir, "new"), "2000.alice.aa02", &Message{
+		ID: "2000.alice.aa02", From: "alice", To: "bob",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	msgs, err := List(tmpDir, agent, "archived")
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for 'archived', got %d", len(msgs))
+	}
+	if msgs[0].Dir != "archive" {
+		t.Errorf("expected Dir='archive', got %q", msgs[0].Dir)
+	}
+}
+
+func TestList_Sent(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeMessageFile(t, filepath.Join(agentDir, "sent"), "1000.bob.aa01", &Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "sent msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, filepath.Join(agentDir, "new"), "2000.alice.aa02", &Message{
+		ID: "2000.alice.aa02", From: "alice", To: "bob",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	msgs, err := List(tmpDir, agent, "sent")
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for 'sent', got %d", len(msgs))
+	}
+	if msgs[0].Dir != "sent" {
+		t.Errorf("expected Dir='sent', got %q", msgs[0].Dir)
+	}
+}
+
+func TestList_InvalidFilter(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+
+	_, err := List(tmpDir, agent, "bogus")
+	if err == nil {
+		t.Fatal("expected error for invalid filter")
+	}
+}
+
+func TestList_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+
+	msgs, err := List(tmpDir, agent, "all")
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if msgs == nil {
+		// Accept nil or empty slice, but check length
+		msgs = []*Message{}
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(msgs))
+	}
+}
+
+func TestList_SortedByTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+
+	// Write messages out of order
+	writeMessageFile(t, newDir, "3000.charlie.0003", &Message{
+		ID: "3000.charlie.0003", From: "charlie", To: "bob",
+		Subject: "third", Body: "3", Timestamp: "2026-03-31T12:00:00Z",
+	})
+	writeMessageFile(t, newDir, "1000.alice.0001", &Message{
+		ID: "1000.alice.0001", From: "alice", To: "bob",
+		Subject: "first", Body: "1", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, newDir, "2000.bob.0002", &Message{
+		ID: "2000.bob.0002", From: "bob", To: "bob",
+		Subject: "second", Body: "2", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	result, err := List(tmpDir, agent, "unread")
+	if err != nil {
+		t.Fatalf("List() unexpected error: %v", err)
+	}
+	if len(result) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(result))
+	}
+
+	if result[0].Subject != "first" {
+		t.Errorf("result[0].Subject = %q, want %q", result[0].Subject, "first")
+	}
+	if result[1].Subject != "second" {
+		t.Errorf("result[1].Subject = %q, want %q", result[1].Subject, "second")
+	}
+	if result[2].Subject != "third" {
+		t.Errorf("result[2].Subject = %q, want %q", result[2].Subject, "third")
+	}
+}
+
 // writeMessageFile is a test helper that writes a Message as JSON into the given directory.
 func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 	t.Helper()

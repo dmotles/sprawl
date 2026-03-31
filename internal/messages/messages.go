@@ -134,3 +134,191 @@ func Inbox(dendraRoot, agent string) ([]*Message, error) {
 
 	return result, nil
 }
+
+// ResolvePrefix finds a full message ID from a prefix by scanning new/, cur/, archive/, sent/ directories.
+// Returns the full ID if exactly one match found.
+func ResolvePrefix(dendraRoot, agent, prefix string) (string, error) {
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	matches := make(map[string]bool)
+
+	for _, dir := range []string{"new", "cur", "archive", "sent"} {
+		dirPath := filepath.Join(agentDir, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("reading %s directory: %w", dir, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), ".json")
+			if strings.HasPrefix(id, prefix) {
+				matches[id] = true
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no message found matching prefix %q", prefix)
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("ambiguous prefix %q: matches %d messages", prefix, len(matches))
+	}
+
+	for id := range matches {
+		return id, nil
+	}
+	return "", nil // unreachable
+}
+
+// MarkRead moves a message from new/ to cur/.
+func MarkRead(dendraRoot, agent, msgID string) error {
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	srcPath := filepath.Join(agentDir, "new", msgID+".json")
+	dstPath := filepath.Join(agentDir, "cur", msgID+".json")
+
+	if err := os.MkdirAll(filepath.Join(agentDir, "cur"), 0755); err != nil {
+		return fmt.Errorf("creating cur directory: %w", err)
+	}
+
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		return fmt.Errorf("marking message as read: %w", err)
+	}
+	return nil
+}
+
+// MarkUnread moves a message from cur/ to new/.
+func MarkUnread(dendraRoot, agent, msgID string) error {
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	srcPath := filepath.Join(agentDir, "cur", msgID+".json")
+	dstPath := filepath.Join(agentDir, "new", msgID+".json")
+
+	if err := os.MkdirAll(filepath.Join(agentDir, "new"), 0755); err != nil {
+		return fmt.Errorf("creating new directory: %w", err)
+	}
+
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		return fmt.Errorf("marking message as unread: %w", err)
+	}
+	return nil
+}
+
+// Archive moves a message from new/ or cur/ to archive/.
+func Archive(dendraRoot, agent, msgID string) error {
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	filename := msgID + ".json"
+	dstPath := filepath.Join(agentDir, "archive", filename)
+
+	if err := os.MkdirAll(filepath.Join(agentDir, "archive"), 0755); err != nil {
+		return fmt.Errorf("creating archive directory: %w", err)
+	}
+
+	// Try new/ first, then cur/
+	srcPath := filepath.Join(agentDir, "new", filename)
+	if err := os.Rename(srcPath, dstPath); err == nil {
+		return nil
+	}
+
+	srcPath = filepath.Join(agentDir, "cur", filename)
+	if err := os.Rename(srcPath, dstPath); err != nil {
+		return fmt.Errorf("archiving message: not found in new/ or cur/")
+	}
+	return nil
+}
+
+// ReadMessage reads a message from any directory (new/, cur/, archive/), returns it.
+// If found in new/, auto-marks as read by moving to cur/.
+func ReadMessage(dendraRoot, agent, msgID string) (*Message, error) {
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	filename := msgID + ".json"
+
+	for _, dir := range []string{"new", "cur", "archive"} {
+		filePath := filepath.Join(agentDir, dir, filename)
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading message file: %w", err)
+		}
+
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return nil, fmt.Errorf("unmarshaling message: %w", err)
+		}
+
+		if dir == "new" {
+			// Auto-mark as read
+			if err := MarkRead(dendraRoot, agent, msgID); err != nil {
+				return nil, fmt.Errorf("auto-marking message as read: %w", err)
+			}
+			msg.Dir = "cur"
+		} else {
+			msg.Dir = dir
+		}
+
+		return &msg, nil
+	}
+
+	return nil, fmt.Errorf("message %q not found", msgID)
+}
+
+// List returns messages filtered by the given filter.
+func List(dendraRoot, agent, filter string) ([]*Message, error) {
+	var dirs []string
+	switch filter {
+	case "", "all":
+		dirs = []string{"new", "cur"}
+	case "unread":
+		dirs = []string{"new"}
+	case "read":
+		dirs = []string{"cur"}
+	case "archived":
+		dirs = []string{"archive"}
+	case "sent":
+		dirs = []string{"sent"}
+	default:
+		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, sent", filter)
+	}
+
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	var result []*Message
+
+	for _, dir := range dirs {
+		dirPath := filepath.Join(agentDir, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading %s directory: %w", dir, err)
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dirPath, entry.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("reading message file %s: %w", entry.Name(), err)
+			}
+			var msg Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				return nil, fmt.Errorf("unmarshaling message %s: %w", entry.Name(), err)
+			}
+			msg.Dir = dir
+			result = append(result, &msg)
+		}
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, result[i].Timestamp)
+		tj, _ := time.Parse(time.RFC3339, result[j].Timestamp)
+		return ti.Before(tj)
+	})
+
+	return result, nil
+}

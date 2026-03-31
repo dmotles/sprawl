@@ -201,6 +201,458 @@ func TestMessagesInbox_MissingDendraRoot(t *testing.T) {
 	}
 }
 
+// --- runMessagesRead tests ---
+
+func TestMessagesRead_HappyPath(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Pre-populate a message in alice's new/ directory
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, newDir, "1000.bob.aabb", &messages.Message{
+		ID: "1000.bob.aabb", From: "bob", To: "alice",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	msg, err := runMessagesRead(deps, "1000.bob.aabb")
+	if err != nil {
+		t.Fatalf("runMessagesRead() unexpected error: %v", err)
+	}
+
+	if msg.ID != "1000.bob.aabb" {
+		t.Errorf("ID = %q, want %q", msg.ID, "1000.bob.aabb")
+	}
+	if msg.From != "bob" {
+		t.Errorf("From = %q, want %q", msg.From, "bob")
+	}
+	if msg.Subject != "hello" {
+		t.Errorf("Subject = %q, want %q", msg.Subject, "hello")
+	}
+	if msg.Body != "world" {
+		t.Errorf("Body = %q, want %q", msg.Body, "world")
+	}
+
+	// Should have been auto-marked read (moved to cur/)
+	if _, err := os.Stat(filepath.Join(newDir, "1000.bob.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from new/")
+	}
+	if _, err := os.Stat(filepath.Join(curDir, "1000.bob.aabb.json")); err != nil {
+		t.Errorf("expected file in cur/: %v", err)
+	}
+}
+
+func TestMessagesRead_NotFound(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Create empty directories
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	_, err := runMessagesRead(deps, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent message")
+	}
+}
+
+func TestMessagesRead_PrefixMatch(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aabb", &messages.Message{
+		ID: "1000.bob.aabb", From: "bob", To: "alice",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	msg, err := runMessagesRead(deps, "1000")
+	if err != nil {
+		t.Fatalf("runMessagesRead() unexpected error: %v", err)
+	}
+	if msg.ID != "1000.bob.aabb" {
+		t.Errorf("ID = %q, want %q", msg.ID, "1000.bob.aabb")
+	}
+}
+
+func TestMessagesRead_MissingEnvVars(t *testing.T) {
+	// Missing DENDRA_ROOT
+	deps := &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_AGENT_IDENTITY" {
+				return "alice"
+			}
+			return ""
+		},
+	}
+	_, err := runMessagesRead(deps, "1000")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_ROOT")
+	}
+	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
+		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	}
+
+	// Missing DENDRA_AGENT_IDENTITY
+	deps = &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_ROOT" {
+				return "/tmp/test"
+			}
+			return ""
+		},
+	}
+	_, err = runMessagesRead(deps, "1000")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+	}
+	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
+		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	}
+}
+
+// --- runMessagesList tests ---
+
+func TestMessagesList_All(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeTestMessage(t, filepath.Join(agentDir, "cur"), "2000.bob.aa02", &messages.Message{
+		ID: "2000.bob.aa02", From: "bob", To: "alice",
+		Subject: "read msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+	writeTestMessage(t, filepath.Join(agentDir, "archive"), "3000.bob.aa03", &messages.Message{
+		ID: "3000.bob.aa03", From: "bob", To: "alice",
+		Subject: "archived msg", Body: "body", Timestamp: "2026-03-31T12:00:00Z",
+	})
+
+	msgs, err := runMessagesList(deps, "all")
+	if err != nil {
+		t.Fatalf("runMessagesList() unexpected error: %v", err)
+	}
+	// "all" should return new/ + cur/ only
+	if len(msgs) != 2 {
+		t.Errorf("expected 2 messages for 'all', got %d", len(msgs))
+	}
+}
+
+func TestMessagesList_Unread(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeTestMessage(t, filepath.Join(agentDir, "cur"), "2000.bob.aa02", &messages.Message{
+		ID: "2000.bob.aa02", From: "bob", To: "alice",
+		Subject: "read msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	msgs, err := runMessagesList(deps, "unread")
+	if err != nil {
+		t.Fatalf("runMessagesList() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for 'unread', got %d", len(msgs))
+	}
+	if msgs[0].Dir != "new" {
+		t.Errorf("expected Dir='new', got %q", msgs[0].Dir)
+	}
+}
+
+func TestMessagesList_Sent(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "sent"), "1000.alice.aa01", &messages.Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "sent msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	msgs, err := runMessagesList(deps, "sent")
+	if err != nil {
+		t.Fatalf("runMessagesList() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message for 'sent', got %d", len(msgs))
+	}
+	if msgs[0].Dir != "sent" {
+		t.Errorf("expected Dir='sent', got %q", msgs[0].Dir)
+	}
+}
+
+func TestMessagesList_DefaultFilter(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "new msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	// Empty string should work like "all"
+	msgs, err := runMessagesList(deps, "")
+	if err != nil {
+		t.Fatalf("runMessagesList() unexpected error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 message for default filter, got %d", len(msgs))
+	}
+}
+
+func TestMessagesList_InvalidFilter(t *testing.T) {
+	deps, _ := newTestMessagesDeps(t)
+
+	_, err := runMessagesList(deps, "bogus")
+	if err == nil {
+		t.Fatal("expected error for invalid filter")
+	}
+}
+
+func TestMessagesList_MissingEnvVars(t *testing.T) {
+	// Missing DENDRA_ROOT
+	deps := &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_AGENT_IDENTITY" {
+				return "alice"
+			}
+			return ""
+		},
+	}
+	_, err := runMessagesList(deps, "all")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_ROOT")
+	}
+	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
+		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	}
+
+	// Missing DENDRA_AGENT_IDENTITY
+	deps = &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_ROOT" {
+				return "/tmp/test"
+			}
+			return ""
+		},
+	}
+	_, err = runMessagesList(deps, "all")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+	}
+}
+
+// --- runMessagesArchive tests ---
+
+func TestMessagesArchive_HappyPath(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aabb", &messages.Message{
+		ID: "1000.bob.aabb", From: "bob", To: "alice",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	err := runMessagesArchive(deps, "1000.bob.aabb")
+	if err != nil {
+		t.Fatalf("runMessagesArchive() unexpected error: %v", err)
+	}
+
+	// Verify message is in archive/
+	archiveDir := filepath.Join(agentDir, "archive")
+	if _, err := os.Stat(filepath.Join(archiveDir, "1000.bob.aabb.json")); err != nil {
+		t.Errorf("expected file in archive/: %v", err)
+	}
+
+	// Verify message is gone from new/
+	newDir := filepath.Join(agentDir, "new")
+	if _, err := os.Stat(filepath.Join(newDir, "1000.bob.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from new/")
+	}
+}
+
+func TestMessagesArchive_NotFound(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	err := runMessagesArchive(deps, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent message")
+	}
+}
+
+func TestMessagesArchive_MissingEnvVars(t *testing.T) {
+	// Missing DENDRA_ROOT
+	deps := &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_AGENT_IDENTITY" {
+				return "alice"
+			}
+			return ""
+		},
+	}
+	err := runMessagesArchive(deps, "1000")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_ROOT")
+	}
+	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
+		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	}
+
+	// Missing DENDRA_AGENT_IDENTITY
+	deps = &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_ROOT" {
+				return "/tmp/test"
+			}
+			return ""
+		},
+	}
+	err = runMessagesArchive(deps, "1000")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+	}
+}
+
+// --- runMessagesUnread tests ---
+
+func TestMessagesUnread_HappyPath(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "cur"), "1000.bob.aabb", &messages.Message{
+		ID: "1000.bob.aabb", From: "bob", To: "alice",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	err := runMessagesUnread(deps, "1000.bob.aabb")
+	if err != nil {
+		t.Fatalf("runMessagesUnread() unexpected error: %v", err)
+	}
+
+	// Verify message is in new/
+	newDir := filepath.Join(agentDir, "new")
+	if _, err := os.Stat(filepath.Join(newDir, "1000.bob.aabb.json")); err != nil {
+		t.Errorf("expected file in new/: %v", err)
+	}
+
+	// Verify message is gone from cur/
+	curDir := filepath.Join(agentDir, "cur")
+	if _, err := os.Stat(filepath.Join(curDir, "1000.bob.aabb.json")); !os.IsNotExist(err) {
+		t.Error("expected file to be gone from cur/")
+	}
+}
+
+func TestMessagesUnread_NotInCur(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	err := runMessagesUnread(deps, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error when message not in cur/")
+	}
+}
+
+func TestMessagesUnread_MissingEnvVars(t *testing.T) {
+	// Missing DENDRA_ROOT
+	deps := &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_AGENT_IDENTITY" {
+				return "alice"
+			}
+			return ""
+		},
+	}
+	err := runMessagesUnread(deps, "1000")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_ROOT")
+	}
+	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
+		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	}
+
+	// Missing DENDRA_AGENT_IDENTITY
+	deps = &messagesDeps{
+		getenv: func(key string) string {
+			if key == "DENDRA_ROOT" {
+				return "/tmp/test"
+			}
+			return ""
+		},
+	}
+	err = runMessagesUnread(deps, "1000")
+	if err == nil {
+		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+	}
+}
+
 // writeTestMessage is a test helper that writes a Message as JSON into the given directory.
 func writeTestMessage(t *testing.T, dir, filename string, msg *messages.Message) {
 	t.Helper()
