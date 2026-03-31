@@ -18,6 +18,7 @@ type Runner interface {
 	NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
 	KillWindow(sessionName, windowName string) error
 	ListWindowPIDs(sessionName, windowName string) ([]int, error)
+	SendKeys(sessionName, windowName string, keys string) error
 	Attach(name string) error
 }
 
@@ -114,6 +115,13 @@ func (r *RealRunner) ListWindowPIDs(sessionName, windowName string) ([]int, erro
 		}
 	}
 	return pids, nil
+}
+
+// SendKeys sends text to a specific tmux window, followed by Enter.
+func (r *RealRunner) SendKeys(sessionName, windowName string, keys string) error {
+	target := sessionName + ":" + windowName
+	cmd := exec.Command(r.TmuxPath, "send-keys", "-t", target, keys, "Enter")
+	return cmd.Run()
 }
 
 // Attach connects to the named tmux session. If called from inside an

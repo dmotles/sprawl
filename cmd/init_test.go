@@ -47,6 +47,10 @@ func (m *mockRunner) ListWindowPIDs(sessionName, windowName string) ([]int, erro
 	return nil, nil
 }
 
+func (m *mockRunner) SendKeys(sessionName, windowName string, keys string) error {
+	return nil
+}
+
 func (m *mockRunner) Attach(name string) error {
 	m.attachCalled = true
 	m.attachName = name
