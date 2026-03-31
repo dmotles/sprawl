@@ -17,3 +17,4 @@ dendra
 .dolt/
 *.db
 .beads-credential-key
+.claude/settings.local.json
