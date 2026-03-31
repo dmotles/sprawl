@@ -1,0 +1,267 @@
+// Package agentloop manages the lifecycle of a Claude Code subprocess,
+// handling message routing, control requests, and state transitions.
+package agentloop
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"sync"
+
+	"github.com/dmotles/dendra/internal/protocol"
+)
+
+// MessageReader reads protocol messages from the Claude process stdout.
+type MessageReader interface {
+	Next() (*protocol.Message, error)
+}
+
+// MessageWriter sends messages to the Claude process stdin.
+type MessageWriter interface {
+	SendUserMessage(prompt string) error
+	ApproveToolUse(requestID string) error
+	Close() error
+}
+
+// WaitFunc blocks until the subprocess exits, returning any error.
+type WaitFunc func() error
+
+// CancelFunc forcefully terminates the subprocess.
+type CancelFunc func() error
+
+// CommandStarter launches a Claude Code subprocess and returns I/O handles.
+type CommandStarter interface {
+	Start(ctx context.Context, config ProcessConfig) (MessageReader, MessageWriter, WaitFunc, CancelFunc, error)
+}
+
+// Observer receives protocol messages during a prompt loop for monitoring/logging.
+type Observer interface {
+	OnMessage(msg *protocol.Message)
+}
+
+// ProcessConfig holds the configuration for launching a Claude Code subprocess.
+type ProcessConfig struct {
+	ClaudePath     string
+	WorkDir        string
+	SessionID      string
+	SystemPrompt   string
+	AgentName      string
+	DendraRoot     string
+	Env            map[string]string
+	Resume         bool
+	SettingSources string
+}
+
+// ProcessState represents the current lifecycle state of the process.
+type ProcessState string
+
+const (
+	StateStarting ProcessState = "starting"
+	StateIdle     ProcessState = "idle"
+	StateRunning  ProcessState = "running"
+	StateStopped  ProcessState = "stopped"
+)
+
+// Option configures a Process.
+type Option func(*Process)
+
+// WithObserver attaches an observer that receives protocol messages.
+func WithObserver(o Observer) Option {
+	return func(p *Process) {
+		p.observer = o
+	}
+}
+
+// Process manages the lifecycle of a single Claude Code subprocess.
+type Process struct {
+	config   ProcessConfig
+	starter  CommandStarter
+	reader   MessageReader
+	writer   MessageWriter
+	waitFn   WaitFunc
+	cancelFn CancelFunc
+	state    ProcessState
+	observer Observer
+	mu       sync.Mutex
+}
+
+// NewProcess creates a new Process with the given config, starter, and options.
+func NewProcess(config ProcessConfig, starter CommandStarter, opts ...Option) *Process {
+	p := &Process{
+		config:  config,
+		starter: starter,
+		state:   StateStopped,
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
+}
+
+// Start launches the Claude Code subprocess and waits for the init message.
+func (p *Process) Start(ctx context.Context) error {
+	p.mu.Lock()
+	p.state = StateStarting
+	p.mu.Unlock()
+
+	reader, writer, waitFn, cancelFn, err := p.starter.Start(ctx, p.config)
+	if err != nil {
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+		return fmt.Errorf("starting claude process: %w", err)
+	}
+
+	p.mu.Lock()
+	p.reader = reader
+	p.writer = writer
+	p.waitFn = waitFn
+	p.cancelFn = cancelFn
+	p.mu.Unlock()
+
+	// Read messages until we get system/init.
+	for {
+		msg, err := reader.Next()
+		if err != nil {
+			p.mu.Lock()
+			p.state = StateStopped
+			p.mu.Unlock()
+			if err == io.EOF {
+				return fmt.Errorf("reader EOF before init message")
+			}
+			return fmt.Errorf("reading init message: %w", err)
+		}
+		if msg.Type == "system" && msg.Subtype == "init" {
+			p.mu.Lock()
+			p.state = StateIdle
+			p.mu.Unlock()
+			return nil
+		}
+	}
+}
+
+// SendPrompt sends a user prompt and processes messages until a result is received.
+func (p *Process) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
+	p.mu.Lock()
+	p.state = StateRunning
+	p.mu.Unlock()
+
+	if err := p.writer.SendUserMessage(prompt); err != nil {
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+		return nil, fmt.Errorf("sending prompt: %w", err)
+	}
+
+	for {
+		msg, err := p.reader.Next()
+		if err != nil {
+			p.mu.Lock()
+			p.state = StateStopped
+			p.mu.Unlock()
+			return nil, fmt.Errorf("reading message: %w", err)
+		}
+
+		switch msg.Type {
+		case "result":
+			var result protocol.ResultMessage
+			if err := protocol.ParseAs(msg, &result); err != nil {
+				p.mu.Lock()
+				p.state = StateStopped
+				p.mu.Unlock()
+				return nil, fmt.Errorf("parsing result message: %w", err)
+			}
+			p.mu.Lock()
+			p.state = StateIdle
+			p.mu.Unlock()
+			return &result, nil
+
+		case "control_request":
+			var cr protocol.ControlRequest
+			if err := protocol.ParseAs(msg, &cr); err != nil {
+				p.mu.Lock()
+				p.state = StateStopped
+				p.mu.Unlock()
+				return nil, fmt.Errorf("parsing control request: %w", err)
+			}
+			if err := p.writer.ApproveToolUse(cr.RequestID); err != nil {
+				p.mu.Lock()
+				p.state = StateStopped
+				p.mu.Unlock()
+				return nil, fmt.Errorf("approving tool use: %w", err)
+			}
+
+		default:
+			if p.observer != nil {
+				p.observer.OnMessage(msg)
+			}
+		}
+	}
+}
+
+// State returns the current process state.
+func (p *Process) State() ProcessState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state
+}
+
+// SessionID returns the session ID from the process config.
+func (p *Process) SessionID() string {
+	return p.config.SessionID
+}
+
+// Stop gracefully shuts down the subprocess by closing the writer and waiting.
+func (p *Process) Stop(ctx context.Context) error {
+	p.mu.Lock()
+	if p.writer == nil {
+		p.state = StateStopped
+		p.mu.Unlock()
+		return nil
+	}
+	p.mu.Unlock()
+
+	closeErr := p.writer.Close()
+
+	// Always transition to stopped, even on close error.
+	defer func() {
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+	}()
+
+	if closeErr != nil {
+		return fmt.Errorf("closing writer: %w", closeErr)
+	}
+	if err := p.waitFn(); err != nil {
+		return fmt.Errorf("waiting for process: %w", err)
+	}
+	return nil
+}
+
+// Kill forcefully terminates the subprocess.
+func (p *Process) Kill() error {
+	p.mu.Lock()
+	if p.cancelFn == nil {
+		p.state = StateStopped
+		p.mu.Unlock()
+		return nil
+	}
+	p.mu.Unlock()
+
+	err := p.cancelFn()
+	p.mu.Lock()
+	p.state = StateStopped
+	p.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("killing process: %w", err)
+	}
+	return nil
+}
+
+// IsRunning reports whether the process is in an active state (idle or running).
+func (p *Process) IsRunning() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state == StateIdle || p.state == StateRunning
+}
