@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/dmotles/dendra/internal/state"
@@ -17,9 +16,9 @@ import (
 type retireDeps struct {
 	tmuxRunner     tmux.Runner
 	getenv         func(string) string
-	signalFunc     func(pid int, sig syscall.Signal) error
+	writeFile      func(string, []byte, os.FileMode) error
+	removeFile     func(string) error
 	sleepFunc      func(time.Duration)
-	processAlive   func(pid int) bool
 	worktreeRemove func(repoRoot, worktreePath string, force bool) error
 	gitStatus      func(worktreePath string) (string, error)
 }
@@ -62,13 +61,11 @@ func resolveRetireDeps() (*retireDeps, error) {
 	}
 
 	return &retireDeps{
-		tmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
-		getenv:     os.Getenv,
-		signalFunc: func(pid int, sig syscall.Signal) error {
-			return syscall.Kill(pid, sig)
-		},
+		tmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
+		getenv:         os.Getenv,
+		writeFile:      os.WriteFile,
+		removeFile:     os.Remove,
 		sleepFunc:      time.Sleep,
-		processAlive:   processIsAlive,
 		worktreeRemove: realWorktreeRemove,
 		gitStatus:      realGitStatus,
 	}, nil
@@ -120,17 +117,16 @@ func runRetire(deps *retireDeps, agentName string, cascade, force bool) error {
 		}
 	}
 
-	// Kill the process (force-kill since we're tearing down)
-	killDep := &killDeps{
-		tmuxRunner:   deps.tmuxRunner,
-		getenv:       deps.getenv,
-		signalFunc:   deps.signalFunc,
-		sleepFunc:    deps.sleepFunc,
-		processAlive: deps.processAlive,
+	// Graceful shutdown (or force kill)
+	sd := &shutdownDeps{
+		tmuxRunner: deps.tmuxRunner,
+		writeFile:  deps.writeFile,
+		removeFile: deps.removeFile,
+		sleepFunc:  deps.sleepFunc,
 	}
-	killProcesses(killDep, agentState, true) // always force-kill during retire
+	gracefulShutdown(sd, dendraRoot, agentState, force)
 
-	// Close tmux window (best-effort)
+	// Best-effort tmux window cleanup after graceful shutdown
 	_ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
 
 	// Crash-safe checkpoint: mark as "retiring"
@@ -146,7 +142,7 @@ func runRetire(deps *retireDeps, agentName string, cascade, force bool) error {
 // This is separated so crash recovery can resume from this point.
 func retireFromCheckpoint(deps *retireDeps, dendraRoot string, agentState *state.AgentState, force bool) error {
 	// Check for uncommitted changes in worktree
-	if agentState.Worktree != "" {
+	if agentState.Worktree != "" && !agentState.Subagent {
 		statusOutput, err := deps.gitStatus(agentState.Worktree)
 		if err == nil && statusOutput != "" && !force {
 			return fmt.Errorf("%s has uncommitted changes in worktree.\nCommit first or use --force to discard.", agentState.Name)

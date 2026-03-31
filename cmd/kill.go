@@ -3,7 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"syscall"
+	"path/filepath"
 	"time"
 
 	"github.com/dmotles/dendra/internal/state"
@@ -13,11 +13,11 @@ import (
 
 // killDeps holds the dependencies for the kill command, enabling testability.
 type killDeps struct {
-	tmuxRunner  tmux.Runner
-	getenv      func(string) string
-	signalFunc  func(pid int, sig syscall.Signal) error
-	sleepFunc   func(time.Duration)
-	processAlive func(pid int) bool
+	tmuxRunner tmux.Runner
+	getenv     func(string) string
+	writeFile  func(string, []byte, os.FileMode) error
+	removeFile func(string) error
+	sleepFunc  func(time.Duration)
 }
 
 var defaultKillDeps *killDeps
@@ -56,12 +56,49 @@ func resolveKillDeps() (*killDeps, error) {
 	return &killDeps{
 		tmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
 		getenv:     os.Getenv,
-		signalFunc: func(pid int, sig syscall.Signal) error {
-			return syscall.Kill(pid, sig)
-		},
-		sleepFunc:    time.Sleep,
-		processAlive: processIsAlive,
+		writeFile:  os.WriteFile,
+		removeFile: os.Remove,
+		sleepFunc:  time.Sleep,
 	}, nil
+}
+
+// shutdownDeps holds the deps needed for graceful agent shutdown.
+type shutdownDeps struct {
+	tmuxRunner tmux.Runner
+	writeFile  func(string, []byte, os.FileMode) error
+	removeFile func(string) error
+	sleepFunc  func(time.Duration)
+}
+
+// gracefulShutdown signals the agent-loop via sentinel file, waits for it to exit,
+// and falls back to killing the tmux window if it doesn't exit in time.
+func gracefulShutdown(deps *shutdownDeps, dendraRoot string, agentState *state.AgentState, force bool) {
+	if force {
+		_ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
+		return
+	}
+
+	// Write sentinel file
+	killPath := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".kill")
+	_ = deps.writeFile(killPath, []byte("kill"), 0644)
+
+	// Poll: wait for window to disappear
+	graceful := false
+	for i := 0; i < 10; i++ {
+		_, err := deps.tmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
+		if err != nil {
+			graceful = true
+			break
+		}
+		deps.sleepFunc(500 * time.Millisecond)
+	}
+
+	if !graceful {
+		_ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
+	}
+
+	// Clean up sentinel (may already be gone)
+	_ = deps.removeFile(killPath)
 }
 
 func runKill(deps *killDeps, agentName string, force bool) error {
@@ -82,11 +119,14 @@ func runKill(deps *killDeps, agentName string, force bool) error {
 		return nil
 	}
 
-	// Kill the process(es) in the tmux window
-	killProcesses(deps, agentState, force)
-
-	// Close tmux window (best-effort)
-	_ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
+	// Graceful shutdown (or force kill)
+	sd := &shutdownDeps{
+		tmuxRunner: deps.tmuxRunner,
+		writeFile:  deps.writeFile,
+		removeFile: deps.removeFile,
+		sleepFunc:  deps.sleepFunc,
+	}
+	gracefulShutdown(sd, dendraRoot, agentState, force)
 
 	// Update status to killed
 	agentState.Status = "killed"
@@ -96,37 +136,4 @@ func runKill(deps *killDeps, agentName string, force bool) error {
 
 	fmt.Fprintf(os.Stderr, "Killed agent %q\n", agentName)
 	return nil
-}
-
-// killProcesses sends signals to processes in the agent's tmux window.
-func killProcesses(deps *killDeps, agentState *state.AgentState, force bool) {
-	pids, err := deps.tmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
-	if err != nil {
-		// Window may already be gone — not an error
-		return
-	}
-
-	for _, pid := range pids {
-		if force {
-			_ = deps.signalFunc(pid, syscall.SIGKILL)
-		} else {
-			// Graceful: SIGTERM → wait 2s → SIGKILL
-			_ = deps.signalFunc(pid, syscall.SIGTERM)
-		}
-	}
-
-	if !force && len(pids) > 0 {
-		deps.sleepFunc(2 * time.Second)
-		for _, pid := range pids {
-			if deps.processAlive(pid) {
-				_ = deps.signalFunc(pid, syscall.SIGKILL)
-			}
-		}
-	}
-}
-
-// processIsAlive checks if a process with the given PID exists.
-func processIsAlive(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil
 }

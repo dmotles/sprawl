@@ -226,6 +226,14 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		default:
 		}
 
+		// 0. Check for kill sentinel file.
+		killFilePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".kill")
+		if _, readErr := deps.readFile(killFilePath); readErr == nil {
+			fmt.Fprintf(deps.stdout, "[agent-loop] kill sentinel detected, shutting down\n")
+			_ = deps.removeFile(killFilePath)
+			return nil // triggers deferred proc.Stop()
+		}
+
 		// 1. Check for a queued task.
 		task, err := deps.nextTask(dendraRoot, agentName)
 		if err != nil {

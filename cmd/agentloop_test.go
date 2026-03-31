@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -612,7 +613,7 @@ func TestTmuxObserver_AssistantMessage(t *testing.T) {
 
 	assistantMsg := &protocol.Message{
 		Type: "assistant",
-		Raw:  mustMarshal(t, map[string]interface{}{
+		Raw: mustMarshal(t, map[string]interface{}{
 			"type":    "assistant",
 			"message": json.RawMessage(raw),
 		}),
@@ -736,6 +737,96 @@ func TestRunAgentLoop_ProcessConfigFromAgentState(t *testing.T) {
 	}
 	if capturedConfig.DendraRoot == "" {
 		t.Error("DendraRoot should be set from DENDRA_ROOT env var")
+	}
+}
+
+func TestRunAgentLoop_KillSentinel(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// No tasks, no inbox messages.
+	deps.nextTask = func(root, name string) (*state.Task, error) { return nil, nil }
+	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
+
+	// Kill sentinel file exists when readFile is called for it.
+	expectedKillPath := filepath.Join(tmpDir, ".dendra", "agents", "ash.kill")
+	var removedFiles []string
+	deps.readFile = func(path string) ([]byte, error) {
+		if path == expectedKillPath {
+			return []byte(""), nil // sentinel file exists
+		}
+		return nil, errors.New("file not found")
+	}
+	deps.removeFile = func(path string) error {
+		removedFiles = append(removedFiles, path)
+		return nil
+	}
+
+	ctx := context.Background()
+	err := runAgentLoop(ctx, deps, "ash")
+	if err != nil {
+		t.Fatalf("expected clean exit on kill sentinel, got error: %v", err)
+	}
+
+	// Verify the kill sentinel file was removed.
+	killSentinelRemoved := false
+	for _, f := range removedFiles {
+		if f == expectedKillPath {
+			killSentinelRemoved = true
+			break
+		}
+	}
+	if !killSentinelRemoved {
+		t.Errorf("expected kill sentinel to be removed at %s, removed files: %v", expectedKillPath, removedFiles)
+	}
+
+	// Verify proc.Stop was called (via deferred cleanup).
+	if !mockProc.stopCalled {
+		t.Error("expected proc.Stop to be called when exiting via kill sentinel")
+	}
+}
+
+func TestRunAgentLoop_KillSentinel_PriorityOverTasks(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Queue a task so there is work available.
+	if _, err := state.EnqueueTask(tmpDir, "ash", "should not be processed"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	// Also have inbox messages available.
+	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this out"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// Kill sentinel file exists.
+	expectedKillPath := filepath.Join(tmpDir, ".dendra", "agents", "ash.kill")
+	deps.readFile = func(path string) ([]byte, error) {
+		if path == expectedKillPath {
+			return []byte(""), nil // sentinel file exists
+		}
+		return nil, errors.New("file not found")
+	}
+
+	var removedFiles []string
+	deps.removeFile = func(path string) error {
+		removedFiles = append(removedFiles, path)
+		return nil
+	}
+
+	ctx := context.Background()
+	err := runAgentLoop(ctx, deps, "ash")
+	if err != nil {
+		t.Fatalf("expected clean exit on kill sentinel, got error: %v", err)
+	}
+
+	// No prompts should have been sent -- the kill sentinel takes priority.
+	if len(mockProc.prompts) > 0 {
+		t.Errorf("expected no prompts sent when kill sentinel is present, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+
+	// Verify the loop exited without processing the task.
+	if mockProc.stopCalled != true {
+		t.Error("expected proc.Stop to be called on kill sentinel exit")
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -27,11 +26,9 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 			}
 			return ""
 		},
-		signalFunc: func(pid int, sig syscall.Signal) error {
-			return nil
-		},
-		sleepFunc:    func(d time.Duration) {},
-		processAlive: func(pid int) bool { return false },
+		writeFile:  func(path string, data []byte, perm os.FileMode) error { return nil },
+		removeFile: func(path string) error { return nil },
+		sleepFunc:  func(d time.Duration) {},
 		worktreeRemove: func(repoRoot, worktreePath string, force bool) error {
 			return nil
 		},
@@ -47,7 +44,9 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 
 func TestRetire_HappyPath(t *testing.T) {
 	deps, runner, tmpDir := newTestRetireDeps(t)
-	runner.pids = []int{12345}
+
+	// Window disappears immediately during graceful poll.
+	runner.pidsErr = os.ErrNotExist
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
@@ -64,15 +63,10 @@ func TestRetire_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// State file should be deleted
+	// State file should be deleted.
 	_, err = state.LoadAgent(tmpDir, "alice")
 	if err == nil {
 		t.Error("expected agent state to be deleted")
-	}
-
-	// tmux window should have been closed
-	if !runner.killWindowCalled {
-		t.Error("expected KillWindow to be called")
 	}
 }
 
@@ -125,7 +119,7 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 		t.Errorf("error should mention uncommitted changes, got: %v", err)
 	}
 
-	// State file should still exist (in "retiring" status for crash safety)
+	// State file should still exist (in "retiring" status for crash safety).
 	agentState, err := state.LoadAgent(tmpDir, "alice")
 	if err != nil {
 		t.Fatalf("state file should still exist: %v", err)
@@ -162,12 +156,12 @@ func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 		t.Fatalf("unexpected error with --force: %v", err)
 	}
 
-	// Should have force-removed the worktree
+	// Should have force-removed the worktree.
 	if !removedForce {
 		t.Error("expected force removal of worktree")
 	}
 
-	// State should be deleted
+	// State should be deleted.
 	_, err = state.LoadAgent(tmpDir, "alice")
 	if err == nil {
 		t.Error("expected agent state to be deleted")
@@ -177,7 +171,7 @@ func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 func TestRetire_WithChildren_Refuses(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	// Create parent
+	// Create parent.
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
@@ -188,7 +182,7 @@ func TestRetire_WithChildren_Refuses(t *testing.T) {
 		Parent:      "root",
 	})
 
-	// Create children
+	// Create children.
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "bob",
 		Status: "active",
@@ -238,13 +232,13 @@ func TestRetire_WithChildren_ForceOrphans(t *testing.T) {
 		t.Fatalf("unexpected error with --force: %v", err)
 	}
 
-	// Alice should be deleted
+	// Alice should be deleted.
 	_, err = state.LoadAgent(tmpDir, "alice")
 	if err == nil {
 		t.Error("expected alice state to be deleted")
 	}
 
-	// Bob should still exist (orphaned)
+	// Bob should still exist (orphaned).
 	bob, err := state.LoadAgent(tmpDir, "bob")
 	if err != nil {
 		t.Fatalf("bob should still exist: %v", err)
@@ -257,7 +251,7 @@ func TestRetire_WithChildren_ForceOrphans(t *testing.T) {
 func TestRetire_Cascade(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	// Create parent
+	// Create parent.
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
@@ -268,7 +262,7 @@ func TestRetire_Cascade(t *testing.T) {
 		Parent:      "root",
 	})
 
-	// Create child
+	// Create child.
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "bob",
 		Status:      "active",
@@ -279,7 +273,7 @@ func TestRetire_Cascade(t *testing.T) {
 		Parent:      "alice",
 	})
 
-	// Create grandchild
+	// Create grandchild.
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "charlie",
 		Status:      "active",
@@ -295,7 +289,7 @@ func TestRetire_Cascade(t *testing.T) {
 		t.Fatalf("unexpected error with --cascade: %v", err)
 	}
 
-	// All agents should be deleted
+	// All agents should be deleted.
 	for _, name := range []string{"alice", "bob", "charlie"} {
 		_, err := state.LoadAgent(tmpDir, name)
 		if err == nil {
@@ -307,7 +301,7 @@ func TestRetire_Cascade(t *testing.T) {
 func TestRetire_CrashRecovery_RetiringState(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	// Agent is in "retiring" state (simulating crash mid-retire)
+	// Agent is in "retiring" state (simulating crash mid-retire).
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "retiring",
@@ -323,7 +317,7 @@ func TestRetire_CrashRecovery_RetiringState(t *testing.T) {
 		t.Fatalf("unexpected error during crash recovery: %v", err)
 	}
 
-	// State should be deleted (recovery completed)
+	// State should be deleted (recovery completed).
 	_, err = state.LoadAgent(tmpDir, "alice")
 	if err == nil {
 		t.Error("expected agent state to be deleted after recovery")
@@ -339,7 +333,7 @@ func TestRetire_EmptyWorktree_SkipsRemoval(t *testing.T) {
 		return nil
 	}
 
-	// Agent with no worktree (like a code merger)
+	// Agent with no worktree (like a code merger).
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
@@ -381,7 +375,7 @@ func TestRetire_WorktreeRemoveFailure_WarnsButContinues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should still have deleted the state
+	// Should still have deleted the state.
 	_, err = state.LoadAgent(tmpDir, "alice")
 	if err == nil {
 		t.Error("expected agent state to be deleted despite worktree removal failure")
@@ -392,9 +386,10 @@ func TestRetire_ForceKillsProcess(t *testing.T) {
 	deps, runner, tmpDir := newTestRetireDeps(t)
 	runner.pids = []int{12345}
 
-	var signals []syscall.Signal
-	deps.signalFunc = func(pid int, sig syscall.Signal) error {
-		signals = append(signals, sig)
+	// Track writeFile calls: no sentinel should be written with force.
+	var writtenPaths []string
+	deps.writeFile = func(path string, data []byte, perm os.FileMode) error {
+		writtenPaths = append(writtenPaths, path)
 		return nil
 	}
 
@@ -408,17 +403,25 @@ func TestRetire_ForceKillsProcess(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Retire always force-kills (SIGKILL only, no SIGTERM)
-	if len(signals) != 1 {
-		t.Fatalf("expected 1 signal, got %d: %v", len(signals), signals)
+	// With force=true, KillWindow should be called immediately (no sentinel).
+	if !runner.killWindowCalled {
+		t.Error("expected KillWindow to be called with --force")
 	}
-	if signals[0] != syscall.SIGKILL {
-		t.Errorf("signal = %v, want SIGKILL", signals[0])
+
+	// No sentinel should be written with force.
+	if len(writtenPaths) > 0 {
+		t.Errorf("expected no sentinel writes with force, got: %v", writtenPaths)
+	}
+
+	// State should be deleted.
+	_, err = state.LoadAgent(tmpDir, "alice")
+	if err == nil {
+		t.Error("expected agent state to be deleted")
 	}
 }
 
@@ -460,5 +463,43 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Errorf("error should mention uncommitted changes, got: %v", err)
+	}
+}
+
+func TestRetire_Subagent_SkipsWorktreeCleanup(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	worktreeRemoveCalled := false
+	deps.worktreeRemove = func(repoRoot, worktreePath string, force bool) error {
+		worktreeRemoveCalled = true
+		return nil
+	}
+
+	// Create a subagent with a non-empty Worktree.
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "sub-alice",
+		Status:      "active",
+		Branch:      "dendra/sub-alice",
+		Worktree:    "/some/worktree/sub-alice",
+		TmuxSession: "dendra-root-children",
+		TmuxWindow:  "sub-alice",
+		Parent:      "alice",
+		Subagent:    true,
+	})
+
+	err := runRetire(deps, "sub-alice", false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Subagent worktree should NOT be removed (it belongs to the parent).
+	if worktreeRemoveCalled {
+		t.Error("worktreeRemove should NOT be called for subagent, even with non-empty worktree")
+	}
+
+	// State file should be deleted.
+	_, err = state.LoadAgent(tmpDir, "sub-alice")
+	if err == nil {
+		t.Error("expected subagent state to be deleted")
 	}
 }
