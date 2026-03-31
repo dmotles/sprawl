@@ -34,6 +34,26 @@ func TestBuildClaudeArgs_IncludesModelOpus(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeArgs_EffortMediumDefault(t *testing.T) {
+	config := ProcessConfig{
+		SessionID: "test-session",
+	}
+
+	args := buildClaudeArgs(config)
+
+	// Verify --effort medium is present.
+	found := false
+	for i, arg := range args {
+		if arg == "--effort" && i+1 < len(args) && args[i+1] == "medium" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected --effort medium in args, but not found")
+	}
+}
+
 func TestBuildClaudeArgs_ContainsExpectedFlags(t *testing.T) {
 	config := ProcessConfig{
 		SessionID:    "sess-1",
@@ -46,7 +66,8 @@ func TestBuildClaudeArgs_ContainsExpectedFlags(t *testing.T) {
 	// Check a few expected flags exist.
 	expected := map[string]bool{
 		"-p": false, "--input-format": false, "--output-format": false,
-		"--verbose": false, "--model": false, "--permission-mode": false,
+		"--verbose": false, "--model": false, "--effort": false,
+		"--permission-mode": false,
 		"--session-id": false, "--system-prompt": false, "--resume": false,
 	}
 	for _, arg := range args {

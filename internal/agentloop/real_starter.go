@@ -20,6 +20,7 @@ func buildClaudeArgs(config ProcessConfig) []string {
 		"--output-format", "stream-json",
 		"--verbose",
 		"--model", "opus[1m]",
+		"--effort", "medium",
 		"--permission-mode", "bypassPermissions",
 		"--session-id", config.SessionID,
 	}
