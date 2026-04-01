@@ -204,13 +204,19 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		return fmt.Errorf("generating session ID: %w", err)
 	}
 
+	// Write initial prompt to file and use @file reference
+	promptPath, err := state.WritePromptFile(dendraRoot, agentName, "initial", prompt)
+	if err != nil {
+		return fmt.Errorf("writing initial prompt file: %w", err)
+	}
+
 	// Save agent state
 	agentState := &state.AgentState{
 		Name:        agentName,
 		Type:        agentType,
 		Family:      family,
 		Parent:      parentName,
-		Prompt:      prompt,
+		Prompt:      fmt.Sprintf("Your task is in @%s — read it and begin working.", promptPath),
 		Branch:      branchName,
 		Worktree:    worktreePath,
 		TmuxSession: childrenSession,

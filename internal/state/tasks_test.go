@@ -2,6 +2,8 @@ package state
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -309,6 +311,87 @@ func TestListTasks(t *testing.T) {
 	}
 	if tasks[2].Prompt != "task three" {
 		t.Errorf("tasks[2].Prompt = %q, want %q", tasks[2].Prompt, "task three")
+	}
+}
+
+func TestEnqueueTask_WritesPromptFile(t *testing.T) {
+	dir := t.TempDir()
+
+	task, err := EnqueueTask(dir, "frank", "implement login page")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	// Verify prompt file exists at prompts/<uuid>.md
+	promptPath := filepath.Join(PromptsDir(dir, "frank"), task.ID+".md")
+	data, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("reading prompt file: %v", err)
+	}
+	if string(data) != "implement login page" {
+		t.Errorf("prompt file content = %q, want %q", string(data), "implement login page")
+	}
+}
+
+func TestEnqueueTask_SetsPromptFilePath(t *testing.T) {
+	dir := t.TempDir()
+
+	task, err := EnqueueTask(dir, "frank", "some task prompt")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	if task.PromptFile == "" {
+		t.Fatal("expected PromptFile to be set")
+	}
+
+	expectedSuffix := filepath.Join("prompts", task.ID+".md")
+	if !strings.HasSuffix(task.PromptFile, expectedSuffix) {
+		t.Errorf("PromptFile = %q, want suffix %q", task.PromptFile, expectedSuffix)
+	}
+
+	// Verify the file actually exists at that path
+	if _, err := os.Stat(task.PromptFile); err != nil {
+		t.Errorf("PromptFile path does not exist: %v", err)
+	}
+}
+
+func TestEnqueueTask_BackwardCompat_PromptStillSet(t *testing.T) {
+	dir := t.TempDir()
+
+	task, err := EnqueueTask(dir, "frank", "some task")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	// Prompt field should still be populated for backward compat
+	if task.Prompt != "some task" {
+		t.Errorf("Prompt = %q, want %q", task.Prompt, "some task")
+	}
+	// PromptFile should also be populated
+	if task.PromptFile == "" {
+		t.Error("expected PromptFile to be set alongside Prompt")
+	}
+}
+
+func TestEnqueueTask_PromptFilePersistsOnDisk(t *testing.T) {
+	dir := t.TempDir()
+
+	task, err := EnqueueTask(dir, "frank", "persist me")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	// Reload task from disk and verify PromptFile is persisted
+	tasks, err := ListTasks(dir, "frank")
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].PromptFile != task.PromptFile {
+		t.Errorf("loaded PromptFile = %q, want %q", tasks[0].PromptFile, task.PromptFile)
 	}
 }
 

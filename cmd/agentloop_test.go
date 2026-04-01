@@ -286,7 +286,7 @@ func TestRunAgentLoop_ProcessStartFails(t *testing.T) {
 func TestRunAgentLoop_ProcessesTask(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
-	// Queue a task
+	// Queue a task (EnqueueTask now writes a prompt file)
 	if _, err := state.EnqueueTask(tmpDir, "ash", "implement feature X"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
@@ -308,12 +308,89 @@ func TestRunAgentLoop_ProcessesTask(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "ash")
 
-	// Verify the task prompt was sent to Claude
+	// Verify the task prompt was sent to Claude via @file reference
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt sent to process")
 	}
-	if !strings.Contains(mockProc.prompts[0], "implement feature X") {
-		t.Errorf("first prompt should contain task prompt, got: %q", mockProc.prompts[0])
+	// Should contain @/ file reference (since EnqueueTask sets PromptFile)
+	if !strings.Contains(mockProc.prompts[0], "@/") {
+		t.Errorf("first prompt should contain @/path reference, got: %q", mockProc.prompts[0])
+	}
+	if !strings.Contains(mockProc.prompts[0], ".md") {
+		t.Errorf("first prompt should reference a .md file, got: %q", mockProc.prompts[0])
+	}
+}
+
+func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Create a task with an explicit PromptFile set (simulating new-style task)
+	promptContent := "do important work"
+	promptFilePath := filepath.Join(tmpDir, ".dendra", "agents", "ash", "prompts", "explicit-task.md")
+	os.MkdirAll(filepath.Dir(promptFilePath), 0755)
+	os.WriteFile(promptFilePath, []byte(promptContent), 0644)
+
+	task := &state.Task{
+		ID:         "explicit-task-id",
+		Prompt:     promptContent,
+		PromptFile: promptFilePath,
+		Status:     "queued",
+		CreatedAt:  "2026-03-31T12:00:00Z",
+	}
+	tasksDir := state.TasksDir(tmpDir, "ash")
+	os.MkdirAll(tasksDir, 0755)
+	taskData, _ := json.Marshal(task)
+	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-explicit-task-id.json"), taskData, 0644)
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	if len(mockProc.prompts) < 1 {
+		t.Fatal("expected at least one prompt sent to process")
+	}
+	// Should deliver @file reference, not raw prompt text
+	if !strings.Contains(mockProc.prompts[0], "@"+promptFilePath) {
+		t.Errorf("expected prompt to contain @%s, got: %q", promptFilePath, mockProc.prompts[0])
+	}
+}
+
+func TestRunAgentLoop_TaskDelivery_FallbackRawPrompt(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Create a task WITHOUT a PromptFile (simulating legacy/backward compat)
+	task := &state.Task{
+		ID:        "legacy-task-id",
+		Prompt:    "do legacy work",
+		Status:    "queued",
+		CreatedAt: "2026-03-31T12:00:00Z",
+	}
+	// Write task JSON directly (bypassing EnqueueTask which now sets PromptFile)
+	tasksDir := state.TasksDir(tmpDir, "ash")
+	os.MkdirAll(tasksDir, 0755)
+	taskData, _ := json.Marshal(task)
+	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-legacy-task-id.json"), taskData, 0644)
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	if len(mockProc.prompts) < 1 {
+		t.Fatal("expected at least one prompt sent to process")
+	}
+	// Should fall back to raw prompt text since PromptFile is empty
+	if mockProc.prompts[0] != "do legacy work" {
+		t.Errorf("expected raw prompt fallback, got: %q", mockProc.prompts[0])
 	}
 }
 
@@ -359,11 +436,11 @@ func TestRunAgentLoop_TaskFIFO(t *testing.T) {
 	if len(mockProc.prompts) < 2 {
 		t.Fatalf("expected at least 2 prompts, got %d", len(mockProc.prompts))
 	}
-	if !strings.Contains(mockProc.prompts[0], "first task") {
-		t.Errorf("first prompt should be 'first task', got: %q", mockProc.prompts[0])
-	}
-	if !strings.Contains(mockProc.prompts[1], "second task") {
-		t.Errorf("second prompt should be 'second task', got: %q", mockProc.prompts[1])
+	// With prompt files, tasks are delivered via @/path references to .md files
+	for i, p := range mockProc.prompts[:2] {
+		if !strings.Contains(p, "@/") || !strings.Contains(p, ".md") {
+			t.Errorf("prompt[%d] should contain @/path reference to .md file, got: %q", i, p)
+		}
 	}
 }
 

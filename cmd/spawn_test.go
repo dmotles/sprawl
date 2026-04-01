@@ -467,6 +467,57 @@ func TestSpawn_FindDendraFails(t *testing.T) {
 	}
 }
 
+// TestSpawn_WritesInitialPromptFile verifies that spawning an agent writes the
+// initial prompt to .dendra/agents/<name>/prompts/initial.md.
+func TestSpawn_WritesInitialPromptFile(t *testing.T) {
+	deps, _, _, tmpDir := newTestSpawnDeps(t)
+
+	err := runSpawn(deps, "engineering", "engineer", "implement the login page")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedName := agent.NamePool[0]
+	promptPath := filepath.Join(tmpDir, ".dendra", "agents", expectedName, "prompts", "initial.md")
+
+	data, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("reading initial prompt file: %v", err)
+	}
+	if string(data) != "implement the login page" {
+		t.Errorf("prompt file content = %q, want %q", string(data), "implement the login page")
+	}
+}
+
+// TestSpawn_AgentPromptContainsFileRef verifies that the agent state's Prompt
+// field contains an @file reference to initial.md, not the raw prompt text.
+func TestSpawn_AgentPromptContainsFileRef(t *testing.T) {
+	deps, _, _, tmpDir := newTestSpawnDeps(t)
+
+	err := runSpawn(deps, "engineering", "engineer", "implement the login page")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedName := agent.NamePool[0]
+	agentState, err := state.LoadAgent(tmpDir, expectedName)
+	if err != nil {
+		t.Fatalf("loading agent state: %v", err)
+	}
+
+	expectedPromptPath := filepath.Join(tmpDir, ".dendra", "agents", expectedName, "prompts", "initial.md")
+
+	// Should contain @file reference
+	if !strings.Contains(agentState.Prompt, "@"+expectedPromptPath) {
+		t.Errorf("agent Prompt should contain @file reference, got: %q", agentState.Prompt)
+	}
+
+	// Should NOT contain the raw prompt text
+	if strings.Contains(agentState.Prompt, "implement the login page") {
+		t.Errorf("agent Prompt should not contain raw prompt text, got: %q", agentState.Prompt)
+	}
+}
+
 // TestSpawn_BareSpawnCmd_HasRunE verifies that `dendra spawn` (without the
 // "agent" subcommand) has a RunE handler for backward compatibility.
 // Both `dendra spawn --flags...` and `dendra spawn agent --flags...` should work.

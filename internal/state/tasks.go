@@ -13,9 +13,10 @@ import (
 
 // Task represents a queued unit of work for an agent.
 type Task struct {
-	ID        string `json:"id"`
-	Prompt    string `json:"prompt"`
-	Status    string `json:"status"`
+	ID         string `json:"id"`
+	Prompt     string `json:"prompt"`
+	PromptFile string `json:"prompt_file,omitempty"`
+	Status     string `json:"status"`
 	CreatedAt string `json:"created_at"`
 	StartedAt string `json:"started_at,omitempty"`
 	DoneAt    string `json:"done_at,omitempty"`
@@ -50,12 +51,18 @@ func EnqueueTask(dendraRoot, agentName, prompt string) (*Task, error) {
 		return nil, err
 	}
 
+	promptPath, err := WritePromptFile(dendraRoot, agentName, id, prompt)
+	if err != nil {
+		return nil, fmt.Errorf("writing prompt file: %w", err)
+	}
+
 	now := time.Now().UTC()
 	task := &Task{
-		ID:        id,
-		Prompt:    prompt,
-		Status:    "queued",
-		CreatedAt: now.Format(time.RFC3339),
+		ID:         id,
+		Prompt:     prompt,
+		PromptFile: promptPath,
+		Status:     "queued",
+		CreatedAt:  now.Format(time.RFC3339),
 	}
 
 	filename := now.Format("20060102T150405.000000000Z") + "-" + id + ".json"

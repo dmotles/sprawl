@@ -372,14 +372,20 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			_ = deps.updateTask(dendraRoot, agentName, task)
 
 			fmt.Fprintf(deps.stdout, "[agent-loop] starting task %s\n", task.ID)
-			_, sendErr := proc.SendPrompt(ctx, task.Prompt)
+			var taskPrompt string
+			if task.PromptFile != "" {
+				taskPrompt = fmt.Sprintf("You have a new task. Read it from @%s and begin working.", task.PromptFile)
+			} else {
+				taskPrompt = task.Prompt
+			}
+			_, sendErr := proc.SendPrompt(ctx, taskPrompt)
 			if sendErr != nil {
 				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on task %s, restarting: %v\n", task.ID, sendErr)
 				if !restartWithResume() {
 					return nil
 				}
 				// Retry on recovered process.
-				_, _ = proc.SendPrompt(ctx, task.Prompt)
+				_, _ = proc.SendPrompt(ctx, taskPrompt)
 			}
 
 			task.Status = "done"
