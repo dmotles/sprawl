@@ -14,6 +14,9 @@ import (
 	"github.com/dmotles/dendra/internal/state"
 )
 
+// NowFunc is the time source used by the messages package. Override in tests for determinism.
+var NowFunc = time.Now
+
 // Message represents a message between agents.
 type Message struct {
 	ID        string `json:"id"`
@@ -73,7 +76,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	}
 	hexSuffix := hex.EncodeToString(suffixBytes)
 
-	now := time.Now()
+	now := NowFunc()
 	id := fmt.Sprintf("%d.%s.%s", now.UnixNano(), from, hexSuffix)
 
 	msg := &Message{

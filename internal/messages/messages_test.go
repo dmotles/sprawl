@@ -494,6 +494,12 @@ func TestSend_EmptySender(t *testing.T) {
 func TestSend_ConsistentTimestamp(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// Inject a fixed clock for deterministic testing.
+	fixedTime := time.Date(2026, 3, 15, 10, 30, 45, 123456789, time.UTC)
+	origNowFunc := NowFunc
+	NowFunc = func() time.Time { return fixedTime }
+	t.Cleanup(func() { NowFunc = origNowFunc })
+
 	err := Send(tmpDir, "alice", "bob", "timestamp test", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
@@ -534,8 +540,17 @@ func TestSend_ConsistentTimestamp(t *testing.T) {
 		t.Fatalf("parsing Timestamp field: %v", err)
 	}
 
-	// The ID nanosecond prefix and the Timestamp field must represent the same second.
-	// This contract ensures Send() uses a single time.Now() call for both.
+	// With clock injection, ID and Timestamp must exactly match the fixed time.
+	wantNanos := fixedTime.UnixNano()
+	if nanos != wantNanos {
+		t.Errorf("ID nanosecond prefix = %d, want %d", nanos, wantNanos)
+	}
+	wantTimestamp := fixedTime.UTC().Format(time.RFC3339)
+	if msg.Timestamp != wantTimestamp {
+		t.Errorf("Timestamp = %q, want %q", msg.Timestamp, wantTimestamp)
+	}
+
+	// The ID time and Timestamp must represent the same second.
 	if idTime.Unix() != tsTime.Unix() {
 		t.Errorf("ID time and Timestamp time differ: ID=%v (%d), Timestamp=%v (%d)",
 			idTime, idTime.Unix(), tsTime, tsTime.Unix())
