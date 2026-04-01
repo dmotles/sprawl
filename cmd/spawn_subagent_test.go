@@ -35,6 +35,10 @@ func newTestSpawnSubagentDeps(t *testing.T) (*spawnSubagentDeps, *spawnMockRunne
 		t.Fatalf("saving parent state: %v", err)
 	}
 
+	// Persist namespace and root name for subagent to read as fallback
+	state.WriteNamespace(tmpDir, tmux.DefaultNamespace)
+	state.WriteRootName(tmpDir, tmux.DefaultRootName)
+
 	deps := &spawnSubagentDeps{
 		tmuxRunner: runner,
 		getenv: func(key string) string {
@@ -43,6 +47,10 @@ func newTestSpawnSubagentDeps(t *testing.T) (*spawnSubagentDeps, *spawnMockRunne
 				return "root"
 			case "DENDRA_ROOT":
 				return tmpDir
+			case "DENDRA_NAMESPACE":
+				return tmux.DefaultNamespace
+			case "DENDRA_TREE_PATH":
+				return tmux.DefaultRootName
 			}
 			return ""
 		},
@@ -67,7 +75,7 @@ func TestSpawnSubagent_HappyPath(t *testing.T) {
 	if !runner.newSessionWithWindowCalled {
 		t.Error("expected NewSessionWithWindow to be called")
 	}
-	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "root")
+	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
 	if runner.newSessionWithWindowSession != expectedChildrenSession {
 		t.Errorf("session = %q, want %q", runner.newSessionWithWindowSession, expectedChildrenSession)
 	}

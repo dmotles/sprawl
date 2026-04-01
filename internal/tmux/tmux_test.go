@@ -59,25 +59,38 @@ func TestIsInsideTmux(t *testing.T) {
 // so we test the interface contract through the mock used in cmd tests.
 
 func TestDefaultNamespace(t *testing.T) {
-	if DefaultNamespace != "dendra" {
-		t.Errorf("DefaultNamespace = %q, want %q", DefaultNamespace, "dendra")
+	if DefaultNamespace != "🌳" {
+		t.Errorf("DefaultNamespace = %q, want %q", DefaultNamespace, "🌳")
+	}
+}
+
+func TestDefaultRootName(t *testing.T) {
+	if DefaultRootName != "sensei" {
+		t.Errorf("DefaultRootName = %q, want %q", DefaultRootName, "sensei")
+	}
+}
+
+func TestBranchSeparator(t *testing.T) {
+	if BranchSeparator != "├" {
+		t.Errorf("BranchSeparator = %q, want %q", BranchSeparator, "├")
 	}
 }
 
 func TestRootSessionName(t *testing.T) {
 	tests := []struct {
 		namespace string
+		rootName  string
 		want      string
 	}{
-		{"dendra", "dendra-root"},
-		{"test-123", "test-123-root"},
-		{"my-ns", "my-ns-root"},
+		{"🌳", "sensei", "🌳sensei"},
+		{"🌲", "test", "🌲test"},
+		{"🌴", "kai", "🌴kai"},
 	}
 
 	for _, tt := range tests {
-		got := RootSessionName(tt.namespace)
+		got := RootSessionName(tt.namespace, tt.rootName)
 		if got != tt.want {
-			t.Errorf("RootSessionName(%q) = %q, want %q", tt.namespace, got, tt.want)
+			t.Errorf("RootSessionName(%q, %q) = %q, want %q", tt.namespace, tt.rootName, got, tt.want)
 		}
 	}
 }
@@ -85,20 +98,88 @@ func TestRootSessionName(t *testing.T) {
 func TestChildrenSessionName(t *testing.T) {
 	tests := []struct {
 		namespace string
-		parent    string
+		treePath  string
 		want      string
 	}{
-		{"dendra", "root", "dendra-root-children"},
-		{"dendra", "alice", "dendra-alice-children"},
-		{"test-123", "root", "test-123-root-children"},
-		{"my-ns", "bob", "my-ns-bob-children"},
+		{"🌳", "sensei", "🌳sensei├"},
+		{"🌳", "sensei├ash", "🌳sensei├ash├"},
+		{"🌳", "sensei├ash├oak", "🌳sensei├ash├oak├"},
+		{"🌲", "test", "🌲test├"},
 	}
 
 	for _, tt := range tests {
-		got := ChildrenSessionName(tt.namespace, tt.parent)
+		got := ChildrenSessionName(tt.namespace, tt.treePath)
 		if got != tt.want {
-			t.Errorf("ChildrenSessionName(%q, %q) = %q, want %q", tt.namespace, tt.parent, got, tt.want)
+			t.Errorf("ChildrenSessionName(%q, %q) = %q, want %q", tt.namespace, tt.treePath, got, tt.want)
 		}
+	}
+}
+
+// mockPickRunner implements Runner for PickNamespace testing.
+type mockPickRunner struct {
+	sessions []string
+	err      error
+}
+
+func (m *mockPickRunner) HasSession(name string) bool                          { return false }
+func (m *mockPickRunner) NewSession(string, map[string]string, string) error   { return nil }
+func (m *mockPickRunner) NewSessionWithWindow(string, string, map[string]string, string) error {
+	return nil
+}
+func (m *mockPickRunner) NewWindow(string, string, map[string]string, string) error { return nil }
+func (m *mockPickRunner) KillWindow(string, string) error                           { return nil }
+func (m *mockPickRunner) ListWindowPIDs(string, string) ([]int, error)              { return nil, nil }
+func (m *mockPickRunner) SendKeys(string, string, string) error                     { return nil }
+func (m *mockPickRunner) Attach(string) error                                       { return nil }
+func (m *mockPickRunner) ListSessionNames() ([]string, error)                       { return m.sessions, m.err }
+
+func TestPickNamespace_NoServer(t *testing.T) {
+	runner := &mockPickRunner{err: errNoServer}
+	got := PickNamespace(runner)
+	if got != DefaultNamespace {
+		t.Errorf("PickNamespace with no server = %q, want %q", got, DefaultNamespace)
+	}
+}
+
+func TestPickNamespace_NoSessions(t *testing.T) {
+	runner := &mockPickRunner{sessions: nil}
+	got := PickNamespace(runner)
+	if got != "🌳" {
+		t.Errorf("PickNamespace with no sessions = %q, want %q", got, "🌳")
+	}
+}
+
+func TestPickNamespace_FirstTaken(t *testing.T) {
+	runner := &mockPickRunner{sessions: []string{"🌳sensei"}}
+	got := PickNamespace(runner)
+	if got != "🌲" {
+		t.Errorf("PickNamespace = %q, want %q (should skip 🌳)", got, "🌲")
+	}
+}
+
+func TestPickNamespace_MultipleTaken(t *testing.T) {
+	runner := &mockPickRunner{sessions: []string{"🌳sensei", "🌲test", "🌴kai"}}
+	got := PickNamespace(runner)
+	if got != "🎋" {
+		t.Errorf("PickNamespace = %q, want %q (should skip first three)", got, "🎋")
+	}
+}
+
+func TestPickNamespace_ChildSessionAlsoTaken(t *testing.T) {
+	// A children session like 🌳sensei├ should also mark 🌳 as taken
+	runner := &mockPickRunner{sessions: []string{"🌳sensei├"}}
+	got := PickNamespace(runner)
+	if got != "🌲" {
+		t.Errorf("PickNamespace = %q, want %q (children session should count)", got, "🌲")
+	}
+}
+
+func TestNamespacePool_NotEmpty(t *testing.T) {
+	if len(NamespacePool) == 0 {
+		t.Error("NamespacePool should not be empty")
+	}
+	if NamespacePool[0] != "🌳" {
+		t.Errorf("NamespacePool[0] = %q, want %q", NamespacePool[0], "🌳")
 	}
 }
 
@@ -107,8 +188,8 @@ func TestExactTarget(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"dendra-root", "=dendra-root"},
-		{"dendra-root-children", "=dendra-root-children"},
+		{"🌳sensei", "=🌳sensei"},
+		{"🌳sensei├", "=🌳sensei├"},
 		{"", "="},
 	}
 
@@ -139,3 +220,15 @@ func TestShellQuote(t *testing.T) {
 		}
 	}
 }
+
+var errNoServer = errorf("no server running")
+
+func errorf(msg string) error {
+	return &simpleError{msg}
+}
+
+type simpleError struct {
+	msg string
+}
+
+func (e *simpleError) Error() string { return e.msg }

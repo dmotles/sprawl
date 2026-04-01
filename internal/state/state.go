@@ -23,6 +23,7 @@ type AgentState struct {
 	CreatedAt   string `json:"created_at"`
 	SessionID   string `json:"session_id,omitempty"`
 	Subagent    bool   `json:"subagent,omitempty"`
+	TreePath    string `json:"tree_path,omitempty"`
 
 	// Report fields — populated by "dendra report" subcommands.
 	LastReportType    string `json:"last_report_type,omitempty"`    // status, done, problem
@@ -105,6 +106,53 @@ func DeleteAgent(dendraRoot string, name string) error {
 		return fmt.Errorf("removing agent state for %q: %w", name, err)
 	}
 	return nil
+}
+
+// DendraDir returns the path to the .dendra directory under the given root.
+func DendraDir(dendraRoot string) string {
+	return filepath.Join(dendraRoot, ".dendra")
+}
+
+// WriteNamespace persists the selected namespace to .dendra/namespace.
+func WriteNamespace(dendraRoot, namespace string) error {
+	dir := DendraDir(dendraRoot)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating .dendra directory: %w", err)
+	}
+	path := filepath.Join(dir, "namespace")
+	return os.WriteFile(path, []byte(namespace), 0644)
+}
+
+// ReadNamespace reads the persisted namespace from .dendra/namespace.
+// Returns empty string if the file doesn't exist.
+func ReadNamespace(dendraRoot string) string {
+	path := filepath.Join(DendraDir(dendraRoot), "namespace")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// WriteRootName persists the root agent name to .dendra/root-name.
+func WriteRootName(dendraRoot, rootName string) error {
+	dir := DendraDir(dendraRoot)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating .dendra directory: %w", err)
+	}
+	path := filepath.Join(dir, "root-name")
+	return os.WriteFile(path, []byte(rootName), 0644)
+}
+
+// ReadRootName reads the persisted root name from .dendra/root-name.
+// Returns empty string if the file doesn't exist.
+func ReadRootName(dendraRoot string) string {
+	path := filepath.Join(DendraDir(dendraRoot), "root-name")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // UsedNames returns a set of agent names that have state files.

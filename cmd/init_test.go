@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 )
 
@@ -56,6 +59,8 @@ func (m *mockRunner) ListWindowPIDs(sessionName, windowName string) ([]int, erro
 	return nil, nil
 }
 
+func (m *mockRunner) ListSessionNames() ([]string, error) { return nil, nil }
+
 func (m *mockRunner) SendKeys(sessionName, windowName string, keys string) error {
 	return nil
 }
@@ -90,7 +95,7 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
-	err := runInit(deps)
+	err := runInit(deps, tmux.DefaultRootName, tmux.DefaultNamespace)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -98,7 +103,7 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 	if !runner.attachCalled {
 		t.Error("expected Attach to be called")
 	}
-	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
 	if runner.attachName != expectedSession {
 		t.Errorf("attached to %q, want %q", runner.attachName, expectedSession)
 	}
@@ -108,16 +113,22 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 }
 
 func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
+	tmpDir := t.TempDir()
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{"--name", tmux.RootSessionName(tmux.DefaultNamespace)},
+		args:   []string{"--name", tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
-	err := runInit(deps)
+	// Override Getwd by using a known cwd
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
 
-	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
+	err := runInit(deps, tmux.DefaultRootName, tmux.DefaultNamespace)
+
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,43 +144,119 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != tmux.DefaultNamespace {
 		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], tmux.DefaultNamespace)
 	}
+	if runner.newSessionWithWinEnv["DENDRA_TREE_PATH"] != tmux.DefaultRootName {
+		t.Errorf("DENDRA_TREE_PATH = %q, want %q", runner.newSessionWithWinEnv["DENDRA_TREE_PATH"], tmux.DefaultRootName)
+	}
 	if !runner.attachCalled {
 		t.Error("expected Attach to be called after NewSession")
 	}
+
+	// Verify namespace was persisted
+	ns := state.ReadNamespace(tmpDir)
+	if ns != tmux.DefaultNamespace {
+		t.Errorf("persisted namespace = %q, want %q", ns, tmux.DefaultNamespace)
+	}
+
+	// Verify root name was persisted
+	rn := state.ReadRootName(tmpDir)
+	if rn != tmux.DefaultRootName {
+		t.Errorf("persisted root name = %q, want %q", rn, tmux.DefaultRootName)
+	}
 }
 
-func TestRunInit_CustomNamespace(t *testing.T) {
+func TestRunInit_CustomNameAndNamespace(t *testing.T) {
+	tmpDir := t.TempDir()
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{"--name", "test-ns-root"},
+		args:   []string{},
 	}
 
-	deps := &initDeps{
-		tmuxRunner:     runner,
-		claudeLauncher: launcher,
-		getenv: func(key string) string {
-			if key == "DENDRA_NAMESPACE" {
-				return "test-ns"
-			}
-			return ""
-		},
-	}
-	err := runInit(deps)
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
 
+	err := runInit(deps, "kai", "🌲")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	expectedSession := tmux.RootSessionName("test-ns")
+	expectedSession := tmux.RootSessionName("🌲", "kai")
 	if runner.newSessionWithWinName != expectedSession {
 		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, expectedSession)
 	}
-	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != "test-ns" {
-		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], "test-ns")
+	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != "🌲" {
+		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], "🌲")
+	}
+	if runner.newSessionWithWinEnv["DENDRA_TREE_PATH"] != "kai" {
+		t.Errorf("DENDRA_TREE_PATH = %q, want %q", runner.newSessionWithWinEnv["DENDRA_TREE_PATH"], "kai")
+	}
+
+	// Verify persistence
+	ns := state.ReadNamespace(tmpDir)
+	if ns != "🌲" {
+		t.Errorf("persisted namespace = %q, want %q", ns, "🌲")
+	}
+	rn := state.ReadRootName(tmpDir)
+	if rn != "kai" {
+		t.Errorf("persisted root name = %q, want %q", rn, "kai")
+	}
+}
+
+func TestRunInit_AutoPickNamespace(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{
+		binary: "/usr/bin/claude",
+		args:   []string{},
+	}
+
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	// Empty namespace triggers auto-pick. With no sessions, should pick 🌳.
+	err := runInit(deps, tmux.DefaultRootName, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != "🌳" {
+		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], "🌳")
+	}
+}
+
+func TestRunInit_NamespacePersisted(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{
+		binary: "/usr/bin/claude",
+		args:   []string{},
+	}
+
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, "test", "🌴")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Check the file exists
+	nsPath := filepath.Join(tmpDir, ".dendra", "namespace")
+	data, err := os.ReadFile(nsPath)
+	if err != nil {
+		t.Fatalf("reading namespace file: %v", err)
+	}
+	if string(data) != "🌴" {
+		t.Errorf("namespace file = %q, want %q", string(data), "🌴")
 	}
 }
 
 func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
 	runner := &mockRunner{
 		hasSession:           false,
 		newSessionWithWinErr: errors.New("tmux exploded"),
@@ -180,7 +267,11 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
-	err := runInit(deps)
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultRootName, tmux.DefaultNamespace)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -197,7 +288,7 @@ func TestRunInit_ClaudeNotFound_ReturnsError(t *testing.T) {
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
-	err := runInit(deps)
+	err := runInit(deps, tmux.DefaultRootName, tmux.DefaultNamespace)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")

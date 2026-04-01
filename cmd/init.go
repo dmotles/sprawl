@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -18,7 +19,14 @@ type initDeps struct {
 
 var defaultDeps *initDeps
 
+var (
+	initName      string
+	initNamespace string
+)
+
 func init() {
+	initCmd.Flags().StringVar(&initName, "name", tmux.DefaultRootName, "root agent name")
+	initCmd.Flags().StringVar(&initNamespace, "namespace", "", "namespace emoji (auto-selected if omitted)")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -31,7 +39,7 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runInit(deps)
+		return runInit(deps, initName, initNamespace)
 	},
 }
 
@@ -57,12 +65,16 @@ func resolveDeps() (*initDeps, error) {
 	}, nil
 }
 
-func runInit(deps *initDeps) error {
-	namespace := deps.getenv("DENDRA_NAMESPACE")
+func runInit(deps *initDeps, rootName, namespace string) error {
+	// Determine namespace: explicit flag > env var > auto-pick
 	if namespace == "" {
-		namespace = tmux.DefaultNamespace
+		namespace = deps.getenv("DENDRA_NAMESPACE")
 	}
-	rootSession := tmux.RootSessionName(namespace)
+	if namespace == "" {
+		namespace = tmux.PickNamespace(deps.tmuxRunner)
+	}
+
+	rootSession := tmux.RootSessionName(namespace, rootName)
 
 	if deps.tmuxRunner.HasSession(rootSession) {
 		fmt.Fprintln(os.Stderr, "Attaching to existing root agent session...")
@@ -90,10 +102,22 @@ func runInit(deps *initDeps) error {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
 
+	// The root agent's tree path is just its name.
+	treePath := rootName
+
 	env := map[string]string{
 		"DENDRA_AGENT_IDENTITY": "root",
 		"DENDRA_ROOT":           cwd,
 		"DENDRA_NAMESPACE":      namespace,
+		"DENDRA_TREE_PATH":      treePath,
+	}
+
+	// Persist namespace and root name for other commands to read.
+	if err := state.WriteNamespace(cwd, namespace); err != nil {
+		return fmt.Errorf("persisting namespace: %w", err)
+	}
+	if err := state.WriteRootName(cwd, rootName); err != nil {
+		return fmt.Errorf("persisting root name: %w", err)
 	}
 
 	fmt.Fprintln(os.Stderr, "Spawning root agent...")

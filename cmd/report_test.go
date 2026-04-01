@@ -9,6 +9,7 @@ import (
 
 	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
 )
 
 func newTestReportDeps(t *testing.T) (*reportDeps, string) {
@@ -312,7 +313,7 @@ func TestReportStatus_PreservesExistingFields(t *testing.T) {
 		Prompt:      "build something",
 		Branch:      "dendra/alice",
 		Worktree:    "/path/to/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Status:      "active",
 		CreatedAt:   "2026-01-01T00:00:00Z",

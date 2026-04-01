@@ -70,6 +70,8 @@ func (m *spawnMockRunner) SendKeys(sessionName, windowName string, keys string) 
 	return nil
 }
 
+func (m *spawnMockRunner) ListSessionNames() ([]string, error) { return nil, nil }
+
 func (m *spawnMockRunner) Attach(name string) error {
 	return nil
 }
@@ -111,6 +113,10 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 	runner := &spawnMockRunner{}
 	creator := &mockWorktreeCreator{}
 
+	// Persist namespace and root name for spawn to read as fallback
+	state.WriteNamespace(tmpDir, tmux.DefaultNamespace)
+	state.WriteRootName(tmpDir, tmux.DefaultRootName)
+
 	deps := &spawnDeps{
 		tmuxRunner:      runner,
 		worktreeCreator: creator,
@@ -120,6 +126,10 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 				return "root"
 			case "DENDRA_ROOT":
 				return tmpDir
+			case "DENDRA_NAMESPACE":
+				return tmux.DefaultNamespace
+			case "DENDRA_TREE_PATH":
+				return tmux.DefaultRootName
 			}
 			return ""
 		},
@@ -149,7 +159,7 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if !runner.newSessionWithWindowCalled {
 		t.Error("expected NewSessionWithWindow to be called")
 	}
-	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "root")
+	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
 	if runner.newSessionWithWindowSession != expectedChildrenSession {
 		t.Errorf("session = %q, want %q", runner.newSessionWithWindowSession, expectedChildrenSession)
 	}
