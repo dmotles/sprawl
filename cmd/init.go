@@ -83,6 +83,11 @@ func runInit(deps *initDeps, namespace string) error {
 		return fmt.Errorf("claude CLI is required but not found")
 	}
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting current directory: %w", err)
+	}
+
 	rootTools := []string{
 		"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch",
 		"Agent", "Task", "TaskOutput", "TaskStop", "ToolSearch",
@@ -90,24 +95,25 @@ func runInit(deps *initDeps, namespace string) error {
 		"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 	}
 
+	systemPrompt := agent.BuildRootPrompt(agent.PromptConfig{
+		RootName: rootName,
+		AgentCLI: "claude-code",
+	})
+	promptPath, err := state.WriteSystemPrompt(cwd, rootName, systemPrompt)
+	if err != nil {
+		return fmt.Errorf("writing system prompt file: %w", err)
+	}
+
 	opts := agent.LaunchOpts{
-		SystemPrompt: agent.BuildRootPrompt(agent.PromptConfig{
-			RootName: rootName,
-			AgentCLI: "claude-code",
-		}),
-		Tools:           rootTools,
-		AllowedTools:    rootTools,
-		DisallowedTools: []string{"Edit", "Write", "NotebookEdit"},
-		Name:            rootSession,
+		SystemPromptFile: promptPath,
+		Tools:            rootTools,
+		AllowedTools:     rootTools,
+		DisallowedTools:  []string{"Edit", "Write", "NotebookEdit"},
+		Name:             rootSession,
 	}
 
 	claudeArgs := deps.claudeLauncher.BuildArgs(opts)
 	shellCmd := tmux.BuildShellCmd(claudePath, claudeArgs)
-
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getting current directory: %w", err)
-	}
 
 	// The root agent's tree path is just its name.
 	treePath := rootName

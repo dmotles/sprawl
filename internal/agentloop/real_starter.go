@@ -25,7 +25,9 @@ func buildClaudeArgs(config ProcessConfig) []string {
 		"--session-id", config.SessionID,
 	}
 
-	if config.SystemPrompt != "" {
+	if config.SystemPromptFile != "" {
+		args = append(args, "--system-prompt-file", config.SystemPromptFile)
+	} else if config.SystemPrompt != "" {
 		args = append(args, "--system-prompt", config.SystemPrompt)
 	}
 	if config.Resume {

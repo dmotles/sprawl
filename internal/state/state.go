@@ -155,6 +155,20 @@ func ReadRootName(dendraRoot string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// WriteSystemPrompt writes the system prompt to .dendra/agents/{agentName}/SYSTEM.md
+// and returns the absolute path to the file.
+func WriteSystemPrompt(dendraRoot, agentName, content string) (string, error) {
+	dir := filepath.Join(AgentsDir(dendraRoot), agentName)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("creating agent directory: %w", err)
+	}
+	path := filepath.Join(dir, "SYSTEM.md")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("writing system prompt: %w", err)
+	}
+	return path, nil
+}
+
 // UsedNames returns a set of agent names that have state files.
 func UsedNames(dendraRoot string) (map[string]bool, error) {
 	agents, err := ListAgents(dendraRoot)

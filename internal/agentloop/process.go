@@ -40,10 +40,11 @@ type Observer interface {
 
 // ProcessConfig holds the configuration for launching a Claude Code subprocess.
 type ProcessConfig struct {
-	ClaudePath     string
-	WorkDir        string
-	SessionID      string
-	SystemPrompt   string
+	ClaudePath       string
+	WorkDir          string
+	SessionID        string
+	SystemPrompt     string
+	SystemPromptFile string
 	AgentName      string
 	DendraRoot     string
 	Env            map[string]string

@@ -256,13 +256,17 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 
 	// Build process config
 	systemPrompt := deps.buildPrompt(agentState)
+	promptPath, err := state.WriteSystemPrompt(dendraRoot, agentName, systemPrompt)
+	if err != nil {
+		return fmt.Errorf("writing system prompt file: %w", err)
+	}
 	config := agentloop.ProcessConfig{
-		AgentName:    agentName,
-		WorkDir:      agentState.Worktree,
-		SessionID:    agentState.SessionID,
-		ClaudePath:   claudePath,
-		SystemPrompt: systemPrompt,
-		DendraRoot:   dendraRoot,
+		AgentName:        agentName,
+		WorkDir:          agentState.Worktree,
+		SessionID:        agentState.SessionID,
+		ClaudePath:       claudePath,
+		SystemPromptFile: promptPath,
+		DendraRoot:       dendraRoot,
 	}
 
 	// Debug: print full configuration being passed to Claude

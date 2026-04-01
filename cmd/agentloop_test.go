@@ -1021,8 +1021,8 @@ func TestRunAgentLoop_ProcessConfigFromAgentState(t *testing.T) {
 	if capturedConfig.ClaudePath == "" {
 		t.Error("ClaudePath should be set from findClaude")
 	}
-	if capturedConfig.SystemPrompt == "" {
-		t.Error("SystemPrompt should be set from buildPrompt")
+	if capturedConfig.SystemPromptFile == "" {
+		t.Error("SystemPromptFile should be set")
 	}
 	if capturedConfig.DendraRoot == "" {
 		t.Error("DendraRoot should be set from DENDRA_ROOT env var")

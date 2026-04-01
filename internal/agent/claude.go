@@ -5,6 +5,7 @@ import "os/exec"
 // LaunchOpts holds the options for launching a Claude Code instance.
 type LaunchOpts struct {
 	SystemPrompt               string
+	SystemPromptFile           string
 	InitialPrompt              string
 	Tools                      []string
 	AllowedTools               []string
@@ -33,7 +34,9 @@ func (r *RealLauncher) FindBinary() (string, error) {
 func (r *RealLauncher) BuildArgs(opts LaunchOpts) []string {
 	var args []string
 
-	if opts.SystemPrompt != "" {
+	if opts.SystemPromptFile != "" {
+		args = append(args, "--system-prompt-file", opts.SystemPromptFile)
+	} else if opts.SystemPrompt != "" {
 		args = append(args, "--system-prompt", opts.SystemPrompt)
 	}
 

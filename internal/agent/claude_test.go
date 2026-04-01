@@ -205,6 +205,42 @@ func TestBuildRootPrompt_DoesNotContainRemovedTypes(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_SystemPromptFile(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{
+		SystemPromptFile: "/tmp/SYSTEM.md",
+		Name:             "test",
+	})
+
+	assertContains(t, args, "--system-prompt-file", "/tmp/SYSTEM.md")
+
+	// Should NOT have --system-prompt
+	for _, a := range args {
+		if a == "--system-prompt" {
+			t.Error("expected no --system-prompt when SystemPromptFile is set")
+		}
+	}
+}
+
+func TestBuildArgs_SystemPromptFilePrecedence(t *testing.T) {
+	launcher := &RealLauncher{}
+	args := launcher.BuildArgs(LaunchOpts{
+		SystemPrompt:     "inline prompt",
+		SystemPromptFile: "/tmp/SYSTEM.md",
+		Name:             "test",
+	})
+
+	// File should win
+	assertContains(t, args, "--system-prompt-file", "/tmp/SYSTEM.md")
+
+	// Should NOT have --system-prompt
+	for _, a := range args {
+		if a == "--system-prompt" {
+			t.Error("SystemPromptFile should take precedence over SystemPrompt")
+		}
+	}
+}
+
 func assertContains(t *testing.T, args []string, flag, value string) {
 	t.Helper()
 	for i, a := range args {

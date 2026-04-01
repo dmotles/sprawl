@@ -1,6 +1,8 @@
 package state
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -205,5 +207,45 @@ func TestUsedNames(t *testing.T) {
 	}
 	if used["carol"] {
 		t.Error("expected carol to not be used")
+	}
+}
+
+func TestWriteSystemPrompt(t *testing.T) {
+	dir := t.TempDir()
+	content := "You are a helpful agent.\nDo good work."
+
+	path, err := WriteSystemPrompt(dir, "ash", content)
+	if err != nil {
+		t.Fatalf("WriteSystemPrompt: %v", err)
+	}
+
+	expected := filepath.Join(dir, ".dendra", "agents", "ash", "SYSTEM.md")
+	if path != expected {
+		t.Errorf("path = %q, want %q", path, expected)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading file: %v", err)
+	}
+	if string(data) != content {
+		t.Errorf("content = %q, want %q", string(data), content)
+	}
+}
+
+func TestWriteSystemPrompt_CreatesDirectory(t *testing.T) {
+	dir := t.TempDir()
+
+	path, err := WriteSystemPrompt(dir, "newagent", "prompt")
+	if err != nil {
+		t.Fatalf("WriteSystemPrompt: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if !info.IsDir() {
+		t.Error("expected agent directory to be created")
 	}
 }
