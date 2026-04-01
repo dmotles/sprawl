@@ -9,6 +9,10 @@ make build      # builds ./dendra binary
 go test ./...   # run all tests
 ```
 
+## Install
+
+> **Warning:** Do not run `make install` unless your agent identity is `root` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./dendra` binary using temporary directories with overridden environment variables (e.g. `DENDRA_ROOT`, `DENDRA_AGENT_IDENTITY`) to exercise the tool.
+
 ## Repo Layout
 
 - `cmd/` — CLI commands (cobra). Each command has its own file + test file.
