@@ -294,6 +294,35 @@ func TestMessagesRead_PrefixMatch(t *testing.T) {
 	}
 }
 
+func TestMessagesRead_OutputContainsArchiveHint(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+	defaultMessagesDeps = deps
+	defer func() { defaultMessagesDeps = nil }()
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aabb", &messages.Message{
+		ID: "1000.bob.aabb", From: "bob", To: "alice",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	err := messagesReadCmd.RunE(messagesReadCmd, []string{"1000.bob.aabb"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := deps.stderr.(*bytes.Buffer).String()
+	expectedHint := "dendra messages archive 1000.bob.aabb"
+	if !strings.Contains(output, expectedHint) {
+		t.Errorf("expected archive hint %q in output, got:\n%s", expectedHint, output)
+	}
+}
+
 func TestMessagesRead_MissingEnvVars(t *testing.T) {
 	// Missing DENDRA_ROOT
 	deps := &messagesDeps{

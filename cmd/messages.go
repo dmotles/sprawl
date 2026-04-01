@@ -178,7 +178,8 @@ var messagesReadCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "From: %s\nTo: %s\nSubject: %s\nTimestamp: %s\n\n%s\n", msg.From, msg.To, msg.Subject, msg.Timestamp, msg.Body)
+		fmt.Fprintf(deps.stderr, "From: %s\nTo: %s\nSubject: %s\nTimestamp: %s\n\n%s\n", msg.From, msg.To, msg.Subject, msg.Timestamp, msg.Body)
+		fmt.Fprintf(deps.stderr, "\nWhen done with this message, run `dendra messages archive %s` to archive it.\n", msg.ID)
 		return nil
 	},
 }
