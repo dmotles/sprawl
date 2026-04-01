@@ -194,9 +194,99 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	}
 }
 
+// Helper to build a default claude-code root prompt config for tests.
+func defaultRootConfig(name string) PromptConfig {
+	return PromptConfig{
+		RootName: name,
+		AgentCLI: "claude-code",
+	}
+}
+
 func TestBuildRootPrompt_DoesNotMentionRespawn(t *testing.T) {
-	if strings.Contains(BuildRootPrompt("sensei"), "respawn") {
+	if strings.Contains(BuildRootPrompt(defaultRootConfig("sensei")), "respawn") {
 		t.Error("BuildRootPrompt should not mention 'respawn' — the command was canceled (QUM-46)")
+	}
+}
+
+func TestBuildRootPrompt_PromptConfigStruct(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "sensei",
+		AgentCLI: "claude-code",
+	}
+	prompt := BuildRootPrompt(cfg)
+	if !strings.Contains(prompt, `Your identity is "sensei"`) {
+		t.Error("BuildRootPrompt should interpolate RootName from config")
+	}
+}
+
+func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "sensei",
+		AgentCLI: "claude-code",
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	keyPhrases := []string{
+		"AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS",
+		"Dendra agents",
+		"dendra spawn",
+		"Claude Code sub-agents",
+		"Agent tool",
+		"fire off an agent",
+		"spawn an agent",
+		"sub-agent",
+		"Default to dendra agents for real work",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("root prompt (claude-code) missing sub-agent guidance phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildRootPrompt_SubAgentGuidance_NotIncludedForUnknownCLI(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "sensei",
+		AgentCLI: "codex",
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	// Sub-agent guidance should NOT be present for non-claude-code CLIs
+	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS") {
+		t.Error("sub-agent guidance should not be included for non-claude-code CLI")
+	}
+	if strings.Contains(prompt, "Claude Code sub-agents") {
+		t.Error("Claude Code sub-agent references should not be included for non-claude-code CLI")
+	}
+}
+
+func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "sensei",
+		AgentCLI: "",
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	// Sub-agent guidance should NOT be present when AgentCLI is empty
+	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS") {
+		t.Error("sub-agent guidance should not be included when AgentCLI is empty")
+	}
+}
+
+func TestBuildRootPrompt_SubAgentGuidanceSectionOrdering(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS")
+	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
+
+	if agentTypesIdx == -1 {
+		t.Fatal("BuildRootPrompt missing 'AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS'")
+	}
+	if verifyIdx == -1 {
+		t.Fatal("BuildRootPrompt missing 'VERIFYING AGENT WORK:'")
+	}
+	if agentTypesIdx >= verifyIdx {
+		t.Errorf("AGENT TYPES section (idx %d) should appear before VERIFYING AGENT WORK (idx %d)", agentTypesIdx, verifyIdx)
 	}
 }
 
@@ -212,7 +302,7 @@ func TestBuildRootPrompt_VerificationGuidance(t *testing.T) {
 		"done report",
 	}
 	for _, phrase := range keyPhrases {
-		if !strings.Contains(BuildRootPrompt("sensei"), phrase) {
+		if !strings.Contains(BuildRootPrompt(defaultRootConfig("sensei")), phrase) {
 			t.Errorf("BuildRootPrompt missing verification guidance phrase: %q", phrase)
 		}
 	}
@@ -232,14 +322,14 @@ func TestBuildRootPrompt_ParallelismGuidance(t *testing.T) {
 		"smaller and more isolated",
 	}
 	for _, phrase := range keyPhrases {
-		if !strings.Contains(BuildRootPrompt("sensei"), phrase) {
+		if !strings.Contains(BuildRootPrompt(defaultRootConfig("sensei")), phrase) {
 			t.Errorf("BuildRootPrompt missing parallelism guidance phrase: %q", phrase)
 		}
 	}
 }
 
 func TestBuildRootPrompt_ParallelismSectionOrdering(t *testing.T) {
-	prompt := BuildRootPrompt("sensei")
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
 	rulesIdx := strings.Index(prompt, "RULES:")
 	parallelismIdx := strings.Index(prompt, "PARALLELISM VS. SERIALIZATION:")
 	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
@@ -281,12 +371,12 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 }
 
 func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
-	prompt := BuildRootPrompt("sensei")
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
 	if !strings.Contains(prompt, `Your identity is "sensei"`) {
 		t.Error("BuildRootPrompt should interpolate the root name into identity line")
 	}
 
-	prompt2 := BuildRootPrompt("kai")
+	prompt2 := BuildRootPrompt(defaultRootConfig("kai"))
 	if !strings.Contains(prompt2, `Your identity is "kai"`) {
 		t.Error("BuildRootPrompt should interpolate custom root name")
 	}

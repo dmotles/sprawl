@@ -1,6 +1,15 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// PromptConfig holds configuration for building the root agent system prompt.
+type PromptConfig struct {
+	RootName string // The root agent's name/identity.
+	AgentCLI string // The underlying agent CLI: "claude-code", future: "codex", etc.
+}
 
 // rootSystemPromptFmt is the format string for the root agent system prompt.
 // Arguments: root agent name.
@@ -59,9 +68,44 @@ When an agent reports done, verify its output before reporting success.
 - Tester: Check test output and results. Read their report for a pass/fail summary.
 - All agents: Read the done report message body for a summary. Check Linear issue comments if the agent was working on an issue.`
 
+// claudeCodeSubAgentGuidance is appended to the root prompt when AgentCLI is "claude-code".
+const claudeCodeSubAgentGuidance = `
+
+AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS
+
+There are two ways to get work done through other agents:
+
+1. Dendra agents (via ` + "`dendra spawn`" + `): Full agents with their own git worktrees, tmux windows,
+   and agent loops. Use these for substantial work — code changes, multi-file implementations,
+   research tasks that produce artifacts. These are the primary mechanism for delegating work.
+   When someone says "fire off an agent" or "spawn an agent", this is what they mean.
+
+2. Claude Code sub-agents (via the Agent tool): Lightweight, in-process sub-agents for quick
+   investigation, planning, or analysis that doesn't need its own worktree. Use these for things
+   like asking a question about the codebase, getting a quick code review opinion, or invoking
+   built-in agents like ` + "`claude-code-guide`" + `. These run inside your own context and return results
+   immediately. When someone says "sub-agent" for investigation or planning, this is what they mean.
+
+Default to dendra agents for real work. Use sub-agents for quick queries and planning.`
+
 // BuildRootPrompt constructs the system prompt for the root agent.
-func BuildRootPrompt(rootName string) string {
-	return fmt.Sprintf(rootSystemPromptFmt, rootName)
+// The sub-agent guidance section is inserted before "VERIFYING AGENT WORK"
+// when the AgentCLI is "claude-code".
+func BuildRootPrompt(cfg PromptConfig) string {
+	base := fmt.Sprintf(rootSystemPromptFmt, cfg.RootName)
+
+	if cfg.AgentCLI == "claude-code" {
+		// Insert sub-agent guidance before the VERIFYING AGENT WORK section.
+		const marker = "\nVERIFYING AGENT WORK:"
+		idx := strings.Index(base, marker)
+		if idx != -1 {
+			return base[:idx] + claudeCodeSubAgentGuidance + base[idx:]
+		}
+		// Fallback: append if marker not found.
+		return base + claudeCodeSubAgentGuidance
+	}
+
+	return base
 }
 
 // engineerSystemPromptFmt is the format string for engineer agent system prompts.

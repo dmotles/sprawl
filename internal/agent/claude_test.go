@@ -123,7 +123,7 @@ func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 
 	for _, phrase := range phrases {
-		if !strings.Contains(BuildRootPrompt("sensei"), phrase) {
+		if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "sensei", AgentCLI: "claude-code"}), phrase) {
 			t.Errorf("root system prompt missing key phrase: %q", phrase)
 		}
 	}
@@ -198,7 +198,7 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildRootPrompt_ContainsTesterType(t *testing.T) {
-	if !strings.Contains(BuildRootPrompt("sensei"), "--type tester") {
+	if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "sensei", AgentCLI: "claude-code"}), "--type tester") {
 		t.Error("root system prompt missing --type tester")
 	}
 }

@@ -86,10 +86,19 @@ func runInit(deps *initDeps, rootName, namespace string) error {
 		return fmt.Errorf("claude CLI is required but not found")
 	}
 
+	rootTools := []string{
+		"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch",
+		"Agent", "Task", "TaskOutput", "TaskStop", "ToolSearch",
+		"Skill", "TodoWrite", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+	}
+
 	opts := agent.LaunchOpts{
-		SystemPrompt:    agent.BuildRootPrompt(rootName),
-		Tools:           []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
-		AllowedTools:    []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
+		SystemPrompt: agent.BuildRootPrompt(agent.PromptConfig{
+			RootName: rootName,
+			AgentCLI: "claude-code",
+		}),
+		Tools:           rootTools,
+		AllowedTools:    rootTools,
 		DisallowedTools: []string{"Edit", "Write", "NotebookEdit"},
 		Name:            rootSession,
 	}
