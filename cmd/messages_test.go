@@ -1105,9 +1105,12 @@ func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 		t.Errorf("SendKeys window = %q, want %q", call.windowName, tmux.RootWindowName)
 	}
 
-	wantNotification := "[inbox] Message from worker-1: build done"
-	if !strings.Contains(call.keys, wantNotification) {
-		t.Errorf("SendKeys keys = %q, want it to contain %q", call.keys, wantNotification)
+	// Notification should include the actionable read command with message ID
+	if !strings.Contains(call.keys, "[inbox] New message from worker-1. Run: `dendra messages read ") {
+		t.Errorf("SendKeys keys = %q, want it to contain actionable read command", call.keys)
+	}
+	if !strings.Contains(call.keys, "dendra messages read ") {
+		t.Errorf("SendKeys keys = %q, want it to contain 'dendra messages read <id>'", call.keys)
 	}
 }
 

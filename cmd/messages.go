@@ -153,8 +153,8 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		}
 		if to == rootName {
 			rootSession := tmux.RootSessionName(namespace, rootName)
-			sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
-				notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
+			sendOpts = append(sendOpts, messages.WithNotify(func(from, subj, msgID string) {
+				notification := fmt.Sprintf("[inbox] New message from %s. Run: `dendra messages read %s`", from, msgID)
 				deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
 			}))
 		}

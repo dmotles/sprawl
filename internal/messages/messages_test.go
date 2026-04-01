@@ -1549,12 +1549,13 @@ func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	var calledFrom, calledSubject string
+	var calledFrom, calledSubject, calledMsgID string
 	notifyCalled := false
-	notify := func(from, subject string) {
+	notify := func(from, subject, msgID string) {
 		notifyCalled = true
 		calledFrom = from
 		calledSubject = subject
+		calledMsgID = msgID
 	}
 
 	err := Send(tmpDir, "alice", "root", "urgent", "please read", WithNotify(notify))
@@ -1571,8 +1572,11 @@ func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 	if calledSubject != "urgent" {
 		t.Errorf("notify subject = %q, want %q", calledSubject, "urgent")
 	}
+	if calledMsgID == "" {
+		t.Error("notify msgID should not be empty")
+	}
 
-	// Also verify the message was delivered
+	// Verify msgID matches the actual delivered message filename
 	newDir := filepath.Join(MessagesDir(tmpDir), "root", "new")
 	entries, err := os.ReadDir(newDir)
 	if err != nil {
@@ -1581,13 +1585,17 @@ func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 file in new/, got %d", len(entries))
 	}
+	expectedID := strings.TrimSuffix(entries[0].Name(), ".json")
+	if calledMsgID != expectedID {
+		t.Errorf("notify msgID = %q, want %q (matching delivered message)", calledMsgID, expectedID)
+	}
 }
 
 func TestSend_WithNotify_AnyRecipientCallsNotify(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	notifyCalled := false
-	notify := func(from, subject string) {
+	notify := func(from, subject, msgID string) {
 		notifyCalled = true
 	}
 
@@ -1633,7 +1641,7 @@ func TestSend_WithoutNotify_StillWorks(t *testing.T) {
 func TestSend_NotifyPanicDoesNotBreakSend(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	notify := func(from, subject string) {
+	notify := func(from, subject, msgID string) {
 		panic("notification system exploded")
 	}
 
