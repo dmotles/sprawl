@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/state"
 )
 
@@ -19,14 +18,11 @@ func newTestDelegateDeps(t *testing.T) (*delegateDeps, string) {
 			switch key {
 			case "DENDRA_ROOT":
 				return tmpDir
-			case "DENDRA_AGENT_IDENTITY":
-				return "root"
 			}
 			return ""
 		},
 		loadAgent:   state.LoadAgent,
 		enqueueTask: state.EnqueueTask,
-		sendMessage: messages.Send,
 	}
 
 	// Ensure agents dir exists
@@ -62,23 +58,6 @@ func TestDelegate_HappyPath(t *testing.T) {
 	}
 	if tasks[0].Prompt != "build login feature" {
 		t.Errorf("task prompt = %q, want %q", tasks[0].Prompt, "build login feature")
-	}
-
-	// Verify wake message was sent
-	inbox, err := messages.Inbox(tmpDir, "alice")
-	if err != nil {
-		t.Fatalf("reading inbox: %v", err)
-	}
-	if len(inbox) != 1 {
-		t.Fatalf("expected 1 message in inbox, got %d", len(inbox))
-	}
-	if inbox[0].Subject != "[TASK] wake" {
-		t.Errorf("message subject = %q, want %q", inbox[0].Subject, "[TASK] wake")
-	}
-
-	// Wake message body should NOT contain the full task text
-	if strings.Contains(inbox[0].Body, "build login feature") {
-		t.Error("wake message body should not contain the full task text (task content belongs in the task file only)")
 	}
 }
 
@@ -224,24 +203,6 @@ func TestDelegate_MissingDendraRoot(t *testing.T) {
 	}
 }
 
-func TestDelegate_MissingAgentIdentity(t *testing.T) {
-	deps, _ := newTestDelegateDeps(t)
-	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
-			return "/tmp/test"
-		}
-		return ""
-	}
-
-	err := runDelegate(deps, "alice", "some task")
-	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
-	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
-	}
-}
-
 func TestDelegate_EnqueueFailure(t *testing.T) {
 	deps, tmpDir := newTestDelegateDeps(t)
 	deps.enqueueTask = func(dendraRoot, agentName, prompt string) (*state.Task, error) {
@@ -260,36 +221,6 @@ func TestDelegate_EnqueueFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "disk full") {
 		t.Errorf("error should propagate enqueue failure, got: %v", err)
-	}
-}
-
-func TestDelegate_MessageFailure_NonFatal(t *testing.T) {
-	deps, tmpDir := newTestDelegateDeps(t)
-	deps.sendMessage = func(dendraRoot, from, to, subject, body string, opts ...messages.SendOption) error {
-		return errors.New("message delivery failed")
-	}
-
-	createTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "alice",
-		Status: "active",
-		Parent: "root",
-	})
-
-	err := runDelegate(deps, "alice", "build login feature")
-	if err != nil {
-		t.Fatalf("expected no error (message failure is non-fatal), got: %v", err)
-	}
-
-	// Task should still have been enqueued successfully
-	tasks, err := state.ListTasks(tmpDir, "alice")
-	if err != nil {
-		t.Fatalf("listing tasks: %v", err)
-	}
-	if len(tasks) != 1 {
-		t.Fatalf("expected 1 task despite message failure, got %d", len(tasks))
-	}
-	if tasks[0].Prompt != "build login feature" {
-		t.Errorf("task prompt = %q, want %q", tasks[0].Prompt, "build login feature")
 	}
 }
 

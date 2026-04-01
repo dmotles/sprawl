@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -13,7 +12,6 @@ type delegateDeps struct {
 	getenv      func(string) string
 	loadAgent   func(dendraRoot, name string) (*state.AgentState, error)
 	enqueueTask func(dendraRoot, agentName, prompt string) (*state.Task, error)
-	sendMessage func(dendraRoot, from, to, subject, body string, opts ...messages.SendOption) error
 }
 
 var defaultDelegateDeps *delegateDeps
@@ -26,7 +24,6 @@ func resolveDelegateDeps() *delegateDeps {
 		getenv:      os.Getenv,
 		loadAgent:   state.LoadAgent,
 		enqueueTask: state.EnqueueTask,
-		sendMessage: messages.Send,
 	}
 }
 
@@ -45,11 +42,6 @@ var delegateCmd = &cobra.Command{
 }
 
 func runDelegate(deps *delegateDeps, agentName, prompt string) error {
-	senderName := deps.getenv("DENDRA_AGENT_IDENTITY")
-	if senderName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
 	dendraRoot := deps.getenv("DENDRA_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
@@ -72,10 +64,6 @@ func runDelegate(deps *delegateDeps, agentName, prompt string) error {
 	task, err := deps.enqueueTask(dendraRoot, agentName, prompt)
 	if err != nil {
 		return err
-	}
-
-	if err := deps.sendMessage(dendraRoot, senderName, agentName, "[TASK] wake", "New task delegated"); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to send wake message to %s: %v\n", agentName, err)
 	}
 
 	fmt.Fprintf(os.Stderr, "Delegated task to %s (task ID: %s)\n", agentName, task.ID)

@@ -309,12 +309,6 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		if err == nil && len(msgs) > 0 {
 			var promptParts []string
 			for _, msg := range msgs {
-				// Filter out [TASK] wake signals — these are internal signals.
-				if strings.HasPrefix(msg.Subject, "[TASK]") {
-					_ = deps.markRead(dendraRoot, agentName, msg.ID)
-					continue
-				}
-
 				// Read the full message content.
 				fullMsg, readErr := deps.readMessage(dendraRoot, agentName, msg.ID)
 				if readErr != nil {
@@ -327,7 +321,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 				promptParts = append(promptParts, fmt.Sprintf("--- Message from %s ---\nSubject: %s\nBody: %s", fullMsg.From, fullMsg.Subject, fullMsg.Body))
 			}
 
-			// Only send a prompt if there are real (non-TASK) messages.
+			// Only send a prompt if there are messages with content.
 			if len(promptParts) > 0 {
 				prompt := fmt.Sprintf("You have %d new message(s):\n\n%s", len(promptParts), strings.Join(promptParts, "\n\n"))
 				fmt.Fprintf(deps.stdout, "[agent-loop] delivering %d inbox message(s) to agent\n", len(promptParts))
