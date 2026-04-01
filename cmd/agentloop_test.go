@@ -1978,3 +1978,121 @@ func (p *promptInterceptor) SendPrompt(ctx context.Context, prompt string) (*pro
 	}
 	return result, err
 }
+
+// --- Tests for injected prompt logging (QUM-62) ---
+
+func TestRunAgentLoop_PokeDelivery_LogsInjectedPrompt(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+	buf := &bytes.Buffer{}
+	deps.stdout = buf
+
+	pokeContent := "hey agent, look at this"
+	pokeRead := false
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "ash.poke") && !pokeRead {
+			pokeRead = true
+			return []byte(pokeContent), nil
+		}
+		return nil, errors.New("file not found")
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	output := buf.String()
+	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
+		t.Error("expected log output to contain '=== INJECTED PROMPT ===' for poke delivery")
+	}
+	if !strings.Contains(output, pokeContent) {
+		t.Errorf("expected log output to contain poke content %q, got:\n%s", pokeContent, output)
+	}
+}
+
+func TestRunAgentLoop_InboxDelivery_LogsInjectedPrompt(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+	buf := &bytes.Buffer{}
+	deps.stdout = buf
+
+	// Send a message to inbox
+	if err := messages.Send(tmpDir, "root", "ash", "urgent", "please fix the bug"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	output := buf.String()
+	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
+		t.Error("expected log output to contain '=== INJECTED PROMPT ===' for inbox delivery")
+	}
+	if !strings.Contains(output, "please fix the bug") {
+		t.Errorf("expected log output to contain message body, got:\n%s", output)
+	}
+}
+
+func TestRunAgentLoop_TaskDelivery_LogsInjectedPrompt(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+	buf := &bytes.Buffer{}
+	deps.stdout = buf
+
+	if _, err := state.EnqueueTask(tmpDir, "ash", "implement feature Y"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	output := buf.String()
+	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
+		t.Error("expected log output to contain '=== INJECTED PROMPT ===' for task delivery")
+	}
+}
+
+func TestRunAgentLoop_WakeFile_LogsInjectedPrompt(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+	buf := &bytes.Buffer{}
+	deps.stdout = buf
+
+	wakeContent := "time to wake up and work"
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "ash.wake") {
+			return []byte(wakeContent), nil
+		}
+		return nil, errors.New("file not found")
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	output := buf.String()
+	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
+		t.Error("expected log output to contain '=== INJECTED PROMPT ===' for wake file delivery")
+	}
+	if !strings.Contains(output, wakeContent) {
+		t.Errorf("expected log output to contain wake content %q, got:\n%s", wakeContent, output)
+	}
+}

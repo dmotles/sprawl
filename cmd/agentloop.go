@@ -459,6 +459,10 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			prompt := pendingPoke
 			pendingPoke = ""
 			fmt.Fprintf(deps.stdout, "[agent-loop] delivering poke message\n")
+			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
+			for _, line := range strings.Split(prompt, "\n") {
+				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
+			}
 			_, pokeContent, sendErr := sendWithInterrupt(prompt)
 			if pokeContent != "" {
 				pendingPoke = pokeContent
@@ -486,6 +490,10 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 				taskPrompt = fmt.Sprintf("You have a new task. Read it from @%s and begin working.", task.PromptFile)
 			} else {
 				taskPrompt = task.Prompt
+			}
+			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
+			for _, line := range strings.Split(taskPrompt, "\n") {
+				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
 			}
 			_, pokeContent, sendErr := sendWithInterrupt(taskPrompt)
 			if pokeContent != "" {
@@ -532,6 +540,10 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			if len(promptParts) > 0 {
 				prompt := fmt.Sprintf("You have %d new message(s):\n\n%s", len(promptParts), strings.Join(promptParts, "\n\n"))
 				fmt.Fprintf(deps.stdout, "[agent-loop] delivering %d inbox message(s) to agent\n", len(promptParts))
+				fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
+				for _, line := range strings.Split(prompt, "\n") {
+					fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
+				}
 				_, pokeContent, sendErr := sendWithInterrupt(prompt)
 				if pokeContent != "" {
 					pendingPoke = pokeContent
@@ -552,7 +564,12 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		wakeContent, readErr := deps.readFile(wakeFilePath)
 		if readErr == nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] wake file detected\n")
-			_, pokeContent, sendErr := sendWithInterrupt(string(wakeContent))
+			wakePrompt := string(wakeContent)
+			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
+			for _, line := range strings.Split(wakePrompt, "\n") {
+				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
+			}
+			_, pokeContent, sendErr := sendWithInterrupt(wakePrompt)
 			if pokeContent != "" {
 				pendingPoke = pokeContent
 			}
