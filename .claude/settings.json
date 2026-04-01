@@ -1,4 +1,7 @@
 {
+  "claudeMdExcludes": [
+      "~/.claude/CLAUDE.md"
+  ],
   "permissions": {
     "allow": [
       "mcp__linear__create_attachment",
