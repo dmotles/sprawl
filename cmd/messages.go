@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmotles/dendra/internal/messages"
+	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
 )
@@ -141,9 +142,16 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 	if deps.tmuxRunner != nil {
 		namespace := deps.getenv("DENDRA_NAMESPACE")
 		if namespace == "" {
+			namespace = state.ReadNamespace(dendraRoot)
+		}
+		if namespace == "" {
 			namespace = tmux.DefaultNamespace
 		}
-		rootSession := tmux.RootSessionName(namespace)
+		rootName := state.ReadRootName(dendraRoot)
+		if rootName == "" {
+			rootName = tmux.DefaultRootName
+		}
+		rootSession := tmux.RootSessionName(namespace, rootName)
 		sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
 			notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
 			deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)

@@ -20,6 +20,7 @@ func TestSaveAndLoadAgent(t *testing.T) {
 		CreatedAt:   "2026-03-30T12:00:00Z",
 		SessionID:   "dendra-frank",
 		Subagent:    true,
+		TreePath:    "sensei├frank",
 	}
 
 	if err := SaveAgent(dir, agent); err != nil {
@@ -69,6 +70,54 @@ func TestSaveAndLoadAgent(t *testing.T) {
 	}
 	if loaded.Subagent != agent.Subagent {
 		t.Errorf("Subagent = %v, want %v", loaded.Subagent, agent.Subagent)
+	}
+	if loaded.TreePath != agent.TreePath {
+		t.Errorf("TreePath = %q, want %q", loaded.TreePath, agent.TreePath)
+	}
+}
+
+func TestWriteAndReadNamespace(t *testing.T) {
+	dir := t.TempDir()
+
+	// Before writing, should return empty
+	if ns := ReadNamespace(dir); ns != "" {
+		t.Errorf("ReadNamespace before write = %q, want empty", ns)
+	}
+
+	if err := WriteNamespace(dir, "🌳"); err != nil {
+		t.Fatalf("WriteNamespace: %v", err)
+	}
+
+	ns := ReadNamespace(dir)
+	if ns != "🌳" {
+		t.Errorf("ReadNamespace = %q, want %q", ns, "🌳")
+	}
+
+	// Overwrite
+	if err := WriteNamespace(dir, "🌲"); err != nil {
+		t.Fatalf("WriteNamespace overwrite: %v", err)
+	}
+	ns = ReadNamespace(dir)
+	if ns != "🌲" {
+		t.Errorf("ReadNamespace after overwrite = %q, want %q", ns, "🌲")
+	}
+}
+
+func TestWriteAndReadRootName(t *testing.T) {
+	dir := t.TempDir()
+
+	// Before writing, should return empty
+	if rn := ReadRootName(dir); rn != "" {
+		t.Errorf("ReadRootName before write = %q, want empty", rn)
+	}
+
+	if err := WriteRootName(dir, "sensei"); err != nil {
+		t.Fatalf("WriteRootName: %v", err)
+	}
+
+	rn := ReadRootName(dir)
+	if rn != "sensei" {
+		t.Errorf("ReadRootName = %q, want %q", rn, "sensei")
 	}
 }
 

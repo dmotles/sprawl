@@ -110,19 +110,41 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		tmux.ShellQuote(parentState.Worktree),
 		tmux.BuildShellCmd(dendraPath, []string{"agent-loop", agentName}))
 
-	// Set environment for the child agent
+	// Resolve namespace: env var > persisted file > default
 	namespace := deps.getenv("DENDRA_NAMESPACE")
+	if namespace == "" {
+		namespace = state.ReadNamespace(dendraRoot)
+	}
 	if namespace == "" {
 		namespace = tmux.DefaultNamespace
 	}
+
+	// Build tree path: parent's tree path + separator + child name
+	parentTreePath := deps.getenv("DENDRA_TREE_PATH")
+	if parentTreePath == "" {
+		// Fallback: use root name from file + parent identity
+		rootName := state.ReadRootName(dendraRoot)
+		if rootName == "" {
+			rootName = tmux.DefaultRootName
+		}
+		if parentName == "root" {
+			parentTreePath = rootName
+		} else {
+			parentTreePath = rootName + tmux.BranchSeparator + parentName
+		}
+	}
+	childTreePath := parentTreePath + tmux.BranchSeparator + agentName
+
+	// Set environment for the child agent
 	env := map[string]string{
 		"DENDRA_AGENT_IDENTITY": agentName,
 		"DENDRA_ROOT":           dendraRoot,
 		"DENDRA_NAMESPACE":      namespace,
+		"DENDRA_TREE_PATH":      childTreePath,
 	}
 
 	// Create or add to tmux session
-	childrenSession := tmux.ChildrenSessionName(namespace, parentName)
+	childrenSession := tmux.ChildrenSessionName(namespace, parentTreePath)
 	if deps.tmuxRunner.HasSession(childrenSession) {
 		if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
 			return fmt.Errorf("creating tmux window for %s: %w", agentName, err)
@@ -154,6 +176,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		SessionID:   sessionID,
 		Subagent:    true,
+		TreePath:    childTreePath,
 	}
 	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)

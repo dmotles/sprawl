@@ -50,6 +50,8 @@ func (m *killMockRunner) KillWindow(sessionName, windowName string) error {
 	return m.killWindowErr
 }
 
+func (m *killMockRunner) ListSessionNames() ([]string, error) { return nil, nil }
+
 func (m *killMockRunner) ListWindowPIDs(sessionName, windowName string) ([]int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -113,7 +115,7 @@ func TestKill_HappyPath(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 	})
 
@@ -171,7 +173,7 @@ func TestKill_GracefulTimeout_FallsBackToForce(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 	})
 
@@ -235,7 +237,7 @@ func TestKill_ForceSkipsGraceful(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 	})
 
@@ -253,7 +255,7 @@ func TestKill_ForceSkipsGraceful(t *testing.T) {
 	if !runner.killWindowCalled {
 		t.Error("expected KillWindow to be called with --force")
 	}
-	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "root")
+	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
 	if runner.killWindowSession != expectedChildrenSession {
 		t.Errorf("kill window session = %q, want %q", runner.killWindowSession, expectedChildrenSession)
 	}
@@ -277,7 +279,7 @@ func TestKill_AlreadyKilled_IsNoOp(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "killed",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 	})
 
@@ -333,7 +335,7 @@ func TestKill_NoProcesses_StillUpdatesState(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 	})
 
@@ -378,7 +380,7 @@ func TestKill_PreservesState(t *testing.T) {
 		Prompt:      "test task",
 		Branch:      "dendra/alice",
 		Worktree:    "/path/to/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Status:      "active",
 		CreatedAt:   "2026-01-01T00:00:00Z",
@@ -436,7 +438,7 @@ func TestKill_SentinelFileCleanup(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 	})
 

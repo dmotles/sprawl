@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
 )
 
 // retireMockRunner extends killMockRunner for retire tests.
@@ -54,7 +55,7 @@ func TestRetire_HappyPath(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -107,7 +108,7 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -147,7 +148,7 @@ func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -178,7 +179,7 @@ func TestRetire_WithChildren_Refuses(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -218,7 +219,7 @@ func TestRetire_WithChildren_ForceOrphans(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -258,7 +259,7 @@ func TestRetire_Cascade(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree/alice",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -269,7 +270,7 @@ func TestRetire_Cascade(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/bob",
 		Worktree:    "/some/worktree/bob",
-		TmuxSession: "dendra-alice-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
 		Parent:      "alice",
 	})
@@ -280,7 +281,7 @@ func TestRetire_Cascade(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/charlie",
 		Worktree:    "/some/worktree/charlie",
-		TmuxSession: "dendra-bob-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"+tmux.BranchSeparator+"bob"),
 		TmuxWindow:  "charlie",
 		Parent:      "bob",
 	})
@@ -308,7 +309,7 @@ func TestRetire_CrashRecovery_RetiringState(t *testing.T) {
 		Status:      "retiring",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -340,7 +341,7 @@ func TestRetire_EmptyWorktree_SkipsRemoval(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "", // no worktree
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -366,7 +367,7 @@ func TestRetire_WorktreeRemoveFailure_WarnsButContinues(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -399,7 +400,7 @@ func TestRetire_ForceKillsProcess(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/some/worktree",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -443,7 +444,7 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    "/worktree/alice",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
@@ -453,7 +454,7 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/bob",
 		Worktree:    "/worktree/bob",
-		TmuxSession: "dendra-alice-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
 		Parent:      "alice",
 	})
@@ -482,7 +483,7 @@ func TestRetire_Subagent_SkipsWorktreeCleanup(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/sub-alice",
 		Worktree:    "/some/worktree/sub-alice",
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "sub-alice",
 		Parent:      "alice",
 		Subagent:    true,
@@ -513,7 +514,7 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 		Status:      "active",
 		Branch:      "dendra/alice",
 		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
-		TmuxSession: "dendra-root-children",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})

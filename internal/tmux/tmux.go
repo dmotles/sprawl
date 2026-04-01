@@ -8,19 +8,59 @@ import (
 	"syscall"
 )
 
-const DefaultNamespace = "dendra"
+const DefaultNamespace = "🌳"
+const DefaultRootName = "sensei"
+const BranchSeparator = "├"
 const RootWindowName = "root"
 
-// RootSessionName returns the tmux session name for the root agent,
-// prefixed with the given namespace.
-func RootSessionName(namespace string) string {
-	return namespace + "-root"
+// NamespacePool is a curated list of tree/nature emojis used for auto-selecting
+// a unique namespace when running dendra init.
+var NamespacePool = []string{
+	"🌳", "🌲", "🌴", "🎋", "🎍", "🪴", "🌵", "🌾", "🍀", "☘️",
+	"🌿", "🍃", "🌱", "🪻", "🌸", "🌺", "🪷", "🌼", "🌻", "🏵️",
+	"🍁", "🍂", "🌊", "🗻", "🏔️",
 }
 
-// ChildrenSessionName returns the tmux session name for a parent's children,
-// prefixed with the given namespace.
-func ChildrenSessionName(namespace, parent string) string {
-	return namespace + "-" + parent + "-children"
+// RootSessionName returns the tmux session name for the root agent.
+// Format: {namespace}{rootName} e.g. "🌳sensei"
+func RootSessionName(namespace, rootName string) string {
+	return namespace + rootName
+}
+
+// ChildrenSessionName returns the tmux session name for a parent's children.
+// Format: {namespace}{treePath}├ e.g. "🌳sensei├" or "🌳sensei├ash├"
+func ChildrenSessionName(namespace, treePath string) string {
+	return namespace + treePath + BranchSeparator
+}
+
+// PickNamespace scans existing tmux sessions and returns the first emoji from
+// NamespacePool that isn't already in use as a session name prefix.
+// If tmux has no server running, returns DefaultNamespace.
+// If all are taken, returns a fallback using the pool size as index.
+func PickNamespace(runner Runner) string {
+	sessions, err := runner.ListSessionNames()
+	if err != nil {
+		// tmux not running or no server — all namespaces are free.
+		return DefaultNamespace
+	}
+
+	used := make(map[string]bool)
+	for _, s := range sessions {
+		for _, emoji := range NamespacePool {
+			if strings.HasPrefix(s, emoji) {
+				used[emoji] = true
+			}
+		}
+	}
+
+	for _, emoji := range NamespacePool {
+		if !used[emoji] {
+			return emoji
+		}
+	}
+
+	// All taken — fallback.
+	return fmt.Sprintf("dendra-%d-", len(NamespacePool))
 }
 
 // Runner abstracts tmux operations for testability.
@@ -31,6 +71,7 @@ type Runner interface {
 	NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
 	KillWindow(sessionName, windowName string) error
 	ListWindowPIDs(sessionName, windowName string) ([]int, error)
+	ListSessionNames() ([]string, error)
 	SendKeys(sessionName, windowName string, keys string) error
 	Attach(name string) error
 }
@@ -134,6 +175,22 @@ func (r *RealRunner) ListWindowPIDs(sessionName, windowName string) ([]int, erro
 		}
 	}
 	return pids, nil
+}
+
+// ListSessionNames returns the names of all running tmux sessions.
+func (r *RealRunner) ListSessionNames() ([]string, error) {
+	cmd := exec.Command(r.TmuxPath, "list-sessions", "-F", "#{session_name}")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
 }
 
 // SendKeys sends text to a specific tmux window, followed by Enter.
