@@ -1096,8 +1096,8 @@ func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 	}
 
 	call := mock.sendKeysCalls[0]
-	if call.sessionName != tmux.RootSessionName {
-		t.Errorf("SendKeys session = %q, want %q", call.sessionName, tmux.RootSessionName)
+	if call.sessionName != tmux.RootSessionName(tmux.DefaultNamespace) {
+		t.Errorf("SendKeys session = %q, want %q", call.sessionName, tmux.RootSessionName(tmux.DefaultNamespace))
 	}
 	if call.windowName != tmux.RootWindowName {
 		t.Errorf("SendKeys window = %q, want %q", call.windowName, tmux.RootWindowName)

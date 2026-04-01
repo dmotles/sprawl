@@ -149,8 +149,9 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if !runner.newSessionWithWindowCalled {
 		t.Error("expected NewSessionWithWindow to be called")
 	}
-	if runner.newSessionWithWindowSession != "dendra-root-children" {
-		t.Errorf("session = %q, want %q", runner.newSessionWithWindowSession, "dendra-root-children")
+	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "root")
+	if runner.newSessionWithWindowSession != expectedChildrenSession {
+		t.Errorf("session = %q, want %q", runner.newSessionWithWindowSession, expectedChildrenSession)
 	}
 	// Window name should be the allocated agent name (first in pool)
 	expectedName := agent.NamePool[0]

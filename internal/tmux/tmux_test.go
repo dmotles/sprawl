@@ -58,6 +58,50 @@ func TestIsInsideTmux(t *testing.T) {
 // Note: RealRunner methods use exec.Command which we can't easily mock,
 // so we test the interface contract through the mock used in cmd tests.
 
+func TestDefaultNamespace(t *testing.T) {
+	if DefaultNamespace != "dendra" {
+		t.Errorf("DefaultNamespace = %q, want %q", DefaultNamespace, "dendra")
+	}
+}
+
+func TestRootSessionName(t *testing.T) {
+	tests := []struct {
+		namespace string
+		want      string
+	}{
+		{"dendra", "dendra-root"},
+		{"test-123", "test-123-root"},
+		{"my-ns", "my-ns-root"},
+	}
+
+	for _, tt := range tests {
+		got := RootSessionName(tt.namespace)
+		if got != tt.want {
+			t.Errorf("RootSessionName(%q) = %q, want %q", tt.namespace, got, tt.want)
+		}
+	}
+}
+
+func TestChildrenSessionName(t *testing.T) {
+	tests := []struct {
+		namespace string
+		parent    string
+		want      string
+	}{
+		{"dendra", "root", "dendra-root-children"},
+		{"dendra", "alice", "dendra-alice-children"},
+		{"test-123", "root", "test-123-root-children"},
+		{"my-ns", "bob", "my-ns-bob-children"},
+	}
+
+	for _, tt := range tests {
+		got := ChildrenSessionName(tt.namespace, tt.parent)
+		if got != tt.want {
+			t.Errorf("ChildrenSessionName(%q, %q) = %q, want %q", tt.namespace, tt.parent, got, tt.want)
+		}
+	}
+}
+
 func TestExactTarget(t *testing.T) {
 	tests := []struct {
 		input string

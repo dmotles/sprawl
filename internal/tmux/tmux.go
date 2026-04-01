@@ -8,8 +8,20 @@ import (
 	"syscall"
 )
 
-const RootSessionName = "dendra-root"
+const DefaultNamespace = "dendra"
 const RootWindowName = "root"
+
+// RootSessionName returns the tmux session name for the root agent,
+// prefixed with the given namespace.
+func RootSessionName(namespace string) string {
+	return namespace + "-root"
+}
+
+// ChildrenSessionName returns the tmux session name for a parent's children,
+// prefixed with the given namespace.
+func ChildrenSessionName(namespace, parent string) string {
+	return namespace + "-" + parent + "-children"
+}
 
 // Runner abstracts tmux operations for testability.
 type Runner interface {

@@ -139,9 +139,14 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 
 	var sendOpts []messages.SendOption
 	if deps.tmuxRunner != nil {
+		namespace := deps.getenv("DENDRA_NAMESPACE")
+		if namespace == "" {
+			namespace = tmux.DefaultNamespace
+		}
+		rootSession := tmux.RootSessionName(namespace)
 		sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
 			notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
-			deps.tmuxRunner.SendKeys(tmux.RootSessionName, tmux.RootWindowName, notification)
+			deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
 		}))
 	}
 

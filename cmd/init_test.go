@@ -81,11 +81,15 @@ func (m *mockLauncher) BuildArgs(opts agent.LaunchOpts) []string {
 	return m.args
 }
 
+func defaultGetenv(key string) string {
+	return ""
+}
+
 func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 	runner := &mockRunner{hasSession: true}
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
 	err := runInit(deps)
 
 	if err != nil {
@@ -94,8 +98,9 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 	if !runner.attachCalled {
 		t.Error("expected Attach to be called")
 	}
-	if runner.attachName != tmux.RootSessionName {
-		t.Errorf("attached to %q, want %q", runner.attachName, tmux.RootSessionName)
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
+	if runner.attachName != expectedSession {
+		t.Errorf("attached to %q, want %q", runner.attachName, expectedSession)
 	}
 	if runner.newSessionWithWinName != "" {
 		t.Error("NewSessionWithWindow should not have been called")
@@ -106,17 +111,18 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{"--name", "dendra-root"},
+		args:   []string{"--name", tmux.RootSessionName(tmux.DefaultNamespace)},
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
 	err := runInit(deps)
 
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if runner.newSessionWithWinName != tmux.RootSessionName {
-		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, tmux.RootSessionName)
+	if runner.newSessionWithWinName != expectedSession {
+		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, expectedSession)
 	}
 	if runner.newSessionWithWinWin != tmux.RootWindowName {
 		t.Errorf("NewSessionWithWindow window = %q, want %q", runner.newSessionWithWinWin, tmux.RootWindowName)
@@ -124,8 +130,42 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 	if runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"] != "root" {
 		t.Errorf("DENDRA_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"], "root")
 	}
+	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != tmux.DefaultNamespace {
+		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], tmux.DefaultNamespace)
+	}
 	if !runner.attachCalled {
 		t.Error("expected Attach to be called after NewSession")
+	}
+}
+
+func TestRunInit_CustomNamespace(t *testing.T) {
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{
+		binary: "/usr/bin/claude",
+		args:   []string{"--name", "test-ns-root"},
+	}
+
+	deps := &initDeps{
+		tmuxRunner:     runner,
+		claudeLauncher: launcher,
+		getenv: func(key string) string {
+			if key == "DENDRA_NAMESPACE" {
+				return "test-ns"
+			}
+			return ""
+		},
+	}
+	err := runInit(deps)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expectedSession := tmux.RootSessionName("test-ns")
+	if runner.newSessionWithWinName != expectedSession {
+		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, expectedSession)
+	}
+	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != "test-ns" {
+		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], "test-ns")
 	}
 }
 
@@ -139,7 +179,7 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 		args:   []string{},
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
 	err := runInit(deps)
 
 	if err == nil {
@@ -156,7 +196,7 @@ func TestRunInit_ClaudeNotFound_ReturnsError(t *testing.T) {
 		binaryErr: errors.New("not found"),
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
 	err := runInit(deps)
 
 	if err == nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
 )
 
 // killMockRunner implements tmux.Runner for kill tests.
@@ -252,8 +253,9 @@ func TestKill_ForceSkipsGraceful(t *testing.T) {
 	if !runner.killWindowCalled {
 		t.Error("expected KillWindow to be called with --force")
 	}
-	if runner.killWindowSession != "dendra-root-children" {
-		t.Errorf("kill window session = %q, want %q", runner.killWindowSession, "dendra-root-children")
+	expectedChildrenSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "root")
+	if runner.killWindowSession != expectedChildrenSession {
+		t.Errorf("kill window session = %q, want %q", runner.killWindowSession, expectedChildrenSession)
 	}
 	if runner.killWindowWindow != "alice" {
 		t.Errorf("kill window name = %q, want %q", runner.killWindowWindow, "alice")

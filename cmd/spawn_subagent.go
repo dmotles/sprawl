@@ -111,13 +111,18 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		tmux.BuildShellCmd(dendraPath, []string{"agent-loop", agentName}))
 
 	// Set environment for the child agent
+	namespace := deps.getenv("DENDRA_NAMESPACE")
+	if namespace == "" {
+		namespace = tmux.DefaultNamespace
+	}
 	env := map[string]string{
 		"DENDRA_AGENT_IDENTITY": agentName,
 		"DENDRA_ROOT":           dendraRoot,
+		"DENDRA_NAMESPACE":      namespace,
 	}
 
 	// Create or add to tmux session
-	childrenSession := "dendra-" + parentName + "-children"
+	childrenSession := tmux.ChildrenSessionName(namespace, parentName)
 	if deps.tmuxRunner.HasSession(childrenSession) {
 		if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
 			return fmt.Errorf("creating tmux window for %s: %w", agentName, err)

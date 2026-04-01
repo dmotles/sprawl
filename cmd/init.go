@@ -11,8 +11,9 @@ import (
 
 // initDeps holds the dependencies for the init command, enabling testability.
 type initDeps struct {
-	tmuxRunner    tmux.Runner
+	tmuxRunner     tmux.Runner
 	claudeLauncher agent.Launcher
+	getenv         func(string) string
 }
 
 var defaultDeps *initDeps
@@ -50,15 +51,22 @@ func resolveDeps() (*initDeps, error) {
 	}
 
 	return &initDeps{
-		tmuxRunner:    &tmux.RealRunner{TmuxPath: tmuxPath},
+		tmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
 		claudeLauncher: claudeLauncher,
+		getenv:         os.Getenv,
 	}, nil
 }
 
 func runInit(deps *initDeps) error {
-	if deps.tmuxRunner.HasSession(tmux.RootSessionName) {
+	namespace := deps.getenv("DENDRA_NAMESPACE")
+	if namespace == "" {
+		namespace = tmux.DefaultNamespace
+	}
+	rootSession := tmux.RootSessionName(namespace)
+
+	if deps.tmuxRunner.HasSession(rootSession) {
 		fmt.Fprintln(os.Stderr, "Attaching to existing root agent session...")
-		return deps.tmuxRunner.Attach(tmux.RootSessionName)
+		return deps.tmuxRunner.Attach(rootSession)
 	}
 
 	claudePath, err := deps.claudeLauncher.FindBinary()
@@ -67,11 +75,11 @@ func runInit(deps *initDeps) error {
 	}
 
 	opts := agent.LaunchOpts{
-		SystemPrompt: agent.RootSystemPrompt,
-		Tools:        []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
-		AllowedTools: []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
+		SystemPrompt:    agent.RootSystemPrompt,
+		Tools:           []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
+		AllowedTools:    []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
 		DisallowedTools: []string{"Edit", "Write", "NotebookEdit"},
-		Name:         "dendra-root",
+		Name:            rootSession,
 	}
 
 	claudeArgs := deps.claudeLauncher.BuildArgs(opts)
@@ -85,12 +93,13 @@ func runInit(deps *initDeps) error {
 	env := map[string]string{
 		"DENDRA_AGENT_IDENTITY": "root",
 		"DENDRA_ROOT":           cwd,
+		"DENDRA_NAMESPACE":      namespace,
 	}
 
 	fmt.Fprintln(os.Stderr, "Spawning root agent...")
-	if err := deps.tmuxRunner.NewSessionWithWindow(tmux.RootSessionName, tmux.RootWindowName, env, shellCmd); err != nil {
+	if err := deps.tmuxRunner.NewSessionWithWindow(rootSession, tmux.RootWindowName, env, shellCmd); err != nil {
 		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
-	return deps.tmuxRunner.Attach(tmux.RootSessionName)
+	return deps.tmuxRunner.Attach(rootSession)
 }
