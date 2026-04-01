@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -166,6 +167,72 @@ func TestWriterClose(t *testing.T) {
 			t.Error("Close() did not call underlying Close()")
 		}
 	})
+}
+
+func TestWriterSendInterrupt(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	if err := w.SendInterrupt("req-int-1"); err != nil {
+		t.Fatalf("SendInterrupt error: %v", err)
+	}
+
+	output := buf.String()
+	// Must end with newline (NDJSON)
+	if !strings.HasSuffix(output, "\n") {
+		t.Error("output does not end with newline")
+	}
+
+	var msg InterruptRequest
+	if err := json.Unmarshal(buf.Bytes(), &msg); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+	if msg.Type != "control_request" {
+		t.Errorf("Type = %q, want %q", msg.Type, "control_request")
+	}
+	if msg.RequestID != "req-int-1" {
+		t.Errorf("RequestID = %q, want %q", msg.RequestID, "req-int-1")
+	}
+	if msg.Request.Subtype != "interrupt" {
+		t.Errorf("Request.Subtype = %q, want %q", msg.Request.Subtype, "interrupt")
+	}
+}
+
+func TestWriterConcurrentWrites(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	const numGoroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines * 2)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(n int) {
+			defer wg.Done()
+			_ = w.SendUserMessage("msg")
+		}(i)
+		go func(n int) {
+			defer wg.Done()
+			_ = w.SendInterrupt("req")
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify we got the expected number of NDJSON lines
+	output := strings.TrimRight(buf.String(), "\n")
+	lines := strings.Split(output, "\n")
+	if len(lines) != numGoroutines*2 {
+		t.Errorf("got %d lines, want %d", len(lines), numGoroutines*2)
+	}
+
+	// Each line should be valid JSON
+	for i, line := range lines {
+		var raw json.RawMessage
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			t.Errorf("line %d is not valid JSON: %v", i, err)
+		}
+	}
 }
 
 func TestWriterMultipleMessages(t *testing.T) {

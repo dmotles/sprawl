@@ -22,17 +22,19 @@ import (
 
 // mockProcessManager implements the processManager interface for testing.
 type mockProcessManager struct {
-	mu          sync.Mutex
-	startErr    error
-	sendResults []*protocol.ResultMessage
-	sendErrors  []error
-	sendIndex   int
-	stopErr     error
-	running     bool
-	startCalled bool
-	stopCalled  bool
-	prompts     []string
-	configs     []agentloop.ProcessConfig
+	mu               sync.Mutex
+	startErr         error
+	sendResults      []*protocol.ResultMessage
+	sendErrors       []error
+	sendIndex        int
+	stopErr          error
+	running          bool
+	startCalled      bool
+	stopCalled       bool
+	interruptCalled  bool
+	interruptErr     error
+	prompts          []string
+	configs          []agentloop.ProcessConfig
 }
 
 func (m *mockProcessManager) Start(ctx context.Context, initialPrompt string) error {
@@ -68,6 +70,13 @@ func (m *mockProcessManager) Stop(ctx context.Context) error {
 	m.stopCalled = true
 	m.running = false
 	return m.stopErr
+}
+
+func (m *mockProcessManager) InterruptTurn(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.interruptCalled = true
+	return m.interruptErr
 }
 
 func (m *mockProcessManager) IsRunning() bool {
@@ -1508,5 +1517,180 @@ func TestRunAgentLoop_OutputHasTimestamps(t *testing.T) {
 		if !tsPattern.MatchString(line) {
 			t.Errorf("expected line to start with [HH:MM:SS] timestamp, got: %q", line)
 		}
+	}
+}
+
+// =====================================================================
+// Tests for sendPromptWithInterrupt and poke file handling
+// =====================================================================
+
+func TestSendPromptWithInterrupt_NoPokeFile(t *testing.T) {
+	mockProc := &mockProcessManager{
+		sendResults: []*protocol.ResultMessage{
+			{Type: "result", Result: "done"},
+		},
+		running: true,
+	}
+
+	deps := &agentLoopDeps{
+		readFile:   func(string) ([]byte, error) { return nil, errors.New("not found") },
+		removeFile: func(string) error { return nil },
+	}
+
+	result, pokeContent, err := sendPromptWithInterrupt(
+		context.Background(), mockProc, deps, "/tmp/test.poke", "hello",
+		10*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("sendPromptWithInterrupt error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Result != "done" {
+		t.Errorf("result.Result = %q, want %q", result.Result, "done")
+	}
+	if pokeContent != "" {
+		t.Errorf("pokeContent = %q, want empty", pokeContent)
+	}
+	if mockProc.interruptCalled {
+		t.Error("InterruptTurn should not be called when no poke file exists")
+	}
+}
+
+func TestSendPromptWithInterrupt_PokeFileFound(t *testing.T) {
+	// This mock blocks until we signal it, simulating a long-running turn.
+	sendCh := make(chan struct{})
+	mockProc := &mockProcessManager{
+		running: true,
+	}
+	// Override SendPrompt to block until channel is closed.
+	originalSend := mockProc.SendPrompt
+	_ = originalSend
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "interrupted", IsError: true},
+	}
+
+	var pokeReturned sync.Once
+	deps := &agentLoopDeps{
+		readFile: func(path string) ([]byte, error) {
+			var result []byte
+			var found bool
+			if strings.HasSuffix(path, ".poke") {
+				pokeReturned.Do(func() {
+					result = []byte("urgent: check status")
+					found = true
+				})
+				if found {
+					return result, nil
+				}
+			}
+			return nil, errors.New("not found")
+		},
+		removeFile: func(string) error { return nil },
+	}
+
+	var result *protocol.ResultMessage
+	var pokeContent string
+	var sendErr error
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		result, pokeContent, sendErr = sendPromptWithInterrupt(
+			context.Background(), blockingProc, deps, "/tmp/test.poke", "hello",
+			10*time.Millisecond,
+		)
+	}()
+
+	// Wait for interrupt to be called, then unblock SendPrompt.
+	time.Sleep(100 * time.Millisecond)
+	close(sendCh)
+	<-done
+
+	if sendErr != nil {
+		t.Fatalf("sendPromptWithInterrupt error: %v", sendErr)
+	}
+	if pokeContent != "urgent: check status" {
+		t.Errorf("pokeContent = %q, want %q", pokeContent, "urgent: check status")
+	}
+	mockProc.mu.Lock()
+	interrupted := mockProc.interruptCalled
+	mockProc.mu.Unlock()
+	if !interrupted {
+		t.Error("InterruptTurn should have been called")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+}
+
+// blockingSendProcessManager wraps mockProcessManager with a blocking SendPrompt.
+type blockingSendProcessManager struct {
+	*mockProcessManager
+	sendCh chan struct{}
+	result *protocol.ResultMessage
+}
+
+func (b *blockingSendProcessManager) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
+	b.mockProcessManager.mu.Lock()
+	b.mockProcessManager.prompts = append(b.mockProcessManager.prompts, prompt)
+	b.mockProcessManager.mu.Unlock()
+	<-b.sendCh
+	return b.result, nil
+}
+
+func TestRunAgentLoop_PokeFileBetweenTurns(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+	_ = tmpDir
+
+	pokeDelivered := false
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "ash.poke") && !pokeDelivered {
+			pokeDelivered = true
+			return []byte("hey, you okay?"), nil
+		}
+		return nil, errors.New("file not found")
+	}
+
+	var removedFiles []string
+	deps.removeFile = func(path string) error {
+		removedFiles = append(removedFiles, path)
+		return nil
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "poke handled"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// The poke content should have been delivered as a prompt.
+	found := false
+	for _, p := range mockProc.prompts {
+		if strings.Contains(p, "hey, you okay?") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected poke content in prompts, got: %v", mockProc.prompts)
+	}
+
+	// Poke file should have been removed.
+	pokeRemoved := false
+	for _, f := range removedFiles {
+		if strings.Contains(f, "ash.poke") {
+			pokeRemoved = true
+			break
+		}
+	}
+	if !pokeRemoved {
+		t.Error("expected poke file to be removed after reading")
 	}
 }

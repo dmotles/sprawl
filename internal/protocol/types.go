@@ -119,6 +119,19 @@ type MessageParam struct {
 	Content string `json:"content"`
 }
 
+// InterruptRequest is sent on stdin to cancel the current turn.
+// Wire format: {"type":"control_request","request_id":"<id>","request":{"subtype":"interrupt"}}
+type InterruptRequest struct {
+	Type      string                `json:"type"`
+	RequestID string                `json:"request_id"`
+	Request   InterruptRequestInner `json:"request"`
+}
+
+// InterruptRequestInner holds the request payload for an InterruptRequest.
+type InterruptRequestInner struct {
+	Subtype string `json:"subtype"` // always "interrupt"
+}
+
 // ControlResponse is sent on stdin to respond to a ControlRequest.
 type ControlResponse struct {
 	Type     string               `json:"type"`

@@ -4,8 +4,10 @@ package agentloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/dmotles/dendra/internal/protocol"
 )
@@ -19,6 +21,7 @@ type MessageReader interface {
 type MessageWriter interface {
 	SendUserMessage(prompt string) error
 	ApproveToolUse(requestID string) error
+	SendInterrupt(requestID string) error
 	Close() error
 }
 
@@ -61,6 +64,14 @@ const (
 	StateRunning  ProcessState = "running"
 	StateStopped  ProcessState = "stopped"
 )
+
+// ErrNotRunning is returned by InterruptTurn when no turn is active.
+var ErrNotRunning = errors.New("agentloop: no turn in progress")
+
+// newRequestID generates a unique request ID for interrupt messages.
+func newRequestID() string {
+	return fmt.Sprintf("interrupt-%d", time.Now().UnixNano())
+}
 
 // Option configures a Process.
 type Option func(*Process)
@@ -375,4 +386,23 @@ func (p *Process) IsRunning() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.state == StateIdle || p.state == StateRunning
+}
+
+// InterruptTurn sends an interrupt control_request to cancel the current turn.
+// It is safe to call concurrently with SendPrompt.
+// Returns ErrNotRunning if the process is not in StateRunning.
+func (p *Process) InterruptTurn(ctx context.Context) error {
+	p.mu.Lock()
+	if p.state != StateRunning {
+		p.mu.Unlock()
+		return ErrNotRunning
+	}
+	writer := p.writer
+	p.mu.Unlock()
+
+	requestID := newRequestID()
+	p.writerMu.Lock()
+	err := writer.SendInterrupt(requestID)
+	p.writerMu.Unlock()
+	return err
 }

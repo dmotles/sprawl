@@ -25,6 +25,7 @@ import (
 type processManager interface {
 	Start(ctx context.Context, initialPrompt string) error
 	SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error)
+	InterruptTurn(ctx context.Context) error
 	Stop(ctx context.Context) error
 	IsRunning() bool
 }
@@ -250,6 +251,59 @@ func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.Pro
 	return proc, true
 }
 
+// sendPromptWithInterrupt wraps SendPrompt with a concurrent poller that
+// watches for a .poke file and interrupts the turn if one appears.
+// Returns the SendPrompt result, any poke content (non-empty if interrupted), and error.
+func sendPromptWithInterrupt(
+	ctx context.Context,
+	proc processManager,
+	deps *agentLoopDeps,
+	pokePath string,
+	prompt string,
+	pollInterval time.Duration,
+) (*protocol.ResultMessage, string, error) {
+	pokeCh := make(chan string, 1)
+	done := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(pollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				content, err := deps.readFile(pokePath)
+				if err != nil {
+					continue // not found yet
+				}
+				_ = deps.removeFile(pokePath)
+				select {
+				case pokeCh <- strings.TrimSpace(string(content)):
+				default:
+				}
+				// Trigger interrupt — ignore error (turn may have already ended).
+				_ = proc.InterruptTurn(ctx)
+				return
+			}
+		}
+	}()
+
+	result, err := proc.SendPrompt(ctx, prompt)
+	close(done)
+
+	var pokeContent string
+	select {
+	case pokeContent = <-pokeCh:
+	default:
+	}
+
+	return result, pokeContent, err
+}
+
+// defaultPollInterval is the default interval for checking poke files during a turn.
+const defaultPollInterval = 500 * time.Millisecond
+
 // runAgentLoop is the main loop logic for the agent-loop command.
 func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) error {
 	// Validate DENDRA_ROOT
@@ -347,6 +401,16 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		return ok
 	}
 
+	pokePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".poke")
+
+	// sendWithInterrupt wraps sendPromptWithInterrupt with the poke path and default interval.
+	sendWithInterrupt := func(prompt string) (*protocol.ResultMessage, string, error) {
+		return sendPromptWithInterrupt(ctx, proc, deps, pokePath, prompt, defaultPollInterval)
+	}
+
+	// pendingPoke holds poke content from a mid-turn interrupt, delivered on the next iteration.
+	var pendingPoke string
+
 	// Main loop
 	for {
 		select {
@@ -361,6 +425,32 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			fmt.Fprintf(deps.stdout, "[agent-loop] kill sentinel detected, shutting down\n")
 			_ = deps.removeFile(killFilePath)
 			return nil // triggers deferred proc.Stop()
+		}
+
+		// 0.5. Check for poke file between turns (or consume pending poke from interrupt).
+		if pendingPoke == "" {
+			if content, readErr := deps.readFile(pokePath); readErr == nil {
+				pendingPoke = strings.TrimSpace(string(content))
+				_ = deps.removeFile(pokePath)
+			}
+		}
+
+		// If we have pending poke content, deliver it immediately.
+		if pendingPoke != "" {
+			prompt := pendingPoke
+			pendingPoke = ""
+			fmt.Fprintf(deps.stdout, "[agent-loop] delivering poke message\n")
+			_, pokeContent, sendErr := sendWithInterrupt(prompt)
+			if pokeContent != "" {
+				pendingPoke = pokeContent
+			}
+			if sendErr != nil {
+				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on poke delivery, restarting: %v\n", sendErr)
+				if !restartWithResume() {
+					return nil
+				}
+			}
+			continue
 		}
 
 		// 1. Check for a queued task.
@@ -378,16 +468,25 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			} else {
 				taskPrompt = task.Prompt
 			}
-			_, sendErr := proc.SendPrompt(ctx, taskPrompt)
+			_, pokeContent, sendErr := sendWithInterrupt(taskPrompt)
+			if pokeContent != "" {
+				pendingPoke = pokeContent
+			}
 			if sendErr != nil {
 				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on task %s, restarting: %v\n", task.ID, sendErr)
 				if !restartWithResume() {
 					return nil
 				}
 				// Retry on recovered process.
-				_, _ = proc.SendPrompt(ctx, taskPrompt)
+				_, retryPoke, _ := sendWithInterrupt(taskPrompt)
+				if retryPoke != "" {
+					pendingPoke = retryPoke
+				}
 			}
 
+			// Only mark task done if it wasn't interrupted by a poke.
+			// An interrupted task still completed its turn (Claude emits a result),
+			// but the poke message takes priority for the next turn.
 			task.Status = "done"
 			_ = deps.updateTask(dendraRoot, agentName, task)
 			continue
@@ -414,7 +513,10 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			if len(promptParts) > 0 {
 				prompt := fmt.Sprintf("You have %d new message(s):\n\n%s", len(promptParts), strings.Join(promptParts, "\n\n"))
 				fmt.Fprintf(deps.stdout, "[agent-loop] delivering %d inbox message(s) to agent\n", len(promptParts))
-				_, sendErr := proc.SendPrompt(ctx, prompt)
+				_, pokeContent, sendErr := sendWithInterrupt(prompt)
+				if pokeContent != "" {
+					pendingPoke = pokeContent
+				}
 				if sendErr != nil {
 					fmt.Fprintf(deps.stdout, "[agent-loop] process crash on inbox delivery, restarting: %v\n", sendErr)
 					if !restartWithResume() {
@@ -431,7 +533,10 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		wakeContent, readErr := deps.readFile(wakeFilePath)
 		if readErr == nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] wake file detected\n")
-			_, sendErr := proc.SendPrompt(ctx, string(wakeContent))
+			_, pokeContent, sendErr := sendWithInterrupt(string(wakeContent))
+			if pokeContent != "" {
+				pendingPoke = pokeContent
+			}
 			if sendErr != nil {
 				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on wake, restarting: %v\n", sendErr)
 				if !restartWithResume() {

@@ -3,12 +3,14 @@ package protocol
 import (
 	"encoding/json"
 	"io"
+	"sync"
 )
 
 // Writer writes NDJSON messages to a stream.
-// Writer is not safe for concurrent use; callers must synchronize access.
+// Writer is safe for concurrent use.
 type Writer struct {
-	w io.Writer
+	mu sync.Mutex
+	w  io.Writer
 }
 
 // NewWriter creates a new Writer that writes to w.
@@ -47,6 +49,16 @@ func (w *Writer) ApproveToolUse(requestID string) error {
 	return w.SendControlResponse(requestID, "success", "")
 }
 
+// SendInterrupt sends an interrupt control_request to cancel the current turn.
+func (w *Writer) SendInterrupt(requestID string) error {
+	msg := InterruptRequest{
+		Type:      "control_request",
+		RequestID: requestID,
+		Request:   InterruptRequestInner{Subtype: "interrupt"},
+	}
+	return w.writeJSON(msg)
+}
+
 // Close closes the underlying writer if it implements io.Closer.
 func (w *Writer) Close() error {
 	if c, ok := w.w.(io.Closer); ok {
@@ -61,6 +73,8 @@ func (w *Writer) writeJSON(v any) error {
 		return err
 	}
 	data = append(data, '\n')
+	w.mu.Lock()
 	_, err = w.w.Write(data)
+	w.mu.Unlock()
 	return err
 }

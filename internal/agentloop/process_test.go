@@ -64,13 +64,15 @@ func (r *blockingMockReader) Next() (*protocol.Message, error) {
 
 // mockWriter records all method calls for verification.
 type mockWriter struct {
-	mu            sync.Mutex
-	promptsSent   []string
-	toolsApproved []string
-	closed        bool
-	sendErr       error
-	approveErr    error
-	closeErr      error
+	mu              sync.Mutex
+	promptsSent     []string
+	toolsApproved   []string
+	interruptsSent  []string
+	closed          bool
+	sendErr         error
+	approveErr      error
+	interruptErr    error
+	closeErr        error
 }
 
 func (w *mockWriter) SendUserMessage(prompt string) error {
@@ -85,6 +87,13 @@ func (w *mockWriter) ApproveToolUse(requestID string) error {
 	defer w.mu.Unlock()
 	w.toolsApproved = append(w.toolsApproved, requestID)
 	return w.approveErr
+}
+
+func (w *mockWriter) SendInterrupt(requestID string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.interruptsSent = append(w.interruptsSent, requestID)
+	return w.interruptErr
 }
 
 func (w *mockWriter) Close() error {
@@ -873,4 +882,115 @@ func TestProcess_SendPrompt_ReaderErrorViaChannel(t *testing.T) {
 	if err == nil {
 		t.Fatal("SendPrompt #2 expected error from broken reader, got nil")
 	}
+}
+
+// =====================================================================
+// Tests for InterruptTurn
+// =====================================================================
+
+func TestProcess_InterruptTurn_WhenIdle_ReturnsErrNotRunning(t *testing.T) {
+	initMsg := makeInitMessage("sess-1")
+	resultMsg := makeResultMessage("ready", false)
+	reader := newMockReader([]*protocol.Message{initMsg, resultMsg}, nil)
+	writer := &mockWriter{}
+	starter := &mockCommandStarter{
+		reader:   reader,
+		writer:   writer,
+		waitFn:   func() error { return nil },
+		cancelFn: func() error { return nil },
+	}
+
+	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	// Process is idle after Start. InterruptTurn should return ErrNotRunning.
+	err := p.InterruptTurn(context.Background())
+	if err != ErrNotRunning {
+		t.Errorf("InterruptTurn() = %v, want ErrNotRunning", err)
+	}
+
+	// Writer should not have received any interrupt.
+	writer.mu.Lock()
+	numInterrupts := len(writer.interruptsSent)
+	writer.mu.Unlock()
+	if numInterrupts != 0 {
+		t.Errorf("interruptsSent = %d, want 0", numInterrupts)
+	}
+}
+
+func TestProcess_InterruptTurn_WhenStopped_ReturnsErrNotRunning(t *testing.T) {
+	starter := &mockCommandStarter{
+		reader:   newMockReader(nil, nil),
+		writer:   &mockWriter{},
+		waitFn:   func() error { return nil },
+		cancelFn: func() error { return nil },
+	}
+
+	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+
+	// Process is stopped (never started). InterruptTurn should return ErrNotRunning.
+	err := p.InterruptTurn(context.Background())
+	if err != ErrNotRunning {
+		t.Errorf("InterruptTurn() = %v, want ErrNotRunning", err)
+	}
+}
+
+func TestProcess_InterruptTurn_WhenRunning_SendsInterrupt(t *testing.T) {
+	ch := make(chan readerResult, 10)
+	reader := &blockingMockReader{ch: ch}
+	writer := &mockWriter{}
+	starter := &mockCommandStarter{
+		reader:   reader,
+		writer:   writer,
+		waitFn:   func() error { return nil },
+		cancelFn: func() error { return nil },
+	}
+
+	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+
+	// Feed init + result for Start.
+	ch <- readerResult{msg: makeInitMessage("sess-1")}
+	ch <- readerResult{msg: makeResultMessage("init done", false)}
+
+	if err := p.Start(context.Background(), "test prompt"); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	// Start SendPrompt in a goroutine (it blocks waiting for result).
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		_, _ = p.SendPrompt(context.Background(), "do something long")
+	}()
+
+	// Wait for state to transition to Running with a reasonable timeout.
+	deadline := time.After(5 * time.Second)
+	for p.State() != StateRunning {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for StateRunning, got %q", p.State())
+		default:
+			time.Sleep(1 * time.Millisecond)
+		}
+	}
+
+	// Now interrupt the turn.
+	err := p.InterruptTurn(context.Background())
+	if err != nil {
+		t.Fatalf("InterruptTurn() error: %v", err)
+	}
+
+	// Verify the writer received an interrupt.
+	writer.mu.Lock()
+	numInterrupts := len(writer.interruptsSent)
+	writer.mu.Unlock()
+	if numInterrupts != 1 {
+		t.Errorf("interruptsSent = %d, want 1", numInterrupts)
+	}
+
+	// Feed a result to unblock SendPrompt (simulating Claude responding to interrupt).
+	ch <- readerResult{msg: makeResultMessage("interrupted", true)}
+	<-sendDone
 }
