@@ -1579,6 +1579,62 @@ func TestBroadcast_WritesWakeFiles(t *testing.T) {
 	}
 }
 
+func TestBroadcast_PartialFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("test requires non-root")
+	}
+
+	tmpDir := t.TempDir()
+
+	// Create 3 active agents
+	for _, name := range []string{"agent-a", "agent-b", "agent-c"} {
+		if err := state.SaveAgent(tmpDir, &state.AgentState{
+			Name:   name,
+			Status: "active",
+		}); err != nil {
+			t.Fatalf("saving agent %s: %v", name, err)
+		}
+	}
+
+	// Create agent-b's messages directory and make it unwritable so Send() fails
+	agentBDir := filepath.Join(MessagesDir(tmpDir), "agent-b")
+	if err := os.MkdirAll(agentBDir, 0755); err != nil {
+		t.Fatalf("creating agent-b messages dir: %v", err)
+	}
+	if err := os.Chmod(agentBDir, 0000); err != nil {
+		t.Fatalf("chmod agent-b dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Chmod(agentBDir, 0755)
+	})
+
+	count, err := Broadcast(tmpDir, "sender", "test-subject", "test-body")
+	if err == nil {
+		t.Fatal("expected error for partial failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "partial broadcast failure") {
+		t.Errorf("error should contain 'partial broadcast failure', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "agent-b") {
+		t.Errorf("error should mention 'agent-b', got: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected count 2 (successful deliveries), got %d", count)
+	}
+
+	// Verify agent-a and agent-c received messages
+	for _, name := range []string{"agent-a", "agent-c"} {
+		newDir := filepath.Join(MessagesDir(tmpDir), name, "new")
+		entries, err := os.ReadDir(newDir)
+		if err != nil {
+			t.Fatalf("reading new dir for %s: %v", name, err)
+		}
+		if len(entries) != 1 {
+			t.Errorf("expected 1 message for %s, got %d", name, len(entries))
+		}
+	}
+}
+
 // writeMessageFile is a test helper that writes a Message as JSON into the given directory.
 func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 	t.Helper()

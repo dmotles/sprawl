@@ -408,6 +408,49 @@ func TestMessagesBroadcast_MissingAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestMessagesBroadcast_PartialFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("test requires non-root")
+	}
+
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Create 3 active agents
+	for _, name := range []string{"bob", "charlie", "dave"} {
+		if err := state.SaveAgent(tmpDir, &state.AgentState{
+			Name:   name,
+			Status: "active",
+		}); err != nil {
+			t.Fatalf("saving agent %s: %v", name, err)
+		}
+	}
+
+	// Make charlie's messages directory unwritable to force a Send failure
+	charlieDir := filepath.Join(messages.MessagesDir(tmpDir), "charlie")
+	if err := os.MkdirAll(charlieDir, 0755); err != nil {
+		t.Fatalf("creating charlie messages dir: %v", err)
+	}
+	if err := os.Chmod(charlieDir, 0000); err != nil {
+		t.Fatalf("chmod charlie dir: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Chmod(charlieDir, 0755)
+	})
+
+	err := runMessagesBroadcast(deps, "announcement", "hello")
+	if err == nil {
+		t.Fatal("expected error for partial failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "partial broadcast failure") {
+		t.Errorf("error should contain 'partial broadcast failure', got: %v", err)
+	}
+
+	stderr := deps.stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "Broadcast sent to 2 agents") {
+		t.Errorf("stderr should contain 'Broadcast sent to 2 agents', got: %q", stderr)
+	}
+}
+
 // --- runMessagesList tests ---
 
 func TestMessagesList_All(t *testing.T) {

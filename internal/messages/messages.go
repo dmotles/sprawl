@@ -354,14 +354,19 @@ func Broadcast(dendraRoot, sender, subject, body string) (int, error) {
 	}
 
 	count := 0
+	var errs []string
 	for _, agent := range agents {
 		if agent.Status != "active" || agent.Name == sender {
 			continue
 		}
 		if err := Send(dendraRoot, sender, agent.Name, subject, body); err != nil {
-			return count, fmt.Errorf("sending to %s: %w", agent.Name, err)
+			errs = append(errs, fmt.Sprintf("%s: %v", agent.Name, err))
+			continue
 		}
 		count++
+	}
+	if len(errs) > 0 {
+		return count, fmt.Errorf("partial broadcast failure (%d/%d succeeded): %s", count, count+len(errs), strings.Join(errs, "; "))
 	}
 	return count, nil
 }
