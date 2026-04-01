@@ -300,11 +300,11 @@ func readMessagesFromDirs(agentDir string, dirs []string) ([]*Message, error) {
 			}
 			data, err := os.ReadFile(filepath.Join(dirPath, entry.Name()))
 			if err != nil {
-				return nil, fmt.Errorf("reading message file %s: %w", entry.Name(), err)
+				continue // file may have been removed between ReadDir and ReadFile
 			}
 			var msg Message
 			if err := json.Unmarshal(data, &msg); err != nil {
-				return nil, fmt.Errorf("unmarshaling message %s: %w", entry.Name(), err)
+				continue // skip corrupt JSON files
 			}
 			msg.Dir = dir
 			result = append(result, &msg)

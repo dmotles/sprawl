@@ -575,6 +575,75 @@ func TestInbox_SkipsNonJSONFiles(t *testing.T) {
 	}
 }
 
+func TestInbox_SkipsCorruptJSONFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
+	newDir := filepath.Join(agentDir, "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+
+	// Write a valid JSON message file
+	validMsg := Message{
+		ID:        "1000.alice.aabb",
+		From:      "alice",
+		To:        "bob",
+		Subject:   "hello",
+		Body:      "world",
+		Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, newDir, "1000.alice.aabb", &validMsg)
+
+	// Write a corrupt JSON file (invalid JSON content with .json extension)
+	if err := os.WriteFile(filepath.Join(newDir, "2000.alice.ccdd.json"), []byte("{corrupt json!!!"), 0644); err != nil {
+		t.Fatalf("writing corrupt json file: %v", err)
+	}
+
+	msgs, err := Inbox(tmpDir, "bob")
+	if err != nil {
+		t.Fatalf("Inbox() should not error on corrupt JSON, got: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 valid message, got %d", len(msgs))
+	}
+	if len(msgs) == 1 && msgs[0].ID != "1000.alice.aabb" {
+		t.Errorf("expected message ID %q, got %q", "1000.alice.aabb", msgs[0].ID)
+	}
+}
+
+func TestList_SkipsCorruptJSONFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
+	curDir := filepath.Join(agentDir, "cur")
+	if err := os.MkdirAll(curDir, 0755); err != nil {
+		t.Fatalf("creating cur dir: %v", err)
+	}
+
+	// Write a valid message in cur/
+	validMsg := Message{
+		ID:        "1000.alice.aabb",
+		From:      "alice",
+		To:        "bob",
+		Subject:   "hello",
+		Body:      "world",
+		Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, curDir, "1000.alice.aabb", &validMsg)
+
+	// Write a corrupt JSON file in cur/
+	if err := os.WriteFile(filepath.Join(curDir, "2000.alice.ccdd.json"), []byte("not json"), 0644); err != nil {
+		t.Fatalf("writing corrupt json file: %v", err)
+	}
+
+	msgs, err := List(tmpDir, "bob", "read")
+	if err != nil {
+		t.Fatalf("List() should not error on corrupt JSON, got: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Errorf("expected 1 valid message, got %d", len(msgs))
+	}
+}
+
 // --- ResolvePrefix tests ---
 
 func TestResolvePrefix_ExactMatch(t *testing.T) {
