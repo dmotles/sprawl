@@ -86,7 +86,8 @@ func runInit(deps *initDeps, namespace string) error {
 	rootTools := []string{
 		"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch",
 		"Agent", "Task", "TaskOutput", "TaskStop", "ToolSearch",
-		"Skill", "TodoWrite", "AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+		"Skill", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
+		"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 	}
 
 	opts := agent.LaunchOpts{

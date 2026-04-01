@@ -214,7 +214,7 @@ func TestBuildRootPrompt_PromptConfigStruct(t *testing.T) {
 		AgentCLI: "claude-code",
 	}
 	prompt := BuildRootPrompt(cfg)
-	if !strings.Contains(prompt, `Your identity is "sensei"`) {
+	if !strings.Contains(prompt, `Your name is "sensei"`) {
 		t.Error("BuildRootPrompt should interpolate RootName from config")
 	}
 }
@@ -227,9 +227,9 @@ func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
 	prompt := BuildRootPrompt(cfg)
 
 	keyPhrases := []string{
-		"AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS",
+		"AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS",
 		"Dendra agents",
-		"dendra spawn",
+		"dendra spawn agent",
 		"Claude Code sub-agents",
 		"Agent tool",
 		"fire off an agent",
@@ -252,7 +252,7 @@ func TestBuildRootPrompt_SubAgentGuidance_NotIncludedForUnknownCLI(t *testing.T)
 	prompt := BuildRootPrompt(cfg)
 
 	// Sub-agent guidance should NOT be present for non-claude-code CLIs
-	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS") {
+	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS") {
 		t.Error("sub-agent guidance should not be included for non-claude-code CLI")
 	}
 	if strings.Contains(prompt, "Claude Code sub-agents") {
@@ -268,7 +268,7 @@ func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
 	prompt := BuildRootPrompt(cfg)
 
 	// Sub-agent guidance should NOT be present when AgentCLI is empty
-	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS") {
+	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS") {
 		t.Error("sub-agent guidance should not be included when AgentCLI is empty")
 	}
 }
@@ -276,11 +276,11 @@ func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
 func TestBuildRootPrompt_SubAgentGuidanceSectionOrdering(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
 
-	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS")
+	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS")
 	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
 
 	if agentTypesIdx == -1 {
-		t.Fatal("BuildRootPrompt missing 'AGENT TYPES: DENDRA AGENTS vs SUB-AGENTS'")
+		t.Fatal("BuildRootPrompt missing 'AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS'")
 	}
 	if verifyIdx == -1 {
 		t.Fatal("BuildRootPrompt missing 'VERIFYING AGENT WORK:'")
@@ -293,13 +293,10 @@ func TestBuildRootPrompt_SubAgentGuidanceSectionOrdering(t *testing.T) {
 func TestBuildRootPrompt_VerificationGuidance(t *testing.T) {
 	keyPhrases := []string{
 		"VERIFYING AGENT WORK",
-		"git diff main..dendra/<name>",
-		"go test ./...",
+		"MUST verify",
+		"run tests",
+		"work tree",
 		".dendra/agents/<name>/findings/",
-		"scope creep",
-		"pass/fail summary",
-		"Linear issue comments",
-		"done report",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(BuildRootPrompt(defaultRootConfig("sensei")), phrase) {
@@ -375,7 +372,7 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 
 	// Spawning & Lifecycle commands
 	spawnLifecycleCommands := []string{
-		"dendra spawn --family",
+		"dendra spawn agent --family",
 		"dendra spawn subagent --family",
 		"dendra delegate",
 		"dendra kill",
@@ -400,18 +397,6 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 	for _, cmd := range messagingCommands {
 		if !strings.Contains(prompt, cmd) {
 			t.Errorf("root prompt KEY COMMANDS missing messaging command: %q", cmd)
-		}
-	}
-
-	// Reporting commands
-	reportingCommands := []string{
-		"dendra report status",
-		"dendra report done",
-		"dendra report problem",
-	}
-	for _, cmd := range reportingCommands {
-		if !strings.Contains(prompt, cmd) {
-			t.Errorf("root prompt KEY COMMANDS missing reporting command: %q", cmd)
 		}
 	}
 }
@@ -445,37 +430,32 @@ func TestBuildRootPrompt_KeyCommands_GroupedLogically(t *testing.T) {
 		t.Fatal("root prompt missing 'KEY COMMANDS:' section")
 	}
 
-	// Verify commands are grouped with section headers
-	keyCommandsIdx := strings.Index(prompt, "KEY COMMANDS:")
-	if keyCommandsIdx == -1 {
-		t.Fatal("KEY COMMANDS section not found")
-	}
-
-	// The spawn commands should appear before messaging commands,
-	// which should appear before reporting commands
-	spawnIdx := strings.Index(prompt, "dendra spawn --family")
+	// The spawn commands should appear before messaging commands
+	spawnIdx := strings.Index(prompt, "dendra spawn agent --family")
 	inboxIdx := strings.Index(prompt, "dendra messages inbox")
-	reportIdx := strings.Index(prompt, "dendra report status")
 
+	if spawnIdx == -1 {
+		t.Fatal("root prompt missing 'dendra spawn agent --family'")
+	}
+	if inboxIdx == -1 {
+		t.Fatal("root prompt missing 'dendra messages inbox'")
+	}
 	if spawnIdx >= inboxIdx {
 		t.Errorf("spawn commands (idx %d) should appear before messaging commands (idx %d)", spawnIdx, inboxIdx)
-	}
-	if inboxIdx >= reportIdx {
-		t.Errorf("messaging commands (idx %d) should appear before reporting commands (idx %d)", inboxIdx, reportIdx)
 	}
 }
 
 func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
-	if !strings.Contains(prompt, `Your identity is "sensei"`) {
-		t.Error("BuildRootPrompt should interpolate the root name into identity line")
+	if !strings.Contains(prompt, `Your name is "sensei"`) {
+		t.Error("BuildRootPrompt should interpolate the root name")
 	}
 
 	prompt2 := BuildRootPrompt(defaultRootConfig("kai"))
-	if !strings.Contains(prompt2, `Your identity is "kai"`) {
+	if !strings.Contains(prompt2, `Your name is "kai"`) {
 		t.Error("BuildRootPrompt should interpolate custom root name")
 	}
-	if strings.Contains(prompt2, `Your identity is "root"`) {
-		t.Error("BuildRootPrompt should not hardcode 'root' identity")
+	if strings.Contains(prompt2, `Your name is "root"`) {
+		t.Error("BuildRootPrompt should not hardcode 'root' name")
 	}
 }

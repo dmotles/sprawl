@@ -115,7 +115,6 @@ func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 		"dendra spawn",
 		"sensei",
 		"DO NOT edit code",
-		"--type manager",
 		"--type engineer",
 		"--type researcher",
 		"--family",
@@ -197,9 +196,12 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 }
 
-func TestBuildRootPrompt_ContainsTesterType(t *testing.T) {
-	if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "sensei", AgentCLI: "claude-code"}), "--type tester") {
-		t.Error("root system prompt missing --type tester")
+func TestBuildRootPrompt_DoesNotContainRemovedTypes(t *testing.T) {
+	prompt := BuildRootPrompt(PromptConfig{RootName: "sensei", AgentCLI: "claude-code"})
+	for _, removed := range []string{"--type tester", "--type manager"} {
+		if strings.Contains(prompt, removed) {
+			t.Errorf("root system prompt should not contain removed type: %q", removed)
+		}
 	}
 }
 
