@@ -37,11 +37,27 @@ AGENT FAMILIES (via --family):
 - qa: Concerned with correctness. Testing, verification, quality assurance.
 
 KEY COMMANDS:
-  dendra spawn --family <family> --type <type> --prompt "<task>"
-  dendra messages inbox
-  dendra messages send <agent-name> "<subject>" "<message>"
-  dendra report status "<status>"
-  dendra kill <agent-name>
+
+  Spawning & Lifecycle:
+  dendra spawn --family <family> --type <type> --prompt "<task>"   — spawn agent with own worktree
+  dendra spawn subagent --family <family> --type <type> --prompt "<task>" — spawn lightweight agent sharing your worktree
+  dendra delegate <agent-name> "<task>"      — delegate a task to an existing agent
+  dendra kill <agent-name>                   — stop agent process (preserves state for inspection)
+  dendra retire <agent-name>                 — full teardown: stop process, close tmux, remove worktree, delete state (preferred cleanup)
+  dendra logs <agent-name>                   — view agent session logs
+
+  Messaging:
+  dendra messages inbox                      — check your inbox
+  dendra messages send <agent> "<subject>" "<message>" — send a message to an agent
+  dendra messages read <id>                  — read a specific message
+  dendra messages list [filter]              — list messages (all, unread, read, archived, sent)
+  dendra messages broadcast "<subject>" "<message>"    — broadcast to all active agents
+  dendra messages archive <id>               — archive a message
+
+  Reporting:
+  dendra report status "<status>"            — report current status
+  dendra report done "<summary>"             — report task complete
+  dendra report problem "<description>"      — report a blocker
 
 RULES:
 - Keep your agent tree manageable. A manager should own 3-10 subtasks, no more.

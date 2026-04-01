@@ -370,6 +370,101 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 	}
 }
 
+func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	// Spawning & Lifecycle commands
+	spawnLifecycleCommands := []string{
+		"dendra spawn --family",
+		"dendra spawn subagent --family",
+		"dendra delegate",
+		"dendra kill",
+		"dendra retire",
+		"dendra logs",
+	}
+	for _, cmd := range spawnLifecycleCommands {
+		if !strings.Contains(prompt, cmd) {
+			t.Errorf("root prompt KEY COMMANDS missing spawn/lifecycle command: %q", cmd)
+		}
+	}
+
+	// Messaging commands
+	messagingCommands := []string{
+		"dendra messages inbox",
+		"dendra messages send",
+		"dendra messages read",
+		"dendra messages list",
+		"dendra messages broadcast",
+		"dendra messages archive",
+	}
+	for _, cmd := range messagingCommands {
+		if !strings.Contains(prompt, cmd) {
+			t.Errorf("root prompt KEY COMMANDS missing messaging command: %q", cmd)
+		}
+	}
+
+	// Reporting commands
+	reportingCommands := []string{
+		"dendra report status",
+		"dendra report done",
+		"dendra report problem",
+	}
+	for _, cmd := range reportingCommands {
+		if !strings.Contains(prompt, cmd) {
+			t.Errorf("root prompt KEY COMMANDS missing reporting command: %q", cmd)
+		}
+	}
+}
+
+func TestBuildRootPrompt_KeyCommands_RetireDistinguishedFromKill(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	if !strings.Contains(prompt, "dendra retire") {
+		t.Error("root prompt should mention 'dendra retire'")
+	}
+	if !strings.Contains(prompt, "dendra kill") {
+		t.Error("root prompt should mention 'dendra kill'")
+	}
+	// retire should be described as full teardown / preferred cleanup
+	retireIdx := strings.Index(prompt, "dendra retire")
+	killIdx := strings.Index(prompt, "dendra kill")
+	if retireIdx == -1 || killIdx == -1 {
+		t.Fatal("both retire and kill must be present")
+	}
+	// They should be distinct entries (different lines)
+	if retireIdx == killIdx {
+		t.Error("retire and kill should be separate entries")
+	}
+}
+
+func TestBuildRootPrompt_KeyCommands_GroupedLogically(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	// Verify KEY COMMANDS section exists
+	if !strings.Contains(prompt, "KEY COMMANDS:") {
+		t.Fatal("root prompt missing 'KEY COMMANDS:' section")
+	}
+
+	// Verify commands are grouped with section headers
+	keyCommandsIdx := strings.Index(prompt, "KEY COMMANDS:")
+	if keyCommandsIdx == -1 {
+		t.Fatal("KEY COMMANDS section not found")
+	}
+
+	// The spawn commands should appear before messaging commands,
+	// which should appear before reporting commands
+	spawnIdx := strings.Index(prompt, "dendra spawn --family")
+	inboxIdx := strings.Index(prompt, "dendra messages inbox")
+	reportIdx := strings.Index(prompt, "dendra report status")
+
+	if spawnIdx >= inboxIdx {
+		t.Errorf("spawn commands (idx %d) should appear before messaging commands (idx %d)", spawnIdx, inboxIdx)
+	}
+	if inboxIdx >= reportIdx {
+		t.Errorf("messaging commands (idx %d) should appear before reporting commands (idx %d)", inboxIdx, reportIdx)
+	}
+}
+
 func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
 	if !strings.Contains(prompt, `Your identity is "sensei"`) {
