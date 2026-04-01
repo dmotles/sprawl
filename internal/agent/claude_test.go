@@ -171,7 +171,7 @@ func TestBuildArgs_DangerouslySkipPermissions_False(t *testing.T) {
 }
 
 func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildEngineerPrompt("frank", "root", "dendra/frank")
+	prompt := BuildEngineerPrompt("frank", "root", "dendra/frank", testEnvConfig())
 	phrases := []string{
 		"frank",
 		"root",

@@ -73,7 +73,9 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 			case "researcher":
 				return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch)
 			default:
-				return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch)
+				env := agent.DefaultEnvConfig()
+				env.WorkDir = a.Worktree
+				return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, env)
 			}
 		},
 		sleepFunc:  time.Sleep,

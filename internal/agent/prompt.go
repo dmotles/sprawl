@@ -2,8 +2,25 @@ package agent
 
 import (
 	"fmt"
+	"os"
+	"runtime"
 	"strings"
 )
+
+// EnvConfig holds runtime environment information for agent prompts.
+type EnvConfig struct {
+	WorkDir  string // The agent's working directory (worktree path).
+	Platform string // OS platform (e.g. "linux", "darwin").
+	Shell    string // The user's shell (e.g. "/bin/zsh").
+}
+
+// DefaultEnvConfig returns an EnvConfig populated from the current runtime.
+func DefaultEnvConfig() EnvConfig {
+	return EnvConfig{
+		Platform: runtime.GOOS,
+		Shell:    os.Getenv("SHELL"),
+	}
+}
 
 // PromptConfig holds configuration for building the root agent system prompt.
 type PromptConfig struct {
@@ -351,8 +368,24 @@ RULES:
 - Do not push your branch unless instructed to do so.`
 
 // BuildEngineerPrompt constructs the system prompt for an engineer agent.
-func BuildEngineerPrompt(agentName, parentName, branchName string) string {
-	return fmt.Sprintf(engineerSystemPromptFmt, agentName, parentName, branchName, parentName)
+func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig) string {
+	prompt := fmt.Sprintf(engineerSystemPromptFmt, agentName, parentName, branchName, parentName)
+
+	var b strings.Builder
+	b.WriteString("\n\n# Environment\n")
+	if env.WorkDir != "" {
+		b.WriteString(fmt.Sprintf("- Working directory: %s\n", env.WorkDir))
+	}
+	b.WriteString("- Git repository: yes\n")
+	b.WriteString(fmt.Sprintf("- Git branch: %s\n", branchName))
+	if env.Platform != "" {
+		b.WriteString(fmt.Sprintf("- Platform: %s\n", env.Platform))
+	}
+	if env.Shell != "" {
+		b.WriteString(fmt.Sprintf("- Shell: %s\n", env.Shell))
+	}
+
+	return prompt + b.String()
 }
 
 // researcherSystemPromptFmt is the format string for researcher agent system prompts.

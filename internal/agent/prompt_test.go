@@ -5,8 +5,16 @@ import (
 	"testing"
 )
 
+func testEnvConfig() EnvConfig {
+	return EnvConfig{
+		WorkDir:  "/tmp/worktrees/test",
+		Platform: "linux",
+		Shell:    "/bin/zsh",
+	}
+}
+
 func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	keyPhrases := []string{
 		"Engineer agent",
@@ -16,7 +24,6 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 		"dendra report done",
 		"dendra report problem",
 		"dendra messages send root",
-		"DENDRA_AGENT_IDENTITY",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -26,7 +33,7 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	if strings.Contains(prompt, "YOUR TASK:") {
 		t.Error("engineer prompt should not contain YOUR TASK section")
@@ -82,7 +89,7 @@ func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	if strings.Contains(prompt, "deep investigator") {
 		t.Error("engineer prompt should not contain researcher role 'deep investigator'")
@@ -90,7 +97,7 @@ func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	mandatoryPhrases := []string{
 		// The workflow must be explicitly mandatory
@@ -117,7 +124,7 @@ func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	subAgents := []string{
 		"oracle",
@@ -135,7 +142,7 @@ func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	// Verify the workflow steps appear in order
 	steps := []string{"oracle", "test-writer", "test-critic", "implementer", "code-reviewer", "qa-validator"}
@@ -153,16 +160,14 @@ func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	keyPhrases := []string{
 		"Reflect",
-		"out of scope",
-		"edge cases",
-		"Architectural observations",
-		"future agents",
-		"comment on the Linear issue",
-		"done report",
+		"code edits challenging",
+		"unclear or confusing",
+		"code quality issues",
+		"Documentation gaps",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -190,7 +195,7 @@ func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
 
 	qaIdx := strings.Index(prompt, "qa-validator")
 	reflectIdx := strings.Index(prompt, "Reflect")
@@ -211,6 +216,51 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	}
 	if reflectIdx >= doneIdx {
 		t.Errorf("'Reflect' (idx %d) should appear before 'Report done' (idx %d)", reflectIdx, doneIdx)
+	}
+}
+
+func TestBuildEngineerPrompt_EnvironmentSection(t *testing.T) {
+	env := EnvConfig{
+		WorkDir:  "/tmp/worktrees/oak",
+		Platform: "linux",
+		Shell:    "/bin/zsh",
+	}
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+
+	envPhrases := []string{
+		"# Environment",
+		"Working directory: /tmp/worktrees/oak",
+		"Git repository: yes",
+		"Git branch: dendra/oak",
+		"Platform: linux",
+		"Shell: /bin/zsh",
+	}
+	for _, phrase := range envPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("engineer prompt missing environment phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildEngineerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
+	env := EnvConfig{} // all empty
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+
+	if strings.Contains(prompt, "Working directory:") {
+		t.Error("should omit working directory when empty")
+	}
+	if strings.Contains(prompt, "Platform:") {
+		t.Error("should omit platform when empty")
+	}
+	if strings.Contains(prompt, "Shell:") {
+		t.Error("should omit shell when empty")
+	}
+	// These should always be present
+	if !strings.Contains(prompt, "Git repository: yes") {
+		t.Error("should always include git repository")
+	}
+	if !strings.Contains(prompt, "Git branch: dendra/oak") {
+		t.Error("should always include git branch")
 	}
 }
 
