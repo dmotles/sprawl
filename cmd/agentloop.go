@@ -261,6 +261,8 @@ func sendPromptWithInterrupt(
 	pokePath string,
 	prompt string,
 	pollInterval time.Duration,
+	dendraRoot string,
+	agentName string,
 ) (*protocol.ResultMessage, string, error) {
 	pokeCh := make(chan string, 1)
 	done := make(chan struct{})
@@ -268,23 +270,37 @@ func sendPromptWithInterrupt(
 	go func() {
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
+		loggedMsgIDs := make(map[string]bool)
 		for {
 			select {
 			case <-done:
 				return
 			case <-ticker.C:
+				// Check for poke file.
 				content, err := deps.readFile(pokePath)
-				if err != nil {
-					continue // not found yet
+				if err == nil {
+					_ = deps.removeFile(pokePath)
+					select {
+					case pokeCh <- strings.TrimSpace(string(content)):
+					default:
+					}
+					// Trigger interrupt — ignore error (turn may have already ended).
+					_ = proc.InterruptTurn(ctx)
+					return
 				}
-				_ = deps.removeFile(pokePath)
-				select {
-				case pokeCh <- strings.TrimSpace(string(content)):
-				default:
+
+				// Check inbox for unread messages and log them (but don't deliver).
+				if dendraRoot != "" && agentName != "" {
+					msgs, listErr := deps.listMessages(dendraRoot, agentName, "unread")
+					if listErr == nil {
+						for _, msg := range msgs {
+							if !loggedMsgIDs[msg.ID] {
+								loggedMsgIDs[msg.ID] = true
+								fmt.Fprintf(deps.stdout, "[agent-loop] message received from %s (subject: %q) — queued, waiting for current turn to finish\n", msg.From, msg.Subject)
+							}
+						}
+					}
 				}
-				// Trigger interrupt — ignore error (turn may have already ended).
-				_ = proc.InterruptTurn(ctx)
-				return
 			}
 		}
 	}()
@@ -405,7 +421,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 
 	// sendWithInterrupt wraps sendPromptWithInterrupt with the poke path and default interval.
 	sendWithInterrupt := func(prompt string) (*protocol.ResultMessage, string, error) {
-		return sendPromptWithInterrupt(ctx, proc, deps, pokePath, prompt, defaultPollInterval)
+		return sendPromptWithInterrupt(ctx, proc, deps, pokePath, prompt, defaultPollInterval, dendraRoot, agentName)
 	}
 
 	// pendingPoke holds poke content from a mid-turn interrupt, delivered on the next iteration.

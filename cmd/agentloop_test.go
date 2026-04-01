@@ -1539,7 +1539,7 @@ func TestSendPromptWithInterrupt_NoPokeFile(t *testing.T) {
 
 	result, pokeContent, err := sendPromptWithInterrupt(
 		context.Background(), mockProc, deps, "/tmp/test.poke", "hello",
-		10*time.Millisecond,
+		10*time.Millisecond, "", "",
 	)
 	if err != nil {
 		t.Fatalf("sendPromptWithInterrupt error: %v", err)
@@ -1601,7 +1601,7 @@ func TestSendPromptWithInterrupt_PokeFileFound(t *testing.T) {
 		defer close(done)
 		result, pokeContent, sendErr = sendPromptWithInterrupt(
 			context.Background(), blockingProc, deps, "/tmp/test.poke", "hello",
-			10*time.Millisecond,
+			10*time.Millisecond, "", "",
 		)
 	}()
 
@@ -1693,4 +1693,248 @@ func TestRunAgentLoop_PokeFileBetweenTurns(t *testing.T) {
 	if !pokeRemoved {
 		t.Error("expected poke file to be removed after reading")
 	}
+}
+
+func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
+	// When a task is being processed (SendPrompt is blocking) and inbox messages
+	// arrive, the log output should contain a "queued, waiting for current turn"
+	// line, AND the messages should still be delivered normally on the next iteration.
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Queue a task so the loop enters a sendWithInterrupt call.
+	if _, err := state.EnqueueTask(tmpDir, "ash", "long running task"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	// Use a blocking process manager so SendPrompt blocks while we send messages.
+	sendCh := make(chan struct{})
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "done"},
+	}
+
+	// Capture stdout
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Track how many prompts have been sent to decide when to cancel.
+	promptCount := 0
+	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
+		return &promptInterceptor{
+			processManager: blockingProc,
+			onSend: func(prompt string) {
+				promptCount++
+				if promptCount >= 2 {
+					// After second prompt (inbox delivery), cancel.
+					cancel()
+				}
+			},
+		}
+	}
+
+	deps.sleepFunc = func(d time.Duration) {
+		if promptCount >= 2 {
+			cancel()
+		}
+	}
+
+	// Start the loop in a goroutine.
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		_ = runAgentLoop(ctx, deps, "ash")
+	}()
+
+	// Wait a bit for the loop to start processing the task (SendPrompt blocks).
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a message to ash's inbox while the turn is in progress.
+	if err := messages.Send(tmpDir, "root", "ash", "Fix the bug", "details here"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// Wait for the poller to notice the message (poll interval is 500ms default,
+	// but we need it to see our message).
+	time.Sleep(700 * time.Millisecond)
+
+	// Unblock the first SendPrompt so the turn finishes and loop continues.
+	close(sendCh)
+
+	// Wait for the loop to finish.
+	select {
+	case <-loopDone:
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-loopDone
+	}
+
+	output := outBuf.String()
+
+	// The output should contain a queued message log line during the turn.
+	expectedLog := `message received from root (subject: "Fix the bug")`
+	if !strings.Contains(output, expectedLog) {
+		t.Errorf("expected output to contain queued message log line %q\ngot:\n%s", expectedLog, output)
+	}
+
+	// The message should ALSO be delivered normally (as an inbox prompt) on the next iteration.
+	found := false
+	for _, p := range mockProc.prompts {
+		if strings.Contains(p, "Fix the bug") || strings.Contains(p, "details here") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected inbox message to be delivered as a prompt on next iteration, prompts: %v", mockProc.prompts)
+	}
+}
+
+func TestRunAgentLoop_InboxQueuedLogNoDuplicates(t *testing.T) {
+	// When the same message is polled multiple times during a single turn,
+	// only one log line should be emitted for it.
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Queue a task so the loop enters a sendWithInterrupt call.
+	if _, err := state.EnqueueTask(tmpDir, "ash", "slow task"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	// Use a blocking process manager.
+	sendCh := make(chan struct{})
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "done"},
+	}
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
+		return blockingProc
+	}
+	deps.sleepFunc = func(d time.Duration) {
+		cancel()
+	}
+
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		_ = runAgentLoop(ctx, deps, "ash")
+	}()
+
+	// Wait for the blocking SendPrompt to be reached.
+	time.Sleep(50 * time.Millisecond)
+
+	// Send a message to ash's inbox.
+	if err := messages.Send(tmpDir, "root", "ash", "Same message", "body"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// Wait long enough for multiple poll intervals to fire (2+ polls should see it).
+	time.Sleep(1500 * time.Millisecond)
+
+	// Unblock SendPrompt and let loop finish.
+	close(sendCh)
+
+	select {
+	case <-loopDone:
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-loopDone
+	}
+
+	output := outBuf.String()
+
+	// Count how many times the queued log line appears.
+	queuedLine := `message received from root (subject: "Same message")`
+	count := strings.Count(output, queuedLine)
+
+	if count == 0 {
+		t.Errorf("expected at least one queued message log line, got none.\noutput:\n%s", output)
+	}
+	if count > 1 {
+		t.Errorf("expected exactly 1 queued message log line, got %d.\noutput:\n%s", count, output)
+	}
+}
+
+func TestRunAgentLoop_InboxQueuedLogFormat(t *testing.T) {
+	// Verify the exact format of the queued message log line.
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Queue a task to trigger a sendWithInterrupt call.
+	if _, err := state.EnqueueTask(tmpDir, "ash", "working on stuff"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	sendCh := make(chan struct{})
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "done"},
+	}
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
+		return blockingProc
+	}
+	deps.sleepFunc = func(d time.Duration) {
+		cancel()
+	}
+
+	loopDone := make(chan struct{})
+	go func() {
+		defer close(loopDone)
+		_ = runAgentLoop(ctx, deps, "ash")
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := messages.Send(tmpDir, "root", "ash", "Fix the bug", "please fix it"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	time.Sleep(700 * time.Millisecond)
+
+	close(sendCh)
+
+	select {
+	case <-loopDone:
+	case <-time.After(5 * time.Second):
+		cancel()
+		<-loopDone
+	}
+
+	output := outBuf.String()
+
+	// Check the exact log line format including the [agent-loop] prefix and trailing text.
+	expectedPattern := regexp.MustCompile(
+		`\[agent-loop\] message received from root \(subject: "Fix the bug"\) — queued, waiting for current turn to finish`,
+	)
+	if !expectedPattern.MatchString(output) {
+		t.Errorf("expected log line matching pattern:\n  %s\ngot output:\n%s", expectedPattern.String(), output)
+	}
+}
+
+// promptInterceptor wraps a processManager and calls onSend after each SendPrompt.
+type promptInterceptor struct {
+	processManager
+	onSend func(prompt string)
+}
+
+func (p *promptInterceptor) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
+	result, err := p.processManager.SendPrompt(ctx, prompt)
+	if p.onSend != nil {
+		p.onSend(prompt)
+	}
+	return result, err
 }
