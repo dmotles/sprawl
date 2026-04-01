@@ -5,7 +5,6 @@ package agentloop
 import (
 	"context"
 	"fmt"
-	"io"
 	"sync"
 
 	"github.com/dmotles/dendra/internal/protocol"
@@ -73,16 +72,28 @@ func WithObserver(o Observer) Option {
 }
 
 // Process manages the lifecycle of a single Claude Code subprocess.
+// A background readLoop goroutine continuously drains Claude's stdout,
+// dispatching messages to the observer and delivering results via channels.
 type Process struct {
 	config   ProcessConfig
 	starter  CommandStarter
-	reader   MessageReader
 	writer   MessageWriter
 	waitFn   WaitFunc
 	cancelFn CancelFunc
 	state    ProcessState
 	observer Observer
 	mu       sync.Mutex
+
+	// writerMu protects concurrent writes to stdin.
+	// readLoop calls ApproveToolUse; SendPrompt calls SendUserMessage.
+	writerMu sync.Mutex
+
+	// Background reader delivers results and errors via channels.
+	resultCh    chan *protocol.ResultMessage // buffered(1)
+	readerErrCh chan error                  // buffered(1)
+
+	// stopCh is closed on Stop/Kill to unblock readLoop's channel sends.
+	stopCh chan struct{}
 }
 
 // NewProcess creates a new Process with the given config, starter, and options.
@@ -98,8 +109,68 @@ func NewProcess(config ProcessConfig, starter CommandStarter, opts ...Option) *P
 	return p
 }
 
-// Start launches the Claude Code subprocess, sends the initial prompt to
-// trigger the system/init message, and waits for init before returning.
+// readLoop continuously reads from the MessageReader in a background goroutine.
+// It dispatches every message to the observer, sends results to resultCh,
+// auto-approves control requests, and reports errors via readerErrCh.
+// The reader is owned exclusively by this goroutine.
+func (p *Process) readLoop(reader MessageReader) {
+	for {
+		msg, err := reader.Next()
+		if err != nil {
+			select {
+			case p.readerErrCh <- err:
+			default:
+			}
+			return
+		}
+
+		// Observer sees every message type.
+		if p.observer != nil {
+			p.observer.OnMessage(msg)
+		}
+
+		switch msg.Type {
+		case "result":
+			var result protocol.ResultMessage
+			if err := protocol.ParseAs(msg, &result); err != nil {
+				select {
+				case p.readerErrCh <- fmt.Errorf("parsing result message: %w", err):
+				default:
+				}
+				return
+			}
+			// Block until the consumer reads the result, or stop is signaled.
+			select {
+			case p.resultCh <- &result:
+			case <-p.stopCh:
+				return
+			}
+
+		case "control_request":
+			var cr protocol.ControlRequest
+			if err := protocol.ParseAs(msg, &cr); err != nil {
+				select {
+				case p.readerErrCh <- fmt.Errorf("parsing control request: %w", err):
+				default:
+				}
+				return
+			}
+			p.writerMu.Lock()
+			err := p.writer.ApproveToolUse(cr.RequestID)
+			p.writerMu.Unlock()
+			if err != nil {
+				select {
+				case p.readerErrCh <- fmt.Errorf("approving tool use: %w", err):
+				default:
+				}
+				return
+			}
+		}
+	}
+}
+
+// Start launches the Claude Code subprocess, sends the initial prompt,
+// and blocks until the initial prompt's result arrives.
 func (p *Process) Start(ctx context.Context, initialPrompt string) error {
 	p.mu.Lock()
 	p.state = StateStarting
@@ -114,97 +185,103 @@ func (p *Process) Start(ctx context.Context, initialPrompt string) error {
 	}
 
 	p.mu.Lock()
-	p.reader = reader
 	p.writer = writer
 	p.waitFn = waitFn
 	p.cancelFn = cancelFn
+	p.resultCh = make(chan *protocol.ResultMessage, 1)
+	p.readerErrCh = make(chan error, 1)
+	p.stopCh = make(chan struct{})
 	p.mu.Unlock()
 
-	// Send the initial user message to trigger system/init from Claude.
-	if err := writer.SendUserMessage(initialPrompt); err != nil {
+	// Start the background reader goroutine.
+	go p.readLoop(reader)
+
+	// Send the initial user message.
+	p.writerMu.Lock()
+	sendErr := writer.SendUserMessage(initialPrompt)
+	p.writerMu.Unlock()
+	if sendErr != nil {
 		p.mu.Lock()
 		p.state = StateStopped
 		p.mu.Unlock()
-		return fmt.Errorf("sending initial prompt: %w", err)
+		return fmt.Errorf("sending initial prompt: %w", sendErr)
 	}
 
-	// Read messages until we get system/init.
-	for {
-		msg, err := reader.Next()
-		if err != nil {
-			p.mu.Lock()
-			p.state = StateStopped
-			p.mu.Unlock()
-			if err == io.EOF {
-				return fmt.Errorf("reader EOF before init message")
-			}
-			return fmt.Errorf("reading init message: %w", err)
-		}
-		if msg.Type == "system" && msg.Subtype == "init" {
+	// Wait for the initial prompt's result.
+	select {
+	case <-p.resultCh:
+		p.mu.Lock()
+		p.state = StateIdle
+		p.mu.Unlock()
+		return nil
+	case err := <-p.readerErrCh:
+		// Check for a pending result that arrived before the error.
+		select {
+		case <-p.resultCh:
 			p.mu.Lock()
 			p.state = StateIdle
 			p.mu.Unlock()
 			return nil
+		default:
 		}
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+		return fmt.Errorf("reading during start: %w", err)
+	case <-ctx.Done():
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+		return ctx.Err()
 	}
 }
 
-// SendPrompt sends a user prompt and processes messages until a result is received.
+// SendPrompt sends a user prompt and blocks until a result is received.
 func (p *Process) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
 	p.mu.Lock()
 	p.state = StateRunning
 	p.mu.Unlock()
 
-	if err := p.writer.SendUserMessage(prompt); err != nil {
+	p.writerMu.Lock()
+	sendErr := p.writer.SendUserMessage(prompt)
+	p.writerMu.Unlock()
+	if sendErr != nil {
 		p.mu.Lock()
 		p.state = StateStopped
 		p.mu.Unlock()
-		return nil, fmt.Errorf("sending prompt: %w", err)
+		return nil, fmt.Errorf("sending prompt: %w", sendErr)
 	}
 
-	for {
-		msg, err := p.reader.Next()
-		if err != nil {
-			p.mu.Lock()
-			p.state = StateStopped
-			p.mu.Unlock()
-			return nil, fmt.Errorf("reading message: %w", err)
-		}
-
-		switch msg.Type {
-		case "result":
-			var result protocol.ResultMessage
-			if err := protocol.ParseAs(msg, &result); err != nil {
-				p.mu.Lock()
-				p.state = StateStopped
-				p.mu.Unlock()
-				return nil, fmt.Errorf("parsing result message: %w", err)
+	select {
+	case result := <-p.resultCh:
+		p.mu.Lock()
+		p.state = StateIdle
+		p.mu.Unlock()
+		return result, nil
+	case err := <-p.readerErrCh:
+		// Check for a pending result that arrived before the error.
+		select {
+		case result := <-p.resultCh:
+			// Result was available — prefer it. Re-queue the error for the next caller.
+			select {
+			case p.readerErrCh <- err:
+			default:
 			}
 			p.mu.Lock()
 			p.state = StateIdle
 			p.mu.Unlock()
-			return &result, nil
-
-		case "control_request":
-			var cr protocol.ControlRequest
-			if err := protocol.ParseAs(msg, &cr); err != nil {
-				p.mu.Lock()
-				p.state = StateStopped
-				p.mu.Unlock()
-				return nil, fmt.Errorf("parsing control request: %w", err)
-			}
-			if err := p.writer.ApproveToolUse(cr.RequestID); err != nil {
-				p.mu.Lock()
-				p.state = StateStopped
-				p.mu.Unlock()
-				return nil, fmt.Errorf("approving tool use: %w", err)
-			}
-
+			return result, nil
 		default:
-			if p.observer != nil {
-				p.observer.OnMessage(msg)
-			}
 		}
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+		return nil, fmt.Errorf("reading message: %w", err)
+	case <-ctx.Done():
+		p.mu.Lock()
+		p.state = StateStopped
+		p.mu.Unlock()
+		return nil, ctx.Err()
 	}
 }
 
@@ -221,6 +298,8 @@ func (p *Process) SessionID() string {
 }
 
 // Stop gracefully shuts down the subprocess by closing the writer and waiting.
+// Closing the writer causes EOF on Claude's stdin; readLoop sees EOF from
+// the reader and exits.
 func (p *Process) Stop(ctx context.Context) error {
 	p.mu.Lock()
 	if p.writer == nil {
@@ -228,7 +307,18 @@ func (p *Process) Stop(ctx context.Context) error {
 		p.mu.Unlock()
 		return nil
 	}
+	stopCh := p.stopCh
 	p.mu.Unlock()
+
+	// Signal readLoop to stop blocking on channel sends.
+	if stopCh != nil {
+		select {
+		case <-stopCh:
+			// Already closed.
+		default:
+			close(stopCh)
+		}
+	}
 
 	closeErr := p.writer.Close()
 
@@ -256,7 +346,18 @@ func (p *Process) Kill() error {
 		p.mu.Unlock()
 		return nil
 	}
+	stopCh := p.stopCh
 	p.mu.Unlock()
+
+	// Signal readLoop to stop blocking on channel sends.
+	if stopCh != nil {
+		select {
+		case <-stopCh:
+			// Already closed.
+		default:
+			close(stopCh)
+		}
+	}
 
 	err := p.cancelFn()
 	p.mu.Lock()
