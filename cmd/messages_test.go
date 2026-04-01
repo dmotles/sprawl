@@ -1071,6 +1071,7 @@ func (m *mockTmuxRunner) Attach(name string) error            { return nil }
 
 func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 	tmpDir := t.TempDir()
+	state.WriteRootName(tmpDir, tmux.DefaultRootName)
 	mock := &mockTmuxRunner{}
 	deps := &messagesDeps{
 		getenv: func(key string) string {
@@ -1087,7 +1088,7 @@ func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 		tmuxRunner: mock,
 	}
 
-	err := runMessagesSend(deps, "root", "build done", "all tests pass")
+	err := runMessagesSend(deps, tmux.DefaultRootName, "build done", "all tests pass")
 	if err != nil {
 		t.Fatalf("runMessagesSend() unexpected error: %v", err)
 	}

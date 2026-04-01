@@ -170,7 +170,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 		if rootName == "" {
 			rootName = tmux.DefaultRootName
 		}
-		if parentName == "root" {
+		if parentName == rootName {
 			parentTreePath = rootName
 		} else {
 			parentTreePath = rootName + tmux.BranchSeparator + parentName

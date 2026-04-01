@@ -151,11 +151,13 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		if rootName == "" {
 			rootName = tmux.DefaultRootName
 		}
-		rootSession := tmux.RootSessionName(namespace, rootName)
-		sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
-			notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
-			deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
-		}))
+		if to == rootName {
+			rootSession := tmux.RootSessionName(namespace, rootName)
+			sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
+				notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
+				deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
+			}))
+		}
 	}
 
 	if err := messages.Send(dendraRoot, agentName, to, subject, body, sendOpts...); err != nil {

@@ -138,8 +138,8 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 	if runner.newSessionWithWinWin != tmux.RootWindowName {
 		t.Errorf("NewSessionWithWindow window = %q, want %q", runner.newSessionWithWinWin, tmux.RootWindowName)
 	}
-	if runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"] != "root" {
-		t.Errorf("DENDRA_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"], "root")
+	if runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"] != tmux.DefaultRootName {
+		t.Errorf("DENDRA_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"], tmux.DefaultRootName)
 	}
 	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != tmux.DefaultNamespace {
 		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], tmux.DefaultNamespace)

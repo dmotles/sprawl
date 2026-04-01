@@ -87,7 +87,7 @@ func runInit(deps *initDeps, rootName, namespace string) error {
 	}
 
 	opts := agent.LaunchOpts{
-		SystemPrompt:    agent.RootSystemPrompt,
+		SystemPrompt:    agent.BuildRootPrompt(rootName),
 		Tools:           []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
 		AllowedTools:    []string{"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch"},
 		DisallowedTools: []string{"Edit", "Write", "NotebookEdit"},
@@ -106,7 +106,7 @@ func runInit(deps *initDeps, rootName, namespace string) error {
 	treePath := rootName
 
 	env := map[string]string{
-		"DENDRA_AGENT_IDENTITY": "root",
+		"DENDRA_AGENT_IDENTITY": rootName,
 		"DENDRA_ROOT":           cwd,
 		"DENDRA_NAMESPACE":      namespace,
 		"DENDRA_TREE_PATH":      treePath,

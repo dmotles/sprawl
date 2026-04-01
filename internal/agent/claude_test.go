@@ -110,10 +110,10 @@ func TestBuildArgs_NoBare(t *testing.T) {
 	}
 }
 
-func TestRootSystemPrompt_ContainsKeyPhrases(t *testing.T) {
+func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 	phrases := []string{
 		"dendra spawn",
-		"root",
+		"sensei",
 		"DO NOT edit code",
 		"--type manager",
 		"--type engineer",
@@ -123,7 +123,7 @@ func TestRootSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 
 	for _, phrase := range phrases {
-		if !strings.Contains(RootSystemPrompt, phrase) {
+		if !strings.Contains(BuildRootPrompt("sensei"), phrase) {
 			t.Errorf("root system prompt missing key phrase: %q", phrase)
 		}
 	}
@@ -197,8 +197,8 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 }
 
-func TestRootSystemPrompt_ContainsTesterType(t *testing.T) {
-	if !strings.Contains(RootSystemPrompt, "--type tester") {
+func TestBuildRootPrompt_ContainsTesterType(t *testing.T) {
+	if !strings.Contains(BuildRootPrompt("sensei"), "--type tester") {
 		t.Error("root system prompt missing --type tester")
 	}
 }

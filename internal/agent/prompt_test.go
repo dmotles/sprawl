@@ -194,13 +194,13 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	}
 }
 
-func TestRootSystemPrompt_DoesNotMentionRespawn(t *testing.T) {
-	if strings.Contains(RootSystemPrompt, "respawn") {
-		t.Error("RootSystemPrompt should not mention 'respawn' — the command was canceled (QUM-46)")
+func TestBuildRootPrompt_DoesNotMentionRespawn(t *testing.T) {
+	if strings.Contains(BuildRootPrompt("sensei"), "respawn") {
+		t.Error("BuildRootPrompt should not mention 'respawn' — the command was canceled (QUM-46)")
 	}
 }
 
-func TestRootSystemPrompt_VerificationGuidance(t *testing.T) {
+func TestBuildRootPrompt_VerificationGuidance(t *testing.T) {
 	keyPhrases := []string{
 		"VERIFYING AGENT WORK",
 		"git diff main..dendra/<name>",
@@ -212,13 +212,13 @@ func TestRootSystemPrompt_VerificationGuidance(t *testing.T) {
 		"done report",
 	}
 	for _, phrase := range keyPhrases {
-		if !strings.Contains(RootSystemPrompt, phrase) {
-			t.Errorf("RootSystemPrompt missing verification guidance phrase: %q", phrase)
+		if !strings.Contains(BuildRootPrompt("sensei"), phrase) {
+			t.Errorf("BuildRootPrompt missing verification guidance phrase: %q", phrase)
 		}
 	}
 }
 
-func TestRootSystemPrompt_ParallelismGuidance(t *testing.T) {
+func TestBuildRootPrompt_ParallelismGuidance(t *testing.T) {
 	keyPhrases := []string{
 		"PARALLELISM VS. SERIALIZATION",
 		"overlapping files",
@@ -232,25 +232,26 @@ func TestRootSystemPrompt_ParallelismGuidance(t *testing.T) {
 		"smaller and more isolated",
 	}
 	for _, phrase := range keyPhrases {
-		if !strings.Contains(RootSystemPrompt, phrase) {
-			t.Errorf("RootSystemPrompt missing parallelism guidance phrase: %q", phrase)
+		if !strings.Contains(BuildRootPrompt("sensei"), phrase) {
+			t.Errorf("BuildRootPrompt missing parallelism guidance phrase: %q", phrase)
 		}
 	}
 }
 
-func TestRootSystemPrompt_ParallelismSectionOrdering(t *testing.T) {
-	rulesIdx := strings.Index(RootSystemPrompt, "RULES:")
-	parallelismIdx := strings.Index(RootSystemPrompt, "PARALLELISM VS. SERIALIZATION:")
-	verifyIdx := strings.Index(RootSystemPrompt, "VERIFYING AGENT WORK:")
+func TestBuildRootPrompt_ParallelismSectionOrdering(t *testing.T) {
+	prompt := BuildRootPrompt("sensei")
+	rulesIdx := strings.Index(prompt, "RULES:")
+	parallelismIdx := strings.Index(prompt, "PARALLELISM VS. SERIALIZATION:")
+	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
 
 	if rulesIdx == -1 {
-		t.Fatal("RootSystemPrompt missing 'RULES:'")
+		t.Fatal("BuildRootPrompt missing 'RULES:'")
 	}
 	if parallelismIdx == -1 {
-		t.Fatal("RootSystemPrompt missing 'PARALLELISM VS. SERIALIZATION:'")
+		t.Fatal("BuildRootPrompt missing 'PARALLELISM VS. SERIALIZATION:'")
 	}
 	if verifyIdx == -1 {
-		t.Fatal("RootSystemPrompt missing 'VERIFYING AGENT WORK:'")
+		t.Fatal("BuildRootPrompt missing 'VERIFYING AGENT WORK:'")
 	}
 
 	if parallelismIdx <= rulesIdx {
@@ -276,5 +277,20 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 
 	if reflectIdx >= doneIdx {
 		t.Errorf("'REFLECTION' (idx %d) should appear before 'dendra report done' (idx %d)", reflectIdx, doneIdx)
+	}
+}
+
+func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
+	prompt := BuildRootPrompt("sensei")
+	if !strings.Contains(prompt, `Your identity is "sensei"`) {
+		t.Error("BuildRootPrompt should interpolate the root name into identity line")
+	}
+
+	prompt2 := BuildRootPrompt("kai")
+	if !strings.Contains(prompt2, `Your identity is "kai"`) {
+		t.Error("BuildRootPrompt should interpolate custom root name")
+	}
+	if strings.Contains(prompt2, `Your identity is "root"`) {
+		t.Error("BuildRootPrompt should not hardcode 'root' identity")
 	}
 }

@@ -30,7 +30,7 @@ func MessagesDir(dendraRoot string) string {
 	return filepath.Join(dendraRoot, ".dendra", "messages")
 }
 
-// NotifyFunc is called after successful delivery when the recipient is "root".
+// NotifyFunc is called after successful delivery when provided via WithNotify.
 // It is best-effort — errors and panics are swallowed.
 type NotifyFunc func(from, subject string)
 
@@ -41,7 +41,7 @@ type sendOptions struct {
 // SendOption configures optional behavior for Send.
 type SendOption func(*sendOptions)
 
-// WithNotify registers a notification callback invoked when the recipient is "root".
+// WithNotify registers a notification callback invoked after successful delivery.
 func WithNotify(fn NotifyFunc) SendOption {
 	return func(o *sendOptions) {
 		o.notify = fn
@@ -119,7 +119,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	for _, o := range opts {
 		o(&sopts)
 	}
-	if to == "root" && sopts.notify != nil {
+	if sopts.notify != nil {
 		func() {
 			defer func() { recover() }()
 			sopts.notify(from, subject)

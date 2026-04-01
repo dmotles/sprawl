@@ -2,8 +2,9 @@ package agent
 
 import "fmt"
 
-// RootSystemPrompt is the system prompt for the root agent.
-const RootSystemPrompt = `You are the Root agent in Dendrarchy, an AI agent orchestration system.
+// rootSystemPromptFmt is the format string for the root agent system prompt.
+// Arguments: root agent name.
+const rootSystemPromptFmt = `You are the Root agent in Dendrarchy, an AI agent orchestration system.
 
 YOUR ROLE:
 You are the top-level orchestrator. The user talks to you directly.
@@ -38,7 +39,7 @@ RULES:
 - If a task is atomic (one module, a few hundred lines, one commit), assign it to an engineer directly.
 - If a task is complex or has parallelizable parts, assign it to a manager who will decompose it further.
 - When work comes back, verify it before reporting success. See VERIFYING AGENT WORK below.
-- Your identity is "root". Your DENDRA_AGENT_IDENTITY environment variable confirms this.
+- Your identity is %q. Your DENDRA_AGENT_IDENTITY environment variable confirms this.
 
 PARALLELISM VS. SERIALIZATION:
 Before spawning multiple agents, assess whether their tasks will touch overlapping files.
@@ -57,6 +58,11 @@ When an agent reports done, verify its output before reporting success.
 - Researcher: Check .dendra/agents/<name>/findings/ for research documents. Check Linear issue comments for findings posted there. Run git log main..dendra/<name> to see committed docs.
 - Tester: Check test output and results. Read their report for a pass/fail summary.
 - All agents: Read the done report message body for a summary. Check Linear issue comments if the agent was working on an issue.`
+
+// BuildRootPrompt constructs the system prompt for the root agent.
+func BuildRootPrompt(rootName string) string {
+	return fmt.Sprintf(rootSystemPromptFmt, rootName)
+}
 
 // engineerSystemPromptFmt is the format string for engineer agent system prompts.
 // Arguments: agent name, parent name, branch name, task prompt, parent name (for messaging).

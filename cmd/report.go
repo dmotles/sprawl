@@ -149,11 +149,13 @@ func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentSt
 		if rootName == "" {
 			rootName = tmux.DefaultRootName
 		}
-		rootSession := tmux.RootSessionName(namespace, rootName)
-		sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
-			notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
-			deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
-		}))
+		if parent == rootName {
+			rootSession := tmux.RootSessionName(namespace, rootName)
+			sendOpts = append(sendOpts, messages.WithNotify(func(from, subj string) {
+				notification := fmt.Sprintf("[inbox] Message from %s: %s", from, subj)
+				deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
+			}))
+		}
 	}
 
 	return deps.sendMessage(dendraRoot, agentState.Name, parent, subject, message, sendOpts...)

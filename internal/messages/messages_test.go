@@ -1583,7 +1583,7 @@ func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 	}
 }
 
-func TestSend_WithNotify_NonRootRecipientDoesNotCallNotify(t *testing.T) {
+func TestSend_WithNotify_AnyRecipientCallsNotify(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	notifyCalled := false
@@ -1596,8 +1596,8 @@ func TestSend_WithNotify_NonRootRecipientDoesNotCallNotify(t *testing.T) {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
 
-	if notifyCalled {
-		t.Fatal("expected notify callback NOT to be called for non-root recipient")
+	if !notifyCalled {
+		t.Fatal("expected notify callback to be called regardless of recipient name")
 	}
 
 	// Verify message was still delivered
