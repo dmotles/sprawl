@@ -323,10 +323,11 @@ func runMessagesBroadcast(d *messagesDeps, subject, body string) error {
 	}
 
 	count, err := messages.Broadcast(dendraRoot, agentName, subject, body)
+	if count > 0 {
+		fmt.Fprintf(d.stderr, "Broadcast sent to %d agents: %s\n", count, subject)
+	}
 	if err != nil {
 		return err
 	}
-
-	fmt.Fprintf(os.Stderr, "Broadcast sent to %d agents: %s\n", count, subject)
 	return nil
 }
