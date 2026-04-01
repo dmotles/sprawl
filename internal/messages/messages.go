@@ -256,16 +256,26 @@ func Archive(dendraRoot, agent, msgID string) error {
 	}
 
 	// Try new/ first, then cur/
-	srcPath := filepath.Join(agentDir, "new", filename)
-	if err := os.Rename(srcPath, dstPath); err == nil {
+	newPath := filepath.Join(agentDir, "new", filename)
+	errNew := os.Rename(newPath, dstPath)
+	if errNew == nil {
 		return nil
 	}
 
-	srcPath = filepath.Join(agentDir, "cur", filename)
-	if err := os.Rename(srcPath, dstPath); err != nil {
+	curPath := filepath.Join(agentDir, "cur", filename)
+	errCur := os.Rename(curPath, dstPath)
+	if errCur == nil {
+		return nil
+	}
+
+	if os.IsNotExist(errNew) && os.IsNotExist(errCur) {
 		return fmt.Errorf("archiving message: not found in new/ or cur/")
 	}
-	return nil
+	// Return whichever error is not a simple "not found" — prefer errNew.
+	if !os.IsNotExist(errNew) {
+		return fmt.Errorf("archiving message from new/: %w", errNew)
+	}
+	return fmt.Errorf("archiving message from cur/: %w", errCur)
 }
 
 // ReadMessage reads a message from any directory (new/, cur/, archive/, sent/), returns it.

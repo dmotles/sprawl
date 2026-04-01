@@ -898,6 +898,51 @@ func TestArchive_NotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when message not found")
 	}
+	if !strings.Contains(err.Error(), "not found in new/ or cur/") {
+		t.Errorf("expected 'not found' message, got: %v", err)
+	}
+}
+
+func TestArchive_PermissionError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("test requires non-root user (root bypasses permission checks)")
+	}
+
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	// Place a message file in new/
+	msg := &Message{
+		ID: "1000.alice.aabb", From: "alice", To: "bob",
+		Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	writeMessageFile(t, newDir, msg.ID, msg)
+
+	// Remove write permission on new/ so os.Rename from new/ fails with permission error
+	if err := os.Chmod(newDir, 0444); err != nil {
+		t.Fatalf("chmod new/: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(newDir, 0755) })
+
+	err := Archive(tmpDir, agent, "1000.alice.aabb")
+	if err == nil {
+		t.Fatal("expected error when rename fails due to permission")
+	}
+
+	// The error should surface the OS error, not the static "not found" message
+	if strings.Contains(err.Error(), "not found in new/ or cur/") {
+		t.Errorf("expected OS error to surface, got static message: %v", err)
+	}
+	if !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("expected 'permission denied' in error, got: %v", err)
+	}
 }
 
 // --- ReadMessage tests ---
