@@ -225,6 +225,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "Spawned %s %s (branch: %s)\n", agentType, agentName, branchName)
+	fmt.Fprintf(os.Stderr, "Agent will message you when done — no need to poll.\n")
 	return nil
 }
 
