@@ -19,13 +19,9 @@ type initDeps struct {
 
 var defaultDeps *initDeps
 
-var (
-	initName      string
-	initNamespace string
-)
+var initNamespace string
 
 func init() {
-	initCmd.Flags().StringVar(&initName, "name", tmux.DefaultRootName, "root agent name")
 	initCmd.Flags().StringVar(&initNamespace, "namespace", "", "namespace emoji (auto-selected if omitted)")
 	rootCmd.AddCommand(initCmd)
 }
@@ -39,7 +35,7 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runInit(deps, initName, initNamespace)
+		return runInit(deps, initNamespace)
 	},
 }
 
@@ -65,7 +61,8 @@ func resolveDeps() (*initDeps, error) {
 	}, nil
 }
 
-func runInit(deps *initDeps, rootName, namespace string) error {
+func runInit(deps *initDeps, namespace string) error {
+	rootName := tmux.DefaultRootName
 	// Determine namespace: explicit flag > env var > auto-pick
 	if namespace == "" {
 		namespace = deps.getenv("DENDRA_NAMESPACE")

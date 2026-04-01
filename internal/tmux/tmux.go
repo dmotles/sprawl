@@ -47,7 +47,7 @@ func PickNamespace(runner Runner) string {
 	used := make(map[string]bool)
 	for _, s := range sessions {
 		for _, emoji := range NamespacePool {
-			if strings.HasPrefix(s, emoji) {
+			if s == RootSessionName(emoji, DefaultRootName) {
 				used[emoji] = true
 			}
 		}

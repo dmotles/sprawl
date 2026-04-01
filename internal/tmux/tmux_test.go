@@ -158,19 +158,30 @@ func TestPickNamespace_FirstTaken(t *testing.T) {
 }
 
 func TestPickNamespace_MultipleTaken(t *testing.T) {
-	runner := &mockPickRunner{sessions: []string{"🌳sensei", "🌲test", "🌴kai"}}
+	runner := &mockPickRunner{sessions: []string{"🌳sensei", "🌲sensei", "🌴sensei"}}
 	got := PickNamespace(runner)
 	if got != "🎋" {
 		t.Errorf("PickNamespace = %q, want %q (should skip first three)", got, "🎋")
 	}
 }
 
-func TestPickNamespace_ChildSessionAlsoTaken(t *testing.T) {
-	// A children session like 🌳sensei├ should also mark 🌳 as taken
+func TestPickNamespace_ChildSessionDoesNotMarkTaken(t *testing.T) {
+	// A children session like 🌳sensei├ should NOT mark 🌳 as taken.
+	// If sensei was killed but children are still running, user should be able
+	// to re-init into the same namespace.
 	runner := &mockPickRunner{sessions: []string{"🌳sensei├"}}
 	got := PickNamespace(runner)
+	if got != "🌳" {
+		t.Errorf("PickNamespace = %q, want %q (child session should not count)", got, "🌳")
+	}
+}
+
+func TestPickNamespace_RootSessionMarksTaken(t *testing.T) {
+	// Only a root session (emoji+DefaultRootName) marks the namespace as taken.
+	runner := &mockPickRunner{sessions: []string{"🌳sensei"}}
+	got := PickNamespace(runner)
 	if got != "🌲" {
-		t.Errorf("PickNamespace = %q, want %q (children session should count)", got, "🌲")
+		t.Errorf("PickNamespace = %q, want %q (root session should mark taken)", got, "🌲")
 	}
 }
 
