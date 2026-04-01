@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -1196,13 +1197,13 @@ func TestRunAgentLoop_DebugConfigOutput(t *testing.T) {
 		t.Error("expected DENDRA_ROOT in env vars debug output")
 	}
 
-	// All lines should have [agent-loop] prefix
+	// All lines should have [agent-loop] prefix (after timestamp)
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		if line == "" {
 			continue
 		}
-		if !strings.HasPrefix(line, "[agent-loop]") {
-			t.Errorf("expected all output lines to have [agent-loop] prefix, got: %q", line)
+		if !strings.Contains(line, "[agent-loop]") {
+			t.Errorf("expected all output lines to contain [agent-loop], got: %q", line)
 		}
 	}
 }
@@ -1288,5 +1289,147 @@ func TestDefaultBuildPrompt_UnknownType(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "test something") {
 		t.Error("buildPrompt for unknown type should contain the task prompt")
+	}
+}
+
+// --- timestampWriter tests ---
+
+func TestTimestampWriter_SingleLine(t *testing.T) {
+	var buf bytes.Buffer
+	fixedTime := time.Date(2026, 4, 1, 14, 30, 45, 0, time.UTC)
+	tw := &timestampWriter{
+		w:       &buf,
+		nowFunc: func() time.Time { return fixedTime },
+	}
+
+	_, err := tw.Write([]byte("[agent-loop] starting task abc123\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	expected := "[14:30:45] [agent-loop] starting task abc123\n"
+	if output != expected {
+		t.Errorf("got %q, want %q", output, expected)
+	}
+}
+
+func TestTimestampWriter_MultiLine(t *testing.T) {
+	var buf bytes.Buffer
+	callCount := 0
+	times := []time.Time{
+		time.Date(2026, 4, 1, 14, 30, 45, 0, time.UTC),
+		time.Date(2026, 4, 1, 14, 30, 46, 0, time.UTC),
+	}
+	tw := &timestampWriter{
+		w: &buf,
+		nowFunc: func() time.Time {
+			idx := callCount
+			if idx >= len(times) {
+				idx = len(times) - 1
+			}
+			callCount++
+			return times[idx]
+		},
+	}
+
+	_, err := tw.Write([]byte("[claude] line one\n[claude] line two\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := buf.String()
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), output)
+	}
+	if !strings.HasPrefix(lines[0], "[14:30:45] ") {
+		t.Errorf("line 0 missing timestamp prefix: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "[14:30:46] ") {
+		t.Errorf("line 1 missing timestamp prefix: %q", lines[1])
+	}
+}
+
+func TestTimestampWriter_EmptyWrite(t *testing.T) {
+	var buf bytes.Buffer
+	tw := &timestampWriter{
+		w:       &buf,
+		nowFunc: time.Now,
+	}
+
+	n, err := tw.Write([]byte{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 bytes reported, got %d", n)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for empty write, got %q", buf.String())
+	}
+}
+
+func TestTimestampWriter_Format(t *testing.T) {
+	var buf bytes.Buffer
+	fixedTime := time.Date(2026, 4, 1, 4, 5, 7, 0, time.UTC)
+	tw := &timestampWriter{
+		w:       &buf,
+		nowFunc: func() time.Time { return fixedTime },
+	}
+
+	tw.Write([]byte("hello\n"))
+
+	output := buf.String()
+	// Should have zero-padded HH:MM:SS format
+	if !strings.HasPrefix(output, "[04:05:07] ") {
+		t.Errorf("expected [04:05:07] prefix, got %q", output)
+	}
+}
+
+func TestTimestampWriter_ReturnsOriginalByteCount(t *testing.T) {
+	var buf bytes.Buffer
+	tw := &timestampWriter{
+		w:       &buf,
+		nowFunc: time.Now,
+	}
+
+	input := []byte("[agent-loop] test\n")
+	n, err := tw.Write(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != len(input) {
+		t.Errorf("expected Write to return %d, got %d", len(input), n)
+	}
+}
+
+func TestRunAgentLoop_OutputHasTimestamps(t *testing.T) {
+	deps, _, _ := newTestAgentLoopDeps(t)
+
+	var out bytes.Buffer
+	deps.stdout = &out
+
+	// No tasks, cancel after first sleep
+	deps.nextTask = func(root, name string) (*state.Task, error) { return nil, nil }
+	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
+	deps.readFile = func(path string) ([]byte, error) { return nil, errors.New("not found") }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	output := out.String()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	// Every non-empty line should start with a timestamp like [HH:MM:SS]
+	tsPattern := regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}\] `)
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		if !tsPattern.MatchString(line) {
+			t.Errorf("expected line to start with [HH:MM:SS] timestamp, got: %q", line)
+		}
 	}
 }

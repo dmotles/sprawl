@@ -95,6 +95,38 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 	}
 }
 
+// timestampWriter wraps an io.Writer and prepends [HH:MM:SS] timestamps to each line.
+type timestampWriter struct {
+	w       io.Writer
+	nowFunc func() time.Time
+}
+
+// Write prepends a timestamp to each line in p.
+func (tw *timestampWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	lines := strings.Split(string(p), "\n")
+	var buf strings.Builder
+	for i, line := range lines {
+		// Skip empty trailing element from trailing newline
+		if i == len(lines)-1 && line == "" {
+			break
+		}
+		ts := tw.nowFunc().Format("15:04:05")
+		buf.WriteString("[")
+		buf.WriteString(ts)
+		buf.WriteString("] ")
+		buf.WriteString(line)
+		buf.WriteString("\n")
+	}
+	_, err := io.WriteString(tw.w, buf.String())
+	if err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
 // tmuxObserver implements agentloop.Observer, writing formatted output to w.
 type tmuxObserver struct {
 	w io.Writer
@@ -249,8 +281,11 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	}
 	defer logFile.Close()
 
-	// Tee output to both stdout and log file
-	deps.stdout = io.MultiWriter(deps.stdout, logFile)
+	// Tee output to both stdout and log file, then wrap with timestamps
+	deps.stdout = &timestampWriter{
+		w:       io.MultiWriter(deps.stdout, logFile),
+		nowFunc: time.Now,
+	}
 
 	fmt.Fprintf(deps.stdout, "[agent-loop] starting for agent %q\n", agentName)
 
