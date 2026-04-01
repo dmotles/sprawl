@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmotles/dendra/internal/claude"
 	"github.com/dmotles/dendra/internal/protocol"
 )
 
@@ -217,7 +218,7 @@ func TestProcess_Start_HappyPath(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	err := p.Start(context.Background(), "test prompt")
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
@@ -238,7 +239,7 @@ func TestProcess_Start_EOF(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	err := p.Start(context.Background(), "test prompt")
 	if err == nil {
 		t.Fatal("Start() expected error when reader returns EOF before init, got nil")
@@ -258,7 +259,7 @@ func TestProcess_SendPrompt_HappyPath(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -308,7 +309,7 @@ func TestProcess_SendPrompt_WithControlRequest(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -346,7 +347,7 @@ func TestProcess_SendPrompt_MultipleControlRequests(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -386,7 +387,7 @@ func TestProcess_SendPrompt_Observer(t *testing.T) {
 	}
 	obs := &mockObserver{}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter, WithObserver(obs))
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter, WithObserver(obs))
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -448,7 +449,7 @@ func TestProcess_SendPrompt_ReaderError(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -476,7 +477,7 @@ func TestProcess_SendPrompt_ErrorResult(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -510,7 +511,7 @@ func TestProcess_MultiTurn(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -570,7 +571,7 @@ func TestProcess_Stop(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -607,7 +608,7 @@ func TestProcess_Kill(t *testing.T) {
 		},
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -637,7 +638,7 @@ func TestProcess_IsRunning(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
 	// Before start, process should not be running.
 	if p.IsRunning() {
@@ -668,7 +669,7 @@ func TestProcess_SessionID(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "my-session-42"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "my-session-42"}}, starter)
 	if got := p.SessionID(); got != "my-session-42" {
 		t.Errorf("SessionID() = %q, want %q", got, "my-session-42")
 	}
@@ -696,7 +697,7 @@ func TestProcess_ReadLoop_ObserverSeesAllMessages(t *testing.T) {
 	}
 	obs := &mockObserver{}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter, WithObserver(obs))
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter, WithObserver(obs))
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -736,7 +737,7 @@ func TestProcess_Start_WaitsForResult(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	err := p.Start(context.Background(), "test prompt")
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
@@ -762,7 +763,7 @@ func TestProcess_Start_EOFBeforeResult(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	err := p.Start(context.Background(), "test prompt")
 	if err == nil {
 		t.Fatal("Start() expected error when EOF arrives before result, got nil")
@@ -782,7 +783,7 @@ func TestProcess_Start_ContextCancelled(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -818,7 +819,7 @@ func TestProcess_SendPrompt_ContextCancelled(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
 	// Feed messages for Start to succeed: init + result.
 	ch <- readerResult{msg: makeInitMessage("sess-1")}
@@ -863,7 +864,7 @@ func TestProcess_SendPrompt_ReaderErrorViaChannel(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -900,7 +901,7 @@ func TestProcess_InterruptTurn_WhenIdle_ReturnsErrNotRunning(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 	if err := p.Start(context.Background(), "test prompt"); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
@@ -928,7 +929,7 @@ func TestProcess_InterruptTurn_WhenStopped_ReturnsErrNotRunning(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
 	// Process is stopped (never started). InterruptTurn should return ErrNotRunning.
 	err := p.InterruptTurn(context.Background())
@@ -948,7 +949,7 @@ func TestProcess_InterruptTurn_WhenRunning_SendsInterrupt(t *testing.T) {
 		cancelFn: func() error { return nil },
 	}
 
-	p := NewProcess(ProcessConfig{SessionID: "sess-1"}, starter)
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
 	// Feed init + result for Start.
 	ch <- readerResult{msg: makeInitMessage("sess-1")}

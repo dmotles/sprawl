@@ -659,7 +659,7 @@ func TestRunAgentLoop_ProcessCrash_Restart(t *testing.T) {
 	if len(createdConfigs) < 2 {
 		t.Fatalf("expected at least 2 process creations (original + restart), got %d", len(createdConfigs))
 	}
-	if createdConfigs[1].Resume != true {
+	if createdConfigs[1].Args.Resume != true {
 		t.Error("restarted process should have Resume=true")
 	}
 }
@@ -1149,13 +1149,13 @@ func TestRunAgentLoop_ProcessConfigFromAgentState(t *testing.T) {
 	if capturedConfig.WorkDir == "" {
 		t.Error("WorkDir should be set from agent state Worktree")
 	}
-	if capturedConfig.SessionID == "" {
+	if capturedConfig.Args.SessionID == "" {
 		t.Error("SessionID should be set from agent state")
 	}
 	if capturedConfig.ClaudePath == "" {
 		t.Error("ClaudePath should be set from findClaude")
 	}
-	if capturedConfig.SystemPromptFile == "" {
+	if capturedConfig.Args.SystemPromptFile == "" {
 		t.Error("SystemPromptFile should be set")
 	}
 	if capturedConfig.DendraRoot == "" {

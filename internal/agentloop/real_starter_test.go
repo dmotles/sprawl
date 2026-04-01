@@ -2,14 +2,25 @@ package agentloop
 
 import (
 	"testing"
+
+	"github.com/dmotles/dendra/internal/claude"
 )
 
-func TestBuildClaudeArgs_IncludesModelOpus(t *testing.T) {
+func TestBuildArgs_IncludesModelOpus(t *testing.T) {
 	config := ProcessConfig{
-		SessionID: "test-session",
+		Args: claude.LaunchOpts{
+			Print:          true,
+			InputFormat:    "stream-json",
+			OutputFormat:   "stream-json",
+			Verbose:        true,
+			Model:          "opus[1m]",
+			Effort:         "medium",
+			PermissionMode: "bypassPermissions",
+			SessionID:      "test-session",
+		},
 	}
 
-	args := buildClaudeArgs(config)
+	args := config.Args.BuildArgs()
 
 	// Verify --model opus is present and comes after --verbose.
 	verboseIdx := -1
@@ -34,14 +45,16 @@ func TestBuildClaudeArgs_IncludesModelOpus(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeArgs_EffortMediumDefault(t *testing.T) {
+func TestBuildArgs_EffortMediumDefault(t *testing.T) {
 	config := ProcessConfig{
-		SessionID: "test-session",
+		Args: claude.LaunchOpts{
+			Effort:    "medium",
+			SessionID: "test-session",
+		},
 	}
 
-	args := buildClaudeArgs(config)
+	args := config.Args.BuildArgs()
 
-	// Verify --effort medium is present.
 	found := false
 	for i, arg := range args {
 		if arg == "--effort" && i+1 < len(args) && args[i+1] == "medium" {
@@ -54,16 +67,24 @@ func TestBuildClaudeArgs_EffortMediumDefault(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeArgs_ContainsExpectedFlags(t *testing.T) {
+func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 	config := ProcessConfig{
-		SessionID:    "sess-1",
-		SystemPrompt: "you are helpful",
-		Resume:       true,
+		Args: claude.LaunchOpts{
+			Print:          true,
+			InputFormat:    "stream-json",
+			OutputFormat:   "stream-json",
+			Verbose:        true,
+			Model:          "opus[1m]",
+			Effort:         "medium",
+			PermissionMode: "bypassPermissions",
+			SessionID:      "sess-1",
+			SystemPrompt:   "you are helpful",
+			Resume:         true,
+		},
 	}
 
-	args := buildClaudeArgs(config)
+	args := config.Args.BuildArgs()
 
-	// Check a few expected flags exist.
 	expected := map[string]bool{
 		"-p": false, "--input-format": false, "--output-format": false,
 		"--verbose": false, "--model": false, "--effort": false,

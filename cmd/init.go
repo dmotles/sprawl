@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/claude"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
@@ -104,15 +105,16 @@ func runInit(deps *initDeps, namespace string) error {
 		return fmt.Errorf("writing system prompt file: %w", err)
 	}
 
-	opts := agent.LaunchOpts{
+	opts := claude.LaunchOpts{
 		SystemPromptFile: promptPath,
 		Tools:            rootTools,
 		AllowedTools:     rootTools,
 		DisallowedTools:  []string{"Edit", "Write", "NotebookEdit"},
 		Name:             rootSession,
+		Model:            "opus[1m]",
 	}
 
-	claudeArgs := deps.claudeLauncher.BuildArgs(opts)
+	claudeArgs := opts.BuildArgs()
 	shellCmd := tmux.BuildShellCmd(claudePath, claudeArgs)
 
 	// The root agent's tree path is just its name.

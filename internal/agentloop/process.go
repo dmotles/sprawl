@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dmotles/dendra/internal/claude"
 	"github.com/dmotles/dendra/internal/protocol"
 )
 
@@ -43,16 +44,12 @@ type Observer interface {
 
 // ProcessConfig holds the configuration for launching a Claude Code subprocess.
 type ProcessConfig struct {
-	ClaudePath       string
-	WorkDir          string
-	SessionID        string
-	SystemPrompt     string
-	SystemPromptFile string
-	AgentName      string
-	DendraRoot     string
-	Env            map[string]string
-	Resume         bool
-	SettingSources string
+	ClaudePath string
+	WorkDir    string
+	AgentName  string
+	DendraRoot string
+	Env        map[string]string
+	Args       claude.LaunchOpts
 }
 
 // ProcessState represents the current lifecycle state of the process.
@@ -306,7 +303,7 @@ func (p *Process) State() ProcessState {
 
 // SessionID returns the session ID from the process config.
 func (p *Process) SessionID() string {
-	return p.config.SessionID
+	return p.config.Args.SessionID
 }
 
 // Stop gracefully shuts down the subprocess by closing the writer and waiting.

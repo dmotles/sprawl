@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dmotles/dendra/internal/agent"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 )
@@ -75,15 +74,10 @@ func (m *mockRunner) Attach(name string) error {
 type mockLauncher struct {
 	binary    string
 	binaryErr error
-	args      []string
 }
 
 func (m *mockLauncher) FindBinary() (string, error) {
 	return m.binary, m.binaryErr
-}
-
-func (m *mockLauncher) BuildArgs(opts agent.LaunchOpts) []string {
-	return m.args
 }
 
 func defaultGetenv(key string) string {
@@ -117,7 +111,6 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{"--name", tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
@@ -169,7 +162,6 @@ func TestRunInit_CustomNamespace(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
@@ -209,7 +201,6 @@ func TestRunInit_AutoPickNamespace(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
@@ -232,7 +223,6 @@ func TestRunInit_NamespacePersisted(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
@@ -264,7 +254,6 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 	}
 	launcher := &mockLauncher{
 		binary: "/usr/bin/claude",
-		args:   []string{},
 	}
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}

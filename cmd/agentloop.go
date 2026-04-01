@@ -15,6 +15,7 @@ import (
 
 	"github.com/dmotles/dendra/internal/agent"
 	"github.com/dmotles/dendra/internal/agentloop"
+	"github.com/dmotles/dendra/internal/claude"
 	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/protocol"
 	"github.com/dmotles/dendra/internal/state"
@@ -363,12 +364,21 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		return fmt.Errorf("writing system prompt file: %w", err)
 	}
 	config := agentloop.ProcessConfig{
-		AgentName:        agentName,
-		WorkDir:          agentState.Worktree,
-		SessionID:        agentState.SessionID,
-		ClaudePath:       claudePath,
-		SystemPromptFile: promptPath,
-		DendraRoot:       dendraRoot,
+		AgentName:  agentName,
+		WorkDir:    agentState.Worktree,
+		ClaudePath: claudePath,
+		DendraRoot: dendraRoot,
+		Args: claude.LaunchOpts{
+			SessionID:        agentState.SessionID,
+			SystemPromptFile: promptPath,
+			Print:            true,
+			InputFormat:      "stream-json",
+			OutputFormat:     "stream-json",
+			Verbose:          true,
+			Model:            "opus[1m]",
+			Effort:           "medium",
+			PermissionMode:   "bypassPermissions",
+		},
 	}
 
 	// Debug: print full configuration being passed to Claude
@@ -380,10 +390,10 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", agentState.Prompt)
 	fmt.Fprintf(deps.stdout, "[agent-loop] === PROCESS CONFIG ===\n")
 	fmt.Fprintf(deps.stdout, "[agent-loop]   agent-name:      %s\n", config.AgentName)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   session-id:      %s\n", config.SessionID)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   session-id:      %s\n", config.Args.SessionID)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   work-dir:        %s\n", config.WorkDir)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   claude-path:     %s\n", config.ClaudePath)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   setting-sources: %s\n", config.SettingSources)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   setting-sources: %s\n", config.Args.SettingSources)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   dendra-root:     %s\n", config.DendraRoot)
 	fmt.Fprintf(deps.stdout, "[agent-loop] === KEY ENV VARS ===\n")
 	fmt.Fprintf(deps.stdout, "[agent-loop]   DENDRA_AGENT_IDENTITY=%s\n", deps.getenv("DENDRA_AGENT_IDENTITY"))
@@ -408,7 +418,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	// Returns false (and exits) if the restart fails.
 	restartWithResume := func() bool {
 		resumeConfig := config
-		resumeConfig.Resume = true
+		resumeConfig.Args.Resume = true
 		var ok bool
 		proc, ok = startProcess(ctx, deps, resumeConfig, observer, dendraRoot, agentName, agentState.Parent, "failed to restart process after crash", agentState.Prompt)
 		return ok
