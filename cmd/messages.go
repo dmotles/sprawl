@@ -31,6 +31,7 @@ func init() {
 	messagesCmd.AddCommand(messagesArchiveCmd)
 	messagesCmd.AddCommand(messagesUnreadCmd)
 	messagesCmd.AddCommand(messagesBroadcastCmd)
+	messagesCmd.AddCommand(messagesSentCmd)
 	rootCmd.AddCommand(messagesCmd)
 }
 
@@ -72,6 +73,16 @@ var messagesBroadcastCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
 		return runMessagesBroadcast(deps, args[0], args[1])
+	},
+}
+
+var messagesSentCmd = &cobra.Command{
+	Use:   "sent",
+	Short: "Show sent messages",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		deps := resolveMessagesDeps()
+		return runMessagesSentDisplay(deps)
 	},
 }
 
@@ -313,6 +324,36 @@ func runMessagesInbox(deps *messagesDeps) ([]*messages.Message, int, int, error)
 	}
 
 	return msgs, newCount, readCount, nil
+}
+
+func runMessagesSent(deps *messagesDeps) ([]*messages.Message, error) {
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return nil, err
+	}
+	return messages.Sent(dendraRoot, agentName)
+}
+
+func runMessagesSentDisplay(deps *messagesDeps) error {
+	msgs, err := runMessagesSent(deps)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(deps.stderr, "Sent: %d messages\n", len(msgs))
+	formatSentTable(deps.stdout, msgs)
+	return nil
+}
+
+func formatSentTable(w io.Writer, msgs []*messages.Message) {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, msg := range msgs {
+		ts := msg.Timestamp
+		if t, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
+			ts = t.Format("2006-01-02 15:04")
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", ts, msg.To, msg.Subject)
+	}
+	tw.Flush()
 }
 
 // runMessagesBroadcast sends a broadcast message to all active agents.

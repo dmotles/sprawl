@@ -140,6 +140,11 @@ func Inbox(dendraRoot, agent string) ([]*Message, error) {
 	return List(dendraRoot, agent, "all")
 }
 
+// Sent returns all messages in the agent's sent/ outbox, sorted by timestamp ascending.
+func Sent(dendraRoot, agent string) ([]*Message, error) {
+	return List(dendraRoot, agent, "sent")
+}
+
 // ResolvePrefix finds a full message ID from a prefix by scanning new/, cur/, archive/, sent/ directories.
 // Returns the full ID if exactly one match found.
 func ResolvePrefix(dendraRoot, agent, prefix string) (string, error) {

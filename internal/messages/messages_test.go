@@ -1887,3 +1887,88 @@ func TestSend_SentCopyFailureDoesNotReturnError(t *testing.T) {
 		t.Error("expected sent/ directory to not exist (should have failed to create)")
 	}
 }
+
+func TestSent_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	msgs, err := Sent(tmpDir, "nonexistent-agent")
+	if err != nil {
+		t.Fatalf("Sent() unexpected error: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Errorf("expected 0 messages, got %d", len(msgs))
+	}
+}
+
+func TestSent_ReturnsMessages(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(MessagesDir(tmpDir), "alice")
+	sentDir := filepath.Join(agentDir, "sent")
+	if err := os.MkdirAll(sentDir, 0755); err != nil {
+		t.Fatalf("creating sent dir: %v", err)
+	}
+
+	msg1 := Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "hello", Body: "hi bob", Timestamp: "2026-03-31T10:00:00Z",
+	}
+	msg2 := Message{
+		ID: "2000.alice.aa02", From: "alice", To: "charlie",
+		Subject: "hey", Body: "hi charlie", Timestamp: "2026-03-31T11:00:00Z",
+	}
+	writeMessageFile(t, sentDir, "1000.alice.aa01", &msg1)
+	writeMessageFile(t, sentDir, "2000.alice.aa02", &msg2)
+
+	msgs, err := Sent(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("Sent() unexpected error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	for _, m := range msgs {
+		if m.Dir != "sent" {
+			t.Errorf("expected Dir='sent', got %q", m.Dir)
+		}
+	}
+}
+
+func TestSent_SortedByTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(MessagesDir(tmpDir), "alice")
+	sentDir := filepath.Join(agentDir, "sent")
+	if err := os.MkdirAll(sentDir, 0755); err != nil {
+		t.Fatalf("creating sent dir: %v", err)
+	}
+
+	// Write messages with out-of-order timestamps
+	writeMessageFile(t, sentDir, "3000.alice.cc03", &Message{
+		ID: "3000.alice.cc03", From: "alice", To: "charlie",
+		Subject: "third", Body: "3", Timestamp: "2026-03-31T12:00:00Z",
+	})
+	writeMessageFile(t, sentDir, "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "first", Body: "1", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, sentDir, "2000.alice.bb02", &Message{
+		ID: "2000.alice.bb02", From: "alice", To: "dave",
+		Subject: "second", Body: "2", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	msgs, err := Sent(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("Sent() unexpected error: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(msgs))
+	}
+	if msgs[0].Subject != "first" {
+		t.Errorf("msgs[0] subject = %q, want 'first'", msgs[0].Subject)
+	}
+	if msgs[1].Subject != "second" {
+		t.Errorf("msgs[1] subject = %q, want 'second'", msgs[1].Subject)
+	}
+	if msgs[2].Subject != "third" {
+		t.Errorf("msgs[2] subject = %q, want 'third'", msgs[2].Subject)
+	}
+}

@@ -1213,3 +1213,68 @@ func TestRunMessagesSend_NonRootNoTmuxNotification(t *testing.T) {
 		t.Errorf("expected 0 SendKeys calls for non-root recipient, got %d", len(mock.sendKeysCalls))
 	}
 }
+
+func TestMessagesSent_HappyPath(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	sentDir := filepath.Join(agentDir, "sent")
+	if err := os.MkdirAll(sentDir, 0755); err != nil {
+		t.Fatalf("creating sent dir: %v", err)
+	}
+
+	writeTestMessage(t, sentDir, "1000.alice.aa01", &messages.Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "hello bob", Body: "hi", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeTestMessage(t, sentDir, "2000.alice.aa02", &messages.Message{
+		ID: "2000.alice.aa02", From: "alice", To: "charlie",
+		Subject: "hello charlie", Body: "hey", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	msgs, err := runMessagesSent(deps)
+	if err != nil {
+		t.Fatalf("runMessagesSent() unexpected error: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Errorf("expected 2 messages, got %d", len(msgs))
+	}
+	for _, m := range msgs {
+		if m.Dir != "sent" {
+			t.Errorf("expected Dir='sent', got %q", m.Dir)
+		}
+	}
+}
+
+func TestMessagesSentDisplay_Output(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	sentDir := filepath.Join(agentDir, "sent")
+	if err := os.MkdirAll(sentDir, 0755); err != nil {
+		t.Fatalf("creating sent dir: %v", err)
+	}
+
+	writeTestMessage(t, sentDir, "1000.alice.aa01", &messages.Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "hello bob", Body: "hi", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	err := runMessagesSentDisplay(deps)
+	if err != nil {
+		t.Fatalf("runMessagesSentDisplay() unexpected error: %v", err)
+	}
+
+	stderr := deps.stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "Sent: 1 messages") {
+		t.Errorf("stderr should contain 'Sent: 1 messages', got: %q", stderr)
+	}
+
+	stdout := deps.stdout.(*bytes.Buffer).String()
+	if !strings.Contains(stdout, "bob") {
+		t.Errorf("stdout should contain recipient 'bob', got: %q", stdout)
+	}
+	if !strings.Contains(stdout, "hello bob") {
+		t.Errorf("stdout should contain subject 'hello bob', got: %q", stdout)
+	}
+}
