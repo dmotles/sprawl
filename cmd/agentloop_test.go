@@ -1027,6 +1027,46 @@ func TestTmuxObserver_ResultError(t *testing.T) {
 	}
 }
 
+func TestTmuxObserver_UserMessageSuppressed(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	userMsg := &protocol.Message{
+		Type: "user",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type": "user",
+		}),
+	}
+
+	obs.OnMessage(userMsg)
+
+	output := buf.String()
+	if output != "" {
+		t.Errorf("expected no output for type=user message, got: %q", output)
+	}
+}
+
+func TestTmuxObserver_UserMessageWithSubtypeSuppressed(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	userMsg := &protocol.Message{
+		Type:    "user",
+		Subtype: "some_subtype",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":    "user",
+			"subtype": "some_subtype",
+		}),
+	}
+
+	obs.OnMessage(userMsg)
+
+	output := buf.String()
+	if output != "" {
+		t.Errorf("expected no output for type=user message with subtype, got: %q", output)
+	}
+}
+
 func TestTmuxObserver_UnknownType(t *testing.T) {
 	var buf bytes.Buffer
 	obs := &tmuxObserver{w: &buf}

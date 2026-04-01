@@ -206,6 +206,9 @@ func (t *tmuxObserver) OnMessage(msg *protocol.Message) {
 			fmt.Fprintf(t.w, "[agent-loop] rate limit blocked (type=%s)\n", evt.RateLimitInfo.RateLimitType)
 		}
 
+	case "user":
+		// Protocol-level echo messages — silently discard (no observability value).
+
 	default:
 		fmt.Fprintf(t.w, "[agent-loop] message: type=%s subtype=%s\n", msg.Type, msg.Subtype)
 	}
