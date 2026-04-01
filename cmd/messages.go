@@ -108,6 +108,18 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 	tw.Flush()
 }
 
+func (d *messagesDeps) resolveEnv() (agentName, dendraRoot string, err error) {
+	agentName = d.getenv("DENDRA_AGENT_IDENTITY")
+	if agentName == "" {
+		return "", "", fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
+	}
+	dendraRoot = d.getenv("DENDRA_ROOT")
+	if dendraRoot == "" {
+		return "", "", fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	}
+	return agentName, dendraRoot, nil
+}
+
 func runMessagesInboxDisplay(deps *messagesDeps, filterNew bool) error {
 	msgs, newCount, readCount, err := runMessagesInbox(deps)
 	if err != nil {
@@ -128,14 +140,9 @@ func runMessagesInboxDisplay(deps *messagesDeps, filterNew bool) error {
 }
 
 func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
-	if agentName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
-	dendraRoot := deps.getenv("DENDRA_ROOT")
-	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return err
 	}
 
 	var sendOpts []messages.SendOption
@@ -235,14 +242,9 @@ var messagesUnreadCmd = &cobra.Command{
 }
 
 func runMessagesRead(deps *messagesDeps, msgID string) (*messages.Message, error) {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
-	if agentName == "" {
-		return nil, fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
-	dendraRoot := deps.getenv("DENDRA_ROOT")
-	if dendraRoot == "" {
-		return nil, fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return nil, err
 	}
 
 	fullID, err := messages.ResolvePrefix(dendraRoot, agentName, msgID)
@@ -254,28 +256,18 @@ func runMessagesRead(deps *messagesDeps, msgID string) (*messages.Message, error
 }
 
 func runMessagesList(deps *messagesDeps, filter string) ([]*messages.Message, error) {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
-	if agentName == "" {
-		return nil, fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
-	dendraRoot := deps.getenv("DENDRA_ROOT")
-	if dendraRoot == "" {
-		return nil, fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return nil, err
 	}
 
 	return messages.List(dendraRoot, agentName, filter)
 }
 
 func runMessagesArchive(deps *messagesDeps, msgID string) error {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
-	if agentName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
-	dendraRoot := deps.getenv("DENDRA_ROOT")
-	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return err
 	}
 
 	fullID, err := messages.ResolvePrefix(dendraRoot, agentName, msgID)
@@ -287,14 +279,9 @@ func runMessagesArchive(deps *messagesDeps, msgID string) error {
 }
 
 func runMessagesUnread(deps *messagesDeps, msgID string) error {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
-	if agentName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
-	dendraRoot := deps.getenv("DENDRA_ROOT")
-	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return err
 	}
 
 	fullID, err := messages.ResolvePrefix(dendraRoot, agentName, msgID)
@@ -306,14 +293,9 @@ func runMessagesUnread(deps *messagesDeps, msgID string) error {
 }
 
 func runMessagesInbox(deps *messagesDeps) ([]*messages.Message, int, int, error) {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
-	if agentName == "" {
-		return nil, 0, 0, fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
-	dendraRoot := deps.getenv("DENDRA_ROOT")
-	if dendraRoot == "" {
-		return nil, 0, 0, fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return nil, 0, 0, err
 	}
 
 	msgs, err := messages.Inbox(dendraRoot, agentName)
@@ -335,14 +317,9 @@ func runMessagesInbox(deps *messagesDeps) ([]*messages.Message, int, int, error)
 
 // runMessagesBroadcast sends a broadcast message to all active agents.
 func runMessagesBroadcast(d *messagesDeps, subject, body string) error {
-	agentName := d.getenv("DENDRA_AGENT_IDENTITY")
-	if agentName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
-	}
-
-	dendraRoot := d.getenv("DENDRA_ROOT")
-	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+	agentName, dendraRoot, err := d.resolveEnv()
+	if err != nil {
+		return err
 	}
 
 	count, err := messages.Broadcast(dendraRoot, agentName, subject, body)
