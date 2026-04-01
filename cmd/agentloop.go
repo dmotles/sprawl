@@ -100,6 +100,14 @@ type tmuxObserver struct {
 	w io.Writer
 }
 
+// truncateStr truncates s to maxLen bytes, appending "..." if truncated.
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // OnMessage handles protocol messages from the Claude process.
 func (t *tmuxObserver) OnMessage(msg *protocol.Message) {
 	switch msg.Type {
@@ -109,8 +117,10 @@ func (t *tmuxObserver) OnMessage(msg *protocol.Message) {
 			Message struct {
 				Role    string `json:"role"`
 				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type  string          `json:"type"`
+					Text  string          `json:"text"`
+					Name  string          `json:"name,omitempty"`
+					Input json.RawMessage `json:"input,omitempty"`
 				} `json:"content"`
 			} `json:"message"`
 		}
@@ -118,10 +128,41 @@ func (t *tmuxObserver) OnMessage(msg *protocol.Message) {
 			return
 		}
 		for _, block := range outer.Message.Content {
-			if block.Type == "text" && block.Text != "" {
-				fmt.Fprintf(t.w, "[claude] %s\n", block.Text)
+			switch block.Type {
+			case "text":
+				if block.Text != "" {
+					fmt.Fprintf(t.w, "[claude] %s\n", block.Text)
+				}
+			case "tool_use":
+				if block.Name != "" {
+					inputStr := truncateStr(string(block.Input), 200)
+					fmt.Fprintf(t.w, "[tool] %s: %s\n", block.Name, inputStr)
+				}
 			}
 		}
+
+	case "system":
+		if msg.Subtype == "session_state_changed" {
+			var ssc protocol.SessionStateChanged
+			if err := json.Unmarshal(msg.Raw, &ssc); err == nil && ssc.State != "" {
+				fmt.Fprintf(t.w, "[system] %s: %s\n", msg.Subtype, ssc.State)
+				return
+			}
+		}
+		if msg.Subtype != "" {
+			fmt.Fprintf(t.w, "[system] %s\n", msg.Subtype)
+		}
+
+	case "result":
+		var res protocol.ResultMessage
+		if err := json.Unmarshal(msg.Raw, &res); err != nil {
+			return
+		}
+		status := "success"
+		if res.IsError {
+			status = "error"
+		}
+		fmt.Fprintf(t.w, "[result] %s (stop=%s, turns=%d)\n", status, res.StopReason, res.NumTurns)
 
 	case "rate_limit_event":
 		var evt protocol.RateLimitEvent
@@ -131,6 +172,9 @@ func (t *tmuxObserver) OnMessage(msg *protocol.Message) {
 		if evt.RateLimitInfo != nil && evt.RateLimitInfo.Status == "blocked" {
 			fmt.Fprintf(t.w, "[agent-loop] rate limit blocked (type=%s)\n", evt.RateLimitInfo.RateLimitType)
 		}
+
+	default:
+		fmt.Fprintf(t.w, "[agent-loop] message: type=%s subtype=%s\n", msg.Type, msg.Subtype)
 	}
 }
 

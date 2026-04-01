@@ -729,6 +729,244 @@ func TestTmuxObserver_IgnoresNonBlocked(t *testing.T) {
 	}
 }
 
+func TestTmuxObserver_ToolUse(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	contentBlock := []map[string]interface{}{
+		{
+			"type":  "tool_use",
+			"name":  "Bash",
+			"input": map[string]interface{}{"command": "go test ./..."},
+		},
+	}
+	msgContent := map[string]interface{}{
+		"role":    "assistant",
+		"content": contentBlock,
+	}
+	raw, _ := json.Marshal(msgContent)
+
+	assistantMsg := &protocol.Message{
+		Type: "assistant",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":    "assistant",
+			"message": json.RawMessage(raw),
+		}),
+	}
+
+	obs.OnMessage(assistantMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "[tool] Bash:") {
+		t.Errorf("expected output to contain [tool] Bash:, got: %q", output)
+	}
+	if !strings.Contains(output, "go test") {
+		t.Errorf("expected output to contain tool input, got: %q", output)
+	}
+}
+
+func TestTmuxObserver_ToolUseTruncation(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	// Create a very long input string (>200 chars)
+	longCommand := strings.Repeat("x", 300)
+	contentBlock := []map[string]interface{}{
+		{
+			"type":  "tool_use",
+			"name":  "Bash",
+			"input": map[string]interface{}{"command": longCommand},
+		},
+	}
+	msgContent := map[string]interface{}{
+		"role":    "assistant",
+		"content": contentBlock,
+	}
+	raw, _ := json.Marshal(msgContent)
+
+	assistantMsg := &protocol.Message{
+		Type: "assistant",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":    "assistant",
+			"message": json.RawMessage(raw),
+		}),
+	}
+
+	obs.OnMessage(assistantMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "...") {
+		t.Errorf("expected truncated output with ..., got: %q", output)
+	}
+	// The output line should be reasonably short (prefix + 200 chars + ...)
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "[tool]") && len(line) > 250 {
+			t.Errorf("expected truncated line under 250 chars, got %d chars", len(line))
+		}
+	}
+}
+
+func TestTmuxObserver_MixedContent(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	contentBlock := []map[string]interface{}{
+		{"type": "text", "text": "Let me run the tests"},
+		{
+			"type":  "tool_use",
+			"name":  "Bash",
+			"input": map[string]interface{}{"command": "go test ./..."},
+		},
+	}
+	msgContent := map[string]interface{}{
+		"role":    "assistant",
+		"content": contentBlock,
+	}
+	raw, _ := json.Marshal(msgContent)
+
+	assistantMsg := &protocol.Message{
+		Type: "assistant",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":    "assistant",
+			"message": json.RawMessage(raw),
+		}),
+	}
+
+	obs.OnMessage(assistantMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "[claude]") {
+		t.Errorf("expected output to contain [claude], got: %q", output)
+	}
+	if !strings.Contains(output, "[tool] Bash:") {
+		t.Errorf("expected output to contain [tool] Bash:, got: %q", output)
+	}
+}
+
+func TestTmuxObserver_SystemMessage(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	sysMsg := &protocol.Message{
+		Type:    "system",
+		Subtype: "session_state_changed",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":    "system",
+			"subtype": "session_state_changed",
+			"state":   "idle",
+		}),
+	}
+
+	obs.OnMessage(sysMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "[system]") {
+		t.Errorf("expected output to contain [system], got: %q", output)
+	}
+	if !strings.Contains(output, "session_state_changed") {
+		t.Errorf("expected output to contain subtype, got: %q", output)
+	}
+}
+
+func TestTmuxObserver_SystemInit(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	sysMsg := &protocol.Message{
+		Type:    "system",
+		Subtype: "init",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":    "system",
+			"subtype": "init",
+		}),
+	}
+
+	obs.OnMessage(sysMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "[system] init") {
+		t.Errorf("expected output to contain [system] init, got: %q", output)
+	}
+}
+
+func TestTmuxObserver_ResultMessage(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	resultMsg := &protocol.Message{
+		Type: "result",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":        "result",
+			"is_error":    false,
+			"stop_reason": "end_turn",
+			"num_turns":   3,
+		}),
+	}
+
+	obs.OnMessage(resultMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "[result]") {
+		t.Errorf("expected output to contain [result], got: %q", output)
+	}
+	if !strings.Contains(output, "success") {
+		t.Errorf("expected output to contain success, got: %q", output)
+	}
+}
+
+func TestTmuxObserver_ResultError(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	resultMsg := &protocol.Message{
+		Type: "result",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":        "result",
+			"is_error":    true,
+			"stop_reason": "error",
+			"num_turns":   1,
+		}),
+	}
+
+	obs.OnMessage(resultMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "[result]") {
+		t.Errorf("expected output to contain [result], got: %q", output)
+	}
+	if !strings.Contains(output, "error") {
+		t.Errorf("expected output to contain error, got: %q", output)
+	}
+}
+
+func TestTmuxObserver_UnknownType(t *testing.T) {
+	var buf bytes.Buffer
+	obs := &tmuxObserver{w: &buf}
+
+	unknownMsg := &protocol.Message{
+		Type:    "unknown_thing",
+		Subtype: "foo",
+		Raw: mustMarshal(t, map[string]interface{}{
+			"type":    "unknown_thing",
+			"subtype": "foo",
+		}),
+	}
+
+	obs.OnMessage(unknownMsg)
+
+	output := buf.String()
+	if !strings.Contains(output, "[agent-loop] message:") {
+		t.Errorf("expected output to contain [agent-loop] message:, got: %q", output)
+	}
+	if !strings.Contains(output, "type=unknown_thing") {
+		t.Errorf("expected output to contain type=unknown_thing, got: %q", output)
+	}
+	if !strings.Contains(output, "subtype=foo") {
+		t.Errorf("expected output to contain subtype=foo, got: %q", output)
+	}
+}
+
 func TestRunAgentLoop_LogPrefix(t *testing.T) {
 	deps, _, _ := newTestAgentLoopDeps(t)
 
