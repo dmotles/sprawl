@@ -134,44 +134,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 // Inbox returns all messages for an agent from both new/ and cur/ directories,
 // sorted by timestamp ascending.
 func Inbox(dendraRoot, agent string) ([]*Message, error) {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
-
-	var result []*Message
-
-	for _, dir := range []string{"new", "cur"} {
-		dirPath := filepath.Join(agentDir, dir)
-		entries, err := os.ReadDir(dirPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("reading %s directory: %w", dir, err)
-		}
-
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(dirPath, entry.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("reading message file %s: %w", entry.Name(), err)
-			}
-			var msg Message
-			if err := json.Unmarshal(data, &msg); err != nil {
-				return nil, fmt.Errorf("unmarshaling message %s: %w", entry.Name(), err)
-			}
-			msg.Dir = dir
-			result = append(result, &msg)
-		}
-	}
-
-	sort.Slice(result, func(i, j int) bool {
-		ti, _ := time.Parse(time.RFC3339, result[i].Timestamp)
-		tj, _ := time.Parse(time.RFC3339, result[j].Timestamp)
-		return ti.Before(tj)
-	})
-
-	return result, nil
+	return List(dendraRoot, agent, "all")
 }
 
 // ResolvePrefix finds a full message ID from a prefix by scanning new/, cur/, archive/, sent/ directories.
@@ -316,25 +279,9 @@ func ReadMessage(dendraRoot, agent, msgID string) (*Message, error) {
 	return nil, fmt.Errorf("message %q not found", msgID)
 }
 
-// List returns messages filtered by the given filter.
-func List(dendraRoot, agent, filter string) ([]*Message, error) {
-	var dirs []string
-	switch filter {
-	case "", "all":
-		dirs = []string{"new", "cur"}
-	case "unread":
-		dirs = []string{"new"}
-	case "read":
-		dirs = []string{"cur"}
-	case "archived":
-		dirs = []string{"archive"}
-	case "sent":
-		dirs = []string{"sent"}
-	default:
-		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, sent", filter)
-	}
-
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+// readMessagesFromDirs scans the given directories under agentDir, reads all
+// .json message files, and returns them sorted by timestamp ascending.
+func readMessagesFromDirs(agentDir string, dirs []string) ([]*Message, error) {
 	var result []*Message
 
 	for _, dir := range dirs {
@@ -371,6 +318,27 @@ func List(dendraRoot, agent, filter string) ([]*Message, error) {
 	})
 
 	return result, nil
+}
+
+// List returns messages filtered by the given filter.
+func List(dendraRoot, agent, filter string) ([]*Message, error) {
+	var dirs []string
+	switch filter {
+	case "", "all":
+		dirs = []string{"new", "cur"}
+	case "unread":
+		dirs = []string{"new"}
+	case "read":
+		dirs = []string{"cur"}
+	case "archived":
+		dirs = []string{"archive"}
+	case "sent":
+		dirs = []string{"sent"}
+	default:
+		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, sent", filter)
+	}
+
+	return readMessagesFromDirs(filepath.Join(MessagesDir(dendraRoot), agent), dirs)
 }
 
 // Broadcast sends a message to all active agents (excluding the sender).
