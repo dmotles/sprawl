@@ -145,6 +145,7 @@ dendra init                          Launch the root agent
 dendra spawn \
   --family <product|engineering|qa> \
   --type <manager|engineer|researcher|tester|code-merger> \
+  --branch <branch-name> \
   --prompt "<task description>"
 
 dendra kill <agent-name>             Kill an unresponsive agent

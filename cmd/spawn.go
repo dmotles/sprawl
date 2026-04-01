@@ -22,7 +22,7 @@ var spawnAgentCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runSpawn(deps, spawnFamily, spawnType, spawnPrompt)
+		return runSpawn(deps, spawnFamily, spawnType, spawnPrompt, spawnBranch)
 	},
 }
 
@@ -52,15 +52,18 @@ var (
 	spawnFamily string
 	spawnType   string
 	spawnPrompt string
+	spawnBranch string
 )
 
 func init() {
 	spawnCmd.PersistentFlags().StringVar(&spawnFamily, "family", "", "agent family: engineering, product, qa")
 	spawnCmd.PersistentFlags().StringVar(&spawnType, "type", "", "agent type: manager, researcher, engineer, tester, code-merger")
 	spawnCmd.PersistentFlags().StringVar(&spawnPrompt, "prompt", "", "task description for the agent")
+	spawnCmd.PersistentFlags().StringVar(&spawnBranch, "branch", "", "git branch name for the agent's worktree")
 	spawnCmd.MarkPersistentFlagRequired("family")
 	spawnCmd.MarkPersistentFlagRequired("type")
 	spawnCmd.MarkPersistentFlagRequired("prompt")
+	spawnCmd.MarkPersistentFlagRequired("branch")
 	spawnCmd.AddCommand(spawnAgentCmd)
 	rootCmd.AddCommand(spawnCmd)
 }
@@ -74,7 +77,7 @@ var spawnCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runSpawn(deps, spawnFamily, spawnType, spawnPrompt)
+		return runSpawn(deps, spawnFamily, spawnType, spawnPrompt, spawnBranch)
 	},
 }
 
@@ -97,7 +100,7 @@ func resolveSpawnDeps() (*spawnDeps, error) {
 	}, nil
 }
 
-func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
+func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	// Validate type
 	if !isValidType(agentType) {
 		return fmt.Errorf("invalid agent type %q; valid types: %v", agentType, validTypes)
@@ -109,6 +112,11 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 	// Validate family
 	if !isValidFamily(family) {
 		return fmt.Errorf("invalid agent family %q; valid families: %v", family, validFamilies)
+	}
+
+	// Validate branch
+	if branch == "" {
+		return fmt.Errorf("--branch is required; provide a descriptive branch name for the agent's worktree")
 	}
 
 	// Read environment
@@ -139,7 +147,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt string) error {
 	}
 
 	// Create worktree
-	worktreePath, branchName, err := deps.worktreeCreator.Create(dendraRoot, agentName, baseBranch)
+	worktreePath, branchName, err := deps.worktreeCreator.Create(dendraRoot, agentName, branch, baseBranch)
 	if err != nil {
 		return fmt.Errorf("creating worktree for %s: %w", agentName, err)
 	}

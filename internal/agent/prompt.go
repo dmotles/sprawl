@@ -139,7 +139,7 @@ AGENT FAMILIES (via --family):
 KEY COMMANDS:
 
   Spawning & Lifecycle:
-  dendra spawn agent --family <family> --type <type> --prompt "<task>"   — spawn agent with own worktree
+  dendra spawn agent --family <family> --type <type> --branch <branch-name> --prompt "<task>"   — spawn agent with own worktree
   dendra spawn subagent --family <family> --type <type> --prompt "<task>" — spawn lightweight agent sharing your worktree
   dendra delegate <agent-name> "<task>"      — delegate a task to an existing agent
   dendra retire <agent-name>                 — Stop an agent, and clean up its work tree. This releases its name back into the pool for future re-use. NOTE that its work branch will remain in case you have not merged it yet.

@@ -84,13 +84,15 @@ type mockWorktreeCreator struct {
 	calledWith   struct {
 		repoRoot   string
 		agentName  string
+		branchName string
 		baseBranch string
 	}
 }
 
-func (m *mockWorktreeCreator) Create(repoRoot, agentName, baseBranch string) (string, string, error) {
+func (m *mockWorktreeCreator) Create(repoRoot, agentName, branchName, baseBranch string) (string, string, error) {
 	m.calledWith.repoRoot = repoRoot
 	m.calledWith.agentName = agentName
+	m.calledWith.branchName = branchName
 	m.calledWith.baseBranch = baseBranch
 	if m.err != nil {
 		return "", "", m.err
@@ -101,7 +103,7 @@ func (m *mockWorktreeCreator) Create(repoRoot, agentName, baseBranch string) (st
 		path = filepath.Join(repoRoot, ".dendra", "worktrees", agentName)
 	}
 	if branch == "" {
-		branch = "dendra/" + agentName
+		branch = branchName
 	}
 	return path, branch, nil
 }
@@ -150,7 +152,7 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 func TestSpawn_HappyPath(t *testing.T) {
 	deps, runner, creator, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "implement login page")
+	err := runSpawn(deps, "engineering", "engineer", "implement login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,6 +181,9 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if creator.calledWith.agentName != expectedName {
 		t.Errorf("worktree agentName = %q, want %q", creator.calledWith.agentName, expectedName)
 	}
+	if creator.calledWith.branchName != "feature/login" {
+		t.Errorf("worktree branchName = %q, want %q", creator.calledWith.branchName, "feature/login")
+	}
 	if creator.calledWith.baseBranch != "main" {
 		t.Errorf("worktree baseBranch = %q, want %q", creator.calledWith.baseBranch, "main")
 	}
@@ -200,6 +205,9 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if agentState.Status != "active" {
 		t.Errorf("state Status = %q, want %q", agentState.Status, "active")
 	}
+	if agentState.Branch != "feature/login" {
+		t.Errorf("state Branch = %q, want %q", agentState.Branch, "feature/login")
+	}
 	// SessionID should be a valid UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)
 	if len(agentState.SessionID) != 36 || agentState.SessionID[8] != '-' || agentState.SessionID[13] != '-' || agentState.SessionID[18] != '-' || agentState.SessionID[23] != '-' {
 		t.Errorf("state SessionID = %q, want valid UUID format", agentState.SessionID)
@@ -210,7 +218,7 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
 	// First spawn creates session
-	err := runSpawn(deps, "engineering", "engineer", "task 1")
+	err := runSpawn(deps, "engineering", "engineer", "task 1", "feature/task1")
 	if err != nil {
 		t.Fatalf("first spawn: %v", err)
 	}
@@ -223,7 +231,7 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 	runner.newSessionWithWindowCalled = false
 
 	// Second spawn should add a window
-	err = runSpawn(deps, "engineering", "engineer", "task 2")
+	err = runSpawn(deps, "engineering", "engineer", "task 2", "feature/task2")
 	if err != nil {
 		t.Fatalf("second spawn: %v", err)
 	}
@@ -259,7 +267,7 @@ func TestSpawn_MissingIdentity(t *testing.T) {
 		return ""
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task")
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for missing identity")
 	}
@@ -277,7 +285,7 @@ func TestSpawn_MissingDendraRoot(t *testing.T) {
 		return ""
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task")
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for missing DENDRA_ROOT")
 	}
@@ -295,7 +303,7 @@ func TestSpawn_NamePoolExhausted(t *testing.T) {
 		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task")
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for exhausted name pool")
 	}
@@ -308,7 +316,7 @@ func TestSpawn_WorktreeCreationFails(t *testing.T) {
 	deps, runner, creator, _ := newTestSpawnDeps(t)
 	creator.err = errors.New("git worktree failed")
 
-	err := runSpawn(deps, "engineering", "engineer", "task")
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for worktree failure")
 	}
@@ -325,7 +333,7 @@ func TestSpawn_TmuxFails(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	runner.newSessionWithWindowErr = errors.New("tmux exploded")
 
-	err := runSpawn(deps, "engineering", "engineer", "task")
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for tmux failure")
 	}
@@ -337,7 +345,7 @@ func TestSpawn_TmuxFails(t *testing.T) {
 func TestSpawn_UnsupportedType(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "manager", "task")
+	err := runSpawn(deps, "engineering", "manager", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -349,7 +357,7 @@ func TestSpawn_UnsupportedType(t *testing.T) {
 func TestSpawn_InvalidType(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "foo", "task")
+	err := runSpawn(deps, "engineering", "foo", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for invalid type")
 	}
@@ -361,7 +369,7 @@ func TestSpawn_InvalidType(t *testing.T) {
 func TestSpawn_ResearcherType_HappyPath(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries")
+	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries", "feature/research")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -390,7 +398,7 @@ func TestSpawn_ResearcherInSupportedTypes(t *testing.T) {
 func TestSpawn_InvalidFamily(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "foo", "engineer", "task")
+	err := runSpawn(deps, "foo", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for invalid family")
 	}
@@ -405,7 +413,7 @@ func TestSpawn_InvalidFamily(t *testing.T) {
 func TestSpawn_ShellCmd_ContainsDendraAgentLoop(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "build login page")
+	err := runSpawn(deps, "engineering", "engineer", "build login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -453,7 +461,7 @@ func TestSpawn_FindDendraFails(t *testing.T) {
 		return "", errors.New("dendra binary not found")
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task")
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when findDendra fails")
 	}
@@ -472,7 +480,7 @@ func TestSpawn_FindDendraFails(t *testing.T) {
 func TestSpawn_WritesInitialPromptFile(t *testing.T) {
 	deps, _, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "implement the login page")
+	err := runSpawn(deps, "engineering", "engineer", "implement the login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -494,7 +502,7 @@ func TestSpawn_WritesInitialPromptFile(t *testing.T) {
 func TestSpawn_AgentPromptContainsFileRef(t *testing.T) {
 	deps, _, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "implement the login page")
+	err := runSpawn(deps, "engineering", "engineer", "implement the login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -539,5 +547,23 @@ func TestSpawn_BareSpawnCmd_HasRunE(t *testing.T) {
 	promptFlag := spawnCmd.PersistentFlags().Lookup("prompt")
 	if promptFlag == nil {
 		t.Error("expected 'prompt' to be a persistent flag on spawnCmd")
+	}
+}
+
+func TestSpawn_BranchFlagRequired(t *testing.T) {
+	branchFlag := spawnCmd.PersistentFlags().Lookup("branch")
+	if branchFlag == nil {
+		t.Fatal("expected 'branch' to be a persistent flag on spawnCmd")
+	}
+}
+
+func TestSpawn_EmptyBranch(t *testing.T) {
+	deps, _, _, _ := newTestSpawnDeps(t)
+	err := runSpawn(deps, "engineering", "engineer", "task", "")
+	if err == nil {
+		t.Fatal("expected error for empty branch")
+	}
+	if !strings.Contains(err.Error(), "branch") {
+		t.Errorf("error should mention branch, got: %v", err)
 	}
 }

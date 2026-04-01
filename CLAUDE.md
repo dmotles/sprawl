@@ -47,7 +47,9 @@ When creating, managing, or querying issues, use the `/linear-issues` skill for 
 When spawning an agent to work on a Linear issue, keep the prompt short. Point the agent at the issue — don't repeat the issue contents in the prompt. Example:
 
 ```
-dendra spawn --family engineering --type engineer --prompt "Work on QUM-42. Read the issue for details."
+dendra spawn --family engineering --type engineer \
+  --branch "dmotles/qum-42-broadcast-partial-failure" \
+  --prompt "Work on QUM-42. Read the issue for details."
 ```
 
 The issue is the source of truth. The agent can read it via Linear MCP tools (`get_issue`).

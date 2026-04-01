@@ -41,13 +41,13 @@ func TestRealCreator_Create(t *testing.T) {
 	repo := initTestRepo(t)
 	creator := &RealCreator{}
 
-	wtPath, branch, err := creator.Create(repo, "alice", "main")
+	wtPath, branch, err := creator.Create(repo, "alice", "feature/alice-work", "main")
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if branch != "dendra/alice" {
-		t.Errorf("branch = %q, want %q", branch, "dendra/alice")
+	if branch != "feature/alice-work" {
+		t.Errorf("branch = %q, want %q", branch, "feature/alice-work")
 	}
 
 	wantPath := filepath.Join(repo, ".dendra", "worktrees", "alice")
@@ -61,8 +61,8 @@ func TestRealCreator_Create(t *testing.T) {
 	}
 
 	// Verify the branch was created
-	if !branchExistsInRepo(t, repo, "dendra/alice") {
-		t.Error("branch dendra/alice was not created")
+	if !branchExistsInRepo(t, repo, "feature/alice-work") {
+		t.Error("branch feature/alice-work was not created")
 	}
 
 	// Clean up worktree so the temp dir can be removed
@@ -71,14 +71,14 @@ func TestRealCreator_Create(t *testing.T) {
 	cleanup.Run()
 }
 
-func TestRealCreator_Create_RecycledName(t *testing.T) {
-	// This test simulates the bug: an agent was retired (worktree removed but
-	// branch kept), then a new agent with the same name is spawned.
+func TestRealCreator_Create_RecycledName_PreservesBranch(t *testing.T) {
+	// When an agent name is recycled, the old branch is preserved (not force-deleted).
+	// The new spawn uses a different branch name.
 	repo := initTestRepo(t)
 	creator := &RealCreator{}
 
 	// First spawn
-	wtPath, _, err := creator.Create(repo, "bob", "main")
+	wtPath, _, err := creator.Create(repo, "bob", "feature/first-task", "main")
 	if err != nil {
 		t.Fatalf("first Create failed: %v", err)
 	}
@@ -90,19 +90,24 @@ func TestRealCreator_Create_RecycledName(t *testing.T) {
 		t.Fatalf("worktree remove failed: %s: %v", out, err)
 	}
 
-	// Verify branch still exists (this is the pre-condition for the bug)
-	if !branchExistsInRepo(t, repo, "dendra/bob") {
-		t.Fatal("branch dendra/bob should still exist after worktree removal")
+	// Verify old branch still exists
+	if !branchExistsInRepo(t, repo, "feature/first-task") {
+		t.Fatal("branch feature/first-task should still exist after worktree removal")
 	}
 
-	// Second spawn with same name — this used to fail before the fix
-	wtPath2, branch2, err := creator.Create(repo, "bob", "main")
+	// Second spawn with same agent name but different branch
+	wtPath2, branch2, err := creator.Create(repo, "bob", "feature/second-task", "main")
 	if err != nil {
 		t.Fatalf("second Create (recycled name) failed: %v", err)
 	}
 
-	if branch2 != "dendra/bob" {
-		t.Errorf("branch = %q, want %q", branch2, "dendra/bob")
+	if branch2 != "feature/second-task" {
+		t.Errorf("branch = %q, want %q", branch2, "feature/second-task")
+	}
+
+	// Old branch should still exist (not force-deleted)
+	if !branchExistsInRepo(t, repo, "feature/first-task") {
+		t.Error("old branch feature/first-task should be preserved after name recycling")
 	}
 
 	// Verify the worktree directory exists

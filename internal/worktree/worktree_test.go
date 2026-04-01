@@ -4,6 +4,9 @@ import (
 	"testing"
 )
 
+// Compile-time interface check.
+var _ Creator = (*mockCreator)(nil)
+
 // mockCreator implements Creator for testing.
 type mockCreator struct {
 	worktreePath string
@@ -12,13 +15,15 @@ type mockCreator struct {
 	calledWith   struct {
 		repoRoot   string
 		agentName  string
+		branchName string
 		baseBranch string
 	}
 }
 
-func (m *mockCreator) Create(repoRoot, agentName, baseBranch string) (string, string, error) {
+func (m *mockCreator) Create(repoRoot, agentName, branchName, baseBranch string) (string, string, error) {
 	m.calledWith.repoRoot = repoRoot
 	m.calledWith.agentName = agentName
+	m.calledWith.branchName = branchName
 	m.calledWith.baseBranch = baseBranch
 	return m.worktreePath, m.branchName, m.err
 }
@@ -29,7 +34,7 @@ func TestMockCreator_ReturnsConfiguredValues(t *testing.T) {
 		branchName:   "dendra/frank",
 	}
 
-	path, branch, err := mock.Create("/repo", "frank", "main")
+	path, branch, err := mock.Create("/repo", "frank", "feature/frank-work", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -44,6 +49,9 @@ func TestMockCreator_ReturnsConfiguredValues(t *testing.T) {
 	}
 	if mock.calledWith.agentName != "frank" {
 		t.Errorf("agentName = %q, want %q", mock.calledWith.agentName, "frank")
+	}
+	if mock.calledWith.branchName != "feature/frank-work" {
+		t.Errorf("branchName = %q, want %q", mock.calledWith.branchName, "feature/frank-work")
 	}
 	if mock.calledWith.baseBranch != "main" {
 		t.Errorf("baseBranch = %q, want %q", mock.calledWith.baseBranch, "main")
