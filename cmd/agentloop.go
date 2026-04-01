@@ -37,8 +37,6 @@ type agentLoopDeps struct {
 	nextTask     func(string, string) (*state.Task, error)
 	updateTask   func(string, string, *state.Task) error
 	listMessages func(string, string, string) ([]*messages.Message, error)
-	readMessage  func(string, string, string) (*messages.Message, error)
-	markRead     func(string, string, string) error
 	sendMessage  func(string, string, string, string, string) error
 	findClaude   func() (string, error)
 	readFile     func(string) ([]byte, error)
@@ -61,12 +59,6 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		updateTask: state.UpdateTask,
 		listMessages: func(root, ag, filter string) ([]*messages.Message, error) {
 			return messages.List(root, ag, filter)
-		},
-		readMessage: func(root, ag, msgID string) (*messages.Message, error) {
-			return messages.ReadMessage(root, ag, msgID)
-		},
-		markRead: func(root, ag, msgID string) error {
-			return messages.MarkRead(root, ag, msgID)
 		},
 		sendMessage: func(root, from, to, subject, body string) error {
 			return messages.Send(root, from, to, subject, body)
@@ -522,37 +514,29 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		// 2. Check inbox for unread messages.
 		msgs, err := deps.listMessages(dendraRoot, agentName, "unread")
 		if err == nil && len(msgs) > 0 {
-			var promptParts []string
+			var cmdLines []string
 			for _, msg := range msgs {
-				// Read the full message content.
-				fullMsg, readErr := deps.readMessage(dendraRoot, agentName, msg.ID)
-				if readErr != nil {
-					// Mark read anyway to avoid re-delivery loop.
-					_ = deps.markRead(dendraRoot, agentName, msg.ID)
-					continue
-				}
-
-				// ReadMessage auto-marks as read (moves new/ -> cur/).
-				promptParts = append(promptParts, fmt.Sprintf("--- Message from %s ---\nSubject: %s\nBody: %s", fullMsg.From, fullMsg.Subject, fullMsg.Body))
+				cmdLines = append(cmdLines, fmt.Sprintf(
+					"Run `dendra messages read %s` to read a message from %s (subject: %q)",
+					msg.ID, msg.From, msg.Subject,
+				))
 			}
 
-			// Only send a prompt if there are messages with content.
-			if len(promptParts) > 0 {
-				prompt := fmt.Sprintf("You have %d new message(s):\n\n%s", len(promptParts), strings.Join(promptParts, "\n\n"))
-				fmt.Fprintf(deps.stdout, "[agent-loop] delivering %d inbox message(s) to agent\n", len(promptParts))
-				fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
-				for _, line := range strings.Split(prompt, "\n") {
-					fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-				}
-				_, pokeContent, sendErr := sendWithInterrupt(prompt)
-				if pokeContent != "" {
-					pendingPoke = pokeContent
-				}
-				if sendErr != nil {
-					fmt.Fprintf(deps.stdout, "[agent-loop] process crash on inbox delivery, restarting: %v\n", sendErr)
-					if !restartWithResume() {
-						return nil
-					}
+			prompt := fmt.Sprintf("You have %d new message(s). Read them with the commands below:\n\n%s",
+				len(cmdLines), strings.Join(cmdLines, "\n"))
+			fmt.Fprintf(deps.stdout, "[agent-loop] delivering %d inbox message(s) to agent\n", len(cmdLines))
+			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
+			for _, line := range strings.Split(prompt, "\n") {
+				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
+			}
+			_, pokeContent, sendErr := sendWithInterrupt(prompt)
+			if pokeContent != "" {
+				pendingPoke = pokeContent
+			}
+			if sendErr != nil {
+				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on inbox delivery, restarting: %v\n", sendErr)
+				if !restartWithResume() {
+					return nil
 				}
 			}
 			deps.sleepFunc(3 * time.Second)

@@ -136,12 +136,6 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 		listMessages: func(root, agent, filter string) ([]*messages.Message, error) {
 			return messages.List(root, agent, filter)
 		},
-		readMessage: func(root, agent, msgID string) (*messages.Message, error) {
-			return messages.ReadMessage(root, agent, msgID)
-		},
-		markRead: func(root, agent, msgID string) error {
-			return messages.MarkRead(root, agent, msgID)
-		},
 		sendMessage: func(root, from, to, subject, body string) error {
 			return messages.Send(root, from, to, subject, body)
 		},
@@ -489,26 +483,32 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt when inbox has messages")
 	}
-	// The prompt should contain the actual message content inline
+	// The prompt should tell the agent to run dendra messages read, not contain inline content.
 	prompt := mockProc.prompts[0]
-	if !strings.Contains(prompt, "check this out") {
-		t.Errorf("prompt should contain message body, got: %q", prompt)
+	if strings.Contains(prompt, "check this out") {
+		t.Errorf("prompt should NOT contain message body inline, got: %q", prompt)
 	}
-	if !strings.Contains(prompt, "hey") {
+	if !strings.Contains(prompt, "dendra messages read") {
+		t.Errorf("prompt should contain 'dendra messages read' command, got: %q", prompt)
+	}
+	if !strings.Contains(prompt, `subject: "hey"`) {
 		t.Errorf("prompt should contain message subject, got: %q", prompt)
 	}
 	if !strings.Contains(prompt, "root") {
 		t.Errorf("prompt should contain sender name, got: %q", prompt)
 	}
+	if !strings.Contains(prompt, "Read them with the commands below") {
+		t.Errorf("prompt should contain directive text, got: %q", prompt)
+	}
 
-	// After delivery, messages should be marked read (moved from new/ to cur/)
+	// After delivery, messages should remain UNREAD (agent reads them itself).
 	unread, _ := messages.List(tmpDir, "ash", "unread")
-	if len(unread) != 0 {
-		t.Errorf("expected 0 unread messages after delivery, got %d", len(unread))
+	if len(unread) != 1 {
+		t.Errorf("expected 1 unread message after delivery (agent reads it), got %d", len(unread))
 	}
 }
 
-func TestRunAgentLoop_InboxNoRedelivery(t *testing.T) {
+func TestRunAgentLoop_InboxRedeliveryUntilRead(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Send a message.
@@ -518,9 +518,10 @@ func TestRunAgentLoop_InboxNoRedelivery(t *testing.T) {
 
 	mockProc.sendResults = []*protocol.ResultMessage{
 		{Type: "result", Result: "done"},
+		{Type: "result", Result: "done"},
 	}
 
-	// Run 2 loop iterations: first should deliver, second should find nothing.
+	// Run 2 loop iterations: both should deliver because message stays unread.
 	ctx, cancel := context.WithCancel(context.Background())
 	iterCount := 0
 	deps.sleepFunc = func(d time.Duration) {
@@ -532,9 +533,15 @@ func TestRunAgentLoop_InboxNoRedelivery(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "ash")
 
-	// Only 1 prompt should have been sent (not re-delivered on second poll).
-	if len(mockProc.prompts) != 1 {
-		t.Errorf("expected exactly 1 prompt (no re-delivery), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	// Both iterations should prompt the agent since the message remains unread.
+	if len(mockProc.prompts) != 2 {
+		t.Errorf("expected 2 prompts (redelivery until agent reads), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+	// Both should contain the read command format.
+	for i, p := range mockProc.prompts {
+		if !strings.Contains(p, "dendra messages read") {
+			t.Errorf("prompt %d should contain 'dendra messages read', got: %q", i, p)
+		}
 	}
 }
 
@@ -1819,16 +1826,16 @@ func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
 		t.Errorf("expected output to contain queued message log line %q\ngot:\n%s", expectedLog, output)
 	}
 
-	// The message should ALSO be delivered normally (as an inbox prompt) on the next iteration.
+	// The message should ALSO be delivered normally (as a read command) on the next iteration.
 	found := false
 	for _, p := range mockProc.prompts {
-		if strings.Contains(p, "Fix the bug") || strings.Contains(p, "details here") {
+		if strings.Contains(p, "dendra messages read") && strings.Contains(p, `subject: "Fix the bug"`) {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("expected inbox message to be delivered as a prompt on next iteration, prompts: %v", mockProc.prompts)
+		t.Errorf("expected inbox message to be delivered as a read command on next iteration, prompts: %v", mockProc.prompts)
 	}
 }
 
@@ -2037,8 +2044,14 @@ func TestRunAgentLoop_InboxDelivery_LogsInjectedPrompt(t *testing.T) {
 	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
 		t.Error("expected log output to contain '=== INJECTED PROMPT ===' for inbox delivery")
 	}
-	if !strings.Contains(output, "please fix the bug") {
-		t.Errorf("expected log output to contain message body, got:\n%s", output)
+	if !strings.Contains(output, "dendra messages read") {
+		t.Errorf("expected log output to contain 'dendra messages read' command, got:\n%s", output)
+	}
+	if !strings.Contains(output, `subject: "urgent"`) {
+		t.Errorf("expected log output to contain message subject, got:\n%s", output)
+	}
+	if strings.Contains(output, "please fix the bug") {
+		t.Errorf("log output should NOT contain message body inline, got:\n%s", output)
 	}
 }
 
