@@ -1235,8 +1235,8 @@ func TestDefaultBuildPrompt_ResearcherType(t *testing.T) {
 	if !strings.Contains(prompt, "deep investigator") {
 		t.Error("buildPrompt for researcher type should contain 'deep investigator'")
 	}
-	if !strings.Contains(prompt, "investigate auth libraries") {
-		t.Error("buildPrompt for researcher type should contain the task prompt")
+	if strings.Contains(prompt, "YOUR TASK:") {
+		t.Error("buildPrompt for researcher type should NOT contain YOUR TASK section")
 	}
 }
 
@@ -1263,8 +1263,8 @@ func TestDefaultBuildPrompt_EngineerType(t *testing.T) {
 	if !strings.Contains(prompt, "hands-on builder") {
 		t.Error("buildPrompt for engineer type should contain 'hands-on builder'")
 	}
-	if !strings.Contains(prompt, "build login page") {
-		t.Error("buildPrompt for engineer type should contain the task prompt")
+	if strings.Contains(prompt, "YOUR TASK:") {
+		t.Error("buildPrompt for engineer type should NOT contain YOUR TASK section")
 	}
 }
 
@@ -1287,8 +1287,8 @@ func TestDefaultBuildPrompt_UnknownType(t *testing.T) {
 	if !strings.Contains(prompt, "Engineer agent") {
 		t.Error("buildPrompt for unknown type should default to engineer prompt containing 'Engineer agent'")
 	}
-	if !strings.Contains(prompt, "test something") {
-		t.Error("buildPrompt for unknown type should contain the task prompt")
+	if strings.Contains(prompt, "YOUR TASK:") {
+		t.Error("buildPrompt for unknown type should NOT contain YOUR TASK section")
 	}
 }
 

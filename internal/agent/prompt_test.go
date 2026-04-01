@@ -6,14 +6,13 @@ import (
 )
 
 func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement login page")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
 
 	keyPhrases := []string{
 		"Engineer agent",
 		"oak",
 		"root",
 		"dendra/oak",
-		"implement login page",
 		"dendra report done",
 		"dendra report problem",
 		"dendra messages send root",
@@ -26,15 +25,36 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 }
 
+func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
+
+	if strings.Contains(prompt, "YOUR TASK:") {
+		t.Error("engineer prompt should not contain YOUR TASK section")
+	}
+	if strings.Contains(prompt, "implement login page") {
+		t.Error("engineer prompt should not contain task-specific text")
+	}
+}
+
+func TestBuildResearcherPrompt_DoesNotContainTaskSection(t *testing.T) {
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
+
+	if strings.Contains(prompt, "YOUR TASK:") {
+		t.Error("researcher prompt should not contain YOUR TASK section")
+	}
+	if strings.Contains(prompt, "investigate auth libraries") {
+		t.Error("researcher prompt should not contain task-specific text")
+	}
+}
+
 func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "investigate auth libraries")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
 
 	keyPhrases := []string{
 		"Researcher agent",
 		"birch",
 		"root",
 		"dendra/birch",
-		"investigate auth libraries",
 		"dendra report done",
 		"dendra report problem",
 		"dendra messages send root",
@@ -54,7 +74,7 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "research task")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
 
 	if strings.Contains(prompt, "hands-on builder") {
 		t.Error("researcher prompt should not contain engineer role 'hands-on builder'")
@@ -62,7 +82,7 @@ func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "build task")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
 
 	if strings.Contains(prompt, "deep investigator") {
 		t.Error("engineer prompt should not contain researcher role 'deep investigator'")
@@ -70,7 +90,7 @@ func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement feature")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
 
 	mandatoryPhrases := []string{
 		// The workflow must be explicitly mandatory
@@ -97,7 +117,7 @@ func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement feature")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
 
 	subAgents := []string{
 		"oracle",
@@ -115,7 +135,7 @@ func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement feature")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
 
 	// Verify the workflow steps appear in order
 	steps := []string{"oracle", "test-writer", "test-critic", "implementer", "code-reviewer", "qa-validator"}
@@ -133,7 +153,7 @@ func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement feature")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
 
 	keyPhrases := []string{
 		"Reflect",
@@ -152,7 +172,7 @@ func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "investigate auth libraries")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
 
 	keyPhrases := []string{
 		"REFLECTION",
@@ -170,7 +190,7 @@ func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", "implement feature")
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak")
 
 	qaIdx := strings.Index(prompt, "qa-validator")
 	reflectIdx := strings.Index(prompt, "Reflect")
@@ -350,7 +370,7 @@ func TestBuildRootPrompt_ParallelismSectionOrdering(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", "investigate auth libraries")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
 
 	reflectIdx := strings.Index(prompt, "REFLECTION")
 	doneIdx := strings.Index(prompt, "dendra report done")

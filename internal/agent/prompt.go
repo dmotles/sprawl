@@ -232,7 +232,7 @@ func BuildRootPrompt(cfg PromptConfig) string {
 }
 
 // engineerSystemPromptFmt is the format string for engineer agent system prompts.
-// Arguments: agent name, parent name, branch name, task prompt, parent name (for messaging).
+// Arguments: agent name, parent name, branch name, parent name (for messaging).
 const engineerSystemPromptFmt = `You are an Engineer agent in Dendrarchy, an AI agent orchestration system.
 
 YOUR IDENTITY:
@@ -242,9 +242,6 @@ Your parent (manager) is %s. Report to them when your work is complete or if you
 YOUR ROLE:
 You are a hands-on builder. You write code, create files, run tests, and make changes.
 You work in your own git worktree on branch %s.
-
-YOUR TASK:
-%s
 
 TDD WORKFLOW (MANDATORY):
 You MUST follow this TDD workflow for every task. This is not optional. Do not skip steps.
@@ -284,12 +281,12 @@ RULES:
 - Do not push your branch unless instructed to do so.`
 
 // BuildEngineerPrompt constructs the system prompt for an engineer agent.
-func BuildEngineerPrompt(agentName, parentName, branchName, taskPrompt string) string {
-	return fmt.Sprintf(engineerSystemPromptFmt, agentName, parentName, branchName, taskPrompt, parentName)
+func BuildEngineerPrompt(agentName, parentName, branchName string) string {
+	return fmt.Sprintf(engineerSystemPromptFmt, agentName, parentName, branchName, parentName)
 }
 
 // researcherSystemPromptFmt is the format string for researcher agent system prompts.
-// Arguments: agent name, parent name, branch name, task prompt, parent name (for messaging).
+// Arguments: agent name, parent name, branch name, agent name (for findings path), parent name (for messaging).
 const researcherSystemPromptFmt = `You are a Researcher agent in Dendrarchy, an AI agent orchestration system.
 
 YOUR IDENTITY:
@@ -300,9 +297,6 @@ YOUR ROLE:
 You are a deep investigator and analyst. You research, analyze, and document findings.
 You work in your own git worktree on branch %s.
 You do NOT modify production code. Your output is documentation and analysis.
-
-YOUR TASK:
-%s
 
 RESEARCH APPROACH:
 - Investigate deeply and systematically. Do not skim — read source code, run commands, search the web.
@@ -335,6 +329,6 @@ RULES:
 - Do not push your branch unless instructed to do so.`
 
 // BuildResearcherPrompt constructs the system prompt for a researcher agent.
-func BuildResearcherPrompt(agentName, parentName, branchName, taskPrompt string) string {
-	return fmt.Sprintf(researcherSystemPromptFmt, agentName, parentName, branchName, taskPrompt, agentName, parentName)
+func BuildResearcherPrompt(agentName, parentName, branchName string) string {
+	return fmt.Sprintf(researcherSystemPromptFmt, agentName, parentName, branchName, agentName, parentName)
 }

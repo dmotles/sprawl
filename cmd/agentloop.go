@@ -78,9 +78,9 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		buildPrompt: func(a *state.AgentState) string {
 			switch a.Type {
 			case "researcher":
-				return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch, a.Prompt)
+				return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch)
 			default:
-				return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, a.Prompt)
+				return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch)
 			}
 		},
 		sleepFunc:  time.Sleep,
