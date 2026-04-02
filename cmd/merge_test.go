@@ -8,7 +8,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/dmotles/dendra/internal/agent"
 	"github.com/dmotles/dendra/internal/state"
 )
 
@@ -1870,5 +1872,91 @@ func TestMerge_BranchDeleteUsesForceFlag(t *testing.T) {
 
 	if deletedBranch != "feature-branch" {
 		t.Errorf("expected branch 'feature-branch' to be deleted, got %q", deletedBranch)
+	}
+}
+
+// TestMerge_RetirePerformsShutdown verifies that merge's retireAgent performs
+// tmux shutdown (calls KillWindow) by using skipShutdown=false.
+func TestMerge_RetirePerformsShutdown(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	runner := &killMockRunner{pidsErr: os.ErrNotExist}
+
+	// Verify that merge's retireAgent performs tmux shutdown (skipShutdown=false).
+	deps.retireAgent = func(dendraRoot string, a *state.AgentState) error {
+		rd := &agent.RetireDeps{
+			TmuxRunner:     runner,
+			WriteFile:      os.WriteFile,
+			RemoveFile:     os.Remove,
+			SleepFunc:      func(d time.Duration) {},
+			WorktreeRemove: func(root, wt string, force bool) error { return nil },
+			GitStatus:      func(wt string) (string, error) { return "", nil },
+			RemoveAll:      func(p string) error { return nil },
+			Stderr:         io.Discard,
+		}
+		return agent.RetireAgent(rd, dendraRoot, a, true, false)
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		TmuxSession: "test-session", TmuxWindow: "target-agent",
+	})
+
+	err := runMerge(deps, "target-agent", "", true, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !runner.killWindowCalled {
+		t.Error("expected tmux KillWindow to be called during merge retire")
+	}
+}
+
+// TestMerge_ForceRetire_PerformsShutdown verifies that force-merge also performs
+// tmux shutdown when retiring a non-done agent.
+func TestMerge_ForceRetire_PerformsShutdown(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	runner := &killMockRunner{pidsErr: os.ErrNotExist}
+
+	deps.retireAgent = func(dendraRoot string, a *state.AgentState) error {
+		rd := &agent.RetireDeps{
+			TmuxRunner:     runner,
+			WriteFile:      os.WriteFile,
+			RemoveFile:     os.Remove,
+			SleepFunc:      func(d time.Duration) {},
+			WorktreeRemove: func(root, wt string, force bool) error { return nil },
+			GitStatus:      func(wt string) (string, error) { return "", nil },
+			RemoveAll:      func(p string) error { return nil },
+			Stderr:         io.Discard,
+		}
+		return agent.RetireAgent(rd, dendraRoot, a, true, false)
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "active", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		TmuxSession: "test-session", TmuxWindow: "target-agent",
+	})
+
+	// Force merge on a non-done agent
+	err := runMerge(deps, "target-agent", "", true, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !runner.killWindowCalled {
+		t.Error("expected tmux KillWindow to be called during force merge retire")
 	}
 }

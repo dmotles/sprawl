@@ -2109,3 +2109,52 @@ func TestRunAgentLoop_WakeFile_LogsInjectedPrompt(t *testing.T) {
 		t.Errorf("expected log output to contain wake content %q, got:\n%s", wakeContent, output)
 	}
 }
+
+// TestRunAgentLoop_StateMissing_ExitsCleanly verifies that the agent loop exits
+// cleanly when the agent state file has been deleted (e.g., after merge retires
+// the agent). Currently this test will FAIL because the agent loop does not
+// check for state file deletion — it hangs in its loop until the context times
+// out. The fix: add a state-file-missing check in the loop body.
+func TestRunAgentLoop_StateMissing_ExitsCleanly(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	deps.nextTask = func(root, name string) (*state.Task, error) { return nil, nil }
+	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
+
+	// After startup, delete the state file so loadAgent fails in the loop
+	startupDone := false
+	originalLoad := deps.loadAgent
+	deps.loadAgent = func(root, name string) (*state.AgentState, error) {
+		if !startupDone {
+			startupDone = true
+			return originalLoad(root, name)
+		}
+		return nil, errors.New("agent state not found")
+	}
+
+	deps.readFile = func(path string) ([]byte, error) {
+		return nil, errors.New("file not found")
+	}
+
+	// Use a short timeout context: if the loop doesn't exit on its own due to
+	// the missing state file, the context will cancel after 5 seconds. The test
+	// asserts the loop exits cleanly (nil error) rather than via timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := runAgentLoop(ctx, deps, "ash")
+
+	// If the loop exited due to context timeout, it means it didn't detect the
+	// missing state file — that's the bug.
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatal("agent loop did not exit when state file was deleted — it hung until context timeout (bug: no state-missing check)")
+	}
+
+	if err != nil {
+		t.Fatalf("expected clean exit, got error: %v", err)
+	}
+
+	if !mockProc.stopCalled {
+		t.Error("expected proc.Stop to be called on state-missing exit")
+	}
+}

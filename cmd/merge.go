@@ -7,9 +7,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/dmotles/dendra/internal/agent"
 	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -74,17 +76,21 @@ func resolveMergeDeps() *mergeDeps {
 		branchExists:   realBranchExists,
 		currentBranch:  gitCurrentBranch,
 		retireAgent: func(dendraRoot string, a *state.AgentState) error {
-			// TmuxRunner and SleepFunc are intentionally nil: skipShutdown=true
-			// means no tmux interaction occurs during merge cleanup.
+			tmuxPath, err := tmux.FindTmux()
+			if err != nil {
+				return fmt.Errorf("tmux is required for agent shutdown: %w", err)
+			}
 			rd := &agent.RetireDeps{
+				TmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
 				WriteFile:      os.WriteFile,
 				RemoveFile:     os.Remove,
+				SleepFunc:      time.Sleep,
 				WorktreeRemove: realWorktreeRemove,
 				GitStatus:      realGitStatus,
 				RemoveAll:      os.RemoveAll,
 				Stderr:         os.Stderr,
 			}
-			return agent.RetireAgent(rd, dendraRoot, a, true, true)
+			return agent.RetireAgent(rd, dendraRoot, a, true, false)
 		},
 		gitBranchDelete: realGitBranchDelete,
 		runTests:        realRunTests,

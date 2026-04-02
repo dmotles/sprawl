@@ -450,6 +450,12 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			return nil // triggers deferred proc.Stop()
 		}
 
+		// 0.1. Check if agent state file still exists (defense against external retirement).
+		if _, loadErr := deps.loadAgent(dendraRoot, agentName); loadErr != nil {
+			fmt.Fprintf(deps.stdout, "[agent-loop] agent state file missing, shutting down\n")
+			return nil
+		}
+
 		// 0.5. Check for poke file between turns (or consume pending poke from interrupt).
 		if pendingPoke == "" {
 			if content, readErr := deps.readFile(pokePath); readErr == nil {
