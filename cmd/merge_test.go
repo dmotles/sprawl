@@ -74,7 +74,7 @@ func TestMerge_HappyPath(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestMerge_AgentNotFound(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 
-	err := runMerge(deps, "nonexistent", "", true)
+	err := runMerge(deps, "nonexistent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for missing agent")
 	}
@@ -120,7 +120,7 @@ func TestMerge_SubagentRejected(t *testing.T) {
 		Subagent: true,
 	})
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for subagent")
 	}
@@ -151,7 +151,7 @@ func TestMerge_NotParent(t *testing.T) {
 		Worktree: "/worktree/target", Parent: "parent-agent",
 	})
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for non-parent caller")
 	}
@@ -172,7 +172,7 @@ func TestMerge_NotDone(t *testing.T) {
 		Worktree: "/worktree/target", Parent: "parent-agent",
 	})
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for non-done agent")
 	}
@@ -202,7 +202,7 @@ func TestMerge_ActiveChildren(t *testing.T) {
 		Worktree: "/worktree/child2", Parent: "target-agent",
 	})
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for active children")
 	}
@@ -235,7 +235,7 @@ func TestMerge_BranchNotFound(t *testing.T) {
 
 	deps.branchExists = func(repoRoot, branchName string) bool { return false }
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for missing branch")
 	}
@@ -264,7 +264,7 @@ func TestMerge_CallerDirtyWorktree(t *testing.T) {
 		return "", nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for dirty caller worktree")
 	}
@@ -296,7 +296,7 @@ func TestMerge_AgentDirtyWorktree(t *testing.T) {
 		return "", nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for dirty agent worktree")
 	}
@@ -329,7 +329,7 @@ func TestMerge_ConflictAbortsAndErrors(t *testing.T) {
 		return nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error from merge conflict")
 	}
@@ -358,7 +358,7 @@ func TestMerge_DefaultCommitMessage(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -402,7 +402,7 @@ func TestMerge_DefaultCommitMessage_EmptyReport(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestMerge_CustomMessage(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	err := runMerge(deps, "target-agent", "Custom merge message", true)
+	err := runMerge(deps, "target-agent", "Custom merge message", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestMerge_MissingDendraRoot(t *testing.T) {
 		return ""
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for missing DENDRA_ROOT")
 	}
@@ -484,7 +484,7 @@ func TestMerge_MissingCallerIdentity(t *testing.T) {
 		Worktree: "/worktree/target", Parent: "parent-agent",
 	})
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
 		t.Fatal("expected error for missing caller identity")
 	}
@@ -515,7 +515,7 @@ func TestMerge_RetiresAgentAfterCommit(t *testing.T) {
 		return nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestMerge_RetireFailure_WarnsButSucceeds(t *testing.T) {
 	}
 
 	// Merge should succeed even if retire fails.
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("merge should succeed even if retire fails, got: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestMerge_BranchDeleteAfterCommit(t *testing.T) {
 		return nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -620,7 +620,7 @@ func TestMerge_BranchDeleteFailure_WarnsButSucceeds(t *testing.T) {
 	}
 
 	// Merge should succeed even if branch delete fails.
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("merge should succeed even if branch delete fails, got: %v", err)
 	}
@@ -659,7 +659,7 @@ func TestMerge_SuccessOutput(t *testing.T) {
 		return "a1b2c3d", nil
 	}
 
-	err := runMerge(deps, "ash", "", true)
+	err := runMerge(deps, "ash", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -715,7 +715,7 @@ func TestMerge_OrderRetireThenBranchDelete(t *testing.T) {
 		return nil
 	}
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestMerge_PreMergeValidation_Pass(t *testing.T) {
 	}
 	deps.dirExists = func(path string) bool { return true }
 
-	err := runMerge(deps, "target-agent", "", false)
+	err := runMerge(deps, "target-agent", "", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -799,7 +799,7 @@ func TestMerge_PreMergeValidation_Fail(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	err := runMerge(deps, "target-agent", "", false)
+	err := runMerge(deps, "target-agent", "", false, false)
 	if err == nil {
 		t.Fatal("expected error from pre-merge validation failure")
 	}
@@ -829,7 +829,7 @@ func TestMerge_PreMergeValidation_SkipNoWorktree(t *testing.T) {
 	}
 	deps.dirExists = func(path string) bool { return false }
 
-	err := runMerge(deps, "target-agent", "", false)
+	err := runMerge(deps, "target-agent", "", false, false)
 	// With dirExists=false and noValidate=false, pre-merge validation should be skipped
 	// but post-merge validation should still run. For this test we only care that
 	// runTests was NOT called for the agent worktree (pre-merge skip).
@@ -857,7 +857,7 @@ func TestMerge_PostMergeValidation_Pass(t *testing.T) {
 		return nil
 	}
 
-	err := runMerge(deps, "target-agent", "", false)
+	err := runMerge(deps, "target-agent", "", false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -899,7 +899,7 @@ func TestMerge_PostMergeValidation_Fail_Rollback(t *testing.T) {
 		return nil
 	}
 
-	err := runMerge(deps, "target-agent", "", false)
+	err := runMerge(deps, "target-agent", "", false, false)
 	if err == nil {
 		t.Fatal("expected error from post-merge validation failure")
 	}
@@ -929,7 +929,7 @@ func TestMerge_NoValidate_SkipsBoth(t *testing.T) {
 	}
 	deps.dirExists = func(path string) bool { return true }
 
-	err := runMerge(deps, "target-agent", "", true)
+	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1018,7 +1018,7 @@ func TestMerge_PostMergeValidation_Fail_ErrorMessage(t *testing.T) {
 	}
 	deps.gitResetHard = func(worktree string) error { return nil }
 
-	err := runMerge(deps, "target-agent", "", false)
+	err := runMerge(deps, "target-agent", "", false, false)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1053,7 +1053,7 @@ func TestMerge_PreMergeValidation_Fail_ErrorMessage(t *testing.T) {
 		return "ok", nil
 	}
 
-	err := runMerge(deps, "target-agent", "", false)
+	err := runMerge(deps, "target-agent", "", false, false)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -1070,5 +1070,353 @@ func TestMerge_PreMergeValidation_Fail_ErrorMessage(t *testing.T) {
 	// Should suggest --no-validate
 	if !strings.Contains(errMsg, "--no-validate") {
 		t.Errorf("error should suggest --no-validate, got: %v", err)
+	}
+}
+
+// --- Force mode tests ---
+
+func TestMerge_Force_NonDoneAgent_RetiresFirst(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "active", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Still working",
+	})
+
+	var order []string
+	deps.retireAgent = func(dendraRoot string, agent *state.AgentState) error {
+		order = append(order, "retire")
+		return nil
+	}
+	deps.gitMergeSquash = func(worktree, branch string) error {
+		order = append(order, "squash")
+		return nil
+	}
+	deps.gitCommit = func(worktree, message string) (string, error) {
+		order = append(order, "commit")
+		return "abc1234", nil
+	}
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		order = append(order, "branch-delete")
+		return nil
+	}
+	// Pre-merge validation should NOT be called on agent worktree
+	var preMergeDirs []string
+	deps.runTests = func(dir string) (string, error) {
+		preMergeDirs = append(preMergeDirs, dir)
+		return "ok", nil
+	}
+	deps.dirExists = func(path string) bool { return true }
+
+	err := runMerge(deps, "target-agent", "", true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Retire must happen BEFORE squash merge for non-done agents.
+	if len(order) < 4 {
+		t.Fatalf("expected at least 4 operations, got %d: %v", len(order), order)
+	}
+	retireIdx := -1
+	squashIdx := -1
+	for i, op := range order {
+		if op == "retire" && retireIdx == -1 {
+			retireIdx = i
+		}
+		if op == "squash" && squashIdx == -1 {
+			squashIdx = i
+		}
+	}
+	if retireIdx == -1 {
+		t.Fatal("retire was not called")
+	}
+	if squashIdx == -1 {
+		t.Fatal("squash was not called")
+	}
+	if retireIdx >= squashIdx {
+		t.Errorf("retire (index %d) should happen before squash (index %d), order: %v", retireIdx, squashIdx, order)
+	}
+
+	// Pre-merge validation should NOT be called on agent worktree.
+	for _, dir := range preMergeDirs {
+		if dir == "/worktree/target" {
+			t.Error("runTests should NOT be called with agent worktree for force + non-done agent")
+		}
+	}
+}
+
+func TestMerge_Force_DoneAgent_NormalOrder(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	var order []string
+	deps.gitCommit = func(worktree, message string) (string, error) {
+		order = append(order, "commit")
+		return "abc1234", nil
+	}
+	deps.retireAgent = func(dendraRoot string, agent *state.AgentState) error {
+		order = append(order, "retire")
+		return nil
+	}
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		order = append(order, "branch-delete")
+		return nil
+	}
+
+	err := runMerge(deps, "target-agent", "", true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// For done agents with force, normal order: commit -> retire -> branch-delete.
+	if len(order) != 3 {
+		t.Fatalf("expected 3 operations, got %d: %v", len(order), order)
+	}
+	if order[0] != "commit" {
+		t.Errorf("expected commit first, got: %v", order)
+	}
+	if order[1] != "retire" {
+		t.Errorf("expected retire second, got: %v", order)
+	}
+	if order[2] != "branch-delete" {
+		t.Errorf("expected branch-delete third, got: %v", order)
+	}
+}
+
+func TestMerge_Force_DirtyWorktree_Succeeds(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	deps.gitStatus = func(worktree string) (string, error) {
+		if worktree == "/worktree/target" {
+			return "M dirty.go", nil
+		}
+		return "", nil
+	}
+
+	err := runMerge(deps, "target-agent", "", true, true)
+	if err != nil {
+		t.Fatalf("force merge with dirty agent worktree should succeed, got: %v", err)
+	}
+}
+
+func TestMerge_Force_NonDone_SkipsPreMergeValidation(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "active", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Still working",
+	})
+
+	var testRunDirs []string
+	deps.runTests = func(dir string) (string, error) {
+		testRunDirs = append(testRunDirs, dir)
+		return "ok", nil
+	}
+	deps.dirExists = func(path string) bool { return true }
+
+	// force=true, noValidate=false: should skip pre-merge on agent worktree,
+	// but still run post-merge on caller worktree.
+	err := runMerge(deps, "target-agent", "", false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify runTests was NOT called with agent worktree.
+	for _, dir := range testRunDirs {
+		if dir == "/worktree/target" {
+			t.Error("runTests should NOT be called with agent worktree (/worktree/target) when force=true")
+		}
+	}
+
+	// Verify runTests WAS called with caller worktree (post-merge).
+	found := false
+	for _, dir := range testRunDirs {
+		if dir == "/worktree/parent" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("runTests should be called with caller worktree (/worktree/parent) for post-merge validation")
+	}
+}
+
+func TestMerge_Force_NonDone_PostMergeStillRuns(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "active", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Still working",
+	})
+
+	deps.runTests = func(dir string) (string, error) {
+		if dir == "/worktree/parent" {
+			return "FAIL: TestIntegration\nexit status 1", fmt.Errorf("tests failed")
+		}
+		return "ok", nil
+	}
+	deps.dirExists = func(path string) bool { return true }
+
+	var resetCalled bool
+	deps.gitResetHard = func(worktree string) error {
+		resetCalled = true
+		return nil
+	}
+
+	// force=true, noValidate=false, post-merge fails.
+	err := runMerge(deps, "target-agent", "", false, true)
+	if err == nil {
+		t.Fatal("expected error from post-merge validation failure")
+	}
+
+	if !resetCalled {
+		t.Error("expected gitResetHard to be called on post-merge validation failure")
+	}
+}
+
+func TestMerge_Force_NonDone_RetireFailure_IsHardError(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "active", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Still working",
+	})
+
+	deps.retireAgent = func(dendraRoot string, agent *state.AgentState) error {
+		return fmt.Errorf("failed to stop tmux session")
+	}
+
+	var squashCalled bool
+	deps.gitMergeSquash = func(worktree, branch string) error {
+		squashCalled = true
+		return nil
+	}
+
+	// force=true, agent status="active", retire fails -> hard error.
+	err := runMerge(deps, "target-agent", "", true, true)
+	if err == nil {
+		t.Fatal("expected error when force retire fails for non-done agent")
+	}
+
+	if squashCalled {
+		t.Error("gitMergeSquash should NOT be called when force retire fails")
+	}
+}
+
+func TestMerge_Force_PlusNoValidate_SkipsAll(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "active", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Still working",
+	})
+
+	var testCallCount int
+	deps.runTests = func(dir string) (string, error) {
+		testCallCount++
+		return "ok", nil
+	}
+	deps.dirExists = func(path string) bool { return true }
+
+	// force=true, noValidate=true -> no tests should run at all.
+	err := runMerge(deps, "target-agent", "", true, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if testCallCount != 0 {
+		t.Errorf("runTests called %d times, want 0 (force+noValidate should skip all validation)", testCallCount)
+	}
+}
+
+func TestMerge_Force_NonDone_PostMergeRollback_Warning(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	var stderr bytes.Buffer
+	deps.stderr = &stderr
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "active", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Still working",
+	})
+
+	deps.runTests = func(dir string) (string, error) {
+		if dir == "/worktree/parent" {
+			return "FAIL: TestIntegration\nexit status 1", fmt.Errorf("tests failed")
+		}
+		return "ok", nil
+	}
+	deps.dirExists = func(path string) bool { return true }
+	deps.gitResetHard = func(worktree string) error { return nil }
+
+	// force=true, noValidate=false, agent status="active".
+	// Post-merge validation fails -> rollback. Since agent was already retired
+	// (force retires before merge for non-done agents), error/stderr should
+	// warn that the agent is already retired.
+	err := runMerge(deps, "target-agent", "", false, true)
+	if err == nil {
+		t.Fatal("expected error from post-merge validation failure")
+	}
+
+	// Check that stderr or error message warns about agent already being retired.
+	combined := stderr.String() + err.Error()
+	if !strings.Contains(combined, "already retired") {
+		t.Errorf("expected warning about agent being 'already retired' in stderr or error, got stderr=%q, err=%v", stderr.String(), err)
 	}
 }

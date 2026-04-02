@@ -35,11 +35,13 @@ var defaultMergeDeps *mergeDeps
 var (
 	mergeMessage    string
 	mergeNoValidate bool
+	mergeForce      bool
 )
 
 func init() {
 	mergeCmd.Flags().StringVarP(&mergeMessage, "message", "m", "", "Override the squash commit message")
 	mergeCmd.Flags().BoolVar(&mergeNoValidate, "no-validate", false, "Skip pre-merge and post-merge test validation")
+	mergeCmd.Flags().BoolVar(&mergeForce, "force", false, "Force merge even if agent has not reported done")
 	rootCmd.AddCommand(mergeCmd)
 }
 
@@ -49,7 +51,7 @@ var mergeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveMergeDeps()
-		return runMerge(deps, args[0], mergeMessage, mergeNoValidate)
+		return runMerge(deps, args[0], mergeMessage, mergeNoValidate, mergeForce)
 	},
 }
 
@@ -88,7 +90,7 @@ func resolveMergeDeps() *mergeDeps {
 	}
 }
 
-func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate bool) error {
+func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate bool, force bool) error {
 	dendraRoot := deps.getenv("DENDRA_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
@@ -115,8 +117,8 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 		return fmt.Errorf("cannot merge %q: you are not its parent (parent is %q)", agentName, agent.Parent)
 	}
 
-	// Precondition 4: Agent status is "done"
-	if agent.Status != "done" {
+	// Precondition 4: Agent status is "done" (unless --force)
+	if agent.Status != "done" && !force {
 		return fmt.Errorf("agent %q has not reported done (status: %q). Use --force to merge anyway", agentName, agent.Status)
 	}
 
@@ -155,17 +157,29 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 		return fmt.Errorf("your worktree has uncommitted changes. Commit or stash before merging")
 	}
 
-	// Precondition 8: Agent's worktree is clean
-	agentStatus, err := deps.gitStatus(agent.Worktree)
-	if err != nil {
-		return fmt.Errorf("checking agent worktree status: %w", err)
-	}
-	if agentStatus != "" {
-		return fmt.Errorf("Agent %q has uncommitted changes in worktree. Ask the agent to commit, or use --force to discard.", agentName)
+	// Precondition 8: Agent's worktree is clean (unless --force)
+	if !force {
+		agentStatus, err := deps.gitStatus(agent.Worktree)
+		if err != nil {
+			return fmt.Errorf("checking agent worktree status: %w", err)
+		}
+		if agentStatus != "" {
+			return fmt.Errorf("Agent %q has uncommitted changes in worktree. Ask the agent to commit, or use --force to discard.", agentName)
+		}
 	}
 
-	// Phase 2: Pre-merge validation
-	if !noValidate {
+	// Force-retire: when --force and agent is not done, retire FIRST to stop the agent
+	forceRetired := false
+	if force && agent.Status != "done" {
+		fmt.Fprintf(deps.stderr, "Force-merging non-done agent %q (status: %q) -- retiring first\n", agentName, agent.Status)
+		if err := deps.retireAgent(dendraRoot, agent); err != nil {
+			return fmt.Errorf("force-retire of agent %q failed: %w", agentName, err)
+		}
+		forceRetired = true
+	}
+
+	// Phase 2: Pre-merge validation (skip if force-retired; worktree is gone)
+	if !noValidate && !forceRetired {
 		if deps.dirExists(agent.Worktree) {
 			fmt.Fprintf(deps.stderr, "Validating %s... running build & tests\n", agent.Branch)
 			output, err := deps.runTests(agent.Worktree)
@@ -205,14 +219,22 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 			if resetErr := deps.gitResetHard(callerAgent.Worktree); resetErr != nil {
 				fmt.Fprintf(deps.stderr, "WARNING: rollback (git reset --hard HEAD~1) failed: %v\n", resetErr)
 			}
+			if forceRetired {
+				fmt.Fprintf(deps.stderr, "⚠ Agent %q was already retired during force-merge. Branch preserved.\n", agentName)
+			}
 			truncated := truncateOutput(output, 50)
+			if forceRetired {
+				return fmt.Errorf("Post-merge validation failed: tests fail after merging %s into %s\nThe merge commit has been rolled back. Your branch is back to its pre-merge state.\n%s\n⚠ Agent %q was already retired during force-merge. Branch preserved.\nUse --no-validate to skip validation.", agentName, targetBranch, truncated, agentName)
+			}
 			return fmt.Errorf("Post-merge validation failed: tests fail after merging %s into %s\nMerge rollback complete: reset the merge commit. Your branch is back to its pre-merge state.\n%s\nAgent %q has NOT retired. Branch preserved.\nUse --no-validate to skip validation, or ask the agent to fix the issue.", agentName, targetBranch, truncated, agentName)
 		}
 	}
 
 	// Phase 5: Post-merge cleanup (warnings, not errors)
 	retireSucceeded := true
-	if err := deps.retireAgent(dendraRoot, agent); err != nil {
+	if forceRetired {
+		// Already retired before merge — nothing to do
+	} else if err := deps.retireAgent(dendraRoot, agent); err != nil {
 		retireSucceeded = false
 		fmt.Fprintf(deps.stderr, "⚠ Merge successful, but cleanup incomplete:\n")
 		fmt.Fprintf(deps.stderr, "  Squash commit created: %s\n", commitHash)
