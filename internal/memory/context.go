@@ -13,10 +13,11 @@ import (
 type BuildOption func(*buildConfig)
 
 type buildConfig struct {
-	agentLister   func(string) ([]*state.AgentState, error)
-	messageLister func(string, string, string) ([]*messages.Message, error)
-	sessionLister func(string, int) ([]Session, []string, error)
-	clock         func() time.Time
+	agentLister    func(string) ([]*state.AgentState, error)
+	messageLister  func(string, string, string) ([]*messages.Message, error)
+	sessionLister  func(string, int) ([]Session, []string, error)
+	timelineLister func(string) ([]TimelineEntry, error)
+	clock          func() time.Time
 }
 
 // WithAgentLister injects a custom agent listing function.
@@ -34,6 +35,11 @@ func WithSessionLister(fn func(string, int) ([]Session, []string, error)) BuildO
 	return func(c *buildConfig) { c.sessionLister = fn }
 }
 
+// WithTimelineLister injects a custom timeline reading function.
+func WithTimelineLister(fn func(string) ([]TimelineEntry, error)) BuildOption {
+	return func(c *buildConfig) { c.timelineLister = fn }
+}
+
 // WithClock injects a custom time source.
 func WithClock(fn func() time.Time) BuildOption {
 	return func(c *buildConfig) { c.clock = fn }
@@ -46,10 +52,11 @@ func WithClock(fn func() time.Time) BuildOption {
 // is non-nil if any section had errors.
 func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (string, error) {
 	cfg := buildConfig{
-		agentLister:   state.ListAgents,
-		messageLister: messages.List,
-		sessionLister: ListRecentSessions,
-		clock:         time.Now,
+		agentLister:    state.ListAgents,
+		messageLister:  messages.List,
+		sessionLister:  ListRecentSessions,
+		timelineLister: ReadTimeline,
+		clock:          time.Now,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -71,6 +78,11 @@ func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (
 	b.WriteString("\n### Pending Inbox\n")
 	if inboxErr := writeInboxSection(&b, dendraRoot, rootName, cfg.messageLister); inboxErr != nil {
 		errs = append(errs, inboxErr)
+	}
+
+	// --- Session Timeline ---
+	if timelineErr := writeTimelineSection(&b, dendraRoot, cfg.timelineLister); timelineErr != nil {
+		errs = append(errs, timelineErr)
 	}
 
 	// --- Recent Sessions ---
@@ -136,6 +148,25 @@ func writeInboxSection(b *strings.Builder, dendraRoot, rootName string, lister f
 
 	for _, m := range msgs {
 		fmt.Fprintf(b, "- From %s: \"%s\" (%s)\n", m.From, m.Subject, m.Timestamp)
+	}
+	return nil
+}
+
+func writeTimelineSection(b *strings.Builder, dendraRoot string, lister func(string) ([]TimelineEntry, error)) error {
+	entries, err := lister(dendraRoot)
+	if err != nil {
+		b.WriteString("\n## Session Timeline\n")
+		fmt.Fprintf(b, "[Error reading timeline: %s]\n", err)
+		return err
+	}
+
+	if len(entries) == 0 {
+		return nil
+	}
+
+	b.WriteString("\n## Session Timeline\n")
+	for _, e := range entries {
+		fmt.Fprintf(b, "- %s: %s\n", e.Timestamp.UTC().Format(time.RFC3339), e.Summary)
 	}
 	return nil
 }

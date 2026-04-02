@@ -371,6 +371,207 @@ func TestBuildContextBlob_AllFailures(t *testing.T) {
 	}
 }
 
+func TestBuildContextBlob_TimelineBetweenSections(t *testing.T) {
+	entries := []TimelineEntry{
+		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Initial project setup"},
+		{Timestamp: time.Date(2026, 4, 1, 14, 30, 0, 0, time.UTC), Summary: "Implemented messaging system"},
+	}
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return []*state.AgentState{
+				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+			}, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithTimelineLister(func(root string) ([]TimelineEntry, error) {
+			if root != "fake-root" {
+				t.Errorf("timeline lister got root %q, want %q", root, "fake-root")
+			}
+			return entries, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return []Session{
+				{SessionID: "sess-1", Timestamp: time.Date(2026, 4, 2, 8, 0, 0, 0, time.UTC)},
+			}, []string{"Session body."}, nil
+		}),
+		WithClock(fixedClock),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Timeline content present
+	if !strings.Contains(blob, "## Session Timeline") {
+		t.Error("expected blob to contain '## Session Timeline' header")
+	}
+	if !strings.Contains(blob, "Initial project setup") {
+		t.Error("expected blob to contain timeline entry 'Initial project setup'")
+	}
+	if !strings.Contains(blob, "Implemented messaging system") {
+		t.Error("expected blob to contain timeline entry 'Implemented messaging system'")
+	}
+
+	// Verify ordering: Active State < Session Timeline < Recent Sessions
+	idxActive := strings.Index(blob, "## Active State")
+	idxTimeline := strings.Index(blob, "## Session Timeline")
+	idxRecent := strings.Index(blob, "## Recent Sessions")
+
+	if idxActive < 0 || idxTimeline < 0 || idxRecent < 0 {
+		t.Fatal("expected all three section headers to be present")
+	}
+	if !(idxActive < idxTimeline && idxTimeline < idxRecent) {
+		t.Errorf("expected Active State (%d) < Session Timeline (%d) < Recent Sessions (%d)",
+			idxActive, idxTimeline, idxRecent)
+	}
+
+	// Entries formatted correctly
+	if !strings.Contains(blob, "- 2026-04-01T10:00:00Z: Initial project setup") {
+		t.Error("expected timeline entry with correct format")
+	}
+}
+
+func TestBuildContextBlob_TimelineMissing(t *testing.T) {
+	// Empty slice (file doesn't exist) → section omitted
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return nil, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithTimelineLister(func(string) ([]TimelineEntry, error) {
+			return []TimelineEntry{}, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return nil, nil, nil
+		}),
+		WithClock(fixedClock),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(blob, "Session Timeline") {
+		t.Error("expected blob to NOT contain 'Session Timeline' when timeline is empty")
+	}
+}
+
+func TestBuildContextBlob_TimelineNil(t *testing.T) {
+	// Nil slice (also empty) → section omitted
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return nil, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithTimelineLister(func(string) ([]TimelineEntry, error) {
+			return nil, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return nil, nil, nil
+		}),
+		WithClock(fixedClock),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(blob, "Session Timeline") {
+		t.Error("expected blob to NOT contain 'Session Timeline' when timeline is nil")
+	}
+}
+
+func TestBuildContextBlob_TimelineError(t *testing.T) {
+	// Timeline read fails → partial failure, other sections still render
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return []*state.AgentState{
+				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+			}, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithTimelineLister(func(string) ([]TimelineEntry, error) {
+			return nil, fmt.Errorf("timeline unreadable")
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return []Session{
+				{SessionID: "sess-1", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+			}, []string{"Body."}, nil
+		}),
+		WithClock(fixedClock),
+	)
+
+	if err == nil {
+		t.Fatal("expected non-nil error when timeline lister fails")
+	}
+
+	// Other sections still render
+	if !strings.Contains(blob, "oak") {
+		t.Error("expected blob to contain agent 'oak' despite timeline error")
+	}
+	if !strings.Contains(blob, "sess-1") {
+		t.Error("expected blob to contain session despite timeline error")
+	}
+
+	// Error marker present
+	if !strings.Contains(blob, "[Error reading timeline:") {
+		t.Error("expected blob to contain error marker for timeline section")
+	}
+}
+
+func TestBuildContextBlob_TimelinePartialData(t *testing.T) {
+	// Some valid entries - verify they all render correctly
+	entries := []TimelineEntry{
+		{Timestamp: time.Date(2026, 3, 30, 9, 0, 0, 0, time.UTC), Summary: "Project kickoff"},
+		{Timestamp: time.Date(2026, 3, 31, 15, 0, 0, 0, time.UTC), Summary: "API design complete"},
+		{Timestamp: time.Date(2026, 4, 1, 11, 0, 0, 0, time.UTC), Summary: "First PR merged"},
+	}
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return nil, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithTimelineLister(func(string) ([]TimelineEntry, error) {
+			return entries, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return nil, nil, nil
+		}),
+		WithClock(fixedClock),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All entries present
+	if !strings.Contains(blob, "Project kickoff") {
+		t.Error("expected blob to contain 'Project kickoff'")
+	}
+	if !strings.Contains(blob, "API design complete") {
+		t.Error("expected blob to contain 'API design complete'")
+	}
+	if !strings.Contains(blob, "First PR merged") {
+		t.Error("expected blob to contain 'First PR merged'")
+	}
+
+	// Entries in chronological order
+	idx1 := strings.Index(blob, "Project kickoff")
+	idx2 := strings.Index(blob, "API design complete")
+	idx3 := strings.Index(blob, "First PR merged")
+	if !(idx1 < idx2 && idx2 < idx3) {
+		t.Errorf("expected chronological ordering: %d < %d < %d", idx1, idx2, idx3)
+	}
+}
+
 func TestBuildContextBlob_DefaultDeps(t *testing.T) {
 	// Call with no options, using a real but empty temp dir as dendraRoot.
 	tmpDir := t.TempDir()

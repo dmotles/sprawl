@@ -47,6 +47,10 @@ type senseiLoopDeps struct {
 	sleepFunc          func(time.Duration)
 	runCommand         func(name string, args []string) error
 	stdout             io.Writer
+	readLastSessionID  func(string) (string, error)
+	autoSummarize      func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
+	userHomeDir        func() (string, error)
+	newCLIInvoker      func() memory.ClaudeInvoker
 }
 
 // defaultSenseiLoopDeps wires real implementations.
@@ -71,7 +75,11 @@ func defaultSenseiLoopDeps() *senseiLoopDeps {
 			cmd.Stderr = os.Stderr
 			return cmd.Run()
 		},
-		stdout: os.Stdout,
+		stdout:            os.Stdout,
+		readLastSessionID: memory.ReadLastSessionID,
+		autoSummarize:     memory.AutoSummarize,
+		userHomeDir:       os.UserHomeDir,
+		newCLIInvoker:     func() memory.ClaudeInvoker { return memory.NewCLIInvoker() },
 	}
 }
 
@@ -123,6 +131,22 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 		case <-ctx.Done():
 			return nil
 		default:
+		}
+
+		// 0. Detect missed handoff from previous session.
+		prevSessionID, _ := deps.readLastSessionID(dendraRoot)
+		if prevSessionID != "" {
+			homeDir, homeErr := deps.userHomeDir()
+			if homeErr != nil {
+				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
+			} else {
+				summarized, sumErr := deps.autoSummarize(ctx, dendraRoot, dendraRoot, homeDir, prevSessionID, deps.newCLIInvoker())
+				if sumErr != nil {
+					fmt.Fprintf(deps.stdout, "[sensei-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
+				} else if summarized {
+					fmt.Fprintf(deps.stdout, "[sensei-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
+				}
+			}
 		}
 
 		// 1. Build context blob (best-effort).

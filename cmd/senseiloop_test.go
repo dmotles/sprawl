@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/memory"
 )
 
 // newTestSenseiLoopDeps creates a senseiLoopDeps with sensible defaults for testing.
@@ -40,6 +41,12 @@ func newTestSenseiLoopDeps(t *testing.T) *senseiLoopDeps {
 		sleepFunc:           func(d time.Duration) {},
 		runCommand:          func(name string, args []string) error { return nil },
 		stdout:              io.Discard,
+		readLastSessionID:   func(string) (string, error) { return "", nil },
+		autoSummarize: func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+			return false, nil
+		},
+		userHomeDir:   func() (string, error) { return "/home/test", nil },
+		newCLIInvoker: func() memory.ClaudeInvoker { return nil },
 	}
 }
 
@@ -526,5 +533,178 @@ func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "context blob") {
 		t.Errorf("expected warning about context blob in output, got: %q", output)
+	}
+}
+
+func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var autoSummarizeCalled bool
+	var capturedSessionID string
+	var capturedCWD string
+	var claudeRan bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// readLastSessionID returns a previous session ID
+	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+		return "prev-session-id", nil
+	}
+
+	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		mu.Lock()
+		autoSummarizeCalled = true
+		capturedSessionID = sessionID
+		capturedCWD = cwd
+		mu.Unlock()
+		return true, nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		claudeRan = true
+		mu.Unlock()
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !autoSummarizeCalled {
+		t.Error("expected autoSummarize to be called")
+	}
+	if capturedSessionID != "prev-session-id" {
+		t.Errorf("expected autoSummarize called with sessionID 'prev-session-id', got %q", capturedSessionID)
+	}
+	if capturedCWD != "/fake/root" {
+		t.Errorf("expected autoSummarize called with cwd equal to dendraRoot '/fake/root', got %q", capturedCWD)
+	}
+	if !claudeRan {
+		t.Error("expected claude to still run after autoSummarize")
+	}
+}
+
+func TestRunSenseiLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var claudeRan bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+		return "prev-session-id", nil
+	}
+
+	// autoSummarize returns false (already summarized)
+	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		return false, nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		claudeRan = true
+		mu.Unlock()
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !claudeRan {
+		t.Error("expected loop to continue normally and run claude")
+	}
+}
+
+func TestRunSenseiLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var claudeRan bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+		return "prev-session-id", nil
+	}
+
+	// autoSummarize returns an error
+	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		return false, fmt.Errorf("summarization failed")
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		claudeRan = true
+		mu.Unlock()
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error (loop should not abort on autoSummarize error), got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !claudeRan {
+		t.Error("expected claude to still run despite autoSummarize error")
+	}
+}
+
+func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var autoSummarizeCalled bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// readLastSessionID returns empty string (first session)
+	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+		return "", nil
+	}
+
+	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		mu.Lock()
+		autoSummarizeCalled = true
+		mu.Unlock()
+		return false, nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if autoSummarizeCalled {
+		t.Error("expected autoSummarize NOT to be called when readLastSessionID returns empty string")
 	}
 }
