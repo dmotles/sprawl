@@ -24,6 +24,9 @@ type mergeDeps struct {
 	currentBranch   func(repoRoot string) (string, error)
 	retireAgent     func(dendraRoot string, agent *state.AgentState) error
 	gitBranchDelete func(repoRoot, branchName string) error
+	runTests        func(dir string) (string, error)
+	gitResetHard    func(worktree string) error
+	dirExists       func(path string) bool
 	stderr          io.Writer
 }
 
@@ -36,7 +39,7 @@ var (
 
 func init() {
 	mergeCmd.Flags().StringVarP(&mergeMessage, "message", "m", "", "Override the squash commit message")
-	mergeCmd.Flags().BoolVar(&mergeNoValidate, "no-validate", false, "Skip test validation (no-op until Issue 2)")
+	mergeCmd.Flags().BoolVar(&mergeNoValidate, "no-validate", false, "Skip pre-merge and post-merge test validation")
 	rootCmd.AddCommand(mergeCmd)
 }
 
@@ -46,7 +49,7 @@ var mergeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveMergeDeps()
-		return runMerge(deps, args[0], mergeMessage)
+		return runMerge(deps, args[0], mergeMessage, mergeNoValidate)
 	},
 }
 
@@ -78,11 +81,14 @@ func resolveMergeDeps() *mergeDeps {
 			return agent.RetireAgent(rd, dendraRoot, a, true, true)
 		},
 		gitBranchDelete: realGitBranchDelete,
+		runTests:        realRunTests,
+		gitResetHard:    realGitResetHard,
+		dirExists:       realDirExists,
 		stderr:          os.Stderr,
 	}
 }
 
-func runMerge(deps *mergeDeps, agentName, messageOverride string) error {
+func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate bool) error {
 	dendraRoot := deps.getenv("DENDRA_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
@@ -158,6 +164,18 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string) error {
 		return fmt.Errorf("Agent %q has uncommitted changes in worktree. Ask the agent to commit, or use --force to discard.", agentName)
 	}
 
+	// Phase 2: Pre-merge validation
+	if !noValidate {
+		if deps.dirExists(agent.Worktree) {
+			fmt.Fprintf(deps.stderr, "Validating %s... running build & tests\n", agent.Branch)
+			output, err := deps.runTests(agent.Worktree)
+			if err != nil {
+				truncated := truncateOutput(output, 50)
+				return fmt.Errorf("Validation failed: tests failed on branch %s\n%s\nUse --no-validate to skip validation", agent.Branch, truncated)
+			}
+		}
+	}
+
 	// Get current branch for commit message
 	targetBranch, err := deps.currentBranch(callerAgent.Worktree)
 	if err != nil {
@@ -178,6 +196,18 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string) error {
 	commitHash, err := deps.gitCommit(callerAgent.Worktree, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
+	}
+
+	// Phase 4: Post-merge validation
+	if !noValidate {
+		output, err := deps.runTests(callerAgent.Worktree)
+		if err != nil {
+			if resetErr := deps.gitResetHard(callerAgent.Worktree); resetErr != nil {
+				fmt.Fprintf(deps.stderr, "WARNING: rollback (git reset --hard HEAD~1) failed: %v\n", resetErr)
+			}
+			truncated := truncateOutput(output, 50)
+			return fmt.Errorf("Post-merge validation failed: tests fail after merging %s into %s\nMerge rollback complete: reset the merge commit. Your branch is back to its pre-merge state.\n%s\nAgent %q has NOT retired. Branch preserved.\nUse --no-validate to skip validation, or ask the agent to fix the issue.", agentName, targetBranch, truncated, agentName)
+		}
 	}
 
 	// Phase 5: Post-merge cleanup (warnings, not errors)
@@ -275,6 +305,43 @@ func realGitBranchDelete(repoRoot, branchName string) error {
 		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func realRunTests(dir string) (string, error) {
+	cmd := exec.Command("bash", "-c", "make build && go test ./...")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func realGitResetHard(worktree string) error {
+	cmd := exec.Command("git", "reset", "--hard", "HEAD~1")
+	cmd.Dir = worktree
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func realDirExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
+
+func truncateOutput(output string, maxLines int) string {
+	if output == "" {
+		return ""
+	}
+	lines := strings.Split(output, "\n")
+	if len(lines) <= maxLines {
+		return output
+	}
+	last := lines[len(lines)-maxLines:]
+	return fmt.Sprintf("... (showing last %d of %d lines)\n%s", maxLines, len(lines), strings.Join(last, "\n"))
 }
 
 func buildFirstLine(a *state.AgentState) string {
