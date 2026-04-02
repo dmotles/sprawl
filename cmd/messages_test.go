@@ -1120,6 +1120,7 @@ type sendKeysCall struct {
 	keys        string
 }
 
+func (m *mockTmuxRunner) HasWindow(string, string) bool                     { return false }
 func (m *mockTmuxRunner) HasSession(name string) bool                       { return false }
 func (m *mockTmuxRunner) NewSession(name string, env map[string]string, shellCmd string) error {
 	return nil

@@ -128,6 +128,7 @@ type mockPickRunner struct {
 }
 
 func (m *mockPickRunner) HasSession(name string) bool                          { return false }
+func (m *mockPickRunner) HasWindow(string, string) bool                        { return false }
 func (m *mockPickRunner) NewSession(string, map[string]string, string) error   { return nil }
 func (m *mockPickRunner) NewSessionWithWindow(string, string, map[string]string, string) error {
 	return nil
@@ -235,6 +236,38 @@ func TestShellQuote(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("ShellQuote(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+// mockHasWindowRunner implements Runner for HasWindow testing.
+type mockHasWindowRunner struct {
+	mockPickRunner
+	hasWindow bool
+}
+
+func (m *mockHasWindowRunner) HasWindow(sessionName, windowName string) bool {
+	return m.hasWindow
+}
+
+func TestHasWindow_MockReturnsTrue(t *testing.T) {
+	var runner Runner = &mockHasWindowRunner{hasWindow: true}
+	if !runner.HasWindow("session", "window") {
+		t.Error("expected HasWindow to return true")
+	}
+}
+
+func TestHasWindow_MockReturnsFalse(t *testing.T) {
+	var runner Runner = &mockHasWindowRunner{hasWindow: false}
+	if runner.HasWindow("session", "window") {
+		t.Error("expected HasWindow to return false")
+	}
+}
+
+func TestHasWindow_RealRunnerBadPath(t *testing.T) {
+	// RealRunner with a non-existent tmux binary should return false gracefully.
+	r := &RealRunner{TmuxPath: "/nonexistent/tmux"}
+	if r.HasWindow("session", "window") {
+		t.Error("expected HasWindow to return false with invalid tmux path")
 	}
 }
 

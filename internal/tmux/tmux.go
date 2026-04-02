@@ -66,6 +66,7 @@ func PickNamespace(runner Runner) string {
 // Runner abstracts tmux operations for testability.
 type Runner interface {
 	HasSession(name string) bool
+	HasWindow(sessionName, windowName string) bool
 	NewSession(name string, env map[string]string, shellCmd string) error
 	NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
 	NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error
@@ -95,6 +96,13 @@ func exactTarget(name string) string {
 // HasSession returns true if a tmux session with the given name exists.
 func (r *RealRunner) HasSession(name string) bool {
 	cmd := exec.Command(r.TmuxPath, "has-session", "-t", exactTarget(name))
+	return cmd.Run() == nil
+}
+
+// HasWindow returns true if a tmux window with the given name exists in the session.
+func (r *RealRunner) HasWindow(sessionName, windowName string) bool {
+	target := exactTarget(sessionName) + ":" + windowName
+	cmd := exec.Command(r.TmuxPath, "display-message", "-t", target, "-p", "#{window_name}")
 	return cmd.Run() == nil
 }
 

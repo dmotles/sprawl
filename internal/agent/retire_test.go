@@ -28,7 +28,8 @@ type retireTestRunner struct {
 	listWindowPIDsFunc func(sessionName, windowName string) ([]int, error)
 }
 
-func (m *retireTestRunner) HasSession(name string) bool { return m.hasSession }
+func (m *retireTestRunner) HasWindow(string, string) bool { return false }
+func (m *retireTestRunner) HasSession(name string) bool   { return m.hasSession }
 func (m *retireTestRunner) NewSession(name string, env map[string]string, shellCmd string) error {
 	return nil
 }

@@ -27,6 +27,8 @@ type mockRunner struct {
 	attachName            string
 }
 
+func (m *mockRunner) HasWindow(string, string) bool { return false }
+
 func (m *mockRunner) HasSession(name string) bool {
 	return m.hasSession
 }
