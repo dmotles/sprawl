@@ -14,6 +14,11 @@ func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 		"--type researcher",
 		"--family",
 		"dendra messages",
+		"dendra merge",
+		"dendra cleanup branches",
+		"--no-validate",
+		"--dry-run",
+		"TaskCreate",
 	}
 
 	for _, phrase := range phrases {
