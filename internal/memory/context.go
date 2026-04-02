@@ -18,6 +18,7 @@ type buildConfig struct {
 	sessionLister  func(string, int) ([]Session, []string, error)
 	timelineLister func(string) ([]TimelineEntry, error)
 	clock          func() time.Time
+	budget         *BudgetConfig
 }
 
 // WithAgentLister injects a custom agent listing function.
@@ -45,6 +46,11 @@ func WithClock(fn func() time.Time) BuildOption {
 	return func(c *buildConfig) { c.clock = fn }
 }
 
+// WithBudgetConfig enables budget enforcement for the context blob.
+func WithBudgetConfig(bc BudgetConfig) BuildOption {
+	return func(c *buildConfig) { c.budget = &bc }
+}
+
 // BuildContextBlob assembles a structured markdown blob from recent sessions,
 // active agent status, and pending inbox messages. It is resilient: if one data
 // source fails, partial results are returned with an error marker in the
@@ -62,39 +68,35 @@ func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (
 		o(&cfg)
 	}
 
-	var b strings.Builder
 	var errs []error
 
-	// --- Active State ---
-	b.WriteString("## Active State\n\n")
-
-	// Agents section
-	b.WriteString("### Agents\n")
-	if agentErr := writeAgentsSection(&b, dendraRoot, cfg.agentLister); agentErr != nil {
-		errs = append(errs, agentErr)
+	// Render Active State section
+	activeState, activeErr := renderActiveState(dendraRoot, rootName, cfg)
+	if activeErr != nil {
+		errs = append(errs, activeErr)
 	}
 
-	// Pending Inbox section
-	b.WriteString("\n### Pending Inbox\n")
-	if inboxErr := writeInboxSection(&b, dendraRoot, rootName, cfg.messageLister); inboxErr != nil {
-		errs = append(errs, inboxErr)
-	}
-
-	// --- Session Timeline ---
-	if timelineErr := writeTimelineSection(&b, dendraRoot, cfg.timelineLister); timelineErr != nil {
+	// Render Timeline section (header + individual entries)
+	timelineHeader, timelineEntries, timelineErr := renderTimeline(dendraRoot, cfg)
+	if timelineErr != nil {
 		errs = append(errs, timelineErr)
 	}
 
-	// --- Recent Sessions ---
-	b.WriteString("\n## Recent Sessions\n")
-	if sessErr := writeSessionsSection(&b, dendraRoot, cfg.sessionLister); sessErr != nil {
+	// Render Sessions
+	sessionStrings, sessErr := renderSessions(dendraRoot, cfg)
+	if sessErr != nil {
 		errs = append(errs, sessErr)
 	}
 
-	// Footer
-	now := cfg.clock()
-	b.WriteString("\n---\n")
-	fmt.Fprintf(&b, "*This system prompt was generated at %s. If this session runs for an extended period, the current time may differ.*\n", now.UTC().Format(time.RFC3339))
+	// Render Footer
+	footer := renderFooter(cfg)
+
+	var result string
+	if cfg.budget != nil {
+		result = assembleBudgeted(activeState, timelineHeader, timelineEntries, sessionStrings, footer, cfg.budget)
+	} else {
+		result = assembleUnbudgeted(activeState, timelineHeader, timelineEntries, sessionStrings, footer)
+	}
 
 	var combinedErr error
 	if len(errs) > 0 {
@@ -105,7 +107,272 @@ func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (
 		combinedErr = fmt.Errorf("context blob errors: %s", strings.Join(msgs, "; "))
 	}
 
+	return result, combinedErr
+}
+
+// renderActiveState produces the "## Active State" section string, including
+// the section header.
+func renderActiveState(dendraRoot, rootName string, cfg buildConfig) (string, error) {
+	var b strings.Builder
+	var errs []error
+
+	b.WriteString("## Active State\n\n")
+
+	b.WriteString("### Agents\n")
+	if agentErr := writeAgentsSection(&b, dendraRoot, cfg.agentLister); agentErr != nil {
+		errs = append(errs, agentErr)
+	}
+
+	b.WriteString("\n### Pending Inbox\n")
+	if inboxErr := writeInboxSection(&b, dendraRoot, rootName, cfg.messageLister); inboxErr != nil {
+		errs = append(errs, inboxErr)
+	}
+
+	var combinedErr error
+	if len(errs) > 0 {
+		msgs := make([]string, len(errs))
+		for i, e := range errs {
+			msgs[i] = e.Error()
+		}
+		combinedErr = fmt.Errorf("%s", strings.Join(msgs, "; "))
+	}
 	return b.String(), combinedErr
+}
+
+// renderTimeline returns the timeline header and individual entry strings.
+// If there are no entries (and no error), header is empty and entries is nil.
+func renderTimeline(dendraRoot string, cfg buildConfig) (string, []string, error) {
+	entries, err := cfg.timelineLister(dendraRoot)
+	if err != nil {
+		header := "\n## Session Timeline\n"
+		errLine := fmt.Sprintf("[Error reading timeline: %s]\n", err)
+		return header, []string{errLine}, err
+	}
+
+	if len(entries) == 0 {
+		return "", nil, nil
+	}
+
+	header := "\n## Session Timeline\n"
+	strs := make([]string, len(entries))
+	for i, e := range entries {
+		strs[i] = fmt.Sprintf("- %s: %s\n", e.Timestamp.UTC().Format(time.RFC3339), e.Summary)
+	}
+	return header, strs, nil
+}
+
+// renderSessions returns individual session strings (each including the ### header).
+func renderSessions(dendraRoot string, cfg buildConfig) ([]string, error) {
+	sessions, bodies, err := cfg.sessionLister(dendraRoot, 3)
+	if err != nil {
+		errStr := fmt.Sprintf("\n[Error reading sessions: %s]\n", err)
+		return []string{errStr}, err
+	}
+
+	if len(sessions) == 0 {
+		return []string{"\nNo previous sessions.\n"}, nil
+	}
+
+	result := make([]string, len(sessions))
+	for i, s := range sessions {
+		ts := s.Timestamp.UTC().Format(time.RFC3339)
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "\n### Session: %s (%s)\n", s.SessionID, ts)
+		if i < len(bodies) {
+			sb.WriteString(bodies[i])
+			sb.WriteString("\n")
+		}
+		result[i] = sb.String()
+	}
+	return result, nil
+}
+
+// renderFooter produces the deterministic footer string.
+func renderFooter(cfg buildConfig) string {
+	now := cfg.clock()
+	var b strings.Builder
+	b.WriteString("\n---\n")
+	fmt.Fprintf(&b, "*This system prompt was generated at %s. If this session runs for an extended period, the current time may differ.*\n", now.UTC().Format(time.RFC3339))
+	return b.String()
+}
+
+// assembleUnbudgeted concatenates all sections without any size limits (backward compat).
+func assembleUnbudgeted(activeState, timelineHeader string, timelineEntries, sessionStrings []string, footer string) string {
+	var b strings.Builder
+	b.WriteString(activeState)
+	if timelineHeader != "" {
+		b.WriteString(timelineHeader)
+		for _, e := range timelineEntries {
+			b.WriteString(e)
+		}
+	}
+	b.WriteString("\n## Recent Sessions\n")
+	for _, s := range sessionStrings {
+		b.WriteString(s)
+	}
+	b.WriteString(footer)
+	return b.String()
+}
+
+// assembleBudgeted assembles sections under a token budget.
+func assembleBudgeted(activeState, timelineHeader string, timelineEntries, sessionStrings []string, footer string, budget *BudgetConfig) string {
+	bc := *budget
+	if bc.MaxTotalChars == 0 {
+		bc = DefaultBudgetConfig()
+	}
+
+	totalBudget := bc.MaxTotalChars
+	footerSize := MeasureBytes(footer)
+	remaining := totalBudget - footerSize
+
+	var b strings.Builder
+
+	// If footer alone exceeds or equals budget, truncate everything into budget.
+	if remaining <= 0 {
+		return TruncateWithNote(activeState+footer, totalBudget)
+	}
+
+	// 1. Active State (highest priority)
+	activeSize := MeasureBytes(activeState)
+	if activeSize > remaining {
+		// Truncate active state; all other sections omitted.
+		b.WriteString(TruncateWithNote(activeState, remaining))
+		b.WriteString(footer)
+		return b.String()
+	}
+	b.WriteString(activeState)
+	remaining -= activeSize
+
+	// 2. Timeline (second priority)
+	if timelineHeader != "" && len(timelineEntries) > 0 {
+		// Calculate full timeline size
+		fullTimelineSize := MeasureBytes(timelineHeader)
+		for _, e := range timelineEntries {
+			fullTimelineSize += MeasureBytes(e)
+		}
+
+		if fullTimelineSize <= remaining {
+			// Fits entirely
+			b.WriteString(timelineHeader)
+			for _, e := range timelineEntries {
+				b.WriteString(e)
+			}
+			remaining -= fullTimelineSize
+		} else {
+			// Try to fit with truncation from oldest end
+			truncNote := "[Timeline truncated to fit budget]\n"
+			headerPlusTrunc := MeasureBytes(timelineHeader) + MeasureBytes(truncNote)
+
+			if headerPlusTrunc <= remaining {
+				// Drop oldest entries until it fits
+				start := 0
+				for start < len(timelineEntries) {
+					size := headerPlusTrunc
+					for j := start; j < len(timelineEntries); j++ {
+						size += MeasureBytes(timelineEntries[j])
+					}
+					if size <= remaining {
+						break
+					}
+					start++
+				}
+
+				if start < len(timelineEntries) {
+					b.WriteString(timelineHeader)
+					b.WriteString(truncNote)
+					for j := start; j < len(timelineEntries); j++ {
+						b.WriteString(timelineEntries[j])
+					}
+					size := headerPlusTrunc
+					for j := start; j < len(timelineEntries); j++ {
+						size += MeasureBytes(timelineEntries[j])
+					}
+					remaining -= size
+				}
+				// If start >= len(timelineEntries), nothing fits, omit entirely
+			}
+			// If header+truncNote doesn't fit, omit timeline entirely
+		}
+	}
+
+	// 3. Sessions header: include if budget remains.
+	sessionsHeader := "\n## Recent Sessions\n"
+	sessionsHeaderSize := MeasureBytes(sessionsHeader)
+	if sessionsHeaderSize <= remaining {
+		remaining -= sessionsHeaderSize
+
+		// Apply per-session truncation.
+		if bc.MaxSessionChars > 0 {
+			for i := range sessionStrings {
+				sessionStrings[i] = TruncateWithNote(sessionStrings[i], bc.MaxSessionChars)
+			}
+		}
+
+		// Allocate newest-first: iterate from newest to oldest, include if fits.
+		// Reserve space for a possible omission note before allocating sessions.
+		included := make([]bool, len(sessionStrings))
+		includedCount := 0
+		for i := len(sessionStrings) - 1; i >= 0; i-- {
+			size := MeasureBytes(sessionStrings[i])
+			if size <= remaining {
+				included[i] = true
+				remaining -= size
+				includedCount++
+			}
+		}
+
+		// Calculate omission note (accounts for its size in the budget).
+		omitted := len(sessionStrings) - includedCount
+		var omissionNote string
+		if omitted > 0 {
+			noun := "sessions"
+			if omitted == 1 {
+				noun = "session"
+			}
+			omissionNote = fmt.Sprintf("\n%d older %s omitted\n", omitted, noun)
+			noteSize := MeasureBytes(omissionNote)
+			// If the note doesn't fit, drop the oldest included session to make room.
+			for noteSize > remaining && includedCount > 0 {
+				for j := 0; j < len(sessionStrings); j++ {
+					if included[j] {
+						included[j] = false
+						remaining += MeasureBytes(sessionStrings[j])
+						includedCount--
+						omitted++
+						break
+					}
+				}
+				noun = "sessions"
+				if omitted == 1 {
+					noun = "session"
+				}
+				omissionNote = fmt.Sprintf("\n%d older %s omitted\n", omitted, noun)
+				noteSize = MeasureBytes(omissionNote)
+			}
+			// If note still doesn't fit after dropping all sessions, suppress it.
+			if noteSize > remaining {
+				omissionNote = ""
+			} else {
+				remaining -= noteSize
+			}
+		}
+
+		b.WriteString(sessionsHeader)
+
+		if omissionNote != "" {
+			b.WriteString(omissionNote)
+		}
+
+		// Display in oldest-first order.
+		for i, s := range sessionStrings {
+			if included[i] {
+				b.WriteString(s)
+			}
+		}
+	}
+
+	b.WriteString(footer)
+	return b.String()
 }
 
 func writeAgentsSection(b *strings.Builder, dendraRoot string, lister func(string) ([]*state.AgentState, error)) error {
@@ -152,44 +419,3 @@ func writeInboxSection(b *strings.Builder, dendraRoot, rootName string, lister f
 	return nil
 }
 
-func writeTimelineSection(b *strings.Builder, dendraRoot string, lister func(string) ([]TimelineEntry, error)) error {
-	entries, err := lister(dendraRoot)
-	if err != nil {
-		b.WriteString("\n## Session Timeline\n")
-		fmt.Fprintf(b, "[Error reading timeline: %s]\n", err)
-		return err
-	}
-
-	if len(entries) == 0 {
-		return nil
-	}
-
-	b.WriteString("\n## Session Timeline\n")
-	for _, e := range entries {
-		fmt.Fprintf(b, "- %s: %s\n", e.Timestamp.UTC().Format(time.RFC3339), e.Summary)
-	}
-	return nil
-}
-
-func writeSessionsSection(b *strings.Builder, dendraRoot string, lister func(string, int) ([]Session, []string, error)) error {
-	sessions, bodies, err := lister(dendraRoot, 3)
-	if err != nil {
-		fmt.Fprintf(b, "\n[Error reading sessions: %s]\n", err)
-		return err
-	}
-
-	if len(sessions) == 0 {
-		b.WriteString("\nNo previous sessions.\n")
-		return nil
-	}
-
-	for i, s := range sessions {
-		ts := s.Timestamp.UTC().Format(time.RFC3339)
-		fmt.Fprintf(b, "\n### Session: %s (%s)\n", s.SessionID, ts)
-		if i < len(bodies) {
-			b.WriteString(bodies[i])
-			b.WriteString("\n")
-		}
-	}
-	return nil
-}

@@ -593,3 +593,447 @@ func TestBuildContextBlob_DefaultDeps(t *testing.T) {
 		t.Error("expected blob to contain 'No previous sessions.'")
 	}
 }
+
+// --- Budget enforcement tests ---
+
+// budgetTestDeps returns common build options for budget tests with the given
+// agents, timeline entries, sessions, and bodies. All listers are injected
+// so tests are deterministic.
+func budgetTestDeps(
+	agents []*state.AgentState,
+	timeline []TimelineEntry,
+	sessions []Session,
+	bodies []string,
+) []BuildOption {
+	return []BuildOption{
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return agents, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithTimelineLister(func(string) ([]TimelineEntry, error) {
+			return timeline, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return sessions, bodies, nil
+		}),
+		WithClock(fixedClock),
+	}
+}
+
+func TestBuildContextBlob_BudgetGenerousNoDifference(t *testing.T) {
+	agents := []*state.AgentState{
+		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+	}
+	timeline := []TimelineEntry{
+		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Setup complete"},
+	}
+	sessions := []Session{
+		{SessionID: "sess-001", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	bodies := []string{"Session one body."}
+
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+
+	// Without budget
+	noBudget, err := BuildContextBlob("fake-root", "root-agent", deps...)
+	if err != nil {
+		t.Fatalf("unexpected error (no budget): %v", err)
+	}
+
+	// With very generous budget
+	withBudget, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   100000,
+			MaxSessionChars: 100000,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error (with budget): %v", err)
+	}
+
+	if noBudget != withBudget {
+		t.Errorf("generous budget should produce identical output to no budget\n--- no budget ---\n%s\n--- with budget ---\n%s", noBudget, withBudget)
+	}
+}
+
+func TestBuildContextBlob_BudgetOmitsOldestSessions(t *testing.T) {
+	agents := []*state.AgentState{
+		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+	}
+	timeline := []TimelineEntry{}
+	sessions := []Session{
+		{SessionID: "sess-oldest", Timestamp: time.Date(2026, 3, 30, 10, 0, 0, 0, time.UTC)},
+		{SessionID: "sess-middle", Timestamp: time.Date(2026, 3, 31, 10, 0, 0, 0, time.UTC)},
+		{SessionID: "sess-newest", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	bodies := []string{
+		strings.Repeat("A", 200), // oldest: 200 bytes body
+		strings.Repeat("B", 200), // middle: 200 bytes body
+		strings.Repeat("C", 200), // newest: 200 bytes body
+	}
+
+	// Build without budget, then build with only the newest session to find the
+	// size of the non-session portions + 1 session. This lets us set a budget
+	// that reliably fits everything except the 2 oldest sessions.
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+	onlyNewest := budgetTestDeps(agents, timeline, sessions[2:], bodies[2:])
+	oneSessionBlob, _ := BuildContextBlob("fake-root", "root-agent", onlyNewest...)
+	// Add margin for the omission note (~30 bytes).
+	budget := MeasureBytes(oneSessionBlob) + 30
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   budget,
+			MaxSessionChars: 5000,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(blob, "sess-newest") {
+		t.Error("expected newest session to be present")
+	}
+	if strings.Contains(blob, "sess-oldest") {
+		t.Error("expected oldest session to be omitted")
+	}
+	if strings.Contains(blob, "sess-middle") {
+		t.Error("expected middle session to be omitted")
+	}
+	if !strings.Contains(blob, "2 older sessions omitted") {
+		t.Error("expected note about 2 older sessions omitted")
+	}
+	if MeasureBytes(blob) > budget {
+		t.Errorf("blob size %d exceeds budget %d", MeasureBytes(blob), budget)
+	}
+}
+
+func TestBuildContextBlob_BudgetTruncatesTimeline(t *testing.T) {
+	agents := []*state.AgentState{
+		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+	}
+	// Create a long timeline to ensure it gets truncated.
+	var timeline []TimelineEntry
+	for i := 0; i < 50; i++ {
+		timeline = append(timeline, TimelineEntry{
+			Timestamp: time.Date(2026, 3, 1+i%28, 10, 0, 0, 0, time.UTC),
+			Summary:   fmt.Sprintf("Timeline entry number %d with some additional detail text", i),
+		})
+	}
+	sessions := []Session{}
+	bodies := []string{}
+
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+
+	// Build without budget to measure full size.
+	fullBlob, _ := BuildContextBlob("fake-root", "root-agent", deps...)
+	fullSize := MeasureBytes(fullBlob)
+
+	// Set budget to roughly half: enough for active state but only partial timeline.
+	budget := fullSize / 2
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   budget,
+			MaxSessionChars: 2000,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(blob, "## Session Timeline") {
+		t.Error("expected timeline section header to be present")
+	}
+	// The timeline should be truncated with a budget note.
+	if !strings.Contains(blob, "truncated") {
+		t.Error("expected 'truncated' note when timeline exceeds budget")
+	}
+	if MeasureBytes(blob) > budget {
+		t.Errorf("blob size %d exceeds budget %d", MeasureBytes(blob), budget)
+	}
+}
+
+func TestBuildContextBlob_BudgetActiveStateOnly(t *testing.T) {
+	agents := []*state.AgentState{
+		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+	}
+	timeline := []TimelineEntry{
+		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Setup complete"},
+	}
+	sessions := []Session{
+		{SessionID: "sess-001", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	bodies := []string{"Session body."}
+
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+
+	// Build without budget, then measure the active-state portion to set a
+	// budget that fits active state + footer but nothing else.
+	noBudgetBlob, _ := BuildContextBlob("fake-root", "root-agent", deps...)
+
+	// Find where timeline or sessions start to estimate active-state size.
+	activeEnd := strings.Index(noBudgetBlob, "\n## Session Timeline")
+	if activeEnd < 0 {
+		activeEnd = strings.Index(noBudgetBlob, "\n## Recent Sessions")
+	}
+	if activeEnd < 0 {
+		t.Fatal("could not find section boundary in blob")
+	}
+	// Budget = active state + some margin for the footer (~120 bytes)
+	budget := activeEnd + 130
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   budget,
+			MaxSessionChars: 2000,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = noBudgetBlob
+
+	// Active state should be present.
+	if !strings.Contains(blob, "## Active State") {
+		t.Error("expected '## Active State' header to be present")
+	}
+
+	// Timeline and sessions sections should be completely omitted or empty.
+	hasTimeline := strings.Contains(blob, "## Session Timeline") &&
+		strings.Contains(blob, "Setup complete")
+	hasSessions := strings.Contains(blob, "## Recent Sessions") &&
+		strings.Contains(blob, "sess-001")
+	if hasTimeline {
+		t.Error("expected timeline content to be omitted under tight budget")
+	}
+	if hasSessions {
+		t.Error("expected sessions content to be omitted under tight budget")
+	}
+	if MeasureBytes(blob) > budget {
+		t.Errorf("blob size %d exceeds budget %d", MeasureBytes(blob), budget)
+	}
+}
+
+func TestBuildContextBlob_BudgetTruncatesActiveState(t *testing.T) {
+	// Many agents to make active state large.
+	var agents []*state.AgentState
+	for i := 0; i < 20; i++ {
+		agents = append(agents, &state.AgentState{
+			Name:           fmt.Sprintf("agent-%d", i),
+			Type:           "engineer",
+			Family:         "eng",
+			Status:         "active",
+			LastReportType: "status",
+		})
+	}
+	timeline := []TimelineEntry{
+		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Entry"},
+	}
+	sessions := []Session{
+		{SessionID: "sess-001", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	bodies := []string{"Body."}
+
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+
+	// Extremely tight budget.
+	budget := 50
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   budget,
+			MaxSessionChars: 2000,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(blob, "[...truncated]") {
+		t.Error("expected '[...truncated]' note when active state is truncated")
+	}
+	// Timeline and sessions should be omitted.
+	if strings.Contains(blob, "## Session Timeline") {
+		t.Error("expected timeline to be omitted under extremely tight budget")
+	}
+	if strings.Contains(blob, "sess-001") {
+		t.Error("expected sessions to be omitted under extremely tight budget")
+	}
+	if MeasureBytes(blob) > budget {
+		t.Errorf("blob size %d exceeds budget %d", MeasureBytes(blob), budget)
+	}
+}
+
+func TestBuildContextBlob_BudgetSingleSessionTruncated(t *testing.T) {
+	agents := []*state.AgentState{}
+	timeline := []TimelineEntry{}
+	sessions := []Session{
+		{SessionID: "sess-001", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	bodies := []string{"This is a very long session body that should definitely exceed the per-session character limit when it is set to a very low value like thirty bytes."}
+
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   100000,
+			MaxSessionChars: 30,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(blob, "[...truncated]") {
+		t.Error("expected '[...truncated]' note when session body exceeds MaxSessionChars")
+	}
+	// The full body should NOT be present.
+	if strings.Contains(blob, "when it is set to a very low value like thirty bytes.") {
+		t.Error("expected session body to be truncated, but full body found")
+	}
+}
+
+func TestBuildContextBlob_BudgetSessionsNewestFirstAllocation(t *testing.T) {
+	agents := []*state.AgentState{}
+	timeline := []TimelineEntry{}
+	sessions := []Session{
+		{SessionID: "sess-oldest", Timestamp: time.Date(2026, 3, 29, 10, 0, 0, 0, time.UTC)},
+		{SessionID: "sess-middle", Timestamp: time.Date(2026, 3, 30, 10, 0, 0, 0, time.UTC)},
+		{SessionID: "sess-newest", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	bodies := []string{
+		strings.Repeat("X", 200), // oldest: 200 bytes body
+		"Middle session body text.",
+		"Newest session body text.",
+	}
+
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+
+	// Build without budget to measure full output, then subtract enough to
+	// force the oldest session (with its 200-byte body) to be dropped.
+	fullBlob, _ := BuildContextBlob("fake-root", "root-agent", deps...)
+	budget := MeasureBytes(fullBlob) - 150
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   budget,
+			MaxSessionChars: 5000,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Newest 2 should be present.
+	if !strings.Contains(blob, "sess-newest") {
+		t.Error("expected newest session to be present")
+	}
+	if !strings.Contains(blob, "sess-middle") {
+		t.Error("expected middle session to be present")
+	}
+	// Oldest should be dropped.
+	if strings.Contains(blob, "sess-oldest") {
+		t.Error("expected oldest session to be omitted")
+	}
+	// Omission note.
+	if !strings.Contains(blob, "1 older session omitted") {
+		t.Error("expected note about 1 older session omitted")
+	}
+	// Display order: middle before newest (oldest-first display order).
+	idxMiddle := strings.Index(blob, "sess-middle")
+	idxNewest := strings.Index(blob, "sess-newest")
+	if idxMiddle >= idxNewest {
+		t.Errorf("expected middle (%d) to appear before newest (%d) in oldest-first display order", idxMiddle, idxNewest)
+	}
+	if MeasureBytes(blob) > budget {
+		t.Errorf("blob size %d exceeds budget %d", MeasureBytes(blob), budget)
+	}
+}
+
+func TestBuildContextBlob_BudgetZeroValueUsesDefault(t *testing.T) {
+	// Create enough data to exceed the default 10000 char budget.
+	var agents []*state.AgentState
+	for i := 0; i < 10; i++ {
+		agents = append(agents, &state.AgentState{
+			Name:           fmt.Sprintf("agent-%d-with-a-long-name-padding", i),
+			Type:           "engineer",
+			Family:         "engineering",
+			Status:         "active",
+			LastReportType: "status",
+		})
+	}
+	var timeline []TimelineEntry
+	for i := 0; i < 100; i++ {
+		timeline = append(timeline, TimelineEntry{
+			Timestamp: time.Date(2026, 3, 1+i%28, 10, 0, 0, 0, time.UTC),
+			Summary:   fmt.Sprintf("Timeline entry %d with enough text to take up space in the context blob", i),
+		})
+	}
+	var sessions []Session
+	var sessionBodies []string
+	for i := 0; i < 3; i++ {
+		sessions = append(sessions, Session{
+			SessionID: fmt.Sprintf("sess-%03d", i),
+			Timestamp: time.Date(2026, 4, 1, i, 0, 0, 0, time.UTC),
+		})
+		sessionBodies = append(sessionBodies, strings.Repeat(fmt.Sprintf("Session %d body content. ", i), 50))
+	}
+
+	deps := budgetTestDeps(agents, timeline, sessions, sessionBodies)
+
+	// Verify that without budget, output exceeds 10000 chars.
+	fullBlob, _ := BuildContextBlob("fake-root", "root-agent", deps...)
+	if MeasureBytes(fullBlob) <= DefaultBudgetConfig().MaxTotalChars {
+		t.Fatalf("test setup: full blob (%d chars) should exceed default budget (%d) for this test to be meaningful",
+			MeasureBytes(fullBlob), DefaultBudgetConfig().MaxTotalChars)
+	}
+
+	// Pass zero-value BudgetConfig — should use DefaultBudgetConfig().
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if MeasureBytes(blob) > DefaultBudgetConfig().MaxTotalChars {
+		t.Errorf("zero-value BudgetConfig: blob size %d exceeds default budget %d",
+			MeasureBytes(blob), DefaultBudgetConfig().MaxTotalChars)
+	}
+}
+
+func TestBuildContextBlob_BudgetIncludesFooter(t *testing.T) {
+	agents := []*state.AgentState{
+		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+	}
+	timeline := []TimelineEntry{
+		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Setup complete"},
+	}
+	sessions := []Session{
+		{SessionID: "sess-001", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	bodies := []string{"Session body."}
+
+	deps := budgetTestDeps(agents, timeline, sessions, bodies)
+
+	// Tight budget — but footer must still be present.
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithBudgetConfig(BudgetConfig{
+			MaxTotalChars:   400,
+			MaxSessionChars: 2000,
+		}))...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(blob, "generated at") {
+		t.Error("expected footer with 'generated at' to be present even under tight budget")
+	}
+	if !strings.Contains(blob, "---") {
+		t.Error("expected footer separator '---' to be present even under tight budget")
+	}
+}

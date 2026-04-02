@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 )
@@ -18,7 +19,15 @@ import (
 // protection is needed.
 //
 // TODO: Wire this into the sensei loop post-handoff path.
-func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker) error {
+func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, now func() time.Time) error {
+	if cfg == nil {
+		c := DefaultTimelineCompressionConfig()
+		cfg = &c
+	}
+	if now == nil {
+		now = time.Now
+	}
+
 	// Load all sessions. ListRecentSessions returns oldest-first.
 	sessions, bodies, err := ListRecentSessions(dendraRoot, 1<<30)
 	if err != nil {
@@ -60,7 +69,19 @@ func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker) 
 		return fmt.Errorf("consolidation produced no valid timeline entries; refusing to overwrite existing timeline")
 	}
 
-	if err := WriteTimeline(dendraRoot, entries); err != nil {
+	// Merge parsed entries with existing timeline, deduplicating overlaps.
+	merged := mergeTimelines(existingTimeline, entries)
+
+	// Apply compression and pruning.
+	compressed := CompressTimeline(merged, *cfg, now())
+	final := PruneTimeline(compressed, *cfg, now())
+
+	// Skip write if the result matches the existing timeline exactly.
+	if timelineEqual(existingTimeline, final) {
+		return nil
+	}
+
+	if err := WriteTimeline(dendraRoot, final); err != nil {
 		return fmt.Errorf("writing consolidated timeline: %w", err)
 	}
 
@@ -158,4 +179,44 @@ func parseTimelineOutput(raw string) ([]TimelineEntry, int) {
 	}
 
 	return entries, skipped
+}
+
+// mergeTimelines combines existing and new timeline entries, deduplicating
+// entries that have the same timestamp (at second precision) and summary.
+// The result is sorted chronologically.
+func mergeTimelines(existing, newEntries []TimelineEntry) []TimelineEntry {
+	type key struct {
+		ts      int64
+		summary string
+	}
+	seen := make(map[key]struct{}, len(existing))
+	result := make([]TimelineEntry, 0, len(existing)+len(newEntries))
+	for _, e := range existing {
+		k := key{e.Timestamp.Unix(), e.Summary}
+		seen[k] = struct{}{}
+		result = append(result, e)
+	}
+	for _, e := range newEntries {
+		k := key{e.Timestamp.Unix(), e.Summary}
+		if _, ok := seen[k]; !ok {
+			result = append(result, e)
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		return result[i].Timestamp.Before(result[j].Timestamp)
+	})
+	return result
+}
+
+// timelineEqual returns true if two timeline slices have identical entries.
+func timelineEqual(a, b []TimelineEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !a[i].Timestamp.Equal(b[i].Timestamp) || a[i].Summary != b[i].Summary {
+			return false
+		}
+	}
+	return true
 }
