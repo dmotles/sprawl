@@ -11,7 +11,7 @@ import (
 const DefaultNamespace = "🌳"
 const DefaultRootName = "sensei"
 const BranchSeparator = "├"
-const RootWindowName = "root"
+const RootWindowName = "sensei"
 
 // NamespacePool is a curated list of tree/nature emojis used for auto-selecting
 // a unique namespace when running dendra init.

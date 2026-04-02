@@ -70,6 +70,12 @@ func TestDefaultRootName(t *testing.T) {
 	}
 }
 
+func TestRootWindowNameMatchesDefaultRootName(t *testing.T) {
+	if RootWindowName != DefaultRootName {
+		t.Errorf("RootWindowName = %q, want it to match DefaultRootName = %q", RootWindowName, DefaultRootName)
+	}
+}
+
 func TestBranchSeparator(t *testing.T) {
 	if BranchSeparator != "├" {
 		t.Errorf("BranchSeparator = %q, want %q", BranchSeparator, "├")
