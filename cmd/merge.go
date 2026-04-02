@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/dmotles/dendra/internal/agent"
@@ -27,6 +28,7 @@ type mergeDeps struct {
 	runTests        func(dir string) (string, error)
 	gitResetHard    func(worktree string) error
 	dirExists       func(path string) bool
+	gitRevListCount func(repoRoot, base, head string) (int, error)
 	stderr          io.Writer
 }
 
@@ -36,12 +38,14 @@ var (
 	mergeMessage    string
 	mergeNoValidate bool
 	mergeForce      bool
+	mergeDryRun     bool
 )
 
 func init() {
 	mergeCmd.Flags().StringVarP(&mergeMessage, "message", "m", "", "Override the squash commit message")
 	mergeCmd.Flags().BoolVar(&mergeNoValidate, "no-validate", false, "Skip pre-merge and post-merge test validation")
 	mergeCmd.Flags().BoolVar(&mergeForce, "force", false, "Force merge even if agent has not reported done")
+	mergeCmd.Flags().BoolVar(&mergeDryRun, "dry-run", false, "Show what would happen without making changes")
 	rootCmd.AddCommand(mergeCmd)
 }
 
@@ -51,7 +55,7 @@ var mergeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveMergeDeps()
-		return runMerge(deps, args[0], mergeMessage, mergeNoValidate, mergeForce)
+		return runMerge(deps, args[0], mergeMessage, mergeNoValidate, mergeForce, mergeDryRun)
 	},
 }
 
@@ -86,11 +90,12 @@ func resolveMergeDeps() *mergeDeps {
 		runTests:        realRunTests,
 		gitResetHard:    realGitResetHard,
 		dirExists:       realDirExists,
+		gitRevListCount: realGitRevListCount,
 		stderr:          os.Stderr,
 	}
 }
 
-func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate bool, force bool) error {
+func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate bool, force bool, dryRun bool) error {
 	dendraRoot := deps.getenv("DENDRA_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
@@ -166,6 +171,53 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 		if agentStatus != "" {
 			return fmt.Errorf("Agent %q has uncommitted changes in worktree. Ask the agent to commit, or use --force to discard.", agentName)
 		}
+	}
+
+	// Dry-run: print plan and exit
+	if dryRun {
+		targetBranch, err := deps.currentBranch(callerAgent.Worktree)
+		if err != nil {
+			return fmt.Errorf("determining current branch: %w", err)
+		}
+
+		commitsAhead, err := deps.gitRevListCount(dendraRoot, targetBranch, agent.Branch)
+		if err != nil {
+			commitsAhead = -1
+		}
+
+		commitMsg := buildMergeCommitMessage(agent, targetBranch, messageOverride)
+
+		// Build steps list
+		var steps []string
+		if force && agent.Status != "done" {
+			steps = []string{"retire agent", "squash-merge", "delete branch"}
+		} else {
+			if !noValidate {
+				steps = append(steps, "validate")
+			}
+			steps = append(steps, "squash-merge", "retire agent", "delete branch")
+		}
+
+		lastReport := agent.LastReportMessage
+		if lastReport == "" {
+			lastReport = "(none)"
+		}
+
+		commitsAheadStr := fmt.Sprintf("%d commits ahead of %s", commitsAhead, targetBranch)
+		if commitsAhead < 0 {
+			commitsAheadStr = "unknown"
+		}
+
+		indentedMsg := "    " + strings.ReplaceAll(commitMsg, "\n", "\n    ")
+
+		fmt.Fprintf(deps.stderr, "[dry-run] Would merge agent %q (branch %s) into %s\n", agentName, agent.Branch, targetBranch)
+		fmt.Fprintf(deps.stderr, "  Agent status: %s\n", agent.Status)
+		fmt.Fprintf(deps.stderr, "  Last report: %q\n", lastReport)
+		fmt.Fprintf(deps.stderr, "  Source branch: %s (%s)\n", agent.Branch, commitsAheadStr)
+		fmt.Fprintf(deps.stderr, "  Commit message:\n%s\n", indentedMsg)
+		fmt.Fprintf(deps.stderr, "  Steps: %s\n", strings.Join(steps, " → "))
+
+		return nil
 	}
 
 	// Force-retire: when --force and agent is not done, retire FIRST to stop the agent
@@ -278,6 +330,20 @@ func buildMergeCommitMessage(agent *state.AgentState, targetBranch, messageOverr
 
 	return fmt.Sprintf("%s\n\nSquash merge of branch '%s' into '%s'.\nAgent: %s (%s, %s)\n\n%s",
 		firstLine, agent.Branch, targetBranch, agent.Name, agent.Type, agent.Family, coAuthor)
+}
+
+func realGitRevListCount(repoRoot, base, head string) (int, error) {
+	cmd := exec.Command("git", "rev-list", "--count", base+".."+head)
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("git rev-list: %w", err)
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("parsing rev-list count: %w", err)
+	}
+	return n, nil
 }
 
 func realGitMergeSquash(worktree, branch string) error {
