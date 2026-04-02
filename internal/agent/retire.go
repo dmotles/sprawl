@@ -59,6 +59,8 @@ type RetireDeps struct {
 	WorktreeRemove func(repoRoot, worktreePath string, force bool) error
 	GitStatus      func(worktreePath string) (string, error)
 	RemoveAll      func(string) error
+	ReadDir        func(string) ([]os.DirEntry, error)
+	ArchiveMessage func(dendraRoot, agent, msgID string) error
 	Stderr         io.Writer
 }
 
@@ -97,6 +99,28 @@ func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, f
 	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agent.Name, "logs")
 	if err := deps.RemoveAll(logsDir); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(deps.Stderr, "Warning: could not remove logs directory: %v\n", err)
+	}
+
+	// Archive messages from new/ and cur/ (leave sent/ untouched)
+	msgsDir := filepath.Join(dendraRoot, ".dendra", "messages", agent.Name)
+	for _, sub := range []string{"new", "cur"} {
+		dirPath := filepath.Join(msgsDir, sub)
+		entries, err := deps.ReadDir(dirPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Fprintf(deps.Stderr, "Warning: could not read messages %s/ directory: %v\n", sub, err)
+			}
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			msgID := entry.Name()[:len(entry.Name())-len(".json")]
+			if err := deps.ArchiveMessage(dendraRoot, agent.Name, msgID); err != nil {
+				fmt.Fprintf(deps.Stderr, "Warning: could not archive message %s: %v\n", msgID, err)
+			}
+		}
 	}
 
 	// Delete state file (name is now free)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
@@ -149,6 +150,8 @@ func buildRetireDeps(deps *retireDeps) *agent.RetireDeps {
 		WorktreeRemove: deps.worktreeRemove,
 		GitStatus:      deps.gitStatus,
 		RemoveAll:      deps.removeAll,
+		ReadDir:        os.ReadDir,
+		ArchiveMessage: messages.Archive,
 		Stderr:         os.Stderr,
 	}
 }

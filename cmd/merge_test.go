@@ -1892,6 +1892,8 @@ func TestMerge_RetirePerformsShutdown(t *testing.T) {
 			WorktreeRemove: func(root, wt string, force bool) error { return nil },
 			GitStatus:      func(wt string) (string, error) { return "", nil },
 			RemoveAll:      func(p string) error { return nil },
+			ReadDir:        os.ReadDir,
+			ArchiveMessage: func(_, _, _ string) error { return nil },
 			Stderr:         io.Discard,
 		}
 		return agent.RetireAgent(rd, dendraRoot, a, true, false)
@@ -1934,6 +1936,8 @@ func TestMerge_ForceRetire_PerformsShutdown(t *testing.T) {
 			WorktreeRemove: func(root, wt string, force bool) error { return nil },
 			GitStatus:      func(wt string) (string, error) { return "", nil },
 			RemoveAll:      func(p string) error { return nil },
+			ReadDir:        os.ReadDir,
+			ArchiveMessage: func(_, _, _ string) error { return nil },
 			Stderr:         io.Discard,
 		}
 		return agent.RetireAgent(rd, dendraRoot, a, true, false)

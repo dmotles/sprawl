@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -74,6 +75,8 @@ func newTestRetireDeps(t *testing.T) (*RetireDeps, *retireTestRunner, string) {
 		WorktreeRemove: func(repoRoot, worktreePath string, force bool) error { return nil },
 		GitStatus:      func(worktreePath string) (string, error) { return "", nil },
 		RemoveAll:      func(path string) error { return nil },
+		ReadDir:        os.ReadDir,
+		ArchiveMessage: func(dendraRoot, agent, msgID string) error { return nil },
 		Stderr:         io.Discard,
 	}
 
@@ -378,6 +381,186 @@ func TestRetireAgent_CleansUpLogs(t *testing.T) {
 	// Verify the logs directory was actually removed.
 	if _, err := os.Stat(logsDir); !os.IsNotExist(err) {
 		t.Errorf("logs directory should have been removed, but still exists")
+	}
+}
+
+func TestRetireAgent_ArchivesMessages(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	agent := &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	}
+	createRetireTestAgent(t, tmpDir, agent)
+
+	// Create message files in new/ and cur/
+	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", "alice")
+	for _, sub := range []string{"new", "cur", "sent", "archive"} {
+		os.MkdirAll(filepath.Join(msgsDir, sub), 0755)
+	}
+	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0644)
+	os.WriteFile(filepath.Join(msgsDir, "cur", "msg2.json"), []byte(`{}`), 0644)
+	os.WriteFile(filepath.Join(msgsDir, "sent", "msg3.json"), []byte(`{}`), 0644)
+
+	var archived []string
+	deps.ArchiveMessage = func(dendraRoot, agentName, msgID string) error {
+		archived = append(archived, msgID)
+		return nil
+	}
+
+	err := RetireAgent(deps, tmpDir, agent, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have archived msg1 (from new/) and msg2 (from cur/) but NOT msg3 (sent/).
+	if len(archived) != 2 {
+		t.Fatalf("expected 2 archived messages, got %d: %v", len(archived), archived)
+	}
+	sort.Strings(archived)
+	if archived[0] != "msg1" || archived[1] != "msg2" {
+		t.Errorf("expected archived [msg1 msg2], got %v", archived)
+	}
+}
+
+func TestRetireAgent_ArchiveMessages_NoMessages(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	agent := &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	}
+	createRetireTestAgent(t, tmpDir, agent)
+
+	// No message directories exist at all — should be a no-op.
+	archiveCalled := false
+	deps.ArchiveMessage = func(dendraRoot, agentName, msgID string) error {
+		archiveCalled = true
+		return nil
+	}
+
+	err := RetireAgent(deps, tmpDir, agent, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if archiveCalled {
+		t.Error("archive should not be called when no messages exist")
+	}
+}
+
+func TestRetireAgent_ArchiveMessages_FailureIsWarning(t *testing.T) {
+	var stderr bytes.Buffer
+	deps, _, tmpDir := newTestRetireDeps(t)
+	deps.Stderr = &stderr
+
+	agent := &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	}
+	createRetireTestAgent(t, tmpDir, agent)
+
+	// Create a message in new/
+	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", "alice")
+	os.MkdirAll(filepath.Join(msgsDir, "new"), 0755)
+	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0644)
+
+	deps.ArchiveMessage = func(dendraRoot, agentName, msgID string) error {
+		return errors.New("archive failed")
+	}
+
+	// Should succeed despite archive failure (warning only).
+	err := RetireAgent(deps, tmpDir, agent, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have printed a warning.
+	if !strings.Contains(stderr.String(), "archive") {
+		t.Errorf("expected warning about archive failure, got stderr: %q", stderr.String())
+	}
+
+	// State should still be deleted.
+	_, err = state.LoadAgent(tmpDir, "alice")
+	if err == nil {
+		t.Error("expected agent state to be deleted despite archive failure")
+	}
+}
+
+func TestRetireAgent_ArchiveMessages_NewAgentHasEmptyInbox(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	agentName := "alice"
+	agent := &state.AgentState{
+		Name:        agentName,
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", agentName),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  agentName,
+		Parent:      "root",
+	}
+	createRetireTestAgent(t, tmpDir, agent)
+
+	// Create messages in new/ and cur/
+	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", agentName)
+	for _, sub := range []string{"new", "cur", "archive"} {
+		os.MkdirAll(filepath.Join(msgsDir, sub), 0755)
+	}
+	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0644)
+	os.WriteFile(filepath.Join(msgsDir, "cur", "msg2.json"), []byte(`{}`), 0644)
+
+	// Use real archive: move files from new/cur to archive
+	deps.ArchiveMessage = func(dendraRoot, agnt, msgID string) error {
+		agentDir := filepath.Join(dendraRoot, ".dendra", "messages", agnt)
+		filename := msgID + ".json"
+		dstPath := filepath.Join(agentDir, "archive", filename)
+		// Try new/ first, then cur/
+		src := filepath.Join(agentDir, "new", filename)
+		if err := os.Rename(src, dstPath); err == nil {
+			return nil
+		}
+		src = filepath.Join(agentDir, "cur", filename)
+		return os.Rename(src, dstPath)
+	}
+
+	err := RetireAgent(deps, tmpDir, agent, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// new/ and cur/ should be empty (messages moved to archive/)
+	for _, sub := range []string{"new", "cur"} {
+		entries, err := os.ReadDir(filepath.Join(msgsDir, sub))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("reading %s: %v", sub, err)
+		}
+		if len(entries) > 0 {
+			t.Errorf("%s/ should be empty after retire, has %d files", sub, len(entries))
+		}
+	}
+
+	// archive/ should have the messages
+	entries, err := os.ReadDir(filepath.Join(msgsDir, "archive"))
+	if err != nil {
+		t.Fatalf("reading archive: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("archive/ should have 2 messages, has %d", len(entries))
 	}
 }
 

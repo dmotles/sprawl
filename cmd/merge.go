@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/dmotles/dendra/internal/agent"
+	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
@@ -88,6 +89,8 @@ func resolveMergeDeps() *mergeDeps {
 				WorktreeRemove: realWorktreeRemove,
 				GitStatus:      realGitStatus,
 				RemoveAll:      os.RemoveAll,
+				ReadDir:        os.ReadDir,
+				ArchiveMessage: messages.Archive,
 				Stderr:         os.Stderr,
 			}
 			return agent.RetireAgent(rd, dendraRoot, a, true, false)
