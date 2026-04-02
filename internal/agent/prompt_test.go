@@ -10,6 +10,7 @@ func testEnvConfig() EnvConfig {
 		WorkDir:  "/tmp/worktrees/test",
 		Platform: "linux",
 		Shell:    "/bin/zsh",
+		TestMode: false,
 	}
 }
 
@@ -44,7 +45,7 @@ func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_DoesNotContainTaskSection(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
 
 	if strings.Contains(prompt, "YOUR TASK:") {
 		t.Error("researcher prompt should not contain YOUR TASK section")
@@ -55,7 +56,7 @@ func TestBuildResearcherPrompt_DoesNotContainTaskSection(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
 
 	keyPhrases := []string{
 		"Researcher agent",
@@ -81,7 +82,7 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
 
 	if strings.Contains(prompt, "hands-on builder") {
 		t.Error("researcher prompt should not contain engineer role 'hands-on builder'")
@@ -177,7 +178,7 @@ func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
 
 	keyPhrases := []string{
 		"REFLECTION",
@@ -455,7 +456,7 @@ func TestBuildRootPrompt_ParallelismSectionOrdering(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch")
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
 
 	reflectIdx := strings.Index(prompt, "REFLECTION")
 	doneIdx := strings.Index(prompt, "dendra report done")
@@ -847,5 +848,117 @@ func TestBuildRootPrompt_ContextBlob_WorksWithNonClaudeCodeCLI(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Some agents.") {
 		t.Error("prompt should contain context blob content with non-claude-code CLI")
+	}
+}
+
+// --- TestMode / DENDRA_TEST_MODE tests ---
+
+func TestBuildEngineerPrompt_TestMode_InjectsWarning(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = true
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+
+	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("engineer prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
+	}
+	if !strings.Contains(prompt, "$DENDRA_ROOT") {
+		t.Error("engineer prompt should reference $DENDRA_ROOT in sandbox warning")
+	}
+	if !strings.Contains(prompt, "$DENDRA_BIN") {
+		t.Error("engineer prompt should reference $DENDRA_BIN in sandbox warning")
+	}
+}
+
+func TestBuildEngineerPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = false
+	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+
+	if strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("engineer prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
+	}
+}
+
+func TestBuildManagerPrompt_TestMode_InjectsWarning(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = true
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", env)
+
+	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("manager prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
+	}
+	if !strings.Contains(prompt, "$DENDRA_ROOT") {
+		t.Error("manager prompt should reference $DENDRA_ROOT in sandbox warning")
+	}
+	if !strings.Contains(prompt, "$DENDRA_BIN") {
+		t.Error("manager prompt should reference $DENDRA_BIN in sandbox warning")
+	}
+}
+
+func TestBuildManagerPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = false
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", env)
+
+	if strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("manager prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
+	}
+}
+
+func TestBuildResearcherPrompt_TestMode_InjectsWarning(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = true
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", env)
+
+	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("researcher prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
+	}
+	if !strings.Contains(prompt, "$DENDRA_ROOT") {
+		t.Error("researcher prompt should reference $DENDRA_ROOT in sandbox warning")
+	}
+	if !strings.Contains(prompt, "$DENDRA_BIN") {
+		t.Error("researcher prompt should reference $DENDRA_BIN in sandbox warning")
+	}
+}
+
+func TestBuildResearcherPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = false
+	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", env)
+
+	if strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("researcher prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
+	}
+}
+
+func TestBuildRootPrompt_TestMode_InjectsWarning(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "sensei",
+		AgentCLI: "claude-code",
+		TestMode: true,
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("root prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
+	}
+	if !strings.Contains(prompt, "$DENDRA_ROOT") {
+		t.Error("root prompt should reference $DENDRA_ROOT in sandbox warning")
+	}
+	if !strings.Contains(prompt, "$DENDRA_BIN") {
+		t.Error("root prompt should reference $DENDRA_BIN in sandbox warning")
+	}
+}
+
+func TestBuildRootPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "sensei",
+		AgentCLI: "claude-code",
+		TestMode: false,
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	if strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("root prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
 	}
 }

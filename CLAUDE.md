@@ -7,6 +7,9 @@ Read `DESCRIPTION.md` for project context. This file covers how to work in this 
 ```bash
 make build      # builds ./dendra binary
 go test ./...   # run all tests
+
+scripts/smoke-test-memory.sh   # integration test for sensei memory system
+scripts/dendra-test-env.sh     # set up isolated test environment
 ```
 
 ## Install

@@ -70,16 +70,21 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		readFile:  os.ReadFile,
 		removeFile: os.Remove,
 		buildPrompt: func(a *state.AgentState) string {
+			testMode := os.Getenv("DENDRA_TEST_MODE") == "1"
 			switch a.Type {
 			case "researcher":
-				return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch)
+				env := agent.DefaultEnvConfig()
+				env.TestMode = testMode
+				return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch, env)
 			case "manager":
 				env := agent.DefaultEnvConfig()
 				env.WorkDir = a.Worktree
+				env.TestMode = testMode
 				return agent.BuildManagerPrompt(a.Name, a.Parent, a.Branch, a.Family, env)
 			default:
 				env := agent.DefaultEnvConfig()
 				env.WorkDir = a.Worktree
+				env.TestMode = testMode
 				return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, env)
 			}
 		},

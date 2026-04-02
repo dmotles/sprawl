@@ -588,6 +588,42 @@ func TestSpawn_BranchFlagRequired(t *testing.T) {
 	}
 }
 
+func TestSpawn_DendraBinPropagated(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+	originalGetenv := deps.getenv
+	deps.getenv = func(key string) string {
+		if key == "DENDRA_BIN" {
+			return "/custom/dendra"
+		}
+		return originalGetenv(key)
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env := runner.newSessionWithWindowEnv
+	if env["DENDRA_BIN"] != "/custom/dendra" {
+		t.Errorf("env DENDRA_BIN = %q, want %q", env["DENDRA_BIN"], "/custom/dendra")
+	}
+}
+
+func TestSpawn_DendraBinNotPropagatedWhenUnset(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+	// Default getenv returns "" for DENDRA_BIN
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env := runner.newSessionWithWindowEnv
+	if _, ok := env["DENDRA_BIN"]; ok {
+		t.Errorf("env should not contain DENDRA_BIN when unset, got %q", env["DENDRA_BIN"])
+	}
+}
+
 func TestSpawn_EmptyBranch(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 	err := runSpawn(deps, "engineering", "engineer", "task", "")
@@ -596,5 +632,41 @@ func TestSpawn_EmptyBranch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "branch") {
 		t.Errorf("error should mention branch, got: %v", err)
+	}
+}
+
+func TestSpawn_DendraTestModePropagated(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+	originalGetenv := deps.getenv
+	deps.getenv = func(key string) string {
+		if key == "DENDRA_TEST_MODE" {
+			return "1"
+		}
+		return originalGetenv(key)
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("runSpawn error: %v", err)
+	}
+
+	env := runner.newSessionWithWindowEnv
+	if env["DENDRA_TEST_MODE"] != "1" {
+		t.Errorf("env DENDRA_TEST_MODE = %q, want %q", env["DENDRA_TEST_MODE"], "1")
+	}
+}
+
+func TestSpawn_DendraTestModeNotPropagatedWhenUnset(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+	// Default getenv returns "" for DENDRA_TEST_MODE
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("runSpawn error: %v", err)
+	}
+
+	env := runner.newSessionWithWindowEnv
+	if _, ok := env["DENDRA_TEST_MODE"]; ok {
+		t.Errorf("env should not contain DENDRA_TEST_MODE when unset, got %q", env["DENDRA_TEST_MODE"])
 	}
 }

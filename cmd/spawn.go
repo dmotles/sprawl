@@ -97,7 +97,7 @@ func resolveSpawnDeps() (*spawnDeps, error) {
 		worktreeCreator: &worktree.RealCreator{},
 		getenv:          os.Getenv,
 		currentBranch:   gitCurrentBranch,
-		findDendra:      os.Executable,
+		findDendra:      FindDendraBin,
 	}, nil
 }
 
@@ -193,6 +193,12 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		"DENDRA_ROOT":           dendraRoot,
 		"DENDRA_NAMESPACE":      namespace,
 		"DENDRA_TREE_PATH":      childTreePath,
+	}
+	if v := deps.getenv("DENDRA_BIN"); v != "" {
+		env["DENDRA_BIN"] = v
+	}
+	if v := deps.getenv("DENDRA_TEST_MODE"); v != "" {
+		env["DENDRA_TEST_MODE"] = v
 	}
 
 	// Create or add to tmux session

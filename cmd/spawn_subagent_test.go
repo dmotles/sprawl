@@ -339,6 +339,42 @@ func TestSpawnSubagent_ShellCmd_UsesParentWorktree(t *testing.T) {
 	}
 }
 
+func TestSpawnSubagent_DendraBinPropagated(t *testing.T) {
+	deps, runner, _ := newTestSpawnSubagentDeps(t)
+	originalGetenv := deps.getenv
+	deps.getenv = func(key string) string {
+		if key == "DENDRA_BIN" {
+			return "/custom/dendra"
+		}
+		return originalGetenv(key)
+	}
+
+	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env := runner.newSessionWithWindowEnv
+	if env["DENDRA_BIN"] != "/custom/dendra" {
+		t.Errorf("env DENDRA_BIN = %q, want %q", env["DENDRA_BIN"], "/custom/dendra")
+	}
+}
+
+func TestSpawnSubagent_DendraBinNotPropagatedWhenUnset(t *testing.T) {
+	deps, runner, _ := newTestSpawnSubagentDeps(t)
+	// Default getenv returns "" for DENDRA_BIN
+
+	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	env := runner.newSessionWithWindowEnv
+	if _, ok := env["DENDRA_BIN"]; ok {
+		t.Errorf("env should not contain DENDRA_BIN when unset, got %q", env["DENDRA_BIN"])
+	}
+}
+
 func TestSpawnSubagentCmd_Registered(t *testing.T) {
 	found := false
 	for _, sub := range spawnCmd.Commands() {

@@ -536,6 +536,55 @@ func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 	}
 }
 
+func TestRunSenseiLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Override getenv to return "1" for DENDRA_TEST_MODE
+	originalGetenv := deps.getenv
+	deps.getenv = func(key string) string {
+		if key == "DENDRA_TEST_MODE" {
+			return "1"
+		}
+		return originalGetenv(key)
+	}
+
+	var capturedCfg agent.PromptConfig
+	deps.buildPrompt = func(cfg agent.PromptConfig) string {
+		capturedCfg = cfg
+		cancel() // stop after first iteration
+		return "system prompt"
+	}
+
+	_ = runSenseiLoop(ctx, deps)
+
+	if !capturedCfg.TestMode {
+		t.Error("expected PromptConfig.TestMode to be true when DENDRA_TEST_MODE=1")
+	}
+}
+
+func TestRunSenseiLoop_TestMode_NotSetWhenUnset(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var capturedCfg agent.PromptConfig
+	deps.buildPrompt = func(cfg agent.PromptConfig) string {
+		capturedCfg = cfg
+		cancel() // stop after first iteration
+		return "system prompt"
+	}
+
+	_ = runSenseiLoop(ctx, deps)
+
+	if capturedCfg.TestMode {
+		t.Error("expected PromptConfig.TestMode to be false when DENDRA_TEST_MODE is not set")
+	}
+}
+
 func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	deps := newTestSenseiLoopDeps(t)
 

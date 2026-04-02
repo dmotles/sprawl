@@ -12,6 +12,7 @@ type EnvConfig struct {
 	WorkDir  string // The agent's working directory (worktree path).
 	Platform string // OS platform (e.g. "linux", "darwin").
 	Shell    string // The user's shell (e.g. "/bin/zsh").
+	TestMode bool   // When true, inject sandbox warning into prompt.
 }
 
 // DefaultEnvConfig returns an EnvConfig populated from the current runtime.
@@ -27,6 +28,7 @@ type PromptConfig struct {
 	RootName    string // The root agent's name/identity.
 	AgentCLI    string // The underlying agent CLI: "claude-code", future: "codex", etc.
 	ContextBlob string // Markdown blob from memory.BuildContextBlob; appended if non-empty.
+	TestMode    bool   // When true, inject sandbox warning into prompt.
 }
 
 // rootSystemPromptFmt is the format string for the root agent system prompt.
@@ -265,6 +267,17 @@ There are two ways to get work done through other agents:
 
 Default to dendra agents for real work. Use sub-agents for quick queries and planning.`
 
+// testSandboxWarning is appended to all prompts when TestMode is enabled.
+const testSandboxWarning = `
+
+# TEST SANDBOX MODE
+
+You are operating in a testing sandbox for dendra. Take care to:
+- Avoid taking any action outside of $DENDRA_ROOT
+- ONLY execute dendra using $DENDRA_BIN (do not use bare 'dendra' from PATH)
+- Do not interact with production systems, push to remote repositories, or modify files outside the test directory
+- This environment will be torn down after testing`
+
 // BuildRootPrompt constructs the system prompt for the root agent.
 // The sub-agent guidance section is inserted before "VERIFYING AGENT WORK"
 // when the AgentCLI is "claude-code".
@@ -284,6 +297,10 @@ func BuildRootPrompt(cfg PromptConfig) string {
 
 	if cfg.ContextBlob != "" {
 		base += "\n\n# Memory Context\n\n" + cfg.ContextBlob
+	}
+
+	if cfg.TestMode {
+		base += testSandboxWarning
 	}
 
 	return base
@@ -426,7 +443,11 @@ func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig
 		b.WriteString(fmt.Sprintf("- Shell: %s\n", env.Shell))
 	}
 
-	return prompt + b.String()
+	result := prompt + b.String()
+	if env.TestMode {
+		result += testSandboxWarning
+	}
+	return result
 }
 
 // researcherSystemPromptFmt is the format string for researcher agent system prompts.
@@ -473,8 +494,12 @@ RULES:
 - Do not push your branch unless instructed to do so.`
 
 // BuildResearcherPrompt constructs the system prompt for a researcher agent.
-func BuildResearcherPrompt(agentName, parentName, branchName string) string {
-	return fmt.Sprintf(researcherSystemPromptFmt, agentName, parentName, branchName, agentName, parentName)
+func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConfig) string {
+	prompt := fmt.Sprintf(researcherSystemPromptFmt, agentName, parentName, branchName, agentName, parentName)
+	if env.TestMode {
+		prompt += testSandboxWarning
+	}
+	return prompt
 }
 
 // managerSystemPromptFmt is the format string for manager agent system prompts.
@@ -704,5 +729,9 @@ func BuildManagerPrompt(agentName, parentName, branchName, family string, env En
 		b.WriteString(fmt.Sprintf("- Shell: %s\n", env.Shell))
 	}
 
-	return prompt + b.String()
+	result := prompt + b.String()
+	if env.TestMode {
+		result += testSandboxWarning
+	}
+	return result
 }

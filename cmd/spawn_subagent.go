@@ -53,7 +53,7 @@ func resolveSpawnSubagentDeps() (*spawnSubagentDeps, error) {
 	return &spawnSubagentDeps{
 		tmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
 		getenv:     os.Getenv,
-		findDendra: os.Executable,
+		findDendra: FindDendraBin,
 		loadAgent:  state.LoadAgent,
 	}, nil
 }
@@ -141,6 +141,9 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		"DENDRA_ROOT":           dendraRoot,
 		"DENDRA_NAMESPACE":      namespace,
 		"DENDRA_TREE_PATH":      childTreePath,
+	}
+	if v := deps.getenv("DENDRA_BIN"); v != "" {
+		env["DENDRA_BIN"] = v
 	}
 
 	// Create or add to tmux session

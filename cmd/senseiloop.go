@@ -160,6 +160,7 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 			RootName:    rootName,
 			AgentCLI:    "claude-code",
 			ContextBlob: contextBlob,
+			TestMode:    deps.getenv("DENDRA_TEST_MODE") == "1",
 		})
 		promptPath, err := deps.writeSystemPrompt(dendraRoot, rootName, systemPrompt)
 		if err != nil {

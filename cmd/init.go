@@ -21,9 +21,11 @@ type initDeps struct {
 var defaultDeps *initDeps
 
 var initNamespace string
+var initDetached bool
 
 func init() {
 	initCmd.Flags().StringVar(&initNamespace, "namespace", "", "namespace emoji (auto-selected if omitted)")
+	initCmd.Flags().BoolVar(&initDetached, "detached", false, "create session without attaching (returns immediately)")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -36,7 +38,7 @@ var initCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runInit(deps, initNamespace)
+		return runInit(deps, initNamespace, initDetached)
 	},
 }
 
@@ -58,12 +60,12 @@ func resolveDeps() (*initDeps, error) {
 	return &initDeps{
 		tmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
 		claudeLauncher: claudeLauncher,
-		findDendra:     os.Executable,
+		findDendra:     FindDendraBin,
 		getenv:         os.Getenv,
 	}, nil
 }
 
-func runInit(deps *initDeps, namespace string) error {
+func runInit(deps *initDeps, namespace string, detached bool) error {
 	rootName := tmux.DefaultRootName
 	// Determine namespace: explicit flag > env var > auto-pick
 	if namespace == "" {
@@ -76,6 +78,10 @@ func runInit(deps *initDeps, namespace string) error {
 	rootSession := tmux.RootSessionName(namespace, rootName)
 
 	if deps.tmuxRunner.HasSession(rootSession) {
+		if detached {
+			printDetachedInfo(namespace, rootSession)
+			return nil
+		}
 		fmt.Fprintln(os.Stderr, "Attaching to existing root agent session...")
 		return deps.tmuxRunner.Attach(rootSession)
 	}
@@ -101,6 +107,12 @@ func runInit(deps *initDeps, namespace string) error {
 		"DENDRA_NAMESPACE":      namespace,
 		"DENDRA_TREE_PATH":      treePath,
 	}
+	if v := deps.getenv("DENDRA_BIN"); v != "" {
+		env["DENDRA_BIN"] = v
+	}
+	if v := deps.getenv("DENDRA_TEST_MODE"); v != "" {
+		env["DENDRA_TEST_MODE"] = v
+	}
 
 	// Persist namespace and root name for other commands to read.
 	if err := state.WriteNamespace(cwd, namespace); err != nil {
@@ -115,5 +127,17 @@ func runInit(deps *initDeps, namespace string) error {
 		return fmt.Errorf("failed to create tmux session: %w", err)
 	}
 
+	if detached {
+		printDetachedInfo(namespace, rootSession)
+		return nil
+	}
+
 	return deps.tmuxRunner.Attach(rootSession)
+}
+
+func printDetachedInfo(namespace, sessionName string) {
+	fmt.Printf("Dendra initialized (detached)\n")
+	fmt.Printf("  Namespace: %s\n", namespace)
+	fmt.Printf("  Session:   %s\n", sessionName)
+	fmt.Printf("  Attach:    tmux attach-session -t %s\n", sessionName)
 }
