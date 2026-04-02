@@ -1712,3 +1712,54 @@ func TestMerge_DryRun_RevListCountError(t *testing.T) {
 		t.Errorf("expected stderr to contain 'unknown' when rev-list count fails, got:\n%s", output)
 	}
 }
+
+func TestMerge_RootCallerNoStateFile(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	// Override caller identity to "sensei" (root agent with no state file)
+	deps.getenv = func(key string) string {
+		switch key {
+		case "DENDRA_ROOT":
+			return tmpDir
+		case "DENDRA_AGENT_IDENTITY":
+			return "sensei"
+		}
+		return ""
+	}
+
+	// Use real loadAgent — it will fail for "sensei" since no state file exists
+	deps.loadAgent = func(dendraRoot, name string) (*state.AgentState, error) {
+		return state.LoadAgent(dendraRoot, name)
+	}
+
+	// Only create the target agent, NOT the caller (sensei)
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "sensei",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	var squashWorktree, commitWorktree string
+	deps.gitMergeSquash = func(worktree, branch string) error {
+		squashWorktree = worktree
+		return nil
+	}
+	deps.gitCommit = func(worktree, message string) (string, error) {
+		commitWorktree = worktree
+		return "abc1234", nil
+	}
+
+	err := runMerge(deps, "target-agent", "", true, false, false)
+	if err != nil {
+		t.Fatalf("expected merge to succeed for root caller with no state file, got: %v", err)
+	}
+
+	// Verify that dendraRoot was used as the worktree (fallback for root agent)
+	if squashWorktree != tmpDir {
+		t.Errorf("gitMergeSquash worktree = %q, want dendraRoot %q", squashWorktree, tmpDir)
+	}
+	if commitWorktree != tmpDir {
+		t.Errorf("gitCommit worktree = %q, want dendraRoot %q", commitWorktree, tmpDir)
+	}
+}

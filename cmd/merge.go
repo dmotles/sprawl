@@ -147,14 +147,15 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 		return fmt.Errorf("branch %q not found", agent.Branch)
 	}
 
-	// Load caller agent to get worktree path
-	callerAgent, err := deps.loadAgent(dendraRoot, callerName)
-	if err != nil {
-		return fmt.Errorf("loading caller agent %q: %w", callerName, err)
+	// Load caller agent to get worktree path.
+	// Root agent (e.g. "sensei") has no state file — fall back to dendraRoot.
+	callerWorktree := dendraRoot // default for root agent
+	if a, err := deps.loadAgent(dendraRoot, callerName); err == nil {
+		callerWorktree = a.Worktree
 	}
 
 	// Precondition 7: Caller's worktree is clean
-	callerStatus, err := deps.gitStatus(callerAgent.Worktree)
+	callerStatus, err := deps.gitStatus(callerWorktree)
 	if err != nil {
 		return fmt.Errorf("checking caller worktree status: %w", err)
 	}
@@ -175,7 +176,7 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 
 	// Dry-run: print plan and exit
 	if dryRun {
-		targetBranch, err := deps.currentBranch(callerAgent.Worktree)
+		targetBranch, err := deps.currentBranch(callerWorktree)
 		if err != nil {
 			return fmt.Errorf("determining current branch: %w", err)
 		}
@@ -243,15 +244,15 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 	}
 
 	// Get current branch for commit message
-	targetBranch, err := deps.currentBranch(callerAgent.Worktree)
+	targetBranch, err := deps.currentBranch(callerWorktree)
 	if err != nil {
 		return fmt.Errorf("determining current branch: %w", err)
 	}
 
 	// Squash merge
-	if err := deps.gitMergeSquash(callerAgent.Worktree, agent.Branch); err != nil {
+	if err := deps.gitMergeSquash(callerWorktree, agent.Branch); err != nil {
 		// Merge conflict — abort and return error
-		_ = deps.gitMergeAbort(callerAgent.Worktree)
+		_ = deps.gitMergeAbort(callerWorktree)
 		return fmt.Errorf("merge failed: %w", err)
 	}
 
@@ -259,16 +260,16 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 	commitMsg := buildMergeCommitMessage(agent, targetBranch, messageOverride)
 
 	// Commit
-	commitHash, err := deps.gitCommit(callerAgent.Worktree, commitMsg)
+	commitHash, err := deps.gitCommit(callerWorktree, commitMsg)
 	if err != nil {
 		return fmt.Errorf("commit failed: %w", err)
 	}
 
 	// Phase 4: Post-merge validation
 	if !noValidate {
-		output, err := deps.runTests(callerAgent.Worktree)
+		output, err := deps.runTests(callerWorktree)
 		if err != nil {
-			if resetErr := deps.gitResetHard(callerAgent.Worktree); resetErr != nil {
+			if resetErr := deps.gitResetHard(callerWorktree); resetErr != nil {
 				fmt.Fprintf(deps.stderr, "WARNING: rollback (git reset --hard HEAD~1) failed: %v\n", resetErr)
 			}
 			if forceRetired {
