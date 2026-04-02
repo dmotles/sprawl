@@ -90,7 +90,7 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 	runner := &mockRunner{hasSession: true}
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	err := runInit(deps, tmux.DefaultNamespace)
 
 	if err != nil {
@@ -115,7 +115,7 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	// Override Getwd by using a known cwd
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
@@ -166,7 +166,7 @@ func TestRunInit_CustomNamespace(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -205,7 +205,7 @@ func TestRunInit_AutoPickNamespace(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -227,7 +227,7 @@ func TestRunInit_NamespacePersisted(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -258,7 +258,7 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -273,16 +273,22 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestRunInit_ClaudeNotFound_ReturnsError(t *testing.T) {
+func TestRunInit_DendraNotFound_ReturnsError(t *testing.T) {
+	tmpDir := t.TempDir()
 	runner := &mockRunner{hasSession: false}
-	launcher := &mockLauncher{
-		binaryErr: errors.New("not found"),
-	}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "", errors.New("not found") }, getenv: defaultGetenv}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
 	err := runInit(deps, tmux.DefaultNamespace)
 
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+	if runner.attachCalled {
+		t.Error("Attach should not be called when findDendra fails")
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/dmotles/dendra/internal/agent"
-	"github.com/dmotles/dendra/internal/claude"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
@@ -15,6 +14,7 @@ import (
 type initDeps struct {
 	tmuxRunner     tmux.Runner
 	claudeLauncher agent.Launcher
+	findDendra     func() (string, error)
 	getenv         func(string) string
 }
 
@@ -58,6 +58,7 @@ func resolveDeps() (*initDeps, error) {
 	return &initDeps{
 		tmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
 		claudeLauncher: claudeLauncher,
+		findDendra:     os.Executable,
 		getenv:         os.Getenv,
 	}, nil
 }
@@ -79,43 +80,17 @@ func runInit(deps *initDeps, namespace string) error {
 		return deps.tmuxRunner.Attach(rootSession)
 	}
 
-	claudePath, err := deps.claudeLauncher.FindBinary()
-	if err != nil {
-		return fmt.Errorf("claude CLI is required but not found")
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
 
-	rootTools := []string{
-		"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch",
-		"Agent", "Task", "TaskOutput", "TaskStop", "ToolSearch",
-		"Skill", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
-		"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
-	}
-
-	systemPrompt := agent.BuildRootPrompt(agent.PromptConfig{
-		RootName: rootName,
-		AgentCLI: "claude-code",
-	})
-	promptPath, err := state.WriteSystemPrompt(cwd, rootName, systemPrompt)
+	dendraPath, err := deps.findDendra()
 	if err != nil {
-		return fmt.Errorf("writing system prompt file: %w", err)
+		return fmt.Errorf("finding dendra binary: %w", err)
 	}
 
-	opts := claude.LaunchOpts{
-		SystemPromptFile: promptPath,
-		Tools:            rootTools,
-		AllowedTools:     rootTools,
-		DisallowedTools:  []string{"Edit", "Write", "NotebookEdit"},
-		Name:             rootSession,
-		Model:            "opus[1m]",
-	}
-
-	claudeArgs := opts.BuildArgs()
-	shellCmd := tmux.BuildShellCmd(claudePath, claudeArgs)
+	shellCmd := tmux.BuildShellCmd(dendraPath, []string{"sensei-loop"})
 
 	// The root agent's tree path is just its name.
 	treePath := rootName

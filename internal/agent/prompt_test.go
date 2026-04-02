@@ -792,3 +792,60 @@ func TestBuildManagerPrompt_ScopeManagement(t *testing.T) {
 		t.Errorf("manager prompt should contain guidance about staying focused on scope")
 	}
 }
+
+// --- BuildRootPrompt ContextBlob tests ---
+
+func TestBuildRootPrompt_ContextBlob_Appended(t *testing.T) {
+	cfg := PromptConfig{
+		RootName:    "sensei",
+		AgentCLI:    "claude-code",
+		ContextBlob: "## Active State\n\nNo active agents.\n",
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	if !strings.Contains(prompt, "# Memory Context") {
+		t.Error("prompt should contain '# Memory Context' heading when ContextBlob is set")
+	}
+	if !strings.Contains(prompt, "No active agents.") {
+		t.Error("prompt should contain the context blob content")
+	}
+
+	// Context blob should appear after the main prompt content
+	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK")
+	contextIdx := strings.Index(prompt, "# Memory Context")
+	if verifyIdx == -1 || contextIdx == -1 {
+		t.Fatal("expected both sections to exist")
+	}
+	if contextIdx < verifyIdx {
+		t.Error("context blob should appear after VERIFYING AGENT WORK section")
+	}
+}
+
+func TestBuildRootPrompt_ContextBlob_EmptyNotAppended(t *testing.T) {
+	cfg := PromptConfig{
+		RootName:    "sensei",
+		AgentCLI:    "claude-code",
+		ContextBlob: "",
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	if strings.Contains(prompt, "# Memory Context") {
+		t.Error("prompt should NOT contain '# Memory Context' when ContextBlob is empty")
+	}
+}
+
+func TestBuildRootPrompt_ContextBlob_WorksWithNonClaudeCodeCLI(t *testing.T) {
+	cfg := PromptConfig{
+		RootName:    "sensei",
+		AgentCLI:    "codex",
+		ContextBlob: "## Active State\n\nSome agents.\n",
+	}
+	prompt := BuildRootPrompt(cfg)
+
+	if !strings.Contains(prompt, "# Memory Context") {
+		t.Error("prompt should contain '# Memory Context' even with non-claude-code CLI")
+	}
+	if !strings.Contains(prompt, "Some agents.") {
+		t.Error("prompt should contain context blob content with non-claude-code CLI")
+	}
+}

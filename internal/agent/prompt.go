@@ -24,8 +24,9 @@ func DefaultEnvConfig() EnvConfig {
 
 // PromptConfig holds configuration for building the root agent system prompt.
 type PromptConfig struct {
-	RootName string // The root agent's name/identity.
-	AgentCLI string // The underlying agent CLI: "claude-code", future: "codex", etc.
+	RootName    string // The root agent's name/identity.
+	AgentCLI    string // The underlying agent CLI: "claude-code", future: "codex", etc.
+	ContextBlob string // Markdown blob from memory.BuildContextBlob; appended if non-empty.
 }
 
 // rootSystemPromptFmt is the format string for the root agent system prompt.
@@ -275,10 +276,14 @@ func BuildRootPrompt(cfg PromptConfig) string {
 		const marker = "\nVERIFYING AGENT WORK:"
 		idx := strings.Index(base, marker)
 		if idx != -1 {
-			return base[:idx] + claudeCodeSubAgentGuidance + base[idx:]
+			base = base[:idx] + claudeCodeSubAgentGuidance + base[idx:]
+		} else {
+			base = base + claudeCodeSubAgentGuidance
 		}
-		// Fallback: append if marker not found.
-		return base + claudeCodeSubAgentGuidance
+	}
+
+	if cfg.ContextBlob != "" {
+		base += "\n\n# Memory Context\n\n" + cfg.ContextBlob
 	}
 
 	return base
