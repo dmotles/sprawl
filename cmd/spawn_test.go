@@ -347,7 +347,7 @@ func TestSpawn_TmuxFails(t *testing.T) {
 func TestSpawn_UnsupportedType(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "manager", "task", "feature/x")
+	err := runSpawn(deps, "engineering", "tester", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -388,6 +388,35 @@ func TestSpawn_ResearcherType_HappyPath(t *testing.T) {
 	}
 	if agentState.Type != "researcher" {
 		t.Errorf("state Type = %q, want %q", agentState.Type, "researcher")
+	}
+}
+
+func TestSpawn_ManagerType_HappyPath(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	err := runSpawn(deps, "engineering", "manager", "coordinate feature work", "feature/manage")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !runner.newSessionWithWindowCalled {
+		t.Error("expected NewSessionWithWindow to be called")
+	}
+
+	// Verify state was saved with manager type
+	expectedName := agent.NamePool[0]
+	agentState, err := state.LoadAgent(tmpDir, expectedName)
+	if err != nil {
+		t.Fatalf("loading agent state: %v", err)
+	}
+	if agentState.Type != "manager" {
+		t.Errorf("state Type = %q, want %q", agentState.Type, "manager")
+	}
+}
+
+func TestSpawn_ManagerInSupportedTypes(t *testing.T) {
+	if !supportedTypes["manager"] {
+		t.Error("manager should be in supportedTypes")
 	}
 }
 

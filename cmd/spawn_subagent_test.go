@@ -241,7 +241,7 @@ func TestSpawnSubagent_InvalidType(t *testing.T) {
 func TestSpawnSubagent_UnsupportedType(t *testing.T) {
 	deps, _, _ := newTestSpawnSubagentDeps(t)
 
-	err := runSpawnSubagent(deps, "engineering", "manager", "task")
+	err := runSpawnSubagent(deps, "engineering", "tester", "task")
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}

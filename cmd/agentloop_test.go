@@ -1425,6 +1425,40 @@ func TestDefaultBuildPrompt_UnknownType(t *testing.T) {
 	}
 }
 
+// TestDefaultBuildPrompt_ManagerType verifies that defaultAgentLoopDeps().buildPrompt
+// dispatches to the manager prompt when the agent type is "manager".
+func TestDefaultBuildPrompt_ManagerType(t *testing.T) {
+	deps := defaultAgentLoopDeps()
+
+	agentState := &state.AgentState{
+		Name:     "ash",
+		Type:     "manager",
+		Family:   "engineering",
+		Parent:   "sensei",
+		Branch:   "dmotles/feature-x",
+		Worktree: "/tmp/test-worktree",
+		Prompt:   "coordinate feature work",
+	}
+
+	prompt := deps.buildPrompt(agentState)
+
+	if !strings.Contains(prompt, "Manager agent") {
+		t.Error("buildPrompt for manager type should contain 'Manager agent'")
+	}
+	if !strings.Contains(prompt, "engineering manager") {
+		t.Error("buildPrompt for manager type should contain 'engineering manager'")
+	}
+	if !strings.Contains(prompt, "integration branch") {
+		t.Error("buildPrompt for manager type should contain 'integration branch'")
+	}
+	if strings.Contains(prompt, "TDD WORKFLOW") {
+		t.Error("buildPrompt for manager type should NOT contain 'TDD WORKFLOW' (that is engineer prompt text)")
+	}
+	if strings.Contains(prompt, "hands-on builder") {
+		t.Error("buildPrompt for manager type should NOT contain 'hands-on builder' (that is engineer prompt text)")
+	}
+}
+
 // --- timestampWriter tests ---
 
 func TestTimestampWriter_SingleLine(t *testing.T) {

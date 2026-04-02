@@ -73,6 +73,10 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 			switch a.Type {
 			case "researcher":
 				return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch)
+			case "manager":
+				env := agent.DefaultEnvConfig()
+				env.WorkDir = a.Worktree
+				return agent.BuildManagerPrompt(a.Name, a.Parent, a.Branch, a.Family, env)
 			default:
 				env := agent.DefaultEnvConfig()
 				env.WorkDir = a.Worktree

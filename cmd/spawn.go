@@ -34,6 +34,7 @@ var (
 	supportedTypes = map[string]bool{
 		"engineer":   true,
 		"researcher": true,
+		"manager":    true,
 	}
 )
 
