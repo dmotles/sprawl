@@ -55,7 +55,7 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 
 func TestBuildRootPrompt_DoesNotContainRemovedTypes(t *testing.T) {
 	prompt := BuildRootPrompt(PromptConfig{RootName: "sensei", AgentCLI: "claude-code"})
-	for _, removed := range []string{"--type tester", "--type manager"} {
+	for _, removed := range []string{"--type tester"} {
 		if strings.Contains(prompt, removed) {
 			t.Errorf("root system prompt should not contain removed type: %q", removed)
 		}

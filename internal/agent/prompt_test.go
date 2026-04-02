@@ -278,6 +278,41 @@ func TestBuildRootPrompt_DoesNotMentionRespawn(t *testing.T) {
 	}
 }
 
+func TestBuildRootPrompt_ManagerTypeInAgentTypes(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	keyPhrases := []string{
+		"Manager",
+		"--type manager",
+		"3+ subtasks",
+		"spawning an engineer directly",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("root prompt AGENT TYPES section missing phrase: %q", phrase)
+		}
+	}
+
+	// Manager entry should appear after Engineer and Researcher but before AGENT FAMILIES
+	managerIdx := strings.Index(prompt, "--type manager")
+	engineerIdx := strings.Index(prompt, "--type engineer")
+	researcherIdx := strings.Index(prompt, "--type researcher")
+	familiesIdx := strings.Index(prompt, "AGENT FAMILIES")
+
+	if managerIdx == -1 {
+		t.Fatal("root prompt missing '--type manager'")
+	}
+	if managerIdx <= engineerIdx {
+		t.Errorf("manager (idx %d) should appear after engineer (idx %d)", managerIdx, engineerIdx)
+	}
+	if managerIdx <= researcherIdx {
+		t.Errorf("manager (idx %d) should appear after researcher (idx %d)", managerIdx, researcherIdx)
+	}
+	if managerIdx >= familiesIdx {
+		t.Errorf("manager (idx %d) should appear before AGENT FAMILIES (idx %d)", managerIdx, familiesIdx)
+	}
+}
+
 func TestBuildRootPrompt_PromptConfigStruct(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "sensei",

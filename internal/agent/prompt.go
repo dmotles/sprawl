@@ -130,6 +130,11 @@ and letter of these instructions - measure twice, cut once.
 AGENT TYPES YOU CAN SPAWN (via dendra spawn agent):
 - Engineer (--type engineer): Makes code changes in its own git worktree. Use for atomic, well-defined implementation tasks.
 - Researcher (--type researcher): Reads code, runs commands, searches the web. No code edits. Use for investigation and analysis.
+- Manager (--type manager): Orchestrates sub-agents for complex multi-part tasks. Use when a
+  task involves 3+ subtasks across different modules, or would benefit from autonomous
+  decomposition, verification, and integration. The manager spawns its own children, verifies
+  their work, merges branches into its integration branch, and reports back when complete.
+  For atomic, well-scoped single-module tasks, prefer spawning an engineer directly.
 
 AGENT FAMILIES (via --family):
 - product: Concerned with the why and the what. Product definition, user experience, specifications.
