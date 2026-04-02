@@ -529,3 +529,231 @@ func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
 		t.Error("BuildRootPrompt should not hardcode 'root' name")
 	}
 }
+
+// --- BuildManagerPrompt tests (TDD red phase — function does not exist yet) ---
+
+func TestBuildManagerPrompt_ContainsKeyPhrases(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	keyPhrases := []string{
+		"Manager agent",
+		"cedar",
+		"sensei",
+		"dmotles/feature-x",
+		"dendra report done",
+		"dendra report problem",
+		"dendra messages send sensei",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt missing key phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_ContainsIdentityWithFamily(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	if !strings.Contains(prompt, "engineering manager") {
+		t.Errorf("manager prompt should contain 'engineering manager' (family interpolated into identity)")
+	}
+}
+
+func TestBuildManagerPrompt_ContainsOrchestrationGuidance(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	orchestrationPhrases := []string{
+		"orchestrate",
+		"decompos",
+		"dispatch",
+		"verif",
+		"integrat",
+	}
+	for _, phrase := range orchestrationPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt missing orchestration phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	mergePhrases := []string{
+		"dendra merge",
+		"--dry-run",
+		"--no-validate",
+		"--force",
+	}
+	for _, phrase := range mergePhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt missing merge phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_ContainsParallelismGuidance(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	parallelismPhrases := []string{
+		"PARALLELISM",
+		"overlapping files",
+		"merge conflicts",
+		"Serialize when",
+		"sequential execution",
+	}
+	for _, phrase := range parallelismPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt missing parallelism phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_ContainsFollowThroughGuidance(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	// Check that at least one alternative is present for each concept
+	followThroughFound := strings.Contains(prompt, "FOLLOW THROUGH") || strings.Contains(prompt, "FOLLOW-THROUGH")
+	if !followThroughFound {
+		t.Errorf("manager prompt missing follow-through heading (expected 'FOLLOW THROUGH' or 'FOLLOW-THROUGH')")
+	}
+
+	scheduleFound := strings.Contains(prompt, "automatically schedule") || strings.Contains(prompt, "automatically fire off")
+	if !scheduleFound {
+		t.Errorf("manager prompt missing scheduling guidance (expected 'automatically schedule' or 'automatically fire off')")
+	}
+
+	waveFound := strings.Contains(prompt, "next wave") || strings.Contains(prompt, "next chunk")
+	if !waveFound {
+		t.Errorf("manager prompt missing wave/chunk guidance (expected 'next wave' or 'next chunk')")
+	}
+}
+
+func TestBuildManagerPrompt_ContainsFailureHandling(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	abandonOrRespawn := strings.Contains(prompt, "abandon") || strings.Contains(prompt, "respawn")
+	if !abandonOrRespawn {
+		t.Errorf("manager prompt missing failure handling (expected 'abandon' or 'respawn')")
+	}
+
+	if !strings.Contains(prompt, "escalate") {
+		t.Errorf("manager prompt missing failure handling phrase: %q", "escalate")
+	}
+}
+
+func TestBuildManagerPrompt_ContainsIntegrationBranch(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	if !strings.Contains(prompt, "integration branch") {
+		t.Errorf("manager prompt missing phrase: %q", "integration branch")
+	}
+}
+
+func TestBuildManagerPrompt_ContainsSubAgentGuidance(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	if !strings.Contains(prompt, "Agent tool") {
+		t.Errorf("manager prompt missing phrase: %q", "Agent tool")
+	}
+
+	investigationFound := strings.Contains(prompt, "investigation") || strings.Contains(prompt, "investigate")
+	if !investigationFound {
+		t.Errorf("manager prompt missing investigation guidance (expected 'investigation' or 'investigate')")
+	}
+
+	planningFound := strings.Contains(prompt, "planning") || strings.Contains(prompt, "plan")
+	if !planningFound {
+		t.Errorf("manager prompt missing planning guidance (expected 'planning' or 'plan')")
+	}
+}
+
+func TestBuildManagerPrompt_DoesNotContainInteractiveLanguage(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	forbidden := []string{
+		"ask the user",
+		"the user will",
+		"align with the user",
+	}
+	for _, phrase := range forbidden {
+		if strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt should NOT contain interactive language: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_DoesNotContainWrongRoles(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	forbidden := []string{
+		"hands-on builder",
+		"deep investigator",
+	}
+	for _, phrase := range forbidden {
+		if strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt should NOT contain wrong role: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_EnvironmentSection(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	envPhrases := []string{
+		"# Environment",
+		"Working directory: /tmp/worktrees/test",
+		"Git repository: yes",
+		"Git branch: dmotles/feature-x",
+		"Platform: linux",
+		"Shell: /bin/zsh",
+	}
+	for _, phrase := range envPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt missing environment phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
+	env := EnvConfig{} // all empty
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", env)
+
+	if strings.Contains(prompt, "Working directory:") {
+		t.Error("should omit working directory when empty")
+	}
+	if strings.Contains(prompt, "Platform:") {
+		t.Error("should omit platform when empty")
+	}
+	if strings.Contains(prompt, "Shell:") {
+		t.Error("should omit shell when empty")
+	}
+	// These should always be present
+	if !strings.Contains(prompt, "Git repository: yes") {
+		t.Error("should always include git repository")
+	}
+	if !strings.Contains(prompt, "Git branch: dmotles/feature-x") {
+		t.Error("should always include git branch")
+	}
+}
+
+func TestBuildManagerPrompt_CannotEditCode(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	cannotEdit := strings.Contains(prompt, "You do NOT edit code") ||
+		strings.Contains(prompt, "you don't implement") ||
+		strings.Contains(prompt, "You orchestrate, you don't implement") ||
+		strings.Contains(prompt, "do not edit code") ||
+		strings.Contains(prompt, "do NOT edit code")
+	if !cannotEdit {
+		t.Errorf("manager prompt should make clear the manager does not edit code directly")
+	}
+}
+
+func TestBuildManagerPrompt_ScopeManagement(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	if !strings.Contains(prompt, "scope") {
+		t.Errorf("manager prompt should contain guidance about staying focused on scope")
+	}
+}
