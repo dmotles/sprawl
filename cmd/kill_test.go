@@ -28,7 +28,8 @@ type killMockRunner struct {
 	listWindowPIDsFunc func(sessionName, windowName string) ([]int, error)
 }
 
-func (m *killMockRunner) HasSession(name string) bool { return m.hasSession }
+func (m *killMockRunner) HasWindow(string, string) bool { return false }
+func (m *killMockRunner) HasSession(name string) bool   { return m.hasSession }
 func (m *killMockRunner) NewSession(name string, env map[string]string, shellCmd string) error {
 	return nil
 }

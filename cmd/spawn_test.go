@@ -32,6 +32,8 @@ type spawnMockRunner struct {
 	newWindowCmd     string
 }
 
+func (m *spawnMockRunner) HasWindow(string, string) bool { return false }
+
 func (m *spawnMockRunner) HasSession(name string) bool {
 	return m.hasSession
 }
