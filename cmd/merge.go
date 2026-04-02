@@ -304,7 +304,11 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 
 	// Phase 6: Success output
 	fmt.Fprintf(deps.stderr, "Merged agent %q (branch %s) into %s\n", agentName, agent.Branch, targetBranch)
-	fmt.Fprintf(deps.stderr, "  Squash commit: %s %q\n", commitHash, buildFirstLine(agent))
+	summaryLine := buildFirstLine(agent)
+	if messageOverride != "" {
+		summaryLine = messageOverride
+	}
+	fmt.Fprintf(deps.stderr, "  Squash commit: %s %q\n", commitHash, summaryLine)
 	if branchDeleted {
 		fmt.Fprintf(deps.stderr, "  Branch %s deleted\n", agent.Branch)
 	}
@@ -387,7 +391,7 @@ func realBranchExists(repoRoot, branchName string) bool {
 }
 
 func realGitBranchDelete(repoRoot, branchName string) error {
-	cmd := exec.Command("git", "branch", "-d", branchName)
+	cmd := exec.Command("git", "branch", "-D", branchName)
 	cmd.Dir = repoRoot
 	out, err := cmd.CombinedOutput()
 	if err != nil {
