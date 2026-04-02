@@ -58,7 +58,7 @@ func LoadAll(deps Deps, dendraRoot string) ([]*AgentInfo, error) {
 
 	// Annotate liveness.
 	for _, info := range result {
-		if isTerminal(info.Status) {
+		if IsTerminal(info.Status) {
 			continue // ProcessAlive stays nil
 		}
 		if deps.TmuxRunner == nil {
@@ -154,7 +154,9 @@ func sortChildren(children []*TreeNode) {
 	})
 }
 
-func isTerminal(status string) bool {
+// IsTerminal reports whether the given status is a terminal state
+// (done, problem, retiring) where liveness checks are not applicable.
+func IsTerminal(status string) bool {
 	switch status {
 	case "done", "problem", "retiring":
 		return true
