@@ -168,6 +168,10 @@ KEY COMMANDS:
   dendra messages broadcast "<subject>" "<message>"    — broadcast to all active agents
   dendra messages archive <id>               — archive a message - call this after you're done with a message.
 
+  Observability:
+  dendra status                               — show status of all agents (table with type, family, status, process liveness, last report)
+  dendra tree                                 — show agent hierarchy as a tree
+
 RULES:
 - Keep your agent tree manageable. Do not have more than 3-10 active agents at a time.
 - When an agent is done with its work and you've verified it, use ` + "`dendra merge <agent>`" + ` to squash-merge, retire the agent, and clean up in one step. Do NOT manually run git merge + dendra retire — the merge command handles the full lifecycle.
@@ -530,6 +534,10 @@ Use dendra commands to create and manage agents:
   dendra messages list [filter]
   dendra messages broadcast "<subject>" "<message>"
   dendra messages archive <id>
+
+  Observability:
+  dendra status                — show status of all agents
+  dendra tree                  — show agent hierarchy as a tree
 
 When spawning an agent to work on a tracked issue, keep the prompt short. Point
 the agent at the issue — don't repeat the issue contents in the prompt.
