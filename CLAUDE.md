@@ -57,8 +57,43 @@ dendra spawn --family engineering --type engineer \
 
 The issue is the source of truth. The agent can read it via Linear MCP tools (`get_issue`).
 
+## Sandbox Testing
+
+An isolated test environment for end-to-end testing without affecting production state or requiring real Claude API keys. Use the `/testing` skill for the full step-by-step workflow.
+
+**Quick start:**
+
+```bash
+make build
+eval "$(bash scripts/dendra-test-env.sh)"
+```
+
+**Key environment variables** (exported by the script):
+
+- `DENDRA_TEST_MODE=1` — injects sandbox warnings into agent prompts
+- `DENDRA_BIN` — path to the built binary (always use `$DENDRA_BIN`, not bare `dendra`)
+- `DENDRA_ROOT` — the temporary test directory
+- `DENDRA_NAMESPACE` — isolated tmux namespace (format: `test-XXXXXXXX`)
+
+**Exercising features:** Use `$DENDRA_BIN` for all commands, work within `$DENDRA_ROOT`.
+
+**Inspecting state:**
+
+- `tmux list-sessions | grep $DENDRA_NAMESPACE` — sandbox tmux sessions
+- `ls $DENDRA_ROOT/.dendra/` — agent state, messages, memory
+- `cat` message JSON files, agent state files, etc.
+
+**Cleanup:**
+
+```bash
+tmux kill-session -t "${DENDRA_NAMESPACE}sensei" && rm -rf $DENDRA_ROOT
+```
+
+**Scripted smoke test:** `scripts/smoke-test-memory.sh` demonstrates automated sandbox assertions.
+
 ## Validating Changes
 
 1. `go test ./...` — all tests pass
 2. `make build` — binary compiles
 3. Manual smoke test: run the built `./dendra` binary with relevant commands
+4. For end-to-end validation, use the `/testing` skill to set up a sandbox environment
