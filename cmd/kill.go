@@ -3,9 +3,9 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
+	"github.com/dmotles/dendra/internal/agent"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
@@ -62,45 +62,6 @@ func resolveKillDeps() (*killDeps, error) {
 	}, nil
 }
 
-// shutdownDeps holds the deps needed for graceful agent shutdown.
-type shutdownDeps struct {
-	tmuxRunner tmux.Runner
-	writeFile  func(string, []byte, os.FileMode) error
-	removeFile func(string) error
-	sleepFunc  func(time.Duration)
-}
-
-// gracefulShutdown signals the agent-loop via sentinel file, waits for it to exit,
-// and falls back to killing the tmux window if it doesn't exit in time.
-func gracefulShutdown(deps *shutdownDeps, dendraRoot string, agentState *state.AgentState, force bool) {
-	if force {
-		_ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
-		return
-	}
-
-	// Write sentinel file
-	killPath := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".kill")
-	_ = deps.writeFile(killPath, []byte("kill"), 0644)
-
-	// Poll: wait for window to disappear
-	graceful := false
-	for i := 0; i < 10; i++ {
-		_, err := deps.tmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
-		if err != nil {
-			graceful = true
-			break
-		}
-		deps.sleepFunc(500 * time.Millisecond)
-	}
-
-	if !graceful {
-		_ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
-	}
-
-	// Clean up sentinel (may already be gone)
-	_ = deps.removeFile(killPath)
-}
-
 func runKill(deps *killDeps, agentName string, force bool) error {
 	dendraRoot := deps.getenv("DENDRA_ROOT")
 	if dendraRoot == "" {
@@ -120,13 +81,13 @@ func runKill(deps *killDeps, agentName string, force bool) error {
 	}
 
 	// Graceful shutdown (or force kill)
-	sd := &shutdownDeps{
-		tmuxRunner: deps.tmuxRunner,
-		writeFile:  deps.writeFile,
-		removeFile: deps.removeFile,
-		sleepFunc:  deps.sleepFunc,
+	sd := &agent.ShutdownDeps{
+		TmuxRunner: deps.tmuxRunner,
+		WriteFile:  deps.writeFile,
+		RemoveFile: deps.removeFile,
+		SleepFunc:  deps.sleepFunc,
 	}
-	gracefulShutdown(sd, dendraRoot, agentState, force)
+	agent.GracefulShutdown(sd, dendraRoot, agentState, force)
 
 	// Update status to killed
 	agentState.Status = "killed"

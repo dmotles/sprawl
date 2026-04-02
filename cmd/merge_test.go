@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -26,11 +29,14 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 		loadAgent:      state.LoadAgent,
 		listAgents:     state.ListAgents,
 		gitMergeSquash: func(worktree, branch string) error { return nil },
-		gitCommit:      func(worktree, message string) error { return nil },
+		gitCommit:      func(worktree, message string) (string, error) { return "abc1234", nil },
 		gitMergeAbort:  func(worktree string) error { return nil },
 		gitStatus:      func(worktree string) (string, error) { return "", nil },
 		branchExists:   func(repoRoot, branchName string) bool { return true },
 		currentBranch:  func(repoRoot string) (string, error) { return "caller-branch", nil },
+		retireAgent:     func(dendraRoot string, agent *state.AgentState) error { return nil },
+		gitBranchDelete: func(repoRoot, branchName string) error { return nil },
+		stderr:          io.Discard,
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
@@ -60,9 +66,9 @@ func TestMerge_HappyPath(t *testing.T) {
 	}
 
 	var commitCalled bool
-	deps.gitCommit = func(worktree, message string) error {
+	deps.gitCommit = func(worktree, message string) (string, error) {
 		commitCalled = true
-		return nil
+		return "abc1234", nil
 	}
 
 	err := runMerge(deps, "target-agent", "")
@@ -344,9 +350,9 @@ func TestMerge_DefaultCommitMessage(t *testing.T) {
 	})
 
 	var capturedMsg string
-	deps.gitCommit = func(worktree, message string) error {
+	deps.gitCommit = func(worktree, message string) (string, error) {
 		capturedMsg = message
-		return nil
+		return "abc1234", nil
 	}
 
 	err := runMerge(deps, "target-agent", "")
@@ -388,9 +394,9 @@ func TestMerge_DefaultCommitMessage_EmptyReport(t *testing.T) {
 	})
 
 	var capturedMsg string
-	deps.gitCommit = func(worktree, message string) error {
+	deps.gitCommit = func(worktree, message string) (string, error) {
 		capturedMsg = message
-		return nil
+		return "abc1234", nil
 	}
 
 	err := runMerge(deps, "target-agent", "")
@@ -423,9 +429,9 @@ func TestMerge_CustomMessage(t *testing.T) {
 	})
 
 	var capturedMsg string
-	deps.gitCommit = func(worktree, message string) error {
+	deps.gitCommit = func(worktree, message string) (string, error) {
 		capturedMsg = message
-		return nil
+		return "abc1234", nil
 	}
 
 	err := runMerge(deps, "target-agent", "Custom merge message")
@@ -481,5 +487,246 @@ func TestMerge_MissingCallerIdentity(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
 		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	}
+}
+
+func TestMerge_RetiresAgentAfterCommit(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	var retireCalled bool
+	var retiredAgentName string
+	deps.retireAgent = func(dendraRoot string, agent *state.AgentState) error {
+		retireCalled = true
+		retiredAgentName = agent.Name
+		return nil
+	}
+
+	err := runMerge(deps, "target-agent", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !retireCalled {
+		t.Error("expected retireAgent to be called after successful commit")
+	}
+	if retiredAgentName != "target-agent" {
+		t.Errorf("retireAgent called with agent %q, want %q", retiredAgentName, "target-agent")
+	}
+}
+
+func TestMerge_RetireFailure_WarnsButSucceeds(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	var stderr bytes.Buffer
+	deps.stderr = &stderr
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	deps.retireAgent = func(dendraRoot string, agent *state.AgentState) error {
+		return fmt.Errorf("tmux session not found")
+	}
+
+	// Merge should succeed even if retire fails.
+	err := runMerge(deps, "target-agent", "")
+	if err != nil {
+		t.Fatalf("merge should succeed even if retire fails, got: %v", err)
+	}
+
+	// Should print a warning about retire failure.
+	output := stderr.String()
+	if !strings.Contains(output, "could not retire agent") {
+		t.Errorf("expected warning about retire failure in stderr, got: %q", output)
+	}
+	if !strings.Contains(output, "target-agent") {
+		t.Errorf("warning should mention agent name, got: %q", output)
+	}
+	if !strings.Contains(output, "dendra retire") {
+		t.Errorf("warning should suggest manual retire command, got: %q", output)
+	}
+}
+
+func TestMerge_BranchDeleteAfterCommit(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	var deletedBranch string
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		deletedBranch = branchName
+		return nil
+	}
+
+	err := runMerge(deps, "target-agent", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if deletedBranch != "feature-branch" {
+		t.Errorf("gitBranchDelete called with branch %q, want %q", deletedBranch, "feature-branch")
+	}
+}
+
+func TestMerge_BranchDeleteFailure_WarnsButSucceeds(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	var stderr bytes.Buffer
+	deps.stderr = &stderr
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		return fmt.Errorf("branch is checked out elsewhere")
+	}
+
+	// Merge should succeed even if branch delete fails.
+	err := runMerge(deps, "target-agent", "")
+	if err != nil {
+		t.Fatalf("merge should succeed even if branch delete fails, got: %v", err)
+	}
+
+	// Should print a warning about branch delete failure.
+	output := stderr.String()
+	if !strings.Contains(output, "could not delete branch") {
+		t.Errorf("expected warning about branch delete failure in stderr, got: %q", output)
+	}
+	if !strings.Contains(output, "feature-branch") {
+		t.Errorf("warning should mention branch name, got: %q", output)
+	}
+	if !strings.Contains(output, "git branch -D") {
+		t.Errorf("warning should suggest manual branch delete command, got: %q", output)
+	}
+}
+
+func TestMerge_SuccessOutput(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	var stderr bytes.Buffer
+	deps.stderr = &stderr
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "ash", Status: "done", Branch: "dendra/ash",
+		Worktree: "/worktree/ash", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "implement QUM-42 broadcast fix",
+	})
+
+	deps.gitCommit = func(worktree, message string) (string, error) {
+		return "a1b2c3d", nil
+	}
+
+	err := runMerge(deps, "ash", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := stderr.String()
+
+	// Should include agent name, branch, and target branch.
+	if !strings.Contains(output, `"ash"`) {
+		t.Errorf("output should mention agent name, got: %q", output)
+	}
+	if !strings.Contains(output, "dendra/ash") {
+		t.Errorf("output should mention branch name, got: %q", output)
+	}
+	// Should include commit hash.
+	if !strings.Contains(output, "a1b2c3d") {
+		t.Errorf("output should include commit hash, got: %q", output)
+	}
+	// Should indicate branch deleted.
+	if !strings.Contains(output, "deleted") || !strings.Contains(output, "dendra/ash") {
+		t.Errorf("output should indicate branch was deleted, got: %q", output)
+	}
+	// Should indicate agent retired.
+	if !strings.Contains(output, "retired") || !strings.Contains(output, "ash") {
+		t.Errorf("output should indicate agent was retired, got: %q", output)
+	}
+}
+
+func TestMerge_OrderRetireThenBranchDelete(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportMessage: "Completed the task",
+	})
+
+	var order []string
+	deps.gitCommit = func(worktree, message string) (string, error) {
+		order = append(order, "commit")
+		return "abc1234", nil
+	}
+	deps.retireAgent = func(dendraRoot string, agent *state.AgentState) error {
+		order = append(order, "retire")
+		return nil
+	}
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		order = append(order, "branch-delete")
+		return nil
+	}
+
+	err := runMerge(deps, "target-agent", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(order) != 3 {
+		t.Fatalf("expected 3 operations, got %d: %v", len(order), order)
+	}
+	if order[0] != "commit" {
+		t.Errorf("expected commit first, got: %v", order)
+	}
+	if order[1] != "retire" {
+		t.Errorf("expected retire second, got: %v", order)
+	}
+	if order[2] != "branch-delete" {
+		t.Errorf("expected branch-delete third, got: %v", order)
 	}
 }

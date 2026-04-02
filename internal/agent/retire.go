@@ -1,0 +1,108 @@
+package agent
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/dendra/internal/tmux"
+)
+
+// ShutdownDeps holds the deps needed for graceful agent shutdown.
+type ShutdownDeps struct {
+	TmuxRunner tmux.Runner
+	WriteFile  func(string, []byte, os.FileMode) error
+	RemoveFile func(string) error
+	SleepFunc  func(time.Duration)
+}
+
+// GracefulShutdown signals the agent-loop via sentinel file, waits for it to exit,
+// and falls back to killing the tmux window if it doesn't exit in time.
+func GracefulShutdown(deps *ShutdownDeps, dendraRoot string, agentState *state.AgentState, force bool) {
+	if force {
+		_ = deps.TmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
+		return
+	}
+
+	// Write sentinel file
+	killPath := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".kill")
+	_ = deps.WriteFile(killPath, []byte("kill"), 0644)
+
+	// Poll: wait for window to disappear
+	graceful := false
+	for i := 0; i < 10; i++ {
+		_, err := deps.TmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
+		if err != nil {
+			graceful = true
+			break
+		}
+		deps.SleepFunc(500 * time.Millisecond)
+	}
+
+	if !graceful {
+		_ = deps.TmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
+	}
+
+	// Clean up sentinel (may already be gone)
+	_ = deps.RemoveFile(killPath)
+}
+
+// RetireDeps holds the dependencies for RetireAgent.
+type RetireDeps struct {
+	TmuxRunner     tmux.Runner
+	WriteFile      func(string, []byte, os.FileMode) error
+	RemoveFile     func(string) error
+	SleepFunc      func(time.Duration)
+	WorktreeRemove func(repoRoot, worktreePath string, force bool) error
+	GitStatus      func(worktreePath string) (string, error)
+	RemoveAll      func(string) error
+	Stderr         io.Writer
+}
+
+// RetireAgent performs core teardown. If skipShutdown is true, skips graceful shutdown and tmux cleanup.
+func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, force bool, skipShutdown bool) error {
+	if !skipShutdown {
+		sd := &ShutdownDeps{
+			TmuxRunner: deps.TmuxRunner,
+			WriteFile:  deps.WriteFile,
+			RemoveFile: deps.RemoveFile,
+			SleepFunc:  deps.SleepFunc,
+		}
+		GracefulShutdown(sd, dendraRoot, agent, force)
+
+		// Best-effort tmux window cleanup after graceful shutdown
+		_ = deps.TmuxRunner.KillWindow(agent.TmuxSession, agent.TmuxWindow)
+	}
+
+	// Worktree check + removal (skip if empty worktree or subagent)
+	if agent.Worktree != "" && !agent.Subagent {
+		statusOutput, err := deps.GitStatus(agent.Worktree)
+		if err == nil && statusOutput != "" && !force {
+			return fmt.Errorf("%s has uncommitted changes in worktree.\nCommit first or use --force to discard.", agent.Name)
+		}
+
+		// Remove worktree
+		forceRemove := force || statusOutput != ""
+		err = deps.WorktreeRemove(dendraRoot, agent.Worktree, forceRemove)
+		if err != nil {
+			// Worktree may already be gone — not fatal
+			fmt.Fprintf(deps.Stderr, "Warning: could not remove worktree: %v\n", err)
+		}
+	}
+
+	// Remove agent logs directory
+	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agent.Name, "logs")
+	if err := deps.RemoveAll(logsDir); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(deps.Stderr, "Warning: could not remove logs directory: %v\n", err)
+	}
+
+	// Delete state file (name is now free)
+	if err := state.DeleteAgent(dendraRoot, agent.Name); err != nil {
+		return fmt.Errorf("deleting agent state: %w", err)
+	}
+
+	return nil
+}

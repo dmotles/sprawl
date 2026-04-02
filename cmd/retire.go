@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/dmotles/dendra/internal/agent"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 	"github.com/spf13/cobra"
@@ -88,7 +88,12 @@ func runRetire(deps *retireDeps, agentName string, cascade, force bool) error {
 
 	// If already in "retiring" state, resume from where we left off (crash recovery)
 	if agentState.Status == "retiring" {
-		return retireFromCheckpoint(deps, dendraRoot, agentState, force)
+		rd := buildRetireDeps(deps)
+		if err := agent.RetireAgent(rd, dendraRoot, agentState, force, true); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Retired agent %q (branch %s preserved)\n", agentState.Name, agentState.Branch)
+		return nil
 	}
 
 	// Check for children
@@ -120,63 +125,32 @@ func runRetire(deps *retireDeps, agentName string, cascade, force bool) error {
 		}
 	}
 
-	// Graceful shutdown (or force kill)
-	sd := &shutdownDeps{
-		tmuxRunner: deps.tmuxRunner,
-		writeFile:  deps.writeFile,
-		removeFile: deps.removeFile,
-		sleepFunc:  deps.sleepFunc,
-	}
-	gracefulShutdown(sd, dendraRoot, agentState, force)
-
-	// Best-effort tmux window cleanup after graceful shutdown
-	_ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
-
 	// Crash-safe checkpoint: mark as "retiring"
 	agentState.Status = "retiring"
 	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
 		return fmt.Errorf("updating agent state: %w", err)
 	}
 
-	return retireFromCheckpoint(deps, dendraRoot, agentState, force)
-}
-
-// retireFromCheckpoint performs the worktree removal and state cleanup.
-// This is separated so crash recovery can resume from this point.
-func retireFromCheckpoint(deps *retireDeps, dendraRoot string, agentState *state.AgentState, force bool) error {
-	// Check for uncommitted changes in worktree
-	if agentState.Worktree != "" && !agentState.Subagent {
-		statusOutput, err := deps.gitStatus(agentState.Worktree)
-		if err == nil && statusOutput != "" && !force {
-			return fmt.Errorf("%s has uncommitted changes in worktree.\nCommit first or use --force to discard.", agentState.Name)
-		}
-
-		// Remove worktree
-		forceRemove := force || statusOutput != ""
-		err = deps.worktreeRemove(dendraRoot, agentState.Worktree, forceRemove)
-		if err != nil {
-			// Worktree may already be gone — not fatal
-			fmt.Fprintf(os.Stderr, "Warning: could not remove worktree: %v\n", err)
-		}
-	}
-
-	// Remove agent from parent's children list (parent state update)
-	// Note: in the current design, children are discovered dynamically by
-	// scanning state files for matching parent fields, so no parent update needed.
-
-	// Remove agent logs directory
-	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name, "logs")
-	if err := deps.removeAll(logsDir); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Warning: could not remove logs directory: %v\n", err)
-	}
-
-	// Delete state file (name is now free)
-	if err := state.DeleteAgent(dendraRoot, agentState.Name); err != nil {
-		return fmt.Errorf("deleting agent state: %w", err)
+	rd := buildRetireDeps(deps)
+	if err := agent.RetireAgent(rd, dendraRoot, agentState, force, false); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "Retired agent %q (branch %s preserved)\n", agentState.Name, agentState.Branch)
 	return nil
+}
+
+func buildRetireDeps(deps *retireDeps) *agent.RetireDeps {
+	return &agent.RetireDeps{
+		TmuxRunner:     deps.tmuxRunner,
+		WriteFile:      deps.writeFile,
+		RemoveFile:     deps.removeFile,
+		SleepFunc:      deps.sleepFunc,
+		WorktreeRemove: deps.worktreeRemove,
+		GitStatus:      deps.gitStatus,
+		RemoveAll:      deps.removeAll,
+		Stderr:         os.Stderr,
+	}
 }
 
 // findChildren returns all agents that have the given name as their parent.
