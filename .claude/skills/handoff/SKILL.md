@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Write a session summary and hand off to the next sensei session.
+description: Write a session summary and hand off to the next sensei session. ONLY TO BE USED BY THE SENSEI.
 user-invocable: true
 ---
 
@@ -49,8 +49,8 @@ EOF
 
 The `dendra handoff` command will:
 - Save the summary as the session file for the current session ID
-- Create a handoff signal file that the sensei loop detects
-- The sensei loop will then start a new session with your summary as context
+- Remind you to instruct the user to kill the session when ready
+- When the user ctrl+c or ctrl+d or /exits the session, the sensei loop will start a fresh version of the sensei with memories from the previous session, so the sensei has historical context of what happened.
 
 ## Reminders
 
