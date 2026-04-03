@@ -566,6 +566,9 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 					return nil
 				}
 			}
+			// Consume any pending wake file — inbox delivery already notified the agent.
+			wakePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".wake")
+			_ = deps.removeFile(wakePath)
 			deps.sleepFunc(3 * time.Second)
 			continue
 		}
@@ -592,7 +595,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			}
 			// Only remove the wake file after it has been successfully delivered.
 			_ = deps.removeFile(wakeFilePath)
-			deps.sleepFunc(3 * time.Second)
+			// Continue immediately — let the inbox check pick up message details on the next iteration.
 			continue
 		}
 

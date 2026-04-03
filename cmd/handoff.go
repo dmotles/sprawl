@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/dmotles/dendra/internal/memory"
@@ -12,6 +13,7 @@ import (
 )
 
 type handoffDeps struct {
+	stdout              io.Writer
 	getenv              func(string) string
 	readStdin           func() ([]byte, error)
 	listAgents          func(dendraRoot string) ([]*state.AgentState, error)
@@ -43,6 +45,7 @@ func resolveHandoffDeps() *handoffDeps {
 		return defaultHandoffDeps
 	}
 	return &handoffDeps{
+		stdout: os.Stdout,
 		getenv: os.Getenv,
 		readStdin: func() ([]byte, error) {
 			return io.ReadAll(os.Stdin)
@@ -76,6 +79,22 @@ func runHandoff(deps *handoffDeps) error {
 	stdinBytes, err := deps.readStdin()
 	if err != nil {
 		return fmt.Errorf("reading stdin: %w", err)
+	}
+
+	// Reject empty or whitespace-only summaries
+	if strings.TrimSpace(string(stdinBytes)) == "" {
+		return fmt.Errorf(`no summary provided on stdin. Pipe your session summary into this command:
+
+  cat <<'EOF' | dendra handoff
+  ## What was accomplished
+  ...
+  ## Key decisions
+  ...
+  ## Outstanding work
+  ...
+  EOF
+
+The summary is the primary context for the next session — make it count.`)
 	}
 
 	// Read current session ID
@@ -113,6 +132,13 @@ func runHandoff(deps *handoffDeps) error {
 		return fmt.Errorf("writing handoff signal: %w", err)
 	}
 
-	fmt.Println("Handoff complete. Session summary written.")
+	fmt.Fprintln(deps.stdout, "Handoff complete. Session summary written.")
+	fmt.Fprintln(deps.stdout)
+	fmt.Fprintln(deps.stdout, "To restart with fresh context, exit this session:")
+	fmt.Fprintln(deps.stdout, "  - Type /exit")
+	fmt.Fprintln(deps.stdout, "  - Or press Ctrl+D")
+	fmt.Fprintln(deps.stdout, "  - Or press Ctrl+C")
+	fmt.Fprintln(deps.stdout)
+	fmt.Fprintln(deps.stdout, "The sensei loop will automatically restart with your new context.")
 	return nil
 }

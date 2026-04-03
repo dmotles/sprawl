@@ -794,6 +794,98 @@ func TestBuildManagerPrompt_ScopeManagement(t *testing.T) {
 	}
 }
 
+// --- delegate vs messages guidance tests ---
+
+func TestBuildRootPrompt_DelegateVsMessagesGuidance(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	keyPhrases := []string{
+		"dendra delegate",
+		"work assignments",
+		"tracked task",
+		"dendra messages send",
+		"coordination",
+		"information sharing",
+		"rule of thumb",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
+			t.Errorf("root prompt missing delegate vs messages guidance phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildRootPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	guidanceIdx := strings.Index(prompt, "DELEGATE VS. MESSAGES")
+	rulesIdx := strings.Index(prompt, "RULES:")
+
+	if guidanceIdx == -1 {
+		t.Fatal("root prompt missing 'DELEGATE VS. MESSAGES' section")
+	}
+	if rulesIdx == -1 {
+		t.Fatal("root prompt missing 'RULES:'")
+	}
+	// Guidance should appear after KEY COMMANDS and before RULES
+	keyCommandsIdx := strings.Index(prompt, "KEY COMMANDS:")
+	if keyCommandsIdx == -1 {
+		t.Fatal("root prompt missing 'KEY COMMANDS:'")
+	}
+	if guidanceIdx <= keyCommandsIdx {
+		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear after KEY COMMANDS (idx %d)", guidanceIdx, keyCommandsIdx)
+	}
+	if guidanceIdx >= rulesIdx {
+		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear before RULES (idx %d)", guidanceIdx, rulesIdx)
+	}
+}
+
+func TestBuildManagerPrompt_DelegateVsMessagesGuidance(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	keyPhrases := []string{
+		"dendra delegate",
+		"work assignments",
+		"tracked task",
+		"dendra messages send",
+		"coordination",
+		"information sharing",
+		"rule of thumb",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
+			t.Errorf("manager prompt missing delegate vs messages guidance phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	guidanceIdx := strings.Index(prompt, "DELEGATE VS. MESSAGES")
+	dispatchIdx := strings.Index(prompt, "# DISPATCHING:")
+
+	if guidanceIdx == -1 {
+		t.Fatal("manager prompt missing 'DELEGATE VS. MESSAGES' section")
+	}
+	if dispatchIdx == -1 {
+		t.Fatal("manager prompt missing '# DISPATCHING:'")
+	}
+	// Guidance should appear after DISPATCHING
+	if guidanceIdx <= dispatchIdx {
+		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear after DISPATCHING (idx %d)", guidanceIdx, dispatchIdx)
+	}
+
+	// And before PARALLELISM
+	parallelismIdx := strings.Index(prompt, "# PARALLELISM")
+	if parallelismIdx == -1 {
+		t.Fatal("manager prompt missing '# PARALLELISM'")
+	}
+	if guidanceIdx >= parallelismIdx {
+		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear before PARALLELISM (idx %d)", guidanceIdx, parallelismIdx)
+	}
+}
+
 // --- BuildRootPrompt ContextBlob tests ---
 
 func TestBuildRootPrompt_ContextBlob_Appended(t *testing.T) {

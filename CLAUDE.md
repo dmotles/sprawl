@@ -61,6 +61,10 @@ dendra spawn --family engineering --type engineer \
 
 The issue is the source of truth. The agent can read it via Linear MCP tools (`get_issue`).
 
+## Session Handoff
+
+At the end of a session, use `/handoff` to persist context for the next session. It guides you through writing a structured summary and piping it into `dendra handoff`.
+
 ## Sandbox Testing
 
 Use the `/e2e-testing-sandboxing` skill for the full setup, inspection, and cleanup workflow. Quick start:

@@ -175,6 +175,11 @@ KEY COMMANDS:
   dendra status                               — show status of all agents (table with type, family, status, process liveness, last report)
   dendra tree                                 — show agent hierarchy as a tree
 
+DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
+- ` + "`dendra delegate <agent> \"<task>\"`" + ` — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
+- ` + "`dendra messages send <agent> \"<subject>\" \"<body>\"`" + ` — Use for coordination and information sharing. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- Rule of thumb: if you're telling an agent to *do* something, use ` + "`delegate`" + `. If you're telling an agent *about* something, use ` + "`messages send`" + `.
+
 RULES:
 - Keep your agent tree manageable. Do not have more than 3-10 active agents at a time.
 - When an agent is done with its work and you've verified it, use ` + "`dendra merge <agent>`" + ` to squash-merge, retire the agent, and clean up in one step. Do NOT manually run git merge + dendra retire — the merge command handles the full lifecycle.
@@ -568,6 +573,11 @@ Use dendra commands to create and manage agents:
   Observability:
   dendra status                — show status of all agents
   dendra tree                  — show agent hierarchy as a tree
+
+DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
+- ` + "`dendra delegate <agent> \"<task>\"`" + ` — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
+- ` + "`dendra messages send <agent> \"<subject>\" \"<body>\"`" + ` — Use for coordination and information sharing. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- Rule of thumb: if you're telling an agent to *do* something, use ` + "`delegate`" + `. If you're telling an agent *about* something, use ` + "`messages send`" + `.
 
 When spawning an agent to work on a tracked issue, keep the prompt short. Point
 the agent at the issue — don't repeat the issue contents in the prompt.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -552,9 +553,13 @@ func TestRunAgentLoop_WakeFile(t *testing.T) {
 	wakeContent := "wake up and do something"
 	var removedFiles []string
 
+	wakeReadCount := 0
 	deps.readFile = func(path string) ([]byte, error) {
 		if strings.HasSuffix(path, "ash.wake") {
-			return []byte(wakeContent), nil
+			wakeReadCount++
+			if wakeReadCount == 1 {
+				return []byte(wakeContent), nil
+			}
 		}
 		return nil, errors.New("file not found")
 	}
@@ -2119,9 +2124,13 @@ func TestRunAgentLoop_WakeFile_LogsInjectedPrompt(t *testing.T) {
 	deps.stdout = buf
 
 	wakeContent := "time to wake up and work"
+	wakeReadCount := 0
 	deps.readFile = func(path string) ([]byte, error) {
 		if strings.HasSuffix(path, "ash.wake") {
-			return []byte(wakeContent), nil
+			wakeReadCount++
+			if wakeReadCount == 1 {
+				return []byte(wakeContent), nil
+			}
 		}
 		return nil, errors.New("file not found")
 	}
@@ -2190,5 +2199,177 @@ func TestRunAgentLoop_StateMissing_ExitsCleanly(t *testing.T) {
 
 	if !mockProc.stopCalled {
 		t.Error("expected proc.Stop to be called on state-missing exit")
+	}
+}
+
+func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send a real message — this creates both inbox entry AND wake file.
+	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this out"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// Use real readFile/removeFile so the wake file on disk is exercised.
+	deps.readFile = os.ReadFile
+	deps.removeFile = os.Remove
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "handled inbox"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// Inbox delivery should have fired (not wake file).
+	if len(mockProc.prompts) < 1 {
+		t.Fatal("expected at least one prompt from inbox delivery")
+	}
+	if !strings.Contains(mockProc.prompts[0], "dendra messages read") {
+		t.Errorf("expected inbox-style prompt, got: %q", mockProc.prompts[0])
+	}
+
+	// The wake file should have been consumed by the inbox delivery branch.
+	wakePath := filepath.Join(tmpDir, ".dendra", "agents", "ash.wake")
+	if _, err := os.Stat(wakePath); err == nil {
+		t.Error("expected wake file to be consumed after inbox delivery, but it still exists")
+	}
+}
+
+func TestRunAgentLoop_WakeFile_ContinuesImmediately(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send a real message so inbox has content for the second iteration.
+	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// On the first iteration, inbox check sees messages and fires (inbox comes
+	// before wake in the loop). But we want to test the wake path specifically,
+	// so we make inbox empty initially and only populate it after the wake fires.
+	inboxCallCount := 0
+	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) {
+		inboxCallCount++
+		if inboxCallCount == 1 {
+			// First iteration: inbox empty, so wake file fires instead.
+			return nil, nil
+		}
+		// Second iteration: inbox has messages (should fire immediately after wake).
+		return messages.List(root, agent, filter)
+	}
+
+	wakeContent := "New message from root: hey"
+	wakeReadCount := 0
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, "ash.wake") {
+			wakeReadCount++
+			if wakeReadCount == 1 {
+				return []byte(wakeContent), nil
+			}
+		}
+		return nil, errors.New("file not found")
+	}
+	deps.removeFile = func(path string) error { return nil }
+	deps.nextTask = func(root, name string) (*state.Task, error) { return nil, nil }
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "woke up"},
+		{Type: "result", Result: "read inbox"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sleepCount := 0
+	deps.sleepFunc = func(d time.Duration) {
+		sleepCount++
+		cancel()
+	}
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// With the fix: wake fires (no sleep) -> immediate next iteration -> inbox fires -> sleep -> cancel.
+	// Without the fix: wake fires -> sleep -> cancel. Only 1 prompt delivered.
+	// So we assert 2 prompts were delivered before the first sleep.
+	if len(mockProc.prompts) < 2 {
+		t.Fatalf("expected 2 prompts (wake + inbox) before first sleep, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+}
+
+func TestRunAgentLoop_MessageSend_SingleNotificationType(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send a real message — creates both inbox entry and wake file.
+	if err := messages.Send(tmpDir, "root", "ash", "deploy done", "all good"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// Use real file operations so both inbox and wake file are on disk.
+	deps.readFile = os.ReadFile
+	deps.removeFile = os.Remove
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	iterCount := 0
+	deps.sleepFunc = func(d time.Duration) {
+		iterCount++
+		if iterCount >= 2 {
+			cancel()
+		}
+	}
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// Every prompt should be inbox-style (contains "dendra messages read").
+	// No prompt should be wake-file-style (raw "New message from" content).
+	for i, p := range mockProc.prompts {
+		if !strings.Contains(p, "dendra messages read") {
+			t.Errorf("prompt[%d] should be inbox-style, got: %q", i, p)
+		}
+		if strings.Contains(p, "New message from root") {
+			t.Errorf("prompt[%d] should NOT contain wake file content, got: %q", i, p)
+		}
+	}
+}
+
+func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send 3 messages rapidly.
+	for i, subj := range []string{"msg1", "msg2", "msg3"} {
+		if err := messages.Send(tmpDir, "root", "ash", subj, fmt.Sprintf("body %d", i)); err != nil {
+			t.Fatalf("sending message %d: %v", i, err)
+		}
+	}
+
+	// Use real file operations.
+	deps.readFile = os.ReadFile
+	deps.removeFile = os.Remove
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	// Should deliver exactly 1 prompt that batches all 3 messages.
+	if len(mockProc.prompts) != 1 {
+		t.Fatalf("expected 1 batched prompt, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+	prompt := mockProc.prompts[0]
+	if !strings.Contains(prompt, "3 new message(s)") {
+		t.Errorf("prompt should mention 3 messages, got: %q", prompt)
+	}
+	// Wake file should be consumed.
+	wakePath := filepath.Join(tmpDir, ".dendra", "agents", "ash.wake")
+	if _, err := os.Stat(wakePath); err == nil {
+		t.Error("expected wake file to be consumed after inbox delivery, but it still exists")
 	}
 }

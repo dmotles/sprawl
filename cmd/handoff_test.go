@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +28,9 @@ func newTestHandoffDeps(t *testing.T) (*handoffDeps, string) {
 	// Set up agents directory
 	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
 
+	var stdout bytes.Buffer
 	deps := &handoffDeps{
+		stdout: &stdout,
 		getenv: func(key string) string {
 			switch key {
 			case "DENDRA_ROOT":
@@ -180,18 +183,90 @@ func TestHandoff_EmptyStdin(t *testing.T) {
 	}
 
 	err := runHandoff(deps)
+	if err == nil {
+		t.Fatal("expected error for empty stdin")
+	}
+	if !strings.Contains(err.Error(), "no summary provided") {
+		t.Errorf("error should mention 'no summary provided', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "dendra handoff") {
+		t.Errorf("error should include usage hint with 'dendra handoff', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "What was accomplished") {
+		t.Errorf("error should suggest summary sections, got: %v", err)
+	}
+
+	// Verify no session file was created
+	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
+	if _, err := os.Stat(sessDir); err == nil {
+		entries, _ := os.ReadDir(sessDir)
+		if len(entries) > 0 {
+			t.Error("no session file should be created when summary is empty")
+		}
+	}
+
+	// Verify no handoff signal file was created
+	signalPath := filepath.Join(tmpDir, ".dendra", "memory", "handoff-signal")
+	if _, err := os.Stat(signalPath); err == nil {
+		t.Error("no handoff-signal file should be created when summary is empty")
+	}
+}
+
+func TestHandoff_WhitespaceOnlyStdin(t *testing.T) {
+	deps, tmpDir := newTestHandoffDeps(t)
+	deps.readStdin = func() ([]byte, error) {
+		return []byte("   \n\t\n  "), nil
+	}
+
+	err := runHandoff(deps)
+	if err == nil {
+		t.Fatal("expected error for whitespace-only stdin")
+	}
+	if !strings.Contains(err.Error(), "no summary provided") {
+		t.Errorf("error should mention 'no summary provided', got: %v", err)
+	}
+
+	// Verify no session file was created
+	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
+	if _, err := os.Stat(sessDir); err == nil {
+		entries, _ := os.ReadDir(sessDir)
+		if len(entries) > 0 {
+			t.Error("no session file should be created when summary is whitespace-only")
+		}
+	}
+
+	// Verify no handoff signal file was created
+	signalPath := filepath.Join(tmpDir, ".dendra", "memory", "handoff-signal")
+	if _, err := os.Stat(signalPath); err == nil {
+		t.Error("no handoff-signal file should be created when summary is whitespace-only")
+	}
+}
+
+func TestHandoff_TerseInput(t *testing.T) {
+	deps, tmpDir := newTestHandoffDeps(t)
+	deps.readStdin = func() ([]byte, error) {
+		return []byte("done"), nil
+	}
+
+	err := runHandoff(deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify file was still created
+	// Verify session file was created
 	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
 	entries, err := os.ReadDir(sessDir)
 	if err != nil {
 		t.Fatalf("reading sessions dir: %v", err)
 	}
 	if len(entries) != 1 {
-		t.Error("session file should exist even with empty stdin")
+		t.Fatalf("expected 1 session file, got %d", len(entries))
+	}
+
+	// Verify handoff signal file exists
+	signalPath := filepath.Join(tmpDir, ".dendra", "memory", "handoff-signal")
+	if _, err := os.Stat(signalPath); os.IsNotExist(err) {
+		t.Error("handoff-signal file should exist for terse but non-empty input")
 	}
 }
 
@@ -248,5 +323,59 @@ func TestHandoff_WriteSignalFileFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "simulated signal failure") {
 		t.Errorf("error should contain failure message, got: %v", err)
+	}
+}
+
+func TestHandoff_ExitInstructions(t *testing.T) {
+	deps, _ := newTestHandoffDeps(t)
+
+	err := runHandoff(deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := deps.stdout.(*bytes.Buffer).String()
+
+	if !strings.Contains(output, "Handoff complete. Session summary written.") {
+		t.Errorf("should contain success message, got: %s", output)
+	}
+	if !strings.Contains(output, "/exit") {
+		t.Errorf("should contain /exit instruction, got: %s", output)
+	}
+	if !strings.Contains(output, "Ctrl+D") {
+		t.Errorf("should contain Ctrl+D instruction, got: %s", output)
+	}
+	if !strings.Contains(output, "Ctrl+C") {
+		t.Errorf("should contain Ctrl+C instruction, got: %s", output)
+	}
+	if !strings.Contains(output, "sensei loop will automatically restart") {
+		t.Errorf("should mention sensei loop restart, got: %s", output)
+	}
+}
+
+func TestHandoff_ErrorNoExitInstructions(t *testing.T) {
+	deps, tmpDir := newTestHandoffDeps(t)
+	// Make the agent a non-root agent to trigger an error
+	deps.getenv = func(key string) string {
+		switch key {
+		case "DENDRA_ROOT":
+			return tmpDir
+		case "DENDRA_AGENT_IDENTITY":
+			return "not-root"
+		}
+		return ""
+	}
+
+	err := runHandoff(deps)
+	if err == nil {
+		t.Fatal("expected error for non-root agent")
+	}
+
+	output := deps.stdout.(*bytes.Buffer).String()
+	if strings.Contains(output, "/exit") {
+		t.Errorf("should not contain exit instructions on error, got: %s", output)
+	}
+	if strings.Contains(output, "Ctrl+D") {
+		t.Errorf("should not contain exit instructions on error, got: %s", output)
 	}
 }
