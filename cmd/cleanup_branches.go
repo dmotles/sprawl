@@ -22,6 +22,7 @@ var cleanupBranchesCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveCleanupBranchesDeps()
+		deps.verbose = cleanupBranchesVerbose
 		return runCleanupBranches(deps, cleanupBranchesDryRun)
 	},
 }
@@ -33,14 +34,19 @@ type cleanupBranchesDeps struct {
 	deleteBranch   func(name string) error
 	listAgents     func(dendraRoot string) ([]*state.AgentState, error)
 	stdout         io.Writer
+	verbose        bool
 }
 
 var defaultCleanupBranchesDeps *cleanupBranchesDeps
 
-var cleanupBranchesDryRun bool
+var (
+	cleanupBranchesDryRun bool
+	cleanupBranchesVerbose bool
+)
 
 func init() {
 	cleanupBranchesCmd.Flags().BoolVar(&cleanupBranchesDryRun, "dry-run", false, "Show what would be deleted without deleting")
+	cleanupBranchesCmd.Flags().BoolVar(&cleanupBranchesVerbose, "verbose", false, "Show individual unmerged branch names")
 	cleanupCmd.AddCommand(cleanupBranchesCmd)
 	rootCmd.AddCommand(cleanupCmd)
 }
@@ -66,6 +72,8 @@ func parseBranchOutput(output string) []string {
 		if line == "" || strings.HasPrefix(line, "*") {
 			continue
 		}
+		// Strip the '+' prefix that git uses for branches checked out in other worktrees.
+		line = strings.TrimPrefix(line, "+ ")
 		branches = append(branches, line)
 	}
 	return branches
@@ -155,10 +163,7 @@ func runCleanupBranches(deps *cleanupBranchesDeps, dryRun bool) error {
 			fmt.Fprintf(w, "  %s\n", b)
 		}
 		if len(unmerged) > 0 {
-			fmt.Fprintf(w, "Would skip %d %s (not fully merged):\n", len(unmerged), branchWord(len(unmerged)))
-			for _, b := range unmerged {
-				fmt.Fprintf(w, "  %s\n", b)
-			}
+			printUnmergedSummary(w, "Would skip", unmerged, deps.verbose)
 		}
 		return nil
 	}
@@ -176,13 +181,22 @@ func runCleanupBranches(deps *cleanupBranchesDeps, dryRun bool) error {
 	}
 
 	if len(unmerged) > 0 {
-		fmt.Fprintf(w, "Skipped %d %s (not fully merged):\n", len(unmerged), branchWord(len(unmerged)))
-		for _, b := range unmerged {
-			fmt.Fprintf(w, "  %s\n", b)
-		}
+		printUnmergedSummary(w, "Skipped", unmerged, deps.verbose)
 	}
 
 	return nil
+}
+
+func printUnmergedSummary(w io.Writer, verb string, unmerged []string, verbose bool) {
+	n := len(unmerged)
+	if verbose {
+		fmt.Fprintf(w, "%s %d %s (not fully merged):\n", verb, n, branchWord(n))
+		for _, b := range unmerged {
+			fmt.Fprintf(w, "  %s\n", b)
+		}
+	} else {
+		fmt.Fprintf(w, "%s %d unmerged %s (use --verbose to list).\n", verb, n, branchWord(n))
+	}
 }
 
 func branchWord(n int) string {

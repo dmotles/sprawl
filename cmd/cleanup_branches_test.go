@@ -106,7 +106,7 @@ func TestCleanupBranches_AgentProtected(t *testing.T) {
 	}
 }
 
-func TestCleanupBranches_UnmergedReported(t *testing.T) {
+func TestCleanupBranches_UnmergedHiddenByDefault(t *testing.T) {
 	deps, buf, _ := newTestCleanupBranchesDeps(t)
 
 	deps.listBranches = func() ([]string, error) {
@@ -132,11 +132,57 @@ func TestCleanupBranches_UnmergedReported(t *testing.T) {
 	}
 
 	out := buf.String()
+	// Should show count summary, not individual branch names
+	if !strings.Contains(out, "Skipped 2 unmerged branches") {
+		t.Errorf("expected skipped count summary in output, got: %s", out)
+	}
+	if !strings.Contains(out, "--verbose") {
+		t.Errorf("expected --verbose hint in output, got: %s", out)
+	}
+	// Should NOT list individual branch names
+	if strings.Contains(out, "  feat-b") {
+		t.Errorf("should not list individual branches without --verbose, got: %s", out)
+	}
+	if strings.Contains(out, "  feat-c") {
+		t.Errorf("should not list individual branches without --verbose, got: %s", out)
+	}
+}
+
+func TestCleanupBranches_UnmergedShownWithVerbose(t *testing.T) {
+	deps, buf, _ := newTestCleanupBranchesDeps(t)
+	deps.verbose = true
+
+	deps.listBranches = func() ([]string, error) {
+		return []string{"feat-a", "feat-b", "feat-c"}, nil
+	}
+	deps.mergedBranches = func() ([]string, error) {
+		return []string{"feat-a"}, nil
+	}
+
+	var deleted []string
+	deps.deleteBranch = func(name string) error {
+		deleted = append(deleted, name)
+		return nil
+	}
+
+	err := runCleanupBranches(deps, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(deleted) != 1 || deleted[0] != "feat-a" {
+		t.Fatalf("expected only feat-a deleted, got: %v", deleted)
+	}
+
+	out := buf.String()
 	if !strings.Contains(out, "Skipped 2 branches (not fully merged):") {
-		t.Errorf("expected skipped message in output, got: %s", out)
+		t.Errorf("expected verbose skipped message in output, got: %s", out)
 	}
 	if !strings.Contains(out, "  feat-b") {
-		t.Errorf("expected '  feat-b' in skipped output, got: %s", out)
+		t.Errorf("expected '  feat-b' in verbose output, got: %s", out)
+	}
+	if !strings.Contains(out, "  feat-c") {
+		t.Errorf("expected '  feat-c' in verbose output, got: %s", out)
 	}
 }
 
@@ -226,12 +272,13 @@ func TestCleanupBranches_MixedScenario(t *testing.T) {
 	}
 
 	out := buf.String()
-	// feat-d is unmerged
-	if !strings.Contains(out, "Skipped 1 branch") {
-		t.Errorf("expected skipped message for unmerged, got: %s", out)
+	// feat-d is unmerged — default (non-verbose) should show count only
+	if !strings.Contains(out, "Skipped 1 unmerged branch") {
+		t.Errorf("expected skipped count summary for unmerged, got: %s", out)
 	}
-	if !strings.Contains(out, "  feat-d") {
-		t.Errorf("expected feat-d in skipped output, got: %s", out)
+	// Should NOT list individual branch names without --verbose
+	if strings.Contains(out, "  feat-d") {
+		t.Errorf("should not list individual branches without --verbose, got: %s", out)
 	}
 }
 
@@ -267,7 +314,51 @@ func TestCleanupBranches_DryRunWithUnmerged(t *testing.T) {
 	if !strings.Contains(out, "[dry-run] Would delete 1 merged branch") {
 		t.Errorf("expected dry-run output, got: %s", out)
 	}
-	if !strings.Contains(out, "Would skip 1 branch") {
-		t.Errorf("expected 'Would skip' in output, got: %s", out)
+	// Default (non-verbose): count summary only
+	if !strings.Contains(out, "Would skip 1 unmerged branch") {
+		t.Errorf("expected 'Would skip' count summary in output, got: %s", out)
+	}
+	if !strings.Contains(out, "--verbose") {
+		t.Errorf("expected --verbose hint in output, got: %s", out)
+	}
+}
+
+func TestCleanupBranches_DryRunUnmergedVerbose(t *testing.T) {
+	deps, buf, _ := newTestCleanupBranchesDeps(t)
+	deps.verbose = true
+
+	deps.listBranches = func() ([]string, error) {
+		return []string{"feat-a", "feat-b"}, nil
+	}
+	deps.mergedBranches = func() ([]string, error) {
+		return []string{"feat-a"}, nil
+	}
+
+	err := runCleanupBranches(deps, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Would skip 1 branch (not fully merged):") {
+		t.Errorf("expected verbose 'Would skip' in output, got: %s", out)
+	}
+	if !strings.Contains(out, "  feat-b") {
+		t.Errorf("expected '  feat-b' in verbose output, got: %s", out)
+	}
+}
+
+func TestParseBranchOutput_WorktreePlusPrefix(t *testing.T) {
+	input := "  dendra/alder\n+ dmotles/qum-123-wire-feature\n* main\n  feat-b\n"
+	got := parseBranchOutput(input)
+
+	expected := []string{"dendra/alder", "dmotles/qum-123-wire-feature", "feat-b"}
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d branches, got %d: %v", len(expected), len(got), got)
+	}
+	for i, want := range expected {
+		if got[i] != want {
+			t.Errorf("branch[%d]: expected %q, got %q", i, want, got[i])
+		}
 	}
 }
