@@ -98,7 +98,7 @@ func TestWriteSessionSummary_FilenameFormat(t *testing.T) {
 		t.Fatalf("reading dir: %v", err)
 	}
 
-	expected := "20260402T150405_fmt-test-id.md"
+	expected := "fmt-test-id.md"
 	if len(entries) != 1 || entries[0].Name() != expected {
 		names := make([]string, len(entries))
 		for i, e := range entries {
@@ -451,5 +451,173 @@ func TestWriteHandoffSignal_CreatesDirectory(t *testing.T) {
 	path := filepath.Join(root, ".dendra", "memory", "handoff-signal")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Error("handoff-signal file should exist")
+	}
+}
+
+func TestWriteSessionSummary_Idempotent(t *testing.T) {
+	root := t.TempDir()
+
+	// First write
+	s1 := Session{
+		SessionID:    "idem-test",
+		Timestamp:    time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+		AgentsActive: []string{"oak"},
+	}
+	if err := WriteSessionSummary(root, s1, "first body\n"); err != nil {
+		t.Fatalf("first WriteSessionSummary: %v", err)
+	}
+
+	// Second write with same session ID but different timestamp and body
+	s2 := Session{
+		SessionID:    "idem-test",
+		Timestamp:    time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC),
+		AgentsActive: []string{"oak", "elm"},
+	}
+	if err := WriteSessionSummary(root, s2, "second body\n"); err != nil {
+		t.Fatalf("second WriteSessionSummary: %v", err)
+	}
+
+	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading sessions dir: %v", err)
+	}
+
+	// Count .md files — should be exactly 1
+	var mdFiles []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			mdFiles = append(mdFiles, e.Name())
+		}
+	}
+	if len(mdFiles) != 1 {
+		t.Fatalf("expected 1 .md file, got %d: %v", len(mdFiles), mdFiles)
+	}
+	if mdFiles[0] != "idem-test.md" {
+		t.Errorf("filename = %q, want %q", mdFiles[0], "idem-test.md")
+	}
+
+	// Verify content reflects the second write
+	path := filepath.Join(dir, mdFiles[0])
+	gotSession, gotBody, err := ReadSessionSummary(path)
+	if err != nil {
+		t.Fatalf("ReadSessionSummary: %v", err)
+	}
+	if gotBody != "second body\n" {
+		t.Errorf("body = %q, want %q", gotBody, "second body\n")
+	}
+	if !gotSession.Timestamp.Equal(s2.Timestamp) {
+		t.Errorf("timestamp = %v, want %v", gotSession.Timestamp, s2.Timestamp)
+	}
+}
+
+func TestWriteSessionSummary_CleansOldFormat(t *testing.T) {
+	root := t.TempDir()
+
+	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create a file in the old timestamp-prefixed format
+	oldContent := "---\nsession_id: migrate-test\ntimestamp: 2026-01-01T00:00:00Z\nhandoff: false\nagents_active: []\n---\n\nold body\n"
+	oldPath := filepath.Join(dir, "20260101T000000_migrate-test.md")
+	if err := os.WriteFile(oldPath, []byte(oldContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write with the same session ID
+	session := Session{
+		SessionID: "migrate-test",
+		Timestamp: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC),
+	}
+	if err := WriteSessionSummary(root, session, "new body\n"); err != nil {
+		t.Fatalf("WriteSessionSummary: %v", err)
+	}
+
+	// Old file should be gone
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Errorf("old-format file should be removed, but still exists")
+	}
+
+	// New file should exist
+	newPath := filepath.Join(dir, "migrate-test.md")
+	if _, err := os.Stat(newPath); err != nil {
+		t.Errorf("new-format file should exist: %v", err)
+	}
+
+	// Should be exactly 1 .md file
+	entries, _ := os.ReadDir(dir)
+	mdCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			mdCount++
+		}
+	}
+	if mdCount != 1 {
+		t.Errorf("expected 1 .md file, got %d", mdCount)
+	}
+
+	// Verify content of the new file
+	gotSession, gotBody, err := ReadSessionSummary(newPath)
+	if err != nil {
+		t.Fatalf("ReadSessionSummary: %v", err)
+	}
+	if gotBody != "new body\n" {
+		t.Errorf("body = %q, want %q", gotBody, "new body\n")
+	}
+	if gotSession.SessionID != "migrate-test" {
+		t.Errorf("SessionID = %q, want %q", gotSession.SessionID, "migrate-test")
+	}
+}
+
+func TestListRecentSessions_SortsByTimestamp(t *testing.T) {
+	root := t.TempDir()
+
+	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create files whose alphabetical name order differs from chronological order.
+	// Alphabetically: aaa < mmm < zzz
+	// Chronologically: zzz (Jan) < mmm (Feb) < aaa (Mar)
+	type entry struct {
+		filename  string
+		sessionID string
+		timestamp time.Time
+	}
+	entries := []entry{
+		{"zzz-session.md", "zzz-session", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{"aaa-session.md", "aaa-session", time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)},
+		{"mmm-session.md", "mmm-session", time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)},
+	}
+
+	for _, e := range entries {
+		s := Session{
+			SessionID:    e.sessionID,
+			Timestamp:    e.timestamp,
+			AgentsActive: []string{},
+		}
+		content := marshalFrontmatter(s) + "\nbody\n"
+		if err := os.WriteFile(filepath.Join(dir, e.filename), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sessions, _, err := ListRecentSessions(root, 3)
+	if err != nil {
+		t.Fatalf("ListRecentSessions: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("got %d sessions, want 3", len(sessions))
+	}
+
+	// Should be sorted oldest-first by timestamp: zzz (Jan), mmm (Feb), aaa (Mar)
+	wantOrder := []string{"zzz-session", "mmm-session", "aaa-session"}
+	for i, s := range sessions {
+		if s.SessionID != wantOrder[i] {
+			t.Errorf("sessions[%d].SessionID = %q, want %q", i, s.SessionID, wantOrder[i])
+		}
 	}
 }

@@ -199,7 +199,7 @@ SESSIONS_DIR="$TEST_ROOT/.dendra/memory/sessions"
 mkdir -p "$SESSIONS_DIR"
 
 # Write a session file manually in the expected format
-cat > "$SESSIONS_DIR/20260401T120000_test-session-001.md" <<'SESSIONEOF'
+cat > "$SESSIONS_DIR/test-session-001.md" <<'SESSIONEOF'
 ---
 session_id: test-session-001
 timestamp: 2026-04-01T12:00:00Z
@@ -212,12 +212,12 @@ agents_active:
 This is a test session summary for persistence validation.
 SESSIONEOF
 
-assert_file_exists "$SESSIONS_DIR/20260401T120000_test-session-001.md" "session file written"
-assert_file_contains "$SESSIONS_DIR/20260401T120000_test-session-001.md" "session_id: test-session-001" "session file has correct session_id"
-assert_file_contains "$SESSIONS_DIR/20260401T120000_test-session-001.md" "timestamp: 2026-04-01T12:00:00Z" "session file has correct timestamp"
-assert_file_contains "$SESSIONS_DIR/20260401T120000_test-session-001.md" "handoff: true" "session file has handoff marker"
-assert_file_contains "$SESSIONS_DIR/20260401T120000_test-session-001.md" "agents_active:" "session file has agents_active"
-assert_file_contains "$SESSIONS_DIR/20260401T120000_test-session-001.md" "persistence validation" "session file has body content"
+assert_file_exists "$SESSIONS_DIR/test-session-001.md" "session file written"
+assert_file_contains "$SESSIONS_DIR/test-session-001.md" "session_id: test-session-001" "session file has correct session_id"
+assert_file_contains "$SESSIONS_DIR/test-session-001.md" "timestamp: 2026-04-01T12:00:00Z" "session file has correct timestamp"
+assert_file_contains "$SESSIONS_DIR/test-session-001.md" "handoff: true" "session file has handoff marker"
+assert_file_contains "$SESSIONS_DIR/test-session-001.md" "agents_active:" "session file has agents_active"
+assert_file_contains "$SESSIONS_DIR/test-session-001.md" "persistence validation" "session file has body content"
 
 echo ""
 
@@ -243,10 +243,9 @@ HANDOFF_OUTPUT=$(echo "Handoff test summary: everything is working." | \
 }
 
 # Verify session file was created
-HANDOFF_FILES=$(ls "$SESSIONS_DIR"/*_smoke-handoff-001.md 2>/dev/null | wc -l)
-if [ "$HANDOFF_FILES" -ge 1 ]; then
+HANDOFF_FILE="$SESSIONS_DIR/smoke-handoff-001.md"
+if [ -f "$HANDOFF_FILE" ]; then
     pass "handoff created session file"
-    HANDOFF_FILE=$(ls "$SESSIONS_DIR"/*_smoke-handoff-001.md | head -1)
     assert_file_contains "$HANDOFF_FILE" "session_id: smoke-handoff-001" "handoff file has correct session_id"
     assert_file_contains "$HANDOFF_FILE" "handoff: true" "handoff file has handoff: true"
     assert_file_contains "$HANDOFF_FILE" "everything is working" "handoff file has body from stdin"
@@ -293,9 +292,8 @@ echo "=== Test 5: Multiple sessions for context blob ==="
 rm -rf "$SESSIONS_DIR"/*
 
 for i in 1 2 3 4 5; do
-    TS="2026040${i}T120000"
     SID="ctx-session-$(printf '%03d' "$i")"
-    cat > "$SESSIONS_DIR/${TS}_${SID}.md" <<EOF
+    cat > "$SESSIONS_DIR/${SID}.md" <<EOF
 ---
 session_id: $SID
 timestamp: 2026-04-0${i}T12:00:00Z
@@ -315,17 +313,11 @@ else
     fail "expected 5 session files, found $FILE_COUNT"
 fi
 
-# Verify files are ordered by timestamp (lexicographic order of filenames)
-FIRST_FILE=$(ls "$SESSIONS_DIR"/*.md | head -1)
-LAST_FILE=$(ls "$SESSIONS_DIR"/*.md | tail -1)
-assert_file_contains "$FIRST_FILE" "ctx-session-001" "first file is oldest session"
-assert_file_contains "$LAST_FILE" "ctx-session-005" "last file is newest session"
-
-# The context blob uses ListRecentSessions(n=3) which takes the last 3 by filename.
-# Verify the last 3 files exist and have correct content.
-for i in 3 4 5; do
+# Verify all session files exist and have correct content
+for i in 1 2 3 4 5; do
     SID="ctx-session-$(printf '%03d' "$i")"
-    assert_file_contains "$SESSIONS_DIR/2026040${i}T120000_${SID}.md" "Session $i summary" "session $i has correct body"
+    assert_file_exists "$SESSIONS_DIR/${SID}.md" "session file ${SID}.md exists"
+    assert_file_contains "$SESSIONS_DIR/${SID}.md" "Session $i summary" "session $i has correct body"
 done
 
 echo ""
@@ -342,8 +334,7 @@ echo "New handoff after existing sessions." | \
     DENDRA_ROOT="$TEST_ROOT" \
     "$DENDRA_BIN" handoff >/dev/null 2>&1
 
-NEW_FILES=$(ls "$SESSIONS_DIR"/*_handoff-after-many.md 2>/dev/null | wc -l)
-if [ "$NEW_FILES" -ge 1 ]; then
+if [ -f "$SESSIONS_DIR/handoff-after-many.md" ]; then
     pass "handoff created new session file alongside existing ones"
 else
     fail "handoff did not create new session file"
@@ -406,10 +397,9 @@ echo "$LARGE_BODY" | \
     DENDRA_ROOT="$TEST_ROOT" \
     "$DENDRA_BIN" handoff >/dev/null 2>&1
 
-BUDGET_FILES=$(ls "$SESSIONS_DIR"/*_budget-test-session.md 2>/dev/null | wc -l)
-if [ "$BUDGET_FILES" -ge 1 ]; then
+BUDGET_FILE="$SESSIONS_DIR/budget-test-session.md"
+if [ -f "$BUDGET_FILE" ]; then
     pass "handoff succeeded with large content"
-    BUDGET_FILE=$(ls "$SESSIONS_DIR"/*_budget-test-session.md | head -1)
     BUDGET_SIZE=$(wc -c < "$BUDGET_FILE")
     if [ "$BUDGET_SIZE" -gt 50000 ]; then
         pass "large session file written (${BUDGET_SIZE} bytes)"

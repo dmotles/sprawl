@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -29,8 +30,7 @@ func lastSessionIDPath(dendraRoot string) string {
 }
 
 func sessionFilename(s Session) string {
-	ts := s.Timestamp.UTC().Format("20060102T150405")
-	return fmt.Sprintf("%s_%s.md", ts, s.SessionID)
+	return fmt.Sprintf("%s.md", s.SessionID)
 }
 
 func marshalFrontmatter(s Session) string {
@@ -134,6 +134,15 @@ func WriteSessionSummary(dendraRoot string, session Session, body string) error 
 	content := marshalFrontmatter(session) + "\n" + body
 	finalPath := filepath.Join(dir, sessionFilename(session))
 
+	// Clean up any old-format files (timestamp-prefixed) for this session ID.
+	oldPattern := filepath.Join(dir, "*_"+session.SessionID+".md")
+	matches, _ := filepath.Glob(oldPattern)
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing old-format session file: %w", err)
+		}
+	}
+
 	tmp, err := os.CreateTemp(dir, ".tmp-session-*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
@@ -195,25 +204,39 @@ func ListRecentSessions(dendraRoot string, n int) ([]Session, []string, error) {
 		return nil, nil, nil
 	}
 
-	// os.ReadDir returns entries sorted by name; filenames are timestamp-prefixed
-	// so lexicographic order == chronological order.
-	// Take the last N entries (most recent).
-	start := 0
-	if len(mdEntries) > n {
-		start = len(mdEntries) - n
+	// Parse all session files
+	type sessionEntry struct {
+		session Session
+		body    string
 	}
-	mdEntries = mdEntries[start:]
-
-	sessions := make([]Session, 0, len(mdEntries))
-	bodies := make([]string, 0, len(mdEntries))
+	var all []sessionEntry
 	for _, e := range mdEntries {
 		path := filepath.Join(dir, e.Name())
 		s, body, err := ReadSessionSummary(path)
 		if err != nil {
 			return nil, nil, fmt.Errorf("reading session %s: %w", e.Name(), err)
 		}
-		sessions = append(sessions, s)
-		bodies = append(bodies, body)
+		all = append(all, sessionEntry{session: s, body: body})
+	}
+
+	// Sort by timestamp ascending (oldest first).
+	// SliceStable for consistency with consolidate.go.
+	sort.SliceStable(all, func(i, j int) bool {
+		return all[i].session.Timestamp.Before(all[j].session.Timestamp)
+	})
+
+	// Take the last N entries (most recent)
+	start := 0
+	if len(all) > n {
+		start = len(all) - n
+	}
+	all = all[start:]
+
+	sessions := make([]Session, len(all))
+	bodies := make([]string, len(all))
+	for i, e := range all {
+		sessions[i] = e.session
+		bodies[i] = e.body
 	}
 
 	return sessions, bodies, nil

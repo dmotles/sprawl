@@ -164,9 +164,11 @@ func HasSessionSummary(dendraRoot, sessionID string) (bool, error) {
 		return false, fmt.Errorf("reading sessions directory: %w", err)
 	}
 
+	// Check for new-format (sessionID.md) or old-format (*_sessionID.md) files.
+	target := sessionID + ".md"
 	suffix := "_" + sessionID + ".md"
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), suffix) {
+		if e.Name() == target || strings.HasSuffix(e.Name(), suffix) {
 			return true, nil
 		}
 	}
