@@ -51,6 +51,7 @@ type senseiLoopDeps struct {
 	autoSummarize      func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
 	userHomeDir        func() (string, error)
 	newCLIInvoker      func() memory.ClaudeInvoker
+	consolidate        func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
 }
 
 // defaultSenseiLoopDeps wires real implementations.
@@ -80,6 +81,7 @@ func defaultSenseiLoopDeps() *senseiLoopDeps {
 		autoSummarize:     memory.AutoSummarize,
 		userHomeDir:       os.UserHomeDir,
 		newCLIInvoker:     func() memory.ClaudeInvoker { return memory.NewCLIInvoker() },
+		consolidate:       memory.Consolidate,
 	}
 }
 
@@ -227,6 +229,11 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 		if _, readErr := deps.readFile(handoffPath); readErr == nil {
 			_ = deps.removeFile(handoffPath)
 			fmt.Fprintf(deps.stdout, "[sensei-loop] handoff signal detected, restarting\n")
+
+			// Run memory consolidation post-handoff (best-effort).
+			if consolidateErr := deps.consolidate(ctx, dendraRoot, deps.newCLIInvoker(), nil, nil); consolidateErr != nil {
+				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: consolidation failed: %v\n", consolidateErr)
+			}
 		} else {
 			fmt.Fprintf(deps.stdout, "[sensei-loop] session ended, restarting\n")
 		}

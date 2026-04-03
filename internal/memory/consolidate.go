@@ -18,7 +18,6 @@ import (
 // restarting. It assumes single-threaded execution — no concurrent access
 // protection is needed.
 //
-// TODO: Wire this into the sensei loop post-handoff path.
 func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, now func() time.Time) error {
 	if cfg == nil {
 		c := DefaultTimelineCompressionConfig()

@@ -47,6 +47,9 @@ func newTestSenseiLoopDeps(t *testing.T) *senseiLoopDeps {
 		},
 		userHomeDir:   func() (string, error) { return "/home/test", nil },
 		newCLIInvoker: func() memory.ClaudeInvoker { return nil },
+		consolidate: func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+			return nil
+		},
 	}
 }
 
@@ -755,5 +758,154 @@ func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
 
 	if autoSummarizeCalled {
 		t.Error("expected autoSummarize NOT to be called when readLastSessionID returns empty string")
+	}
+}
+
+func TestRunSenseiLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var consolidateCalled bool
+	var consolidateDendraRoot string
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handoff signal file exists
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	deps.removeFile = func(path string) error { return nil }
+
+	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		mu.Lock()
+		consolidateCalled = true
+		consolidateDendraRoot = dendraRoot
+		mu.Unlock()
+		return nil
+	}
+
+	iterations := 0
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		iterations++
+		iter := iterations
+		mu.Unlock()
+		// Cancel on 2nd iteration so the 1st iteration completes fully
+		// (including post-handoff consolidation).
+		if iter >= 2 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !consolidateCalled {
+		t.Error("expected consolidate to be called after handoff signal")
+	}
+	if consolidateDendraRoot != "/fake/root" {
+		t.Errorf("expected consolidate called with dendraRoot '/fake/root', got %q", consolidateDendraRoot)
+	}
+}
+
+func TestRunSenseiLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var consolidateCalled bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// No handoff signal (readFile returns ErrNotExist by default)
+
+	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		mu.Lock()
+		consolidateCalled = true
+		mu.Unlock()
+		return nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if consolidateCalled {
+		t.Error("expected consolidate NOT to be called when there is no handoff signal")
+	}
+}
+
+func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var claudeRan bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var buf strings.Builder
+	deps.stdout = &buf
+
+	// Handoff signal file exists
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	deps.removeFile = func(path string) error { return nil }
+
+	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		return fmt.Errorf("consolidation failed")
+	}
+
+	iterations := 0
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		iterations++
+		iter := iterations
+		claudeRan = true
+		mu.Unlock()
+		if iter >= 2 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error (loop should continue despite consolidation error), got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !claudeRan {
+		t.Error("expected claude to still run despite consolidation error")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "consolidat") {
+		t.Errorf("expected warning about consolidation in output, got: %q", output)
 	}
 }
