@@ -88,7 +88,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
-	agentName, err := agent.AllocateName(agentsDir)
+	agentName, err := agent.AllocateName(agentsDir, agentType)
 	if err != nil {
 		return err
 	}

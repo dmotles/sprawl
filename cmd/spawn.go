@@ -136,7 +136,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
-	agentName, err := agent.AllocateName(agentsDir)
+	agentName, err := agent.AllocateName(agentsDir, agentType)
 	if err != nil {
 		return err
 	}

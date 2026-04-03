@@ -167,8 +167,8 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if runner.newSessionWithWindowSession != expectedChildrenSession {
 		t.Errorf("session = %q, want %q", runner.newSessionWithWindowSession, expectedChildrenSession)
 	}
-	// Window name should be the allocated agent name (first in pool)
-	expectedName := agent.NamePool[0]
+	// Window name should be the allocated agent name (first in engineer pool)
+	expectedName := agent.EngineerNames[0]
 	if runner.newSessionWithWindowWindow != expectedName {
 		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, expectedName)
 	}
@@ -245,7 +245,7 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 	}
 
 	// Verify second child got a different name
-	secondName := agent.NamePool[1]
+	secondName := agent.EngineerNames[1]
 	if runner.newWindowWindow != secondName {
 		t.Errorf("second window = %q, want %q", runner.newWindowWindow, secondName)
 	}
@@ -296,21 +296,23 @@ func TestSpawn_MissingDendraRoot(t *testing.T) {
 	}
 }
 
-func TestSpawn_NamePoolExhausted(t *testing.T) {
-	deps, _, _, tmpDir := newTestSpawnDeps(t)
+func TestSpawn_NamePoolExhausted_UsesFallback(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	// Fill all names
+	// Fill all engineer names
 	agentsDir := state.AgentsDir(tmpDir)
-	for _, name := range agent.NamePool {
+	for _, name := range agent.EngineerNames {
 		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
 	}
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
-	if err == nil {
-		t.Fatal("expected error for exhausted name pool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
-	if !strings.Contains(err.Error(), "no more agents") {
-		t.Errorf("error should mention name exhaustion, got: %v", err)
+
+	// Should have allocated a fallback name like "tree-1"
+	if runner.newSessionWithWindowWindow != "tree-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "tree-1")
 	}
 }
 
@@ -381,7 +383,7 @@ func TestSpawn_ResearcherType_HappyPath(t *testing.T) {
 	}
 
 	// Verify state was saved with researcher type
-	expectedName := agent.NamePool[0]
+	expectedName := agent.ResearcherNames[0]
 	agentState, err := state.LoadAgent(tmpDir, expectedName)
 	if err != nil {
 		t.Fatalf("loading agent state: %v", err)
@@ -404,7 +406,7 @@ func TestSpawn_ManagerType_HappyPath(t *testing.T) {
 	}
 
 	// Verify state was saved with manager type
-	expectedName := agent.NamePool[0]
+	expectedName := agent.ManagerNames[0]
 	agentState, err := state.LoadAgent(tmpDir, expectedName)
 	if err != nil {
 		t.Fatalf("loading agent state: %v", err)
@@ -450,7 +452,7 @@ func TestSpawn_ShellCmd_ContainsDendraAgentLoop(t *testing.T) {
 	}
 
 	cmd := runner.newSessionWithWindowCmd
-	expectedName := agent.NamePool[0]
+	expectedName := agent.EngineerNames[0]
 	expectedWorktree := filepath.Join(tmpDir, ".dendra", "worktrees", expectedName)
 
 	// Verify the shell command structure:
@@ -516,7 +518,7 @@ func TestSpawn_WritesInitialPromptFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedName := agent.NamePool[0]
+	expectedName := agent.EngineerNames[0]
 	promptPath := filepath.Join(tmpDir, ".dendra", "agents", expectedName, "prompts", "initial.md")
 
 	data, err := os.ReadFile(promptPath)
@@ -538,7 +540,7 @@ func TestSpawn_AgentPromptContainsFileRef(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedName := agent.NamePool[0]
+	expectedName := agent.EngineerNames[0]
 	agentState, err := state.LoadAgent(tmpDir, expectedName)
 	if err != nil {
 		t.Fatalf("loading agent state: %v", err)
@@ -668,5 +670,102 @@ func TestSpawn_DendraTestModeNotPropagatedWhenUnset(t *testing.T) {
 	env := runner.newSessionWithWindowEnv
 	if _, ok := env["DENDRA_TEST_MODE"]; ok {
 		t.Errorf("env should not contain DENDRA_TEST_MODE when unset, got %q", env["DENDRA_TEST_MODE"])
+	}
+}
+
+// TestSpawn_CrossTypeIsolation verifies that spawning agents of different types
+// assigns names from their respective pools, not from a shared pool.
+func TestSpawn_CrossTypeIsolation(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// Spawn an engineer
+	err := runSpawn(deps, "engineering", "engineer", "build feature", "feature/eng")
+	if err != nil {
+		t.Fatalf("engineer spawn: %v", err)
+	}
+	engineerName := runner.newSessionWithWindowWindow
+
+	// Session now exists for subsequent spawns
+	runner.hasSession = true
+	runner.newSessionWithWindowCalled = false
+
+	// Spawn a researcher
+	err = runSpawn(deps, "engineering", "researcher", "investigate auth", "feature/research")
+	if err != nil {
+		t.Fatalf("researcher spawn: %v", err)
+	}
+	researcherName := runner.newWindowWindow
+
+	// Reset for manager
+	runner.newWindowCalled = false
+
+	// Spawn a manager
+	err = runSpawn(deps, "engineering", "manager", "coordinate work", "feature/manage")
+	if err != nil {
+		t.Fatalf("manager spawn: %v", err)
+	}
+	managerName := runner.newWindowWindow
+
+	// Verify each name comes from its respective pool
+	if engineerName != agent.EngineerNames[0] {
+		t.Errorf("engineer name = %q, want %q (from EngineerNames)", engineerName, agent.EngineerNames[0])
+	}
+	if researcherName != agent.ResearcherNames[0] {
+		t.Errorf("researcher name = %q, want %q (from ResearcherNames)", researcherName, agent.ResearcherNames[0])
+	}
+	if managerName != agent.ManagerNames[0] {
+		t.Errorf("manager name = %q, want %q (from ManagerNames)", managerName, agent.ManagerNames[0])
+	}
+
+	// Verify all three names are distinct
+	if engineerName == researcherName || engineerName == managerName || researcherName == managerName {
+		t.Errorf("names should be distinct: engineer=%q, researcher=%q, manager=%q", engineerName, researcherName, managerName)
+	}
+
+	// Verify state files have correct types
+	agents, err := state.ListAgents(tmpDir)
+	if err != nil {
+		t.Fatalf("listing agents: %v", err)
+	}
+	if len(agents) != 3 {
+		t.Fatalf("expected 3 agents, got %d", len(agents))
+	}
+}
+
+func TestSpawn_ResearcherPoolExhausted_UsesFallback(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// Fill all researcher names
+	agentsDir := state.AgentsDir(tmpDir)
+	for _, name := range agent.ResearcherNames {
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+	}
+
+	err := runSpawn(deps, "engineering", "researcher", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
+	}
+
+	if runner.newSessionWithWindowWindow != "river-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "river-1")
+	}
+}
+
+func TestSpawn_ManagerPoolExhausted_UsesFallback(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// Fill all manager names
+	agentsDir := state.AgentsDir(tmpDir)
+	for _, name := range agent.ManagerNames {
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+	}
+
+	err := runSpawn(deps, "engineering", "manager", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
+	}
+
+	if runner.newSessionWithWindowWindow != "peak-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "peak-1")
 	}
 }

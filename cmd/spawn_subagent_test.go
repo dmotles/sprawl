@@ -81,7 +81,7 @@ func TestSpawnSubagent_HappyPath(t *testing.T) {
 	}
 
 	// Window name should be the allocated agent name (first in pool)
-	expectedName := agent.NamePool[0]
+	expectedName := agent.EngineerNames[0]
 	if runner.newSessionWithWindowWindow != expectedName {
 		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, expectedName)
 	}
@@ -160,7 +160,7 @@ func TestSpawnSubagent_SecondChild_AddsWindow(t *testing.T) {
 	}
 
 	// Verify second child got a different name
-	secondName := agent.NamePool[1]
+	secondName := agent.EngineerNames[1]
 	if runner.newWindowWindow != secondName {
 		t.Errorf("second window = %q, want %q", runner.newWindowWindow, secondName)
 	}
@@ -295,21 +295,23 @@ func TestSpawnSubagent_FindDendraFails(t *testing.T) {
 	}
 }
 
-func TestSpawnSubagent_NamePoolExhausted(t *testing.T) {
-	deps, _, tmpDir := newTestSpawnSubagentDeps(t)
+func TestSpawnSubagent_NamePoolExhausted_UsesFallback(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
 
-	// Fill all names
+	// Fill all engineer names
 	agentsDir := state.AgentsDir(tmpDir)
-	for _, name := range agent.NamePool {
+	for _, name := range agent.EngineerNames {
 		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
 	}
 
 	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
-	if err == nil {
-		t.Fatal("expected error for exhausted name pool")
+	if err != nil {
+		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
-	if !strings.Contains(err.Error(), "no more agents") {
-		t.Errorf("error should mention name exhaustion, got: %v", err)
+
+	// Should have allocated a fallback name like "tree-1"
+	if runner.newSessionWithWindowWindow != "tree-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "tree-1")
 	}
 }
 
@@ -322,7 +324,7 @@ func TestSpawnSubagent_ShellCmd_UsesParentWorktree(t *testing.T) {
 	}
 
 	cmd := runner.newSessionWithWindowCmd
-	expectedName := agent.NamePool[0]
+	expectedName := agent.EngineerNames[0]
 	parentWorktree := filepath.Join(tmpDir, ".dendra", "worktrees", "root")
 
 	// Should use parent's worktree in cd command
@@ -372,6 +374,221 @@ func TestSpawnSubagent_DendraBinNotPropagatedWhenUnset(t *testing.T) {
 	env := runner.newSessionWithWindowEnv
 	if _, ok := env["DENDRA_BIN"]; ok {
 		t.Errorf("env should not contain DENDRA_BIN when unset, got %q", env["DENDRA_BIN"])
+	}
+}
+
+func TestSpawnSubagent_ResearcherType_HappyPath(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	err := runSpawnSubagent(deps, "engineering", "researcher", "investigate auth libraries")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !runner.newSessionWithWindowCalled {
+		t.Error("expected NewSessionWithWindow to be called")
+	}
+
+	expectedName := agent.ResearcherNames[0]
+	if runner.newSessionWithWindowWindow != expectedName {
+		t.Errorf("window = %q, want %q (from ResearcherNames)", runner.newSessionWithWindowWindow, expectedName)
+	}
+
+	agentState, err := state.LoadAgent(tmpDir, expectedName)
+	if err != nil {
+		t.Fatalf("loading agent state: %v", err)
+	}
+	if agentState.Type != "researcher" {
+		t.Errorf("state Type = %q, want %q", agentState.Type, "researcher")
+	}
+	if !agentState.Subagent {
+		t.Error("state Subagent should be true")
+	}
+}
+
+func TestSpawnSubagent_ManagerType_HappyPath(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	err := runSpawnSubagent(deps, "engineering", "manager", "coordinate feature work")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !runner.newSessionWithWindowCalled {
+		t.Error("expected NewSessionWithWindow to be called")
+	}
+
+	expectedName := agent.ManagerNames[0]
+	if runner.newSessionWithWindowWindow != expectedName {
+		t.Errorf("window = %q, want %q (from ManagerNames)", runner.newSessionWithWindowWindow, expectedName)
+	}
+
+	agentState, err := state.LoadAgent(tmpDir, expectedName)
+	if err != nil {
+		t.Fatalf("loading agent state: %v", err)
+	}
+	if agentState.Type != "manager" {
+		t.Errorf("state Type = %q, want %q", agentState.Type, "manager")
+	}
+	if !agentState.Subagent {
+		t.Error("state Subagent should be true")
+	}
+}
+
+// TestSpawnSubagent_CrossTypeIsolation verifies that spawning subagents of
+// different types assigns names from their respective pools.
+func TestSpawnSubagent_CrossTypeIsolation(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	// Spawn an engineer subagent
+	err := runSpawnSubagent(deps, "engineering", "engineer", "build feature")
+	if err != nil {
+		t.Fatalf("engineer spawn: %v", err)
+	}
+	engineerName := runner.newSessionWithWindowWindow
+
+	// Session now exists
+	runner.hasSession = true
+	runner.newSessionWithWindowCalled = false
+
+	// Spawn a researcher subagent
+	err = runSpawnSubagent(deps, "engineering", "researcher", "investigate")
+	if err != nil {
+		t.Fatalf("researcher spawn: %v", err)
+	}
+	researcherName := runner.newWindowWindow
+
+	runner.newWindowCalled = false
+
+	// Spawn a manager subagent
+	err = runSpawnSubagent(deps, "engineering", "manager", "coordinate")
+	if err != nil {
+		t.Fatalf("manager spawn: %v", err)
+	}
+	managerName := runner.newWindowWindow
+
+	// Verify names come from respective pools
+	if engineerName != agent.EngineerNames[0] {
+		t.Errorf("engineer name = %q, want %q", engineerName, agent.EngineerNames[0])
+	}
+	if researcherName != agent.ResearcherNames[0] {
+		t.Errorf("researcher name = %q, want %q", researcherName, agent.ResearcherNames[0])
+	}
+	if managerName != agent.ManagerNames[0] {
+		t.Errorf("manager name = %q, want %q", managerName, agent.ManagerNames[0])
+	}
+
+	// Names must be distinct
+	if engineerName == researcherName || engineerName == managerName || researcherName == managerName {
+		t.Errorf("names should be distinct: engineer=%q, researcher=%q, manager=%q", engineerName, researcherName, managerName)
+	}
+
+	// Verify correct number of agents
+	agents, err := state.ListAgents(tmpDir)
+	if err != nil {
+		t.Fatalf("listing agents: %v", err)
+	}
+	// 3 subagents + 1 pre-existing parent = 4
+	if len(agents) != 4 {
+		t.Errorf("expected 4 agents (3 subagents + parent), got %d", len(agents))
+	}
+}
+
+func TestSpawnSubagent_ResearcherPoolExhausted_UsesFallback(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	// Fill all researcher names
+	agentsDir := state.AgentsDir(tmpDir)
+	for _, name := range agent.ResearcherNames {
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+	}
+
+	err := runSpawnSubagent(deps, "engineering", "researcher", "task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
+	}
+
+	if runner.newSessionWithWindowWindow != "river-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "river-1")
+	}
+}
+
+func TestSpawnSubagent_ManagerPoolExhausted_UsesFallback(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	// Fill all manager names
+	agentsDir := state.AgentsDir(tmpDir)
+	for _, name := range agent.ManagerNames {
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+	}
+
+	err := runSpawnSubagent(deps, "engineering", "manager", "task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
+	}
+
+	if runner.newSessionWithWindowWindow != "peak-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "peak-1")
+	}
+}
+
+// TestSpawnSubagent_MultipleChildrenDifferentTypes verifies that a parent
+// (e.g. manager) can spawn children of different types, each getting a name
+// from the correct pool.
+func TestSpawnSubagent_MultipleChildrenDifferentTypes(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	// Update parent to be a manager
+	parentState := &state.AgentState{
+		Name:     "root",
+		Type:     "manager",
+		Family:   "engineering",
+		Worktree: filepath.Join(tmpDir, ".dendra", "worktrees", "root"),
+		Branch:   "dendra/root",
+		Status:   "active",
+	}
+	if err := state.SaveAgent(tmpDir, parentState); err != nil {
+		t.Fatalf("saving parent state: %v", err)
+	}
+
+	// Manager spawns an engineer subagent
+	err := runSpawnSubagent(deps, "engineering", "engineer", "implement feature")
+	if err != nil {
+		t.Fatalf("engineer spawn: %v", err)
+	}
+	engineerName := runner.newSessionWithWindowWindow
+	runner.hasSession = true
+
+	// Manager spawns a researcher subagent
+	err = runSpawnSubagent(deps, "engineering", "researcher", "investigate options")
+	if err != nil {
+		t.Fatalf("researcher spawn: %v", err)
+	}
+	researcherName := runner.newWindowWindow
+
+	// Verify engineer got tree name, researcher got river name
+	if engineerName != agent.EngineerNames[0] {
+		t.Errorf("engineer name = %q, want %q", engineerName, agent.EngineerNames[0])
+	}
+	if researcherName != agent.ResearcherNames[0] {
+		t.Errorf("researcher name = %q, want %q", researcherName, agent.ResearcherNames[0])
+	}
+
+	// Verify state types are correct
+	engState, err := state.LoadAgent(tmpDir, engineerName)
+	if err != nil {
+		t.Fatalf("loading engineer state: %v", err)
+	}
+	if engState.Type != "engineer" {
+		t.Errorf("engineer type = %q, want %q", engState.Type, "engineer")
+	}
+
+	resState, err := state.LoadAgent(tmpDir, researcherName)
+	if err != nil {
+		t.Fatalf("loading researcher state: %v", err)
+	}
+	if resState.Type != "researcher" {
+		t.Errorf("researcher type = %q, want %q", resState.Type, "researcher")
 	}
 }
 
