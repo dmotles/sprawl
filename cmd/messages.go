@@ -50,7 +50,10 @@ var messagesSendCmd = &cobra.Command{
 	},
 }
 
-var inboxNewOnly bool
+var (
+	inboxShowAll bool
+	inboxNewOnly bool // kept for backward compat, now a no-op
+)
 
 var messagesInboxCmd = &cobra.Command{
 	Use:   "inbox",
@@ -58,12 +61,13 @@ var messagesInboxCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
-		return runMessagesInboxDisplay(deps, inboxNewOnly)
+		return runMessagesInboxDisplay(deps, inboxShowAll)
 	},
 }
 
 func init() {
-	messagesInboxCmd.Flags().BoolVar(&inboxNewOnly, "new", false, "Show only unread (new) messages")
+	messagesInboxCmd.Flags().BoolVar(&inboxShowAll, "all", false, "Show all messages (read and unread)")
+	messagesInboxCmd.Flags().BoolVar(&inboxNewOnly, "new", false, "Show only unread messages (default, kept for backward compatibility)")
 }
 
 var messagesBroadcastCmd = &cobra.Command{
@@ -114,7 +118,7 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 		if t, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
 			ts = t.Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", status, ts, msg.From, msg.Subject)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", displayShortID(msg), status, ts, msg.From, msg.Subject)
 	}
 	tw.Flush()
 }
@@ -131,22 +135,33 @@ func (d *messagesDeps) resolveEnv() (agentName, dendraRoot string, err error) {
 	return agentName, dendraRoot, nil
 }
 
-func runMessagesInboxDisplay(deps *messagesDeps, filterNew bool) error {
+func runMessagesInboxDisplay(deps *messagesDeps, showAll bool) error {
 	msgs, newCount, readCount, err := runMessagesInbox(deps)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(deps.stderr, "Inbox: %d new, %d read (%d total)\n", newCount, readCount, len(msgs))
-	displayMsgs := msgs
-	if filterNew {
-		displayMsgs = nil
-		for _, msg := range msgs {
-			if msg.Dir == "new" {
-				displayMsgs = append(displayMsgs, msg)
-			}
+
+	if showAll {
+		fmt.Fprintf(deps.stderr, "Inbox: %d new, %d read (%d total)\n", newCount, readCount, len(msgs))
+		formatInboxTable(deps.stdout, msgs)
+		return nil
+	}
+
+	// Default: show only unread messages
+	var unreadMsgs []*messages.Message
+	for _, msg := range msgs {
+		if msg.Dir == "new" {
+			unreadMsgs = append(unreadMsgs, msg)
 		}
 	}
-	formatInboxTable(deps.stdout, displayMsgs)
+
+	if len(unreadMsgs) == 0 {
+		fmt.Fprintf(deps.stderr, "No new messages.\n")
+		return nil
+	}
+
+	fmt.Fprintf(deps.stderr, "Inbox: %d unread messages\n", len(unreadMsgs))
+	formatInboxTable(deps.stdout, unreadMsgs)
 	return nil
 }
 
@@ -196,8 +211,12 @@ var messagesReadCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(deps.stderr, "From: %s\nTo: %s\nSubject: %s\nTimestamp: %s\n\n%s\n", msg.From, msg.To, msg.Subject, msg.Timestamp, msg.Body)
-		fmt.Fprintf(deps.stderr, "\nWhen done with this message, run `dendra messages archive %s` to archive it.\n", msg.ID)
+		fmt.Fprintf(deps.stderr, "ID: %s\nFrom: %s\nTo: %s\nSubject: %s\nTimestamp: %s\n\n%s\n", displayShortID(msg), msg.From, msg.To, msg.Subject, msg.Timestamp, msg.Body)
+		archiveRef := msg.ID
+		if msg.ShortID != "" {
+			archiveRef = msg.ShortID
+		}
+		fmt.Fprintf(deps.stderr, "\nWhen done with this message, run `dendra messages archive %s` to archive it.\n", archiveRef)
 		return nil
 	},
 }
@@ -212,30 +231,45 @@ var messagesListCmd = &cobra.Command{
 		if len(args) > 0 {
 			filter = args[0]
 		}
-		msgs, err := runMessagesList(deps, filter)
-		if err != nil {
+		return runMessagesListDisplay(deps, filter)
+	},
+}
+
+var archiveAll bool
+var archiveRead bool
+
+var messagesArchiveCmd = &cobra.Command{
+	Use:   "archive [message-id]",
+	Short: "Archive a message or bulk archive messages",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		deps := resolveMessagesDeps()
+
+		if (archiveAll || archiveRead) && len(args) > 0 {
+			return fmt.Errorf("cannot specify both --all and a message ID")
+		}
+		if !archiveAll && !archiveRead && len(args) == 0 {
+			return fmt.Errorf("must specify a message ID, --all, or --read")
+		}
+
+		if archiveAll {
+			return runMessagesArchiveAll(deps)
+		}
+		if archiveRead {
+			return runMessagesArchiveRead(deps)
+		}
+
+		if err := runMessagesArchive(deps, args[0]); err != nil {
 			return err
 		}
-		for _, msg := range msgs {
-			fmt.Fprintf(os.Stderr, "  [%s] %s from %s: %s\n", msg.Dir, msg.Subject, msg.From, msg.Body)
-		}
-		fmt.Fprintf(os.Stderr, "%d messages\n", len(msgs))
+		fmt.Fprintf(deps.stderr, "Message archived\n")
 		return nil
 	},
 }
 
-var messagesArchiveCmd = &cobra.Command{
-	Use:   "archive <message-id>",
-	Short: "Archive a message",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		deps := resolveMessagesDeps()
-		if err := runMessagesArchive(deps, args[0]); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "Message archived\n")
-		return nil
-	},
+func init() {
+	messagesArchiveCmd.Flags().BoolVar(&archiveAll, "all", false, "Archive all messages in inbox")
+	messagesArchiveCmd.Flags().BoolVar(&archiveRead, "read", false, "Archive only read messages")
 }
 
 var messagesUnreadCmd = &cobra.Command{
@@ -287,6 +321,34 @@ func runMessagesArchive(deps *messagesDeps, msgID string) error {
 	}
 
 	return messages.Archive(dendraRoot, agentName, fullID)
+}
+
+func runMessagesArchiveAll(deps *messagesDeps) error {
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return err
+	}
+	count, err := messages.ArchiveAll(dendraRoot, agentName)
+	if count == 0 && err == nil {
+		fmt.Fprintf(deps.stderr, "No messages to archive.\n")
+		return nil
+	}
+	fmt.Fprintf(deps.stderr, "Archived %d messages.\n", count)
+	return err
+}
+
+func runMessagesArchiveRead(deps *messagesDeps) error {
+	agentName, dendraRoot, err := deps.resolveEnv()
+	if err != nil {
+		return err
+	}
+	count, err := messages.ArchiveRead(dendraRoot, agentName)
+	if count == 0 && err == nil {
+		fmt.Fprintf(deps.stderr, "No messages to archive.\n")
+		return nil
+	}
+	fmt.Fprintf(deps.stderr, "Archived %d messages.\n", count)
+	return err
 }
 
 func runMessagesUnread(deps *messagesDeps, msgID string) error {
@@ -351,9 +413,32 @@ func formatSentTable(w io.Writer, msgs []*messages.Message) {
 		if t, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
 			ts = t.Format("2006-01-02 15:04")
 		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\n", ts, msg.To, msg.Subject)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", displayShortID(msg), ts, msg.To, msg.Subject)
 	}
 	tw.Flush()
+}
+
+// displayShortID returns the short display ID for a message.
+// If ShortID is set, returns it. Otherwise returns first 6 chars of ID (or full ID if shorter).
+// TODO(QUM-112): implement legacy fallback logic
+func displayShortID(msg *messages.Message) string {
+	if msg.ShortID != "" {
+		return msg.ShortID
+	}
+	if len(msg.ID) > 6 {
+		return msg.ID[:6]
+	}
+	return msg.ID
+}
+
+func runMessagesListDisplay(deps *messagesDeps, filter string) error {
+	msgs, err := runMessagesList(deps, filter)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(deps.stderr, "%d messages\n", len(msgs))
+	formatInboxTable(deps.stdout, msgs)
+	return nil
 }
 
 // runMessagesBroadcast sends a broadcast message to all active agents.

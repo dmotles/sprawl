@@ -960,7 +960,7 @@ func TestMessagesInbox_OutputRouting(t *testing.T) {
 		Subject: "hello subject", Body: "hello body", Timestamp: "2026-03-31T10:00:00Z",
 	})
 
-	// runMessagesInboxDisplay should write summary to stderr and table to stdout
+	// Default (showAll=false) should show only unread messages
 	err := runMessagesInboxDisplay(deps, false)
 	if err != nil {
 		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
@@ -996,7 +996,7 @@ func TestMessagesInbox_OutputRouting(t *testing.T) {
 	}
 }
 
-func TestMessagesInbox_NewFlag_FiltersTableButKeepsSummary(t *testing.T) {
+func TestMessagesInbox_DefaultShowsOnlyUnread(t *testing.T) {
 	deps, tmpDir := newTestMessagesDeps(t)
 
 	// Pre-populate messages for alice: 2 new, 1 read
@@ -1023,8 +1023,8 @@ func TestMessagesInbox_NewFlag_FiltersTableButKeepsSummary(t *testing.T) {
 		Subject: "already-read", Body: "body3", Timestamp: "2026-03-31T09:00:00Z",
 	})
 
-	// Call with filterNew=true
-	err := runMessagesInboxDisplay(deps, true)
+	// Default (showAll=false) should only show unread messages
+	err := runMessagesInboxDisplay(deps, false)
 	if err != nil {
 		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
 	}
@@ -1042,22 +1042,16 @@ func TestMessagesInbox_NewFlag_FiltersTableButKeepsSummary(t *testing.T) {
 
 	// Table should NOT contain the read message
 	if strings.Contains(stdoutOutput, "already-read") {
-		t.Errorf("read message 'already-read' should not appear in table with --new flag, got stdout:\n%s", stdoutOutput)
+		t.Errorf("read message 'already-read' should not appear in default view, got stdout:\n%s", stdoutOutput)
 	}
 
-	// Summary should still show full counts
-	if !strings.Contains(stderrOutput, "2 new") {
-		t.Errorf("summary should show '2 new', got stderr:\n%s", stderrOutput)
-	}
-	if !strings.Contains(stderrOutput, "1 read") {
-		t.Errorf("summary should show '1 read', got stderr:\n%s", stderrOutput)
-	}
-	if !strings.Contains(stderrOutput, "3 total") {
-		t.Errorf("summary should show '3 total', got stderr:\n%s", stderrOutput)
+	// Summary should say "X unread messages"
+	if !strings.Contains(stderrOutput, "2 unread") {
+		t.Errorf("summary should show '2 unread', got stderr:\n%s", stderrOutput)
 	}
 }
 
-func TestMessagesInbox_NoNewFlag_ShowsAllMessages(t *testing.T) {
+func TestMessagesInbox_AllFlag_ShowsAllMessages(t *testing.T) {
 	deps, tmpDir := newTestMessagesDeps(t)
 
 	// Pre-populate messages for alice: 1 new, 1 read
@@ -1080,13 +1074,14 @@ func TestMessagesInbox_NoNewFlag_ShowsAllMessages(t *testing.T) {
 		Subject: "read-msg", Body: "body2", Timestamp: "2026-03-31T09:00:00Z",
 	})
 
-	// Call with filterNew=false (default behavior)
-	err := runMessagesInboxDisplay(deps, false)
+	// Call with showAll=true (--all flag behavior)
+	err := runMessagesInboxDisplay(deps, true)
 	if err != nil {
 		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
 	}
 
 	stdoutOutput := deps.stdout.(*bytes.Buffer).String()
+	stderrOutput := deps.stderr.(*bytes.Buffer).String()
 
 	// Table should contain both messages
 	if !strings.Contains(stdoutOutput, "new-msg") {
@@ -1094,6 +1089,56 @@ func TestMessagesInbox_NoNewFlag_ShowsAllMessages(t *testing.T) {
 	}
 	if !strings.Contains(stdoutOutput, "read-msg") {
 		t.Errorf("expected 'read-msg' in table, got stdout:\n%s", stdoutOutput)
+	}
+
+	// Summary should show full counts (old format)
+	if !strings.Contains(stderrOutput, "1 new") {
+		t.Errorf("summary should show '1 new', got stderr:\n%s", stderrOutput)
+	}
+	if !strings.Contains(stderrOutput, "1 read") {
+		t.Errorf("summary should show '1 read', got stderr:\n%s", stderrOutput)
+	}
+	if !strings.Contains(stderrOutput, "2 total") {
+		t.Errorf("summary should show '2 total', got stderr:\n%s", stderrOutput)
+	}
+}
+
+func TestMessagesInbox_EmptyUnread_ShowsFriendlyMessage(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	// Pre-populate only a read message for alice (no new messages)
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+	if err := os.MkdirAll(curDir, 0755); err != nil {
+		t.Fatalf("creating cur dir: %v", err)
+	}
+
+	writeTestMessage(t, curDir, "500.dave.aa03", &messages.Message{
+		ID: "500.dave.aa03", From: "dave", To: "alice",
+		Subject: "old-msg", Body: "body", Timestamp: "2026-03-31T09:00:00Z",
+	})
+
+	// Default view (showAll=false) with no unread messages
+	err := runMessagesInboxDisplay(deps, false)
+	if err != nil {
+		t.Fatalf("runMessagesInboxDisplay() unexpected error: %v", err)
+	}
+
+	stderrOutput := deps.stderr.(*bytes.Buffer).String()
+	stdoutOutput := deps.stdout.(*bytes.Buffer).String()
+
+	// Should show friendly "No new messages." message
+	if !strings.Contains(stderrOutput, "No new messages.") {
+		t.Errorf("expected 'No new messages.' on stderr, got:\n%s", stderrOutput)
+	}
+
+	// Should not print any table content
+	if strings.Contains(stdoutOutput, "old-msg") {
+		t.Errorf("should not show read messages in default view, got stdout:\n%s", stdoutOutput)
 	}
 }
 
@@ -1277,5 +1322,360 @@ func TestMessagesSentDisplay_Output(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "hello bob") {
 		t.Errorf("stdout should contain subject 'hello bob', got: %q", stdout)
+	}
+}
+
+// --- runMessagesArchiveAll tests ---
+
+func TestMessagesArchiveAll_HappyPath(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "new-msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeTestMessage(t, filepath.Join(agentDir, "cur"), "2000.charlie.aa02", &messages.Message{
+		ID: "2000.charlie.aa02", From: "charlie", To: "alice",
+		Subject: "read-msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	err := runMessagesArchiveAll(deps)
+	if err != nil {
+		t.Fatalf("runMessagesArchiveAll() unexpected error: %v", err)
+	}
+
+	stderr := deps.stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "Archived 2 messages.") {
+		t.Errorf("stderr should contain 'Archived 2 messages.', got: %q", stderr)
+	}
+
+	// Verify both messages are in archive/
+	archiveDir := filepath.Join(agentDir, "archive")
+	if _, err := os.Stat(filepath.Join(archiveDir, "1000.bob.aa01.json")); err != nil {
+		t.Errorf("expected 1000.bob.aa01 in archive/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(archiveDir, "2000.charlie.aa02.json")); err != nil {
+		t.Errorf("expected 2000.charlie.aa02 in archive/: %v", err)
+	}
+}
+
+func TestMessagesArchiveAll_Empty(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	err := runMessagesArchiveAll(deps)
+	if err != nil {
+		t.Fatalf("runMessagesArchiveAll() unexpected error: %v", err)
+	}
+
+	stderr := deps.stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "No messages to archive.") {
+		t.Errorf("stderr should contain 'No messages to archive.', got: %q", stderr)
+	}
+}
+
+// --- runMessagesArchiveRead tests ---
+
+func TestMessagesArchiveRead_HappyPath(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "cur"), "2000.charlie.aa02", &messages.Message{
+		ID: "2000.charlie.aa02", From: "charlie", To: "alice",
+		Subject: "read-msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	err := runMessagesArchiveRead(deps)
+	if err != nil {
+		t.Fatalf("runMessagesArchiveRead() unexpected error: %v", err)
+	}
+
+	stderr := deps.stderr.(*bytes.Buffer).String()
+	if !strings.Contains(stderr, "Archived 1 messages.") {
+		t.Errorf("stderr should contain 'Archived 1 messages.', got: %q", stderr)
+	}
+
+	// Verify message is in archive/
+	archiveDir := filepath.Join(agentDir, "archive")
+	if _, err := os.Stat(filepath.Join(archiveDir, "2000.charlie.aa02.json")); err != nil {
+		t.Errorf("expected 2000.charlie.aa02 in archive/: %v", err)
+	}
+}
+
+func TestMessagesArchiveRead_LeavesNewUntouched(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	// Message in new/ — should remain untouched
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", From: "bob", To: "alice",
+		Subject: "unread-msg", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	// Message in cur/ — should be archived
+	writeTestMessage(t, filepath.Join(agentDir, "cur"), "2000.charlie.aa02", &messages.Message{
+		ID: "2000.charlie.aa02", From: "charlie", To: "alice",
+		Subject: "read-msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	err := runMessagesArchiveRead(deps)
+	if err != nil {
+		t.Fatalf("runMessagesArchiveRead() unexpected error: %v", err)
+	}
+
+	// new/ message should still be there
+	newDir := filepath.Join(agentDir, "new")
+	if _, err := os.Stat(filepath.Join(newDir, "1000.bob.aa01.json")); err != nil {
+		t.Errorf("expected 1000.bob.aa01 to remain in new/: %v", err)
+	}
+
+	// cur/ message should be in archive/
+	archiveDir := filepath.Join(agentDir, "archive")
+	if _, err := os.Stat(filepath.Join(archiveDir, "2000.charlie.aa02.json")); err != nil {
+		t.Errorf("expected 2000.charlie.aa02 in archive/: %v", err)
+	}
+}
+
+// --- QUM-112: Short ID display tests ---
+
+func TestDisplayShortID(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *messages.Message
+		want string
+	}{
+		{
+			name: "message with ShortID set",
+			msg:  &messages.Message{ID: "1234567890.bob.aabb", ShortID: "a7k"},
+			want: "a7k",
+		},
+		{
+			name: "message with empty ShortID and long ID",
+			msg:  &messages.Message{ID: "1234567890.bob.aabb", ShortID: ""},
+			want: "123456",
+		},
+		{
+			name: "message with empty ShortID and short ID",
+			msg:  &messages.Message{ID: "abc", ShortID: ""},
+			want: "abc",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := displayShortID(tt.msg)
+			if got != tt.want {
+				t.Errorf("displayShortID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatInboxTable_FallbackShortID(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{
+			ID: "1234567890.bob.aabb", ShortID: "", From: "bob", To: "alice",
+			Subject: "test subject", Body: "body", Timestamp: "2026-03-31T10:00:00Z", Dir: "new",
+		},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	// Should contain first 6 chars of ID as fallback
+	if !strings.Contains(output, "123456") {
+		t.Errorf("expected output to contain fallback short ID '123456', got:\n%s", output)
+	}
+
+	// Should NOT contain standalone "-" as the short ID column (the old fallback).
+	// Split into fields and check that no field is exactly "-".
+	fields := strings.Fields(output)
+	for _, f := range fields {
+		if f == "-" {
+			t.Errorf("output should not contain '-' as standalone short ID fallback, got:\n%s", output)
+			break
+		}
+	}
+}
+
+func TestFormatInboxTable_WithShortID(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{
+			ID: "1234567890.bob.aabb", ShortID: "a7k", From: "bob", To: "alice",
+			Subject: "test subject", Body: "body", Timestamp: "2026-03-31T10:00:00Z", Dir: "new",
+		},
+	}
+
+	formatInboxTable(&buf, msgs)
+	output := buf.String()
+
+	if !strings.Contains(output, "a7k") {
+		t.Errorf("expected output to contain short ID 'a7k', got:\n%s", output)
+	}
+}
+
+func TestFormatSentTable_FallbackShortID(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{
+			ID: "1234567890.alice.aabb", ShortID: "", From: "alice", To: "bob",
+			Subject: "sent subject", Body: "body", Timestamp: "2026-03-31T10:00:00Z", Dir: "sent",
+		},
+	}
+
+	formatSentTable(&buf, msgs)
+	output := buf.String()
+
+	// Should contain first 6 chars of ID as fallback
+	if !strings.Contains(output, "123456") {
+		t.Errorf("expected output to contain fallback short ID '123456', got:\n%s", output)
+	}
+
+	// Should NOT contain standalone "-" as the short ID column
+	fields := strings.Fields(output)
+	for _, f := range fields {
+		if f == "-" {
+			t.Errorf("output should not contain '-' as standalone short ID fallback, got:\n%s", output)
+			break
+		}
+	}
+}
+
+func TestFormatSentTable_WithShortID(t *testing.T) {
+	var buf bytes.Buffer
+	msgs := []*messages.Message{
+		{
+			ID: "1234567890.alice.aabb", ShortID: "b9x", From: "alice", To: "bob",
+			Subject: "sent subject", Body: "body", Timestamp: "2026-03-31T10:00:00Z", Dir: "sent",
+		},
+	}
+
+	formatSentTable(&buf, msgs)
+	output := buf.String()
+
+	if !strings.Contains(output, "b9x") {
+		t.Errorf("expected output to contain short ID 'b9x', got:\n%s", output)
+	}
+}
+
+func TestMessagesRead_OutputContainsIDLine(t *testing.T) {
+	tests := []struct {
+		name      string
+		msg       *messages.Message
+		wantIDStr string
+	}{
+		{
+			name: "message without ShortID shows truncated ID",
+			msg: &messages.Message{
+				ID: "1000.bob.aabb", ShortID: "", From: "bob", To: "alice",
+				Subject: "hello", Body: "world", Timestamp: "2026-03-31T10:00:00Z",
+			},
+			wantIDStr: "ID: ",
+		},
+		{
+			name: "message with ShortID shows ShortID",
+			msg: &messages.Message{
+				ID: "1000.bob.aabb", ShortID: "x3f", From: "bob", To: "alice",
+				Subject: "hello2", Body: "world2", Timestamp: "2026-03-31T10:00:00Z",
+			},
+			wantIDStr: "ID: ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps, tmpDir := newTestMessagesDeps(t)
+			defaultMessagesDeps = deps
+			defer func() { defaultMessagesDeps = nil }()
+
+			agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+			for _, sub := range []string{"new", "cur", "archive", "sent"} {
+				if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+					t.Fatalf("creating %s dir: %v", sub, err)
+				}
+			}
+
+			writeTestMessage(t, filepath.Join(agentDir, "new"), tt.msg.ID, tt.msg)
+
+			err := messagesReadCmd.RunE(messagesReadCmd, []string{tt.msg.ID})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			output := deps.stderr.(*bytes.Buffer).String()
+			if !strings.Contains(output, tt.wantIDStr) {
+				t.Errorf("expected output to contain %q, got:\n%s", tt.wantIDStr, output)
+			}
+
+			// For message with ShortID, output should contain the ShortID value
+			if tt.msg.ShortID != "" && !strings.Contains(output, tt.msg.ShortID) {
+				t.Errorf("expected output to contain ShortID %q, got:\n%s", tt.msg.ShortID, output)
+			}
+		})
+	}
+}
+
+func TestMessagesListDisplay_ShowsShortIDs(t *testing.T) {
+	deps, tmpDir := newTestMessagesDeps(t)
+
+	agentDir := filepath.Join(messages.MessagesDir(tmpDir), "alice")
+	for _, sub := range []string{"new", "cur", "archive", "sent"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	writeTestMessage(t, filepath.Join(agentDir, "new"), "1000.bob.aa01", &messages.Message{
+		ID: "1000.bob.aa01", ShortID: "k9z", From: "bob", To: "alice",
+		Subject: "list-test-subject", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	err := runMessagesListDisplay(deps, "")
+	if err != nil {
+		t.Fatalf("runMessagesListDisplay() unexpected error: %v", err)
+	}
+
+	stdout := deps.stdout.(*bytes.Buffer).String()
+
+	// Should contain the short ID in the output
+	if !strings.Contains(stdout, "k9z") {
+		t.Errorf("expected stdout to contain short ID 'k9z', got:\n%s", stdout)
+	}
+
+	// Should contain the subject
+	if !strings.Contains(stdout, "list-test-subject") {
+		t.Errorf("expected stdout to contain subject 'list-test-subject', got:\n%s", stdout)
+	}
+
+	// Should NOT use old format "[dir] subject from"
+	if strings.Contains(stdout, "[new]") {
+		t.Errorf("should not use old bracket format '[new]', got:\n%s", stdout)
 	}
 }

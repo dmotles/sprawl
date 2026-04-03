@@ -1761,7 +1761,7 @@ func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 		t.Error("notify msgID should not be empty")
 	}
 
-	// Verify msgID matches the actual delivered message filename
+	// Verify msgID matches the short ID of the delivered message
 	newDir := filepath.Join(MessagesDir(tmpDir), "root", "new")
 	entries, err := os.ReadDir(newDir)
 	if err != nil {
@@ -1770,9 +1770,19 @@ func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 file in new/, got %d", len(entries))
 	}
-	expectedID := strings.TrimSuffix(entries[0].Name(), ".json")
-	if calledMsgID != expectedID {
-		t.Errorf("notify msgID = %q, want %q (matching delivered message)", calledMsgID, expectedID)
+	data, err := os.ReadFile(filepath.Join(newDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading message file: %v", err)
+	}
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshaling message: %v", err)
+	}
+	if msg.ShortID == "" {
+		t.Fatal("delivered message should have a ShortID")
+	}
+	if calledMsgID != msg.ShortID {
+		t.Errorf("notify msgID = %q, want %q (short ID of delivered message)", calledMsgID, msg.ShortID)
 	}
 }
 
@@ -1970,5 +1980,480 @@ func TestSent_SortedByTimestamp(t *testing.T) {
 	}
 	if msgs[2].Subject != "third" {
 		t.Errorf("msgs[2] subject = %q, want 'third'", msgs[2].Subject)
+	}
+}
+
+// --- ArchiveAll / ArchiveRead tests ---
+
+func TestArchiveAll_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	count, err := ArchiveAll(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("ArchiveAll() unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("ArchiveAll() count = %d, want 0", count)
+	}
+}
+
+func TestArchiveAll_FromNewAndCur(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	archiveDir := filepath.Join(agentDir, "archive")
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	// 2 messages in new/
+	writeMessageFile(t, newDir, "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "new-1", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+	writeMessageFile(t, newDir, "2000.alice.aa02", &Message{
+		ID: "2000.alice.aa02", From: "alice", To: "bob",
+		Subject: "new-2", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	// 1 message in cur/
+	writeMessageFile(t, curDir, "3000.alice.aa03", &Message{
+		ID: "3000.alice.aa03", From: "alice", To: "bob",
+		Subject: "read-1", Body: "body", Timestamp: "2026-03-31T12:00:00Z",
+	})
+
+	count, err := ArchiveAll(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("ArchiveAll() unexpected error: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("ArchiveAll() count = %d, want 3", count)
+	}
+
+	// All 3 should be in archive/
+	for _, id := range []string{"1000.alice.aa01", "2000.alice.aa02", "3000.alice.aa03"} {
+		if _, err := os.Stat(filepath.Join(archiveDir, id+".json")); err != nil {
+			t.Errorf("expected %s in archive/: %v", id, err)
+		}
+	}
+
+	// new/ and cur/ should be empty
+	newEntries, _ := os.ReadDir(newDir)
+	if len(newEntries) != 0 {
+		t.Errorf("expected new/ to be empty, got %d files", len(newEntries))
+	}
+	curEntries, _ := os.ReadDir(curDir)
+	if len(curEntries) != 0 {
+		t.Errorf("expected cur/ to be empty, got %d files", len(curEntries))
+	}
+}
+
+func TestArchiveAll_DirsDoNotExist(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	// Create agent dir but NOT new/ or cur/ subdirectories
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("creating agent dir: %v", err)
+	}
+
+	count, err := ArchiveAll(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("ArchiveAll() unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("ArchiveAll() count = %d, want 0", count)
+	}
+}
+
+func TestArchiveRead_OnlyCur(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	newDir := filepath.Join(agentDir, "new")
+	curDir := filepath.Join(agentDir, "cur")
+	archiveDir := filepath.Join(agentDir, "archive")
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	// Message in new/ — should NOT be archived
+	writeMessageFile(t, newDir, "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "unread", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	// Message in cur/ — should be archived
+	writeMessageFile(t, curDir, "2000.alice.aa02", &Message{
+		ID: "2000.alice.aa02", From: "alice", To: "bob",
+		Subject: "read-msg", Body: "body", Timestamp: "2026-03-31T11:00:00Z",
+	})
+
+	count, err := ArchiveRead(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("ArchiveRead() unexpected error: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("ArchiveRead() count = %d, want 1", count)
+	}
+
+	// cur/ message should be in archive/
+	if _, err := os.Stat(filepath.Join(archiveDir, "2000.alice.aa02.json")); err != nil {
+		t.Errorf("expected 2000.alice.aa02 in archive/: %v", err)
+	}
+
+	// new/ message should still be in new/
+	if _, err := os.Stat(filepath.Join(newDir, "1000.alice.aa01.json")); err != nil {
+		t.Errorf("expected 1000.alice.aa01 to remain in new/: %v", err)
+	}
+
+	// cur/ should be empty
+	curEntries, _ := os.ReadDir(curDir)
+	if len(curEntries) != 0 {
+		t.Errorf("expected cur/ to be empty, got %d files", len(curEntries))
+	}
+}
+
+func TestArchiveRead_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	agent := "bob"
+	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
+	for _, sub := range []string{"new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+			t.Fatalf("creating %s dir: %v", sub, err)
+		}
+	}
+
+	// Put a message in new/ but nothing in cur/
+	writeMessageFile(t, filepath.Join(agentDir, "new"), "1000.alice.aa01", &Message{
+		ID: "1000.alice.aa01", From: "alice", To: "bob",
+		Subject: "unread", Body: "body", Timestamp: "2026-03-31T10:00:00Z",
+	})
+
+	count, err := ArchiveRead(tmpDir, agent)
+	if err != nil {
+		t.Fatalf("ArchiveRead() unexpected error: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("ArchiveRead() count = %d, want 0", count)
+	}
+}
+// --- Short Message ID Tests (TDD Red Phase) ---
+
+func TestSend_GeneratesShortID(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "short id test", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+
+	data, err := os.ReadFile(filepath.Join(newDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading message file: %v", err)
+	}
+
+	// Parse as raw JSON to check the shortId field exists
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshaling raw JSON: %v", err)
+	}
+
+	shortIDVal, ok := raw["shortId"]
+	if !ok {
+		t.Fatal("shortId field missing from message JSON")
+	}
+
+	shortID, ok := shortIDVal.(string)
+	if !ok {
+		t.Fatalf("shortId is not a string: %T", shortIDVal)
+	}
+
+	if len(shortID) != 3 {
+		t.Errorf("shortId length = %d, want 3; shortId = %q", len(shortID), shortID)
+	}
+
+	pattern := regexp.MustCompile(`^[a-z0-9]{3}$`)
+	if !pattern.MatchString(shortID) {
+		t.Errorf("shortId %q does not match ^[a-z0-9]{3}$", shortID)
+	}
+}
+
+func TestSend_ShortIDInSentCopy(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "sent copy short id", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	// Read the delivered copy
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	newEntries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(newEntries) != 1 {
+		t.Fatalf("expected 1 file in bob/new/, got %d", len(newEntries))
+	}
+	newData, err := os.ReadFile(filepath.Join(newDir, newEntries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading delivered message: %v", err)
+	}
+
+	var deliveredMsg Message
+	if err := json.Unmarshal(newData, &deliveredMsg); err != nil {
+		t.Fatalf("unmarshaling delivered message: %v", err)
+	}
+
+	// Read the sent copy
+	sentDir := filepath.Join(MessagesDir(tmpDir), "alice", "sent")
+	sentEntries, err := os.ReadDir(sentDir)
+	if err != nil {
+		t.Fatalf("reading sent dir: %v", err)
+	}
+	if len(sentEntries) != 1 {
+		t.Fatalf("expected 1 file in alice/sent/, got %d", len(sentEntries))
+	}
+	sentData, err := os.ReadFile(filepath.Join(sentDir, sentEntries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading sent message: %v", err)
+	}
+
+	var sentMsg Message
+	if err := json.Unmarshal(sentData, &sentMsg); err != nil {
+		t.Fatalf("unmarshaling sent message: %v", err)
+	}
+
+	if deliveredMsg.ShortID == "" {
+		t.Fatal("delivered message ShortID is empty")
+	}
+	if sentMsg.ShortID == "" {
+		t.Fatal("sent message ShortID is empty")
+	}
+	if deliveredMsg.ShortID != sentMsg.ShortID {
+		t.Errorf("ShortID mismatch: delivered=%q, sent=%q", deliveredMsg.ShortID, sentMsg.ShortID)
+	}
+}
+
+func TestResolvePrefix_ByShortID(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "resolve by short id", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	// Read the message to get its short ID and full ID
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+
+	data, err := os.ReadFile(filepath.Join(newDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading message file: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshaling message: %v", err)
+	}
+
+	if msg.ShortID == "" {
+		t.Fatal("ShortID is empty; cannot test ResolvePrefix by short ID")
+	}
+
+	// ResolvePrefix with the short ID should return the full ID
+	resolved, err := ResolvePrefix(tmpDir, "bob", msg.ShortID)
+	if err != nil {
+		t.Fatalf("ResolvePrefix(%q) unexpected error: %v", msg.ShortID, err)
+	}
+	if resolved != msg.ID {
+		t.Errorf("ResolvePrefix(%q) = %q, want %q", msg.ShortID, resolved, msg.ID)
+	}
+}
+
+func TestResolvePrefix_FallbackToLongPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "long prefix", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+
+	data, err := os.ReadFile(filepath.Join(newDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading message file: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshaling message: %v", err)
+	}
+
+	// Use the first 10 characters of the long ID as prefix
+	longPrefix := msg.ID[:10]
+	resolved, err := ResolvePrefix(tmpDir, "bob", longPrefix)
+	if err != nil {
+		t.Fatalf("ResolvePrefix(%q) unexpected error: %v", longPrefix, err)
+	}
+	if resolved != msg.ID {
+		t.Errorf("ResolvePrefix(%q) = %q, want %q", longPrefix, resolved, msg.ID)
+	}
+}
+
+func TestResolvePrefix_OldMessageWithoutShortID(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
+	newDir := filepath.Join(agentDir, "new")
+	if err := os.MkdirAll(newDir, 0755); err != nil {
+		t.Fatalf("creating new dir: %v", err)
+	}
+
+	// Manually write a message JSON WITHOUT shortId field (simulates old message)
+	oldMsg := map[string]string{
+		"id":        "1000000000.alice.deadbeef",
+		"from":      "alice",
+		"to":        "bob",
+		"subject":   "old message",
+		"body":      "no short id",
+		"timestamp": "2026-03-31T10:00:00Z",
+	}
+	data, err := json.MarshalIndent(oldMsg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshaling old message: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir, "1000000000.alice.deadbeef.json"), data, 0644); err != nil {
+		t.Fatalf("writing old message: %v", err)
+	}
+
+	// ResolvePrefix with a long ID prefix should still work
+	resolved, err := ResolvePrefix(tmpDir, "bob", "1000000000")
+	if err != nil {
+		t.Fatalf("ResolvePrefix(\"1000000000\") unexpected error: %v", err)
+	}
+	if resolved != "1000000000.alice.deadbeef" {
+		t.Errorf("ResolvePrefix(\"1000000000\") = %q, want %q", resolved, "1000000000.alice.deadbeef")
+	}
+}
+
+func TestGenerateShortID_Uniqueness(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		err := Send(tmpDir, "alice", "bob", "msg "+strconv.Itoa(i), "body")
+		if err != nil {
+			t.Fatalf("Send() message %d unexpected error: %v", i, err)
+		}
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != n {
+		t.Fatalf("expected %d files in new/, got %d", n, len(entries))
+	}
+
+	shortIDs := make(map[string]bool)
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(newDir, entry.Name()))
+		if err != nil {
+			t.Fatalf("reading message file: %v", err)
+		}
+
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			t.Fatalf("unmarshaling message: %v", err)
+		}
+
+		if msg.ShortID == "" {
+			t.Fatalf("message %s has empty ShortID", msg.ID)
+		}
+
+		if shortIDs[msg.ShortID] {
+			t.Errorf("duplicate ShortID %q found across %d messages", msg.ShortID, n)
+		}
+		shortIDs[msg.ShortID] = true
+	}
+}
+
+func TestSend_ShortIDNotInFilename(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	err := Send(tmpDir, "alice", "bob", "filename test", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+
+	// Read the message to get the shortId
+	data, err := os.ReadFile(filepath.Join(newDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading message file: %v", err)
+	}
+
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshaling message: %v", err)
+	}
+
+	if msg.ShortID == "" {
+		t.Fatal("ShortID is empty; cannot verify filename exclusion")
+	}
+
+	// The filename should be based on the long ID, not contain the short ID as a distinct component.
+	// The filename format is: <long-id>.json
+	// We verify the filename is exactly <long-id>.json and does not have the short ID injected.
+	filename := entries[0].Name()
+	expectedFilename := msg.ID + ".json"
+	if filename != expectedFilename {
+		t.Errorf("filename = %q, want %q (short ID should not appear in filename)", filename, expectedFilename)
 	}
 }

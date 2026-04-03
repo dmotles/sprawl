@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,9 +18,13 @@ import (
 // NowFunc is the time source used by the messages package. Override in tests for determinism.
 var NowFunc = time.Now
 
+// RandReader is the randomness source used by the messages package. Override in tests for determinism.
+var RandReader io.Reader = rand.Reader
+
 // Message represents a message between agents.
 type Message struct {
 	ID        string `json:"id"`
+	ShortID   string `json:"shortId,omitempty"`
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Subject   string `json:"subject"`
@@ -79,8 +84,14 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	now := NowFunc()
 	id := fmt.Sprintf("%d.%s.%s", now.UnixNano(), from, hexSuffix)
 
+	shortID, err := generateShortID(agentDir)
+	if err != nil {
+		return fmt.Errorf("generating short ID: %w", err)
+	}
+
 	msg := &Message{
 		ID:        id,
+		ShortID:   shortID,
 		From:      from,
 		To:        to,
 		Subject:   subject,
@@ -127,7 +138,11 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	if sopts.notify != nil {
 		func() {
 			defer func() { recover() }()
-			sopts.notify(from, subject, id)
+			notifyID := shortID
+			if notifyID == "" {
+				notifyID = id
+			}
+			sopts.notify(from, subject, notifyID)
 		}()
 	}
 
@@ -146,11 +161,51 @@ func Sent(dendraRoot, agent string) ([]*Message, error) {
 }
 
 // ResolvePrefix finds a full message ID from a prefix by scanning new/, cur/, archive/, sent/ directories.
-// Returns the full ID if exactly one match found.
+// It first attempts to match by ShortID (exact match inside message JSON), then falls back to
+// filename-based prefix matching for long IDs. Returns the full ID if exactly one match found.
 func ResolvePrefix(dendraRoot, agent, prefix string) (string, error) {
 	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
-	matches := make(map[string]bool)
 
+	// Pass 1: match by ShortID (read JSON, compare ShortID field)
+	shortIDMatches := make(map[string]bool)
+	for _, dir := range []string{"new", "cur", "archive", "sent"} {
+		dirPath := filepath.Join(agentDir, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", fmt.Errorf("reading %s directory: %w", dir, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dirPath, entry.Name()))
+			if err != nil {
+				continue
+			}
+			var msg Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				continue
+			}
+			if msg.ShortID != "" && msg.ShortID == prefix {
+				shortIDMatches[msg.ID] = true
+			}
+		}
+	}
+
+	if len(shortIDMatches) == 1 {
+		for id := range shortIDMatches {
+			return id, nil
+		}
+	}
+	if len(shortIDMatches) > 1 {
+		return "", fmt.Errorf("ambiguous prefix %q: matches %d messages", prefix, len(shortIDMatches))
+	}
+
+	// Pass 2: fallback to filename-based prefix matching
+	matches := make(map[string]bool)
 	for _, dir := range []string{"new", "cur", "archive", "sent"} {
 		dirPath := filepath.Join(agentDir, dir)
 		entries, err := os.ReadDir(dirPath)
@@ -247,6 +302,57 @@ func Archive(dendraRoot, agent, msgID string) error {
 		return fmt.Errorf("archiving message from new/: %w", errNew)
 	}
 	return fmt.Errorf("archiving message from cur/: %w", errCur)
+}
+
+// archiveFromDirs moves all .json files from the given directories into archive/.
+// It continues on failure and returns the count of successful archives plus any error.
+func archiveFromDirs(agentDir string, dirs []string) (int, error) {
+	archiveDir := filepath.Join(agentDir, "archive")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		return 0, fmt.Errorf("creating archive directory: %w", err)
+	}
+
+	count := 0
+	var errs []string
+	for _, dir := range dirs {
+		dirPath := filepath.Join(agentDir, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return count, fmt.Errorf("reading %s directory: %w", dir, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			src := filepath.Join(dirPath, entry.Name())
+			dst := filepath.Join(archiveDir, entry.Name())
+			if err := os.Rename(src, dst); err != nil {
+				errs = append(errs, fmt.Sprintf("%s/%s: %v", dir, entry.Name(), err))
+				continue
+			}
+			count++
+		}
+	}
+	if len(errs) > 0 {
+		return count, fmt.Errorf("partial archive failure (%d archived, %d errors): %s",
+			count, len(errs), strings.Join(errs, "; "))
+	}
+	return count, nil
+}
+
+// ArchiveAll archives all messages from new/ and cur/ directories, returning the count.
+func ArchiveAll(dendraRoot, agent string) (int, error) {
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	return archiveFromDirs(agentDir, []string{"new", "cur"})
+}
+
+// ArchiveRead archives only read messages from cur/ directory, returning the count.
+func ArchiveRead(dendraRoot, agent string) (int, error) {
+	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+	return archiveFromDirs(agentDir, []string{"cur"})
 }
 
 // ReadMessage reads a message from any directory (new/, cur/, archive/, sent/), returns it.
@@ -377,4 +483,75 @@ func Broadcast(dendraRoot, sender, subject, body string) (int, error) {
 		return count, fmt.Errorf("partial broadcast failure (%d/%d succeeded): %s", count, count+len(errs), strings.Join(errs, "; "))
 	}
 	return count, nil
+}
+
+// collectExistingShortIDs scans new/, cur/, archive/ directories under agentDir
+// and returns a set of short IDs already in use.
+func collectExistingShortIDs(agentDir string) map[string]bool {
+	existing := make(map[string]bool)
+	for _, dir := range []string{"new", "cur", "archive"} {
+		dirPath := filepath.Join(agentDir, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dirPath, entry.Name()))
+			if err != nil {
+				continue
+			}
+			var msg Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				continue
+			}
+			if msg.ShortID != "" {
+				existing[msg.ShortID] = true
+			}
+		}
+	}
+	return existing
+}
+
+// generateShortID creates a unique short identifier for a message within the
+// given agent directory. It tries 3-character IDs first, falling back to
+// 4-character IDs if collisions occur.
+func generateShortID(agentDir string) (string, error) {
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	const maxAttempts = 10
+
+	existing := collectExistingShortIDs(agentDir)
+
+	// Try 3-char IDs first
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		candidate := randomString(3, charset)
+		if !existing[candidate] {
+			return candidate, nil
+		}
+	}
+
+	// Fallback to 4-char IDs
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		candidate := randomString(4, charset)
+		if !existing[candidate] {
+			return candidate, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to generate unique short ID after %d attempts", maxAttempts*2)
+}
+
+// randomString generates a random string of the given length using characters from charset.
+func randomString(length int, charset string) string {
+	b := make([]byte, length)
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(RandReader, buf); err != nil {
+		return string(buf[:length])
+	}
+	for i := range b {
+		b[i] = charset[int(buf[i])%len(charset)]
+	}
+	return string(b)
 }
