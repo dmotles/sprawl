@@ -13,12 +13,13 @@ import (
 type BuildOption func(*buildConfig)
 
 type buildConfig struct {
-	agentLister    func(string) ([]*state.AgentState, error)
-	messageLister  func(string, string, string) ([]*messages.Message, error)
-	sessionLister  func(string, int) ([]Session, []string, error)
-	timelineLister func(string) ([]TimelineEntry, error)
-	clock          func() time.Time
-	budget         *BudgetConfig
+	agentLister               func(string) ([]*state.AgentState, error)
+	messageLister             func(string, string, string) ([]*messages.Message, error)
+	sessionLister             func(string, int) ([]Session, []string, error)
+	timelineLister            func(string) ([]TimelineEntry, error)
+	clock                     func() time.Time
+	budget                    *BudgetConfig
+	persistentKnowledgeReader func(string) (string, error)
 }
 
 // WithAgentLister injects a custom agent listing function.
@@ -46,6 +47,11 @@ func WithClock(fn func() time.Time) BuildOption {
 	return func(c *buildConfig) { c.clock = fn }
 }
 
+// WithPersistentKnowledgeReader injects a custom persistent knowledge reader.
+func WithPersistentKnowledgeReader(fn func(string) (string, error)) BuildOption {
+	return func(c *buildConfig) { c.persistentKnowledgeReader = fn }
+}
+
 // WithBudgetConfig enables budget enforcement for the context blob.
 func WithBudgetConfig(bc BudgetConfig) BuildOption {
 	return func(c *buildConfig) { c.budget = &bc }
@@ -58,11 +64,12 @@ func WithBudgetConfig(bc BudgetConfig) BuildOption {
 // is non-nil if any section had errors.
 func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (string, error) {
 	cfg := buildConfig{
-		agentLister:    state.ListAgents,
-		messageLister:  messages.List,
-		sessionLister:  ListRecentSessions,
-		timelineLister: ReadTimeline,
-		clock:          time.Now,
+		agentLister:               state.ListAgents,
+		messageLister:             messages.List,
+		sessionLister:             ListRecentSessions,
+		timelineLister:            ReadTimeline,
+		clock:                     time.Now,
+		persistentKnowledgeReader: ReadPersistentKnowledge,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -74,6 +81,12 @@ func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (
 	activeState, activeErr := renderActiveState(dendraRoot, rootName, cfg)
 	if activeErr != nil {
 		errs = append(errs, activeErr)
+	}
+
+	// Render Persistent Knowledge section
+	persistentKnowledge, pkErr := renderPersistentKnowledge(dendraRoot, cfg)
+	if pkErr != nil {
+		errs = append(errs, pkErr)
 	}
 
 	// Render Timeline section (header + individual entries)
@@ -93,9 +106,9 @@ func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (
 
 	var result string
 	if cfg.budget != nil {
-		result = assembleBudgeted(activeState, timelineHeader, timelineEntries, sessionStrings, footer, cfg.budget)
+		result = assembleBudgeted(activeState, persistentKnowledge, timelineHeader, timelineEntries, sessionStrings, footer, cfg.budget)
 	} else {
-		result = assembleUnbudgeted(activeState, timelineHeader, timelineEntries, sessionStrings, footer)
+		result = assembleUnbudgeted(activeState, persistentKnowledge, timelineHeader, timelineEntries, sessionStrings, footer)
 	}
 
 	var combinedErr error
@@ -137,6 +150,22 @@ func renderActiveState(dendraRoot, rootName string, cfg buildConfig) (string, er
 		combinedErr = fmt.Errorf("%s", strings.Join(msgs, "; "))
 	}
 	return b.String(), combinedErr
+}
+
+// renderPersistentKnowledge produces the "## Persistent Knowledge" section string.
+func renderPersistentKnowledge(dendraRoot string, cfg buildConfig) (string, error) {
+	if cfg.persistentKnowledgeReader == nil {
+		return "", nil
+	}
+	content, err := cfg.persistentKnowledgeReader(dendraRoot)
+	if err != nil {
+		return fmt.Sprintf("\n## Persistent Knowledge\n\n[Error reading persistent knowledge: %s]\n", err), err
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", nil
+	}
+	return "\n## Persistent Knowledge\n\n" + content + "\n", nil
 }
 
 // renderTimeline returns the timeline header and individual entry strings.
@@ -197,9 +226,12 @@ func renderFooter(cfg buildConfig) string {
 }
 
 // assembleUnbudgeted concatenates all sections without any size limits (backward compat).
-func assembleUnbudgeted(activeState, timelineHeader string, timelineEntries, sessionStrings []string, footer string) string {
+func assembleUnbudgeted(activeState, persistentKnowledge, timelineHeader string, timelineEntries, sessionStrings []string, footer string) string {
 	var b strings.Builder
 	b.WriteString(activeState)
+	if persistentKnowledge != "" {
+		b.WriteString(persistentKnowledge)
+	}
 	if timelineHeader != "" {
 		b.WriteString(timelineHeader)
 		for _, e := range timelineEntries {
@@ -215,7 +247,7 @@ func assembleUnbudgeted(activeState, timelineHeader string, timelineEntries, ses
 }
 
 // assembleBudgeted assembles sections under a token budget.
-func assembleBudgeted(activeState, timelineHeader string, timelineEntries, sessionStrings []string, footer string, budget *BudgetConfig) string {
+func assembleBudgeted(activeState, persistentKnowledge, timelineHeader string, timelineEntries, sessionStrings []string, footer string, budget *BudgetConfig) string {
 	bc := *budget
 	if bc.MaxTotalChars == 0 {
 		bc = DefaultBudgetConfig()
@@ -243,7 +275,19 @@ func assembleBudgeted(activeState, timelineHeader string, timelineEntries, sessi
 	b.WriteString(activeState)
 	remaining -= activeSize
 
-	// 2. Timeline (second priority)
+	// 2. Persistent Knowledge (second priority)
+	if persistentKnowledge != "" {
+		pkSize := MeasureBytes(persistentKnowledge)
+		if pkSize <= remaining {
+			b.WriteString(persistentKnowledge)
+			remaining -= pkSize
+		} else {
+			b.WriteString(TruncateWithNote(persistentKnowledge, remaining))
+			remaining = 0
+		}
+	}
+
+	// 3. Timeline (third priority)
 	if timelineHeader != "" && len(timelineEntries) > 0 {
 		// Calculate full timeline size
 		fullTimelineSize := MeasureBytes(timelineHeader)
@@ -295,7 +339,7 @@ func assembleBudgeted(activeState, timelineHeader string, timelineEntries, sessi
 		}
 	}
 
-	// 3. Sessions header: include if budget remains.
+	// 4. Sessions header: include if budget remains.
 	sessionsHeader := "\n## Recent Sessions\n"
 	sessionsHeaderSize := MeasureBytes(sessionsHeader)
 	if sessionsHeaderSize <= remaining {

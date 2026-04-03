@@ -3,7 +3,7 @@ package memory
 import "time"
 
 // BudgetConfig controls the size budget for the context blob.
-// Section priority ordering is implicit: Active State > Timeline > Recent Sessions.
+// Section priority ordering is implicit: Active State > Persistent Knowledge > Timeline > Recent Sessions.
 // When the budget is exceeded, lower-priority sections are truncated first.
 type BudgetConfig struct {
 	MaxTotalChars   int

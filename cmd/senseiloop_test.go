@@ -50,6 +50,15 @@ func newTestSenseiLoopDeps(t *testing.T) *senseiLoopDeps {
 		consolidate: func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 			return nil
 		},
+		updatePersistentKnowledge: func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+			return nil
+		},
+		listRecentSessions: func(root string, n int) ([]memory.Session, []string, error) {
+			return nil, nil, nil
+		},
+		readTimeline: func(root string) ([]memory.TimelineEntry, error) {
+			return nil, nil
+		},
 	}
 }
 
@@ -907,5 +916,253 @@ func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "consolidat") {
 		t.Errorf("expected warning about consolidation in output, got: %q", output)
+	}
+}
+
+func TestRunSenseiLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var updatePKCalled bool
+	var capturedSummary string
+	var capturedBullets string
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handoff signal file exists
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	deps.removeFile = func(path string) error { return nil }
+
+	deps.listRecentSessions = func(root string, n int) ([]memory.Session, []string, error) {
+		return []memory.Session{
+			{SessionID: "sess-1", Timestamp: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)},
+		}, []string{"test summary"}, nil
+	}
+
+	deps.readTimeline = func(root string) ([]memory.TimelineEntry, error) {
+		return []memory.TimelineEntry{
+			{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Initial setup"},
+			{Timestamp: time.Date(2026, 4, 2, 8, 0, 0, 0, time.UTC), Summary: "Added tests"},
+		}, nil
+	}
+
+	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		mu.Lock()
+		updatePKCalled = true
+		capturedSummary = sessionSummary
+		capturedBullets = timelineBullets
+		mu.Unlock()
+		return nil
+	}
+
+	iterations := 0
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		iterations++
+		iter := iterations
+		mu.Unlock()
+		if iter >= 2 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !updatePKCalled {
+		t.Error("expected updatePersistentKnowledge to be called after handoff signal")
+	}
+	if capturedSummary != "test summary" {
+		t.Errorf("expected sessionSummary %q, got %q", "test summary", capturedSummary)
+	}
+	// Timeline bullets should contain both entries formatted as bullets
+	if !strings.Contains(capturedBullets, "Initial setup") {
+		t.Error("expected timelineBullets to contain 'Initial setup'")
+	}
+	if !strings.Contains(capturedBullets, "Added tests") {
+		t.Error("expected timelineBullets to contain 'Added tests'")
+	}
+}
+
+func TestRunSenseiLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var updatePKCalled bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// No handoff signal (readFile returns ErrNotExist by default)
+
+	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		mu.Lock()
+		updatePKCalled = true
+		mu.Unlock()
+		return nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if updatePKCalled {
+		t.Error("expected updatePersistentKnowledge NOT to be called when there is no handoff signal")
+	}
+}
+
+func TestRunSenseiLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var claudeRan bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var buf strings.Builder
+	deps.stdout = &buf
+
+	// Handoff signal file exists
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	deps.removeFile = func(path string) error { return nil }
+
+	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		return fmt.Errorf("knowledge update failed")
+	}
+
+	iterations := 0
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		iterations++
+		iter := iterations
+		claudeRan = true
+		mu.Unlock()
+		if iter >= 2 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error (loop should continue despite PK update error), got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !claudeRan {
+		t.Error("expected claude to still run despite updatePersistentKnowledge error")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "knowledge") || !strings.Contains(output, "failed") {
+		t.Errorf("expected warning about knowledge update failure in output, got: %q", output)
+	}
+}
+
+func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var callOrder []string
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handoff signal file exists
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	deps.removeFile = func(path string) error { return nil }
+
+	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		mu.Lock()
+		callOrder = append(callOrder, "consolidate")
+		mu.Unlock()
+		return nil
+	}
+
+	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		mu.Lock()
+		callOrder = append(callOrder, "updatePersistentKnowledge")
+		mu.Unlock()
+		return nil
+	}
+
+	iterations := 0
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		iterations++
+		iter := iterations
+		mu.Unlock()
+		if iter >= 2 {
+			cancel()
+		}
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(callOrder) < 2 {
+		t.Fatalf("expected at least 2 calls (consolidate + updatePersistentKnowledge), got %d: %v", len(callOrder), callOrder)
+	}
+
+	// Find first occurrence of each
+	consolidateIdx := -1
+	updatePKIdx := -1
+	for i, name := range callOrder {
+		if name == "consolidate" && consolidateIdx == -1 {
+			consolidateIdx = i
+		}
+		if name == "updatePersistentKnowledge" && updatePKIdx == -1 {
+			updatePKIdx = i
+		}
+	}
+
+	if consolidateIdx == -1 {
+		t.Fatal("expected consolidate to be called")
+	}
+	if updatePKIdx == -1 {
+		t.Fatal("expected updatePersistentKnowledge to be called")
+	}
+	if consolidateIdx >= updatePKIdx {
+		t.Errorf("expected consolidate (idx=%d) to be called before updatePersistentKnowledge (idx=%d)", consolidateIdx, updatePKIdx)
 	}
 }

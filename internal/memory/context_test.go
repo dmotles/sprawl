@@ -618,6 +618,9 @@ func budgetTestDeps(
 		WithSessionLister(func(string, int) ([]Session, []string, error) {
 			return sessions, bodies, nil
 		}),
+		WithPersistentKnowledgeReader(func(string) (string, error) {
+			return "", nil
+		}),
 		WithClock(fixedClock),
 	}
 }
@@ -1035,5 +1038,196 @@ func TestBuildContextBlob_BudgetIncludesFooter(t *testing.T) {
 	}
 	if !strings.Contains(blob, "---") {
 		t.Error("expected footer separator '---' to be present even under tight budget")
+	}
+}
+
+func TestBuildContextBlob_PersistentKnowledge_Rendered(t *testing.T) {
+	pkContent := "The project uses cobra for CLI commands.\nAlways run tests before committing."
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return []*state.AgentState{
+				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+			}, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithTimelineLister(func(string) ([]TimelineEntry, error) {
+			return []TimelineEntry{
+				{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Setup complete"},
+			}, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return []Session{
+				{SessionID: "sess-001", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+			}, []string{"Session body."}, nil
+		}),
+		WithPersistentKnowledgeReader(func(root string) (string, error) {
+			if root != "fake-root" {
+				t.Errorf("PK reader got root %q, want %q", root, "fake-root")
+			}
+			return pkContent, nil
+		}),
+		WithClock(fixedClock),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Section header present
+	if !strings.Contains(blob, "## Persistent Knowledge") {
+		t.Error("expected blob to contain '## Persistent Knowledge' header")
+	}
+
+	// Content present
+	if !strings.Contains(blob, "The project uses cobra for CLI commands.") {
+		t.Error("expected blob to contain persistent knowledge content")
+	}
+	if !strings.Contains(blob, "Always run tests before committing.") {
+		t.Error("expected blob to contain persistent knowledge content (second line)")
+	}
+
+	// Ordering: Active State < Persistent Knowledge < Session Timeline < Recent Sessions
+	idxActive := strings.Index(blob, "## Active State")
+	idxPK := strings.Index(blob, "## Persistent Knowledge")
+	idxTimeline := strings.Index(blob, "## Session Timeline")
+	idxRecent := strings.Index(blob, "## Recent Sessions")
+
+	if idxActive < 0 || idxPK < 0 || idxTimeline < 0 || idxRecent < 0 {
+		t.Fatalf("expected all four section headers to be present; got Active=%d PK=%d Timeline=%d Recent=%d",
+			idxActive, idxPK, idxTimeline, idxRecent)
+	}
+	if !(idxActive < idxPK && idxPK < idxTimeline && idxTimeline < idxRecent) {
+		t.Errorf("expected ordering Active(%d) < PK(%d) < Timeline(%d) < Recent(%d)",
+			idxActive, idxPK, idxTimeline, idxRecent)
+	}
+}
+
+func TestBuildContextBlob_PersistentKnowledge_Empty_OmitsSection(t *testing.T) {
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return nil, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return nil, nil, nil
+		}),
+		WithPersistentKnowledgeReader(func(root string) (string, error) {
+			return "", nil
+		}),
+		WithClock(fixedClock),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(blob, "## Persistent Knowledge") {
+		t.Error("expected blob to NOT contain '## Persistent Knowledge' when PK is empty")
+	}
+}
+
+func TestBuildContextBlob_PersistentKnowledge_Error_ContinuesWithOtherSections(t *testing.T) {
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		WithAgentLister(func(string) ([]*state.AgentState, error) {
+			return []*state.AgentState{
+				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+			}, nil
+		}),
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
+			return nil, nil
+		}),
+		WithSessionLister(func(string, int) ([]Session, []string, error) {
+			return []Session{
+				{SessionID: "sess-001", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+			}, []string{"Session body."}, nil
+		}),
+		WithPersistentKnowledgeReader(func(root string) (string, error) {
+			return "", fmt.Errorf("knowledge file corrupt")
+		}),
+		WithClock(fixedClock),
+	)
+
+	// Error should be returned
+	if err == nil {
+		t.Fatal("expected non-nil error when PK reader fails")
+	}
+
+	// Other sections still render
+	if !strings.Contains(blob, "oak") {
+		t.Error("expected blob to contain agent 'oak' despite PK error")
+	}
+	if !strings.Contains(blob, "sess-001") {
+		t.Error("expected blob to contain session despite PK error")
+	}
+
+	// Error marker present in blob
+	if !strings.Contains(blob, "[Error reading persistent knowledge:") {
+		t.Error("expected blob to contain error marker for persistent knowledge section")
+	}
+}
+
+func TestBuildContextBlob_BudgetPersistentKnowledge_SecondPriority(t *testing.T) {
+	agents := []*state.AgentState{
+		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+	}
+	timeline := []TimelineEntry{}
+	sessions := []Session{
+		{SessionID: "sess-oldest", Timestamp: time.Date(2026, 3, 30, 10, 0, 0, 0, time.UTC)},
+		{SessionID: "sess-newest", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+	}
+	sessionBodies := []string{
+		strings.Repeat("A", 300),
+		strings.Repeat("B", 300),
+	}
+	pkContent := "Important: always use dependency injection for testability."
+
+	deps := budgetTestDeps(agents, timeline, sessions, sessionBodies)
+
+	// Build with PK but no budget to find full size.
+	fullBlob, _ := BuildContextBlob("fake-root", "root-agent",
+		append(deps, WithPersistentKnowledgeReader(func(string) (string, error) {
+			return pkContent, nil
+		}))...,
+	)
+	fullSize := MeasureBytes(fullBlob)
+
+	// Set budget tight enough that PK fits but at least one session must be dropped.
+	budget := fullSize - 350
+
+	blob, err := BuildContextBlob("fake-root", "root-agent",
+		append(deps,
+			WithPersistentKnowledgeReader(func(string) (string, error) {
+				return pkContent, nil
+			}),
+			WithBudgetConfig(BudgetConfig{
+				MaxTotalChars:   budget,
+				MaxSessionChars: 5000,
+			}),
+		)...,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// PK should be present (higher priority than sessions)
+	if !strings.Contains(blob, "## Persistent Knowledge") {
+		t.Error("expected persistent knowledge section to be present under tight budget")
+	}
+	if !strings.Contains(blob, "dependency injection") {
+		t.Error("expected persistent knowledge content to be present under tight budget")
+	}
+
+	// At least one session should be omitted
+	hasOldest := strings.Contains(blob, "sess-oldest")
+	hasNewest := strings.Contains(blob, "sess-newest")
+	if hasOldest && hasNewest {
+		t.Error("expected at least one session to be omitted to make room for persistent knowledge")
+	}
+
+	if MeasureBytes(blob) > budget {
+		t.Errorf("blob size %d exceeds budget %d", MeasureBytes(blob), budget)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,7 +52,10 @@ type senseiLoopDeps struct {
 	autoSummarize      func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
 	userHomeDir        func() (string, error)
 	newCLIInvoker      func() memory.ClaudeInvoker
-	consolidate        func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
+	consolidate                func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
+	updatePersistentKnowledge func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error
+	listRecentSessions        func(dendraRoot string, n int) ([]memory.Session, []string, error)
+	readTimeline              func(dendraRoot string) ([]memory.TimelineEntry, error)
 }
 
 // defaultSenseiLoopDeps wires real implementations.
@@ -81,7 +85,10 @@ func defaultSenseiLoopDeps() *senseiLoopDeps {
 		autoSummarize:     memory.AutoSummarize,
 		userHomeDir:       os.UserHomeDir,
 		newCLIInvoker:     func() memory.ClaudeInvoker { return memory.NewCLIInvoker() },
-		consolidate:       memory.Consolidate,
+		consolidate:               memory.Consolidate,
+		updatePersistentKnowledge: memory.UpdatePersistentKnowledge,
+		listRecentSessions:        memory.ListRecentSessions,
+		readTimeline:              memory.ReadTimeline,
 	}
 }
 
@@ -233,6 +240,29 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 			// Run memory consolidation post-handoff (best-effort).
 			if consolidateErr := deps.consolidate(ctx, dendraRoot, deps.newCLIInvoker(), nil, nil); consolidateErr != nil {
 				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: consolidation failed: %v\n", consolidateErr)
+			}
+
+			// Update persistent knowledge post-handoff (best-effort).
+			var sessionSummary string
+			if sessions, bodies, listErr := deps.listRecentSessions(dendraRoot, 1); listErr != nil {
+				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading latest session for persistent knowledge: %v\n", listErr)
+			} else if len(sessions) > 0 && len(bodies) > 0 {
+				sessionSummary = bodies[0]
+			}
+
+			var timelineBullets string
+			if entries, tlErr := deps.readTimeline(dendraRoot); tlErr != nil {
+				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading timeline for persistent knowledge: %v\n", tlErr)
+			} else {
+				var tlb strings.Builder
+				for _, e := range entries {
+					fmt.Fprintf(&tlb, "- %s: %s\n", e.Timestamp.UTC().Format(time.RFC3339), e.Summary)
+				}
+				timelineBullets = tlb.String()
+			}
+
+			if pkErr := deps.updatePersistentKnowledge(ctx, dendraRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets); pkErr != nil {
+				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: persistent knowledge update failed: %v\n", pkErr)
 			}
 		} else {
 			fmt.Fprintf(deps.stdout, "[sensei-loop] session ended, restarting\n")
