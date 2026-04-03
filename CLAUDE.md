@@ -36,6 +36,8 @@ This repo IS Dendrarchy. The `.dendra/` directory at the repo root stores agent 
 
 **Read `/go-cli-best-practices` before writing or modifying Go code** — it covers cobra patterns, error handling conventions, and dependency injection structure used throughout this codebase.
 
+**Read `/cli-ux-best-practices` before adding or modifying any CLI command's behavior** — it covers output design for agent consumers, the "next action hint" pattern, error message design, and idempotency. Every command must tell the calling agent what to do next.
+
 ## Linear Issue Tracking
 
 This project tracks work in Linear. All issues belong to the **Dendra** project in team **Qumulo-dmotles** (prefix: `QUM`).
