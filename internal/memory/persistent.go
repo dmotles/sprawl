@@ -47,7 +47,6 @@ func writePersistentKnowledge(dendraRoot string, items []string) error {
 	}
 
 	var b strings.Builder
-	b.WriteString("# Persistent Knowledge\n\n")
 	for _, item := range items {
 		fmt.Fprintf(&b, "- %s\n", item)
 	}

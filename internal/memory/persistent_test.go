@@ -124,7 +124,7 @@ func TestReadPersistentKnowledge_ExistingFile(t *testing.T) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	knowledgeContent := "# Persistent Knowledge\n\n- Item A\n- Item B\n"
+	knowledgeContent := "- Item A\n- Item B\n"
 	if err := os.WriteFile(filepath.Join(dir, "persistent.md"), []byte(knowledgeContent), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -160,8 +160,13 @@ func TestWriteReadRoundtrip(t *testing.T) {
 	if !strings.Contains(content, "- Gamma") {
 		t.Error("content should contain '- Gamma'")
 	}
-	if !strings.HasPrefix(content, "# Persistent Knowledge") {
-		t.Error("content should start with '# Persistent Knowledge' header")
+	// writePersistentKnowledge should NOT include a header — renderPersistentKnowledge adds one.
+	if strings.Contains(content, "# Persistent Knowledge") {
+		t.Error("file content should NOT contain a '# Persistent Knowledge' header")
+	}
+	// File should start directly with the first bullet
+	if !strings.HasPrefix(content, "- Alpha") {
+		t.Errorf("file should start with first bullet, got prefix: %q", content[:min(len(content), 40)])
 	}
 }
 
