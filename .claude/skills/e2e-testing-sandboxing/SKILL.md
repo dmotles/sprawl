@@ -1,5 +1,5 @@
 ---
-name: testing
+name: e2e-testing-sandboxing
 description: Set up and use the sandbox testing system for end-to-end validation of dendra changes without affecting production state.
 user-invocable: true
 argument-hint: "[setup|inspect|cleanup] or omit for full workflow"

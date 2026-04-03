@@ -32,7 +32,9 @@ This repo IS Dendrarchy. The `.dendra/` directory at the repo root stores agent 
 
 **Dependency injection**: Commands use a `deps` struct to inject interfaces for external dependencies (tmux, claude, git, env vars). See `cmd/spawn.go` (`spawnDeps`) for the canonical example. This enables testing without real subprocesses.
 
-**Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way.
+**Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way. **Read `/testing-practices` before writing any tests for the first time** — it covers the dependency injection pattern, mock conventions, and common pitfalls.
+
+**Read `/go-cli-best-practices` before writing or modifying Go code** — it covers cobra patterns, error handling conventions, and dependency injection structure used throughout this codebase.
 
 ## Linear Issue Tracking
 
@@ -59,41 +61,16 @@ The issue is the source of truth. The agent can read it via Linear MCP tools (`g
 
 ## Sandbox Testing
 
-An isolated test environment for end-to-end testing without affecting production state or requiring real Claude API keys. Use the `/testing` skill for the full step-by-step workflow.
-
-**Quick start:**
+Use the `/e2e-testing-sandboxing` skill for the full setup, inspection, and cleanup workflow. Quick start:
 
 ```bash
 make build
 eval "$(bash scripts/dendra-test-env.sh)"
 ```
 
-**Key environment variables** (exported by the script):
-
-- `DENDRA_TEST_MODE=1` — injects sandbox warnings into agent prompts
-- `DENDRA_BIN` — path to the built binary (always use `$DENDRA_BIN`, not bare `dendra`)
-- `DENDRA_ROOT` — the temporary test directory
-- `DENDRA_NAMESPACE` — isolated tmux namespace (format: `test-XXXXXXXX`)
-
-**Exercising features:** Use `$DENDRA_BIN` for all commands, work within `$DENDRA_ROOT`.
-
-**Inspecting state:**
-
-- `tmux list-sessions | grep $DENDRA_NAMESPACE` — sandbox tmux sessions
-- `ls $DENDRA_ROOT/.dendra/` — agent state, messages, memory
-- `cat` message JSON files, agent state files, etc.
-
-**Cleanup:**
-
-```bash
-tmux kill-session -t "${DENDRA_NAMESPACE}sensei" && rm -rf $DENDRA_ROOT
-```
-
-**Scripted smoke test:** `scripts/smoke-test-memory.sh` demonstrates automated sandbox assertions.
-
 ## Validating Changes
 
 1. `go test ./...` — all tests pass
 2. `make build` — binary compiles
 3. Manual smoke test: run the built `./dendra` binary with relevant commands
-4. For end-to-end validation, use the `/testing` skill to set up a sandbox environment
+4. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
