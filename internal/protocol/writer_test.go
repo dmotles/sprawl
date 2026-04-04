@@ -206,7 +206,7 @@ func TestWriterConcurrentWrites(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines * 2)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(n int) {
 			defer wg.Done()
 			_ = w.SendUserMessage("msg")

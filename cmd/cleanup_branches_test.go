@@ -12,7 +12,7 @@ import (
 func newTestCleanupBranchesDeps(t *testing.T) (*cleanupBranchesDeps, *bytes.Buffer, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 	var buf bytes.Buffer
 
 	deps := &cleanupBranchesDeps{

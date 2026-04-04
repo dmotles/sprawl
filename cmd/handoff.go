@@ -34,7 +34,7 @@ var handoffCmd = &cobra.Command{
 	Short: "Write session summary and signal handoff to next session",
 	Long:  "Persist a session summary (read from stdin) and create a handoff signal file for the sensei loop to detect.",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps := resolveHandoffDeps()
 		return runHandoff(deps)
 	},
@@ -83,6 +83,7 @@ func runHandoff(deps *handoffDeps) error {
 
 	// Reject empty or whitespace-only summaries
 	if strings.TrimSpace(string(stdinBytes)) == "" {
+		//nolint:revive,staticcheck // multi-line error message is intentional for CLI UX
 		return fmt.Errorf(`no summary provided on stdin. Pipe your session summary into this command:
 
   cat <<'EOF' | dendra handoff

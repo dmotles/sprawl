@@ -30,13 +30,11 @@ func (m *treeMockRunner) NewSessionWithWindow(string, string, map[string]string,
 	return nil
 }
 func (m *treeMockRunner) NewWindow(string, string, map[string]string, string) error { return nil }
-func (m *treeMockRunner) KillWindow(string, string) error                          { return nil }
-func (m *treeMockRunner) ListWindowPIDs(string, string) ([]int, error)             { return nil, nil }
-func (m *treeMockRunner) ListSessionNames() ([]string, error)                      { return nil, nil }
-func (m *treeMockRunner) SendKeys(string, string, string) error                    { return nil }
-func (m *treeMockRunner) Attach(string) error                                      { return nil }
-
-func boolPtr(v bool) *bool { return &v }
+func (m *treeMockRunner) KillWindow(string, string) error                           { return nil }
+func (m *treeMockRunner) ListWindowPIDs(string, string) ([]int, error)              { return nil, nil }
+func (m *treeMockRunner) ListSessionNames() ([]string, error)                       { return nil, nil }
+func (m *treeMockRunner) SendKeys(string, string, string) error                     { return nil }
+func (m *treeMockRunner) Attach(string) error                                       { return nil }
 
 func newTestTreeDeps(t *testing.T, agents []*state.AgentState, rootName, namespace string) *treeDeps {
 	t.Helper()
@@ -457,7 +455,7 @@ func TestTree_ChildrenSortedByName(t *testing.T) {
 	if ashIdx == -1 || cedarIdx == -1 || elmIdx == -1 {
 		t.Fatalf("could not find all children in output:\n%s", out)
 	}
-	if !(ashIdx < cedarIdx && cedarIdx < elmIdx) {
+	if !(ashIdx < cedarIdx && cedarIdx < elmIdx) { //nolint:staticcheck // QF1001: direct form is more readable
 		t.Errorf("children should be sorted alphabetically: ash(%d) < cedar(%d) < elm(%d)", ashIdx, cedarIdx, elmIdx)
 	}
 }

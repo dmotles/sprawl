@@ -99,7 +99,7 @@ type Process struct {
 
 	// Background reader delivers results and errors via channels.
 	resultCh    chan *protocol.ResultMessage // buffered(1)
-	readerErrCh chan error                  // buffered(1)
+	readerErrCh chan error                   // buffered(1)
 
 	// stopCh is closed on Stop/Kill to unblock readLoop's channel sends.
 	stopCh chan struct{}
@@ -309,7 +309,7 @@ func (p *Process) SessionID() string {
 // Stop gracefully shuts down the subprocess by closing the writer and waiting.
 // Closing the writer causes EOF on Claude's stdin; readLoop sees EOF from
 // the reader and exits.
-func (p *Process) Stop(ctx context.Context) error {
+func (p *Process) Stop(_ context.Context) error {
 	p.mu.Lock()
 	if p.writer == nil {
 		p.state = StateStopped
@@ -388,7 +388,7 @@ func (p *Process) IsRunning() bool {
 // InterruptTurn sends an interrupt control_request to cancel the current turn.
 // It is safe to call concurrently with SendPrompt.
 // Returns ErrNotRunning if the process is not in StateRunning.
-func (p *Process) InterruptTurn(ctx context.Context) error {
+func (p *Process) InterruptTurn(_ context.Context) error {
 	p.mu.Lock()
 	if p.state != StateRunning {
 		p.mu.Unlock()

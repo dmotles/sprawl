@@ -66,8 +66,8 @@ func TestRunPoke_HappyPath(t *testing.T) {
 	}
 
 	// Verify permissions
-	if writtenPerm != 0644 {
-		t.Errorf("writtenPerm = %o, want %o", writtenPerm, 0644)
+	if writtenPerm != 0o644 {
+		t.Errorf("writtenPerm = %o, want %o", writtenPerm, 0o644)
 	}
 
 	// Verify stdout confirmation

@@ -8,10 +8,12 @@ import (
 	"syscall"
 )
 
-const DefaultNamespace = "🌳"
-const DefaultRootName = "sensei"
-const BranchSeparator = "├"
-const RootWindowName = "sensei"
+const (
+	DefaultNamespace = "🌳"
+	DefaultRootName  = "sensei"
+	BranchSeparator  = "├"
+	RootWindowName   = "sensei"
+)
 
 // NamespacePool is a curated list of tree/nature emojis used for auto-selecting
 // a unique namespace when running dendra init.
@@ -95,14 +97,14 @@ func exactTarget(name string) string {
 
 // HasSession returns true if a tmux session with the given name exists.
 func (r *RealRunner) HasSession(name string) bool {
-	cmd := exec.Command(r.TmuxPath, "has-session", "-t", exactTarget(name))
+	cmd := exec.Command(r.TmuxPath, "has-session", "-t", exactTarget(name)) //nolint:gosec // arguments are not user-controlled
 	return cmd.Run() == nil
 }
 
 // HasWindow returns true if a tmux window with the given name exists in the session.
 func (r *RealRunner) HasWindow(sessionName, windowName string) bool {
 	target := exactTarget(sessionName) + ":" + windowName
-	cmd := exec.Command(r.TmuxPath, "display-message", "-t", target, "-p", "#{window_name}")
+	cmd := exec.Command(r.TmuxPath, "display-message", "-t", target, "-p", "#{window_name}") //nolint:gosec // arguments are not user-controlled
 	return cmd.Run() == nil
 }
 
@@ -116,7 +118,7 @@ func (r *RealRunner) NewSession(name string, env map[string]string, shellCmd str
 
 	args = append(args, shellCmd)
 
-	cmd := exec.Command(r.TmuxPath, args...)
+	cmd := exec.Command(r.TmuxPath, args...) //nolint:gosec // arguments are not user-controlled
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -133,7 +135,7 @@ func (r *RealRunner) NewSessionWithWindow(sessionName, windowName string, env ma
 
 	args = append(args, shellCmd)
 
-	cmd := exec.Command(r.TmuxPath, args...)
+	cmd := exec.Command(r.TmuxPath, args...) //nolint:gosec // arguments are not user-controlled
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -150,7 +152,7 @@ func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]st
 
 	args = append(args, shellCmd)
 
-	cmd := exec.Command(r.TmuxPath, args...)
+	cmd := exec.Command(r.TmuxPath, args...) //nolint:gosec // arguments are not user-controlled
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -160,20 +162,20 @@ func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]st
 // KillWindow closes a tmux window by name.
 func (r *RealRunner) KillWindow(sessionName, windowName string) error {
 	target := exactTarget(sessionName) + ":" + windowName
-	cmd := exec.Command(r.TmuxPath, "kill-window", "-t", target)
+	cmd := exec.Command(r.TmuxPath, "kill-window", "-t", target) //nolint:gosec // arguments are not user-controlled
 	return cmd.Run()
 }
 
 // ListWindowPIDs returns the PIDs of processes running in the given tmux window.
 func (r *RealRunner) ListWindowPIDs(sessionName, windowName string) ([]int, error) {
 	target := exactTarget(sessionName) + ":" + windowName
-	cmd := exec.Command(r.TmuxPath, "list-panes", "-t", target, "-F", "#{pane_pid}")
+	cmd := exec.Command(r.TmuxPath, "list-panes", "-t", target, "-F", "#{pane_pid}") //nolint:gosec // arguments are not user-controlled
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 	var pids []int
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
 		}
@@ -187,13 +189,13 @@ func (r *RealRunner) ListWindowPIDs(sessionName, windowName string) ([]int, erro
 
 // ListSessionNames returns the names of all running tmux sessions.
 func (r *RealRunner) ListSessionNames() ([]string, error) {
-	cmd := exec.Command(r.TmuxPath, "list-sessions", "-F", "#{session_name}")
+	cmd := exec.Command(r.TmuxPath, "list-sessions", "-F", "#{session_name}") //nolint:gosec // arguments are not user-controlled
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 	var names []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line != "" {
 			names = append(names, line)
 		}
@@ -204,7 +206,7 @@ func (r *RealRunner) ListSessionNames() ([]string, error) {
 // SendKeys sends text to a specific tmux window, followed by Enter.
 func (r *RealRunner) SendKeys(sessionName, windowName string, keys string) error {
 	target := exactTarget(sessionName) + ":" + windowName
-	cmd := exec.Command(r.TmuxPath, "send-keys", "-t", target, keys, "Enter")
+	cmd := exec.Command(r.TmuxPath, "send-keys", "-t", target, keys, "Enter") //nolint:gosec // arguments are not user-controlled
 	return cmd.Run()
 }
 
@@ -215,10 +217,10 @@ func (r *RealRunner) SendKeys(sessionName, windowName string, keys string) error
 func (r *RealRunner) Attach(name string) error {
 	if IsInsideTmux() {
 		args := []string{"tmux", "switch-client", "-t", exactTarget(name)}
-		return syscall.Exec(r.TmuxPath, args, os.Environ())
+		return syscall.Exec(r.TmuxPath, args, os.Environ()) //nolint:gosec // arguments are not user-controlled
 	}
 	args := []string{"tmux", "attach-session", "-t", exactTarget(name)}
-	return syscall.Exec(r.TmuxPath, args, os.Environ())
+	return syscall.Exec(r.TmuxPath, args, os.Environ()) //nolint:gosec // arguments are not user-controlled
 }
 
 // IsInsideTmux returns true if the current process is running inside a tmux session.

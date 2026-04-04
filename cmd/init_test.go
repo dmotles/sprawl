@@ -94,7 +94,6 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 
 	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	err := runInit(deps, tmux.DefaultNamespace, false)
-
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

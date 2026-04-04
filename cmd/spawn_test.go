@@ -146,7 +146,7 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 	}
 
 	// Ensure agents dir exists
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, runner, creator, tmpDir
 }
@@ -302,7 +302,7 @@ func TestSpawn_NamePoolExhausted_UsesFallback(t *testing.T) {
 	// Fill all engineer names
 	agentsDir := state.AgentsDir(tmpDir)
 	for _, name := range agent.EngineerNames {
-		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
@@ -738,7 +738,7 @@ func TestSpawn_ResearcherPoolExhausted_UsesFallback(t *testing.T) {
 	// Fill all researcher names
 	agentsDir := state.AgentsDir(tmpDir)
 	for _, name := range agent.ResearcherNames {
-		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
 	err := runSpawn(deps, "engineering", "researcher", "task", "feature/x")
@@ -757,7 +757,7 @@ func TestSpawn_ManagerPoolExhausted_UsesFallback(t *testing.T) {
 	// Fill all manager names
 	agentsDir := state.AgentsDir(tmpDir)
 	for _, name := range agent.ManagerNames {
-		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
 	err := runSpawn(deps, "engineering", "manager", "task", "feature/x")

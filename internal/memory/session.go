@@ -77,11 +77,11 @@ func parseFrontmatter(raw string) (Session, string, error) {
 	var s Session
 	var inAgents bool
 
-	for _, line := range strings.Split(strings.TrimRight(frontmatter, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(frontmatter, "\n"), "\n") {
 		if inAgents {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "- ") {
-				s.AgentsActive = append(s.AgentsActive, strings.TrimPrefix(trimmed, "- "))
+			if after, ok := strings.CutPrefix(trimmed, "- "); ok {
+				s.AgentsActive = append(s.AgentsActive, after)
 				continue
 			}
 			inAgents = false
@@ -127,7 +127,7 @@ func parseFrontmatter(raw string) (Session, string, error) {
 // It uses write-to-temp-then-rename for atomicity.
 func WriteSessionSummary(dendraRoot string, session Session, body string) error {
 	dir := sessionsDir(dendraRoot)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable sessions dir is intentional
 		return fmt.Errorf("creating sessions directory: %w", err)
 	}
 
@@ -152,12 +152,12 @@ func WriteSessionSummary(dendraRoot string, session Session, body string) error 
 	success := false
 	defer func() {
 		if !success {
-			os.Remove(tmpName)
+			os.Remove(tmpName) //nolint:gosec,errcheck // best-effort cleanup
 		}
 	}()
 
 	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
@@ -258,10 +258,10 @@ func ReadLastSessionID(dendraRoot string) (string, error) {
 // WriteLastSessionID writes the session ID to .dendra/memory/last-session-id.
 func WriteLastSessionID(dendraRoot string, sessionID string) error {
 	dir := memoryDir(dendraRoot)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}
-	if err := os.WriteFile(lastSessionIDPath(dendraRoot), []byte(sessionID), 0644); err != nil {
+	if err := os.WriteFile(lastSessionIDPath(dendraRoot), []byte(sessionID), 0o644); err != nil { //nolint:gosec // G306: world-readable session file is intentional
 		return fmt.Errorf("writing last session ID: %w", err)
 	}
 	return nil
@@ -271,11 +271,11 @@ func WriteLastSessionID(dendraRoot string, sessionID string) error {
 // The sensei loop detects the presence of this file and restarts.
 func WriteHandoffSignal(dendraRoot string) error {
 	dir := memoryDir(dendraRoot)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}
 	path := filepath.Join(dir, "handoff-signal")
-	if err := os.WriteFile(path, []byte{}, 0644); err != nil {
+	if err := os.WriteFile(path, []byte{}, 0o644); err != nil { //nolint:gosec // G306: world-readable signal file is intentional
 		return fmt.Errorf("writing handoff signal: %w", err)
 	}
 	return nil

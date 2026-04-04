@@ -19,8 +19,10 @@ type treeDeps struct {
 
 var defaultTreeDeps *treeDeps
 
-var treeJSON bool
-var treeRoot string
+var (
+	treeJSON bool
+	treeRoot string
+)
 
 func init() {
 	treeCmd.Flags().BoolVar(&treeJSON, "json", false, "Output as JSON")
@@ -31,18 +33,15 @@ func init() {
 var treeCmd = &cobra.Command{
 	Use:   "tree",
 	Short: "Display the agent hierarchy tree",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		deps, err := resolveTreeDeps()
-		if err != nil {
-			return err
-		}
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		deps := resolveTreeDeps()
 		return runTree(deps, cmd.OutOrStdout(), treeJSON, treeRoot)
 	},
 }
 
-func resolveTreeDeps() (*treeDeps, error) {
+func resolveTreeDeps() *treeDeps {
 	if defaultTreeDeps != nil {
-		return defaultTreeDeps, nil
+		return defaultTreeDeps
 	}
 
 	var runner tmux.Runner
@@ -59,7 +58,7 @@ func resolveTreeDeps() (*treeDeps, error) {
 			ReadNamespace: state.ReadNamespace,
 		},
 		getenv: os.Getenv,
-	}, nil
+	}
 }
 
 func runTree(deps *treeDeps, stdout io.Writer, jsonOutput bool, subtreeRoot string) error {
@@ -158,13 +157,14 @@ func formatLabel(agent *observe.AgentInfo) string {
 
 	name := agent.Name
 	var role string
-	if agent.IsRoot {
+	switch {
+	case agent.IsRoot:
 		role = "root"
-	} else if agent.Type != "" && agent.Family != "" {
+	case agent.Type != "" && agent.Family != "":
 		role = agent.Type + "/" + agent.Family
-	} else if agent.Type != "" {
+	case agent.Type != "":
 		role = agent.Type
-	} else if agent.Family != "" {
+	case agent.Family != "":
 		role = agent.Family
 	}
 
@@ -181,11 +181,12 @@ func formatLabel(agent *observe.AgentInfo) string {
 
 	// Liveness: only for non-terminal statuses.
 	if !observe.IsTerminal(status) {
-		if agent.ProcessAlive == nil {
+		switch {
+		case agent.ProcessAlive == nil:
 			label += ", ?"
-		} else if *agent.ProcessAlive {
+		case *agent.ProcessAlive:
 			label += ", alive"
-		} else {
+		default:
 			label += ", DEAD"
 		}
 	}
@@ -196,11 +197,11 @@ func formatLabel(agent *observe.AgentInfo) string {
 
 // JSON output types.
 type jsonTreeOutput struct {
-	Name         string          `json:"name"`
-	Type         string          `json:"type"`
-	Family       string          `json:"family"`
-	Status       string          `json:"status"`
-	ProcessAlive *bool           `json:"process_alive"`
+	Name         string           `json:"name"`
+	Type         string           `json:"type"`
+	Family       string           `json:"family"`
+	Status       string           `json:"status"`
+	ProcessAlive *bool            `json:"process_alive"`
 	Children     []jsonTreeOutput `json:"children"`
 	Orphans      []jsonTreeOutput `json:"orphans,omitempty"`
 }

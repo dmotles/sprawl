@@ -5,8 +5,14 @@ Read `DESCRIPTION.md` for project context. This file covers how to work in this 
 ## Build & Test
 
 ```bash
-make build      # builds ./dendra binary
-go test ./...   # run all tests
+make              # runs full validation (build + fmt-check + lint + test)
+make validate     # same as above — the default target
+make build        # builds ./dendra binary
+make fmt          # auto-fix formatting
+make fmt-check    # check formatting without fixing (used in CI/hooks)
+make lint         # run golangci-lint
+make test         # run all unit tests
+make hooks        # install pre-commit hook
 
 scripts/smoke-test-memory.sh   # integration test for sensei memory system
 scripts/dendra-test-env.sh     # set up isolated test environment
@@ -74,12 +80,19 @@ make build
 eval "$(bash scripts/dendra-test-env.sh)"
 ```
 
+## Linting & Formatting
+
+This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` formatting. Configuration is in `.golangci.yml`.
+
+* **All code must pass** `make validate` before committing. The pre-commit hook enforces this.
+* Run `make fmt` to auto-fix formatting issues.
+* Run `make hooks` after cloning to install the pre-commit hook.
+
 ## Validating Changes
 
-1. `go test ./...` — all tests pass
-2. `make build` — binary compiles
-3. Manual smoke test: run the built `./dendra` binary with relevant commands
-4. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
+1. `make validate` — full pipeline: build, fmt-check, lint, test
+2. Manual smoke test: run the built `./dendra` binary with relevant commands
+3. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
 
 ## Migration Notes
 

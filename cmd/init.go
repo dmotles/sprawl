@@ -20,8 +20,10 @@ type initDeps struct {
 
 var defaultDeps *initDeps
 
-var initNamespace string
-var initDetached bool
+var (
+	initNamespace string
+	initDetached  bool
+)
 
 func init() {
 	initCmd.Flags().StringVar(&initNamespace, "namespace", "", "namespace emoji (auto-selected if omitted)")
@@ -33,7 +35,7 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Launch the root agent",
 	Long:  "Start a new Dendrarchy root agent session, or attach to an existing one.",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps, err := resolveDeps()
 		if err != nil {
 			return err

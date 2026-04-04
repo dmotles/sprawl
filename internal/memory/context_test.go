@@ -220,7 +220,7 @@ func TestBuildContextBlob_SessionOrdering(t *testing.T) {
 	if idxOldest < 0 || idxMiddle < 0 || idxNewest < 0 {
 		t.Fatal("expected all three sessions to be present in blob")
 	}
-	if !(idxOldest < idxMiddle && idxMiddle < idxNewest) {
+	if !(idxOldest < idxMiddle && idxMiddle < idxNewest) { //nolint:staticcheck // QF1001: direct form is more readable
 		t.Errorf("expected oldest < middle < newest ordering, got %d, %d, %d", idxOldest, idxMiddle, idxNewest)
 	}
 }
@@ -422,7 +422,7 @@ func TestBuildContextBlob_TimelineBetweenSections(t *testing.T) {
 	if idxActive < 0 || idxTimeline < 0 || idxRecent < 0 {
 		t.Fatal("expected all three section headers to be present")
 	}
-	if !(idxActive < idxTimeline && idxTimeline < idxRecent) {
+	if !(idxActive < idxTimeline && idxTimeline < idxRecent) { //nolint:staticcheck // QF1001: direct form is more readable
 		t.Errorf("expected Active State (%d) < Session Timeline (%d) < Recent Sessions (%d)",
 			idxActive, idxTimeline, idxRecent)
 	}
@@ -567,7 +567,7 @@ func TestBuildContextBlob_TimelinePartialData(t *testing.T) {
 	idx1 := strings.Index(blob, "Project kickoff")
 	idx2 := strings.Index(blob, "API design complete")
 	idx3 := strings.Index(blob, "First PR merged")
-	if !(idx1 < idx2 && idx2 < idx3) {
+	if !(idx1 < idx2 && idx2 < idx3) { //nolint:staticcheck // QF1001: direct form is more readable
 		t.Errorf("expected chronological ordering: %d < %d < %d", idx1, idx2, idx3)
 	}
 }
@@ -719,7 +719,7 @@ func TestBuildContextBlob_BudgetTruncatesTimeline(t *testing.T) {
 	}
 	// Create a long timeline to ensure it gets truncated.
 	var timeline []TimelineEntry
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		timeline = append(timeline, TimelineEntry{
 			Timestamp: time.Date(2026, 3, 1+i%28, 10, 0, 0, 0, time.UTC),
 			Summary:   fmt.Sprintf("Timeline entry number %d with some additional detail text", i),
@@ -823,7 +823,7 @@ func TestBuildContextBlob_BudgetActiveStateOnly(t *testing.T) {
 func TestBuildContextBlob_BudgetTruncatesActiveState(t *testing.T) {
 	// Many agents to make active state large.
 	var agents []*state.AgentState
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		agents = append(agents, &state.AgentState{
 			Name:           fmt.Sprintf("agent-%d", i),
 			Type:           "engineer",
@@ -959,7 +959,7 @@ func TestBuildContextBlob_BudgetSessionsNewestFirstAllocation(t *testing.T) {
 func TestBuildContextBlob_BudgetZeroValueUsesDefault(t *testing.T) {
 	// Create enough data to exceed the default 10000 char budget.
 	var agents []*state.AgentState
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		agents = append(agents, &state.AgentState{
 			Name:           fmt.Sprintf("agent-%d-with-a-long-name-padding", i),
 			Type:           "engineer",
@@ -969,7 +969,7 @@ func TestBuildContextBlob_BudgetZeroValueUsesDefault(t *testing.T) {
 		})
 	}
 	var timeline []TimelineEntry
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		timeline = append(timeline, TimelineEntry{
 			Timestamp: time.Date(2026, 3, 1+i%28, 10, 0, 0, 0, time.UTC),
 			Summary:   fmt.Sprintf("Timeline entry %d with enough text to take up space in the context blob", i),
@@ -977,7 +977,7 @@ func TestBuildContextBlob_BudgetZeroValueUsesDefault(t *testing.T) {
 	}
 	var sessions []Session
 	var sessionBodies []string
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		sessions = append(sessions, Session{
 			SessionID: fmt.Sprintf("sess-%03d", i),
 			Timestamp: time.Date(2026, 4, 1, i, 0, 0, 0, time.UTC),
@@ -1098,7 +1098,7 @@ func TestBuildContextBlob_PersistentKnowledge_Rendered(t *testing.T) {
 		t.Fatalf("expected all four section headers to be present; got Active=%d PK=%d Timeline=%d Recent=%d",
 			idxActive, idxPK, idxTimeline, idxRecent)
 	}
-	if !(idxActive < idxPK && idxPK < idxTimeline && idxTimeline < idxRecent) {
+	if !(idxActive < idxPK && idxPK < idxTimeline && idxTimeline < idxRecent) { //nolint:staticcheck // QF1001: direct form is more readable
 		t.Errorf("expected ordering Active(%d) < PK(%d) < Timeline(%d) < Recent(%d)",
 			idxActive, idxPK, idxTimeline, idxRecent)
 	}

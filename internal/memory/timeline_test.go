@@ -311,8 +311,8 @@ func TestReadTimeline_ParsesVariousISO8601(t *testing.T) {
 		summary string
 	}{
 		{time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), "UTC entry"},
-		{time.Date(2026, 4, 1, 10, 30, 0, 0, time.UTC), "Positive offset entry"},  // 15:30+05:00 = 10:30 UTC
-		{time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC), "Negative offset entry"},   // 08:00-04:00 = 12:00 UTC
+		{time.Date(2026, 4, 1, 10, 30, 0, 0, time.UTC), "Positive offset entry"}, // 15:30+05:00 = 10:30 UTC
+		{time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC), "Negative offset entry"},  // 08:00-04:00 = 12:00 UTC
 	}
 	for i, w := range want {
 		gotUTC := got[i].Timestamp.UTC()

@@ -121,11 +121,11 @@ func TestReadPersistentKnowledge_NoFile(t *testing.T) {
 func TestReadPersistentKnowledge_ExistingFile(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".dendra", "memory")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	knowledgeContent := "- Item A\n- Item B\n"
-	if err := os.WriteFile(filepath.Join(dir, "persistent.md"), []byte(knowledgeContent), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "persistent.md"), []byte(knowledgeContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -271,7 +271,7 @@ func TestUpdatePersistentKnowledge_ItemCapEnforcement(t *testing.T) {
 	}
 
 	itemCount := 0
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), "- ") {
 			itemCount++
 		}

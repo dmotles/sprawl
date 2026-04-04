@@ -50,7 +50,7 @@ func TestReadSessionLog_ValidJSONL(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"Hello world"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there"}]}}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,7 +79,7 @@ func TestReadSessionLog_MissingFile(t *testing.T) {
 func TestReadSessionLog_EmptyFile(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "empty.jsonl")
-	if err := os.WriteFile(path, []byte{}, 0644); err != nil {
+	if err := os.WriteFile(path, []byte{}, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -97,10 +97,10 @@ func TestReadSessionLog_MaxMessageTruncation(t *testing.T) {
 	path := filepath.Join(tmp, "many.jsonl")
 
 	var lines []string
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		lines = append(lines, fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"msg-%04d"}}`, i))
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -117,7 +117,7 @@ func TestReadSessionLog_MaxMessageTruncation(t *testing.T) {
 		}
 	}
 	// Earlier messages should NOT be present
-	for i := 0; i < 90; i++ {
+	for i := range 90 {
 		needle := fmt.Sprintf("msg-%04d", i)
 		if strings.Contains(result, needle) {
 			t.Errorf("expected output NOT to contain %q (should be truncated)", needle)
@@ -130,10 +130,10 @@ func TestReadSessionLog_MaxByteTruncation(t *testing.T) {
 	path := filepath.Join(tmp, "big.jsonl")
 
 	var lines []string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		lines = append(lines, fmt.Sprintf(`{"type":"user","message":{"role":"user","content":"message-number-%04d-with-padding"}}`, i))
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -157,7 +157,7 @@ func TestReadSessionLog_MalformedLines(t *testing.T) {
 		`{"broken":`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"also valid"}]}}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -180,7 +180,7 @@ func TestReadSessionLog_ToolUseBlocks(t *testing.T) {
 	lines := []string{
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read","input":{"path":"/foo"}}]}}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -202,7 +202,7 @@ func TestReadSessionLog_QueueOperationSkipped(t *testing.T) {
 		`{"type":"queue-operation","data":{"op":"enqueue"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"response"}]}}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -228,7 +228,7 @@ func TestReadSessionLog_UserContentString(t *testing.T) {
 	lines := []string{
 		`{"type":"user","message":{"role":"user","content":"plain string content"}}`,
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -268,7 +268,7 @@ func TestHasSessionSummary_NotExists(t *testing.T) {
 	root := t.TempDir()
 	// Create sessions dir but leave it empty
 	dir := filepath.Join(root, ".dendra", "memory", "sessions")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -364,7 +364,7 @@ func TestAutoSummarize_Success(t *testing.T) {
 	// Write a JSONL file at the expected path
 	encodedCWD := EncodeCWDForClaude(cwd)
 	jsonlDir := filepath.Join(homeDir, ".claude", "projects", encodedCWD)
-	if err := os.MkdirAll(jsonlDir, 0755); err != nil {
+	if err := os.MkdirAll(jsonlDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
@@ -372,7 +372,7 @@ func TestAutoSummarize_Success(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"What is dendra?"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Dendra is a multi-agent system."}]}}`,
 	}
-	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -435,14 +435,14 @@ func TestAutoSummarize_InvokerError(t *testing.T) {
 	// Write a JSONL file at the expected path
 	encodedCWD := EncodeCWDForClaude(cwd)
 	jsonlDir := filepath.Join(homeDir, ".claude", "projects", encodedCWD)
-	if err := os.MkdirAll(jsonlDir, 0755); err != nil {
+	if err := os.MkdirAll(jsonlDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
 	lines := []string{
 		`{"type":"user","message":{"role":"user","content":"Hello"}}`,
 	}
-	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -474,7 +474,7 @@ func TestAutoSummarize_EmptyTranscript(t *testing.T) {
 	// Write a JSONL file with only queue-operation lines
 	encodedCWD := EncodeCWDForClaude(cwd)
 	jsonlDir := filepath.Join(homeDir, ".claude", "projects", encodedCWD)
-	if err := os.MkdirAll(jsonlDir, 0755); err != nil {
+	if err := os.MkdirAll(jsonlDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
@@ -482,7 +482,7 @@ func TestAutoSummarize_EmptyTranscript(t *testing.T) {
 		`{"type":"queue-operation","data":{"op":"enqueue"}}`,
 		`{"type":"queue-operation","data":{"op":"dequeue"}}`,
 	}
-	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0644); err != nil {
+	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

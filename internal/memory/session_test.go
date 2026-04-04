@@ -163,7 +163,7 @@ func TestReadSessionSummary_MalformedFrontmatter(t *testing.T) {
 	path := filepath.Join(root, "bad.md")
 
 	// No closing ---
-	if err := os.WriteFile(path, []byte("---\nsession_id: x\n"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("---\nsession_id: x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := ReadSessionSummary(path)
@@ -177,7 +177,7 @@ func TestReadSessionSummary_BadTimestamp(t *testing.T) {
 	path := filepath.Join(root, "bad-ts.md")
 
 	content := "---\nsession_id: x\ntimestamp: not-a-date\nhandoff: false\nagents_active: []\n---\nbody\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := ReadSessionSummary(path)
@@ -197,7 +197,7 @@ func TestReadSessionSummary_NoOpeningDelimiter(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "no-open.md")
 
-	if err := os.WriteFile(path, []byte("just some text"), 0644); err != nil {
+	if err := os.WriteFile(path, []byte("just some text"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := ReadSessionSummary(path)
@@ -223,7 +223,7 @@ func TestListRecentSessions_DirNotExist(t *testing.T) {
 func TestListRecentSessions_EmptyExistingDir(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, ".dendra", "memory", "sessions")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	sessions, bodies, err := ListRecentSessions(root, 5)
@@ -242,7 +242,7 @@ func TestListRecentSessions_Multiple(t *testing.T) {
 	root := t.TempDir()
 
 	// Write 5 sessions with distinct timestamps
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		s := Session{
 			SessionID:    strings.Replace("sess-X", "X", string(rune('a'+i)), 1),
 			Timestamp:    time.Date(2026, 1, 1, i, 0, 0, 0, time.UTC),
@@ -277,7 +277,7 @@ func TestListRecentSessions_Multiple(t *testing.T) {
 func TestListRecentSessions_FewerThanN(t *testing.T) {
 	root := t.TempDir()
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		s := Session{
 			SessionID: strings.Replace("sess-X", "X", string(rune('a'+i)), 1),
 			Timestamp: time.Date(2026, 1, 1, i, 0, 0, 0, time.UTC),
@@ -515,14 +515,14 @@ func TestWriteSessionSummary_CleansOldFormat(t *testing.T) {
 	root := t.TempDir()
 
 	dir := filepath.Join(root, ".dendra", "memory", "sessions")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	// Pre-create a file in the old timestamp-prefixed format
 	oldContent := "---\nsession_id: migrate-test\ntimestamp: 2026-01-01T00:00:00Z\nhandoff: false\nagents_active: []\n---\n\nold body\n"
 	oldPath := filepath.Join(dir, "20260101T000000_migrate-test.md")
-	if err := os.WriteFile(oldPath, []byte(oldContent), 0644); err != nil {
+	if err := os.WriteFile(oldPath, []byte(oldContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -575,7 +575,7 @@ func TestListRecentSessions_SortsByTimestamp(t *testing.T) {
 	root := t.TempDir()
 
 	dir := filepath.Join(root, ".dendra", "memory", "sessions")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -600,7 +600,7 @@ func TestListRecentSessions_SortsByTimestamp(t *testing.T) {
 			AgentsActive: []string{},
 		}
 		content := marshalFrontmatter(s) + "\nbody\n"
-		if err := os.WriteFile(filepath.Join(dir, e.filename), []byte(content), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, e.filename), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

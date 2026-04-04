@@ -34,18 +34,18 @@ func ReadTimeline(dendraRoot string) ([]TimelineEntry, error) {
 	}
 
 	var entries []TimelineEntry
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "- ") {
 			continue
 		}
 		rest := line[2:] // strip "- "
-		colonIdx := strings.Index(rest, ": ")
-		if colonIdx < 0 {
+		before, after, ok := strings.Cut(rest, ": ")
+		if !ok {
 			continue
 		}
-		tsStr := rest[:colonIdx]
-		summary := rest[colonIdx+2:]
+		tsStr := before
+		summary := after
 
 		t, err := time.Parse(time.RFC3339, tsStr)
 		if err != nil {
@@ -68,7 +68,7 @@ func ReadTimeline(dendraRoot string) ([]TimelineEntry, error) {
 // empty slice, writes just the header.
 func WriteTimeline(dendraRoot string, entries []TimelineEntry) error {
 	p := timelinePath(dendraRoot)
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}
 
@@ -83,7 +83,7 @@ func WriteTimeline(dendraRoot string, entries []TimelineEntry) error {
 		}
 	}
 
-	if err := os.WriteFile(p, []byte(b.String()), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(b.String()), 0o644); err != nil { //nolint:gosec // G306: world-readable timeline file is intentional
 		return fmt.Errorf("writing timeline: %w", err)
 	}
 	return nil
@@ -98,7 +98,7 @@ func AppendTimelineEntries(dendraRoot string, entries []TimelineEntry) error {
 		return fmt.Errorf("reading existing timeline: %w", err)
 	}
 
-	merged := append(existing, entries...)
+	merged := append(existing, entries...) //nolint:gocritic // intentionally creating a new slice
 	sort.Slice(merged, func(i, j int) bool {
 		return merged[i].Timestamp.Before(merged[j].Timestamp)
 	})

@@ -17,7 +17,7 @@ var spawnAgentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Spawn a new agent",
 	Long:  "Spawn a new agent with the given family, type, and task prompt.",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps, err := resolveSpawnDeps()
 		if err != nil {
 			return err
@@ -61,10 +61,10 @@ func init() {
 	spawnCmd.PersistentFlags().StringVar(&spawnType, "type", "", "agent type: manager, researcher, engineer, tester, code-merger")
 	spawnCmd.PersistentFlags().StringVar(&spawnPrompt, "prompt", "", "task description for the agent")
 	spawnCmd.PersistentFlags().StringVar(&spawnBranch, "branch", "", "git branch name for the agent's worktree")
-	spawnCmd.MarkPersistentFlagRequired("family")
-	spawnCmd.MarkPersistentFlagRequired("type")
-	spawnCmd.MarkPersistentFlagRequired("prompt")
-	spawnCmd.MarkPersistentFlagRequired("branch")
+	_ = spawnCmd.MarkPersistentFlagRequired("family")
+	_ = spawnCmd.MarkPersistentFlagRequired("type")
+	_ = spawnCmd.MarkPersistentFlagRequired("prompt")
+	_ = spawnCmd.MarkPersistentFlagRequired("branch")
 	spawnCmd.AddCommand(spawnAgentCmd)
 	rootCmd.AddCommand(spawnCmd)
 }
@@ -73,7 +73,7 @@ var spawnCmd = &cobra.Command{
 	Use:   "spawn",
 	Short: "Spawn a new agent",
 	Long:  "Spawn a new agent with the given family, type, and task prompt.",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps, err := resolveSpawnDeps()
 		if err != nil {
 			return err
@@ -133,7 +133,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 
 	// Allocate name
 	agentsDir := state.AgentsDir(dendraRoot)
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil { //nolint:gosec // G301: world-readable agent dir is intentional
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
 	agentName, err := agent.AllocateName(agentsDir, agentType)

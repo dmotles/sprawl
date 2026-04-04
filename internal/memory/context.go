@@ -377,7 +377,7 @@ func assembleBudgeted(activeState, persistentKnowledge, timelineHeader string, t
 			noteSize := MeasureBytes(omissionNote)
 			// If the note doesn't fit, drop the oldest included session to make room.
 			for noteSize > remaining && includedCount > 0 {
-				for j := 0; j < len(sessionStrings); j++ {
+				for j := range sessionStrings {
 					if included[j] {
 						included[j] = false
 						remaining += MeasureBytes(sessionStrings[j])
@@ -396,8 +396,6 @@ func assembleBudgeted(activeState, persistentKnowledge, timelineHeader string, t
 			// If note still doesn't fit after dropping all sessions, suppress it.
 			if noteSize > remaining {
 				omissionNote = ""
-			} else {
-				remaining -= noteSize
 			}
 		}
 
@@ -462,4 +460,3 @@ func writeInboxSection(b *strings.Builder, dendraRoot, rootName string, lister f
 	}
 	return nil
 }
-

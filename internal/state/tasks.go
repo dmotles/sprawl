@@ -17,9 +17,9 @@ type Task struct {
 	Prompt     string `json:"prompt"`
 	PromptFile string `json:"prompt_file,omitempty"`
 	Status     string `json:"status"`
-	CreatedAt string `json:"created_at"`
-	StartedAt string `json:"started_at,omitempty"`
-	DoneAt    string `json:"done_at,omitempty"`
+	CreatedAt  string `json:"created_at"`
+	StartedAt  string `json:"started_at,omitempty"`
+	DoneAt     string `json:"done_at,omitempty"`
 }
 
 // TasksDir returns the path to the tasks directory for a given agent.
@@ -42,7 +42,7 @@ func GenerateUUID() (string, error) {
 // EnqueueTask creates a new task with status "queued" and writes it to disk.
 func EnqueueTask(dendraRoot, agentName, prompt string) (*Task, error) {
 	dir := TasksDir(dendraRoot, agentName)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable tasks dir is intentional
 		return nil, fmt.Errorf("creating tasks directory: %w", err)
 	}
 
@@ -71,7 +71,7 @@ func EnqueueTask(dendraRoot, agentName, prompt string) (*Task, error) {
 		return nil, fmt.Errorf("marshaling task: %w", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, filename), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, filename), data, 0o644); err != nil { //nolint:gosec // G306: world-readable task file is intentional
 		return nil, fmt.Errorf("writing task file: %w", err)
 	}
 
@@ -112,7 +112,7 @@ func UpdateTask(dendraRoot, agentName string, task *Task) error {
 		if err != nil {
 			return fmt.Errorf("marshaling task: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0o644); err != nil { //nolint:gosec // G306: world-readable task file is intentional
 			return fmt.Errorf("writing task file: %w", err)
 		}
 		return nil

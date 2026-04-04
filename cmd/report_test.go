@@ -32,7 +32,7 @@ func newTestReportDeps(t *testing.T) (*reportDeps, string) {
 		sendMessage: messages.Send,
 	}
 
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 	return deps, tmpDir
 }
 

@@ -3,6 +3,7 @@ package agentloop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -65,15 +66,15 @@ func (r *blockingMockReader) Next() (*protocol.Message, error) {
 
 // mockWriter records all method calls for verification.
 type mockWriter struct {
-	mu              sync.Mutex
-	promptsSent     []string
-	toolsApproved   []string
-	interruptsSent  []string
-	closed          bool
-	sendErr         error
-	approveErr      error
-	interruptErr    error
-	closeErr        error
+	mu             sync.Mutex
+	promptsSent    []string
+	toolsApproved  []string
+	interruptsSent []string
+	closed         bool
+	sendErr        error
+	approveErr     error
+	interruptErr   error
+	closeErr       error
 }
 
 func (w *mockWriter) SendUserMessage(prompt string) error {
@@ -908,7 +909,7 @@ func TestProcess_InterruptTurn_WhenIdle_ReturnsErrNotRunning(t *testing.T) {
 
 	// Process is idle after Start. InterruptTurn should return ErrNotRunning.
 	err := p.InterruptTurn(context.Background())
-	if err != ErrNotRunning {
+	if !errors.Is(err, ErrNotRunning) {
 		t.Errorf("InterruptTurn() = %v, want ErrNotRunning", err)
 	}
 
@@ -933,7 +934,7 @@ func TestProcess_InterruptTurn_WhenStopped_ReturnsErrNotRunning(t *testing.T) {
 
 	// Process is stopped (never started). InterruptTurn should return ErrNotRunning.
 	err := p.InterruptTurn(context.Background())
-	if err != ErrNotRunning {
+	if !errors.Is(err, ErrNotRunning) {
 		t.Errorf("InterruptTurn() = %v, want ErrNotRunning", err)
 	}
 }

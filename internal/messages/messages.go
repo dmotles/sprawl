@@ -19,7 +19,7 @@ import (
 var NowFunc = time.Now
 
 // RandReader is the randomness source used by the messages package. Override in tests for determinism.
-var RandReader io.Reader = rand.Reader
+var RandReader = rand.Reader
 
 // Message represents a message between agents.
 type Message struct {
@@ -34,7 +34,7 @@ type Message struct {
 }
 
 // MessagesDir returns the path to the messages directory under the dendra root.
-func MessagesDir(dendraRoot string) string {
+func MessagesDir(dendraRoot string) string { //nolint:revive // stuttering name is part of public API
 	return filepath.Join(dendraRoot, ".dendra", "messages")
 }
 
@@ -69,7 +69,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 
 	agentDir := filepath.Join(MessagesDir(dendraRoot), to)
 	for _, sub := range []string{"tmp", "new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
 			return fmt.Errorf("creating directory %s: %w", sub, err)
 		}
 	}
@@ -108,7 +108,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	tmpPath := filepath.Join(agentDir, "tmp", filename)
 	newPath := filepath.Join(agentDir, "new", filename)
 
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // G306: world-readable message files are intentional
 		return fmt.Errorf("writing tmp file: %w", err)
 	}
 
@@ -121,14 +121,14 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	// silently ignore errors to avoid returning a misleading failure that
 	// could cause callers to retry (and duplicate) a delivered message.
 	sentDir := filepath.Join(MessagesDir(dendraRoot), from, "sent")
-	if err := os.MkdirAll(sentDir, 0755); err == nil {
-		_ = os.WriteFile(filepath.Join(sentDir, filename), data, 0644)
+	if err := os.MkdirAll(sentDir, 0o755); err == nil { //nolint:gosec // G301: world-readable sent dir is intentional
+		_ = os.WriteFile(filepath.Join(sentDir, filename), data, 0o644) //nolint:gosec // G306: world-readable message files are intentional
 	}
 
 	// Best-effort wake file to notify the recipient agent.
 	wakePath := filepath.Join(dendraRoot, ".dendra", "agents", to+".wake")
 	wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
-	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0644)
+	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional
 
 	// Best-effort root notification
 	var sopts sendOptions
@@ -137,7 +137,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	}
 	if sopts.notify != nil {
 		func() {
-			defer func() { recover() }()
+			defer func() { recover() }() //nolint:errcheck // intentional panic recovery
 			notifyID := shortID
 			if notifyID == "" {
 				notifyID = id
@@ -245,7 +245,7 @@ func MarkRead(dendraRoot, agent, msgID string) error {
 	srcPath := filepath.Join(agentDir, "new", msgID+".json")
 	dstPath := filepath.Join(agentDir, "cur", msgID+".json")
 
-	if err := os.MkdirAll(filepath.Join(agentDir, "cur"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(agentDir, "cur"), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
 		return fmt.Errorf("creating cur directory: %w", err)
 	}
 
@@ -261,7 +261,7 @@ func MarkUnread(dendraRoot, agent, msgID string) error {
 	srcPath := filepath.Join(agentDir, "cur", msgID+".json")
 	dstPath := filepath.Join(agentDir, "new", msgID+".json")
 
-	if err := os.MkdirAll(filepath.Join(agentDir, "new"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(agentDir, "new"), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
 		return fmt.Errorf("creating new directory: %w", err)
 	}
 
@@ -277,7 +277,7 @@ func Archive(dendraRoot, agent, msgID string) error {
 	filename := msgID + ".json"
 	dstPath := filepath.Join(agentDir, "archive", filename)
 
-	if err := os.MkdirAll(filepath.Join(agentDir, "archive"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(agentDir, "archive"), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
 		return fmt.Errorf("creating archive directory: %w", err)
 	}
 
@@ -308,7 +308,7 @@ func Archive(dendraRoot, agent, msgID string) error {
 // It continues on failure and returns the count of successful archives plus any error.
 func archiveFromDirs(agentDir string, dirs []string) (int, error) {
 	archiveDir := filepath.Join(agentDir, "archive")
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
 		return 0, fmt.Errorf("creating archive directory: %w", err)
 	}
 
@@ -525,7 +525,7 @@ func generateShortID(agentDir string) (string, error) {
 	existing := collectExistingShortIDs(agentDir)
 
 	// Try 3-char IDs first
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for range maxAttempts {
 		candidate := randomString(3, charset)
 		if !existing[candidate] {
 			return candidate, nil
@@ -533,7 +533,7 @@ func generateShortID(agentDir string) (string, error) {
 	}
 
 	// Fallback to 4-char IDs
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for range maxAttempts {
 		candidate := randomString(4, charset)
 		if !existing[candidate] {
 			return candidate, nil

@@ -41,7 +41,7 @@ the agent loop will interrupt the current turn and deliver the message
 as the next prompt. If the agent is between turns, the message is
 delivered immediately on the next poll cycle.`,
 	Args: cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolvePokeDeps()
 		return runPoke(deps, args[0], args[1])
 	},
@@ -54,7 +54,7 @@ func runPoke(deps *pokeDeps, agentName, message string) error {
 	}
 
 	pokePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".poke")
-	if err := deps.writeFile(pokePath, []byte(message), 0644); err != nil {
+	if err := deps.writeFile(pokePath, []byte(message), 0o644); err != nil {
 		return fmt.Errorf("writing poke file: %w", err)
 	}
 

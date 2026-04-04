@@ -15,7 +15,7 @@ var spawnSubagentCmd = &cobra.Command{
 	Use:   "subagent",
 	Short: "Spawn a lightweight subagent on the parent's worktree",
 	Long:  "Spawn a subagent that shares the parent agent's worktree instead of creating its own.",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps, err := resolveSpawnSubagentDeps()
 		if err != nil {
 			return err
@@ -85,7 +85,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 
 	// Allocate name
 	agentsDir := state.AgentsDir(dendraRoot)
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil { //nolint:gosec // G301: world-readable agent dir is intentional
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
 	agentName, err := agent.AllocateName(agentsDir, agentType)

@@ -44,7 +44,7 @@ var messagesSendCmd = &cobra.Command{
 	Use:   "send <agent> <subject> <body>",
 	Short: "Send a message to another agent",
 	Args:  cobra.ExactArgs(3),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
 		return runMessagesSend(deps, args[0], args[1], args[2])
 	},
@@ -59,7 +59,7 @@ var messagesInboxCmd = &cobra.Command{
 	Use:   "inbox",
 	Short: "Show messages in your inbox",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps := resolveMessagesDeps()
 		return runMessagesInboxDisplay(deps, inboxShowAll)
 	},
@@ -74,7 +74,7 @@ var messagesBroadcastCmd = &cobra.Command{
 	Use:   "broadcast <subject> <body>",
 	Short: "Broadcast a message to all active agents",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
 		return runMessagesBroadcast(deps, args[0], args[1])
 	},
@@ -84,7 +84,7 @@ var messagesSentCmd = &cobra.Command{
 	Use:   "sent",
 	Short: "Show sent messages",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps := resolveMessagesDeps()
 		return runMessagesSentDisplay(deps)
 	},
@@ -108,11 +108,14 @@ func resolveMessagesDeps() *messagesDeps {
 func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, msg := range msgs {
-		status := msg.Dir
-		if msg.Dir == "new" {
+		var status string
+		switch msg.Dir {
+		case "new":
 			status = "NEW"
-		} else if msg.Dir == "cur" {
+		case "cur":
 			status = "read"
+		default:
+			status = msg.Dir
 		}
 		ts := msg.Timestamp
 		if t, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
@@ -120,7 +123,7 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", displayShortID(msg), status, ts, msg.From, msg.Subject)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 func (d *messagesDeps) resolveEnv() (agentName, dendraRoot string, err error) {
@@ -186,9 +189,9 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		}
 		if to == rootName {
 			rootSession := tmux.RootSessionName(namespace, rootName)
-			sendOpts = append(sendOpts, messages.WithNotify(func(from, subj, msgID string) {
+			sendOpts = append(sendOpts, messages.WithNotify(func(from, _, msgID string) {
 				notification := fmt.Sprintf("[inbox] New message from %s. Run: `dendra messages read %s`", from, msgID)
-				deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
+				_ = deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
 			}))
 		}
 	}
@@ -205,7 +208,7 @@ var messagesReadCmd = &cobra.Command{
 	Use:   "read <message-id>",
 	Short: "Read a message by ID or prefix",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
 		msg, err := runMessagesRead(deps, args[0])
 		if err != nil {
@@ -225,7 +228,7 @@ var messagesListCmd = &cobra.Command{
 	Use:   "list [filter]",
 	Short: "List messages with optional filter (all, unread, read, archived, sent)",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
 		filter := ""
 		if len(args) > 0 {
@@ -235,14 +238,16 @@ var messagesListCmd = &cobra.Command{
 	},
 }
 
-var archiveAll bool
-var archiveRead bool
+var (
+	archiveAll  bool
+	archiveRead bool
+)
 
 var messagesArchiveCmd = &cobra.Command{
 	Use:   "archive [message-id]",
 	Short: "Archive a message or bulk archive messages",
 	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
 
 		if (archiveAll || archiveRead) && len(args) > 0 {
@@ -276,7 +281,7 @@ var messagesUnreadCmd = &cobra.Command{
 	Use:   "unread <message-id>",
 	Short: "Mark a message as unread",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveMessagesDeps()
 		if err := runMessagesUnread(deps, args[0]); err != nil {
 			return err
@@ -378,9 +383,10 @@ func runMessagesInbox(deps *messagesDeps) ([]*messages.Message, int, int, error)
 
 	var newCount, readCount int
 	for _, msg := range msgs {
-		if msg.Dir == "new" {
+		switch msg.Dir {
+		case "new":
 			newCount++
-		} else if msg.Dir == "cur" {
+		case "cur":
 			readCount++
 		}
 	}
@@ -415,7 +421,7 @@ func formatSentTable(w io.Writer, msgs []*messages.Message) {
 		}
 		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", displayShortID(msg), ts, msg.To, msg.Subject)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 }
 
 // displayShortID returns the short display ID for a message.

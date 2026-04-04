@@ -29,13 +29,13 @@ type StreamMessage struct {
 	Subtype string `json:"subtype,omitempty"`
 
 	// For type=system (init message)
-	SessionID        string   `json:"session_id,omitempty"`
-	CWD              string   `json:"cwd,omitempty"`
-	Tools            []string `json:"tools,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	PermissionMode   string   `json:"permissionMode,omitempty"`
-	ClaudeVersion    string   `json:"claude_code_version,omitempty"`
-	APIKeySource     string   `json:"apiKeySource,omitempty"`
+	SessionID      string   `json:"session_id,omitempty"`
+	CWD            string   `json:"cwd,omitempty"`
+	Tools          []string `json:"tools,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	PermissionMode string   `json:"permissionMode,omitempty"`
+	ClaudeVersion  string   `json:"claude_code_version,omitempty"`
+	APIKeySource   string   `json:"apiKeySource,omitempty"`
 
 	// For type=assistant
 	Message *AssistantMessage `json:"message,omitempty"`
@@ -98,10 +98,10 @@ type RateLimitInfo struct {
 
 // InputMessage is the format for sending messages via --input-format stream-json.
 type InputMessage struct {
-	Type             string       `json:"type"`
-	Message          InputContent `json:"message"`
-	ParentToolUseID  *string      `json:"parent_tool_use_id"`
-	SessionID        *string      `json:"session_id"`
+	Type            string       `json:"type"`
+	Message         InputContent `json:"message"`
+	ParentToolUseID *string      `json:"parent_tool_use_id"`
+	SessionID       *string      `json:"session_id"`
 }
 
 // InputContent is the inner message content for input messages.
@@ -253,7 +253,7 @@ func runMultiTurn() {
 	}
 
 	// Close stdin to let claude exit
-	stdin.Close()
+	_ = stdin.Close()
 	if err := cmd.Wait(); err != nil {
 		log.Printf("Claude exited with error: %v", err)
 	}

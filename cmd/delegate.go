@@ -35,7 +35,7 @@ var delegateCmd = &cobra.Command{
 	Use:   "delegate <agent-name> <task>",
 	Short: "Delegate a task to an existing agent",
 	Args:  cobra.ExactArgs(2),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveDelegateDeps()
 		return runDelegate(deps, args[0], args[1])
 	},

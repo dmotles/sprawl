@@ -26,9 +26,9 @@ type AgentState struct {
 	TreePath    string `json:"tree_path,omitempty"`
 
 	// Report fields — populated by "dendra report" subcommands.
-	LastReportType    string `json:"last_report_type,omitempty"`    // status, done, problem
+	LastReportType    string `json:"last_report_type,omitempty"` // status, done, problem
 	LastReportMessage string `json:"last_report_message,omitempty"`
-	LastReportAt      string `json:"last_report_at,omitempty"`      // RFC3339
+	LastReportAt      string `json:"last_report_at,omitempty"` // RFC3339
 }
 
 // AgentsDir returns the path to the agents state directory under the given dendra root.
@@ -39,7 +39,7 @@ func AgentsDir(dendraRoot string) string {
 // SaveAgent writes the agent state to a JSON file in the agents directory.
 func SaveAgent(dendraRoot string, agent *AgentState) error {
 	dir := AgentsDir(dendraRoot)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable agents dir is intentional
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
 
@@ -49,7 +49,7 @@ func SaveAgent(dendraRoot string, agent *AgentState) error {
 	}
 
 	path := filepath.Join(dir, agent.Name+".json")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0o644); err != nil { //nolint:gosec // G306: world-readable state file is intentional
 		return fmt.Errorf("writing agent state: %w", err)
 	}
 	return nil
@@ -116,11 +116,11 @@ func DendraDir(dendraRoot string) string {
 // WriteNamespace persists the selected namespace to .dendra/namespace.
 func WriteNamespace(dendraRoot, namespace string) error {
 	dir := DendraDir(dendraRoot)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable .dendra dir is intentional
 		return fmt.Errorf("creating .dendra directory: %w", err)
 	}
 	path := filepath.Join(dir, "namespace")
-	return os.WriteFile(path, []byte(namespace), 0644)
+	return os.WriteFile(path, []byte(namespace), 0o644) //nolint:gosec // G306: world-readable namespace file is intentional
 }
 
 // ReadNamespace reads the persisted namespace from .dendra/namespace.
@@ -137,11 +137,11 @@ func ReadNamespace(dendraRoot string) string {
 // WriteRootName persists the root agent name to .dendra/root-name.
 func WriteRootName(dendraRoot, rootName string) error {
 	dir := DendraDir(dendraRoot)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable .dendra dir is intentional
 		return fmt.Errorf("creating .dendra directory: %w", err)
 	}
 	path := filepath.Join(dir, "root-name")
-	return os.WriteFile(path, []byte(rootName), 0644)
+	return os.WriteFile(path, []byte(rootName), 0o644) //nolint:gosec // G306: world-readable root-name file is intentional
 }
 
 // ReadRootName reads the persisted root name from .dendra/root-name.
@@ -159,11 +159,11 @@ func ReadRootName(dendraRoot string) string {
 // and returns the absolute path to the file.
 func WriteSystemPrompt(dendraRoot, agentName, content string) (string, error) {
 	dir := filepath.Join(AgentsDir(dendraRoot), agentName)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable agent dir is intentional
 		return "", fmt.Errorf("creating agent directory: %w", err)
 	}
 	path := filepath.Join(dir, "SYSTEM.md")
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil { //nolint:gosec // G306: world-readable prompt file is intentional
 		return "", fmt.Errorf("writing system prompt: %w", err)
 	}
 	return path, nil

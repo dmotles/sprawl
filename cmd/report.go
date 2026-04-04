@@ -39,7 +39,7 @@ var reportStatusCmd = &cobra.Command{
 	Use:   "status <message>",
 	Short: "Report a status update",
 	Args:  cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveReportDeps()
 		message := strings.Join(args, " ")
 		return runReport(deps, "status", message)
@@ -50,7 +50,7 @@ var reportDoneCmd = &cobra.Command{
 	Use:   "done <message>",
 	Short: "Report that your task is complete",
 	Args:  cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveReportDeps()
 		message := strings.Join(args, " ")
 		return runReport(deps, "done", message)
@@ -61,7 +61,7 @@ var reportProblemCmd = &cobra.Command{
 	Use:   "problem <message>",
 	Short: "Report a problem or blocker",
 	Args:  cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveReportDeps()
 		message := strings.Join(args, " ")
 		return runReport(deps, "problem", message)
@@ -106,9 +106,10 @@ func runReport(deps *reportDeps, reportType, message string) error {
 	agentState.LastReportAt = deps.nowFunc().UTC().Format(time.RFC3339)
 
 	// Update status for done/problem
-	if reportType == "done" {
+	switch reportType {
+	case "done":
 		agentState.Status = "done"
-	} else if reportType == "problem" {
+	case "problem":
 		agentState.Status = "problem"
 	}
 
@@ -151,9 +152,9 @@ func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentSt
 		}
 		if parent == rootName {
 			rootSession := tmux.RootSessionName(namespace, rootName)
-			sendOpts = append(sendOpts, messages.WithNotify(func(from, subj, msgID string) {
+			sendOpts = append(sendOpts, messages.WithNotify(func(from, _, msgID string) {
 				notification := fmt.Sprintf("[inbox] New message from %s. Run: `dendra messages read %s`", from, msgID)
-				deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
+				_ = deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
 			}))
 		}
 	}

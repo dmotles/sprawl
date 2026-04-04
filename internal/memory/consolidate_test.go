@@ -21,7 +21,7 @@ func createTestSessions(t *testing.T, root string, n int) ([]Session, []string) 
 	t.Helper()
 	sessions := make([]Session, n)
 	bodies := make([]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		s := Session{
 			SessionID:    fmt.Sprintf("sess-%d", i),
 			Timestamp:    time.Date(2026, 1, 1+i, 0, 0, 0, 0, time.UTC),
@@ -177,7 +177,7 @@ func TestConsolidate_PromptOnlyIncludesCandidates(t *testing.T) {
 	}
 
 	// Candidates (sessions 0-2) should be in the prompt
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if !strings.Contains(mock.lastPrompt, bodies[i]) {
 			t.Errorf("prompt should contain body of candidate session %d", i)
 		}
@@ -530,11 +530,11 @@ func TestConsolidate_CompressAndPrune_Integration(t *testing.T) {
 	// - Medium age (14-60 days): compressed weekly
 	// - Old (60+ days): compressed monthly (merged with existing)
 	mockOutput := strings.Join([]string{
-		"- 2025-10-15T00:00:00Z: Ancient event from October",       // existing, 6mo old -> monthly
-		"- 2026-02-10T00:00:00Z: February event A",                 // ~49 days old -> weekly
-		"- 2026-02-12T00:00:00Z: February event B",                 // ~47 days old -> same week
-		"- 2026-03-25T00:00:00Z: Recent event A",                   // 7 days old -> kept
-		"- 2026-03-28T00:00:00Z: Recent event B",                   // 4 days old -> kept
+		"- 2025-10-15T00:00:00Z: Ancient event from October", // existing, 6mo old -> monthly
+		"- 2026-02-10T00:00:00Z: February event A",           // ~49 days old -> weekly
+		"- 2026-02-12T00:00:00Z: February event B",           // ~47 days old -> same week
+		"- 2026-03-25T00:00:00Z: Recent event A",             // 7 days old -> kept
+		"- 2026-03-28T00:00:00Z: Recent event B",             // 4 days old -> kept
 	}, "\n")
 
 	mock := &mockClaudeInvoker{response: mockOutput}

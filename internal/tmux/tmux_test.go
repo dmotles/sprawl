@@ -127,9 +127,9 @@ type mockPickRunner struct {
 	err      error
 }
 
-func (m *mockPickRunner) HasSession(name string) bool                          { return false }
-func (m *mockPickRunner) HasWindow(string, string) bool                        { return false }
-func (m *mockPickRunner) NewSession(string, map[string]string, string) error   { return nil }
+func (m *mockPickRunner) HasSession(name string) bool                        { return false }
+func (m *mockPickRunner) HasWindow(string, string) bool                      { return false }
+func (m *mockPickRunner) NewSession(string, map[string]string, string) error { return nil }
 func (m *mockPickRunner) NewSessionWithWindow(string, string, map[string]string, string) error {
 	return nil
 }

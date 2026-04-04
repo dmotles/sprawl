@@ -20,7 +20,7 @@ type RealCreator struct{}
 // on a new branch with the given branchName based off baseBranch.
 func (r *RealCreator) Create(repoRoot, agentName, branchName, baseBranch string) (string, string, error) {
 	worktreesDir := filepath.Join(repoRoot, ".dendra", "worktrees")
-	if err := os.MkdirAll(worktreesDir, 0755); err != nil {
+	if err := os.MkdirAll(worktreesDir, 0o755); err != nil { //nolint:gosec // G301: world-readable worktrees dir is intentional
 		return "", "", fmt.Errorf("creating worktrees directory: %w", err)
 	}
 
@@ -39,7 +39,7 @@ func (r *RealCreator) Create(repoRoot, agentName, branchName, baseBranch string)
 
 // branchExists checks whether a local git branch with the given name exists.
 func branchExists(repoRoot, branchName string) bool {
-	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branchName)
+	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branchName) //nolint:gosec // arguments are not user-controlled
 	cmd.Dir = repoRoot
 	return cmd.Run() == nil
 }

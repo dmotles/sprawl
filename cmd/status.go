@@ -45,7 +45,7 @@ var statusCmd = &cobra.Command{
 	Short: "Show status of all agents",
 	Long:  "Display a flat table of every agent in the system with status and process liveness.",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps := resolveStatusDeps()
 		return runStatus(deps, statusJSON, statusFamily, statusType, statusParent, statusStatus)
 	},

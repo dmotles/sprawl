@@ -33,9 +33,11 @@ func (m *killMockRunner) HasSession(name string) bool   { return m.hasSession }
 func (m *killMockRunner) NewSession(name string, env map[string]string, shellCmd string) error {
 	return nil
 }
+
 func (m *killMockRunner) NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
 	return nil
 }
+
 func (m *killMockRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
 	return nil
 }
@@ -81,7 +83,7 @@ func newTestKillDeps(t *testing.T) (*killDeps, *killMockRunner, string) {
 	}
 
 	// Ensure agents dir exists
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, runner, tmpDir
 }

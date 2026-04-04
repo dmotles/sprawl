@@ -15,8 +15,7 @@ func newTestDelegateDeps(t *testing.T) (*delegateDeps, string) {
 
 	deps := &delegateDeps{
 		getenv: func(key string) string {
-			switch key {
-			case "DENDRA_ROOT":
+			if key == "DENDRA_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -26,7 +25,7 @@ func newTestDelegateDeps(t *testing.T) (*delegateDeps, string) {
 	}
 
 	// Ensure agents dir exists
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, tmpDir
 }

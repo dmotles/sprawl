@@ -12,20 +12,20 @@ import (
 // RealLockAcquire acquires an exclusive flock on the given path.
 // Returns an unlock function that releases the lock and closes the file.
 func RealLockAcquire(lockPath string) (func(), error) {
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil { //nolint:gosec // G301: world-readable lock dir is intentional
 		return nil, fmt.Errorf("creating lock directory: %w", err)
 	}
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644) //nolint:gosec // G302: world-readable lock file is intentional
 	if err != nil {
 		return nil, fmt.Errorf("opening lock file: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("acquiring flock: %w", err)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		_ = f.Close()
 	}, nil
 }
 
@@ -121,9 +121,9 @@ func RealGitResetHard(worktree string) error {
 	return nil
 }
 
-// RealRunTests runs make build && go test ./... in the given directory.
+// RealRunTests runs make validate in the given directory.
 func RealRunTests(dir string) (string, error) {
-	cmd := exec.Command("bash", "-c", "make build && go test ./...")
+	cmd := exec.Command("bash", "-c", "make validate") //nolint:gosec // command is not user-controlled
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
@@ -132,5 +132,5 @@ func RealRunTests(dir string) (string, error) {
 // RealWritePoke writes a poke file for the given agent.
 func RealWritePoke(dendraRoot, agentName, content string) error {
 	pokePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".poke")
-	return os.WriteFile(pokePath, []byte(content), 0644)
+	return os.WriteFile(pokePath, []byte(content), 0o644) //nolint:gosec // G306: world-readable poke file is intentional
 }

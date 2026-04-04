@@ -145,7 +145,7 @@ func TestSend_ConcurrentSends(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make([]error, n)
 
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -320,10 +320,10 @@ func TestInbox_NewAndCurMessages(t *testing.T) {
 	// Create new/ and cur/ directories
 	newDir := filepath.Join(agentDir, "new")
 	curDir := filepath.Join(agentDir, "cur")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
-	if err := os.MkdirAll(curDir, 0755); err != nil {
+	if err := os.MkdirAll(curDir, 0o755); err != nil {
 		t.Fatalf("creating cur dir: %v", err)
 	}
 
@@ -380,7 +380,7 @@ func TestInbox_SortedByTimestamp(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
 	newDir := filepath.Join(agentDir, "new")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
 
@@ -561,7 +561,7 @@ func TestInbox_SkipsNonJSONFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
 	newDir := filepath.Join(agentDir, "new")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
 
@@ -577,7 +577,7 @@ func TestInbox_SkipsNonJSONFiles(t *testing.T) {
 	writeMessageFile(t, newDir, "1000.alice.aabb", &validMsg)
 
 	// Write a junk non-JSON file that should be skipped
-	if err := os.WriteFile(filepath.Join(newDir, ".DS_Store"), []byte("\x00\x00\x00\x01Bud1"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(newDir, ".DS_Store"), []byte("\x00\x00\x00\x01Bud1"), 0o644); err != nil {
 		t.Fatalf("writing .DS_Store: %v", err)
 	}
 
@@ -594,7 +594,7 @@ func TestInbox_SkipsCorruptJSONFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
 	newDir := filepath.Join(agentDir, "new")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
 
@@ -610,7 +610,7 @@ func TestInbox_SkipsCorruptJSONFiles(t *testing.T) {
 	writeMessageFile(t, newDir, "1000.alice.aabb", &validMsg)
 
 	// Write a corrupt JSON file (invalid JSON content with .json extension)
-	if err := os.WriteFile(filepath.Join(newDir, "2000.alice.ccdd.json"), []byte("{corrupt json!!!"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(newDir, "2000.alice.ccdd.json"), []byte("{corrupt json!!!"), 0o644); err != nil {
 		t.Fatalf("writing corrupt json file: %v", err)
 	}
 
@@ -630,7 +630,7 @@ func TestList_SkipsCorruptJSONFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
 	curDir := filepath.Join(agentDir, "cur")
-	if err := os.MkdirAll(curDir, 0755); err != nil {
+	if err := os.MkdirAll(curDir, 0o755); err != nil {
 		t.Fatalf("creating cur dir: %v", err)
 	}
 
@@ -646,7 +646,7 @@ func TestList_SkipsCorruptJSONFiles(t *testing.T) {
 	writeMessageFile(t, curDir, "1000.alice.aabb", &validMsg)
 
 	// Write a corrupt JSON file in cur/
-	if err := os.WriteFile(filepath.Join(curDir, "2000.alice.ccdd.json"), []byte("not json"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(curDir, "2000.alice.ccdd.json"), []byte("not json"), 0o644); err != nil {
 		t.Fatalf("writing corrupt json file: %v", err)
 	}
 
@@ -666,7 +666,7 @@ func TestResolvePrefix_ExactMatch(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	newDir := filepath.Join(agentDir, "new")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
 
@@ -691,10 +691,10 @@ func TestResolvePrefix_UniquePrefix(t *testing.T) {
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	newDir := filepath.Join(agentDir, "new")
 	curDir := filepath.Join(agentDir, "cur")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
-	if err := os.MkdirAll(curDir, 0755); err != nil {
+	if err := os.MkdirAll(curDir, 0o755); err != nil {
 		t.Fatalf("creating cur dir: %v", err)
 	}
 
@@ -723,7 +723,7 @@ func TestResolvePrefix_AmbiguousPrefix(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	newDir := filepath.Join(agentDir, "new")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
 
@@ -752,7 +752,7 @@ func TestResolvePrefix_NoMatch(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -774,10 +774,10 @@ func TestMarkRead_MovesFromNewToCur(t *testing.T) {
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	newDir := filepath.Join(agentDir, "new")
 	curDir := filepath.Join(agentDir, "cur")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
-	if err := os.MkdirAll(curDir, 0755); err != nil {
+	if err := os.MkdirAll(curDir, 0o755); err != nil {
 		t.Fatalf("creating cur dir: %v", err)
 	}
 
@@ -821,7 +821,7 @@ func TestMarkRead_NotInNew(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -840,10 +840,10 @@ func TestMarkUnread_MovesFromCurToNew(t *testing.T) {
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	newDir := filepath.Join(agentDir, "new")
 	curDir := filepath.Join(agentDir, "cur")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
-	if err := os.MkdirAll(curDir, 0755); err != nil {
+	if err := os.MkdirAll(curDir, 0o755); err != nil {
 		t.Fatalf("creating cur dir: %v", err)
 	}
 
@@ -887,7 +887,7 @@ func TestMarkUnread_NotInCur(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -907,7 +907,7 @@ func TestArchive_FromNew(t *testing.T) {
 	newDir := filepath.Join(agentDir, "new")
 	archiveDir := filepath.Join(agentDir, "archive")
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -941,7 +941,7 @@ func TestArchive_FromCur(t *testing.T) {
 	curDir := filepath.Join(agentDir, "cur")
 	archiveDir := filepath.Join(agentDir, "archive")
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -973,7 +973,7 @@ func TestArchive_NotFound(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -997,7 +997,7 @@ func TestArchive_PermissionError(t *testing.T) {
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	newDir := filepath.Join(agentDir, "new")
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1010,10 +1010,10 @@ func TestArchive_PermissionError(t *testing.T) {
 	writeMessageFile(t, newDir, msg.ID, msg)
 
 	// Remove write permission on new/ so os.Rename from new/ fails with permission error
-	if err := os.Chmod(newDir, 0444); err != nil {
+	if err := os.Chmod(newDir, 0o444); err != nil {
 		t.Fatalf("chmod new/: %v", err)
 	}
-	t.Cleanup(func() { os.Chmod(newDir, 0755) })
+	t.Cleanup(func() { os.Chmod(newDir, 0o755) })
 
 	err := Archive(tmpDir, agent, "1000.alice.aabb")
 	if err == nil {
@@ -1038,7 +1038,7 @@ func TestReadMessage_FromNew_AutoMarksRead(t *testing.T) {
 	newDir := filepath.Join(agentDir, "new")
 	curDir := filepath.Join(agentDir, "cur")
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1079,7 +1079,7 @@ func TestReadMessage_FromCur(t *testing.T) {
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	curDir := filepath.Join(agentDir, "cur")
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1111,7 +1111,7 @@ func TestReadMessage_FromArchive(t *testing.T) {
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	archiveDir := filepath.Join(agentDir, "archive")
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1138,7 +1138,7 @@ func TestReadMessage_FromSent(t *testing.T) {
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	sentDir := filepath.Join(agentDir, "sent")
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1175,7 +1175,7 @@ func TestReadMessage_NotFound(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1193,7 +1193,7 @@ func TestList_All(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1235,7 +1235,7 @@ func TestList_Unread(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1266,7 +1266,7 @@ func TestList_Read(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1297,7 +1297,7 @@ func TestList_Archived(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1328,7 +1328,7 @@ func TestList_Sent(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive", "sent"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -1386,7 +1386,7 @@ func TestList_SortedByTimestamp(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	newDir := filepath.Join(agentDir, "new")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
 
@@ -1428,7 +1428,7 @@ func TestSend_WritesWakeFile(t *testing.T) {
 
 	// Create the agents directory so wake file can be written
 	agentsDir := filepath.Join(tmpDir, ".dendra", "agents")
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("creating agents dir: %v", err)
 	}
 
@@ -1454,7 +1454,7 @@ func TestSend_WakeFileOverwritten(t *testing.T) {
 
 	// Create the agents directory so wake file can be written
 	agentsDir := filepath.Join(tmpDir, ".dendra", "agents")
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("creating agents dir: %v", err)
 	}
 
@@ -1682,14 +1682,14 @@ func TestBroadcast_PartialFailure(t *testing.T) {
 
 	// Create agent-b's messages directory and make it unwritable so Send() fails
 	agentBDir := filepath.Join(MessagesDir(tmpDir), "agent-b")
-	if err := os.MkdirAll(agentBDir, 0755); err != nil {
+	if err := os.MkdirAll(agentBDir, 0o755); err != nil {
 		t.Fatalf("creating agent-b messages dir: %v", err)
 	}
-	if err := os.Chmod(agentBDir, 0000); err != nil {
+	if err := os.Chmod(agentBDir, 0o000); err != nil {
 		t.Fatalf("chmod agent-b dir: %v", err)
 	}
 	t.Cleanup(func() {
-		os.Chmod(agentBDir, 0755)
+		os.Chmod(agentBDir, 0o755)
 	})
 
 	count, err := Broadcast(tmpDir, "sender", "test-subject", "test-body")
@@ -1726,7 +1726,7 @@ func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 	if err != nil {
 		t.Fatalf("marshaling message: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, filename+".json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, filename+".json"), data, 0o644); err != nil {
 		t.Fatalf("writing message file: %v", err)
 	}
 }
@@ -1862,16 +1862,16 @@ func TestSend_SentCopyFailureDoesNotReturnError(t *testing.T) {
 	// Pre-create the sender's messages directory as a read-only directory
 	// so that MkdirAll for sent/ will fail.
 	senderDir := filepath.Join(MessagesDir(tmpDir), "alice")
-	if err := os.MkdirAll(senderDir, 0755); err != nil {
+	if err := os.MkdirAll(senderDir, 0o755); err != nil {
 		t.Fatalf("setup: creating sender dir: %v", err)
 	}
 	// Make sender dir read-only so creating sent/ subdirectory fails.
-	if err := os.Chmod(senderDir, 0555); err != nil {
+	if err := os.Chmod(senderDir, 0o555); err != nil {
 		t.Fatalf("setup: chmod sender dir: %v", err)
 	}
 	t.Cleanup(func() {
 		// Restore permissions so t.TempDir() cleanup can remove it.
-		os.Chmod(senderDir, 0755)
+		os.Chmod(senderDir, 0o755)
 	})
 
 	// Send should succeed (delivery to recipient) even though sent copy fails.
@@ -1914,7 +1914,7 @@ func TestSent_ReturnsMessages(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(MessagesDir(tmpDir), "alice")
 	sentDir := filepath.Join(agentDir, "sent")
-	if err := os.MkdirAll(sentDir, 0755); err != nil {
+	if err := os.MkdirAll(sentDir, 0o755); err != nil {
 		t.Fatalf("creating sent dir: %v", err)
 	}
 
@@ -1947,7 +1947,7 @@ func TestSent_SortedByTimestamp(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(MessagesDir(tmpDir), "alice")
 	sentDir := filepath.Join(agentDir, "sent")
-	if err := os.MkdirAll(sentDir, 0755); err != nil {
+	if err := os.MkdirAll(sentDir, 0o755); err != nil {
 		t.Fatalf("creating sent dir: %v", err)
 	}
 
@@ -1990,7 +1990,7 @@ func TestArchiveAll_Empty(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -2012,7 +2012,7 @@ func TestArchiveAll_FromNewAndCur(t *testing.T) {
 	curDir := filepath.Join(agentDir, "cur")
 	archiveDir := filepath.Join(agentDir, "archive")
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -2064,7 +2064,7 @@ func TestArchiveAll_DirsDoNotExist(t *testing.T) {
 	agent := "bob"
 	// Create agent dir but NOT new/ or cur/ subdirectories
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
+	if err := os.MkdirAll(agentDir, 0o755); err != nil {
 		t.Fatalf("creating agent dir: %v", err)
 	}
 
@@ -2085,7 +2085,7 @@ func TestArchiveRead_OnlyCur(t *testing.T) {
 	curDir := filepath.Join(agentDir, "cur")
 	archiveDir := filepath.Join(agentDir, "archive")
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -2132,7 +2132,7 @@ func TestArchiveRead_Empty(t *testing.T) {
 	agent := "bob"
 	agentDir := filepath.Join(MessagesDir(tmpDir), agent)
 	for _, sub := range []string{"new", "cur", "archive"} {
-		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil {
 			t.Fatalf("creating %s dir: %v", sub, err)
 		}
 	}
@@ -2151,6 +2151,7 @@ func TestArchiveRead_Empty(t *testing.T) {
 		t.Errorf("ArchiveRead() count = %d, want 0", count)
 	}
 }
+
 // --- Short Message ID Tests (TDD Red Phase) ---
 
 func TestSend_GeneratesShortID(t *testing.T) {
@@ -2176,7 +2177,7 @@ func TestSend_GeneratesShortID(t *testing.T) {
 	}
 
 	// Parse as raw JSON to check the shortId field exists
-	var raw map[string]interface{}
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("unmarshaling raw JSON: %v", err)
 	}
@@ -2342,7 +2343,7 @@ func TestResolvePrefix_OldMessageWithoutShortID(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(MessagesDir(tmpDir), "bob")
 	newDir := filepath.Join(agentDir, "new")
-	if err := os.MkdirAll(newDir, 0755); err != nil {
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatalf("creating new dir: %v", err)
 	}
 
@@ -2359,7 +2360,7 @@ func TestResolvePrefix_OldMessageWithoutShortID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshaling old message: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(newDir, "1000000000.alice.deadbeef.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(newDir, "1000000000.alice.deadbeef.json"), data, 0o644); err != nil {
 		t.Fatalf("writing old message: %v", err)
 	}
 
@@ -2377,7 +2378,7 @@ func TestGenerateShortID_Uniqueness(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	const n = 20
-	for i := 0; i < n; i++ {
+	for i := range n {
 		err := Send(tmpDir, "alice", "bob", "msg "+strconv.Itoa(i), "body")
 		if err != nil {
 			t.Fatalf("Send() message %d unexpected error: %v", i, err)

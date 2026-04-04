@@ -42,7 +42,7 @@ func ReadPersistentKnowledge(dendraRoot string) (string, error) {
 // writePersistentKnowledge writes items as a markdown bullet list to persistent.md.
 func writePersistentKnowledge(dendraRoot string, items []string) error {
 	dir := filepath.Dir(persistentKnowledgePath(dendraRoot))
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}
 
@@ -51,7 +51,7 @@ func writePersistentKnowledge(dendraRoot string, items []string) error {
 		fmt.Fprintf(&b, "- %s\n", item)
 	}
 
-	if err := os.WriteFile(persistentKnowledgePath(dendraRoot), []byte(b.String()), 0644); err != nil {
+	if err := os.WriteFile(persistentKnowledgePath(dendraRoot), []byte(b.String()), 0o644); err != nil { //nolint:gosec // G306: world-readable knowledge file is intentional
 		return fmt.Errorf("writing persistent knowledge: %w", err)
 	}
 	return nil
@@ -100,7 +100,7 @@ func buildPersistentPrompt(existingKnowledge, sessionSummary, timelineBullets st
 // Lines matching "- {text}" are parsed; others are silently skipped.
 func parsePersistentOutput(raw string) []string {
 	var items []string
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

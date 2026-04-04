@@ -20,7 +20,7 @@ var cleanupBranchesCmd = &cobra.Command{
 	Use:   "branches",
 	Short: "Delete merged branches not owned by any agent",
 	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps := resolveCleanupBranchesDeps()
 		deps.verbose = cleanupBranchesVerbose
 		return runCleanupBranches(deps, cleanupBranchesDryRun)
@@ -40,7 +40,7 @@ type cleanupBranchesDeps struct {
 var defaultCleanupBranchesDeps *cleanupBranchesDeps
 
 var (
-	cleanupBranchesDryRun bool
+	cleanupBranchesDryRun  bool
 	cleanupBranchesVerbose bool
 )
 

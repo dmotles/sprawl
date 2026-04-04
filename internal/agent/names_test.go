@@ -55,7 +55,7 @@ func TestAllocateName_SkipsUsedNames(t *testing.T) {
 	dir := t.TempDir()
 	// Mark first 3 engineer names as used
 	for _, name := range EngineerNames[:3] {
-		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -84,7 +84,7 @@ func TestAllocateName_ExhaustedPoolFallsBackToNumericSuffix(t *testing.T) {
 	dir := t.TempDir()
 	// Fill all researcher names
 	for _, name := range ResearcherNames {
-		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -102,12 +102,12 @@ func TestAllocateName_FallbackSkipsUsedNumericNames(t *testing.T) {
 	dir := t.TempDir()
 	// Fill all manager names
 	for _, name := range ManagerNames {
-		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// Also mark peak-1 as used
-	if err := os.WriteFile(filepath.Join(dir, "peak-1.json"), []byte("{}"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "peak-1.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,7 +124,7 @@ func TestAllocateName_EngineerFallbackUsesTreePrefix(t *testing.T) {
 	dir := t.TempDir()
 	// Fill all engineer names
 	for _, name := range EngineerNames {
-		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), []byte("{}"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

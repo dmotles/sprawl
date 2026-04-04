@@ -1107,7 +1107,11 @@ func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
 	}
 
 	// Should not reference --force flag on merge
-	mergeSection := prompt[strings.Index(prompt, "Merging & Branch Maintenance"):]
+	mergeIdx := strings.Index(prompt, "Merging & Branch Maintenance")
+	if mergeIdx < 0 {
+		t.Fatal("expected 'Merging & Branch Maintenance' section in prompt")
+	}
+	mergeSection := prompt[mergeIdx:]
 	mergeEnd := strings.Index(mergeSection, "Messaging:")
 	if mergeEnd > 0 {
 		mergeSection = mergeSection[:mergeEnd]

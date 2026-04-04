@@ -301,7 +301,7 @@ func TestSpawnSubagent_NamePoolExhausted_UsesFallback(t *testing.T) {
 	// Fill all engineer names
 	agentsDir := state.AgentsDir(tmpDir)
 	for _, name := range agent.EngineerNames {
-		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
 	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
@@ -500,7 +500,7 @@ func TestSpawnSubagent_ResearcherPoolExhausted_UsesFallback(t *testing.T) {
 	// Fill all researcher names
 	agentsDir := state.AgentsDir(tmpDir)
 	for _, name := range agent.ResearcherNames {
-		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
 	err := runSpawnSubagent(deps, "engineering", "researcher", "task")
@@ -519,7 +519,7 @@ func TestSpawnSubagent_ManagerPoolExhausted_UsesFallback(t *testing.T) {
 	// Fill all manager names
 	agentsDir := state.AgentsDir(tmpDir)
 	for _, name := range agent.ManagerNames {
-		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0644)
+		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
 	err := runSpawnSubagent(deps, "engineering", "manager", "task")

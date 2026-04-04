@@ -1,0 +1,38 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - revive
+    - unconvert
+    - unparam
+  exclusions:
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # Test files: relax errcheck, unparam, gosec, revive export/package comments
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+          - gosec
+      - path: _test\.go
+        linters:
+          - revive
+        text: "unused-parameter"
+      # Package comments are low-value for internal packages
+      - linters:
+          - revive
+        text: "package-comments"
+      # Exported comment requirements too noisy for now
+      - linters:
+          - revive
+        text: "exported:"
+formatters:
+  enable:
+    - gofumpt
+    - goimports

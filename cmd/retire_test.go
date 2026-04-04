@@ -53,15 +53,13 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 		newMergeDeps: func() *merge.Deps {
 			return &merge.Deps{}
 		},
-		loadAgent: func(dendraRoot, name string) (*state.AgentState, error) {
-			return state.LoadAgent(dendraRoot, name)
-		},
+		loadAgent: state.LoadAgent,
 		currentBranch: func(repoRoot string) (string, error) {
 			return "main", nil
 		},
 	}
 
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, runner, tmpDir
 }
@@ -543,10 +541,10 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 
 	// Create a logs directory with a fake log file.
 	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("failed to create logs dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(logsDir, "agent.log"), []byte("log data"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(logsDir, "agent.log"), []byte("log data"), 0o644); err != nil {
 		t.Fatalf("failed to create log file: %v", err)
 	}
 

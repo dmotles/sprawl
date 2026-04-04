@@ -17,7 +17,6 @@ import (
 // This function is designed to be called post-handoff when the sensei is
 // restarting. It assumes single-threaded execution — no concurrent access
 // protection is needed.
-//
 func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, now func() time.Time) error {
 	if cfg == nil {
 		c := DefaultTimelineCompressionConfig()
@@ -144,7 +143,7 @@ func parseTimelineOutput(raw string) ([]TimelineEntry, int) {
 	var entries []TimelineEntry
 	skipped := 0
 
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -156,14 +155,14 @@ func parseTimelineOutput(raw string) ([]TimelineEntry, int) {
 		}
 
 		rest := line[2:] // strip "- "
-		colonIdx := strings.Index(rest, ": ")
-		if colonIdx < 0 {
+		before, after, ok := strings.Cut(rest, ": ")
+		if !ok {
 			skipped++
 			continue
 		}
 
-		tsStr := rest[:colonIdx]
-		summary := rest[colonIdx+2:]
+		tsStr := before
+		summary := after
 
 		t, err := time.Parse(time.RFC3339, tsStr)
 		if err != nil {

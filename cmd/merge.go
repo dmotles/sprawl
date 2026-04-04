@@ -13,7 +13,7 @@ import (
 )
 
 func realBranchExists(repoRoot, branchName string) bool {
-	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branchName)
+	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branchName) //nolint:gosec // arguments are not user-controlled
 	cmd.Dir = repoRoot
 	return cmd.Run() == nil
 }
@@ -57,7 +57,7 @@ to receive work.
 The merge acquires a file lock on the agent to prevent concurrent Claude
 invocations during the branch rebase.`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveMergeDeps()
 		return runMerge(deps, args[0], mergeMessage, mergeNoValidate, mergeDryRun)
 	},

@@ -32,7 +32,7 @@ var logsCmd = &cobra.Command{
 	Short: "Show log files for an agent",
 	Long:  "Display agent loop log files. Each log corresponds to one agent session (context window).",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := resolveLogsDeps()
 		return runLogs(deps, args[0], logsTail)
 	},

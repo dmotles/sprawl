@@ -36,23 +36,23 @@ var rootSenseiTools = []string{
 
 // senseiLoopDeps holds all injectable dependencies for the sensei-loop command.
 type senseiLoopDeps struct {
-	getenv             func(string) string
-	findClaude         func() (string, error)
-	buildPrompt        func(agent.PromptConfig) string
-	buildContextBlob   func(dendraRoot, rootName string) (string, error)
-	writeSystemPrompt  func(string, string, string) (string, error)
-	writeLastSessionID func(string, string) error
-	readFile           func(string) ([]byte, error)
-	removeFile         func(string) error
-	newUUID            func() (string, error)
-	sleepFunc          func(time.Duration)
-	runCommand         func(name string, args []string) error
-	stdout             io.Writer
-	readLastSessionID  func(string) (string, error)
-	autoSummarize      func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
-	userHomeDir        func() (string, error)
-	newCLIInvoker      func() memory.ClaudeInvoker
-	consolidate                func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
+	getenv                    func(string) string
+	findClaude                func() (string, error)
+	buildPrompt               func(agent.PromptConfig) string
+	buildContextBlob          func(dendraRoot, rootName string) (string, error)
+	writeSystemPrompt         func(string, string, string) (string, error)
+	writeLastSessionID        func(string, string) error
+	readFile                  func(string) ([]byte, error)
+	removeFile                func(string) error
+	newUUID                   func() (string, error)
+	sleepFunc                 func(time.Duration)
+	runCommand                func(name string, args []string) error
+	stdout                    io.Writer
+	readLastSessionID         func(string) (string, error)
+	autoSummarize             func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
+	userHomeDir               func() (string, error)
+	newCLIInvoker             func() memory.ClaudeInvoker
+	consolidate               func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
 	updatePersistentKnowledge func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error
 	listRecentSessions        func(dendraRoot string, n int) ([]memory.Session, []string, error)
 	readTimeline              func(dendraRoot string) ([]memory.TimelineEntry, error)
@@ -61,13 +61,13 @@ type senseiLoopDeps struct {
 // defaultSenseiLoopDeps wires real implementations.
 func defaultSenseiLoopDeps() *senseiLoopDeps {
 	return &senseiLoopDeps{
-		getenv:             os.Getenv,
-		findClaude:         func() (string, error) { return exec.LookPath("claude") },
+		getenv:      os.Getenv,
+		findClaude:  func() (string, error) { return exec.LookPath("claude") },
 		buildPrompt: agent.BuildRootPrompt,
 		buildContextBlob: func(dendraRoot, rootName string) (string, error) {
 			return memory.BuildContextBlob(dendraRoot, rootName)
 		},
-		writeSystemPrompt: state.WriteSystemPrompt,
+		writeSystemPrompt:  state.WriteSystemPrompt,
 		writeLastSessionID: memory.WriteLastSessionID,
 		readFile:           os.ReadFile,
 		removeFile:         os.Remove,
@@ -80,11 +80,11 @@ func defaultSenseiLoopDeps() *senseiLoopDeps {
 			cmd.Stderr = os.Stderr
 			return cmd.Run()
 		},
-		stdout:            os.Stdout,
-		readLastSessionID: memory.ReadLastSessionID,
-		autoSummarize:     memory.AutoSummarize,
-		userHomeDir:       os.UserHomeDir,
-		newCLIInvoker:     func() memory.ClaudeInvoker { return memory.NewCLIInvoker() },
+		stdout:                    os.Stdout,
+		readLastSessionID:         memory.ReadLastSessionID,
+		autoSummarize:             memory.AutoSummarize,
+		userHomeDir:               os.UserHomeDir,
+		newCLIInvoker:             func() memory.ClaudeInvoker { return memory.NewCLIInvoker() },
 		consolidate:               memory.Consolidate,
 		updatePersistentKnowledge: memory.UpdatePersistentKnowledge,
 		listRecentSessions:        memory.ListRecentSessions,
@@ -97,7 +97,7 @@ var senseiLoopCmd = &cobra.Command{
 	Short:  "Run the sensei lifecycle loop (internal use)",
 	Hidden: true,
 	Args:   cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		deps := defaultSenseiLoopDeps()
 
 		ctx, cancel := context.WithCancel(context.Background())

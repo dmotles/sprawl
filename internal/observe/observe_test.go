@@ -27,7 +27,7 @@ func (m *mockRunner) HasWindow(sessionName, windowName string) bool {
 	return m.hasWindowResults[sessionName+":"+windowName]
 }
 
-func (m *mockRunner) NewSession(string, map[string]string, string) error            { return nil }
+func (m *mockRunner) NewSession(string, map[string]string, string) error { return nil }
 func (m *mockRunner) NewSessionWithWindow(string, string, map[string]string, string) error {
 	return nil
 }
@@ -40,10 +40,6 @@ func (m *mockRunner) Attach(string) error                                       
 
 // Compile-time check that mockRunner satisfies tmux.Runner.
 var _ tmux.Runner = (*mockRunner)(nil)
-
-func boolPtr(b bool) *bool {
-	return &b
-}
 
 // ---------------------------------------------------------------------------
 // LoadAll tests

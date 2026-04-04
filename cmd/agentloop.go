@@ -62,13 +62,11 @@ type agentLoopDeps struct {
 // defaultAgentLoopDeps wires real implementations.
 func defaultAgentLoopDeps() *agentLoopDeps {
 	return &agentLoopDeps{
-		getenv:     os.Getenv,
-		loadAgent:  state.LoadAgent,
-		nextTask:   state.NextTask,
-		updateTask: state.UpdateTask,
-		listMessages: func(root, ag, filter string) ([]*messages.Message, error) {
-			return messages.List(root, ag, filter)
-		},
+		getenv:       os.Getenv,
+		loadAgent:    state.LoadAgent,
+		nextTask:     state.NextTask,
+		updateTask:   state.UpdateTask,
+		listMessages: messages.List,
 		sendMessage: func(root, from, to, subject, body string) error {
 			return messages.Send(root, from, to, subject, body)
 		},
@@ -106,7 +104,7 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 			return agentloop.NewProcess(config, starter, agentloop.WithObserver(observer))
 		},
 		newWorkLock: func(lockDir, agentName string) (*workLock, error) {
-			if err := os.MkdirAll(lockDir, 0755); err != nil {
+			if err := os.MkdirAll(lockDir, 0o755); err != nil { //nolint:gosec // G301: world-readable lock dir is intentional
 				return nil, fmt.Errorf("creating locks directory: %w", err)
 			}
 			lockPath := filepath.Join(lockDir, agentName+".lock")
@@ -243,7 +241,7 @@ var agentLoopCmd = &cobra.Command{
 	Short:  "Run the agent loop for a named agent (internal use)",
 	Hidden: true,
 	Args:   cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps := defaultAgentLoopDeps()
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -368,7 +366,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 
 	// Create log file
 	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agentName, "logs")
-	if err := deps.mkdirAll(logsDir, 0755); err != nil {
+	if err := deps.mkdirAll(logsDir, 0o755); err != nil {
 		return fmt.Errorf("creating logs directory: %w", err)
 	}
 	logFile, err := deps.createFile(filepath.Join(logsDir, agentState.SessionID+".log"))

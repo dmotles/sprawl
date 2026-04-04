@@ -130,7 +130,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	}, nil
 }
 
-func dryRun(cfg *Config, deps *Deps) (*Result, error) {
+func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // error return kept for interface consistency
 	mergeBase, err := deps.GitMergeBase(cfg.DendraRoot, cfg.ParentBranch, cfg.AgentBranch)
 	if err != nil {
 		mergeBase = "(unknown)"

@@ -399,8 +399,8 @@ func TestCompressTimeline_CustomConfig(t *testing.T) {
 		MonthlySummaryAge: 20 * 24 * time.Hour,
 	}
 	entries := []TimelineEntry{
-		te(5, "recent"),  // < 10 days -> recent
-		te(15, "weekly"), // 10-20 days -> weekly
+		te(5, "recent"),   // < 10 days -> recent
+		te(15, "weekly"),  // 10-20 days -> weekly
 		te(25, "monthly"), // >= 20 days -> monthly
 	}
 	got := CompressTimeline(entries, cfg, compressNow)
@@ -750,15 +750,15 @@ func TestPruneTimeline_MaxEntriesBeforeMaxSizeChars(t *testing.T) {
 	singleSize := formattedSize(entries[0])
 	cfg := pruneCfg(4, singleSize*2)
 	got := PruneTimeline(entries, cfg, compressNow)
-	var real []TimelineEntry
+	var realEntries []TimelineEntry
 	for _, e := range got {
 		if !strings.Contains(e.Summary, "earliest entries omitted") {
-			real = append(real, e)
+			realEntries = append(realEntries, e)
 		}
 	}
 	// After MaxEntries: 4 entries. After MaxSizeChars: ~2 entries.
-	if len(real) > 2 {
-		t.Errorf("expected at most 2 real entries, got %d: %v", len(real), summaries(real))
+	if len(realEntries) > 2 {
+		t.Errorf("expected at most 2 real entries, got %d: %v", len(realEntries), summaries(realEntries))
 	}
 }
 

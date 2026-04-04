@@ -69,26 +69,6 @@ func makeStatusTestDeps(agents []*state.AgentState, rootName string, runner tmux
 	}, buf
 }
 
-// makeStatusTestDepsWithWriter is like makeStatusTestDeps but uses a custom writer.
-func makeStatusTestDepsWithWriter(agents []*state.AgentState, rootName string, runner tmux.Runner, w io.Writer) *statusDeps {
-	return &statusDeps{
-		observeDeps: observe.Deps{
-			TmuxRunner:    runner,
-			ListAgents:    func(string) ([]*state.AgentState, error) { return agents, nil },
-			ReadRootName:  func(string) string { return rootName },
-			ReadNamespace: func(string) string { return "test" },
-		},
-		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
-				return "/fake"
-			}
-			return ""
-		},
-		stdout: w,
-		stderr: io.Discard,
-	}
-}
-
 func TestRunStatus_MissingDendraRoot(t *testing.T) {
 	buf := &bytes.Buffer{}
 	deps := &statusDeps{
@@ -510,8 +490,10 @@ func TestRunStatus_JSON(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active",
-			TmuxSession: "sess", TmuxWindow: "win", LastReportType: "status", LastReportMessage: "working"},
+		{
+			Name: "alpha", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active",
+			TmuxSession: "sess", TmuxWindow: "win", LastReportType: "status", LastReportMessage: "working",
+		},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "sensei", runner)

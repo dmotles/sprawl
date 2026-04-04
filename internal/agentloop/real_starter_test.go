@@ -89,7 +89,7 @@ func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 		"-p": false, "--input-format": false, "--output-format": false,
 		"--verbose": false, "--model": false, "--effort": false,
 		"--permission-mode": false,
-		"--session-id": false, "--system-prompt": false, "--resume": false,
+		"--session-id":      false, "--system-prompt": false, "--resume": false,
 	}
 	for _, arg := range args {
 		if _, ok := expected[arg]; ok {

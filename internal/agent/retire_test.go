@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -34,9 +35,11 @@ func (m *retireTestRunner) HasSession(name string) bool   { return m.hasSession 
 func (m *retireTestRunner) NewSession(name string, env map[string]string, shellCmd string) error {
 	return nil
 }
+
 func (m *retireTestRunner) NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
 	return nil
 }
+
 func (m *retireTestRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
 	return nil
 }
@@ -80,7 +83,7 @@ func newTestRetireDeps(t *testing.T) (*RetireDeps, *retireTestRunner, string) {
 		Stderr:         io.Discard,
 	}
 
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, runner, tmpDir
 }
@@ -354,10 +357,10 @@ func TestRetireAgent_CleansUpLogs(t *testing.T) {
 
 	// Create a logs directory with a fake log file.
 	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("failed to create logs dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(logsDir, "agent.log"), []byte("log data"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(logsDir, "agent.log"), []byte("log data"), 0o644); err != nil {
 		t.Fatalf("failed to create log file: %v", err)
 	}
 
@@ -401,11 +404,11 @@ func TestRetireAgent_ArchivesMessages(t *testing.T) {
 	// Create message files in new/ and cur/
 	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", "alice")
 	for _, sub := range []string{"new", "cur", "sent", "archive"} {
-		os.MkdirAll(filepath.Join(msgsDir, sub), 0755)
+		os.MkdirAll(filepath.Join(msgsDir, sub), 0o755)
 	}
-	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0644)
-	os.WriteFile(filepath.Join(msgsDir, "cur", "msg2.json"), []byte(`{}`), 0644)
-	os.WriteFile(filepath.Join(msgsDir, "sent", "msg3.json"), []byte(`{}`), 0644)
+	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0o644)
+	os.WriteFile(filepath.Join(msgsDir, "cur", "msg2.json"), []byte(`{}`), 0o644)
+	os.WriteFile(filepath.Join(msgsDir, "sent", "msg3.json"), []byte(`{}`), 0o644)
 
 	var archived []string
 	deps.ArchiveMessage = func(dendraRoot, agentName, msgID string) error {
@@ -476,8 +479,8 @@ func TestRetireAgent_ArchiveMessages_FailureIsWarning(t *testing.T) {
 
 	// Create a message in new/
 	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", "alice")
-	os.MkdirAll(filepath.Join(msgsDir, "new"), 0755)
-	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0644)
+	os.MkdirAll(filepath.Join(msgsDir, "new"), 0o755)
+	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0o644)
 
 	deps.ArchiveMessage = func(dendraRoot, agentName, msgID string) error {
 		return errors.New("archive failed")
@@ -519,10 +522,10 @@ func TestRetireAgent_ArchiveMessages_NewAgentHasEmptyInbox(t *testing.T) {
 	// Create messages in new/ and cur/
 	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", agentName)
 	for _, sub := range []string{"new", "cur", "archive"} {
-		os.MkdirAll(filepath.Join(msgsDir, sub), 0755)
+		os.MkdirAll(filepath.Join(msgsDir, sub), 0o755)
 	}
-	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0644)
-	os.WriteFile(filepath.Join(msgsDir, "cur", "msg2.json"), []byte(`{}`), 0644)
+	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0o644)
+	os.WriteFile(filepath.Join(msgsDir, "cur", "msg2.json"), []byte(`{}`), 0o644)
 
 	// Use real archive: move files from new/cur to archive
 	deps.ArchiveMessage = func(dendraRoot, agnt, msgID string) error {
@@ -604,13 +607,7 @@ func TestGracefulShutdown_Normal(t *testing.T) {
 
 	// Sentinel should have been written.
 	expectedSentinel := filepath.Join(tmpDir, ".dendra", "agents", "alice.kill")
-	sentinelWritten := false
-	for _, p := range writtenPaths {
-		if p == expectedSentinel {
-			sentinelWritten = true
-			break
-		}
-	}
+	sentinelWritten := slices.Contains(writtenPaths, expectedSentinel)
 	if !sentinelWritten {
 		t.Errorf("expected sentinel file to be written at %s, got writes: %v", expectedSentinel, writtenPaths)
 	}
@@ -621,13 +618,7 @@ func TestGracefulShutdown_Normal(t *testing.T) {
 	}
 
 	// Sentinel should be cleaned up.
-	sentinelRemoved := false
-	for _, p := range removedPaths {
-		if p == expectedSentinel {
-			sentinelRemoved = true
-			break
-		}
-	}
+	sentinelRemoved := slices.Contains(removedPaths, expectedSentinel)
 	if !sentinelRemoved {
 		t.Errorf("expected sentinel file cleanup at %s, got removes: %v", expectedSentinel, removedPaths)
 	}

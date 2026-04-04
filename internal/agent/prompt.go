@@ -298,7 +298,7 @@ func BuildRootPrompt(cfg PromptConfig) string {
 		if idx != -1 {
 			base = base[:idx] + claudeCodeSubAgentGuidance + base[idx:]
 		} else {
-			base = base + claudeCodeSubAgentGuidance
+			base += claudeCodeSubAgentGuidance
 		}
 	}
 

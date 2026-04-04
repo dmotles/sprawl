@@ -24,7 +24,7 @@ These tests should already pass via `go test ./...`. They cover the mechanical p
 **Run all unit tests:**
 
 ```bash
-make build && go test ./...
+make validate
 ```
 
 All packages should report `ok`. No failures expected.

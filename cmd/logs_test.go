@@ -67,7 +67,7 @@ func TestRunLogs_NoLogsDir(t *testing.T) {
 func TestRunLogs_EmptyLogsDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
 
@@ -95,15 +95,15 @@ func TestRunLogs_EmptyLogsDir(t *testing.T) {
 func TestRunLogs_ShowsAllLogs(t *testing.T) {
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
 
 	// Create two log files
-	if err := os.WriteFile(filepath.Join(logsDir, "session-001.log"), []byte("log line 1\nlog line 2\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(logsDir, "session-001.log"), []byte("log line 1\nlog line 2\n"), 0o644); err != nil {
 		t.Fatalf("writing log file: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(logsDir, "session-002.log"), []byte("log line 3\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(logsDir, "session-002.log"), []byte("log line 3\n"), 0o644); err != nil {
 		t.Fatalf("writing log file: %v", err)
 	}
 
@@ -154,7 +154,7 @@ func TestRunLogs_ShowsAllLogs(t *testing.T) {
 func TestRunLogs_TailLines(t *testing.T) {
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestRunLogs_TailLines(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	content := strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(logsDir, "session-001.log"), []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(logsDir, "session-001.log"), []byte(content), 0o644); err != nil {
 		t.Fatalf("writing log file: %v", err)
 	}
 
@@ -206,7 +206,7 @@ func TestRunLogs_TailLines(t *testing.T) {
 func TestRunLogs_TailMoreThanAvailable(t *testing.T) {
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
-	if err := os.MkdirAll(logsDir, 0755); err != nil {
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestRunLogs_TailMoreThanAvailable(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	content := strings.Join(lines, "\n") + "\n"
-	if err := os.WriteFile(filepath.Join(logsDir, "session-001.log"), []byte(content), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(logsDir, "session-001.log"), []byte(content), 0o644); err != nil {
 		t.Fatalf("writing log file: %v", err)
 	}
 

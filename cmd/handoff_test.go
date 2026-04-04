@@ -22,11 +22,11 @@ func newTestHandoffDeps(t *testing.T) (*handoffDeps, string) {
 
 	// Set up last-session-id file
 	memDir := filepath.Join(tmpDir, ".dendra", "memory")
-	os.MkdirAll(memDir, 0755)
-	os.WriteFile(filepath.Join(memDir, "last-session-id"), []byte("test-session-123"), 0644)
+	os.MkdirAll(memDir, 0o755)
+	os.WriteFile(filepath.Join(memDir, "last-session-id"), []byte("test-session-123"), 0o644)
 
 	// Set up agents directory
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	var stdout bytes.Buffer
 	deps := &handoffDeps{

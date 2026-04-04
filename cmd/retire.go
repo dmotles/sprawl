@@ -18,14 +18,14 @@ import (
 
 // retireDeps holds the dependencies for the retire command, enabling testability.
 type retireDeps struct {
-	tmuxRunner     tmux.Runner
-	getenv         func(string) string
-	writeFile      func(string, []byte, os.FileMode) error
-	removeFile     func(string) error
-	sleepFunc      func(time.Duration)
-	worktreeRemove  func(repoRoot, worktreePath string, force bool) error
-	gitStatus       func(worktreePath string) (string, error)
-	removeAll       func(string) error
+	tmuxRunner          tmux.Runner
+	getenv              func(string) string
+	writeFile           func(string, []byte, os.FileMode) error
+	removeFile          func(string) error
+	sleepFunc           func(time.Duration)
+	worktreeRemove      func(repoRoot, worktreePath string, force bool) error
+	gitStatus           func(worktreePath string) (string, error)
+	removeAll           func(string) error
 	gitBranchDelete     func(repoRoot, branchName string) error
 	gitBranchIsMerged   func(repoRoot, branchName string) (bool, error)
 	gitBranchSafeDelete func(repoRoot, branchName string) error
@@ -57,7 +57,7 @@ var retireCmd = &cobra.Command{
 	Short: "Full teardown: stop process, close tmux, remove worktree, delete state",
 	Long:  "Full agent teardown. Three workflows:\n\n  dendra retire <agent>          preserve branch, warn if unmerged\n  dendra retire --merge <agent>   merge into your branch, then retire\n  dendra retire --abandon <agent> delete branch and all work",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, args []string) error {
 		deps, err := resolveRetireDeps()
 		if err != nil {
 			return err
@@ -77,14 +77,14 @@ func resolveRetireDeps() (*retireDeps, error) {
 	}
 
 	return &retireDeps{
-		tmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
-		getenv:         os.Getenv,
-		writeFile:      os.WriteFile,
-		removeFile:     os.Remove,
-		sleepFunc:      time.Sleep,
-		worktreeRemove:  realWorktreeRemove,
-		gitStatus:       realGitStatus,
-		removeAll:       os.RemoveAll,
+		tmuxRunner:          &tmux.RealRunner{TmuxPath: tmuxPath},
+		getenv:              os.Getenv,
+		writeFile:           os.WriteFile,
+		removeFile:          os.Remove,
+		sleepFunc:           time.Sleep,
+		worktreeRemove:      realWorktreeRemove,
+		gitStatus:           realGitStatus,
+		removeAll:           os.RemoveAll,
 		gitBranchDelete:     realGitBranchDelete,
 		gitBranchIsMerged:   realGitBranchIsMerged,
 		gitBranchSafeDelete: realGitBranchSafeDelete,
@@ -192,7 +192,7 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 			for i, c := range children {
 				names[i] = c.Name
 			}
-			return fmt.Errorf("%s has %d active children: %s\nUse --cascade to retire %s and all descendants.\nUse --force to retire %s only (children become orphans).",
+			return fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
 				agentName, len(children), strings.Join(names, ", "), agentName, agentName)
 		}
 	}
@@ -231,21 +231,22 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 }
 
 func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, deps *retireDeps, dendraRoot string) {
-	if abandon && agentState.Branch != "" {
+	switch {
+	case abandon && agentState.Branch != "":
 		if err := deps.gitBranchDelete(dendraRoot, agentState.Branch); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not delete branch %s: %v\n", agentState.Branch, err)
 			fmt.Fprintf(os.Stderr, "Retired agent %q (branch %s preserved)\n", agentState.Name, agentState.Branch)
 		} else {
 			fmt.Fprintf(os.Stderr, "Retired %q and deleted branch %s\n", agentState.Name, agentState.Branch)
 		}
-	} else if mergeFirst && agentState.Branch != "" {
+	case mergeFirst && agentState.Branch != "":
 		if err := deps.gitBranchSafeDelete(dendraRoot, agentState.Branch); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not delete branch %s: %v\n", agentState.Branch, err)
 			fmt.Fprintf(os.Stderr, "Merged and retired %q (branch %s preserved)\n", agentState.Name, agentState.Branch)
 		} else {
 			fmt.Fprintf(os.Stderr, "Merged and retired %q, deleted branch %s\n", agentState.Name, agentState.Branch)
 		}
-	} else {
+	default:
 		if agentState.Branch != "" {
 			merged, err := deps.gitBranchIsMerged(dendraRoot, agentState.Branch)
 			if err == nil && merged {

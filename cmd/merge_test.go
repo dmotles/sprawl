@@ -38,7 +38,7 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 		stderr:       io.Discard,
 	}
 
-	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
+	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, tmpDir
 }

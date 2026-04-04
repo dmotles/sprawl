@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -195,7 +196,7 @@ func TestReaderControlRequest(t *testing.T) {
 		t.Fatal("Request is nil, expected non-nil json.RawMessage")
 	}
 	// Verify the request payload is valid JSON containing expected fields
-	var reqPayload map[string]interface{}
+	var reqPayload map[string]any
 	if err := json.Unmarshal(cr.Request, &reqPayload); err != nil {
 		t.Fatalf("Unmarshal Request payload: %v", err)
 	}
@@ -290,7 +291,7 @@ func TestReaderStreamEvent(t *testing.T) {
 		t.Error("Event is nil, expected non-nil json.RawMessage")
 	}
 	// Verify event content is parseable
-	var eventPayload map[string]interface{}
+	var eventPayload map[string]any
 	if err := json.Unmarshal(se.Event, &eventPayload); err != nil {
 		t.Fatalf("Unmarshal Event: %v", err)
 	}
@@ -316,7 +317,7 @@ func TestReaderEmptyLines(t *testing.T) {
 
 	// Should get EOF after the single message
 	msg2, err2 := r.Next()
-	if err2 != io.EOF {
+	if !errors.Is(err2, io.EOF) {
 		t.Errorf("second Next() error = %v, want io.EOF", err2)
 	}
 	if msg2 != nil {
@@ -332,7 +333,7 @@ func TestReaderMalformedJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("Next() expected error for malformed JSON, got nil")
 	}
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		t.Fatal("Next() returned io.EOF, expected JSON parse error")
 	}
 }
@@ -341,7 +342,7 @@ func TestReaderEOF(t *testing.T) {
 	r := NewReader(strings.NewReader(""))
 
 	msg, err := r.Next()
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Errorf("Next() error = %v, want io.EOF", err)
 	}
 	if msg != nil {
@@ -361,7 +362,7 @@ func TestReaderMultipleMessages(t *testing.T) {
 	expectedTypes := []string{"system", "assistant", "result"}
 	expectedUUIDs := []string{"u1", "u2", "u3"}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		msg, err := r.Next()
 		if err != nil {
 			t.Fatalf("Next() #%d error: %v", i, err)
@@ -382,7 +383,7 @@ func TestReaderMultipleMessages(t *testing.T) {
 
 	// Fourth call should be EOF
 	msg, err := r.Next()
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		t.Errorf("fourth Next() error = %v, want io.EOF", err)
 	}
 	if msg != nil {

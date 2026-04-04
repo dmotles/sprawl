@@ -66,7 +66,7 @@ func ReadSessionLog(path string, maxMessages int, maxBytes int) (string, error) 
 			continue
 		}
 
-		var entry map[string]interface{}
+		var entry map[string]any
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue // skip malformed lines
 		}
@@ -76,7 +76,7 @@ func ReadSessionLog(path string, maxMessages int, maxBytes int) (string, error) 
 			continue
 		}
 
-		msgObj, ok := entry["message"].(map[string]interface{})
+		msgObj, ok := entry["message"].(map[string]any)
 		if !ok {
 			continue
 		}
@@ -90,10 +90,10 @@ func ReadSessionLog(path string, maxMessages int, maxBytes int) (string, error) 
 		switch c := msgObj["content"].(type) {
 		case string:
 			content = c
-		case []interface{}:
+		case []any:
 			var parts []string
 			for _, block := range c {
-				blockMap, ok := block.(map[string]interface{})
+				blockMap, ok := block.(map[string]any)
 				if !ok {
 					continue
 				}

@@ -29,11 +29,11 @@ func GracefulShutdown(deps *ShutdownDeps, dendraRoot string, agentState *state.A
 
 	// Write sentinel file
 	killPath := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".kill")
-	_ = deps.WriteFile(killPath, []byte("kill"), 0644)
+	_ = deps.WriteFile(killPath, []byte("kill"), 0o644)
 
 	// Poll: wait for window to disappear
 	graceful := false
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		_, err := deps.TmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
 		if err != nil {
 			graceful = true
@@ -83,7 +83,7 @@ func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, f
 	if agent.Worktree != "" && !agent.Subagent {
 		statusOutput, err := deps.GitStatus(agent.Worktree)
 		if err == nil && statusOutput != "" && !force {
-			return fmt.Errorf("%s has uncommitted changes in worktree.\nCommit first or use --force to discard.", agent.Name)
+			return fmt.Errorf("agent %s has uncommitted changes in worktree; commit first or use --force to discard", agent.Name)
 		}
 
 		// Remove worktree

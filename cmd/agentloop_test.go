@@ -23,19 +23,19 @@ import (
 
 // mockProcessManager implements the processManager interface for testing.
 type mockProcessManager struct {
-	mu               sync.Mutex
-	startErr         error
-	sendResults      []*protocol.ResultMessage
-	sendErrors       []error
-	sendIndex        int
-	stopErr          error
-	running          bool
-	startCalled      bool
-	stopCalled       bool
-	interruptCalled  bool
-	interruptErr     error
-	prompts          []string
-	configs          []agentloop.ProcessConfig
+	mu              sync.Mutex
+	startErr        error
+	sendResults     []*protocol.ResultMessage
+	sendErrors      []error
+	sendIndex       int
+	stopErr         error
+	running         bool
+	startCalled     bool
+	stopCalled      bool
+	interruptCalled bool
+	interruptErr    error
+	prompts         []string
+	configs         []agentloop.ProcessConfig
 }
 
 func (m *mockProcessManager) Start(ctx context.Context, initialPrompt string) error {
@@ -125,18 +125,10 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 			}
 			return ""
 		},
-		loadAgent: func(root, name string) (*state.AgentState, error) {
-			return state.LoadAgent(root, name)
-		},
-		nextTask: func(root, name string) (*state.Task, error) {
-			return state.NextTask(root, name)
-		},
-		updateTask: func(root, name string, task *state.Task) error {
-			return state.UpdateTask(root, name, task)
-		},
-		listMessages: func(root, agent, filter string) ([]*messages.Message, error) {
-			return messages.List(root, agent, filter)
-		},
+		loadAgent:    state.LoadAgent,
+		nextTask:     state.NextTask,
+		updateTask:   state.UpdateTask,
+		listMessages: messages.List,
 		sendMessage: func(root, from, to, subject, body string) error {
 			return messages.Send(root, from, to, subject, body)
 		},
@@ -157,9 +149,9 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 			sleepCalls++
 			sleepMu.Unlock()
 		},
-		mkdirAll:   func(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) },
-		createFile: func(path string) (*os.File, error) { return os.Create(path) },
-		stdout: &bytes.Buffer{},
+		mkdirAll:   os.MkdirAll,
+		createFile: os.Create,
+		stdout:     &bytes.Buffer{},
 		exit: func(code int) {
 			exitCode = code
 			exitCalled = true
@@ -337,8 +329,8 @@ func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
 	// Create a task with an explicit PromptFile set (simulating new-style task)
 	promptContent := "do important work"
 	promptFilePath := filepath.Join(tmpDir, ".dendra", "agents", "ash", "prompts", "explicit-task.md")
-	os.MkdirAll(filepath.Dir(promptFilePath), 0755)
-	os.WriteFile(promptFilePath, []byte(promptContent), 0644)
+	os.MkdirAll(filepath.Dir(promptFilePath), 0o755)
+	os.WriteFile(promptFilePath, []byte(promptContent), 0o644)
 
 	task := &state.Task{
 		ID:         "explicit-task-id",
@@ -348,9 +340,9 @@ func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
 		CreatedAt:  "2026-03-31T12:00:00Z",
 	}
 	tasksDir := state.TasksDir(tmpDir, "ash")
-	os.MkdirAll(tasksDir, 0755)
+	os.MkdirAll(tasksDir, 0o755)
 	taskData, _ := json.Marshal(task)
-	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-explicit-task-id.json"), taskData, 0644)
+	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-explicit-task-id.json"), taskData, 0o644)
 
 	mockProc.sendResults = []*protocol.ResultMessage{
 		{Type: "result", Result: "done"},
@@ -382,9 +374,9 @@ func TestRunAgentLoop_TaskDelivery_FallbackRawPrompt(t *testing.T) {
 	}
 	// Write task JSON directly (bypassing EnqueueTask which now sets PromptFile)
 	tasksDir := state.TasksDir(tmpDir, "ash")
-	os.MkdirAll(tasksDir, 0755)
+	os.MkdirAll(tasksDir, 0o755)
 	taskData, _ := json.Marshal(task)
-	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-legacy-task-id.json"), taskData, 0644)
+	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-legacy-task-id.json"), taskData, 0o644)
 
 	mockProc.sendResults = []*protocol.ResultMessage{
 		{Type: "result", Result: "done"},
@@ -1727,9 +1719,9 @@ type blockingSendProcessManager struct {
 }
 
 func (b *blockingSendProcessManager) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
-	b.mockProcessManager.mu.Lock()
-	b.mockProcessManager.prompts = append(b.mockProcessManager.prompts, prompt)
-	b.mockProcessManager.mu.Unlock()
+	b.mu.Lock()
+	b.prompts = append(b.prompts, prompt)
+	b.mu.Unlock()
 	<-b.sendCh
 	return b.result, nil
 }
