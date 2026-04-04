@@ -1166,3 +1166,180 @@ func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(
 		t.Errorf("expected consolidate (idx=%d) to be called before updatePersistentKnowledge (idx=%d)", consolidateIdx, updatePKIdx)
 	}
 }
+
+func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var consolidateCalled bool
+	var updatePKCalled bool
+	var capturedSummary string
+	var capturedBullets string
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Previous session exists (missed handoff scenario)
+	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+		return "prev-session-id", nil
+	}
+
+	// autoSummarize returns true (it actually summarized)
+	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		return true, nil
+	}
+
+	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		mu.Lock()
+		consolidateCalled = true
+		mu.Unlock()
+		return nil
+	}
+
+	deps.listRecentSessions = func(root string, n int) ([]memory.Session, []string, error) {
+		return []memory.Session{
+			{SessionID: "prev-session-id", Timestamp: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)},
+		}, []string{"auto-summarized content"}, nil
+	}
+
+	deps.readTimeline = func(root string) ([]memory.TimelineEntry, error) {
+		return []memory.TimelineEntry{
+			{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Timeline entry"},
+		}, nil
+	}
+
+	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		mu.Lock()
+		updatePKCalled = true
+		capturedSummary = sessionSummary
+		capturedBullets = timelineBullets
+		mu.Unlock()
+		return nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !consolidateCalled {
+		t.Error("expected consolidate to be called after auto-summarize")
+	}
+	if !updatePKCalled {
+		t.Error("expected updatePersistentKnowledge to be called after auto-summarize")
+	}
+	if capturedSummary != "auto-summarized content" {
+		t.Errorf("expected sessionSummary %q, got %q", "auto-summarized content", capturedSummary)
+	}
+	if !strings.Contains(capturedBullets, "Timeline entry") {
+		t.Error("expected timelineBullets to contain 'Timeline entry'")
+	}
+}
+
+func TestRunSenseiLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var consolidateCalled bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Previous session exists
+	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+		return "prev-session-id", nil
+	}
+
+	// autoSummarize returns false (already summarized, no-op)
+	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		return false, nil
+	}
+
+	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		mu.Lock()
+		consolidateCalled = true
+		mu.Unlock()
+		return nil
+	}
+
+	// No handoff signal either
+	deps.runCommand = func(name string, args []string) error {
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if consolidateCalled {
+		t.Error("expected consolidate NOT to be called when auto-summarize is a no-op")
+	}
+}
+
+func TestRunSenseiLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing.T) {
+	deps := newTestSenseiLoopDeps(t)
+
+	var mu sync.Mutex
+	var claudeRan bool
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var buf strings.Builder
+	deps.stdout = &buf
+
+	// Previous session exists (missed handoff)
+	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+		return "prev-session-id", nil
+	}
+
+	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		return true, nil
+	}
+
+	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		return fmt.Errorf("consolidation failed")
+	}
+
+	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		return fmt.Errorf("knowledge update failed")
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		mu.Lock()
+		claudeRan = true
+		mu.Unlock()
+		cancel()
+		return nil
+	}
+
+	err := runSenseiLoop(ctx, deps)
+	if err != nil {
+		t.Fatalf("expected nil error (loop should continue despite consolidation errors), got: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !claudeRan {
+		t.Error("expected claude to still run despite consolidation errors after auto-summarize")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "consolidat") {
+		t.Errorf("expected warning about consolidation in output, got: %q", output)
+	}
+}

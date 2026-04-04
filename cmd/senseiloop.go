@@ -154,6 +154,7 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 					fmt.Fprintf(deps.stdout, "[sensei-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
 				} else if summarized {
 					fmt.Fprintf(deps.stdout, "[sensei-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
+					runConsolidationPipeline(ctx, deps, dendraRoot)
 				}
 			}
 		}
@@ -237,37 +238,41 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 			_ = deps.removeFile(handoffPath)
 			fmt.Fprintf(deps.stdout, "[sensei-loop] handoff signal detected, restarting\n")
 
-			// Run memory consolidation post-handoff (best-effort).
-			if consolidateErr := deps.consolidate(ctx, dendraRoot, deps.newCLIInvoker(), nil, nil); consolidateErr != nil {
-				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: consolidation failed: %v\n", consolidateErr)
-			}
-
-			// Update persistent knowledge post-handoff (best-effort).
-			var sessionSummary string
-			if sessions, bodies, listErr := deps.listRecentSessions(dendraRoot, 1); listErr != nil {
-				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading latest session for persistent knowledge: %v\n", listErr)
-			} else if len(sessions) > 0 && len(bodies) > 0 {
-				sessionSummary = bodies[0]
-			}
-
-			var timelineBullets string
-			if entries, tlErr := deps.readTimeline(dendraRoot); tlErr != nil {
-				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading timeline for persistent knowledge: %v\n", tlErr)
-			} else {
-				var tlb strings.Builder
-				for _, e := range entries {
-					fmt.Fprintf(&tlb, "- %s: %s\n", e.Timestamp.UTC().Format(time.RFC3339), e.Summary)
-				}
-				timelineBullets = tlb.String()
-			}
-
-			if pkErr := deps.updatePersistentKnowledge(ctx, dendraRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets); pkErr != nil {
-				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: persistent knowledge update failed: %v\n", pkErr)
-			}
+			runConsolidationPipeline(ctx, deps, dendraRoot)
 		} else {
 			fmt.Fprintf(deps.stdout, "[sensei-loop] session ended, restarting\n")
 		}
 
 		// 7. Loop back to step 1.
+	}
+}
+
+// runConsolidationPipeline runs timeline consolidation and persistent knowledge
+// update. Both steps are best-effort: failures are logged as warnings.
+func runConsolidationPipeline(ctx context.Context, deps *senseiLoopDeps, dendraRoot string) {
+	if err := deps.consolidate(ctx, dendraRoot, deps.newCLIInvoker(), nil, nil); err != nil {
+		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: consolidation failed: %v\n", err)
+	}
+
+	var sessionSummary string
+	if sessions, bodies, err := deps.listRecentSessions(dendraRoot, 1); err != nil {
+		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading latest session for persistent knowledge: %v\n", err)
+	} else if len(sessions) > 0 && len(bodies) > 0 {
+		sessionSummary = bodies[0]
+	}
+
+	var timelineBullets string
+	if entries, err := deps.readTimeline(dendraRoot); err != nil {
+		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading timeline for persistent knowledge: %v\n", err)
+	} else {
+		var tlb strings.Builder
+		for _, e := range entries {
+			fmt.Fprintf(&tlb, "- %s: %s\n", e.Timestamp.UTC().Format(time.RFC3339), e.Summary)
+		}
+		timelineBullets = tlb.String()
+	}
+
+	if err := deps.updatePersistentKnowledge(ctx, dendraRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets); err != nil {
+		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: persistent knowledge update failed: %v\n", err)
 	}
 }
