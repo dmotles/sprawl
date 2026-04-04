@@ -53,7 +53,7 @@ func RealGitRevParseHead(worktree string) (string, error) {
 
 // RealGitResetSoft performs a soft reset to the given ref.
 func RealGitResetSoft(worktree, ref string) error {
-	cmd := exec.Command("git", "reset", "--soft", "--", ref)
+	cmd := exec.Command("git", "reset", "--soft", ref)
 	cmd.Dir = worktree
 	out, err := cmd.CombinedOutput()
 	if err != nil {
