@@ -80,3 +80,14 @@ eval "$(bash scripts/dendra-test-env.sh)"
 2. `make build` — binary compiles
 3. Manual smoke test: run the built `./dendra` binary with relevant commands
 4. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
+
+## Migration Notes
+
+### M12: Merge/Retire Workflow Change
+
+- `dendra merge` no longer retires agents or deletes branches. It only pulls in work via squash-merge. The agent stays alive.
+- `dendra retire --merge` replaces the old merge-and-retire-in-one-step behavior.
+- `dendra retire` now deletes the agent's branch by default and refuses if unmerged commits exist.
+- `dendra retire --abandon` discards work and deletes the branch without checking for unmerged commits.
+- The `--force` flag on merge has been removed.
+- **Pre-M12 branches**: Agent branches merged before M12 used the old squash-merge approach and will never appear in `git branch --merged`. Clean them up manually with `git branch -D <branch>`.

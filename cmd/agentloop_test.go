@@ -170,6 +170,12 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 			mockProc.mu.Unlock()
 			return mockProc
 		},
+		newWorkLock: func(lockDir, agentName string) (*workLock, error) {
+			return &workLock{
+				Acquire: func() error { return nil },
+				Release: func() error { return nil },
+			}, nil
+		},
 	}
 
 	// Suppress unused variable warnings by using them in a closure.
@@ -2372,4 +2378,297 @@ func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
 	if _, err := os.Stat(wakePath); err == nil {
 		t.Error("expected wake file to be consumed after inbox delivery, but it still exists")
 	}
+}
+
+func TestRunAgentLoop_LockAcquiredBeforeWork(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Queue a task so the loop has work to do.
+	if _, err := state.EnqueueTask(tmpDir, "ash", "implement feature X"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "done"},
+	}
+
+	// Track event ordering.
+	var mu sync.Mutex
+	var events []string
+
+	deps.newWorkLock = func(lockDir, agentName string) (*workLock, error) {
+		return &workLock{
+			Acquire: func() error {
+				mu.Lock()
+				events = append(events, "acquire")
+				mu.Unlock()
+				return nil
+			},
+			Release: func() error {
+				mu.Lock()
+				events = append(events, "release")
+				mu.Unlock()
+				return nil
+			},
+		}, nil
+	}
+
+	// Wrap newProcess to track send events.
+	origNewProcess := deps.newProcess
+	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
+		pm := origNewProcess(config, observer)
+		return &eventTrackingProcess{
+			processManager: pm,
+			onSend: func() {
+				mu.Lock()
+				events = append(events, "send")
+				mu.Unlock()
+			},
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify ordering: acquire must come before send, send before release.
+	acquireIdx, sendIdx, releaseIdx := -1, -1, -1
+	for i, e := range events {
+		switch e {
+		case "acquire":
+			if acquireIdx == -1 {
+				acquireIdx = i
+			}
+		case "send":
+			if sendIdx == -1 {
+				sendIdx = i
+			}
+		case "release":
+			if releaseIdx == -1 {
+				releaseIdx = i
+			}
+		}
+	}
+
+	if acquireIdx == -1 {
+		t.Fatal("lock was never acquired")
+	}
+	if sendIdx == -1 {
+		t.Fatal("SendPrompt was never called")
+	}
+	if releaseIdx == -1 {
+		t.Fatal("lock was never released")
+	}
+	if acquireIdx >= sendIdx {
+		t.Errorf("acquire (idx=%d) should happen before send (idx=%d)", acquireIdx, sendIdx)
+	}
+	if sendIdx >= releaseIdx {
+		t.Errorf("send (idx=%d) should happen before release (idx=%d)", sendIdx, releaseIdx)
+	}
+}
+
+// eventTrackingProcess wraps a processManager and calls onSend before each SendPrompt.
+type eventTrackingProcess struct {
+	processManager
+	onSend func()
+}
+
+func (e *eventTrackingProcess) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
+	if e.onSend != nil {
+		e.onSend()
+	}
+	return e.processManager.SendPrompt(ctx, prompt)
+}
+
+func TestRunAgentLoop_LockReleasedOnIdle(t *testing.T) {
+	deps, _, _ := newTestAgentLoopDeps(t)
+
+	// No tasks, no messages, no wake, no poke — idle loop.
+	var mu sync.Mutex
+	var events []string
+
+	deps.newWorkLock = func(lockDir, agentName string) (*workLock, error) {
+		return &workLock{
+			Acquire: func() error {
+				mu.Lock()
+				events = append(events, "acquire")
+				mu.Unlock()
+				return nil
+			},
+			Release: func() error {
+				mu.Lock()
+				events = append(events, "release")
+				mu.Unlock()
+				return nil
+			},
+		}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) {
+		mu.Lock()
+		events = append(events, "sleep")
+		mu.Unlock()
+		cancel()
+	}
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Lock should be acquired, then released, then sleep (lock NOT held during sleep).
+	acquireIdx, releaseIdx, sleepIdx := -1, -1, -1
+	for i, e := range events {
+		switch e {
+		case "acquire":
+			if acquireIdx == -1 {
+				acquireIdx = i
+			}
+		case "release":
+			if releaseIdx == -1 {
+				releaseIdx = i
+			}
+		case "sleep":
+			if sleepIdx == -1 {
+				sleepIdx = i
+			}
+		}
+	}
+
+	if acquireIdx == -1 {
+		t.Fatal("lock was never acquired")
+	}
+	if releaseIdx == -1 {
+		t.Fatal("lock was never released")
+	}
+	if sleepIdx == -1 {
+		t.Fatal("sleep was never called")
+	}
+	if acquireIdx >= releaseIdx {
+		t.Errorf("acquire (idx=%d) should happen before release (idx=%d)", acquireIdx, releaseIdx)
+	}
+	if releaseIdx >= sleepIdx {
+		t.Errorf("release (idx=%d) should happen before sleep (idx=%d)", releaseIdx, sleepIdx)
+	}
+}
+
+func TestRunAgentLoop_LockReleasedOnError(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Queue a task so the loop has work to do.
+	if _, err := state.EnqueueTask(tmpDir, "ash", "do work"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	// First send fails (crash), restart succeeds, second send succeeds.
+	mockProc.sendErrors = []error{errors.New("process crashed"), nil}
+	mockProc.sendResults = []*protocol.ResultMessage{
+		nil,
+		{Type: "result", Result: "done"},
+	}
+
+	var mu sync.Mutex
+	var releaseCalled bool
+
+	deps.newWorkLock = func(lockDir, agentName string) (*workLock, error) {
+		return &workLock{
+			Acquire: func() error { return nil },
+			Release: func() error {
+				mu.Lock()
+				releaseCalled = true
+				mu.Unlock()
+				return nil
+			},
+		}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "ash")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !releaseCalled {
+		t.Error("lock was not released after error/crash")
+	}
+}
+
+func TestRunAgentLoop_LockAcquireError(t *testing.T) {
+	deps, _, _ := newTestAgentLoopDeps(t)
+
+	deps.newWorkLock = func(lockDir, agentName string) (*workLock, error) {
+		return &workLock{
+			Acquire: func() error { return errors.New("lock acquire failed") },
+			Release: func() error { return nil },
+		}, nil
+	}
+
+	ctx := context.Background()
+	err := runAgentLoop(ctx, deps, "ash")
+	if err == nil {
+		t.Fatal("expected error when lock acquire fails")
+	}
+	if !strings.Contains(err.Error(), "lock") {
+		t.Errorf("error should mention lock, got: %v", err)
+	}
+}
+
+func TestRunAgentLoop_NewWorkLockError(t *testing.T) {
+	deps, _, _ := newTestAgentLoopDeps(t)
+
+	deps.newWorkLock = func(lockDir, agentName string) (*workLock, error) {
+		return nil, errors.New("cannot create lock")
+	}
+
+	ctx := context.Background()
+	err := runAgentLoop(ctx, deps, "ash")
+	if err == nil {
+		t.Fatal("expected error when newWorkLock fails")
+	}
+	if !strings.Contains(err.Error(), "lock") {
+		t.Errorf("error should mention lock, got: %v", err)
+	}
+}
+
+func TestRunAgentLoop_LockNotHeldDuringSleep(t *testing.T) {
+	deps, _, _ := newTestAgentLoopDeps(t)
+
+	var mu sync.Mutex
+	lockHeld := false
+
+	deps.newWorkLock = func(lockDir, agentName string) (*workLock, error) {
+		return &workLock{
+			Acquire: func() error {
+				mu.Lock()
+				lockHeld = true
+				mu.Unlock()
+				return nil
+			},
+			Release: func() error {
+				mu.Lock()
+				lockHeld = false
+				mu.Unlock()
+				return nil
+			},
+		}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) {
+		mu.Lock()
+		held := lockHeld
+		mu.Unlock()
+		if held {
+			t.Error("lock should NOT be held during sleep")
+		}
+		cancel()
+	}
+
+	_ = runAgentLoop(ctx, deps, "ash")
 }

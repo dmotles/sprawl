@@ -19,8 +19,15 @@ import (
 	"github.com/dmotles/dendra/internal/messages"
 	"github.com/dmotles/dendra/internal/protocol"
 	"github.com/dmotles/dendra/internal/state"
+	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
 )
+
+// workLock provides acquire/release functions for the agent work lock.
+type workLock struct {
+	Acquire func() error
+	Release func() error
+}
 
 // processManager is the interface for managing a Claude Code subprocess.
 type processManager interface {
@@ -44,19 +51,20 @@ type agentLoopDeps struct {
 	removeFile   func(string) error
 	buildPrompt  func(*state.AgentState) string
 	sleepFunc    func(time.Duration)
-	mkdirAll   func(string, os.FileMode) error
-	createFile func(string) (*os.File, error)
+	mkdirAll     func(string, os.FileMode) error
+	createFile   func(string) (*os.File, error)
 	stdout       io.Writer
 	exit         func(int)
 	newProcess   func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager
+	newWorkLock  func(lockDir, agentName string) (*workLock, error)
 }
 
 // defaultAgentLoopDeps wires real implementations.
 func defaultAgentLoopDeps() *agentLoopDeps {
 	return &agentLoopDeps{
-		getenv:    os.Getenv,
-		loadAgent: state.LoadAgent,
-		nextTask:  state.NextTask,
+		getenv:     os.Getenv,
+		loadAgent:  state.LoadAgent,
+		nextTask:   state.NextTask,
 		updateTask: state.UpdateTask,
 		listMessages: func(root, ag, filter string) ([]*messages.Message, error) {
 			return messages.List(root, ag, filter)
@@ -67,7 +75,7 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		findClaude: func() (string, error) {
 			return exec.LookPath("claude")
 		},
-		readFile:  os.ReadFile,
+		readFile:   os.ReadFile,
 		removeFile: os.Remove,
 		buildPrompt: func(a *state.AgentState) string {
 			testMode := os.Getenv("DENDRA_TEST_MODE") == "1"
@@ -91,11 +99,22 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		sleepFunc:  time.Sleep,
 		mkdirAll:   os.MkdirAll,
 		createFile: os.Create,
-		stdout:    os.Stdout,
-		exit:      os.Exit,
+		stdout:     os.Stdout,
+		exit:       os.Exit,
 		newProcess: func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
 			starter := &agentloop.RealCommandStarter{}
 			return agentloop.NewProcess(config, starter, agentloop.WithObserver(observer))
+		},
+		newWorkLock: func(lockDir, agentName string) (*workLock, error) {
+			if err := os.MkdirAll(lockDir, 0755); err != nil {
+				return nil, fmt.Errorf("creating locks directory: %w", err)
+			}
+			lockPath := filepath.Join(lockDir, agentName+".lock")
+			fl := flock.New(lockPath)
+			return &workLock{
+				Acquire: func() error { return fl.Lock() },
+				Release: func() error { return fl.Unlock() },
+			}, nil
 		},
 	}
 }
@@ -358,6 +377,13 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	}
 	defer logFile.Close()
 
+	// Create work lock for synchronization with merge operations.
+	lockDir := filepath.Join(dendraRoot, ".dendra", "locks")
+	wl, err := deps.newWorkLock(lockDir, agentName)
+	if err != nil {
+		return fmt.Errorf("creating work lock: %w", err)
+	}
+
 	// Tee output to both stdout and log file, then wrap with timestamps
 	deps.stdout = &timestampWriter{
 		w:       io.MultiWriter(deps.stdout, logFile),
@@ -465,6 +491,12 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			return nil
 		}
 
+		// Acquire the work lock before checking for work and invoking Claude.
+		// This synchronizes with merge operations that need exclusive branch access.
+		if err := wl.Acquire(); err != nil {
+			return fmt.Errorf("acquiring work lock: %w", err)
+		}
+
 		// 0.5. Check for poke file between turns (or consume pending poke from interrupt).
 		if pendingPoke == "" {
 			if content, readErr := deps.readFile(pokePath); readErr == nil {
@@ -489,9 +521,11 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			if sendErr != nil {
 				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on poke delivery, restarting: %v\n", sendErr)
 				if !restartWithResume() {
+					_ = wl.Release()
 					return nil
 				}
 			}
+			_ = wl.Release()
 			continue
 		}
 
@@ -521,6 +555,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			if sendErr != nil {
 				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on task %s, restarting: %v\n", task.ID, sendErr)
 				if !restartWithResume() {
+					_ = wl.Release()
 					return nil
 				}
 				// Retry on recovered process.
@@ -535,6 +570,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			// but the poke message takes priority for the next turn.
 			task.Status = "done"
 			_ = deps.updateTask(dendraRoot, agentName, task)
+			_ = wl.Release()
 			continue
 		}
 
@@ -563,12 +599,14 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			if sendErr != nil {
 				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on inbox delivery, restarting: %v\n", sendErr)
 				if !restartWithResume() {
+					_ = wl.Release()
 					return nil
 				}
 			}
 			// Consume any pending wake file — inbox delivery already notified the agent.
 			wakePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".wake")
 			_ = deps.removeFile(wakePath)
+			_ = wl.Release()
 			deps.sleepFunc(3 * time.Second)
 			continue
 		}
@@ -590,16 +628,19 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			if sendErr != nil {
 				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on wake, restarting: %v\n", sendErr)
 				if !restartWithResume() {
+					_ = wl.Release()
 					return nil
 				}
 			}
 			// Only remove the wake file after it has been successfully delivered.
 			_ = deps.removeFile(wakeFilePath)
 			// Continue immediately — let the inbox check pick up message details on the next iteration.
+			_ = wl.Release()
 			continue
 		}
 
-		// 4. Nothing to do — sleep and poll again.
+		// 4. Nothing to do — release lock and sleep.
+		_ = wl.Release()
 		deps.sleepFunc(3 * time.Second)
 	}
 }

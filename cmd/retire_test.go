@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dmotles/dendra/internal/merge"
 	"github.com/dmotles/dendra/internal/state"
 	"github.com/dmotles/dendra/internal/tmux"
 )
@@ -36,7 +39,26 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 		gitStatus: func(worktreePath string) (string, error) {
 			return "", nil // clean
 		},
-		removeAll: func(path string) error { return nil },
+		removeAll:       func(path string) error { return nil },
+		gitBranchDelete: func(repoRoot, branchName string) error { return nil },
+		gitBranchIsMerged: func(repoRoot, branchName string) (bool, error) {
+			return false, nil
+		},
+		gitBranchSafeDelete: func(repoRoot, branchName string) error {
+			return nil
+		},
+		doMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
+			return &merge.Result{}, nil
+		},
+		newMergeDeps: func() *merge.Deps {
+			return &merge.Deps{}
+		},
+		loadAgent: func(dendraRoot, name string) (*state.AgentState, error) {
+			return state.LoadAgent(dendraRoot, name)
+		},
+		currentBranch: func(repoRoot string) (string, error) {
+			return "main", nil
+		},
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0755)
@@ -60,7 +82,7 @@ func TestRetire_HappyPath(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -75,7 +97,7 @@ func TestRetire_HappyPath(t *testing.T) {
 func TestRetire_AgentNotFound(t *testing.T) {
 	deps, _, _ := newTestRetireDeps(t)
 
-	err := runRetire(deps, "nonexistent", false, false)
+	err := runRetire(deps, "nonexistent", false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for missing agent")
 	}
@@ -88,7 +110,7 @@ func TestRetire_MissingDendraRoot(t *testing.T) {
 	deps, _, _ := newTestRetireDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for missing DENDRA_ROOT")
 	}
@@ -113,7 +135,7 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for dirty worktree")
 	}
@@ -153,7 +175,7 @@ func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, true)
+	err := runRetire(deps, "alice", false, true, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error with --force: %v", err)
 	}
@@ -196,7 +218,7 @@ func TestRetire_WithChildren_Refuses(t *testing.T) {
 		Parent: "alice",
 	})
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for agent with children")
 	}
@@ -229,7 +251,7 @@ func TestRetire_WithChildren_ForceOrphans(t *testing.T) {
 		Parent: "alice",
 	})
 
-	err := runRetire(deps, "alice", false, true)
+	err := runRetire(deps, "alice", false, true, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error with --force: %v", err)
 	}
@@ -286,7 +308,7 @@ func TestRetire_Cascade(t *testing.T) {
 		Parent:      "bob",
 	})
 
-	err := runRetire(deps, "alice", true, false)
+	err := runRetire(deps, "alice", true, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error with --cascade: %v", err)
 	}
@@ -314,7 +336,7 @@ func TestRetire_CrashRecovery_RetiringState(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error during crash recovery: %v", err)
 	}
@@ -346,7 +368,7 @@ func TestRetire_EmptyWorktree_SkipsRemoval(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -372,7 +394,7 @@ func TestRetire_WorktreeRemoveFailure_WarnsButContinues(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -405,7 +427,7 @@ func TestRetire_ForceKillsProcess(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, true)
+	err := runRetire(deps, "alice", false, true, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -459,7 +481,7 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 		Parent:      "alice",
 	})
 
-	err := runRetire(deps, "alice", true, false)
+	err := runRetire(deps, "alice", true, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for dirty child worktree in cascade")
 	}
@@ -489,7 +511,7 @@ func TestRetire_Subagent_SkipsWorktreeCleanup(t *testing.T) {
 		Subagent:    true,
 	})
 
-	err := runRetire(deps, "sub-alice", false, false)
+	err := runRetire(deps, "sub-alice", false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -535,7 +557,7 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 		return os.RemoveAll(path)
 	}
 
-	err := runRetire(deps, "alice", false, false)
+	err := runRetire(deps, "alice", false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -548,5 +570,594 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 	// Verify the logs directory was actually removed.
 	if _, err := os.Stat(logsDir); !os.IsNotExist(err) {
 		t.Errorf("logs directory should have been removed, but still exists")
+	}
+}
+
+func TestRetire_Abandon_DeletesBranch(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	var deletedBranch string
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		deletedBranch = branchName
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if deletedBranch != "dendra/alice" {
+		t.Errorf("gitBranchDelete called with branch %q, want %q", deletedBranch, "dendra/alice")
+	}
+
+	// State file should be deleted.
+	_, err = state.LoadAgent(tmpDir, "alice")
+	if err == nil {
+		t.Error("expected agent state to be deleted")
+	}
+}
+
+func TestRetire_Abandon_BranchDeleteFails_WarnsButSucceeds(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		return fmt.Errorf("branch not found")
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false)
+	if err != nil {
+		t.Fatalf("expected no error when branch deletion fails, got: %v", err)
+	}
+
+	// State file should still be deleted (branch failure is non-fatal).
+	_, err = state.LoadAgent(tmpDir, "alice")
+	if err == nil {
+		t.Error("expected agent state to be deleted")
+	}
+}
+
+func TestRetire_NoAbandon_PreservesBranch(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	branchDeleteCalled := false
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		branchDeleteCalled = true
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if branchDeleteCalled {
+		t.Error("gitBranchDelete should NOT be called without --abandon")
+	}
+}
+
+func TestRealGitBranchDelete(t *testing.T) {
+	// Create a temporary git repo with a branch to delete
+	repoDir := t.TempDir()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s: %v", args, out, err)
+		}
+	}
+
+	run("init", "-b", "main")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+
+	// Create an initial commit so we can create branches
+	run("commit", "--allow-empty", "-m", "initial")
+	run("branch", "feature-to-delete")
+
+	// Verify the branch exists
+	cmd := exec.Command("git", "branch", "--list", "feature-to-delete")
+	cmd.Dir = repoDir
+	out, _ := cmd.Output()
+	if !strings.Contains(string(out), "feature-to-delete") {
+		t.Fatal("expected branch feature-to-delete to exist before deletion")
+	}
+
+	// Delete it using our function
+	err := realGitBranchDelete(repoDir, "feature-to-delete")
+	if err != nil {
+		t.Fatalf("realGitBranchDelete returned error: %v", err)
+	}
+
+	// Verify the branch is gone
+	cmd = exec.Command("git", "branch", "--list", "feature-to-delete")
+	cmd.Dir = repoDir
+	out, _ = cmd.Output()
+	if strings.Contains(string(out), "feature-to-delete") {
+		t.Error("expected branch feature-to-delete to be deleted")
+	}
+}
+
+func TestRealGitBranchDelete_NonexistentBranch(t *testing.T) {
+	repoDir := t.TempDir()
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %s: %v", args, out, err)
+		}
+	}
+
+	run("init", "-b", "main")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+	run("commit", "--allow-empty", "-m", "initial")
+
+	err := realGitBranchDelete(repoDir, "nonexistent-branch")
+	if err == nil {
+		t.Fatal("expected error when deleting nonexistent branch")
+	}
+	if !strings.Contains(err.Error(), "git branch -D") {
+		t.Errorf("error should mention 'git branch -D', got: %v", err)
+	}
+}
+
+// --- New tests for QUM-129 retire overhaul ---
+
+func TestRetire_Default_MergedBranch_DeletesBranch(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.gitBranchIsMerged = func(repoRoot, branchName string) (bool, error) {
+		return true, nil
+	}
+
+	var safeDeletedBranch string
+	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+		safeDeletedBranch = branchName
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if safeDeletedBranch != "dendra/alice" {
+		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "dendra/alice")
+	}
+}
+
+func TestRetire_Default_UnmergedBranch_PreservesBranch(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.gitBranchIsMerged = func(repoRoot, branchName string) (bool, error) {
+		return false, nil
+	}
+
+	safeDeleteCalled := false
+	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+		safeDeleteCalled = true
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if safeDeleteCalled {
+		t.Error("gitBranchSafeDelete should NOT be called when branch is not merged")
+	}
+
+	// Agent should still be retired (state deleted).
+	_, err = state.LoadAgent(tmpDir, "alice")
+	if err == nil {
+		t.Error("expected agent state to be deleted")
+	}
+}
+
+func TestRetire_MergeFlag_HappyPath(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.getenv = func(key string) string {
+		switch key {
+		case "DENDRA_ROOT":
+			return tmpDir
+		case "DENDRA_AGENT_IDENTITY":
+			return "root"
+		}
+		return ""
+	}
+
+	deps.currentBranch = func(repoRoot string) (string, error) {
+		return "main", nil
+	}
+
+	var doMergeCalled bool
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		doMergeCalled = true
+		return &merge.Result{CommitHash: "abc123"}, nil
+	}
+
+	var safeDeletedBranch string
+	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+		safeDeletedBranch = branchName
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !doMergeCalled {
+		t.Error("expected doMerge to be called with mergeFirst=true")
+	}
+
+	// Agent state should be deleted (retired).
+	_, err = state.LoadAgent(tmpDir, "alice")
+	if err == nil {
+		t.Error("expected agent state to be deleted")
+	}
+
+	if safeDeletedBranch != "dendra/alice" {
+		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "dendra/alice")
+	}
+}
+
+func TestRetire_MergeAndAbandon_MutualExclusion(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, true)
+	if err == nil {
+		t.Fatal("expected error for mutually exclusive flags")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error should mention 'mutually exclusive', got: %v", err)
+	}
+}
+
+func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.getenv = func(key string) string {
+		switch key {
+		case "DENDRA_ROOT":
+			return tmpDir
+		case "DENDRA_AGENT_IDENTITY":
+			return "root"
+		}
+		return ""
+	}
+
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		return nil, fmt.Errorf("merge conflict: cannot rebase")
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, true)
+	if err == nil {
+		t.Fatal("expected error when merge fails")
+	}
+	if !strings.Contains(err.Error(), "merge") {
+		t.Errorf("error should mention merge failure, got: %v", err)
+	}
+
+	// Agent state should still exist (retire did NOT proceed).
+	agentState, err := state.LoadAgent(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("agent state should still exist after failed merge: %v", err)
+	}
+	if agentState.Status != "active" {
+		t.Errorf("agent status = %q, want %q (should not have changed)", agentState.Status, "active")
+	}
+}
+
+func TestRetire_ForcePlusMerge(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.getenv = func(key string) string {
+		switch key {
+		case "DENDRA_ROOT":
+			return tmpDir
+		case "DENDRA_AGENT_IDENTITY":
+			return "root"
+		}
+		return ""
+	}
+
+	deps.currentBranch = func(repoRoot string) (string, error) {
+		return "main", nil
+	}
+
+	var doMergeCalled bool
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		doMergeCalled = true
+		return &merge.Result{CommitHash: "def456"}, nil
+	}
+
+	var safeDeletedBranch string
+	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+		safeDeletedBranch = branchName
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, true, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error with force+merge: %v", err)
+	}
+
+	if !doMergeCalled {
+		t.Error("expected doMerge to be called with force+merge")
+	}
+
+	// Agent state should be deleted.
+	_, err = state.LoadAgent(tmpDir, "alice")
+	if err == nil {
+		t.Error("expected agent state to be deleted")
+	}
+
+	if safeDeletedBranch != "dendra/alice" {
+		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "dendra/alice")
+	}
+}
+
+func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.getenv = func(key string) string {
+		switch key {
+		case "DENDRA_ROOT":
+			return tmpDir
+		case "DENDRA_AGENT_IDENTITY":
+			return "root"
+		}
+		return ""
+	}
+
+	deps.currentBranch = func(repoRoot string) (string, error) {
+		return "main", nil
+	}
+
+	var mergedAgents []string
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		mergedAgents = append(mergedAgents, cfg.AgentName)
+		return &merge.Result{CommitHash: "abc123"}, nil
+	}
+
+	// Create parent alice with Parent: "root".
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	// Create child bob with Parent: "alice".
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "bob",
+		Status:      "active",
+		Branch:      "dendra/bob",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "bob"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
+		TmuxWindow:  "bob",
+		Parent:      "alice",
+	})
+
+	err := runRetire(deps, "alice", true, false, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error with cascade+merge: %v", err)
+	}
+
+	// doMerge should be called exactly once, for alice only (not bob).
+	if len(mergedAgents) != 1 {
+		t.Fatalf("expected doMerge to be called 1 time, got %d: %v", len(mergedAgents), mergedAgents)
+	}
+	if mergedAgents[0] != "alice" {
+		t.Errorf("doMerge called for agent %q, want %q", mergedAgents[0], "alice")
+	}
+
+	// Both agents should be retired.
+	for _, name := range []string{"alice", "bob"} {
+		_, err := state.LoadAgent(tmpDir, name)
+		if err == nil {
+			t.Errorf("expected %s state to be deleted", name)
+		}
+	}
+}
+
+func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	var deletedBranches []string
+	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+		deletedBranches = append(deletedBranches, branchName)
+		return nil
+	}
+
+	// Create parent alice.
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	// Create child bob.
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "bob",
+		Status:      "active",
+		Branch:      "dendra/bob",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "bob"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
+		TmuxWindow:  "bob",
+		Parent:      "alice",
+	})
+
+	err := runRetire(deps, "alice", true, false, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error with cascade+abandon: %v", err)
+	}
+
+	// gitBranchDelete should be called for BOTH alice and bob branches.
+	if len(deletedBranches) != 2 {
+		t.Fatalf("expected gitBranchDelete to be called 2 times, got %d: %v", len(deletedBranches), deletedBranches)
+	}
+
+	branchSet := make(map[string]bool)
+	for _, b := range deletedBranches {
+		branchSet[b] = true
+	}
+	if !branchSet["dendra/alice"] {
+		t.Error("expected gitBranchDelete to be called for dendra/alice")
+	}
+	if !branchSet["dendra/bob"] {
+		t.Error("expected gitBranchDelete to be called for dendra/bob")
+	}
+}
+
+func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	var removedFiles []string
+	deps.removeFile = func(path string) error {
+		removedFiles = append(removedFiles, path)
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedLockPath := filepath.Join(tmpDir, ".dendra", "locks", "alice.lock")
+	expectedPokePath := filepath.Join(tmpDir, ".dendra", "agents", "alice.poke")
+
+	var foundLock, foundPoke bool
+	for _, path := range removedFiles {
+		if path == expectedLockPath {
+			foundLock = true
+		}
+		if path == expectedPokePath {
+			foundPoke = true
+		}
+	}
+
+	if !foundLock {
+		t.Errorf("removeFile not called with lock path %q; called with: %v", expectedLockPath, removedFiles)
+	}
+	if !foundPoke {
+		t.Errorf("removeFile not called with poke path %q; called with: %v", expectedPokePath, removedFiles)
 	}
 }

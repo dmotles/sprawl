@@ -619,12 +619,53 @@ func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 		"dendra merge",
 		"--dry-run",
 		"--no-validate",
-		"--force",
+		"--message",
 	}
 	for _, phrase := range mergePhrases {
 		if !strings.Contains(prompt, phrase) {
 			t.Errorf("manager prompt missing merge phrase: %q", phrase)
 		}
+	}
+
+	// --force flag on merge was removed in M12
+	if strings.Contains(prompt, "--force") {
+		t.Error("manager prompt should not reference --force flag (removed in M12)")
+	}
+}
+
+func TestBuildManagerPrompt_ContainsRetireWorkflows(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	retirePhrases := []string{
+		"retire --merge",
+		"retire --abandon",
+	}
+	for _, phrase := range retirePhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt missing retire workflow phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_MergeDoesNotRetire(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	// Merge should describe pulling in work, not retiring
+	if strings.Contains(prompt, "merge + retire + branch cleanup in one step") {
+		t.Error("manager prompt should not describe merge as retire+cleanup in one step")
+	}
+
+	// Should mention agent stays alive
+	if !strings.Contains(prompt, "stays alive") {
+		t.Error("manager prompt should mention that agent stays alive after merge")
+	}
+}
+
+func TestBuildManagerPrompt_ConflictRecovery(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	if !strings.Contains(prompt, "conflict") {
+		t.Error("manager prompt should mention conflict recovery")
 	}
 }
 
@@ -1052,5 +1093,76 @@ func TestBuildRootPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 
 	if strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("root prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
+	}
+}
+
+// M12 merge/retire workflow tests
+
+func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	// Merge should not mention retiring or deleting branches
+	if strings.Contains(prompt, "retire the agent, and delete the branch") {
+		t.Error("sensei prompt should not describe merge as retiring+deleting")
+	}
+
+	// Should not reference --force flag on merge
+	mergeSection := prompt[strings.Index(prompt, "Merging & Branch Maintenance"):]
+	mergeEnd := strings.Index(mergeSection, "Messaging:")
+	if mergeEnd > 0 {
+		mergeSection = mergeSection[:mergeEnd]
+	}
+	if strings.Contains(mergeSection, "--force") {
+		t.Error("sensei prompt merge section should not reference --force flag")
+	}
+
+	// Should describe merge as pulling in work
+	if !strings.Contains(prompt, "stays alive") {
+		t.Error("sensei prompt should mention agent stays alive after merge")
+	}
+
+	// Should have retire workflows
+	retirePhrases := []string{
+		"retire --merge",
+		"retire --abandon",
+	}
+	for _, phrase := range retirePhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("sensei prompt missing retire workflow: %q", phrase)
+		}
+	}
+}
+
+func TestBuildRootPrompt_FlockSynchronization(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	// Should mention flock or lock-based synchronization
+	if !strings.Contains(prompt, "lock") && !strings.Contains(prompt, "flock") {
+		t.Error("sensei prompt should explain flock/lock synchronization during merge")
+	}
+}
+
+func TestBuildRootPrompt_MergeConflictRecovery(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	if !strings.Contains(prompt, "conflict") {
+		t.Error("sensei prompt should explain recovery from rebase conflicts")
+	}
+}
+
+func TestBuildRootPrompt_NoStaleSquashMergeReferences(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	// The RULES section should not say merge handles "the full lifecycle"
+	if strings.Contains(prompt, "squash-merge, retire the agent, and clean up in one step") {
+		t.Error("sensei prompt RULES should not describe merge as full lifecycle cleanup")
+	}
+}
+
+func TestBuildEngineerPrompt_BranchRebaseNotification(t *testing.T) {
+	prompt := BuildEngineerPrompt("oak", "summit", "dmotles/feature-x", testEnvConfig())
+
+	if !strings.Contains(prompt, "rebase") {
+		t.Error("engineer prompt should mention that parent may rebase their branch")
 	}
 }
