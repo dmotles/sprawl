@@ -104,3 +104,4 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 - `dendra retire --abandon` discards work and deletes the branch without checking for unmerged commits.
 - The `--force` flag on merge has been removed.
 - **Pre-M12 branches**: Agent branches merged before M12 used the old squash-merge approach and will never appear in `git branch --merged`. Clean them up manually with `git branch -D <branch>`.
+- **Retirement safety:** `dendra retire` checks for unmerged commits and refuses if found. Use `--abandon` only to intentionally discard work. For researchers with committed findings, always merge before retiring.

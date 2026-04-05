@@ -1163,6 +1163,34 @@ func TestBuildRootPrompt_NoStaleSquashMergeReferences(t *testing.T) {
 	}
 }
 
+func TestBuildRootPrompt_SafeRetireGuidance(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+
+	// Should guide toward safe retirement by default
+	if !strings.Contains(prompt, "dendra retire") || !strings.Contains(prompt, "Default to safe retirement") {
+		t.Error("sensei prompt should include guidance to default to safe retirement")
+	}
+
+	// Should warn about researchers having committed artifacts
+	if !strings.Contains(prompt, "retiring researchers") {
+		t.Error("sensei prompt should warn about checking researcher artifacts before retiring")
+	}
+}
+
+func TestBuildManagerPrompt_SafeRetireGuidance(t *testing.T) {
+	prompt := BuildManagerPrompt("mgr1", "sensei", "feature/mgr1", "engineering", testEnvConfig())
+
+	// Should guide toward safe retirement by default
+	if !strings.Contains(prompt, "Default to safe retirement") {
+		t.Error("manager prompt should include guidance to default to safe retirement")
+	}
+
+	// Should warn about researchers having committed artifacts
+	if !strings.Contains(prompt, "retiring researchers") {
+		t.Error("manager prompt should warn about checking researcher artifacts before retiring")
+	}
+}
+
 func TestBuildEngineerPrompt_BranchRebaseNotification(t *testing.T) {
 	prompt := BuildEngineerPrompt("oak", "summit", "dmotles/feature-x", testEnvConfig())
 

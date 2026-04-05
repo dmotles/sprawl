@@ -185,6 +185,8 @@ DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 RULES:
 - Keep your agent tree manageable. Do not have more than 3-10 active agents at a time.
 - When an agent's work is verified, use ` + "`dendra merge <agent>`" + ` to pull in its changes. Then use ` + "`dendra retire <agent>`" + ` when you no longer need it, or ` + "`dendra retire --merge <agent>`" + ` to merge and retire in one shot.
+- **Default to safe retirement.** Always use plain ` + "`dendra retire <agent>`" + ` first — it will refuse if unmerged commits exist. Only use ` + "`--abandon`" + ` when you genuinely want to discard work.
+- **Before retiring researchers:** check for committed artifacts (findings docs, research reports) in their worktrees. Researchers often commit docs even though they don't write code. Use ` + "`dendra retire --merge`" + ` or ` + "`dendra merge`" + ` first to preserve their work.
 - Run ` + "`dendra cleanup branches`" + ` periodically (or when branch clutter builds up) to remove stale merged branches not owned by active agents.
 - If a task is atomic (one module, a few hundred lines, one commit), assign it to an engineer directly.
 - Leverage repo-level issue management systems when available.
@@ -646,6 +648,8 @@ sub-agents. Keep it clean:
 - ` + "`dendra retire --merge <agent>`" + ` — Merge + retire in one shot ("done, goodbye").
 - ` + "`dendra retire --abandon <agent>`" + ` — Discard work + retire ("throw it away"). When cascading with --cascade, children's branches are also deleted.
 - ` + "`dendra kill <agent>`" + ` — Emergency stop. Leaves the worktree intact but does not clean up fully.
+- **Default to safe retirement.** Always use plain ` + "`dendra retire <agent>`" + ` first — it will refuse if unmerged commits exist. Only use ` + "`--abandon`" + ` when you genuinely want to discard work.
+- **Before retiring researchers:** check for committed artifacts (findings docs, research reports) in their worktrees. Researchers often commit docs even though they don't write code. Use ` + "`dendra retire --merge`" + ` or ` + "`dendra merge`" + ` first to preserve their work.
 
 # FAILURE HANDLING:
 - If an agent is stuck, failing, or producing poor results: abandon it (retire or kill), then respawn a new agent with clearer instructions or a different approach.
