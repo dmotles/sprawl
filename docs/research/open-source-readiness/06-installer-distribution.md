@@ -1,81 +1,429 @@
-# Installer & Distribution Strategy
+# 06 — Installer & Distribution Strategy
 
-**Date:** 2026-04-04
-**Original researcher:** marsh
-**Status:** Reconstructed from summary — needs agent validation/expansion
+> **Validated by:** delta (researcher agent), 2026-04-05
+> **Method:** Web research of install.sh scripts from starship, go-task, and age; GoReleaser documentation review; codebase analysis of current build system.
 
-## Summary
+## Current State
 
-Research on curl-pipe-bash install pattern and distribution channels for a Go CLI tool.
+Dendra currently builds via `make build` which runs `go build -o dendra .`. There is:
 
-## Primary Channel: curl | bash Install Script
+- No `.goreleaser.yml` configuration
+- No install.sh script
+- No GitHub Actions CI/CD workflows (`.github/` directory does not exist)
+- No Homebrew formula or tap
+- `make install` uses `go install .` with `GOBIN` defaulting to `$HOME/.local/bin`
+- The README instructs users to clone and `make build`
 
-### install.sh Requirements
-- POSIX sh (not bash) for maximum compatibility
-- Auto-detect platform (uname -s) and architecture (uname -m)
-- Download correct binary from GitHub Releases
-- Verify checksum (SHA256)
-- Install to `~/.local/bin` by default (configurable)
-- Provide PATH guidance if `~/.local/bin` not in PATH
-- Show clear progress messages
+The module path is `github.com/dmotles/dendra` and the repo is hosted at `https://github.com/dmotles/dendra.git`.
 
-### Reference Implementations Analyzed
-- starship — excellent install.sh
-- rustup — comprehensive but complex
-- nvm — POSIX sh, well-tested
-- go-task — simple and clean
-- gh CLI — system package managers
-- lazygit — GoReleaser + GitHub Releases
-- fzf — multi-channel
-- age — minimal
+## GoReleaser: What It Generates by Default
 
-## Secondary Channel: go install
+GoReleaser is the standard release tool for Go CLI projects. Here's what a minimal `.goreleaser.yml` produces:
+
+### Default Archive Naming
 
 ```
-go install github.com/<org>/<name>@latest
+{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
 ```
 
-Works automatically once tags exist on GitHub. No extra config needed. Good for Go developers who already have the toolchain.
-
-## Future: Homebrew Tap
-
-GoReleaser can auto-generate Homebrew tap config. Create a separate repo (`<org>/homebrew-tap`) and GoReleaser publishes formula automatically on release.
+Example output for dendra v0.1.0:
 
 ```
-brew tap <org>/tap
-brew install <name>
+dendra_0.1.0_linux_amd64.tar.gz
+dendra_0.1.0_linux_arm64.tar.gz
+dendra_0.1.0_darwin_amd64.tar.gz
+dendra_0.1.0_darwin_arm64.tar.gz
+dendra_0.1.0_windows_amd64.zip
 ```
 
-## Not Recommended (For Now)
-- **APT/RPM repos** — high maintenance, low payoff for a new project
-- **Signing** — GPG signing adds complexity; checksums are sufficient initially
-- **Windows** — WSL is the path; no native Windows support (tmux dependency)
+### Default Behavior
+
+- **Formats:** `tar.gz` for Linux/macOS, overridable to `zip` for Windows
+- **Checksums:** Generates `dendra_0.1.0_checksums.txt` with SHA256 hashes for all archives
+- **Changelog:** Auto-generated from git commits
+- **Archives contain:** The binary plus any files matching `README*`, `LICENSE*`, `CHANGELOG*`
+
+### Homebrew Tap Generation
+
+GoReleaser v2.10+ supports auto-generating Homebrew cask files:
+
+```yaml
+homebrew_casks:
+  - name: dendra
+    binaries:
+      - dendra
+    homepage: "https://github.com/dmotles/dendra"
+    description: "Self-organizing AI agent orchestration"
+    repository:
+      owner: dmotles
+      name: homebrew-tap
+      branch: main
+```
+
+This pushes a formula to a separate `homebrew-tap` repo on each release.
+
+### What GoReleaser Does NOT Generate
+
+**GoReleaser does not generate install.sh scripts.** The companion tool `godownloader` (https://github.com/goreleaser/godownloader) previously generated install scripts from `.goreleaser.yml`, but it was **archived and deprecated on 2022-01-14**. There is no official successor. Projects must either:
+
+1. Write a custom install.sh (recommended)
+2. Rely on package managers (Homebrew, apt, etc.)
+3. Point users at `go install github.com/dmotles/dendra@latest`
+
+## Install.sh Patterns from Popular Tools
+
+### Starship (https://starship.rs/install.sh)
+
+- **Lines:** ~543
+- **Origin:** Hand-written
+- **Style:** Polished user experience with colored output, interactive confirmation
+
+| Function | Purpose |
+|---|---|
+| `detect_platform()` | Maps `uname -s` → platform string |
+| `detect_arch()` | Maps `uname -m` → arch string |
+| `detect_target()` | Combines into target triple |
+| `download()` | Downloads via curl, wget, or fetch |
+| `unpack()` | Extracts `.tar.gz` or `.zip` |
+| `install()` | Orchestrates download + unpack with optional sudo |
+| `elevate_priv()` | Detects and invokes sudo when needed |
+| `test_writeable()` | Tests if bin dir is writable |
+| `confirm()` | Interactive y/N prompt (skippable with `--yes`) |
+| `check_bin_dir()` | Validates install dir is in PATH |
+
+**Platform detection:**
+
+```sh
+platform="$(uname -s | tr '[:upper:]' '[:lower:]')"
+case "${platform}" in
+  msys_nt*) platform="pc-windows-msvc" ;;
+  linux) platform="unknown-linux-musl" ;;
+  darwin) platform="apple-darwin" ;;
+  freebsd) platform="unknown-freebsd" ;;
+esac
+```
+
+**Download URL pattern:**
+
+```
+https://github.com/starship/starship/releases/latest/download/starship-${TARGET}.tar.gz
+```
+
+**Key characteristics:**
+
+- Uses Rust-style target triples (not Go-style GOOS/GOARCH)
+- Hardcoded `SUPPORTED_TARGETS` allowlist
+- Auto-detects sudo need based on directory writability
+- Post-install prints shell-specific setup instructions
+- Supports `--base-url` for mirrors
+- No checksum verification
+
+### go-task (https://taskfile.dev/install.sh)
+
+- **Lines:** ~381
+- **Origin:** Generated by godownloader (2021-01-12)
+- **Style:** Functional, POSIX-compliant, less polish
+
+| Function | Purpose |
+|---|---|
+| `uname_os()` / `uname_arch()` | Maps to Go GOOS/GOARCH values |
+| `http_download()` | Downloads via curl or wget |
+| `github_release()` | Resolves "latest" tag via GitHub API |
+| `hash_sha256_verify()` | Verifies SHA256 checksum |
+| `execute()` | Main logic wrapped to prevent partial-download execution |
+
+**Platform detection (Go-style):**
+
+```sh
+os=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$os" in
+  cygwin_nt*) os="windows" ;;
+  mingw*) os="windows" ;;
+  msys_nt*) os="windows" ;;
+esac
+
+arch=$(uname -m)
+case $arch in
+  x86_64) arch="amd64" ;;
+  i686) arch="386" ;;
+  aarch64) arch="arm64" ;;
+  armv5*|armv6*|armv7*) arch="arm" ;;
+esac
+```
+
+**Download URL pattern:**
+
+```
+https://github.com/go-task/task/releases/download/${TAG}/task_${OS}_${ARCH}.tar.gz
+```
+
+**Key characteristics:**
+
+- SHA256 checksum verification (downloads `_checksums.txt`)
+- `execute()` wrapper prevents partial installs from `curl | bash` truncation
+- Default install dir is `./bin` (no sudo handling)
+- Syslog-style logging levels
+- Uses Go-native GOOS/GOARCH naming
+
+### age (https://github.com/FiloSottile/age)
+
+- **No install.sh script at all**
+- Relies on package managers (Homebrew, apt, Arch, Fedora, Chocolatey, Scoop)
+- Uses `go install filippo.io/age/cmd/...@latest` for Go users
+- Custom download proxy at `dl.filippo.io/age/latest?for=linux/amd64` (302 redirects to GitHub)
+- Sigsum cryptographic proofs for integrity verification (`.proof` files)
+- Archive naming: `age-v{VERSION}-{os}-{arch}.tar.gz` (Go-style GOOS/GOARCH)
+
+## Comparison Matrix
+
+| Aspect | Starship | go-task | age | Recommended for Dendra |
+|---|---|---|---|---|
+| Install script | Hand-written (543 lines) | godownloader (381 lines) | None | Hand-written (~200 lines) |
+| OS/arch naming | Rust triples | Go GOOS/GOARCH | Go-style | Go GOOS/GOARCH |
+| Checksum verification | No | SHA256 | Sigsum proofs | SHA256 (via GoReleaser checksums) |
+| Sudo handling | Auto-detect + escalate | None | N/A | Auto-detect |
+| Interactive confirmation | Yes | No | N/A | Yes (with `--yes` flag) |
+| Download fallbacks | curl, wget, fetch | curl, wget | N/A | curl, wget |
+| Latest version resolution | `/latest/download/` URL | GitHub API JSON | Custom proxy | GitHub API JSON |
+| Partial-download protection | No | Yes (`execute()` wrap) | N/A | Yes |
+
+## GitHub Releases URL Patterns
+
+```
+# Latest release (convenience redirect):
+https://github.com/{owner}/{repo}/releases/latest/download/{asset-filename}
+
+# Specific version:
+https://github.com/{owner}/{repo}/releases/download/{tag}/{asset-filename}
+
+# API (resolve latest tag):
+https://api.github.com/repos/{owner}/{repo}/releases/latest
+
+# API (specific tag):
+https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}
+```
+
+The `/releases/latest/download/` pattern is simpler (no API call needed) but doesn't allow resolving the version number for display. Most mature install scripts use the API approach.
+
+## Recommended Install.sh Skeleton for Dendra
+
+Based on the patterns above, here is a concrete skeleton combining the best elements:
+
+```sh
+#!/bin/sh
+# Dendra installer — downloads and installs the dendra binary.
+# Usage: curl -fsSL https://raw.githubusercontent.com/dmotles/dendra/main/install.sh | sh
+# Or:    curl -fsSL https://raw.githubusercontent.com/dmotles/dendra/main/install.sh | sh -s -- --version v0.1.0
+
+set -eu
+
+GITHUB_REPO="dmotles/dendra"
+BINARY_NAME="dendra"
+DEFAULT_INSTALL_DIR="/usr/local/bin"
+
+# ---- Platform detection (Go-style GOOS/GOARCH) ----
+
+detect_os() {
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  case "$os" in
+    linux) echo "linux" ;;
+    darwin) echo "darwin" ;;
+    *) echo "Error: unsupported OS: $os" >&2; exit 1 ;;
+  esac
+}
+
+detect_arch() {
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) echo "amd64" ;;
+    aarch64|arm64) echo "arm64" ;;
+    *) echo "Error: unsupported architecture: $arch" >&2; exit 1 ;;
+  esac
+}
+
+# ---- Download helpers ----
+
+download() {
+  url="$1" dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL -o "$dest" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$dest" "$url"
+  else
+    echo "Error: curl or wget is required" >&2; exit 1
+  fi
+}
+
+# ---- Version resolution ----
+
+resolve_version() {
+  if [ -n "${VERSION:-}" ]; then
+    echo "$VERSION"
+    return
+  fi
+  # Resolve latest tag via GitHub API
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p'
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
+      | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p'
+  fi
+}
+
+# ---- Checksum verification ----
+
+verify_checksum() {
+  archive="$1" checksums="$2"
+  expected="$(grep "$(basename "$archive")" "$checksums" | cut -d' ' -f1)"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive" | cut -d' ' -f1)"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$archive" | cut -d' ' -f1)"
+  else
+    echo "Warning: no sha256 tool found, skipping verification" >&2
+    return 0
+  fi
+  if [ "$expected" != "$actual" ]; then
+    echo "Error: checksum mismatch" >&2; exit 1
+  fi
+}
+
+# ---- Sudo handling ----
+
+maybe_sudo() {
+  if [ -w "$INSTALL_DIR" ]; then
+    "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    echo "Elevated permissions required to install to $INSTALL_DIR"
+    sudo "$@"
+  else
+    echo "Error: $INSTALL_DIR is not writable and sudo is not available" >&2
+    exit 1
+  fi
+}
+
+# ---- Main install logic (wrapped to prevent partial-download execution) ----
+
+execute() {
+  # Parse args
+  VERSION="" INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --version) VERSION="$2"; shift 2 ;;
+      --install-dir) INSTALL_DIR="$2"; shift 2 ;;
+      --yes) YES=1; shift ;;
+      *) echo "Unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+
+  OS="$(detect_os)"
+  ARCH="$(detect_arch)"
+  TAG="$(resolve_version)"
+  ARCHIVE="${BINARY_NAME}_${TAG#v}_${OS}_${ARCH}.tar.gz"
+  CHECKSUMS="${BINARY_NAME}_${TAG#v}_checksums.txt"
+  BASE_URL="https://github.com/${GITHUB_REPO}/releases/download/${TAG}"
+
+  echo "Installing ${BINARY_NAME} ${TAG} (${OS}/${ARCH})..."
+
+  TMPDIR="$(mktemp -d)"
+  trap 'rm -rf "$TMPDIR"' EXIT
+
+  download "${BASE_URL}/${ARCHIVE}" "${TMPDIR}/${ARCHIVE}"
+  download "${BASE_URL}/${CHECKSUMS}" "${TMPDIR}/${CHECKSUMS}"
+  verify_checksum "${TMPDIR}/${ARCHIVE}" "${TMPDIR}/${CHECKSUMS}"
+
+  tar -xzf "${TMPDIR}/${ARCHIVE}" -C "$TMPDIR"
+  maybe_sudo install -m 755 "${TMPDIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
+
+  echo "Installed ${BINARY_NAME} to ${INSTALL_DIR}/${BINARY_NAME}"
+
+  # Verify
+  if command -v "$BINARY_NAME" >/dev/null 2>&1; then
+    echo "Run '$BINARY_NAME init' to get started."
+  else
+    echo "Warning: $INSTALL_DIR is not in your PATH."
+    echo "Add it: export PATH=\"${INSTALL_DIR}:\$PATH\""
+  fi
+}
+
+execute "$@"
+```
+
+**Lines:** ~110 (without comments/whitespace)
+**Features included:** Go-style GOOS/GOARCH, SHA256 verification, sudo auto-detect, `execute()` wrapper, curl/wget fallback, version resolution via GitHub API, `--version` and `--install-dir` flags.
 
 ## Distribution Architecture
 
+The recommended distribution pipeline:
+
 ```
-GitHub Release (GoReleaser creates):
-├── <name>_v0.1.0_linux_amd64.tar.gz
-├── <name>_v0.1.0_linux_arm64.tar.gz
-├── <name>_v0.1.0_darwin_amd64.tar.gz
-├── <name>_v0.1.0_darwin_arm64.tar.gz
-├── checksums.txt (SHA256)
-└── install.sh (hosted in repo, URL in README)
+git tag v0.1.0
+git push --tags
+    │
+    ▼
+GitHub Actions ──► GoReleaser ──► GitHub Releases
+    │                                   │
+    │                                   ├── dendra_0.1.0_linux_amd64.tar.gz
+    │                                   ├── dendra_0.1.0_linux_arm64.tar.gz
+    │                                   ├── dendra_0.1.0_darwin_amd64.tar.gz
+    │                                   ├── dendra_0.1.0_darwin_arm64.tar.gz
+    │                                   ├── dendra_0.1.0_checksums.txt
+    │                                   └── CHANGELOG.md (auto-generated)
+    │
+    ├──► Homebrew tap repo (auto-updated formula)
+    │
+    └──► install.sh (hosted in repo, points at GitHub Releases)
 ```
 
-## Install UX
+### Installation Methods (priority order)
 
-```bash
-curl -fsSL https://<domain>/install.sh | bash
-```
+1. **`curl | sh`** — `curl -fsSL https://raw.githubusercontent.com/dmotles/dendra/main/install.sh | sh`
+2. **Homebrew** — `brew install dmotles/tap/dendra`
+3. **Go install** — `go install github.com/dmotles/dendra@latest`
+4. **From source** — `git clone && make build`
 
-Or with version pinning:
-```bash
-curl -fsSL https://<domain>/install.sh | bash -s -- --version v0.1.0
+### Minimal GoReleaser Configuration
+
+```yaml
+# .goreleaser.yml
+version: 2
+
+builds:
+  - binary: dendra
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
 ```
 
 ## Open Questions
-- Final module path / org name (depends on naming decision)
-- Custom domain for install URL
-- Update mechanism (check for new versions on launch?)
-- Should install.sh check for runtime dependencies (tmux, git, claude)?
+
+1. **Windows support?** The skeleton above excludes Windows. Dendra requires tmux, which is Linux/macOS only. Should we explicitly reject Windows or offer WSL guidance?
+2. **Version embedding:** The `ldflags` in GoReleaser set `main.version`, but the codebase doesn't currently have a `version` variable in `main.go`. This needs to be added.
+3. **Minimum Go version:** `go.mod` specifies Go 1.25.0 — this is very new. `go install` won't work for users with older Go versions. The install.sh path becomes more important.
+4. **Prerequisites check:** Should install.sh verify that tmux and Claude Code are available, or just install the binary?
