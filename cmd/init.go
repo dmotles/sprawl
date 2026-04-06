@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/state"
@@ -16,6 +20,11 @@ type initDeps struct {
 	claudeLauncher agent.Launcher
 	findSprawl     func() (string, error)
 	getenv         func(string) string
+	gitStatus      func(dir string) (string, error)
+	readFile       func(path string) ([]byte, error)
+	appendFile     func(path string, data []byte) error
+	gitAdd         func(dir string, paths ...string) error
+	gitCommit      func(dir, message string) error
 }
 
 var defaultDeps *initDeps
@@ -64,6 +73,36 @@ func resolveDeps() (*initDeps, error) {
 		claudeLauncher: claudeLauncher,
 		findSprawl:     FindSprawlBin,
 		getenv:         os.Getenv,
+		gitStatus:      realGitStatus,
+		readFile:       os.ReadFile,
+		appendFile: func(path string, data []byte) error {
+			f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			_, err = f.Write(data)
+			return err
+		},
+		gitAdd: func(dir string, paths ...string) error {
+			args := append([]string{"add", "--"}, paths...)
+			cmd := exec.Command("git", args...)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("git add: %w: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
+		gitCommit: func(dir, message string) error {
+			cmd := exec.Command("git", "commit", "-m", message)
+			cmd.Dir = dir
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("git commit: %w: %s", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
 	}, nil
 }
 
@@ -91,6 +130,20 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting current directory: %w", err)
+	}
+
+	// Check that the repo working tree is clean.
+	statusOut, err := deps.gitStatus(cwd)
+	if err != nil {
+		return fmt.Errorf("checking repo status: %w", err)
+	}
+	if statusOut != "" {
+		return fmt.Errorf("repo has uncommitted changes — please start from a clean repo state — commit or stash your changes first")
+	}
+
+	// Ensure .sprawl/ is gitignored.
+	if err := ensureSprawlGitignored(deps, cwd); err != nil {
+		return err
 	}
 
 	dendraPath, err := deps.findSprawl()
@@ -135,6 +188,42 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 	}
 
 	return deps.tmuxRunner.Attach(rootSession)
+}
+
+// ensureSprawlGitignored checks if .sprawl/ is in .gitignore and adds the
+// appropriate entries if not. If entries are added, it stages and commits.
+func ensureSprawlGitignored(deps *initDeps, cwd string) error {
+	gitignorePath := filepath.Join(cwd, ".gitignore")
+	content, err := deps.readFile(gitignorePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading .gitignore: %w", err)
+	}
+
+	if strings.Contains(string(content), ".sprawl/*") {
+		return nil
+	}
+
+	// Build the entries to append.
+	var entries string
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		entries = "\n"
+	}
+	entries += ".sprawl/*\n!.sprawl/config.yaml\n"
+
+	if err := deps.appendFile(gitignorePath, []byte(entries)); err != nil {
+		return fmt.Errorf("updating .gitignore: %w", err)
+	}
+
+	if err := deps.gitAdd(cwd, ".gitignore"); err != nil {
+		return fmt.Errorf("staging .gitignore: %w", err)
+	}
+
+	if err := deps.gitCommit(cwd, "Add .sprawl/ to .gitignore"); err != nil {
+		return fmt.Errorf("committing .gitignore: %w", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "Added .sprawl/ to .gitignore and committed.")
+	return nil
 }
 
 func printDetachedInfo(namespace, sessionName string) {
