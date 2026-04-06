@@ -15,9 +15,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 echo "Building sprawl..." >&2
 make -C "$REPO_ROOT" build >&2
 
-SPRAWL_BIN="$REPO_ROOT/dendra"
+SPRAWL_BIN="$REPO_ROOT/sprawl"
 if [ ! -x "$SPRAWL_BIN" ]; then
-    echo "FAIL: dendra binary not found or not executable at $SPRAWL_BIN" >&2
+    echo "FAIL: sprawl binary not found or not executable at $SPRAWL_BIN" >&2
     exit 1
 fi
 

@@ -4,7 +4,7 @@
 validate: build fmt-check lint test
 
 build:
-	go build -o dendra .
+	go build -o sprawl .
 
 fmt:
 	golangci-lint fmt ./...
@@ -25,7 +25,7 @@ install:
 	GOBIN=$(GOBIN) go install .
 
 clean:
-	rm -f dendra
+	rm -f sprawl
 
 hooks:
 	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
