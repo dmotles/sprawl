@@ -482,13 +482,13 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt when inbox has messages")
 	}
-	// The prompt should tell the agent to run dendra messages read, not contain inline content.
+	// The prompt should tell the agent to run sprawl messages read, not contain inline content.
 	prompt := mockProc.prompts[0]
 	if strings.Contains(prompt, "check this out") {
 		t.Errorf("prompt should NOT contain message body inline, got: %q", prompt)
 	}
-	if !strings.Contains(prompt, "dendra messages read") {
-		t.Errorf("prompt should contain 'dendra messages read' command, got: %q", prompt)
+	if !strings.Contains(prompt, "sprawl messages read") {
+		t.Errorf("prompt should contain 'sprawl messages read' command, got: %q", prompt)
 	}
 	if !strings.Contains(prompt, `subject: "hey"`) {
 		t.Errorf("prompt should contain message subject, got: %q", prompt)
@@ -538,8 +538,8 @@ func TestRunAgentLoop_InboxRedeliveryUntilRead(t *testing.T) {
 	}
 	// Both should contain the read command format.
 	for i, p := range mockProc.prompts {
-		if !strings.Contains(p, "dendra messages read") {
-			t.Errorf("prompt %d should contain 'dendra messages read', got: %q", i, p)
+		if !strings.Contains(p, "sprawl messages read") {
+			t.Errorf("prompt %d should contain 'sprawl messages read', got: %q", i, p)
 		}
 	}
 }
@@ -1866,7 +1866,7 @@ func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
 	// The message should ALSO be delivered normally (as a read command) on the next iteration.
 	found := false
 	for _, p := range mockProc.prompts {
-		if strings.Contains(p, "dendra messages read") && strings.Contains(p, `subject: "Fix the bug"`) {
+		if strings.Contains(p, "sprawl messages read") && strings.Contains(p, `subject: "Fix the bug"`) {
 			found = true
 			break
 		}
@@ -2081,8 +2081,8 @@ func TestRunAgentLoop_InboxDelivery_LogsInjectedPrompt(t *testing.T) {
 	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
 		t.Error("expected log output to contain '=== INJECTED PROMPT ===' for inbox delivery")
 	}
-	if !strings.Contains(output, "dendra messages read") {
-		t.Errorf("expected log output to contain 'dendra messages read' command, got:\n%s", output)
+	if !strings.Contains(output, "sprawl messages read") {
+		t.Errorf("expected log output to contain 'sprawl messages read' command, got:\n%s", output)
 	}
 	if !strings.Contains(output, `subject: "urgent"`) {
 		t.Errorf("expected log output to contain message subject, got:\n%s", output)
@@ -2225,7 +2225,7 @@ func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt from inbox delivery")
 	}
-	if !strings.Contains(mockProc.prompts[0], "dendra messages read") {
+	if !strings.Contains(mockProc.prompts[0], "sprawl messages read") {
 		t.Errorf("expected inbox-style prompt, got: %q", mockProc.prompts[0])
 	}
 
@@ -2322,10 +2322,10 @@ func TestRunAgentLoop_MessageSend_SingleNotificationType(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// Every prompt should be inbox-style (contains "dendra messages read").
+	// Every prompt should be inbox-style (contains "sprawl messages read").
 	// No prompt should be wake-file-style (raw "New message from" content).
 	for i, p := range mockProc.prompts {
-		if !strings.Contains(p, "dendra messages read") {
+		if !strings.Contains(p, "sprawl messages read") {
 			t.Errorf("prompt[%d] should be inbox-style, got: %q", i, p)
 		}
 		if strings.Contains(p, "New message from root") {

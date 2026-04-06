@@ -22,9 +22,9 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 		"zone",
 		"root",
 		"dendra/zone",
-		"dendra report done",
-		"dendra report problem",
-		"dendra messages send root",
+		"sprawl report done",
+		"sprawl report problem",
+		"sprawl messages send root",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -63,9 +63,9 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 		"birch",
 		"root",
 		"dendra/birch",
-		"dendra report done",
-		"dendra report problem",
-		"dendra messages send root",
+		"sprawl report done",
+		"sprawl report problem",
+		"sprawl messages send root",
 		"SPRAWL_AGENT_IDENTITY",
 		"do NOT modify production code",
 		"deep investigator",
@@ -333,15 +333,15 @@ func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
 	prompt := BuildRootPrompt(cfg)
 
 	keyPhrases := []string{
-		"AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS",
-		"Dendra agents",
-		"dendra spawn agent",
+		"AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS",
+		"Sprawl agents",
+		"sprawl spawn agent",
 		"Claude Code sub-agents",
 		"Agent tool",
 		"fire off an agent",
 		"spawn an agent",
 		"sub-agent",
-		"Default to dendra agents for real work",
+		"Default to sprawl agents for real work",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -358,7 +358,7 @@ func TestBuildRootPrompt_SubAgentGuidance_NotIncludedForUnknownCLI(t *testing.T)
 	prompt := BuildRootPrompt(cfg)
 
 	// Sub-agent guidance should NOT be present for non-claude-code CLIs
-	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS") {
+	if strings.Contains(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS") {
 		t.Error("sub-agent guidance should not be included for non-claude-code CLI")
 	}
 	if strings.Contains(prompt, "Claude Code sub-agents") {
@@ -374,7 +374,7 @@ func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
 	prompt := BuildRootPrompt(cfg)
 
 	// Sub-agent guidance should NOT be present when AgentCLI is empty
-	if strings.Contains(prompt, "AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS") {
+	if strings.Contains(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS") {
 		t.Error("sub-agent guidance should not be included when AgentCLI is empty")
 	}
 }
@@ -382,11 +382,11 @@ func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
 func TestBuildRootPrompt_SubAgentGuidanceSectionOrdering(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
-	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS")
+	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS")
 	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
 
 	if agentTypesIdx == -1 {
-		t.Fatal("BuildRootPrompt missing 'AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS'")
+		t.Fatal("BuildRootPrompt missing 'AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS'")
 	}
 	if verifyIdx == -1 {
 		t.Fatal("BuildRootPrompt missing 'VERIFYING AGENT WORK:'")
@@ -459,17 +459,17 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
 
 	reflectIdx := strings.Index(prompt, "REFLECTION")
-	doneIdx := strings.Index(prompt, "dendra report done")
+	doneIdx := strings.Index(prompt, "sprawl report done")
 
 	if reflectIdx == -1 {
 		t.Fatal("researcher prompt missing 'REFLECTION'")
 	}
 	if doneIdx == -1 {
-		t.Fatal("researcher prompt missing 'dendra report done'")
+		t.Fatal("researcher prompt missing 'sprawl report done'")
 	}
 
 	if reflectIdx >= doneIdx {
-		t.Errorf("'REFLECTION' (idx %d) should appear before 'dendra report done' (idx %d)", reflectIdx, doneIdx)
+		t.Errorf("'REFLECTION' (idx %d) should appear before 'sprawl report done' (idx %d)", reflectIdx, doneIdx)
 	}
 }
 
@@ -478,12 +478,12 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 
 	// Spawning & Lifecycle commands
 	spawnLifecycleCommands := []string{
-		"dendra spawn agent --family",
-		"dendra spawn subagent --family",
-		"dendra delegate",
-		"dendra kill",
-		"dendra retire",
-		"dendra logs",
+		"sprawl spawn agent --family",
+		"sprawl spawn subagent --family",
+		"sprawl delegate",
+		"sprawl kill",
+		"sprawl retire",
+		"sprawl logs",
 	}
 	for _, cmd := range spawnLifecycleCommands {
 		if !strings.Contains(prompt, cmd) {
@@ -493,12 +493,12 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 
 	// Messaging commands
 	messagingCommands := []string{
-		"dendra messages inbox",
-		"dendra messages send",
-		"dendra messages read",
-		"dendra messages list",
-		"dendra messages broadcast",
-		"dendra messages archive",
+		"sprawl messages inbox",
+		"sprawl messages send",
+		"sprawl messages read",
+		"sprawl messages list",
+		"sprawl messages broadcast",
+		"sprawl messages archive",
 	}
 	for _, cmd := range messagingCommands {
 		if !strings.Contains(prompt, cmd) {
@@ -510,15 +510,15 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 func TestBuildRootPrompt_KeyCommands_RetireDistinguishedFromKill(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
-	if !strings.Contains(prompt, "dendra retire") {
-		t.Error("root prompt should mention 'dendra retire'")
+	if !strings.Contains(prompt, "sprawl retire") {
+		t.Error("root prompt should mention 'sprawl retire'")
 	}
-	if !strings.Contains(prompt, "dendra kill") {
-		t.Error("root prompt should mention 'dendra kill'")
+	if !strings.Contains(prompt, "sprawl kill") {
+		t.Error("root prompt should mention 'sprawl kill'")
 	}
 	// retire should be described as full teardown / preferred cleanup
-	retireIdx := strings.Index(prompt, "dendra retire")
-	killIdx := strings.Index(prompt, "dendra kill")
+	retireIdx := strings.Index(prompt, "sprawl retire")
+	killIdx := strings.Index(prompt, "sprawl kill")
 	if retireIdx == -1 || killIdx == -1 {
 		t.Fatal("both retire and kill must be present")
 	}
@@ -537,14 +537,14 @@ func TestBuildRootPrompt_KeyCommands_GroupedLogically(t *testing.T) {
 	}
 
 	// The spawn commands should appear before messaging commands
-	spawnIdx := strings.Index(prompt, "dendra spawn agent --family")
-	inboxIdx := strings.Index(prompt, "dendra messages inbox")
+	spawnIdx := strings.Index(prompt, "sprawl spawn agent --family")
+	inboxIdx := strings.Index(prompt, "sprawl messages inbox")
 
 	if spawnIdx == -1 {
-		t.Fatal("root prompt missing 'dendra spawn agent --family'")
+		t.Fatal("root prompt missing 'sprawl spawn agent --family'")
 	}
 	if inboxIdx == -1 {
-		t.Fatal("root prompt missing 'dendra messages inbox'")
+		t.Fatal("root prompt missing 'sprawl messages inbox'")
 	}
 	if spawnIdx >= inboxIdx {
 		t.Errorf("spawn commands (idx %d) should appear before messaging commands (idx %d)", spawnIdx, inboxIdx)
@@ -576,9 +576,9 @@ func TestBuildManagerPrompt_ContainsKeyPhrases(t *testing.T) {
 		"cedar",
 		"neo",
 		"dmotles/feature-x",
-		"dendra report done",
-		"dendra report problem",
-		"dendra messages send neo",
+		"sprawl report done",
+		"sprawl report problem",
+		"sprawl messages send neo",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -616,7 +616,7 @@ func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	mergePhrases := []string{
-		"dendra merge",
+		"sprawl merge",
 		"--dry-run",
 		"--no-validate",
 		"--message",
@@ -841,10 +841,10 @@ func TestBuildRootPrompt_DelegateVsMessagesGuidance(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	keyPhrases := []string{
-		"dendra delegate",
+		"sprawl delegate",
 		"work assignments",
 		"tracked task",
-		"dendra messages send",
+		"sprawl messages send",
 		"coordination",
 		"information sharing",
 		"rule of thumb",
@@ -885,10 +885,10 @@ func TestBuildManagerPrompt_DelegateVsMessagesGuidance(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	keyPhrases := []string{
-		"dendra delegate",
+		"sprawl delegate",
 		"work assignments",
 		"tracked task",
-		"dendra messages send",
+		"sprawl messages send",
 		"coordination",
 		"information sharing",
 		"rule of thumb",
@@ -1167,7 +1167,7 @@ func TestBuildRootPrompt_SafeRetireGuidance(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	// Should guide toward safe retirement by default
-	if !strings.Contains(prompt, "dendra retire") || !strings.Contains(prompt, "Default to safe retirement") {
+	if !strings.Contains(prompt, "sprawl retire") || !strings.Contains(prompt, "Default to safe retirement") {
 		t.Error("root prompt should include guidance to default to safe retirement")
 	}
 

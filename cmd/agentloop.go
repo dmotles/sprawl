@@ -427,7 +427,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	fmt.Fprintf(deps.stdout, "[agent-loop]   work-dir:        %s\n", config.WorkDir)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   claude-path:     %s\n", config.ClaudePath)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   setting-sources: %s\n", config.Args.SettingSources)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   dendra-root:     %s\n", config.DendraRoot)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   sprawl-root:     %s\n", config.DendraRoot)
 	fmt.Fprintf(deps.stdout, "[agent-loop] === KEY ENV VARS ===\n")
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_AGENT_IDENTITY=%s\n", deps.getenv("SPRAWL_AGENT_IDENTITY"))
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_ROOT=%s\n", deps.getenv("SPRAWL_ROOT"))
@@ -578,7 +578,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			var cmdLines []string
 			for _, msg := range msgs {
 				cmdLines = append(cmdLines, fmt.Sprintf(
-					"Run `dendra messages read %s` to read a message from %s (subject: %q)",
+					"Run `sprawl messages read %s` to read a message from %s (subject: %q)",
 					msg.ID, msg.From, msg.Subject,
 				))
 			}

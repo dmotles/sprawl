@@ -86,12 +86,12 @@ func resolveReportDeps() *reportDeps {
 func runReport(deps *reportDeps, reportType, message string) error {
 	agentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
-		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report must be called from within a sprawl agent")
 	}
 
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; report must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; report must be called from within a sprawl agent")
 	}
 
 	// Load agent state
@@ -153,7 +153,7 @@ func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentSt
 		if parent == rootName {
 			rootSession := tmux.RootSessionName(namespace, rootName)
 			sendOpts = append(sendOpts, messages.WithNotify(func(from, _, msgID string) {
-				notification := fmt.Sprintf("[inbox] New message from %s. Run: `dendra messages read %s`", from, msgID)
+				notification := fmt.Sprintf("[inbox] New message from %s. Run: `sprawl messages read %s`", from, msgID)
 				_ = deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
 			}))
 		}

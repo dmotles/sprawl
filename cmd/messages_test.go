@@ -317,7 +317,7 @@ func TestMessagesRead_OutputContainsArchiveHint(t *testing.T) {
 	}
 
 	output := deps.stderr.(*bytes.Buffer).String()
-	expectedHint := "dendra messages archive 1000.bob.aabb"
+	expectedHint := "sprawl messages archive 1000.bob.aabb"
 	if !strings.Contains(output, expectedHint) {
 		t.Errorf("expected archive hint %q in output, got:\n%s", expectedHint, output)
 	}
@@ -1227,11 +1227,11 @@ func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 	}
 
 	// Notification should include the actionable read command with message ID
-	if !strings.Contains(call.keys, "[inbox] New message from worker-1. Run: `dendra messages read ") {
+	if !strings.Contains(call.keys, "[inbox] New message from worker-1. Run: `sprawl messages read ") {
 		t.Errorf("SendKeys keys = %q, want it to contain actionable read command", call.keys)
 	}
-	if !strings.Contains(call.keys, "dendra messages read ") {
-		t.Errorf("SendKeys keys = %q, want it to contain 'dendra messages read <id>'", call.keys)
+	if !strings.Contains(call.keys, "sprawl messages read ") {
+		t.Errorf("SendKeys keys = %q, want it to contain 'sprawl messages read <id>'", call.keys)
 	}
 }
 

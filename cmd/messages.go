@@ -190,7 +190,7 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		if to == rootName {
 			rootSession := tmux.RootSessionName(namespace, rootName)
 			sendOpts = append(sendOpts, messages.WithNotify(func(from, _, msgID string) {
-				notification := fmt.Sprintf("[inbox] New message from %s. Run: `dendra messages read %s`", from, msgID)
+				notification := fmt.Sprintf("[inbox] New message from %s. Run: `sprawl messages read %s`", from, msgID)
 				_ = deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
 			}))
 		}
@@ -219,7 +219,7 @@ var messagesReadCmd = &cobra.Command{
 		if msg.ShortID != "" {
 			archiveRef = msg.ShortID
 		}
-		fmt.Fprintf(deps.stderr, "\nWhen done with this message, run `dendra messages archive %s` to archive it.\n", archiveRef)
+		fmt.Fprintf(deps.stderr, "\nWhen done with this message, run `sprawl messages archive %s` to archive it.\n", archiveRef)
 		return nil
 	},
 }

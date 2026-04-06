@@ -55,7 +55,7 @@ func init() {
 var retireCmd = &cobra.Command{
 	Use:   "retire <agent-name>",
 	Short: "Full teardown: stop process, close tmux, remove worktree, delete state",
-	Long:  "Full agent teardown. Three workflows:\n\n  dendra retire <agent>          preserve branch, warn if unmerged\n  dendra retire --merge <agent>   merge into your branch, then retire\n  dendra retire --abandon <agent> delete branch and all work",
+	Long:  "Full agent teardown. Three workflows:\n\n  sprawl retire <agent>          preserve branch, warn if unmerged\n  sprawl retire --merge <agent>   merge into your branch, then retire\n  sprawl retire --abandon <agent> delete branch and all work",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		deps, err := resolveRetireDeps()

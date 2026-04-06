@@ -141,7 +141,7 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 			return "main", nil
 		},
 		findSprawl: func() (string, error) {
-			return "/usr/local/bin/dendra", nil
+			return "/usr/local/bin/sprawl", nil
 		},
 	}
 
@@ -441,7 +441,7 @@ func TestSpawn_InvalidFamily(t *testing.T) {
 }
 
 // TestSpawn_ShellCmd_ContainsDendraAgentLoop verifies the exact shape of the
-// shell command passed to tmux: cd '<worktree>' && '<dendra>' 'agent-loop' '<name>'
+// shell command passed to tmux: cd '<worktree>' && '<sprawl>' 'agent-loop' '<name>'
 // Also verifies the command does NOT reference claude directly.
 func TestSpawn_ShellCmd_ContainsDendraAgentLoop(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
@@ -456,22 +456,22 @@ func TestSpawn_ShellCmd_ContainsDendraAgentLoop(t *testing.T) {
 	expectedWorktree := filepath.Join(tmpDir, ".sprawl", "worktrees", expectedName)
 
 	// Verify the shell command structure:
-	// cd '<worktree>' && '<dendra_path>' 'agent-loop' '<name>'
+	// cd '<worktree>' && '<sprawl_path>' 'agent-loop' '<name>'
 	expectedCmd := "cd " + tmux.ShellQuote(expectedWorktree) + " && " +
-		tmux.BuildShellCmd("/usr/local/bin/dendra", []string{"agent-loop", expectedName})
+		tmux.BuildShellCmd("/usr/local/bin/sprawl", []string{"agent-loop", expectedName})
 
 	if cmd != expectedCmd {
 		t.Errorf("shell command mismatch\n  got:  %s\n  want: %s", cmd, expectedCmd)
 	}
 
-	// The shell command should NOT contain 'claude' -- we launch via dendra agent-loop now.
+	// The shell command should NOT contain 'claude' -- we launch via sprawl agent-loop now.
 	if strings.Contains(cmd, "claude") {
-		t.Error("shell command should NOT contain 'claude'; spawn now launches via dendra agent-loop")
+		t.Error("shell command should NOT contain 'claude'; spawn now launches via sprawl agent-loop")
 	}
 }
 
 // TestSpawnAgentCmd_Registered verifies that spawnAgentCmd is registered as a
-// child of spawnCmd. After the refactor, `dendra spawn agent` should be a valid
+// child of spawnCmd. After the refactor, `sprawl spawn agent` should be a valid
 // subcommand.
 func TestSpawnAgentCmd_Registered(t *testing.T) {
 	found := false
@@ -491,15 +491,15 @@ func TestSpawnAgentCmd_Registered(t *testing.T) {
 func TestSpawn_FindSprawlFails(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	deps.findSprawl = func() (string, error) {
-		return "", errors.New("dendra binary not found")
+		return "", errors.New("sprawl binary not found")
 	}
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when findSprawl fails")
 	}
-	if !strings.Contains(err.Error(), "dendra") {
-		t.Errorf("error should mention dendra, got: %v", err)
+	if !strings.Contains(err.Error(), "sprawl") {
+		t.Errorf("error should mention sprawl, got: %v", err)
 	}
 
 	// Tmux should not have been called
@@ -559,13 +559,13 @@ func TestSpawn_AgentPromptContainsFileRef(t *testing.T) {
 	}
 }
 
-// TestSpawn_BareSpawnCmd_HasRunE verifies that `dendra spawn` (without the
+// TestSpawn_BareSpawnCmd_HasRunE verifies that `sprawl spawn` (without the
 // "agent" subcommand) has a RunE handler for backward compatibility.
-// Both `dendra spawn --flags...` and `dendra spawn agent --flags...` should work.
+// Both `sprawl spawn --flags...` and `sprawl spawn agent --flags...` should work.
 func TestSpawn_BareSpawnCmd_HasRunE(t *testing.T) {
-	// spawnCmd must have RunE so bare 'dendra spawn --family ...' still works
+	// spawnCmd must have RunE so bare 'sprawl spawn --family ...' still works
 	if spawnCmd.RunE == nil {
-		t.Fatal("spawnCmd.RunE should be set for backward-compatible bare 'dendra spawn' usage")
+		t.Fatal("spawnCmd.RunE should be set for backward-compatible bare 'sprawl spawn' usage")
 	}
 
 	// Flags should be persistent (inherited by subcommands)
@@ -595,7 +595,7 @@ func TestSpawn_DendraBinPropagated(t *testing.T) {
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_BIN" {
-			return "/custom/dendra"
+			return "/custom/sprawl"
 		}
 		return originalGetenv(key)
 	}
@@ -606,8 +606,8 @@ func TestSpawn_DendraBinPropagated(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if env["SPRAWL_BIN"] != "/custom/dendra" {
-		t.Errorf("env SPRAWL_BIN = %q, want %q", env["SPRAWL_BIN"], "/custom/dendra")
+	if env["SPRAWL_BIN"] != "/custom/sprawl" {
+		t.Errorf("env SPRAWL_BIN = %q, want %q", env["SPRAWL_BIN"], "/custom/sprawl")
 	}
 }
 

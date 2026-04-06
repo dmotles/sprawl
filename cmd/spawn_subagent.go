@@ -75,12 +75,12 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	// Read environment
 	parentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if parentName == "" {
-		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; spawn must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; spawn must be called from within a sprawl agent")
 	}
 
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a sprawl agent")
 	}
 
 	// Allocate name
@@ -99,13 +99,13 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		return fmt.Errorf("loading parent agent state: %w", err)
 	}
 
-	// Find dendra binary
+	// Find sprawl binary
 	dendraPath, err := deps.findSprawl()
 	if err != nil {
-		return fmt.Errorf("finding dendra binary: %w", err)
+		return fmt.Errorf("finding sprawl binary: %w", err)
 	}
 
-	// Build shell command: cd to parent's worktree, then run dendra agent-loop
+	// Build shell command: cd to parent's worktree, then run sprawl agent-loop
 	shellCmd := fmt.Sprintf("cd %s && %s",
 		tmux.ShellQuote(parentState.Worktree),
 		tmux.BuildShellCmd(dendraPath, []string{"agent-loop", agentName}))

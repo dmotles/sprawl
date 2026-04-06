@@ -86,7 +86,7 @@ func runHandoff(deps *handoffDeps) error {
 		//nolint:revive,staticcheck // multi-line error message is intentional for CLI UX
 		return fmt.Errorf(`no summary provided on stdin. Pipe your session summary into this command:
 
-  cat <<'EOF' | dendra handoff
+  cat <<'EOF' | sprawl handoff
   ## What was accomplished
   ...
   ## Key decisions

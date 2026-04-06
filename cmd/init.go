@@ -34,7 +34,7 @@ func init() {
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Launch the root agent",
-	Long:  "Start a new Dendrarchy root agent session, or attach to an existing one.",
+	Long:  "Start a new Sprawl root agent session, or attach to an existing one.",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		deps, err := resolveDeps()
 		if err != nil {
@@ -95,7 +95,7 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 
 	dendraPath, err := deps.findSprawl()
 	if err != nil {
-		return fmt.Errorf("finding dendra binary: %w", err)
+		return fmt.Errorf("finding sprawl binary: %w", err)
 	}
 
 	shellCmd := tmux.BuildShellCmd(dendraPath, []string{"root-loop"})
@@ -138,7 +138,7 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 }
 
 func printDetachedInfo(namespace, sessionName string) {
-	fmt.Printf("Dendra initialized (detached)\n")
+	fmt.Printf("Sprawl initialized (detached)\n")
 	fmt.Printf("  Namespace: %s\n", namespace)
 	fmt.Printf("  Session:   %s\n", sessionName)
 	fmt.Printf("  Attach:    tmux attach-session -t %s\n", sessionName)

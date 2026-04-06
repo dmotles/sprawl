@@ -55,7 +55,7 @@ func newTestSpawnSubagentDeps(t *testing.T) (*spawnSubagentDeps, *spawnMockRunne
 			return ""
 		},
 		findSprawl: func() (string, error) {
-			return "/usr/local/bin/dendra", nil
+			return "/usr/local/bin/sprawl", nil
 		},
 		loadAgent: state.LoadAgent,
 	}
@@ -278,15 +278,15 @@ func TestSpawnSubagent_TmuxFails(t *testing.T) {
 func TestSpawnSubagent_FindSprawlFails(t *testing.T) {
 	deps, runner, _ := newTestSpawnSubagentDeps(t)
 	deps.findSprawl = func() (string, error) {
-		return "", errors.New("dendra binary not found")
+		return "", errors.New("sprawl binary not found")
 	}
 
 	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
 	if err == nil {
 		t.Fatal("expected error when findSprawl fails")
 	}
-	if !strings.Contains(err.Error(), "dendra") {
-		t.Errorf("error should mention dendra, got: %v", err)
+	if !strings.Contains(err.Error(), "sprawl") {
+		t.Errorf("error should mention sprawl, got: %v", err)
 	}
 
 	// Tmux should not have been called
@@ -329,7 +329,7 @@ func TestSpawnSubagent_ShellCmd_UsesParentWorktree(t *testing.T) {
 
 	// Should use parent's worktree in cd command
 	expectedCmd := "cd " + tmux.ShellQuote(parentWorktree) + " && " +
-		tmux.BuildShellCmd("/usr/local/bin/dendra", []string{"agent-loop", expectedName})
+		tmux.BuildShellCmd("/usr/local/bin/sprawl", []string{"agent-loop", expectedName})
 
 	if cmd != expectedCmd {
 		t.Errorf("shell command mismatch\n  got:  %s\n  want: %s", cmd, expectedCmd)
@@ -346,7 +346,7 @@ func TestSpawnSubagent_DendraBinPropagated(t *testing.T) {
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_BIN" {
-			return "/custom/dendra"
+			return "/custom/sprawl"
 		}
 		return originalGetenv(key)
 	}
@@ -357,8 +357,8 @@ func TestSpawnSubagent_DendraBinPropagated(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if env["SPRAWL_BIN"] != "/custom/dendra" {
-		t.Errorf("env SPRAWL_BIN = %q, want %q", env["SPRAWL_BIN"], "/custom/dendra")
+	if env["SPRAWL_BIN"] != "/custom/sprawl" {
+		t.Errorf("env SPRAWL_BIN = %q, want %q", env["SPRAWL_BIN"], "/custom/sprawl")
 	}
 }
 

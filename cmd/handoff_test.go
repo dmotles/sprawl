@@ -189,8 +189,8 @@ func TestHandoff_EmptyStdin(t *testing.T) {
 	if !strings.Contains(err.Error(), "no summary provided") {
 		t.Errorf("error should mention 'no summary provided', got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "dendra handoff") {
-		t.Errorf("error should include usage hint with 'dendra handoff', got: %v", err)
+	if !strings.Contains(err.Error(), "sprawl handoff") {
+		t.Errorf("error should include usage hint with 'sprawl handoff', got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "What was accomplished") {
 		t.Errorf("error should suggest summary sections, got: %v", err)

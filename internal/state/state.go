@@ -25,13 +25,13 @@ type AgentState struct {
 	Subagent    bool   `json:"subagent,omitempty"`
 	TreePath    string `json:"tree_path,omitempty"`
 
-	// Report fields — populated by "dendra report" subcommands.
+	// Report fields — populated by "sprawl report" subcommands.
 	LastReportType    string `json:"last_report_type,omitempty"` // status, done, problem
 	LastReportMessage string `json:"last_report_message,omitempty"`
 	LastReportAt      string `json:"last_report_at,omitempty"` // RFC3339
 }
 
-// AgentsDir returns the path to the agents state directory under the given dendra root.
+// AgentsDir returns the path to the agents state directory under the given sprawl root.
 func AgentsDir(dendraRoot string) string {
 	return filepath.Join(dendraRoot, ".sprawl", "agents")
 }

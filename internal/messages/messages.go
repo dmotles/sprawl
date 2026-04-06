@@ -33,14 +33,14 @@ type Message struct {
 	Dir       string `json:"-"`
 }
 
-// MessagesDir returns the path to the messages directory under the dendra root.
+// MessagesDir returns the path to the messages directory under the sprawl root.
 func MessagesDir(dendraRoot string) string { //nolint:revive // stuttering name is part of public API
 	return filepath.Join(dendraRoot, ".sprawl", "messages")
 }
 
 // NotifyFunc is called after successful delivery when provided via WithNotify.
 // It receives the sender name, subject, and the generated message ID so callers
-// can construct actionable instructions (e.g. "dendra messages read <id>").
+// can construct actionable instructions (e.g. "sprawl messages read <id>").
 // It is best-effort — errors and panics are swallowed.
 type NotifyFunc func(from, subject, msgID string)
 
