@@ -26,11 +26,11 @@ func TestEncodeCWDForClaude_DotsInPath(t *testing.T) {
 	}
 }
 
-func TestEncodeCWDForClaude_DendraWorktree(t *testing.T) {
-	got := EncodeCWDForClaude("/home/coder/dendra/.sprawl/worktrees/oak")
-	want := "-home-coder-dendra--sprawl-worktrees-oak"
+func TestEncodeCWDForClaude_SprawlWorktree(t *testing.T) {
+	got := EncodeCWDForClaude("/home/user/sprawl/.sprawl/worktrees/oak")
+	want := "-home-user-sprawl--sprawl-worktrees-oak"
 	if got != want {
-		t.Errorf("EncodeCWDForClaude(%q) = %q, want %q", "/home/coder/dendra/.sprawl/worktrees/oak", got, want)
+		t.Errorf("EncodeCWDForClaude(%q) = %q, want %q", "/home/user/sprawl/.sprawl/worktrees/oak", got, want)
 	}
 }
 
