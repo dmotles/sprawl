@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dmotles/dendra/internal/memory"
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/memory"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/spf13/cobra"
 )
 

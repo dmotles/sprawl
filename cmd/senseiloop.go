@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dmotles/dendra/internal/agent"
-	"github.com/dmotles/dendra/internal/claude"
-	"github.com/dmotles/dendra/internal/memory"
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/claude"
+	"github.com/dmotles/sprawl/internal/memory"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 

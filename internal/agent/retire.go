@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // ShutdownDeps holds the deps needed for graceful agent shutdown.

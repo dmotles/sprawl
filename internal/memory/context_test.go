@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/messages"
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 var fixedClock = func() time.Time {

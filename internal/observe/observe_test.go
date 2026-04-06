@@ -3,8 +3,8 @@ package observe
 import (
 	"testing"
 
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // mockRunner implements tmux.Runner with configurable HasSession/HasWindow results.

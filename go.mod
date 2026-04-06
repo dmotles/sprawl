@@ -1,4 +1,4 @@
-module github.com/dmotles/dendra
+module github.com/dmotles/sprawl
 
 go 1.25.0
 

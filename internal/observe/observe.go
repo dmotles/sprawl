@@ -3,8 +3,8 @@ package observe
 import (
 	"sort"
 
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // AgentInfo wraps AgentState with runtime liveness and role info.

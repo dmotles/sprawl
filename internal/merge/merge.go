@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 // Config holds the parameters for a merge operation.

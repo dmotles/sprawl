@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/messages"
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 func newTestReportDeps(t *testing.T) (*reportDeps, string) {

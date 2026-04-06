@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/protocol"
+	"github.com/dmotles/sprawl/internal/protocol"
 )
 
 // readResult holds a message or error from the reader goroutine.

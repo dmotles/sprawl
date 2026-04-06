@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/dendra/internal/observe"
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/observe"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // statusMockRunner implements tmux.Runner for status tests.

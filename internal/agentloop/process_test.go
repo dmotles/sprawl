@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/claude"
-	"github.com/dmotles/dendra/internal/protocol"
+	"github.com/dmotles/sprawl/internal/claude"
+	"github.com/dmotles/sprawl/internal/protocol"
 )
 
 // --- Mock infrastructure ---

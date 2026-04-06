@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 func TestMessagesDir(t *testing.T) {

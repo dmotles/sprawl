@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // retireTestRunner implements tmux.Runner for retire tests.

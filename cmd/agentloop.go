@@ -13,12 +13,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/dmotles/dendra/internal/agent"
-	"github.com/dmotles/dendra/internal/agentloop"
-	"github.com/dmotles/dendra/internal/claude"
-	"github.com/dmotles/dendra/internal/messages"
-	"github.com/dmotles/dendra/internal/protocol"
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/claude"
+	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
 )

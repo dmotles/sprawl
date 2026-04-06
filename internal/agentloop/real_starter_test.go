@@ -3,7 +3,7 @@ package agentloop
 import (
 	"testing"
 
-	"github.com/dmotles/dendra/internal/claude"
+	"github.com/dmotles/sprawl/internal/claude"
 )
 
 func TestBuildArgs_IncludesModelOpus(t *testing.T) {

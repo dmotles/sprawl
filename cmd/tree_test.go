@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/dendra/internal/observe"
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/observe"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // treeMockRunner implements tmux.Runner for tree tests.

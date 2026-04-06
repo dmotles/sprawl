@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dmotles/dendra/internal/claude"
-	"github.com/dmotles/dendra/internal/protocol"
+	"github.com/dmotles/sprawl/internal/claude"
+	"github.com/dmotles/sprawl/internal/protocol"
 )
 
 // MessageReader reads protocol messages from the Claude process stdout.

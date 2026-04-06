@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/agent"
-	"github.com/dmotles/dendra/internal/memory"
+	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/memory"
 )
 
 // newTestSenseiLoopDeps creates a senseiLoopDeps with sensible defaults for testing.

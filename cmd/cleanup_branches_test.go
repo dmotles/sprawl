@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 func newTestCleanupBranchesDeps(t *testing.T) (*cleanupBranchesDeps, *bytes.Buffer, string) {

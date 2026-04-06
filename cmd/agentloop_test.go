@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/agentloop"
-	"github.com/dmotles/dendra/internal/messages"
-	"github.com/dmotles/dendra/internal/protocol"
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 // mockProcessManager implements the processManager interface for testing.

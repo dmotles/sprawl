@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dmotles/dendra/internal/messages"
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 // BuildOption configures BuildContextBlob behavior.

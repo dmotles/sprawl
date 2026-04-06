@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/dendra/internal/merge"
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/merge"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {

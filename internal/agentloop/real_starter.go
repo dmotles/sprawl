@@ -6,7 +6,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/dmotles/dendra/internal/protocol"
+	"github.com/dmotles/sprawl/internal/protocol"
 )
 
 // RealCommandStarter launches a real Claude Code subprocess.

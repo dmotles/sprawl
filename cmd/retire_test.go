@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/merge"
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/merge"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // retireMockRunner extends killMockRunner for retire tests.

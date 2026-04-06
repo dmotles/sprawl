@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 func newTestDeps() *Deps {

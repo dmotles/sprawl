@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/dendra/internal/state"
-	"github.com/dmotles/dendra/internal/tmux"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // killMockRunner implements tmux.Runner for kill tests.

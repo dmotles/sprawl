@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dmotles/dendra/internal/state"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 // NowFunc is the time source used by the messages package. Override in tests for determinism.
