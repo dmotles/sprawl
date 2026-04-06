@@ -58,9 +58,6 @@ func LoadAll(deps Deps, dendraRoot string) ([]*AgentInfo, error) {
 
 	// Annotate liveness.
 	for _, info := range result {
-		if IsTerminal(info.Status) {
-			continue // ProcessAlive stays nil
-		}
 		if deps.TmuxRunner == nil {
 			continue // ProcessAlive stays nil
 		}

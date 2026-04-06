@@ -2,15 +2,15 @@
 name: linear-issues
 description: Create, update, query, and manage Linear issues for this project. Use when creating tasks, filing bugs, planning work, setting up dependencies, or checking what's available to work on.
 user-invocable: true
-argument-hint: "[action] e.g. 'create', 'list blocked', 'plan milestone', or a QUM-### issue ID"
+argument-hint: "[action] e.g. 'create', 'list blocked', 'plan milestone', or an issue ID"
 ---
 
 # Linear Issue Management for Sprawl
 
 ## Workspace Context
 
-- **Team**: Qumulo-dmotles (prefix: `QUM`)
-- **Project**: Sprawl (use `project: "Sprawl"` when creating issues)
+
+Team name, issue prefix, and project name are defined in `CLAUDE.local.md`. Read it for the current workspace configuration.
 - **Statuses**: Backlog → Todo → In Progress → Done (also: Canceled, Duplicate)
 - **Labels**: Bug, Feature, Improvement
 - **Priority scale**: 1=Urgent, 2=High, 3=Normal, 4=Low
@@ -105,7 +105,7 @@ When filing a batch of related issues, wire up dependencies at creation time. Cr
 
 To find issues that are ready to work on (unblocked):
 
-1. List issues: `list_issues` with `project: "Sprawl"`, `state: "Todo"` or `state: "Backlog"`
+1. List issues: `list_issues` with `project: "<project from CLAUDE.local.md>"`, `state: "Todo"` or `state: "Backlog"`
 2. For each issue, `get_issue` to check if it has `blockedBy` relations
 3. Issues with no `blockedBy` (or all blockers in Done state) are available
 
@@ -113,7 +113,7 @@ To find issues that are ready to work on (unblocked):
 
 Use milestones to group issues into meaningful project phases. Milestones live inside the Sprawl project.
 
-- Create milestones with `save_milestone` (requires `project: "Sprawl"`)
+- Create milestones with `save_milestone` (requires `project: "<project from CLAUDE.local.md>"`)
 - Assign issues to milestones via the `milestone` field on `save_issue`
 - Milestones can have target dates
 
@@ -134,8 +134,8 @@ For large issues, break them into sub-issues using `parentId` on `save_issue`.
 save_issue:
   title: "Add timeout to agent spawn"
   description: "## Context\n..."
-  team: "Qumulo-dmotles"
-  project: "Sprawl"
+  team: "<team from CLAUDE.local.md>"
+  project: "<project from CLAUDE.local.md>"
   labels: ["Feature"]
   priority: 3
   state: "Todo"
@@ -144,14 +144,14 @@ save_issue:
 ### Setting dependencies
 ```
 save_issue:
-  id: "QUM-10"
-  blockedBy: ["QUM-8", "QUM-9"]
+  id: "<PREFIX>-10"
+  blockedBy: ["<PREFIX>-8", "<PREFIX>-9"]
 ```
 
 ### Creating a milestone
 ```
 save_milestone:
-  project: "Sprawl"
+  project: "<project from CLAUDE.local.md>"
   name: "v0.2 - Multi-agent coordination"
   description: "Core features for running multiple agents"
   targetDate: "2026-05-01"
@@ -160,7 +160,7 @@ save_milestone:
 ### Assigning issue to milestone
 ```
 save_issue:
-  id: "QUM-10"
+  id: "<PREFIX>-10"
   milestone: "v0.2 - Multi-agent coordination"
 ```
 
@@ -172,7 +172,7 @@ save_issue:
 
 ## Conventions
 
-- Always assign to project "Sprawl" — never create orphan issues
+- Always assign to the project configured in `CLAUDE.local.md` — never create orphan issues
 - Default to `state: "Backlog"` for new issues unless they're immediately actionable (use "Todo")
 - When closing an issue via code change, update its state to "Done" and leave a comment linking the commit/PR
 - When an issue is blocked, add a comment explaining what it's waiting on

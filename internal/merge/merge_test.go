@@ -21,7 +21,7 @@ func newTestDeps() *Deps {
 		GitRebaseAbort:  func(worktree string) error { return nil },
 		GitFFMerge:      func(worktree, branch string) error { return nil },
 		GitResetHard:    func(worktree string) error { return nil },
-		RunTests:        func(dir string) (string, error) { return "ok", nil },
+		RunTests:        func(dir, command string) (string, error) { return "ok", nil },
 		WritePoke:       func(dendraRoot, agentName, content string) error { return nil },
 		Stderr:          io.Discard,
 	}
@@ -35,6 +35,7 @@ func newTestConfig() *Config {
 		AgentWorktree:  "/worktree/agent",
 		ParentBranch:   "main",
 		ParentWorktree: "/worktree/parent",
+		ValidateCmd:    "make validate",
 		AgentState: &state.AgentState{
 			Name:              "test-agent",
 			Type:              "engineer",
@@ -333,7 +334,7 @@ func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
 
-	deps.RunTests = func(dir string) (string, error) {
+	deps.RunTests = func(dir, command string) (string, error) {
 		return "FAIL: TestSomething\nexit status 1", fmt.Errorf("tests failed")
 	}
 
@@ -379,7 +380,7 @@ func TestMerge_NoValidate_SkipsTests(t *testing.T) {
 	cfg.NoValidate = true
 
 	var testsCalled bool
-	deps.RunTests = func(dir string) (string, error) {
+	deps.RunTests = func(dir, command string) (string, error) {
 		testsCalled = true
 		return "ok", nil
 	}
@@ -475,7 +476,7 @@ func TestMerge_StepOrdering(t *testing.T) {
 		order = append(order, "ff-merge")
 		return nil
 	}
-	deps.RunTests = func(dir string) (string, error) {
+	deps.RunTests = func(dir, command string) (string, error) {
 		order = append(order, "validate")
 		return "ok", nil
 	}
@@ -550,6 +551,66 @@ func TestMerge_CommitMessage_Default(t *testing.T) {
 	}
 	if !strings.Contains(capturedMessage, "Co-Authored-By:") {
 		t.Errorf("commit message should contain co-author, got: %q", capturedMessage)
+	}
+}
+
+func TestMerge_EmptyValidateCmd_SkipsWithWarning(t *testing.T) {
+	deps := newTestDeps()
+	cfg := newTestConfig()
+	cfg.ValidateCmd = ""
+	cfg.NoValidate = false
+
+	var testsCalled bool
+	deps.RunTests = func(dir, command string) (string, error) {
+		testsCalled = true
+		return "ok", nil
+	}
+
+	var stderr bytes.Buffer
+	deps.Stderr = &stderr
+
+	var pokeCalled bool
+	deps.WritePoke = func(dendraRoot, agentName, content string) error {
+		pokeCalled = true
+		return nil
+	}
+
+	result, err := Merge(cfg, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if testsCalled {
+		t.Error("RunTests should NOT be called when ValidateCmd is empty")
+	}
+	if !strings.Contains(stderr.String(), "no validate command configured") {
+		t.Errorf("stderr should warn about missing validate command, got: %q", stderr.String())
+	}
+	if !pokeCalled {
+		t.Error("poke should still be written when ValidateCmd is empty")
+	}
+	if result == nil {
+		t.Fatal("result should not be nil")
+	}
+}
+
+func TestMerge_ValidateCmd_PassedToRunTests(t *testing.T) {
+	deps := newTestDeps()
+	cfg := newTestConfig()
+	cfg.ValidateCmd = "npm test"
+
+	var capturedCommand string
+	deps.RunTests = func(dir, command string) (string, error) {
+		capturedCommand = command
+		return "ok", nil
+	}
+
+	_, err := Merge(cfg, deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedCommand != "npm test" {
+		t.Errorf("RunTests command = %q, want %q", capturedCommand, "npm test")
 	}
 }
 

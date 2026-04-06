@@ -22,10 +22,21 @@ scripts/sprawl-test-env.sh     # set up isolated test environment
 
 > **Warning:** Do not run `make install` unless your agent identity is `neo` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./dendra` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
 
+## Project Configuration
+
+Sprawl reads `.sprawl/config.yaml` for project-level settings:
+
+```yaml
+validate: "make validate"   # command to run for post-merge validation
+```
+
+If no config file exists or the `validate` key is absent, post-merge validation is skipped with a warning. Use `--no-validate` on `sprawl merge` to explicitly skip validation.
+
 ## Repo Layout
 
 - `cmd/` — CLI commands (cobra). Each command has its own file + test file.
 - `internal/agent/` — Claude Code launcher, agent name allocation, prompt building
+- `internal/config/` — Project configuration loading (`.sprawl/config.yaml`)
 - `internal/state/` — Agent state persistence (JSON files in `.sprawl/agents/`)
 - `internal/tmux/` — tmux session/window management for running agents
 - `internal/worktree/` — Git worktree creation for agent isolation
@@ -46,7 +57,7 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 
 ## Linear Issue Tracking
 
-This project tracks work in Linear. All issues belong to the **Sprawl** project in team **Qumulo-dmotles** (prefix: `QUM`).
+This project tracks work in Linear. See `CLAUDE.local.md` for workspace-specific configuration (team name, issue prefix).
 
 When creating, managing, or querying issues, use the `/linear-issues` skill for conventions, required fields, and MCP tool usage.
 
@@ -57,13 +68,7 @@ When creating, managing, or querying issues, use the `/linear-issues` skill for 
 
 ## Spawning Agents
 
-When spawning an agent to work on a Linear issue, keep the prompt short. Point the agent at the issue — don't repeat the issue contents in the prompt. Example:
-
-```
-sprawl spawn --family engineering --type engineer \
-  --branch "dmotles/qum-42-broadcast-partial-failure" \
-  --prompt "Work on QUM-42. Read the issue for details."
-```
+When spawning an agent to work on a Linear issue, keep the prompt short. Point the agent at the issue — don't repeat the issue contents in the prompt. See `CLAUDE.local.md` for the team prefix to use in branch names.
 
 The issue is the source of truth. The agent can read it via Linear MCP tools (`get_issue`).
 

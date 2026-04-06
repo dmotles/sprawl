@@ -73,6 +73,17 @@ func TestMessagesSend_HappyPath(t *testing.T) {
 	}
 }
 
+func TestMessagesSend_InvalidRecipientReturnsError(t *testing.T) {
+	deps, _ := newTestMessagesDeps(t)
+	err := runMessagesSend(deps, "../evil", "subject", "body")
+	if err == nil {
+		t.Fatal("expected error for invalid recipient name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+}
+
 func TestMessagesSend_MissingAgentIdentity(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {

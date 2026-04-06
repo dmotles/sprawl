@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/spf13/cobra"
@@ -25,6 +27,7 @@ type mergeDeps struct {
 	gitStatus     func(worktree string) (string, error)
 	branchExists  func(repoRoot, branchName string) bool
 	currentBranch func(repoRoot string) (string, error)
+	loadConfig    func(sprawlRoot string) (*config.Config, error)
 	doMerge       func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
 	newMergeDeps  func() *merge.Deps
 	stderr        io.Writer
@@ -74,6 +77,7 @@ func resolveMergeDeps() *mergeDeps {
 		gitStatus:     realGitStatus,
 		branchExists:  realBranchExists,
 		currentBranch: gitCurrentBranch,
+		loadConfig:    config.Load,
 		doMerge:       merge.Merge,
 		newMergeDeps: func() *merge.Deps {
 			return &merge.Deps{
@@ -96,9 +100,18 @@ func resolveMergeDeps() *mergeDeps {
 }
 
 func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate bool, dryRun bool) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
+	}
+
+	sprawlCfg, err := deps.loadConfig(dendraRoot)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
 	}
 
 	callerName := deps.getenv("SPRAWL_AGENT_IDENTITY")
@@ -187,6 +200,7 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 		ParentWorktree:  callerWorktree,
 		MessageOverride: messageOverride,
 		NoValidate:      noValidate,
+		ValidateCmd:     sprawlCfg.Validate,
 		DryRun:          dryRun,
 		AgentState:      agent,
 	}

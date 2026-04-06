@@ -63,6 +63,10 @@ func resolveKillDeps() (*killDeps, error) {
 }
 
 func runKill(deps *killDeps, agentName string, force bool) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -31,6 +32,9 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 		gitStatus:     func(worktree string) (string, error) { return "", nil },
 		branchExists:  func(repoRoot, branchName string) bool { return true },
 		currentBranch: func(repoRoot string) (string, error) { return "main", nil },
+		loadConfig: func(sprawlRoot string) (*config.Config, error) {
+			return &config.Config{Validate: "make validate"}, nil
+		},
 		doMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
 			return &merge.Result{CommitHash: "abc1234"}, nil
 		},
@@ -41,6 +45,17 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, tmpDir
+}
+
+func TestMerge_InvalidAgentNameReturnsError(t *testing.T) {
+	deps, _ := newTestMergeDeps(t)
+	err := runMerge(deps, "../evil", "", false, false)
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
 }
 
 func TestMerge_HappyPath(t *testing.T) {
@@ -561,5 +576,108 @@ func TestMerge_SuccessOutput(t *testing.T) {
 	}
 	if strings.Contains(output, "deleted") {
 		t.Errorf("output should not indicate branch was deleted, got: %q", output)
+	}
+}
+
+func TestMerge_ConfigValidateCmd_PassedThrough(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+	})
+
+	var configLoadedFrom string
+	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+		configLoadedFrom = sprawlRoot
+		return &config.Config{Validate: "go test ./..."}, nil
+	}
+
+	var capturedCfg *merge.Config
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		capturedCfg = cfg
+		return &merge.Result{CommitHash: "abc1234"}, nil
+	}
+
+	err := runMerge(deps, "target-agent", "", true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedCfg == nil {
+		t.Fatal("doMerge was not called")
+	}
+	if capturedCfg.ValidateCmd != "go test ./..." {
+		t.Errorf("ValidateCmd = %q, want %q", capturedCfg.ValidateCmd, "go test ./...")
+	}
+	if configLoadedFrom != tmpDir {
+		t.Errorf("loadConfig called with %q, want %q", configLoadedFrom, tmpDir)
+	}
+}
+
+func TestMerge_NoConfig_SkipsValidation(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+	})
+
+	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+		return &config.Config{}, nil
+	}
+
+	var capturedCfg *merge.Config
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		capturedCfg = cfg
+		return &merge.Result{CommitHash: "abc1234"}, nil
+	}
+
+	err := runMerge(deps, "target-agent", "", true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedCfg == nil {
+		t.Fatal("doMerge was not called")
+	}
+	if capturedCfg.ValidateCmd != "" {
+		t.Errorf("ValidateCmd = %q, want empty string", capturedCfg.ValidateCmd)
+	}
+}
+
+func TestMerge_ConfigLoadError(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+	})
+
+	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+		return nil, fmt.Errorf("permission denied reading config.yaml")
+	}
+
+	err := runMerge(deps, "target-agent", "", true, false)
+	if err == nil {
+		t.Fatal("expected error from config load failure")
+	}
+	if !strings.Contains(err.Error(), "loading config") {
+		t.Errorf("error should mention loading config, got: %v", err)
 	}
 }

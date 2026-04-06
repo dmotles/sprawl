@@ -19,6 +19,7 @@ type Config struct {
 	ParentWorktree  string
 	MessageOverride string
 	NoValidate      bool
+	ValidateCmd     string
 	DryRun          bool
 	AgentState      *state.AgentState
 }
@@ -34,7 +35,7 @@ type Deps struct {
 	GitRebaseAbort  func(worktree string) error
 	GitFFMerge      func(worktree, branch string) error
 	GitResetHard    func(worktree string) error
-	RunTests        func(dir string) (string, error)
+	RunTests        func(dir, command string) (string, error)
 	WritePoke       func(dendraRoot, agentName, content string) error
 	Stderr          io.Writer
 }
@@ -104,8 +105,8 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	}
 
 	// Step 7: Post-merge validation.
-	if !cfg.NoValidate {
-		output, err := deps.RunTests(cfg.ParentWorktree)
+	if !cfg.NoValidate && cfg.ValidateCmd != "" {
+		output, err := deps.RunTests(cfg.ParentWorktree, cfg.ValidateCmd)
 		if err != nil {
 			if resetErr := deps.GitResetHard(cfg.ParentWorktree); resetErr != nil {
 				fmt.Fprintf(deps.Stderr, "WARNING: rollback (git reset --hard HEAD~1) failed: %v\n", resetErr)
@@ -113,6 +114,8 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 			truncated := truncateOutput(output, 50)
 			return nil, fmt.Errorf("post-merge validation failed: tests fail after merging %s into %s\nMerge rolled back. Your branch is back to its pre-merge state.\n%s\nUse --no-validate to skip validation", cfg.AgentName, cfg.ParentBranch, truncated)
 		}
+	} else if !cfg.NoValidate && cfg.ValidateCmd == "" {
+		fmt.Fprintf(deps.Stderr, "WARNING: no validate command configured; skipping post-merge validation\n")
 	}
 
 	// Step 8: Write poke BEFORE releasing lock.
@@ -156,8 +159,10 @@ func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // erro
 
 	fmt.Fprintf(deps.Stderr, "  Commit message:\n%s\n", indentedMsg)
 	fmt.Fprintf(deps.Stderr, "  Steps: acquire lock → squash → rebase → ff-merge")
-	if !cfg.NoValidate {
-		fmt.Fprintf(deps.Stderr, " → validate")
+	if !cfg.NoValidate && cfg.ValidateCmd != "" {
+		fmt.Fprintf(deps.Stderr, " → validate (%s)", cfg.ValidateCmd)
+	} else if !cfg.NoValidate && cfg.ValidateCmd == "" {
+		fmt.Fprintf(deps.Stderr, " → validate (skipped - not configured)")
 	}
 	fmt.Fprintf(deps.Stderr, " → poke → release lock\n")
 

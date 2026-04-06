@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -42,6 +43,10 @@ var delegateCmd = &cobra.Command{
 }
 
 func runDelegate(deps *delegateDeps, agentName, prompt string) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")

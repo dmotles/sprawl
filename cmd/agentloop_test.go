@@ -219,6 +219,19 @@ func TestRunAgentLoop_MissingDendraRoot(t *testing.T) {
 	}
 }
 
+func TestRunAgentLoop_InvalidAgentNameReturnsError(t *testing.T) {
+	deps, _, _ := newTestAgentLoopDeps(t)
+
+	ctx := context.Background()
+	err := runAgentLoop(ctx, deps, "../evil")
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+}
+
 func TestRunAgentLoop_AgentNotFound(t *testing.T) {
 	deps, _, _ := newTestAgentLoopDeps(t)
 	deps.loadAgent = func(root, name string) (*state.AgentState, error) {

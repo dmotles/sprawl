@@ -346,6 +346,10 @@ const defaultPollInterval = 500 * time.Millisecond
 
 // runAgentLoop is the main loop logic for the agent-loop command.
 func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+
 	// Validate SPRAWL_ROOT
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {

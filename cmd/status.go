@@ -187,9 +187,6 @@ func tolerantListAgents(stderr io.Writer) func(string) ([]*state.AgentState, err
 
 func processDisplay(info *observe.AgentInfo) string {
 	if info.ProcessAlive == nil {
-		if isTerminalStatus(info.Status) {
-			return "-"
-		}
 		return "?"
 	}
 	if *info.ProcessAlive {
@@ -212,14 +209,6 @@ func lastReportDisplay(info *observe.AgentInfo) string {
 		msg = msg[:maxLen-3] + "..."
 	}
 	return tag + " " + msg
-}
-
-func isTerminalStatus(status string) bool {
-	switch status {
-	case "done", "problem", "retiring":
-		return true
-	}
-	return false
 }
 
 func dash(s string) string {

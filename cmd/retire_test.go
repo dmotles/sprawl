@@ -57,11 +57,25 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 		currentBranch: func(repoRoot string) (string, error) {
 			return "main", nil
 		},
+		gitUnmergedCommits: func(repoRoot, branchName string) ([]string, error) {
+			return nil, nil
+		},
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 
 	return deps, runner, tmpDir
+}
+
+func TestRetire_InvalidAgentNameReturnsError(t *testing.T) {
+	deps, _, _ := newTestRetireDeps(t)
+	err := runRetire(deps, "../evil", false, false, false, false, false)
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
 }
 
 func TestRetire_HappyPath(t *testing.T) {
@@ -80,7 +94,7 @@ func TestRetire_HappyPath(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -95,7 +109,7 @@ func TestRetire_HappyPath(t *testing.T) {
 func TestRetire_AgentNotFound(t *testing.T) {
 	deps, _, _ := newTestRetireDeps(t)
 
-	err := runRetire(deps, "nonexistent", false, false, false, false)
+	err := runRetire(deps, "nonexistent", false, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for missing agent")
 	}
@@ -108,7 +122,7 @@ func TestRetire_MissingDendraRoot(t *testing.T) {
 	deps, _, _ := newTestRetireDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
@@ -133,7 +147,7 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for dirty worktree")
 	}
@@ -173,7 +187,7 @@ func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, true, false, false)
+	err := runRetire(deps, "alice", false, true, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error with --force: %v", err)
 	}
@@ -216,7 +230,7 @@ func TestRetire_WithChildren_Refuses(t *testing.T) {
 		Parent: "alice",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for agent with children")
 	}
@@ -249,7 +263,7 @@ func TestRetire_WithChildren_ForceOrphans(t *testing.T) {
 		Parent: "alice",
 	})
 
-	err := runRetire(deps, "alice", false, true, false, false)
+	err := runRetire(deps, "alice", false, true, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error with --force: %v", err)
 	}
@@ -306,7 +320,7 @@ func TestRetire_Cascade(t *testing.T) {
 		Parent:      "bob",
 	})
 
-	err := runRetire(deps, "alice", true, false, false, false)
+	err := runRetire(deps, "alice", true, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error with --cascade: %v", err)
 	}
@@ -334,7 +348,7 @@ func TestRetire_CrashRecovery_RetiringState(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error during crash recovery: %v", err)
 	}
@@ -366,7 +380,7 @@ func TestRetire_EmptyWorktree_SkipsRemoval(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -392,7 +406,7 @@ func TestRetire_WorktreeRemoveFailure_WarnsButContinues(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -425,7 +439,7 @@ func TestRetire_ForceKillsProcess(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, true, false, false)
+	err := runRetire(deps, "alice", false, true, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -479,7 +493,7 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 		Parent:      "alice",
 	})
 
-	err := runRetire(deps, "alice", true, false, false, false)
+	err := runRetire(deps, "alice", true, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected error for dirty child worktree in cascade")
 	}
@@ -509,7 +523,7 @@ func TestRetire_Subagent_SkipsWorktreeCleanup(t *testing.T) {
 		Subagent:    true,
 	})
 
-	err := runRetire(deps, "sub-alice", false, false, false, false)
+	err := runRetire(deps, "sub-alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -555,7 +569,7 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 		return os.RemoveAll(path)
 	}
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -590,7 +604,7 @@ func TestRetire_Abandon_DeletesBranch(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, true, false)
+	err := runRetire(deps, "alice", false, false, true, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -623,7 +637,7 @@ func TestRetire_Abandon_BranchDeleteFails_WarnsButSucceeds(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, true, false)
+	err := runRetire(deps, "alice", false, false, true, false, false)
 	if err != nil {
 		t.Fatalf("expected no error when branch deletion fails, got: %v", err)
 	}
@@ -654,7 +668,7 @@ func TestRetire_NoAbandon_PreservesBranch(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -761,7 +775,7 @@ func TestRetire_Default_MergedBranch_DeletesBranch(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -794,7 +808,7 @@ func TestRetire_Default_UnmergedBranch_PreservesBranch(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -849,7 +863,7 @@ func TestRetire_MergeFlag_HappyPath(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, true)
+	err := runRetire(deps, "alice", false, false, false, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -882,7 +896,7 @@ func TestRetire_MergeAndAbandon_MutualExclusion(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, true, true)
+	err := runRetire(deps, "alice", false, false, true, true, false)
 	if err == nil {
 		t.Fatal("expected error for mutually exclusive flags")
 	}
@@ -918,7 +932,7 @@ func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, true)
+	err := runRetire(deps, "alice", false, false, false, true, false)
 	if err == nil {
 		t.Fatal("expected error when merge fails")
 	}
@@ -975,7 +989,7 @@ func TestRetire_ForcePlusMerge(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, true, false, true)
+	err := runRetire(deps, "alice", false, true, false, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error with force+merge: %v", err)
 	}
@@ -1040,7 +1054,7 @@ func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 		Parent:      "alice",
 	})
 
-	err := runRetire(deps, "alice", true, false, false, true)
+	err := runRetire(deps, "alice", true, false, false, true, false)
 	if err != nil {
 		t.Fatalf("unexpected error with cascade+merge: %v", err)
 	}
@@ -1093,7 +1107,7 @@ func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
 		Parent:      "alice",
 	})
 
-	err := runRetire(deps, "alice", true, false, true, false)
+	err := runRetire(deps, "alice", true, false, true, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error with cascade+abandon: %v", err)
 	}
@@ -1134,7 +1148,7 @@ func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
 		Parent:      "root",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false)
+	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1157,5 +1171,256 @@ func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
 	}
 	if !foundPoke {
 		t.Errorf("removeFile not called with poke path %q; called with: %v", expectedPokePath, removedFiles)
+	}
+}
+
+// --- Tests for QUM-159: abandon safety guards ---
+
+func TestRetire_Abandon_UnmergedCommits_BlocksWithoutYes(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+		return []string{"abc1234 Add initial implementation", "def5678 Fix edge case"}, nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false, false) // abandon=true, yes=false
+	if err == nil {
+		t.Fatal("expected error for unmerged commits without --yes")
+	}
+	if !strings.Contains(err.Error(), "abandon blocked") {
+		t.Errorf("error should mention 'abandon blocked', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unmerged commits") {
+		t.Errorf("error should mention 'unmerged commits', got: %v", err)
+	}
+
+	// Agent state should still exist (not retired).
+	agentState, loadErr := state.LoadAgent(tmpDir, "alice")
+	if loadErr != nil {
+		t.Fatalf("agent state should still exist: %v", loadErr)
+	}
+	if agentState.Status != "active" {
+		t.Errorf("status = %q, want %q", agentState.Status, "active")
+	}
+}
+
+func TestRetire_Abandon_UnmergedCommits_ProceedsWithYes(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+		return []string{"abc1234 Add initial implementation"}, nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false, true) // abandon=true, yes=true
+	if err != nil {
+		t.Fatalf("unexpected error with --yes: %v", err)
+	}
+
+	// Agent should be retired.
+	_, loadErr := state.LoadAgent(tmpDir, "alice")
+	if loadErr == nil {
+		t.Error("expected agent state to be deleted")
+	}
+}
+
+func TestRetire_Abandon_LiveProcess_BlocksWithoutYes(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+
+	runner.pids = []int{12345} // live process
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false, false) // abandon=true, yes=false
+	if err == nil {
+		t.Fatal("expected error for live process without --yes")
+	}
+	if !strings.Contains(err.Error(), "abandon blocked") {
+		t.Errorf("error should mention 'abandon blocked', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "live process") {
+		t.Errorf("error should mention 'live process', got: %v", err)
+	}
+}
+
+func TestRetire_Abandon_LiveProcess_ProceedsWithYes(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+
+	runner.pids = []int{12345}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false, true) // abandon=true, yes=true
+	if err != nil {
+		t.Fatalf("unexpected error with --yes: %v", err)
+	}
+
+	_, loadErr := state.LoadAgent(tmpDir, "alice")
+	if loadErr == nil {
+		t.Error("expected agent state to be deleted")
+	}
+}
+
+func TestRetire_Abandon_BothGuards_BlocksWithoutYes(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+
+	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+		return []string{"abc1234 Some commit"}, nil
+	}
+	runner.pids = []int{12345}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false, false)
+	if err == nil {
+		t.Fatal("expected error for both guards without --yes")
+	}
+	if !strings.Contains(err.Error(), "unmerged commits") {
+		t.Errorf("error should mention 'unmerged commits', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "live process") {
+		t.Errorf("error should mention 'live process', got: %v", err)
+	}
+}
+
+func TestRetire_Abandon_NoGuards_ProceedsWithoutYes(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+
+	// No unmerged commits (default mock returns nil).
+	// No live process.
+	runner.pidsErr = os.ErrNotExist
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, true, false, false) // abandon=true, yes=false
+	if err != nil {
+		t.Fatalf("unexpected error: --yes should not be required when no guards fire: %v", err)
+	}
+
+	_, loadErr := state.LoadAgent(tmpDir, "alice")
+	if loadErr == nil {
+		t.Error("expected agent state to be deleted")
+	}
+}
+
+func TestRetire_Abandon_Subagent_SkipsGuards(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+		return []string{"abc1234 Some commit"}, nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "sub-alice",
+		Status:      "active",
+		Branch:      "dendra/sub-alice",
+		Worktree:    "/some/worktree/sub-alice",
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "sub-alice",
+		Parent:      "alice",
+		Subagent:    true,
+	})
+
+	// Subagents should skip guards even with unmerged commits.
+	err := runRetire(deps, "sub-alice", false, false, true, false, false) // abandon=true, yes=false
+	if err != nil {
+		t.Fatalf("unexpected error: subagent should skip guards: %v", err)
+	}
+
+	_, loadErr := state.LoadAgent(tmpDir, "sub-alice")
+	if loadErr == nil {
+		t.Error("expected subagent state to be deleted")
+	}
+}
+
+func TestRetire_Abandon_Cascade_PropagatesYes(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+		return []string{"abc1234 Some commit"}, nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "dendra/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "bob",
+		Status:      "active",
+		Branch:      "dendra/bob",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "bob"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
+		TmuxWindow:  "bob",
+		Parent:      "alice",
+	})
+
+	// cascade=true, abandon=true, yes=true — should propagate yes to children.
+	err := runRetire(deps, "alice", true, false, true, false, true)
+	if err != nil {
+		t.Fatalf("unexpected error with cascade+abandon+yes: %v", err)
+	}
+
+	for _, name := range []string{"alice", "bob"} {
+		_, loadErr := state.LoadAgent(tmpDir, name)
+		if loadErr == nil {
+			t.Errorf("expected %s state to be deleted", name)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/spf13/cobra"
 )
 
@@ -48,6 +49,10 @@ delivered immediately on the next poll cycle.`,
 }
 
 func runPoke(deps *pokeDeps, agentName, message string) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")

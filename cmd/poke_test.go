@@ -80,6 +80,27 @@ func TestRunPoke_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRunPoke_InvalidAgentNameReturnsError(t *testing.T) {
+	deps := &pokeDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return "/tmp/test-root"
+			}
+			return ""
+		},
+		writeFile: func(string, []byte, fs.FileMode) error { return nil },
+		stdout:    &bytes.Buffer{},
+	}
+
+	err := runPoke(deps, "../evil", "hello")
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+}
+
 func TestRunPoke_MissingDendraRoot(t *testing.T) {
 	deps := &pokeDeps{
 		getenv:    func(string) string { return "" },

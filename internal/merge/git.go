@@ -121,9 +121,9 @@ func RealGitResetHard(worktree string) error {
 	return nil
 }
 
-// RealRunTests runs make validate in the given directory.
-func RealRunTests(dir string) (string, error) {
-	cmd := exec.Command("bash", "-c", "make validate") //nolint:gosec // command is not user-controlled
+// RealRunTests runs the given validation command in the given directory.
+func RealRunTests(dir, command string) (string, error) {
+	cmd := exec.Command("bash", "-c", command) //nolint:gosec // G204: command from project-level .sprawl/config.yaml, trusted like committed config
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err

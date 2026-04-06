@@ -41,6 +41,23 @@ func TestRunLogs_MissingDendraRoot(t *testing.T) {
 	}
 }
 
+func TestRunLogs_InvalidAgentNameReturnsError(t *testing.T) {
+	deps := &logsDeps{
+		getenv:   func(string) string { return "/tmp/test" },
+		readDir:  os.ReadDir,
+		readFile: os.ReadFile,
+		stdout:   &bytes.Buffer{},
+	}
+
+	err := runLogs(deps, "../evil", 0)
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+}
+
 func TestRunLogs_NoLogsDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	deps := &logsDeps{

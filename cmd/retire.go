@@ -33,6 +33,7 @@ type retireDeps struct {
 	newMergeDeps        func() *merge.Deps
 	loadAgent           func(dendraRoot, name string) (*state.AgentState, error)
 	currentBranch       func(repoRoot string) (string, error)
+	gitUnmergedCommits  func(repoRoot, branchName string) ([]string, error)
 }
 
 var defaultRetireDeps *retireDeps
@@ -42,6 +43,7 @@ var (
 	retireForce   bool
 	retireAbandon bool
 	retireMerge   bool
+	retireYes     bool
 )
 
 func init() {
@@ -49,6 +51,7 @@ func init() {
 	retireCmd.Flags().BoolVar(&retireForce, "force", false, "Skip dirty worktree check and orphan children")
 	retireCmd.Flags().BoolVar(&retireAbandon, "abandon", false, "Discard the agent's work and delete its branch")
 	retireCmd.Flags().BoolVar(&retireMerge, "merge", false, "Merge the agent's work into your branch before retiring")
+	retireCmd.Flags().BoolVar(&retireYes, "yes", false, "Acknowledge safety warnings (unmerged commits, live process) and proceed")
 	rootCmd.AddCommand(retireCmd)
 }
 
@@ -62,7 +65,7 @@ var retireCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return runRetire(deps, args[0], retireCascade, retireForce, retireAbandon, retireMerge)
+		return runRetire(deps, args[0], retireCascade, retireForce, retireAbandon, retireMerge, retireYes)
 	},
 }
 
@@ -105,12 +108,17 @@ func resolveRetireDeps() (*retireDeps, error) {
 				Stderr:          os.Stderr,
 			}
 		},
-		loadAgent:     state.LoadAgent,
-		currentBranch: gitCurrentBranch,
+		loadAgent:          state.LoadAgent,
+		currentBranch:      gitCurrentBranch,
+		gitUnmergedCommits: realGitUnmergedCommits,
 	}, nil
 }
 
-func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, mergeFirst bool) error {
+func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, mergeFirst, yes bool) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+
 	if abandon && mergeFirst {
 		return fmt.Errorf("--merge and --abandon are mutually exclusive")
 	}
@@ -197,6 +205,34 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 		}
 	}
 
+	// Abandon safety guards: warn about unmerged commits and live processes.
+	if abandon && agentState.Branch != "" && !agentState.Subagent {
+		var warnings []string
+
+		// Guard 1: Check for unmerged commits.
+		commits, commitErr := deps.gitUnmergedCommits(dendraRoot, agentState.Branch)
+		if commitErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not check unmerged commits: %v\n", commitErr)
+		} else if len(commits) > 0 {
+			fmt.Fprintf(os.Stderr, "WARNING: Agent %q has %d unmerged commit(s) on branch %s:\n", agentName, len(commits), agentState.Branch)
+			for _, c := range commits {
+				fmt.Fprintf(os.Stderr, "  %s\n", c)
+			}
+			warnings = append(warnings, "unmerged commits")
+		}
+
+		// Guard 2: Check for live tmux process.
+		pids, pidErr := deps.tmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
+		if pidErr == nil && len(pids) > 0 {
+			fmt.Fprintf(os.Stderr, "WARNING: Agent %q process is still alive.\n", agentName)
+			warnings = append(warnings, "live process")
+		}
+
+		if len(warnings) > 0 && !yes {
+			return fmt.Errorf("retire --abandon blocked: %s detected. Re-run with --yes to confirm, or use --merge instead", strings.Join(warnings, " and "))
+		}
+	}
+
 	// Cascade: retire children first (depth-first, bottom-up)
 	if cascade {
 		children, err := findChildren(dendraRoot, agentName)
@@ -204,7 +240,7 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 			return fmt.Errorf("checking children: %w", err)
 		}
 		for _, child := range children {
-			if err := runRetire(deps, child.Name, true, force, abandon, false); err != nil {
+			if err := runRetire(deps, child.Name, true, force, abandon, false, yes); err != nil {
 				return fmt.Errorf("retiring child %s: %w", child.Name, err)
 			}
 		}
@@ -359,4 +395,20 @@ func realGitStatus(worktreePath string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// realGitUnmergedCommits returns a list of commits on branchName not reachable from main.
+func realGitUnmergedCommits(repoRoot, branchName string) ([]string, error) {
+	revRange := "main.." + branchName
+	cmd := exec.Command("git", "log", revRange, "--oneline") // #nosec G204 -- branchName is from agent state, not user input
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git log %s: %w", revRange, err)
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return nil, nil
+	}
+	return strings.Split(trimmed, "\n"), nil
 }

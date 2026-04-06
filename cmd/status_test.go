@@ -229,8 +229,38 @@ func TestRunStatus_ProcessTerminal(t *testing.T) {
 	lines := strings.Split(out, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "alpha") {
-			if strings.Contains(line, "alive") || strings.Contains(line, "DEAD") || strings.Contains(line, "?") {
-				t.Errorf("expected '-' process for terminal agent, got line: %s", line)
+			if !strings.Contains(line, "DEAD") {
+				t.Errorf("expected 'DEAD' for done agent without tmux window, got line: %s", line)
+			}
+			break
+		}
+	}
+}
+
+func TestRunStatus_ProcessTerminalButAlive(t *testing.T) {
+	runner := &statusMockRunner{
+		hasWindowResults: map[string]bool{
+			"sess:win": true,
+		},
+	}
+
+	agents := []*state.AgentState{
+		{Name: "alpha", Status: "done", Parent: "neo", TmuxSession: "sess", TmuxWindow: "win"},
+	}
+
+	deps, buf := makeStatusTestDeps(agents, "", runner)
+
+	err := runStatus(deps, false, "", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	lines := strings.Split(out, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "alpha") {
+			if !strings.Contains(line, "alive") {
+				t.Errorf("expected 'alive' for done agent with live tmux window, got line: %s", line)
 			}
 			break
 		}

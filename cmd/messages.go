@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
@@ -169,6 +170,10 @@ func runMessagesInboxDisplay(deps *messagesDeps, showAll bool) error {
 }
 
 func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
+	if err := agent.ValidateName(to); err != nil {
+		return err
+	}
+
 	agentName, dendraRoot, err := deps.resolveEnv()
 	if err != nil {
 		return err

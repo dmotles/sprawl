@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/spf13/cobra"
 )
 
@@ -51,6 +52,10 @@ func resolveLogsDeps() *logsDeps {
 }
 
 func runLogs(deps *logsDeps, agentName string, tail int) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+
 	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")

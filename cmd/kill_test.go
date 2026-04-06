@@ -95,6 +95,17 @@ func createTestAgent(t *testing.T, dendraRoot string, agent *state.AgentState) {
 	}
 }
 
+func TestKill_InvalidAgentNameReturnsError(t *testing.T) {
+	deps, _, _ := newTestKillDeps(t)
+	err := runKill(deps, "../evil", false)
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+}
+
 func TestKill_HappyPath(t *testing.T) {
 	deps, runner, tmpDir := newTestKillDeps(t)
 

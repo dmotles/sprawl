@@ -30,6 +30,17 @@ func newTestDelegateDeps(t *testing.T) (*delegateDeps, string) {
 	return deps, tmpDir
 }
 
+func TestDelegate_InvalidAgentNameReturnsError(t *testing.T) {
+	deps, _ := newTestDelegateDeps(t)
+	err := runDelegate(deps, "../evil", "do something")
+	if err == nil {
+		t.Fatal("expected error for invalid agent name")
+	}
+	if !strings.Contains(err.Error(), "invalid agent name") {
+		t.Errorf("error should mention 'invalid agent name', got: %v", err)
+	}
+}
+
 func TestDelegate_HappyPath(t *testing.T) {
 	deps, tmpDir := newTestDelegateDeps(t)
 

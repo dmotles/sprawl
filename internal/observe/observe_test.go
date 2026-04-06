@@ -226,8 +226,11 @@ func TestLoadAll_LivenessTerminalDone(t *testing.T) {
 	if found == nil {
 		t.Fatalf("agent1 not found in results")
 	}
-	if found.ProcessAlive != nil {
-		t.Errorf("expected ProcessAlive=nil for done agent, got %v", *found.ProcessAlive)
+	if found.ProcessAlive == nil {
+		t.Fatalf("expected ProcessAlive to be non-nil for done agent")
+	}
+	if *found.ProcessAlive != false {
+		t.Errorf("expected ProcessAlive=false for done agent without tmux window, got true")
 	}
 }
 
@@ -262,8 +265,11 @@ func TestLoadAll_LivenessTerminalProblem(t *testing.T) {
 	if found == nil {
 		t.Fatalf("agent1 not found in results")
 	}
-	if found.ProcessAlive != nil {
-		t.Errorf("expected ProcessAlive=nil for problem agent, got %v", *found.ProcessAlive)
+	if found.ProcessAlive == nil {
+		t.Fatalf("expected ProcessAlive to be non-nil for problem agent")
+	}
+	if *found.ProcessAlive != false {
+		t.Errorf("expected ProcessAlive=false for problem agent without tmux window, got true")
 	}
 }
 
@@ -298,8 +304,50 @@ func TestLoadAll_LivenessTerminalRetiring(t *testing.T) {
 	if found == nil {
 		t.Fatalf("agent1 not found in results")
 	}
-	if found.ProcessAlive != nil {
-		t.Errorf("expected ProcessAlive=nil for retiring agent, got %v", *found.ProcessAlive)
+	if found.ProcessAlive == nil {
+		t.Fatalf("expected ProcessAlive to be non-nil for retiring agent")
+	}
+	if *found.ProcessAlive != false {
+		t.Errorf("expected ProcessAlive=false for retiring agent without tmux window, got true")
+	}
+}
+
+func TestLoadAll_LivenessTerminalDoneButAlive(t *testing.T) {
+	deps := Deps{
+		TmuxRunner: &mockRunner{
+			hasWindowResults: map[string]bool{
+				"sess:win": true,
+			},
+		},
+		ListAgents: func(string) ([]*state.AgentState, error) {
+			return []*state.AgentState{
+				{Name: "agent1", Status: "done", TmuxSession: "sess", TmuxWindow: "win", Parent: "neo"},
+			}, nil
+		},
+		ReadRootName:  func(string) string { return "neo" },
+		ReadNamespace: func(string) string { return "test" },
+	}
+
+	agents, err := LoadAll(deps, "/fake")
+	if err != nil {
+		t.Fatalf("LoadAll returned error: %v", err)
+	}
+
+	var found *AgentInfo
+	for _, a := range agents {
+		if a.Name == "agent1" {
+			found = a
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("agent1 not found in results")
+	}
+	if found.ProcessAlive == nil {
+		t.Fatalf("expected ProcessAlive to be non-nil for done agent with tmux window")
+	}
+	if *found.ProcessAlive != true {
+		t.Errorf("expected ProcessAlive=true for done agent with live tmux window, got false")
 	}
 }
 
