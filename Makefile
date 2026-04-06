@@ -3,8 +3,16 @@
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
 
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X main.version=$(VERSION) \
+	-X main.commit=$(COMMIT) \
+	-X main.date=$(DATE)
+
 build:
-	go build -o sprawl .
+	go build -ldflags "$(LDFLAGS)" -o sprawl .
 
 fmt:
 	golangci-lint fmt ./...
