@@ -28,10 +28,10 @@ func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (M
 	env := os.Environ()
 	env = append(env, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
 	if config.AgentName != "" {
-		env = append(env, fmt.Sprintf("DENDRA_AGENT_IDENTITY=%s", config.AgentName))
+		env = append(env, fmt.Sprintf("SPRAWL_AGENT_IDENTITY=%s", config.AgentName))
 	}
 	if config.DendraRoot != "" {
-		env = append(env, fmt.Sprintf("DENDRA_ROOT=%s", config.DendraRoot))
+		env = append(env, fmt.Sprintf("SPRAWL_ROOT=%s", config.DendraRoot))
 	}
 	for k, v := range config.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))

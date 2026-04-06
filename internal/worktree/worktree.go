@@ -16,10 +16,10 @@ type Creator interface {
 type RealCreator struct{}
 
 // Create creates a new git worktree for an agent.
-// The worktree is placed at <repoRoot>/.dendra/worktrees/<agentName>/
+// The worktree is placed at <repoRoot>/.sprawl/worktrees/<agentName>/
 // on a new branch with the given branchName based off baseBranch.
 func (r *RealCreator) Create(repoRoot, agentName, branchName, baseBranch string) (string, string, error) {
-	worktreesDir := filepath.Join(repoRoot, ".dendra", "worktrees")
+	worktreesDir := filepath.Join(repoRoot, ".sprawl", "worktrees")
 	if err := os.MkdirAll(worktreesDir, 0o755); err != nil { //nolint:gosec // G301: world-readable worktrees dir is intentional
 		return "", "", fmt.Errorf("creating worktrees directory: %w", err)
 	}

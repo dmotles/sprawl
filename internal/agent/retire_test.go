@@ -105,7 +105,7 @@ func TestRetireAgent_HappyPath(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -138,7 +138,7 @@ func TestRetireAgent_SkipShutdown(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -348,7 +348,7 @@ func TestRetireAgent_CleansUpLogs(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -356,7 +356,7 @@ func TestRetireAgent_CleansUpLogs(t *testing.T) {
 	createRetireTestAgent(t, tmpDir, agent)
 
 	// Create a logs directory with a fake log file.
-	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
+	logsDir := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("failed to create logs dir: %v", err)
 	}
@@ -394,7 +394,7 @@ func TestRetireAgent_ArchivesMessages(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -402,7 +402,7 @@ func TestRetireAgent_ArchivesMessages(t *testing.T) {
 	createRetireTestAgent(t, tmpDir, agent)
 
 	// Create message files in new/ and cur/
-	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", "alice")
+	msgsDir := filepath.Join(tmpDir, ".sprawl", "messages", "alice")
 	for _, sub := range []string{"new", "cur", "sent", "archive"} {
 		os.MkdirAll(filepath.Join(msgsDir, sub), 0o755)
 	}
@@ -438,7 +438,7 @@ func TestRetireAgent_ArchiveMessages_NoMessages(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -470,7 +470,7 @@ func TestRetireAgent_ArchiveMessages_FailureIsWarning(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -478,7 +478,7 @@ func TestRetireAgent_ArchiveMessages_FailureIsWarning(t *testing.T) {
 	createRetireTestAgent(t, tmpDir, agent)
 
 	// Create a message in new/
-	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", "alice")
+	msgsDir := filepath.Join(tmpDir, ".sprawl", "messages", "alice")
 	os.MkdirAll(filepath.Join(msgsDir, "new"), 0o755)
 	os.WriteFile(filepath.Join(msgsDir, "new", "msg1.json"), []byte(`{}`), 0o644)
 
@@ -512,7 +512,7 @@ func TestRetireAgent_ArchiveMessages_NewAgentHasEmptyInbox(t *testing.T) {
 		Name:        agentName,
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", agentName),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", agentName),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  agentName,
 		Parent:      "root",
@@ -520,7 +520,7 @@ func TestRetireAgent_ArchiveMessages_NewAgentHasEmptyInbox(t *testing.T) {
 	createRetireTestAgent(t, tmpDir, agent)
 
 	// Create messages in new/ and cur/
-	msgsDir := filepath.Join(tmpDir, ".dendra", "messages", agentName)
+	msgsDir := filepath.Join(tmpDir, ".sprawl", "messages", agentName)
 	for _, sub := range []string{"new", "cur", "archive"} {
 		os.MkdirAll(filepath.Join(msgsDir, sub), 0o755)
 	}
@@ -529,7 +529,7 @@ func TestRetireAgent_ArchiveMessages_NewAgentHasEmptyInbox(t *testing.T) {
 
 	// Use real archive: move files from new/cur to archive
 	deps.ArchiveMessage = func(dendraRoot, agnt, msgID string) error {
-		agentDir := filepath.Join(dendraRoot, ".dendra", "messages", agnt)
+		agentDir := filepath.Join(dendraRoot, ".sprawl", "messages", agnt)
 		filename := msgID + ".json"
 		dstPath := filepath.Join(agentDir, "archive", filename)
 		// Try new/ first, then cur/
@@ -606,7 +606,7 @@ func TestGracefulShutdown_Normal(t *testing.T) {
 	GracefulShutdown(sd, tmpDir, agent, false)
 
 	// Sentinel should have been written.
-	expectedSentinel := filepath.Join(tmpDir, ".dendra", "agents", "alice.kill")
+	expectedSentinel := filepath.Join(tmpDir, ".sprawl", "agents", "alice.kill")
 	sentinelWritten := slices.Contains(writtenPaths, expectedSentinel)
 	if !sentinelWritten {
 		t.Errorf("expected sentinel file to be written at %s, got writes: %v", expectedSentinel, writtenPaths)

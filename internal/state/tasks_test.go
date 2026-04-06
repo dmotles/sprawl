@@ -10,7 +10,7 @@ import (
 
 func TestTasksDir(t *testing.T) {
 	got := TasksDir("/home/user/project", "frank")
-	want := "/home/user/project/.dendra/agents/frank/tasks"
+	want := "/home/user/project/.sprawl/agents/frank/tasks"
 	if got != want {
 		t.Errorf("TasksDir = %q, want %q", got, want)
 	}

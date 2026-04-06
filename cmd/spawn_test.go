@@ -102,7 +102,7 @@ func (m *mockWorktreeCreator) Create(repoRoot, agentName, branchName, baseBranch
 	path := m.worktreePath
 	branch := m.branchName
 	if path == "" {
-		path = filepath.Join(repoRoot, ".dendra", "worktrees", agentName)
+		path = filepath.Join(repoRoot, ".sprawl", "worktrees", agentName)
 	}
 	if branch == "" {
 		branch = branchName
@@ -126,13 +126,13 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 		worktreeCreator: creator,
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_AGENT_IDENTITY":
+			case "SPRAWL_AGENT_IDENTITY":
 				return "root"
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_NAMESPACE":
+			case "SPRAWL_NAMESPACE":
 				return tmux.DefaultNamespace
-			case "DENDRA_TREE_PATH":
+			case "SPRAWL_TREE_PATH":
 				return tmux.DefaultRootName
 			}
 			return ""
@@ -140,7 +140,7 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 		currentBranch: func(repoRoot string) (string, error) {
 			return "main", nil
 		},
-		findDendra: func() (string, error) {
+		findSprawl: func() (string, error) {
 			return "/usr/local/bin/dendra", nil
 		},
 	}
@@ -172,11 +172,11 @@ func TestSpawn_HappyPath(t *testing.T) {
 	if runner.newSessionWithWindowWindow != expectedName {
 		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, expectedName)
 	}
-	if runner.newSessionWithWindowEnv["DENDRA_AGENT_IDENTITY"] != expectedName {
-		t.Errorf("env DENDRA_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWindowEnv["DENDRA_AGENT_IDENTITY"], expectedName)
+	if runner.newSessionWithWindowEnv["SPRAWL_AGENT_IDENTITY"] != expectedName {
+		t.Errorf("env SPRAWL_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWindowEnv["SPRAWL_AGENT_IDENTITY"], expectedName)
 	}
-	if runner.newSessionWithWindowEnv["DENDRA_ROOT"] != tmpDir {
-		t.Errorf("env DENDRA_ROOT = %q, want %q", runner.newSessionWithWindowEnv["DENDRA_ROOT"], tmpDir)
+	if runner.newSessionWithWindowEnv["SPRAWL_ROOT"] != tmpDir {
+		t.Errorf("env SPRAWL_ROOT = %q, want %q", runner.newSessionWithWindowEnv["SPRAWL_ROOT"], tmpDir)
 	}
 
 	// Verify worktree creator was called
@@ -263,7 +263,7 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 func TestSpawn_MissingIdentity(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return "/tmp/test"
 		}
 		return ""
@@ -273,15 +273,15 @@ func TestSpawn_MissingIdentity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing identity")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
 func TestSpawn_MissingDendraRoot(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
+		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "root"
 		}
 		return ""
@@ -289,10 +289,10 @@ func TestSpawn_MissingDendraRoot(t *testing.T) {
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -310,9 +310,9 @@ func TestSpawn_NamePoolExhausted_UsesFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
 
-	// Should have allocated a fallback name like "tree-1"
-	if runner.newSessionWithWindowWindow != "tree-1" {
-		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "tree-1")
+	// Should have allocated a fallback name like "runner-1"
+	if runner.newSessionWithWindowWindow != "runner-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "runner-1")
 	}
 }
 
@@ -453,7 +453,7 @@ func TestSpawn_ShellCmd_ContainsDendraAgentLoop(t *testing.T) {
 
 	cmd := runner.newSessionWithWindowCmd
 	expectedName := agent.EngineerNames[0]
-	expectedWorktree := filepath.Join(tmpDir, ".dendra", "worktrees", expectedName)
+	expectedWorktree := filepath.Join(tmpDir, ".sprawl", "worktrees", expectedName)
 
 	// Verify the shell command structure:
 	// cd '<worktree>' && '<dendra_path>' 'agent-loop' '<name>'
@@ -486,17 +486,17 @@ func TestSpawnAgentCmd_Registered(t *testing.T) {
 	}
 }
 
-// TestSpawn_FindDendraFails verifies that when findDendra returns an error,
+// TestSpawn_FindSprawlFails verifies that when findSprawl returns an error,
 // runSpawn propagates it.
-func TestSpawn_FindDendraFails(t *testing.T) {
+func TestSpawn_FindSprawlFails(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
-	deps.findDendra = func() (string, error) {
+	deps.findSprawl = func() (string, error) {
 		return "", errors.New("dendra binary not found")
 	}
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
-		t.Fatal("expected error when findDendra fails")
+		t.Fatal("expected error when findSprawl fails")
 	}
 	if !strings.Contains(err.Error(), "dendra") {
 		t.Errorf("error should mention dendra, got: %v", err)
@@ -504,12 +504,12 @@ func TestSpawn_FindDendraFails(t *testing.T) {
 
 	// Tmux should not have been called
 	if runner.newSessionWithWindowCalled || runner.newWindowCalled {
-		t.Error("tmux should not be called when findDendra fails")
+		t.Error("tmux should not be called when findSprawl fails")
 	}
 }
 
 // TestSpawn_WritesInitialPromptFile verifies that spawning an agent writes the
-// initial prompt to .dendra/agents/<name>/prompts/initial.md.
+// initial prompt to .sprawl/agents/<name>/prompts/initial.md.
 func TestSpawn_WritesInitialPromptFile(t *testing.T) {
 	deps, _, _, tmpDir := newTestSpawnDeps(t)
 
@@ -519,7 +519,7 @@ func TestSpawn_WritesInitialPromptFile(t *testing.T) {
 	}
 
 	expectedName := agent.EngineerNames[0]
-	promptPath := filepath.Join(tmpDir, ".dendra", "agents", expectedName, "prompts", "initial.md")
+	promptPath := filepath.Join(tmpDir, ".sprawl", "agents", expectedName, "prompts", "initial.md")
 
 	data, err := os.ReadFile(promptPath)
 	if err != nil {
@@ -546,7 +546,7 @@ func TestSpawn_AgentPromptContainsFileRef(t *testing.T) {
 		t.Fatalf("loading agent state: %v", err)
 	}
 
-	expectedPromptPath := filepath.Join(tmpDir, ".dendra", "agents", expectedName, "prompts", "initial.md")
+	expectedPromptPath := filepath.Join(tmpDir, ".sprawl", "agents", expectedName, "prompts", "initial.md")
 
 	// Should contain @file reference
 	if !strings.Contains(agentState.Prompt, "@"+expectedPromptPath) {
@@ -594,7 +594,7 @@ func TestSpawn_DendraBinPropagated(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_BIN" {
+		if key == "SPRAWL_BIN" {
 			return "/custom/dendra"
 		}
 		return originalGetenv(key)
@@ -606,14 +606,14 @@ func TestSpawn_DendraBinPropagated(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if env["DENDRA_BIN"] != "/custom/dendra" {
-		t.Errorf("env DENDRA_BIN = %q, want %q", env["DENDRA_BIN"], "/custom/dendra")
+	if env["SPRAWL_BIN"] != "/custom/dendra" {
+		t.Errorf("env SPRAWL_BIN = %q, want %q", env["SPRAWL_BIN"], "/custom/dendra")
 	}
 }
 
 func TestSpawn_DendraBinNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
-	// Default getenv returns "" for DENDRA_BIN
+	// Default getenv returns "" for SPRAWL_BIN
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
@@ -621,8 +621,8 @@ func TestSpawn_DendraBinNotPropagatedWhenUnset(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if _, ok := env["DENDRA_BIN"]; ok {
-		t.Errorf("env should not contain DENDRA_BIN when unset, got %q", env["DENDRA_BIN"])
+	if _, ok := env["SPRAWL_BIN"]; ok {
+		t.Errorf("env should not contain SPRAWL_BIN when unset, got %q", env["SPRAWL_BIN"])
 	}
 }
 
@@ -641,7 +641,7 @@ func TestSpawn_DendraTestModePropagated(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_TEST_MODE" {
+		if key == "SPRAWL_TEST_MODE" {
 			return "1"
 		}
 		return originalGetenv(key)
@@ -653,14 +653,14 @@ func TestSpawn_DendraTestModePropagated(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if env["DENDRA_TEST_MODE"] != "1" {
-		t.Errorf("env DENDRA_TEST_MODE = %q, want %q", env["DENDRA_TEST_MODE"], "1")
+	if env["SPRAWL_TEST_MODE"] != "1" {
+		t.Errorf("env SPRAWL_TEST_MODE = %q, want %q", env["SPRAWL_TEST_MODE"], "1")
 	}
 }
 
 func TestSpawn_DendraTestModeNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
-	// Default getenv returns "" for DENDRA_TEST_MODE
+	// Default getenv returns "" for SPRAWL_TEST_MODE
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
@@ -668,8 +668,8 @@ func TestSpawn_DendraTestModeNotPropagatedWhenUnset(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if _, ok := env["DENDRA_TEST_MODE"]; ok {
-		t.Errorf("env should not contain DENDRA_TEST_MODE when unset, got %q", env["DENDRA_TEST_MODE"])
+	if _, ok := env["SPRAWL_TEST_MODE"]; ok {
+		t.Errorf("env should not contain SPRAWL_TEST_MODE when unset, got %q", env["SPRAWL_TEST_MODE"])
 	}
 }
 
@@ -746,8 +746,8 @@ func TestSpawn_ResearcherPoolExhausted_UsesFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
 
-	if runner.newSessionWithWindowWindow != "river-1" {
-		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "river-1")
+	if runner.newSessionWithWindowWindow != "decker-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "decker-1")
 	}
 }
 
@@ -765,7 +765,7 @@ func TestSpawn_ManagerPoolExhausted_UsesFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
 
-	if runner.newSessionWithWindowWindow != "peak-1" {
-		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "peak-1")
+	if runner.newSessionWithWindowWindow != "fixer-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "fixer-1")
 	}
 }

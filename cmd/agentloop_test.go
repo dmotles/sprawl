@@ -87,7 +87,7 @@ func (m *mockProcessManager) IsRunning() bool {
 }
 
 // newTestAgentLoopDeps creates a standard test deps struct with sensible defaults.
-// Returns the deps, the temp dir (used as DENDRA_ROOT), and the mock process manager.
+// Returns the deps, the temp dir (used as SPRAWL_ROOT), and the mock process manager.
 func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessManager) {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -99,15 +99,15 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 	}
 
 	agentState := &state.AgentState{
-		Name:      "ash",
+		Name:      "finn",
 		Type:      "engineer",
 		Family:    "engineering",
 		Parent:    "root",
 		Prompt:    "do stuff",
-		Branch:    "dendra/ash",
+		Branch:    "dendra/finn",
 		Worktree:  tmpDir,
 		Status:    "active",
-		SessionID: "dendra-ash",
+		SessionID: "dendra-finn",
 	}
 	if err := state.SaveAgent(tmpDir, agentState); err != nil {
 		t.Fatalf("saving test agent state: %v", err)
@@ -120,7 +120,7 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 
 	deps := &agentLoopDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -199,7 +199,7 @@ func TestAgentLoopCmd_ExactArgs(t *testing.T) {
 	}
 
 	// Should accept exactly 1 arg
-	err = cmd.Args(cmd, []string{"ash"})
+	err = cmd.Args(cmd, []string{"finn"})
 	if err != nil {
 		t.Errorf("expected no error for 1 arg, got: %v", err)
 	}
@@ -210,12 +210,12 @@ func TestRunAgentLoop_MissingDendraRoot(t *testing.T) {
 	deps.getenv = func(key string) string { return "" }
 
 	ctx := context.Background()
-	err := runAgentLoop(ctx, deps, "ash")
+	err := runAgentLoop(ctx, deps, "finn")
 	if err == nil {
-		t.Fatal("expected error when DENDRA_ROOT is empty")
+		t.Fatal("expected error when SPRAWL_ROOT is empty")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -242,7 +242,7 @@ func TestRunAgentLoop_FindClaudeFails(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := runAgentLoop(ctx, deps, "ash")
+	err := runAgentLoop(ctx, deps, "finn")
 	if err == nil {
 		t.Fatal("expected error when findClaude fails")
 	}
@@ -265,7 +265,7 @@ func TestRunAgentLoop_ProcessStartFails(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 	_ = tmpDir
 
 	// Should have reported failure to parent "root"
@@ -289,7 +289,7 @@ func TestRunAgentLoop_ProcessesTask(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue a task (EnqueueTask now writes a prompt file)
-	if _, err := state.EnqueueTask(tmpDir, "ash", "implement feature X"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "implement feature X"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -308,7 +308,7 @@ func TestRunAgentLoop_ProcessesTask(t *testing.T) {
 		cancel()
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// Verify the task prompt was sent to Claude via @file reference
 	if len(mockProc.prompts) < 1 {
@@ -328,7 +328,7 @@ func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
 
 	// Create a task with an explicit PromptFile set (simulating new-style task)
 	promptContent := "do important work"
-	promptFilePath := filepath.Join(tmpDir, ".dendra", "agents", "ash", "prompts", "explicit-task.md")
+	promptFilePath := filepath.Join(tmpDir, ".sprawl", "agents", "finn", "prompts", "explicit-task.md")
 	os.MkdirAll(filepath.Dir(promptFilePath), 0o755)
 	os.WriteFile(promptFilePath, []byte(promptContent), 0o644)
 
@@ -339,7 +339,7 @@ func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
 		Status:     "queued",
 		CreatedAt:  "2026-03-31T12:00:00Z",
 	}
-	tasksDir := state.TasksDir(tmpDir, "ash")
+	tasksDir := state.TasksDir(tmpDir, "finn")
 	os.MkdirAll(tasksDir, 0o755)
 	taskData, _ := json.Marshal(task)
 	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-explicit-task-id.json"), taskData, 0o644)
@@ -351,7 +351,7 @@ func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt sent to process")
@@ -373,7 +373,7 @@ func TestRunAgentLoop_TaskDelivery_FallbackRawPrompt(t *testing.T) {
 		CreatedAt: "2026-03-31T12:00:00Z",
 	}
 	// Write task JSON directly (bypassing EnqueueTask which now sets PromptFile)
-	tasksDir := state.TasksDir(tmpDir, "ash")
+	tasksDir := state.TasksDir(tmpDir, "finn")
 	os.MkdirAll(tasksDir, 0o755)
 	taskData, _ := json.Marshal(task)
 	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-legacy-task-id.json"), taskData, 0o644)
@@ -385,7 +385,7 @@ func TestRunAgentLoop_TaskDelivery_FallbackRawPrompt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt sent to process")
@@ -400,11 +400,11 @@ func TestRunAgentLoop_TaskFIFO(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue two tasks
-	if _, err := state.EnqueueTask(tmpDir, "ash", "first task"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "first task"); err != nil {
 		t.Fatalf("creating task1: %v", err)
 	}
 	time.Sleep(10 * time.Millisecond)
-	if _, err := state.EnqueueTask(tmpDir, "ash", "second task"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "second task"); err != nil {
 		t.Fatalf("creating task2: %v", err)
 	}
 
@@ -433,7 +433,7 @@ func TestRunAgentLoop_TaskFIFO(t *testing.T) {
 		}
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if len(mockProc.prompts) < 2 {
 		t.Fatalf("expected at least 2 prompts, got %d", len(mockProc.prompts))
@@ -464,7 +464,7 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// No tasks queued, but send a message to the agent's inbox
-	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this out"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "hey", "check this out"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -477,7 +477,7 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 		cancel()
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected at least one prompt when inbox has messages")
@@ -501,7 +501,7 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 	}
 
 	// After delivery, messages should remain UNREAD (agent reads them itself).
-	unread, _ := messages.List(tmpDir, "ash", "unread")
+	unread, _ := messages.List(tmpDir, "finn", "unread")
 	if len(unread) != 1 {
 		t.Errorf("expected 1 unread message after delivery (agent reads it), got %d", len(unread))
 	}
@@ -511,7 +511,7 @@ func TestRunAgentLoop_InboxRedeliveryUntilRead(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Send a message.
-	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "hey", "check this"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -530,7 +530,7 @@ func TestRunAgentLoop_InboxRedeliveryUntilRead(t *testing.T) {
 		}
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// Both iterations should prompt the agent since the message remains unread.
 	if len(mockProc.prompts) != 2 {
@@ -553,7 +553,7 @@ func TestRunAgentLoop_WakeFile(t *testing.T) {
 
 	wakeReadCount := 0
 	deps.readFile = func(path string) ([]byte, error) {
-		if strings.HasSuffix(path, "ash.wake") {
+		if strings.HasSuffix(path, "finn.wake") {
 			wakeReadCount++
 			if wakeReadCount == 1 {
 				return []byte(wakeContent), nil
@@ -575,7 +575,7 @@ func TestRunAgentLoop_WakeFile(t *testing.T) {
 		cancel()
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if len(mockProc.prompts) < 1 {
 		t.Fatal("expected prompt from wake file")
@@ -587,7 +587,7 @@ func TestRunAgentLoop_WakeFile(t *testing.T) {
 	// Wake file should be removed after reading
 	foundRemove := false
 	for _, f := range removedFiles {
-		if strings.Contains(f, "ash.wake") {
+		if strings.Contains(f, "finn.wake") {
 			foundRemove = true
 			break
 		}
@@ -618,7 +618,7 @@ func TestRunAgentLoop_IdleSleep(t *testing.T) {
 		cancel() // Exit the loop after sleep
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if !sleepCalled {
 		t.Error("expected sleepFunc to be called when idle")
@@ -629,7 +629,7 @@ func TestRunAgentLoop_ProcessCrash_Restart(t *testing.T) {
 	deps, tmpDir, _ := newTestAgentLoopDeps(t)
 
 	// Queue a task so the loop has work to do
-	if _, err := state.EnqueueTask(tmpDir, "ash", "do work"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "do work"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -657,7 +657,7 @@ func TestRunAgentLoop_ProcessCrash_Restart(t *testing.T) {
 		return pm
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if len(createdConfigs) < 2 {
 		t.Fatalf("expected at least 2 process creations (original + restart), got %d", len(createdConfigs))
@@ -671,7 +671,7 @@ func TestRunAgentLoop_RestartFailure_ReportsParent(t *testing.T) {
 	deps, tmpDir, _ := newTestAgentLoopDeps(t)
 
 	// Queue a task
-	if _, err := state.EnqueueTask(tmpDir, "ash", "do work"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "do work"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -700,7 +700,7 @@ func TestRunAgentLoop_RestartFailure_ReportsParent(t *testing.T) {
 	deps.exit = func(code int) { exitCode = code }
 
 	ctx := context.Background()
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// Should have sent a message to parent ("root") about the failure
 	parentNotified := false
@@ -738,7 +738,7 @@ func TestRunAgentLoop_GracefulShutdown(t *testing.T) {
 		cancel()
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	if !mockProc.stopCalled {
 		t.Error("expected proc.Stop to be called on graceful shutdown")
@@ -1118,7 +1118,7 @@ func TestRunAgentLoop_LogPrefix(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	output := out.String()
 	if !strings.Contains(output, "[agent-loop]") {
@@ -1142,12 +1142,12 @@ func TestRunAgentLoop_ProcessConfigFromAgentState(t *testing.T) {
 	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
 	deps.readFile = func(path string) ([]byte, error) { return nil, errors.New("not found") }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 	_ = tmpDir
 
 	// Verify ProcessConfig was populated from agent state
-	if capturedConfig.AgentName != "ash" {
-		t.Errorf("AgentName = %q, want %q", capturedConfig.AgentName, "ash")
+	if capturedConfig.AgentName != "finn" {
+		t.Errorf("AgentName = %q, want %q", capturedConfig.AgentName, "finn")
 	}
 	if capturedConfig.WorkDir == "" {
 		t.Error("WorkDir should be set from agent state Worktree")
@@ -1162,7 +1162,7 @@ func TestRunAgentLoop_ProcessConfigFromAgentState(t *testing.T) {
 		t.Error("SystemPromptFile should be set")
 	}
 	if capturedConfig.DendraRoot == "" {
-		t.Error("DendraRoot should be set from DENDRA_ROOT env var")
+		t.Error("DendraRoot should be set from SPRAWL_ROOT env var")
 	}
 }
 
@@ -1174,7 +1174,7 @@ func TestRunAgentLoop_KillSentinel(t *testing.T) {
 	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
 
 	// Kill sentinel file exists when readFile is called for it.
-	expectedKillPath := filepath.Join(tmpDir, ".dendra", "agents", "ash.kill")
+	expectedKillPath := filepath.Join(tmpDir, ".sprawl", "agents", "finn.kill")
 	var removedFiles []string
 	deps.readFile = func(path string) ([]byte, error) {
 		if path == expectedKillPath {
@@ -1188,7 +1188,7 @@ func TestRunAgentLoop_KillSentinel(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := runAgentLoop(ctx, deps, "ash")
+	err := runAgentLoop(ctx, deps, "finn")
 	if err != nil {
 		t.Fatalf("expected clean exit on kill sentinel, got error: %v", err)
 	}
@@ -1215,17 +1215,17 @@ func TestRunAgentLoop_KillSentinel_PriorityOverTasks(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue a task so there is work available.
-	if _, err := state.EnqueueTask(tmpDir, "ash", "should not be processed"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "should not be processed"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
 	// Also have inbox messages available.
-	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this out"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "hey", "check this out"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
 	// Kill sentinel file exists.
-	expectedKillPath := filepath.Join(tmpDir, ".dendra", "agents", "ash.kill")
+	expectedKillPath := filepath.Join(tmpDir, ".sprawl", "agents", "finn.kill")
 	deps.readFile = func(path string) ([]byte, error) {
 		if path == expectedKillPath {
 			return []byte(""), nil // sentinel file exists
@@ -1240,7 +1240,7 @@ func TestRunAgentLoop_KillSentinel_PriorityOverTasks(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := runAgentLoop(ctx, deps, "ash")
+	err := runAgentLoop(ctx, deps, "finn")
 	if err != nil {
 		t.Fatalf("expected clean exit on kill sentinel, got error: %v", err)
 	}
@@ -1275,10 +1275,10 @@ func TestRunAgentLoop_DebugConfigOutput(t *testing.T) {
 	// Set up env vars to be printed
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
-			return "ash"
+		case "SPRAWL_AGENT_IDENTITY":
+			return "finn"
 		default:
 			return ""
 		}
@@ -1291,7 +1291,7 @@ func TestRunAgentLoop_DebugConfigOutput(t *testing.T) {
 	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
 	deps.readFile = func(path string) ([]byte, error) { return nil, errors.New("not found") }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	output := out.String()
 
@@ -1299,7 +1299,7 @@ func TestRunAgentLoop_DebugConfigOutput(t *testing.T) {
 	if !strings.Contains(output, "=== SYSTEM PROMPT ===") {
 		t.Error("expected system prompt section header in debug output")
 	}
-	if !strings.Contains(output, "system prompt for ash") {
+	if !strings.Contains(output, "system prompt for finn") {
 		t.Error("expected full system prompt content in debug output")
 	}
 
@@ -1326,11 +1326,11 @@ func TestRunAgentLoop_DebugConfigOutput(t *testing.T) {
 	if !strings.Contains(output, "=== KEY ENV VARS ===") {
 		t.Error("expected env vars section header in debug output")
 	}
-	if !strings.Contains(output, "DENDRA_AGENT_IDENTITY") {
-		t.Error("expected DENDRA_AGENT_IDENTITY in env vars debug output")
+	if !strings.Contains(output, "SPRAWL_AGENT_IDENTITY") {
+		t.Error("expected SPRAWL_AGENT_IDENTITY in env vars debug output")
 	}
-	if !strings.Contains(output, "DENDRA_ROOT") {
-		t.Error("expected DENDRA_ROOT in env vars debug output")
+	if !strings.Contains(output, "SPRAWL_ROOT") {
+		t.Error("expected SPRAWL_ROOT in env vars debug output")
 	}
 
 	// All lines should have [agent-loop] prefix (after timestamp)
@@ -1353,10 +1353,10 @@ func TestDefaultBuildPrompt_ResearcherType(t *testing.T) {
 	deps := defaultAgentLoopDeps()
 
 	agentState := &state.AgentState{
-		Name:   "ash",
+		Name:   "finn",
 		Type:   "researcher",
 		Parent: "root",
-		Branch: "dendra/ash",
+		Branch: "dendra/finn",
 		Prompt: "investigate auth libraries",
 	}
 
@@ -1384,10 +1384,10 @@ func TestDefaultBuildPrompt_EngineerType(t *testing.T) {
 	deps := defaultAgentLoopDeps()
 
 	agentState := &state.AgentState{
-		Name:   "ash",
+		Name:   "finn",
 		Type:   "engineer",
 		Parent: "root",
-		Branch: "dendra/ash",
+		Branch: "dendra/finn",
 		Prompt: "build login page",
 	}
 
@@ -1410,10 +1410,10 @@ func TestDefaultBuildPrompt_UnknownType(t *testing.T) {
 	deps := defaultAgentLoopDeps()
 
 	agentState := &state.AgentState{
-		Name:   "ash",
+		Name:   "finn",
 		Type:   "tester",
 		Parent: "root",
-		Branch: "dendra/ash",
+		Branch: "dendra/finn",
 		Prompt: "test something",
 	}
 
@@ -1434,10 +1434,10 @@ func TestDefaultBuildPrompt_ManagerType(t *testing.T) {
 	deps := defaultAgentLoopDeps()
 
 	agentState := &state.AgentState{
-		Name:     "ash",
+		Name:     "finn",
 		Type:     "manager",
 		Family:   "engineering",
-		Parent:   "sensei",
+		Parent:   "neo",
 		Branch:   "dmotles/feature-x",
 		Worktree: "/tmp/test-worktree",
 		Prompt:   "coordinate feature work",
@@ -1588,7 +1588,7 @@ func TestRunAgentLoop_OutputHasTimestamps(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	output := out.String()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
@@ -1732,7 +1732,7 @@ func TestRunAgentLoop_PokeFileBetweenTurns(t *testing.T) {
 
 	pokeDelivered := false
 	deps.readFile = func(path string) ([]byte, error) {
-		if strings.HasSuffix(path, "ash.poke") && !pokeDelivered {
+		if strings.HasSuffix(path, "finn.poke") && !pokeDelivered {
 			pokeDelivered = true
 			return []byte("hey, you okay?"), nil
 		}
@@ -1752,7 +1752,7 @@ func TestRunAgentLoop_PokeFileBetweenTurns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// The poke content should have been delivered as a prompt.
 	found := false
@@ -1769,7 +1769,7 @@ func TestRunAgentLoop_PokeFileBetweenTurns(t *testing.T) {
 	// Poke file should have been removed.
 	pokeRemoved := false
 	for _, f := range removedFiles {
-		if strings.Contains(f, "ash.poke") {
+		if strings.Contains(f, "finn.poke") {
 			pokeRemoved = true
 			break
 		}
@@ -1786,7 +1786,7 @@ func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue a task so the loop enters a sendWithInterrupt call.
-	if _, err := state.EnqueueTask(tmpDir, "ash", "long running task"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "long running task"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -1829,14 +1829,14 @@ func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		_ = runAgentLoop(ctx, deps, "ash")
+		_ = runAgentLoop(ctx, deps, "finn")
 	}()
 
 	// Wait a bit for the loop to start processing the task (SendPrompt blocks).
 	time.Sleep(50 * time.Millisecond)
 
-	// Send a message to ash's inbox while the turn is in progress.
-	if err := messages.Send(tmpDir, "root", "ash", "Fix the bug", "details here"); err != nil {
+	// Send a message to finn's inbox while the turn is in progress.
+	if err := messages.Send(tmpDir, "root", "finn", "Fix the bug", "details here"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -1882,7 +1882,7 @@ func TestRunAgentLoop_InboxQueuedLogNoDuplicates(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue a task so the loop enters a sendWithInterrupt call.
-	if _, err := state.EnqueueTask(tmpDir, "ash", "slow task"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "slow task"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -1909,14 +1909,14 @@ func TestRunAgentLoop_InboxQueuedLogNoDuplicates(t *testing.T) {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		_ = runAgentLoop(ctx, deps, "ash")
+		_ = runAgentLoop(ctx, deps, "finn")
 	}()
 
 	// Wait for the blocking SendPrompt to be reached.
 	time.Sleep(50 * time.Millisecond)
 
-	// Send a message to ash's inbox.
-	if err := messages.Send(tmpDir, "root", "ash", "Same message", "body"); err != nil {
+	// Send a message to finn's inbox.
+	if err := messages.Send(tmpDir, "root", "finn", "Same message", "body"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -1952,7 +1952,7 @@ func TestRunAgentLoop_InboxQueuedLogFormat(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue a task to trigger a sendWithInterrupt call.
-	if _, err := state.EnqueueTask(tmpDir, "ash", "working on stuff"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "working on stuff"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -1978,12 +1978,12 @@ func TestRunAgentLoop_InboxQueuedLogFormat(t *testing.T) {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		_ = runAgentLoop(ctx, deps, "ash")
+		_ = runAgentLoop(ctx, deps, "finn")
 	}()
 
 	time.Sleep(50 * time.Millisecond)
 
-	if err := messages.Send(tmpDir, "root", "ash", "Fix the bug", "please fix it"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "Fix the bug", "please fix it"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -2033,7 +2033,7 @@ func TestRunAgentLoop_PokeDelivery_LogsInjectedPrompt(t *testing.T) {
 	pokeContent := "hey agent, look at this"
 	pokeRead := false
 	deps.readFile = func(path string) ([]byte, error) {
-		if strings.HasSuffix(path, "ash.poke") && !pokeRead {
+		if strings.HasSuffix(path, "finn.poke") && !pokeRead {
 			pokeRead = true
 			return []byte(pokeContent), nil
 		}
@@ -2047,7 +2047,7 @@ func TestRunAgentLoop_PokeDelivery_LogsInjectedPrompt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	output := buf.String()
 	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
@@ -2064,7 +2064,7 @@ func TestRunAgentLoop_InboxDelivery_LogsInjectedPrompt(t *testing.T) {
 	deps.stdout = buf
 
 	// Send a message to inbox
-	if err := messages.Send(tmpDir, "root", "ash", "urgent", "please fix the bug"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "urgent", "please fix the bug"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -2075,7 +2075,7 @@ func TestRunAgentLoop_InboxDelivery_LogsInjectedPrompt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	output := buf.String()
 	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
@@ -2097,7 +2097,7 @@ func TestRunAgentLoop_TaskDelivery_LogsInjectedPrompt(t *testing.T) {
 	buf := &bytes.Buffer{}
 	deps.stdout = buf
 
-	if _, err := state.EnqueueTask(tmpDir, "ash", "implement feature Y"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "implement feature Y"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -2108,7 +2108,7 @@ func TestRunAgentLoop_TaskDelivery_LogsInjectedPrompt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	output := buf.String()
 	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
@@ -2124,7 +2124,7 @@ func TestRunAgentLoop_WakeFile_LogsInjectedPrompt(t *testing.T) {
 	wakeContent := "time to wake up and work"
 	wakeReadCount := 0
 	deps.readFile = func(path string) ([]byte, error) {
-		if strings.HasSuffix(path, "ash.wake") {
+		if strings.HasSuffix(path, "finn.wake") {
 			wakeReadCount++
 			if wakeReadCount == 1 {
 				return []byte(wakeContent), nil
@@ -2140,7 +2140,7 @@ func TestRunAgentLoop_WakeFile_LogsInjectedPrompt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	output := buf.String()
 	if !strings.Contains(output, "=== INJECTED PROMPT ===") {
@@ -2183,7 +2183,7 @@ func TestRunAgentLoop_StateMissing_ExitsCleanly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := runAgentLoop(ctx, deps, "ash")
+	err := runAgentLoop(ctx, deps, "finn")
 
 	// If the loop exited due to context timeout, it means it didn't detect the
 	// missing state file — that's the bug.
@@ -2204,7 +2204,7 @@ func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Send a real message — this creates both inbox entry AND wake file.
-	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this out"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "hey", "check this out"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -2219,7 +2219,7 @@ func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// Inbox delivery should have fired (not wake file).
 	if len(mockProc.prompts) < 1 {
@@ -2230,7 +2230,7 @@ func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
 	}
 
 	// The wake file should have been consumed by the inbox delivery branch.
-	wakePath := filepath.Join(tmpDir, ".dendra", "agents", "ash.wake")
+	wakePath := filepath.Join(tmpDir, ".sprawl", "agents", "finn.wake")
 	if _, err := os.Stat(wakePath); err == nil {
 		t.Error("expected wake file to be consumed after inbox delivery, but it still exists")
 	}
@@ -2240,7 +2240,7 @@ func TestRunAgentLoop_WakeFile_ContinuesImmediately(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Send a real message so inbox has content for the second iteration.
-	if err := messages.Send(tmpDir, "root", "ash", "hey", "check this"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "hey", "check this"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -2261,7 +2261,7 @@ func TestRunAgentLoop_WakeFile_ContinuesImmediately(t *testing.T) {
 	wakeContent := "New message from root: hey"
 	wakeReadCount := 0
 	deps.readFile = func(path string) ([]byte, error) {
-		if strings.HasSuffix(path, "ash.wake") {
+		if strings.HasSuffix(path, "finn.wake") {
 			wakeReadCount++
 			if wakeReadCount == 1 {
 				return []byte(wakeContent), nil
@@ -2284,7 +2284,7 @@ func TestRunAgentLoop_WakeFile_ContinuesImmediately(t *testing.T) {
 		cancel()
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// With the fix: wake fires (no sleep) -> immediate next iteration -> inbox fires -> sleep -> cancel.
 	// Without the fix: wake fires -> sleep -> cancel. Only 1 prompt delivered.
@@ -2298,7 +2298,7 @@ func TestRunAgentLoop_MessageSend_SingleNotificationType(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Send a real message — creates both inbox entry and wake file.
-	if err := messages.Send(tmpDir, "root", "ash", "deploy done", "all good"); err != nil {
+	if err := messages.Send(tmpDir, "root", "finn", "deploy done", "all good"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -2320,7 +2320,7 @@ func TestRunAgentLoop_MessageSend_SingleNotificationType(t *testing.T) {
 		}
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// Every prompt should be inbox-style (contains "dendra messages read").
 	// No prompt should be wake-file-style (raw "New message from" content).
@@ -2339,7 +2339,7 @@ func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
 
 	// Send 3 messages rapidly.
 	for i, subj := range []string{"msg1", "msg2", "msg3"} {
-		if err := messages.Send(tmpDir, "root", "ash", subj, fmt.Sprintf("body %d", i)); err != nil {
+		if err := messages.Send(tmpDir, "root", "finn", subj, fmt.Sprintf("body %d", i)); err != nil {
 			t.Fatalf("sending message %d: %v", i, err)
 		}
 	}
@@ -2355,7 +2355,7 @@ func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	// Should deliver exactly 1 prompt that batches all 3 messages.
 	if len(mockProc.prompts) != 1 {
@@ -2366,7 +2366,7 @@ func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
 		t.Errorf("prompt should mention 3 messages, got: %q", prompt)
 	}
 	// Wake file should be consumed.
-	wakePath := filepath.Join(tmpDir, ".dendra", "agents", "ash.wake")
+	wakePath := filepath.Join(tmpDir, ".sprawl", "agents", "finn.wake")
 	if _, err := os.Stat(wakePath); err == nil {
 		t.Error("expected wake file to be consumed after inbox delivery, but it still exists")
 	}
@@ -2376,7 +2376,7 @@ func TestRunAgentLoop_LockAcquiredBeforeWork(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue a task so the loop has work to do.
-	if _, err := state.EnqueueTask(tmpDir, "ash", "implement feature X"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "implement feature X"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -2422,7 +2422,7 @@ func TestRunAgentLoop_LockAcquiredBeforeWork(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -2508,7 +2508,7 @@ func TestRunAgentLoop_LockReleasedOnIdle(t *testing.T) {
 		cancel()
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -2553,7 +2553,7 @@ func TestRunAgentLoop_LockReleasedOnError(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
 	// Queue a task so the loop has work to do.
-	if _, err := state.EnqueueTask(tmpDir, "ash", "do work"); err != nil {
+	if _, err := state.EnqueueTask(tmpDir, "finn", "do work"); err != nil {
 		t.Fatalf("creating task: %v", err)
 	}
 
@@ -2582,7 +2582,7 @@ func TestRunAgentLoop_LockReleasedOnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	deps.sleepFunc = func(d time.Duration) { cancel() }
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -2602,7 +2602,7 @@ func TestRunAgentLoop_LockAcquireError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := runAgentLoop(ctx, deps, "ash")
+	err := runAgentLoop(ctx, deps, "finn")
 	if err == nil {
 		t.Fatal("expected error when lock acquire fails")
 	}
@@ -2619,7 +2619,7 @@ func TestRunAgentLoop_NewWorkLockError(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := runAgentLoop(ctx, deps, "ash")
+	err := runAgentLoop(ctx, deps, "finn")
 	if err == nil {
 		t.Fatal("expected error when newWorkLock fails")
 	}
@@ -2662,5 +2662,5 @@ func TestRunAgentLoop_LockNotHeldDuringSleep(t *testing.T) {
 		cancel()
 	}
 
-	_ = runAgentLoop(ctx, deps, "ash")
+	_ = runAgentLoop(ctx, deps, "finn")
 }

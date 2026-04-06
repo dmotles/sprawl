@@ -8,9 +8,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "dendra",
+	Use:   "sprawl",
 	Short: "Tree-governance for AI agents",
-	Long:  "Dendrarchy — a self-organizing AI agent orchestration system built on Claude Code.",
+	Long:  "Sprawl — a self-organizing AI agent orchestration system built on Claude Code.",
 }
 
 func Execute() {

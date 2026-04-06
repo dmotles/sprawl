@@ -27,10 +27,10 @@ func TestEncodeCWDForClaude_DotsInPath(t *testing.T) {
 }
 
 func TestEncodeCWDForClaude_DendraWorktree(t *testing.T) {
-	got := EncodeCWDForClaude("/home/coder/dendra/.dendra/worktrees/oak")
-	want := "-home-coder-dendra--dendra-worktrees-oak"
+	got := EncodeCWDForClaude("/home/coder/dendra/.sprawl/worktrees/oak")
+	want := "-home-coder-dendra--sprawl-worktrees-oak"
 	if got != want {
-		t.Errorf("EncodeCWDForClaude(%q) = %q, want %q", "/home/coder/dendra/.dendra/worktrees/oak", got, want)
+		t.Errorf("EncodeCWDForClaude(%q) = %q, want %q", "/home/coder/dendra/.sprawl/worktrees/oak", got, want)
 	}
 }
 
@@ -267,7 +267,7 @@ func TestHasSessionSummary_Exists(t *testing.T) {
 func TestHasSessionSummary_NotExists(t *testing.T) {
 	root := t.TempDir()
 	// Create sessions dir but leave it empty
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +398,7 @@ func TestAutoSummarize_Success(t *testing.T) {
 	}
 
 	// Read the summary and verify contents
-	sessDir := filepath.Join(root, ".dendra", "memory", "sessions")
+	sessDir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(sessDir)
 	if err != nil {
 		t.Fatalf("reading sessions dir: %v", err)

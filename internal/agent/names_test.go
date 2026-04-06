@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestAllocateName_EngineerReturnsTreeName(t *testing.T) {
+func TestAllocateName_EngineerReturnsCyberpunkName(t *testing.T) {
 	dir := t.TempDir()
 	name, err := AllocateName(dir, "engineer")
 	if err != nil {
@@ -18,7 +18,7 @@ func TestAllocateName_EngineerReturnsTreeName(t *testing.T) {
 	}
 }
 
-func TestAllocateName_ResearcherReturnsRiverName(t *testing.T) {
+func TestAllocateName_ResearcherReturnsCyberpunkName(t *testing.T) {
 	dir := t.TempDir()
 	name, err := AllocateName(dir, "researcher")
 	if err != nil {
@@ -29,7 +29,7 @@ func TestAllocateName_ResearcherReturnsRiverName(t *testing.T) {
 	}
 }
 
-func TestAllocateName_ManagerReturnsMountainName(t *testing.T) {
+func TestAllocateName_ManagerReturnsCyberpunkName(t *testing.T) {
 	dir := t.TempDir()
 	name, err := AllocateName(dir, "manager")
 	if err != nil {
@@ -93,8 +93,8 @@ func TestAllocateName_ExhaustedPoolFallsBackToNumericSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "river-1" {
-		t.Errorf("got %q, want %q", name, "river-1")
+	if name != "decker-1" {
+		t.Errorf("got %q, want %q", name, "decker-1")
 	}
 }
 
@@ -106,8 +106,8 @@ func TestAllocateName_FallbackSkipsUsedNumericNames(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Also mark peak-1 as used
-	if err := os.WriteFile(filepath.Join(dir, "peak-1.json"), []byte("{}"), 0o644); err != nil {
+	// Also mark fixer-1 as used
+	if err := os.WriteFile(filepath.Join(dir, "fixer-1.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,12 +115,12 @@ func TestAllocateName_FallbackSkipsUsedNumericNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "peak-2" {
-		t.Errorf("got %q, want %q", name, "peak-2")
+	if name != "fixer-2" {
+		t.Errorf("got %q, want %q", name, "fixer-2")
 	}
 }
 
-func TestAllocateName_EngineerFallbackUsesTreePrefix(t *testing.T) {
+func TestAllocateName_EngineerFallbackUsesRunnerPrefix(t *testing.T) {
 	dir := t.TempDir()
 	// Fill all engineer names
 	for _, name := range EngineerNames {
@@ -133,8 +133,8 @@ func TestAllocateName_EngineerFallbackUsesTreePrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if name != "tree-1" {
-		t.Errorf("got %q, want %q", name, "tree-1")
+	if name != "runner-1" {
+		t.Errorf("got %q, want %q", name, "runner-1")
 	}
 }
 
@@ -149,20 +149,20 @@ func TestNamePoolNoDuplicates(t *testing.T) {
 }
 
 func TestEngineerNames_Size(t *testing.T) {
-	if len(EngineerNames) != 20 {
-		t.Errorf("EngineerNames has %d names, want 20", len(EngineerNames))
+	if len(EngineerNames) != 19 {
+		t.Errorf("EngineerNames has %d names, want 19", len(EngineerNames))
 	}
 }
 
 func TestResearcherNames_Size(t *testing.T) {
-	if len(ResearcherNames) != 15 {
-		t.Errorf("ResearcherNames has %d names, want 15", len(ResearcherNames))
+	if len(ResearcherNames) != 14 {
+		t.Errorf("ResearcherNames has %d names, want 14", len(ResearcherNames))
 	}
 }
 
 func TestManagerNames_Size(t *testing.T) {
-	if len(ManagerNames) != 15 {
-		t.Errorf("ManagerNames has %d names, want 15", len(ManagerNames))
+	if len(ManagerNames) != 13 {
+		t.Errorf("ManagerNames has %d names, want 13", len(ManagerNames))
 	}
 }
 
@@ -202,8 +202,8 @@ func TestPartitionedPools_NoDuplicatesAcrossPools(t *testing.T) {
 
 func TestPartitionedPools_TotalCapacity(t *testing.T) {
 	total := len(EngineerNames) + len(ResearcherNames) + len(ManagerNames)
-	if total != 50 {
-		t.Errorf("total pool capacity is %d, want 50", total)
+	if total != 46 {
+		t.Errorf("total pool capacity is %d, want 46", total)
 	}
 }
 
@@ -233,11 +233,11 @@ func TestNamePools_SharedPools(t *testing.T) {
 
 func TestFallbackPrefix_MapsAllTypes(t *testing.T) {
 	expected := map[string]string{
-		"engineer":    "tree",
-		"researcher":  "river",
-		"manager":     "peak",
-		"tester":      "tree",
-		"code-merger": "tree",
+		"engineer":    "runner",
+		"researcher":  "decker",
+		"manager":     "fixer",
+		"tester":      "runner",
+		"code-merger": "runner",
 	}
 	for typ, wantPrefix := range expected {
 		got, ok := FallbackPrefix[typ]

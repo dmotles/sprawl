@@ -42,9 +42,9 @@ var delegateCmd = &cobra.Command{
 }
 
 func runDelegate(deps *delegateDeps, agentName, prompt string) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	if prompt == "" {

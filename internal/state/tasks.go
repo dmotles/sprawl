@@ -24,7 +24,7 @@ type Task struct {
 
 // TasksDir returns the path to the tasks directory for a given agent.
 func TasksDir(dendraRoot, agentName string) string {
-	return filepath.Join(dendraRoot, ".dendra", "agents", agentName, "tasks")
+	return filepath.Join(dendraRoot, ".sprawl", "agents", agentName, "tasks")
 }
 
 // GenerateUUID creates a random UUID v4 string using crypto/rand.

@@ -30,7 +30,7 @@ func (m *mockCreator) Create(repoRoot, agentName, branchName, baseBranch string)
 
 func TestMockCreator_ReturnsConfiguredValues(t *testing.T) {
 	mock := &mockCreator{
-		worktreePath: "/repo/.dendra/worktrees/frank",
+		worktreePath: "/repo/.sprawl/worktrees/frank",
 		branchName:   "dendra/frank",
 	}
 
@@ -38,8 +38,8 @@ func TestMockCreator_ReturnsConfiguredValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if path != "/repo/.dendra/worktrees/frank" {
-		t.Errorf("path = %q, want %q", path, "/repo/.dendra/worktrees/frank")
+	if path != "/repo/.sprawl/worktrees/frank" {
+		t.Errorf("path = %q, want %q", path, "/repo/.sprawl/worktrees/frank")
 	}
 	if branch != "dendra/frank" {
 		t.Errorf("branch = %q, want %q", branch, "dendra/frank")

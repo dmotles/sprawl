@@ -103,9 +103,9 @@ func realDeleteBranch(name string) error {
 }
 
 func runCleanupBranches(deps *cleanupBranchesDeps, dryRun bool) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT is not set")
+		return fmt.Errorf("SPRAWL_ROOT is not set")
 	}
 
 	allBranches, err := deps.listBranches()

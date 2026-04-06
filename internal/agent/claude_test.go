@@ -8,7 +8,7 @@ import (
 func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 	phrases := []string{
 		"dendra spawn",
-		"sensei",
+		"neo",
 		"DO NOT edit code",
 		"--type engineer",
 		"--type researcher",
@@ -22,7 +22,7 @@ func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 
 	for _, phrase := range phrases {
-		if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "sensei", AgentCLI: "claude-code"}), phrase) {
+		if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "neo", AgentCLI: "claude-code"}), phrase) {
 			t.Errorf("root system prompt missing key phrase: %q", phrase)
 		}
 	}
@@ -54,7 +54,7 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildRootPrompt_DoesNotContainRemovedTypes(t *testing.T) {
-	prompt := BuildRootPrompt(PromptConfig{RootName: "sensei", AgentCLI: "claude-code"})
+	prompt := BuildRootPrompt(PromptConfig{RootName: "neo", AgentCLI: "claude-code"})
 	for _, removed := range []string{"--type tester"} {
 		if strings.Contains(prompt, removed) {
 			t.Errorf("root system prompt should not contain removed type: %q", removed)

@@ -120,7 +120,7 @@ func TestReadPersistentKnowledge_NoFile(t *testing.T) {
 
 func TestReadPersistentKnowledge_ExistingFile(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".dendra", "memory")
+	dir := filepath.Join(root, ".sprawl", "memory")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

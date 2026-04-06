@@ -52,7 +52,7 @@ func TestReadTimeline_MissingFile(t *testing.T) {
 
 func TestReadTimeline_EmptyFile(t *testing.T) {
 	root := t.TempDir()
-	tlPath := filepath.Join(root, ".dendra", "memory", "timeline.md")
+	tlPath := filepath.Join(root, ".sprawl", "memory", "timeline.md")
 	if err := os.MkdirAll(filepath.Dir(tlPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestReadTimeline_EmptyFile(t *testing.T) {
 
 func TestReadTimeline_HeaderOnly(t *testing.T) {
 	root := t.TempDir()
-	tlPath := filepath.Join(root, ".dendra", "memory", "timeline.md")
+	tlPath := filepath.Join(root, ".sprawl", "memory", "timeline.md")
 	if err := os.MkdirAll(filepath.Dir(tlPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestReadTimeline_HeaderOnly(t *testing.T) {
 
 func TestReadTimeline_MalformedLines(t *testing.T) {
 	root := t.TempDir()
-	tlPath := filepath.Join(root, ".dendra", "memory", "timeline.md")
+	tlPath := filepath.Join(root, ".sprawl", "memory", "timeline.md")
 	if err := os.MkdirAll(filepath.Dir(tlPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestWriteTimeline_EmptySlice(t *testing.T) {
 		t.Fatalf("WriteTimeline: %v", err)
 	}
 
-	tlPath := filepath.Join(root, ".dendra", "memory", "timeline.md")
+	tlPath := filepath.Join(root, ".sprawl", "memory", "timeline.md")
 	data, err := os.ReadFile(tlPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -159,7 +159,7 @@ func TestWriteTimeline_EmptySlice(t *testing.T) {
 func TestWriteTimeline_CreatesDirectories(t *testing.T) {
 	root := t.TempDir()
 	// The memory directory should not exist yet
-	memDir := filepath.Join(root, ".dendra", "memory")
+	memDir := filepath.Join(root, ".sprawl", "memory")
 	if _, err := os.Stat(memDir); err == nil {
 		t.Fatalf("memory dir should not exist before write")
 	}
@@ -171,7 +171,7 @@ func TestWriteTimeline_CreatesDirectories(t *testing.T) {
 		t.Fatalf("WriteTimeline: %v", err)
 	}
 
-	tlPath := filepath.Join(root, ".dendra", "memory", "timeline.md")
+	tlPath := filepath.Join(root, ".sprawl", "memory", "timeline.md")
 	if _, err := os.Stat(tlPath); err != nil {
 		t.Fatalf("timeline.md should exist after write: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestWriteTimeline_NormalizesToUTC(t *testing.T) {
 	}
 
 	// Read the raw file to verify UTC formatting
-	tlPath := filepath.Join(root, ".dendra", "memory", "timeline.md")
+	tlPath := filepath.Join(root, ".sprawl", "memory", "timeline.md")
 	data, err := os.ReadFile(tlPath)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -280,7 +280,7 @@ func TestWriteTimeline_NormalizesToUTC(t *testing.T) {
 
 func TestReadTimeline_ParsesVariousISO8601(t *testing.T) {
 	root := t.TempDir()
-	tlPath := filepath.Join(root, ".dendra", "memory", "timeline.md")
+	tlPath := filepath.Join(root, ".sprawl", "memory", "timeline.md")
 	if err := os.MkdirAll(filepath.Dir(tlPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

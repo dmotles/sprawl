@@ -16,15 +16,15 @@ import (
 	"github.com/dmotles/sprawl/internal/memory"
 )
 
-// newTestSenseiLoopDeps creates a senseiLoopDeps with sensible defaults for testing.
-func newTestSenseiLoopDeps(t *testing.T) *senseiLoopDeps {
+// newTestRootLoopDeps creates a rootLoopDeps with sensible defaults for testing.
+func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 	t.Helper()
-	return &senseiLoopDeps{
+	return &rootLoopDeps{
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return "/fake/root"
-			case "DENDRA_NAMESPACE":
+			case "SPRAWL_NAMESPACE":
 				return "🌳"
 			default:
 				return ""
@@ -63,7 +63,7 @@ func newTestSenseiLoopDeps(t *testing.T) *senseiLoopDeps {
 }
 
 func TestRunSenseiLoop_SingleIteration_HandoffSignal(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var buildPromptCalls int
@@ -125,7 +125,7 @@ func TestRunSenseiLoop_SingleIteration_HandoffSignal(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestRunSenseiLoop_SingleIteration_HandoffSignal(t *testing.T) {
 }
 
 func TestRunSenseiLoop_SessionEndWithoutHandoff(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var iterations int
@@ -169,7 +169,7 @@ func TestRunSenseiLoop_SessionEndWithoutHandoff(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestRunSenseiLoop_SessionEndWithoutHandoff(t *testing.T) {
 }
 
 func TestRunSenseiLoop_RetryOnStartupFailure(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var sleepCalls []time.Duration
@@ -211,7 +211,7 @@ func TestRunSenseiLoop_RetryOnStartupFailure(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestRunSenseiLoop_RetryOnStartupFailure(t *testing.T) {
 }
 
 func TestRunSenseiLoop_MaxRetriesExceeded(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	// All calls return a non-ExitError (startup failure)
 	deps.runCommand = func(name string, args []string) error {
@@ -239,7 +239,7 @@ func TestRunSenseiLoop_MaxRetriesExceeded(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err == nil {
 		t.Fatal("expected error after max retries, got nil")
 	}
@@ -249,33 +249,33 @@ func TestRunSenseiLoop_MaxRetriesExceeded(t *testing.T) {
 }
 
 func TestRunSenseiLoop_SignalStopsLoop(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	// Cancel immediately before running
 	cancel()
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error on context cancellation, got: %v", err)
 	}
 }
 
 func TestRunSenseiLoop_MissingDendraRoot(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
-	err := runSenseiLoop(context.Background(), deps)
+	err := runRootLoop(context.Background(), deps)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT, got nil")
+		t.Fatal("expected error for missing SPRAWL_ROOT, got nil")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("expected error to mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("expected error to mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
 func TestRunSenseiLoop_SuccessResetsRetryCount(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var runCalls int
@@ -310,7 +310,7 @@ func TestRunSenseiLoop_SuccessResetsRetryCount(t *testing.T) {
 		}
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error (retry count should have reset), got: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestRunSenseiLoop_SuccessResetsRetryCount(t *testing.T) {
 }
 
 func TestRunSenseiLoop_SessionIDWrittenEachIteration(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var sessionIDs []string
@@ -359,7 +359,7 @@ func TestRunSenseiLoop_SessionIDWrittenEachIteration(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestRunSenseiLoop_SessionIDWrittenEachIteration(t *testing.T) {
 }
 
 func TestRunSenseiLoop_PromptRebuiltEachIteration(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var promptCalls int
@@ -403,7 +403,7 @@ func TestRunSenseiLoop_PromptRebuiltEachIteration(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestRunSenseiLoop_PromptRebuiltEachIteration(t *testing.T) {
 }
 
 func TestRunSenseiLoop_ExitErrorNotCountedAsStartupFailure(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var runCalls int
@@ -440,7 +440,7 @@ func TestRunSenseiLoop_ExitErrorNotCountedAsStartupFailure(t *testing.T) {
 		return &exec.ExitError{}
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error (ExitError should not trigger max retries), got: %v", err)
 	}
@@ -455,7 +455,7 @@ func TestRunSenseiLoop_ExitErrorNotCountedAsStartupFailure(t *testing.T) {
 }
 
 func TestRunSenseiLoop_MaxRetriesExceeded_WithTimeout(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	deps.runCommand = func(name string, args []string) error {
 		return errors.New("command not found")
@@ -464,7 +464,7 @@ func TestRunSenseiLoop_MaxRetriesExceeded_WithTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err == nil {
 		t.Fatal("expected error after max retries, got nil")
 	}
@@ -474,12 +474,12 @@ func TestRunSenseiLoop_MaxRetriesExceeded_WithTimeout(t *testing.T) {
 }
 
 func TestRunSenseiLoop_FindClaudeFailure(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 	deps.findClaude = func() (string, error) {
 		return "", errors.New("claude not found")
 	}
 
-	err := runSenseiLoop(context.Background(), deps)
+	err := runRootLoop(context.Background(), deps)
 	if err == nil {
 		t.Fatal("expected error when claude not found, got nil")
 	}
@@ -489,7 +489,7 @@ func TestRunSenseiLoop_FindClaudeFailure(t *testing.T) {
 }
 
 func TestRunSenseiLoop_ContextBlobPassedToPrompt(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -504,7 +504,7 @@ func TestRunSenseiLoop_ContextBlobPassedToPrompt(t *testing.T) {
 		return "## Active State\n\ntest blob\n", nil
 	}
 
-	_ = runSenseiLoop(ctx, deps)
+	_ = runRootLoop(ctx, deps)
 
 	if capturedCfg.ContextBlob != "## Active State\n\ntest blob\n" {
 		t.Errorf("expected context blob to be passed to buildPrompt, got: %q", capturedCfg.ContextBlob)
@@ -512,7 +512,7 @@ func TestRunSenseiLoop_ContextBlobPassedToPrompt(t *testing.T) {
 }
 
 func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -530,7 +530,7 @@ func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 		return "partial blob", fmt.Errorf("context blob errors: session read failed")
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	// Should not fail due to context blob error
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -549,15 +549,15 @@ func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 }
 
 func TestRunSenseiLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Override getenv to return "1" for DENDRA_TEST_MODE
+	// Override getenv to return "1" for SPRAWL_TEST_MODE
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_TEST_MODE" {
+		if key == "SPRAWL_TEST_MODE" {
 			return "1"
 		}
 		return originalGetenv(key)
@@ -570,15 +570,15 @@ func TestRunSenseiLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
 		return "system prompt"
 	}
 
-	_ = runSenseiLoop(ctx, deps)
+	_ = runRootLoop(ctx, deps)
 
 	if !capturedCfg.TestMode {
-		t.Error("expected PromptConfig.TestMode to be true when DENDRA_TEST_MODE=1")
+		t.Error("expected PromptConfig.TestMode to be true when SPRAWL_TEST_MODE=1")
 	}
 }
 
 func TestRunSenseiLoop_TestMode_NotSetWhenUnset(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -590,15 +590,15 @@ func TestRunSenseiLoop_TestMode_NotSetWhenUnset(t *testing.T) {
 		return "system prompt"
 	}
 
-	_ = runSenseiLoop(ctx, deps)
+	_ = runRootLoop(ctx, deps)
 
 	if capturedCfg.TestMode {
-		t.Error("expected PromptConfig.TestMode to be false when DENDRA_TEST_MODE is not set")
+		t.Error("expected PromptConfig.TestMode to be false when SPRAWL_TEST_MODE is not set")
 	}
 }
 
 func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var autoSummarizeCalled bool
@@ -631,7 +631,7 @@ func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -654,7 +654,7 @@ func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 }
 
 func TestRunSenseiLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var claudeRan bool
@@ -679,7 +679,7 @@ func TestRunSenseiLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestRunSenseiLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
 }
 
 func TestRunSenseiLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var claudeRan bool
@@ -718,7 +718,7 @@ func TestRunSenseiLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error (loop should not abort on autoSummarize error), got: %v", err)
 	}
@@ -732,7 +732,7 @@ func TestRunSenseiLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
 }
 
 func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var autoSummarizeCalled bool
@@ -757,7 +757,7 @@ func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -771,7 +771,7 @@ func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
 }
 
 func TestRunSenseiLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var consolidateCalled bool
@@ -811,7 +811,7 @@ func TestRunSenseiLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -828,7 +828,7 @@ func TestRunSenseiLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
 }
 
 func TestRunSenseiLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var consolidateCalled bool
@@ -850,7 +850,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -864,7 +864,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
 }
 
 func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var claudeRan bool
@@ -901,7 +901,7 @@ func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error (loop should continue despite consolidation error), got: %v", err)
 	}
@@ -920,7 +920,7 @@ func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 }
 
 func TestRunSenseiLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var updatePKCalled bool
@@ -973,7 +973,7 @@ func TestRunSenseiLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -997,7 +997,7 @@ func TestRunSenseiLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T
 }
 
 func TestRunSenseiLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var updatePKCalled bool
@@ -1019,7 +1019,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -1033,7 +1033,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing
 }
 
 func TestRunSenseiLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var claudeRan bool
@@ -1070,7 +1070,7 @@ func TestRunSenseiLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error (loop should continue despite PK update error), got: %v", err)
 	}
@@ -1089,7 +1089,7 @@ func TestRunSenseiLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.
 }
 
 func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var callOrder []string
@@ -1132,7 +1132,7 @@ func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -1168,7 +1168,7 @@ func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(
 }
 
 func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var consolidateCalled bool
@@ -1222,7 +1222,7 @@ func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -1245,7 +1245,7 @@ func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 }
 
 func TestRunSenseiLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var consolidateCalled bool
@@ -1276,7 +1276,7 @@ func TestRunSenseiLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
@@ -1290,7 +1290,7 @@ func TestRunSenseiLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
 }
 
 func TestRunSenseiLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing.T) {
-	deps := newTestSenseiLoopDeps(t)
+	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var claudeRan bool
@@ -1326,7 +1326,7 @@ func TestRunSenseiLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing
 		return nil
 	}
 
-	err := runSenseiLoop(ctx, deps)
+	err := runRootLoop(ctx, deps)
 	if err != nil {
 		t.Fatalf("expected nil error (loop should continue despite consolidation errors), got: %v", err)
 	}

@@ -127,13 +127,13 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 }
 
 func (d *messagesDeps) resolveEnv() (agentName, dendraRoot string, err error) {
-	agentName = d.getenv("DENDRA_AGENT_IDENTITY")
+	agentName = d.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
-		return "", "", fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
+		return "", "", fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set")
 	}
-	dendraRoot = d.getenv("DENDRA_ROOT")
+	dendraRoot = d.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return "", "", fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return "", "", fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 	return agentName, dendraRoot, nil
 }
@@ -176,7 +176,7 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 
 	var sendOpts []messages.SendOption
 	if deps.tmuxRunner != nil {
-		namespace := deps.getenv("DENDRA_NAMESPACE")
+		namespace := deps.getenv("SPRAWL_NAMESPACE")
 		if namespace == "" {
 			namespace = state.ReadNamespace(dendraRoot)
 		}

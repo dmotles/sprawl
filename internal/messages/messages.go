@@ -35,7 +35,7 @@ type Message struct {
 
 // MessagesDir returns the path to the messages directory under the dendra root.
 func MessagesDir(dendraRoot string) string { //nolint:revive // stuttering name is part of public API
-	return filepath.Join(dendraRoot, ".dendra", "messages")
+	return filepath.Join(dendraRoot, ".sprawl", "messages")
 }
 
 // NotifyFunc is called after successful delivery when provided via WithNotify.
@@ -126,7 +126,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	}
 
 	// Best-effort wake file to notify the recipient agent.
-	wakePath := filepath.Join(dendraRoot, ".dendra", "agents", to+".wake")
+	wakePath := filepath.Join(dendraRoot, ".sprawl", "agents", to+".wake")
 	wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
 	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional
 

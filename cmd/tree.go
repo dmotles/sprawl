@@ -62,9 +62,9 @@ func resolveTreeDeps() *treeDeps {
 }
 
 func runTree(deps *treeDeps, stdout io.Writer, jsonOutput bool, subtreeRoot string) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	agents, err := observe.LoadAll(deps.observeDeps, dendraRoot)

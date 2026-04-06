@@ -30,7 +30,7 @@ var spawnSubagentCmd = &cobra.Command{
 type spawnSubagentDeps struct {
 	tmuxRunner tmux.Runner
 	getenv     func(string) string
-	findDendra func() (string, error)
+	findSprawl func() (string, error)
 	loadAgent  func(dendraRoot, name string) (*state.AgentState, error)
 }
 
@@ -53,7 +53,7 @@ func resolveSpawnSubagentDeps() (*spawnSubagentDeps, error) {
 	return &spawnSubagentDeps{
 		tmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
 		getenv:     os.Getenv,
-		findDendra: FindDendraBin,
+		findSprawl: FindSprawlBin,
 		loadAgent:  state.LoadAgent,
 	}, nil
 }
@@ -73,14 +73,14 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	}
 
 	// Read environment
-	parentName := deps.getenv("DENDRA_AGENT_IDENTITY")
+	parentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if parentName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set; spawn must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; spawn must be called from within a dendra agent")
 	}
 
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set; spawn must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a dendra agent")
 	}
 
 	// Allocate name
@@ -100,7 +100,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	}
 
 	// Find dendra binary
-	dendraPath, err := deps.findDendra()
+	dendraPath, err := deps.findSprawl()
 	if err != nil {
 		return fmt.Errorf("finding dendra binary: %w", err)
 	}
@@ -111,7 +111,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		tmux.BuildShellCmd(dendraPath, []string{"agent-loop", agentName}))
 
 	// Resolve namespace: env var > persisted file > default
-	namespace := deps.getenv("DENDRA_NAMESPACE")
+	namespace := deps.getenv("SPRAWL_NAMESPACE")
 	if namespace == "" {
 		namespace = state.ReadNamespace(dendraRoot)
 	}
@@ -120,7 +120,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	}
 
 	// Build tree path: parent's tree path + separator + child name
-	parentTreePath := deps.getenv("DENDRA_TREE_PATH")
+	parentTreePath := deps.getenv("SPRAWL_TREE_PATH")
 	if parentTreePath == "" {
 		// Fallback: use root name from file + parent identity
 		rootName := state.ReadRootName(dendraRoot)
@@ -137,13 +137,13 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 
 	// Set environment for the child agent
 	env := map[string]string{
-		"DENDRA_AGENT_IDENTITY": agentName,
-		"DENDRA_ROOT":           dendraRoot,
-		"DENDRA_NAMESPACE":      namespace,
-		"DENDRA_TREE_PATH":      childTreePath,
+		"SPRAWL_AGENT_IDENTITY": agentName,
+		"SPRAWL_ROOT":           dendraRoot,
+		"SPRAWL_NAMESPACE":      namespace,
+		"SPRAWL_TREE_PATH":      childTreePath,
 	}
-	if v := deps.getenv("DENDRA_BIN"); v != "" {
-		env["DENDRA_BIN"] = v
+	if v := deps.getenv("SPRAWL_BIN"); v != "" {
+		env["SPRAWL_BIN"] = v
 	}
 
 	// Create or add to tmux session

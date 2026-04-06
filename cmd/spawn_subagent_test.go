@@ -22,7 +22,7 @@ func newTestSpawnSubagentDeps(t *testing.T) (*spawnSubagentDeps, *spawnMockRunne
 	runner := &spawnMockRunner{}
 
 	// Pre-save a parent agent state
-	parentWorktree := filepath.Join(tmpDir, ".dendra", "worktrees", "root")
+	parentWorktree := filepath.Join(tmpDir, ".sprawl", "worktrees", "root")
 	parentState := &state.AgentState{
 		Name:     "root",
 		Type:     "engineer",
@@ -43,18 +43,18 @@ func newTestSpawnSubagentDeps(t *testing.T) (*spawnSubagentDeps, *spawnMockRunne
 		tmuxRunner: runner,
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_AGENT_IDENTITY":
+			case "SPRAWL_AGENT_IDENTITY":
 				return "root"
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_NAMESPACE":
+			case "SPRAWL_NAMESPACE":
 				return tmux.DefaultNamespace
-			case "DENDRA_TREE_PATH":
+			case "SPRAWL_TREE_PATH":
 				return tmux.DefaultRootName
 			}
 			return ""
 		},
-		findDendra: func() (string, error) {
+		findSprawl: func() (string, error) {
 			return "/usr/local/bin/dendra", nil
 		},
 		loadAgent: state.LoadAgent,
@@ -87,11 +87,11 @@ func TestSpawnSubagent_HappyPath(t *testing.T) {
 	}
 
 	// Verify env vars passed to tmux
-	if runner.newSessionWithWindowEnv["DENDRA_AGENT_IDENTITY"] != expectedName {
-		t.Errorf("env DENDRA_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWindowEnv["DENDRA_AGENT_IDENTITY"], expectedName)
+	if runner.newSessionWithWindowEnv["SPRAWL_AGENT_IDENTITY"] != expectedName {
+		t.Errorf("env SPRAWL_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWindowEnv["SPRAWL_AGENT_IDENTITY"], expectedName)
 	}
-	if runner.newSessionWithWindowEnv["DENDRA_ROOT"] != tmpDir {
-		t.Errorf("env DENDRA_ROOT = %q, want %q", runner.newSessionWithWindowEnv["DENDRA_ROOT"], tmpDir)
+	if runner.newSessionWithWindowEnv["SPRAWL_ROOT"] != tmpDir {
+		t.Errorf("env SPRAWL_ROOT = %q, want %q", runner.newSessionWithWindowEnv["SPRAWL_ROOT"], tmpDir)
 	}
 
 	// Verify state was saved
@@ -118,7 +118,7 @@ func TestSpawnSubagent_HappyPath(t *testing.T) {
 		t.Errorf("state Status = %q, want %q", agentState.Status, "active")
 	}
 	// Should use parent's worktree, not a new one
-	expectedWorktree := filepath.Join(tmpDir, ".dendra", "worktrees", "root")
+	expectedWorktree := filepath.Join(tmpDir, ".sprawl", "worktrees", "root")
 	if agentState.Worktree != expectedWorktree {
 		t.Errorf("state Worktree = %q, want parent worktree %q", agentState.Worktree, expectedWorktree)
 	}
@@ -169,7 +169,7 @@ func TestSpawnSubagent_SecondChild_AddsWindow(t *testing.T) {
 func TestSpawnSubagent_MissingIdentity(t *testing.T) {
 	deps, _, _ := newTestSpawnSubagentDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return "/tmp/test"
 		}
 		return ""
@@ -179,15 +179,15 @@ func TestSpawnSubagent_MissingIdentity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing identity")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
 func TestSpawnSubagent_MissingDendraRoot(t *testing.T) {
 	deps, _, _ := newTestSpawnSubagentDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
+		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "root"
 		}
 		return ""
@@ -195,10 +195,10 @@ func TestSpawnSubagent_MissingDendraRoot(t *testing.T) {
 
 	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -206,9 +206,9 @@ func TestSpawnSubagent_ParentNotFound(t *testing.T) {
 	deps, _, _ := newTestSpawnSubagentDeps(t)
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_AGENT_IDENTITY":
+		case "SPRAWL_AGENT_IDENTITY":
 			return "nonexistent"
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return "/tmp/test"
 		}
 		return ""
@@ -275,15 +275,15 @@ func TestSpawnSubagent_TmuxFails(t *testing.T) {
 	}
 }
 
-func TestSpawnSubagent_FindDendraFails(t *testing.T) {
+func TestSpawnSubagent_FindSprawlFails(t *testing.T) {
 	deps, runner, _ := newTestSpawnSubagentDeps(t)
-	deps.findDendra = func() (string, error) {
+	deps.findSprawl = func() (string, error) {
 		return "", errors.New("dendra binary not found")
 	}
 
 	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
 	if err == nil {
-		t.Fatal("expected error when findDendra fails")
+		t.Fatal("expected error when findSprawl fails")
 	}
 	if !strings.Contains(err.Error(), "dendra") {
 		t.Errorf("error should mention dendra, got: %v", err)
@@ -291,7 +291,7 @@ func TestSpawnSubagent_FindDendraFails(t *testing.T) {
 
 	// Tmux should not have been called
 	if runner.newSessionWithWindowCalled || runner.newWindowCalled {
-		t.Error("tmux should not be called when findDendra fails")
+		t.Error("tmux should not be called when findSprawl fails")
 	}
 }
 
@@ -309,9 +309,9 @@ func TestSpawnSubagent_NamePoolExhausted_UsesFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
 
-	// Should have allocated a fallback name like "tree-1"
-	if runner.newSessionWithWindowWindow != "tree-1" {
-		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "tree-1")
+	// Should have allocated a fallback name like "runner-1"
+	if runner.newSessionWithWindowWindow != "runner-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "runner-1")
 	}
 }
 
@@ -325,7 +325,7 @@ func TestSpawnSubagent_ShellCmd_UsesParentWorktree(t *testing.T) {
 
 	cmd := runner.newSessionWithWindowCmd
 	expectedName := agent.EngineerNames[0]
-	parentWorktree := filepath.Join(tmpDir, ".dendra", "worktrees", "root")
+	parentWorktree := filepath.Join(tmpDir, ".sprawl", "worktrees", "root")
 
 	// Should use parent's worktree in cd command
 	expectedCmd := "cd " + tmux.ShellQuote(parentWorktree) + " && " +
@@ -345,7 +345,7 @@ func TestSpawnSubagent_DendraBinPropagated(t *testing.T) {
 	deps, runner, _ := newTestSpawnSubagentDeps(t)
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_BIN" {
+		if key == "SPRAWL_BIN" {
 			return "/custom/dendra"
 		}
 		return originalGetenv(key)
@@ -357,14 +357,14 @@ func TestSpawnSubagent_DendraBinPropagated(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if env["DENDRA_BIN"] != "/custom/dendra" {
-		t.Errorf("env DENDRA_BIN = %q, want %q", env["DENDRA_BIN"], "/custom/dendra")
+	if env["SPRAWL_BIN"] != "/custom/dendra" {
+		t.Errorf("env SPRAWL_BIN = %q, want %q", env["SPRAWL_BIN"], "/custom/dendra")
 	}
 }
 
 func TestSpawnSubagent_DendraBinNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _ := newTestSpawnSubagentDeps(t)
-	// Default getenv returns "" for DENDRA_BIN
+	// Default getenv returns "" for SPRAWL_BIN
 
 	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
 	if err != nil {
@@ -372,8 +372,8 @@ func TestSpawnSubagent_DendraBinNotPropagatedWhenUnset(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWindowEnv
-	if _, ok := env["DENDRA_BIN"]; ok {
-		t.Errorf("env should not contain DENDRA_BIN when unset, got %q", env["DENDRA_BIN"])
+	if _, ok := env["SPRAWL_BIN"]; ok {
+		t.Errorf("env should not contain SPRAWL_BIN when unset, got %q", env["SPRAWL_BIN"])
 	}
 }
 
@@ -508,8 +508,8 @@ func TestSpawnSubagent_ResearcherPoolExhausted_UsesFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
 
-	if runner.newSessionWithWindowWindow != "river-1" {
-		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "river-1")
+	if runner.newSessionWithWindowWindow != "decker-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "decker-1")
 	}
 }
 
@@ -527,8 +527,8 @@ func TestSpawnSubagent_ManagerPoolExhausted_UsesFallback(t *testing.T) {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
 
-	if runner.newSessionWithWindowWindow != "peak-1" {
-		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "peak-1")
+	if runner.newSessionWithWindowWindow != "fixer-1" {
+		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "fixer-1")
 	}
 }
 
@@ -543,7 +543,7 @@ func TestSpawnSubagent_MultipleChildrenDifferentTypes(t *testing.T) {
 		Name:     "root",
 		Type:     "manager",
 		Family:   "engineering",
-		Worktree: filepath.Join(tmpDir, ".dendra", "worktrees", "root"),
+		Worktree: filepath.Join(tmpDir, ".sprawl", "worktrees", "root"),
 		Branch:   "dendra/root",
 		Status:   "active",
 	}

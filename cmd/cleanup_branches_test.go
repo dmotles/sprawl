@@ -17,7 +17,7 @@ func newTestCleanupBranchesDeps(t *testing.T) (*cleanupBranchesDeps, *bytes.Buff
 
 	deps := &cleanupBranchesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -288,10 +288,10 @@ func TestCleanupBranches_MissingDendraRoot(t *testing.T) {
 
 	err := runCleanupBranches(deps, false)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("expected error to mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("expected error to mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 

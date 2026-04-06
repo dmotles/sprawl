@@ -19,9 +19,9 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 	deps := &mergeDeps{
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_AGENT_IDENTITY":
+			case "SPRAWL_AGENT_IDENTITY":
 				return "parent-agent"
 			}
 			return ""
@@ -133,9 +133,9 @@ func TestMerge_NotParent(t *testing.T) {
 
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
+		case "SPRAWL_AGENT_IDENTITY":
 			return "other-agent"
 		}
 		return ""
@@ -334,7 +334,7 @@ func TestMerge_MissingDendraRoot(t *testing.T) {
 	deps, _ := newTestMergeDeps(t)
 
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
+		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "parent-agent"
 		}
 		return ""
@@ -342,10 +342,10 @@ func TestMerge_MissingDendraRoot(t *testing.T) {
 
 	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -353,7 +353,7 @@ func TestMerge_MissingCallerIdentity(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return tmpDir
 		}
 		return ""
@@ -368,8 +368,8 @@ func TestMerge_MissingCallerIdentity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing caller identity")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
@@ -530,8 +530,8 @@ func TestMerge_SuccessOutput(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "ash", Status: "done", Branch: "dendra/ash",
-		Worktree: "/worktree/ash", Parent: "parent-agent",
+		Name: "finn", Status: "done", Branch: "dendra/finn",
+		Worktree: "/worktree/finn", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 		LastReportMessage: "implement QUM-42 broadcast fix",
 	})
@@ -540,16 +540,16 @@ func TestMerge_SuccessOutput(t *testing.T) {
 		return &merge.Result{CommitHash: "a1b2c3d"}, nil
 	}
 
-	err := runMerge(deps, "ash", "", true, false)
+	err := runMerge(deps, "finn", "", true, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	output := stderr.String()
-	if !strings.Contains(output, `"ash"`) {
+	if !strings.Contains(output, `"finn"`) {
 		t.Errorf("output should mention agent name, got: %q", output)
 	}
-	if !strings.Contains(output, "dendra/ash") {
+	if !strings.Contains(output, "dendra/finn") {
 		t.Errorf("output should mention branch name, got: %q", output)
 	}
 	if !strings.Contains(output, "a1b2c3d") {

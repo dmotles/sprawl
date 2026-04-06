@@ -15,7 +15,7 @@ func newTestDelegateDeps(t *testing.T) (*delegateDeps, string) {
 
 	deps := &delegateDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -187,7 +187,7 @@ func TestDelegate_AgentRetiring(t *testing.T) {
 func TestDelegate_MissingDendraRoot(t *testing.T) {
 	deps, _ := newTestDelegateDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
+		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "root"
 		}
 		return ""
@@ -195,10 +195,10 @@ func TestDelegate_MissingDendraRoot(t *testing.T) {
 
 	err := runDelegate(deps, "alice", "some task")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 

@@ -34,10 +34,10 @@ func TestRunLogs_MissingDendraRoot(t *testing.T) {
 
 	err := runLogs(deps, "alice", 0)
 	if err == nil {
-		t.Fatal("expected error when DENDRA_ROOT is empty")
+		t.Fatal("expected error when SPRAWL_ROOT is empty")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -45,7 +45,7 @@ func TestRunLogs_NoLogsDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	deps := &logsDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -66,14 +66,14 @@ func TestRunLogs_NoLogsDir(t *testing.T) {
 
 func TestRunLogs_EmptyLogsDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
+	logsDir := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
 
 	deps := &logsDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -94,7 +94,7 @@ func TestRunLogs_EmptyLogsDir(t *testing.T) {
 
 func TestRunLogs_ShowsAllLogs(t *testing.T) {
 	tmpDir := t.TempDir()
-	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
+	logsDir := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestRunLogs_ShowsAllLogs(t *testing.T) {
 	var buf bytes.Buffer
 	deps := &logsDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -153,7 +153,7 @@ func TestRunLogs_ShowsAllLogs(t *testing.T) {
 
 func TestRunLogs_TailLines(t *testing.T) {
 	tmpDir := t.TempDir()
-	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
+	logsDir := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestRunLogs_TailLines(t *testing.T) {
 	var buf bytes.Buffer
 	deps := &logsDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -205,7 +205,7 @@ func TestRunLogs_TailLines(t *testing.T) {
 
 func TestRunLogs_TailMoreThanAvailable(t *testing.T) {
 	tmpDir := t.TempDir()
-	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
+	logsDir := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("creating logs dir: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestRunLogs_TailMoreThanAvailable(t *testing.T) {
 	var buf bytes.Buffer
 	deps := &logsDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""

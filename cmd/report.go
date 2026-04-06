@@ -84,14 +84,14 @@ func resolveReportDeps() *reportDeps {
 }
 
 func runReport(deps *reportDeps, reportType, message string) error {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
+	agentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set; report must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report must be called from within a dendra agent")
 	}
 
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set; report must be called from within a dendra agent")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; report must be called from within a dendra agent")
 	}
 
 	// Load agent state
@@ -139,7 +139,7 @@ func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentSt
 
 	var sendOpts []messages.SendOption
 	if deps.tmuxRunner != nil {
-		namespace := deps.getenv("DENDRA_NAMESPACE")
+		namespace := deps.getenv("SPRAWL_NAMESPACE")
 		if namespace == "" {
 			namespace = state.ReadNamespace(dendraRoot)
 		}

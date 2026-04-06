@@ -21,7 +21,7 @@ func timelinePath(dendraRoot string) string {
 
 const timelineHeader = "# Session Timeline"
 
-// ReadTimeline parses .dendra/memory/timeline.md and returns entries.
+// ReadTimeline parses .sprawl/memory/timeline.md and returns entries.
 // Returns an empty slice (not error) if the file doesn't exist.
 // Lines not matching the expected format are silently skipped.
 func ReadTimeline(dendraRoot string) ([]TimelineEntry, error) {
@@ -63,7 +63,7 @@ func ReadTimeline(dendraRoot string) ([]TimelineEntry, error) {
 	return entries, nil
 }
 
-// WriteTimeline writes entries to .dendra/memory/timeline.md, creating parent
+// WriteTimeline writes entries to .sprawl/memory/timeline.md, creating parent
 // directories if needed. Timestamps are normalized to UTC. If called with an
 // empty slice, writes just the header.
 func WriteTimeline(dendraRoot string, entries []TimelineEntry) error {

@@ -76,7 +76,7 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 		readFile:   os.ReadFile,
 		removeFile: os.Remove,
 		buildPrompt: func(a *state.AgentState) string {
-			testMode := os.Getenv("DENDRA_TEST_MODE") == "1"
+			testMode := os.Getenv("SPRAWL_TEST_MODE") == "1"
 			switch a.Type {
 			case "researcher":
 				env := agent.DefaultEnvConfig()
@@ -346,10 +346,10 @@ const defaultPollInterval = 500 * time.Millisecond
 
 // runAgentLoop is the main loop logic for the agent-loop command.
 func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) error {
-	// Validate DENDRA_ROOT
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	// Validate SPRAWL_ROOT
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Load agent state
@@ -365,7 +365,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	}
 
 	// Create log file
-	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agentName, "logs")
+	logsDir := filepath.Join(dendraRoot, ".sprawl", "agents", agentName, "logs")
 	if err := deps.mkdirAll(logsDir, 0o755); err != nil {
 		return fmt.Errorf("creating logs directory: %w", err)
 	}
@@ -376,7 +376,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	defer logFile.Close()
 
 	// Create work lock for synchronization with merge operations.
-	lockDir := filepath.Join(dendraRoot, ".dendra", "locks")
+	lockDir := filepath.Join(dendraRoot, ".sprawl", "locks")
 	wl, err := deps.newWorkLock(lockDir, agentName)
 	if err != nil {
 		return fmt.Errorf("creating work lock: %w", err)
@@ -429,8 +429,8 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	fmt.Fprintf(deps.stdout, "[agent-loop]   setting-sources: %s\n", config.Args.SettingSources)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   dendra-root:     %s\n", config.DendraRoot)
 	fmt.Fprintf(deps.stdout, "[agent-loop] === KEY ENV VARS ===\n")
-	fmt.Fprintf(deps.stdout, "[agent-loop]   DENDRA_AGENT_IDENTITY=%s\n", deps.getenv("DENDRA_AGENT_IDENTITY"))
-	fmt.Fprintf(deps.stdout, "[agent-loop]   DENDRA_ROOT=%s\n", deps.getenv("DENDRA_ROOT"))
+	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_AGENT_IDENTITY=%s\n", deps.getenv("SPRAWL_AGENT_IDENTITY"))
+	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_ROOT=%s\n", deps.getenv("SPRAWL_ROOT"))
 
 	observer := &tmuxObserver{w: deps.stdout}
 
@@ -457,7 +457,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		return ok
 	}
 
-	pokePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".poke")
+	pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".poke")
 
 	// sendWithInterrupt wraps sendPromptWithInterrupt with the poke path and default interval.
 	sendWithInterrupt := func(prompt string) (*protocol.ResultMessage, string, error) {
@@ -476,7 +476,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		}
 
 		// 0. Check for kill sentinel file.
-		killFilePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".kill")
+		killFilePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".kill")
 		if _, readErr := deps.readFile(killFilePath); readErr == nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] kill sentinel detected, shutting down\n")
 			_ = deps.removeFile(killFilePath)
@@ -602,7 +602,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 				}
 			}
 			// Consume any pending wake file — inbox delivery already notified the agent.
-			wakePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".wake")
+			wakePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".wake")
 			_ = deps.removeFile(wakePath)
 			_ = wl.Release()
 			deps.sleepFunc(3 * time.Second)
@@ -610,7 +610,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		}
 
 		// 3. Check for a wake file.
-		wakeFilePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".wake")
+		wakeFilePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".wake")
 		wakeContent, readErr := deps.readFile(wakeFilePath)
 		if readErr == nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] wake file detected\n")

@@ -59,14 +59,14 @@ func TestIsInsideTmux(t *testing.T) {
 // so we test the interface contract through the mock used in cmd tests.
 
 func TestDefaultNamespace(t *testing.T) {
-	if DefaultNamespace != "🌳" {
-		t.Errorf("DefaultNamespace = %q, want %q", DefaultNamespace, "🌳")
+	if DefaultNamespace != "⚡" {
+		t.Errorf("DefaultNamespace = %q, want %q", DefaultNamespace, "⚡")
 	}
 }
 
 func TestDefaultRootName(t *testing.T) {
-	if DefaultRootName != "sensei" {
-		t.Errorf("DefaultRootName = %q, want %q", DefaultRootName, "sensei")
+	if DefaultRootName != "neo" {
+		t.Errorf("DefaultRootName = %q, want %q", DefaultRootName, "neo")
 	}
 }
 
@@ -88,9 +88,9 @@ func TestRootSessionName(t *testing.T) {
 		rootName  string
 		want      string
 	}{
-		{"🌳", "sensei", "🌳sensei"},
-		{"🌲", "test", "🌲test"},
-		{"🌴", "kai", "🌴kai"},
+		{"⚡", "neo", "⚡neo"},
+		{"🔮", "test", "🔮test"},
+		{"💠", "kai", "💠kai"},
 	}
 
 	for _, tt := range tests {
@@ -107,10 +107,10 @@ func TestChildrenSessionName(t *testing.T) {
 		treePath  string
 		want      string
 	}{
-		{"🌳", "sensei", "🌳sensei├"},
-		{"🌳", "sensei├ash", "🌳sensei├ash├"},
-		{"🌳", "sensei├ash├oak", "🌳sensei├ash├oak├"},
-		{"🌲", "test", "🌲test├"},
+		{"⚡", "neo", "⚡neo├"},
+		{"⚡", "neo├ash", "⚡neo├ash├"},
+		{"⚡", "neo├ash├oak", "⚡neo├ash├oak├"},
+		{"🔮", "test", "🔮test├"},
 	}
 
 	for _, tt := range tests {
@@ -151,44 +151,44 @@ func TestPickNamespace_NoServer(t *testing.T) {
 func TestPickNamespace_NoSessions(t *testing.T) {
 	runner := &mockPickRunner{sessions: nil}
 	got := PickNamespace(runner)
-	if got != "🌳" {
-		t.Errorf("PickNamespace with no sessions = %q, want %q", got, "🌳")
+	if got != "⚡" {
+		t.Errorf("PickNamespace with no sessions = %q, want %q", got, "⚡")
 	}
 }
 
 func TestPickNamespace_FirstTaken(t *testing.T) {
-	runner := &mockPickRunner{sessions: []string{"🌳sensei"}}
+	runner := &mockPickRunner{sessions: []string{"⚡neo"}}
 	got := PickNamespace(runner)
-	if got != "🌲" {
-		t.Errorf("PickNamespace = %q, want %q (should skip 🌳)", got, "🌲")
+	if got != "🔮" {
+		t.Errorf("PickNamespace = %q, want %q (should skip ⚡)", got, "🔮")
 	}
 }
 
 func TestPickNamespace_MultipleTaken(t *testing.T) {
-	runner := &mockPickRunner{sessions: []string{"🌳sensei", "🌲sensei", "🌴sensei"}}
+	runner := &mockPickRunner{sessions: []string{"⚡neo", "🔮neo", "💠neo"}}
 	got := PickNamespace(runner)
-	if got != "🎋" {
-		t.Errorf("PickNamespace = %q, want %q (should skip first three)", got, "🎋")
+	if got != "🌃" {
+		t.Errorf("PickNamespace = %q, want %q (should skip first three)", got, "🌃")
 	}
 }
 
 func TestPickNamespace_ChildSessionDoesNotMarkTaken(t *testing.T) {
-	// A children session like 🌳sensei├ should NOT mark 🌳 as taken.
-	// If sensei was killed but children are still running, user should be able
+	// A children session like ⚡neo├ should NOT mark ⚡ as taken.
+	// If neo was killed but children are still running, user should be able
 	// to re-init into the same namespace.
-	runner := &mockPickRunner{sessions: []string{"🌳sensei├"}}
+	runner := &mockPickRunner{sessions: []string{"⚡neo├"}}
 	got := PickNamespace(runner)
-	if got != "🌳" {
-		t.Errorf("PickNamespace = %q, want %q (child session should not count)", got, "🌳")
+	if got != "⚡" {
+		t.Errorf("PickNamespace = %q, want %q (child session should not count)", got, "⚡")
 	}
 }
 
 func TestPickNamespace_RootSessionMarksTaken(t *testing.T) {
 	// Only a root session (emoji+DefaultRootName) marks the namespace as taken.
-	runner := &mockPickRunner{sessions: []string{"🌳sensei"}}
+	runner := &mockPickRunner{sessions: []string{"⚡neo"}}
 	got := PickNamespace(runner)
-	if got != "🌲" {
-		t.Errorf("PickNamespace = %q, want %q (root session should mark taken)", got, "🌲")
+	if got != "🔮" {
+		t.Errorf("PickNamespace = %q, want %q (root session should mark taken)", got, "🔮")
 	}
 }
 
@@ -196,8 +196,8 @@ func TestNamespacePool_NotEmpty(t *testing.T) {
 	if len(NamespacePool) == 0 {
 		t.Error("NamespacePool should not be empty")
 	}
-	if NamespacePool[0] != "🌳" {
-		t.Errorf("NamespacePool[0] = %q, want %q", NamespacePool[0], "🌳")
+	if NamespacePool[0] != "⚡" {
+		t.Errorf("NamespacePool[0] = %q, want %q", NamespacePool[0], "⚡")
 	}
 }
 
@@ -206,8 +206,8 @@ func TestExactTarget(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"🌳sensei", "=🌳sensei"},
-		{"🌳sensei├", "=🌳sensei├"},
+		{"⚡neo", "=⚡neo"},
+		{"⚡neo├", "=⚡neo├"},
 		{"", "="},
 	}
 

@@ -32,7 +32,7 @@ func init() {
 var handoffCmd = &cobra.Command{
 	Use:   "handoff",
 	Short: "Write session summary and signal handoff to next session",
-	Long:  "Persist a session summary (read from stdin) and create a handoff signal file for the sensei loop to detect.",
+	Long:  "Persist a session summary (read from stdin) and create a handoff signal file for the root loop to detect.",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
 		deps := resolveHandoffDeps()
@@ -59,14 +59,14 @@ func resolveHandoffDeps() *handoffDeps {
 }
 
 func runHandoff(deps *handoffDeps) error {
-	agentName := deps.getenv("DENDRA_AGENT_IDENTITY")
+	agentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
+		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set")
 	}
 
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Only the root agent may run handoff
@@ -104,7 +104,7 @@ The summary is the primary context for the next session — make it count.`)
 		return fmt.Errorf("reading session ID: %w", err)
 	}
 	if sessionID == "" {
-		return fmt.Errorf("no session ID found; .dendra/memory/last-session-id is missing or empty")
+		return fmt.Errorf("no session ID found; .sprawl/memory/last-session-id is missing or empty")
 	}
 
 	// Collect active agent names
@@ -140,6 +140,6 @@ The summary is the primary context for the next session — make it count.`)
 	fmt.Fprintln(deps.stdout, "  - Or press Ctrl+D")
 	fmt.Fprintln(deps.stdout, "  - Or press Ctrl+C")
 	fmt.Fprintln(deps.stdout)
-	fmt.Fprintln(deps.stdout, "The sensei loop will automatically restart with your new context.")
+	fmt.Fprintln(deps.stdout, "The root loop will automatically restart with your new context.")
 	return nil
 }

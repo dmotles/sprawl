@@ -25,7 +25,7 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 	deps := &retireDeps{
 		tmuxRunner: runner,
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -74,7 +74,7 @@ func TestRetire_HappyPath(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -110,10 +110,10 @@ func TestRetire_MissingDendraRoot(t *testing.T) {
 
 	err := runRetire(deps, "alice", false, false, false, false)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -533,14 +533,14 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
 	})
 
 	// Create a logs directory with a fake log file.
-	logsDir := filepath.Join(tmpDir, ".dendra", "agents", "alice", "logs")
+	logsDir := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "logs")
 	if err := os.MkdirAll(logsDir, 0o755); err != nil {
 		t.Fatalf("failed to create logs dir: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestRetire_Abandon_DeletesBranch(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -617,7 +617,7 @@ func TestRetire_Abandon_BranchDeleteFails_WarnsButSucceeds(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -648,7 +648,7 @@ func TestRetire_NoAbandon_PreservesBranch(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -755,7 +755,7 @@ func TestRetire_Default_MergedBranch_DeletesBranch(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -788,7 +788,7 @@ func TestRetire_Default_UnmergedBranch_PreservesBranch(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -815,9 +815,9 @@ func TestRetire_MergeFlag_HappyPath(t *testing.T) {
 
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
+		case "SPRAWL_AGENT_IDENTITY":
 			return "root"
 		}
 		return ""
@@ -843,7 +843,7 @@ func TestRetire_MergeFlag_HappyPath(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -876,7 +876,7 @@ func TestRetire_MergeAndAbandon_MutualExclusion(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -896,9 +896,9 @@ func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
 
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
+		case "SPRAWL_AGENT_IDENTITY":
 			return "root"
 		}
 		return ""
@@ -912,7 +912,7 @@ func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -941,9 +941,9 @@ func TestRetire_ForcePlusMerge(t *testing.T) {
 
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
+		case "SPRAWL_AGENT_IDENTITY":
 			return "root"
 		}
 		return ""
@@ -969,7 +969,7 @@ func TestRetire_ForcePlusMerge(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -1000,9 +1000,9 @@ func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
+		case "SPRAWL_AGENT_IDENTITY":
 			return "root"
 		}
 		return ""
@@ -1023,7 +1023,7 @@ func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -1034,7 +1034,7 @@ func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 		Name:        "bob",
 		Status:      "active",
 		Branch:      "dendra/bob",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "bob"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "bob"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
 		Parent:      "alice",
@@ -1076,7 +1076,7 @@ func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -1087,7 +1087,7 @@ func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
 		Name:        "bob",
 		Status:      "active",
 		Branch:      "dendra/bob",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "bob"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "bob"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
 		Parent:      "alice",
@@ -1128,7 +1128,7 @@ func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
 		Name:        "alice",
 		Status:      "active",
 		Branch:      "dendra/alice",
-		Worktree:    filepath.Join(tmpDir, ".dendra", "worktrees", "alice"),
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
 		Parent:      "root",
@@ -1139,8 +1139,8 @@ func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedLockPath := filepath.Join(tmpDir, ".dendra", "locks", "alice.lock")
-	expectedPokePath := filepath.Join(tmpDir, ".dendra", "agents", "alice.poke")
+	expectedLockPath := filepath.Join(tmpDir, ".sprawl", "locks", "alice.lock")
+	expectedPokePath := filepath.Join(tmpDir, ".sprawl", "agents", "alice.poke")
 
 	var foundLock, foundPoke bool
 	for _, path := range removedFiles {

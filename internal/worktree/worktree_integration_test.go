@@ -50,7 +50,7 @@ func TestRealCreator_Create(t *testing.T) {
 		t.Errorf("branch = %q, want %q", branch, "feature/alice-work")
 	}
 
-	wantPath := filepath.Join(repo, ".dendra", "worktrees", "alice")
+	wantPath := filepath.Join(repo, ".sprawl", "worktrees", "alice")
 	if wtPath != wantPath {
 		t.Errorf("worktreePath = %q, want %q", wtPath, wantPath)
 	}

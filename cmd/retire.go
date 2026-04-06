@@ -115,9 +115,9 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 		return fmt.Errorf("--merge and --abandon are mutually exclusive")
 	}
 
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Load agent state
@@ -128,9 +128,9 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 
 	// Merge before retire if requested (must happen before "retiring" checkpoint)
 	if mergeFirst {
-		callerName := deps.getenv("DENDRA_AGENT_IDENTITY")
+		callerName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 		if callerName == "" {
-			return fmt.Errorf("--merge requires DENDRA_AGENT_IDENTITY to be set")
+			return fmt.Errorf("--merge requires SPRAWL_AGENT_IDENTITY to be set")
 		}
 		if agentState.Subagent {
 			return fmt.Errorf("agent %q is a subagent and has no branch to merge", agentName)
@@ -173,9 +173,9 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 			return err
 		}
 		// Clean up lock and poke files
-		lockPath := filepath.Join(dendraRoot, ".dendra", "locks", agentState.Name+".lock")
+		lockPath := filepath.Join(dendraRoot, ".sprawl", "locks", agentState.Name+".lock")
 		_ = deps.removeFile(lockPath)
-		pokePath := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".poke")
+		pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentState.Name+".poke")
 		_ = deps.removeFile(pokePath)
 		printRetireSuccess(agentState, abandon, mergeFirst, deps, dendraRoot)
 		return nil
@@ -222,9 +222,9 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 	}
 
 	// Clean up lock and poke files
-	lockPath := filepath.Join(dendraRoot, ".dendra", "locks", agentState.Name+".lock")
+	lockPath := filepath.Join(dendraRoot, ".sprawl", "locks", agentState.Name+".lock")
 	_ = deps.removeFile(lockPath)
-	pokePath := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".poke")
+	pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentState.Name+".poke")
 	_ = deps.removeFile(pokePath)
 	printRetireSuccess(agentState, abandon, mergeFirst, deps, dendraRoot)
 	return nil

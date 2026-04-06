@@ -18,10 +18,10 @@ func newTestHandoffDeps(t *testing.T) (*handoffDeps, string) {
 	tmpDir := t.TempDir()
 
 	// Set up root-name file
-	state.WriteRootName(tmpDir, "sensei")
+	state.WriteRootName(tmpDir, "neo")
 
 	// Set up last-session-id file
-	memDir := filepath.Join(tmpDir, ".dendra", "memory")
+	memDir := filepath.Join(tmpDir, ".sprawl", "memory")
 	os.MkdirAll(memDir, 0o755)
 	os.WriteFile(filepath.Join(memDir, "last-session-id"), []byte("test-session-123"), 0o644)
 
@@ -33,10 +33,10 @@ func newTestHandoffDeps(t *testing.T) (*handoffDeps, string) {
 		stdout: &stdout,
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_AGENT_IDENTITY":
-				return "sensei"
+			case "SPRAWL_AGENT_IDENTITY":
+				return "neo"
 			}
 			return ""
 		},
@@ -59,11 +59,11 @@ func TestHandoff_HappyPath(t *testing.T) {
 	deps, tmpDir := newTestHandoffDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ash",
+		Name:   "finn",
 		Status: "active",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "elm",
+		Name:   "ratz",
 		Status: "active",
 	})
 
@@ -73,7 +73,7 @@ func TestHandoff_HappyPath(t *testing.T) {
 	}
 
 	// Verify session summary file was written (filename includes timestamp prefix)
-	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
+	sessDir := filepath.Join(tmpDir, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(sessDir)
 	if err != nil {
 		t.Fatalf("reading sessions dir: %v", err)
@@ -101,7 +101,7 @@ func TestHandoff_HappyPath(t *testing.T) {
 	}
 
 	// Verify handoff signal file exists
-	signalPath := filepath.Join(tmpDir, ".dendra", "memory", "handoff-signal")
+	signalPath := filepath.Join(tmpDir, ".sprawl", "memory", "handoff-signal")
 	if _, err := os.Stat(signalPath); os.IsNotExist(err) {
 		t.Error("handoff-signal file should exist")
 	}
@@ -111,10 +111,10 @@ func TestHandoff_NonRootAgent(t *testing.T) {
 	deps, tmpDir := newTestHandoffDeps(t)
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
-			return "elm"
+		case "SPRAWL_AGENT_IDENTITY":
+			return "ratz"
 		}
 		return ""
 	}
@@ -131,7 +131,7 @@ func TestHandoff_NonRootAgent(t *testing.T) {
 func TestHandoff_MissingAgentIdentity(t *testing.T) {
 	deps, tmpDir := newTestHandoffDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return tmpDir
 		}
 		return ""
@@ -139,28 +139,28 @@ func TestHandoff_MissingAgentIdentity(t *testing.T) {
 
 	err := runHandoff(deps)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
 func TestHandoff_MissingDendraRoot(t *testing.T) {
 	deps, _ := newTestHandoffDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
-			return "sensei"
+		if key == "SPRAWL_AGENT_IDENTITY" {
+			return "neo"
 		}
 		return ""
 	}
 
 	err := runHandoff(deps)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -168,7 +168,7 @@ func TestHandoff_MissingSessionID(t *testing.T) {
 	deps, tmpDir := newTestHandoffDeps(t)
 
 	// Remove the last-session-id file
-	os.Remove(filepath.Join(tmpDir, ".dendra", "memory", "last-session-id"))
+	os.Remove(filepath.Join(tmpDir, ".sprawl", "memory", "last-session-id"))
 
 	err := runHandoff(deps)
 	if err == nil {
@@ -197,7 +197,7 @@ func TestHandoff_EmptyStdin(t *testing.T) {
 	}
 
 	// Verify no session file was created
-	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
+	sessDir := filepath.Join(tmpDir, ".sprawl", "memory", "sessions")
 	if _, err := os.Stat(sessDir); err == nil {
 		entries, _ := os.ReadDir(sessDir)
 		if len(entries) > 0 {
@@ -206,7 +206,7 @@ func TestHandoff_EmptyStdin(t *testing.T) {
 	}
 
 	// Verify no handoff signal file was created
-	signalPath := filepath.Join(tmpDir, ".dendra", "memory", "handoff-signal")
+	signalPath := filepath.Join(tmpDir, ".sprawl", "memory", "handoff-signal")
 	if _, err := os.Stat(signalPath); err == nil {
 		t.Error("no handoff-signal file should be created when summary is empty")
 	}
@@ -227,7 +227,7 @@ func TestHandoff_WhitespaceOnlyStdin(t *testing.T) {
 	}
 
 	// Verify no session file was created
-	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
+	sessDir := filepath.Join(tmpDir, ".sprawl", "memory", "sessions")
 	if _, err := os.Stat(sessDir); err == nil {
 		entries, _ := os.ReadDir(sessDir)
 		if len(entries) > 0 {
@@ -236,7 +236,7 @@ func TestHandoff_WhitespaceOnlyStdin(t *testing.T) {
 	}
 
 	// Verify no handoff signal file was created
-	signalPath := filepath.Join(tmpDir, ".dendra", "memory", "handoff-signal")
+	signalPath := filepath.Join(tmpDir, ".sprawl", "memory", "handoff-signal")
 	if _, err := os.Stat(signalPath); err == nil {
 		t.Error("no handoff-signal file should be created when summary is whitespace-only")
 	}
@@ -254,7 +254,7 @@ func TestHandoff_TerseInput(t *testing.T) {
 	}
 
 	// Verify session file was created
-	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
+	sessDir := filepath.Join(tmpDir, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(sessDir)
 	if err != nil {
 		t.Fatalf("reading sessions dir: %v", err)
@@ -264,7 +264,7 @@ func TestHandoff_TerseInput(t *testing.T) {
 	}
 
 	// Verify handoff signal file exists
-	signalPath := filepath.Join(tmpDir, ".dendra", "memory", "handoff-signal")
+	signalPath := filepath.Join(tmpDir, ".sprawl", "memory", "handoff-signal")
 	if _, err := os.Stat(signalPath); os.IsNotExist(err) {
 		t.Error("handoff-signal file should exist for terse but non-empty input")
 	}
@@ -278,7 +278,7 @@ func TestHandoff_NoAgents(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	sessDir := filepath.Join(tmpDir, ".dendra", "memory", "sessions")
+	sessDir := filepath.Join(tmpDir, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(sessDir)
 	if err != nil {
 		t.Fatalf("reading sessions dir: %v", err)
@@ -348,8 +348,8 @@ func TestHandoff_ExitInstructions(t *testing.T) {
 	if !strings.Contains(output, "Ctrl+C") {
 		t.Errorf("should contain Ctrl+C instruction, got: %s", output)
 	}
-	if !strings.Contains(output, "sensei loop will automatically restart") {
-		t.Errorf("should mention sensei loop restart, got: %s", output)
+	if !strings.Contains(output, "root loop will automatically restart") {
+		t.Errorf("should mention root loop restart, got: %s", output)
 	}
 }
 
@@ -358,9 +358,9 @@ func TestHandoff_ErrorNoExitInstructions(t *testing.T) {
 	// Make the agent a non-root agent to trigger an error
 	deps.getenv = func(key string) string {
 		switch key {
-		case "DENDRA_ROOT":
+		case "SPRAWL_ROOT":
 			return tmpDir
-		case "DENDRA_AGENT_IDENTITY":
+		case "SPRAWL_AGENT_IDENTITY":
 			return "not-root"
 		}
 		return ""

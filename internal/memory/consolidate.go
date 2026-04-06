@@ -14,7 +14,7 @@ import (
 // than the 3 most recent are distilled into timeline entries; the 3 most recent
 // sessions are left untouched.
 //
-// This function is designed to be called post-handoff when the sensei is
+// This function is designed to be called post-handoff when the root agent is
 // restarting. It assumes single-threaded execution — no concurrent access
 // protection is needed.
 func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, now func() time.Time) error {

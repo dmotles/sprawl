@@ -59,7 +59,7 @@ func makeStatusTestDeps(agents []*state.AgentState, rootName string, runner tmux
 			ReadNamespace: func(string) string { return "test" },
 		},
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/fake"
 			}
 			return ""
@@ -80,22 +80,22 @@ func TestRunStatus_MissingDendraRoot(t *testing.T) {
 
 	err := runStatus(deps, false, "", "", "", "")
 	if err == nil {
-		t.Fatal("expected error when DENDRA_ROOT is empty")
+		t.Fatal("expected error when SPRAWL_ROOT is empty")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
 func TestRunStatus_RootOnly(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "sensei")
+	rootSession := tmux.RootSessionName("test", "neo")
 	runner := &statusMockRunner{
 		hasSessionResults: map[string]bool{
 			rootSession: true,
 		},
 	}
 
-	deps, buf := makeStatusTestDeps(nil, "sensei", runner)
+	deps, buf := makeStatusTestDeps(nil, "neo", runner)
 
 	err := runStatus(deps, false, "", "", "", "")
 	if err != nil {
@@ -109,8 +109,8 @@ func TestRunStatus_RootOnly(t *testing.T) {
 		t.Error("expected table header with AGENT")
 	}
 	// Root agent row.
-	if !strings.Contains(out, "sensei") {
-		t.Error("expected sensei in output")
+	if !strings.Contains(out, "neo") {
+		t.Error("expected neo in output")
 	}
 	// Root type/family/parent/status should show "-".
 	// The row should contain "alive" since tmux session is present.
@@ -120,7 +120,7 @@ func TestRunStatus_RootOnly(t *testing.T) {
 }
 
 func TestRunStatus_MultipleAgents(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "sensei")
+	rootSession := tmux.RootSessionName("test", "neo")
 	runner := &statusMockRunner{
 		hasSessionResults: map[string]bool{
 			rootSession: true,
@@ -132,11 +132,11 @@ func TestRunStatus_MultipleAgents(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: "sess", TmuxWindow: "win-a"},
-		{Name: "bravo", Type: "researcher", Family: "research", Parent: "sensei", Status: "active", TmuxSession: "sess", TmuxWindow: "win-b"},
+		{Name: "alpha", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: "sess", TmuxWindow: "win-a"},
+		{Name: "bravo", Type: "researcher", Family: "research", Parent: "neo", Status: "active", TmuxSession: "sess", TmuxWindow: "win-b"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, false, "", "", "", "")
 	if err != nil {
@@ -144,8 +144,8 @@ func TestRunStatus_MultipleAgents(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "sensei") {
-		t.Error("expected sensei in output")
+	if !strings.Contains(out, "neo") {
+		t.Error("expected neo in output")
 	}
 	if !strings.Contains(out, "alpha") {
 		t.Error("expected alpha in output")
@@ -169,7 +169,7 @@ func TestRunStatus_ProcessAlive(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "sensei"},
+		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "neo"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -193,7 +193,7 @@ func TestRunStatus_ProcessDead(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "sensei"},
+		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "neo"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -213,7 +213,7 @@ func TestRunStatus_ProcessTerminal(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "done", Parent: "sensei"},
+		{Name: "alpha", Status: "done", Parent: "neo"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -239,7 +239,7 @@ func TestRunStatus_ProcessTerminal(t *testing.T) {
 
 func TestRunStatus_ProcessNoTmux(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "sensei"},
+		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "neo"},
 	}
 
 	// nil runner means tmux is unavailable.
@@ -260,7 +260,7 @@ func TestRunStatus_LastReportDone(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "done", Parent: "sensei", LastReportType: "done", LastReportMessage: "task completed"},
+		{Name: "alpha", Status: "done", Parent: "neo", LastReportType: "done", LastReportMessage: "task completed"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -283,7 +283,7 @@ func TestRunStatus_LastReportNone(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "done", Parent: "sensei"},
+		{Name: "alpha", Status: "done", Parent: "neo"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -311,7 +311,7 @@ func TestRunStatus_LastReportTypeOnly(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "problem", Parent: "sensei", LastReportType: "problem"},
+		{Name: "alpha", Status: "problem", Parent: "neo", LastReportType: "problem"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -331,11 +331,11 @@ func TestRunStatus_FilterFamily(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "sensei", Status: "active"},
-		{Name: "bravo", Family: "research", Type: "researcher", Parent: "sensei", Status: "active"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
+		{Name: "bravo", Family: "research", Type: "researcher", Parent: "neo", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, false, "engineering", "", "", "")
 	if err != nil {
@@ -355,11 +355,11 @@ func TestRunStatus_FilterType(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "sensei", Status: "active"},
-		{Name: "bravo", Family: "research", Type: "researcher", Parent: "sensei", Status: "active"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
+		{Name: "bravo", Family: "research", Type: "researcher", Parent: "neo", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, false, "", "researcher", "", "")
 	if err != nil {
@@ -379,11 +379,11 @@ func TestRunStatus_FilterParent(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Parent: "sensei", Status: "active"},
+		{Name: "alpha", Parent: "neo", Status: "active"},
 		{Name: "bravo", Parent: "alpha", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, false, "", "", "alpha", "")
 	if err != nil {
@@ -394,9 +394,9 @@ func TestRunStatus_FilterParent(t *testing.T) {
 	if !strings.Contains(out, "bravo") {
 		t.Error("expected bravo (parent=alpha) in filtered output")
 	}
-	// sensei should be filtered out (parent is empty, not "alpha").
-	if strings.Contains(out, "sensei") {
-		t.Error("expected sensei to be filtered out (parent is not alpha)")
+	// neo should be filtered out (parent is empty, not "alpha").
+	if strings.Contains(out, "neo") {
+		t.Error("expected neo to be filtered out (parent is not alpha)")
 	}
 }
 
@@ -404,11 +404,11 @@ func TestRunStatus_FilterStatus(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Parent: "sensei", Status: "active"},
-		{Name: "bravo", Parent: "sensei", Status: "done"},
+		{Name: "alpha", Parent: "neo", Status: "active"},
+		{Name: "bravo", Parent: "neo", Status: "done"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, false, "", "", "", "done")
 	if err != nil {
@@ -428,12 +428,12 @@ func TestRunStatus_FilterMultiple(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "sensei", Status: "active"},
-		{Name: "bravo", Family: "engineering", Type: "researcher", Parent: "sensei", Status: "done"},
-		{Name: "charlie", Family: "research", Type: "engineer", Parent: "sensei", Status: "active"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
+		{Name: "bravo", Family: "engineering", Type: "researcher", Parent: "neo", Status: "done"},
+		{Name: "charlie", Family: "research", Type: "engineer", Parent: "neo", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	// Filter by family=engineering AND status=active. Only alpha should match.
 	err := runStatus(deps, false, "engineering", "", "", "active")
@@ -457,10 +457,10 @@ func TestRunStatus_FilterNoMatch(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Status: "active", Parent: "sensei"},
+		{Name: "alpha", Family: "engineering", Status: "active", Parent: "neo"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, false, "nonexistent", "", "", "")
 	if err != nil {
@@ -479,7 +479,7 @@ func TestRunStatus_FilterNoMatch(t *testing.T) {
 }
 
 func TestRunStatus_JSON(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "sensei")
+	rootSession := tmux.RootSessionName("test", "neo")
 	runner := &statusMockRunner{
 		hasSessionResults: map[string]bool{
 			rootSession: true,
@@ -491,12 +491,12 @@ func TestRunStatus_JSON(t *testing.T) {
 
 	agents := []*state.AgentState{
 		{
-			Name: "alpha", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active",
+			Name: "alpha", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active",
 			TmuxSession: "sess", TmuxWindow: "win", LastReportType: "status", LastReportMessage: "working",
 		},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, true, "", "", "", "")
 	if err != nil {
@@ -519,7 +519,7 @@ func TestRunStatus_JSON(t *testing.T) {
 		if entries[i].Name == "alpha" {
 			alpha = &entries[i]
 		}
-		if entries[i].Name == "sensei" {
+		if entries[i].Name == "neo" {
 			root = &entries[i]
 		}
 	}
@@ -533,8 +533,8 @@ func TestRunStatus_JSON(t *testing.T) {
 	if alpha.Family != "engineering" {
 		t.Errorf("alpha family = %q, want %q", alpha.Family, "engineering")
 	}
-	if alpha.Parent != "sensei" {
-		t.Errorf("alpha parent = %q, want %q", alpha.Parent, "sensei")
+	if alpha.Parent != "neo" {
+		t.Errorf("alpha parent = %q, want %q", alpha.Parent, "neo")
 	}
 	if alpha.Status != "active" {
 		t.Errorf("alpha status = %q, want %q", alpha.Status, "active")
@@ -544,10 +544,10 @@ func TestRunStatus_JSON(t *testing.T) {
 	}
 
 	if root == nil {
-		t.Fatal("expected sensei in JSON output")
+		t.Fatal("expected neo in JSON output")
 	}
 	if !root.IsRoot {
-		t.Error("expected sensei to have is_root=true")
+		t.Error("expected neo to have is_root=true")
 	}
 }
 
@@ -555,11 +555,11 @@ func TestRunStatus_JSONFiltered(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "sensei", Status: "active"},
-		{Name: "bravo", Family: "research", Type: "researcher", Parent: "sensei", Status: "done"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
+		{Name: "bravo", Family: "research", Type: "researcher", Parent: "neo", Status: "done"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "sensei", runner)
+	deps, buf := makeStatusTestDeps(agents, "neo", runner)
 
 	err := runStatus(deps, true, "engineering", "", "", "")
 	if err != nil {
@@ -594,7 +594,7 @@ func TestRunStatus_LastReportTruncation(t *testing.T) {
 
 	longMsg := strings.Repeat("a", 100)
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", Parent: "sensei", LastReportType: "status", LastReportMessage: longMsg},
+		{Name: "alpha", Status: "active", Parent: "neo", LastReportType: "status", LastReportMessage: longMsg},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -620,15 +620,15 @@ func TestRunStatus_LastReportTruncation(t *testing.T) {
 }
 
 func TestTolerantListAgents_SkipsCorruptFile(t *testing.T) {
-	// Create a temp directory simulating .dendra/agents/ with one good and one corrupt file.
+	// Create a temp directory simulating .sprawl/agents/ with one good and one corrupt file.
 	tmpDir := t.TempDir()
-	agentsDir := tmpDir + "/.dendra/agents"
+	agentsDir := tmpDir + "/.sprawl/agents"
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	// Write a valid agent state file.
-	validJSON := `{"name":"good","type":"engineer","family":"engineering","parent":"sensei","status":"active"}`
+	validJSON := `{"name":"good","type":"engineer","family":"engineering","parent":"neo","status":"active"}`
 	if err := os.WriteFile(agentsDir+"/good.json", []byte(validJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}

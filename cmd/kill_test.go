@@ -72,7 +72,7 @@ func newTestKillDeps(t *testing.T) (*killDeps, *killMockRunner, string) {
 	deps := &killDeps{
 		tmuxRunner: runner,
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
@@ -128,7 +128,7 @@ func TestKill_HappyPath(t *testing.T) {
 	}
 
 	// Verify sentinel file was written.
-	expectedSentinel := filepath.Join(tmpDir, ".dendra", "agents", "alice.kill")
+	expectedSentinel := filepath.Join(tmpDir, ".sprawl", "agents", "alice.kill")
 	sentinelWritten := false
 	for _, p := range writtenPaths {
 		if p == expectedSentinel {
@@ -186,7 +186,7 @@ func TestKill_GracefulTimeout_FallsBackToForce(t *testing.T) {
 	}
 
 	// Sentinel file should have been written.
-	expectedSentinel := filepath.Join(tmpDir, ".dendra", "agents", "alice.kill")
+	expectedSentinel := filepath.Join(tmpDir, ".sprawl", "agents", "alice.kill")
 	sentinelWritten := false
 	for _, p := range writtenPaths {
 		if p == expectedSentinel {
@@ -315,10 +315,10 @@ func TestKill_MissingDendraRoot(t *testing.T) {
 
 	err := runKill(deps, "alice", false)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -348,7 +348,7 @@ func TestKill_NoProcesses_StillUpdatesState(t *testing.T) {
 	}
 
 	// Sentinel should still be written.
-	expectedSentinel := filepath.Join(tmpDir, ".dendra", "agents", "alice.kill")
+	expectedSentinel := filepath.Join(tmpDir, ".sprawl", "agents", "alice.kill")
 	sentinelWritten := false
 	for _, p := range writtenPaths {
 		if p == expectedSentinel {
@@ -451,7 +451,7 @@ func TestKill_SentinelFileCleanup(t *testing.T) {
 	}
 
 	// Verify removeFile was called with the sentinel path.
-	expectedSentinel := filepath.Join(tmpDir, ".dendra", "agents", "alice.kill")
+	expectedSentinel := filepath.Join(tmpDir, ".sprawl", "agents", "alice.kill")
 	sentinelRemoved := false
 	for _, p := range removedPaths {
 		if p == expectedSentinel {

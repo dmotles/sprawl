@@ -16,15 +16,15 @@ var fixedClock = func() time.Time {
 
 func TestBuildContextBlob_FullContext(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "oak", Type: "engineer", Family: "engineering", Status: "active", LastReportType: "status"},
+		{Name: "zone", Type: "engineer", Family: "engineering", Status: "active", LastReportType: "status"},
 		{Name: "birch", Type: "researcher", Family: "research", Status: "working", LastReportType: "done"},
 		// done/retired should be excluded
-		{Name: "elm", Type: "engineer", Family: "engineering", Status: "done", LastReportType: "done"},
-		{Name: "pine", Type: "engineer", Family: "engineering", Status: "retired", LastReportType: "status"},
+		{Name: "ratz", Type: "engineer", Family: "engineering", Status: "done", LastReportType: "done"},
+		{Name: "chip", Type: "engineer", Family: "engineering", Status: "retired", LastReportType: "status"},
 	}
 
 	msgs := []*messages.Message{
-		{From: "oak", Subject: "build failed", Timestamp: "2026-04-02T11:00:00Z"},
+		{From: "zone", Subject: "build failed", Timestamp: "2026-04-02T11:00:00Z"},
 		{From: "birch", Subject: "research complete", Timestamp: "2026-04-02T11:30:00Z"},
 	}
 
@@ -63,17 +63,17 @@ func TestBuildContextBlob_FullContext(t *testing.T) {
 	}
 
 	// Active agents present (excluding done/retired)
-	if !strings.Contains(blob, "oak") {
+	if !strings.Contains(blob, "zone") {
 		t.Error("expected blob to contain agent 'oak'")
 	}
 	if !strings.Contains(blob, "birch") {
 		t.Error("expected blob to contain agent 'birch'")
 	}
 	// Done/retired excluded
-	if strings.Contains(blob, "elm") {
+	if strings.Contains(blob, "ratz") {
 		t.Error("expected blob to NOT contain done agent 'elm'")
 	}
-	if strings.Contains(blob, "pine") {
+	if strings.Contains(blob, "chip") {
 		t.Error("expected blob to NOT contain retired agent 'pine'")
 	}
 
@@ -229,12 +229,12 @@ func TestBuildContextBlob_PartialFailure_SessionError(t *testing.T) {
 	blob, err := BuildContextBlob("fake-root", "root-agent",
 		WithAgentLister(func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+				{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 			}, nil
 		}),
 		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
 			return []*messages.Message{
-				{From: "oak", Subject: "hello", Timestamp: "2026-04-02T11:00:00Z"},
+				{From: "zone", Subject: "hello", Timestamp: "2026-04-02T11:00:00Z"},
 			}, nil
 		}),
 		WithSessionLister(func(string, int) ([]Session, []string, error) {
@@ -248,7 +248,7 @@ func TestBuildContextBlob_PartialFailure_SessionError(t *testing.T) {
 	}
 
 	// Other sections should still render
-	if !strings.Contains(blob, "oak") {
+	if !strings.Contains(blob, "zone") {
 		t.Error("expected blob to contain agent 'oak' despite session error")
 	}
 	if !strings.Contains(blob, "hello") {
@@ -268,7 +268,7 @@ func TestBuildContextBlob_PartialFailure_AgentError(t *testing.T) {
 		}),
 		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
 			return []*messages.Message{
-				{From: "oak", Subject: "hello", Timestamp: "2026-04-02T11:00:00Z"},
+				{From: "zone", Subject: "hello", Timestamp: "2026-04-02T11:00:00Z"},
 			}, nil
 		}),
 		WithSessionLister(func(string, int) ([]Session, []string, error) {
@@ -301,7 +301,7 @@ func TestBuildContextBlob_PartialFailure_InboxError(t *testing.T) {
 	blob, err := BuildContextBlob("fake-root", "root-agent",
 		WithAgentLister(func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+				{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 			}, nil
 		}),
 		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
@@ -320,7 +320,7 @@ func TestBuildContextBlob_PartialFailure_InboxError(t *testing.T) {
 	}
 
 	// Other sections render
-	if !strings.Contains(blob, "oak") {
+	if !strings.Contains(blob, "zone") {
 		t.Error("expected blob to contain agent 'oak' despite inbox error")
 	}
 	if !strings.Contains(blob, "sess-1") {
@@ -380,7 +380,7 @@ func TestBuildContextBlob_TimelineBetweenSections(t *testing.T) {
 	blob, err := BuildContextBlob("fake-root", "root-agent",
 		WithAgentLister(func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+				{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 			}, nil
 		}),
 		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
@@ -490,7 +490,7 @@ func TestBuildContextBlob_TimelineError(t *testing.T) {
 	blob, err := BuildContextBlob("fake-root", "root-agent",
 		WithAgentLister(func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+				{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 			}, nil
 		}),
 		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
@@ -512,7 +512,7 @@ func TestBuildContextBlob_TimelineError(t *testing.T) {
 	}
 
 	// Other sections still render
-	if !strings.Contains(blob, "oak") {
+	if !strings.Contains(blob, "zone") {
 		t.Error("expected blob to contain agent 'oak' despite timeline error")
 	}
 	if !strings.Contains(blob, "sess-1") {
@@ -627,7 +627,7 @@ func budgetTestDeps(
 
 func TestBuildContextBlob_BudgetGenerousNoDifference(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+		{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 	}
 	timeline := []TimelineEntry{
 		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Setup complete"},
@@ -663,7 +663,7 @@ func TestBuildContextBlob_BudgetGenerousNoDifference(t *testing.T) {
 
 func TestBuildContextBlob_BudgetOmitsOldestSessions(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+		{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 	}
 	timeline := []TimelineEntry{}
 	sessions := []Session{
@@ -715,7 +715,7 @@ func TestBuildContextBlob_BudgetOmitsOldestSessions(t *testing.T) {
 
 func TestBuildContextBlob_BudgetTruncatesTimeline(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+		{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 	}
 	// Create a long timeline to ensure it gets truncated.
 	var timeline []TimelineEntry
@@ -761,7 +761,7 @@ func TestBuildContextBlob_BudgetTruncatesTimeline(t *testing.T) {
 
 func TestBuildContextBlob_BudgetActiveStateOnly(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+		{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 	}
 	timeline := []TimelineEntry{
 		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Setup complete"},
@@ -1010,7 +1010,7 @@ func TestBuildContextBlob_BudgetZeroValueUsesDefault(t *testing.T) {
 
 func TestBuildContextBlob_BudgetIncludesFooter(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+		{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 	}
 	timeline := []TimelineEntry{
 		{Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC), Summary: "Setup complete"},
@@ -1047,7 +1047,7 @@ func TestBuildContextBlob_PersistentKnowledge_Rendered(t *testing.T) {
 	blob, err := BuildContextBlob("fake-root", "root-agent",
 		WithAgentLister(func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+				{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 			}, nil
 		}),
 		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
@@ -1133,7 +1133,7 @@ func TestBuildContextBlob_PersistentKnowledge_Error_ContinuesWithOtherSections(t
 	blob, err := BuildContextBlob("fake-root", "root-agent",
 		WithAgentLister(func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+				{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 			}, nil
 		}),
 		WithMessageLister(func(string, string, string) ([]*messages.Message, error) {
@@ -1156,7 +1156,7 @@ func TestBuildContextBlob_PersistentKnowledge_Error_ContinuesWithOtherSections(t
 	}
 
 	// Other sections still render
-	if !strings.Contains(blob, "oak") {
+	if !strings.Contains(blob, "zone") {
 		t.Error("expected blob to contain agent 'oak' despite PK error")
 	}
 	if !strings.Contains(blob, "sess-001") {
@@ -1171,7 +1171,7 @@ func TestBuildContextBlob_PersistentKnowledge_Error_ContinuesWithOtherSections(t
 
 func TestBuildContextBlob_BudgetPersistentKnowledge_SecondPriority(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "oak", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
+		{Name: "zone", Type: "engineer", Family: "eng", Status: "active", LastReportType: "status"},
 	}
 	timeline := []TimelineEntry{}
 	sessions := []Session{

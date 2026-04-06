@@ -96,14 +96,14 @@ func resolveMergeDeps() *mergeDeps {
 }
 
 func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate bool, dryRun bool) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	callerName := deps.getenv("DENDRA_AGENT_IDENTITY")
+	callerName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if callerName == "" {
-		return fmt.Errorf("DENDRA_AGENT_IDENTITY environment variable is not set")
+		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set")
 	}
 
 	// Precondition 1: Agent exists

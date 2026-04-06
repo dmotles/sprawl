@@ -8,10 +8,10 @@ import (
 
 // PromptsDir returns the path to the prompts directory for a given agent.
 func PromptsDir(dendraRoot, agentName string) string {
-	return filepath.Join(dendraRoot, ".dendra", "agents", agentName, "prompts")
+	return filepath.Join(dendraRoot, ".sprawl", "agents", agentName, "prompts")
 }
 
-// WritePromptFile writes a prompt to .dendra/agents/{agentName}/prompts/{id}.md
+// WritePromptFile writes a prompt to .sprawl/agents/{agentName}/prompts/{id}.md
 // and returns the absolute path to the file.
 func WritePromptFile(dendraRoot, agentName, id, content string) (string, error) {
 	dir := PromptsDir(dendraRoot, agentName)

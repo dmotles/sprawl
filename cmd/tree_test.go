@@ -65,7 +65,7 @@ func newTestTreeDeps(t *testing.T, agents []*state.AgentState, rootName, namespa
 			},
 		},
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/fake/dendra/root"
 			}
 			return ""
@@ -80,10 +80,10 @@ func TestTree_MissingDendraRoot(t *testing.T) {
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -102,26 +102,26 @@ func TestTree_EmptyTree(t *testing.T) {
 }
 
 func TestTree_RootOnly(t *testing.T) {
-	deps := newTestTreeDeps(t, nil, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, nil, "neo", tmux.DefaultNamespace)
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := buf.String()
-	expected := "sensei (root, active, alive)\n"
+	expected := "neo (root, active, alive)\n"
 	if out != expected {
 		t.Errorf("output mismatch\ngot:  %q\nwant: %q", out, expected)
 	}
 }
 
 func TestTree_RootWithChildren(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
-		{Name: "elm", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "elm"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
+		{Name: "ratz", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "ratz"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
@@ -131,25 +131,25 @@ func TestTree_RootWithChildren(t *testing.T) {
 	out := buf.String()
 
 	// Expect box-drawing tree with children sorted alphabetically.
-	if !strings.Contains(out, "sensei") {
-		t.Errorf("output should contain root 'sensei', got:\n%s", out)
+	if !strings.Contains(out, "neo") {
+		t.Errorf("output should contain root 'neo', got:\n%s", out)
 	}
-	if !strings.Contains(out, "├── ash") {
-		t.Errorf("output should contain '├── ash', got:\n%s", out)
+	if !strings.Contains(out, "├── finn") {
+		t.Errorf("output should contain '├── finn', got:\n%s", out)
 	}
-	if !strings.Contains(out, "└── elm") {
-		t.Errorf("output should contain '└── elm', got:\n%s", out)
+	if !strings.Contains(out, "└── ratz") {
+		t.Errorf("output should contain '└── ratz', got:\n%s", out)
 	}
 }
 
 func TestTree_DeepNesting(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
-	grandchildSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei├ash")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
+	grandchildSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo├finn")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash", TreePath: "sensei├ash"},
-		{Name: "bud", Type: "engineer", Family: "engineering", Parent: "ash", Status: "active", TmuxSession: grandchildSession, TmuxWindow: "bud", TreePath: "sensei├ash├bud"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn", TreePath: "neo├finn"},
+		{Name: "bud", Type: "engineer", Family: "engineering", Parent: "finn", Status: "active", TmuxSession: grandchildSession, TmuxWindow: "bud", TreePath: "neo├finn├bud"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
@@ -158,12 +158,12 @@ func TestTree_DeepNesting(t *testing.T) {
 	}
 	out := buf.String()
 
-	// 3 levels: root → ash → bud. Verify prefix propagation with │.
-	if !strings.Contains(out, "sensei") {
-		t.Errorf("output should contain 'sensei', got:\n%s", out)
+	// 3 levels: root → finn → bud. Verify prefix propagation with │.
+	if !strings.Contains(out, "neo") {
+		t.Errorf("output should contain 'neo', got:\n%s", out)
 	}
-	if !strings.Contains(out, "ash") {
-		t.Errorf("output should contain 'ash', got:\n%s", out)
+	if !strings.Contains(out, "finn") {
+		t.Errorf("output should contain 'finn', got:\n%s", out)
 	}
 	if !strings.Contains(out, "bud") {
 		t.Errorf("output should contain 'bud', got:\n%s", out)
@@ -177,41 +177,41 @@ func TestTree_DeepNesting(t *testing.T) {
 			break
 		}
 	}
-	// If ash is the last (only) child of sensei, the prefix for bud would use spaces, not │.
-	// But if ash is the only child, └── is used, and bud's prefix has spaces.
-	// Either way, bud should be further indented than ash.
+	// If finn is the last (only) child of neo, the prefix for bud would use spaces, not │.
+	// But if finn is the only child, └── is used, and bud's prefix has spaces.
+	// Either way, bud should be further indented than finn.
 	budLine := ""
-	ashLine := ""
+	finnLine := ""
 	for _, line := range lines {
 		if strings.Contains(line, "bud") {
 			budLine = line
 		}
-		if strings.Contains(line, "ash") {
-			ashLine = line
+		if strings.Contains(line, "finn") {
+			finnLine = line
 		}
 	}
 	if budLine == "" {
 		t.Fatalf("bud line not found in output:\n%s", out)
 	}
-	if ashLine == "" {
-		t.Fatalf("ash line not found in output:\n%s", out)
+	if finnLine == "" {
+		t.Fatalf("finn line not found in output:\n%s", out)
 	}
 	_ = foundPipe
-	// Verify bud is indented deeper than ash.
+	// Verify bud is indented deeper than finn.
 	budIndent := len(budLine) - len(strings.TrimLeft(budLine, " │├└─"))
-	ashIndent := len(ashLine) - len(strings.TrimLeft(ashLine, " │├└─"))
-	if budIndent <= ashIndent {
-		t.Errorf("bud should be indented deeper than ash.\nash: %q\nbud: %q", ashLine, budLine)
+	finnIndent := len(finnLine) - len(strings.TrimLeft(finnLine, " │├└─"))
+	if budIndent <= finnIndent {
+		t.Errorf("bud should be indented deeper than finn.\nfinn: %q\nbud: %q", finnLine, budLine)
 	}
 }
 
 func TestTree_Orphans(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
-		{Name: "oak", Type: "engineer", Family: "engineering", Parent: "ghost", Status: "active", TmuxSession: childSession, TmuxWindow: "oak"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
+		{Name: "zone", Type: "engineer", Family: "engineering", Parent: "ghost", Status: "active", TmuxSession: childSession, TmuxWindow: "zone"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
@@ -223,17 +223,17 @@ func TestTree_Orphans(t *testing.T) {
 	if !strings.Contains(out, "orphan") {
 		t.Errorf("output should contain orphan section, got:\n%s", out)
 	}
-	if !strings.Contains(out, "oak") {
-		t.Errorf("output should contain orphan agent 'oak', got:\n%s", out)
+	if !strings.Contains(out, "zone") {
+		t.Errorf("output should contain orphan agent 'zone', got:\n%s", out)
 	}
 }
 
 func TestTree_TerminalOmitsLiveness(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "done", TmuxSession: childSession, TmuxWindow: "ash"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "done", TmuxSession: childSession, TmuxWindow: "finn"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
@@ -242,9 +242,9 @@ func TestTree_TerminalOmitsLiveness(t *testing.T) {
 	}
 	out := buf.String()
 
-	// Find the ash line — it should NOT contain "alive" or "DEAD".
+	// Find the finn line — it should NOT contain "alive" or "DEAD".
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "ash") {
+		if strings.Contains(line, "finn") {
 			if strings.Contains(line, "alive") || strings.Contains(line, "DEAD") {
 				t.Errorf("terminal agent should not show liveness, got line: %q", line)
 			}
@@ -257,13 +257,13 @@ func TestTree_TerminalOmitsLiveness(t *testing.T) {
 }
 
 func TestTree_DeadAgent(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
-	// Mark ash's window as NOT alive.
-	deps.observeDeps.TmuxRunner.(*treeMockRunner).windows[childSession+":ash"] = false
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
+	// Mark finn's window as NOT alive.
+	deps.observeDeps.TmuxRunner.(*treeMockRunner).windows[childSession+":finn"] = false
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
@@ -273,7 +273,7 @@ func TestTree_DeadAgent(t *testing.T) {
 	out := buf.String()
 
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "ash") {
+		if strings.Contains(line, "finn") {
 			if !strings.Contains(line, "DEAD") {
 				t.Errorf("dead agent should show 'DEAD', got line: %q", line)
 			}
@@ -284,9 +284,9 @@ func TestTree_DeadAgent(t *testing.T) {
 
 func TestTree_TmuxUnavailable(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: "whatever", TmuxWindow: "ash"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: "whatever", TmuxWindow: "finn"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 	// Set TmuxRunner to nil to simulate tmux unavailable.
 	deps.observeDeps.TmuxRunner = nil
 
@@ -298,7 +298,7 @@ func TestTree_TmuxUnavailable(t *testing.T) {
 	out := buf.String()
 
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "ash") {
+		if strings.Contains(line, "finn") {
 			if !strings.Contains(line, "?") {
 				t.Errorf("agent with no tmux should show '?', got line: %q", line)
 			}
@@ -308,11 +308,11 @@ func TestTree_TmuxUnavailable(t *testing.T) {
 }
 
 func TestTree_JSON(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, true, "")
@@ -333,8 +333,8 @@ func TestTree_JSON(t *testing.T) {
 	}
 
 	// Verify root name.
-	if name, ok := result["name"].(string); !ok || name != "sensei" {
-		t.Errorf("JSON root name = %v, want 'sensei'", result["name"])
+	if name, ok := result["name"].(string); !ok || name != "neo" {
+		t.Errorf("JSON root name = %v, want 'neo'", result["name"])
 	}
 
 	// Verify children.
@@ -348,12 +348,12 @@ func TestTree_JSON(t *testing.T) {
 }
 
 func TestTree_JSON_WithOrphans(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
-		{Name: "oak", Type: "engineer", Family: "engineering", Parent: "ghost", Status: "active", TmuxSession: childSession, TmuxWindow: "oak"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
+		{Name: "zone", Type: "engineer", Family: "engineering", Parent: "ghost", Status: "active", TmuxSession: childSession, TmuxWindow: "zone"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, true, "")
@@ -381,36 +381,36 @@ func TestTree_JSON_WithOrphans(t *testing.T) {
 }
 
 func TestTree_RootFlag(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
-		{Name: "elm", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "elm"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
+		{Name: "ratz", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "ratz"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
-	err := runTree(deps, &buf, false, "ash")
+	err := runTree(deps, &buf, false, "finn")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := buf.String()
 
-	if !strings.Contains(out, "ash") {
-		t.Errorf("output should contain 'ash', got:\n%s", out)
+	if !strings.Contains(out, "finn") {
+		t.Errorf("output should contain 'finn', got:\n%s", out)
 	}
-	if strings.Contains(out, "elm") {
-		t.Errorf("output should NOT contain 'elm' when subtree root is 'ash', got:\n%s", out)
+	if strings.Contains(out, "ratz") {
+		t.Errorf("output should NOT contain 'ratz' when subtree root is 'finn', got:\n%s", out)
 	}
-	if strings.Contains(out, "sensei") {
-		t.Errorf("output should NOT contain 'sensei' when subtree root is 'ash', got:\n%s", out)
+	if strings.Contains(out, "neo") {
+		t.Errorf("output should NOT contain 'neo' when subtree root is 'finn', got:\n%s", out)
 	}
 }
 
 func TestTree_RootFlag_NotFound(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "nonexistent")
@@ -423,13 +423,13 @@ func TestTree_RootFlag_NotFound(t *testing.T) {
 }
 
 func TestTree_ChildrenSortedByName(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "elm", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "elm"},
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
-		{Name: "cedar", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "cedar"},
+		{Name: "ratz", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "ratz"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
+		{Name: "cedar", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "cedar"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
@@ -440,32 +440,32 @@ func TestTree_ChildrenSortedByName(t *testing.T) {
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
 
 	// Find positions of child names in output.
-	ashIdx, cedarIdx, elmIdx := -1, -1, -1
+	finnIdx, cedarIdx, ratzIdx := -1, -1, -1
 	for i, line := range lines {
-		if strings.Contains(line, "ash") {
-			ashIdx = i
+		if strings.Contains(line, "finn") {
+			finnIdx = i
 		}
 		if strings.Contains(line, "cedar") {
 			cedarIdx = i
 		}
-		if strings.Contains(line, "elm") {
-			elmIdx = i
+		if strings.Contains(line, "ratz") {
+			ratzIdx = i
 		}
 	}
-	if ashIdx == -1 || cedarIdx == -1 || elmIdx == -1 {
+	if finnIdx == -1 || cedarIdx == -1 || ratzIdx == -1 {
 		t.Fatalf("could not find all children in output:\n%s", out)
 	}
-	if !(ashIdx < cedarIdx && cedarIdx < elmIdx) { //nolint:staticcheck // QF1001: direct form is more readable
-		t.Errorf("children should be sorted alphabetically: ash(%d) < cedar(%d) < elm(%d)", ashIdx, cedarIdx, elmIdx)
+	if !(cedarIdx < finnIdx && finnIdx < ratzIdx) { //nolint:staticcheck // QF1001: direct form is more readable
+		t.Errorf("children should be sorted alphabetically: cedar(%d) < finn(%d) < ratz(%d)", cedarIdx, finnIdx, ratzIdx)
 	}
 }
 
 func TestTree_TypeFamilyLabel(t *testing.T) {
-	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "sensei")
+	childSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, "neo")
 	agents := []*state.AgentState{
-		{Name: "ash", Type: "engineer", Family: "engineering", Parent: "sensei", Status: "active", TmuxSession: childSession, TmuxWindow: "ash"},
+		{Name: "finn", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: childSession, TmuxWindow: "finn"},
 	}
-	deps := newTestTreeDeps(t, agents, "sensei", tmux.DefaultNamespace)
+	deps := newTestTreeDeps(t, agents, "neo", tmux.DefaultNamespace)
 
 	var buf bytes.Buffer
 	err := runTree(deps, &buf, false, "")
@@ -476,7 +476,7 @@ func TestTree_TypeFamilyLabel(t *testing.T) {
 
 	// Non-root agent should show type/family in label.
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "ash") {
+		if strings.Contains(line, "finn") {
 			if !strings.Contains(line, "engineer/engineering") {
 				t.Errorf("non-root agent should show type/family, got line: %q", line)
 			}

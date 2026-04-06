@@ -26,16 +26,16 @@ const (
 	retryDelay             = 5 * time.Second
 )
 
-// rootSenseiTools is the set of tools available to the root sensei agent.
-var rootSenseiTools = []string{
+// rootTools is the set of tools available to the root agent.
+var rootTools = []string{
 	"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch",
 	"Agent", "Task", "TaskOutput", "TaskStop", "ToolSearch",
 	"Skill", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
 	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
 }
 
-// senseiLoopDeps holds all injectable dependencies for the sensei-loop command.
-type senseiLoopDeps struct {
+// rootLoopDeps holds all injectable dependencies for the root-loop command.
+type rootLoopDeps struct {
 	getenv                    func(string) string
 	findClaude                func() (string, error)
 	buildPrompt               func(agent.PromptConfig) string
@@ -58,9 +58,9 @@ type senseiLoopDeps struct {
 	readTimeline              func(dendraRoot string) ([]memory.TimelineEntry, error)
 }
 
-// defaultSenseiLoopDeps wires real implementations.
-func defaultSenseiLoopDeps() *senseiLoopDeps {
-	return &senseiLoopDeps{
+// defaultRootLoopDeps wires real implementations.
+func defaultRootLoopDeps() *rootLoopDeps {
+	return &rootLoopDeps{
 		getenv:      os.Getenv,
 		findClaude:  func() (string, error) { return exec.LookPath("claude") },
 		buildPrompt: agent.BuildRootPrompt,
@@ -92,13 +92,13 @@ func defaultSenseiLoopDeps() *senseiLoopDeps {
 	}
 }
 
-var senseiLoopCmd = &cobra.Command{
-	Use:    "sensei-loop",
-	Short:  "Run the sensei lifecycle loop (internal use)",
+var rootLoopCmd = &cobra.Command{
+	Use:    "root-loop",
+	Short:  "Run the root agent lifecycle loop (internal use)",
 	Hidden: true,
 	Args:   cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		deps := defaultSenseiLoopDeps()
+		deps := defaultRootLoopDeps()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -110,22 +110,22 @@ var senseiLoopCmd = &cobra.Command{
 			cancel()
 		}()
 
-		return runSenseiLoop(ctx, deps)
+		return runRootLoop(ctx, deps)
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(senseiLoopCmd)
+	rootCmd.AddCommand(rootLoopCmd)
 }
 
-// runSenseiLoop is the main loop logic for the sensei-loop command.
-func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+// runRootLoop is the main loop logic for the root-loop command.
+func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	namespace := deps.getenv("DENDRA_NAMESPACE")
+	namespace := deps.getenv("SPRAWL_NAMESPACE")
 	rootName := tmux.DefaultRootName
 
 	claudePath, err := deps.findClaude()
@@ -147,13 +147,13 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 		if prevSessionID != "" {
 			homeDir, homeErr := deps.userHomeDir()
 			if homeErr != nil {
-				fmt.Fprintf(deps.stdout, "[sensei-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
+				fmt.Fprintf(deps.stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
 			} else {
 				summarized, sumErr := deps.autoSummarize(ctx, dendraRoot, dendraRoot, homeDir, prevSessionID, deps.newCLIInvoker())
 				if sumErr != nil {
-					fmt.Fprintf(deps.stdout, "[sensei-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
+					fmt.Fprintf(deps.stdout, "[root-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
 				} else if summarized {
-					fmt.Fprintf(deps.stdout, "[sensei-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
+					fmt.Fprintf(deps.stdout, "[root-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
 					runConsolidationPipeline(ctx, deps, dendraRoot)
 				}
 			}
@@ -162,7 +162,7 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 		// 1. Build context blob (best-effort).
 		contextBlob, ctxErr := deps.buildContextBlob(dendraRoot, rootName)
 		if ctxErr != nil {
-			fmt.Fprintf(deps.stdout, "[sensei-loop] warning: context blob partial or failed: %v\n", ctxErr)
+			fmt.Fprintf(deps.stdout, "[root-loop] warning: context blob partial or failed: %v\n", ctxErr)
 		}
 
 		// 2. Build system prompt.
@@ -170,7 +170,7 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 			RootName:    rootName,
 			AgentCLI:    "claude-code",
 			ContextBlob: contextBlob,
-			TestMode:    deps.getenv("DENDRA_TEST_MODE") == "1",
+			TestMode:    deps.getenv("SPRAWL_TEST_MODE") == "1",
 		})
 		promptPath, err := deps.writeSystemPrompt(dendraRoot, rootName, systemPrompt)
 		if err != nil {
@@ -190,8 +190,8 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 		sessionName := tmux.RootSessionName(namespace, rootName)
 		opts := claude.LaunchOpts{
 			SystemPromptFile: promptPath,
-			Tools:            rootSenseiTools,
-			AllowedTools:     rootSenseiTools,
+			Tools:            rootTools,
+			AllowedTools:     rootTools,
 			DisallowedTools:  []string{"Edit", "Write", "NotebookEdit"},
 			Name:             sessionName,
 			Model:            "opus[1m]",
@@ -199,7 +199,7 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 		}
 		args := opts.BuildArgs()
 
-		fmt.Fprintf(deps.stdout, "[sensei-loop] starting session %s\n", sessionID)
+		fmt.Fprintf(deps.stdout, "[root-loop] starting session %s\n", sessionID)
 
 		// 5. Run claude interactively (blocks until exit).
 		runErr := deps.runCommand(claudePath, args)
@@ -215,7 +215,7 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 			var exitErr *exec.ExitError
 			if errors.As(runErr, &exitErr) {
 				// Claude ran but exited non-zero — treat as normal exit.
-				fmt.Fprintf(deps.stdout, "[sensei-loop] claude exited with code %d\n", exitErr.ExitCode())
+				fmt.Fprintf(deps.stdout, "[root-loop] claude exited with code %d\n", exitErr.ExitCode())
 				consecutiveFailures = 0
 			} else {
 				// Failed to start — retry logic.
@@ -223,7 +223,7 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 				if consecutiveFailures >= maxConsecutiveFailures {
 					return fmt.Errorf("claude failed to start %d consecutive times, giving up: %w", maxConsecutiveFailures, runErr)
 				}
-				fmt.Fprintf(deps.stdout, "[sensei-loop] claude failed to start, retrying in %v (%d/%d): %v\n",
+				fmt.Fprintf(deps.stdout, "[root-loop] claude failed to start, retrying in %v (%d/%d): %v\n",
 					retryDelay, consecutiveFailures, maxConsecutiveFailures, runErr)
 				deps.sleepFunc(retryDelay)
 				continue
@@ -233,14 +233,14 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 		}
 
 		// 6. Housekeeping: check handoff signal.
-		handoffPath := filepath.Join(dendraRoot, ".dendra", "memory", "handoff-signal")
+		handoffPath := filepath.Join(dendraRoot, ".sprawl", "memory", "handoff-signal")
 		if _, readErr := deps.readFile(handoffPath); readErr == nil {
 			_ = deps.removeFile(handoffPath)
-			fmt.Fprintf(deps.stdout, "[sensei-loop] handoff signal detected, restarting\n")
+			fmt.Fprintf(deps.stdout, "[root-loop] handoff signal detected, restarting\n")
 
 			runConsolidationPipeline(ctx, deps, dendraRoot)
 		} else {
-			fmt.Fprintf(deps.stdout, "[sensei-loop] session ended, restarting\n")
+			fmt.Fprintf(deps.stdout, "[root-loop] session ended, restarting\n")
 		}
 
 		// 7. Loop back to step 1.
@@ -249,21 +249,21 @@ func runSenseiLoop(ctx context.Context, deps *senseiLoopDeps) error {
 
 // runConsolidationPipeline runs timeline consolidation and persistent knowledge
 // update. Both steps are best-effort: failures are logged as warnings.
-func runConsolidationPipeline(ctx context.Context, deps *senseiLoopDeps, dendraRoot string) {
+func runConsolidationPipeline(ctx context.Context, deps *rootLoopDeps, dendraRoot string) {
 	if err := deps.consolidate(ctx, dendraRoot, deps.newCLIInvoker(), nil, nil); err != nil {
-		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: consolidation failed: %v\n", err)
+		fmt.Fprintf(deps.stdout, "[root-loop] warning: consolidation failed: %v\n", err)
 	}
 
 	var sessionSummary string
 	if sessions, bodies, err := deps.listRecentSessions(dendraRoot, 1); err != nil {
-		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading latest session for persistent knowledge: %v\n", err)
+		fmt.Fprintf(deps.stdout, "[root-loop] warning: reading latest session for persistent knowledge: %v\n", err)
 	} else if len(sessions) > 0 && len(bodies) > 0 {
 		sessionSummary = bodies[0]
 	}
 
 	var timelineBullets string
 	if entries, err := deps.readTimeline(dendraRoot); err != nil {
-		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: reading timeline for persistent knowledge: %v\n", err)
+		fmt.Fprintf(deps.stdout, "[root-loop] warning: reading timeline for persistent knowledge: %v\n", err)
 	} else {
 		var tlb strings.Builder
 		for _, e := range entries {
@@ -273,6 +273,6 @@ func runConsolidationPipeline(ctx context.Context, deps *senseiLoopDeps, dendraR
 	}
 
 	if err := deps.updatePersistentKnowledge(ctx, dendraRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets); err != nil {
-		fmt.Fprintf(deps.stdout, "[sensei-loop] warning: persistent knowledge update failed: %v\n", err)
+		fmt.Fprintf(deps.stdout, "[root-loop] warning: persistent knowledge update failed: %v\n", err)
 	}
 }

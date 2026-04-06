@@ -14,7 +14,7 @@ import (
 type initDeps struct {
 	tmuxRunner     tmux.Runner
 	claudeLauncher agent.Launcher
-	findDendra     func() (string, error)
+	findSprawl     func() (string, error)
 	getenv         func(string) string
 }
 
@@ -62,7 +62,7 @@ func resolveDeps() (*initDeps, error) {
 	return &initDeps{
 		tmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
 		claudeLauncher: claudeLauncher,
-		findDendra:     FindDendraBin,
+		findSprawl:     FindSprawlBin,
 		getenv:         os.Getenv,
 	}, nil
 }
@@ -71,7 +71,7 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 	rootName := tmux.DefaultRootName
 	// Determine namespace: explicit flag > env var > auto-pick
 	if namespace == "" {
-		namespace = deps.getenv("DENDRA_NAMESPACE")
+		namespace = deps.getenv("SPRAWL_NAMESPACE")
 	}
 	if namespace == "" {
 		namespace = tmux.PickNamespace(deps.tmuxRunner)
@@ -93,27 +93,27 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 		return fmt.Errorf("getting current directory: %w", err)
 	}
 
-	dendraPath, err := deps.findDendra()
+	dendraPath, err := deps.findSprawl()
 	if err != nil {
 		return fmt.Errorf("finding dendra binary: %w", err)
 	}
 
-	shellCmd := tmux.BuildShellCmd(dendraPath, []string{"sensei-loop"})
+	shellCmd := tmux.BuildShellCmd(dendraPath, []string{"root-loop"})
 
 	// The root agent's tree path is just its name.
 	treePath := rootName
 
 	env := map[string]string{
-		"DENDRA_AGENT_IDENTITY": rootName,
-		"DENDRA_ROOT":           cwd,
-		"DENDRA_NAMESPACE":      namespace,
-		"DENDRA_TREE_PATH":      treePath,
+		"SPRAWL_AGENT_IDENTITY": rootName,
+		"SPRAWL_ROOT":           cwd,
+		"SPRAWL_NAMESPACE":      namespace,
+		"SPRAWL_TREE_PATH":      treePath,
 	}
-	if v := deps.getenv("DENDRA_BIN"); v != "" {
-		env["DENDRA_BIN"] = v
+	if v := deps.getenv("SPRAWL_BIN"); v != "" {
+		env["SPRAWL_BIN"] = v
 	}
-	if v := deps.getenv("DENDRA_TEST_MODE"); v != "" {
-		env["DENDRA_TEST_MODE"] = v
+	if v := deps.getenv("SPRAWL_TEST_MODE"); v != "" {
+		env["SPRAWL_TEST_MODE"] = v
 	}
 
 	// Persist namespace and root name for other commands to read.

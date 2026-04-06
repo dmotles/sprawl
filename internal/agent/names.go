@@ -7,23 +7,23 @@ import (
 	"path/filepath"
 )
 
-// EngineerNames contains tree-themed names for engineer agents.
+// EngineerNames contains cyberpunk hacker/runner-themed names for engineer agents.
 var EngineerNames = []string{
-	"ash", "elm", "fig", "oak", "yew", "palm", "pine", "teak",
-	"alder", "aspen", "beech", "birch", "cedar", "hazel",
-	"holly", "larch", "maple", "rowan", "spruce", "walnut",
+	"finn", "ratz", "zone", "chip", "byte", "flux", "grid",
+	"hex", "link", "node", "ping", "riot", "sync", "volt", "wire",
+	"ajax", "blur", "dash", "edge",
 }
 
-// ResearcherNames contains river/water-themed names for researcher agents.
+// ResearcherNames contains cyberpunk decker/netrunner-themed names for researcher agents.
 var ResearcherNames = []string{
-	"brook", "creek", "delta", "fjord", "lake", "marsh", "rapids", "reed",
-	"rill", "shoal", "spring", "strait", "tide", "cove", "bay",
+	"ghost", "trace", "query", "probe", "recon", "scout", "cipher",
+	"prism", "pulse", "signal", "vector", "index", "logic", "orbit",
 }
 
-// ManagerNames contains mountain/ridge-themed names for manager agents.
+// ManagerNames contains cyberpunk fixer/operator-themed names for manager agents.
 var ManagerNames = []string{
-	"summit", "ridge", "peak", "bluff", "cliff", "crest", "mesa", "butte",
-	"gorge", "ledge", "vale", "glen", "knoll", "cairn", "sierra",
+	"tower", "forge", "bastion", "citadel", "command",
+	"axis", "vault", "bridge", "cortex", "matrix", "prime", "zenith", "apex",
 }
 
 // NamePools maps agent type to its name pool.
@@ -37,11 +37,11 @@ var NamePools = map[string][]string{
 
 // FallbackPrefix maps agent type to its overflow name prefix.
 var FallbackPrefix = map[string]string{
-	"engineer":    "tree",
-	"researcher":  "river",
-	"manager":     "peak",
-	"tester":      "tree",
-	"code-merger": "tree",
+	"engineer":    "runner",
+	"researcher":  "decker",
+	"manager":     "fixer",
+	"tester":      "runner",
+	"code-merger": "runner",
 }
 
 // NamePool is the union of all partitioned pools, preserved for backward compatibility.
@@ -55,7 +55,7 @@ var NamePool = func() []string {
 
 // AllocateName returns the first unused name from the pool for the given agent type.
 // A name is considered "used" if a file named <name>.json exists in stateDir.
-// If the typed pool is exhausted, it falls back to numeric suffix names (e.g. "tree-1").
+// If the typed pool is exhausted, it falls back to numeric suffix names (e.g. "runner-1").
 func AllocateName(stateDir string, agentType string) (string, error) {
 	pool, ok := NamePools[agentType]
 	if !ok {

@@ -22,7 +22,7 @@ func TestSaveAndLoadAgent(t *testing.T) {
 		CreatedAt:   "2026-03-30T12:00:00Z",
 		SessionID:   "dendra-frank",
 		Subagent:    true,
-		TreePath:    "sensei├frank",
+		TreePath:    "neo├frank",
 	}
 
 	if err := SaveAgent(dir, agent); err != nil {
@@ -113,13 +113,13 @@ func TestWriteAndReadRootName(t *testing.T) {
 		t.Errorf("ReadRootName before write = %q, want empty", rn)
 	}
 
-	if err := WriteRootName(dir, "sensei"); err != nil {
+	if err := WriteRootName(dir, "neo"); err != nil {
 		t.Fatalf("WriteRootName: %v", err)
 	}
 
 	rn := ReadRootName(dir)
-	if rn != "sensei" {
-		t.Errorf("ReadRootName = %q, want %q", rn, "sensei")
+	if rn != "neo" {
+		t.Errorf("ReadRootName = %q, want %q", rn, "neo")
 	}
 }
 
@@ -214,12 +214,12 @@ func TestWriteSystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	content := "You are a helpful agent.\nDo good work."
 
-	path, err := WriteSystemPrompt(dir, "ash", content)
+	path, err := WriteSystemPrompt(dir, "finn", content)
 	if err != nil {
 		t.Fatalf("WriteSystemPrompt: %v", err)
 	}
 
-	expected := filepath.Join(dir, ".dendra", "agents", "ash", "SYSTEM.md")
+	expected := filepath.Join(dir, ".sprawl", "agents", "finn", "SYSTEM.md")
 	if path != expected {
 		t.Errorf("path = %q, want %q", path, expected)
 	}

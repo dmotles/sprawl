@@ -48,12 +48,12 @@ delivered immediately on the next poll cycle.`,
 }
 
 func runPoke(deps *pokeDeps, agentName, message string) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	pokePath := filepath.Join(dendraRoot, ".dendra", "agents", agentName+".poke")
+	pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".poke")
 	if err := deps.writeFile(pokePath, []byte(message), 0o644); err != nil {
 		return fmt.Errorf("writing poke file: %w", err)
 	}

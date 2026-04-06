@@ -9,28 +9,27 @@ import (
 )
 
 const (
-	DefaultNamespace = "🌳"
-	DefaultRootName  = "sensei"
+	DefaultNamespace = "⚡"
+	DefaultRootName  = "neo"
 	BranchSeparator  = "├"
-	RootWindowName   = "sensei"
+	RootWindowName   = "neo"
 )
 
-// NamespacePool is a curated list of tree/nature emojis used for auto-selecting
-// a unique namespace when running dendra init.
+// NamespacePool is a curated list of electric/cyberpunk emojis used for auto-selecting
+// a unique namespace when running sprawl init.
 var NamespacePool = []string{
-	"🌳", "🌲", "🌴", "🎋", "🎍", "🪴", "🌵", "🌾", "🍀", "☘️",
-	"🌿", "🍃", "🌱", "🪻", "🌸", "🌺", "🪷", "🌼", "🌻", "🏵️",
-	"🍁", "🍂", "🌊", "🗻", "🏔️",
+	"⚡", "🔮", "💠", "🌃", "💜", "🔷", "✴️", "💎", "🌆", "🛰️",
+	"🌐", "🔌", "💡", "🧿", "☄️",
 }
 
 // RootSessionName returns the tmux session name for the root agent.
-// Format: {namespace}{rootName} e.g. "🌳sensei"
+// Format: {namespace}{rootName} e.g. "⚡neo"
 func RootSessionName(namespace, rootName string) string {
 	return namespace + rootName
 }
 
 // ChildrenSessionName returns the tmux session name for a parent's children.
-// Format: {namespace}{treePath}├ e.g. "🌳sensei├" or "🌳sensei├ash├"
+// Format: {namespace}{treePath}├ e.g. "⚡neo├" or "⚡neo├ash├"
 func ChildrenSessionName(namespace, treePath string) string {
 	return namespace + treePath + BranchSeparator
 }

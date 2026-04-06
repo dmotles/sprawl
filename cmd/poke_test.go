@@ -35,7 +35,7 @@ func TestRunPoke_HappyPath(t *testing.T) {
 
 	deps := &pokeDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/tmp/test-root"
 			}
 			return ""
@@ -49,13 +49,13 @@ func TestRunPoke_HappyPath(t *testing.T) {
 		stdout: &stdout,
 	}
 
-	err := runPoke(deps, "palm", "Hey, you okay?")
+	err := runPoke(deps, "byte", "Hey, you okay?")
 	if err != nil {
 		t.Fatalf("runPoke error: %v", err)
 	}
 
 	// Verify file path
-	wantPath := "/tmp/test-root/.dendra/agents/palm.poke"
+	wantPath := "/tmp/test-root/.sprawl/agents/byte.poke"
 	if writtenPath != wantPath {
 		t.Errorf("writtenPath = %q, want %q", writtenPath, wantPath)
 	}
@@ -75,7 +75,7 @@ func TestRunPoke_HappyPath(t *testing.T) {
 	if !strings.Contains(output, "[poke]") {
 		t.Errorf("output should contain [poke], got: %q", output)
 	}
-	if !strings.Contains(output, "palm") {
+	if !strings.Contains(output, "byte") {
 		t.Errorf("output should contain agent name, got: %q", output)
 	}
 }
@@ -87,19 +87,19 @@ func TestRunPoke_MissingDendraRoot(t *testing.T) {
 		stdout:    &bytes.Buffer{},
 	}
 
-	err := runPoke(deps, "palm", "hello")
+	err := runPoke(deps, "byte", "hello")
 	if err == nil {
-		t.Fatal("expected error when DENDRA_ROOT is empty")
+		t.Fatal("expected error when SPRAWL_ROOT is empty")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
 func TestRunPoke_WriteFileFails(t *testing.T) {
 	deps := &pokeDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/tmp/test-root"
 			}
 			return ""
@@ -110,7 +110,7 @@ func TestRunPoke_WriteFileFails(t *testing.T) {
 		stdout: &bytes.Buffer{},
 	}
 
-	err := runPoke(deps, "palm", "hello")
+	err := runPoke(deps, "byte", "hello")
 	if err == nil {
 		t.Fatal("expected error when writeFile fails")
 	}

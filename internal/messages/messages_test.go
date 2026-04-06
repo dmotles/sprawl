@@ -17,7 +17,7 @@ import (
 
 func TestMessagesDir(t *testing.T) {
 	got := MessagesDir("/home/user/project")
-	want := "/home/user/project/.dendra/messages"
+	want := "/home/user/project/.sprawl/messages"
 	if got != want {
 		t.Errorf("MessagesDir() = %q, want %q", got, want)
 	}
@@ -1427,7 +1427,7 @@ func TestSend_WritesWakeFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create the agents directory so wake file can be written
-	agentsDir := filepath.Join(tmpDir, ".dendra", "agents")
+	agentsDir := filepath.Join(tmpDir, ".sprawl", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("creating agents dir: %v", err)
 	}
@@ -1453,7 +1453,7 @@ func TestSend_WakeFileOverwritten(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create the agents directory so wake file can be written
-	agentsDir := filepath.Join(tmpDir, ".dendra", "agents")
+	agentsDir := filepath.Join(tmpDir, ".sprawl", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("creating agents dir: %v", err)
 	}
@@ -1483,7 +1483,7 @@ func TestSend_WakeFileOverwritten(t *testing.T) {
 func TestSend_WakeFileIgnoresErrors(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Intentionally do NOT create .dendra/agents/ directory.
+	// Intentionally do NOT create .sprawl/agents/ directory.
 	// Send should still succeed; wake file write is best-effort.
 	err := Send(tmpDir, "alice", "bob", "subj", "body")
 	if err != nil {
@@ -1509,9 +1509,9 @@ func TestBroadcast_SendsToAllActiveAgents(t *testing.T) {
 		name   string
 		status string
 	}{
-		{"oak", "active"},
-		{"pine", "active"},
-		{"elm", "killed"},
+		{"zone", "active"},
+		{"chip", "active"},
+		{"ratz", "killed"},
 	}
 	for _, a := range agents {
 		if err := state.SaveAgent(tmpDir, &state.AgentState{
@@ -1530,8 +1530,8 @@ func TestBroadcast_SendsToAllActiveAgents(t *testing.T) {
 		t.Errorf("Broadcast() returned count %d, want 2", count)
 	}
 
-	// Verify oak and pine got messages
-	for _, name := range []string{"oak", "pine"} {
+	// Verify zone and chip got messages
+	for _, name := range []string{"zone", "chip"} {
 		msgs, err := Inbox(tmpDir, name)
 		if err != nil {
 			t.Fatalf("Inbox(%s) error: %v", name, err)
@@ -1546,13 +1546,13 @@ func TestBroadcast_SendsToAllActiveAgents(t *testing.T) {
 		}
 	}
 
-	// Verify elm (killed) did NOT get a message
-	msgs, err := Inbox(tmpDir, "elm")
+	// Verify ratz (killed) did NOT get a message
+	msgs, err := Inbox(tmpDir, "ratz")
 	if err != nil {
-		t.Fatalf("Inbox(elm) error: %v", err)
+		t.Fatalf("Inbox(ratz) error: %v", err)
 	}
 	if len(msgs) != 0 {
-		t.Errorf("expected 0 messages for killed agent elm, got %d", len(msgs))
+		t.Errorf("expected 0 messages for killed agent ratz, got %d", len(msgs))
 	}
 }
 
@@ -1560,7 +1560,7 @@ func TestBroadcast_ExcludesSender(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create 2 active agents, one of which is the sender
-	for _, name := range []string{"oak", "pine"} {
+	for _, name := range []string{"zone", "chip"} {
 		if err := state.SaveAgent(tmpDir, &state.AgentState{
 			Name:   name,
 			Status: "active",
@@ -1569,7 +1569,7 @@ func TestBroadcast_ExcludesSender(t *testing.T) {
 		}
 	}
 
-	count, err := Broadcast(tmpDir, "oak", "hello", "body")
+	count, err := Broadcast(tmpDir, "zone", "hello", "body")
 	if err != nil {
 		t.Fatalf("Broadcast() unexpected error: %v", err)
 	}
@@ -1577,22 +1577,22 @@ func TestBroadcast_ExcludesSender(t *testing.T) {
 		t.Errorf("Broadcast() returned count %d, want 1 (should exclude sender)", count)
 	}
 
-	// oak should NOT have a message in inbox
-	oakMsgs, err := Inbox(tmpDir, "oak")
+	// zone should NOT have a message in inbox
+	zoneMsgs, err := Inbox(tmpDir, "zone")
 	if err != nil {
-		t.Fatalf("Inbox(oak) error: %v", err)
+		t.Fatalf("Inbox(zone) error: %v", err)
 	}
-	if len(oakMsgs) != 0 {
-		t.Errorf("sender oak should not receive broadcast, got %d messages", len(oakMsgs))
+	if len(zoneMsgs) != 0 {
+		t.Errorf("sender zone should not receive broadcast, got %d messages", len(zoneMsgs))
 	}
 
-	// pine should have the message
-	pineMsgs, err := Inbox(tmpDir, "pine")
+	// chip should have the message
+	chipMsgs, err := Inbox(tmpDir, "chip")
 	if err != nil {
-		t.Fatalf("Inbox(pine) error: %v", err)
+		t.Fatalf("Inbox(chip) error: %v", err)
 	}
-	if len(pineMsgs) != 1 {
-		t.Errorf("expected 1 message for pine, got %d", len(pineMsgs))
+	if len(chipMsgs) != 1 {
+		t.Errorf("expected 1 message for chip, got %d", len(chipMsgs))
 	}
 }
 
@@ -1635,7 +1635,7 @@ func TestBroadcast_WritesWakeFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create 2 active agents
-	for _, name := range []string{"oak", "pine"} {
+	for _, name := range []string{"zone", "chip"} {
 		if err := state.SaveAgent(tmpDir, &state.AgentState{
 			Name:   name,
 			Status: "active",
@@ -1649,8 +1649,8 @@ func TestBroadcast_WritesWakeFiles(t *testing.T) {
 		t.Fatalf("Broadcast() unexpected error: %v", err)
 	}
 
-	agentsDir := filepath.Join(tmpDir, ".dendra", "agents")
-	for _, name := range []string{"oak", "pine"} {
+	agentsDir := filepath.Join(tmpDir, ".sprawl", "agents")
+	for _, name := range []string{"zone", "chip"} {
 		wakePath := filepath.Join(agentsDir, name+".wake")
 		data, err := os.ReadFile(wakePath)
 		if err != nil {

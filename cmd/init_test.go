@@ -92,7 +92,7 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 	runner := &mockRunner{hasSession: true}
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	err := runInit(deps, tmux.DefaultNamespace, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -116,7 +116,7 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	// Override Getwd by using a known cwd
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
@@ -134,14 +134,14 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 	if runner.newSessionWithWinWin != tmux.RootWindowName {
 		t.Errorf("NewSessionWithWindow window = %q, want %q", runner.newSessionWithWinWin, tmux.RootWindowName)
 	}
-	if runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"] != tmux.DefaultRootName {
-		t.Errorf("DENDRA_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWinEnv["DENDRA_AGENT_IDENTITY"], tmux.DefaultRootName)
+	if runner.newSessionWithWinEnv["SPRAWL_AGENT_IDENTITY"] != tmux.DefaultRootName {
+		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q", runner.newSessionWithWinEnv["SPRAWL_AGENT_IDENTITY"], tmux.DefaultRootName)
 	}
-	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != tmux.DefaultNamespace {
-		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], tmux.DefaultNamespace)
+	if runner.newSessionWithWinEnv["SPRAWL_NAMESPACE"] != tmux.DefaultNamespace {
+		t.Errorf("SPRAWL_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["SPRAWL_NAMESPACE"], tmux.DefaultNamespace)
 	}
-	if runner.newSessionWithWinEnv["DENDRA_TREE_PATH"] != tmux.DefaultRootName {
-		t.Errorf("DENDRA_TREE_PATH = %q, want %q", runner.newSessionWithWinEnv["DENDRA_TREE_PATH"], tmux.DefaultRootName)
+	if runner.newSessionWithWinEnv["SPRAWL_TREE_PATH"] != tmux.DefaultRootName {
+		t.Errorf("SPRAWL_TREE_PATH = %q, want %q", runner.newSessionWithWinEnv["SPRAWL_TREE_PATH"], tmux.DefaultRootName)
 	}
 	if !runner.attachCalled {
 		t.Error("expected Attach to be called after NewSession")
@@ -167,7 +167,7 @@ func TestRunInit_CustomNamespace(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -176,16 +176,16 @@ func TestRunInit_CustomNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Root name is always DefaultRootName ("sensei")
+	// Root name is always DefaultRootName ("neo")
 	expectedSession := tmux.RootSessionName("🌲", tmux.DefaultRootName)
 	if runner.newSessionWithWinName != expectedSession {
 		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, expectedSession)
 	}
-	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != "🌲" {
-		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], "🌲")
+	if runner.newSessionWithWinEnv["SPRAWL_NAMESPACE"] != "🌲" {
+		t.Errorf("SPRAWL_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["SPRAWL_NAMESPACE"], "🌲")
 	}
-	if runner.newSessionWithWinEnv["DENDRA_TREE_PATH"] != tmux.DefaultRootName {
-		t.Errorf("DENDRA_TREE_PATH = %q, want %q", runner.newSessionWithWinEnv["DENDRA_TREE_PATH"], tmux.DefaultRootName)
+	if runner.newSessionWithWinEnv["SPRAWL_TREE_PATH"] != tmux.DefaultRootName {
+		t.Errorf("SPRAWL_TREE_PATH = %q, want %q", runner.newSessionWithWinEnv["SPRAWL_TREE_PATH"], tmux.DefaultRootName)
 	}
 
 	// Verify persistence
@@ -206,18 +206,18 @@ func TestRunInit_AutoPickNamespace(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
 
-	// Empty namespace triggers auto-pick. With no sessions, should pick 🌳.
+	// Empty namespace triggers auto-pick. With no sessions, should pick ⚡.
 	err := runInit(deps, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if runner.newSessionWithWinEnv["DENDRA_NAMESPACE"] != "🌳" {
-		t.Errorf("DENDRA_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["DENDRA_NAMESPACE"], "🌳")
+	if runner.newSessionWithWinEnv["SPRAWL_NAMESPACE"] != "⚡" {
+		t.Errorf("SPRAWL_NAMESPACE = %q, want %q", runner.newSessionWithWinEnv["SPRAWL_NAMESPACE"], "⚡")
 	}
 }
 
@@ -228,7 +228,7 @@ func TestRunInit_NamespacePersisted(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -239,7 +239,7 @@ func TestRunInit_NamespacePersisted(t *testing.T) {
 	}
 
 	// Check the file exists
-	nsPath := filepath.Join(tmpDir, ".dendra", "namespace")
+	nsPath := filepath.Join(tmpDir, ".sprawl", "namespace")
 	data, err := os.ReadFile(nsPath)
 	if err != nil {
 		t.Fatalf("reading namespace file: %v", err)
@@ -259,7 +259,7 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 		binary: "/usr/bin/claude",
 	}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -279,7 +279,7 @@ func TestRunInit_Detached_NoSession_CreatesButDoesNotAttach(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -327,7 +327,7 @@ func TestRunInit_Detached_ExistingSession_DoesNotAttach(t *testing.T) {
 	runner := &mockRunner{hasSession: true}
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -362,7 +362,7 @@ func TestRunInit_NotDetached_BehaviorUnchanged(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "/usr/bin/dendra", nil }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -390,9 +390,9 @@ func TestRunInit_DendraBinPropagated(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findDendra:     func() (string, error) { return "/usr/bin/dendra", nil },
+		findSprawl:     func() (string, error) { return "/usr/bin/dendra", nil },
 		getenv: func(key string) string {
-			if key == "DENDRA_BIN" {
+			if key == "SPRAWL_BIN" {
 				return "/custom/dendra"
 			}
 			return ""
@@ -408,8 +408,8 @@ func TestRunInit_DendraBinPropagated(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWinEnv
-	if env["DENDRA_BIN"] != "/custom/dendra" {
-		t.Errorf("env DENDRA_BIN = %q, want %q", env["DENDRA_BIN"], "/custom/dendra")
+	if env["SPRAWL_BIN"] != "/custom/dendra" {
+		t.Errorf("env SPRAWL_BIN = %q, want %q", env["SPRAWL_BIN"], "/custom/dendra")
 	}
 }
 
@@ -421,7 +421,7 @@ func TestRunInit_DendraBinNotPropagatedWhenUnset(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findDendra:     func() (string, error) { return "/usr/bin/dendra", nil },
+		findSprawl:     func() (string, error) { return "/usr/bin/dendra", nil },
 		getenv:         defaultGetenv,
 	}
 	origDir, _ := os.Getwd()
@@ -434,8 +434,8 @@ func TestRunInit_DendraBinNotPropagatedWhenUnset(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWinEnv
-	if _, ok := env["DENDRA_BIN"]; ok {
-		t.Errorf("env should not contain DENDRA_BIN when unset, got %q", env["DENDRA_BIN"])
+	if _, ok := env["SPRAWL_BIN"]; ok {
+		t.Errorf("env should not contain SPRAWL_BIN when unset, got %q", env["SPRAWL_BIN"])
 	}
 }
 
@@ -447,9 +447,9 @@ func TestRunInit_DendraTestModePropagated(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findDendra:     func() (string, error) { return "/usr/bin/dendra", nil },
+		findSprawl:     func() (string, error) { return "/usr/bin/dendra", nil },
 		getenv: func(key string) string {
-			if key == "DENDRA_TEST_MODE" {
+			if key == "SPRAWL_TEST_MODE" {
 				return "1"
 			}
 			return ""
@@ -465,8 +465,8 @@ func TestRunInit_DendraTestModePropagated(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWinEnv
-	if env["DENDRA_TEST_MODE"] != "1" {
-		t.Errorf("env DENDRA_TEST_MODE = %q, want %q", env["DENDRA_TEST_MODE"], "1")
+	if env["SPRAWL_TEST_MODE"] != "1" {
+		t.Errorf("env SPRAWL_TEST_MODE = %q, want %q", env["SPRAWL_TEST_MODE"], "1")
 	}
 }
 
@@ -478,7 +478,7 @@ func TestRunInit_DendraTestModeNotPropagatedWhenUnset(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findDendra:     func() (string, error) { return "/usr/bin/dendra", nil },
+		findSprawl:     func() (string, error) { return "/usr/bin/dendra", nil },
 		getenv:         defaultGetenv,
 	}
 	origDir, _ := os.Getwd()
@@ -491,8 +491,8 @@ func TestRunInit_DendraTestModeNotPropagatedWhenUnset(t *testing.T) {
 	}
 
 	env := runner.newSessionWithWinEnv
-	if _, ok := env["DENDRA_TEST_MODE"]; ok {
-		t.Errorf("env should not contain DENDRA_TEST_MODE when unset, got %q", env["DENDRA_TEST_MODE"])
+	if _, ok := env["SPRAWL_TEST_MODE"]; ok {
+		t.Errorf("env should not contain SPRAWL_TEST_MODE when unset, got %q", env["SPRAWL_TEST_MODE"])
 	}
 }
 
@@ -501,7 +501,7 @@ func TestRunInit_DendraNotFound_ReturnsError(t *testing.T) {
 	runner := &mockRunner{hasSession: false}
 	launcher := &mockLauncher{binary: "/usr/bin/claude"}
 
-	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findDendra: func() (string, error) { return "", errors.New("not found") }, getenv: defaultGetenv}
+	deps := &initDeps{tmuxRunner: runner, claudeLauncher: launcher, findSprawl: func() (string, error) { return "", errors.New("not found") }, getenv: defaultGetenv}
 	origDir, _ := os.Getwd()
 	os.Chdir(tmpDir)
 	defer os.Chdir(origDir)
@@ -512,6 +512,6 @@ func TestRunInit_DendraNotFound_ReturnsError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 	if runner.attachCalled {
-		t.Error("Attach should not be called when findDendra fails")
+		t.Error("Attach should not be called when findSprawl fails")
 	}
 }

@@ -51,12 +51,12 @@ func resolveLogsDeps() *logsDeps {
 }
 
 func runLogs(deps *logsDeps, agentName string, tail int) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agentName, "logs")
+	logsDir := filepath.Join(dendraRoot, ".sprawl", "agents", agentName, "logs")
 	entries, err := deps.readDir(logsDir)
 	if err != nil {
 		if os.IsNotExist(err) {

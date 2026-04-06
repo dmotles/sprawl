@@ -22,7 +22,7 @@ func sessionsDir(dendraRoot string) string {
 }
 
 func memoryDir(dendraRoot string) string {
-	return filepath.Join(dendraRoot, ".dendra", "memory")
+	return filepath.Join(dendraRoot, ".sprawl", "memory")
 }
 
 func lastSessionIDPath(dendraRoot string) string {
@@ -242,7 +242,7 @@ func ListRecentSessions(dendraRoot string, n int) ([]Session, []string, error) {
 	return sessions, bodies, nil
 }
 
-// ReadLastSessionID reads the last session ID from .dendra/memory/last-session-id.
+// ReadLastSessionID reads the last session ID from .sprawl/memory/last-session-id.
 // Returns ("", nil) if the file does not exist.
 func ReadLastSessionID(dendraRoot string) (string, error) {
 	data, err := os.ReadFile(lastSessionIDPath(dendraRoot))
@@ -255,7 +255,7 @@ func ReadLastSessionID(dendraRoot string) (string, error) {
 	return strings.TrimSpace(string(data)), nil
 }
 
-// WriteLastSessionID writes the session ID to .dendra/memory/last-session-id.
+// WriteLastSessionID writes the session ID to .sprawl/memory/last-session-id.
 func WriteLastSessionID(dendraRoot string, sessionID string) error {
 	dir := memoryDir(dendraRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
@@ -267,8 +267,8 @@ func WriteLastSessionID(dendraRoot string, sessionID string) error {
 	return nil
 }
 
-// WriteHandoffSignal creates an empty handoff signal file at .dendra/memory/handoff-signal.
-// The sensei loop detects the presence of this file and restarts.
+// WriteHandoffSignal creates an empty handoff signal file at .sprawl/memory/handoff-signal.
+// The root loop detects the presence of this file and restarts.
 func WriteHandoffSignal(dendraRoot string) error {
 	dir := memoryDir(dendraRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional

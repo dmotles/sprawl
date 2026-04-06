@@ -14,7 +14,7 @@ func TestWriteAndReadSessionSummary(t *testing.T) {
 		SessionID:    "abc-123",
 		Timestamp:    time.Date(2026, 4, 1, 10, 30, 0, 0, time.UTC),
 		Handoff:      true,
-		AgentsActive: []string{"oak", "elm", "ash"},
+		AgentsActive: []string{"zone", "ratz", "finn"},
 	}
 	body := "## Summary\n\nThis is a test session summary.\n"
 
@@ -23,7 +23,7 @@ func TestWriteAndReadSessionSummary(t *testing.T) {
 	}
 
 	// Find the written file
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("reading sessions dir: %v", err)
@@ -71,7 +71,7 @@ func TestWriteSessionSummary_CreatesDirectories(t *testing.T) {
 		t.Fatalf("WriteSessionSummary: %v", err)
 	}
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	info, err := os.Stat(dir)
 	if err != nil {
 		t.Fatalf("sessions dir not created: %v", err)
@@ -92,7 +92,7 @@ func TestWriteSessionSummary_FilenameFormat(t *testing.T) {
 		t.Fatalf("WriteSessionSummary: %v", err)
 	}
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("reading dir: %v", err)
@@ -120,7 +120,7 @@ func TestWriteSessionSummary_EmptyAgents(t *testing.T) {
 		t.Fatalf("WriteSessionSummary: %v", err)
 	}
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, _ := os.ReadDir(dir)
 	path := filepath.Join(dir, entries[0].Name())
 
@@ -145,7 +145,7 @@ func TestWriteSessionSummary_NilAgents(t *testing.T) {
 		t.Fatalf("WriteSessionSummary: %v", err)
 	}
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, _ := os.ReadDir(dir)
 	path := filepath.Join(dir, entries[0].Name())
 
@@ -222,7 +222,7 @@ func TestListRecentSessions_DirNotExist(t *testing.T) {
 
 func TestListRecentSessions_EmptyExistingDir(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestListRecentSessions_Multiple(t *testing.T) {
 		s := Session{
 			SessionID:    strings.Replace("sess-X", "X", string(rune('a'+i)), 1),
 			Timestamp:    time.Date(2026, 1, 1, i, 0, 0, 0, time.UTC),
-			AgentsActive: []string{"oak"},
+			AgentsActive: []string{"zone"},
 		}
 		body := strings.Replace("body-X", "X", string(rune('a'+i)), 1)
 		if err := WriteSessionSummary(root, s, body); err != nil {
@@ -356,7 +356,7 @@ func TestWriteSessionSummary_NoTempFilesRemain(t *testing.T) {
 		t.Fatalf("WriteSessionSummary: %v", err)
 	}
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -384,7 +384,7 @@ func TestWriteSessionSummary_FileContent(t *testing.T) {
 		SessionID:    "content-check",
 		Timestamp:    time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC),
 		Handoff:      false,
-		AgentsActive: []string{"oak", "elm"},
+		AgentsActive: []string{"zone", "ratz"},
 	}
 	body := "Some summary text.\n"
 
@@ -392,7 +392,7 @@ func TestWriteSessionSummary_FileContent(t *testing.T) {
 		t.Fatalf("WriteSessionSummary: %v", err)
 	}
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, _ := os.ReadDir(dir)
 	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
 	if err != nil {
@@ -428,7 +428,7 @@ func TestWriteHandoffSignal_CreatesFile(t *testing.T) {
 		t.Fatalf("WriteHandoffSignal: %v", err)
 	}
 
-	path := filepath.Join(root, ".dendra", "memory", "handoff-signal")
+	path := filepath.Join(root, ".sprawl", "memory", "handoff-signal")
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
 		t.Fatal("handoff-signal file should exist")
@@ -448,7 +448,7 @@ func TestWriteHandoffSignal_CreatesDirectory(t *testing.T) {
 		t.Fatalf("WriteHandoffSignal: %v", err)
 	}
 
-	path := filepath.Join(root, ".dendra", "memory", "handoff-signal")
+	path := filepath.Join(root, ".sprawl", "memory", "handoff-signal")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		t.Error("handoff-signal file should exist")
 	}
@@ -461,7 +461,7 @@ func TestWriteSessionSummary_Idempotent(t *testing.T) {
 	s1 := Session{
 		SessionID:    "idem-test",
 		Timestamp:    time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
-		AgentsActive: []string{"oak"},
+		AgentsActive: []string{"zone"},
 	}
 	if err := WriteSessionSummary(root, s1, "first body\n"); err != nil {
 		t.Fatalf("first WriteSessionSummary: %v", err)
@@ -471,13 +471,13 @@ func TestWriteSessionSummary_Idempotent(t *testing.T) {
 	s2 := Session{
 		SessionID:    "idem-test",
 		Timestamp:    time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC),
-		AgentsActive: []string{"oak", "elm"},
+		AgentsActive: []string{"zone", "ratz"},
 	}
 	if err := WriteSessionSummary(root, s2, "second body\n"); err != nil {
 		t.Fatalf("second WriteSessionSummary: %v", err)
 	}
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("reading sessions dir: %v", err)
@@ -514,7 +514,7 @@ func TestWriteSessionSummary_Idempotent(t *testing.T) {
 func TestWriteSessionSummary_CleansOldFormat(t *testing.T) {
 	root := t.TempDir()
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestWriteSessionSummary_CleansOldFormat(t *testing.T) {
 func TestListRecentSessions_SortsByTimestamp(t *testing.T) {
 	root := t.TempDir()
 
-	dir := filepath.Join(root, ".dendra", "memory", "sessions")
+	dir := filepath.Join(root, ".sprawl", "memory", "sessions")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

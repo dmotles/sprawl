@@ -26,7 +26,7 @@ func persistentKnowledgePath(dendraRoot string) string {
 	return filepath.Join(memoryDir(dendraRoot), "persistent.md")
 }
 
-// ReadPersistentKnowledge reads .dendra/memory/persistent.md and returns its
+// ReadPersistentKnowledge reads .sprawl/memory/persistent.md and returns its
 // contents. Returns an empty string (not error) if the file doesn't exist.
 func ReadPersistentKnowledge(dendraRoot string) (string, error) {
 	data, err := os.ReadFile(persistentKnowledgePath(dendraRoot))

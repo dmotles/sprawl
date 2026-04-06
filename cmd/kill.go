@@ -63,9 +63,9 @@ func resolveKillDeps() (*killDeps, error) {
 }
 
 func runKill(deps *killDeps, agentName string, force bool) error {
-	dendraRoot := deps.getenv("DENDRA_ROOT")
+	dendraRoot := deps.getenv("SPRAWL_ROOT")
 	if dendraRoot == "" {
-		return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Load agent state

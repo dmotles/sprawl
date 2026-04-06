@@ -15,13 +15,13 @@ func testEnvConfig() EnvConfig {
 }
 
 func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	keyPhrases := []string{
 		"Engineer agent",
-		"oak",
+		"zone",
 		"root",
-		"dendra/oak",
+		"dendra/zone",
 		"dendra report done",
 		"dendra report problem",
 		"dendra messages send root",
@@ -34,7 +34,7 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	if strings.Contains(prompt, "YOUR TASK:") {
 		t.Error("engineer prompt should not contain YOUR TASK section")
@@ -66,13 +66,13 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 		"dendra report done",
 		"dendra report problem",
 		"dendra messages send root",
-		"DENDRA_AGENT_IDENTITY",
+		"SPRAWL_AGENT_IDENTITY",
 		"do NOT modify production code",
 		"deep investigator",
 		"document findings",
 		"systematic analysis",
 		"tradeoffs",
-		".dendra/agents/birch/findings/",
+		".sprawl/agents/birch/findings/",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -90,7 +90,7 @@ func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	if strings.Contains(prompt, "deep investigator") {
 		t.Error("engineer prompt should not contain researcher role 'deep investigator'")
@@ -98,7 +98,7 @@ func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	mandatoryPhrases := []string{
 		// The workflow must be explicitly mandatory
@@ -125,7 +125,7 @@ func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	subAgents := []string{
 		"oracle",
@@ -143,7 +143,7 @@ func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	// Verify the workflow steps appear in order
 	steps := []string{"oracle", "test-writer", "test-critic", "implementer", "code-reviewer", "qa-validator"}
@@ -161,7 +161,7 @@ func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	keyPhrases := []string{
 		"Reflect",
@@ -196,7 +196,7 @@ func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
 
 	qaIdx := strings.Index(prompt, "qa-validator")
 	reflectIdx := strings.Index(prompt, "Reflect")
@@ -226,13 +226,13 @@ func TestBuildEngineerPrompt_EnvironmentSection(t *testing.T) {
 		Platform: "linux",
 		Shell:    "/bin/zsh",
 	}
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
 
 	envPhrases := []string{
 		"# Environment",
 		"Working directory: /tmp/worktrees/oak",
 		"Git repository: yes",
-		"Git branch: dendra/oak",
+		"Git branch: dendra/zone",
 		"Platform: linux",
 		"Shell: /bin/zsh",
 	}
@@ -245,7 +245,7 @@ func TestBuildEngineerPrompt_EnvironmentSection(t *testing.T) {
 
 func TestBuildEngineerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 	env := EnvConfig{} // all empty
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
 
 	if strings.Contains(prompt, "Working directory:") {
 		t.Error("should omit working directory when empty")
@@ -260,7 +260,7 @@ func TestBuildEngineerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 	if !strings.Contains(prompt, "Git repository: yes") {
 		t.Error("should always include git repository")
 	}
-	if !strings.Contains(prompt, "Git branch: dendra/oak") {
+	if !strings.Contains(prompt, "Git branch: dendra/zone") {
 		t.Error("should always include git branch")
 	}
 }
@@ -274,13 +274,13 @@ func defaultRootConfig(name string) PromptConfig {
 }
 
 func TestBuildRootPrompt_DoesNotMentionRespawn(t *testing.T) {
-	if strings.Contains(BuildRootPrompt(defaultRootConfig("sensei")), "respawn") {
+	if strings.Contains(BuildRootPrompt(defaultRootConfig("neo")), "respawn") {
 		t.Error("BuildRootPrompt should not mention 'respawn' — the command was canceled (QUM-46)")
 	}
 }
 
 func TestBuildRootPrompt_ManagerTypeInAgentTypes(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	keyPhrases := []string{
 		"Manager",
@@ -316,18 +316,18 @@ func TestBuildRootPrompt_ManagerTypeInAgentTypes(t *testing.T) {
 
 func TestBuildRootPrompt_PromptConfigStruct(t *testing.T) {
 	cfg := PromptConfig{
-		RootName: "sensei",
+		RootName: "neo",
 		AgentCLI: "claude-code",
 	}
 	prompt := BuildRootPrompt(cfg)
-	if !strings.Contains(prompt, `Your name is "sensei"`) {
+	if !strings.Contains(prompt, `Your name is "neo"`) {
 		t.Error("BuildRootPrompt should interpolate RootName from config")
 	}
 }
 
 func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
 	cfg := PromptConfig{
-		RootName: "sensei",
+		RootName: "neo",
 		AgentCLI: "claude-code",
 	}
 	prompt := BuildRootPrompt(cfg)
@@ -352,7 +352,7 @@ func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
 
 func TestBuildRootPrompt_SubAgentGuidance_NotIncludedForUnknownCLI(t *testing.T) {
 	cfg := PromptConfig{
-		RootName: "sensei",
+		RootName: "neo",
 		AgentCLI: "codex",
 	}
 	prompt := BuildRootPrompt(cfg)
@@ -368,7 +368,7 @@ func TestBuildRootPrompt_SubAgentGuidance_NotIncludedForUnknownCLI(t *testing.T)
 
 func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
 	cfg := PromptConfig{
-		RootName: "sensei",
+		RootName: "neo",
 		AgentCLI: "",
 	}
 	prompt := BuildRootPrompt(cfg)
@@ -380,7 +380,7 @@ func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
 }
 
 func TestBuildRootPrompt_SubAgentGuidanceSectionOrdering(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: DENDRA AGENTS vs CLAUDE SUB-AGENTS")
 	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
@@ -402,10 +402,10 @@ func TestBuildRootPrompt_VerificationGuidance(t *testing.T) {
 		"MUST verify",
 		"run tests",
 		"work tree",
-		".dendra/agents/<name>/findings/",
+		".sprawl/agents/<name>/findings/",
 	}
 	for _, phrase := range keyPhrases {
-		if !strings.Contains(BuildRootPrompt(defaultRootConfig("sensei")), phrase) {
+		if !strings.Contains(BuildRootPrompt(defaultRootConfig("neo")), phrase) {
 			t.Errorf("BuildRootPrompt missing verification guidance phrase: %q", phrase)
 		}
 	}
@@ -425,14 +425,14 @@ func TestBuildRootPrompt_ParallelismGuidance(t *testing.T) {
 		"smaller and more isolated",
 	}
 	for _, phrase := range keyPhrases {
-		if !strings.Contains(BuildRootPrompt(defaultRootConfig("sensei")), phrase) {
+		if !strings.Contains(BuildRootPrompt(defaultRootConfig("neo")), phrase) {
 			t.Errorf("BuildRootPrompt missing parallelism guidance phrase: %q", phrase)
 		}
 	}
 }
 
 func TestBuildRootPrompt_ParallelismSectionOrdering(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 	rulesIdx := strings.Index(prompt, "RULES:")
 	parallelismIdx := strings.Index(prompt, "PARALLELISM VS. SERIALIZATION:")
 	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
@@ -474,7 +474,7 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 }
 
 func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	// Spawning & Lifecycle commands
 	spawnLifecycleCommands := []string{
@@ -508,7 +508,7 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 }
 
 func TestBuildRootPrompt_KeyCommands_RetireDistinguishedFromKill(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	if !strings.Contains(prompt, "dendra retire") {
 		t.Error("root prompt should mention 'dendra retire'")
@@ -529,7 +529,7 @@ func TestBuildRootPrompt_KeyCommands_RetireDistinguishedFromKill(t *testing.T) {
 }
 
 func TestBuildRootPrompt_KeyCommands_GroupedLogically(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	// Verify KEY COMMANDS section exists
 	if !strings.Contains(prompt, "KEY COMMANDS:") {
@@ -552,8 +552,8 @@ func TestBuildRootPrompt_KeyCommands_GroupedLogically(t *testing.T) {
 }
 
 func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
-	if !strings.Contains(prompt, `Your name is "sensei"`) {
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
+	if !strings.Contains(prompt, `Your name is "neo"`) {
 		t.Error("BuildRootPrompt should interpolate the root name")
 	}
 
@@ -569,16 +569,16 @@ func TestBuildRootPrompt_InterpolatesIdentity(t *testing.T) {
 // --- BuildManagerPrompt tests (TDD red phase — function does not exist yet) ---
 
 func TestBuildManagerPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	keyPhrases := []string{
 		"Manager agent",
 		"cedar",
-		"sensei",
+		"neo",
 		"dmotles/feature-x",
 		"dendra report done",
 		"dendra report problem",
-		"dendra messages send sensei",
+		"dendra messages send neo",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -588,7 +588,7 @@ func TestBuildManagerPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsIdentityWithFamily(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	if !strings.Contains(prompt, "engineering manager") {
 		t.Errorf("manager prompt should contain 'engineering manager' (family interpolated into identity)")
@@ -596,7 +596,7 @@ func TestBuildManagerPrompt_ContainsIdentityWithFamily(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsOrchestrationGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	orchestrationPhrases := []string{
 		"orchestrate",
@@ -613,7 +613,7 @@ func TestBuildManagerPrompt_ContainsOrchestrationGuidance(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	mergePhrases := []string{
 		"dendra merge",
@@ -634,7 +634,7 @@ func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsRetireWorkflows(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	retirePhrases := []string{
 		"retire --merge",
@@ -648,7 +648,7 @@ func TestBuildManagerPrompt_ContainsRetireWorkflows(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_MergeDoesNotRetire(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	// Merge should describe pulling in work, not retiring
 	if strings.Contains(prompt, "merge + retire + branch cleanup in one step") {
@@ -662,7 +662,7 @@ func TestBuildManagerPrompt_MergeDoesNotRetire(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ConflictRecovery(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	if !strings.Contains(prompt, "conflict") {
 		t.Error("manager prompt should mention conflict recovery")
@@ -670,7 +670,7 @@ func TestBuildManagerPrompt_ConflictRecovery(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsParallelismGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	parallelismPhrases := []string{
 		"PARALLELISM",
@@ -687,7 +687,7 @@ func TestBuildManagerPrompt_ContainsParallelismGuidance(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsFollowThroughGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	// Check that at least one alternative is present for each concept
 	followThroughFound := strings.Contains(prompt, "FOLLOW THROUGH") || strings.Contains(prompt, "FOLLOW-THROUGH")
@@ -707,7 +707,7 @@ func TestBuildManagerPrompt_ContainsFollowThroughGuidance(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsFailureHandling(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	abandonOrRespawn := strings.Contains(prompt, "abandon") || strings.Contains(prompt, "respawn")
 	if !abandonOrRespawn {
@@ -720,7 +720,7 @@ func TestBuildManagerPrompt_ContainsFailureHandling(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsIntegrationBranch(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	if !strings.Contains(prompt, "integration branch") {
 		t.Errorf("manager prompt missing phrase: %q", "integration branch")
@@ -728,7 +728,7 @@ func TestBuildManagerPrompt_ContainsIntegrationBranch(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ContainsSubAgentGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	if !strings.Contains(prompt, "Agent tool") {
 		t.Errorf("manager prompt missing phrase: %q", "Agent tool")
@@ -746,7 +746,7 @@ func TestBuildManagerPrompt_ContainsSubAgentGuidance(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_DoesNotContainInteractiveLanguage(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	forbidden := []string{
 		"ask the user",
@@ -761,7 +761,7 @@ func TestBuildManagerPrompt_DoesNotContainInteractiveLanguage(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_DoesNotContainWrongRoles(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	forbidden := []string{
 		"hands-on builder",
@@ -775,7 +775,7 @@ func TestBuildManagerPrompt_DoesNotContainWrongRoles(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_EnvironmentSection(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	envPhrases := []string{
 		"# Environment",
@@ -794,7 +794,7 @@ func TestBuildManagerPrompt_EnvironmentSection(t *testing.T) {
 
 func TestBuildManagerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 	env := EnvConfig{} // all empty
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", env)
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", env)
 
 	if strings.Contains(prompt, "Working directory:") {
 		t.Error("should omit working directory when empty")
@@ -815,7 +815,7 @@ func TestBuildManagerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_CannotEditCode(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	cannotEdit := strings.Contains(prompt, "You do NOT edit code") ||
 		strings.Contains(prompt, "you don't implement") ||
@@ -828,7 +828,7 @@ func TestBuildManagerPrompt_CannotEditCode(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_ScopeManagement(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	if !strings.Contains(prompt, "scope") {
 		t.Errorf("manager prompt should contain guidance about staying focused on scope")
@@ -838,7 +838,7 @@ func TestBuildManagerPrompt_ScopeManagement(t *testing.T) {
 // --- delegate vs messages guidance tests ---
 
 func TestBuildRootPrompt_DelegateVsMessagesGuidance(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	keyPhrases := []string{
 		"dendra delegate",
@@ -857,7 +857,7 @@ func TestBuildRootPrompt_DelegateVsMessagesGuidance(t *testing.T) {
 }
 
 func TestBuildRootPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	guidanceIdx := strings.Index(prompt, "DELEGATE VS. MESSAGES")
 	rulesIdx := strings.Index(prompt, "RULES:")
@@ -882,7 +882,7 @@ func TestBuildRootPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_DelegateVsMessagesGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	keyPhrases := []string{
 		"dendra delegate",
@@ -901,7 +901,7 @@ func TestBuildManagerPrompt_DelegateVsMessagesGuidance(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	guidanceIdx := strings.Index(prompt, "DELEGATE VS. MESSAGES")
 	dispatchIdx := strings.Index(prompt, "# DISPATCHING:")
@@ -931,7 +931,7 @@ func TestBuildManagerPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
 
 func TestBuildRootPrompt_ContextBlob_Appended(t *testing.T) {
 	cfg := PromptConfig{
-		RootName:    "sensei",
+		RootName:    "neo",
 		AgentCLI:    "claude-code",
 		ContextBlob: "## Active State\n\nNo active agents.\n",
 	}
@@ -957,7 +957,7 @@ func TestBuildRootPrompt_ContextBlob_Appended(t *testing.T) {
 
 func TestBuildRootPrompt_ContextBlob_EmptyNotAppended(t *testing.T) {
 	cfg := PromptConfig{
-		RootName:    "sensei",
+		RootName:    "neo",
 		AgentCLI:    "claude-code",
 		ContextBlob: "",
 	}
@@ -970,7 +970,7 @@ func TestBuildRootPrompt_ContextBlob_EmptyNotAppended(t *testing.T) {
 
 func TestBuildRootPrompt_ContextBlob_WorksWithNonClaudeCodeCLI(t *testing.T) {
 	cfg := PromptConfig{
-		RootName:    "sensei",
+		RootName:    "neo",
 		AgentCLI:    "codex",
 		ContextBlob: "## Active State\n\nSome agents.\n",
 	}
@@ -984,28 +984,28 @@ func TestBuildRootPrompt_ContextBlob_WorksWithNonClaudeCodeCLI(t *testing.T) {
 	}
 }
 
-// --- TestMode / DENDRA_TEST_MODE tests ---
+// --- TestMode / SPRAWL_TEST_MODE tests ---
 
 func TestBuildEngineerPrompt_TestMode_InjectsWarning(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = true
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
 
 	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("engineer prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
 	}
-	if !strings.Contains(prompt, "$DENDRA_ROOT") {
-		t.Error("engineer prompt should reference $DENDRA_ROOT in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_ROOT") {
+		t.Error("engineer prompt should reference $SPRAWL_ROOT in sandbox warning")
 	}
-	if !strings.Contains(prompt, "$DENDRA_BIN") {
-		t.Error("engineer prompt should reference $DENDRA_BIN in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_BIN") {
+		t.Error("engineer prompt should reference $SPRAWL_BIN in sandbox warning")
 	}
 }
 
 func TestBuildEngineerPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = false
-	prompt := BuildEngineerPrompt("oak", "root", "dendra/oak", env)
+	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
 
 	if strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("engineer prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
@@ -1015,23 +1015,23 @@ func TestBuildEngineerPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 func TestBuildManagerPrompt_TestMode_InjectsWarning(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = true
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", env)
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", env)
 
 	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("manager prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
 	}
-	if !strings.Contains(prompt, "$DENDRA_ROOT") {
-		t.Error("manager prompt should reference $DENDRA_ROOT in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_ROOT") {
+		t.Error("manager prompt should reference $SPRAWL_ROOT in sandbox warning")
 	}
-	if !strings.Contains(prompt, "$DENDRA_BIN") {
-		t.Error("manager prompt should reference $DENDRA_BIN in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_BIN") {
+		t.Error("manager prompt should reference $SPRAWL_BIN in sandbox warning")
 	}
 }
 
 func TestBuildManagerPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = false
-	prompt := BuildManagerPrompt("cedar", "sensei", "dmotles/feature-x", "engineering", env)
+	prompt := BuildManagerPrompt("cedar", "neo", "dmotles/feature-x", "engineering", env)
 
 	if strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("manager prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
@@ -1046,11 +1046,11 @@ func TestBuildResearcherPrompt_TestMode_InjectsWarning(t *testing.T) {
 	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("researcher prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
 	}
-	if !strings.Contains(prompt, "$DENDRA_ROOT") {
-		t.Error("researcher prompt should reference $DENDRA_ROOT in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_ROOT") {
+		t.Error("researcher prompt should reference $SPRAWL_ROOT in sandbox warning")
 	}
-	if !strings.Contains(prompt, "$DENDRA_BIN") {
-		t.Error("researcher prompt should reference $DENDRA_BIN in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_BIN") {
+		t.Error("researcher prompt should reference $SPRAWL_BIN in sandbox warning")
 	}
 }
 
@@ -1066,7 +1066,7 @@ func TestBuildResearcherPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 
 func TestBuildRootPrompt_TestMode_InjectsWarning(t *testing.T) {
 	cfg := PromptConfig{
-		RootName: "sensei",
+		RootName: "neo",
 		AgentCLI: "claude-code",
 		TestMode: true,
 	}
@@ -1075,17 +1075,17 @@ func TestBuildRootPrompt_TestMode_InjectsWarning(t *testing.T) {
 	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("root prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
 	}
-	if !strings.Contains(prompt, "$DENDRA_ROOT") {
-		t.Error("root prompt should reference $DENDRA_ROOT in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_ROOT") {
+		t.Error("root prompt should reference $SPRAWL_ROOT in sandbox warning")
 	}
-	if !strings.Contains(prompt, "$DENDRA_BIN") {
-		t.Error("root prompt should reference $DENDRA_BIN in sandbox warning")
+	if !strings.Contains(prompt, "$SPRAWL_BIN") {
+		t.Error("root prompt should reference $SPRAWL_BIN in sandbox warning")
 	}
 }
 
 func TestBuildRootPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 	cfg := PromptConfig{
-		RootName: "sensei",
+		RootName: "neo",
 		AgentCLI: "claude-code",
 		TestMode: false,
 	}
@@ -1099,11 +1099,11 @@ func TestBuildRootPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 // M12 merge/retire workflow tests
 
 func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	// Merge should not mention retiring or deleting branches
 	if strings.Contains(prompt, "retire the agent, and delete the branch") {
-		t.Error("sensei prompt should not describe merge as retiring+deleting")
+		t.Error("root prompt should not describe merge as retiring+deleting")
 	}
 
 	// Should not reference --force flag on merge
@@ -1117,12 +1117,12 @@ func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
 		mergeSection = mergeSection[:mergeEnd]
 	}
 	if strings.Contains(mergeSection, "--force") {
-		t.Error("sensei prompt merge section should not reference --force flag")
+		t.Error("root prompt merge section should not reference --force flag")
 	}
 
 	// Should describe merge as pulling in work
 	if !strings.Contains(prompt, "stays alive") {
-		t.Error("sensei prompt should mention agent stays alive after merge")
+		t.Error("root prompt should mention agent stays alive after merge")
 	}
 
 	// Should have retire workflows
@@ -1132,53 +1132,53 @@ func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
 	}
 	for _, phrase := range retirePhrases {
 		if !strings.Contains(prompt, phrase) {
-			t.Errorf("sensei prompt missing retire workflow: %q", phrase)
+			t.Errorf("root prompt missing retire workflow: %q", phrase)
 		}
 	}
 }
 
 func TestBuildRootPrompt_FlockSynchronization(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	// Should mention flock or lock-based synchronization
 	if !strings.Contains(prompt, "lock") && !strings.Contains(prompt, "flock") {
-		t.Error("sensei prompt should explain flock/lock synchronization during merge")
+		t.Error("root prompt should explain flock/lock synchronization during merge")
 	}
 }
 
 func TestBuildRootPrompt_MergeConflictRecovery(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	if !strings.Contains(prompt, "conflict") {
-		t.Error("sensei prompt should explain recovery from rebase conflicts")
+		t.Error("root prompt should explain recovery from rebase conflicts")
 	}
 }
 
 func TestBuildRootPrompt_NoStaleSquashMergeReferences(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	// The RULES section should not say merge handles "the full lifecycle"
 	if strings.Contains(prompt, "squash-merge, retire the agent, and clean up in one step") {
-		t.Error("sensei prompt RULES should not describe merge as full lifecycle cleanup")
+		t.Error("root prompt RULES should not describe merge as full lifecycle cleanup")
 	}
 }
 
 func TestBuildRootPrompt_SafeRetireGuidance(t *testing.T) {
-	prompt := BuildRootPrompt(defaultRootConfig("sensei"))
+	prompt := BuildRootPrompt(defaultRootConfig("neo"))
 
 	// Should guide toward safe retirement by default
 	if !strings.Contains(prompt, "dendra retire") || !strings.Contains(prompt, "Default to safe retirement") {
-		t.Error("sensei prompt should include guidance to default to safe retirement")
+		t.Error("root prompt should include guidance to default to safe retirement")
 	}
 
 	// Should warn about researchers having committed artifacts
 	if !strings.Contains(prompt, "retiring researchers") {
-		t.Error("sensei prompt should warn about checking researcher artifacts before retiring")
+		t.Error("root prompt should warn about checking researcher artifacts before retiring")
 	}
 }
 
 func TestBuildManagerPrompt_SafeRetireGuidance(t *testing.T) {
-	prompt := BuildManagerPrompt("mgr1", "sensei", "feature/mgr1", "engineering", testEnvConfig())
+	prompt := BuildManagerPrompt("mgr1", "neo", "feature/mgr1", "engineering", testEnvConfig())
 
 	// Should guide toward safe retirement by default
 	if !strings.Contains(prompt, "Default to safe retirement") {
@@ -1192,7 +1192,7 @@ func TestBuildManagerPrompt_SafeRetireGuidance(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_BranchRebaseNotification(t *testing.T) {
-	prompt := BuildEngineerPrompt("oak", "summit", "dmotles/feature-x", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "tower", "dmotles/feature-x", testEnvConfig())
 
 	if !strings.Contains(prompt, "rebase") {
 		t.Error("engineer prompt should mention that parent may rebase their branch")

@@ -19,9 +19,9 @@ func newTestMessagesDeps(t *testing.T) (*messagesDeps, string) {
 	deps := &messagesDeps{
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_AGENT_IDENTITY":
+			case "SPRAWL_AGENT_IDENTITY":
 				return "alice"
 			}
 			return ""
@@ -76,7 +76,7 @@ func TestMessagesSend_HappyPath(t *testing.T) {
 func TestMessagesSend_MissingAgentIdentity(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return "/tmp/test"
 		}
 		return ""
@@ -84,17 +84,17 @@ func TestMessagesSend_MissingAgentIdentity(t *testing.T) {
 
 	err := runMessagesSend(deps, "bob", "hello", "world")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
 func TestMessagesSend_MissingDendraRoot(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
+		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "alice"
 		}
 		return ""
@@ -102,10 +102,10 @@ func TestMessagesSend_MissingDendraRoot(t *testing.T) {
 
 	err := runMessagesSend(deps, "bob", "hello", "world")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -173,7 +173,7 @@ func TestMessagesInbox_Empty(t *testing.T) {
 func TestMessagesInbox_MissingAgentIdentity(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return "/tmp/test"
 		}
 		return ""
@@ -181,17 +181,17 @@ func TestMessagesInbox_MissingAgentIdentity(t *testing.T) {
 
 	_, _, _, err := runMessagesInbox(deps)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
 func TestMessagesInbox_MissingDendraRoot(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
+		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "alice"
 		}
 		return ""
@@ -199,10 +199,10 @@ func TestMessagesInbox_MissingDendraRoot(t *testing.T) {
 
 	_, _, _, err := runMessagesInbox(deps)
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
@@ -324,10 +324,10 @@ func TestMessagesRead_OutputContainsArchiveHint(t *testing.T) {
 }
 
 func TestMessagesRead_MissingEnvVars(t *testing.T) {
-	// Missing DENDRA_ROOT
+	// Missing SPRAWL_ROOT
 	deps := &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_AGENT_IDENTITY" {
+			if key == "SPRAWL_AGENT_IDENTITY" {
 				return "alice"
 			}
 			return ""
@@ -335,16 +335,16 @@ func TestMessagesRead_MissingEnvVars(t *testing.T) {
 	}
 	_, err := runMessagesRead(deps, "1000")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 
-	// Missing DENDRA_AGENT_IDENTITY
+	// Missing SPRAWL_AGENT_IDENTITY
 	deps = &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/tmp/test"
 			}
 			return ""
@@ -352,10 +352,10 @@ func TestMessagesRead_MissingEnvVars(t *testing.T) {
 	}
 	_, err = runMessagesRead(deps, "1000")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
@@ -393,7 +393,7 @@ func TestMessagesBroadcast_HappyPath(t *testing.T) {
 func TestMessagesBroadcast_MissingAgentIdentity(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return "/tmp/test"
 		}
 		return ""
@@ -401,10 +401,10 @@ func TestMessagesBroadcast_MissingAgentIdentity(t *testing.T) {
 
 	err := runMessagesBroadcast(deps, "subj", "body")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
@@ -579,10 +579,10 @@ func TestMessagesList_InvalidFilter(t *testing.T) {
 }
 
 func TestMessagesList_MissingEnvVars(t *testing.T) {
-	// Missing DENDRA_ROOT
+	// Missing SPRAWL_ROOT
 	deps := &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_AGENT_IDENTITY" {
+			if key == "SPRAWL_AGENT_IDENTITY" {
 				return "alice"
 			}
 			return ""
@@ -590,16 +590,16 @@ func TestMessagesList_MissingEnvVars(t *testing.T) {
 	}
 	_, err := runMessagesList(deps, "all")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 
-	// Missing DENDRA_AGENT_IDENTITY
+	// Missing SPRAWL_AGENT_IDENTITY
 	deps = &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/tmp/test"
 			}
 			return ""
@@ -607,7 +607,7 @@ func TestMessagesList_MissingEnvVars(t *testing.T) {
 	}
 	_, err = runMessagesList(deps, "all")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
 }
 
@@ -663,10 +663,10 @@ func TestMessagesArchive_NotFound(t *testing.T) {
 }
 
 func TestMessagesArchive_MissingEnvVars(t *testing.T) {
-	// Missing DENDRA_ROOT
+	// Missing SPRAWL_ROOT
 	deps := &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_AGENT_IDENTITY" {
+			if key == "SPRAWL_AGENT_IDENTITY" {
 				return "alice"
 			}
 			return ""
@@ -674,16 +674,16 @@ func TestMessagesArchive_MissingEnvVars(t *testing.T) {
 	}
 	err := runMessagesArchive(deps, "1000")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 
-	// Missing DENDRA_AGENT_IDENTITY
+	// Missing SPRAWL_AGENT_IDENTITY
 	deps = &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/tmp/test"
 			}
 			return ""
@@ -691,7 +691,7 @@ func TestMessagesArchive_MissingEnvVars(t *testing.T) {
 	}
 	err = runMessagesArchive(deps, "1000")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
 }
 
@@ -747,10 +747,10 @@ func TestMessagesUnread_NotInCur(t *testing.T) {
 }
 
 func TestMessagesUnread_MissingEnvVars(t *testing.T) {
-	// Missing DENDRA_ROOT
+	// Missing SPRAWL_ROOT
 	deps := &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_AGENT_IDENTITY" {
+			if key == "SPRAWL_AGENT_IDENTITY" {
 				return "alice"
 			}
 			return ""
@@ -758,16 +758,16 @@ func TestMessagesUnread_MissingEnvVars(t *testing.T) {
 	}
 	err := runMessagesUnread(deps, "1000")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 
-	// Missing DENDRA_AGENT_IDENTITY
+	// Missing SPRAWL_AGENT_IDENTITY
 	deps = &messagesDeps{
 		getenv: func(key string) string {
-			if key == "DENDRA_ROOT" {
+			if key == "SPRAWL_ROOT" {
 				return "/tmp/test"
 			}
 			return ""
@@ -775,7 +775,7 @@ func TestMessagesUnread_MissingEnvVars(t *testing.T) {
 	}
 	err = runMessagesUnread(deps, "1000")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
 }
 
@@ -1197,9 +1197,9 @@ func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 	deps := &messagesDeps{
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_AGENT_IDENTITY":
+			case "SPRAWL_AGENT_IDENTITY":
 				return "worker-1"
 			}
 			return ""
@@ -1241,9 +1241,9 @@ func TestRunMessagesSend_NonRootNoTmuxNotification(t *testing.T) {
 	deps := &messagesDeps{
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_AGENT_IDENTITY":
+			case "SPRAWL_AGENT_IDENTITY":
 				return "worker-1"
 			}
 			return ""

@@ -52,7 +52,7 @@ func TestLoadAll_SynthesizesRoot(t *testing.T) {
 			return nil, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -66,8 +66,8 @@ func TestLoadAll_SynthesizesRoot(t *testing.T) {
 	if len(agents) != 1 {
 		t.Fatalf("expected 1 agent (synthesized root), got %d", len(agents))
 	}
-	if agents[0].Name != "sensei" {
-		t.Errorf("expected root name %q, got %q", "sensei", agents[0].Name)
+	if agents[0].Name != "neo" {
+		t.Errorf("expected root name %q, got %q", "neo", agents[0].Name)
 	}
 	if !agents[0].IsRoot {
 		t.Errorf("expected root agent to have IsRoot=true")
@@ -111,12 +111,12 @@ func TestLoadAll_LivenessActiveAlive(t *testing.T) {
 					Status:      "active",
 					TmuxSession: "childsession",
 					TmuxWindow:  "childwindow",
-					Parent:      "sensei",
+					Parent:      "neo",
 				},
 			}, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -160,12 +160,12 @@ func TestLoadAll_LivenessActiveDead(t *testing.T) {
 					Status:      "active",
 					TmuxSession: "childsession",
 					TmuxWindow:  "childwindow",
-					Parent:      "sensei",
+					Parent:      "neo",
 				},
 			}, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -200,11 +200,11 @@ func TestLoadAll_LivenessTerminalDone(t *testing.T) {
 		TmuxRunner: &mockRunner{},
 		ListAgents: func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "agent1", Status: "done", Parent: "sensei"},
+				{Name: "agent1", Status: "done", Parent: "neo"},
 			}, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -236,11 +236,11 @@ func TestLoadAll_LivenessTerminalProblem(t *testing.T) {
 		TmuxRunner: &mockRunner{},
 		ListAgents: func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "agent1", Status: "problem", Parent: "sensei"},
+				{Name: "agent1", Status: "problem", Parent: "neo"},
 			}, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -272,11 +272,11 @@ func TestLoadAll_LivenessTerminalRetiring(t *testing.T) {
 		TmuxRunner: &mockRunner{},
 		ListAgents: func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "agent1", Status: "retiring", Parent: "sensei"},
+				{Name: "agent1", Status: "retiring", Parent: "neo"},
 			}, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -308,11 +308,11 @@ func TestLoadAll_LivenessNoTmux(t *testing.T) {
 		TmuxRunner: nil,
 		ListAgents: func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "agent1", Status: "active", Parent: "sensei", TmuxSession: "s", TmuxWindow: "w"},
+				{Name: "agent1", Status: "active", Parent: "neo", TmuxSession: "s", TmuxWindow: "w"},
 			}, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -340,7 +340,7 @@ func TestLoadAll_LivenessNoTmux(t *testing.T) {
 }
 
 func TestLoadAll_RootLiveness(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "sensei")
+	rootSession := tmux.RootSessionName("test", "neo")
 	deps := Deps{
 		TmuxRunner: &mockRunner{
 			hasSessionResults: map[string]bool{
@@ -351,7 +351,7 @@ func TestLoadAll_RootLiveness(t *testing.T) {
 			return nil, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -382,7 +382,7 @@ func TestLoadAll_RootLiveness(t *testing.T) {
 }
 
 func TestLoadAll_RootLivenessDead(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "sensei")
+	rootSession := tmux.RootSessionName("test", "neo")
 	deps := Deps{
 		TmuxRunner: &mockRunner{
 			hasSessionResults: map[string]bool{
@@ -393,7 +393,7 @@ func TestLoadAll_RootLivenessDead(t *testing.T) {
 			return nil, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -428,13 +428,13 @@ func TestLoadAll_SortedByName(t *testing.T) {
 		TmuxRunner: &mockRunner{},
 		ListAgents: func(string) ([]*state.AgentState, error) {
 			return []*state.AgentState{
-				{Name: "cherry", Status: "active", Parent: "sensei"},
-				{Name: "apple", Status: "active", Parent: "sensei"},
-				{Name: "banana", Status: "active", Parent: "sensei"},
+				{Name: "cherry", Status: "active", Parent: "neo"},
+				{Name: "apple", Status: "active", Parent: "neo"},
+				{Name: "banana", Status: "active", Parent: "neo"},
 			}, nil
 		},
 		ReadRootName: func(string) string {
-			return "sensei"
+			return "neo"
 		},
 		ReadNamespace: func(string) string {
 			return "test"
@@ -446,8 +446,8 @@ func TestLoadAll_SortedByName(t *testing.T) {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
 
-	// Expect root ("sensei") first (sorted), then apple, banana, cherry.
-	expectedOrder := []string{"apple", "banana", "cherry", "sensei"}
+	// Expect root ("neo") first (sorted), then apple, banana, cherry.
+	expectedOrder := []string{"apple", "banana", "cherry", "neo"}
 	if len(agents) != len(expectedOrder) {
 		t.Fatalf("expected %d agents, got %d", len(expectedOrder), len(agents))
 	}
@@ -464,15 +464,15 @@ func TestLoadAll_SortedByName(t *testing.T) {
 
 func TestBuildTree_SingleRoot(t *testing.T) {
 	agents := []*AgentInfo{
-		{AgentState: state.AgentState{Name: "sensei"}, IsRoot: true},
+		{AgentState: state.AgentState{Name: "neo"}, IsRoot: true},
 	}
 
-	root, orphans := BuildTree(agents, "sensei")
+	root, orphans := BuildTree(agents, "neo")
 	if root == nil {
 		t.Fatalf("expected root node, got nil")
 	}
-	if root.Agent.Name != "sensei" {
-		t.Errorf("root name = %q, want %q", root.Agent.Name, "sensei")
+	if root.Agent.Name != "neo" {
+		t.Errorf("root name = %q, want %q", root.Agent.Name, "neo")
 	}
 	if len(root.Children) != 0 {
 		t.Errorf("expected 0 children, got %d", len(root.Children))
@@ -484,12 +484,12 @@ func TestBuildTree_SingleRoot(t *testing.T) {
 
 func TestBuildTree_SimpleHierarchy(t *testing.T) {
 	agents := []*AgentInfo{
-		{AgentState: state.AgentState{Name: "sensei"}, IsRoot: true},
-		{AgentState: state.AgentState{Name: "bravo", Parent: "sensei"}},
-		{AgentState: state.AgentState{Name: "alpha", Parent: "sensei"}},
+		{AgentState: state.AgentState{Name: "neo"}, IsRoot: true},
+		{AgentState: state.AgentState{Name: "bravo", Parent: "neo"}},
+		{AgentState: state.AgentState{Name: "alpha", Parent: "neo"}},
 	}
 
-	root, orphans := BuildTree(agents, "sensei")
+	root, orphans := BuildTree(agents, "neo")
 	if root == nil {
 		t.Fatalf("expected root node, got nil")
 	}
@@ -509,12 +509,12 @@ func TestBuildTree_SimpleHierarchy(t *testing.T) {
 
 func TestBuildTree_DeepHierarchy(t *testing.T) {
 	agents := []*AgentInfo{
-		{AgentState: state.AgentState{Name: "sensei"}, IsRoot: true},
-		{AgentState: state.AgentState{Name: "child", Parent: "sensei"}},
+		{AgentState: state.AgentState{Name: "neo"}, IsRoot: true},
+		{AgentState: state.AgentState{Name: "child", Parent: "neo"}},
 		{AgentState: state.AgentState{Name: "grandchild", Parent: "child"}},
 	}
 
-	root, orphans := BuildTree(agents, "sensei")
+	root, orphans := BuildTree(agents, "neo")
 	if root == nil {
 		t.Fatalf("expected root node, got nil")
 	}
@@ -539,11 +539,11 @@ func TestBuildTree_DeepHierarchy(t *testing.T) {
 
 func TestBuildTree_Orphans(t *testing.T) {
 	agents := []*AgentInfo{
-		{AgentState: state.AgentState{Name: "sensei"}, IsRoot: true},
+		{AgentState: state.AgentState{Name: "neo"}, IsRoot: true},
 		{AgentState: state.AgentState{Name: "lost", Parent: "nonexistent"}},
 	}
 
-	root, orphans := BuildTree(agents, "sensei")
+	root, orphans := BuildTree(agents, "neo")
 	if root == nil {
 		t.Fatalf("expected root node, got nil")
 	}
@@ -563,11 +563,11 @@ func TestBuildTree_Orphans(t *testing.T) {
 
 func TestBuildTree_NoOrphans(t *testing.T) {
 	agents := []*AgentInfo{
-		{AgentState: state.AgentState{Name: "sensei"}, IsRoot: true},
-		{AgentState: state.AgentState{Name: "child", Parent: "sensei"}},
+		{AgentState: state.AgentState{Name: "neo"}, IsRoot: true},
+		{AgentState: state.AgentState{Name: "child", Parent: "neo"}},
 	}
 
-	_, orphans := BuildTree(agents, "sensei")
+	_, orphans := BuildTree(agents, "neo")
 	if orphans != nil {
 		t.Errorf("expected no orphans, got orphans with %d children", len(orphans.Children))
 	}
@@ -575,13 +575,13 @@ func TestBuildTree_NoOrphans(t *testing.T) {
 
 func TestBuildTree_ChildrenSortedByName(t *testing.T) {
 	agents := []*AgentInfo{
-		{AgentState: state.AgentState{Name: "sensei"}, IsRoot: true},
-		{AgentState: state.AgentState{Name: "charlie", Parent: "sensei"}},
-		{AgentState: state.AgentState{Name: "alice", Parent: "sensei"}},
-		{AgentState: state.AgentState{Name: "bob", Parent: "sensei"}},
+		{AgentState: state.AgentState{Name: "neo"}, IsRoot: true},
+		{AgentState: state.AgentState{Name: "charlie", Parent: "neo"}},
+		{AgentState: state.AgentState{Name: "alice", Parent: "neo"}},
+		{AgentState: state.AgentState{Name: "bob", Parent: "neo"}},
 	}
 
-	root, _ := BuildTree(agents, "sensei")
+	root, _ := BuildTree(agents, "neo")
 	if root == nil {
 		t.Fatalf("expected root node, got nil")
 	}
@@ -597,7 +597,7 @@ func TestBuildTree_ChildrenSortedByName(t *testing.T) {
 }
 
 func TestBuildTree_EmptyList(t *testing.T) {
-	root, orphans := BuildTree(nil, "sensei")
+	root, orphans := BuildTree(nil, "neo")
 	if root != nil {
 		t.Errorf("expected nil root for empty list, got %v", root)
 	}

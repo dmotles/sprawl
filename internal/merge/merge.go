@@ -56,7 +56,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	}
 
 	// Step 1: Acquire flock.
-	lockPath := filepath.Join(cfg.DendraRoot, ".dendra", "locks", cfg.AgentName+".lock")
+	lockPath := filepath.Join(cfg.DendraRoot, ".sprawl", "locks", cfg.AgentName+".lock")
 	unlock, err := deps.LockAcquire(lockPath)
 	if err != nil {
 		return nil, fmt.Errorf("acquiring lock for %s: %w", cfg.AgentName, err)

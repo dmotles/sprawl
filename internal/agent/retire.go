@@ -28,7 +28,7 @@ func GracefulShutdown(deps *ShutdownDeps, dendraRoot string, agentState *state.A
 	}
 
 	// Write sentinel file
-	killPath := filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".kill")
+	killPath := filepath.Join(dendraRoot, ".sprawl", "agents", agentState.Name+".kill")
 	_ = deps.WriteFile(killPath, []byte("kill"), 0o644)
 
 	// Poll: wait for window to disappear
@@ -96,13 +96,13 @@ func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, f
 	}
 
 	// Remove agent logs directory
-	logsDir := filepath.Join(dendraRoot, ".dendra", "agents", agent.Name, "logs")
+	logsDir := filepath.Join(dendraRoot, ".sprawl", "agents", agent.Name, "logs")
 	if err := deps.RemoveAll(logsDir); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(deps.Stderr, "Warning: could not remove logs directory: %v\n", err)
 	}
 
 	// Archive messages from new/ and cur/ (leave sent/ untouched)
-	msgsDir := filepath.Join(dendraRoot, ".dendra", "messages", agent.Name)
+	msgsDir := filepath.Join(dendraRoot, ".sprawl", "messages", agent.Name)
 	for _, sub := range []string{"new", "cur"} {
 		dirPath := filepath.Join(msgsDir, sub)
 		entries, err := deps.ReadDir(dirPath)

@@ -19,9 +19,9 @@ func newTestReportDeps(t *testing.T) (*reportDeps, string) {
 	deps := &reportDeps{
 		getenv: func(key string) string {
 			switch key {
-			case "DENDRA_ROOT":
+			case "SPRAWL_ROOT":
 				return tmpDir
-			case "DENDRA_AGENT_IDENTITY":
+			case "SPRAWL_AGENT_IDENTITY":
 				return "alice"
 			}
 			return ""
@@ -227,7 +227,7 @@ func TestReportDone_NonRootParent_SendsMessage(t *testing.T) {
 func TestReport_MissingAgentIdentity(t *testing.T) {
 	deps, _ := newTestReportDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_ROOT" {
+		if key == "SPRAWL_ROOT" {
 			return "/tmp/test"
 		}
 		return ""
@@ -235,17 +235,17 @@ func TestReport_MissingAgentIdentity(t *testing.T) {
 
 	err := runReport(deps, "status", "test")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_AGENT_IDENTITY")
+		t.Fatal("expected error for missing SPRAWL_AGENT_IDENTITY")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_AGENT_IDENTITY") {
-		t.Errorf("error should mention DENDRA_AGENT_IDENTITY, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_AGENT_IDENTITY") {
+		t.Errorf("error should mention SPRAWL_AGENT_IDENTITY, got: %v", err)
 	}
 }
 
 func TestReport_MissingDendraRoot(t *testing.T) {
 	deps, _ := newTestReportDeps(t)
 	deps.getenv = func(key string) string {
-		if key == "DENDRA_AGENT_IDENTITY" {
+		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "alice"
 		}
 		return ""
@@ -253,10 +253,10 @@ func TestReport_MissingDendraRoot(t *testing.T) {
 
 	err := runReport(deps, "status", "test")
 	if err == nil {
-		t.Fatal("expected error for missing DENDRA_ROOT")
+		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
-	if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-		t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 	}
 }
 
