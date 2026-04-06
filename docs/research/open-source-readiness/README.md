@@ -1,6 +1,6 @@
 # Open Source Readiness Research
 
-Research documents for preparing dendra for open source publication. These are living documents — update them as decisions are made and work is completed.
+Research documents for preparing sprawl for open source publication. These are living documents — update them as decisions are made and work is completed.
 
 ## Documents
 

@@ -6,13 +6,13 @@
 
 ## Incident Summary
 
-A manager agent (summit) completed its primary task and ran `dendra report done`. When `dendra status` was checked, it showed:
+A manager agent (summit) completed its primary task and ran `sprawl report done`. When `sprawl status` was checked, it showed:
 
 | AGENT  | STATUS | PROCESS |
 |--------|--------|---------|
 | summit | done   | -       |
 
-This was interpreted as "the process is dead." `dendra retire --abandon` was used, destroying 6 unmerged commits. In reality, the agent was still alive — it had reported done on its first task, and a new message with follow-up work had already been sent to it.
+This was interpreted as "the process is dead." `sprawl retire --abandon` was used, destroying 6 unmerged commits. In reality, the agent was still alive — it had reported done on its first task, and a new message with follow-up work had already been sent to it.
 
 ## Root Cause Analysis
 
@@ -57,7 +57,7 @@ The agent loop (`cmd/agentloop.go`) is a perpetual loop that:
 5. Checks for wake files → delivers them
 6. Sleeps 3 seconds → loops back to step 1
 
-**The loop never exits on its own.** When an agent calls `dendra report done`, it only updates the state file — the agent loop keeps running, waiting for new tasks or messages. "done" is a task-level concept being displayed as if it were a process-level concept.
+**The loop never exits on its own.** When an agent calls `sprawl report done`, it only updates the state file — the agent loop keeps running, waiting for new tasks or messages. "done" is a task-level concept being displayed as if it were a process-level concept.
 
 ### Finding 3: `retire --abandon` has no safety checks for live processes
 
@@ -86,8 +86,8 @@ With `--abandon`, the retire flow:
 
 The STATUS column has these possible values:
 - `""` (empty/blank) — initial state after spawn
-- `"done"` — agent called `dendra report done`
-- `"problem"` — agent called `dendra report problem`
+- `"done"` — agent called `sprawl report done`
+- `"problem"` — agent called `sprawl report problem`
 - `"retiring"` — retire command checkpoint (crash recovery)
 
 None of these directly indicate process liveness. "done" means "the agent finished a task," which is often the moment a manager sends it MORE work. This is the fundamental semantic confusion that caused the incident.
@@ -103,7 +103,7 @@ None of these directly indicate process liveness. "done" means "the agent finish
 - `DEAD` — tmux window does not exist
 - `?` — tmux not available to check
 
-This means `dendra status` would show `done / alive` for an agent that reported done but is still running — clearly different from `done / DEAD`.
+This means `sprawl status` would show `done / alive` for an agent that reported done but is still running — clearly different from `done / DEAD`.
 
 **Effort:** ~10 lines changed in `observe.go` and `status.go`.
 
@@ -157,11 +157,11 @@ This would require changes in the agent loop to update state after delivering ne
 
 1. **Should `retire` (without `--abandon`) also warn about unmerged commits more prominently?** Currently it refuses if unmerged, which is good, but the error message could be clearer about what to do next.
 
-2. **Should there be a `dendra stop` command** that gracefully stops an agent's process without retiring it? This would let operators stop a process without destroying state, which is a safer intermediate step.
+2. **Should there be a `sprawl stop` command** that gracefully stops an agent's process without retiring it? This would let operators stop a process without destroying state, which is a safer intermediate step.
 
 3. **Race condition:** Between checking status and running retire, the agent could pick up new work. The "retiring" checkpoint and kill sentinel handle this, but there's a window where work could be lost. Is this acceptable?
 
-4. **Should `dendra retire --abandon` be renamed** to something more alarming like `--destroy` or `--discard`? The word "abandon" may not convey sufficient danger.
+4. **Should `sprawl retire --abandon` be renamed** to something more alarming like `--destroy` or `--discard`? The word "abandon" may not convey sufficient danger.
 
 ## Summary of Changes by Priority
 

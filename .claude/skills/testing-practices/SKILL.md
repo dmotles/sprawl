@@ -120,26 +120,26 @@ Build the binary:
 make build
 ```
 
-This produces a `./dendra` binary. Common commands to test:
+This produces a `./sprawl` binary. Common commands to test:
 
 ```bash
 # Initialize the root agent session
-./dendra init
+./sprawl init
 
 # Spawn a child agent
-./dendra spawn engineering engineer "implement feature X"
+./sprawl spawn engineering engineer "implement feature X"
 
 # Kill an agent (graceful SIGTERM then SIGKILL)
-./dendra kill alice
+./sprawl kill alice
 
 # Force-kill an agent (immediate SIGKILL)
-./dendra kill --force alice
+./sprawl kill --force alice
 
 # Retire an agent (kill + remove worktree + delete state)
-./dendra retire alice
+./sprawl retire alice
 
 # Retire with cascade (retire agent and all descendants)
-./dendra retire --cascade alice
+./sprawl retire --cascade alice
 ```
 
 ## Validating Agent Behavior
@@ -153,18 +153,18 @@ When testing the full system (not unit tests), verify these artifacts:
 tmux list-sessions
 
 # List windows in a session
-tmux list-windows -t dendra-root
+tmux list-windows -t sprawl-root
 
 # Attach to observe an agent
-tmux attach -t dendra-root
+tmux attach -t sprawl-root
 ```
 
 ### Agent state files
 
 ```bash
-# State files live in .dendra/agents/
-ls .dendra/agents/
-cat .dendra/agents/alice.json
+# State files live in .sprawl/agents/
+ls .sprawl/agents/
+cat .sprawl/agents/alice.json
 
 # Each JSON file contains: name, type, family, parent, prompt, branch,
 # worktree path, tmux session/window, status, and timestamps
@@ -173,14 +173,14 @@ cat .dendra/agents/alice.json
 ### Git worktrees
 
 ```bash
-# Worktrees are created under .dendra/worktrees/<agent-name>/
-ls .dendra/worktrees/
+# Worktrees are created under .sprawl/worktrees/<agent-name>/
+ls .sprawl/worktrees/
 
-# Each agent works on branch dendra/<agent-name>
+# Each agent works on branch sprawl/<agent-name>
 git worktree list
 
 # Check for uncommitted changes in an agent's worktree
-git -C .dendra/worktrees/alice status
+git -C .sprawl/worktrees/alice status
 ```
 
 ## Testing Pyramid

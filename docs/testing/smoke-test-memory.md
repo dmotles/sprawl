@@ -1,6 +1,6 @@
-# Sensei Memory System Smoke Test
+# Neo Memory System Smoke Test
 
-Integration smoke test for the dendra sensei memory system. Exercises session persistence, handoff, context blob file contracts, timeline, and budget enforcement using the locally-built binary.
+Integration smoke test for the sprawl neo memory system. Exercises session persistence, handoff, context blob file contracts, timeline, and budget enforcement using the locally-built binary.
 
 Does NOT require a real Claude API key.
 
@@ -8,7 +8,7 @@ Does NOT require a real Claude API key.
 
 - `tmux` installed and on `$PATH`
 - Go toolchain (for `make build`)
-- `claude` CLI on `$PATH` (required by `dendra init`, but no API key needed)
+- `claude` CLI on `$PATH` (required by `sprawl init`, but no API key needed)
 - `xxd` available (typically from `vim-common`)
 
 ## Running the Smoke Test
@@ -20,10 +20,10 @@ bash scripts/smoke-test-memory.sh
 
 The script will:
 
-1. Build the `dendra` binary
+1. Build the `sprawl` binary
 2. Create a temp directory with an isolated git repo
 3. Generate a `test-*` namespaced environment
-4. Run `dendra init --detached` to bootstrap state files
+4. Run `sprawl init --detached` to bootstrap state files
 5. Execute test cases against the memory system
 6. Clean up all resources on exit (via trap)
 
@@ -33,9 +33,9 @@ Exit code 0 means all tests passed. Non-zero means at least one test failed.
 
 | Test | Description |
 |------|-------------|
-| Init state files | Verifies `.dendra/namespace` and `.dendra/root-name` are created |
+| Init state files | Verifies `.sprawl/namespace` and `.sprawl/root-name` are created |
 | Session persistence | Writes session files in the expected YAML frontmatter format, reads back |
-| Handoff command | Runs `dendra handoff` via stdin, verifies session file and signal file created |
+| Handoff command | Runs `sprawl handoff` via stdin, verifies session file and signal file created |
 | Handoff error cases | Verifies handoff fails without required env vars or with wrong identity |
 | Multiple sessions | Creates 5 session files, verifies ordering and file format contract |
 | Handoff with existing sessions | Verifies new handoff appends alongside existing session files |
@@ -50,21 +50,21 @@ Use the wrapper script to create an isolated environment for manual testing:
 
 ```bash
 # Print export statements
-bash scripts/dendra-test-env.sh
+bash scripts/sprawl-test-env.sh
 
 # Or source directly into your shell
-eval "$(bash scripts/dendra-test-env.sh)"
+eval "$(bash scripts/sprawl-test-env.sh)"
 
 # The following env vars are now set:
-#   DENDRA_BIN       - path to built binary
-#   DENDRA_ROOT      - temp directory with git repo
-#   DENDRA_TEST_MODE - set to 1
-#   DENDRA_NAMESPACE - test-* namespace
-#   TEST_NS          - same as DENDRA_NAMESPACE
-#   TEST_ROOT        - same as DENDRA_ROOT
+#   SPRAWL_BIN       - path to built binary
+#   SPRAWL_ROOT      - temp directory with git repo
+#   SPRAWL_TEST_MODE - set to 1
+#   SPRAWL_NAMESPACE - test-* namespace
+#   TEST_NS          - same as SPRAWL_NAMESPACE
+#   TEST_ROOT        - same as SPRAWL_ROOT
 ```
 
-The test environment creates a tmux session running the sensei loop. You can attach to it or kill it as needed.
+The test environment creates a tmux session running the neo loop. You can attach to it or kill it as needed.
 
 ## Cleanup
 

@@ -14,25 +14,25 @@ make lint         # run golangci-lint
 make test         # run all unit tests
 make hooks        # install pre-commit hook
 
-scripts/smoke-test-memory.sh   # integration test for sensei memory system
-scripts/dendra-test-env.sh     # set up isolated test environment
+scripts/smoke-test-memory.sh   # integration test for neo memory system
+scripts/sprawl-test-env.sh     # set up isolated test environment
 ```
 
 ## Install
 
-> **Warning:** Do not run `make install` unless your agent identity is `root` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./dendra` binary using temporary directories with overridden environment variables (e.g. `DENDRA_ROOT`, `DENDRA_AGENT_IDENTITY`) to exercise the tool.
+> **Warning:** Do not run `make install` unless your agent identity is `neo` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./dendra` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
 
 ## Repo Layout
 
 - `cmd/` — CLI commands (cobra). Each command has its own file + test file.
 - `internal/agent/` — Claude Code launcher, agent name allocation, prompt building
-- `internal/state/` — Agent state persistence (JSON files in `.dendra/agents/`)
+- `internal/state/` — Agent state persistence (JSON files in `.sprawl/agents/`)
 - `internal/tmux/` — tmux session/window management for running agents
 - `internal/worktree/` — Git worktree creation for agent isolation
 
-## Meta: Developing Dendra Inside Dendra
+## Meta: Developing Sprawl Inside Sprawl
 
-This repo IS Dendrarchy. The `.dendra/` directory at the repo root stores agent state and worktrees. If you're an agent working on this codebase, you are running inside the system you're building. Don't mess with `.dendra/` contents unless that's your task.
+This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent state and worktrees. If you're an agent working on this codebase, you are running inside the system you're building. Don't mess with `.sprawl/` contents unless that's your task.
 
 ## Code Patterns
 
@@ -46,7 +46,7 @@ This repo IS Dendrarchy. The `.dendra/` directory at the repo root stores agent 
 
 ## Linear Issue Tracking
 
-This project tracks work in Linear. All issues belong to the **Dendra** project in team **Qumulo-dmotles** (prefix: `QUM`).
+This project tracks work in Linear. All issues belong to the **Sprawl** project in team **Qumulo-dmotles** (prefix: `QUM`).
 
 When creating, managing, or querying issues, use the `/linear-issues` skill for conventions, required fields, and MCP tool usage.
 
@@ -60,7 +60,7 @@ When creating, managing, or querying issues, use the `/linear-issues` skill for 
 When spawning an agent to work on a Linear issue, keep the prompt short. Point the agent at the issue — don't repeat the issue contents in the prompt. Example:
 
 ```
-dendra spawn --family engineering --type engineer \
+sprawl spawn --family engineering --type engineer \
   --branch "dmotles/qum-42-broadcast-partial-failure" \
   --prompt "Work on QUM-42. Read the issue for details."
 ```
@@ -69,7 +69,7 @@ The issue is the source of truth. The agent can read it via Linear MCP tools (`g
 
 ## Session Handoff
 
-At the end of a session, use `/handoff` to persist context for the next session. It guides you through writing a structured summary and piping it into `dendra handoff`.
+At the end of a session, use `/handoff` to persist context for the next session. It guides you through writing a structured summary and piping it into `sprawl handoff`.
 
 ## Sandbox Testing
 
@@ -77,7 +77,7 @@ Use the `/e2e-testing-sandboxing` skill for the full setup, inspection, and clea
 
 ```bash
 make build
-eval "$(bash scripts/dendra-test-env.sh)"
+eval "$(bash scripts/sprawl-test-env.sh)"
 ```
 
 ## Linting & Formatting
@@ -91,17 +91,17 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 ## Validating Changes
 
 1. `make validate` — full pipeline: build, fmt-check, lint, test
-2. Manual smoke test: run the built `./dendra` binary with relevant commands
+2. Manual smoke test: run the built `./sprawl` binary with relevant commands
 3. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
 
 ## Migration Notes
 
 ### M12: Merge/Retire Workflow Change
 
-- `dendra merge` no longer retires agents or deletes branches. It only pulls in work via squash-merge. The agent stays alive.
-- `dendra retire --merge` replaces the old merge-and-retire-in-one-step behavior.
-- `dendra retire` now deletes the agent's branch by default and refuses if unmerged commits exist.
-- `dendra retire --abandon` discards work and deletes the branch without checking for unmerged commits.
+- `sprawl merge` no longer retires agents or deletes branches. It only pulls in work via squash-merge. The agent stays alive.
+- `sprawl retire --merge` replaces the old merge-and-retire-in-one-step behavior.
+- `sprawl retire` now deletes the agent's branch by default and refuses if unmerged commits exist.
+- `sprawl retire --abandon` discards work and deletes the branch without checking for unmerged commits.
 - The `--force` flag on merge has been removed.
 - **Pre-M12 branches**: Agent branches merged before M12 used the old squash-merge approach and will never appear in `git branch --merged`. Clean them up manually with `git branch -D <branch>`.
-- **Retirement safety:** `dendra retire` checks for unmerged commits and refuses if found. Use `--abandon` only to intentionally discard work. For researchers with committed findings, always merge before retiring.
+- **Retirement safety:** `sprawl retire` checks for unmerged commits and refuses if found. Use `--abandon` only to intentionally discard work. For researchers with committed findings, always merge before retiring.

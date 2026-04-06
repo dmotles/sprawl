@@ -1,8 +1,8 @@
 # Claude Code Capabilities Research: Agents, Skills, Plugins
 
 **Date:** 2026-03-31
-**Author:** dave (dendra agent)
-**Purpose:** Research how Claude Code handles skills, plugins, and the `--agents` flag to inform Dendrarchy's design for TDD workflows and sub-agent orchestration.
+**Author:** dave (sprawl agent)
+**Purpose:** Research how Claude Code handles skills, plugins, and the `--agents` flag to inform Sprawl's design for TDD workflows and sub-agent orchestration.
 
 ---
 
@@ -192,8 +192,8 @@ claude --agents '{
 
 This makes these 6 agents available as sub-agent types for the session.
 
-**How Dendrarchy currently spawns agents:**
-Dendrarchy uses `claude -p` with system prompts. If we want a spawned engineer agent to have access to sub-agents, we need to:
+**How Sprawl currently spawns agents:**
+Sprawl uses `claude -p` with system prompts. If we want a spawned engineer agent to have access to sub-agents, we need to:
 
 1. Pass `--agents <json>` when spawning the engineer via `claude -p`
 2. The engineer's system prompt should reference the available sub-agents
@@ -277,19 +277,19 @@ Both can reference sub-agents defined in the same plugin's `agents/` directory.
 | Approach | Pros | Cons |
 |----------|------|------|
 | **Skill (SKILL.md)** | Auto-triggers on TDD-related requests; progressive loading; can bundle scripts and reference docs | Requires careful description tuning; may over/under-trigger |
-| **`--agents` definitions** | Simple; passed at spawn time; works with Dendrarchy's existing `claude -p` pattern | Limited formatting; prompt length in JSON is awkward; no tool/model restrictions |
+| **`--agents` definitions** | Simple; passed at spawn time; works with Sprawl's existing `claude -p` pattern | Limited formatting; prompt length in JSON is awkward; no tool/model restrictions |
 | **Plugin with agents + command** | Full control over agents (tools, models); slash command for explicit invocation; agents for sub-tasks | Requires maintaining a plugin directory; more setup |
 | **Custom command (.md file)** | Explicit invocation (`/tdd`); clear workflow phases; can reference agents | No auto-triggering; user must know to invoke it |
 
 ### Recommended Approach: **Plugin with Agents + Command**
 
-For Dendrarchy's TDD workflow, the best approach is a **plugin directory** because:
+For Sprawl's TDD workflow, the best approach is a **plugin directory** because:
 
 1. **Agent definitions need tool restrictions.** A test-writer should have different tools than a code-reviewer. Only the `.md` frontmatter format supports `tools:` restrictions.
 
 2. **Model selection per agent.** The oracle might use `opus` for deep analysis while the test-writer uses `sonnet` for speed. The `--agents` JSON doesn't support model selection.
 
-3. **Dendrarchy spawns via `claude -p`.** We can add `--plugin-dir ./plugins/tdd-workflow/` to the spawn command.
+3. **Sprawl spawns via `claude -p`.** We can add `--plugin-dir ./plugins/tdd-workflow/` to the spawn command.
 
 4. **The command provides structure.** A `/tdd` command (or the initial prompt) orchestrates the phases (red-green-refactor) while sub-agents handle specific tasks.
 
@@ -312,7 +312,7 @@ plugins/tdd-workflow/
     └── tdd-principles.md   # Reference doc on TDD best practices
 ```
 
-### How to Wire into Dendrarchy
+### How to Wire into Sprawl
 
 When spawning an engineer agent:
 
@@ -350,7 +350,7 @@ This is simpler but less powerful. Good for prototyping; graduate to plugin for 
 
 ---
 
-## 7. Key Takeaways for Dendrarchy
+## 7. Key Takeaways for Sprawl
 
 1. **`--agents` JSON is the quick path** — pass agent definitions inline when spawning. Good for simple sub-agents where tool/model restrictions aren't needed.
 
@@ -362,6 +362,6 @@ This is simpler but less powerful. Good for prototyping; graduate to plugin for 
 
 5. **The feature-dev plugin is the gold standard example.** It shows exactly how to structure a multi-phase workflow with specialized sub-agents (code-explorer, code-architect, code-reviewer) orchestrated by a command (`/feature-dev`).
 
-6. **Dendrarchy's `--append-system-prompt` is key.** When spawning agents with `claude -p`, use `--append-system-prompt` to add Dendrarchy-specific instructions (reporting, scope rules) without replacing Claude Code's default system prompt.
+6. **Sprawl's `--append-system-prompt` is key.** When spawning agents with `claude -p`, use `--append-system-prompt` to add Sprawl-specific instructions (reporting, scope rules) without replacing Claude Code's default system prompt.
 
 7. **`--bare` mode is useful for controlled spawning.** It skips auto-discovery and gives us full control over what context the agent sees, but skills still work via `/skill-name`.

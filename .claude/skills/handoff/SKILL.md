@@ -1,12 +1,12 @@
 ---
 name: handoff
-description: Write a session summary and hand off to the next sensei session. ONLY TO BE USED BY THE SENSEI.
+description: Write a session summary and hand off to the next neo session. ONLY TO BE USED BY NEO.
 user-invocable: true
 ---
 
 # Session Handoff
 
-Use this skill at the end of a sensei session to write a structured summary and hand off context to the next session. The summary you write is the **primary context** the next sensei will have — make it count.
+Use this skill at the end of a neo session to write a structured summary and hand off context to the next session. The summary you write is the **primary context** the next neo will have — make it count.
 
 ## Step 1: Write the Session Summary
 
@@ -37,24 +37,24 @@ Write a structured summary covering these categories:
 - Any explicit requests or directions from the user
 - Tone, style, or workflow preferences noticed
 
-## Step 2: Pipe the Summary into `dendra handoff`
+## Step 2: Pipe the Summary into `sprawl handoff`
 
 Once your summary is written, execute the handoff by piping it via a heredoc:
 
 ```bash
-dendra handoff <<'EOF'
+sprawl handoff <<'EOF'
 <paste your full summary here>
 EOF
 ```
 
-The `dendra handoff` command will:
+The `sprawl handoff` command will:
 - Save the summary as the session file for the current session ID
 - Remind you to instruct the user to kill the session when ready
-- When the user ctrl+c or ctrl+d or /exits the session, the sensei loop will start a fresh version of the sensei with memories from the previous session, so the sensei has historical context of what happened.
+- When the user ctrl+c or ctrl+d or /exits the session, the neo loop will start a fresh version of neo with memories from the previous session, so neo has historical context of what happened.
 
 ## Reminders
 
 - **Be specific, not vague.** "Made progress on auth" is useless. "Implemented JWT validation in `internal/auth/`, added tests, blocked on refresh token rotation (see QUM-45)" is useful.
-- **Include agent state.** If agents are still running, say which ones and what they're working on. The next sensei needs to know what's in flight.
+- **Include agent state.** If agents are still running, say which ones and what they're working on. The next neo needs to know what's in flight.
 - **Reference artifacts.** Link to Linear issues, name branches, cite file paths. The next session can't search your memory — only what you write down.
 - **Don't skip "what didn't work."** Process failures are some of the most valuable context for the next session.

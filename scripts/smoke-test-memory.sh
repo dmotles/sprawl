@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# smoke-test-memory.sh - Integration smoke test for the sensei memory system.
+# smoke-test-memory.sh - Integration smoke test for the neo memory system.
 #
 # Exercises session persistence, handoff, context blob file contracts,
 # timeline read/write, and budget enforcement using the locally-built binary.
@@ -131,27 +131,27 @@ assert_exit_nonzero() {
 echo "=== Setting up test environment ==="
 
 # Build binary
-echo "Building dendra..."
+echo "Building sprawl..."
 make -C "$REPO_ROOT" build >/dev/null 2>&1
 
-DENDRA_BIN="$REPO_ROOT/dendra"
-if [ ! -x "$DENDRA_BIN" ]; then
-    echo "FATAL: dendra binary not found at $DENDRA_BIN" >&2
+SPRAWL_BIN="$REPO_ROOT/dendra"
+if [ ! -x "$SPRAWL_BIN" ]; then
+    echo "FATAL: dendra binary not found at $SPRAWL_BIN" >&2
     exit 1
 fi
 
 # Create temp dir with git repo
-TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/dendra-smoke-XXXXXX")
+TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sprawl-smoke-XXXXXX")
 git -C "$TEST_ROOT" init -b main --quiet
 git -C "$TEST_ROOT" -c user.name="Test" -c user.email="test@test" commit --allow-empty -m "init" --quiet
 
 # Generate test namespace
 TEST_NS="test-$(head -c4 /dev/urandom | xxd -p)"
 
-export DENDRA_BIN
-export DENDRA_ROOT="$TEST_ROOT"
-export DENDRA_TEST_MODE=1
-export DENDRA_NAMESPACE="$TEST_NS"
+export SPRAWL_BIN
+export SPRAWL_ROOT="$TEST_ROOT"
+export SPRAWL_TEST_MODE=1
+export SPRAWL_NAMESPACE="$TEST_NS"
 
 # Teardown trap - uses targeted session kills only
 cleanup() {
@@ -168,14 +168,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Run dendra init --detached
-echo "Running dendra init --detached --namespace $TEST_NS..."
-(cd "$TEST_ROOT" && "$DENDRA_BIN" init --detached --namespace "$TEST_NS") 2>&1
+# Run sprawl init --detached
+echo "Running sprawl init --detached --namespace $TEST_NS..."
+(cd "$TEST_ROOT" && "$SPRAWL_BIN" init --detached --namespace "$TEST_NS") 2>&1
 
-# Kill the sensei-loop tmux session immediately (we don't need it running)
-tmux kill-session -t "${TEST_NS}sensei" 2>/dev/null || true
+# Kill the neo-loop tmux session immediately (we don't need it running)
+tmux kill-session -t "${TEST_NS}neo" 2>/dev/null || true
 
-echo "  DENDRA_ROOT=$TEST_ROOT"
+echo "  SPRAWL_ROOT=$TEST_ROOT"
 echo "  TEST_NS=$TEST_NS"
 echo ""
 
@@ -183,11 +183,11 @@ echo ""
 
 echo "=== Test 1: Init creates expected state files ==="
 
-assert_dir_exists "$TEST_ROOT/.dendra" "init creates .dendra directory"
-assert_file_exists "$TEST_ROOT/.dendra/namespace" "init creates namespace file"
-assert_file_exists "$TEST_ROOT/.dendra/root-name" "init creates root-name file"
-assert_file_contains "$TEST_ROOT/.dendra/namespace" "$TEST_NS" "namespace file contains test namespace"
-assert_file_contains "$TEST_ROOT/.dendra/root-name" "sensei" "root-name file contains sensei"
+assert_dir_exists "$TEST_ROOT/.sprawl" "init creates .sprawl directory"
+assert_file_exists "$TEST_ROOT/.sprawl/namespace" "init creates namespace file"
+assert_file_exists "$TEST_ROOT/.sprawl/root-name" "init creates root-name file"
+assert_file_contains "$TEST_ROOT/.sprawl/namespace" "$TEST_NS" "namespace file contains test namespace"
+assert_file_contains "$TEST_ROOT/.sprawl/root-name" "neo" "root-name file contains neo"
 
 echo ""
 
@@ -195,7 +195,7 @@ echo ""
 
 echo "=== Test 2: Session persistence ==="
 
-SESSIONS_DIR="$TEST_ROOT/.dendra/memory/sessions"
+SESSIONS_DIR="$TEST_ROOT/.sprawl/memory/sessions"
 mkdir -p "$SESSIONS_DIR"
 
 # Write a session file manually in the expected format
@@ -205,7 +205,7 @@ session_id: test-session-001
 timestamp: 2026-04-01T12:00:00Z
 handoff: true
 agents_active:
-  - sensei
+  - neo
   - elm
 ---
 
@@ -229,15 +229,15 @@ echo "=== Test 3: Handoff command ==="
 rm -rf "$SESSIONS_DIR"/*
 
 # Write last-session-id (required by handoff)
-MEMORY_DIR="$TEST_ROOT/.dendra/memory"
+MEMORY_DIR="$TEST_ROOT/.sprawl/memory"
 mkdir -p "$MEMORY_DIR"
 echo "smoke-handoff-001" > "$MEMORY_DIR/last-session-id"
 
 # Run handoff
 HANDOFF_OUTPUT=$(echo "Handoff test summary: everything is working." | \
-    DENDRA_AGENT_IDENTITY=sensei \
-    DENDRA_ROOT="$TEST_ROOT" \
-    "$DENDRA_BIN" handoff 2>&1) || {
+    SPRAWL_AGENT_IDENTITY=neo \
+    SPRAWL_ROOT="$TEST_ROOT" \
+    "$SPRAWL_BIN" handoff 2>&1) || {
     fail "handoff command exited non-zero"
     echo "  Output: $HANDOFF_OUTPUT" >&2
 }
@@ -265,22 +265,22 @@ echo ""
 
 echo "=== Test 4: Handoff error cases ==="
 
-# Handoff without DENDRA_AGENT_IDENTITY should fail
-assert_exit_nonzero "handoff fails without DENDRA_AGENT_IDENTITY" \
-    env -u DENDRA_AGENT_IDENTITY DENDRA_ROOT="$TEST_ROOT" "$DENDRA_BIN" handoff
+# Handoff without SPRAWL_AGENT_IDENTITY should fail
+assert_exit_nonzero "handoff fails without SPRAWL_AGENT_IDENTITY" \
+    env -u SPRAWL_AGENT_IDENTITY SPRAWL_ROOT="$TEST_ROOT" "$SPRAWL_BIN" handoff
 
 # Handoff with wrong identity (not root) should fail
 assert_exit_nonzero "handoff fails with non-root identity" \
-    env DENDRA_AGENT_IDENTITY=not-sensei DENDRA_ROOT="$TEST_ROOT" "$DENDRA_BIN" handoff
+    env SPRAWL_AGENT_IDENTITY=not-neo SPRAWL_ROOT="$TEST_ROOT" "$SPRAWL_BIN" handoff
 
-# Handoff without DENDRA_ROOT should fail
-assert_exit_nonzero "handoff fails without DENDRA_ROOT" \
-    env DENDRA_AGENT_IDENTITY=sensei -u DENDRA_ROOT "$DENDRA_BIN" handoff
+# Handoff without SPRAWL_ROOT should fail
+assert_exit_nonzero "handoff fails without SPRAWL_ROOT" \
+    env SPRAWL_AGENT_IDENTITY=neo -u SPRAWL_ROOT "$SPRAWL_BIN" handoff
 
 # Handoff without last-session-id should fail
 rm -f "$MEMORY_DIR/last-session-id"
 assert_exit_nonzero "handoff fails without last-session-id" \
-    bash -c 'echo "test" | DENDRA_AGENT_IDENTITY=sensei DENDRA_ROOT="'"$TEST_ROOT"'" "'"$DENDRA_BIN"'" handoff'
+    bash -c 'echo "test" | SPRAWL_AGENT_IDENTITY=neo SPRAWL_ROOT="'"$TEST_ROOT"'" "'"$SPRAWL_BIN"'" handoff'
 
 echo ""
 
@@ -330,9 +330,9 @@ echo "handoff-after-many" > "$MEMORY_DIR/last-session-id"
 rm -f "$MEMORY_DIR/handoff-signal"
 
 echo "New handoff after existing sessions." | \
-    DENDRA_AGENT_IDENTITY=sensei \
-    DENDRA_ROOT="$TEST_ROOT" \
-    "$DENDRA_BIN" handoff >/dev/null 2>&1
+    SPRAWL_AGENT_IDENTITY=neo \
+    SPRAWL_ROOT="$TEST_ROOT" \
+    "$SPRAWL_BIN" handoff >/dev/null 2>&1
 
 if [ -f "$SESSIONS_DIR/handoff-after-many.md" ]; then
     pass "handoff created new session file alongside existing ones"
@@ -393,9 +393,9 @@ rm -f "$MEMORY_DIR/handoff-signal"
 LARGE_BODY=$(python3 -c "print('x' * 50000)" 2>/dev/null || dd if=/dev/zero bs=50000 count=1 2>/dev/null | tr '\0' 'x')
 
 echo "$LARGE_BODY" | \
-    DENDRA_AGENT_IDENTITY=sensei \
-    DENDRA_ROOT="$TEST_ROOT" \
-    "$DENDRA_BIN" handoff >/dev/null 2>&1
+    SPRAWL_AGENT_IDENTITY=neo \
+    SPRAWL_ROOT="$TEST_ROOT" \
+    "$SPRAWL_BIN" handoff >/dev/null 2>&1
 
 BUDGET_FILE="$SESSIONS_DIR/budget-test-session.md"
 if [ -f "$BUDGET_FILE" ]; then
@@ -440,15 +440,15 @@ echo "=== Test 10: Cleanup flags ==="
 
 # Create a temporary test session to verify cleanup works
 TEST_CLEANUP_NS="test-cleanup-$$"
-tmux new-session -d -s "${TEST_CLEANUP_NS}sensei" "sleep 300" 2>/dev/null || true
+tmux new-session -d -s "${TEST_CLEANUP_NS}neo" "sleep 300" 2>/dev/null || true
 
-if tmux has-session -t "${TEST_CLEANUP_NS}sensei" 2>/dev/null; then
+if tmux has-session -t "${TEST_CLEANUP_NS}neo" 2>/dev/null; then
     # Test --cleanup with specific namespace
     bash "$REPO_ROOT/scripts/smoke-test-memory.sh" --cleanup "$TEST_CLEANUP_NS" >/dev/null 2>&1
 
-    if tmux has-session -t "${TEST_CLEANUP_NS}sensei" 2>/dev/null; then
+    if tmux has-session -t "${TEST_CLEANUP_NS}neo" 2>/dev/null; then
         fail "--cleanup did not kill test session"
-        tmux kill-session -t "${TEST_CLEANUP_NS}sensei" 2>/dev/null || true
+        tmux kill-session -t "${TEST_CLEANUP_NS}neo" 2>/dev/null || true
     else
         pass "--cleanup killed targeted session"
     fi
@@ -459,14 +459,14 @@ fi
 
 # Test --cleanup-all: create a test-* session and verify it gets cleaned up
 TEST_ALL_NS="test-all-$$"
-tmux new-session -d -s "${TEST_ALL_NS}sensei" "sleep 300" 2>/dev/null || true
+tmux new-session -d -s "${TEST_ALL_NS}neo" "sleep 300" 2>/dev/null || true
 
-if tmux has-session -t "${TEST_ALL_NS}sensei" 2>/dev/null; then
+if tmux has-session -t "${TEST_ALL_NS}neo" 2>/dev/null; then
     bash "$REPO_ROOT/scripts/smoke-test-memory.sh" --cleanup-all >/dev/null 2>&1
 
-    if tmux has-session -t "${TEST_ALL_NS}sensei" 2>/dev/null; then
+    if tmux has-session -t "${TEST_ALL_NS}neo" 2>/dev/null; then
         fail "--cleanup-all did not kill test-* session"
-        tmux kill-session -t "${TEST_ALL_NS}sensei" 2>/dev/null || true
+        tmux kill-session -t "${TEST_ALL_NS}neo" 2>/dev/null || true
     else
         pass "--cleanup-all killed test-* sessions"
     fi

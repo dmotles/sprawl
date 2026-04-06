@@ -20,7 +20,7 @@ Currently, non-root agents are launched as **interactive Claude Code sessions** 
 - Messages can land in the middle of Claude processing, corrupting input
 - Messages can be dropped or partially delivered
 - There's no clean boundary between "agent is working" and "agent is idle"
-- The interactive session has no awareness of the dendra messaging system
+- The interactive session has no awareness of the sprawl messaging system
 - Timing-dependent behavior is inherently unreliable
 
 Meanwhile, DESCRIPTION.md already describes the desired agent lifecycle as a **wake/work/sleep loop** (see "Agent Lifecycle" section). This design implements that architecture.
@@ -31,17 +31,17 @@ Replace the interactive Claude Code session with a **wrapper loop** that runs in
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  tmux window (dendra-root-children:alice)        │
+│  tmux window (sprawl-root-children:alice)        │
 │                                                   │
 │  ┌─────────────────────────────────────────────┐ │
-│  │  dendra-agent-loop (bash script)            │ │
+│  │  sprawl-agent-loop (bash script)            │ │
 │  │                                             │ │
 │  │  1. claude -p --resume $SID "$initial_msg"  │ │
 │  │     ↳ claude runs, outputs visible in tmux  │ │
 │  │     ↳ claude exits when done                │ │
 │  │                                             │ │
 │  │  2. Poll for new messages/signals           │ │
-│  │     ↳ check .dendra/ state files            │ │
+│  │     ↳ check .sprawl/ state files            │ │
 │  │     ↳ sleep between checks                  │ │
 │  │                                             │ │
 │  │  3. On new message:                         │ │
@@ -66,16 +66,16 @@ Replace the interactive Claude Code session with a **wrapper loop** that runs in
 
 ### Decision 1: Bash script, not Go binary
 
-The wrapper loop should be a **bash script** (`scripts/dendra-agent-loop.sh`), not a compiled Go binary.
+The wrapper loop should be a **bash script** (`scripts/sprawl-agent-loop.sh`), not a compiled Go binary.
 
 **Rationale:**
 - The loop is trivial: run a command, check a file, sleep, repeat. Bash excels at this.
 - The script runs *inside* the tmux window -- it needs to be a transparent passthrough for Claude's output. Bash gives us `exec`-like transparency; a Go binary would add a layer.
 - Debugging is easier: you can `cat` the script, edit it live, add `echo` statements.
 - No compilation step means no circular dependency (the build system doesn't need to produce a binary for the wrapper before agents can run).
-- The heavy logic (message checking, state management) already lives in the `dendra` CLI. The wrapper just calls `dendra` commands.
+- The heavy logic (message checking, state management) already lives in the `sprawl` CLI. The wrapper just calls `sprawl` commands.
 
-**The script is NOT a user-facing command.** It's an internal implementation detail invoked by `dendra spawn`. Users never run it directly.
+**The script is NOT a user-facing command.** It's an internal implementation detail invoked by `sprawl spawn`. Users never run it directly.
 
 ### Decision 2: File-based polling with signal-assisted wake
 
@@ -84,8 +84,8 @@ The wrapper polls for new messages by checking the agent's inbox directory. But 
 **Polling mechanism:**
 
 ```bash
-INBOX_DIR="$DENDRA_ROOT/.dendra/messages/$AGENT_NAME/inbox"
-WAKE_FILE="$DENDRA_ROOT/.dendra/agents/$AGENT_NAME.wake"
+INBOX_DIR="$SPRAWL_ROOT/.sprawl/messages/$AGENT_NAME/inbox"
+WAKE_FILE="$SPRAWL_ROOT/.sprawl/agents/$AGENT_NAME.wake"
 
 while true; do
     # Check for new messages
@@ -94,7 +94,7 @@ while true; do
         continue
     fi
 
-    # Check for wake signal (from dendra messages send, dendra report, etc.)
+    # Check for wake signal (from sprawl messages send, sprawl report, etc.)
     if [ -f "$WAKE_FILE" ]; then
         reason=$(cat "$WAKE_FILE")
         rm -f "$WAKE_FILE"
@@ -107,7 +107,7 @@ done
 ```
 
 **Wake file protocol:**
-- When `dendra messages send <agent>` delivers a message, it also writes a `.wake` file for the target agent: `.dendra/agents/<name>.wake`
+- When `sprawl messages send <agent>` delivers a message, it also writes a `.wake` file for the target agent: `.sprawl/agents/<name>.wake`
 - The wake file contains a human-readable reason string (e.g., "You have new messages. Check your inbox." or "Your child bob reported done.")
 - The wrapper checks for this file each poll cycle and deletes it after reading
 - If multiple signals arrive between polls, only the last one is kept (which is fine -- the prompt just tells Claude to check its inbox)
@@ -123,11 +123,11 @@ done
 - File-based signaling is simpler and non-blocking
 - Can upgrade to FIFO or Unix socket later if needed
 
-**Poll interval:** 3 seconds default. Configurable via environment variable `DENDRA_POLL_INTERVAL`.
+**Poll interval:** 3 seconds default. Configurable via environment variable `SPRAWL_POLL_INTERVAL`.
 
 ### Decision 3: Session ID management
 
-Each agent gets a deterministic session ID derived from its name: `dendra-<agent-name>` (e.g., `dendra-alice`). This is set at spawn time and stored in the agent state file.
+Each agent gets a deterministic session ID derived from its name: `sprawl-<agent-name>` (e.g., `sprawl-alice`). This is set at spawn time and stored in the agent state file.
 
 **On first run:**
 ```bash
@@ -185,7 +185,7 @@ shellCmd := fmt.Sprintf("cd %s && %s",
 
 **Proposed:**
 ```go
-wrapperPath := filepath.Join(dendraRoot, "scripts", "dendra-agent-loop.sh")
+wrapperPath := filepath.Join(sprawlRoot, "scripts", "sprawl-agent-loop.sh")
 shellCmd := fmt.Sprintf("cd %s && %s",
     tmux.ShellQuote(worktreePath),
     tmux.ShellQuote(wrapperPath))
@@ -195,14 +195,14 @@ shellCmd := fmt.Sprintf("cd %s && %s",
 
 | Variable | Value | Purpose |
 |---|---|---|
-| `DENDRA_AGENT_IDENTITY` | agent name | Already exists |
-| `DENDRA_ROOT` | repo root | Already exists |
-| `DENDRA_SESSION_ID` | `dendra-<name>` | Claude --resume session ID |
-| `DENDRA_SYSTEM_PROMPT` | system prompt text | Passed on first run only |
-| `DENDRA_INITIAL_PROMPT` | initial task prompt | First wake message |
-| `DENDRA_CLAUDE_PATH` | path to claude binary | So wrapper doesn't need to find it |
-| `DENDRA_POLL_INTERVAL` | `3` (seconds) | Poll interval, configurable |
-| `DENDRA_SKIP_PERMISSIONS` | `1` | Whether to pass --dangerously-skip-permissions |
+| `SPRAWL_AGENT_IDENTITY` | agent name | Already exists |
+| `SPRAWL_ROOT` | repo root | Already exists |
+| `SPRAWL_SESSION_ID` | `sprawl-<name>` | Claude --resume session ID |
+| `SPRAWL_SYSTEM_PROMPT` | system prompt text | Passed on first run only |
+| `SPRAWL_INITIAL_PROMPT` | initial task prompt | First wake message |
+| `SPRAWL_CLAUDE_PATH` | path to claude binary | So wrapper doesn't need to find it |
+| `SPRAWL_POLL_INTERVAL` | `3` (seconds) | Poll interval, configurable |
+| `SPRAWL_SKIP_PERMISSIONS` | `1` | Whether to pass --dangerously-skip-permissions |
 
 Using environment variables (rather than command-line arguments to the script) avoids shell quoting issues with the system prompt, which can contain quotes, newlines, and special characters.
 
@@ -216,11 +216,11 @@ Claude Code can exit with different codes. The wrapper should handle them:
 | 1 | Error | Log error, enter poll loop (agent can be woken to retry) |
 | Other | Unknown | Log, enter poll loop |
 
-The wrapper **never exits on its own** (except on SIGTERM/SIGKILL from `dendra kill`). Even if Claude errors, the wrapper stays alive so the agent can be woken again. This is important: a transient error shouldn't permanently kill an agent.
+The wrapper **never exits on its own** (except on SIGTERM/SIGKILL from `sprawl kill`). Even if Claude errors, the wrapper stays alive so the agent can be woken again. This is important: a transient error shouldn't permanently kill an agent.
 
 ### Decision 7: Impact on kill and retire
 
-**kill:** No changes needed. `dendra kill` already:
+**kill:** No changes needed. `sprawl kill` already:
 1. Finds PIDs in the tmux window (`ListWindowPIDs`)
 2. Sends SIGTERM/SIGKILL
 3. Kills the tmux window
@@ -236,17 +236,17 @@ This works identically whether the window is running an interactive Claude sessi
 Since the wrapper runs inside tmux, all output is visible to anyone watching:
 
 ```
-[dendra-agent-loop] Starting agent alice (session: dendra-alice)
-[dendra-agent-loop] Running: claude -p --resume dendra-alice "You have been assigned a task..."
+[sprawl-agent-loop] Starting agent alice (session: sprawl-alice)
+[sprawl-agent-loop] Running: claude -p --resume sprawl-alice "You have been assigned a task..."
 ... claude output appears here ...
-[dendra-agent-loop] Claude exited (code 0). Entering poll loop.
-[dendra-agent-loop] Polling for messages (interval: 3s)...
-[dendra-agent-loop] Wake signal received: "You have new messages. Check your inbox."
-[dendra-agent-loop] Running: claude -p --resume dendra-alice "You have new messages. Check your inbox."
+[sprawl-agent-loop] Claude exited (code 0). Entering poll loop.
+[sprawl-agent-loop] Polling for messages (interval: 3s)...
+[sprawl-agent-loop] Wake signal received: "You have new messages. Check your inbox."
+[sprawl-agent-loop] Running: claude -p --resume sprawl-alice "You have new messages. Check your inbox."
 ... claude output appears here ...
 ```
 
-The `[dendra-agent-loop]` prefix makes it easy to distinguish wrapper output from Claude output when scrolling through tmux history.
+The `[sprawl-agent-loop]` prefix makes it easy to distinguish wrapper output from Claude output when scrolling through tmux history.
 
 ## Wrapper Script Pseudocode
 
@@ -255,19 +255,19 @@ The `[dendra-agent-loop]` prefix makes it easy to distinguish wrapper output fro
 set -euo pipefail
 
 # Configuration from environment
-AGENT_NAME="${DENDRA_AGENT_IDENTITY:?}"
-DENDRA_ROOT="${DENDRA_ROOT:?}"
-SESSION_ID="${DENDRA_SESSION_ID:?}"
-CLAUDE_PATH="${DENDRA_CLAUDE_PATH:?}"
-SYSTEM_PROMPT="${DENDRA_SYSTEM_PROMPT:-}"
-INITIAL_PROMPT="${DENDRA_INITIAL_PROMPT:?}"
-POLL_INTERVAL="${DENDRA_POLL_INTERVAL:-3}"
-SKIP_PERMISSIONS="${DENDRA_SKIP_PERMISSIONS:-0}"
+AGENT_NAME="${SPRAWL_AGENT_IDENTITY:?}"
+SPRAWL_ROOT="${SPRAWL_ROOT:?}"
+SESSION_ID="${SPRAWL_SESSION_ID:?}"
+CLAUDE_PATH="${SPRAWL_CLAUDE_PATH:?}"
+SYSTEM_PROMPT="${SPRAWL_SYSTEM_PROMPT:-}"
+INITIAL_PROMPT="${SPRAWL_INITIAL_PROMPT:?}"
+POLL_INTERVAL="${SPRAWL_POLL_INTERVAL:-3}"
+SKIP_PERMISSIONS="${SPRAWL_SKIP_PERMISSIONS:-0}"
 
-INBOX_DIR="$DENDRA_ROOT/.dendra/messages/$AGENT_NAME/inbox"
-WAKE_FILE="$DENDRA_ROOT/.dendra/agents/$AGENT_NAME.wake"
+INBOX_DIR="$SPRAWL_ROOT/.sprawl/messages/$AGENT_NAME/inbox"
+WAKE_FILE="$SPRAWL_ROOT/.sprawl/agents/$AGENT_NAME.wake"
 
-log() { echo "[dendra-agent-loop] $*"; }
+log() { echo "[sprawl-agent-loop] $*"; }
 
 # Build base claude args
 build_claude_args() {
@@ -335,7 +335,7 @@ while true; do
     # Check for new messages in inbox
     if has_new_messages; then
         log "New messages detected in inbox"
-        run_claude "You have new messages. Check your inbox with: dendra messages inbox"
+        run_claude "You have new messages. Check your inbox with: sprawl messages inbox"
         continue
     fi
 
@@ -351,7 +351,7 @@ done
 
 | File | Description |
 |---|---|
-| `scripts/dendra-agent-loop.sh` | The wrapper loop script |
+| `scripts/sprawl-agent-loop.sh` | The wrapper loop script |
 
 ### Modified Files
 
@@ -363,18 +363,18 @@ done
 
 ### Messaging system integration
 
-When `dendra messages send` delivers a message, it should also write a wake file:
+When `sprawl messages send` delivers a message, it should also write a wake file:
 
 ```go
 // After writing message to inbox:
-wakeFile := filepath.Join(dendraRoot, ".dendra", "agents", targetAgent+".wake")
+wakeFile := filepath.Join(sprawlRoot, ".sprawl", "agents", targetAgent+".wake")
 os.WriteFile(wakeFile, []byte("You have new messages. Check your inbox."), 0644)
 ```
 
-Similarly, `dendra report` (child reporting to parent) should write a wake file for the parent:
+Similarly, `sprawl report` (child reporting to parent) should write a wake file for the parent:
 
 ```go
-wakeFile := filepath.Join(dendraRoot, ".dendra", "agents", parentName+".wake")
+wakeFile := filepath.Join(sprawlRoot, ".sprawl", "agents", parentName+".wake")
 reason := fmt.Sprintf("Your child %s reported: %s", agentName, reportType)
 os.WriteFile(wakeFile, []byte(reason), 0644)
 ```
@@ -417,16 +417,16 @@ Note: The `starting`, `sleeping`, and `working` states are conceptual -- the wra
 
 1. **Phase 1:** Implement the wrapper script and update `spawn` to use it. All new agents get the wrapper. Existing interactive sessions are unaffected (there are none in a fresh system).
 
-2. **Phase 2:** Implement the wake file protocol in `dendra messages send` and `dendra report`. Until this is done, agents rely on polling (3s latency, which is fine).
+2. **Phase 2:** Implement the wake file protocol in `sprawl messages send` and `sprawl report`. Until this is done, agents rely on polling (3s latency, which is fine).
 
 3. **Phase 3:** (Optional) Add fine-grained state tracking (`sleeping`/`working`) to the state file for observability.
 
 ## Edge Cases
 
 **Claude hangs and never exits:**
-The wrapper can't proceed to the poll phase until Claude exits. The `dendra kill` command handles this -- it sends SIGTERM/SIGKILL to all processes in the tmux window, which includes both the wrapper and Claude. After respawn, the wrapper starts fresh.
+The wrapper can't proceed to the poll phase until Claude exits. The `sprawl kill` command handles this -- it sends SIGTERM/SIGKILL to all processes in the tmux window, which includes both the wrapper and Claude. After respawn, the wrapper starts fresh.
 
-Future improvement: add a configurable timeout to the wrapper (e.g., `DENDRA_RUN_TIMEOUT=600`) that kills the Claude process if it runs longer than N seconds. Not needed for v1.
+Future improvement: add a configurable timeout to the wrapper (e.g., `SPRAWL_RUN_TIMEOUT=600`) that kills the Claude process if it runs longer than N seconds. Not needed for v1.
 
 **Multiple wake signals arrive while Claude is running:**
 Only the last `.wake` file contents are preserved (each write overwrites). This is fine -- the wake message is just a nudge to check inbox/notifications, not the message itself. The actual messages are in the inbox.
@@ -442,10 +442,10 @@ The wrapper should handle SIGTERM gracefully -- kill the child Claude process (i
 
 ## Open Questions
 
-1. **Should the wrapper write its PID to a file?** This would let `dendra kill` target the wrapper specifically, rather than relying on tmux's `list-panes` PID discovery. Not critical since the current approach works, but could be cleaner.
+1. **Should the wrapper write its PID to a file?** This would let `sprawl kill` target the wrapper specifically, rather than relying on tmux's `list-panes` PID discovery. Not critical since the current approach works, but could be cleaner.
 
 2. **Should there be a max wake cycles limit?** If an agent gets into a loop (keeps waking, doing nothing useful, sleeping), a circuit breaker could prevent runaway API usage. Probably a v2 concern -- managers should notice unproductive agents.
 
-3. **Should the wrapper log to a file in addition to stdout?** tmux scrollback is finite. A log file (`.dendra/logs/<agent>.log`) would preserve full history. Nice-to-have for debugging but not critical for v1.
+3. **Should the wrapper log to a file in addition to stdout?** tmux scrollback is finite. A log file (`.sprawl/logs/<agent>.log`) would preserve full history. Nice-to-have for debugging but not critical for v1.
 
 4. **Should `--resume` be optional on first run?** If the session doesn't exist yet, Claude Code may create it automatically. Need to verify Claude Code's behavior when `--resume` is given a non-existent session ID. If it errors, the wrapper should omit `--resume` on first run and start using it from the second invocation onward.

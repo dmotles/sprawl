@@ -1,12 +1,12 @@
 # 05 — Cross-Platform Support
 
 > **Validated by:** creek (research agent), 2026-04-05
-> Verified by reading actual source code in the dendra codebase, checking
+> Verified by reading actual source code in the sprawl codebase, checking
 > gofrs/flock v0.13.0 platform support, and auditing all syscall usage.
 
 ## Summary
 
-Dendra is currently a **Unix-only** tool. It depends on tmux for session
+Sprawl is currently a **Unix-only** tool. It depends on tmux for session
 management, uses POSIX syscalls directly, and assumes a Unix-like environment
 throughout. This document catalogs every platform-specific dependency and
 assesses the work needed for cross-platform support.
@@ -81,7 +81,7 @@ sigCh := make(chan os.Signal, 1)
 signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 ```
 
-**File:** `cmd/senseiloop.go` (lines 106–107)
+**File:** `cmd/rootloop.go` (lines 106–107)
 
 ```go
 sigCh := make(chan os.Signal, 1)
@@ -100,7 +100,7 @@ The `signal.Notify(sigCh, os.Interrupt)` pattern works on both Unix and Windows.
 **File:** `internal/tmux/tmux.go` (entire file, 250 lines)
 
 The `tmux.Runner` interface and `RealRunner` implementation form a core part of
-dendra's architecture. Every agent runs in a tmux window. Key operations:
+sprawl's architecture. Every agent runs in a tmux window. Key operations:
 
 | Method | What it does |
 |---|---|

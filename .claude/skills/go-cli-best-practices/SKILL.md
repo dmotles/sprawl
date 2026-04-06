@@ -1,4 +1,4 @@
-# Go CLI Best Practices for Dendrarchy
+# Go CLI Best Practices for Sprawl
 
 Reference skill for AI agents working in this Go CLI codebase. Covers project structure, cobra patterns, testing, and error handling as used in this repo.
 
@@ -37,9 +37,9 @@ Library: [github.com/spf13/cobra](https://github.com/spf13/cobra) — see [Cobra
 
 ```go
 var rootCmd = &cobra.Command{
-    Use:   "dendra",
+    Use:   "sprawl",
     Short: "Tree-governance for AI agents",
-    Long:  "Dendrarchy — a self-organizing AI agent orchestration system.",
+    Long:  "Sprawl — a self-organizing AI agent orchestration system.",
 }
 
 func Execute() {
@@ -192,9 +192,9 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
         tmuxRunner: runner,
         getenv: func(key string) string {
             switch key {
-            case "DENDRA_AGENT_IDENTITY":
+            case "SPRAWL_AGENT_IDENTITY":
                 return "root"
-            case "DENDRA_ROOT":
+            case "SPRAWL_ROOT":
                 return tmpDir
             }
             return ""
@@ -260,8 +260,8 @@ func TestSpawn_InvalidType(t *testing.T) {
 Use `strings.Contains` on `err.Error()` to check error messages:
 
 ```go
-if !strings.Contains(err.Error(), "DENDRA_ROOT") {
-    t.Errorf("error should mention DENDRA_ROOT, got: %v", err)
+if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
+    t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
 }
 ```
 
@@ -287,7 +287,7 @@ Reference: [Go blog: Error handling and Go](https://go.dev/blog/error-handling-a
 Always wrap errors with context using `fmt.Errorf` and `%w`:
 
 ```go
-if err := state.SaveAgent(dendraRoot, agentState); err != nil {
+if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
     return fmt.Errorf("saving agent state: %w", err)
 }
 
@@ -304,7 +304,7 @@ When the original error isn't useful to callers, create a new descriptive error:
 
 ```go
 return fmt.Errorf("tmux is required but not found")
-return fmt.Errorf("DENDRA_ROOT environment variable is not set")
+return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 ```
 
 ### Validation Errors
@@ -347,7 +347,7 @@ _ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
 
 ## Go Module & Dependencies
 
-- **Module path:** `github.com/dmotles/dendra`
+- **Module path:** `github.com/dmotles/sprawl`
 - **Go version:** 1.25.0
 - **Dependencies:**
   - `github.com/spf13/cobra v1.10.2` — CLI framework

@@ -35,25 +35,25 @@ All packages should report `ok`. No failures expected.
 
 ### Prerequisites
 
-- Built `dendra` binary (`make build`)
+- Built `sprawl` binary (`make build`)
 - `tmux` installed and available on `$PATH`
 - A Git repository to test in (can be this repo or a throwaway)
-- No existing dendra session running (or use a different namespace)
+- No existing sprawl session running (or use a different namespace)
 
-### Step 1: Initialize dendra
+### Step 1: Initialize sprawl
 
 ```bash
-./dendra init
+./sprawl init
 ```
 
 **Verify:**
-- `.dendra/` directory created
-- Namespace file exists at `.dendra/namespace`
+- `.sprawl/` directory created
+- Namespace file exists at `.sprawl/namespace`
 
 ### Step 2: Start root session
 
 ```bash
-./dendra start
+./sprawl start
 ```
 
 **Verify:**
@@ -65,12 +65,12 @@ All packages should report `ok`. No failures expected.
 From the root agent session (or via CLI):
 
 ```bash
-dendra spawn agent --family engineering --type manager \
+sprawl spawn agent --family engineering --type manager \
   --branch "test/manager-smoke" \
   --prompt "Coordinate a simple task: create a hello.txt file."
 ```
 
-**Verify state file** at `.dendra/agents/<manager-name>.json`:
+**Verify state file** at `.sprawl/agents/<manager-name>.json`:
 
 ```json
 {
@@ -80,7 +80,7 @@ dendra spawn agent --family engineering --type manager \
   "parent": "<root-agent-name>",
   "prompt": "Coordinate a simple task: create a hello.txt file.",
   "branch": "<branch-name>",
-  "worktree": "<repo-root>/.dendra/worktrees/<manager-name>",
+  "worktree": "<repo-root>/.sprawl/worktrees/<manager-name>",
   "tmux_session": "<namespace>-children",
   "status": "active",
   "created_at": "<RFC3339 timestamp>",
@@ -101,12 +101,12 @@ The manager should have a window named after its allocated agent name.
 Check the system prompt written for the manager:
 
 ```bash
-cat .dendra/agents/<manager-name>/SYSTEM.md
+cat .sprawl/agents/<manager-name>/SYSTEM.md
 ```
 
 **Expected content should include:**
 - `Your name is <manager-name>.`
-- `You are a Manager agent in Dendrarchy`
+- `You are a Manager agent in Sprawl`
 - `Your parent (manager) is <root-name>.`
 - `You work in your own git worktree on branch <branch-name>.`
 - `As an engineering manager, your domain informs...`
@@ -119,7 +119,7 @@ git worktree list
 ```
 
 **Verify:**
-- Entry for `.dendra/worktrees/<manager-name>` exists
+- Entry for `.sprawl/worktrees/<manager-name>` exists
 - It is on a branch derived from the specified base branch
 
 ### Step 6: Observe manager behavior (decomposition)
@@ -132,7 +132,7 @@ Watch the manager's tmux window. The manager should:
 **Verify child agents spawned:**
 
 ```bash
-ls .dendra/agents/
+ls .sprawl/agents/
 ```
 
 You should see JSON files for both the manager and any children it spawned. Each child state file should have `"parent": "<manager-name>"`.
@@ -142,12 +142,12 @@ You should see JSON files for both the manager and any children it spawned. Each
 Watch child agent tmux windows. Each should:
 1. Receive its task prompt
 2. Work in its own worktree on its own branch
-3. Report done via `dendra report done "<summary>"`
+3. Report done via `sprawl report done "<summary>"`
 
 **Verify child reports:**
 
 ```bash
-cat .dendra/agents/<child-name>.json | grep last_report
+cat .sprawl/agents/<child-name>.json | grep last_report
 ```
 
 Expected: `"last_report_type": "done"`, `"status": "done"`
@@ -157,12 +157,12 @@ Expected: `"last_report_type": "done"`, `"status": "done"`
 After children report done, the manager should:
 1. Receive notification of child completion
 2. Verify the child's work (run tests in child's worktree)
-3. Merge child's branch into its integration branch via `dendra merge <child-name>`
+3. Merge child's branch into its integration branch via `sprawl merge <child-name>`
 
 **Verify merge occurred:**
 
 ```bash
-cd .dendra/worktrees/<manager-name>
+cd .sprawl/worktrees/<manager-name>
 git log --oneline -5
 ```
 
@@ -172,8 +172,8 @@ You should see a squash merge commit with format:
 ```
 
 **Verify child cleaned up:**
-- Child state file removed from `.dendra/agents/`
-- Child worktree removed from `.dendra/worktrees/`
+- Child state file removed from `.sprawl/agents/`
+- Child worktree removed from `.sprawl/worktrees/`
 - Child branch deleted
 
 ### Step 9: Observe manager reporting done
@@ -181,13 +181,13 @@ You should see a squash merge commit with format:
 After all children are merged and final validation passes, the manager should:
 
 ```bash
-dendra report done "All subtasks completed and merged."
+sprawl report done "All subtasks completed and merged."
 ```
 
 **Verify manager state:**
 
 ```bash
-cat .dendra/agents/<manager-name>.json | grep -E '"status"|last_report'
+cat .sprawl/agents/<manager-name>.json | grep -E '"status"|last_report'
 ```
 
 Expected:
@@ -199,7 +199,7 @@ Expected:
 From the root session:
 
 ```bash
-dendra merge <manager-name>
+sprawl merge <manager-name>
 ```
 
 **Verify:**
@@ -212,7 +212,7 @@ dendra merge <manager-name>
 
 ```bash
 git log --oneline -5  # Should show squash merge commit
-ls .dendra/agents/    # Manager and children should be gone
+ls .sprawl/agents/    # Manager and children should be gone
 git worktree list     # Manager worktree should be gone
 ```
 
@@ -232,17 +232,17 @@ root
       |
       |  [Children work independently in their worktrees]
       |
-      |  child-1: dendra report done "..."
-      |  child-2: dendra report done "..."
+      |  child-1: sprawl report done "..."
+      |  child-2: sprawl report done "..."
       |
       |  [Manager verifies each child's work]
-      |  [Manager merges each child: dendra merge child-1, dendra merge child-2]
+      |  [Manager merges each child: sprawl merge child-1, sprawl merge child-2]
       |
       |  [Manager runs final validation on integration branch]
       |
-      |  manager: dendra report done "All work integrated and validated."
+      |  manager: sprawl report done "All work integrated and validated."
       |
- root: dendra merge manager
+ root: sprawl merge manager
 ```
 
 At each stage, the key artifacts to check are:
@@ -257,24 +257,24 @@ At each stage, the key artifacts to check are:
 
 ## 4. Semi-Automated Smoke Test Script
 
-The following script validates the plumbing without requiring a real Claude instance. It sets up a temporary dendra environment, spawns a manager, and validates state files and prompt content.
+The following script validates the plumbing without requiring a real Claude instance. It sets up a temporary sprawl environment, spawns a manager, and validates state files and prompt content.
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 
 # -- Configuration --
-DENDRA_BIN="${DENDRA_BIN:-./dendra}"
+SPRAWL_BIN="${SPRAWL_BIN:-./sprawl}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TMPDIR_BASE="${TMPDIR:-/tmp}"
 
 # -- Setup --
-WORK_DIR=$(mktemp -d "${TMPDIR_BASE}/dendra-smoke-XXXXXX")
+WORK_DIR=$(mktemp -d "${TMPDIR_BASE}/sprawl-smoke-XXXXXX")
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 echo "=== M4 Manager Smoke Test ==="
 echo "Work dir: $WORK_DIR"
-echo "Binary:   $DENDRA_BIN"
+echo "Binary:   $SPRAWL_BIN"
 echo ""
 
 # Initialize a git repo
@@ -282,16 +282,16 @@ cd "$WORK_DIR"
 git init -b main
 git commit --allow-empty -m "initial commit"
 
-# Set up dendra structure
-export DENDRA_ROOT="$WORK_DIR"
-export DENDRA_AGENT_IDENTITY="root"
+# Set up sprawl structure
+export SPRAWL_ROOT="$WORK_DIR"
+export SPRAWL_AGENT_IDENTITY="root"
 
-mkdir -p .dendra/agents
+mkdir -p .sprawl/agents
 
 # -- Test 1: Build succeeds --
 echo "[1/5] Checking binary exists..."
-if [ ! -x "$DENDRA_BIN" ]; then
-  echo "FAIL: dendra binary not found or not executable at $DENDRA_BIN"
+if [ ! -x "$SPRAWL_BIN" ]; then
+  echo "FAIL: sprawl binary not found or not executable at $SPRAWL_BIN"
   exit 1
 fi
 echo "  PASS"
@@ -306,7 +306,7 @@ git checkout -b "$MANAGER_BRANCH"
 git checkout main
 
 # Create manager state file (simulates what spawn would create)
-cat > .dendra/agents/${MANAGER_NAME}.json <<AGENT_EOF
+cat > .sprawl/agents/${MANAGER_NAME}.json <<AGENT_EOF
 {
   "name": "$MANAGER_NAME",
   "type": "manager",
@@ -314,7 +314,7 @@ cat > .dendra/agents/${MANAGER_NAME}.json <<AGENT_EOF
   "parent": "root",
   "prompt": "Coordinate test task",
   "branch": "$MANAGER_BRANCH",
-  "worktree": "$WORK_DIR/.dendra/worktrees/$MANAGER_NAME",
+  "worktree": "$WORK_DIR/.sprawl/worktrees/$MANAGER_NAME",
   "tmux_session": "test-children",
   "status": "active",
   "created_at": "2026-04-02T00:00:00Z",
@@ -323,7 +323,7 @@ cat > .dendra/agents/${MANAGER_NAME}.json <<AGENT_EOF
 AGENT_EOF
 
 # Validate state file is valid JSON and has correct type
-TYPE=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['type'])" .dendra/agents/${MANAGER_NAME}.json)
+TYPE=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['type'])" .sprawl/agents/${MANAGER_NAME}.json)
 if [ "$TYPE" != "manager" ]; then
   echo "  FAIL: state type is '$TYPE', expected 'manager'"
   exit 1
@@ -332,7 +332,7 @@ echo "  PASS: state file has type=manager"
 
 # -- Test 3: Validate prompt construction --
 echo "[3/5] Checking prompt construction..."
-mkdir -p .dendra/agents/${MANAGER_NAME}
+mkdir -p .sprawl/agents/${MANAGER_NAME}
 
 # Use go test to run prompt tests specifically
 cd "$SCRIPT_DIR/../.."

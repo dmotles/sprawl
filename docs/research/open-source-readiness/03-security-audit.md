@@ -7,7 +7,7 @@
 
 ## Summary
 
-Security audit of the dendra codebase for vulnerabilities relevant to publishing as open source. All original findings confirmed. Path traversal is the most actionable issue — no agent name validation exists anywhere in the codebase.
+Security audit of the sprawl codebase for vulnerabilities relevant to publishing as open source. All original findings confirmed. Path traversal is the most actionable issue — no agent name validation exists anywhere in the codebase.
 
 ## Findings
 
@@ -28,30 +28,30 @@ This is a hardcoded command string, not user-controlled. The `//nolint` comment 
 
 **CONFIRMED — No validation exists anywhere.** Searched for `ValidateAgentName`, `validateAgentName`, `isValidName`, `nameRegex` — zero results. Agent names from CLI args flow directly into `filepath.Join` unsanitized in **8+ locations**.
 
-A name like `../../etc` could escape the `.dendra/` directory for reads, writes, and deletes.
+A name like `../../etc` could escape the `.sprawl/` directory for reads, writes, and deletes.
 
 #### Affected Code Paths
 
 | File | Line | Operation | Code |
 |------|------|-----------|------|
-| `cmd/poke.go` | 56 | Write poke file | `filepath.Join(dendraRoot, ".dendra", "agents", agentName+".poke")` |
-| `cmd/logs.go` | 59 | Read logs dir | `filepath.Join(dendraRoot, ".dendra", "agents", agentName, "logs")` |
+| `cmd/poke.go` | 56 | Write poke file | `filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")` |
+| `cmd/logs.go` | 59 | Read logs dir | `filepath.Join(sprawlRoot, ".sprawl", "agents", agentName, "logs")` |
 | `internal/state/state.go` | 51 | Write state | `filepath.Join(dir, agent.Name+".json")` |
-| `internal/state/state.go` | 60 | Read state | `filepath.Join(AgentsDir(dendraRoot), name+".json")` |
-| `internal/state/state.go` | 101 | Delete state | `filepath.Join(AgentsDir(dendraRoot), name+".json")` |
-| `internal/messages/messages.go` | 70 | Create message dirs | `filepath.Join(MessagesDir(dendraRoot), to)` |
-| `internal/messages/messages.go` | 129 | Write wake file | `filepath.Join(dendraRoot, ".dendra", "agents", to+".wake")` |
+| `internal/state/state.go` | 60 | Read state | `filepath.Join(AgentsDir(sprawlRoot), name+".json")` |
+| `internal/state/state.go` | 101 | Delete state | `filepath.Join(AgentsDir(sprawlRoot), name+".json")` |
+| `internal/messages/messages.go` | 70 | Create message dirs | `filepath.Join(MessagesDir(sprawlRoot), to)` |
+| `internal/messages/messages.go` | 129 | Write wake file | `filepath.Join(sprawlRoot, ".sprawl", "agents", to+".wake")` |
 | `internal/worktree/worktree.go` | 27–29 | Create git worktree | `filepath.Join(worktreesDir, agentName)` |
-| `internal/merge/git.go` | 134 | Write poke file | `filepath.Join(dendraRoot, ".dendra", "agents", agentName+".poke")` |
-| `internal/agent/retire.go` | 31 | Write kill sentinel | `filepath.Join(dendraRoot, ".dendra", "agents", agentState.Name+".kill")` |
+| `internal/merge/git.go` | 134 | Write poke file | `filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")` |
+| `internal/agent/retire.go` | 31 | Write kill sentinel | `filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".kill")` |
 
 **Fix:** Add a centralized `ValidateAgentName()` function rejecting slashes, dots-prefix, and other path-unsafe characters. Call it at every CLI entry point before the name reaches any file operation.
 
 ### CRITICAL: Agent Identity Spoofing
 
-**CONFIRMED.** `DENDRA_AGENT_IDENTITY` is set in one place and checked only for presence:
+**CONFIRMED.** `SPRAWL_AGENT_IDENTITY` is set in one place and checked only for presence:
 
-- **Set:** `internal/agentloop/real_starter.go:31` — `env = append(env, fmt.Sprintf("DENDRA_AGENT_IDENTITY=%s", config.AgentName))`
+- **Set:** `internal/agentloop/real_starter.go:31` — `env = append(env, fmt.Sprintf("SPRAWL_AGENT_IDENTITY=%s", config.AgentName))`
 - **Checked:** `cmd/handoff.go:62`, `cmd/retire.go:131` — only checks non-empty, no cryptographic verification
 - **Used in prompt:** `internal/agent/prompt.go:471` — mentioned in prompt text for the agent's self-awareness
 
@@ -90,7 +90,7 @@ if readErr == nil {
 ```go
 // cmd/agentloop.go:581-582
 cmdLines = append(cmdLines, fmt.Sprintf(
-    "Run `dendra messages read %s` to read a message from %s (subject: %q)",
+    "Run `sprawl messages read %s` to read a message from %s (subject: %q)",
     msg.ID, msg.From, msg.Subject,  // user-controlled msg.Subject
 ))
 ```
@@ -99,7 +99,7 @@ cmdLines = append(cmdLines, fmt.Sprintf(
 
 ```go
 // internal/messages/messages.go:129-131
-wakePath := filepath.Join(dendraRoot, ".dendra", "agents", to+".wake")
+wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", to+".wake")
 wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
 _ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644)
 ```
@@ -125,7 +125,7 @@ _ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644)
 
 | File | Line | What |
 |------|------|------|
-| `internal/state/state.go` | 42, 119 | Agents dir, .dendra dir |
+| `internal/state/state.go` | 42, 119 | Agents dir, .sprawl dir |
 | `internal/messages/messages.go` | 72, 124 | Message subdirs, sent dir |
 | `internal/worktree/worktree.go` | 23 | Worktrees dir |
 
@@ -137,15 +137,15 @@ All are annotated with `//nolint:gosec // G301/G306: world-readable X is intenti
 
 **CONFIRMED — purely a prompt-level warning with no OS enforcement.**
 
-- **Detection:** `cmd/senseiloop.go:173` reads `DENDRA_TEST_MODE` env var
+- **Detection:** `cmd/rootloop.go:173` reads `SPRAWL_TEST_MODE` env var
 - **Implementation:** `internal/agent/prompt.go` lines 278–286, 309–310, 460–461, 512–513, 758–759 — appends a text warning to the system prompt:
 
 ```
 # TEST SANDBOX MODE
 
-You are operating in a testing sandbox for dendra. Take care to:
-- Avoid taking any action outside of $DENDRA_ROOT
-- ONLY execute dendra using $DENDRA_BIN (do not use bare 'dendra' from PATH)
+You are operating in a testing sandbox for sprawl. Take care to:
+- Avoid taking any action outside of $SPRAWL_ROOT
+- ONLY execute sprawl using $SPRAWL_BIN (do not use bare 'sprawl' from PATH)
 - Do not interact with production systems, push to remote repositories,
   or modify files outside the test directory
 - This environment will be torn down after testing
@@ -167,4 +167,4 @@ Minimal attack surface. Only 2 direct dependencies + 3 transitives. No known vul
 1. **Agent name validation** — highest bang-for-buck. Single centralized function rejecting names containing `/`, `\`, `..`, or starting with `.`. Closes all 8+ path traversal vectors.
 2. **Document trust model** — agents trust each other, filesystem is the trust boundary. Identity spoofing and prompt injection are accepted risks within this model. This should be a top-level doc (e.g., `docs/security-model.md`).
 3. **Consider tighter file permissions** — 0o600/0o700 instead of 0o644/0o755 for state files and directories. The `//nolint` annotations show this was a conscious decision, but it should be revisited for shared systems.
-4. **Document sandbox limitations** — `DENDRA_TEST_MODE` is prompt-level only. Add a note to README or security docs.
+4. **Document sandbox limitations** — `SPRAWL_TEST_MODE` is prompt-level only. Add a note to README or security docs.

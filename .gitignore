@@ -1,5 +1,6 @@
-# Binary
+# Binary (Makefile still builds as 'dendra' until Phase 3)
 dendra
+sprawl
 
 # OS
 .DS_Store
@@ -10,8 +11,8 @@ dendra
 *.swp
 *.swo
 
-# Dendra runtime state
-.dendra/
+# Sprawl runtime state
+.sprawl/
 
 # Beads / Dolt files (added by bd init)
 .dolt/

@@ -1,7 +1,7 @@
 # Go Agent Loop: Integration Testing Strategy and Architecture
 
 **Date:** 2026-03-31
-**Author:** elm (dendra agent)
+**Author:** elm (sprawl agent)
 **Issue:** QUM-30
 **Milestone:** M2: Agent Wrapper Loop
 
@@ -431,7 +431,7 @@ Keep a single `claude -p --input-format stream-json --output-format stream-json`
 
 ```
 ┌─────────────────────────────────────────────┐
-│  dendra agent-loop <name>                   │
+│  sprawl agent-loop <name>                   │
 │                                             │
 │  ┌──────────┐    stdin     ┌─────────────┐  │
 │  │  Go loop  │──────────►│  claude -p    │  │
@@ -545,7 +545,7 @@ for msg := range stream {
 
 #### Handling incoming messages
 
-The Go loop watches for incoming messages (from `dendra messages send`) via filesystem polling or inotify on the agent's inbox directory. When a message arrives during sleep, it wakes the agent by sending a prompt via stdin.
+The Go loop watches for incoming messages (from `sprawl messages send`) via filesystem polling or inotify on the agent's inbox directory. When a message arrives during sleep, it wakes the agent by sending a prompt via stdin.
 
 During active processing (Claude is working), new messages are queued and delivered at the next natural pause (after the current `result` message).
 

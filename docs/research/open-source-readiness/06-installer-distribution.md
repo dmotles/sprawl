@@ -5,7 +5,7 @@
 
 ## Current State
 
-Dendra currently builds via `make build` which runs `go build -o dendra .`. There is:
+Sprawl currently builds via `make build` which runs `go build -o sprawl .`. There is:
 
 - No `.goreleaser.yml` configuration
 - No install.sh script
@@ -14,7 +14,7 @@ Dendra currently builds via `make build` which runs `go build -o dendra .`. Ther
 - `make install` uses `go install .` with `GOBIN` defaulting to `$HOME/.local/bin`
 - The README instructs users to clone and `make build`
 
-The module path is `github.com/dmotles/dendra` and the repo is hosted at `https://github.com/dmotles/dendra.git`.
+The module path is `github.com/dmotles/sprawl` and the repo is hosted at `https://github.com/dmotles/sprawl.git`.
 
 ## GoReleaser: What It Generates by Default
 
@@ -26,20 +26,20 @@ GoReleaser is the standard release tool for Go CLI projects. Here's what a minim
 {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
 ```
 
-Example output for dendra v0.1.0:
+Example output for sprawl v0.1.0:
 
 ```
-dendra_0.1.0_linux_amd64.tar.gz
-dendra_0.1.0_linux_arm64.tar.gz
-dendra_0.1.0_darwin_amd64.tar.gz
-dendra_0.1.0_darwin_arm64.tar.gz
-dendra_0.1.0_windows_amd64.zip
+sprawl_0.1.0_linux_amd64.tar.gz
+sprawl_0.1.0_linux_arm64.tar.gz
+sprawl_0.1.0_darwin_amd64.tar.gz
+sprawl_0.1.0_darwin_arm64.tar.gz
+sprawl_0.1.0_windows_amd64.zip
 ```
 
 ### Default Behavior
 
 - **Formats:** `tar.gz` for Linux/macOS, overridable to `zip` for Windows
-- **Checksums:** Generates `dendra_0.1.0_checksums.txt` with SHA256 hashes for all archives
+- **Checksums:** Generates `sprawl_0.1.0_checksums.txt` with SHA256 hashes for all archives
 - **Changelog:** Auto-generated from git commits
 - **Archives contain:** The binary plus any files matching `README*`, `LICENSE*`, `CHANGELOG*`
 
@@ -49,10 +49,10 @@ GoReleaser v2.10+ supports auto-generating Homebrew cask files:
 
 ```yaml
 homebrew_casks:
-  - name: dendra
+  - name: sprawl
     binaries:
-      - dendra
-    homepage: "https://github.com/dmotles/dendra"
+      - sprawl
+    homepage: "https://github.com/dmotles/sprawl"
     description: "Self-organizing AI agent orchestration"
     repository:
       owner: dmotles
@@ -68,7 +68,7 @@ This pushes a formula to a separate `homebrew-tap` repo on each release.
 
 1. Write a custom install.sh (recommended)
 2. Rely on package managers (Homebrew, apt, etc.)
-3. Point users at `go install github.com/dmotles/dendra@latest`
+3. Point users at `go install github.com/dmotles/sprawl@latest`
 
 ## Install.sh Patterns from Popular Tools
 
@@ -176,7 +176,7 @@ https://github.com/go-task/task/releases/download/${TAG}/task_${OS}_${ARCH}.tar.
 
 ## Comparison Matrix
 
-| Aspect | Starship | go-task | age | Recommended for Dendra |
+| Aspect | Starship | go-task | age | Recommended for Sprawl |
 |---|---|---|---|---|
 | Install script | Hand-written (543 lines) | godownloader (381 lines) | None | Hand-written (~200 lines) |
 | OS/arch naming | Rust triples | Go GOOS/GOARCH | Go-style | Go GOOS/GOARCH |
@@ -205,20 +205,20 @@ https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}
 
 The `/releases/latest/download/` pattern is simpler (no API call needed) but doesn't allow resolving the version number for display. Most mature install scripts use the API approach.
 
-## Recommended Install.sh Skeleton for Dendra
+## Recommended Install.sh Skeleton for Sprawl
 
 Based on the patterns above, here is a concrete skeleton combining the best elements:
 
 ```sh
 #!/bin/sh
-# Dendra installer — downloads and installs the dendra binary.
-# Usage: curl -fsSL https://raw.githubusercontent.com/dmotles/dendra/main/install.sh | sh
-# Or:    curl -fsSL https://raw.githubusercontent.com/dmotles/dendra/main/install.sh | sh -s -- --version v0.1.0
+# Sprawl installer — downloads and installs the sprawl binary.
+# Usage: curl -fsSL https://raw.githubusercontent.com/dmotles/sprawl/main/install.sh | sh
+# Or:    curl -fsSL https://raw.githubusercontent.com/dmotles/sprawl/main/install.sh | sh -s -- --version v0.1.0
 
 set -eu
 
-GITHUB_REPO="dmotles/dendra"
-BINARY_NAME="dendra"
+GITHUB_REPO="dmotles/sprawl"
+BINARY_NAME="sprawl"
 DEFAULT_INSTALL_DIR="/usr/local/bin"
 
 # ---- Platform detection (Go-style GOOS/GOARCH) ----
@@ -364,11 +364,11 @@ git push --tags
     ▼
 GitHub Actions ──► GoReleaser ──► GitHub Releases
     │                                   │
-    │                                   ├── dendra_0.1.0_linux_amd64.tar.gz
-    │                                   ├── dendra_0.1.0_linux_arm64.tar.gz
-    │                                   ├── dendra_0.1.0_darwin_amd64.tar.gz
-    │                                   ├── dendra_0.1.0_darwin_arm64.tar.gz
-    │                                   ├── dendra_0.1.0_checksums.txt
+    │                                   ├── sprawl_0.1.0_linux_amd64.tar.gz
+    │                                   ├── sprawl_0.1.0_linux_arm64.tar.gz
+    │                                   ├── sprawl_0.1.0_darwin_amd64.tar.gz
+    │                                   ├── sprawl_0.1.0_darwin_arm64.tar.gz
+    │                                   ├── sprawl_0.1.0_checksums.txt
     │                                   └── CHANGELOG.md (auto-generated)
     │
     ├──► Homebrew tap repo (auto-updated formula)
@@ -378,9 +378,9 @@ GitHub Actions ──► GoReleaser ──► GitHub Releases
 
 ### Installation Methods (priority order)
 
-1. **`curl | sh`** — `curl -fsSL https://raw.githubusercontent.com/dmotles/dendra/main/install.sh | sh`
-2. **Homebrew** — `brew install dmotles/tap/dendra`
-3. **Go install** — `go install github.com/dmotles/dendra@latest`
+1. **`curl | sh`** — `curl -fsSL https://raw.githubusercontent.com/dmotles/sprawl/main/install.sh | sh`
+2. **Homebrew** — `brew install dmotles/tap/sprawl`
+3. **Go install** — `go install github.com/dmotles/sprawl@latest`
 4. **From source** — `git clone && make build`
 
 ### Minimal GoReleaser Configuration
@@ -390,7 +390,7 @@ GitHub Actions ──► GoReleaser ──► GitHub Releases
 version: 2
 
 builds:
-  - binary: dendra
+  - binary: sprawl
     env:
       - CGO_ENABLED=0
     goos:
@@ -423,7 +423,7 @@ changelog:
 
 ## Open Questions
 
-1. **Windows support?** The skeleton above excludes Windows. Dendra requires tmux, which is Linux/macOS only. Should we explicitly reject Windows or offer WSL guidance?
+1. **Windows support?** The skeleton above excludes Windows. Sprawl requires tmux, which is Linux/macOS only. Should we explicitly reject Windows or offer WSL guidance?
 2. **Version embedding:** The `ldflags` in GoReleaser set `main.version`, but the codebase doesn't currently have a `version` variable in `main.go`. This needs to be added.
 3. **Minimum Go version:** `go.mod` specifies Go 1.25.0 — this is very new. `go install` won't work for users with older Go versions. The install.sh path becomes more important.
 4. **Prerequisites check:** Should install.sh verify that tmux and Claude Code are available, or just install the binary?

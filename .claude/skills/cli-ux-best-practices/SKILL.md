@@ -1,8 +1,8 @@
-# CLI UX Best Practices for Dendra
+# CLI UX Best Practices for Sprawl
 
 **Load this skill before adding or modifying any CLI command's behavior.**
 
-Dendra's CLI is consumed almost exclusively by AI agents (Claude Code), not humans at a TTY. Every design decision should optimize for non-interactive, agent-driven usage. No TUIs, no interactive prompts, no spinners, no color-dependent output.
+Sprawl's CLI is consumed almost exclusively by AI agents (Claude Code), not humans at a TTY. Every design decision should optimize for non-interactive, agent-driven usage. No TUIs, no interactive prompts, no spinners, no color-dependent output.
 
 ---
 
@@ -26,7 +26,7 @@ To push the current branch and set the remote as upstream, use:
     git push --set-upstream origin feature
 ```
 
-**Apply this to every dendra command:**
+**Apply this to every sprawl command:**
 
 ```go
 // GOOD: spawn tells the agent what happens next
@@ -138,10 +138,10 @@ return fmt.Errorf("invalid agent type")
 
 ```go
 // GOOD — agent can copy-paste the fix
-return fmt.Errorf("agent %q has no worktree; create one first with: dendra spawn --family engineering --type engineer --prompt '...'")
+return fmt.Errorf("agent %q has no worktree; create one first with: sprawl spawn --family engineering --type engineer --prompt '...'")
 
 // GOOD — explains the precondition
-return fmt.Errorf("cannot merge %q: agent status is %q, expected \"done\". Wait for it to finish, or use: dendra merge --force %s", name, status, name)
+return fmt.Errorf("cannot merge %q: agent status is %q, expected \"done\". Wait for it to finish, or use: sprawl merge --force %s", name, status, name)
 ```
 
 ### Pattern: Distinguish Retryable vs Permanent Failures
@@ -205,9 +205,9 @@ if !forceFlag {
 
 ## Command Naming and Structure
 
-### Verb-Based Commands (Dendra's Pattern)
+### Verb-Based Commands (Sprawl's Pattern)
 
-Dendra uses direct verbs: `spawn`, `kill`, `retire`, `merge`, `status`, `handoff`. This is good for a focused tool. Keep it.
+Sprawl uses direct verbs: `spawn`, `kill`, `retire`, `merge`, `status`, `handoff`. This is good for a focused tool. Keep it.
 
 ### Naming Conventions
 
@@ -218,7 +218,7 @@ Dendra uses direct verbs: `spawn`, `kill`, `retire`, `merge`, `status`, `handoff
 
 ### Help Text
 
-Write `Short` descriptions that complete the sentence "dendra [command] will...":
+Write `Short` descriptions that complete the sentence "sprawl [command] will...":
 
 ```go
 Short: "Spawn a new agent"           // good
@@ -248,28 +248,28 @@ Git never leaves you at a dead end. Every error suggests a path forward. Every s
 
 ### kubectl: Declarative Idempotency
 
-`kubectl apply` can be run 10 times with the same result. When state already matches, it says "unchanged" — it doesn't error. **Dendra should treat already-in-desired-state as success, not failure.**
+`kubectl apply` can be run 10 times with the same result. When state already matches, it says "unchanged" — it doesn't error. **Sprawl should treat already-in-desired-state as success, not failure.**
 
 ### terraform: Plan Before Apply
 
-For destructive operations, show what will change before doing it. Terraform's `plan` → `apply` pattern maps to dendra's `--dry-run` potential for risky commands.
+For destructive operations, show what will change before doing it. Terraform's `plan` → `apply` pattern maps to sprawl's `--dry-run` potential for risky commands.
 
 ### docker: Noun-Verb Hierarchy for Discovery
 
-`docker container ls`, `docker image rm` — the command tree is self-documenting. Agents can explore via `--help` at each level. Dendra's flat verb structure works fine at current scale, but if it grows, consider grouping.
+`docker container ls`, `docker image rm` — the command tree is self-documenting. Agents can explore via `--help` at each level. Sprawl's flat verb structure works fine at current scale, but if it grows, consider grouping.
 
 ---
 
 ## Checklist: Before Shipping a New Command
 
-Use this checklist when adding or modifying any dendra command:
+Use this checklist when adding or modifying any sprawl command:
 
 - [ ] **Success output includes a next-action hint** — what should the agent do/communicate after this succeeds?
 - [ ] **Error messages include recovery suggestions** — every error says what to do about it
 - [ ] **Idempotent where possible** — calling it twice doesn't break things
 - [ ] **No interactive prompts** — all input comes via flags and args
 - [ ] **stderr for status, stdout for data** — output streams are correct
-- [ ] **Help text is actionable** — Short completes "dendra X will...", Long explains when/why
+- [ ] **Help text is actionable** — Short completes "sprawl X will...", Long explains when/why
 - [ ] **Validation errors include bad value + valid options** — the agent can self-correct
 - [ ] **Destructive actions require --force** — no silent data loss
 - [ ] **`--json` flag if the command returns structured data** — for programmatic consumption

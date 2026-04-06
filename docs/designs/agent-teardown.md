@@ -6,8 +6,8 @@
 
 DESCRIPTION.md defines two teardown-adjacent commands:
 
-- `dendra kill <agent-name>` — Kill an unresponsive agent
-- `dendra respawn <agent-name>` — Kill + restart with same session ID
+- `sprawl kill <agent-name>` — Kill an unresponsive agent
+- `sprawl respawn <agent-name>` — Kill + restart with same session ID
 
 But the system also needs full teardown: stop the process, close the tmux window, remove the worktree, delete state, and return the name to the pool. This doc designs the complete teardown surface.
 
@@ -38,8 +38,8 @@ But the system also needs full teardown: stop the process, close the tmux window
 5. Update agent state file: set `status` to `"killed"`
 
 **What it preserves:**
-- Agent state file (`.dendra/agents/<name>.json`) — intact
-- Git worktree (`.dendra/worktrees/<name>/`) — intact
+- Agent state file (`.sprawl/agents/<name>.json`) — intact
+- Git worktree (`.sprawl/worktrees/<name>/`) — intact
 - Git branch — intact
 - Session ID — intact (in state file)
 - Parent/child relationships — intact
@@ -63,11 +63,11 @@ But the system also needs full teardown: stop the process, close the tmux window
    └─ `tmux kill-window -t <session>:<window>`
 
 3. Remove the git worktree
-   └─ `git worktree remove .dendra/worktrees/<name> --force`
+   └─ `git worktree remove .sprawl/worktrees/<name> --force`
    └─ Does NOT delete the branch — just detaches it
 
 4. Delete the agent state file
-   └─ Remove `.dendra/agents/<name>.json`
+   └─ Remove `.sprawl/agents/<name>.json`
    └─ Name is now available in the pool again
 
 5. Update parent's state
@@ -75,7 +75,7 @@ But the system also needs full teardown: stop the process, close the tmux window
 ```
 
 **What survives retire:**
-- The git branch (e.g., `dendra/<name>`) — still exists in the repo, can be merged, inspected, or deleted manually
+- The git branch (e.g., `sprawl/<name>`) — still exists in the repo, can be merged, inspected, or deleted manually
 - Any messages already delivered to other agents' inboxes
 
 **What does not survive:**
@@ -126,13 +126,13 @@ For `kill`, children are **not** affected. Killing a manager doesn't kill its en
 
 ## Command Reference
 
-### `dendra kill <agent-name>`
+### `sprawl kill <agent-name>`
 
 Stop an agent's process but preserve all state for respawn or inspection.
 
 ```
-dendra kill <agent-name>            # Graceful kill (SIGTERM → SIGKILL)
-dendra kill <agent-name> --force    # Immediate SIGKILL, handle wedged state
+sprawl kill <agent-name>            # Graceful kill (SIGTERM → SIGKILL)
+sprawl kill <agent-name> --force    # Immediate SIGKILL, handle wedged state
 ```
 
 **Exit codes:**
@@ -140,14 +140,14 @@ dendra kill <agent-name> --force    # Immediate SIGKILL, handle wedged state
 - 1: Agent not found (no state file)
 - 1: Agent already killed (not an error? — see open question)
 
-### `dendra retire <agent-name>`
+### `sprawl retire <agent-name>`
 
 Full teardown. Stop process, close tmux, remove worktree, delete state, free name.
 
 ```
-dendra retire <agent-name>              # Retire agent (fails if has children or dirty worktree)
-dendra retire <agent-name> --cascade    # Retire agent + all descendants
-dendra retire <agent-name> --force      # Override safety checks (orphan children, discard uncommitted work)
+sprawl retire <agent-name>              # Retire agent (fails if has children or dirty worktree)
+sprawl retire <agent-name> --cascade    # Retire agent + all descendants
+sprawl retire <agent-name> --force      # Override safety checks (orphan children, discard uncommitted work)
 ```
 
 **Exit codes:**
@@ -156,12 +156,12 @@ dendra retire <agent-name> --force      # Override safety checks (orphan childre
 - 1: Agent has active children (suggest --cascade or --force)
 - 1: Agent has uncommitted changes in worktree (suggest committing or --force)
 
-### `dendra respawn <agent-name>`
+### `sprawl respawn <agent-name>`
 
 Kill and restart an agent, preserving session history.
 
 ```
-dendra respawn <agent-name>         # Kill + restart with same session ID
+sprawl respawn <agent-name>         # Kill + restart with same session ID
 ```
 
 **Exit codes:**
@@ -237,13 +237,13 @@ The agent did work but didn't commit. Without the check, `git worktree remove --
 Step 8 of retire is a no-op. `git worktree remove` on a non-existent path is handled gracefully.
 
 **tmux session itself is gone:**
-If the entire `dendra-<parent>-children` session is gone (e.g., tmux crashed), window cleanup is a no-op. Continue.
+If the entire `sprawl-<parent>-children` session is gone (e.g., tmux crashed), window cleanup is a no-op. Continue.
 
 **Name pool is exhausted:**
 Retiring agents frees names. This is the only way to reclaim names from the pool (short of manually deleting state files). Managers should retire completed engineers to free names for new work.
 
 **Retiring the root:**
-`dendra retire root` should require `--cascade` if any agents exist, and should be treated as "shut down the entire system." This is a special case worth calling out in help text.
+`sprawl retire root` should require `--cascade` if any agents exist, and should be treated as "shut down the entire system." This is a special case worth calling out in help text.
 
 **Code Merger agents:**
 Code Mergers are ephemeral by design — they should self-retire when their merge is complete. If a Code Merger gets stuck, it can be killed/retired like any other agent. Since they operate in the parent's worktree, retire skips the worktree removal step (they don't have their own).
@@ -253,12 +253,12 @@ Code Mergers are ephemeral by design — they should self-retire when their merg
 The current DESCRIPTION.md mentions `kill` and `respawn`. This design adds `retire`. The CLI section should be updated:
 
 ```
-dendra kill <agent-name>                Kill an agent (preserves state for respawn)
-dendra kill <agent-name> --force        Force-kill a wedged agent
-dendra retire <agent-name>              Full teardown (fails if children or dirty worktree)
-dendra retire <agent-name> --cascade    Retire agent and all descendants
-dendra retire <agent-name> --force      Override safety checks (orphans children, discards uncommitted work)
-dendra respawn <agent-name>             Kill + restart with same session ID
+sprawl kill <agent-name>                Kill an agent (preserves state for respawn)
+sprawl kill <agent-name> --force        Force-kill a wedged agent
+sprawl retire <agent-name>              Full teardown (fails if children or dirty worktree)
+sprawl retire <agent-name> --cascade    Retire agent and all descendants
+sprawl retire <agent-name> --force      Override safety checks (orphans children, discards uncommitted work)
+sprawl respawn <agent-name>             Kill + restart with same session ID
 ```
 
 ## Impact on README.md
@@ -271,6 +271,6 @@ Add `retire` to the CLI reference section under "Spawn and Manage Agents."
 
 2. **Should `retire` auto-kill, or require the agent to be killed first?** This design says auto-kill (retire handles everything). Requiring a separate kill first adds friction for no safety benefit.
 
-3. **Should retired agent names be logged somewhere?** When a state file is deleted, we lose the record that the agent ever existed. A lightweight audit log (`.dendra/history.log`) with one line per lifecycle event could be useful for debugging but is not critical for v1.
+3. **Should retired agent names be logged somewhere?** When a state file is deleted, we lose the record that the agent ever existed. A lightweight audit log (`.sprawl/history.log`) with one line per lifecycle event could be useful for debugging but is not critical for v1.
 
 4. **Timeout on graceful shutdown?** This design says 2 seconds. That might be too short if Claude Code is mid-operation, or too long if you're retiring 20 agents in a cascade. Could be configurable via `--timeout`, but defaulting to 2s seems reasonable for v1.

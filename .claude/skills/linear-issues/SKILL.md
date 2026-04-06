@@ -5,12 +5,12 @@ user-invocable: true
 argument-hint: "[action] e.g. 'create', 'list blocked', 'plan milestone', or a QUM-### issue ID"
 ---
 
-# Linear Issue Management for Dendra
+# Linear Issue Management for Sprawl
 
 ## Workspace Context
 
 - **Team**: Qumulo-dmotles (prefix: `QUM`)
-- **Project**: Dendra (use `project: "Dendra"` when creating issues)
+- **Project**: Sprawl (use `project: "Sprawl"` when creating issues)
 - **Statuses**: Backlog → Todo → In Progress → Done (also: Canceled, Duplicate)
 - **Labels**: Bug, Feature, Improvement
 - **Priority scale**: 1=Urgent, 2=High, 3=Normal, 4=Low
@@ -59,7 +59,7 @@ Not every issue will have all of these, but include everything that's relevant. 
 #### Acceptance Criteria
 A clear checklist that defines "done." Each criterion should be:
 - **Verifiable** — someone unfamiliar with the issue could check whether it's met
-- **Specific** — not "it works" but "running `dendra spawn --timeout 30s` kills the agent process after 30 seconds"
+- **Specific** — not "it works" but "running `sprawl spawn --timeout 30s` kills the agent process after 30 seconds"
 
 **Critically, include how to validate the work.** If there's a way the implementer can exercise the feature to prove correctness — a CLI command to run, a specific scenario to test, a UI flow to verify via browser automation — describe it. The implementer should know not just what to build but how to confirm it works.
 
@@ -105,15 +105,15 @@ When filing a batch of related issues, wire up dependencies at creation time. Cr
 
 To find issues that are ready to work on (unblocked):
 
-1. List issues: `list_issues` with `project: "Dendra"`, `state: "Todo"` or `state: "Backlog"`
+1. List issues: `list_issues` with `project: "Sprawl"`, `state: "Todo"` or `state: "Backlog"`
 2. For each issue, `get_issue` to check if it has `blockedBy` relations
 3. Issues with no `blockedBy` (or all blockers in Done state) are available
 
 ## Milestones
 
-Use milestones to group issues into meaningful project phases. Milestones live inside the Dendra project.
+Use milestones to group issues into meaningful project phases. Milestones live inside the Sprawl project.
 
-- Create milestones with `save_milestone` (requires `project: "Dendra"`)
+- Create milestones with `save_milestone` (requires `project: "Sprawl"`)
 - Assign issues to milestones via the `milestone` field on `save_issue`
 - Milestones can have target dates
 
@@ -135,7 +135,7 @@ save_issue:
   title: "Add timeout to agent spawn"
   description: "## Context\n..."
   team: "Qumulo-dmotles"
-  project: "Dendra"
+  project: "Sprawl"
   labels: ["Feature"]
   priority: 3
   state: "Todo"
@@ -151,7 +151,7 @@ save_issue:
 ### Creating a milestone
 ```
 save_milestone:
-  project: "Dendra"
+  project: "Sprawl"
   name: "v0.2 - Multi-agent coordination"
   description: "Core features for running multiple agents"
   targetDate: "2026-05-01"
@@ -172,7 +172,7 @@ save_issue:
 
 ## Conventions
 
-- Always assign to project "Dendra" — never create orphan issues
+- Always assign to project "Sprawl" — never create orphan issues
 - Default to `state: "Backlog"` for new issues unless they're immediately actionable (use "Todo")
 - When closing an issue via code change, update its state to "Done" and leave a comment linking the commit/PR
 - When an issue is blocked, add a comment explaining what it's waiting on

@@ -1,6 +1,6 @@
-# Dendrarchy
+# Sprawl
 
-**Dendrarchy** — from *dendron* (Greek: "tree") + *-archy* (Greek: "rule/governance") — is a self-organizing AI agent orchestration system built on top of Claude Code. The CLI command is `dendra`.
+**Sprawl** — named for the interconnected urban megastructure in William Gibson's *Sprawl trilogy* — is a self-organizing AI agent orchestration system built on top of Claude Code. The CLI command is `sprawl`.
 
 ## Why
 
@@ -8,11 +8,11 @@ Today's AI coding agents are powerful but singular. You talk to one agent, it do
 
 What if you could give a high-level goal to an AI system and it would figure out how to organize itself to achieve it? Not through a rigid, predefined pipeline, but through a simple set of rules that allow agents to self-organize, spawn sub-agents, decompose work, and converge toward a completed goal.
 
-The inspiration comes from Conway's Game of Life — not because Dendrarchy is a cellular automaton, but because of the core insight: **simple rules can produce complex, emergent behavior**. Unlike Conway's Game of Life, which runs indefinitely, Dendrarchy is goal-directed. The system converges. Tasks get decomposed until they become atomic, the atomic work gets done, results flow back up, and the system resolves.
+The inspiration comes from Conway's Game of Life — not because Sprawl is a cellular automaton, but because of the core insight: **simple rules can produce complex, emergent behavior**. Unlike Conway's Game of Life, which runs indefinitely, Sprawl is goal-directed. The system converges. Tasks get decomposed until they become atomic, the atomic work gets done, results flow back up, and the system resolves.
 
 ## What
 
-Dendrarchy is a terminal-first CLI tool that orchestrates multiple Claude Code instances. You run `dendra init`, it spawns the **root** agent in a tmux session, and you **seed** it with a goal. From there the system self-organizes to accomplish it.
+Sprawl is a terminal-first CLI tool that orchestrates multiple Claude Code instances. You run `sprawl init`, it spawns the **root** agent in a tmux session, and you **seed** it with a goal. From there the system self-organizes to accomplish it.
 
 ### Seeding
 
@@ -24,7 +24,7 @@ The root is the top-level agent and the only one the user interacts with directl
 
 ### Agent Identity
 
-Every agent in the system has a unique name drawn from a pre-set pool of ~50 names. When an agent is spawned, it is assigned the next available name. The name is set as the `DENDRA_AGENT_IDENTITY` environment variable in the agent's environment, so every agent always knows who it is. This means commands like `dendra spawn` don't need a `--parent` flag — the system knows who's spawning based on the caller's identity.
+Every agent in the system has a unique name drawn from a pre-set pool of ~50 names. When an agent is spawned, it is assigned the next available name. The name is set as the `SPRAWL_AGENT_IDENTITY` environment variable in the agent's environment, so every agent always knows who it is. This means commands like `sprawl spawn` don't need a `--parent` flag — the system knows who's spawning based on the caller's identity.
 
 If the name pool is exhausted, the system errors: "no more agents can be spawned." This acts as a natural ceiling on system complexity. Future versions may generate additional names dynamically.
 
@@ -70,7 +70,7 @@ A manager receives a task from its parent and decides how to execute it. Its cor
 4. **Integrate** — When an engineer reports done, the manager evaluates the work. If it's good (possibly after having a researcher or QA agent review it), it spawns a Code Merger to merge the engineer's branch into the manager's integration branch. If the work is bad, the manager has two choices:
    - **Abandon and respawn**: scrap the work and spawn a new engineer with corrected instructions based on what went wrong.
    - **Spawn forward**: if it's close but needs tweaks, send follow-up work to the same agent (who has context) or spawn a new one to fix the issues from where the previous one left off.
-5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context) or kill unresponsive agents (`dendra kill <agent>`).
+5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context) or kill unresponsive agents (`sprawl kill <agent>`).
 6. **Report up** — When all subtasks are complete and merged into the manager's integration branch, report to the parent that the branch is ready to be merged up.
 
 The key design principle: **the manager decides how to handle every situation.** Your objective is X; figure out how to make it happen. These are the tools you have. This keeps the rules simple and lets emergent behavior handle the complexity.
@@ -111,7 +111,7 @@ Agents also belong to one of three families, which represent the agent's orienta
 
 The system operates on a small set of simple rules:
 
-1. **The root grows the initial tree.** Based on the seed, the root creates managers in whatever family makes sense — product managers, engineering managers, QA managers — with guidelines but also freedom to decide the right structure.
+1. **The root grows the initial network.** Based on the seed, the root creates managers in whatever family makes sense — product managers, engineering managers, QA managers — with guidelines but also freedom to decide the right structure.
 
 2. **Managers decompose and delegate.** When a manager receives a task, it decides: is this big enough to warrant sub-managers, or can I hand this directly to an IC? This decision is made autonomously by each manager. A manager should own no more than 3-10 subtasks at a time.
 
@@ -127,56 +127,56 @@ The system operates on a small set of simple rules:
 
 The system doesn't spiral into infinity because of a natural forcing function: **task decomposition bottoms out**. At some point, a task becomes simple enough that the only thing left to do is make the code change, write the document, or run the test. The recursive spawning of managers converges toward atomic units of work, and atomic work gets done by ICs.
 
-This is what distinguishes Dendrarchy from Conway's Game of Life. Conway's system is aimless — patterns emerge and evolve but go nowhere in particular. Dendrarchy is goal-directed. The branching is in service of convergence. The tree grows outward so it can collapse back inward with a completed result.
+This is what distinguishes Sprawl from Conway's Game of Life. Conway's system is aimless — patterns emerge and evolve but go nowhere in particular. Sprawl is goal-directed. The expansion is in service of convergence. The network grows outward so it can collapse back inward with a completed result.
 
 ## CLI
 
-The `dendra` CLI is how agents interact with the system. Rather than providing tools via MCP servers, the system's capabilities are exposed as CLI commands. This keeps agents loosely coupled to Claude Code specifically — the CLI is the interface, not the model.
+The `sprawl` CLI is how agents interact with the system. Rather than providing tools via MCP servers, the system's capabilities are exposed as CLI commands. This keeps agents loosely coupled to Claude Code specifically — the CLI is the interface, not the model.
 
 ### Core Commands
 
 ```
-dendra init                          Launch the root agent
+sprawl init                          Launch the root agent
 ```
 
 ### Spawning & Agent Management
 
 ```
-dendra spawn \
+sprawl spawn \
   --family <product|engineering|qa> \
   --type <manager|engineer|researcher|tester|code-merger> \
   --branch <branch-name> \
   --prompt "<task description>"
 
-dendra kill <agent-name>             Kill an unresponsive agent
+sprawl kill <agent-name>             Kill an unresponsive agent
 ```
 
-The calling agent's identity is inferred from `DENDRA_AGENT_IDENTITY` — no `--parent` flag needed.
+The calling agent's identity is inferred from `SPRAWL_AGENT_IDENTITY` — no `--parent` flag needed.
 
 ### Messaging
 
 Agents communicate via a mailbox-style messaging system.
 
 ```
-dendra messages send <agent-id> "<subject>" "<message>"
-dendra messages broadcast "<subject>" "<message>"
-dendra messages inbox
-dendra messages list [all|sent|read|unread|archived]
-dendra messages read <msg-id>
-dendra messages unread <msg-id>
-dendra messages archive <msg-id>
+sprawl messages send <agent-id> "<subject>" "<message>"
+sprawl messages broadcast "<subject>" "<message>"
+sprawl messages inbox
+sprawl messages list [all|sent|read|unread|archived]
+sprawl messages read <msg-id>
+sprawl messages unread <msg-id>
+sprawl messages archive <msg-id>
 ```
 
 Broadcast sends a message to all agents. Intended primarily for the root.
 
 ### Reporting
 
-Agents report status to their parent (superior) in the tree.
+Agents report status to their parent (superior) in the network.
 
 ```
-dendra report status "<status>"      Report current status
-dendra report done "<result>"        Report successful completion
-dendra report problem "<problem>"    Escalate an issue
+sprawl report status "<status>"      Report current status
+sprawl report done "<result>"        Report successful completion
+sprawl report problem "<problem>"    Escalate an issue
 ```
 
 ### Signaling
@@ -185,11 +185,11 @@ Underlying the messaging and reporting system is a signaling mechanism integrate
 
 ## Name
 
-The name **Dendrarchy** combines *dendron* (Greek: "tree") and *-archy* (Greek: "rule/governance") — literally "tree-governance." A self-governing tree of agents. The CLI command `dendra` is the shorthand.
+The name **Sprawl** is taken from William Gibson's *Sprawl trilogy* (*Neuromancer*, *Count Zero*, *Mona Lisa Overdrive*) — the Boston-Atlanta Metropolitan Axis, a vast interconnected urban megastructure where networks overlap, evolve, and self-organize. Like Gibson's Sprawl, this system is an organic network of autonomous agents that grows, adapts, and connects to accomplish complex goals. The CLI command `sprawl` is the entry point into the network.
 
 ## Platform
 
-- **CLI entry point:** `dendra init` launches the root agent
+- **CLI entry point:** `sprawl init` launches the root agent
 - **Runtime:** Orchestrates Claude Code instances via tmux sessions
 - **Git strategy:** Each agent operates in its own git worktree (except Code Mergers, which operate in their parent manager's worktree). Uses beads (`bd`) for issue tracking per worktree.
 - **Future:** Potentially a web UI for visualization and monitoring

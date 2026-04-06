@@ -63,14 +63,14 @@ The root `CLAUDE.md` (read by Claude Code on startup) contains:
 
 **Recommendation:** CLAUDE.md can stay as-is — it's genuinely useful for any Claude Code user working on the project. The Linear team name could be updated post-rename. Skills are additive and harmless.
 
-## 3. .dendra/ Runtime State
+## 3. .sprawl/ Runtime State
 
 ### What Gets Created at Runtime
 
-The `.dendra/` directory is **gitignored** and created at runtime by `dendra init`. Based on code in `internal/state/`:
+The `.sprawl/` directory is **gitignored** and created at runtime by `sprawl init`. Based on code in `internal/state/`:
 
 ```
-.dendra/
+.sprawl/
 ├── namespace           # Namespace identifier
 ├── root-name           # Name of the root agent
 ├── agents/
@@ -83,21 +83,21 @@ The `.dendra/` directory is **gitignored** and created at runtime by `dendra ini
     └── {agent-name}/   # Git worktree for each agent
 ```
 
-### What's in the Repo's .dendra/ (If Anything)
+### What's in the Repo's .sprawl/ (If Anything)
 
-In a clean clone, `.dendra/` does not exist. The `.gitignore` excludes it entirely. However, **in the development repo** (where dendra develops itself), `.dendra/` contains live agent state. This is by design — see CLAUDE.md: "This repo IS Dendrarchy."
+In a clean clone, `.sprawl/` does not exist. The `.gitignore` excludes it entirely. However, **in the development repo** (where sprawl develops itself), `.sprawl/` contains live agent state. This is by design — see CLAUDE.md: "This repo IS Sprawl."
 
 ### Open-Source Impact
 
-**No risk.** The `.gitignore` correctly excludes `.dendra/`. A clean clone will not contain any runtime state.
+**No risk.** The `.gitignore` correctly excludes `.sprawl/`. A clean clone will not contain any runtime state.
 
 ## 4. Missing Community Files
 
 ### Comparison with Popular Go CLI Tools
 
-I compared dendra's community files against three well-known Go CLI projects:
+I compared sprawl's community files against three well-known Go CLI projects:
 
-| File | cobra | go-task | age | dendra |
+| File | cobra | go-task | age | sprawl |
 |---|---|---|---|---|
 | LICENSE | Apache-2.0 | MIT | BSD-3 | **Missing** |
 | CONTRIBUTING.md | Yes | Yes | No | **Missing** |
@@ -119,7 +119,7 @@ I compared dendra's community files against three well-known Go CLI projects:
    - How to set up a development environment
    - Code style requirements (gofumpt, golangci-lint)
    - PR process and review expectations
-   - Whether dendra agents are used in the contribution workflow
+   - Whether sprawl agents are used in the contribution workflow
 
 3. **.github/workflows/** — No CI pipeline. The project has `make validate` but nothing runs it automatically on PRs.
 
@@ -143,7 +143,7 @@ I compared dendra's community files against three well-known Go CLI projects:
 
 | Location | Reference | Issue |
 |---|---|---|
-| `go.mod` | `github.com/dmotles/dendra` | Module path — must match actual GitHub org/repo |
+| `go.mod` | `github.com/dmotles/sprawl` | Module path — must match actual GitHub org/repo |
 | `CLAUDE.md` | "Qumulo-dmotles" team | Internal team name in Linear |
 | `CLAUDE.md` | "QUM" issue prefix | Internal Linear project prefix |
 | `.mcp.json` | `https://mcp.linear.app/mcp` | Linear MCP server — internal workflow |
@@ -152,12 +152,12 @@ I compared dendra's community files against three well-known Go CLI projects:
 
 ### Module Path
 
-The `go.mod` declares `github.com/dmotles/dendra`. All internal imports use this path. If the project moves to a different GitHub org (e.g., `github.com/dendrarchy/dendra`), every import across all `.go` files must be updated. This is a straightforward `sed` operation but touches many files.
+The `go.mod` declares `github.com/dmotles/sprawl`. All internal imports use this path. If the project moves to a different GitHub org (e.g., `github.com/sprawlrchy/sprawl`), every import across all `.go` files must be updated. This is a straightforward `sed` operation but touches many files.
 
 **Current import count:**
 
 ```
-$ grep -r "github.com/dmotles/dendra" --include="*.go" -l | wc -l
+$ grep -r "github.com/dmotles/sprawl" --include="*.go" -l | wc -l
 ```
 
 This would affect all files in `cmd/` and `internal/` that import sibling packages.
@@ -185,7 +185,7 @@ This would affect all files in `cmd/` and `internal/` that import sibling packag
 
 `go.mod` requires Go 1.25.0. This is Go's **latest release** (as of 2026). This means:
 
-- `go install github.com/dmotles/dendra@latest` requires users to have Go 1.25+
+- `go install github.com/dmotles/sprawl@latest` requires users to have Go 1.25+
 - Older CI systems or user environments may not have this version
 - Worth documenting minimum Go version prominently
 
@@ -199,7 +199,7 @@ The `.claude/skills/` directory is committed to the repo containing custom skill
 
 - Useful for any Claude Code user working on the project
 - Not harmful to commit
-- But they reference internal workflows (Linear, dendra agent spawning)
+- But they reference internal workflows (Linear, sprawl agent spawning)
 
 **Verdict:** Keep them. They're analogous to `.vscode/` settings — project-specific tooling config.
 
@@ -221,7 +221,7 @@ Both files describe the system. `DESCRIPTION.md` is more detailed (full architec
 
 ### 7e. Tmux Dependency Is Unusual
 
-Dendra requires tmux to function. This is uncommon for a Go CLI tool and creates friction:
+Sprawl requires tmux to function. This is uncommon for a Go CLI tool and creates friction:
 
 - tmux is not installed by default on most systems
 - macOS users need `brew install tmux`
@@ -230,7 +230,7 @@ Dendra requires tmux to function. This is uncommon for a Go CLI tool and creates
 
 ### 7f. Claude Code Is a Prerequisite
 
-Dendra is an orchestration layer over Claude Code. Users need:
+Sprawl is an orchestration layer over Claude Code. Users need:
 
 1. A Claude Code installation
 2. An Anthropic API key or subscription
@@ -246,7 +246,7 @@ This dependency chain should be prominently documented. The README already menti
 | LICENSE file exists | **No** | P0 Blocker | Referenced in README but missing |
 | No secrets in repo | **OK** | — | `.gitignore` excludes credential files |
 | Dependencies are permissive | **OK** | — | All Apache-2.0 or BSD-3-Clause |
-| .dendra/ is gitignored | **OK** | — | No runtime state leaks |
+| .sprawl/ is gitignored | **OK** | — | No runtime state leaks |
 | Beads is documented as optional | **No** | P1 | Currently presented as core workflow |
 | CONTRIBUTING.md exists | **No** | P1 | Needed before accepting PRs |
 | CI pipeline exists | **No** | P1 | `make validate` exists but no automation |

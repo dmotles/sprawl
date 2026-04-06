@@ -1,26 +1,26 @@
 # 04 — Release Mechanism
 
 > **Validated by:** creek (research agent), 2026-04-05
-> Verified against GoReleaser v2 docs, gh CLI (cli/cli), lazygit (jesseduffield/lazygit), and current dendra codebase.
+> Verified against GoReleaser v2 docs, gh CLI (cli/cli), lazygit (jesseduffield/lazygit), and current sprawl codebase.
 
 ## Summary
 
-Dendra needs a release pipeline to produce versioned binaries for distribution.
+Sprawl needs a release pipeline to produce versioned binaries for distribution.
 This document covers GoReleaser v2 configuration, GitHub Actions integration,
 and version injection via ldflags.
 
 ## Current State
 
-Dendra currently has no release automation. The Makefile builds a local binary
-with a simple `go build -o dendra .` (no ldflags, no version embedding). There
+Sprawl currently has no release automation. The Makefile builds a local binary
+with a simple `go build -o sprawl .` (no ldflags, no version embedding). There
 is no `.goreleaser.yaml`, no release workflow, and no version variable in
 `main.go` or elsewhere.
 
 **Relevant files:**
 
-- `Makefile` — line 7: `go build -o dendra .`
+- `Makefile` — line 7: `go build -o sprawl .`
 - `main.go` — calls `cmd.Execute()`, no version variables
-- `go.mod` — module `github.com/dmotles/dendra`, Go 1.25.0
+- `go.mod` — module `github.com/dmotles/sprawl`, Go 1.25.0
 
 ## GoReleaser v2
 
@@ -33,7 +33,7 @@ with all deprecated options removed). The key migration changes from v1:
 - `builds.gobinary` became `builds.tool`
 - CLI flags: `--rm-dist` became `--clean`, `--debug` became `--verbose`
 
-### Recommended .goreleaser.yaml for Dendra
+### Recommended .goreleaser.yaml for Sprawl
 
 Based on lazygit's config (the cleanest reference among popular Go CLIs):
 
@@ -80,7 +80,7 @@ changelog:
 
 **Notes:**
 
-- `CGO_ENABLED=0` is appropriate since dendra has no CGO dependencies (verified
+- `CGO_ENABLED=0` is appropriate since sprawl has no CGO dependencies (verified
   — no `import "C"` or CGO references anywhere in the codebase).
 - Windows builds will compile but will **not work** without significant code
   changes (see [05-cross-platform.md](05-cross-platform.md)). Consider
@@ -96,7 +96,7 @@ Add version variables to `main.go` (or a dedicated `internal/build` package):
 ```go
 package main
 
-import "github.com/dmotles/dendra/cmd"
+import "github.com/dmotles/sprawl/cmd"
 
 var (
     version = "dev"
@@ -109,7 +109,7 @@ func main() {
 }
 ```
 
-Then wire these into a `dendra version` command or the root command's version
+Then wire these into a `sprawl version` command or the root command's version
 field. GoReleaser automatically populates `main.version`, `main.commit`, and
 `main.date` at build time.
 
@@ -122,7 +122,7 @@ go build -ldflags "-s -w \
   -X main.version=$(git describe --tags --always) \
   -X main.commit=$(git rev-parse HEAD) \
   -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  -o dendra .
+  -o sprawl .
 ```
 
 ### Non-main Package Alternative
@@ -132,7 +132,7 @@ If version info belongs in a library package (like gh CLI uses
 
 ```yaml
 ldflags:
-  - -X github.com/dmotles/dendra/internal/build.Version={{.Version}}
+  - -X github.com/dmotles/sprawl/internal/build.Version={{.Version}}
 ```
 
 **Recommendation:** Start with `main.version` for simplicity. Move to a
@@ -215,12 +215,12 @@ git push origin v1.0.0
   signing, Apple notarization, Homebrew tap bumping
 - Version injection: `-X github.com/cli/cli/v2/internal/build.Version={{.Version}}`
 - Uses `workflow_dispatch` (not tag-push) with multi-runner builds
-- **Not a good template for dendra** — far more complexity than needed
+- **Not a good template for sprawl** — far more complexity than needed
 
 ## Recommended Implementation Plan
 
 1. **Add version variables** to `main.go` (`version`, `commit`, `date`)
-2. **Add a `dendra version` command** that prints them
+2. **Add a `sprawl version` command** that prints them
 3. **Create `.goreleaser.yaml`** using the config above (initially linux +
    darwin only, add windows later after cross-platform work)
 4. **Add `.github/workflows/release.yml`** with the tag-push workflow
@@ -229,7 +229,7 @@ git push origin v1.0.0
 
 ## Open Questions
 
-- Should dendra publish to Homebrew? If so, a separate tap repo and a PAT
+- Should sprawl publish to Homebrew? If so, a separate tap repo and a PAT
   secret are needed.
-- Should there be a `dendra self-update` mechanism, or rely on package managers?
+- Should there be a `sprawl self-update` mechanism, or rely on package managers?
 - What's the minimum supported Go version? Currently building with Go 1.25.0.

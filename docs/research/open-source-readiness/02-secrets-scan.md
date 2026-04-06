@@ -31,7 +31,7 @@ References internal/personal Linear workspace. Found in:
 | `CLAUDE.md` | 64 | `--branch "dmotles/qum-42-broadcast-partial-failure"` |
 | `.claude/skills/linear-issues/SKILL.md` | 12 | `Team: Qumulo-dmotles (prefix: QUM)` |
 | `.claude/skills/linear-issues/SKILL.md` | 137 | `team: "Qumulo-dmotles"` |
-| `.claude/skills/go-cli-best-practices/SKILL.md` | 350 | `github.com/dmotles/dendra` |
+| `.claude/skills/go-cli-best-practices/SKILL.md` | 350 | `github.com/dmotles/sprawl` |
 | `.claude/skills/cli-ux-best-practices/SKILL.md` | 111 | `branch dmotles/qum-42 preserved` |
 
 **Decision:** Move to `CLAUDE.local.md` and `.gitignore` it. The Linear integration config (`.claude/skills/linear-issues/`) should also be excluded or parameterized.
@@ -45,22 +45,22 @@ References internal/personal Linear workspace. Found in:
 
 Standard for OSS but user wants to use a different public identity. Can be scrubbed via `git filter-repo` before first public push.
 
-#### 3. Hardcoded `/home/coder/dendra` path
+#### 3. Hardcoded `/home/coder/sprawl` path
 
 Found in one test file:
 
 | File | Line | Content |
 |------|------|---------|
-| `internal/memory/sessionlog_test.go` | 30 | `got := EncodeCWDForClaude("/home/coder/dendra/.dendra/worktrees/oak")` |
-| `internal/memory/sessionlog_test.go` | 33 | `t.Errorf("EncodeCWDForClaude(%q) = ...", "/home/coder/dendra/.dendra/worktrees/oak", ...)` |
+| `internal/memory/sessionlog_test.go` | 30 | `got := EncodeCWDForClaude("/home/coder/sprawl/.sprawl/worktrees/oak")` |
+| `internal/memory/sessionlog_test.go` | 33 | `t.Errorf("EncodeCWDForClaude(%q) = ...", "/home/coder/sprawl/.sprawl/worktrees/oak", ...)` |
 
-Cosmetic, not a security issue. Should be replaced with a generic path like `/home/testuser/project/.dendra/worktrees/testagent`.
+Cosmetic, not a security issue. Should be replaced with a generic path like `/home/testuser/project/.sprawl/worktrees/testagent`.
 
-#### 4. Go module path `github.com/dmotles/dendra` (NEW)
+#### 4. Go module path `github.com/dmotles/sprawl` (NEW)
 
 The module path in `go.mod` line 1 references the personal GitHub account `dmotles`. This propagates to **every `.go` file** via import statements (~80+ instances across `cmd/` and `internal/`). This will need updating if the repo moves to a different GitHub org/account.
 
-**Files affected:** `go.mod` + all `.go` files with import statements referencing `github.com/dmotles/dendra`.
+**Files affected:** `go.mod` + all `.go` files with import statements referencing `github.com/dmotles/sprawl`.
 
 #### 5. QUM- Linear issue references in documentation (NEW)
 

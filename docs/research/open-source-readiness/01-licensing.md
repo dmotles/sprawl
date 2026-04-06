@@ -10,7 +10,7 @@
 - **No copyright headers** in any `.go` source files.
 - **No NOTICE file.**
 - **No SPDX identifiers** anywhere in the codebase.
-- Module path: `github.com/dmotles/dendra` (per go.mod).
+- Module path: `github.com/dmotles/sprawl` (per go.mod).
 
 ## Dependency Audit
 
