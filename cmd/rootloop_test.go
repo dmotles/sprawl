@@ -605,6 +605,8 @@ func TestRunNeoLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	var capturedSessionID string
 	var capturedCWD string
 	var claudeRan bool
+	var buf strings.Builder
+	deps.stdout = &buf
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -650,6 +652,11 @@ func TestRunNeoLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	}
 	if !claudeRan {
 		t.Error("expected claude to still run after autoSummarize")
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Detected missed handoff from previous session, generating summary") {
+		t.Errorf("expected stdout to contain missed handoff feedback message before auto-summarize, got: %q", output)
 	}
 }
 
