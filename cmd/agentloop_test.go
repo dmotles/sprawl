@@ -3071,14 +3071,19 @@ func TestRunAgentLoop_ClearsStaleWakeFileBeforeInitialPrompt(t *testing.T) {
 	}
 }
 
-func TestRunAgentLoop_InitialPromptInterruptedByWake_RequeuesPrompt(t *testing.T) {
-	deps, _, mockProc := newTestAgentLoopDeps(t)
+func TestRunAgentLoop_InitialPromptInterruptedByWake_DeliversInbox(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 
-	// First send (initial prompt) returns an error result (simulating interrupt).
-	// Second send (re-delivery) succeeds.
+	// First send (initial prompt) returns an error result (simulating wake interrupt).
+	// Second send (inbox delivery) succeeds.
 	mockProc.sendResults = []*protocol.ResultMessage{
 		{Type: "result", Result: "interrupted", IsError: true},
 		{Type: "result", Result: "done"},
+	}
+
+	// Pre-populate an unread message so the inbox check finds it.
+	if err := messages.Send(tmpDir, "neo", "finn", "urgent update", "please check this"); err != nil {
+		t.Fatalf("sending test message: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3089,23 +3094,29 @@ func TestRunAgentLoop_InitialPromptInterruptedByWake_RequeuesPrompt(t *testing.T
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// The initial prompt should have been re-delivered.
+	// The initial prompt should NOT be re-delivered. Instead, the inbox
+	// message should be delivered on the next turn.
 	if len(mockProc.prompts) < 2 {
-		t.Fatalf("expected at least 2 prompts (initial + re-delivery), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+		t.Fatalf("expected at least 2 prompts (initial + inbox delivery), got %d: %v", len(mockProc.prompts), mockProc.prompts)
 	}
 
-	// Both prompts should be the initial prompt ("do stuff" from test fixture).
+	// First prompt is the initial prompt.
 	if mockProc.prompts[0] != "do stuff" {
 		t.Errorf("prompts[0] = %q, want %q", mockProc.prompts[0], "do stuff")
 	}
-	if mockProc.prompts[1] != "do stuff" {
-		t.Errorf("prompts[1] = %q, want %q (re-delivery of initial prompt)", mockProc.prompts[1], "do stuff")
+
+	// Second prompt should be inbox delivery (not a re-delivery of initial prompt).
+	if mockProc.prompts[1] == "do stuff" {
+		t.Errorf("prompts[1] should be inbox delivery, not re-delivery of initial prompt")
+	}
+	if !strings.Contains(mockProc.prompts[1], "new message") {
+		t.Errorf("prompts[1] = %q, expected inbox delivery containing 'new message'", mockProc.prompts[1])
 	}
 
-	// Stdout should contain the re-queue log line.
+	// Stdout should NOT contain the old re-queue log line.
 	output := outBuf.String()
-	if !strings.Contains(output, "initial prompt interrupted") {
-		t.Errorf("expected 'initial prompt interrupted' in output, got:\n%s", output)
+	if strings.Contains(output, "initial prompt interrupted, re-queuing") {
+		t.Errorf("should not re-queue initial prompt on wake interrupt")
 	}
 }
 

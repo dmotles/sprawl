@@ -492,7 +492,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	// Send the initial prompt through the interrupt-aware path so poke/wake
 	// files are detected during the first turn, not just subsequent turns.
 	fmt.Fprintf(deps.stdout, "[agent-loop] sending initial prompt with interrupt support\n")
-	initialResult, initialPoke, initialSendErr := sendWithInterrupt(agentState.Prompt)
+	_, initialPoke, initialSendErr := sendWithInterrupt(agentState.Prompt)
 	if initialSendErr != nil {
 		fmt.Fprintf(deps.stdout, "[agent-loop] failed to send initial prompt: %v\n", initialSendErr)
 		_ = deps.sendMessage(sprawlRoot, agentName, agentState.Parent, "[PROBLEM] agent-loop failure",
@@ -503,13 +503,11 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	if initialPoke != "" {
 		pendingPoke = initialPoke
 	}
-	// If the initial turn was interrupted (IsError=true but no Go error),
-	// the prompt was never fully processed. Re-queue it so the main loop
-	// delivers it on the next iteration.
-	if initialResult != nil && initialResult.IsError && pendingPoke == "" {
-		fmt.Fprintf(deps.stdout, "[agent-loop] initial prompt interrupted, re-queuing for delivery\n")
-		pendingPoke = agentState.Prompt
-	}
+	// If the initial turn was interrupted by a wake (no poke content),
+	// do NOT re-queue the initial prompt. The agent already has session
+	// context from the partially-completed first turn and knows its task.
+	// Let the main loop fall through to inbox delivery so the message
+	// that triggered the interrupt gets delivered immediately.
 
 	// restartWithResume creates a new process with Resume=true after a crash.
 	// Returns false (and exits) if the restart fails.

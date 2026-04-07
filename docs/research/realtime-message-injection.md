@@ -20,7 +20,7 @@ claude -p --input-format stream-json --output-format stream-json \
 
 Key files:
 - `cmd/agentloop.go` — the agent loop that dispatches prompts to Claude
-- `internal/agentloop/process.go` — process lifecycle management (`Start`, `SendPrompt`, `InterruptTurn`, `Stop`)
+- `internal/agentloop/process.go` — process lifecycle management (`Launch`, `SendPrompt`, `InterruptTurn`, `Stop`)
 - `internal/agentloop/real_starter.go` — subprocess spawning via `exec.CommandContext` with `StdinPipe()`/`StdoutPipe()`
 - `internal/protocol/writer.go` — NDJSON writer for stdin messages
 - `internal/protocol/reader.go` — NDJSON reader for stdout messages
