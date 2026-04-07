@@ -98,15 +98,3 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 1. `make validate` — full pipeline: build, fmt-check, lint, test
 2. Manual smoke test: run the built `./sprawl` binary with relevant commands
 3. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
-
-## Migration Notes
-
-### M12: Merge/Retire Workflow Change
-
-- `sprawl merge` no longer retires agents or deletes branches. It only pulls in work via squash-merge. The agent stays alive.
-- `sprawl retire --merge` replaces the old merge-and-retire-in-one-step behavior.
-- `sprawl retire` now deletes the agent's branch by default and refuses if unmerged commits exist.
-- `sprawl retire --abandon` discards work and deletes the branch without checking for unmerged commits.
-- The `--force` flag on merge has been removed.
-- **Pre-M12 branches**: Agent branches merged before M12 used the old squash-merge approach and will never appear in `git branch --merged`. Clean them up manually with `git branch -D <branch>`.
-- **Retirement safety:** `sprawl retire` checks for unmerged commits and refuses if found. Use `--abandon` only to intentionally discard work. For researchers with committed findings, always merge before retiring.
