@@ -115,7 +115,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 			return nil, fmt.Errorf("post-merge validation failed: tests fail after merging %s into %s\nMerge rolled back. Your branch is back to its pre-merge state.\n%s\nUse --no-validate to skip validation", cfg.AgentName, cfg.ParentBranch, truncated)
 		}
 	} else if !cfg.NoValidate && cfg.ValidateCmd == "" {
-		fmt.Fprintf(deps.Stderr, "WARNING: no validate command configured; skipping post-merge validation\n")
+		fmt.Fprintf(deps.Stderr, "WARNING: no validate command configured; skipping post-merge validation.\n  Configure with: sprawl config set validate \"<command>\"\n  See: sprawl config --help\n")
 	}
 
 	// Step 8: Write poke BEFORE releasing lock.

@@ -585,6 +585,9 @@ func TestMerge_EmptyValidateCmd_SkipsWithWarning(t *testing.T) {
 	if !strings.Contains(stderr.String(), "no validate command configured") {
 		t.Errorf("stderr should warn about missing validate command, got: %q", stderr.String())
 	}
+	if !strings.Contains(stderr.String(), "sprawl config set validate") {
+		t.Errorf("stderr should contain config hint 'sprawl config set validate', got: %q", stderr.String())
+	}
 	if !pokeCalled {
 		t.Error("poke should still be written when ValidateCmd is empty")
 	}
