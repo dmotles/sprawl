@@ -2408,6 +2408,72 @@ func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
 	}
 }
 
+func TestRunAgentLoop_InboxDelivery_NoDoubleInterrupt(t *testing.T) {
+	// Regression test for QUM-172: when inbox delivery picks up a message,
+	// the stale wake file must be deleted BEFORE sendPromptWithInterrupt starts,
+	// so the poller doesn't find it mid-turn and double-interrupt.
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Send a real message — creates both inbox entry AND wake file.
+	if err := messages.Send(tmpDir, "root", "finn", "hey", "check this out"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// Use real readFile/removeFile so the wake file on disk is exercised.
+	deps.readFile = os.ReadFile
+	deps.removeFile = os.Remove
+
+	// Use a blocking process manager so SendPrompt takes long enough for the
+	// poller (10ms interval) to tick and check for the wake file.
+	sendCh := make(chan struct{})
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "handled inbox"},
+	}
+	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
+		return blockingProc
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = runAgentLoop(ctx, deps, "finn")
+	}()
+
+	// Let the poller tick while SendPrompt is blocked. The default poll
+	// interval is 500ms, so we wait longer than that to ensure at least one
+	// poll cycle occurs. If the wake file wasn't consumed before the turn
+	// started, the poller will find it and call InterruptTurn — the bug.
+	time.Sleep(700 * time.Millisecond)
+	close(sendCh) // unblock SendPrompt
+
+	<-done
+
+	// InterruptTurn must NOT have been called — inbox delivery consumed the
+	// wake file before the turn started.
+	mockProc.mu.Lock()
+	interrupted := mockProc.interruptCalled
+	mockProc.mu.Unlock()
+	if interrupted {
+		t.Error("InterruptTurn was called during inbox delivery — stale wake file caused double-interrupt (QUM-172)")
+	}
+
+	// Verify inbox delivery fired (not wake file delivery).
+	mockProc.mu.Lock()
+	prompts := mockProc.prompts
+	mockProc.mu.Unlock()
+	if len(prompts) < 1 {
+		t.Fatal("expected at least one prompt from inbox delivery")
+	}
+	if !strings.Contains(prompts[0], "sprawl messages read") {
+		t.Errorf("expected inbox-style prompt, got: %q", prompts[0])
+	}
+}
+
 func TestRunAgentLoop_WakeFile_ContinuesImmediately(t *testing.T) {
 	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
 

@@ -615,6 +615,11 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			for _, line := range strings.Split(prompt, "\n") {
 				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
 			}
+			// Consume any pending wake file BEFORE starting the turn — inbox
+			// delivery already handles the notification, so don't let
+			// sendPromptWithInterrupt find a stale wake file and double-interrupt.
+			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
+			_ = deps.removeFile(wakePath)
 			_, pokeContent, sendErr := sendWithInterrupt(prompt)
 			if pokeContent != "" {
 				pendingPoke = pokeContent
@@ -626,9 +631,6 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 					return nil
 				}
 			}
-			// Consume any pending wake file — inbox delivery already notified the agent.
-			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
-			_ = deps.removeFile(wakePath)
 			_ = wl.Release()
 			deps.sleepFunc(3 * time.Second)
 			continue
