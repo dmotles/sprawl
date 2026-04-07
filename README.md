@@ -33,7 +33,10 @@ make build
 ```bash
 cd your-repo
 sprawl init
+sprawl config set validate "make test"
 ```
+
+Use `sprawl config show` to view current settings, or `sprawl config --help` for all options.
 
 This launches **neo** (the root agent) in a tmux session. Give it a goal and it self-organizes from there — decomposing work, spawning agents, and managing everything autonomously.
 
