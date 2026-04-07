@@ -15,9 +15,5 @@ sprawl
 .sprawl/*
 !.sprawl/config.yaml
 
-# Beads / Dolt files (added by bd init)
-.dolt/
-*.db
-.beads-credential-key
 .claude/settings.local.json
 CLAUDE.local.md
