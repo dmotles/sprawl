@@ -37,7 +37,7 @@ This launches **neo** (the root agent) in a tmux session. Give it a goal and it 
 
 ## State
 
-All of sprawl's state lives in `.sprawl/` (gitignored). Back up this directory to migrate between hosts.
+All of sprawl's state lives in `.sprawl/` (gitignored), except for `.sprawl/config.yaml` which is tracked — it holds project-level settings like the validation command. Back up this directory to migrate between hosts.
 
 ## Prerequisites
 

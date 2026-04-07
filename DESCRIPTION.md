@@ -45,7 +45,7 @@ Claude Code's `--resume <session-id>` flag and `--json` output mode are the mech
 
 ### Agent Types
 
-Agents come in five types. The system's philosophy is to keep rules simple and let agents — especially managers — exercise judgment about how to accomplish their goals.
+Agents come in four types. The system's philosophy is to keep rules simple and let agents — especially managers — exercise judgment about how to accomplish their goals.
 
 | Type | Can edit code | Can spawn agents | Worktree | Lifecycle |
 |---|---|---|---|---|
@@ -53,8 +53,6 @@ Agents come in five types. The system's philosophy is to keep rules simple and l
 | **Manager** | No | Yes | Own worktree + integration branch | Dormant between tasks, reusable, lives until goal complete |
 | **Engineer** | Yes | No | Own worktree + branch | Dormant between tasks, reusable for follow-up work |
 | **Researcher** | No | No | Own worktree | Dormant between tasks, reusable for follow-up work |
-| **Tester** | Yes (tests only) | No | Own worktree + branch | Dormant between tasks, reusable for follow-up work |
-| **Code Merger** | Merge only | No | Parent manager's worktree | Ephemeral — lives for one merge, dies when done |
 
 #### Root
 
@@ -65,9 +63,9 @@ The root cannot edit code. It can read code, execute commands, and spawn agents.
 A manager receives a task from its parent and decides how to execute it. Its core responsibilities:
 
 1. **Decompose** — Break the task into 3-10 subtasks. No more. If a subtask is still too big, spawn a sub-manager for it. If it's small enough (a few hundred lines, one module, one commit's worth of changes), spawn an engineer.
-2. **Dispatch** — Spawn the right agents for each subtask. Managers can spawn engineers, researchers, other managers, and code mergers.
+2. **Dispatch** — Spawn the right agents for each subtask. Managers can spawn engineers, researchers, and other managers.
 3. **Wait and respond** — Sit and wait for agents to report back. When work comes in, decide what to do with it.
-4. **Integrate** — When an engineer reports done, the manager evaluates the work. If it's good (possibly after having a researcher or QA agent review it), it spawns a Code Merger to merge the engineer's branch into the manager's integration branch. If the work is bad, the manager has two choices:
+4. **Integrate** — When an engineer reports done, the manager evaluates the work. If it's good (possibly after having a researcher or QA agent review it), it uses `sprawl merge` to squash-merge the engineer's branch into the manager's integration branch. If the work is bad, the manager has two choices:
    - **Abandon and respawn**: scrap the work and spawn a new engineer with corrected instructions based on what went wrong.
    - **Spawn forward**: if it's close but needs tweaks, send follow-up work to the same agent (who has context) or spawn a new one to fix the issues from where the previous one left off.
 5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context) or kill unresponsive agents (`sprawl kill <agent>`).
@@ -81,21 +79,12 @@ A big part of the manager's job is understanding **parallelism and dependencies*
 
 The hands-on builder. Engineers have full, unfettered access to edit code, create files, run commands, and make changes within their own worktree. They are leaf nodes — they cannot spawn other agents. When they finish their task, they report done. If they discover additional work is needed beyond their scope, they report the problem back to their manager, who decides how to handle it.
 
-When an engineer is spawned, the system:
-1. Creates a new git worktree and branch
-2. Copies/initializes any necessary secrets (e.g., `.env` from the root)
+When an engineer is spawned, the system creates a new git worktree and branch for the agent to work in.
 
 #### Researcher (IC)
 
 An individual contributor without code editing permissions. They can read code, execute commands, and search the web. Useful for investigation, research, documentation, review, and analysis tasks. Like engineers, they are leaf nodes and cannot spawn agents.
 
-#### Tester
-
-A quality-focused individual contributor that writes and runs tests, verifies correctness, and validates that work meets specifications. Testers have code editing permissions (for writing test code) and their own worktree. Like engineers and researchers, they are leaf nodes and cannot spawn agents.
-
-#### Code Merger
-
-A specialized agent whose sole job is to merge a completed branch into a manager's integration branch. Code Mergers are spawned on demand by managers when it's time to integrate work. They operate in the **parent manager's worktree** (not their own), since they're merging *into* the manager's integration branch. They perform the merge, report done, and die.
 
 ### Agent Families
 
@@ -115,13 +104,13 @@ The system operates on a small set of simple rules:
 
 2. **Managers decompose and delegate.** When a manager receives a task, it decides: is this big enough to warrant sub-managers, or can I hand this directly to an IC? This decision is made autonomously by each manager. A manager should own no more than 3-10 subtasks at a time.
 
-3. **Managers own integration.** Each engineering manager has its own integration branch. When an IC's work is deemed ready, the manager spawns a Code Merger to merge it in. When all subtasks are integrated, the manager reports up that its branch is ready.
+3. **Managers own integration.** Each engineering manager has its own integration branch. When an IC's work is deemed ready, the manager uses `sprawl merge` to squash-merge it in. When all subtasks are integrated, the manager reports up that its branch is ready.
 
 4. **Managers handle failure.** When work comes back wrong, the manager decides: abandon and respawn with better instructions, or spawn forward to fix from where it is. The manager exercises judgment.
 
 5. **ICs do the work but cannot spawn agents.** Engineers and researchers are leaf nodes. They execute their assigned task. If they discover additional work is needed, they report the problem back to their manager.
 
-6. **Completion flows upward.** When a manager's entire scope of work is done and integrated, it reports completion to its parent. The parent's Code Merger merges the manager's branch up. This cascades until the root can report to the user that the goal is achieved.
+6. **Completion flows upward.** When a manager's entire scope of work is done and integrated, it reports completion to its parent. The parent merges the manager's branch up. This cascades until the root can report to the user that the goal is achieved.
 
 ### The Forcing Function
 
@@ -144,7 +133,7 @@ sprawl init                          Launch the root agent
 ```
 sprawl spawn \
   --family <product|engineering|qa> \
-  --type <manager|engineer|researcher|tester|code-merger> \
+  --type <manager|engineer|researcher> \
   --branch <branch-name> \
   --prompt "<task description>"
 
@@ -191,5 +180,13 @@ The name **Sprawl** is taken from William Gibson's *Sprawl trilogy* (*Neuromance
 
 - **CLI entry point:** `sprawl init` launches the root agent
 - **Runtime:** Orchestrates Claude Code instances via tmux sessions
-- **Git strategy:** Each agent operates in its own git worktree (except Code Mergers, which operate in their parent manager's worktree). Uses beads (`bd`) for issue tracking per worktree.
-- **Future:** Potentially a web UI for visualization and monitoring
+- **Git strategy:** Each agent operates in its own git worktree. Issue tracking is external (users bring their own — Linear, GitHub Issues, etc.).
+
+## Future / Potential Enhancements
+
+The following features are planned but not yet implemented:
+
+- **Tester agent type** — A quality-focused individual contributor that writes and runs tests, verifies correctness, and validates that work meets specifications. Would have code editing permissions (for writing test code) and its own worktree.
+- **Code Merger agent type** — A specialized agent whose sole job is to merge a completed branch into a manager's integration branch. Currently, merging is done via the `sprawl merge` command by managers directly.
+- **Automatic .env copying** — Copying/initializing secrets (e.g., `.env` from the root) when spawning engineer agents.
+- **Web UI** — A web-based interface for visualization and monitoring of the agent network.
