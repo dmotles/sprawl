@@ -30,7 +30,7 @@ test:
 GOBIN ?= $(HOME)/.local/bin
 
 install:
-	GOBIN=$(GOBIN) go install .
+	GOBIN=$(GOBIN) go install -ldflags "$(LDFLAGS)" .
 
 clean:
 	rm -f sprawl
