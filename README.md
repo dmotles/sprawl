@@ -4,22 +4,20 @@
 
 # Sprawl
 
-A self-organizing AI agent orchestration system built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+Self-organizing AI agent orchestration on [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Designed to force-multiply solo agentic engineers.
 
 Give it a goal. It figures out how to organize agents to achieve it.
 
 ## Install
 
 ```bash
-go install github.com/dmotles/sprawl@latest
+curl -fsSL https://raw.githubusercontent.com/dmotles/sprawl/main/install.sh | sh
 ```
 
-Or build from source:
+Or with Go:
 
 ```bash
-git clone <repo-url>
-cd sprawl
-make build
+go install github.com/dmotles/sprawl@latest
 ```
 
 ## Quick Start
@@ -29,15 +27,17 @@ cd your-repo
 sprawl init
 ```
 
-This launches the root agent in a tmux session. Give it a seed — a high-level objective like "build a REST API with auth" — and it self-organizes from there.
+This launches **neo** (the root agent) in a tmux session. Give it a goal and it self-organizes from there — decomposing work, spawning agents, and managing everything autonomously.
 
-## Features
+## Usage
 
-- **Self-organizing agent network** — root decomposes goals into managers, managers into engineers. No manual coordination.
-- **Git worktree isolation** — every agent works in its own worktree and branch. No conflicts.
-- **Agent messaging** — built-in mailbox system for inter-agent communication.
-- **Dormant reuse** — agents sleep between tasks and wake with full context preserved.
-- **tmux-native** — each agent runs in its own tmux window. Watch them work in real time.
+- **Navigate agents**: Use tmux to watch agents work. `ctrl+b s` to switch sessions, `ctrl+b w` to switch windows.
+- **Context handoff**: When neo's context window fills up, ask neo to run `sprawl handoff`, then `/exit`. The next session picks up with memories of what happened. If you forget, the root loop will attempt to auto-summarize for you.
+- **Shut down**: Ask neo to make sure no agents are running, then `ctrl+b x` to kill neo's session.
+
+## State
+
+All of sprawl's state lives in `.sprawl/` (gitignored). Back up this directory to migrate between hosts.
 
 ## Prerequisites
 
@@ -46,17 +46,8 @@ This launches the root agent in a tmux session. Give it a seed — a high-level 
 - [Go](https://go.dev/) 1.25+
 - Git
 
-## Architecture
+## More
 
-See [DESCRIPTION.md](DESCRIPTION.md) for the full design — agent types, lifecycle, rules, and how the system converges.
-
-## CLI Reference
-
-```
-sprawl init                     # Launch root agent
-sprawl spawn --type engineer    # Spawn an agent
-sprawl messages send <agent>    # Send a message
-sprawl report done "<result>"   # Report completion
-```
-
-Run `sprawl --help` for the full command list.
+- [DESCRIPTION.md](DESCRIPTION.md) — architecture and design
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
+- [LICENSE](LICENSE)
