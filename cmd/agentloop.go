@@ -277,6 +277,9 @@ func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.Pro
 
 // sendPromptWithInterrupt wraps SendPrompt with a concurrent poller that
 // watches for a .poke file and interrupts the turn if one appears.
+// It also watches for .wake files (written by messages.Send) and interrupts
+// when one appears — but without storing poke content, since the inbox
+// delivery (step 2 of the agent loop) will handle the actual notification.
 // Returns the SendPrompt result, any poke content (non-empty if interrupted), and error.
 func sendPromptWithInterrupt(
 	ctx context.Context,
@@ -291,6 +294,12 @@ func sendPromptWithInterrupt(
 	pokeCh := make(chan string, 1)
 	done := make(chan struct{})
 
+	// Derive wake file path from agent identity.
+	var wakePath string
+	if sprawlRoot != "" && agentName != "" {
+		wakePath = filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
+	}
+
 	go func() {
 		ticker := time.NewTicker(pollInterval)
 		defer ticker.Stop()
@@ -300,7 +309,7 @@ func sendPromptWithInterrupt(
 			case <-done:
 				return
 			case <-ticker.C:
-				// Check for poke file.
+				// Check for poke file (highest priority — explicit interrupt with content).
 				content, err := deps.readFile(pokePath)
 				if err == nil {
 					_ = deps.removeFile(pokePath)
@@ -311,6 +320,18 @@ func sendPromptWithInterrupt(
 					// Trigger interrupt — ignore error (turn may have already ended).
 					_ = proc.InterruptTurn(ctx)
 					return
+				}
+
+				// Check for wake file (message notification — interrupt without content).
+				// The wake file signals a new message; the inbox delivery in the agent
+				// loop provides the detailed notification, so we just interrupt here.
+				if wakePath != "" {
+					if _, wakeErr := deps.readFile(wakePath); wakeErr == nil {
+						_ = deps.removeFile(wakePath)
+						fmt.Fprintf(deps.stdout, "[agent-loop] wake file detected mid-turn, interrupting for message delivery\n")
+						_ = proc.InterruptTurn(ctx)
+						return
+					}
 				}
 
 				// Check inbox for unread messages and log them (but don't deliver).

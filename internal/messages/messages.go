@@ -126,6 +126,9 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 	}
 
 	// Best-effort wake file to notify the recipient agent.
+	// The wake file serves dual purposes: (1) between turns, step 3 of the agent loop
+	// picks it up as a notification; (2) during a turn, sendPromptWithInterrupt detects
+	// it and interrupts the running Claude session so messages are received immediately.
 	wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", to+".wake")
 	wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
 	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional

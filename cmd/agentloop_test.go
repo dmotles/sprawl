@@ -1724,6 +1724,165 @@ func TestSendPromptWithInterrupt_PokeFileFound(t *testing.T) {
 	}
 }
 
+func TestSendPromptWithInterrupt_WakeFileTriggersInterrupt(t *testing.T) {
+	// When a .wake file appears during a mid-turn, sendPromptWithInterrupt should
+	// interrupt the running turn (so the agent loop can deliver inbox messages).
+	// Unlike .poke files, wake-triggered interrupts do NOT return poke content —
+	// the inbox delivery (step 2) handles the actual notification.
+	sendCh := make(chan struct{})
+	mockProc := &mockProcessManager{
+		running: true,
+	}
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "interrupted", IsError: true},
+	}
+
+	var wakeReturned sync.Once
+	var mu sync.Mutex
+	var removedFiles []string
+	deps := &agentLoopDeps{
+		readFile: func(path string) ([]byte, error) {
+			// No poke file.
+			if strings.HasSuffix(path, ".poke") {
+				return nil, errors.New("not found")
+			}
+			// Wake file found once.
+			if strings.HasSuffix(path, ".wake") {
+				var result []byte
+				var found bool
+				wakeReturned.Do(func() {
+					result = []byte("New message from root: check this")
+					found = true
+				})
+				if found {
+					return result, nil
+				}
+			}
+			return nil, errors.New("not found")
+		},
+		removeFile: func(path string) error {
+			mu.Lock()
+			removedFiles = append(removedFiles, path)
+			mu.Unlock()
+			return nil
+		},
+		listMessages: func(string, string, string) ([]*messages.Message, error) { return nil, nil },
+		stdout:       io.Discard,
+	}
+
+	var result *protocol.ResultMessage
+	var pokeContent string
+	var sendErr error
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		result, pokeContent, sendErr = sendPromptWithInterrupt(
+			context.Background(), blockingProc, deps, "/tmp/test.poke", "hello",
+			10*time.Millisecond, "/tmp/sprawl-root", "finn",
+		)
+	}()
+
+	// Wait for interrupt to be called, then unblock SendPrompt.
+	time.Sleep(100 * time.Millisecond)
+	close(sendCh)
+	<-done
+
+	if sendErr != nil {
+		t.Fatalf("sendPromptWithInterrupt error: %v", sendErr)
+	}
+	// Wake-triggered interrupts should NOT return poke content.
+	// The inbox delivery handles the actual message notification.
+	if pokeContent != "" {
+		t.Errorf("pokeContent = %q, want empty (wake interrupts don't store content)", pokeContent)
+	}
+	mockProc.mu.Lock()
+	interrupted := mockProc.interruptCalled
+	mockProc.mu.Unlock()
+	if !interrupted {
+		t.Error("InterruptTurn should have been called when wake file appears mid-turn")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify the wake file was removed.
+	mu.Lock()
+	defer mu.Unlock()
+	wakeRemoved := false
+	for _, f := range removedFiles {
+		if strings.HasSuffix(f, ".wake") {
+			wakeRemoved = true
+			break
+		}
+	}
+	if !wakeRemoved {
+		t.Error("expected wake file to be removed after interrupt")
+	}
+}
+
+func TestSendPromptWithInterrupt_PokeFileHasPriorityOverWake(t *testing.T) {
+	// When both .poke and .wake files exist, the poke file should take priority
+	// (it carries explicit content for the agent). The wake file should be left
+	// for the agent loop to handle.
+	sendCh := make(chan struct{})
+	mockProc := &mockProcessManager{
+		running: true,
+	}
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "interrupted"},
+	}
+
+	var pokeReturned sync.Once
+	deps := &agentLoopDeps{
+		readFile: func(path string) ([]byte, error) {
+			if strings.HasSuffix(path, ".poke") {
+				var result []byte
+				var found bool
+				pokeReturned.Do(func() {
+					result = []byte("urgent: rebase complete")
+					found = true
+				})
+				if found {
+					return result, nil
+				}
+			}
+			// Wake file also exists but should not be reached since poke is checked first.
+			if strings.HasSuffix(path, ".wake") {
+				return []byte("New message from root: hey"), nil
+			}
+			return nil, errors.New("not found")
+		},
+		removeFile:   func(string) error { return nil },
+		listMessages: func(string, string, string) ([]*messages.Message, error) { return nil, nil },
+		stdout:       io.Discard,
+	}
+
+	var pokeContent string
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		_, pokeContent, _ = sendPromptWithInterrupt(
+			context.Background(), blockingProc, deps, "/tmp/test.poke", "hello",
+			10*time.Millisecond, "/tmp/sprawl-root", "finn",
+		)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(sendCh)
+	<-done
+
+	// Poke content should be delivered (not wake content).
+	if pokeContent != "urgent: rebase complete" {
+		t.Errorf("pokeContent = %q, want %q", pokeContent, "urgent: rebase complete")
+	}
+}
+
 // blockingSendProcessManager wraps mockProcessManager with a blocking SendPrompt.
 type blockingSendProcessManager struct {
 	*mockProcessManager
@@ -2382,6 +2541,51 @@ func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
 	wakePath := filepath.Join(tmpDir, ".sprawl", "agents", "finn.wake")
 	if _, err := os.Stat(wakePath); err == nil {
 		t.Error("expected wake file to be consumed after inbox delivery, but it still exists")
+	}
+}
+
+func TestRunAgentLoop_WakeMidTurn_InterruptsAndInboxDelivers(t *testing.T) {
+	// Simulates the QUM-171 scenario: agent is mid-turn processing a task,
+	// a message arrives (wake file written), the turn is interrupted, and
+	// the inbox delivery on the next iteration provides the message details.
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Queue a task so the agent has something to do.
+	if _, err := state.EnqueueTask(tmpDir, "finn", "implement feature X"); err != nil {
+		t.Fatalf("creating task: %v", err)
+	}
+
+	// Pre-send a message so it's in the inbox. messages.Send also writes a wake file.
+	if err := messages.Send(tmpDir, "neo", "finn", "critical fix", "apply this patch"); err != nil {
+		t.Fatalf("sending message: %v", err)
+	}
+
+	// Use real file ops so both wake file and inbox are on disk.
+	deps.readFile = os.ReadFile
+	deps.removeFile = os.Remove
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "task interrupted"}, // task turn interrupted by wake
+		{Type: "result", Result: "read messages"},    // inbox delivery
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	// We expect at least 2 prompts: the task prompt and the inbox delivery.
+	if len(mockProc.prompts) < 2 {
+		t.Fatalf("expected at least 2 prompts (task + inbox), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+
+	// The second prompt should be inbox-style with message read commands.
+	inboxPrompt := mockProc.prompts[1]
+	if !strings.Contains(inboxPrompt, "sprawl messages read") {
+		t.Errorf("expected inbox-style prompt with read commands, got: %q", inboxPrompt)
+	}
+	if !strings.Contains(inboxPrompt, "neo") {
+		t.Errorf("expected inbox prompt to mention sender 'neo', got: %q", inboxPrompt)
 	}
 }
 
