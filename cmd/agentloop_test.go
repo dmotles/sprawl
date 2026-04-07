@@ -38,7 +38,7 @@ type mockProcessManager struct {
 	configs         []agentloop.ProcessConfig
 }
 
-func (m *mockProcessManager) Start(ctx context.Context, initialPrompt string) error {
+func (m *mockProcessManager) Launch(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.startCalled = true
@@ -94,6 +94,7 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 
 	mockProc := &mockProcessManager{
 		sendResults: []*protocol.ResultMessage{
+			{Type: "result", Result: "initial done"},
 			{Type: "result", Result: "done"},
 		},
 	}
@@ -307,10 +308,11 @@ func TestRunAgentLoop_ProcessesTask(t *testing.T) {
 	}
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "completed feature X"},
 	}
 
-	// Cancel context after first SendPrompt call
+	// Cancel context after task SendPrompt call
 	ctx, cancel := context.WithCancel(context.Background())
 	origNewProcess := deps.newProcess
 	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
@@ -323,16 +325,16 @@ func TestRunAgentLoop_ProcessesTask(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// Verify the task prompt was sent to Claude via @file reference
-	if len(mockProc.prompts) < 1 {
-		t.Fatal("expected at least one prompt sent to process")
+	// prompts[0] is the initial agent prompt, prompts[1] is the task prompt
+	if len(mockProc.prompts) < 2 {
+		t.Fatal("expected at least two prompts sent to process (initial + task)")
 	}
 	// Should contain @/ file reference (since EnqueueTask sets PromptFile)
-	if !strings.Contains(mockProc.prompts[0], "@/") {
-		t.Errorf("first prompt should contain @/path reference, got: %q", mockProc.prompts[0])
+	if !strings.Contains(mockProc.prompts[1], "@/") {
+		t.Errorf("task prompt should contain @/path reference, got: %q", mockProc.prompts[1])
 	}
-	if !strings.Contains(mockProc.prompts[0], ".md") {
-		t.Errorf("first prompt should reference a .md file, got: %q", mockProc.prompts[0])
+	if !strings.Contains(mockProc.prompts[1], ".md") {
+		t.Errorf("task prompt should reference a .md file, got: %q", mockProc.prompts[1])
 	}
 }
 
@@ -358,6 +360,7 @@ func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
 	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-explicit-task-id.json"), taskData, 0o644)
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "done"},
 	}
 
@@ -366,12 +369,13 @@ func TestRunAgentLoop_TaskDelivery_UsesPromptFileRef(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	if len(mockProc.prompts) < 1 {
-		t.Fatal("expected at least one prompt sent to process")
+	// prompts[0] is initial, prompts[1] is task
+	if len(mockProc.prompts) < 2 {
+		t.Fatal("expected at least two prompts sent to process")
 	}
 	// Should deliver @file reference, not raw prompt text
-	if !strings.Contains(mockProc.prompts[0], "@"+promptFilePath) {
-		t.Errorf("expected prompt to contain @%s, got: %q", promptFilePath, mockProc.prompts[0])
+	if !strings.Contains(mockProc.prompts[1], "@"+promptFilePath) {
+		t.Errorf("expected prompt to contain @%s, got: %q", promptFilePath, mockProc.prompts[1])
 	}
 }
 
@@ -392,6 +396,7 @@ func TestRunAgentLoop_TaskDelivery_FallbackRawPrompt(t *testing.T) {
 	os.WriteFile(filepath.Join(tasksDir, "20260331T120000.000000000Z-legacy-task-id.json"), taskData, 0o644)
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "done"},
 	}
 
@@ -400,12 +405,13 @@ func TestRunAgentLoop_TaskDelivery_FallbackRawPrompt(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	if len(mockProc.prompts) < 1 {
-		t.Fatal("expected at least one prompt sent to process")
+	// prompts[0] is initial, prompts[1] is task
+	if len(mockProc.prompts) < 2 {
+		t.Fatal("expected at least two prompts sent to process")
 	}
 	// Should fall back to raw prompt text since PromptFile is empty
-	if mockProc.prompts[0] != "do legacy work" {
-		t.Errorf("expected raw prompt fallback, got: %q", mockProc.prompts[0])
+	if mockProc.prompts[1] != "do legacy work" {
+		t.Errorf("expected raw prompt fallback, got: %q", mockProc.prompts[1])
 	}
 }
 
@@ -422,11 +428,12 @@ func TestRunAgentLoop_TaskFIFO(t *testing.T) {
 	}
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "done 1"},
 		{Type: "result", Result: "done 2"},
 	}
 
-	// Cancel after both tasks processed
+	// Cancel after both tasks processed (initial prompt + 2 tasks = 3 prompts)
 	ctx, cancel := context.WithCancel(context.Background())
 	promptCount := 0
 	deps.sleepFunc = func(d time.Duration) {
@@ -439,7 +446,7 @@ func TestRunAgentLoop_TaskFIFO(t *testing.T) {
 			processManager: pm,
 			onPrompt: func() {
 				promptCount++
-				if promptCount >= 2 {
+				if promptCount >= 3 {
 					cancel()
 				}
 			},
@@ -448,13 +455,14 @@ func TestRunAgentLoop_TaskFIFO(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	if len(mockProc.prompts) < 2 {
-		t.Fatalf("expected at least 2 prompts, got %d", len(mockProc.prompts))
+	// prompts[0] is initial, prompts[1:] are task prompts
+	if len(mockProc.prompts) < 3 {
+		t.Fatalf("expected at least 3 prompts (initial + 2 tasks), got %d", len(mockProc.prompts))
 	}
 	// With prompt files, tasks are delivered via @/path references to .md files
-	for i, p := range mockProc.prompts[:2] {
+	for i, p := range mockProc.prompts[1:3] {
 		if !strings.Contains(p, "@/") || !strings.Contains(p, ".md") {
-			t.Errorf("prompt[%d] should contain @/path reference to .md file, got: %q", i, p)
+			t.Errorf("task prompt[%d] should contain @/path reference to .md file, got: %q", i, p)
 		}
 	}
 }
@@ -482,6 +490,7 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 	}
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "checked inbox"},
 	}
 
@@ -492,11 +501,12 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	if len(mockProc.prompts) < 1 {
-		t.Fatal("expected at least one prompt when inbox has messages")
+	// prompts[0] is initial, prompts[1] is inbox delivery
+	if len(mockProc.prompts) < 2 {
+		t.Fatal("expected at least two prompts (initial + inbox)")
 	}
 	// The prompt should tell the agent to run sprawl messages read, not contain inline content.
-	prompt := mockProc.prompts[0]
+	prompt := mockProc.prompts[1]
 	if strings.Contains(prompt, "check this out") {
 		t.Errorf("prompt should NOT contain message body inline, got: %q", prompt)
 	}
@@ -529,6 +539,7 @@ func TestRunAgentLoop_InboxRedeliveryUntilRead(t *testing.T) {
 	}
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "done"},
 		{Type: "result", Result: "done"},
 	}
@@ -545,14 +556,15 @@ func TestRunAgentLoop_InboxRedeliveryUntilRead(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
+	// prompts[0] is initial, prompts[1:] are inbox deliveries.
 	// Both iterations should prompt the agent since the message remains unread.
-	if len(mockProc.prompts) != 2 {
-		t.Errorf("expected 2 prompts (redelivery until agent reads), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	if len(mockProc.prompts) != 3 {
+		t.Errorf("expected 3 prompts (initial + 2 redeliveries), got %d: %v", len(mockProc.prompts), mockProc.prompts)
 	}
-	// Both should contain the read command format.
-	for i, p := range mockProc.prompts {
+	// Both inbox prompts should contain the read command format.
+	for i, p := range mockProc.prompts[1:] {
 		if !strings.Contains(p, "sprawl messages read") {
-			t.Errorf("prompt %d should contain 'sprawl messages read', got: %q", i, p)
+			t.Errorf("inbox prompt %d should contain 'sprawl messages read', got: %q", i, p)
 		}
 	}
 }
@@ -580,6 +592,7 @@ func TestRunAgentLoop_WakeFile(t *testing.T) {
 	}
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "woke up"},
 	}
 
@@ -590,11 +603,12 @@ func TestRunAgentLoop_WakeFile(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	if len(mockProc.prompts) < 1 {
+	// prompts[0] is initial, prompts[1] is wake
+	if len(mockProc.prompts) < 2 {
 		t.Fatal("expected prompt from wake file")
 	}
-	if !strings.Contains(mockProc.prompts[0], wakeContent) {
-		t.Errorf("prompt should contain wake file contents, got: %q", mockProc.prompts[0])
+	if !strings.Contains(mockProc.prompts[1], wakeContent) {
+		t.Errorf("prompt should contain wake file contents, got: %q", mockProc.prompts[1])
 	}
 
 	// Wake file should be removed after reading
@@ -654,9 +668,12 @@ func TestRunAgentLoop_ProcessCrash_Restart(t *testing.T) {
 		createdConfigs = append(createdConfigs, config)
 		callCount++
 		if callCount == 1 {
-			// First process: starts fine, but SendPrompt crashes
+			// First process: initial prompt succeeds, but task SendPrompt crashes
 			return &mockProcessManager{
-				sendErrors: []error{errors.New("process crashed")},
+				sendResults: []*protocol.ResultMessage{
+					{Type: "result", Result: "initial done"},
+				},
+				sendErrors: []error{nil, errors.New("process crashed")},
 			}
 		}
 		// Second process: should have Resume=true, succeeds
@@ -692,12 +709,15 @@ func TestRunAgentLoop_RestartFailure_ReportsParent(t *testing.T) {
 	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
 		callCount++
 		if callCount == 1 {
-			// First process: starts fine, but SendPrompt crashes
+			// First process: initial prompt succeeds, but task SendPrompt crashes
 			return &mockProcessManager{
-				sendErrors: []error{errors.New("process crashed")},
+				sendResults: []*protocol.ResultMessage{
+					{Type: "result", Result: "initial done"},
+				},
+				sendErrors: []error{nil, errors.New("process crashed")},
 			}
 		}
-		// Second process (restart): fails to start
+		// Second process (restart): fails to launch
 		return &mockProcessManager{
 			startErr: errors.New("cannot start"),
 		}
@@ -1258,9 +1278,9 @@ func TestRunAgentLoop_KillSentinel_PriorityOverTasks(t *testing.T) {
 		t.Fatalf("expected clean exit on kill sentinel, got error: %v", err)
 	}
 
-	// No prompts should have been sent -- the kill sentinel takes priority.
-	if len(mockProc.prompts) > 0 {
-		t.Errorf("expected no prompts sent when kill sentinel is present, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	// Only the initial prompt should have been sent -- the kill sentinel prevents further work.
+	if len(mockProc.prompts) > 1 {
+		t.Errorf("expected only initial prompt when kill sentinel is present, got %d: %v", len(mockProc.prompts), mockProc.prompts)
 	}
 
 	// Verify the loop exited without processing the task.
@@ -1884,16 +1904,27 @@ func TestSendPromptWithInterrupt_PokeFileHasPriorityOverWake(t *testing.T) {
 }
 
 // blockingSendProcessManager wraps mockProcessManager with a blocking SendPrompt.
+// When skipFirst is true, the first SendPrompt call (for the initial prompt)
+// returns immediately; subsequent calls block on sendCh. When skipFirst is
+// false (default), all calls block.
 type blockingSendProcessManager struct {
 	*mockProcessManager
-	sendCh chan struct{}
-	result *protocol.ResultMessage
+	sendCh    chan struct{}
+	result    *protocol.ResultMessage
+	skipFirst bool
+	callCount int
 }
 
 func (b *blockingSendProcessManager) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
 	b.mu.Lock()
 	b.prompts = append(b.prompts, prompt)
+	b.callCount++
+	count := b.callCount
 	b.mu.Unlock()
+	// First call is the initial prompt — return immediately if skipFirst is set.
+	if b.skipFirst && count == 1 {
+		return b.result, nil
+	}
 	<-b.sendCh
 	return b.result, nil
 }
@@ -1963,11 +1994,13 @@ func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
 	}
 
 	// Use a blocking process manager so SendPrompt blocks while we send messages.
+	// skipFirst: initial prompt returns immediately; task prompt blocks.
 	sendCh := make(chan struct{})
 	blockingProc := &blockingSendProcessManager{
 		mockProcessManager: mockProc,
 		sendCh:             sendCh,
 		result:             &protocol.ResultMessage{Type: "result", Result: "done"},
+		skipFirst:          true,
 	}
 
 	// Capture stdout
@@ -1977,14 +2010,15 @@ func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Track how many prompts have been sent to decide when to cancel.
+	// promptCount: 1=initial, 2=task, 3=inbox delivery
 	promptCount := 0
 	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
 		return &promptInterceptor{
 			processManager: blockingProc,
 			onSend: func(prompt string) {
 				promptCount++
-				if promptCount >= 2 {
-					// After second prompt (inbox delivery), cancel.
+				if promptCount >= 3 {
+					// After third prompt (inbox delivery), cancel.
 					cancel()
 				}
 			},
@@ -1992,7 +2026,7 @@ func TestRunAgentLoop_InboxMessagesLoggedDuringTurn(t *testing.T) {
 	}
 
 	deps.sleepFunc = func(d time.Duration) {
-		if promptCount >= 2 {
+		if promptCount >= 3 {
 			cancel()
 		}
 	}
@@ -2058,11 +2092,12 @@ func TestRunAgentLoop_InboxQueuedLogNoDuplicates(t *testing.T) {
 		t.Fatalf("creating task: %v", err)
 	}
 
-	// Use a blocking process manager.
+	// Use a blocking process manager. skipFirst: initial prompt returns immediately.
 	sendCh := make(chan struct{})
 	blockingProc := &blockingSendProcessManager{
 		mockProcessManager: mockProc,
 		sendCh:             sendCh,
+		skipFirst:          true,
 		result:             &protocol.ResultMessage{Type: "result", Result: "done"},
 	}
 
@@ -2133,6 +2168,7 @@ func TestRunAgentLoop_InboxQueuedLogFormat(t *testing.T) {
 		mockProcessManager: mockProc,
 		sendCh:             sendCh,
 		result:             &protocol.ResultMessage{Type: "result", Result: "done"},
+		skipFirst:          true,
 	}
 
 	var outBuf bytes.Buffer
@@ -2385,6 +2421,7 @@ func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
 	deps.removeFile = os.Remove
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "handled inbox"},
 	}
 
@@ -2393,12 +2430,12 @@ func TestRunAgentLoop_InboxDelivery_ConsumesWakeFile(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// Inbox delivery should have fired (not wake file).
-	if len(mockProc.prompts) < 1 {
-		t.Fatal("expected at least one prompt from inbox delivery")
+	// prompts[0] is initial, prompts[1] is inbox delivery.
+	if len(mockProc.prompts) < 2 {
+		t.Fatal("expected at least two prompts (initial + inbox)")
 	}
-	if !strings.Contains(mockProc.prompts[0], "sprawl messages read") {
-		t.Errorf("expected inbox-style prompt, got: %q", mockProc.prompts[0])
+	if !strings.Contains(mockProc.prompts[1], "sprawl messages read") {
+		t.Errorf("expected inbox-style prompt, got: %q", mockProc.prompts[1])
 	}
 
 	// The wake file should have been consumed by the inbox delivery branch.
@@ -2425,11 +2462,13 @@ func TestRunAgentLoop_InboxDelivery_NoDoubleInterrupt(t *testing.T) {
 
 	// Use a blocking process manager so SendPrompt takes long enough for the
 	// poller (10ms interval) to tick and check for the wake file.
+	// skipFirst: initial prompt returns immediately.
 	sendCh := make(chan struct{})
 	blockingProc := &blockingSendProcessManager{
 		mockProcessManager: mockProc,
 		sendCh:             sendCh,
 		result:             &protocol.ResultMessage{Type: "result", Result: "handled inbox"},
+		skipFirst:          true,
 	}
 	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
 		return blockingProc
@@ -2463,14 +2502,15 @@ func TestRunAgentLoop_InboxDelivery_NoDoubleInterrupt(t *testing.T) {
 	}
 
 	// Verify inbox delivery fired (not wake file delivery).
+	// prompts[0] is initial, prompts[1] is inbox delivery.
 	mockProc.mu.Lock()
 	prompts := mockProc.prompts
 	mockProc.mu.Unlock()
-	if len(prompts) < 1 {
-		t.Fatal("expected at least one prompt from inbox delivery")
+	if len(prompts) < 2 {
+		t.Fatal("expected at least two prompts (initial + inbox)")
 	}
-	if !strings.Contains(prompts[0], "sprawl messages read") {
-		t.Errorf("expected inbox-style prompt, got: %q", prompts[0])
+	if !strings.Contains(prompts[1], "sprawl messages read") {
+		t.Errorf("expected inbox-style prompt, got: %q", prompts[1])
 	}
 }
 
@@ -2511,6 +2551,7 @@ func TestRunAgentLoop_WakeFile_ContinuesImmediately(t *testing.T) {
 	deps.nextTask = func(root, name string) (*state.Task, error) { return nil, nil }
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "woke up"},
 		{Type: "result", Result: "read inbox"},
 	}
@@ -2524,11 +2565,10 @@ func TestRunAgentLoop_WakeFile_ContinuesImmediately(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// With the fix: wake fires (no sleep) -> immediate next iteration -> inbox fires -> sleep -> cancel.
-	// Without the fix: wake fires -> sleep -> cancel. Only 1 prompt delivered.
-	// So we assert 2 prompts were delivered before the first sleep.
-	if len(mockProc.prompts) < 2 {
-		t.Fatalf("expected 2 prompts (wake + inbox) before first sleep, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	// With the fix: initial + wake fires (no sleep) -> immediate next iteration -> inbox fires -> sleep -> cancel.
+	// So we assert 3 prompts were delivered before the first sleep (initial + wake + inbox).
+	if len(mockProc.prompts) < 3 {
+		t.Fatalf("expected 3 prompts (initial + wake + inbox) before first sleep, got %d: %v", len(mockProc.prompts), mockProc.prompts)
 	}
 }
 
@@ -2545,6 +2585,7 @@ func TestRunAgentLoop_MessageSend_SingleNotificationType(t *testing.T) {
 	deps.removeFile = os.Remove
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "done"},
 		{Type: "result", Result: "done"},
 	}
@@ -2560,9 +2601,9 @@ func TestRunAgentLoop_MessageSend_SingleNotificationType(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// Every prompt should be inbox-style (contains "sprawl messages read").
+	// Every prompt after the initial should be inbox-style (contains "sprawl messages read").
 	// No prompt should be wake-file-style (raw "New message from" content).
-	for i, p := range mockProc.prompts {
+	for i, p := range mockProc.prompts[1:] {
 		if !strings.Contains(p, "sprawl messages read") {
 			t.Errorf("prompt[%d] should be inbox-style, got: %q", i, p)
 		}
@@ -2587,6 +2628,7 @@ func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
 	deps.removeFile = os.Remove
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "done"},
 	}
 
@@ -2595,11 +2637,11 @@ func TestRunAgentLoop_RapidMessages_SingleBatchDelivery(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// Should deliver exactly 1 prompt that batches all 3 messages.
-	if len(mockProc.prompts) != 1 {
-		t.Fatalf("expected 1 batched prompt, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	// Should deliver initial prompt + 1 batched prompt for all 3 messages.
+	if len(mockProc.prompts) != 2 {
+		t.Fatalf("expected 2 prompts (initial + batched), got %d: %v", len(mockProc.prompts), mockProc.prompts)
 	}
-	prompt := mockProc.prompts[0]
+	prompt := mockProc.prompts[1]
 	if !strings.Contains(prompt, "3 new message(s)") {
 		t.Errorf("prompt should mention 3 messages, got: %q", prompt)
 	}
@@ -2631,6 +2673,7 @@ func TestRunAgentLoop_WakeMidTurn_InterruptsAndInboxDelivers(t *testing.T) {
 	deps.removeFile = os.Remove
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "task interrupted"}, // task turn interrupted by wake
 		{Type: "result", Result: "read messages"},    // inbox delivery
 	}
@@ -2640,13 +2683,13 @@ func TestRunAgentLoop_WakeMidTurn_InterruptsAndInboxDelivers(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 
-	// We expect at least 2 prompts: the task prompt and the inbox delivery.
-	if len(mockProc.prompts) < 2 {
-		t.Fatalf("expected at least 2 prompts (task + inbox), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	// We expect at least 3 prompts: initial + task + inbox delivery.
+	if len(mockProc.prompts) < 3 {
+		t.Fatalf("expected at least 3 prompts (initial + task + inbox), got %d: %v", len(mockProc.prompts), mockProc.prompts)
 	}
 
-	// The second prompt should be inbox-style with message read commands.
-	inboxPrompt := mockProc.prompts[1]
+	// The third prompt should be inbox-style with message read commands.
+	inboxPrompt := mockProc.prompts[2]
 	if !strings.Contains(inboxPrompt, "sprawl messages read") {
 		t.Errorf("expected inbox-style prompt with read commands, got: %q", inboxPrompt)
 	}
@@ -2664,6 +2707,7 @@ func TestRunAgentLoop_LockAcquiredBeforeWork(t *testing.T) {
 	}
 
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		{Type: "result", Result: "done"},
 	}
 
@@ -2688,13 +2732,18 @@ func TestRunAgentLoop_LockAcquiredBeforeWork(t *testing.T) {
 		}, nil
 	}
 
-	// Wrap newProcess to track send events.
+	// Wrap newProcess to track send events. Skip the initial prompt (first call).
+	sendCount := 0
 	origNewProcess := deps.newProcess
 	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
 		pm := origNewProcess(config, observer)
 		return &eventTrackingProcess{
 			processManager: pm,
 			onSend: func() {
+				sendCount++
+				if sendCount == 1 {
+					return // Skip initial prompt — it happens before the lock.
+				}
 				mu.Lock()
 				events = append(events, "send")
 				mu.Unlock()
@@ -2840,9 +2889,10 @@ func TestRunAgentLoop_LockReleasedOnError(t *testing.T) {
 		t.Fatalf("creating task: %v", err)
 	}
 
-	// First send fails (crash), restart succeeds, second send succeeds.
-	mockProc.sendErrors = []error{errors.New("process crashed"), nil}
+	// Initial prompt succeeds, task send fails (crash), restart send succeeds.
+	mockProc.sendErrors = []error{nil, errors.New("process crashed"), nil}
 	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
 		nil,
 		{Type: "result", Result: "done"},
 	}

@@ -31,7 +31,7 @@ type workLock struct {
 
 // processManager is the interface for managing a Claude Code subprocess.
 type processManager interface {
-	Start(ctx context.Context, initialPrompt string) error
+	Launch(ctx context.Context) error
 	SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error)
 	InterruptTurn(ctx context.Context) error
 	Stop(ctx context.Context) error
@@ -262,11 +262,12 @@ func init() {
 	rootCmd.AddCommand(agentLoopCmd)
 }
 
-// startProcess creates and starts a process. On failure it reports to parent and calls exit(1).
+// startProcess creates and launches a process (without sending a prompt).
+// On failure it reports to parent and calls exit(1).
 // Returns (proc, true) on success, or (nil, false) on failure (after reporting and exiting).
-func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.ProcessConfig, observer agentloop.Observer, sprawlRoot, agentName, parent, reason, initialPrompt string) (processManager, bool) {
+func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.ProcessConfig, observer agentloop.Observer, sprawlRoot, agentName, parent, reason string) (processManager, bool) {
 	proc := deps.newProcess(config, observer)
-	if err := proc.Start(ctx, initialPrompt); err != nil {
+	if err := proc.Launch(ctx); err != nil {
 		fmt.Fprintf(deps.stdout, "[agent-loop] %s: %v\n", reason, err)
 		_ = deps.sendMessage(sprawlRoot, agentName, parent, "[PROBLEM] agent-loop failure", fmt.Sprintf("%s: %v", reason, err))
 		deps.exit(1)
@@ -459,8 +460,8 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 
 	observer := &tmuxObserver{w: deps.stdout}
 
-	// Create and start the initial process.
-	proc, ok := startProcess(ctx, deps, config, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process", agentState.Prompt)
+	// Create and launch the initial process (without sending a prompt yet).
+	proc, ok := startProcess(ctx, deps, config, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process")
 	if !ok {
 		return nil
 	}
@@ -472,16 +473,6 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		}
 	}()
 
-	// restartWithResume creates a new process with Resume=true after a crash.
-	// Returns false (and exits) if the restart fails.
-	restartWithResume := func() bool {
-		resumeConfig := config
-		resumeConfig.Args.Resume = true
-		var ok bool
-		proc, ok = startProcess(ctx, deps, resumeConfig, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash", agentState.Prompt)
-		return ok
-	}
-
 	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")
 
 	// sendWithInterrupt wraps sendPromptWithInterrupt with the poke path and default interval.
@@ -491,6 +482,31 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 
 	// pendingPoke holds poke content from a mid-turn interrupt, delivered on the next iteration.
 	var pendingPoke string
+
+	// Send the initial prompt through the interrupt-aware path so poke/wake
+	// files are detected during the first turn, not just subsequent turns.
+	fmt.Fprintf(deps.stdout, "[agent-loop] sending initial prompt with interrupt support\n")
+	_, initialPoke, initialSendErr := sendWithInterrupt(agentState.Prompt)
+	if initialSendErr != nil {
+		fmt.Fprintf(deps.stdout, "[agent-loop] failed to send initial prompt: %v\n", initialSendErr)
+		_ = deps.sendMessage(sprawlRoot, agentName, agentState.Parent, "[PROBLEM] agent-loop failure",
+			fmt.Sprintf("failed to send initial prompt: %v", initialSendErr))
+		deps.exit(1)
+		return nil
+	}
+	if initialPoke != "" {
+		pendingPoke = initialPoke
+	}
+
+	// restartWithResume creates a new process with Resume=true after a crash.
+	// Returns false (and exits) if the restart fails.
+	restartWithResume := func() bool {
+		resumeConfig := config
+		resumeConfig.Args.Resume = true
+		var ok bool
+		proc, ok = startProcess(ctx, deps, resumeConfig, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash")
+		return ok
+	}
 
 	// Main loop
 	for {

@@ -207,9 +207,49 @@ func makeAssistantMessage(uuid string) *protocol.Message {
 // UPDATED existing tests: Start() now blocks until initial result arrives
 // =====================================================================
 
-func TestProcess_Start_HappyPath(t *testing.T) {
+func TestProcess_Launch_HappyPath(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultMsg := makeResultMessage("ready", false)
+	reader := newMockReader([]*protocol.Message{initMsg}, nil)
+	writer := &mockWriter{}
+	starter := &mockCommandStarter{
+		reader:   reader,
+		writer:   writer,
+		waitFn:   func() error { return nil },
+		cancelFn: func() error { return nil },
+	}
+
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
+	err := p.Launch(context.Background())
+	if err != nil {
+		t.Fatalf("Launch() returned error: %v", err)
+	}
+	if p.State() != StateIdle {
+		t.Errorf("State() = %q, want %q", p.State(), StateIdle)
+	}
+	// Launch should not send any prompts.
+	if len(writer.promptsSent) != 0 {
+		t.Errorf("writer.promptsSent has %d entries, want 0", len(writer.promptsSent))
+	}
+}
+
+func TestProcess_Launch_StarterError(t *testing.T) {
+	starter := &mockCommandStarter{
+		startErr: fmt.Errorf("cannot start subprocess"),
+	}
+
+	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
+	err := p.Launch(context.Background())
+	if err == nil {
+		t.Fatal("Launch() expected error when starter fails, got nil")
+	}
+	if p.State() != StateStopped {
+		t.Errorf("State() = %q, want %q", p.State(), StateStopped)
+	}
+}
+
+func TestProcess_SendPrompt_HappyPath(t *testing.T) {
+	initMsg := makeInitMessage("sess-1")
+	resultMsg := makeResultMessage("Done", false)
 	reader := newMockReader([]*protocol.Message{initMsg, resultMsg}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
@@ -220,49 +260,8 @@ func TestProcess_Start_HappyPath(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	err := p.Start(context.Background(), "test prompt")
-	if err != nil {
-		t.Fatalf("Start() returned error: %v", err)
-	}
-	if p.State() != StateIdle {
-		t.Errorf("State() = %q, want %q", p.State(), StateIdle)
-	}
-}
-
-func TestProcess_Start_EOF(t *testing.T) {
-	// Reader returns EOF immediately -- no init message.
-	reader := newMockReader(nil, nil)
-	writer := &mockWriter{}
-	starter := &mockCommandStarter{
-		reader:   reader,
-		writer:   writer,
-		waitFn:   func() error { return nil },
-		cancelFn: func() error { return nil },
-	}
-
-	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	err := p.Start(context.Background(), "test prompt")
-	if err == nil {
-		t.Fatal("Start() expected error when reader returns EOF before init, got nil")
-	}
-}
-
-func TestProcess_SendPrompt_HappyPath(t *testing.T) {
-	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
-	resultMsg := makeResultMessage("Done", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultForStart, resultMsg}, nil)
-	writer := &mockWriter{}
-	starter := &mockCommandStarter{
-		reader:   reader,
-		writer:   writer,
-		waitFn:   func() error { return nil },
-		cancelFn: func() error { return nil },
-	}
-
-	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	result, err := p.SendPrompt(context.Background(), "do something")
@@ -279,15 +278,12 @@ func TestProcess_SendPrompt_HappyPath(t *testing.T) {
 		t.Error("result.IsError = true, want false")
 	}
 
-	// Verify the writer received the initial prompt (from Start) and the SendPrompt prompt.
-	if len(writer.promptsSent) != 2 {
-		t.Fatalf("writer.promptsSent has %d entries, want 2", len(writer.promptsSent))
+	// Verify the writer received only the SendPrompt prompt (Launch sends nothing).
+	if len(writer.promptsSent) != 1 {
+		t.Fatalf("writer.promptsSent has %d entries, want 1", len(writer.promptsSent))
 	}
-	if writer.promptsSent[0] != "test prompt" {
-		t.Errorf("writer.promptsSent[0] = %q, want %q", writer.promptsSent[0], "test prompt")
-	}
-	if writer.promptsSent[1] != "do something" {
-		t.Errorf("writer.promptsSent[1] = %q, want %q", writer.promptsSent[1], "do something")
+	if writer.promptsSent[0] != "do something" {
+		t.Errorf("writer.promptsSent[0] = %q, want %q", writer.promptsSent[0], "do something")
 	}
 
 	// State should be back to idle after result.
@@ -298,10 +294,9 @@ func TestProcess_SendPrompt_HappyPath(t *testing.T) {
 
 func TestProcess_SendPrompt_WithControlRequest(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
 	ctrlReq := makeControlRequest("req-42")
 	resultMsg := makeResultMessage("Approved and done", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultForStart, ctrlReq, resultMsg}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg, ctrlReq, resultMsg}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
 		reader:   reader,
@@ -311,8 +306,8 @@ func TestProcess_SendPrompt_WithControlRequest(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	result, err := p.SendPrompt(context.Background(), "use bash")
@@ -334,12 +329,11 @@ func TestProcess_SendPrompt_WithControlRequest(t *testing.T) {
 
 func TestProcess_SendPrompt_MultipleControlRequests(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
 	ctrl1 := makeControlRequest("req-1")
 	ctrl2 := makeControlRequest("req-2")
 	ctrl3 := makeControlRequest("req-3")
 	resultMsg := makeResultMessage("All approved", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultForStart, ctrl1, ctrl2, ctrl3, resultMsg}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg, ctrl1, ctrl2, ctrl3, resultMsg}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
 		reader:   reader,
@@ -349,8 +343,8 @@ func TestProcess_SendPrompt_MultipleControlRequests(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	result, err := p.SendPrompt(context.Background(), "do three things")
@@ -375,10 +369,9 @@ func TestProcess_SendPrompt_MultipleControlRequests(t *testing.T) {
 
 func TestProcess_SendPrompt_Observer(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
 	assistMsg := makeAssistantMessage("msg-1")
 	resultMsg := makeResultMessage("Done", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultForStart, assistMsg, resultMsg}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg, assistMsg, resultMsg}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
 		reader:   reader,
@@ -389,8 +382,8 @@ func TestProcess_SendPrompt_Observer(t *testing.T) {
 	obs := &mockObserver{}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter, WithObserver(obs))
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	_, err := p.SendPrompt(context.Background(), "say hello")
@@ -398,7 +391,7 @@ func TestProcess_SendPrompt_Observer(t *testing.T) {
 		t.Fatalf("SendPrompt() error: %v", err)
 	}
 
-	// Observer should now receive ALL message types including init, result, and control_request.
+	// Observer should receive ALL message types including init, result, and assistant.
 	observed := obs.getMessages()
 
 	// Check that observer received init message.
@@ -423,24 +416,23 @@ func TestProcess_SendPrompt_Observer(t *testing.T) {
 		t.Error("observer did not receive the assistant message")
 	}
 
-	// Check that observer received result messages (both for start and sendprompt).
+	// Check that observer received result message.
 	resultCount := 0
 	for _, m := range observed {
 		if m.Type == "result" {
 			resultCount++
 		}
 	}
-	if resultCount < 2 {
-		t.Errorf("observer received %d result messages, want at least 2", resultCount)
+	if resultCount < 1 {
+		t.Errorf("observer received %d result messages, want at least 1", resultCount)
 	}
 }
 
 func TestProcess_SendPrompt_ReaderError(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
 	reader := newMockReader(
-		[]*protocol.Message{initMsg, resultForStart, nil},
-		[]error{nil, nil, fmt.Errorf("connection broken")},
+		[]*protocol.Message{initMsg, nil},
+		[]error{nil, fmt.Errorf("connection broken")},
 	)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
@@ -451,8 +443,8 @@ func TestProcess_SendPrompt_ReaderError(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	_, err := p.SendPrompt(context.Background(), "break things")
@@ -467,9 +459,8 @@ func TestProcess_SendPrompt_ReaderError(t *testing.T) {
 
 func TestProcess_SendPrompt_ErrorResult(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
 	errResult := makeResultMessage("max turns exceeded", true)
-	reader := newMockReader([]*protocol.Message{initMsg, resultForStart, errResult}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg, errResult}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
 		reader:   reader,
@@ -479,8 +470,8 @@ func TestProcess_SendPrompt_ErrorResult(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	result, err := p.SendPrompt(context.Background(), "do too much")
@@ -500,10 +491,9 @@ func TestProcess_SendPrompt_ErrorResult(t *testing.T) {
 
 func TestProcess_MultiTurn(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
 	result1 := makeResultMessage("first done", false)
 	result2 := makeResultMessage("second done", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultForStart, result1, result2}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg, result1, result2}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
 		reader:   reader,
@@ -513,8 +503,8 @@ func TestProcess_MultiTurn(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	// First turn
@@ -541,25 +531,21 @@ func TestProcess_MultiTurn(t *testing.T) {
 		t.Errorf("State() after second turn = %q, want %q", p.State(), StateIdle)
 	}
 
-	// Verify all prompts were sent: initial (from Start) + two SendPrompt calls.
-	if len(writer.promptsSent) != 3 {
-		t.Fatalf("writer.promptsSent has %d entries, want 3", len(writer.promptsSent))
+	// Verify all prompts were sent: two SendPrompt calls (Launch sends nothing).
+	if len(writer.promptsSent) != 2 {
+		t.Fatalf("writer.promptsSent has %d entries, want 2", len(writer.promptsSent))
 	}
-	if writer.promptsSent[0] != "test prompt" {
-		t.Errorf("promptsSent[0] = %q, want %q", writer.promptsSent[0], "test prompt")
+	if writer.promptsSent[0] != "first prompt" {
+		t.Errorf("promptsSent[0] = %q, want %q", writer.promptsSent[0], "first prompt")
 	}
-	if writer.promptsSent[1] != "first prompt" {
-		t.Errorf("promptsSent[1] = %q, want %q", writer.promptsSent[1], "first prompt")
-	}
-	if writer.promptsSent[2] != "second prompt" {
-		t.Errorf("promptsSent[2] = %q, want %q", writer.promptsSent[2], "second prompt")
+	if writer.promptsSent[1] != "second prompt" {
+		t.Errorf("promptsSent[1] = %q, want %q", writer.promptsSent[1], "second prompt")
 	}
 }
 
 func TestProcess_Stop(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultMsg := makeResultMessage("ready", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultMsg}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg}, nil)
 	writer := &mockWriter{}
 	waitCalled := false
 	starter := &mockCommandStarter{
@@ -573,8 +559,8 @@ func TestProcess_Stop(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	err := p.Stop(context.Background())
@@ -595,8 +581,7 @@ func TestProcess_Stop(t *testing.T) {
 
 func TestProcess_Kill(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultMsg := makeResultMessage("ready", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultMsg}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg}, nil)
 	writer := &mockWriter{}
 	cancelCalled := false
 	starter := &mockCommandStarter{
@@ -610,8 +595,8 @@ func TestProcess_Kill(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	err := p.Kill()
@@ -629,8 +614,7 @@ func TestProcess_Kill(t *testing.T) {
 
 func TestProcess_IsRunning(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultMsg := makeResultMessage("ready", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultMsg}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
 		reader:   reader,
@@ -641,18 +625,18 @@ func TestProcess_IsRunning(t *testing.T) {
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
-	// Before start, process should not be running.
+	// Before launch, process should not be running.
 	if p.IsRunning() {
-		t.Error("IsRunning() = true before Start(), want false")
+		t.Error("IsRunning() = true before Launch(), want false")
 	}
 
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
-	// After start (idle), process should be running.
+	// After launch (idle), process should be running.
 	if !p.IsRunning() {
-		t.Error("IsRunning() = false after Start(), want true")
+		t.Error("IsRunning() = false after Launch(), want true")
 	}
 
 	// After stop, process should not be running.
@@ -699,11 +683,16 @@ func TestProcess_ReadLoop_ObserverSeesAllMessages(t *testing.T) {
 	obs := &mockObserver{}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter, WithObserver(obs))
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
-	// After Start completes (which now waits for result), check observer got everything.
+	// Send a prompt to consume the result message and let readLoop process all messages.
+	_, err := p.SendPrompt(context.Background(), "test prompt")
+	if err != nil {
+		t.Fatalf("SendPrompt() error: %v", err)
+	}
+
 	observed := obs.getMessages()
 
 	// We expect observer to have seen all four message types.
@@ -723,9 +712,9 @@ func TestProcess_ReadLoop_ObserverSeesAllMessages(t *testing.T) {
 	}
 }
 
-// TestProcess_Start_WaitsForResult verifies that Start() blocks until the
-// initial prompt's result message arrives, not just until system/init.
-func TestProcess_Start_WaitsForResult(t *testing.T) {
+// TestProcess_Launch_ThenSendPrompt verifies that Launch + SendPrompt works
+// end-to-end, replacing the old Start (which combined both).
+func TestProcess_Launch_ThenSendPrompt(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
 	assistMsg := makeAssistantMessage("msg-1")
 	resultMsg := makeResultMessage("initial result", false)
@@ -739,22 +728,33 @@ func TestProcess_Start_WaitsForResult(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	err := p.Start(context.Background(), "test prompt")
-	if err != nil {
-		t.Fatalf("Start() returned error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() returned error: %v", err)
 	}
 
-	// After Start returns, the result has been consumed and state is idle.
+	// Launch returns immediately with StateIdle.
 	if p.State() != StateIdle {
-		t.Errorf("State() = %q, want %q", p.State(), StateIdle)
+		t.Errorf("State() after Launch = %q, want %q", p.State(), StateIdle)
+	}
+
+	// SendPrompt delivers the prompt and waits for result.
+	result, err := p.SendPrompt(context.Background(), "test prompt")
+	if err != nil {
+		t.Fatalf("SendPrompt() returned error: %v", err)
+	}
+	if result.Result != "initial result" {
+		t.Errorf("result.Result = %q, want %q", result.Result, "initial result")
+	}
+	if p.State() != StateIdle {
+		t.Errorf("State() after SendPrompt = %q, want %q", p.State(), StateIdle)
 	}
 }
 
-// TestProcess_Start_EOFBeforeResult verifies that Start() returns an error
-// if the reader hits EOF after init but before a result message.
-func TestProcess_Start_EOFBeforeResult(t *testing.T) {
+// TestProcess_SendPrompt_EOFBeforeResult verifies that SendPrompt returns an
+// error if the reader hits EOF before a result message arrives.
+func TestProcess_SendPrompt_EOFBeforeResult(t *testing.T) {
+	// Only init message, then EOF — no result.
 	initMsg := makeInitMessage("sess-1")
-	// Only init, no result -- EOF follows.
 	reader := newMockReader([]*protocol.Message{initMsg}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
@@ -765,45 +765,13 @@ func TestProcess_Start_EOFBeforeResult(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	err := p.Start(context.Background(), "test prompt")
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
+	}
+
+	_, err := p.SendPrompt(context.Background(), "test prompt")
 	if err == nil {
-		t.Fatal("Start() expected error when EOF arrives before result, got nil")
-	}
-}
-
-// TestProcess_Start_ContextCancelled verifies that Start() returns a context
-// error when the context is cancelled before the result arrives.
-func TestProcess_Start_ContextCancelled(t *testing.T) {
-	ch := make(chan readerResult, 10)
-	reader := &blockingMockReader{ch: ch}
-	writer := &mockWriter{}
-	starter := &mockCommandStarter{
-		reader:   reader,
-		writer:   writer,
-		waitFn:   func() error { return nil },
-		cancelFn: func() error { return nil },
-	}
-
-	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Send init message.
-	ch <- readerResult{msg: makeInitMessage("sess-1")}
-
-	// Cancel context before sending result.
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-	}()
-
-	err := p.Start(ctx, "test prompt")
-	if err == nil {
-		t.Fatal("Start() expected context error, got nil")
-	}
-	// Should be a context-related error.
-	if ctx.Err() == nil {
-		t.Error("context should be cancelled")
+		t.Fatal("SendPrompt() expected error when EOF arrives before result, got nil")
 	}
 }
 
@@ -822,12 +790,11 @@ func TestProcess_SendPrompt_ContextCancelled(t *testing.T) {
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
-	// Feed messages for Start to succeed: init + result.
+	// Feed init message for Launch.
 	ch <- readerResult{msg: makeInitMessage("sess-1")}
-	ch <- readerResult{msg: makeResultMessage("init done", false)}
 
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -851,11 +818,10 @@ func TestProcess_SendPrompt_ContextCancelled(t *testing.T) {
 // is propagated through the channel-based architecture to SendPrompt.
 func TestProcess_SendPrompt_ReaderErrorViaChannel(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultForStart := makeResultMessage("init done", false)
 	resultForPrompt1 := makeResultMessage("prompt1 done", false)
 	reader := newMockReader(
-		[]*protocol.Message{initMsg, resultForStart, resultForPrompt1, nil},
-		[]error{nil, nil, nil, fmt.Errorf("broken pipe")},
+		[]*protocol.Message{initMsg, resultForPrompt1, nil},
+		[]error{nil, nil, fmt.Errorf("broken pipe")},
 	)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
@@ -866,8 +832,8 @@ func TestProcess_SendPrompt_ReaderErrorViaChannel(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	// First SendPrompt should succeed.
@@ -892,8 +858,7 @@ func TestProcess_SendPrompt_ReaderErrorViaChannel(t *testing.T) {
 
 func TestProcess_InterruptTurn_WhenIdle_ReturnsErrNotRunning(t *testing.T) {
 	initMsg := makeInitMessage("sess-1")
-	resultMsg := makeResultMessage("ready", false)
-	reader := newMockReader([]*protocol.Message{initMsg, resultMsg}, nil)
+	reader := newMockReader([]*protocol.Message{initMsg}, nil)
 	writer := &mockWriter{}
 	starter := &mockCommandStarter{
 		reader:   reader,
@@ -903,11 +868,11 @@ func TestProcess_InterruptTurn_WhenIdle_ReturnsErrNotRunning(t *testing.T) {
 	}
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
-	// Process is idle after Start. InterruptTurn should return ErrNotRunning.
+	// Process is idle after Launch. InterruptTurn should return ErrNotRunning.
 	err := p.InterruptTurn(context.Background())
 	if !errors.Is(err, ErrNotRunning) {
 		t.Errorf("InterruptTurn() = %v, want ErrNotRunning", err)
@@ -952,12 +917,11 @@ func TestProcess_InterruptTurn_WhenRunning_SendsInterrupt(t *testing.T) {
 
 	p := NewProcess(ProcessConfig{Args: claude.LaunchOpts{SessionID: "sess-1"}}, starter)
 
-	// Feed init + result for Start.
+	// Feed init message for Launch.
 	ch <- readerResult{msg: makeInitMessage("sess-1")}
-	ch <- readerResult{msg: makeResultMessage("init done", false)}
 
-	if err := p.Start(context.Background(), "test prompt"); err != nil {
-		t.Fatalf("Start() error: %v", err)
+	if err := p.Launch(context.Background()); err != nil {
+		t.Fatalf("Launch() error: %v", err)
 	}
 
 	// Start SendPrompt in a goroutine (it blocks waiting for result).

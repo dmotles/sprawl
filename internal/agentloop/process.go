@@ -178,9 +178,10 @@ func (p *Process) readLoop(reader MessageReader) {
 	}
 }
 
-// Start launches the Claude Code subprocess, sends the initial prompt,
-// and blocks until the initial prompt's result arrives.
-func (p *Process) Start(ctx context.Context, initialPrompt string) error {
+// Launch starts the Claude Code subprocess and background reader goroutine,
+// but does not send any prompt. The process transitions to StateIdle and is
+// ready to accept prompts via SendPrompt.
+func (p *Process) Launch(ctx context.Context) error {
 	p.mu.Lock()
 	p.state = StateStarting
 	p.mu.Unlock()
@@ -200,49 +201,13 @@ func (p *Process) Start(ctx context.Context, initialPrompt string) error {
 	p.resultCh = make(chan *protocol.ResultMessage, 1)
 	p.readerErrCh = make(chan error, 1)
 	p.stopCh = make(chan struct{})
+	p.state = StateIdle
 	p.mu.Unlock()
 
 	// Start the background reader goroutine.
 	go p.readLoop(reader)
 
-	// Send the initial user message.
-	p.writerMu.Lock()
-	sendErr := writer.SendUserMessage(initialPrompt)
-	p.writerMu.Unlock()
-	if sendErr != nil {
-		p.mu.Lock()
-		p.state = StateStopped
-		p.mu.Unlock()
-		return fmt.Errorf("sending initial prompt: %w", sendErr)
-	}
-
-	// Wait for the initial prompt's result.
-	select {
-	case <-p.resultCh:
-		p.mu.Lock()
-		p.state = StateIdle
-		p.mu.Unlock()
-		return nil
-	case err := <-p.readerErrCh:
-		// Check for a pending result that arrived before the error.
-		select {
-		case <-p.resultCh:
-			p.mu.Lock()
-			p.state = StateIdle
-			p.mu.Unlock()
-			return nil
-		default:
-		}
-		p.mu.Lock()
-		p.state = StateStopped
-		p.mu.Unlock()
-		return fmt.Errorf("reading during start: %w", err)
-	case <-ctx.Done():
-		p.mu.Lock()
-		p.state = StateStopped
-		p.mu.Unlock()
-		return ctx.Err()
-	}
+	return nil
 }
 
 // SendPrompt sends a user prompt and blocks until a result is received.
