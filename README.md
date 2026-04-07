@@ -20,6 +20,14 @@ Or with Go:
 go install github.com/dmotles/sprawl@latest
 ```
 
+Build from source:
+
+```bash
+git clone https://github.com/dmotles/sprawl.git
+cd sprawl
+make build
+```
+
 ## Quick Start
 
 ```bash

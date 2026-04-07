@@ -7,7 +7,7 @@ Read `DESCRIPTION.md` for project context. This file covers how to work in this 
 ```bash
 make              # runs full validation (build + fmt-check + lint + test)
 make validate     # same as above — the default target
-make build        # builds ./dendra binary
+make build        # builds ./sprawl binary
 make fmt          # auto-fix formatting
 make fmt-check    # check formatting without fixing (used in CI/hooks)
 make lint         # run golangci-lint
@@ -20,7 +20,7 @@ scripts/sprawl-test-env.sh     # set up isolated test environment
 
 ## Install
 
-> **Warning:** Do not run `make install` unless your agent identity is `neo` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./dendra` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
+> **Warning:** Do not run `make install` unless your agent identity is `neo` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./sprawl` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
 
 ## Project Configuration
 
