@@ -2,7 +2,6 @@
 
 **Date:** 2026-04-07
 **Researcher:** ghost
-**Branch:** dmotles/fresh-eyes-audit
 
 ## Summary
 

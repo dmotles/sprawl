@@ -19,12 +19,11 @@ Research documents for preparing sprawl for open source publication. These are l
 - **License:** Apache-2.0 (no CLA)
 - **Copyright holder:** David Motles
 - **Platforms:** macOS + Linux, amd64 + arm64 (no Windows)
-- **Internal refs:** Move Qumulo/Linear config to CLAUDE.local.md + .gitignore
+- **Internal refs:** Move Linear config to CLAUDE.local.md + .gitignore
 
 ## Key Decisions Pending
 
-- **Project name** — see `docs/research/naming-all-candidates.md`
-- **GitHub org / module path** — depends on name
+- **GitHub org / module path** — depends on final project name
 - **Public identity / email** — domain + email or GitHub noreply
 - **Agent name path traversal fix** — pre-publish or fast-follow?
 - **Scope of first publish** — incremental or all-at-once?

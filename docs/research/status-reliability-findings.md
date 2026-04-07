@@ -2,7 +2,6 @@
 
 **Date:** 2026-04-06
 **Investigator:** brook (researcher agent)
-**Branch:** dmotles/status-reliability-research
 
 ## Incident Summary
 

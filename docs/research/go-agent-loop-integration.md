@@ -2,7 +2,6 @@
 
 **Date:** 2026-03-31
 **Author:** elm (sprawl agent)
-**Issue:** QUM-30
 **Milestone:** M2: Agent Wrapper Loop
 
 ---
@@ -590,7 +589,7 @@ During active processing (Claude is working), new messages are queued and delive
 
 3. **`--output-format stream-json` without `--verbose`**: Claude Code requires `--verbose` when using `--output-format stream-json` in print mode. Without it, you get: `Error: When using --print, --output-format=stream-json requires --verbose`.
 
-### Not Yet Tested (Deferred to QUM-29 or Implementation)
+### Not Yet Tested (Deferred to Implementation)
 
 - `--resume` with stream-json mode
 - Subagent messages (`parent_tool_use_id` flow)

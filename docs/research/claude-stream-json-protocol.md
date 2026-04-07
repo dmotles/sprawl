@@ -1,10 +1,10 @@
 # Research: Claude Code stream-json Protocol and Agent SDK Internals
 
-## Status: Complete | QUM-29
+## Status: Complete
 
 ## Executive Summary
 
-Claude Code supports a bidirectional NDJSON protocol (`--input-format stream-json` / `--output-format stream-json`) that enables programmatic control of a long-running Claude Code process via stdin/stdout. The official TypeScript Agent SDK (`@anthropic-ai/claude-agent-sdk`) uses this protocol internally. This document analyzes the protocol, SDK architecture, and provides recommendations for implementing a Go-based agent loop in Dendra.
+Claude Code supports a bidirectional NDJSON protocol (`--input-format stream-json` / `--output-format stream-json`) that enables programmatic control of a long-running Claude Code process via stdin/stdout. The official TypeScript Agent SDK (`@anthropic-ai/claude-agent-sdk`) uses this protocol internally. This document analyzes the protocol, SDK architecture, and provides recommendations for implementing a Go-based agent loop in Sprawl.
 
 ---
 
