@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.jpg" alt="Sprawl" width="100%">
+</p>
+
 # Sprawl
 
 A self-organizing AI agent orchestration system built on [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
