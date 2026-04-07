@@ -190,3 +190,4 @@ The following features are planned but not yet implemented:
 - **Code Merger agent type** — A specialized agent whose sole job is to merge a completed branch into a manager's integration branch. Currently, merging is done via the `sprawl merge` command by managers directly.
 - **Automatic .env copying** — Copying/initializing secrets (e.g., `.env` from the root) when spawning engineer agents.
 - **Web UI** — A web-based interface for visualization and monitoring of the agent network.
+
