@@ -2997,3 +2997,142 @@ func TestRunAgentLoop_LockNotHeldDuringSleep(t *testing.T) {
 
 	_ = runAgentLoop(ctx, deps, "finn")
 }
+
+func TestRunAgentLoop_ClearsStaleWakeFileBeforeInitialPrompt(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	// Track removal order relative to initial send.
+	var events []string
+	var eventsMu sync.Mutex
+
+	deps.removeFile = func(path string) error {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+		if strings.HasSuffix(path, "finn.wake") {
+			events = append(events, "remove-wake")
+		}
+		return nil
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+	}
+
+	// Wrap newProcess to track when initial SendPrompt is called.
+	origNewProcess := deps.newProcess
+	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
+		proc := origNewProcess(config, observer)
+		return &promptInterceptor{
+			processManager: proc,
+			onSend: func(prompt string) {
+				eventsMu.Lock()
+				events = append(events, "send-initial")
+				eventsMu.Unlock()
+			},
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+
+	// Verify wake file removal happened.
+	wakeRemoved := false
+	for _, e := range events {
+		if e == "remove-wake" {
+			wakeRemoved = true
+			break
+		}
+	}
+	if !wakeRemoved {
+		t.Error("expected stale wake file to be cleared before initial prompt")
+	}
+
+	// Verify removal happened BEFORE the initial send.
+	wakeIdx := -1
+	sendIdx := -1
+	for i, e := range events {
+		if e == "remove-wake" && wakeIdx == -1 {
+			wakeIdx = i
+		}
+		if e == "send-initial" && sendIdx == -1 {
+			sendIdx = i
+		}
+	}
+	if wakeIdx == -1 || sendIdx == -1 {
+		t.Fatalf("expected both remove-wake and send-initial events, got: %v", events)
+	}
+	if wakeIdx >= sendIdx {
+		t.Errorf("expected wake file removal (idx=%d) before initial send (idx=%d), events: %v", wakeIdx, sendIdx, events)
+	}
+}
+
+func TestRunAgentLoop_InitialPromptInterruptedByWake_RequeuesPrompt(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	// First send (initial prompt) returns an error result (simulating interrupt).
+	// Second send (re-delivery) succeeds.
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "interrupted", IsError: true},
+		{Type: "result", Result: "done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	// The initial prompt should have been re-delivered.
+	if len(mockProc.prompts) < 2 {
+		t.Fatalf("expected at least 2 prompts (initial + re-delivery), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+
+	// Both prompts should be the initial prompt ("do stuff" from test fixture).
+	if mockProc.prompts[0] != "do stuff" {
+		t.Errorf("prompts[0] = %q, want %q", mockProc.prompts[0], "do stuff")
+	}
+	if mockProc.prompts[1] != "do stuff" {
+		t.Errorf("prompts[1] = %q, want %q (re-delivery of initial prompt)", mockProc.prompts[1], "do stuff")
+	}
+
+	// Stdout should contain the re-queue log line.
+	output := outBuf.String()
+	if !strings.Contains(output, "initial prompt interrupted") {
+		t.Errorf("expected 'initial prompt interrupted' in output, got:\n%s", output)
+	}
+}
+
+func TestRunAgentLoop_InitialPromptNotInterrupted_NoRequeue(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	// Initial prompt succeeds normally (no interrupt).
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	// Only the initial prompt should have been sent.
+	if len(mockProc.prompts) != 1 {
+		t.Errorf("expected exactly 1 prompt (initial only), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+
+	// Stdout should NOT contain the re-queue log line.
+	output := outBuf.String()
+	if strings.Contains(output, "initial prompt interrupted") {
+		t.Errorf("did not expect 'initial prompt interrupted' in output for successful initial turn")
+	}
+}

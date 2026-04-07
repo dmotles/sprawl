@@ -483,10 +483,16 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	// pendingPoke holds poke content from a mid-turn interrupt, delivered on the next iteration.
 	var pendingPoke string
 
+	// Clear any stale wake file before the initial turn — a leftover wake
+	// file from a previous agent (or a message sent before launch) would
+	// trigger a spurious interrupt on the very first turn.
+	wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
+	_ = deps.removeFile(wakePath)
+
 	// Send the initial prompt through the interrupt-aware path so poke/wake
 	// files are detected during the first turn, not just subsequent turns.
 	fmt.Fprintf(deps.stdout, "[agent-loop] sending initial prompt with interrupt support\n")
-	_, initialPoke, initialSendErr := sendWithInterrupt(agentState.Prompt)
+	initialResult, initialPoke, initialSendErr := sendWithInterrupt(agentState.Prompt)
 	if initialSendErr != nil {
 		fmt.Fprintf(deps.stdout, "[agent-loop] failed to send initial prompt: %v\n", initialSendErr)
 		_ = deps.sendMessage(sprawlRoot, agentName, agentState.Parent, "[PROBLEM] agent-loop failure",
@@ -496,6 +502,13 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	}
 	if initialPoke != "" {
 		pendingPoke = initialPoke
+	}
+	// If the initial turn was interrupted (IsError=true but no Go error),
+	// the prompt was never fully processed. Re-queue it so the main loop
+	// delivers it on the next iteration.
+	if initialResult != nil && initialResult.IsError && pendingPoke == "" {
+		fmt.Fprintf(deps.stdout, "[agent-loop] initial prompt interrupted, re-queuing for delivery\n")
+		pendingPoke = agentState.Prompt
 	}
 
 	// restartWithResume creates a new process with Resume=true after a crash.
