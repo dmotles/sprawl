@@ -655,8 +655,8 @@ func TestRunNeoLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "Detected missed handoff from previous session, generating summary") {
-		t.Errorf("expected stdout to contain missed handoff feedback message before auto-summarize, got: %q", output)
+	if !strings.Contains(output, "[root-loop] Detected missed handoff from previous session, generating summary") {
+		t.Errorf("expected stdout to contain missed handoff feedback message with [root-loop] prefix, got: %q", output)
 	}
 }
 

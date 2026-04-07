@@ -149,7 +149,7 @@ func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
 			if homeErr != nil {
 				fmt.Fprintf(deps.stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
 			} else {
-				fmt.Fprintf(deps.stdout, "[neo] Detected missed handoff from previous session, generating summary...\n")
+				fmt.Fprintf(deps.stdout, "[root-loop] Detected missed handoff from previous session, generating summary...\n")
 				summarized, sumErr := deps.autoSummarize(ctx, sprawlRoot, sprawlRoot, homeDir, prevSessionID, deps.newCLIInvoker())
 				if sumErr != nil {
 					fmt.Fprintf(deps.stdout, "[root-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
