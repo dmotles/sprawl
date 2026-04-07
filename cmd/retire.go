@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
@@ -34,16 +35,18 @@ type retireDeps struct {
 	loadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
 	currentBranch       func(repoRoot string) (string, error)
 	gitUnmergedCommits  func(repoRoot, branchName string) ([]string, error)
+	loadConfig          func(sprawlRoot string) (*config.Config, error)
 }
 
 var defaultRetireDeps *retireDeps
 
 var (
-	retireCascade bool
-	retireForce   bool
-	retireAbandon bool
-	retireMerge   bool
-	retireYes     bool
+	retireCascade    bool
+	retireForce      bool
+	retireAbandon    bool
+	retireMerge      bool
+	retireYes        bool
+	retireNoValidate bool
 )
 
 func init() {
@@ -52,6 +55,7 @@ func init() {
 	retireCmd.Flags().BoolVar(&retireAbandon, "abandon", false, "Discard the agent's work and delete its branch")
 	retireCmd.Flags().BoolVar(&retireMerge, "merge", false, "Merge the agent's work into your branch before retiring")
 	retireCmd.Flags().BoolVar(&retireYes, "yes", false, "Acknowledge safety warnings (unmerged commits, live process) and proceed")
+	retireCmd.Flags().BoolVar(&retireNoValidate, "no-validate", false, "Skip post-merge test validation")
 	rootCmd.AddCommand(retireCmd)
 }
 
@@ -111,6 +115,7 @@ func resolveRetireDeps() (*retireDeps, error) {
 		loadAgent:          state.LoadAgent,
 		currentBranch:      gitCurrentBranch,
 		gitUnmergedCommits: realGitUnmergedCommits,
+		loadConfig:         config.Load,
 	}, nil
 }
 
@@ -154,6 +159,10 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 		if err != nil {
 			return fmt.Errorf("determining current branch: %w", err)
 		}
+		sprawlCfg, err := deps.loadConfig(sprawlRoot)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
 		cfg := &merge.Config{
 			SprawlRoot:     sprawlRoot,
 			AgentName:      agentName,
@@ -161,6 +170,8 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 			AgentWorktree:  agentState.Worktree,
 			ParentBranch:   targetBranch,
 			ParentWorktree: callerWorktree,
+			NoValidate:     retireNoValidate,
+			ValidateCmd:    sprawlCfg.Validate,
 			AgentState:     agentState,
 		}
 		result, err := deps.doMerge(cfg, deps.newMergeDeps())

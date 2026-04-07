@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
@@ -59,6 +60,9 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 		},
 		gitUnmergedCommits: func(repoRoot, branchName string) ([]string, error) {
 			return nil, nil
+		},
+		loadConfig: func(sprawlRoot string) (*config.Config, error) {
+			return &config.Config{}, nil
 		},
 	}
 
@@ -1422,5 +1426,156 @@ func TestRetire_Abandon_Cascade_PropagatesYes(t *testing.T) {
 		if loadErr == nil {
 			t.Errorf("expected %s state to be deleted", name)
 		}
+	}
+}
+
+func TestRetire_MergeFlag_PassesValidateCmdFromConfig(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.getenv = func(key string) string {
+		switch key {
+		case "SPRAWL_ROOT":
+			return tmpDir
+		case "SPRAWL_AGENT_IDENTITY":
+			return "root"
+		}
+		return ""
+	}
+
+	deps.currentBranch = func(repoRoot string) (string, error) {
+		return "main", nil
+	}
+
+	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+		return &config.Config{Validate: "make validate"}, nil
+	}
+
+	var capturedCfg *merge.Config
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		capturedCfg = cfg
+		return &merge.Result{CommitHash: "abc123"}, nil
+	}
+
+	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "sprawl/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedCfg == nil {
+		t.Fatal("doMerge was not called")
+	}
+	if capturedCfg.ValidateCmd != "make validate" {
+		t.Errorf("ValidateCmd = %q, want %q", capturedCfg.ValidateCmd, "make validate")
+	}
+}
+
+func TestRetire_MergeFlag_NoValidate_SkipsValidation(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.getenv = func(key string) string {
+		switch key {
+		case "SPRAWL_ROOT":
+			return tmpDir
+		case "SPRAWL_AGENT_IDENTITY":
+			return "root"
+		}
+		return ""
+	}
+
+	deps.currentBranch = func(repoRoot string) (string, error) {
+		return "main", nil
+	}
+
+	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+		return &config.Config{Validate: "make validate"}, nil
+	}
+
+	var capturedCfg *merge.Config
+	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		capturedCfg = cfg
+		return &merge.Result{CommitHash: "abc123"}, nil
+	}
+
+	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+		return nil
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "sprawl/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	retireNoValidate = true
+	defer func() { retireNoValidate = false }()
+
+	err := runRetire(deps, "alice", false, false, false, true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedCfg == nil {
+		t.Fatal("doMerge was not called")
+	}
+	if !capturedCfg.NoValidate {
+		t.Error("NoValidate should be true when --no-validate is passed")
+	}
+}
+
+func TestRetire_MergeFlag_ConfigLoadError(t *testing.T) {
+	deps, _, tmpDir := newTestRetireDeps(t)
+
+	deps.getenv = func(key string) string {
+		switch key {
+		case "SPRAWL_ROOT":
+			return tmpDir
+		case "SPRAWL_AGENT_IDENTITY":
+			return "root"
+		}
+		return ""
+	}
+
+	deps.currentBranch = func(repoRoot string) (string, error) {
+		return "main", nil
+	}
+
+	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+		return nil, fmt.Errorf("permission denied reading config.yaml")
+	}
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "sprawl/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	err := runRetire(deps, "alice", false, false, false, true, false)
+	if err == nil {
+		t.Fatal("expected error when config load fails")
+	}
+	if !strings.Contains(err.Error(), "loading config") {
+		t.Errorf("error should mention config loading, got: %v", err)
 	}
 }
