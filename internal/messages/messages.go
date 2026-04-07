@@ -34,8 +34,8 @@ type Message struct {
 }
 
 // MessagesDir returns the path to the messages directory under the sprawl root.
-func MessagesDir(dendraRoot string) string { //nolint:revive // stuttering name is part of public API
-	return filepath.Join(dendraRoot, ".sprawl", "messages")
+func MessagesDir(sprawlRoot string) string { //nolint:revive // stuttering name is part of public API
+	return filepath.Join(sprawlRoot, ".sprawl", "messages")
 }
 
 // NotifyFunc is called after successful delivery when provided via WithNotify.
@@ -59,7 +59,7 @@ func WithNotify(fn NotifyFunc) SendOption {
 }
 
 // Send delivers a message from one agent to another using Maildir-style atomic writes.
-func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error {
+func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error {
 	if from == "" {
 		return fmt.Errorf("sender (from) must not be empty")
 	}
@@ -67,7 +67,7 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 		return fmt.Errorf("recipient (to) must not be empty")
 	}
 
-	agentDir := filepath.Join(MessagesDir(dendraRoot), to)
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), to)
 	for _, sub := range []string{"tmp", "new", "cur", "archive"} {
 		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
 			return fmt.Errorf("creating directory %s: %w", sub, err)
@@ -120,13 +120,13 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 	// The sent copy is advisory — delivery already succeeded above, so we
 	// silently ignore errors to avoid returning a misleading failure that
 	// could cause callers to retry (and duplicate) a delivered message.
-	sentDir := filepath.Join(MessagesDir(dendraRoot), from, "sent")
+	sentDir := filepath.Join(MessagesDir(sprawlRoot), from, "sent")
 	if err := os.MkdirAll(sentDir, 0o755); err == nil { //nolint:gosec // G301: world-readable sent dir is intentional
 		_ = os.WriteFile(filepath.Join(sentDir, filename), data, 0o644) //nolint:gosec // G306: world-readable message files are intentional
 	}
 
 	// Best-effort wake file to notify the recipient agent.
-	wakePath := filepath.Join(dendraRoot, ".sprawl", "agents", to+".wake")
+	wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", to+".wake")
 	wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
 	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional
 
@@ -151,20 +151,20 @@ func Send(dendraRoot, from, to, subject, body string, opts ...SendOption) error 
 
 // Inbox returns all messages for an agent from both new/ and cur/ directories,
 // sorted by timestamp ascending.
-func Inbox(dendraRoot, agent string) ([]*Message, error) {
-	return List(dendraRoot, agent, "all")
+func Inbox(sprawlRoot, agent string) ([]*Message, error) {
+	return List(sprawlRoot, agent, "all")
 }
 
 // Sent returns all messages in the agent's sent/ outbox, sorted by timestamp ascending.
-func Sent(dendraRoot, agent string) ([]*Message, error) {
-	return List(dendraRoot, agent, "sent")
+func Sent(sprawlRoot, agent string) ([]*Message, error) {
+	return List(sprawlRoot, agent, "sent")
 }
 
 // ResolvePrefix finds a full message ID from a prefix by scanning new/, cur/, archive/, sent/ directories.
 // It first attempts to match by ShortID (exact match inside message JSON), then falls back to
 // filename-based prefix matching for long IDs. Returns the full ID if exactly one match found.
-func ResolvePrefix(dendraRoot, agent, prefix string) (string, error) {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+func ResolvePrefix(sprawlRoot, agent, prefix string) (string, error) {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
 
 	// Pass 1: match by ShortID (read JSON, compare ShortID field)
 	shortIDMatches := make(map[string]bool)
@@ -240,8 +240,8 @@ func ResolvePrefix(dendraRoot, agent, prefix string) (string, error) {
 }
 
 // MarkRead moves a message from new/ to cur/.
-func MarkRead(dendraRoot, agent, msgID string) error {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+func MarkRead(sprawlRoot, agent, msgID string) error {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
 	srcPath := filepath.Join(agentDir, "new", msgID+".json")
 	dstPath := filepath.Join(agentDir, "cur", msgID+".json")
 
@@ -256,8 +256,8 @@ func MarkRead(dendraRoot, agent, msgID string) error {
 }
 
 // MarkUnread moves a message from cur/ to new/.
-func MarkUnread(dendraRoot, agent, msgID string) error {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+func MarkUnread(sprawlRoot, agent, msgID string) error {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
 	srcPath := filepath.Join(agentDir, "cur", msgID+".json")
 	dstPath := filepath.Join(agentDir, "new", msgID+".json")
 
@@ -272,8 +272,8 @@ func MarkUnread(dendraRoot, agent, msgID string) error {
 }
 
 // Archive moves a message from new/ or cur/ to archive/.
-func Archive(dendraRoot, agent, msgID string) error {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+func Archive(sprawlRoot, agent, msgID string) error {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
 	filename := msgID + ".json"
 	dstPath := filepath.Join(agentDir, "archive", filename)
 
@@ -344,22 +344,22 @@ func archiveFromDirs(agentDir string, dirs []string) (int, error) {
 }
 
 // ArchiveAll archives all messages from new/ and cur/ directories, returning the count.
-func ArchiveAll(dendraRoot, agent string) (int, error) {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+func ArchiveAll(sprawlRoot, agent string) (int, error) {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
 	return archiveFromDirs(agentDir, []string{"new", "cur"})
 }
 
 // ArchiveRead archives only read messages from cur/ directory, returning the count.
-func ArchiveRead(dendraRoot, agent string) (int, error) {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+func ArchiveRead(sprawlRoot, agent string) (int, error) {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
 	return archiveFromDirs(agentDir, []string{"cur"})
 }
 
 // ReadMessage reads a message from any directory (new/, cur/, archive/, sent/), returns it.
 // If found in new/, auto-marks as read by moving to cur/.
 // Messages in sent/ are returned as-is (no auto-mark-read).
-func ReadMessage(dendraRoot, agent, msgID string) (*Message, error) {
-	agentDir := filepath.Join(MessagesDir(dendraRoot), agent)
+func ReadMessage(sprawlRoot, agent, msgID string) (*Message, error) {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), agent)
 	filename := msgID + ".json"
 
 	for _, dir := range []string{"new", "cur", "archive", "sent"} {
@@ -379,7 +379,7 @@ func ReadMessage(dendraRoot, agent, msgID string) (*Message, error) {
 
 		if dir == "new" {
 			// Auto-mark as read
-			if err := MarkRead(dendraRoot, agent, msgID); err != nil {
+			if err := MarkRead(sprawlRoot, agent, msgID); err != nil {
 				return nil, fmt.Errorf("auto-marking message as read: %w", err)
 			}
 			msg.Dir = "cur"
@@ -435,7 +435,7 @@ func readMessagesFromDirs(agentDir string, dirs []string) ([]*Message, error) {
 }
 
 // List returns messages filtered by the given filter.
-func List(dendraRoot, agent, filter string) ([]*Message, error) {
+func List(sprawlRoot, agent, filter string) ([]*Message, error) {
 	var dirs []string
 	switch filter {
 	case "", "all":
@@ -452,17 +452,17 @@ func List(dendraRoot, agent, filter string) ([]*Message, error) {
 		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, sent", filter)
 	}
 
-	return readMessagesFromDirs(filepath.Join(MessagesDir(dendraRoot), agent), dirs)
+	return readMessagesFromDirs(filepath.Join(MessagesDir(sprawlRoot), agent), dirs)
 }
 
 // Broadcast sends a message to all active agents (excluding the sender).
 // Returns the number of recipients.
-func Broadcast(dendraRoot, sender, subject, body string) (int, error) {
+func Broadcast(sprawlRoot, sender, subject, body string) (int, error) {
 	if sender == "" {
 		return 0, fmt.Errorf("sender must not be empty")
 	}
 
-	agents, err := state.ListAgents(dendraRoot)
+	agents, err := state.ListAgents(sprawlRoot)
 	if err != nil {
 		return 0, fmt.Errorf("listing agents: %w", err)
 	}
@@ -473,7 +473,7 @@ func Broadcast(dendraRoot, sender, subject, body string) (int, error) {
 		if agent.Status != "active" || agent.Name == sender {
 			continue
 		}
-		if err := Send(dendraRoot, sender, agent.Name, subject, body); err != nil {
+		if err := Send(sprawlRoot, sender, agent.Name, subject, body); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", agent.Name, err))
 			continue
 		}

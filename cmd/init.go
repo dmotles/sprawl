@@ -146,12 +146,12 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 		return err
 	}
 
-	dendraPath, err := deps.findSprawl()
+	sprawlPath, err := deps.findSprawl()
 	if err != nil {
 		return fmt.Errorf("finding sprawl binary: %w", err)
 	}
 
-	shellCmd := tmux.BuildShellCmd(dendraPath, []string{"root-loop"})
+	shellCmd := tmux.BuildShellCmd(sprawlPath, []string{"root-loop"})
 
 	// The root agent's tree path is just its name.
 	treePath := rootName

@@ -17,16 +17,16 @@ type Session struct {
 	AgentsActive []string  `json:"agents_active"`
 }
 
-func sessionsDir(dendraRoot string) string {
-	return filepath.Join(memoryDir(dendraRoot), "sessions")
+func sessionsDir(sprawlRoot string) string {
+	return filepath.Join(memoryDir(sprawlRoot), "sessions")
 }
 
-func memoryDir(dendraRoot string) string {
-	return filepath.Join(dendraRoot, ".sprawl", "memory")
+func memoryDir(sprawlRoot string) string {
+	return filepath.Join(sprawlRoot, ".sprawl", "memory")
 }
 
-func lastSessionIDPath(dendraRoot string) string {
-	return filepath.Join(memoryDir(dendraRoot), "last-session-id")
+func lastSessionIDPath(sprawlRoot string) string {
+	return filepath.Join(memoryDir(sprawlRoot), "last-session-id")
 }
 
 func sessionFilename(s Session) string {
@@ -125,8 +125,8 @@ func parseFrontmatter(raw string) (Session, string, error) {
 
 // WriteSessionSummary writes a session summary file with YAML frontmatter and markdown body.
 // It uses write-to-temp-then-rename for atomicity.
-func WriteSessionSummary(dendraRoot string, session Session, body string) error {
-	dir := sessionsDir(dendraRoot)
+func WriteSessionSummary(sprawlRoot string, session Session, body string) error {
+	dir := sessionsDir(sprawlRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable sessions dir is intentional
 		return fmt.Errorf("creating sessions directory: %w", err)
 	}
@@ -182,8 +182,8 @@ func ReadSessionSummary(path string) (Session, string, error) {
 
 // ListRecentSessions returns the N most recent sessions sorted oldest first.
 // Returns (nil, nil, nil) if the sessions directory does not exist or is empty.
-func ListRecentSessions(dendraRoot string, n int) ([]Session, []string, error) {
-	dir := sessionsDir(dendraRoot)
+func ListRecentSessions(sprawlRoot string, n int) ([]Session, []string, error) {
+	dir := sessionsDir(sprawlRoot)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -244,8 +244,8 @@ func ListRecentSessions(dendraRoot string, n int) ([]Session, []string, error) {
 
 // ReadLastSessionID reads the last session ID from .sprawl/memory/last-session-id.
 // Returns ("", nil) if the file does not exist.
-func ReadLastSessionID(dendraRoot string) (string, error) {
-	data, err := os.ReadFile(lastSessionIDPath(dendraRoot))
+func ReadLastSessionID(sprawlRoot string) (string, error) {
+	data, err := os.ReadFile(lastSessionIDPath(sprawlRoot))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -256,12 +256,12 @@ func ReadLastSessionID(dendraRoot string) (string, error) {
 }
 
 // WriteLastSessionID writes the session ID to .sprawl/memory/last-session-id.
-func WriteLastSessionID(dendraRoot string, sessionID string) error {
-	dir := memoryDir(dendraRoot)
+func WriteLastSessionID(sprawlRoot string, sessionID string) error {
+	dir := memoryDir(sprawlRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}
-	if err := os.WriteFile(lastSessionIDPath(dendraRoot), []byte(sessionID), 0o644); err != nil { //nolint:gosec // G306: world-readable session file is intentional
+	if err := os.WriteFile(lastSessionIDPath(sprawlRoot), []byte(sessionID), 0o644); err != nil { //nolint:gosec // G306: world-readable session file is intentional
 		return fmt.Errorf("writing last session ID: %w", err)
 	}
 	return nil
@@ -269,8 +269,8 @@ func WriteLastSessionID(dendraRoot string, sessionID string) error {
 
 // WriteHandoffSignal creates an empty handoff signal file at .sprawl/memory/handoff-signal.
 // The root loop detects the presence of this file and restarts.
-func WriteHandoffSignal(dendraRoot string) error {
-	dir := memoryDir(dendraRoot)
+func WriteHandoffSignal(sprawlRoot string) error {
+	dir := memoryDir(sprawlRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}

@@ -69,7 +69,7 @@ func makeStatusTestDeps(agents []*state.AgentState, rootName string, runner tmux
 	}, buf
 }
 
-func TestRunStatus_MissingDendraRoot(t *testing.T) {
+func TestRunStatus_MissingSprawlRoot(t *testing.T) {
 	buf := &bytes.Buffer{}
 	deps := &statusDeps{
 		observeDeps: observe.Deps{},

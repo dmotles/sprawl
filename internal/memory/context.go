@@ -62,7 +62,7 @@ func WithBudgetConfig(bc BudgetConfig) BuildOption {
 // source fails, partial results are returned with an error marker in the
 // affected section. The returned string is always a best-effort blob; the error
 // is non-nil if any section had errors.
-func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (string, error) {
+func BuildContextBlob(sprawlRoot string, rootName string, opts ...BuildOption) (string, error) {
 	cfg := buildConfig{
 		agentLister:               state.ListAgents,
 		messageLister:             messages.List,
@@ -78,25 +78,25 @@ func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (
 	var errs []error
 
 	// Render Active State section
-	activeState, activeErr := renderActiveState(dendraRoot, rootName, cfg)
+	activeState, activeErr := renderActiveState(sprawlRoot, rootName, cfg)
 	if activeErr != nil {
 		errs = append(errs, activeErr)
 	}
 
 	// Render Persistent Knowledge section
-	persistentKnowledge, pkErr := renderPersistentKnowledge(dendraRoot, cfg)
+	persistentKnowledge, pkErr := renderPersistentKnowledge(sprawlRoot, cfg)
 	if pkErr != nil {
 		errs = append(errs, pkErr)
 	}
 
 	// Render Timeline section (header + individual entries)
-	timelineHeader, timelineEntries, timelineErr := renderTimeline(dendraRoot, cfg)
+	timelineHeader, timelineEntries, timelineErr := renderTimeline(sprawlRoot, cfg)
 	if timelineErr != nil {
 		errs = append(errs, timelineErr)
 	}
 
 	// Render Sessions
-	sessionStrings, sessErr := renderSessions(dendraRoot, cfg)
+	sessionStrings, sessErr := renderSessions(sprawlRoot, cfg)
 	if sessErr != nil {
 		errs = append(errs, sessErr)
 	}
@@ -125,19 +125,19 @@ func BuildContextBlob(dendraRoot string, rootName string, opts ...BuildOption) (
 
 // renderActiveState produces the "## Active State" section string, including
 // the section header.
-func renderActiveState(dendraRoot, rootName string, cfg buildConfig) (string, error) {
+func renderActiveState(sprawlRoot, rootName string, cfg buildConfig) (string, error) {
 	var b strings.Builder
 	var errs []error
 
 	b.WriteString("## Active State\n\n")
 
 	b.WriteString("### Agents\n")
-	if agentErr := writeAgentsSection(&b, dendraRoot, cfg.agentLister); agentErr != nil {
+	if agentErr := writeAgentsSection(&b, sprawlRoot, cfg.agentLister); agentErr != nil {
 		errs = append(errs, agentErr)
 	}
 
 	b.WriteString("\n### Pending Inbox\n")
-	if inboxErr := writeInboxSection(&b, dendraRoot, rootName, cfg.messageLister); inboxErr != nil {
+	if inboxErr := writeInboxSection(&b, sprawlRoot, rootName, cfg.messageLister); inboxErr != nil {
 		errs = append(errs, inboxErr)
 	}
 
@@ -153,11 +153,11 @@ func renderActiveState(dendraRoot, rootName string, cfg buildConfig) (string, er
 }
 
 // renderPersistentKnowledge produces the "## Persistent Knowledge" section string.
-func renderPersistentKnowledge(dendraRoot string, cfg buildConfig) (string, error) {
+func renderPersistentKnowledge(sprawlRoot string, cfg buildConfig) (string, error) {
 	if cfg.persistentKnowledgeReader == nil {
 		return "", nil
 	}
-	content, err := cfg.persistentKnowledgeReader(dendraRoot)
+	content, err := cfg.persistentKnowledgeReader(sprawlRoot)
 	if err != nil {
 		return fmt.Sprintf("\n## Persistent Knowledge\n\n[Error reading persistent knowledge: %s]\n", err), err
 	}
@@ -170,8 +170,8 @@ func renderPersistentKnowledge(dendraRoot string, cfg buildConfig) (string, erro
 
 // renderTimeline returns the timeline header and individual entry strings.
 // If there are no entries (and no error), header is empty and entries is nil.
-func renderTimeline(dendraRoot string, cfg buildConfig) (string, []string, error) {
-	entries, err := cfg.timelineLister(dendraRoot)
+func renderTimeline(sprawlRoot string, cfg buildConfig) (string, []string, error) {
+	entries, err := cfg.timelineLister(sprawlRoot)
 	if err != nil {
 		header := "\n## Session Timeline\n"
 		errLine := fmt.Sprintf("[Error reading timeline: %s]\n", err)
@@ -191,8 +191,8 @@ func renderTimeline(dendraRoot string, cfg buildConfig) (string, []string, error
 }
 
 // renderSessions returns individual session strings (each including the ### header).
-func renderSessions(dendraRoot string, cfg buildConfig) ([]string, error) {
-	sessions, bodies, err := cfg.sessionLister(dendraRoot, 3)
+func renderSessions(sprawlRoot string, cfg buildConfig) ([]string, error) {
+	sessions, bodies, err := cfg.sessionLister(sprawlRoot, 3)
 	if err != nil {
 		errStr := fmt.Sprintf("\n[Error reading sessions: %s]\n", err)
 		return []string{errStr}, err
@@ -417,8 +417,8 @@ func assembleBudgeted(activeState, persistentKnowledge, timelineHeader string, t
 	return b.String()
 }
 
-func writeAgentsSection(b *strings.Builder, dendraRoot string, lister func(string) ([]*state.AgentState, error)) error {
-	agents, err := lister(dendraRoot)
+func writeAgentsSection(b *strings.Builder, sprawlRoot string, lister func(string) ([]*state.AgentState, error)) error {
+	agents, err := lister(sprawlRoot)
 	if err != nil {
 		fmt.Fprintf(b, "[Error listing agents: %s]\n", err)
 		return err
@@ -443,8 +443,8 @@ func writeAgentsSection(b *strings.Builder, dendraRoot string, lister func(strin
 	return nil
 }
 
-func writeInboxSection(b *strings.Builder, dendraRoot, rootName string, lister func(string, string, string) ([]*messages.Message, error)) error {
-	msgs, err := lister(dendraRoot, rootName, "unread")
+func writeInboxSection(b *strings.Builder, sprawlRoot, rootName string, lister func(string, string, string) ([]*messages.Message, error)) error {
+	msgs, err := lister(sprawlRoot, rootName, "unread")
 	if err != nil {
 		fmt.Fprintf(b, "[Error reading inbox: %s]\n", err)
 		return err

@@ -85,12 +85,12 @@ type statusEntry struct {
 }
 
 func runStatus(deps *statusDeps, jsonOutput bool, family, typ, parent, statusFilter string) error {
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	agents, err := observe.LoadAll(deps.observeDeps, dendraRoot)
+	agents, err := observe.LoadAll(deps.observeDeps, sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("loading agents: %w", err)
 	}
@@ -158,8 +158,8 @@ func renderStatusJSON(w io.Writer, agents []*observe.AgentInfo) error {
 // tolerantListAgents returns a ListAgents function that skips corrupt state files
 // and logs warnings to stderr instead of failing.
 func tolerantListAgents(stderr io.Writer) func(string) ([]*state.AgentState, error) {
-	return func(dendraRoot string) ([]*state.AgentState, error) {
-		dir := state.AgentsDir(dendraRoot)
+	return func(sprawlRoot string) ([]*state.AgentState, error) {
+		dir := state.AgentsDir(sprawlRoot)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -174,7 +174,7 @@ func tolerantListAgents(stderr io.Writer) func(string) ([]*state.AgentState, err
 				continue
 			}
 			name := strings.TrimSuffix(entry.Name(), ".json")
-			agent, err := state.LoadAgent(dendraRoot, name)
+			agent, err := state.LoadAgent(sprawlRoot, name)
 			if err != nil {
 				fmt.Fprintf(stderr, "warning: skipping corrupt agent state %q: %v\n", name, err)
 				continue

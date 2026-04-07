@@ -87,7 +87,7 @@ func TestRetire_HappyPath(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -118,7 +118,7 @@ func TestRetire_AgentNotFound(t *testing.T) {
 	}
 }
 
-func TestRetire_MissingDendraRoot(t *testing.T) {
+func TestRetire_MissingSprawlRoot(t *testing.T) {
 	deps, _, _ := newTestRetireDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
@@ -140,7 +140,7 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -180,7 +180,7 @@ func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -211,7 +211,7 @@ func TestRetire_WithChildren_Refuses(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -251,7 +251,7 @@ func TestRetire_WithChildren_ForceOrphans(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -291,7 +291,7 @@ func TestRetire_Cascade(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree/alice",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -302,7 +302,7 @@ func TestRetire_Cascade(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "bob",
 		Status:      "active",
-		Branch:      "dendra/bob",
+		Branch:      "sprawl/bob",
 		Worktree:    "/some/worktree/bob",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
@@ -313,7 +313,7 @@ func TestRetire_Cascade(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "charlie",
 		Status:      "active",
-		Branch:      "dendra/charlie",
+		Branch:      "sprawl/charlie",
 		Worktree:    "/some/worktree/charlie",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"+tmux.BranchSeparator+"bob"),
 		TmuxWindow:  "charlie",
@@ -341,7 +341,7 @@ func TestRetire_CrashRecovery_RetiringState(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "retiring",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -373,7 +373,7 @@ func TestRetire_EmptyWorktree_SkipsRemoval(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "", // no worktree
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -399,7 +399,7 @@ func TestRetire_WorktreeRemoveFailure_WarnsButContinues(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -432,7 +432,7 @@ func TestRetire_ForceKillsProcess(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/some/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -476,7 +476,7 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/worktree/alice",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -486,7 +486,7 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "bob",
 		Status:      "active",
-		Branch:      "dendra/bob",
+		Branch:      "sprawl/bob",
 		Worktree:    "/worktree/bob",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
@@ -515,7 +515,7 @@ func TestRetire_Subagent_SkipsWorktreeCleanup(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "sub-alice",
 		Status:      "active",
-		Branch:      "dendra/sub-alice",
+		Branch:      "sprawl/sub-alice",
 		Worktree:    "/some/worktree/sub-alice",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "sub-alice",
@@ -546,7 +546,7 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -597,7 +597,7 @@ func TestRetire_Abandon_DeletesBranch(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -609,8 +609,8 @@ func TestRetire_Abandon_DeletesBranch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if deletedBranch != "dendra/alice" {
-		t.Errorf("gitBranchDelete called with branch %q, want %q", deletedBranch, "dendra/alice")
+	if deletedBranch != "sprawl/alice" {
+		t.Errorf("gitBranchDelete called with branch %q, want %q", deletedBranch, "sprawl/alice")
 	}
 
 	// State file should be deleted.
@@ -630,7 +630,7 @@ func TestRetire_Abandon_BranchDeleteFails_WarnsButSucceeds(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -661,7 +661,7 @@ func TestRetire_NoAbandon_PreservesBranch(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -768,7 +768,7 @@ func TestRetire_Default_MergedBranch_DeletesBranch(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -780,8 +780,8 @@ func TestRetire_Default_MergedBranch_DeletesBranch(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if safeDeletedBranch != "dendra/alice" {
-		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "dendra/alice")
+	if safeDeletedBranch != "sprawl/alice" {
+		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "sprawl/alice")
 	}
 }
 
@@ -801,7 +801,7 @@ func TestRetire_Default_UnmergedBranch_PreservesBranch(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -856,7 +856,7 @@ func TestRetire_MergeFlag_HappyPath(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -878,8 +878,8 @@ func TestRetire_MergeFlag_HappyPath(t *testing.T) {
 		t.Error("expected agent state to be deleted")
 	}
 
-	if safeDeletedBranch != "dendra/alice" {
-		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "dendra/alice")
+	if safeDeletedBranch != "sprawl/alice" {
+		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "sprawl/alice")
 	}
 }
 
@@ -889,7 +889,7 @@ func TestRetire_MergeAndAbandon_MutualExclusion(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -925,7 +925,7 @@ func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -982,7 +982,7 @@ func TestRetire_ForcePlusMerge(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1004,8 +1004,8 @@ func TestRetire_ForcePlusMerge(t *testing.T) {
 		t.Error("expected agent state to be deleted")
 	}
 
-	if safeDeletedBranch != "dendra/alice" {
-		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "dendra/alice")
+	if safeDeletedBranch != "sprawl/alice" {
+		t.Errorf("gitBranchSafeDelete called with branch %q, want %q", safeDeletedBranch, "sprawl/alice")
 	}
 }
 
@@ -1036,7 +1036,7 @@ func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1047,7 +1047,7 @@ func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "bob",
 		Status:      "active",
-		Branch:      "dendra/bob",
+		Branch:      "sprawl/bob",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "bob"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
@@ -1089,7 +1089,7 @@ func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1100,7 +1100,7 @@ func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "bob",
 		Status:      "active",
-		Branch:      "dendra/bob",
+		Branch:      "sprawl/bob",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "bob"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",
@@ -1121,11 +1121,11 @@ func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
 	for _, b := range deletedBranches {
 		branchSet[b] = true
 	}
-	if !branchSet["dendra/alice"] {
-		t.Error("expected gitBranchDelete to be called for dendra/alice")
+	if !branchSet["sprawl/alice"] {
+		t.Error("expected gitBranchDelete to be called for sprawl/alice")
 	}
-	if !branchSet["dendra/bob"] {
-		t.Error("expected gitBranchDelete to be called for dendra/bob")
+	if !branchSet["sprawl/bob"] {
+		t.Error("expected gitBranchDelete to be called for sprawl/bob")
 	}
 }
 
@@ -1141,7 +1141,7 @@ func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1186,7 +1186,7 @@ func TestRetire_Abandon_UnmergedCommits_BlocksWithoutYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1224,7 +1224,7 @@ func TestRetire_Abandon_UnmergedCommits_ProceedsWithYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1251,7 +1251,7 @@ func TestRetire_Abandon_LiveProcess_BlocksWithoutYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1278,7 +1278,7 @@ func TestRetire_Abandon_LiveProcess_ProceedsWithYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1307,7 +1307,7 @@ func TestRetire_Abandon_BothGuards_BlocksWithoutYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1336,7 +1336,7 @@ func TestRetire_Abandon_NoGuards_ProceedsWithoutYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1364,7 +1364,7 @@ func TestRetire_Abandon_Subagent_SkipsGuards(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "sub-alice",
 		Status:      "active",
-		Branch:      "dendra/sub-alice",
+		Branch:      "sprawl/sub-alice",
 		Worktree:    "/some/worktree/sub-alice",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "sub-alice",
@@ -1394,7 +1394,7 @@ func TestRetire_Abandon_Cascade_PropagatesYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
 		Status:      "active",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -1404,7 +1404,7 @@ func TestRetire_Abandon_Cascade_PropagatesYes(t *testing.T) {
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "bob",
 		Status:      "active",
-		Branch:      "dendra/bob",
+		Branch:      "sprawl/bob",
 		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "bob"),
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName+tmux.BranchSeparator+"alice"),
 		TmuxWindow:  "bob",

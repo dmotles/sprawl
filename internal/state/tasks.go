@@ -23,8 +23,8 @@ type Task struct {
 }
 
 // TasksDir returns the path to the tasks directory for a given agent.
-func TasksDir(dendraRoot, agentName string) string {
-	return filepath.Join(dendraRoot, ".sprawl", "agents", agentName, "tasks")
+func TasksDir(sprawlRoot, agentName string) string {
+	return filepath.Join(sprawlRoot, ".sprawl", "agents", agentName, "tasks")
 }
 
 // GenerateUUID creates a random UUID v4 string using crypto/rand.
@@ -40,8 +40,8 @@ func GenerateUUID() (string, error) {
 }
 
 // EnqueueTask creates a new task with status "queued" and writes it to disk.
-func EnqueueTask(dendraRoot, agentName, prompt string) (*Task, error) {
-	dir := TasksDir(dendraRoot, agentName)
+func EnqueueTask(sprawlRoot, agentName, prompt string) (*Task, error) {
+	dir := TasksDir(sprawlRoot, agentName)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable tasks dir is intentional
 		return nil, fmt.Errorf("creating tasks directory: %w", err)
 	}
@@ -51,7 +51,7 @@ func EnqueueTask(dendraRoot, agentName, prompt string) (*Task, error) {
 		return nil, err
 	}
 
-	promptPath, err := WritePromptFile(dendraRoot, agentName, id, prompt)
+	promptPath, err := WritePromptFile(sprawlRoot, agentName, id, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("writing prompt file: %w", err)
 	}
@@ -79,8 +79,8 @@ func EnqueueTask(dendraRoot, agentName, prompt string) (*Task, error) {
 }
 
 // NextTask returns the first task with status "queued" in FIFO order, or nil if none.
-func NextTask(dendraRoot, agentName string) (*Task, error) {
-	tasks, err := ListTasks(dendraRoot, agentName)
+func NextTask(sprawlRoot, agentName string) (*Task, error) {
+	tasks, err := ListTasks(sprawlRoot, agentName)
 	if err != nil {
 		return nil, err
 	}
@@ -93,8 +93,8 @@ func NextTask(dendraRoot, agentName string) (*Task, error) {
 }
 
 // UpdateTask updates an existing task file on disk. Returns an error if the task is not found.
-func UpdateTask(dendraRoot, agentName string, task *Task) error {
-	dir := TasksDir(dendraRoot, agentName)
+func UpdateTask(sprawlRoot, agentName string, task *Task) error {
+	dir := TasksDir(sprawlRoot, agentName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -122,8 +122,8 @@ func UpdateTask(dendraRoot, agentName string, task *Task) error {
 }
 
 // ListTasks returns all tasks for an agent in FIFO order (sorted by filename).
-func ListTasks(dendraRoot, agentName string) ([]*Task, error) {
-	dir := TasksDir(dendraRoot, agentName)
+func ListTasks(sprawlRoot, agentName string) ([]*Task, error) {
+	dir := TasksDir(sprawlRoot, agentName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

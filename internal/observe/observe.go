@@ -17,9 +17,9 @@ type AgentInfo struct {
 // Deps holds injected dependencies for the observe package.
 type Deps struct {
 	TmuxRunner    tmux.Runner
-	ListAgents    func(dendraRoot string) ([]*state.AgentState, error)
-	ReadRootName  func(dendraRoot string) string
-	ReadNamespace func(dendraRoot string) string
+	ListAgents    func(sprawlRoot string) ([]*state.AgentState, error)
+	ReadRootName  func(sprawlRoot string) string
+	ReadNamespace func(sprawlRoot string) string
 }
 
 // TreeNode represents a node in the agent hierarchy tree.
@@ -30,14 +30,14 @@ type TreeNode struct {
 
 // LoadAll loads all agents, synthesizes the root if needed, and annotates liveness.
 // Agents are returned sorted by name for deterministic output.
-func LoadAll(deps Deps, dendraRoot string) ([]*AgentInfo, error) {
-	agents, err := deps.ListAgents(dendraRoot)
+func LoadAll(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
+	agents, err := deps.ListAgents(sprawlRoot)
 	if err != nil {
 		return nil, err
 	}
 
-	rootName := deps.ReadRootName(dendraRoot)
-	namespace := deps.ReadNamespace(dendraRoot)
+	rootName := deps.ReadRootName(sprawlRoot)
+	namespace := deps.ReadNamespace(sprawlRoot)
 
 	var result []*AgentInfo
 

@@ -264,11 +264,11 @@ func init() {
 
 // startProcess creates and starts a process. On failure it reports to parent and calls exit(1).
 // Returns (proc, true) on success, or (nil, false) on failure (after reporting and exiting).
-func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.ProcessConfig, observer agentloop.Observer, dendraRoot, agentName, parent, reason, initialPrompt string) (processManager, bool) {
+func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.ProcessConfig, observer agentloop.Observer, sprawlRoot, agentName, parent, reason, initialPrompt string) (processManager, bool) {
 	proc := deps.newProcess(config, observer)
 	if err := proc.Start(ctx, initialPrompt); err != nil {
 		fmt.Fprintf(deps.stdout, "[agent-loop] %s: %v\n", reason, err)
-		_ = deps.sendMessage(dendraRoot, agentName, parent, "[PROBLEM] agent-loop failure", fmt.Sprintf("%s: %v", reason, err))
+		_ = deps.sendMessage(sprawlRoot, agentName, parent, "[PROBLEM] agent-loop failure", fmt.Sprintf("%s: %v", reason, err))
 		deps.exit(1)
 		return nil, false
 	}
@@ -285,7 +285,7 @@ func sendPromptWithInterrupt(
 	pokePath string,
 	prompt string,
 	pollInterval time.Duration,
-	dendraRoot string,
+	sprawlRoot string,
 	agentName string,
 ) (*protocol.ResultMessage, string, error) {
 	pokeCh := make(chan string, 1)
@@ -314,8 +314,8 @@ func sendPromptWithInterrupt(
 				}
 
 				// Check inbox for unread messages and log them (but don't deliver).
-				if dendraRoot != "" && agentName != "" {
-					msgs, listErr := deps.listMessages(dendraRoot, agentName, "unread")
+				if sprawlRoot != "" && agentName != "" {
+					msgs, listErr := deps.listMessages(sprawlRoot, agentName, "unread")
 					if listErr == nil {
 						for _, msg := range msgs {
 							if !loggedMsgIDs[msg.ID] {
@@ -351,13 +351,13 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	}
 
 	// Validate SPRAWL_ROOT
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Load agent state
-	agentState, err := deps.loadAgent(dendraRoot, agentName)
+	agentState, err := deps.loadAgent(sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("loading agent state: %w", err)
 	}
@@ -369,7 +369,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	}
 
 	// Create log file
-	logsDir := filepath.Join(dendraRoot, ".sprawl", "agents", agentName, "logs")
+	logsDir := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName, "logs")
 	if err := deps.mkdirAll(logsDir, 0o755); err != nil {
 		return fmt.Errorf("creating logs directory: %w", err)
 	}
@@ -380,7 +380,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	defer logFile.Close()
 
 	// Create work lock for synchronization with merge operations.
-	lockDir := filepath.Join(dendraRoot, ".sprawl", "locks")
+	lockDir := filepath.Join(sprawlRoot, ".sprawl", "locks")
 	wl, err := deps.newWorkLock(lockDir, agentName)
 	if err != nil {
 		return fmt.Errorf("creating work lock: %w", err)
@@ -396,7 +396,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 
 	// Build process config
 	systemPrompt := deps.buildPrompt(agentState)
-	promptPath, err := state.WriteSystemPrompt(dendraRoot, agentName, systemPrompt)
+	promptPath, err := state.WriteSystemPrompt(sprawlRoot, agentName, systemPrompt)
 	if err != nil {
 		return fmt.Errorf("writing system prompt file: %w", err)
 	}
@@ -404,7 +404,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		AgentName:  agentName,
 		WorkDir:    agentState.Worktree,
 		ClaudePath: claudePath,
-		DendraRoot: dendraRoot,
+		SprawlRoot: sprawlRoot,
 		Args: claude.LaunchOpts{
 			SessionID:        agentState.SessionID,
 			SystemPromptFile: promptPath,
@@ -431,7 +431,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	fmt.Fprintf(deps.stdout, "[agent-loop]   work-dir:        %s\n", config.WorkDir)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   claude-path:     %s\n", config.ClaudePath)
 	fmt.Fprintf(deps.stdout, "[agent-loop]   setting-sources: %s\n", config.Args.SettingSources)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   sprawl-root:     %s\n", config.DendraRoot)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   sprawl-root:     %s\n", config.SprawlRoot)
 	fmt.Fprintf(deps.stdout, "[agent-loop] === KEY ENV VARS ===\n")
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_AGENT_IDENTITY=%s\n", deps.getenv("SPRAWL_AGENT_IDENTITY"))
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_ROOT=%s\n", deps.getenv("SPRAWL_ROOT"))
@@ -439,7 +439,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	observer := &tmuxObserver{w: deps.stdout}
 
 	// Create and start the initial process.
-	proc, ok := startProcess(ctx, deps, config, observer, dendraRoot, agentName, agentState.Parent, "failed to start process", agentState.Prompt)
+	proc, ok := startProcess(ctx, deps, config, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process", agentState.Prompt)
 	if !ok {
 		return nil
 	}
@@ -457,15 +457,15 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		resumeConfig := config
 		resumeConfig.Args.Resume = true
 		var ok bool
-		proc, ok = startProcess(ctx, deps, resumeConfig, observer, dendraRoot, agentName, agentState.Parent, "failed to restart process after crash", agentState.Prompt)
+		proc, ok = startProcess(ctx, deps, resumeConfig, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash", agentState.Prompt)
 		return ok
 	}
 
-	pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".poke")
+	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")
 
 	// sendWithInterrupt wraps sendPromptWithInterrupt with the poke path and default interval.
 	sendWithInterrupt := func(prompt string) (*protocol.ResultMessage, string, error) {
-		return sendPromptWithInterrupt(ctx, proc, deps, pokePath, prompt, defaultPollInterval, dendraRoot, agentName)
+		return sendPromptWithInterrupt(ctx, proc, deps, pokePath, prompt, defaultPollInterval, sprawlRoot, agentName)
 	}
 
 	// pendingPoke holds poke content from a mid-turn interrupt, delivered on the next iteration.
@@ -480,7 +480,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		}
 
 		// 0. Check for kill sentinel file.
-		killFilePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".kill")
+		killFilePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".kill")
 		if _, readErr := deps.readFile(killFilePath); readErr == nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] kill sentinel detected, shutting down\n")
 			_ = deps.removeFile(killFilePath)
@@ -488,7 +488,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		}
 
 		// 0.1. Check if agent state file still exists (defense against external retirement).
-		if _, loadErr := deps.loadAgent(dendraRoot, agentName); loadErr != nil {
+		if _, loadErr := deps.loadAgent(sprawlRoot, agentName); loadErr != nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] agent state file missing, shutting down\n")
 			return nil
 		}
@@ -532,12 +532,12 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		}
 
 		// 1. Check for a queued task.
-		task, err := deps.nextTask(dendraRoot, agentName)
+		task, err := deps.nextTask(sprawlRoot, agentName)
 		if err != nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] error fetching next task: %v\n", err)
 		} else if task != nil {
 			task.Status = "in-progress"
-			_ = deps.updateTask(dendraRoot, agentName, task)
+			_ = deps.updateTask(sprawlRoot, agentName, task)
 
 			fmt.Fprintf(deps.stdout, "[agent-loop] starting task %s\n", task.ID)
 			var taskPrompt string
@@ -571,13 +571,13 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			// An interrupted task still completed its turn (Claude emits a result),
 			// but the poke message takes priority for the next turn.
 			task.Status = "done"
-			_ = deps.updateTask(dendraRoot, agentName, task)
+			_ = deps.updateTask(sprawlRoot, agentName, task)
 			_ = wl.Release()
 			continue
 		}
 
 		// 2. Check inbox for unread messages.
-		msgs, err := deps.listMessages(dendraRoot, agentName, "unread")
+		msgs, err := deps.listMessages(sprawlRoot, agentName, "unread")
 		if err == nil && len(msgs) > 0 {
 			var cmdLines []string
 			for _, msg := range msgs {
@@ -606,7 +606,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 				}
 			}
 			// Consume any pending wake file — inbox delivery already notified the agent.
-			wakePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".wake")
+			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
 			_ = deps.removeFile(wakePath)
 			_ = wl.Release()
 			deps.sleepFunc(3 * time.Second)
@@ -614,7 +614,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		}
 
 		// 3. Check for a wake file.
-		wakeFilePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".wake")
+		wakeFilePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
 		wakeContent, readErr := deps.readFile(wakeFilePath)
 		if readErr == nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] wake file detected\n")

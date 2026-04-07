@@ -15,8 +15,8 @@ type TimelineEntry struct {
 	Summary   string
 }
 
-func timelinePath(dendraRoot string) string {
-	return filepath.Join(memoryDir(dendraRoot), "timeline.md")
+func timelinePath(sprawlRoot string) string {
+	return filepath.Join(memoryDir(sprawlRoot), "timeline.md")
 }
 
 const timelineHeader = "# Session Timeline"
@@ -24,8 +24,8 @@ const timelineHeader = "# Session Timeline"
 // ReadTimeline parses .sprawl/memory/timeline.md and returns entries.
 // Returns an empty slice (not error) if the file doesn't exist.
 // Lines not matching the expected format are silently skipped.
-func ReadTimeline(dendraRoot string) ([]TimelineEntry, error) {
-	data, err := os.ReadFile(timelinePath(dendraRoot))
+func ReadTimeline(sprawlRoot string) ([]TimelineEntry, error) {
+	data, err := os.ReadFile(timelinePath(sprawlRoot))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []TimelineEntry{}, nil
@@ -66,8 +66,8 @@ func ReadTimeline(dendraRoot string) ([]TimelineEntry, error) {
 // WriteTimeline writes entries to .sprawl/memory/timeline.md, creating parent
 // directories if needed. Timestamps are normalized to UTC. If called with an
 // empty slice, writes just the header.
-func WriteTimeline(dendraRoot string, entries []TimelineEntry) error {
-	p := timelinePath(dendraRoot)
+func WriteTimeline(sprawlRoot string, entries []TimelineEntry) error {
+	p := timelinePath(sprawlRoot)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}
@@ -92,8 +92,8 @@ func WriteTimeline(dendraRoot string, entries []TimelineEntry) error {
 // AppendTimelineEntries appends new entries to the existing timeline.
 // It reads existing entries, merges with new ones, sorts chronologically,
 // and writes back. No deduplication is performed.
-func AppendTimelineEntries(dendraRoot string, entries []TimelineEntry) error {
-	existing, err := ReadTimeline(dendraRoot)
+func AppendTimelineEntries(sprawlRoot string, entries []TimelineEntry) error {
+	existing, err := ReadTimeline(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("reading existing timeline: %w", err)
 	}
@@ -103,5 +103,5 @@ func AppendTimelineEntries(dendraRoot string, entries []TimelineEntry) error {
 		return merged[i].Timestamp.Before(merged[j].Timestamp)
 	})
 
-	return WriteTimeline(dendraRoot, merged)
+	return WriteTimeline(sprawlRoot, merged)
 }

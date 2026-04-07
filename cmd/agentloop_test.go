@@ -104,10 +104,10 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 		Family:    "engineering",
 		Parent:    "root",
 		Prompt:    "do stuff",
-		Branch:    "dendra/finn",
+		Branch:    "sprawl/finn",
 		Worktree:  tmpDir,
 		Status:    "active",
-		SessionID: "dendra-finn",
+		SessionID: "sprawl-finn",
 	}
 	if err := state.SaveAgent(tmpDir, agentState); err != nil {
 		t.Fatalf("saving test agent state: %v", err)
@@ -205,7 +205,7 @@ func TestAgentLoopCmd_ExactArgs(t *testing.T) {
 	}
 }
 
-func TestRunAgentLoop_MissingDendraRoot(t *testing.T) {
+func TestRunAgentLoop_MissingSprawlRoot(t *testing.T) {
 	deps, _, _ := newTestAgentLoopDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
@@ -1174,8 +1174,8 @@ func TestRunAgentLoop_ProcessConfigFromAgentState(t *testing.T) {
 	if capturedConfig.Args.SystemPromptFile == "" {
 		t.Error("SystemPromptFile should be set")
 	}
-	if capturedConfig.DendraRoot == "" {
-		t.Error("DendraRoot should be set from SPRAWL_ROOT env var")
+	if capturedConfig.SprawlRoot == "" {
+		t.Error("SprawlRoot should be set from SPRAWL_ROOT env var")
 	}
 }
 
@@ -1369,7 +1369,7 @@ func TestDefaultBuildPrompt_ResearcherType(t *testing.T) {
 		Name:   "finn",
 		Type:   "researcher",
 		Parent: "root",
-		Branch: "dendra/finn",
+		Branch: "sprawl/finn",
 		Prompt: "investigate auth libraries",
 	}
 
@@ -1400,7 +1400,7 @@ func TestDefaultBuildPrompt_EngineerType(t *testing.T) {
 		Name:   "finn",
 		Type:   "engineer",
 		Parent: "root",
-		Branch: "dendra/finn",
+		Branch: "sprawl/finn",
 		Prompt: "build login page",
 	}
 
@@ -1426,7 +1426,7 @@ func TestDefaultBuildPrompt_UnknownType(t *testing.T) {
 		Name:   "finn",
 		Type:   "tester",
 		Parent: "root",
-		Branch: "dendra/finn",
+		Branch: "sprawl/finn",
 		Prompt: "test something",
 	}
 

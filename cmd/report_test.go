@@ -242,7 +242,7 @@ func TestReport_MissingAgentIdentity(t *testing.T) {
 	}
 }
 
-func TestReport_MissingDendraRoot(t *testing.T) {
+func TestReport_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestReportDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
@@ -282,7 +282,7 @@ func TestReportDone_MessageFailure_NonFatal(t *testing.T) {
 	})
 
 	// Inject a failing sendMessage to simulate messaging failure
-	deps.sendMessage = func(dendraRoot, from, to, subject, body string, opts ...messages.SendOption) error {
+	deps.sendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error {
 		return fmt.Errorf("simulated send failure")
 	}
 
@@ -311,7 +311,7 @@ func TestReportStatus_PreservesExistingFields(t *testing.T) {
 		Family:      "engineering",
 		Parent:      "root",
 		Prompt:      "build something",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/path/to/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -336,8 +336,8 @@ func TestReportStatus_PreservesExistingFields(t *testing.T) {
 	if agentState.Family != "engineering" {
 		t.Errorf("Family = %q, want %q", agentState.Family, "engineering")
 	}
-	if agentState.Branch != "dendra/alice" {
-		t.Errorf("Branch = %q, want %q", agentState.Branch, "dendra/alice")
+	if agentState.Branch != "sprawl/alice" {
+		t.Errorf("Branch = %q, want %q", agentState.Branch, "sprawl/alice")
 	}
 	if agentState.Worktree != "/path/to/worktree" {
 		t.Errorf("Worktree = %q, want %q", agentState.Worktree, "/path/to/worktree")

@@ -130,7 +130,7 @@ func TestBranchExists(t *testing.T) {
 	}
 
 	// A non-existent branch should return false
-	if branchExists(repo, "dendra/nonexistent") {
-		t.Error("branchExists(dendra/nonexistent) = true, want false")
+	if branchExists(repo, "sprawl/nonexistent") {
+		t.Error("branchExists(sprawl/nonexistent) = true, want false")
 	}
 }

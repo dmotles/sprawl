@@ -28,7 +28,7 @@ func newTestSpawnSubagentDeps(t *testing.T) (*spawnSubagentDeps, *spawnMockRunne
 		Type:     "engineer",
 		Family:   "engineering",
 		Worktree: parentWorktree,
-		Branch:   "dendra/root",
+		Branch:   "sprawl/root",
 		Status:   "active",
 	}
 	if err := state.SaveAgent(tmpDir, parentState); err != nil {
@@ -122,8 +122,8 @@ func TestSpawnSubagent_HappyPath(t *testing.T) {
 	if agentState.Worktree != expectedWorktree {
 		t.Errorf("state Worktree = %q, want parent worktree %q", agentState.Worktree, expectedWorktree)
 	}
-	if agentState.Branch != "dendra/root" {
-		t.Errorf("state Branch = %q, want parent branch %q", agentState.Branch, "dendra/root")
+	if agentState.Branch != "sprawl/root" {
+		t.Errorf("state Branch = %q, want parent branch %q", agentState.Branch, "sprawl/root")
 	}
 	// SessionID should be a valid UUID
 	if len(agentState.SessionID) != 36 || agentState.SessionID[8] != '-' {
@@ -184,7 +184,7 @@ func TestSpawnSubagent_MissingIdentity(t *testing.T) {
 	}
 }
 
-func TestSpawnSubagent_MissingDendraRoot(t *testing.T) {
+func TestSpawnSubagent_MissingSprawlRoot(t *testing.T) {
 	deps, _, _ := newTestSpawnSubagentDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
@@ -213,7 +213,7 @@ func TestSpawnSubagent_ParentNotFound(t *testing.T) {
 		}
 		return ""
 	}
-	deps.loadAgent = func(dendraRoot, name string) (*state.AgentState, error) {
+	deps.loadAgent = func(sprawlRoot, name string) (*state.AgentState, error) {
 		return nil, fmt.Errorf("reading agent state for %q: file not found", name)
 	}
 
@@ -341,7 +341,7 @@ func TestSpawnSubagent_ShellCmd_UsesParentWorktree(t *testing.T) {
 	}
 }
 
-func TestSpawnSubagent_DendraBinPropagated(t *testing.T) {
+func TestSpawnSubagent_SprawlBinPropagated(t *testing.T) {
 	deps, runner, _ := newTestSpawnSubagentDeps(t)
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
@@ -362,7 +362,7 @@ func TestSpawnSubagent_DendraBinPropagated(t *testing.T) {
 	}
 }
 
-func TestSpawnSubagent_DendraBinNotPropagatedWhenUnset(t *testing.T) {
+func TestSpawnSubagent_SprawlBinNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _ := newTestSpawnSubagentDeps(t)
 	// Default getenv returns "" for SPRAWL_BIN
 
@@ -544,7 +544,7 @@ func TestSpawnSubagent_MultipleChildrenDifferentTypes(t *testing.T) {
 		Type:     "manager",
 		Family:   "engineering",
 		Worktree: filepath.Join(tmpDir, ".sprawl", "worktrees", "root"),
-		Branch:   "dendra/root",
+		Branch:   "sprawl/root",
 		Status:   "active",
 	}
 	if err := state.SaveAgent(tmpDir, parentState); err != nil {

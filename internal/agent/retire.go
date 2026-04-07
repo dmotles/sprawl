@@ -21,14 +21,14 @@ type ShutdownDeps struct {
 
 // GracefulShutdown signals the agent-loop via sentinel file, waits for it to exit,
 // and falls back to killing the tmux window if it doesn't exit in time.
-func GracefulShutdown(deps *ShutdownDeps, dendraRoot string, agentState *state.AgentState, force bool) {
+func GracefulShutdown(deps *ShutdownDeps, sprawlRoot string, agentState *state.AgentState, force bool) {
 	if force {
 		_ = deps.TmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
 		return
 	}
 
 	// Write sentinel file
-	killPath := filepath.Join(dendraRoot, ".sprawl", "agents", agentState.Name+".kill")
+	killPath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".kill")
 	_ = deps.WriteFile(killPath, []byte("kill"), 0o644)
 
 	// Poll: wait for window to disappear
@@ -60,12 +60,12 @@ type RetireDeps struct {
 	GitStatus      func(worktreePath string) (string, error)
 	RemoveAll      func(string) error
 	ReadDir        func(string) ([]os.DirEntry, error)
-	ArchiveMessage func(dendraRoot, agent, msgID string) error
+	ArchiveMessage func(sprawlRoot, agent, msgID string) error
 	Stderr         io.Writer
 }
 
 // RetireAgent performs core teardown. If skipShutdown is true, skips graceful shutdown and tmux cleanup.
-func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, force bool, skipShutdown bool) error {
+func RetireAgent(deps *RetireDeps, sprawlRoot string, agent *state.AgentState, force bool, skipShutdown bool) error {
 	if !skipShutdown {
 		sd := &ShutdownDeps{
 			TmuxRunner: deps.TmuxRunner,
@@ -73,7 +73,7 @@ func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, f
 			RemoveFile: deps.RemoveFile,
 			SleepFunc:  deps.SleepFunc,
 		}
-		GracefulShutdown(sd, dendraRoot, agent, force)
+		GracefulShutdown(sd, sprawlRoot, agent, force)
 
 		// Best-effort tmux window cleanup after graceful shutdown
 		_ = deps.TmuxRunner.KillWindow(agent.TmuxSession, agent.TmuxWindow)
@@ -88,7 +88,7 @@ func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, f
 
 		// Remove worktree
 		forceRemove := force || statusOutput != ""
-		err = deps.WorktreeRemove(dendraRoot, agent.Worktree, forceRemove)
+		err = deps.WorktreeRemove(sprawlRoot, agent.Worktree, forceRemove)
 		if err != nil {
 			// Worktree may already be gone — not fatal
 			fmt.Fprintf(deps.Stderr, "Warning: could not remove worktree: %v\n", err)
@@ -96,13 +96,13 @@ func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, f
 	}
 
 	// Remove agent logs directory
-	logsDir := filepath.Join(dendraRoot, ".sprawl", "agents", agent.Name, "logs")
+	logsDir := filepath.Join(sprawlRoot, ".sprawl", "agents", agent.Name, "logs")
 	if err := deps.RemoveAll(logsDir); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(deps.Stderr, "Warning: could not remove logs directory: %v\n", err)
 	}
 
 	// Archive messages from new/ and cur/ (leave sent/ untouched)
-	msgsDir := filepath.Join(dendraRoot, ".sprawl", "messages", agent.Name)
+	msgsDir := filepath.Join(sprawlRoot, ".sprawl", "messages", agent.Name)
 	for _, sub := range []string{"new", "cur"} {
 		dirPath := filepath.Join(msgsDir, sub)
 		entries, err := deps.ReadDir(dirPath)
@@ -117,14 +117,14 @@ func RetireAgent(deps *RetireDeps, dendraRoot string, agent *state.AgentState, f
 				continue
 			}
 			msgID := entry.Name()[:len(entry.Name())-len(".json")]
-			if err := deps.ArchiveMessage(dendraRoot, agent.Name, msgID); err != nil {
+			if err := deps.ArchiveMessage(sprawlRoot, agent.Name, msgID); err != nil {
 				fmt.Fprintf(deps.Stderr, "Warning: could not archive message %s: %v\n", msgID, err)
 			}
 		}
 	}
 
 	// Delete state file (name is now free)
-	if err := state.DeleteAgent(dendraRoot, agent.Name); err != nil {
+	if err := state.DeleteAgent(sprawlRoot, agent.Name); err != nil {
 		return fmt.Errorf("deleting agent state: %w", err)
 	}
 

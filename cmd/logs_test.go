@@ -24,7 +24,7 @@ func TestLogsCmd_ExactArgs(t *testing.T) {
 	}
 }
 
-func TestRunLogs_MissingDendraRoot(t *testing.T) {
+func TestRunLogs_MissingSprawlRoot(t *testing.T) {
 	deps := &logsDeps{
 		getenv:   func(string) string { return "" },
 		readDir:  os.ReadDir,

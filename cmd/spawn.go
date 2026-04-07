@@ -126,13 +126,13 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; spawn must be called from within a sprawl agent")
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a sprawl agent")
 	}
 
 	// Allocate name
-	agentsDir := state.AgentsDir(dendraRoot)
+	agentsDir := state.AgentsDir(sprawlRoot)
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil { //nolint:gosec // G301: world-readable agent dir is intentional
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
@@ -142,30 +142,30 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	}
 
 	// Get current branch for worktree base
-	baseBranch, err := deps.currentBranch(dendraRoot)
+	baseBranch, err := deps.currentBranch(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("determining current branch: %w", err)
 	}
 
 	// Create worktree
-	worktreePath, branchName, err := deps.worktreeCreator.Create(dendraRoot, agentName, branch, baseBranch)
+	worktreePath, branchName, err := deps.worktreeCreator.Create(sprawlRoot, agentName, branch, baseBranch)
 	if err != nil {
 		return fmt.Errorf("creating worktree for %s: %w", agentName, err)
 	}
 
 	// Find sprawl binary
-	dendraPath, err := deps.findSprawl()
+	sprawlPath, err := deps.findSprawl()
 	if err != nil {
 		return fmt.Errorf("finding sprawl binary: %w", err)
 	}
 
 	// Build shell command: cd to worktree, then run sprawl agent-loop
-	shellCmd := fmt.Sprintf("cd %s && %s", tmux.ShellQuote(worktreePath), tmux.BuildShellCmd(dendraPath, []string{"agent-loop", agentName}))
+	shellCmd := fmt.Sprintf("cd %s && %s", tmux.ShellQuote(worktreePath), tmux.BuildShellCmd(sprawlPath, []string{"agent-loop", agentName}))
 
 	// Resolve namespace: env var > persisted file > default
 	namespace := deps.getenv("SPRAWL_NAMESPACE")
 	if namespace == "" {
-		namespace = state.ReadNamespace(dendraRoot)
+		namespace = state.ReadNamespace(sprawlRoot)
 	}
 	if namespace == "" {
 		namespace = tmux.DefaultNamespace
@@ -175,7 +175,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	parentTreePath := deps.getenv("SPRAWL_TREE_PATH")
 	if parentTreePath == "" {
 		// Fallback: use root name from file + parent identity
-		rootName := state.ReadRootName(dendraRoot)
+		rootName := state.ReadRootName(sprawlRoot)
 		if rootName == "" {
 			rootName = tmux.DefaultRootName
 		}
@@ -190,7 +190,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	// Set environment for the child agent
 	env := map[string]string{
 		"SPRAWL_AGENT_IDENTITY": agentName,
-		"SPRAWL_ROOT":           dendraRoot,
+		"SPRAWL_ROOT":           sprawlRoot,
 		"SPRAWL_NAMESPACE":      namespace,
 		"SPRAWL_TREE_PATH":      childTreePath,
 	}
@@ -220,7 +220,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	}
 
 	// Write initial prompt to file and use @file reference
-	promptPath, err := state.WritePromptFile(dendraRoot, agentName, "initial", prompt)
+	promptPath, err := state.WritePromptFile(sprawlRoot, agentName, "initial", prompt)
 	if err != nil {
 		return fmt.Errorf("writing initial prompt file: %w", err)
 	}
@@ -241,7 +241,7 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		SessionID:   sessionID,
 		TreePath:    childTreePath,
 	}
-	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
+	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)
 	}
 

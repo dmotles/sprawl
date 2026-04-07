@@ -32,13 +32,13 @@ type AgentState struct {
 }
 
 // AgentsDir returns the path to the agents state directory under the given sprawl root.
-func AgentsDir(dendraRoot string) string {
-	return filepath.Join(dendraRoot, ".sprawl", "agents")
+func AgentsDir(sprawlRoot string) string {
+	return filepath.Join(sprawlRoot, ".sprawl", "agents")
 }
 
 // SaveAgent writes the agent state to a JSON file in the agents directory.
-func SaveAgent(dendraRoot string, agent *AgentState) error {
-	dir := AgentsDir(dendraRoot)
+func SaveAgent(sprawlRoot string, agent *AgentState) error {
+	dir := AgentsDir(sprawlRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable agents dir is intentional
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
@@ -56,8 +56,8 @@ func SaveAgent(dendraRoot string, agent *AgentState) error {
 }
 
 // LoadAgent reads the agent state from a JSON file.
-func LoadAgent(dendraRoot string, name string) (*AgentState, error) {
-	path := filepath.Join(AgentsDir(dendraRoot), name+".json")
+func LoadAgent(sprawlRoot string, name string) (*AgentState, error) {
+	path := filepath.Join(AgentsDir(sprawlRoot), name+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading agent state for %q: %w", name, err)
@@ -71,8 +71,8 @@ func LoadAgent(dendraRoot string, name string) (*AgentState, error) {
 }
 
 // ListAgents returns all agent states from the agents directory.
-func ListAgents(dendraRoot string) ([]*AgentState, error) {
-	dir := AgentsDir(dendraRoot)
+func ListAgents(sprawlRoot string) ([]*AgentState, error) {
+	dir := AgentsDir(sprawlRoot)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -87,7 +87,7 @@ func ListAgents(dendraRoot string) ([]*AgentState, error) {
 			continue
 		}
 		name := strings.TrimSuffix(entry.Name(), ".json")
-		agent, err := LoadAgent(dendraRoot, name)
+		agent, err := LoadAgent(sprawlRoot, name)
 		if err != nil {
 			return nil, err
 		}
@@ -97,8 +97,8 @@ func ListAgents(dendraRoot string) ([]*AgentState, error) {
 }
 
 // DeleteAgent removes the agent state file, freeing the name.
-func DeleteAgent(dendraRoot string, name string) error {
-	path := filepath.Join(AgentsDir(dendraRoot), name+".json")
+func DeleteAgent(sprawlRoot string, name string) error {
+	path := filepath.Join(AgentsDir(sprawlRoot), name+".json")
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil // already gone
@@ -109,13 +109,13 @@ func DeleteAgent(dendraRoot string, name string) error {
 }
 
 // SprawlDir returns the path to the .sprawl directory under the given root.
-func SprawlDir(dendraRoot string) string {
-	return filepath.Join(dendraRoot, ".sprawl")
+func SprawlDir(sprawlRoot string) string {
+	return filepath.Join(sprawlRoot, ".sprawl")
 }
 
 // WriteNamespace persists the selected namespace to .sprawl/namespace.
-func WriteNamespace(dendraRoot, namespace string) error {
-	dir := SprawlDir(dendraRoot)
+func WriteNamespace(sprawlRoot, namespace string) error {
+	dir := SprawlDir(sprawlRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable .sprawl dir is intentional
 		return fmt.Errorf("creating .sprawl directory: %w", err)
 	}
@@ -125,8 +125,8 @@ func WriteNamespace(dendraRoot, namespace string) error {
 
 // ReadNamespace reads the persisted namespace from .sprawl/namespace.
 // Returns empty string if the file doesn't exist.
-func ReadNamespace(dendraRoot string) string {
-	path := filepath.Join(SprawlDir(dendraRoot), "namespace")
+func ReadNamespace(sprawlRoot string) string {
+	path := filepath.Join(SprawlDir(sprawlRoot), "namespace")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -135,8 +135,8 @@ func ReadNamespace(dendraRoot string) string {
 }
 
 // WriteRootName persists the root agent name to .sprawl/root-name.
-func WriteRootName(dendraRoot, rootName string) error {
-	dir := SprawlDir(dendraRoot)
+func WriteRootName(sprawlRoot, rootName string) error {
+	dir := SprawlDir(sprawlRoot)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable .sprawl dir is intentional
 		return fmt.Errorf("creating .sprawl directory: %w", err)
 	}
@@ -146,8 +146,8 @@ func WriteRootName(dendraRoot, rootName string) error {
 
 // ReadRootName reads the persisted root name from .sprawl/root-name.
 // Returns empty string if the file doesn't exist.
-func ReadRootName(dendraRoot string) string {
-	path := filepath.Join(SprawlDir(dendraRoot), "root-name")
+func ReadRootName(sprawlRoot string) string {
+	path := filepath.Join(SprawlDir(sprawlRoot), "root-name")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -157,8 +157,8 @@ func ReadRootName(dendraRoot string) string {
 
 // WriteSystemPrompt writes the system prompt to .sprawl/agents/{agentName}/SYSTEM.md
 // and returns the absolute path to the file.
-func WriteSystemPrompt(dendraRoot, agentName, content string) (string, error) {
-	dir := filepath.Join(AgentsDir(dendraRoot), agentName)
+func WriteSystemPrompt(sprawlRoot, agentName, content string) (string, error) {
+	dir := filepath.Join(AgentsDir(sprawlRoot), agentName)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable agent dir is intentional
 		return "", fmt.Errorf("creating agent directory: %w", err)
 	}
@@ -170,8 +170,8 @@ func WriteSystemPrompt(dendraRoot, agentName, content string) (string, error) {
 }
 
 // UsedNames returns a set of agent names that have state files.
-func UsedNames(dendraRoot string) (map[string]bool, error) {
-	agents, err := ListAgents(dendraRoot)
+func UsedNames(sprawlRoot string) (map[string]bool, error) {
+	agents, err := ListAgents(sprawlRoot)
 	if err != nil {
 		return nil, err
 	}

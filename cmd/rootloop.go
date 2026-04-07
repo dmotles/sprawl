@@ -39,7 +39,7 @@ type rootLoopDeps struct {
 	getenv                    func(string) string
 	findClaude                func() (string, error)
 	buildPrompt               func(agent.PromptConfig) string
-	buildContextBlob          func(dendraRoot, rootName string) (string, error)
+	buildContextBlob          func(sprawlRoot, rootName string) (string, error)
 	writeSystemPrompt         func(string, string, string) (string, error)
 	writeLastSessionID        func(string, string) error
 	readFile                  func(string) ([]byte, error)
@@ -49,13 +49,13 @@ type rootLoopDeps struct {
 	runCommand                func(name string, args []string) error
 	stdout                    io.Writer
 	readLastSessionID         func(string) (string, error)
-	autoSummarize             func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
+	autoSummarize             func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
 	userHomeDir               func() (string, error)
 	newCLIInvoker             func() memory.ClaudeInvoker
-	consolidate               func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
-	updatePersistentKnowledge func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error
-	listRecentSessions        func(dendraRoot string, n int) ([]memory.Session, []string, error)
-	readTimeline              func(dendraRoot string) ([]memory.TimelineEntry, error)
+	consolidate               func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
+	updatePersistentKnowledge func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error
+	listRecentSessions        func(sprawlRoot string, n int) ([]memory.Session, []string, error)
+	readTimeline              func(sprawlRoot string) ([]memory.TimelineEntry, error)
 }
 
 // defaultRootLoopDeps wires real implementations.
@@ -64,8 +64,8 @@ func defaultRootLoopDeps() *rootLoopDeps {
 		getenv:      os.Getenv,
 		findClaude:  func() (string, error) { return exec.LookPath("claude") },
 		buildPrompt: agent.BuildRootPrompt,
-		buildContextBlob: func(dendraRoot, rootName string) (string, error) {
-			return memory.BuildContextBlob(dendraRoot, rootName)
+		buildContextBlob: func(sprawlRoot, rootName string) (string, error) {
+			return memory.BuildContextBlob(sprawlRoot, rootName)
 		},
 		writeSystemPrompt:  state.WriteSystemPrompt,
 		writeLastSessionID: memory.WriteLastSessionID,
@@ -120,8 +120,8 @@ func init() {
 
 // runRootLoop is the main loop logic for the root-loop command.
 func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
@@ -143,24 +143,24 @@ func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
 		}
 
 		// 0. Detect missed handoff from previous session.
-		prevSessionID, _ := deps.readLastSessionID(dendraRoot)
+		prevSessionID, _ := deps.readLastSessionID(sprawlRoot)
 		if prevSessionID != "" {
 			homeDir, homeErr := deps.userHomeDir()
 			if homeErr != nil {
 				fmt.Fprintf(deps.stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
 			} else {
-				summarized, sumErr := deps.autoSummarize(ctx, dendraRoot, dendraRoot, homeDir, prevSessionID, deps.newCLIInvoker())
+				summarized, sumErr := deps.autoSummarize(ctx, sprawlRoot, sprawlRoot, homeDir, prevSessionID, deps.newCLIInvoker())
 				if sumErr != nil {
 					fmt.Fprintf(deps.stdout, "[root-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
 				} else if summarized {
 					fmt.Fprintf(deps.stdout, "[root-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
-					runConsolidationPipeline(ctx, deps, dendraRoot)
+					runConsolidationPipeline(ctx, deps, sprawlRoot)
 				}
 			}
 		}
 
 		// 1. Build context blob (best-effort).
-		contextBlob, ctxErr := deps.buildContextBlob(dendraRoot, rootName)
+		contextBlob, ctxErr := deps.buildContextBlob(sprawlRoot, rootName)
 		if ctxErr != nil {
 			fmt.Fprintf(deps.stdout, "[root-loop] warning: context blob partial or failed: %v\n", ctxErr)
 		}
@@ -172,7 +172,7 @@ func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
 			ContextBlob: contextBlob,
 			TestMode:    deps.getenv("SPRAWL_TEST_MODE") == "1",
 		})
-		promptPath, err := deps.writeSystemPrompt(dendraRoot, rootName, systemPrompt)
+		promptPath, err := deps.writeSystemPrompt(sprawlRoot, rootName, systemPrompt)
 		if err != nil {
 			return fmt.Errorf("writing system prompt: %w", err)
 		}
@@ -182,7 +182,7 @@ func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
 		if err != nil {
 			return fmt.Errorf("generating session ID: %w", err)
 		}
-		if err := deps.writeLastSessionID(dendraRoot, sessionID); err != nil {
+		if err := deps.writeLastSessionID(sprawlRoot, sessionID); err != nil {
 			return fmt.Errorf("writing session ID: %w", err)
 		}
 
@@ -233,12 +233,12 @@ func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
 		}
 
 		// 6. Housekeeping: check handoff signal.
-		handoffPath := filepath.Join(dendraRoot, ".sprawl", "memory", "handoff-signal")
+		handoffPath := filepath.Join(sprawlRoot, ".sprawl", "memory", "handoff-signal")
 		if _, readErr := deps.readFile(handoffPath); readErr == nil {
 			_ = deps.removeFile(handoffPath)
 			fmt.Fprintf(deps.stdout, "[root-loop] handoff signal detected, restarting\n")
 
-			runConsolidationPipeline(ctx, deps, dendraRoot)
+			runConsolidationPipeline(ctx, deps, sprawlRoot)
 		} else {
 			fmt.Fprintf(deps.stdout, "[root-loop] session ended, restarting\n")
 		}
@@ -249,20 +249,20 @@ func runRootLoop(ctx context.Context, deps *rootLoopDeps) error {
 
 // runConsolidationPipeline runs timeline consolidation and persistent knowledge
 // update. Both steps are best-effort: failures are logged as warnings.
-func runConsolidationPipeline(ctx context.Context, deps *rootLoopDeps, dendraRoot string) {
-	if err := deps.consolidate(ctx, dendraRoot, deps.newCLIInvoker(), nil, nil); err != nil {
+func runConsolidationPipeline(ctx context.Context, deps *rootLoopDeps, sprawlRoot string) {
+	if err := deps.consolidate(ctx, sprawlRoot, deps.newCLIInvoker(), nil, nil); err != nil {
 		fmt.Fprintf(deps.stdout, "[root-loop] warning: consolidation failed: %v\n", err)
 	}
 
 	var sessionSummary string
-	if sessions, bodies, err := deps.listRecentSessions(dendraRoot, 1); err != nil {
+	if sessions, bodies, err := deps.listRecentSessions(sprawlRoot, 1); err != nil {
 		fmt.Fprintf(deps.stdout, "[root-loop] warning: reading latest session for persistent knowledge: %v\n", err)
 	} else if len(sessions) > 0 && len(bodies) > 0 {
 		sessionSummary = bodies[0]
 	}
 
 	var timelineBullets string
-	if entries, err := deps.readTimeline(dendraRoot); err != nil {
+	if entries, err := deps.readTimeline(sprawlRoot); err != nil {
 		fmt.Fprintf(deps.stdout, "[root-loop] warning: reading timeline for persistent knowledge: %v\n", err)
 	} else {
 		var tlb strings.Builder
@@ -272,7 +272,7 @@ func runConsolidationPipeline(ctx context.Context, deps *rootLoopDeps, dendraRoo
 		timelineBullets = tlb.String()
 	}
 
-	if err := deps.updatePersistentKnowledge(ctx, dendraRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets); err != nil {
+	if err := deps.updatePersistentKnowledge(ctx, sprawlRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets); err != nil {
 		fmt.Fprintf(deps.stdout, "[root-loop] warning: persistent knowledge update failed: %v\n", err)
 	}
 }

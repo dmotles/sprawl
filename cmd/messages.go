@@ -127,16 +127,16 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 	_ = tw.Flush()
 }
 
-func (d *messagesDeps) resolveEnv() (agentName, dendraRoot string, err error) {
+func (d *messagesDeps) resolveEnv() (agentName, sprawlRoot string, err error) {
 	agentName = d.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
 		return "", "", fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set")
 	}
-	dendraRoot = d.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot = d.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return "", "", fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
-	return agentName, dendraRoot, nil
+	return agentName, sprawlRoot, nil
 }
 
 func runMessagesInboxDisplay(deps *messagesDeps, showAll bool) error {
@@ -174,7 +174,7 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		return err
 	}
 
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return err
 	}
@@ -183,12 +183,12 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 	if deps.tmuxRunner != nil {
 		namespace := deps.getenv("SPRAWL_NAMESPACE")
 		if namespace == "" {
-			namespace = state.ReadNamespace(dendraRoot)
+			namespace = state.ReadNamespace(sprawlRoot)
 		}
 		if namespace == "" {
 			namespace = tmux.DefaultNamespace
 		}
-		rootName := state.ReadRootName(dendraRoot)
+		rootName := state.ReadRootName(sprawlRoot)
 		if rootName == "" {
 			rootName = tmux.DefaultRootName
 		}
@@ -201,7 +201,7 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		}
 	}
 
-	if err := messages.Send(dendraRoot, agentName, to, subject, body, sendOpts...); err != nil {
+	if err := messages.Send(sprawlRoot, agentName, to, subject, body, sendOpts...); err != nil {
 		return err
 	}
 
@@ -297,48 +297,48 @@ var messagesUnreadCmd = &cobra.Command{
 }
 
 func runMessagesRead(deps *messagesDeps, msgID string) (*messages.Message, error) {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return nil, err
 	}
 
-	fullID, err := messages.ResolvePrefix(dendraRoot, agentName, msgID)
+	fullID, err := messages.ResolvePrefix(sprawlRoot, agentName, msgID)
 	if err != nil {
 		return nil, err
 	}
 
-	return messages.ReadMessage(dendraRoot, agentName, fullID)
+	return messages.ReadMessage(sprawlRoot, agentName, fullID)
 }
 
 func runMessagesList(deps *messagesDeps, filter string) ([]*messages.Message, error) {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return nil, err
 	}
 
-	return messages.List(dendraRoot, agentName, filter)
+	return messages.List(sprawlRoot, agentName, filter)
 }
 
 func runMessagesArchive(deps *messagesDeps, msgID string) error {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return err
 	}
 
-	fullID, err := messages.ResolvePrefix(dendraRoot, agentName, msgID)
+	fullID, err := messages.ResolvePrefix(sprawlRoot, agentName, msgID)
 	if err != nil {
 		return err
 	}
 
-	return messages.Archive(dendraRoot, agentName, fullID)
+	return messages.Archive(sprawlRoot, agentName, fullID)
 }
 
 func runMessagesArchiveAll(deps *messagesDeps) error {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return err
 	}
-	count, err := messages.ArchiveAll(dendraRoot, agentName)
+	count, err := messages.ArchiveAll(sprawlRoot, agentName)
 	if count == 0 && err == nil {
 		fmt.Fprintf(deps.stderr, "No messages to archive.\n")
 		return nil
@@ -348,11 +348,11 @@ func runMessagesArchiveAll(deps *messagesDeps) error {
 }
 
 func runMessagesArchiveRead(deps *messagesDeps) error {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return err
 	}
-	count, err := messages.ArchiveRead(dendraRoot, agentName)
+	count, err := messages.ArchiveRead(sprawlRoot, agentName)
 	if count == 0 && err == nil {
 		fmt.Fprintf(deps.stderr, "No messages to archive.\n")
 		return nil
@@ -362,26 +362,26 @@ func runMessagesArchiveRead(deps *messagesDeps) error {
 }
 
 func runMessagesUnread(deps *messagesDeps, msgID string) error {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return err
 	}
 
-	fullID, err := messages.ResolvePrefix(dendraRoot, agentName, msgID)
+	fullID, err := messages.ResolvePrefix(sprawlRoot, agentName, msgID)
 	if err != nil {
 		return err
 	}
 
-	return messages.MarkUnread(dendraRoot, agentName, fullID)
+	return messages.MarkUnread(sprawlRoot, agentName, fullID)
 }
 
 func runMessagesInbox(deps *messagesDeps) ([]*messages.Message, int, int, error) {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return nil, 0, 0, err
 	}
 
-	msgs, err := messages.Inbox(dendraRoot, agentName)
+	msgs, err := messages.Inbox(sprawlRoot, agentName)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -400,11 +400,11 @@ func runMessagesInbox(deps *messagesDeps) ([]*messages.Message, int, int, error)
 }
 
 func runMessagesSent(deps *messagesDeps) ([]*messages.Message, error) {
-	agentName, dendraRoot, err := deps.resolveEnv()
+	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return nil, err
 	}
-	return messages.Sent(dendraRoot, agentName)
+	return messages.Sent(sprawlRoot, agentName)
 }
 
 func runMessagesSentDisplay(deps *messagesDeps) error {
@@ -454,12 +454,12 @@ func runMessagesListDisplay(deps *messagesDeps, filter string) error {
 
 // runMessagesBroadcast sends a broadcast message to all active agents.
 func runMessagesBroadcast(d *messagesDeps, subject, body string) error {
-	agentName, dendraRoot, err := d.resolveEnv()
+	agentName, sprawlRoot, err := d.resolveEnv()
 	if err != nil {
 		return err
 	}
 
-	count, err := messages.Broadcast(dendraRoot, agentName, subject, body)
+	count, err := messages.Broadcast(sprawlRoot, agentName, subject, body)
 	if count > 0 {
 		fmt.Fprintf(d.stderr, "Broadcast sent to %d agents: %s\n", count, subject)
 	}

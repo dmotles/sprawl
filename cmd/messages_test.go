@@ -102,7 +102,7 @@ func TestMessagesSend_MissingAgentIdentity(t *testing.T) {
 	}
 }
 
-func TestMessagesSend_MissingDendraRoot(t *testing.T) {
+func TestMessagesSend_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
@@ -199,7 +199,7 @@ func TestMessagesInbox_MissingAgentIdentity(t *testing.T) {
 	}
 }
 
-func TestMessagesInbox_MissingDendraRoot(t *testing.T) {
+func TestMessagesInbox_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestMessagesDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {

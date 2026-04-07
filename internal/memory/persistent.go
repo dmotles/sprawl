@@ -22,14 +22,14 @@ func DefaultPersistentKnowledgeConfig() PersistentKnowledgeConfig {
 	}
 }
 
-func persistentKnowledgePath(dendraRoot string) string {
-	return filepath.Join(memoryDir(dendraRoot), "persistent.md")
+func persistentKnowledgePath(sprawlRoot string) string {
+	return filepath.Join(memoryDir(sprawlRoot), "persistent.md")
 }
 
 // ReadPersistentKnowledge reads .sprawl/memory/persistent.md and returns its
 // contents. Returns an empty string (not error) if the file doesn't exist.
-func ReadPersistentKnowledge(dendraRoot string) (string, error) {
-	data, err := os.ReadFile(persistentKnowledgePath(dendraRoot))
+func ReadPersistentKnowledge(sprawlRoot string) (string, error) {
+	data, err := os.ReadFile(persistentKnowledgePath(sprawlRoot))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -40,8 +40,8 @@ func ReadPersistentKnowledge(dendraRoot string) (string, error) {
 }
 
 // writePersistentKnowledge writes items as a markdown bullet list to persistent.md.
-func writePersistentKnowledge(dendraRoot string, items []string) error {
-	dir := filepath.Dir(persistentKnowledgePath(dendraRoot))
+func writePersistentKnowledge(sprawlRoot string, items []string) error {
+	dir := filepath.Dir(persistentKnowledgePath(sprawlRoot))
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable memory dir is intentional
 		return fmt.Errorf("creating memory directory: %w", err)
 	}
@@ -51,7 +51,7 @@ func writePersistentKnowledge(dendraRoot string, items []string) error {
 		fmt.Fprintf(&b, "- %s\n", item)
 	}
 
-	if err := os.WriteFile(persistentKnowledgePath(dendraRoot), []byte(b.String()), 0o644); err != nil { //nolint:gosec // G306: world-readable knowledge file is intentional
+	if err := os.WriteFile(persistentKnowledgePath(sprawlRoot), []byte(b.String()), 0o644); err != nil { //nolint:gosec // G306: world-readable knowledge file is intentional
 		return fmt.Errorf("writing persistent knowledge: %w", err)
 	}
 	return nil
@@ -62,7 +62,7 @@ func writePersistentKnowledge(dendraRoot string, items []string) error {
 func buildPersistentPrompt(existingKnowledge, sessionSummary, timelineBullets string, maxItems int) string {
 	var b strings.Builder
 
-	b.WriteString("You are a knowledge curator for the Dendra AI orchestration system.\n\n")
+	b.WriteString("You are a knowledge curator for the Sprawl AI orchestration system.\n\n")
 	b.WriteString("Your job is to maintain a concise list of persistent knowledge — important facts, preferences, conventions, and patterns that should be remembered across sessions.\n\n")
 
 	b.WriteString("## Current Persistent Knowledge\n\n")
@@ -117,13 +117,13 @@ func parsePersistentOutput(raw string) []string {
 // prompt to Claude to extract and merge new knowledge from the latest session,
 // and writes the updated knowledge back. It follows the same dependency
 // injection pattern as Consolidate().
-func UpdatePersistentKnowledge(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, cfg *PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+func UpdatePersistentKnowledge(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, cfg *PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 	if cfg == nil {
 		c := DefaultPersistentKnowledgeConfig()
 		cfg = &c
 	}
 
-	existing, err := ReadPersistentKnowledge(dendraRoot)
+	existing, err := ReadPersistentKnowledge(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("reading existing knowledge: %w", err)
 	}
@@ -147,7 +147,7 @@ func UpdatePersistentKnowledge(ctx context.Context, dendraRoot string, invoker C
 		items = items[:cfg.MaxItems]
 	}
 
-	if err := writePersistentKnowledge(dendraRoot, items); err != nil {
+	if err := writePersistentKnowledge(sprawlRoot, items); err != nil {
 		return fmt.Errorf("writing persistent knowledge: %w", err)
 	}
 

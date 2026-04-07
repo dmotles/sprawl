@@ -32,7 +32,7 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 		},
 		findClaude:         func() (string, error) { return "/usr/bin/claude", nil },
 		buildPrompt:        func(cfg agent.PromptConfig) string { return "system prompt" },
-		buildContextBlob:   func(dendraRoot, rootName string) (string, error) { return "", nil },
+		buildContextBlob:   func(sprawlRoot, rootName string) (string, error) { return "", nil },
 		writeSystemPrompt:  func(root, name, content string) (string, error) { return "/fake/prompt.md", nil },
 		writeLastSessionID: func(root, id string) error { return nil },
 		readFile:           func(path string) ([]byte, error) { return nil, os.ErrNotExist },
@@ -42,15 +42,15 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 		runCommand:         func(name string, args []string) error { return nil },
 		stdout:             io.Discard,
 		readLastSessionID:  func(string) (string, error) { return "", nil },
-		autoSummarize: func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		autoSummarize: func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 			return false, nil
 		},
 		userHomeDir:   func() (string, error) { return "/home/test", nil },
 		newCLIInvoker: func() memory.ClaudeInvoker { return nil },
-		consolidate: func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		consolidate: func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 			return nil
 		},
-		updatePersistentKnowledge: func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		updatePersistentKnowledge: func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 			return nil
 		},
 		listRecentSessions: func(root string, n int) ([]memory.Session, []string, error) {
@@ -62,7 +62,7 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 	}
 }
 
-func TestRunSenseiLoop_SingleIteration_HandoffSignal(t *testing.T) {
+func TestRunNeoLoop_SingleIteration_HandoffSignal(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -147,7 +147,7 @@ func TestRunSenseiLoop_SingleIteration_HandoffSignal(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_SessionEndWithoutHandoff(t *testing.T) {
+func TestRunNeoLoop_SessionEndWithoutHandoff(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -182,7 +182,7 @@ func TestRunSenseiLoop_SessionEndWithoutHandoff(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_RetryOnStartupFailure(t *testing.T) {
+func TestRunNeoLoop_RetryOnStartupFailure(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -230,7 +230,7 @@ func TestRunSenseiLoop_RetryOnStartupFailure(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_MaxRetriesExceeded(t *testing.T) {
+func TestRunNeoLoop_MaxRetriesExceeded(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	// All calls return a non-ExitError (startup failure)
@@ -248,7 +248,7 @@ func TestRunSenseiLoop_MaxRetriesExceeded(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_SignalStopsLoop(t *testing.T) {
+func TestRunNeoLoop_SignalStopsLoop(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -261,7 +261,7 @@ func TestRunSenseiLoop_SignalStopsLoop(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_MissingDendraRoot(t *testing.T) {
+func TestRunNeoLoop_MissingSprawlRoot(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
@@ -274,7 +274,7 @@ func TestRunSenseiLoop_MissingDendraRoot(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_SuccessResetsRetryCount(t *testing.T) {
+func TestRunNeoLoop_SuccessResetsRetryCount(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -323,7 +323,7 @@ func TestRunSenseiLoop_SuccessResetsRetryCount(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_SessionIDWrittenEachIteration(t *testing.T) {
+func TestRunNeoLoop_SessionIDWrittenEachIteration(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -375,7 +375,7 @@ func TestRunSenseiLoop_SessionIDWrittenEachIteration(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_PromptRebuiltEachIteration(t *testing.T) {
+func TestRunNeoLoop_PromptRebuiltEachIteration(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -416,7 +416,7 @@ func TestRunSenseiLoop_PromptRebuiltEachIteration(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_ExitErrorNotCountedAsStartupFailure(t *testing.T) {
+func TestRunNeoLoop_ExitErrorNotCountedAsStartupFailure(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -454,7 +454,7 @@ func TestRunSenseiLoop_ExitErrorNotCountedAsStartupFailure(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_MaxRetriesExceeded_WithTimeout(t *testing.T) {
+func TestRunNeoLoop_MaxRetriesExceeded_WithTimeout(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	deps.runCommand = func(name string, args []string) error {
@@ -473,7 +473,7 @@ func TestRunSenseiLoop_MaxRetriesExceeded_WithTimeout(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_FindClaudeFailure(t *testing.T) {
+func TestRunNeoLoop_FindClaudeFailure(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 	deps.findClaude = func() (string, error) {
 		return "", errors.New("claude not found")
@@ -488,7 +488,7 @@ func TestRunSenseiLoop_FindClaudeFailure(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_ContextBlobPassedToPrompt(t *testing.T) {
+func TestRunNeoLoop_ContextBlobPassedToPrompt(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -500,7 +500,7 @@ func TestRunSenseiLoop_ContextBlobPassedToPrompt(t *testing.T) {
 		cancel() // stop after first iteration
 		return "system prompt"
 	}
-	deps.buildContextBlob = func(dendraRoot, rootName string) (string, error) {
+	deps.buildContextBlob = func(sprawlRoot, rootName string) (string, error) {
 		return "## Active State\n\ntest blob\n", nil
 	}
 
@@ -511,7 +511,7 @@ func TestRunSenseiLoop_ContextBlobPassedToPrompt(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
+func TestRunNeoLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -526,7 +526,7 @@ func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 		cancel() // stop after first iteration
 		return "system prompt"
 	}
-	deps.buildContextBlob = func(dendraRoot, rootName string) (string, error) {
+	deps.buildContextBlob = func(sprawlRoot, rootName string) (string, error) {
 		return "partial blob", fmt.Errorf("context blob errors: session read failed")
 	}
 
@@ -548,7 +548,7 @@ func TestRunSenseiLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
+func TestRunNeoLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -577,7 +577,7 @@ func TestRunSenseiLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_TestMode_NotSetWhenUnset(t *testing.T) {
+func TestRunNeoLoop_TestMode_NotSetWhenUnset(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -597,7 +597,7 @@ func TestRunSenseiLoop_TestMode_NotSetWhenUnset(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
+func TestRunNeoLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -610,11 +610,11 @@ func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	defer cancel()
 
 	// readLastSessionID returns a previous session ID
-	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
 	}
 
-	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 		mu.Lock()
 		autoSummarizeCalled = true
 		capturedSessionID = sessionID
@@ -646,14 +646,14 @@ func TestRunSenseiLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 		t.Errorf("expected autoSummarize called with sessionID 'prev-session-id', got %q", capturedSessionID)
 	}
 	if capturedCWD != "/fake/root" {
-		t.Errorf("expected autoSummarize called with cwd equal to dendraRoot '/fake/root', got %q", capturedCWD)
+		t.Errorf("expected autoSummarize called with cwd equal to sprawlRoot '/fake/root', got %q", capturedCWD)
 	}
 	if !claudeRan {
 		t.Error("expected claude to still run after autoSummarize")
 	}
 }
 
-func TestRunSenseiLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
+func TestRunNeoLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -662,12 +662,12 @@ func TestRunSenseiLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
 	}
 
 	// autoSummarize returns false (already summarized)
-	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 		return false, nil
 	}
 
@@ -692,7 +692,7 @@ func TestRunSenseiLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
+func TestRunNeoLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -701,12 +701,12 @@ func TestRunSenseiLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
 	}
 
 	// autoSummarize returns an error
-	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 		return false, fmt.Errorf("summarization failed")
 	}
 
@@ -731,7 +731,7 @@ func TestRunSenseiLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
+func TestRunNeoLoop_FirstSession_NoLastID(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -741,11 +741,11 @@ func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
 	defer cancel()
 
 	// readLastSessionID returns empty string (first session)
-	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "", nil
 	}
 
-	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 		mu.Lock()
 		autoSummarizeCalled = true
 		mu.Unlock()
@@ -770,12 +770,12 @@ func TestRunSenseiLoop_FirstSession_NoLastID(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
+func TestRunNeoLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
 	var consolidateCalled bool
-	var consolidateDendraRoot string
+	var consolidateSprawlRoot string
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -789,10 +789,10 @@ func TestRunSenseiLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
 	}
 	deps.removeFile = func(path string) error { return nil }
 
-	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		mu.Lock()
 		consolidateCalled = true
-		consolidateDendraRoot = dendraRoot
+		consolidateSprawlRoot = sprawlRoot
 		mu.Unlock()
 		return nil
 	}
@@ -822,12 +822,12 @@ func TestRunSenseiLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
 	if !consolidateCalled {
 		t.Error("expected consolidate to be called after handoff signal")
 	}
-	if consolidateDendraRoot != "/fake/root" {
-		t.Errorf("expected consolidate called with dendraRoot '/fake/root', got %q", consolidateDendraRoot)
+	if consolidateSprawlRoot != "/fake/root" {
+		t.Errorf("expected consolidate called with sprawlRoot '/fake/root', got %q", consolidateSprawlRoot)
 	}
 }
 
-func TestRunSenseiLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
+func TestRunNeoLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -838,7 +838,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
 
 	// No handoff signal (readFile returns ErrNotExist by default)
 
-	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		mu.Lock()
 		consolidateCalled = true
 		mu.Unlock()
@@ -863,7 +863,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
+func TestRunNeoLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -884,7 +884,7 @@ func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 	}
 	deps.removeFile = func(path string) error { return nil }
 
-	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		return fmt.Errorf("consolidation failed")
 	}
 
@@ -919,7 +919,7 @@ func TestRunSenseiLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
+func TestRunNeoLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -952,7 +952,7 @@ func TestRunSenseiLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T
 		}, nil
 	}
 
-	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 		mu.Lock()
 		updatePKCalled = true
 		capturedSummary = sessionSummary
@@ -996,7 +996,7 @@ func TestRunSenseiLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T
 	}
 }
 
-func TestRunSenseiLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing.T) {
+func TestRunNeoLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -1007,7 +1007,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing
 
 	// No handoff signal (readFile returns ErrNotExist by default)
 
-	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 		mu.Lock()
 		updatePKCalled = true
 		mu.Unlock()
@@ -1032,7 +1032,7 @@ func TestRunSenseiLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing
 	}
 }
 
-func TestRunSenseiLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.T) {
+func TestRunNeoLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -1053,7 +1053,7 @@ func TestRunSenseiLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.
 	}
 	deps.removeFile = func(path string) error { return nil }
 
-	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 		return fmt.Errorf("knowledge update failed")
 	}
 
@@ -1088,7 +1088,7 @@ func TestRunSenseiLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.
 	}
 }
 
-func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *testing.T) {
+func TestRunNeoLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -1106,14 +1106,14 @@ func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(
 	}
 	deps.removeFile = func(path string) error { return nil }
 
-	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		mu.Lock()
 		callOrder = append(callOrder, "consolidate")
 		mu.Unlock()
 		return nil
 	}
 
-	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 		mu.Lock()
 		callOrder = append(callOrder, "updatePersistentKnowledge")
 		mu.Unlock()
@@ -1167,7 +1167,7 @@ func TestRunSenseiLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(
 	}
 }
 
-func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
+func TestRunNeoLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -1180,16 +1180,16 @@ func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 	defer cancel()
 
 	// Previous session exists (missed handoff scenario)
-	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
 	}
 
 	// autoSummarize returns true (it actually summarized)
-	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 		return true, nil
 	}
 
-	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		mu.Lock()
 		consolidateCalled = true
 		mu.Unlock()
@@ -1208,7 +1208,7 @@ func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 		}, nil
 	}
 
-	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 		mu.Lock()
 		updatePKCalled = true
 		capturedSummary = sessionSummary
@@ -1244,7 +1244,7 @@ func TestRunSenseiLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
+func TestRunNeoLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -1254,16 +1254,16 @@ func TestRunSenseiLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
 	defer cancel()
 
 	// Previous session exists
-	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
 	}
 
 	// autoSummarize returns false (already summarized, no-op)
-	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 		return false, nil
 	}
 
-	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		mu.Lock()
 		consolidateCalled = true
 		mu.Unlock()
@@ -1289,7 +1289,7 @@ func TestRunSenseiLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
 	}
 }
 
-func TestRunSenseiLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing.T) {
+func TestRunNeoLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var mu sync.Mutex
@@ -1302,19 +1302,19 @@ func TestRunSenseiLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing
 	deps.stdout = &buf
 
 	// Previous session exists (missed handoff)
-	deps.readLastSessionID = func(dendraRoot string) (string, error) {
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
 	}
 
-	deps.autoSummarize = func(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
 		return true, nil
 	}
 
-	deps.consolidate = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		return fmt.Errorf("consolidation failed")
 	}
 
-	deps.updatePersistentKnowledge = func(ctx context.Context, dendraRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
 		return fmt.Errorf("knowledge update failed")
 	}
 

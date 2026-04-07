@@ -11,7 +11,7 @@ import (
 
 // Config holds the parameters for a merge operation.
 type Config struct {
-	DendraRoot      string
+	SprawlRoot      string
 	AgentName       string
 	AgentBranch     string
 	AgentWorktree   string
@@ -36,7 +36,7 @@ type Deps struct {
 	GitFFMerge      func(worktree, branch string) error
 	GitResetHard    func(worktree string) error
 	RunTests        func(dir, command string) (string, error)
-	WritePoke       func(dendraRoot, agentName, content string) error
+	WritePoke       func(sprawlRoot, agentName, content string) error
 	Stderr          io.Writer
 }
 
@@ -57,7 +57,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	}
 
 	// Step 1: Acquire flock.
-	lockPath := filepath.Join(cfg.DendraRoot, ".sprawl", "locks", cfg.AgentName+".lock")
+	lockPath := filepath.Join(cfg.SprawlRoot, ".sprawl", "locks", cfg.AgentName+".lock")
 	unlock, err := deps.LockAcquire(lockPath)
 	if err != nil {
 		return nil, fmt.Errorf("acquiring lock for %s: %w", cfg.AgentName, err)
@@ -65,7 +65,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	defer unlock()
 
 	// Step 2: Check for zero-commit case.
-	mergeBase, err := deps.GitMergeBase(cfg.DendraRoot, cfg.ParentBranch, cfg.AgentBranch)
+	mergeBase, err := deps.GitMergeBase(cfg.SprawlRoot, cfg.ParentBranch, cfg.AgentBranch)
 	if err != nil {
 		return nil, fmt.Errorf("finding merge base: %w", err)
 	}
@@ -124,7 +124,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 			"Your commit history has changed — any previous commits have been squashed. "+
 			"Your worktree is clean and your branch is up to date with the parent.",
 		cfg.AgentBranch, cfg.ParentBranch)
-	_ = deps.WritePoke(cfg.DendraRoot, cfg.AgentName, pokeMsg)
+	_ = deps.WritePoke(cfg.SprawlRoot, cfg.AgentName, pokeMsg)
 
 	// Step 9: Release flock (handled by defer unlock()).
 	return &Result{
@@ -134,7 +134,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 }
 
 func dryRun(cfg *Config, deps *Deps) (*Result, error) { //nolint:unparam // error return kept for interface consistency
-	mergeBase, err := deps.GitMergeBase(cfg.DendraRoot, cfg.ParentBranch, cfg.AgentBranch)
+	mergeBase, err := deps.GitMergeBase(cfg.SprawlRoot, cfg.ParentBranch, cfg.AgentBranch)
 	if err != nil {
 		mergeBase = "(unknown)"
 	}

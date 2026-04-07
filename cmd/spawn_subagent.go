@@ -31,7 +31,7 @@ type spawnSubagentDeps struct {
 	tmuxRunner tmux.Runner
 	getenv     func(string) string
 	findSprawl func() (string, error)
-	loadAgent  func(dendraRoot, name string) (*state.AgentState, error)
+	loadAgent  func(sprawlRoot, name string) (*state.AgentState, error)
 }
 
 var defaultSpawnSubagentDeps *spawnSubagentDeps
@@ -78,13 +78,13 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; spawn must be called from within a sprawl agent")
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a sprawl agent")
 	}
 
 	// Allocate name
-	agentsDir := state.AgentsDir(dendraRoot)
+	agentsDir := state.AgentsDir(sprawlRoot)
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil { //nolint:gosec // G301: world-readable agent dir is intentional
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
@@ -94,13 +94,13 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	}
 
 	// Load parent state to get worktree and branch
-	parentState, err := deps.loadAgent(dendraRoot, parentName)
+	parentState, err := deps.loadAgent(sprawlRoot, parentName)
 	if err != nil {
 		return fmt.Errorf("loading parent agent state: %w", err)
 	}
 
 	// Find sprawl binary
-	dendraPath, err := deps.findSprawl()
+	sprawlPath, err := deps.findSprawl()
 	if err != nil {
 		return fmt.Errorf("finding sprawl binary: %w", err)
 	}
@@ -108,12 +108,12 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	// Build shell command: cd to parent's worktree, then run sprawl agent-loop
 	shellCmd := fmt.Sprintf("cd %s && %s",
 		tmux.ShellQuote(parentState.Worktree),
-		tmux.BuildShellCmd(dendraPath, []string{"agent-loop", agentName}))
+		tmux.BuildShellCmd(sprawlPath, []string{"agent-loop", agentName}))
 
 	// Resolve namespace: env var > persisted file > default
 	namespace := deps.getenv("SPRAWL_NAMESPACE")
 	if namespace == "" {
-		namespace = state.ReadNamespace(dendraRoot)
+		namespace = state.ReadNamespace(sprawlRoot)
 	}
 	if namespace == "" {
 		namespace = tmux.DefaultNamespace
@@ -123,7 +123,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	parentTreePath := deps.getenv("SPRAWL_TREE_PATH")
 	if parentTreePath == "" {
 		// Fallback: use root name from file + parent identity
-		rootName := state.ReadRootName(dendraRoot)
+		rootName := state.ReadRootName(sprawlRoot)
 		if rootName == "" {
 			rootName = tmux.DefaultRootName
 		}
@@ -138,7 +138,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	// Set environment for the child agent
 	env := map[string]string{
 		"SPRAWL_AGENT_IDENTITY": agentName,
-		"SPRAWL_ROOT":           dendraRoot,
+		"SPRAWL_ROOT":           sprawlRoot,
 		"SPRAWL_NAMESPACE":      namespace,
 		"SPRAWL_TREE_PATH":      childTreePath,
 	}
@@ -181,7 +181,7 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		Subagent:    true,
 		TreePath:    childTreePath,
 	}
-	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
+	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)
 	}
 

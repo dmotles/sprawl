@@ -17,7 +17,7 @@ import (
 // This function is designed to be called post-handoff when the root agent is
 // restarting. It assumes single-threaded execution — no concurrent access
 // protection is needed.
-func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, now func() time.Time) error {
+func Consolidate(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, now func() time.Time) error {
 	if cfg == nil {
 		c := DefaultTimelineCompressionConfig()
 		cfg = &c
@@ -27,7 +27,7 @@ func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, 
 	}
 
 	// Load all sessions. ListRecentSessions returns oldest-first.
-	sessions, bodies, err := ListRecentSessions(dendraRoot, 1<<30)
+	sessions, bodies, err := ListRecentSessions(sprawlRoot, 1<<30)
 	if err != nil {
 		return fmt.Errorf("listing sessions: %w", err)
 	}
@@ -43,7 +43,7 @@ func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, 
 	candidateBodies := bodies[:candidateCount]
 
 	// Read existing timeline (empty slice if file doesn't exist).
-	existingTimeline, err := ReadTimeline(dendraRoot)
+	existingTimeline, err := ReadTimeline(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("reading timeline: %w", err)
 	}
@@ -79,7 +79,7 @@ func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, 
 		return nil
 	}
 
-	if err := WriteTimeline(dendraRoot, final); err != nil {
+	if err := WriteTimeline(sprawlRoot, final); err != nil {
 		return fmt.Errorf("writing consolidated timeline: %w", err)
 	}
 
@@ -92,7 +92,7 @@ func Consolidate(ctx context.Context, dendraRoot string, invoker ClaudeInvoker, 
 func buildConsolidationPrompt(existingTimeline []TimelineEntry, sessions []Session, bodies []string) string {
 	var b strings.Builder
 
-	b.WriteString("You are a timeline distillation agent for the Dendra AI orchestration system.\n\n")
+	b.WriteString("You are a timeline distillation agent for the Sprawl AI orchestration system.\n\n")
 	b.WriteString("Your job is to produce an updated session timeline by incorporating the session summaries below into the existing timeline.\n\n")
 
 	// Existing timeline section.

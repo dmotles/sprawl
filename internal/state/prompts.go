@@ -7,14 +7,14 @@ import (
 )
 
 // PromptsDir returns the path to the prompts directory for a given agent.
-func PromptsDir(dendraRoot, agentName string) string {
-	return filepath.Join(dendraRoot, ".sprawl", "agents", agentName, "prompts")
+func PromptsDir(sprawlRoot, agentName string) string {
+	return filepath.Join(sprawlRoot, ".sprawl", "agents", agentName, "prompts")
 }
 
 // WritePromptFile writes a prompt to .sprawl/agents/{agentName}/prompts/{id}.md
 // and returns the absolute path to the file.
-func WritePromptFile(dendraRoot, agentName, id, content string) (string, error) {
-	dir := PromptsDir(dendraRoot, agentName)
+func WritePromptFile(sprawlRoot, agentName, id, content string) (string, error) {
+	dir := PromptsDir(sprawlRoot, agentName)
 	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable prompts dir is intentional
 		return "", fmt.Errorf("creating prompts directory: %w", err)
 	}

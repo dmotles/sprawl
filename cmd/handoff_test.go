@@ -146,7 +146,7 @@ func TestHandoff_MissingAgentIdentity(t *testing.T) {
 	}
 }
 
-func TestHandoff_MissingDendraRoot(t *testing.T) {
+func TestHandoff_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestHandoffDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
@@ -298,7 +298,7 @@ func TestHandoff_NoAgents(t *testing.T) {
 
 func TestHandoff_WriteSessionSummaryFailure(t *testing.T) {
 	deps, _ := newTestHandoffDeps(t)
-	deps.writeSessionSummary = func(dendraRoot string, session memory.Session, body string) error {
+	deps.writeSessionSummary = func(sprawlRoot string, session memory.Session, body string) error {
 		return fmt.Errorf("simulated write failure")
 	}
 
@@ -313,7 +313,7 @@ func TestHandoff_WriteSessionSummaryFailure(t *testing.T) {
 
 func TestHandoff_WriteSignalFileFailure(t *testing.T) {
 	deps, _ := newTestHandoffDeps(t)
-	deps.writeSignalFile = func(dendraRoot string) error {
+	deps.writeSignalFile = func(sprawlRoot string) error {
 		return fmt.Errorf("simulated signal failure")
 	}
 

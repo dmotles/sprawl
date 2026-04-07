@@ -6,13 +6,13 @@ import (
 )
 
 func TestFindSprawlBin_EnvVarSet(t *testing.T) {
-	t.Setenv("SPRAWL_BIN", "/custom/path/dendra")
+	t.Setenv("SPRAWL_BIN", "/custom/path/sprawl")
 	path, err := FindSprawlBin()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if path != "/custom/path/dendra" {
-		t.Errorf("FindSprawlBin() = %q, want %q", path, "/custom/path/dendra")
+	if path != "/custom/path/sprawl" {
+		t.Errorf("FindSprawlBin() = %q, want %q", path, "/custom/path/sprawl")
 	}
 }
 

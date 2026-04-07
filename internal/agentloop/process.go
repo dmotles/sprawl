@@ -47,7 +47,7 @@ type ProcessConfig struct {
 	ClaudePath string
 	WorkDir    string
 	AgentName  string
-	DendraRoot string
+	SprawlRoot string
 	Env        map[string]string
 	Args       claude.LaunchOpts
 }

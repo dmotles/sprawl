@@ -101,7 +101,7 @@ func TestRunPoke_InvalidAgentNameReturnsError(t *testing.T) {
 	}
 }
 
-func TestRunPoke_MissingDendraRoot(t *testing.T) {
+func TestRunPoke_MissingSprawlRoot(t *testing.T) {
 	deps := &pokeDeps{
 		getenv:    func(string) string { return "" },
 		writeFile: func(string, []byte, fs.FileMode) error { return nil },

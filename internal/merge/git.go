@@ -130,7 +130,7 @@ func RealRunTests(dir, command string) (string, error) {
 }
 
 // RealWritePoke writes a poke file for the given agent.
-func RealWritePoke(dendraRoot, agentName, content string) error {
-	pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".poke")
+func RealWritePoke(sprawlRoot, agentName, content string) error {
+	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")
 	return os.WriteFile(pokePath, []byte(content), 0o644) //nolint:gosec // G306: world-readable poke file is intentional
 }

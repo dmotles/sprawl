@@ -22,8 +22,8 @@ func realBranchExists(repoRoot, branchName string) bool {
 
 type mergeDeps struct {
 	getenv        func(string) string
-	loadAgent     func(dendraRoot, name string) (*state.AgentState, error)
-	listAgents    func(dendraRoot string) ([]*state.AgentState, error)
+	loadAgent     func(sprawlRoot, name string) (*state.AgentState, error)
+	listAgents    func(sprawlRoot string) ([]*state.AgentState, error)
 	gitStatus     func(worktree string) (string, error)
 	branchExists  func(repoRoot, branchName string) bool
 	currentBranch func(repoRoot string) (string, error)
@@ -104,12 +104,12 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 		return err
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	sprawlCfg, err := deps.loadConfig(dendraRoot)
+	sprawlCfg, err := deps.loadConfig(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -120,7 +120,7 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 	}
 
 	// Precondition 1: Agent exists
-	agent, err := deps.loadAgent(dendraRoot, agentName)
+	agent, err := deps.loadAgent(sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("agent %q not found", agentName)
 	}
@@ -141,7 +141,7 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 	}
 
 	// Precondition 5: No active children
-	allAgents, err := deps.listAgents(dendraRoot)
+	allAgents, err := deps.listAgents(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("listing agents: %w", err)
 	}
@@ -156,13 +156,13 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 	}
 
 	// Precondition 6: Source branch exists
-	if !deps.branchExists(dendraRoot, agent.Branch) {
+	if !deps.branchExists(sprawlRoot, agent.Branch) {
 		return fmt.Errorf("branch %q not found", agent.Branch)
 	}
 
 	// Load caller agent to get worktree path.
-	callerWorktree := dendraRoot
-	if a, err := deps.loadAgent(dendraRoot, callerName); err == nil {
+	callerWorktree := sprawlRoot
+	if a, err := deps.loadAgent(sprawlRoot, callerName); err == nil {
 		callerWorktree = a.Worktree
 	}
 
@@ -192,7 +192,7 @@ func runMerge(deps *mergeDeps, agentName, messageOverride string, noValidate boo
 
 	// Build merge config
 	cfg := &merge.Config{
-		DendraRoot:      dendraRoot,
+		SprawlRoot:      sprawlRoot,
 		AgentName:       agentName,
 		AgentBranch:     agent.Branch,
 		AgentWorktree:   agent.Worktree,

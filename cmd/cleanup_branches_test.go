@@ -282,7 +282,7 @@ func TestCleanupBranches_MixedScenario(t *testing.T) {
 	}
 }
 
-func TestCleanupBranches_MissingDendraRoot(t *testing.T) {
+func TestCleanupBranches_MissingSprawlRoot(t *testing.T) {
 	deps, _, _ := newTestCleanupBranchesDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
@@ -349,10 +349,10 @@ func TestCleanupBranches_DryRunUnmergedVerbose(t *testing.T) {
 }
 
 func TestParseBranchOutput_WorktreePlusPrefix(t *testing.T) {
-	input := "  dendra/alder\n+ dmotles/qum-123-wire-feature\n* main\n  feat-b\n"
+	input := "  sprawl/alder\n+ dmotles/qum-123-wire-feature\n* main\n  feat-b\n"
 	got := parseBranchOutput(input)
 
-	expected := []string{"dendra/alder", "dmotles/qum-123-wire-feature", "feat-b"}
+	expected := []string{"sprawl/alder", "dmotles/qum-123-wire-feature", "feat-b"}
 	if len(got) != len(expected) {
 		t.Fatalf("expected %d branches, got %d: %v", len(expected), len(got), got)
 	}

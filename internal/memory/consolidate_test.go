@@ -15,7 +15,7 @@ func consolidateTestNow() func() time.Time {
 	return func() time.Time { return time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC) }
 }
 
-// helper: create N sessions in a temp dendra root using WriteSessionSummary.
+// helper: create N sessions in a temp sprawl root using WriteSessionSummary.
 // Sessions are timestamped sequentially starting 2026-01-01 with +1 day increments.
 func createTestSessions(t *testing.T, root string, n int) ([]Session, []string) {
 	t.Helper()

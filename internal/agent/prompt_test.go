@@ -15,13 +15,13 @@ func testEnvConfig() EnvConfig {
 }
 
 func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	keyPhrases := []string{
 		"Engineer agent",
 		"zone",
 		"root",
-		"dendra/zone",
+		"sprawl/zone",
 		"sprawl report done",
 		"sprawl report problem",
 		"sprawl messages send root",
@@ -34,7 +34,7 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	if strings.Contains(prompt, "YOUR TASK:") {
 		t.Error("engineer prompt should not contain YOUR TASK section")
@@ -45,7 +45,7 @@ func TestBuildEngineerPrompt_DoesNotContainTaskSection(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_DoesNotContainTaskSection(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	if strings.Contains(prompt, "YOUR TASK:") {
 		t.Error("researcher prompt should not contain YOUR TASK section")
@@ -56,13 +56,13 @@ func TestBuildResearcherPrompt_DoesNotContainTaskSection(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	keyPhrases := []string{
 		"Researcher agent",
 		"birch",
 		"root",
-		"dendra/birch",
+		"sprawl/birch",
 		"sprawl report done",
 		"sprawl report problem",
 		"sprawl messages send root",
@@ -82,7 +82,7 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	if strings.Contains(prompt, "hands-on builder") {
 		t.Error("researcher prompt should not contain engineer role 'hands-on builder'")
@@ -90,7 +90,7 @@ func TestBuildResearcherPrompt_DoesNotContainEngineerRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	if strings.Contains(prompt, "deep investigator") {
 		t.Error("engineer prompt should not contain researcher role 'deep investigator'")
@@ -98,7 +98,7 @@ func TestBuildEngineerPrompt_DoesNotContainResearcherRole(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	mandatoryPhrases := []string{
 		// The workflow must be explicitly mandatory
@@ -125,7 +125,7 @@ func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	subAgents := []string{
 		"oracle",
@@ -143,7 +143,7 @@ func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	// Verify the workflow steps appear in order
 	steps := []string{"oracle", "test-writer", "test-critic", "implementer", "code-reviewer", "qa-validator"}
@@ -161,7 +161,7 @@ func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	keyPhrases := []string{
 		"Reflect",
@@ -178,7 +178,7 @@ func TestBuildEngineerPrompt_ReflectionStep(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	keyPhrases := []string{
 		"REFLECTION",
@@ -196,7 +196,7 @@ func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
 }
 
 func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", testEnvConfig())
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	qaIdx := strings.Index(prompt, "qa-validator")
 	reflectIdx := strings.Index(prompt, "Reflect")
@@ -226,13 +226,13 @@ func TestBuildEngineerPrompt_EnvironmentSection(t *testing.T) {
 		Platform: "linux",
 		Shell:    "/bin/zsh",
 	}
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
 	envPhrases := []string{
 		"# Environment",
 		"Working directory: /tmp/worktrees/oak",
 		"Git repository: yes",
-		"Git branch: dendra/zone",
+		"Git branch: sprawl/zone",
 		"Platform: linux",
 		"Shell: /bin/zsh",
 	}
@@ -245,7 +245,7 @@ func TestBuildEngineerPrompt_EnvironmentSection(t *testing.T) {
 
 func TestBuildEngineerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 	env := EnvConfig{} // all empty
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
 	if strings.Contains(prompt, "Working directory:") {
 		t.Error("should omit working directory when empty")
@@ -260,7 +260,7 @@ func TestBuildEngineerPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
 	if !strings.Contains(prompt, "Git repository: yes") {
 		t.Error("should always include git repository")
 	}
-	if !strings.Contains(prompt, "Git branch: dendra/zone") {
+	if !strings.Contains(prompt, "Git branch: sprawl/zone") {
 		t.Error("should always include git branch")
 	}
 }
@@ -456,7 +456,7 @@ func TestBuildRootPrompt_ParallelismSectionOrdering(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", testEnvConfig())
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	reflectIdx := strings.Index(prompt, "REFLECTION")
 	doneIdx := strings.Index(prompt, "sprawl report done")
@@ -989,7 +989,7 @@ func TestBuildRootPrompt_ContextBlob_WorksWithNonClaudeCodeCLI(t *testing.T) {
 func TestBuildEngineerPrompt_TestMode_InjectsWarning(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = true
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
 	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("engineer prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
@@ -1005,7 +1005,7 @@ func TestBuildEngineerPrompt_TestMode_InjectsWarning(t *testing.T) {
 func TestBuildEngineerPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = false
-	prompt := BuildEngineerPrompt("zone", "root", "dendra/zone", env)
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
 	if strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("engineer prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
@@ -1041,7 +1041,7 @@ func TestBuildManagerPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 func TestBuildResearcherPrompt_TestMode_InjectsWarning(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = true
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", env)
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
 
 	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("researcher prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
@@ -1057,7 +1057,7 @@ func TestBuildResearcherPrompt_TestMode_InjectsWarning(t *testing.T) {
 func TestBuildResearcherPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
 	env := testEnvConfig()
 	env.TestMode = false
-	prompt := BuildResearcherPrompt("birch", "root", "dendra/birch", env)
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
 
 	if strings.Contains(prompt, "TEST SANDBOX MODE") {
 		t.Error("researcher prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")

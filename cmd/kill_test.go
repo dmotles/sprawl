@@ -88,9 +88,9 @@ func newTestKillDeps(t *testing.T) (*killDeps, *killMockRunner, string) {
 	return deps, runner, tmpDir
 }
 
-func createTestAgent(t *testing.T, dendraRoot string, agent *state.AgentState) {
+func createTestAgent(t *testing.T, sprawlRoot string, agent *state.AgentState) {
 	t.Helper()
-	if err := state.SaveAgent(dendraRoot, agent); err != nil {
+	if err := state.SaveAgent(sprawlRoot, agent); err != nil {
 		t.Fatalf("saving test agent: %v", err)
 	}
 }
@@ -320,7 +320,7 @@ func TestKill_AgentNotFound(t *testing.T) {
 	}
 }
 
-func TestKill_MissingDendraRoot(t *testing.T) {
+func TestKill_MissingSprawlRoot(t *testing.T) {
 	deps, _, _ := newTestKillDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
@@ -392,7 +392,7 @@ func TestKill_PreservesState(t *testing.T) {
 		Family:      "engineering",
 		Parent:      "root",
 		Prompt:      "test task",
-		Branch:      "dendra/alice",
+		Branch:      "sprawl/alice",
 		Worktree:    "/path/to/worktree",
 		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
 		TmuxWindow:  "alice",
@@ -416,8 +416,8 @@ func TestKill_PreservesState(t *testing.T) {
 	if agentState.Worktree != "/path/to/worktree" {
 		t.Errorf("Worktree = %q, want %q", agentState.Worktree, "/path/to/worktree")
 	}
-	if agentState.Branch != "dendra/alice" {
-		t.Errorf("Branch = %q, want %q", agentState.Branch, "dendra/alice")
+	if agentState.Branch != "sprawl/alice" {
+		t.Errorf("Branch = %q, want %q", agentState.Branch, "sprawl/alice")
 	}
 	if agentState.Status != "killed" {
 		t.Errorf("Status = %q, want %q", agentState.Status, "killed")

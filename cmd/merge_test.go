@@ -345,7 +345,7 @@ func TestMerge_AgentDirtyWorktree(t *testing.T) {
 	}
 }
 
-func TestMerge_MissingDendraRoot(t *testing.T) {
+func TestMerge_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestMergeDeps(t)
 
 	deps.getenv = func(key string) string {
@@ -473,8 +473,8 @@ func TestMerge_ConfigWiring(t *testing.T) {
 	if capturedCfg == nil {
 		t.Fatal("doMerge was not called")
 	}
-	if capturedCfg.DendraRoot != tmpDir {
-		t.Errorf("DendraRoot = %q, want %q", capturedCfg.DendraRoot, tmpDir)
+	if capturedCfg.SprawlRoot != tmpDir {
+		t.Errorf("SprawlRoot = %q, want %q", capturedCfg.SprawlRoot, tmpDir)
 	}
 	if capturedCfg.AgentName != "target-agent" {
 		t.Errorf("AgentName = %q, want target-agent", capturedCfg.AgentName)
@@ -545,7 +545,7 @@ func TestMerge_SuccessOutput(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "finn", Status: "done", Branch: "dendra/finn",
+		Name: "finn", Status: "done", Branch: "sprawl/finn",
 		Worktree: "/worktree/finn", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 		LastReportMessage: "implement QUM-42 broadcast fix",
@@ -564,7 +564,7 @@ func TestMerge_SuccessOutput(t *testing.T) {
 	if !strings.Contains(output, `"finn"`) {
 		t.Errorf("output should mention agent name, got: %q", output)
 	}
-	if !strings.Contains(output, "dendra/finn") {
+	if !strings.Contains(output, "sprawl/finn") {
 		t.Errorf("output should mention branch name, got: %q", output)
 	}
 	if !strings.Contains(output, "a1b2c3d") {

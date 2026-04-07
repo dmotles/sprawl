@@ -369,8 +369,8 @@ func TestAutoSummarize_Success(t *testing.T) {
 	}
 	jsonlPath := filepath.Join(jsonlDir, sessionID+".jsonl")
 	lines := []string{
-		`{"type":"user","message":{"role":"user","content":"What is dendra?"}}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Dendra is a multi-agent system."}]}}`,
+		`{"type":"user","message":{"role":"user","content":"What is sprawl?"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Sprawl is a multi-agent system."}]}}`,
 	}
 	if err := os.WriteFile(jsonlPath, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)

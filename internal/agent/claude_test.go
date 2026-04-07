@@ -29,11 +29,11 @@ func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
-	prompt := BuildEngineerPrompt("frank", "root", "dendra/frank", testEnvConfig())
+	prompt := BuildEngineerPrompt("frank", "root", "sprawl/frank", testEnvConfig())
 	phrases := []string{
 		"frank",
 		"root",
-		"dendra/frank",
+		"sprawl/frank",
 		"sprawl report done",
 		"sprawl report problem",
 		"sprawl messages send",

@@ -31,7 +31,7 @@ type retireDeps struct {
 	gitBranchSafeDelete func(repoRoot, branchName string) error
 	doMerge             func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
 	newMergeDeps        func() *merge.Deps
-	loadAgent           func(dendraRoot, name string) (*state.AgentState, error)
+	loadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
 	currentBranch       func(repoRoot string) (string, error)
 	gitUnmergedCommits  func(repoRoot, branchName string) ([]string, error)
 }
@@ -123,13 +123,13 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 		return fmt.Errorf("--merge and --abandon are mutually exclusive")
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Load agent state
-	agentState, err := state.LoadAgent(dendraRoot, agentName)
+	agentState, err := state.LoadAgent(sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
@@ -146,8 +146,8 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 		if agentState.Parent != callerName {
 			return fmt.Errorf("cannot merge %q: you are not its parent (parent is %q)", agentName, agentState.Parent)
 		}
-		callerWorktree := dendraRoot
-		if a, err := deps.loadAgent(dendraRoot, callerName); err == nil {
+		callerWorktree := sprawlRoot
+		if a, err := deps.loadAgent(sprawlRoot, callerName); err == nil {
 			callerWorktree = a.Worktree
 		}
 		targetBranch, err := deps.currentBranch(callerWorktree)
@@ -155,7 +155,7 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 			return fmt.Errorf("determining current branch: %w", err)
 		}
 		cfg := &merge.Config{
-			DendraRoot:     dendraRoot,
+			SprawlRoot:     sprawlRoot,
 			AgentName:      agentName,
 			AgentBranch:    agentState.Branch,
 			AgentWorktree:  agentState.Worktree,
@@ -177,21 +177,21 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 	// If already in "retiring" state, resume from where we left off (crash recovery)
 	if agentState.Status == "retiring" {
 		rd := buildRetireDeps(deps)
-		if err := agent.RetireAgent(rd, dendraRoot, agentState, force, true); err != nil {
+		if err := agent.RetireAgent(rd, sprawlRoot, agentState, force, true); err != nil {
 			return err
 		}
 		// Clean up lock and poke files
-		lockPath := filepath.Join(dendraRoot, ".sprawl", "locks", agentState.Name+".lock")
+		lockPath := filepath.Join(sprawlRoot, ".sprawl", "locks", agentState.Name+".lock")
 		_ = deps.removeFile(lockPath)
-		pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentState.Name+".poke")
+		pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".poke")
 		_ = deps.removeFile(pokePath)
-		printRetireSuccess(agentState, abandon, mergeFirst, deps, dendraRoot)
+		printRetireSuccess(agentState, abandon, mergeFirst, deps, sprawlRoot)
 		return nil
 	}
 
 	// Check for children
 	if !cascade && !force {
-		children, err := findChildren(dendraRoot, agentName)
+		children, err := findChildren(sprawlRoot, agentName)
 		if err != nil {
 			return fmt.Errorf("checking children: %w", err)
 		}
@@ -210,7 +210,7 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 		var warnings []string
 
 		// Guard 1: Check for unmerged commits.
-		commits, commitErr := deps.gitUnmergedCommits(dendraRoot, agentState.Branch)
+		commits, commitErr := deps.gitUnmergedCommits(sprawlRoot, agentState.Branch)
 		if commitErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not check unmerged commits: %v\n", commitErr)
 		} else if len(commits) > 0 {
@@ -235,7 +235,7 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 
 	// Cascade: retire children first (depth-first, bottom-up)
 	if cascade {
-		children, err := findChildren(dendraRoot, agentName)
+		children, err := findChildren(sprawlRoot, agentName)
 		if err != nil {
 			return fmt.Errorf("checking children: %w", err)
 		}
@@ -248,35 +248,35 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 
 	// Crash-safe checkpoint: mark as "retiring"
 	agentState.Status = "retiring"
-	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
+	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("updating agent state: %w", err)
 	}
 
 	rd := buildRetireDeps(deps)
-	if err := agent.RetireAgent(rd, dendraRoot, agentState, force, false); err != nil {
+	if err := agent.RetireAgent(rd, sprawlRoot, agentState, force, false); err != nil {
 		return err
 	}
 
 	// Clean up lock and poke files
-	lockPath := filepath.Join(dendraRoot, ".sprawl", "locks", agentState.Name+".lock")
+	lockPath := filepath.Join(sprawlRoot, ".sprawl", "locks", agentState.Name+".lock")
 	_ = deps.removeFile(lockPath)
-	pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentState.Name+".poke")
+	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".poke")
 	_ = deps.removeFile(pokePath)
-	printRetireSuccess(agentState, abandon, mergeFirst, deps, dendraRoot)
+	printRetireSuccess(agentState, abandon, mergeFirst, deps, sprawlRoot)
 	return nil
 }
 
-func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, deps *retireDeps, dendraRoot string) {
+func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, deps *retireDeps, sprawlRoot string) {
 	switch {
 	case abandon && agentState.Branch != "":
-		if err := deps.gitBranchDelete(dendraRoot, agentState.Branch); err != nil {
+		if err := deps.gitBranchDelete(sprawlRoot, agentState.Branch); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not delete branch %s: %v\n", agentState.Branch, err)
 			fmt.Fprintf(os.Stderr, "Retired agent %q (branch %s preserved)\n", agentState.Name, agentState.Branch)
 		} else {
 			fmt.Fprintf(os.Stderr, "Retired %q and deleted branch %s\n", agentState.Name, agentState.Branch)
 		}
 	case mergeFirst && agentState.Branch != "":
-		if err := deps.gitBranchSafeDelete(dendraRoot, agentState.Branch); err != nil {
+		if err := deps.gitBranchSafeDelete(sprawlRoot, agentState.Branch); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not delete branch %s: %v\n", agentState.Branch, err)
 			fmt.Fprintf(os.Stderr, "Merged and retired %q (branch %s preserved)\n", agentState.Name, agentState.Branch)
 		} else {
@@ -284,9 +284,9 @@ func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, 
 		}
 	default:
 		if agentState.Branch != "" {
-			merged, err := deps.gitBranchIsMerged(dendraRoot, agentState.Branch)
+			merged, err := deps.gitBranchIsMerged(sprawlRoot, agentState.Branch)
 			if err == nil && merged {
-				if delErr := deps.gitBranchSafeDelete(dendraRoot, agentState.Branch); delErr == nil {
+				if delErr := deps.gitBranchSafeDelete(sprawlRoot, agentState.Branch); delErr == nil {
 					fmt.Fprintf(os.Stderr, "Retired %q, deleted branch %s (already merged)\n", agentState.Name, agentState.Branch)
 					return
 				}
@@ -315,8 +315,8 @@ func buildRetireDeps(deps *retireDeps) *agent.RetireDeps {
 }
 
 // findChildren returns all agents that have the given name as their parent.
-func findChildren(dendraRoot, parentName string) ([]*state.AgentState, error) {
-	agents, err := state.ListAgents(dendraRoot)
+func findChildren(sprawlRoot, parentName string) ([]*state.AgentState, error) {
+	agents, err := state.ListAgents(sprawlRoot)
 	if err != nil {
 		return nil, err
 	}

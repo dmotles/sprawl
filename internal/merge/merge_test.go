@@ -22,16 +22,16 @@ func newTestDeps() *Deps {
 		GitFFMerge:      func(worktree, branch string) error { return nil },
 		GitResetHard:    func(worktree string) error { return nil },
 		RunTests:        func(dir, command string) (string, error) { return "ok", nil },
-		WritePoke:       func(dendraRoot, agentName, content string) error { return nil },
+		WritePoke:       func(sprawlRoot, agentName, content string) error { return nil },
 		Stderr:          io.Discard,
 	}
 }
 
 func newTestConfig() *Config {
 	return &Config{
-		DendraRoot:     "/tmp/dendra-test",
+		SprawlRoot:     "/tmp/sprawl-test",
 		AgentName:      "test-agent",
-		AgentBranch:    "dendra/test-agent",
+		AgentBranch:    "sprawl/test-agent",
 		AgentWorktree:  "/worktree/agent",
 		ParentBranch:   "main",
 		ParentWorktree: "/worktree/parent",
@@ -40,7 +40,7 @@ func newTestConfig() *Config {
 			Name:              "test-agent",
 			Type:              "engineer",
 			Family:            "engineering",
-			Branch:            "dendra/test-agent",
+			Branch:            "sprawl/test-agent",
 			LastReportMessage: "completed the task",
 		},
 	}
@@ -96,14 +96,14 @@ func TestMerge_HappyPath(t *testing.T) {
 		if worktree != "/worktree/parent" {
 			t.Errorf("ff-merge worktree = %q, want /worktree/parent", worktree)
 		}
-		if branch != "dendra/test-agent" {
-			t.Errorf("ff-merge branch = %q, want dendra/test-agent", branch)
+		if branch != "sprawl/test-agent" {
+			t.Errorf("ff-merge branch = %q, want sprawl/test-agent", branch)
 		}
 		return nil
 	}
 
 	var pokeCalled bool
-	deps.WritePoke = func(dendraRoot, agentName, content string) error {
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error {
 		pokeCalled = true
 		if agentName != "test-agent" {
 			t.Errorf("poke agent = %q, want test-agent", agentName)
@@ -160,7 +160,7 @@ func TestMerge_ZeroCommit_NoOp(t *testing.T) {
 	deps.GitResetSoft = func(worktree, ref string) error { resetSoftCalled = true; return nil }
 	deps.GitRebase = func(worktree, onto string) error { rebaseCalled = true; return nil }
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
-	deps.WritePoke = func(dendraRoot, agentName, content string) error { pokeCalled = true; return nil }
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
 	result, err := Merge(cfg, deps)
 	if err != nil {
@@ -200,7 +200,7 @@ func TestMerge_DryRun(t *testing.T) {
 	deps.GitResetSoft = func(worktree, ref string) error { resetSoftCalled = true; return nil }
 	deps.GitRebase = func(worktree, onto string) error { rebaseCalled = true; return nil }
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
-	deps.WritePoke = func(dendraRoot, agentName, content string) error { pokeCalled = true; return nil }
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
 	result, err := Merge(cfg, deps)
 	if err != nil {
@@ -280,7 +280,7 @@ func TestMerge_RebaseConflict_AbortsAndErrors(t *testing.T) {
 		return func() { unlockCalled = true }, nil
 	}
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
-	deps.WritePoke = func(dendraRoot, agentName, content string) error { pokeCalled = true; return nil }
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
 	result, err := Merge(cfg, deps)
 	if err == nil {
@@ -316,7 +316,7 @@ func TestMerge_FFMergeFailure(t *testing.T) {
 	}
 
 	var pokeCalled bool
-	deps.WritePoke = func(dendraRoot, agentName, content string) error { pokeCalled = true; return nil }
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
 	result, err := Merge(cfg, deps)
 	if err == nil {
@@ -348,7 +348,7 @@ func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
 	deps.LockAcquire = func(lockPath string) (func(), error) {
 		return func() { unlockCalled = true }, nil
 	}
-	deps.WritePoke = func(dendraRoot, agentName, content string) error { pokeCalled = true; return nil }
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
 	result, err := Merge(cfg, deps)
 	if err == nil {
@@ -386,7 +386,7 @@ func TestMerge_NoValidate_SkipsTests(t *testing.T) {
 	}
 
 	var pokeCalled bool
-	deps.WritePoke = func(dendraRoot, agentName, content string) error { pokeCalled = true; return nil }
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
 	result, err := Merge(cfg, deps)
 	if err != nil {
@@ -408,7 +408,7 @@ func TestMerge_PokeWrittenBeforeLockRelease(t *testing.T) {
 	cfg := newTestConfig()
 
 	var order []string
-	deps.WritePoke = func(dendraRoot, agentName, content string) error {
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error {
 		order = append(order, "poke")
 		return nil
 	}
@@ -480,7 +480,7 @@ func TestMerge_StepOrdering(t *testing.T) {
 		order = append(order, "validate")
 		return "ok", nil
 	}
-	deps.WritePoke = func(dendraRoot, agentName, content string) error {
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error {
 		order = append(order, "poke")
 		return nil
 	}
@@ -570,7 +570,7 @@ func TestMerge_EmptyValidateCmd_SkipsWithWarning(t *testing.T) {
 	deps.Stderr = &stderr
 
 	var pokeCalled bool
-	deps.WritePoke = func(dendraRoot, agentName, content string) error {
+	deps.WritePoke = func(sprawlRoot, agentName, content string) error {
 		pokeCalled = true
 		return nil
 	}

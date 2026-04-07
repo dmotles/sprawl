@@ -154,8 +154,8 @@ func ReadSessionLog(path string, maxMessages int, maxBytes int) (string, error) 
 }
 
 // HasSessionSummary checks if a session summary file exists for the given session ID.
-func HasSessionSummary(dendraRoot, sessionID string) (bool, error) {
-	dir := sessionsDir(dendraRoot)
+func HasSessionSummary(sprawlRoot, sessionID string) (bool, error) {
+	dir := sessionsDir(sprawlRoot)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -176,8 +176,8 @@ func HasSessionSummary(dendraRoot, sessionID string) (bool, error) {
 }
 
 // AutoSummarize detects a missed handoff and auto-summarizes the session log.
-func AutoSummarize(ctx context.Context, dendraRoot, cwd, homeDir, sessionID string, invoker ClaudeInvoker) (bool, error) {
-	exists, err := HasSessionSummary(dendraRoot, sessionID)
+func AutoSummarize(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker ClaudeInvoker) (bool, error) {
+	exists, err := HasSessionSummary(sprawlRoot, sessionID)
 	if err != nil {
 		return false, err
 	}
@@ -206,7 +206,7 @@ func AutoSummarize(ctx context.Context, dendraRoot, cwd, homeDir, sessionID stri
 		Handoff:      false,
 		AgentsActive: []string{},
 	}
-	if err := WriteSessionSummary(dendraRoot, session, response); err != nil {
+	if err := WriteSessionSummary(sprawlRoot, session, response); err != nil {
 		return false, err
 	}
 

@@ -61,7 +61,7 @@ func PickNamespace(runner Runner) string {
 	}
 
 	// All taken — fallback.
-	return fmt.Sprintf("dendra-%d-", len(NamespacePool))
+	return fmt.Sprintf("sprawl-%d-", len(NamespacePool))
 }
 
 // Runner abstracts tmux operations for testability.

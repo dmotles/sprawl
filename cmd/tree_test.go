@@ -54,26 +54,26 @@ func newTestTreeDeps(t *testing.T, agents []*state.AgentState, rootName, namespa
 	return &treeDeps{
 		observeDeps: observe.Deps{
 			TmuxRunner: runner,
-			ListAgents: func(dendraRoot string) ([]*state.AgentState, error) {
+			ListAgents: func(sprawlRoot string) ([]*state.AgentState, error) {
 				return agents, nil
 			},
-			ReadRootName: func(dendraRoot string) string {
+			ReadRootName: func(sprawlRoot string) string {
 				return rootName
 			},
-			ReadNamespace: func(dendraRoot string) string {
+			ReadNamespace: func(sprawlRoot string) string {
 				return namespace
 			},
 		},
 		getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
-				return "/fake/dendra/root"
+				return "/fake/sprawl/root"
 			}
 			return ""
 		},
 	}
 }
 
-func TestTree_MissingDendraRoot(t *testing.T) {
+func TestTree_MissingSprawlRoot(t *testing.T) {
 	deps := &treeDeps{
 		getenv: func(string) string { return "" },
 	}

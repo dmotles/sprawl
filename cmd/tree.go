@@ -62,17 +62,17 @@ func resolveTreeDeps() *treeDeps {
 }
 
 func runTree(deps *treeDeps, stdout io.Writer, jsonOutput bool, subtreeRoot string) error {
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	agents, err := observe.LoadAll(deps.observeDeps, dendraRoot)
+	agents, err := observe.LoadAll(deps.observeDeps, sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("loading agents: %w", err)
 	}
 
-	rootName := deps.observeDeps.ReadRootName(dendraRoot)
+	rootName := deps.observeDeps.ReadRootName(sprawlRoot)
 	root, orphans := observe.BuildTree(agents, rootName)
 
 	// Handle --root flag: find subtree.

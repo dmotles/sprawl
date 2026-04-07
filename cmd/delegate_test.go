@@ -195,7 +195,7 @@ func TestDelegate_AgentRetiring(t *testing.T) {
 	}
 }
 
-func TestDelegate_MissingDendraRoot(t *testing.T) {
+func TestDelegate_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestDelegateDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
@@ -215,7 +215,7 @@ func TestDelegate_MissingDendraRoot(t *testing.T) {
 
 func TestDelegate_EnqueueFailure(t *testing.T) {
 	deps, tmpDir := newTestDelegateDeps(t)
-	deps.enqueueTask = func(dendraRoot, agentName, prompt string) (*state.Task, error) {
+	deps.enqueueTask = func(sprawlRoot, agentName, prompt string) (*state.Task, error) {
 		return nil, errors.New("disk full")
 	}
 

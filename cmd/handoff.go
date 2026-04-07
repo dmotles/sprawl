@@ -16,10 +16,10 @@ type handoffDeps struct {
 	stdout              io.Writer
 	getenv              func(string) string
 	readStdin           func() ([]byte, error)
-	listAgents          func(dendraRoot string) ([]*state.AgentState, error)
-	writeSessionSummary func(dendraRoot string, session memory.Session, body string) error
-	readLastSessionID   func(dendraRoot string) (string, error)
-	writeSignalFile     func(dendraRoot string) error
+	listAgents          func(sprawlRoot string) ([]*state.AgentState, error)
+	writeSessionSummary func(sprawlRoot string, session memory.Session, body string) error
+	readLastSessionID   func(sprawlRoot string) (string, error)
+	writeSignalFile     func(sprawlRoot string) error
 	now                 func() time.Time
 }
 
@@ -64,13 +64,13 @@ func runHandoff(deps *handoffDeps) error {
 		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set")
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Only the root agent may run handoff
-	rootName := state.ReadRootName(dendraRoot)
+	rootName := state.ReadRootName(sprawlRoot)
 	if agentName != rootName {
 		return fmt.Errorf("handoff can only be run by the root agent")
 	}
@@ -99,7 +99,7 @@ The summary is the primary context for the next session — make it count.`)
 	}
 
 	// Read current session ID
-	sessionID, err := deps.readLastSessionID(dendraRoot)
+	sessionID, err := deps.readLastSessionID(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("reading session ID: %w", err)
 	}
@@ -108,7 +108,7 @@ The summary is the primary context for the next session — make it count.`)
 	}
 
 	// Collect active agent names
-	agents, err := deps.listAgents(dendraRoot)
+	agents, err := deps.listAgents(sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("listing agents: %w", err)
 	}
@@ -124,12 +124,12 @@ The summary is the primary context for the next session — make it count.`)
 		Handoff:      true,
 		AgentsActive: agentNames,
 	}
-	if err := deps.writeSessionSummary(dendraRoot, session, string(stdinBytes)); err != nil {
+	if err := deps.writeSessionSummary(sprawlRoot, session, string(stdinBytes)); err != nil {
 		return fmt.Errorf("writing session summary: %w", err)
 	}
 
 	// Write handoff signal
-	if err := deps.writeSignalFile(dendraRoot); err != nil {
+	if err := deps.writeSignalFile(sprawlRoot); err != nil {
 		return fmt.Errorf("writing handoff signal: %w", err)
 	}
 

@@ -30,8 +30,8 @@ func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (M
 	if config.AgentName != "" {
 		env = append(env, fmt.Sprintf("SPRAWL_AGENT_IDENTITY=%s", config.AgentName))
 	}
-	if config.DendraRoot != "" {
-		env = append(env, fmt.Sprintf("SPRAWL_ROOT=%s", config.DendraRoot))
+	if config.SprawlRoot != "" {
+		env = append(env, fmt.Sprintf("SPRAWL_ROOT=%s", config.SprawlRoot))
 	}
 	for k, v := range config.Env {
 		env = append(env, fmt.Sprintf("%s=%s", k, v))

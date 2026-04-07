@@ -17,7 +17,7 @@ type reportDeps struct {
 	getenv      func(string) string
 	nowFunc     func() time.Time
 	tmuxRunner  tmux.Runner
-	sendMessage func(dendraRoot, from, to, subject, body string, opts ...messages.SendOption) error
+	sendMessage func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error
 }
 
 var defaultReportDeps *reportDeps
@@ -89,13 +89,13 @@ func runReport(deps *reportDeps, reportType, message string) error {
 		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report must be called from within a sprawl agent")
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; report must be called from within a sprawl agent")
 	}
 
 	// Load agent state
-	agentState, err := state.LoadAgent(dendraRoot, agentName)
+	agentState, err := state.LoadAgent(sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("loading agent state: %w", err)
 	}
@@ -114,12 +114,12 @@ func runReport(deps *reportDeps, reportType, message string) error {
 	}
 
 	// Persist to state file
-	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
+	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)
 	}
 
 	// Notify parent for all report types
-	if err := notifyParent(deps, dendraRoot, agentState, reportType, message); err != nil {
+	if err := notifyParent(deps, sprawlRoot, agentState, reportType, message); err != nil {
 		// Notification failure is non-fatal — state is already persisted
 		fmt.Fprintf(os.Stderr, "Warning: failed to notify parent: %v\n", err)
 	}
@@ -129,7 +129,7 @@ func runReport(deps *reportDeps, reportType, message string) error {
 }
 
 // notifyParent sends a notification to the agent's parent via the messaging system.
-func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentState, reportType, message string) error {
+func notifyParent(deps *reportDeps, sprawlRoot string, agentState *state.AgentState, reportType, message string) error {
 	parent := agentState.Parent
 	if parent == "" {
 		return nil
@@ -141,12 +141,12 @@ func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentSt
 	if deps.tmuxRunner != nil {
 		namespace := deps.getenv("SPRAWL_NAMESPACE")
 		if namespace == "" {
-			namespace = state.ReadNamespace(dendraRoot)
+			namespace = state.ReadNamespace(sprawlRoot)
 		}
 		if namespace == "" {
 			namespace = tmux.DefaultNamespace
 		}
-		rootName := state.ReadRootName(dendraRoot)
+		rootName := state.ReadRootName(sprawlRoot)
 		if rootName == "" {
 			rootName = tmux.DefaultRootName
 		}
@@ -159,5 +159,5 @@ func notifyParent(deps *reportDeps, dendraRoot string, agentState *state.AgentSt
 		}
 	}
 
-	return deps.sendMessage(dendraRoot, agentState.Name, parent, subject, message, sendOpts...)
+	return deps.sendMessage(sprawlRoot, agentState.Name, parent, subject, message, sendOpts...)
 }

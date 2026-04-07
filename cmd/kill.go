@@ -67,13 +67,13 @@ func runKill(deps *killDeps, agentName string, force bool) error {
 		return err
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Load agent state
-	agentState, err := state.LoadAgent(dendraRoot, agentName)
+	agentState, err := state.LoadAgent(sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
@@ -91,11 +91,11 @@ func runKill(deps *killDeps, agentName string, force bool) error {
 		RemoveFile: deps.removeFile,
 		SleepFunc:  deps.sleepFunc,
 	}
-	agent.GracefulShutdown(sd, dendraRoot, agentState, force)
+	agent.GracefulShutdown(sd, sprawlRoot, agentState, force)
 
 	// Update status to killed
 	agentState.Status = "killed"
-	if err := state.SaveAgent(dendraRoot, agentState); err != nil {
+	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("updating agent state: %w", err)
 	}
 

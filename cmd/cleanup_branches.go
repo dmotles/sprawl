@@ -32,7 +32,7 @@ type cleanupBranchesDeps struct {
 	listBranches   func() ([]string, error)
 	mergedBranches func() ([]string, error)
 	deleteBranch   func(name string) error
-	listAgents     func(dendraRoot string) ([]*state.AgentState, error)
+	listAgents     func(sprawlRoot string) ([]*state.AgentState, error)
 	stdout         io.Writer
 	verbose        bool
 }
@@ -103,8 +103,8 @@ func realDeleteBranch(name string) error {
 }
 
 func runCleanupBranches(deps *cleanupBranchesDeps, dryRun bool) error {
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT is not set")
 	}
 
@@ -118,7 +118,7 @@ func runCleanupBranches(deps *cleanupBranchesDeps, dryRun bool) error {
 		return err
 	}
 
-	agents, err := deps.listAgents(dendraRoot)
+	agents, err := deps.listAgents(sprawlRoot)
 	if err != nil {
 		return err
 	}

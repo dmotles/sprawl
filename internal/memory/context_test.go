@@ -573,7 +573,7 @@ func TestBuildContextBlob_TimelinePartialData(t *testing.T) {
 }
 
 func TestBuildContextBlob_DefaultDeps(t *testing.T) {
-	// Call with no options, using a real but empty temp dir as dendraRoot.
+	// Call with no options, using a real but empty temp dir as sprawlRoot.
 	tmpDir := t.TempDir()
 
 	blob, err := BuildContextBlob(tmpDir, "test-root",

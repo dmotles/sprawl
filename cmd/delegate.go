@@ -11,8 +11,8 @@ import (
 
 type delegateDeps struct {
 	getenv      func(string) string
-	loadAgent   func(dendraRoot, name string) (*state.AgentState, error)
-	enqueueTask func(dendraRoot, agentName, prompt string) (*state.Task, error)
+	loadAgent   func(sprawlRoot, name string) (*state.AgentState, error)
+	enqueueTask func(sprawlRoot, agentName, prompt string) (*state.Task, error)
 }
 
 var defaultDelegateDeps *delegateDeps
@@ -47,8 +47,8 @@ func runDelegate(deps *delegateDeps, agentName, prompt string) error {
 		return err
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
@@ -56,7 +56,7 @@ func runDelegate(deps *delegateDeps, agentName, prompt string) error {
 		return fmt.Errorf("task prompt must not be empty")
 	}
 
-	agentState, err := deps.loadAgent(dendraRoot, agentName)
+	agentState, err := deps.loadAgent(sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
@@ -66,7 +66,7 @@ func runDelegate(deps *delegateDeps, agentName, prompt string) error {
 		return fmt.Errorf("cannot delegate to agent %q: status is %q", agentName, agentState.Status)
 	}
 
-	task, err := deps.enqueueTask(dendraRoot, agentName, prompt)
+	task, err := deps.enqueueTask(sprawlRoot, agentName, prompt)
 	if err != nil {
 		return err
 	}

@@ -278,7 +278,7 @@ func TestSpawn_MissingIdentity(t *testing.T) {
 	}
 }
 
-func TestSpawn_MissingDendraRoot(t *testing.T) {
+func TestSpawn_MissingSprawlRoot(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
@@ -440,10 +440,10 @@ func TestSpawn_InvalidFamily(t *testing.T) {
 	}
 }
 
-// TestSpawn_ShellCmd_ContainsDendraAgentLoop verifies the exact shape of the
+// TestSpawn_ShellCmd_ContainsSprawlAgentLoop verifies the exact shape of the
 // shell command passed to tmux: cd '<worktree>' && '<sprawl>' 'agent-loop' '<name>'
 // Also verifies the command does NOT reference claude directly.
-func TestSpawn_ShellCmd_ContainsDendraAgentLoop(t *testing.T) {
+func TestSpawn_ShellCmd_ContainsSprawlAgentLoop(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
 	err := runSpawn(deps, "engineering", "engineer", "build login page", "feature/login")
@@ -590,7 +590,7 @@ func TestSpawn_BranchFlagRequired(t *testing.T) {
 	}
 }
 
-func TestSpawn_DendraBinPropagated(t *testing.T) {
+func TestSpawn_SprawlBinPropagated(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
@@ -611,7 +611,7 @@ func TestSpawn_DendraBinPropagated(t *testing.T) {
 	}
 }
 
-func TestSpawn_DendraBinNotPropagatedWhenUnset(t *testing.T) {
+func TestSpawn_SprawlBinNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	// Default getenv returns "" for SPRAWL_BIN
 
@@ -637,7 +637,7 @@ func TestSpawn_EmptyBranch(t *testing.T) {
 	}
 }
 
-func TestSpawn_DendraTestModePropagated(t *testing.T) {
+func TestSpawn_SprawlTestModePropagated(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	originalGetenv := deps.getenv
 	deps.getenv = func(key string) string {
@@ -658,7 +658,7 @@ func TestSpawn_DendraTestModePropagated(t *testing.T) {
 	}
 }
 
-func TestSpawn_DendraTestModeNotPropagatedWhenUnset(t *testing.T) {
+func TestSpawn_SprawlTestModeNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	// Default getenv returns "" for SPRAWL_TEST_MODE
 

@@ -53,12 +53,12 @@ func runPoke(deps *pokeDeps, agentName, message string) error {
 		return err
 	}
 
-	dendraRoot := deps.getenv("SPRAWL_ROOT")
-	if dendraRoot == "" {
+	sprawlRoot := deps.getenv("SPRAWL_ROOT")
+	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	pokePath := filepath.Join(dendraRoot, ".sprawl", "agents", agentName+".poke")
+	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")
 	if err := deps.writeFile(pokePath, []byte(message), 0o644); err != nil {
 		return fmt.Errorf("writing poke file: %w", err)
 	}
