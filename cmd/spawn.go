@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/dmotles/sprawl/internal/worktree"
+	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
 )
 
@@ -45,6 +47,7 @@ type spawnDeps struct {
 	getenv          func(string) string
 	currentBranch   func(repoRoot string) (string, error)
 	findSprawl      func() (string, error)
+	newSpawnLock    func(lockPath string) (acquire func() error, release func() error)
 }
 
 var defaultSpawnDeps *spawnDeps
@@ -98,6 +101,10 @@ func resolveSpawnDeps() (*spawnDeps, error) {
 		getenv:          os.Getenv,
 		currentBranch:   gitCurrentBranch,
 		findSprawl:      FindSprawlBin,
+		newSpawnLock: func(lockPath string) (func() error, func() error) {
+			fl := flock.New(lockPath)
+			return fl.Lock, fl.Unlock
+		},
 	}, nil
 }
 
@@ -131,11 +138,19 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a sprawl agent")
 	}
 
-	// Allocate name
+	// Allocate name (inside spawn lock to prevent concurrent name collisions)
 	agentsDir := state.AgentsDir(sprawlRoot)
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil { //nolint:gosec // G301: world-readable agent dir is intentional
 		return fmt.Errorf("creating agents directory: %w", err)
 	}
+
+	lockPath := filepath.Join(agentsDir, ".spawn.lock")
+	acquire, release := deps.newSpawnLock(lockPath)
+	if err := acquire(); err != nil {
+		return fmt.Errorf("acquiring spawn lock: %w", err)
+	}
+	defer release() //nolint:errcheck // best-effort lock release
+
 	agentName, err := agent.AllocateName(agentsDir, agentType)
 	if err != nil {
 		return err
@@ -201,15 +216,16 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		env["SPRAWL_TEST_MODE"] = v
 	}
 
-	// Create or add to tmux session
+	// Create or add to tmux session using try-then-fallback to avoid TOCTOU race.
+	// Multiple concurrent spawns may all try to create the session simultaneously.
 	childrenSession := tmux.ChildrenSessionName(namespace, parentTreePath)
-	if deps.tmuxRunner.HasSession(childrenSession) {
-		if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
-			return fmt.Errorf("creating tmux window for %s: %w", agentName, err)
-		}
-	} else {
+	if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
+		// Session may not exist yet — try creating it
 		if err := deps.tmuxRunner.NewSessionWithWindow(childrenSession, agentName, env, shellCmd); err != nil {
-			return fmt.Errorf("creating tmux session for %s: %w", agentName, err)
+			// Another concurrent spawn may have just created the session — retry NewWindow
+			if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
+				return fmt.Errorf("creating tmux window/session for %s: %w", agentName, err)
+			}
 		}
 	}
 

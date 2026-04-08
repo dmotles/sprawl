@@ -18,6 +18,10 @@ type spawnMockRunner struct {
 	newSessionWithWindowErr error
 	newWindowErr            error
 
+	// Per-call errors for NewWindow (supports retry testing).
+	// If set, newWindowErrs[callIndex] is used instead of newWindowErr.
+	newWindowErrs []error
+
 	// Recorded calls
 	newSessionWithWindowCalled  bool
 	newSessionWithWindowSession string
@@ -25,11 +29,12 @@ type spawnMockRunner struct {
 	newSessionWithWindowEnv     map[string]string
 	newSessionWithWindowCmd     string
 
-	newWindowCalled  bool
-	newWindowSession string
-	newWindowWindow  string
-	newWindowEnv     map[string]string
-	newWindowCmd     string
+	newWindowCalled    bool
+	newWindowCallCount int
+	newWindowSession   string
+	newWindowWindow    string
+	newWindowEnv       map[string]string
+	newWindowCmd       string
 }
 
 func (m *spawnMockRunner) HasWindow(string, string) bool { return false }
@@ -53,10 +58,15 @@ func (m *spawnMockRunner) NewSessionWithWindow(sessionName, windowName string, e
 
 func (m *spawnMockRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
 	m.newWindowCalled = true
+	idx := m.newWindowCallCount
+	m.newWindowCallCount++
 	m.newWindowSession = sessionName
 	m.newWindowWindow = windowName
 	m.newWindowEnv = env
 	m.newWindowCmd = shellCmd
+	if idx < len(m.newWindowErrs) {
+		return m.newWindowErrs[idx]
+	}
 	return m.newWindowErr
 }
 
@@ -114,7 +124,11 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 	t.Helper()
 	tmpDir := t.TempDir()
 
-	runner := &spawnMockRunner{}
+	runner := &spawnMockRunner{
+		// Default: no tmux session exists, so NewWindow fails and
+		// NewSessionWithWindow is used as fallback (matches first-spawn scenario).
+		newWindowErr: errors.New("no session"),
+	}
 	creator := &mockWorktreeCreator{}
 
 	// Persist namespace and root name for spawn to read as fallback
@@ -142,6 +156,9 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 		},
 		findSprawl: func() (string, error) {
 			return "/usr/local/bin/sprawl", nil
+		},
+		newSpawnLock: func(lockPath string) (func() error, func() error) {
+			return func() error { return nil }, func() error { return nil }
 		},
 	}
 
@@ -219,7 +236,7 @@ func TestSpawn_HappyPath(t *testing.T) {
 func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	// First spawn creates session
+	// First spawn creates session (NewWindow fails, falls back to NewSessionWithWindow)
 	err := runSpawn(deps, "engineering", "engineer", "task 1", "feature/task1")
 	if err != nil {
 		t.Fatalf("first spawn: %v", err)
@@ -228,11 +245,11 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 		t.Error("expected NewSessionWithWindow for first child")
 	}
 
-	// Now the session exists
-	runner.hasSession = true
+	// Now the session exists — NewWindow will succeed
+	runner.newWindowErr = nil
 	runner.newSessionWithWindowCalled = false
 
-	// Second spawn should add a window
+	// Second spawn should add a window (NewWindow succeeds directly)
 	err = runSpawn(deps, "engineering", "engineer", "task 2", "feature/task2")
 	if err != nil {
 		t.Fatalf("second spawn: %v", err)
@@ -335,6 +352,7 @@ func TestSpawn_WorktreeCreationFails(t *testing.T) {
 
 func TestSpawn_TmuxFails(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
+	// All tmux attempts fail: NewWindow (default err) -> NewSessionWithWindow -> NewWindow retry
 	runner.newSessionWithWindowErr = errors.New("tmux exploded")
 
 	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
@@ -678,15 +696,15 @@ func TestSpawn_SprawlTestModeNotPropagatedWhenUnset(t *testing.T) {
 func TestSpawn_CrossTypeIsolation(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	// Spawn an engineer
+	// Spawn an engineer (NewWindow fails, falls back to NewSessionWithWindow)
 	err := runSpawn(deps, "engineering", "engineer", "build feature", "feature/eng")
 	if err != nil {
 		t.Fatalf("engineer spawn: %v", err)
 	}
 	engineerName := runner.newSessionWithWindowWindow
 
-	// Session now exists for subsequent spawns
-	runner.hasSession = true
+	// Session now exists — NewWindow will succeed
+	runner.newWindowErr = nil
 	runner.newSessionWithWindowCalled = false
 
 	// Spawn a researcher
@@ -767,5 +785,176 @@ func TestSpawn_ManagerPoolExhausted_UsesFallback(t *testing.T) {
 
 	if runner.newSessionWithWindowWindow != "fixer-1" {
 		t.Errorf("window = %q, want %q", runner.newSessionWithWindowWindow, "fixer-1")
+	}
+}
+
+// TestSpawn_TmuxNewWindow_FallsBackToNewSession verifies that when NewWindow
+// fails (session doesn't exist), runSpawn falls back to NewSessionWithWindow.
+func TestSpawn_TmuxNewWindow_FallsBackToNewSession(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// NewWindow fails on first call (no session yet), succeeds after
+	runner.newWindowErrs = []error{errors.New("session not found")}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// NewWindow was tried first, then NewSessionWithWindow succeeded
+	if runner.newWindowCallCount != 1 {
+		t.Errorf("newWindowCallCount = %d, want 1", runner.newWindowCallCount)
+	}
+	if !runner.newSessionWithWindowCalled {
+		t.Error("expected NewSessionWithWindow to be called as fallback")
+	}
+
+	// Agent state should still be saved
+	expectedName := agent.EngineerNames[0]
+	_, err = state.LoadAgent(tmpDir, expectedName)
+	if err != nil {
+		t.Fatalf("agent state not saved: %v", err)
+	}
+}
+
+// TestSpawn_TmuxBothPathsFail_RetryNewWindowSucceeds verifies the full retry
+// chain: NewWindow fails -> NewSessionWithWindow fails -> NewWindow retry succeeds.
+func TestSpawn_TmuxBothPathsFail_RetryNewWindowSucceeds(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// First NewWindow fails, then succeeds on second try
+	runner.newWindowErrs = []error{errors.New("session not found"), nil}
+	runner.newSessionWithWindowErr = errors.New("duplicate session")
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if runner.newWindowCallCount != 2 {
+		t.Errorf("newWindowCallCount = %d, want 2", runner.newWindowCallCount)
+	}
+	if !runner.newSessionWithWindowCalled {
+		t.Error("expected NewSessionWithWindow to be called")
+	}
+
+	// Agent state should still be saved
+	expectedName := agent.EngineerNames[0]
+	_, err = state.LoadAgent(tmpDir, expectedName)
+	if err != nil {
+		t.Fatalf("agent state not saved: %v", err)
+	}
+}
+
+// TestSpawn_TmuxAllAttemptsExhausted_ReturnsError verifies that when all three
+// tmux attempts fail, runSpawn returns an error.
+func TestSpawn_TmuxAllAttemptsExhausted_ReturnsError(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	// All attempts fail
+	runner.newWindowErrs = []error{
+		errors.New("session not found"),
+		errors.New("session not found again"),
+	}
+	runner.newSessionWithWindowErr = errors.New("duplicate session")
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err == nil {
+		t.Fatal("expected error when all tmux attempts fail")
+	}
+	if !strings.Contains(err.Error(), "tmux") {
+		t.Errorf("error should mention tmux, got: %v", err)
+	}
+
+	if runner.newWindowCallCount != 2 {
+		t.Errorf("newWindowCallCount = %d, want 2", runner.newWindowCallCount)
+	}
+}
+
+// TestSpawn_SpawnLockAcquiredAndReleased verifies the spawn lock is acquired
+// and released during a successful spawn.
+func TestSpawn_SpawnLockAcquiredAndReleased(t *testing.T) {
+	deps, _, _, _ := newTestSpawnDeps(t)
+
+	acquireCount := 0
+	releaseCount := 0
+	deps.newSpawnLock = func(lockPath string) (func() error, func() error) {
+		return func() error {
+				acquireCount++
+				return nil
+			}, func() error {
+				releaseCount++
+				return nil
+			}
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if acquireCount != 1 {
+		t.Errorf("acquireCount = %d, want 1", acquireCount)
+	}
+	if releaseCount != 1 {
+		t.Errorf("releaseCount = %d, want 1", releaseCount)
+	}
+}
+
+// TestSpawn_SpawnLockReleasedOnError verifies the spawn lock is released even
+// when spawn fails partway through (e.g., worktree creation fails).
+func TestSpawn_SpawnLockReleasedOnError(t *testing.T) {
+	deps, _, creator, _ := newTestSpawnDeps(t)
+	creator.err = errors.New("git worktree failed")
+
+	acquireCount := 0
+	releaseCount := 0
+	deps.newSpawnLock = func(lockPath string) (func() error, func() error) {
+		return func() error {
+				acquireCount++
+				return nil
+			}, func() error {
+				releaseCount++
+				return nil
+			}
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err == nil {
+		t.Fatal("expected error for worktree failure")
+	}
+
+	if acquireCount != 1 {
+		t.Errorf("acquireCount = %d, want 1", acquireCount)
+	}
+	if releaseCount != 1 {
+		t.Errorf("releaseCount = %d, want 1 (lock should be released even on error)", releaseCount)
+	}
+}
+
+// TestSpawn_SpawnLockAcquireFailure verifies that when the lock cannot be
+// acquired, runSpawn returns an error without proceeding.
+func TestSpawn_SpawnLockAcquireFailure(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	deps.newSpawnLock = func(lockPath string) (func() error, func() error) {
+		return func() error {
+				return errors.New("lock held by another process")
+			}, func() error {
+				return nil
+			}
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err == nil {
+		t.Fatal("expected error when lock acquisition fails")
+	}
+	if !strings.Contains(err.Error(), "spawn lock") {
+		t.Errorf("error should mention spawn lock, got: %v", err)
+	}
+
+	// Nothing else should have been called
+	if runner.newSessionWithWindowCalled || runner.newWindowCalled {
+		t.Error("tmux should not be called when lock acquisition fails")
 	}
 }
