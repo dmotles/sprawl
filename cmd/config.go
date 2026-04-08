@@ -33,10 +33,13 @@ var configCmd = &cobra.Command{
 	Long: `Manage project-level configuration stored in .sprawl/config.yaml.
 
 Known keys:
-  validate    Shell command to run for post-merge validation (e.g. "make validate", "npm test")
+  validate            Shell command to run for post-merge validation (e.g. "make validate", "npm test")
+  worktree.setup      Bash script to run in each new agent worktree before the agent starts (e.g. "npm install")
+  worktree.teardown   Bash script to run in each agent worktree before removal on retire
 
 Examples:
   sprawl config set validate "make test"
+  sprawl config set worktree.setup "npm install"
   sprawl config get validate
   sprawl config show`,
 }

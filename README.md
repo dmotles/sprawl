@@ -34,6 +34,7 @@ make build
 cd your-repo
 sprawl init
 sprawl config set validate "make test"
+sprawl config set worktree.setup 'npm install && cp $SPRAWL_ROOT/.env .env'
 ```
 
 Use `sprawl config show` to view current settings, or `sprawl config --help` for all options.
