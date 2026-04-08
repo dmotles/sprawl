@@ -76,6 +76,9 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 		readTimeline: func(root string) ([]memory.TimelineEntry, error) {
 			return nil, nil
 		},
+		hasSessionSummary: func(sprawlRoot, sessionID string) (bool, error) {
+			return false, nil
+		},
 	}
 }
 
@@ -155,6 +158,41 @@ func TestRunRootSession_HandoffSignal(t *testing.T) {
 
 	if !handoffDeleted {
 		t.Error("expected handoff signal to be deleted")
+	}
+}
+
+func TestRunRootSession_HandoffSignal_ClearsLastSessionID(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+
+	var lastSessionIDCleared bool
+
+	// Handoff signal file exists
+	deps.readFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	deps.removeFile = func(path string) error { return nil }
+
+	deps.writeLastSessionID = func(root, id string) error {
+		if id == "" {
+			lastSessionIDCleared = true
+		}
+		return nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		return nil
+	}
+
+	err := runRootSession(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	if !lastSessionIDCleared {
+		t.Error("expected last-session-id to be cleared after handoff signal processing")
 	}
 }
 
@@ -351,13 +389,21 @@ func TestRunRootSession_MissedHandoff_AlreadySummarized(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
 	var claudeRan bool
+	var autoSummarizeCalled bool
+	var buf strings.Builder
+	deps.stdout = &buf
 
 	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
 	}
 
-	// autoSummarize returns false (already summarized)
+	// Summary already exists for this session
+	deps.hasSessionSummary = func(sprawlRoot, sessionID string) (bool, error) {
+		return true, nil
+	}
+
 	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
+		autoSummarizeCalled = true
 		return false, nil
 	}
 
@@ -373,6 +419,15 @@ func TestRunRootSession_MissedHandoff_AlreadySummarized(t *testing.T) {
 
 	if !claudeRan {
 		t.Error("expected claude to still run after already-summarized session")
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "Detected missed handoff") {
+		t.Error("should NOT print 'Detected missed handoff' when session summary already exists")
+	}
+
+	if autoSummarizeCalled {
+		t.Error("should NOT call autoSummarize when session summary already exists")
 	}
 }
 

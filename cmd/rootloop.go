@@ -51,6 +51,7 @@ type rootLoopDeps struct {
 	runCommand                func(name string, args []string) error
 	stdout                    io.Writer
 	readLastSessionID         func(string) (string, error)
+	hasSessionSummary         func(sprawlRoot, sessionID string) (bool, error)
 	autoSummarize             func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
 	userHomeDir               func() (string, error)
 	newCLIInvoker             func() memory.ClaudeInvoker
@@ -83,6 +84,7 @@ func defaultRootLoopDeps() *rootLoopDeps {
 		},
 		stdout:                    os.Stdout,
 		readLastSessionID:         memory.ReadLastSessionID,
+		hasSessionSummary:         memory.HasSessionSummary,
 		autoSummarize:             memory.AutoSummarize,
 		userHomeDir:               os.UserHomeDir,
 		newCLIInvoker:             func() memory.ClaudeInvoker { return memory.NewCLIInvoker() },
@@ -146,19 +148,27 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 	// 0. Detect missed handoff from previous session.
 	prevSessionID, _ := deps.readLastSessionID(sprawlRoot)
 	if prevSessionID != "" {
-		homeDir, homeErr := deps.userHomeDir()
-		if homeErr != nil {
-			fmt.Fprintf(deps.stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
+		// Check if a summary already exists (e.g., from a successful handoff).
+		// If so, skip the entire missed-handoff path to avoid false positives.
+		alreadySummarized, _ := deps.hasSessionSummary(sprawlRoot, prevSessionID)
+		if alreadySummarized {
+			// Clear stale last-session-id so we don't check again next session.
+			_ = deps.writeLastSessionID(sprawlRoot, "")
 		} else {
-			fmt.Fprintf(deps.stdout, "[root-loop] Detected missed handoff from previous session\n")
-			sp := startSpinner(deps.stdout, "auto-summarizing...")
-			summarized, sumErr := deps.autoSummarize(ctx, sprawlRoot, sprawlRoot, homeDir, prevSessionID, deps.newCLIInvoker())
-			sp.stop()
-			if sumErr != nil {
-				fmt.Fprintf(deps.stdout, "[root-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
-			} else if summarized {
-				fmt.Fprintf(deps.stdout, "[root-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
-				runConsolidationPipeline(ctx, deps, sprawlRoot)
+			homeDir, homeErr := deps.userHomeDir()
+			if homeErr != nil {
+				fmt.Fprintf(deps.stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
+			} else {
+				fmt.Fprintf(deps.stdout, "[root-loop] Detected missed handoff from previous session\n")
+				sp := startSpinner(deps.stdout, "auto-summarizing...")
+				summarized, sumErr := deps.autoSummarize(ctx, sprawlRoot, sprawlRoot, homeDir, prevSessionID, deps.newCLIInvoker())
+				sp.stop()
+				if sumErr != nil {
+					fmt.Fprintf(deps.stdout, "[root-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
+				} else if summarized {
+					fmt.Fprintf(deps.stdout, "[root-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
+					runConsolidationPipeline(ctx, deps, sprawlRoot)
+				}
 			}
 		}
 	}
@@ -223,6 +233,8 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 	handoffPath := filepath.Join(sprawlRoot, ".sprawl", "memory", "handoff-signal")
 	if _, readErr := deps.readFile(handoffPath); readErr == nil {
 		_ = deps.removeFile(handoffPath)
+		// Clear last-session-id so the next session doesn't false-positive on missed handoff.
+		_ = deps.writeLastSessionID(sprawlRoot, "")
 		fmt.Fprintf(deps.stdout, "[root-loop] handoff signal detected, restarting\n")
 
 		runConsolidationPipeline(ctx, deps, sprawlRoot)
