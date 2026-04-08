@@ -18,7 +18,6 @@ import (
 type initDeps struct {
 	tmuxRunner     tmux.Runner
 	claudeLauncher agent.Launcher
-	findSprawl     func() (string, error)
 	getenv         func(string) string
 	gitStatus      func(dir string) (string, error)
 	readFile       func(path string) ([]byte, error)
@@ -71,7 +70,6 @@ func resolveDeps() (*initDeps, error) {
 	return &initDeps{
 		tmuxRunner:     &tmux.RealRunner{TmuxPath: tmuxPath},
 		claudeLauncher: claudeLauncher,
-		findSprawl:     FindSprawlBin,
 		getenv:         os.Getenv,
 		gitStatus:      realGitStatus,
 		readFile:       os.ReadFile,
@@ -146,12 +144,7 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 		return err
 	}
 
-	sprawlPath, err := deps.findSprawl()
-	if err != nil {
-		return fmt.Errorf("finding sprawl binary: %w", err)
-	}
-
-	shellCmd := tmux.BuildShellCmd(sprawlPath, []string{"root-loop"})
+	shellCmd := buildRootLoopScript()
 
 	// The root agent's tree path is just its name.
 	treePath := rootName
@@ -188,6 +181,19 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 	}
 
 	return deps.tmuxRunner.Attach(rootSession)
+}
+
+// buildRootLoopScript generates a bash restart loop that calls `sprawl _root-session`
+// repeatedly. The script uses ${SPRAWL_BIN:-sprawl} so it picks up whatever
+// sprawl binary is on PATH (or the SPRAWL_BIN override), enabling seamless
+// binary upgrades without restarting the tmux session.
+//
+// Exit code contract:
+//   - 0:  normal exit → restart immediately
+//   - 42: explicit shutdown → break loop
+//   - other: failure → retry after 5s delay
+func buildRootLoopScript() string {
+	return `bash -c 'trap '"'"'exit 42'"'"' TERM INT; while true; do "${SPRAWL_BIN:-sprawl}" _root-session; rc=$?; if [ $rc -eq 42 ]; then echo "[root-loop] explicit shutdown, exiting"; break; elif [ $rc -ne 0 ]; then echo "[root-loop] session failed (exit $rc), retrying in 5s..."; sleep 5; else echo "[root-loop] session ended, restarting..."; fi; done'`
 }
 
 // ensureSprawlGitignored checks if .sprawl/ is in .gitignore and adds the

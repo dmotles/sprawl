@@ -103,9 +103,8 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  nil, readFile: nil, appendFile: nil, gitAdd: nil, gitCommit: nil,
+		getenv:    defaultGetenv,
+		gitStatus: nil, readFile: nil, appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	err := runInit(deps, tmux.DefaultNamespace, false)
 	if err != nil {
@@ -132,9 +131,8 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
 		appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	// Override Getwd by using a known cwd
@@ -189,9 +187,8 @@ func TestRunInit_CustomNamespace(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
 		appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	origDir, _ := os.Getwd()
@@ -234,9 +231,8 @@ func TestRunInit_AutoPickNamespace(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
 		appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	origDir, _ := os.Getwd()
@@ -262,9 +258,8 @@ func TestRunInit_NamespacePersisted(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
 		appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	origDir, _ := os.Getwd()
@@ -299,9 +294,8 @@ func TestRunInit_NewSessionFails_ReturnsError(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
 		appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	origDir, _ := os.Getwd()
@@ -325,9 +319,8 @@ func TestRunInit_Detached_NoSession_CreatesButDoesNotAttach(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
 		appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	origDir, _ := os.Getwd()
@@ -379,9 +372,8 @@ func TestRunInit_Detached_ExistingSession_DoesNotAttach(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  nil, readFile: nil, appendFile: nil, gitAdd: nil, gitCommit: nil,
+		getenv:    defaultGetenv,
+		gitStatus: nil, readFile: nil, appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 
 	// Capture stdout
@@ -419,9 +411,8 @@ func TestRunInit_NotDetached_BehaviorUnchanged(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
 		appendFile: nil, gitAdd: nil, gitCommit: nil,
 	}
 	origDir, _ := os.Getwd()
@@ -451,7 +442,6 @@ func TestRunInit_SprawlBinPropagated(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findSprawl:     func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv: func(key string) string {
 			if key == "SPRAWL_BIN" {
 				return "/custom/sprawl"
@@ -485,7 +475,6 @@ func TestRunInit_SprawlBinNotPropagatedWhenUnset(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findSprawl:     func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv:         defaultGetenv,
 		gitStatus:      happyGitStatus,
 		readFile:       happyReadFile,
@@ -514,7 +503,6 @@ func TestRunInit_SprawlTestModePropagated(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findSprawl:     func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv: func(key string) string {
 			if key == "SPRAWL_TEST_MODE" {
 				return "1"
@@ -548,7 +536,6 @@ func TestRunInit_SprawlTestModeNotPropagatedWhenUnset(t *testing.T) {
 	deps := &initDeps{
 		tmuxRunner:     runner,
 		claudeLauncher: launcher,
-		findSprawl:     func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv:         defaultGetenv,
 		gitStatus:      happyGitStatus,
 		readFile:       happyReadFile,
@@ -569,32 +556,6 @@ func TestRunInit_SprawlTestModeNotPropagatedWhenUnset(t *testing.T) {
 	}
 }
 
-func TestRunInit_SprawlNotFound_ReturnsError(t *testing.T) {
-	tmpDir := t.TempDir()
-	runner := &mockRunner{hasSession: false}
-	launcher := &mockLauncher{binary: "/usr/bin/claude"}
-
-	deps := &initDeps{
-		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "", errors.New("not found") },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus, readFile: happyReadFile,
-		appendFile: nil, gitAdd: nil, gitCommit: nil,
-	}
-	origDir, _ := os.Getwd()
-	os.Chdir(tmpDir)
-	defer os.Chdir(origDir)
-
-	err := runInit(deps, tmux.DefaultNamespace, false)
-
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if runner.attachCalled {
-		t.Error("Attach should not be called when findSprawl fails")
-	}
-}
-
 func TestRunInit_DirtyRepo_ReturnsError(t *testing.T) {
 	tmpDir := t.TempDir()
 	runner := &mockRunner{hasSession: false}
@@ -602,7 +563,6 @@ func TestRunInit_DirtyRepo_ReturnsError(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv:     defaultGetenv,
 		gitStatus:  func(string) (string, error) { return "M file.go", nil },
 		readFile:   happyReadFile,
@@ -635,7 +595,6 @@ func TestRunInit_GitStatusFails_ReturnsError(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv:     defaultGetenv,
 		gitStatus:  func(string) (string, error) { return "", errors.New("not a git repo") },
 		readFile:   happyReadFile,
@@ -676,10 +635,9 @@ func TestRunInit_NoGitignore_CreatesAndCommits(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus,
-		readFile:   func(string) ([]byte, error) { return nil, os.ErrNotExist },
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus,
+		readFile:  func(string) ([]byte, error) { return nil, os.ErrNotExist },
 		appendFile: func(path string, data []byte) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -769,10 +727,9 @@ func TestRunInit_GitignoreWithoutSprawl_AppendsAndCommits(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus,
-		readFile:   func(string) ([]byte, error) { return []byte("node_modules/\n"), nil },
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus,
+		readFile:  func(string) ([]byte, error) { return []byte("node_modules/\n"), nil },
 		appendFile: func(path string, data []byte) error {
 			appendFileCalled = true
 			appendFileData = data
@@ -824,10 +781,9 @@ func TestRunInit_GitignoreAlreadyHasSprawl_Proceeds(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
-		gitStatus:  happyGitStatus,
-		readFile:   func(string) ([]byte, error) { return []byte(".sprawl/*\n!.sprawl/config.yaml\n"), nil },
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus,
+		readFile:  func(string) ([]byte, error) { return []byte(".sprawl/*\n!.sprawl/config.yaml\n"), nil },
 		appendFile: func(string, []byte) error {
 			t.Fatal("appendFile should not be called when .sprawl/* already in .gitignore")
 			return nil
@@ -859,7 +815,6 @@ func TestRunInit_AppendFileFails_ReturnsError(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv:     defaultGetenv,
 		gitStatus:  happyGitStatus,
 		readFile:   func(string) ([]byte, error) { return nil, os.ErrNotExist },
@@ -890,7 +845,6 @@ func TestRunInit_GitAddFails_ReturnsError(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv:     defaultGetenv,
 		gitStatus:  happyGitStatus,
 		readFile:   func(string) ([]byte, error) { return nil, os.ErrNotExist },
@@ -921,7 +875,6 @@ func TestRunInit_GitCommitFails_ReturnsError(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
 		getenv:     defaultGetenv,
 		gitStatus:  happyGitStatus,
 		readFile:   func(string) ([]byte, error) { return nil, os.ErrNotExist },
@@ -951,8 +904,7 @@ func TestRunInit_ExistingSession_SkipsCleanCheck(t *testing.T) {
 
 	deps := &initDeps{
 		tmuxRunner: runner, claudeLauncher: launcher,
-		findSprawl: func() (string, error) { return "/usr/bin/sprawl", nil },
-		getenv:     defaultGetenv,
+		getenv: defaultGetenv,
 		gitStatus: func(string) (string, error) {
 			t.Fatal("gitStatus should not be called when session already exists")
 			return "", nil
@@ -970,5 +922,129 @@ func TestRunInit_ExistingSession_SkipsCleanCheck(t *testing.T) {
 	}
 	if !runner.attachCalled {
 		t.Error("expected Attach to be called for existing session")
+	}
+}
+
+// --- New tests for bash loop generation ---
+
+func TestRunInit_BashLoopGenerated(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	shellCmd := runner.newSessionWithWinCmd
+	// The shell command should contain _root-session (the new subcommand name)
+	if !strings.Contains(shellCmd, "_root-session") {
+		t.Errorf("expected shell command to contain '_root-session', got: %q", shellCmd)
+	}
+	// The shell command should be a bash loop (contain 'while true')
+	if !strings.Contains(shellCmd, "while true") {
+		t.Errorf("expected shell command to contain 'while true' (bash loop), got: %q", shellCmd)
+	}
+}
+
+func TestRunInit_BashLoopUsesSprawlBinFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	shellCmd := runner.newSessionWithWinCmd
+	// Should use ${SPRAWL_BIN:-sprawl} pattern, not an absolute path to sprawl
+	if !strings.Contains(shellCmd, "${SPRAWL_BIN:-sprawl}") {
+		t.Errorf("expected shell command to use '${SPRAWL_BIN:-sprawl}' fallback pattern, got: %q", shellCmd)
+	}
+}
+
+func TestRunInit_BashLoopExitCodeHandling(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	shellCmd := runner.newSessionWithWinCmd
+	// Should handle exit code 42 as shutdown
+	if !strings.Contains(shellCmd, "42") {
+		t.Errorf("expected shell command to handle exit code 42, got: %q", shellCmd)
+	}
+	// Should have explicit break on exit 42
+	if !strings.Contains(shellCmd, "break") {
+		t.Errorf("expected shell command to contain 'break' for shutdown exit code, got: %q", shellCmd)
+	}
+}
+
+func TestRunInit_BashLoopSignalTrap(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	shellCmd := runner.newSessionWithWinCmd
+	// Should have a trap for TERM and INT signals
+	if !strings.Contains(shellCmd, "trap") {
+		t.Errorf("expected shell command to contain 'trap' for signal handling, got: %q", shellCmd)
+	}
+	if !strings.Contains(shellCmd, "TERM") {
+		t.Errorf("expected shell command to trap TERM signal, got: %q", shellCmd)
+	}
+	if !strings.Contains(shellCmd, "INT") {
+		t.Errorf("expected shell command to trap INT signal, got: %q", shellCmd)
 	}
 }

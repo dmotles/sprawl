@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +37,6 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 		readFile:           func(path string) ([]byte, error) { return nil, os.ErrNotExist },
 		removeFile:         func(path string) error { return nil },
 		newUUID:            func() (string, error) { return "test-uuid", nil },
-		sleepFunc:          func(d time.Duration) {},
 		runCommand:         func(name string, args []string) error { return nil },
 		stdout:             io.Discard,
 		readLastSessionID:  func(string) (string, error) { return "", nil },
@@ -62,39 +60,55 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 	}
 }
 
-func TestRunNeoLoop_SingleIteration_HandoffSignal(t *testing.T) {
+func TestRunRootSession_NormalExit_ReturnsNil(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
-	var buildPromptCalls int
-	var sessionIDsWritten []string
-	var claudeLaunched int
-	var handoffDeleted bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	deps.buildPrompt = func(cfg agent.PromptConfig) string {
-		mu.Lock()
-		buildPromptCalls++
-		mu.Unlock()
-		return "system prompt"
-	}
-
-	uuidCounter := 0
-	deps.newUUID = func() (string, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		uuidCounter++
-		return fmt.Sprintf("uuid-%d", uuidCounter), nil
-	}
-
-	deps.writeLastSessionID = func(root, id string) error {
-		mu.Lock()
-		sessionIDsWritten = append(sessionIDsWritten, id)
-		mu.Unlock()
+	// runCommand returns nil (normal exit)
+	deps.runCommand = func(name string, args []string) error {
 		return nil
 	}
+
+	err := runRootSession(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("expected nil error for normal exit, got: %v", err)
+	}
+}
+
+func TestRunRootSession_ClaudeExitError_ReturnsNil(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+
+	// runCommand returns an *exec.ExitError (Claude ran but exited non-zero)
+	deps.runCommand = func(name string, args []string) error {
+		return &exec.ExitError{}
+	}
+
+	err := runRootSession(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("expected nil error for ExitError (Claude ran but exited non-zero), got: %v", err)
+	}
+}
+
+func TestRunRootSession_StartupFailure_ReturnsError(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+
+	// runCommand returns a non-ExitError (startup failure)
+	deps.runCommand = func(name string, args []string) error {
+		return errors.New("command not found")
+	}
+
+	err := runRootSession(context.Background(), deps)
+	if err == nil {
+		t.Fatal("expected error for startup failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "command not found") {
+		t.Errorf("expected error to contain 'command not found', got: %v", err)
+	}
+}
+
+func TestRunRootSession_HandoffSignal(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+
+	var handoffDeleted bool
 
 	// Handoff signal file exists
 	deps.readFile = func(path string) ([]byte, error) {
@@ -106,166 +120,52 @@ func TestRunNeoLoop_SingleIteration_HandoffSignal(t *testing.T) {
 
 	deps.removeFile = func(path string) error {
 		if strings.Contains(path, "handoff-signal") {
-			mu.Lock()
 			handoffDeleted = true
-			mu.Unlock()
 		}
 		return nil
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		claudeLaunched++
-		iteration := claudeLaunched
-		mu.Unlock()
-		// Cancel after 2nd iteration starts
-		if iteration >= 2 {
-			cancel()
-		}
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	if buildPromptCalls < 2 {
-		t.Errorf("expected buildPrompt called at least 2 times, got %d", buildPromptCalls)
-	}
-	if len(sessionIDsWritten) < 2 {
-		t.Errorf("expected at least 2 session IDs written, got %d", len(sessionIDsWritten))
-	}
-	if claudeLaunched < 2 {
-		t.Errorf("expected claude launched at least 2 times, got %d", claudeLaunched)
-	}
 	if !handoffDeleted {
 		t.Error("expected handoff signal to be deleted")
 	}
 }
 
-func TestRunNeoLoop_SessionEndWithoutHandoff(t *testing.T) {
+func TestRunRootSession_SessionEndWithoutHandoff(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
-	var iterations int
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	var buf strings.Builder
+	deps.stdout = &buf
 
 	// No handoff signal (readFile returns ErrNotExist by default)
-
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		mu.Unlock()
-		if iter >= 2 {
-			cancel()
-		}
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	if iterations < 2 {
-		t.Errorf("expected loop to restart without handoff signal, got %d iterations", iterations)
+	output := buf.String()
+	if !strings.Contains(output, "session ended") {
+		t.Errorf("expected output to contain 'session ended', got: %q", output)
 	}
 }
 
-func TestRunNeoLoop_RetryOnStartupFailure(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	var mu sync.Mutex
-	var sleepCalls []time.Duration
-	var runCalls int
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	deps.sleepFunc = func(d time.Duration) {
-		mu.Lock()
-		sleepCalls = append(sleepCalls, d)
-		mu.Unlock()
-	}
-
-	// First call: non-ExitError (startup failure). Second call: success, then cancel.
-	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		runCalls++
-		call := runCalls
-		mu.Unlock()
-		if call == 1 {
-			return errors.New("command not found")
-		}
-		cancel()
-		return nil
-	}
-
-	err := runRootLoop(ctx, deps)
-	if err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(sleepCalls) < 1 {
-		t.Fatal("expected at least one sleep call for retry")
-	}
-	if sleepCalls[0] != 5*time.Second {
-		t.Errorf("expected sleep of 5s, got %v", sleepCalls[0])
-	}
-	if runCalls < 2 {
-		t.Errorf("expected retry attempt, got %d runCommand calls", runCalls)
-	}
-}
-
-func TestRunNeoLoop_MaxRetriesExceeded(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	// All calls return a non-ExitError (startup failure)
-	deps.runCommand = func(name string, args []string) error {
-		return errors.New("command not found")
-	}
-
-	ctx := context.Background()
-	err := runRootLoop(ctx, deps)
-	if err == nil {
-		t.Fatal("expected error after max retries, got nil")
-	}
-	if !strings.Contains(err.Error(), "3") {
-		t.Errorf("expected error to mention 3 retries, got: %v", err)
-	}
-}
-
-func TestRunNeoLoop_SignalStopsLoop(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel immediately before running
-	cancel()
-
-	err := runRootLoop(ctx, deps)
-	if err != nil {
-		t.Fatalf("expected nil error on context cancellation, got: %v", err)
-	}
-}
-
-func TestRunNeoLoop_MissingSprawlRoot(t *testing.T) {
+func TestRunRootSession_MissingSprawlRoot(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 	deps.getenv = func(key string) string { return "" }
 
-	err := runRootLoop(context.Background(), deps)
+	err := runRootSession(context.Background(), deps)
 	if err == nil {
 		t.Fatal("expected error for missing SPRAWL_ROOT, got nil")
 	}
@@ -274,212 +174,13 @@ func TestRunNeoLoop_MissingSprawlRoot(t *testing.T) {
 	}
 }
 
-func TestRunNeoLoop_SuccessResetsRetryCount(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	var mu sync.Mutex
-	var runCalls int
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Call 1: startup failure (non-ExitError)
-	// Call 2: success (ExitError or nil — normal exit)
-	// Call 3: startup failure again
-	// Call 4: success, then cancel
-	// If retry count wasn't reset, call 3 would be "attempt 2" and we'd be closer to max.
-	// We verify no max-retry error is returned.
-	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		runCalls++
-		call := runCalls
-		mu.Unlock()
-		switch call {
-		case 1:
-			return errors.New("command not found") // startup failure
-		case 2:
-			return nil // success resets counter
-		case 3:
-			return errors.New("command not found") // startup failure again
-		case 4:
-			cancel()
-			return nil // success
-		default:
-			cancel()
-			return nil
-		}
-	}
-
-	err := runRootLoop(ctx, deps)
-	if err != nil {
-		t.Fatalf("expected nil error (retry count should have reset), got: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if runCalls < 4 {
-		t.Errorf("expected at least 4 runCommand calls, got %d", runCalls)
-	}
-}
-
-func TestRunNeoLoop_SessionIDWrittenEachIteration(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	var mu sync.Mutex
-	var sessionIDs []string
-	var iterations int
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	uuidCounter := 0
-	deps.newUUID = func() (string, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		uuidCounter++
-		return fmt.Sprintf("session-%d", uuidCounter), nil
-	}
-
-	deps.writeLastSessionID = func(root, id string) error {
-		mu.Lock()
-		sessionIDs = append(sessionIDs, id)
-		mu.Unlock()
-		return nil
-	}
-
-	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		mu.Unlock()
-		if iter >= 2 {
-			cancel()
-		}
-		return nil
-	}
-
-	err := runRootLoop(ctx, deps)
-	if err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(sessionIDs) < 2 {
-		t.Fatalf("expected at least 2 session IDs written, got %d", len(sessionIDs))
-	}
-	if sessionIDs[0] == sessionIDs[1] {
-		t.Errorf("expected different UUIDs each iteration, got %q and %q", sessionIDs[0], sessionIDs[1])
-	}
-}
-
-func TestRunNeoLoop_PromptRebuiltEachIteration(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	var mu sync.Mutex
-	var promptCalls int
-	var iterations int
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	deps.buildPrompt = func(cfg agent.PromptConfig) string {
-		mu.Lock()
-		promptCalls++
-		mu.Unlock()
-		return "system prompt"
-	}
-
-	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		mu.Unlock()
-		if iter >= 2 {
-			cancel()
-		}
-		return nil
-	}
-
-	err := runRootLoop(ctx, deps)
-	if err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if promptCalls < 2 {
-		t.Errorf("expected buildPrompt called at least 2 times, got %d", promptCalls)
-	}
-}
-
-func TestRunNeoLoop_ExitErrorNotCountedAsStartupFailure(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	var mu sync.Mutex
-	var runCalls int
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// All calls return ExitError (simulating Claude running then exiting non-zero).
-	// This should NOT trigger retry/max-retry logic — it's a normal exit.
-	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		runCalls++
-		call := runCalls
-		mu.Unlock()
-		if call >= 4 {
-			cancel()
-			return nil
-		}
-		// Return an exec.ExitError-like error (wrapping is enough for errors.As)
-		return &exec.ExitError{}
-	}
-
-	err := runRootLoop(ctx, deps)
-	if err != nil {
-		t.Fatalf("expected nil error (ExitError should not trigger max retries), got: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Should have run 4 times without hitting max retries (which is 3)
-	if runCalls < 4 {
-		t.Errorf("expected at least 4 iterations (ExitError = normal exit), got %d", runCalls)
-	}
-}
-
-func TestRunNeoLoop_MaxRetriesExceeded_WithTimeout(t *testing.T) {
-	deps := newTestRootLoopDeps(t)
-
-	deps.runCommand = func(name string, args []string) error {
-		return errors.New("command not found")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	err := runRootLoop(ctx, deps)
-	if err == nil {
-		t.Fatal("expected error after max retries, got nil")
-	}
-	if !strings.Contains(err.Error(), "3") {
-		t.Errorf("expected error to mention 3 retries, got: %v", err)
-	}
-}
-
-func TestRunNeoLoop_FindClaudeFailure(t *testing.T) {
+func TestRunRootSession_FindClaudeFailure(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 	deps.findClaude = func() (string, error) {
 		return "", errors.New("claude not found")
 	}
 
-	err := runRootLoop(context.Background(), deps)
+	err := runRootSession(context.Background(), deps)
 	if err == nil {
 		t.Fatal("expected error when claude not found, got nil")
 	}
@@ -488,34 +189,27 @@ func TestRunNeoLoop_FindClaudeFailure(t *testing.T) {
 	}
 }
 
-func TestRunNeoLoop_ContextBlobPassedToPrompt(t *testing.T) {
+func TestRunRootSession_ContextBlobPassedToPrompt(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	var capturedCfg agent.PromptConfig
 	deps.buildPrompt = func(cfg agent.PromptConfig) string {
 		capturedCfg = cfg
-		cancel() // stop after first iteration
 		return "system prompt"
 	}
 	deps.buildContextBlob = func(sprawlRoot, rootName string) (string, error) {
 		return "## Active State\n\ntest blob\n", nil
 	}
 
-	_ = runRootLoop(ctx, deps)
+	_ = runRootSession(context.Background(), deps)
 
 	if capturedCfg.ContextBlob != "## Active State\n\ntest blob\n" {
 		t.Errorf("expected context blob to be passed to buildPrompt, got: %q", capturedCfg.ContextBlob)
 	}
 }
 
-func TestRunNeoLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
+func TestRunRootSession_ContextBlobError_LogsAndContinues(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	var buf strings.Builder
 	deps.stdout = &buf
@@ -523,14 +217,13 @@ func TestRunNeoLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 	var capturedCfg agent.PromptConfig
 	deps.buildPrompt = func(cfg agent.PromptConfig) string {
 		capturedCfg = cfg
-		cancel() // stop after first iteration
 		return "system prompt"
 	}
 	deps.buildContextBlob = func(sprawlRoot, rootName string) (string, error) {
 		return "partial blob", fmt.Errorf("context blob errors: session read failed")
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	// Should not fail due to context blob error
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -548,11 +241,8 @@ func TestRunNeoLoop_ContextBlobError_LogsAndContinues(t *testing.T) {
 	}
 }
 
-func TestRunNeoLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
+func TestRunRootSession_TestMode_PropagatedToPromptConfig(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Override getenv to return "1" for SPRAWL_TEST_MODE
 	originalGetenv := deps.getenv
@@ -566,50 +256,40 @@ func TestRunNeoLoop_TestMode_PropagatedToPromptConfig(t *testing.T) {
 	var capturedCfg agent.PromptConfig
 	deps.buildPrompt = func(cfg agent.PromptConfig) string {
 		capturedCfg = cfg
-		cancel() // stop after first iteration
 		return "system prompt"
 	}
 
-	_ = runRootLoop(ctx, deps)
+	_ = runRootSession(context.Background(), deps)
 
 	if !capturedCfg.TestMode {
 		t.Error("expected PromptConfig.TestMode to be true when SPRAWL_TEST_MODE=1")
 	}
 }
 
-func TestRunNeoLoop_TestMode_NotSetWhenUnset(t *testing.T) {
+func TestRunRootSession_TestMode_NotSetWhenUnset(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	var capturedCfg agent.PromptConfig
 	deps.buildPrompt = func(cfg agent.PromptConfig) string {
 		capturedCfg = cfg
-		cancel() // stop after first iteration
 		return "system prompt"
 	}
 
-	_ = runRootLoop(ctx, deps)
+	_ = runRootSession(context.Background(), deps)
 
 	if capturedCfg.TestMode {
 		t.Error("expected PromptConfig.TestMode to be false when SPRAWL_TEST_MODE is not set")
 	}
 }
 
-func TestRunNeoLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
+func TestRunRootSession_MissedHandoff_AutoSummarizes(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var autoSummarizeCalled bool
 	var capturedSessionID string
 	var capturedCWD string
-	var claudeRan bool
 	var buf strings.Builder
 	deps.stdout = &buf
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// readLastSessionID returns a previous session ID
 	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
@@ -617,29 +297,20 @@ func TestRunNeoLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	}
 
 	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
-		mu.Lock()
 		autoSummarizeCalled = true
 		capturedSessionID = sessionID
 		capturedCWD = cwd
-		mu.Unlock()
 		return true, nil
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		claudeRan = true
-		mu.Unlock()
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if !autoSummarizeCalled {
 		t.Error("expected autoSummarize to be called")
@@ -650,24 +321,17 @@ func TestRunNeoLoop_MissedHandoff_AutoSummarizes(t *testing.T) {
 	if capturedCWD != "/fake/root" {
 		t.Errorf("expected autoSummarize called with cwd equal to sprawlRoot '/fake/root', got %q", capturedCWD)
 	}
-	if !claudeRan {
-		t.Error("expected claude to still run after autoSummarize")
-	}
 
 	output := buf.String()
-	if !strings.Contains(output, "[root-loop] Detected missed handoff from previous session, generating summary") {
-		t.Errorf("expected stdout to contain missed handoff feedback message with [root-loop] prefix, got: %q", output)
+	if !strings.Contains(output, "Detected missed handoff from previous session") {
+		t.Errorf("expected stdout to contain missed handoff feedback message, got: %q", output)
 	}
 }
 
-func TestRunNeoLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
+func TestRunRootSession_MissedHandoff_AlreadySummarized(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var claudeRan bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
@@ -679,34 +343,24 @@ func TestRunNeoLoop_MissedHandoff_AlreadySummarized(t *testing.T) {
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
 		claudeRan = true
-		mu.Unlock()
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
 	if !claudeRan {
-		t.Error("expected loop to continue normally and run claude")
+		t.Error("expected claude to still run after already-summarized session")
 	}
 }
 
-func TestRunNeoLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
+func TestRunRootSession_MissedHandoff_Error_Continues(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var claudeRan bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
 		return "prev-session-id", nil
@@ -718,34 +372,24 @@ func TestRunNeoLoop_MissedHandoff_Error_ContinuesLoop(t *testing.T) {
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
 		claudeRan = true
-		mu.Unlock()
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
-		t.Fatalf("expected nil error (loop should not abort on autoSummarize error), got: %v", err)
+		t.Fatalf("expected nil error (should not abort on autoSummarize error), got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if !claudeRan {
 		t.Error("expected claude to still run despite autoSummarize error")
 	}
 }
 
-func TestRunNeoLoop_FirstSession_NoLastID(t *testing.T) {
+func TestRunRootSession_FirstSession_NoLastID(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var autoSummarizeCalled bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// readLastSessionID returns empty string (first session)
 	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
@@ -753,39 +397,29 @@ func TestRunNeoLoop_FirstSession_NoLastID(t *testing.T) {
 	}
 
 	deps.autoSummarize = func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error) {
-		mu.Lock()
 		autoSummarizeCalled = true
-		mu.Unlock()
 		return false, nil
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if autoSummarizeCalled {
 		t.Error("expected autoSummarize NOT to be called when readLastSessionID returns empty string")
 	}
 }
 
-func TestRunNeoLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
+func TestRunRootSession_HandoffSignal_CallsConsolidate(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var consolidateCalled bool
 	var consolidateSprawlRoot string
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Handoff signal file exists
 	deps.readFile = func(path string) ([]byte, error) {
@@ -797,34 +431,19 @@ func TestRunNeoLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
 	deps.removeFile = func(path string) error { return nil }
 
 	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
-		mu.Lock()
 		consolidateCalled = true
 		consolidateSprawlRoot = sprawlRoot
-		mu.Unlock()
 		return nil
 	}
 
-	iterations := 0
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		mu.Unlock()
-		// Cancel on 2nd iteration so the 1st iteration completes fully
-		// (including post-handoff consolidation).
-		if iter >= 2 {
-			cancel()
-		}
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if !consolidateCalled {
 		t.Error("expected consolidate to be called after handoff signal")
@@ -834,50 +453,34 @@ func TestRunNeoLoop_HandoffSignal_CallsConsolidate(t *testing.T) {
 	}
 }
 
-func TestRunNeoLoop_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
+func TestRunRootSession_NoHandoff_DoesNotCallConsolidate(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var consolidateCalled bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// No handoff signal (readFile returns ErrNotExist by default)
 
 	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
-		mu.Lock()
 		consolidateCalled = true
-		mu.Unlock()
 		return nil
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if consolidateCalled {
 		t.Error("expected consolidate NOT to be called when there is no handoff signal")
 	}
 }
 
-func TestRunNeoLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
+func TestRunRootSession_Consolidate_Error_DoesNotFail(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
-
-	var mu sync.Mutex
-	var claudeRan bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	var buf strings.Builder
 	deps.stdout = &buf
@@ -895,29 +498,13 @@ func TestRunNeoLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 		return fmt.Errorf("consolidation failed")
 	}
 
-	iterations := 0
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		claudeRan = true
-		mu.Unlock()
-		if iter >= 2 {
-			cancel()
-		}
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
-		t.Fatalf("expected nil error (loop should continue despite consolidation error), got: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if !claudeRan {
-		t.Error("expected claude to still run despite consolidation error")
+		t.Fatalf("expected nil error (consolidation error should be warning only), got: %v", err)
 	}
 
 	output := buf.String()
@@ -926,16 +513,12 @@ func TestRunNeoLoop_Consolidate_Error_ContinuesLoop(t *testing.T) {
 	}
 }
 
-func TestRunNeoLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
+func TestRunRootSession_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var updatePKCalled bool
 	var capturedSummary string
 	var capturedBullets string
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Handoff signal file exists
 	deps.readFile = func(path string) ([]byte, error) {
@@ -960,33 +543,20 @@ func TestRunNeoLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
 	}
 
 	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
-		mu.Lock()
 		updatePKCalled = true
 		capturedSummary = sessionSummary
 		capturedBullets = timelineBullets
-		mu.Unlock()
 		return nil
 	}
 
-	iterations := 0
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		mu.Unlock()
-		if iter >= 2 {
-			cancel()
-		}
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if !updatePKCalled {
 		t.Error("expected updatePersistentKnowledge to be called after handoff signal")
@@ -1003,50 +573,34 @@ func TestRunNeoLoop_HandoffSignal_CallsUpdatePersistentKnowledge(t *testing.T) {
 	}
 }
 
-func TestRunNeoLoop_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing.T) {
+func TestRunRootSession_NoHandoff_DoesNotCallUpdatePersistentKnowledge(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var updatePKCalled bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// No handoff signal (readFile returns ErrNotExist by default)
 
 	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
-		mu.Lock()
 		updatePKCalled = true
-		mu.Unlock()
 		return nil
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if updatePKCalled {
 		t.Error("expected updatePersistentKnowledge NOT to be called when there is no handoff signal")
 	}
 }
 
-func TestRunNeoLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.T) {
+func TestRunRootSession_UpdatePersistentKnowledge_Error_DoesNotFail(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
-
-	var mu sync.Mutex
-	var claudeRan bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	var buf strings.Builder
 	deps.stdout = &buf
@@ -1064,29 +618,13 @@ func TestRunNeoLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.T) 
 		return fmt.Errorf("knowledge update failed")
 	}
 
-	iterations := 0
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		claudeRan = true
-		mu.Unlock()
-		if iter >= 2 {
-			cancel()
-		}
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
-		t.Fatalf("expected nil error (loop should continue despite PK update error), got: %v", err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	if !claudeRan {
-		t.Error("expected claude to still run despite updatePersistentKnowledge error")
+		t.Fatalf("expected nil error (PK update error should be warning only), got: %v", err)
 	}
 
 	output := buf.String()
@@ -1095,14 +633,10 @@ func TestRunNeoLoop_UpdatePersistentKnowledge_Error_ContinuesLoop(t *testing.T) 
 	}
 }
 
-func TestRunNeoLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *testing.T) {
+func TestRunRootSession_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var callOrder []string
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Handoff signal file exists
 	deps.readFile = func(path string) ([]byte, error) {
@@ -1114,38 +648,23 @@ func TestRunNeoLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *
 	deps.removeFile = func(path string) error { return nil }
 
 	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
-		mu.Lock()
 		callOrder = append(callOrder, "consolidate")
-		mu.Unlock()
 		return nil
 	}
 
 	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
-		mu.Lock()
 		callOrder = append(callOrder, "updatePersistentKnowledge")
-		mu.Unlock()
 		return nil
 	}
 
-	iterations := 0
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
-		iterations++
-		iter := iterations
-		mu.Unlock()
-		if iter >= 2 {
-			cancel()
-		}
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if len(callOrder) < 2 {
 		t.Fatalf("expected at least 2 calls (consolidate + updatePersistentKnowledge), got %d: %v", len(callOrder), callOrder)
@@ -1174,17 +693,13 @@ func TestRunNeoLoop_HandoffSignal_UpdatePersistentKnowledge_AfterConsolidate(t *
 	}
 }
 
-func TestRunNeoLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
+func TestRunRootSession_AutoSummarize_RunsConsolidation(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var consolidateCalled bool
 	var updatePKCalled bool
 	var capturedSummary string
 	var capturedBullets string
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Previous session exists (missed handoff scenario)
 	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
@@ -1197,9 +712,7 @@ func TestRunNeoLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 	}
 
 	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
-		mu.Lock()
 		consolidateCalled = true
-		mu.Unlock()
 		return nil
 	}
 
@@ -1216,26 +729,20 @@ func TestRunNeoLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 	}
 
 	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
-		mu.Lock()
 		updatePKCalled = true
 		capturedSummary = sessionSummary
 		capturedBullets = timelineBullets
-		mu.Unlock()
 		return nil
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if !consolidateCalled {
 		t.Error("expected consolidate to be called after auto-summarize")
@@ -1251,14 +758,10 @@ func TestRunNeoLoop_AutoSummarize_RunsConsolidation(t *testing.T) {
 	}
 }
 
-func TestRunNeoLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
+func TestRunRootSession_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var consolidateCalled bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Previous session exists
 	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
@@ -1271,39 +774,28 @@ func TestRunNeoLoop_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
 	}
 
 	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
-		mu.Lock()
 		consolidateCalled = true
-		mu.Unlock()
 		return nil
 	}
 
-	// No handoff signal either
 	deps.runCommand = func(name string, args []string) error {
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if consolidateCalled {
 		t.Error("expected consolidate NOT to be called when auto-summarize is a no-op")
 	}
 }
 
-func TestRunNeoLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing.T) {
+func TestRunRootSession_AutoSummarize_ConsolidationError_Continues(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
-	var mu sync.Mutex
 	var claudeRan bool
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	var buf strings.Builder
 	deps.stdout = &buf
@@ -1326,20 +818,14 @@ func TestRunNeoLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing.T)
 	}
 
 	deps.runCommand = func(name string, args []string) error {
-		mu.Lock()
 		claudeRan = true
-		mu.Unlock()
-		cancel()
 		return nil
 	}
 
-	err := runRootLoop(ctx, deps)
+	err := runRootSession(context.Background(), deps)
 	if err != nil {
-		t.Fatalf("expected nil error (loop should continue despite consolidation errors), got: %v", err)
+		t.Fatalf("expected nil error (should continue despite consolidation errors), got: %v", err)
 	}
-
-	mu.Lock()
-	defer mu.Unlock()
 
 	if !claudeRan {
 		t.Error("expected claude to still run despite consolidation errors after auto-summarize")
@@ -1348,5 +834,49 @@ func TestRunNeoLoop_AutoSummarize_ConsolidationError_ContinuesLoop(t *testing.T)
 	output := buf.String()
 	if !strings.Contains(output, "consolidat") {
 		t.Errorf("expected warning about consolidation in output, got: %q", output)
+	}
+}
+
+func TestRunRootSession_UUIDFailure_ReturnsError(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+
+	deps.newUUID = func() (string, error) {
+		return "", errors.New("uuid generation failed")
+	}
+
+	err := runRootSession(context.Background(), deps)
+	if err == nil {
+		t.Fatal("expected error when UUID generation fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "session ID") {
+		t.Errorf("expected error to mention session ID, got: %v", err)
+	}
+}
+
+func TestRunRootSession_SessionIDWritten(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+
+	var sessionIDWritten string
+
+	deps.newUUID = func() (string, error) {
+		return "test-session-123", nil
+	}
+
+	deps.writeLastSessionID = func(root, id string) error {
+		sessionIDWritten = id
+		return nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		return nil
+	}
+
+	err := runRootSession(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	if sessionIDWritten != "test-session-123" {
+		t.Errorf("expected session ID 'test-session-123' to be written, got %q", sessionIDWritten)
 	}
 }
