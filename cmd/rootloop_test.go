@@ -8,12 +8,31 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/memory"
 )
+
+// syncBuffer is a thread-safe buffer for capturing spinner output in tests.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // newTestRootLoopDeps creates a rootLoopDeps with sensible defaults for testing.
 func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
@@ -878,5 +897,89 @@ func TestRunRootSession_SessionIDWritten(t *testing.T) {
 
 	if sessionIDWritten != "test-session-123" {
 		t.Errorf("expected session ID 'test-session-123' to be written, got %q", sessionIDWritten)
+	}
+}
+
+func TestSpinner_StartsAndStops(t *testing.T) {
+	var buf syncBuffer
+	sp := startSpinner(&buf, "testing...")
+	// Give enough time for at least 1 frame at 150ms tick rate.
+	time.Sleep(500 * time.Millisecond)
+	sp.stop() // stop() blocks until goroutine exits and clears line
+
+	output := buf.String()
+	if !strings.Contains(output, "testing...") {
+		t.Errorf("expected output to contain label 'testing...', got: %q", output)
+	}
+}
+
+func TestSpinner_DisplaysElapsedTime(t *testing.T) {
+	var buf syncBuffer
+	sp := startSpinner(&buf, "working...")
+	time.Sleep(500 * time.Millisecond)
+	sp.stop()
+
+	output := buf.String()
+	// Accept either (0s) or (1s) depending on scheduling.
+	if !strings.Contains(output, "(0s)") && !strings.Contains(output, "(1s)") {
+		t.Errorf("expected output to contain elapsed time like '(0s)' or '(1s)', got: %q", output)
+	}
+}
+
+func TestSpinner_StopClearsLine(t *testing.T) {
+	var buf syncBuffer
+	sp := startSpinner(&buf, "clearing...")
+	time.Sleep(500 * time.Millisecond)
+	// stop() uses WaitGroup to ensure goroutine has finished writing the
+	// clear-line escape before returning. No race with buf.String() below.
+	sp.stop()
+
+	output := buf.String()
+	if !strings.HasSuffix(output, "\033[2K\r") {
+		t.Errorf("expected output to end with clear-line escape, got suffix: %q", output[max(0, len(output)-20):])
+	}
+}
+
+func TestSpinner_CyclesThroughFrames(t *testing.T) {
+	var buf syncBuffer
+	sp := startSpinner(&buf, "cycling...")
+	time.Sleep(2 * time.Second) // enough for 10+ frames at 150ms tick
+	sp.stop()
+
+	output := buf.String()
+	frames := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+	distinctFrames := 0
+	for _, f := range frames {
+		if strings.ContainsRune(output, f) {
+			distinctFrames++
+		}
+	}
+	if distinctFrames < 2 {
+		t.Errorf("expected at least 2 distinct spinner frames, found %d in output: %q", distinctFrames, output)
+	}
+}
+
+func TestSpinner_IncludesRootLoopPrefix(t *testing.T) {
+	var buf syncBuffer
+	sp := startSpinner(&buf, "prefixed...")
+	time.Sleep(500 * time.Millisecond)
+	sp.stop()
+
+	output := buf.String()
+	if !strings.Contains(output, "[root-loop]") {
+		t.Errorf("expected output to contain '[root-loop]' prefix, got: %q", output)
+	}
+}
+
+func TestSpinner_ImmediateStop(t *testing.T) {
+	// Verify stop works even if called before any frame renders.
+	var buf syncBuffer
+	sp := startSpinner(&buf, "quick...")
+	sp.stop()
+
+	output := buf.String()
+	// Should at minimum have the clear-line escape from stop.
+	if !strings.HasSuffix(output, "\033[2K\r") {
+		t.Errorf("expected output to end with clear-line escape after immediate stop, got: %q", output)
 	}
 }

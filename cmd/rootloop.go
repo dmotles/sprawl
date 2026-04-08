@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
@@ -149,8 +150,10 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 		if homeErr != nil {
 			fmt.Fprintf(deps.stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
 		} else {
-			fmt.Fprintf(deps.stdout, "[root-loop] Detected missed handoff from previous session, generating summary...\n")
+			fmt.Fprintf(deps.stdout, "[root-loop] Detected missed handoff from previous session\n")
+			sp := startSpinner(deps.stdout, "auto-summarizing...")
 			summarized, sumErr := deps.autoSummarize(ctx, sprawlRoot, sprawlRoot, homeDir, prevSessionID, deps.newCLIInvoker())
+			sp.stop()
 			if sumErr != nil {
 				fmt.Fprintf(deps.stdout, "[root-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
 			} else if summarized {
@@ -233,8 +236,11 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 // runConsolidationPipeline runs timeline consolidation and persistent knowledge
 // update. Both steps are best-effort: failures are logged as warnings.
 func runConsolidationPipeline(ctx context.Context, deps *rootLoopDeps, sprawlRoot string) {
-	if err := deps.consolidate(ctx, sprawlRoot, deps.newCLIInvoker(), nil, nil); err != nil {
-		fmt.Fprintf(deps.stdout, "[root-loop] warning: consolidation failed: %v\n", err)
+	sp := startSpinner(deps.stdout, "consolidating timeline...")
+	cErr := deps.consolidate(ctx, sprawlRoot, deps.newCLIInvoker(), nil, nil)
+	sp.stop()
+	if cErr != nil {
+		fmt.Fprintf(deps.stdout, "[root-loop] warning: consolidation failed: %v\n", cErr)
 	}
 
 	var sessionSummary string
@@ -255,7 +261,56 @@ func runConsolidationPipeline(ctx context.Context, deps *rootLoopDeps, sprawlRoo
 		timelineBullets = tlb.String()
 	}
 
-	if err := deps.updatePersistentKnowledge(ctx, sprawlRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets); err != nil {
-		fmt.Fprintf(deps.stdout, "[root-loop] warning: persistent knowledge update failed: %v\n", err)
+	sp = startSpinner(deps.stdout, "updating persistent knowledge...")
+	pkErr := deps.updatePersistentKnowledge(ctx, sprawlRoot, deps.newCLIInvoker(), nil, sessionSummary, timelineBullets)
+	sp.stop()
+	if pkErr != nil {
+		fmt.Fprintf(deps.stdout, "[root-loop] warning: persistent knowledge update failed: %v\n", pkErr)
+	}
+}
+
+// spinner displays an animated progress indicator on a single terminal line.
+type spinner struct {
+	w     io.Writer
+	label string
+	done  chan struct{}
+	wg    sync.WaitGroup
+}
+
+// startSpinner starts a background goroutine that animates the spinner.
+func startSpinner(w io.Writer, label string) *spinner {
+	s := &spinner{
+		w:     w,
+		label: label,
+		done:  make(chan struct{}),
+	}
+	s.wg.Add(1)
+	go s.run()
+	return s
+}
+
+// stop halts the spinner and clears the line. Blocks until cleanup is done.
+func (s *spinner) stop() {
+	close(s.done)
+	s.wg.Wait()
+}
+
+func (s *spinner) run() {
+	defer s.wg.Done()
+	frames := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
+	start := time.Now()
+	tick := time.NewTicker(150 * time.Millisecond)
+	defer tick.Stop()
+	i := 0
+	for {
+		select {
+		case <-s.done:
+			fmt.Fprintf(s.w, "\033[2K\r")
+			return
+		case <-tick.C:
+			elapsed := time.Since(start).Truncate(time.Second)
+			fmt.Fprintf(s.w, "\033[2K\r[root-loop]   %c %s (%s)", frames[i%len(frames)], s.label, elapsed)
+			i++
+		}
 	}
 }
