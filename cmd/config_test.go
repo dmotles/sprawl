@@ -21,8 +21,9 @@ func newTestConfigDeps(t *testing.T) (*configDeps, string) {
 			}
 			return ""
 		},
-		stdout: &stdout,
-		stderr: &stderr,
+		stdout:   &stdout,
+		stderr:   &stderr,
+		readFile: os.ReadFile,
 	}
 	return deps, tmpDir
 }
@@ -162,5 +163,74 @@ func TestConfigSet_MissingSprawlRoot(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
 		t.Errorf("error should mention SPRAWL_ROOT, got: %v", err)
+	}
+}
+
+func TestConfigSet_DottedKey_RoundTrip(t *testing.T) {
+	deps, tmpDir := newTestConfigDeps(t)
+	os.MkdirAll(filepath.Join(tmpDir, ".sprawl"), 0o755)
+
+	err := runConfigSet(deps, "worktree.setup", "npm install")
+	if err != nil {
+		t.Fatalf("runConfigSet error: %v", err)
+	}
+
+	// Reset stdout buffer for the get call
+	deps.stdout = &bytes.Buffer{}
+	err = runConfigGet(deps, "worktree.setup")
+	if err != nil {
+		t.Fatalf("runConfigGet error: %v", err)
+	}
+
+	stdout := deps.stdout.(*bytes.Buffer).String()
+	if !strings.Contains(stdout, "npm install") {
+		t.Errorf("stdout should contain 'npm install', got: %q", stdout)
+	}
+}
+
+func TestConfigSet_FileFlag_ReadsFileContents(t *testing.T) {
+	deps, _ := newTestConfigDeps(t)
+
+	// Create a temp file with script content
+	tmpFile := filepath.Join(t.TempDir(), "setup.sh")
+	os.WriteFile(tmpFile, []byte("npm install\n"), 0o644)
+
+	key, value, err := resolveConfigSetValue(deps, []string{"worktree.setup"}, tmpFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "worktree.setup" {
+		t.Errorf("key = %q, want %q", key, "worktree.setup")
+	}
+	if value != "npm install" {
+		t.Errorf("value = %q, want %q (trailing newline should be trimmed)", value, "npm install")
+	}
+}
+
+func TestConfigSet_FileFlag_MissingFile(t *testing.T) {
+	deps, _ := newTestConfigDeps(t)
+
+	_, _, err := resolveConfigSetValue(deps, []string{"worktree.setup"}, "/nonexistent/file.sh")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestConfigSet_FileFlag_PreservesMultilineContent(t *testing.T) {
+	deps, _ := newTestConfigDeps(t)
+
+	tmpFile := filepath.Join(t.TempDir(), "setup.sh")
+	os.WriteFile(tmpFile, []byte("npm install\ncp .env.example .env\n"), 0o644)
+
+	key, value, err := resolveConfigSetValue(deps, []string{"worktree.setup"}, tmpFile)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "worktree.setup" {
+		t.Errorf("key = %q, want %q", key, "worktree.setup")
+	}
+	expected := "npm install\ncp .env.example .env"
+	if value != expected {
+		t.Errorf("value = %q, want %q (only trailing newline should be trimmed)", value, expected)
 	}
 }

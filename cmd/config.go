@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/spf13/cobra"
@@ -11,16 +12,18 @@ import (
 )
 
 type configDeps struct {
-	getenv func(string) string
-	stdout io.Writer
-	stderr io.Writer
+	getenv   func(string) string
+	stdout   io.Writer
+	stderr   io.Writer
+	readFile func(string) ([]byte, error)
 }
 
 func resolveConfigDeps() *configDeps {
 	return &configDeps{
-		getenv: os.Getenv,
-		stdout: os.Stdout,
-		stderr: os.Stderr,
+		getenv:   os.Getenv,
+		stdout:   os.Stdout,
+		stderr:   os.Stderr,
+		readFile: os.ReadFile,
 	}
 }
 
@@ -38,12 +41,30 @@ Examples:
   sprawl config show`,
 }
 
+var configSetFile string
+
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Set a configuration value",
-	Args:  cobra.ExactArgs(2),
+	Args: func(_ *cobra.Command, args []string) error {
+		if configSetFile != "" {
+			if len(args) != 1 {
+				return fmt.Errorf("with --file, exactly 1 argument (key) is required")
+			}
+			return nil
+		}
+		if len(args) != 2 {
+			return fmt.Errorf("exactly 2 arguments (key and value) are required")
+		}
+		return nil
+	},
 	RunE: func(_ *cobra.Command, args []string) error {
-		return runConfigSet(resolveConfigDeps(), args[0], args[1])
+		deps := resolveConfigDeps()
+		key, value, err := resolveConfigSetValue(deps, args, configSetFile)
+		if err != nil {
+			return err
+		}
+		return runConfigSet(deps, key, value)
 	},
 }
 
@@ -66,6 +87,7 @@ var configShowCmd = &cobra.Command{
 }
 
 func init() {
+	configSetCmd.Flags().StringVar(&configSetFile, "file", "", "Read value from file instead of argument")
 	configCmd.AddCommand(configSetCmd)
 	configCmd.AddCommand(configGetCmd)
 	configCmd.AddCommand(configShowCmd)
@@ -117,6 +139,24 @@ func runConfigGet(deps *configDeps, key string) error {
 		fmt.Fprintln(deps.stdout, val)
 	}
 	return nil
+}
+
+// resolveConfigSetValue resolves the key and value for config set.
+// If filePath is non-empty, the value is read from the file (trailing newline trimmed).
+// Otherwise, key=args[0] and value=args[1].
+func resolveConfigSetValue(deps *configDeps, args []string, filePath string) (string, string, error) {
+	if filePath != "" {
+		data, err := deps.readFile(filePath)
+		if err != nil {
+			return "", "", fmt.Errorf("reading file %s: %w", filePath, err)
+		}
+		value := strings.TrimRight(string(data), "\n")
+		return args[0], value, nil
+	}
+	if len(args) < 2 {
+		return "", "", fmt.Errorf("value argument is required when --file is not used")
+	}
+	return args[0], args[1], nil
 }
 
 func runConfigShow(deps *configDeps) error {

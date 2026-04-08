@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/dmotles/sprawl/internal/worktree"
@@ -48,6 +49,9 @@ type spawnDeps struct {
 	currentBranch   func(repoRoot string) (string, error)
 	findSprawl      func() (string, error)
 	newSpawnLock    func(lockPath string) (acquire func() error, release func() error)
+	loadConfig      func(sprawlRoot string) (*config.Config, error)
+	runScript       func(script, workDir string, env map[string]string) ([]byte, error)
+	worktreeRemove  func(repoRoot, worktreePath string, force bool) error
 }
 
 var defaultSpawnDeps *spawnDeps
@@ -105,6 +109,9 @@ func resolveSpawnDeps() (*spawnDeps, error) {
 			fl := flock.New(lockPath)
 			return fl.Lock, fl.Unlock
 		},
+		loadConfig:     config.Load,
+		runScript:      runBashScript,
+		worktreeRemove: realWorktreeRemove,
 	}, nil
 }
 
@@ -166,6 +173,24 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	worktreePath, branchName, err := deps.worktreeCreator.Create(sprawlRoot, agentName, branch, baseBranch)
 	if err != nil {
 		return fmt.Errorf("creating worktree for %s: %w", agentName, err)
+	}
+
+	// Run worktree setup script if configured
+	cfg, cfgErr := deps.loadConfig(sprawlRoot)
+	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not load config: %v\n", cfgErr)
+	} else if setupScript, ok := cfg.Get("worktree.setup"); ok && setupScript != "" {
+		setupEnv := map[string]string{
+			"SPRAWL_AGENT_IDENTITY": agentName,
+			"SPRAWL_ROOT":           sprawlRoot,
+		}
+		fmt.Fprintf(os.Stderr, "Running worktree setup script for %s...\n", agentName)
+		output, scriptErr := deps.runScript(setupScript, worktreePath, setupEnv)
+		if scriptErr != nil {
+			// Clean up the partially-created worktree
+			_ = deps.worktreeRemove(sprawlRoot, worktreePath, true)
+			return fmt.Errorf("worktree setup script failed for %s:\n%s\nEscalate to your parent agent or the user — agent spawning is broken and needs attention", agentName, string(output))
+		}
 	}
 
 	// Find sprawl binary

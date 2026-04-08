@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
 )
@@ -160,6 +161,9 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 		newSpawnLock: func(lockPath string) (func() error, func() error) {
 			return func() error { return nil }, func() error { return nil }
 		},
+		loadConfig:     func(string) (*config.Config, error) { return &config.Config{}, nil },
+		runScript:      func(string, string, map[string]string) ([]byte, error) { return nil, nil },
+		worktreeRemove: func(string, string, bool) error { return nil },
 	}
 
 	// Ensure agents dir exists
@@ -956,5 +960,108 @@ func TestSpawn_SpawnLockAcquireFailure(t *testing.T) {
 	// Nothing else should have been called
 	if runner.newSessionWithWindowCalled || runner.newWindowCalled {
 		t.Error("tmux should not be called when lock acquisition fails")
+	}
+}
+
+func TestSpawn_SetupScript_Runs(t *testing.T) {
+	deps, _, _, tmpDir := newTestSpawnDeps(t)
+
+	// Configure a setup script
+	setupScript := "npm install"
+	cfg := &config.Config{}
+	cfg.Set("worktree.setup", setupScript)
+
+	deps.loadConfig = func(string) (*config.Config, error) {
+		return cfg, nil
+	}
+
+	var scriptCalled bool
+	var gotScript, gotWorkDir string
+	var gotEnv map[string]string
+	deps.runScript = func(script, workDir string, env map[string]string) ([]byte, error) {
+		scriptCalled = true
+		gotScript = script
+		gotWorkDir = workDir
+		gotEnv = env
+		return []byte("ok"), nil
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !scriptCalled {
+		t.Fatal("expected runScript to be called when worktree.setup is configured")
+	}
+	if gotScript != setupScript {
+		t.Errorf("script = %q, want %q", gotScript, setupScript)
+	}
+
+	expectedName := agent.EngineerNames[0]
+	expectedWorktree := filepath.Join(tmpDir, ".sprawl", "worktrees", expectedName)
+	if gotWorkDir != expectedWorktree {
+		t.Errorf("workDir = %q, want %q", gotWorkDir, expectedWorktree)
+	}
+
+	if gotEnv["SPRAWL_AGENT_IDENTITY"] == "" {
+		t.Error("env should contain SPRAWL_AGENT_IDENTITY")
+	}
+	if gotEnv["SPRAWL_ROOT"] != tmpDir {
+		t.Errorf("env SPRAWL_ROOT = %q, want %q", gotEnv["SPRAWL_ROOT"], tmpDir)
+	}
+}
+
+func TestSpawn_SetupScript_Failure_CleansUpWorktree(t *testing.T) {
+	deps, _, _, _ := newTestSpawnDeps(t)
+
+	cfg := &config.Config{}
+	cfg.Set("worktree.setup", "npm install")
+
+	deps.loadConfig = func(string) (*config.Config, error) {
+		return cfg, nil
+	}
+	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+		return []byte("ERR"), errors.New("script failed")
+	}
+
+	var worktreeRemoved bool
+	deps.worktreeRemove = func(repoRoot, worktreePath string, force bool) error {
+		worktreeRemoved = true
+		return nil
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err == nil {
+		t.Fatal("expected error when setup script fails")
+	}
+	if !strings.Contains(err.Error(), "setup script failed") {
+		t.Errorf("error should contain 'setup script failed', got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Escalate") {
+		t.Errorf("error should contain 'Escalate', got: %v", err)
+	}
+	if !worktreeRemoved {
+		t.Error("expected worktreeRemove to be called on setup script failure")
+	}
+}
+
+func TestSpawn_SetupScript_NotConfigured_Skipped(t *testing.T) {
+	deps, _, _, _ := newTestSpawnDeps(t)
+
+	// Default empty config (no worktree.setup)
+	var scriptCalled bool
+	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+		scriptCalled = true
+		return nil, nil
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if scriptCalled {
+		t.Error("runScript should NOT be called when worktree.setup is not configured")
 	}
 }

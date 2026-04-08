@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -64,6 +65,7 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 		loadConfig: func(sprawlRoot string) (*config.Config, error) {
 			return &config.Config{}, nil
 		},
+		runScript: func(string, string, map[string]string) ([]byte, error) { return nil, nil },
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
@@ -1577,5 +1579,165 @@ func TestRetire_MergeFlag_ConfigLoadError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "loading config") {
 		t.Errorf("error should mention config loading, got: %v", err)
+	}
+}
+
+func TestRetire_TeardownScript_Runs(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+	runner.pidsErr = os.ErrNotExist
+
+	worktreePath := filepath.Join(tmpDir, ".sprawl", "worktrees", "alice")
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "sprawl/alice",
+		Worktree:    worktreePath,
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	teardownScript := "rm -rf node_modules"
+	cfg := &config.Config{}
+	cfg.Set("worktree.teardown", teardownScript)
+	deps.loadConfig = func(string) (*config.Config, error) {
+		return cfg, nil
+	}
+
+	var scriptCalled bool
+	var gotScript, gotWorkDir string
+	var gotEnv map[string]string
+	deps.runScript = func(script, workDir string, env map[string]string) ([]byte, error) {
+		scriptCalled = true
+		gotScript = script
+		gotWorkDir = workDir
+		gotEnv = env
+		return []byte("ok"), nil
+	}
+
+	err := runRetire(deps, "alice", false, false, false, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !scriptCalled {
+		t.Fatal("expected runScript to be called when worktree.teardown is configured")
+	}
+	if gotScript != teardownScript {
+		t.Errorf("script = %q, want %q", gotScript, teardownScript)
+	}
+	if gotWorkDir != worktreePath {
+		t.Errorf("workDir = %q, want %q", gotWorkDir, worktreePath)
+	}
+	if gotEnv == nil {
+		t.Fatal("expected env to be non-nil")
+	}
+	if gotEnv["SPRAWL_AGENT_IDENTITY"] != "alice" {
+		t.Errorf("env SPRAWL_AGENT_IDENTITY = %q, want %q", gotEnv["SPRAWL_AGENT_IDENTITY"], "alice")
+	}
+	if gotEnv["SPRAWL_ROOT"] != tmpDir {
+		t.Errorf("env SPRAWL_ROOT = %q, want %q", gotEnv["SPRAWL_ROOT"], tmpDir)
+	}
+}
+
+func TestRetire_TeardownScript_Failure_ContinuesRetirement(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+	runner.pidsErr = os.ErrNotExist
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "sprawl/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	cfg := &config.Config{}
+	cfg.Set("worktree.teardown", "exit 1")
+	deps.loadConfig = func(string) (*config.Config, error) {
+		return cfg, nil
+	}
+	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+		return []byte("ERR"), errors.New("teardown failed")
+	}
+
+	err := runRetire(deps, "alice", false, false, false, false, false)
+	if err != nil {
+		t.Fatalf("retirement should succeed even when teardown script fails, got: %v", err)
+	}
+
+	// Agent state should be deleted (retirement completed)
+	_, loadErr := state.LoadAgent(tmpDir, "alice")
+	if loadErr == nil {
+		t.Error("agent state should be deleted after successful retirement")
+	}
+}
+
+func TestRetire_TeardownScript_NotConfigured_Skipped(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+	runner.pidsErr = os.ErrNotExist
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "sprawl/alice",
+		Worktree:    filepath.Join(tmpDir, ".sprawl", "worktrees", "alice"),
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	var scriptCalled bool
+	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+		scriptCalled = true
+		return nil, nil
+	}
+
+	err := runRetire(deps, "alice", false, false, false, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if scriptCalled {
+		t.Error("runScript should NOT be called when worktree.teardown is not configured")
+	}
+}
+
+func TestRetire_TeardownScript_SubagentSkipped(t *testing.T) {
+	deps, runner, tmpDir := newTestRetireDeps(t)
+	runner.pidsErr = os.ErrNotExist
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name:        "alice",
+		Status:      "active",
+		Branch:      "",
+		Worktree:    "",
+		Subagent:    true,
+		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
+		TmuxWindow:  "alice",
+		Parent:      "root",
+	})
+
+	cfg := &config.Config{}
+	cfg.Set("worktree.teardown", "cleanup")
+	deps.loadConfig = func(string) (*config.Config, error) {
+		return cfg, nil
+	}
+
+	var scriptCalled bool
+	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+		scriptCalled = true
+		return nil, nil
+	}
+
+	err := runRetire(deps, "alice", false, false, false, false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if scriptCalled {
+		t.Error("runScript should NOT be called for subagents")
 	}
 }

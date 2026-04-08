@@ -36,6 +36,7 @@ type retireDeps struct {
 	currentBranch       func(repoRoot string) (string, error)
 	gitUnmergedCommits  func(repoRoot, branchName string) ([]string, error)
 	loadConfig          func(sprawlRoot string) (*config.Config, error)
+	runScript           func(script, workDir string, env map[string]string) ([]byte, error)
 }
 
 var defaultRetireDeps *retireDeps
@@ -116,6 +117,7 @@ func resolveRetireDeps() (*retireDeps, error) {
 		currentBranch:      gitCurrentBranch,
 		gitUnmergedCommits: realGitUnmergedCommits,
 		loadConfig:         config.Load,
+		runScript:          runBashScript,
 	}, nil
 }
 
@@ -187,6 +189,7 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 
 	// If already in "retiring" state, resume from where we left off (crash recovery)
 	if agentState.Status == "retiring" {
+		runTeardownScript(deps, sprawlRoot, agentState)
 		rd := buildRetireDeps(deps)
 		if err := agent.RetireAgent(rd, sprawlRoot, agentState, force, true); err != nil {
 			return err
@@ -263,6 +266,9 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 		return fmt.Errorf("updating agent state: %w", err)
 	}
 
+	// Run worktree teardown script if configured (before worktree removal)
+	runTeardownScript(deps, sprawlRoot, agentState)
+
 	rd := buildRetireDeps(deps)
 	if err := agent.RetireAgent(rd, sprawlRoot, agentState, force, false); err != nil {
 		return err
@@ -275,6 +281,34 @@ func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, merg
 	_ = deps.removeFile(pokePath)
 	printRetireSuccess(agentState, abandon, mergeFirst, deps, sprawlRoot)
 	return nil
+}
+
+// runTeardownScript runs the worktree.teardown script if configured.
+// Failures are logged as warnings but do not stop retirement.
+func runTeardownScript(deps *retireDeps, sprawlRoot string, agentState *state.AgentState) {
+	if agentState.Worktree == "" || agentState.Subagent {
+		return
+	}
+
+	cfg, err := deps.loadConfig(sprawlRoot)
+	if err != nil {
+		return
+	}
+
+	teardownScript, ok := cfg.Get("worktree.teardown")
+	if !ok || teardownScript == "" {
+		return
+	}
+
+	teardownEnv := map[string]string{
+		"SPRAWL_AGENT_IDENTITY": agentState.Name,
+		"SPRAWL_ROOT":           sprawlRoot,
+	}
+	fmt.Fprintf(os.Stderr, "Running worktree teardown script for %s...\n", agentState.Name)
+	output, scriptErr := deps.runScript(teardownScript, agentState.Worktree, teardownEnv)
+	if scriptErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: worktree teardown script failed for %s:\n%s\nEscalate to your parent agent or the user — teardown wasn't clean and needs attention\n", agentState.Name, string(output))
+	}
 }
 
 func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, deps *retireDeps, sprawlRoot string) {
