@@ -28,6 +28,9 @@ type mockRunner struct {
 	newSessionWithWinCmd  string
 	attachCalled          bool
 	attachName            string
+	sourceFileCalled      bool
+	sourceFileSession     string
+	sourceFilePath        string
 }
 
 func (m *mockRunner) HasWindow(string, string) bool { return false }
@@ -73,6 +76,13 @@ func (m *mockRunner) Attach(name string) error {
 	m.attachCalled = true
 	m.attachName = name
 	return m.attachErr
+}
+
+func (m *mockRunner) SourceFile(sessionName, filePath string) error {
+	m.sourceFileCalled = true
+	m.sourceFileSession = sessionName
+	m.sourceFilePath = filePath
+	return nil
 }
 
 // mockLauncher implements agent.Launcher for testing.
@@ -1046,5 +1056,96 @@ func TestRunInit_BashLoopSignalTrap(t *testing.T) {
 	}
 	if !strings.Contains(shellCmd, "INT") {
 		t.Errorf("expected shell command to trap INT signal, got: %q", shellCmd)
+	}
+}
+
+func TestRunInit_PersistsAccentColor(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	color := state.ReadAccentColor(tmpDir)
+	if color == "" {
+		t.Error("expected accent color to be persisted after init")
+	}
+}
+
+func TestRunInit_PersistsVersion(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	version := state.ReadVersion(tmpDir)
+	if version == "" {
+		t.Error("expected version to be persisted after init")
+	}
+}
+
+func TestRunInit_GeneratesTmuxConfigAndSources(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify tmux.conf was generated
+	confPath := filepath.Join(tmpDir, ".sprawl", "tmux.conf")
+	if _, err := os.Stat(confPath); os.IsNotExist(err) {
+		t.Error("expected .sprawl/tmux.conf to be generated after init")
+	}
+
+	// Verify SourceFile was called
+	if !runner.sourceFileCalled {
+		t.Error("expected SourceFile to be called after session creation")
+	}
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
+	if runner.sourceFileSession != expectedSession {
+		t.Errorf("SourceFile session = %q, want %q", runner.sourceFileSession, expectedSession)
+	}
+	if runner.sourceFilePath != confPath {
+		t.Errorf("SourceFile path = %q, want %q", runner.sourceFilePath, confPath)
 	}
 }

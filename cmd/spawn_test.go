@@ -36,6 +36,10 @@ type spawnMockRunner struct {
 	newWindowWindow    string
 	newWindowEnv       map[string]string
 	newWindowCmd       string
+
+	sourceFileCalled  bool
+	sourceFileSession string
+	sourceFilePath    string
 }
 
 func (m *spawnMockRunner) HasWindow(string, string) bool { return false }
@@ -86,6 +90,13 @@ func (m *spawnMockRunner) SendKeys(sessionName, windowName string, keys string) 
 func (m *spawnMockRunner) ListSessionNames() ([]string, error) { return nil, nil }
 
 func (m *spawnMockRunner) Attach(name string) error {
+	return nil
+}
+
+func (m *spawnMockRunner) SourceFile(sessionName, filePath string) error {
+	m.sourceFileCalled = true
+	m.sourceFileSession = sessionName
+	m.sourceFilePath = filePath
 	return nil
 }
 
@@ -1063,5 +1074,43 @@ func TestSpawn_SetupScript_NotConfigured_Skipped(t *testing.T) {
 
 	if scriptCalled {
 		t.Error("runScript should NOT be called when worktree.setup is not configured")
+	}
+}
+
+func TestSpawn_SourcesTmuxConfigWhenExists(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// Create the tmux.conf file that init would have generated
+	sprawlDir := filepath.Join(tmpDir, ".sprawl")
+	confPath := filepath.Join(sprawlDir, "tmux.conf")
+	if err := os.WriteFile(confPath, []byte("# sprawl tmux config\n"), 0o644); err != nil {
+		t.Fatalf("writing tmux.conf: %v", err)
+	}
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !runner.sourceFileCalled {
+		t.Error("expected SourceFile to be called when tmux.conf exists")
+	}
+	if runner.sourceFilePath != confPath {
+		t.Errorf("SourceFile path = %q, want %q", runner.sourceFilePath, confPath)
+	}
+}
+
+func TestSpawn_SkipsSourceFileWhenNoConfig(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	// Don't create tmux.conf — simulate init not having been run yet
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if runner.sourceFileCalled {
+		t.Error("expected SourceFile NOT to be called when tmux.conf doesn't exist")
 	}
 }

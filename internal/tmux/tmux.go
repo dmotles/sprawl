@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,6 +15,26 @@ const (
 	BranchSeparator  = "├"
 	RootWindowName   = "weave"
 )
+
+// AccentColorPool is a curated palette of tmux colors that look good on dark backgrounds.
+// Used to assign a per-namespace accent color during sprawl init.
+var AccentColorPool = []string{
+	"colour39",  // cyan / DeepSkyBlue1
+	"colour198", // magenta / DeepPink1
+	"colour82",  // green / Chartreuse2
+	"colour208", // orange / DarkOrange
+	"colour141", // purple / MediumPurple1
+	"colour196", // red / Red1
+	"colour220", // yellow / Gold1
+	"colour43",  // teal / DarkCyan
+	"colour205", // pink / HotPink
+	"colour69",  // blue / CornflowerBlue
+}
+
+// PickAccentColor randomly selects an accent color from the curated palette.
+func PickAccentColor() string {
+	return AccentColorPool[rand.IntN(len(AccentColorPool))] //nolint:gosec // G404: weak RNG is fine for cosmetic color selection
+}
 
 // NamespacePool is a curated list of electric/cyberpunk emojis used for auto-selecting
 // a unique namespace when running sprawl init.
@@ -77,6 +98,7 @@ type Runner interface {
 	ListSessionNames() ([]string, error)
 	SendKeys(sessionName, windowName string, keys string) error
 	Attach(name string) error
+	SourceFile(sessionName, filePath string) error
 }
 
 // RealRunner implements Runner using the real tmux binary.
@@ -221,6 +243,15 @@ func (r *RealRunner) Attach(name string) error {
 	}
 	args := []string{"tmux", "attach-session", "-t", exactTarget(name)}
 	return syscall.Exec(r.TmuxPath, args, os.Environ()) //nolint:gosec // arguments are not user-controlled
+}
+
+// SourceFile sources a tmux config file, applying it to the tmux server.
+// The config should use session-targeted set-option where possible.
+func (r *RealRunner) SourceFile(_ string, filePath string) error {
+	cmd := exec.Command(r.TmuxPath, "source-file", filePath) //nolint:gosec // arguments are not user-controlled
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // IsInsideTmux returns true if the current process is running inside a tmux session.

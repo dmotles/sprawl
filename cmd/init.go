@@ -170,9 +170,36 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 		return fmt.Errorf("persisting root name: %w", err)
 	}
 
+	// Pick and persist accent color for the tmux theme.
+	accentColor := tmux.PickAccentColor()
+	if err := state.WriteAccentColor(cwd, accentColor); err != nil {
+		return fmt.Errorf("persisting accent color: %w", err)
+	}
+
+	// Cache the version so the tmux status bar can read it cheaply.
+	if err := state.WriteVersion(cwd, buildVersion); err != nil {
+		return fmt.Errorf("persisting version: %w", err)
+	}
+
+	// Generate the tmux config with branding and accent color.
+	confPath, err := tmux.WriteConfig(tmux.ConfigParams{
+		AccentColor: accentColor,
+		Namespace:   namespace,
+		Version:     buildVersion,
+		SprawlRoot:  cwd,
+	})
+	if err != nil {
+		return fmt.Errorf("generating tmux config: %w", err)
+	}
+
 	fmt.Fprintln(os.Stderr, "Spawning root agent...")
 	if err := deps.tmuxRunner.NewSessionWithWindow(rootSession, tmux.RootWindowName, env, shellCmd); err != nil {
 		return fmt.Errorf("failed to create tmux session: %w", err)
+	}
+
+	// Apply the branded tmux config (best-effort — cosmetic only).
+	if err := deps.tmuxRunner.SourceFile(rootSession, confPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not apply tmux config: %v\n", err)
 	}
 
 	if detached {

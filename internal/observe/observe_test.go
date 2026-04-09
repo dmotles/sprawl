@@ -37,6 +37,7 @@ func (m *mockRunner) ListWindowPIDs(string, string) ([]int, error)              
 func (m *mockRunner) ListSessionNames() ([]string, error)                       { return nil, nil }
 func (m *mockRunner) SendKeys(string, string, string) error                     { return nil }
 func (m *mockRunner) Attach(string) error                                       { return nil }
+func (m *mockRunner) SourceFile(string, string) error                           { return nil }
 
 // Compile-time check that mockRunner satisfies tmux.Runner.
 var _ tmux.Runner = (*mockRunner)(nil)

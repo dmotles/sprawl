@@ -43,6 +43,7 @@ func (m *killMockRunner) NewWindow(sessionName, windowName string, env map[strin
 }
 func (m *killMockRunner) SendKeys(sessionName, windowName string, keys string) error { return nil }
 func (m *killMockRunner) Attach(name string) error                                   { return nil }
+func (m *killMockRunner) SourceFile(string, string) error                            { return nil }
 
 func (m *killMockRunner) KillWindow(sessionName, windowName string) error {
 	m.mu.Lock()

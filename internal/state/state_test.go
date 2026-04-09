@@ -210,6 +210,51 @@ func TestUsedNames(t *testing.T) {
 	}
 }
 
+func TestWriteAndReadAccentColor(t *testing.T) {
+	dir := t.TempDir()
+
+	// Before writing, should return empty
+	if c := ReadAccentColor(dir); c != "" {
+		t.Errorf("ReadAccentColor before write = %q, want empty", c)
+	}
+
+	if err := WriteAccentColor(dir, "colour39"); err != nil {
+		t.Fatalf("WriteAccentColor: %v", err)
+	}
+
+	c := ReadAccentColor(dir)
+	if c != "colour39" {
+		t.Errorf("ReadAccentColor = %q, want %q", c, "colour39")
+	}
+
+	// Overwrite
+	if err := WriteAccentColor(dir, "colour198"); err != nil {
+		t.Fatalf("WriteAccentColor overwrite: %v", err)
+	}
+	c = ReadAccentColor(dir)
+	if c != "colour198" {
+		t.Errorf("ReadAccentColor after overwrite = %q, want %q", c, "colour198")
+	}
+}
+
+func TestWriteAndReadVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	// Before writing, should return empty
+	if v := ReadVersion(dir); v != "" {
+		t.Errorf("ReadVersion before write = %q, want empty", v)
+	}
+
+	if err := WriteVersion(dir, "0.1.3"); err != nil {
+		t.Fatalf("WriteVersion: %v", err)
+	}
+
+	v := ReadVersion(dir)
+	if v != "0.1.3" {
+		t.Errorf("ReadVersion = %q, want %q", v, "0.1.3")
+	}
+}
+
 func TestWriteSystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	content := "You are a helpful agent.\nDo good work."

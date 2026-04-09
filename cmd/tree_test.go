@@ -35,6 +35,7 @@ func (m *treeMockRunner) ListWindowPIDs(string, string) ([]int, error)          
 func (m *treeMockRunner) ListSessionNames() ([]string, error)                       { return nil, nil }
 func (m *treeMockRunner) SendKeys(string, string, string) error                     { return nil }
 func (m *treeMockRunner) Attach(string) error                                       { return nil }
+func (m *treeMockRunner) SourceFile(string, string) error                           { return nil }
 
 func newTestTreeDeps(t *testing.T, agents []*state.AgentState, rootName, namespace string) *treeDeps {
 	t.Helper()

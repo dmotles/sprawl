@@ -254,6 +254,14 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		}
 	}
 
+	// Apply the branded tmux config if it exists (generated at init time).
+	confPath := filepath.Join(sprawlRoot, ".sprawl", "tmux.conf")
+	if _, statErr := os.Stat(confPath); statErr == nil {
+		if err := deps.tmuxRunner.SourceFile(childrenSession, confPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not apply tmux config: %v\n", err)
+		}
+	}
+
 	// Generate a UUID for the Claude session ID
 	sessionID, err := state.GenerateUUID()
 	if err != nil {
