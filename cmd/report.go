@@ -151,7 +151,7 @@ func notifyParent(deps *reportDeps, sprawlRoot string, agentState *state.AgentSt
 			rootName = tmux.DefaultRootName
 		}
 		if parent == rootName {
-			rootSession := tmux.RootSessionName(namespace, rootName)
+			rootSession := tmux.RootSessionName(namespace)
 			sendOpts = append(sendOpts, messages.WithNotify(func(from, _, msgID string) {
 				notification := fmt.Sprintf("[inbox] New message from %s. Run: `sprawl messages read %s`", from, msgID)
 				_ = deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)

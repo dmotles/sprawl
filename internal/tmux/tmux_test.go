@@ -65,8 +65,8 @@ func TestDefaultNamespace(t *testing.T) {
 }
 
 func TestDefaultRootName(t *testing.T) {
-	if DefaultRootName != "neo" {
-		t.Errorf("DefaultRootName = %q, want %q", DefaultRootName, "neo")
+	if DefaultRootName != "weave" {
+		t.Errorf("DefaultRootName = %q, want %q", DefaultRootName, "weave")
 	}
 }
 
@@ -85,18 +85,17 @@ func TestBranchSeparator(t *testing.T) {
 func TestRootSessionName(t *testing.T) {
 	tests := []struct {
 		namespace string
-		rootName  string
 		want      string
 	}{
-		{"⚡", "neo", "⚡neo"},
-		{"🔮", "test", "🔮test"},
-		{"💠", "kai", "💠kai"},
+		{"⚡", "⚡"},
+		{"🔮", "🔮"},
+		{"💠", "💠"},
 	}
 
 	for _, tt := range tests {
-		got := RootSessionName(tt.namespace, tt.rootName)
+		got := RootSessionName(tt.namespace)
 		if got != tt.want {
-			t.Errorf("RootSessionName(%q, %q) = %q, want %q", tt.namespace, tt.rootName, got, tt.want)
+			t.Errorf("RootSessionName(%q) = %q, want %q", tt.namespace, got, tt.want)
 		}
 	}
 }
@@ -107,9 +106,9 @@ func TestChildrenSessionName(t *testing.T) {
 		treePath  string
 		want      string
 	}{
-		{"⚡", "neo", "⚡neo├"},
-		{"⚡", "neo├ash", "⚡neo├ash├"},
-		{"⚡", "neo├ash├oak", "⚡neo├ash├oak├"},
+		{"⚡", "weave", "⚡weave├"},
+		{"⚡", "weave├ash", "⚡weave├ash├"},
+		{"⚡", "weave├ash├oak", "⚡weave├ash├oak├"},
 		{"🔮", "test", "🔮test├"},
 	}
 
@@ -157,7 +156,7 @@ func TestPickNamespace_NoSessions(t *testing.T) {
 }
 
 func TestPickNamespace_FirstTaken(t *testing.T) {
-	runner := &mockPickRunner{sessions: []string{"⚡neo"}}
+	runner := &mockPickRunner{sessions: []string{"⚡"}}
 	got := PickNamespace(runner)
 	if got != "🔮" {
 		t.Errorf("PickNamespace = %q, want %q (should skip ⚡)", got, "🔮")
@@ -165,7 +164,7 @@ func TestPickNamespace_FirstTaken(t *testing.T) {
 }
 
 func TestPickNamespace_MultipleTaken(t *testing.T) {
-	runner := &mockPickRunner{sessions: []string{"⚡neo", "🔮neo", "💠neo"}}
+	runner := &mockPickRunner{sessions: []string{"⚡", "🔮", "💠"}}
 	got := PickNamespace(runner)
 	if got != "🌃" {
 		t.Errorf("PickNamespace = %q, want %q (should skip first three)", got, "🌃")
@@ -173,10 +172,10 @@ func TestPickNamespace_MultipleTaken(t *testing.T) {
 }
 
 func TestPickNamespace_ChildSessionDoesNotMarkTaken(t *testing.T) {
-	// A children session like ⚡neo├ should NOT mark ⚡ as taken.
-	// If neo was killed but children are still running, user should be able
+	// A children session like ⚡weave├ should NOT mark ⚡ as taken.
+	// If weave was killed but children are still running, user should be able
 	// to re-init into the same namespace.
-	runner := &mockPickRunner{sessions: []string{"⚡neo├"}}
+	runner := &mockPickRunner{sessions: []string{"⚡weave├"}}
 	got := PickNamespace(runner)
 	if got != "⚡" {
 		t.Errorf("PickNamespace = %q, want %q (child session should not count)", got, "⚡")
@@ -184,8 +183,8 @@ func TestPickNamespace_ChildSessionDoesNotMarkTaken(t *testing.T) {
 }
 
 func TestPickNamespace_RootSessionMarksTaken(t *testing.T) {
-	// Only a root session (emoji+DefaultRootName) marks the namespace as taken.
-	runner := &mockPickRunner{sessions: []string{"⚡neo"}}
+	// Only a root session (the namespace emoji) marks the namespace as taken.
+	runner := &mockPickRunner{sessions: []string{"⚡"}}
 	got := PickNamespace(runner)
 	if got != "🔮" {
 		t.Errorf("PickNamespace = %q, want %q (root session should mark taken)", got, "🔮")
@@ -206,8 +205,8 @@ func TestExactTarget(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"⚡neo", "=⚡neo"},
-		{"⚡neo├", "=⚡neo├"},
+		{"⚡", "=⚡"},
+		{"⚡weave├", "=⚡weave├"},
 		{"", "="},
 	}
 

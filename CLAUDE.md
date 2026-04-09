@@ -14,13 +14,13 @@ make lint         # run golangci-lint
 make test         # run all unit tests
 make hooks        # install pre-commit hook
 
-scripts/smoke-test-memory.sh   # integration test for neo memory system
+scripts/smoke-test-memory.sh   # integration test for weave memory system
 scripts/sprawl-test-env.sh     # set up isolated test environment
 ```
 
 ## Install
 
-> **Warning:** Do not run `make install` unless your agent identity is `neo` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./sprawl` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
+> **Warning:** Do not run `make install` unless your agent identity is `weave` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./sprawl` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
 
 ## Project Configuration
 

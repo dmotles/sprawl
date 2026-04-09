@@ -22,7 +22,7 @@ func TestSaveAndLoadAgent(t *testing.T) {
 		CreatedAt:   "2026-03-30T12:00:00Z",
 		SessionID:   "sprawl-frank",
 		Subagent:    true,
-		TreePath:    "neo├frank",
+		TreePath:    "weave├frank",
 	}
 
 	if err := SaveAgent(dir, agent); err != nil {
@@ -113,13 +113,13 @@ func TestWriteAndReadRootName(t *testing.T) {
 		t.Errorf("ReadRootName before write = %q, want empty", rn)
 	}
 
-	if err := WriteRootName(dir, "neo"); err != nil {
+	if err := WriteRootName(dir, "weave"); err != nil {
 		t.Fatalf("WriteRootName: %v", err)
 	}
 
 	rn := ReadRootName(dir)
-	if rn != "neo" {
-		t.Errorf("ReadRootName = %q, want %q", rn, "neo")
+	if rn != "weave" {
+		t.Errorf("ReadRootName = %q, want %q", rn, "weave")
 	}
 }
 

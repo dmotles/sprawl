@@ -1482,7 +1482,7 @@ func TestDefaultBuildPrompt_ManagerType(t *testing.T) {
 		Name:     "finn",
 		Type:     "manager",
 		Family:   "engineering",
-		Parent:   "neo",
+		Parent:   "weave",
 		Branch:   "dmotles/feature-x",
 		Worktree: "/tmp/test-worktree",
 		Prompt:   "coordinate feature work",
@@ -2676,7 +2676,7 @@ func TestRunAgentLoop_WakeMidTurn_InterruptsAndInboxDelivers(t *testing.T) {
 	}
 
 	// Pre-send a message so it's in the inbox. messages.Send also writes a wake file.
-	if err := messages.Send(tmpDir, "neo", "finn", "critical fix", "apply this patch"); err != nil {
+	if err := messages.Send(tmpDir, "weave", "finn", "critical fix", "apply this patch"); err != nil {
 		t.Fatalf("sending message: %v", err)
 	}
 
@@ -2705,8 +2705,8 @@ func TestRunAgentLoop_WakeMidTurn_InterruptsAndInboxDelivers(t *testing.T) {
 	if !strings.Contains(inboxPrompt, "sprawl messages read") {
 		t.Errorf("expected inbox-style prompt with read commands, got: %q", inboxPrompt)
 	}
-	if !strings.Contains(inboxPrompt, "neo") {
-		t.Errorf("expected inbox prompt to mention sender 'neo', got: %q", inboxPrompt)
+	if !strings.Contains(inboxPrompt, "weave") {
+		t.Errorf("expected inbox prompt to mention sender 'weave', got: %q", inboxPrompt)
 	}
 }
 
@@ -3094,7 +3094,7 @@ func TestRunAgentLoop_InitialPromptInterruptedByWake_DeliversInbox(t *testing.T)
 	}
 
 	// Pre-populate an unread message so the inbox check finds it.
-	if err := messages.Send(tmpDir, "neo", "finn", "urgent update", "please check this"); err != nil {
+	if err := messages.Send(tmpDir, "weave", "finn", "urgent update", "please check this"); err != nil {
 		t.Fatalf("sending test message: %v", err)
 	}
 

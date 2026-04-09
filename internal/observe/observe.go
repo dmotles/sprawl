@@ -62,7 +62,7 @@ func LoadAll(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
 			continue // ProcessAlive stays nil
 		}
 		if info.IsRoot {
-			alive := deps.TmuxRunner.HasSession(tmux.RootSessionName(namespace, rootName))
+			alive := deps.TmuxRunner.HasSession(tmux.RootSessionName(namespace))
 			info.ProcessAlive = &alive
 		} else {
 			alive := deps.TmuxRunner.HasWindow(info.TmuxSession, info.TmuxWindow)

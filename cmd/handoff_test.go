@@ -18,7 +18,7 @@ func newTestHandoffDeps(t *testing.T) (*handoffDeps, string) {
 	tmpDir := t.TempDir()
 
 	// Set up root-name file
-	state.WriteRootName(tmpDir, "neo")
+	state.WriteRootName(tmpDir, "weave")
 
 	// Set up last-session-id file
 	memDir := filepath.Join(tmpDir, ".sprawl", "memory")
@@ -36,7 +36,7 @@ func newTestHandoffDeps(t *testing.T) (*handoffDeps, string) {
 			case "SPRAWL_ROOT":
 				return tmpDir
 			case "SPRAWL_AGENT_IDENTITY":
-				return "neo"
+				return "weave"
 			}
 			return ""
 		},
@@ -150,7 +150,7 @@ func TestHandoff_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestHandoffDeps(t)
 	deps.getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
-			return "neo"
+			return "weave"
 		}
 		return ""
 	}

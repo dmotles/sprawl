@@ -40,7 +40,7 @@ $SPRAWL_BIN spawn --family engineering --type engineer \
 $SPRAWL_BIN status
 
 # Example: send a message
-$SPRAWL_BIN messages send neo "Test message" "Hello"
+$SPRAWL_BIN messages send weave "Test message" "Hello"
 ```
 
 ## Inspecting State
@@ -65,7 +65,7 @@ ls "$SPRAWL_ROOT/.sprawl/messages/"
 When done, tear down the sandbox:
 
 ```bash
-tmux kill-session -t "${SPRAWL_NAMESPACE}neo" && rm -rf "$SPRAWL_ROOT"
+tmux kill-session -t "${SPRAWL_NAMESPACE}" && rm -rf "$SPRAWL_ROOT"
 ```
 
 ## Scripted Smoke Tests

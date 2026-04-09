@@ -113,7 +113,7 @@ func TestRunInit_ExistingSession_Attaches(t *testing.T) {
 	if !runner.attachCalled {
 		t.Error("expected Attach to be called")
 	}
-	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
 	if runner.attachName != expectedSession {
 		t.Errorf("attached to %q, want %q", runner.attachName, expectedSession)
 	}
@@ -142,7 +142,7 @@ func TestRunInit_NoSession_CreatesAndAttaches(t *testing.T) {
 
 	err := runInit(deps, tmux.DefaultNamespace, false)
 
-	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -199,8 +199,8 @@ func TestRunInit_CustomNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Root name is always DefaultRootName ("neo")
-	expectedSession := tmux.RootSessionName("🌲", tmux.DefaultRootName)
+	// Root name is always DefaultRootName ("weave")
+	expectedSession := tmux.RootSessionName("🌲")
 	if runner.newSessionWithWinName != expectedSession {
 		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, expectedSession)
 	}
@@ -343,7 +343,7 @@ func TestRunInit_Detached_NoSession_CreatesButDoesNotAttach(t *testing.T) {
 	}
 
 	// Session should be created
-	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
 	if runner.newSessionWithWinName != expectedSession {
 		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, expectedSession)
 	}
@@ -398,7 +398,7 @@ func TestRunInit_Detached_ExistingSession_DoesNotAttach(t *testing.T) {
 
 	// Output should contain session info
 	output := string(out)
-	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
 	if !strings.Contains(output, expectedSession) {
 		t.Errorf("output should contain session name %q, got: %s", expectedSession, output)
 	}
@@ -425,7 +425,7 @@ func TestRunInit_NotDetached_BehaviorUnchanged(t *testing.T) {
 	}
 
 	// Should create session AND attach
-	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
 	if runner.newSessionWithWinName != expectedSession {
 		t.Errorf("NewSessionWithWindow session = %q, want %q", runner.newSessionWithWinName, expectedSession)
 	}

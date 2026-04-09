@@ -88,14 +88,14 @@ func TestRunStatus_MissingSprawlRoot(t *testing.T) {
 }
 
 func TestRunStatus_RootOnly(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "neo")
+	rootSession := tmux.RootSessionName("test")
 	runner := &statusMockRunner{
 		hasSessionResults: map[string]bool{
 			rootSession: true,
 		},
 	}
 
-	deps, buf := makeStatusTestDeps(nil, "neo", runner)
+	deps, buf := makeStatusTestDeps(nil, "weave", runner)
 
 	err := runStatus(deps, false, "", "", "", "")
 	if err != nil {
@@ -109,8 +109,8 @@ func TestRunStatus_RootOnly(t *testing.T) {
 		t.Error("expected table header with AGENT")
 	}
 	// Root agent row.
-	if !strings.Contains(out, "neo") {
-		t.Error("expected neo in output")
+	if !strings.Contains(out, "weave") {
+		t.Error("expected weave in output")
 	}
 	// Root type/family/parent/status should show "-".
 	// The row should contain "alive" since tmux session is present.
@@ -120,7 +120,7 @@ func TestRunStatus_RootOnly(t *testing.T) {
 }
 
 func TestRunStatus_MultipleAgents(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "neo")
+	rootSession := tmux.RootSessionName("test")
 	runner := &statusMockRunner{
 		hasSessionResults: map[string]bool{
 			rootSession: true,
@@ -132,11 +132,11 @@ func TestRunStatus_MultipleAgents(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active", TmuxSession: "sess", TmuxWindow: "win-a"},
-		{Name: "bravo", Type: "researcher", Family: "research", Parent: "neo", Status: "active", TmuxSession: "sess", TmuxWindow: "win-b"},
+		{Name: "alpha", Type: "engineer", Family: "engineering", Parent: "weave", Status: "active", TmuxSession: "sess", TmuxWindow: "win-a"},
+		{Name: "bravo", Type: "researcher", Family: "research", Parent: "weave", Status: "active", TmuxSession: "sess", TmuxWindow: "win-b"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, false, "", "", "", "")
 	if err != nil {
@@ -144,8 +144,8 @@ func TestRunStatus_MultipleAgents(t *testing.T) {
 	}
 
 	out := buf.String()
-	if !strings.Contains(out, "neo") {
-		t.Error("expected neo in output")
+	if !strings.Contains(out, "weave") {
+		t.Error("expected weave in output")
 	}
 	if !strings.Contains(out, "alpha") {
 		t.Error("expected alpha in output")
@@ -169,7 +169,7 @@ func TestRunStatus_ProcessAlive(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "neo"},
+		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "weave"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -193,7 +193,7 @@ func TestRunStatus_ProcessDead(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "neo"},
+		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "weave"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -213,7 +213,7 @@ func TestRunStatus_ProcessTerminal(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "done", Parent: "neo"},
+		{Name: "alpha", Status: "done", Parent: "weave"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -245,7 +245,7 @@ func TestRunStatus_ProcessTerminalButAlive(t *testing.T) {
 	}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "done", Parent: "neo", TmuxSession: "sess", TmuxWindow: "win"},
+		{Name: "alpha", Status: "done", Parent: "weave", TmuxSession: "sess", TmuxWindow: "win"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -269,7 +269,7 @@ func TestRunStatus_ProcessTerminalButAlive(t *testing.T) {
 
 func TestRunStatus_ProcessNoTmux(t *testing.T) {
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "neo"},
+		{Name: "alpha", Status: "active", TmuxSession: "sess", TmuxWindow: "win", Parent: "weave"},
 	}
 
 	// nil runner means tmux is unavailable.
@@ -290,7 +290,7 @@ func TestRunStatus_LastReportDone(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "done", Parent: "neo", LastReportType: "done", LastReportMessage: "task completed"},
+		{Name: "alpha", Status: "done", Parent: "weave", LastReportType: "done", LastReportMessage: "task completed"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -313,7 +313,7 @@ func TestRunStatus_LastReportNone(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "done", Parent: "neo"},
+		{Name: "alpha", Status: "done", Parent: "weave"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -341,7 +341,7 @@ func TestRunStatus_LastReportTypeOnly(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "problem", Parent: "neo", LastReportType: "problem"},
+		{Name: "alpha", Status: "problem", Parent: "weave", LastReportType: "problem"},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -361,11 +361,11 @@ func TestRunStatus_FilterFamily(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
-		{Name: "bravo", Family: "research", Type: "researcher", Parent: "neo", Status: "active"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "weave", Status: "active"},
+		{Name: "bravo", Family: "research", Type: "researcher", Parent: "weave", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, false, "engineering", "", "", "")
 	if err != nil {
@@ -385,11 +385,11 @@ func TestRunStatus_FilterType(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
-		{Name: "bravo", Family: "research", Type: "researcher", Parent: "neo", Status: "active"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "weave", Status: "active"},
+		{Name: "bravo", Family: "research", Type: "researcher", Parent: "weave", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, false, "", "researcher", "", "")
 	if err != nil {
@@ -409,11 +409,11 @@ func TestRunStatus_FilterParent(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Parent: "neo", Status: "active"},
+		{Name: "alpha", Parent: "weave", Status: "active"},
 		{Name: "bravo", Parent: "alpha", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, false, "", "", "alpha", "")
 	if err != nil {
@@ -424,9 +424,9 @@ func TestRunStatus_FilterParent(t *testing.T) {
 	if !strings.Contains(out, "bravo") {
 		t.Error("expected bravo (parent=alpha) in filtered output")
 	}
-	// neo should be filtered out (parent is empty, not "alpha").
-	if strings.Contains(out, "neo") {
-		t.Error("expected neo to be filtered out (parent is not alpha)")
+	// weave should be filtered out (parent is empty, not "alpha").
+	if strings.Contains(out, "weave") {
+		t.Error("expected weave to be filtered out (parent is not alpha)")
 	}
 }
 
@@ -434,11 +434,11 @@ func TestRunStatus_FilterStatus(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Parent: "neo", Status: "active"},
-		{Name: "bravo", Parent: "neo", Status: "done"},
+		{Name: "alpha", Parent: "weave", Status: "active"},
+		{Name: "bravo", Parent: "weave", Status: "done"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, false, "", "", "", "done")
 	if err != nil {
@@ -458,12 +458,12 @@ func TestRunStatus_FilterMultiple(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
-		{Name: "bravo", Family: "engineering", Type: "researcher", Parent: "neo", Status: "done"},
-		{Name: "charlie", Family: "research", Type: "engineer", Parent: "neo", Status: "active"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "weave", Status: "active"},
+		{Name: "bravo", Family: "engineering", Type: "researcher", Parent: "weave", Status: "done"},
+		{Name: "charlie", Family: "research", Type: "engineer", Parent: "weave", Status: "active"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	// Filter by family=engineering AND status=active. Only alpha should match.
 	err := runStatus(deps, false, "engineering", "", "", "active")
@@ -487,10 +487,10 @@ func TestRunStatus_FilterNoMatch(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Status: "active", Parent: "neo"},
+		{Name: "alpha", Family: "engineering", Status: "active", Parent: "weave"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, false, "nonexistent", "", "", "")
 	if err != nil {
@@ -509,7 +509,7 @@ func TestRunStatus_FilterNoMatch(t *testing.T) {
 }
 
 func TestRunStatus_JSON(t *testing.T) {
-	rootSession := tmux.RootSessionName("test", "neo")
+	rootSession := tmux.RootSessionName("test")
 	runner := &statusMockRunner{
 		hasSessionResults: map[string]bool{
 			rootSession: true,
@@ -521,12 +521,12 @@ func TestRunStatus_JSON(t *testing.T) {
 
 	agents := []*state.AgentState{
 		{
-			Name: "alpha", Type: "engineer", Family: "engineering", Parent: "neo", Status: "active",
+			Name: "alpha", Type: "engineer", Family: "engineering", Parent: "weave", Status: "active",
 			TmuxSession: "sess", TmuxWindow: "win", LastReportType: "status", LastReportMessage: "working",
 		},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, true, "", "", "", "")
 	if err != nil {
@@ -549,7 +549,7 @@ func TestRunStatus_JSON(t *testing.T) {
 		if entries[i].Name == "alpha" {
 			alpha = &entries[i]
 		}
-		if entries[i].Name == "neo" {
+		if entries[i].Name == "weave" {
 			root = &entries[i]
 		}
 	}
@@ -563,8 +563,8 @@ func TestRunStatus_JSON(t *testing.T) {
 	if alpha.Family != "engineering" {
 		t.Errorf("alpha family = %q, want %q", alpha.Family, "engineering")
 	}
-	if alpha.Parent != "neo" {
-		t.Errorf("alpha parent = %q, want %q", alpha.Parent, "neo")
+	if alpha.Parent != "weave" {
+		t.Errorf("alpha parent = %q, want %q", alpha.Parent, "weave")
 	}
 	if alpha.Status != "active" {
 		t.Errorf("alpha status = %q, want %q", alpha.Status, "active")
@@ -574,10 +574,10 @@ func TestRunStatus_JSON(t *testing.T) {
 	}
 
 	if root == nil {
-		t.Fatal("expected neo in JSON output")
+		t.Fatal("expected weave in JSON output")
 	}
 	if !root.IsRoot {
-		t.Error("expected neo to have is_root=true")
+		t.Error("expected weave to have is_root=true")
 	}
 }
 
@@ -585,11 +585,11 @@ func TestRunStatus_JSONFiltered(t *testing.T) {
 	runner := &statusMockRunner{}
 
 	agents := []*state.AgentState{
-		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "neo", Status: "active"},
-		{Name: "bravo", Family: "research", Type: "researcher", Parent: "neo", Status: "done"},
+		{Name: "alpha", Family: "engineering", Type: "engineer", Parent: "weave", Status: "active"},
+		{Name: "bravo", Family: "research", Type: "researcher", Parent: "weave", Status: "done"},
 	}
 
-	deps, buf := makeStatusTestDeps(agents, "neo", runner)
+	deps, buf := makeStatusTestDeps(agents, "weave", runner)
 
 	err := runStatus(deps, true, "engineering", "", "", "")
 	if err != nil {
@@ -624,7 +624,7 @@ func TestRunStatus_LastReportTruncation(t *testing.T) {
 
 	longMsg := strings.Repeat("a", 100)
 	agents := []*state.AgentState{
-		{Name: "alpha", Status: "active", Parent: "neo", LastReportType: "status", LastReportMessage: longMsg},
+		{Name: "alpha", Status: "active", Parent: "weave", LastReportType: "status", LastReportMessage: longMsg},
 	}
 
 	deps, buf := makeStatusTestDeps(agents, "", runner)
@@ -658,7 +658,7 @@ func TestTolerantListAgents_SkipsCorruptFile(t *testing.T) {
 	}
 
 	// Write a valid agent state file.
-	validJSON := `{"name":"good","type":"engineer","family":"engineering","parent":"neo","status":"active"}`
+	validJSON := `{"name":"good","type":"engineer","family":"engineering","parent":"weave","status":"active"}`
 	if err := os.WriteFile(agentsDir+"/good.json", []byte(validJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -10,9 +10,9 @@ import (
 
 const (
 	DefaultNamespace = "⚡"
-	DefaultRootName  = "neo"
+	DefaultRootName  = "weave"
 	BranchSeparator  = "├"
-	RootWindowName   = "neo"
+	RootWindowName   = "weave"
 )
 
 // NamespacePool is a curated list of electric/cyberpunk emojis used for auto-selecting
@@ -23,13 +23,14 @@ var NamespacePool = []string{
 }
 
 // RootSessionName returns the tmux session name for the root agent.
-// Format: {namespace}{rootName} e.g. "⚡neo"
-func RootSessionName(namespace, rootName string) string {
-	return namespace + rootName
+// The root session is just the namespace (e.g. "⚡"). The root agent name
+// becomes the window name within that session, not part of the session name.
+func RootSessionName(namespace string) string {
+	return namespace
 }
 
 // ChildrenSessionName returns the tmux session name for a parent's children.
-// Format: {namespace}{treePath}├ e.g. "⚡neo├" or "⚡neo├ash├"
+// Format: {namespace}{treePath}├ e.g. "⚡weave├" or "⚡weave├ash├"
 func ChildrenSessionName(namespace, treePath string) string {
 	return namespace + treePath + BranchSeparator
 }
@@ -48,7 +49,7 @@ func PickNamespace(runner Runner) string {
 	used := make(map[string]bool)
 	for _, s := range sessions {
 		for _, emoji := range NamespacePool {
-			if s == RootSessionName(emoji, DefaultRootName) {
+			if s == RootSessionName(emoji) {
 				used[emoji] = true
 			}
 		}

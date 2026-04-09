@@ -267,7 +267,7 @@ The interrupt + re-deliver flow already works correctly. The only latency bottle
 When channels graduate from research preview and support API key auth:
 - Build an MCP server that listens on a Unix socket for sprawl messages
 - Register it as a channel so it can push events into running Claude sessions
-- Messages arrive as `<channel source="sprawl-inbox" from="neo" subject="...">` tags
+- Messages arrive as `<channel source="sprawl-inbox" from="weave" subject="...">` tags
 - Claude sees them immediately in context, even mid-turn
 - Two-way: Claude can reply through the channel (replaces `sprawl messages send` for replies)
 

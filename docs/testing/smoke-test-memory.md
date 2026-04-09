@@ -1,6 +1,6 @@
-# Neo Memory System Smoke Test
+# Weave Memory System Smoke Test
 
-Integration smoke test for the sprawl neo memory system. Exercises session persistence, handoff, context blob file contracts, timeline, and budget enforcement using the locally-built binary.
+Integration smoke test for the sprawl weave memory system. Exercises session persistence, handoff, context blob file contracts, timeline, and budget enforcement using the locally-built binary.
 
 Does NOT require a real Claude API key.
 
@@ -64,7 +64,7 @@ eval "$(bash scripts/sprawl-test-env.sh)"
 #   TEST_ROOT        - same as SPRAWL_ROOT
 ```
 
-The test environment creates a tmux session running the neo loop. You can attach to it or kill it as needed.
+The test environment creates a tmux session running the weave loop. You can attach to it or kill it as needed.
 
 ## Cleanup
 

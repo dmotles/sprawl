@@ -201,7 +201,7 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 	}
 
 	// 4. Build claude args (interactive mode).
-	sessionName := tmux.RootSessionName(namespace, rootName)
+	sessionName := namespace + rootName
 	opts := claude.LaunchOpts{
 		SystemPromptFile: promptPath,
 		Tools:            rootTools,

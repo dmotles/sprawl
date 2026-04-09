@@ -114,7 +114,7 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 		namespace = tmux.PickNamespace(deps.tmuxRunner)
 	}
 
-	rootSession := tmux.RootSessionName(namespace, rootName)
+	rootSession := tmux.RootSessionName(namespace)
 
 	if deps.tmuxRunner.HasSession(rootSession) {
 		if detached {

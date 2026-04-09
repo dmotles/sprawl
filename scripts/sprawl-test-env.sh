@@ -58,7 +58,7 @@ Test environment ready:
   SPRAWL_ROOT=$TEST_ROOT
   SPRAWL_TEST_MODE=1
   SPRAWL_NAMESPACE=$TEST_NS
-  Session: ${TEST_NS}neo
-  Attach:  tmux attach-session -t ${TEST_NS}neo
-  Cleanup: tmux kill-session -t ${TEST_NS}neo && rm -rf $TEST_ROOT
+  Session: ${TEST_NS}
+  Attach:  tmux attach-session -t ${TEST_NS}
+  Cleanup: tmux kill-session -t ${TEST_NS} && rm -rf $TEST_ROOT
 EOF
