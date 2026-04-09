@@ -1,1 +1,3 @@
-validate: "make validate"
+validate: make validate
+worktree.setup: ""
+worktree.teardown: ""
