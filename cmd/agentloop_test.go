@@ -528,6 +528,18 @@ func TestRunAgentLoop_InboxTriggers(t *testing.T) {
 	if len(unread) != 1 {
 		t.Errorf("expected 1 unread message after delivery (agent reads it), got %d", len(unread))
 	}
+
+	// The prompt must use the short ID, not the long-form ID.
+	msg := unread[0]
+	if msg.ShortID == "" {
+		t.Fatal("message should have a ShortID")
+	}
+	if !strings.Contains(prompt, "sprawl messages read "+msg.ShortID) {
+		t.Errorf("prompt should use short ID %q in read command, got: %q", msg.ShortID, prompt)
+	}
+	if strings.Contains(prompt, msg.ID) {
+		t.Errorf("prompt should NOT contain long-form ID %q, got: %q", msg.ID, prompt)
+	}
 }
 
 func TestRunAgentLoop_InboxRedeliveryUntilRead(t *testing.T) {

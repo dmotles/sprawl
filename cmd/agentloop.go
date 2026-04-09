@@ -629,9 +629,13 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		if err == nil && len(msgs) > 0 {
 			var cmdLines []string
 			for _, msg := range msgs {
+				msgID := msg.ShortID
+				if msgID == "" {
+					msgID = msg.ID
+				}
 				cmdLines = append(cmdLines, fmt.Sprintf(
 					"Run `sprawl messages read %s` to read a message from %s (subject: %q)",
-					msg.ID, msg.From, msg.Subject,
+					msgID, msg.From, msg.Subject,
 				))
 			}
 
