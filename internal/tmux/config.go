@@ -34,11 +34,10 @@ func GenerateConfig(params ConfigParams) string {
 		version = "dev"
 	}
 
-	// Double-quote the root path for use inside #() shell commands in the status bar.
-	// Using double quotes (not single quotes via ShellQuote) for path quoting within
-	// the #() expansions, which is safe since the outer status-right value also uses
-	// double quotes.
-	quotedRoot := `"` + root + `"`
+	// Single-quote the root path for use inside #() shell commands in the status bar.
+	// The outer status-right value uses double quotes, so single-quoting the path
+	// (via ShellQuote) avoids nested double-quote conflicts.
+	quotedRoot := ShellQuote(root)
 
 	// Shell commands for dynamic status bar content (run every status-interval).
 	// These must be fast (sub-millisecond) since they run every 5 seconds.

@@ -110,10 +110,10 @@ func TestGenerateConfig_UsesSprawlRootForDynamicContent(t *testing.T) {
 		Version:     "0.1.3",
 		SprawlRoot:  "/home/user/myproject",
 	})
-	// Root path should appear double-quoted (not single-quoted) inside #() commands
-	// to avoid nested single-quote conflicts with the outer set -g '...' value.
-	if !strings.Contains(cfg, `"/home/user/myproject"`) {
-		t.Error("config should reference SPRAWL_ROOT with double quotes for #() shell commands")
+	// Root path should appear single-quoted (via ShellQuote) inside #() commands,
+	// which is safe since the outer status-right value uses double quotes.
+	if !strings.Contains(cfg, `'/home/user/myproject'`) {
+		t.Error("config should reference SPRAWL_ROOT with single quotes for #() shell commands")
 	}
 }
 
