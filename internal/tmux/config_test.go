@@ -124,24 +124,53 @@ func TestGenerateConfig_NoNestedSingleQuotesInStatusRight(t *testing.T) {
 		Version:     "0.1.3",
 		SprawlRoot:  "/home/user/myproject",
 	})
-	// Extract the status-right line and verify it doesn't have nested single quotes.
-	// The outer set -g status-right '...' value should not contain unescaped single
-	// quotes from ShellQuote inside #() expansions.
+	// The status-right value is wrapped in outer quotes. If the outer quotes are
+	// single quotes, any single quotes inside #() shell commands (tr -d ' ',
+	// display-message -p '#{window_name}', echo '...') would prematurely terminate
+	// the outer value, causing tmux parse errors.
 	for _, line := range strings.Split(cfg, "\n") {
-		if !strings.Contains(line, "status-right") {
+		if !strings.HasPrefix(line, "set -g status-right ") {
 			continue
 		}
-		// Find the content between the outer single quotes of set -g status-right '...'
-		idx := strings.Index(line, "status-right '")
-		if idx == -1 {
-			continue
+		// If using outer single quotes, count them — should only be 0 (using double quotes)
+		// or exactly 2 (open+close with no inner singles). More than 2 means nested conflict.
+		value := strings.TrimPrefix(line, "set -g status-right ")
+		if len(value) > 0 && value[0] == '\'' {
+			// Outer delimiter is single quote — check for nested singles
+			singleCount := strings.Count(value, "'")
+			if singleCount > 2 {
+				t.Errorf("status-right has %d single quotes — nested single quotes inside outer single-quoted value will break tmux parser", singleCount)
+			}
 		}
-		inner := line[idx+len("status-right '"):]
-		// The inner content should not contain single-quoted paths like '/path/to/root'
-		if strings.Contains(inner, "'/home/user/myproject'") {
-			t.Error("status-right should not contain single-quoted paths inside #() commands — causes nested quote syntax errors in tmux")
-		}
+		return
 	}
+	t.Error("no 'set -g status-right' line found in generated config")
+}
+
+func TestGenerateConfig_StatusRightUsesDoubleQuotes(t *testing.T) {
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "0.1.3",
+		SprawlRoot:  "/home/user/myproject",
+	})
+	// The status-right line must use double quotes as the outer value delimiter.
+	// Inner #() shell commands use single quotes (e.g. tr -d ' ', display-message -p '#{window_name}'),
+	// so using outer single quotes would cause nested quote syntax errors in tmux.
+	for _, line := range strings.Split(cfg, "\n") {
+		if !strings.HasPrefix(line, "set -g status-right ") {
+			continue
+		}
+		// Should be: set -g status-right "..."
+		if strings.Contains(line, "status-right '") {
+			t.Error("status-right must use double quotes as outer delimiter, not single quotes — inner #() shell commands use single quotes")
+		}
+		if !strings.Contains(line, `status-right "`) {
+			t.Error("status-right should use double quotes as outer value delimiter")
+		}
+		return
+	}
+	t.Error("no status-right line found in generated config")
 }
 
 func TestGenerateConfig_UsesWindowNameForIdentity(t *testing.T) {
@@ -167,7 +196,7 @@ func TestGenerateConfig_MailCountUsesWindowName(t *testing.T) {
 	})
 	// Mail count should use tmux display-message to resolve window name dynamically,
 	// not $SPRAWL_AGENT_IDENTITY which is session-scoped.
-	if !strings.Contains(cfg, "tmux display-message -p '#{window_name}'") {
+	if !strings.Contains(cfg, `tmux display-message -p '#{window_name}'`) {
 		t.Error("config mail count should use tmux display-message to get window name")
 	}
 }

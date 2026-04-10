@@ -35,9 +35,9 @@ func GenerateConfig(params ConfigParams) string {
 	}
 
 	// Double-quote the root path for use inside #() shell commands in the status bar.
-	// These #() expansions are embedded within an outer single-quoted set -g value,
-	// so we must use double quotes (not single quotes via ShellQuote) to avoid
-	// nested single-quote syntax errors in tmux's parser.
+	// Using double quotes (not single quotes via ShellQuote) for path quoting within
+	// the #() expansions, which is safe since the outer status-right value also uses
+	// double quotes.
 	quotedRoot := `"` + root + `"`
 
 	// Shell commands for dynamic status bar content (run every status-interval).
@@ -83,7 +83,7 @@ func GenerateConfig(params ConfigParams) string {
 
 	// Right status: mail count + agent count + version
 	b.WriteString(fmt.Sprintf(
-		"set -g status-right '%s#[fg=colour245,bg=colour233] │ agents: %s │ #[fg=%s]v%s #[default]'\n\n",
+		"set -g status-right \"%s#[fg=colour245,bg=colour233] │ agents: %s │ #[fg=%s]v%s #[default]\"\n\n",
 		mailIndicator, agentCount, accent, versionFile,
 	))
 
