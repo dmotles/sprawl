@@ -173,6 +173,31 @@ func TestGenerateConfig_StatusRightUsesDoubleQuotes(t *testing.T) {
 	t.Error("no status-right line found in generated config")
 }
 
+func TestGenerateConfig_NoNestedDoubleQuotesInStatusRight(t *testing.T) {
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "0.1.3",
+		SprawlRoot:  "/home/user/myproject",
+	})
+	for _, line := range strings.Split(cfg, "\n") {
+		if !strings.HasPrefix(line, "set -g status-right ") {
+			continue
+		}
+		value := strings.TrimPrefix(line, "set -g status-right ")
+		// The outer delimiters are double quotes. Strip them and check
+		// that no double quotes appear inside the value body.
+		if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+			inner := value[1 : len(value)-1]
+			if strings.Contains(inner, `"`) {
+				t.Errorf("status-right inner value contains nested double quotes which will break tmux parsing: %s", inner)
+			}
+		}
+		return
+	}
+	t.Error("no 'set -g status-right' line found in generated config")
+}
+
 func TestGenerateConfig_UsesWindowNameForIdentity(t *testing.T) {
 	cfg := GenerateConfig(ConfigParams{
 		AccentColor: "colour39",

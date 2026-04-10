@@ -45,7 +45,7 @@ func GenerateConfig(params ConfigParams) string {
 	// current window name dynamically — this works correctly in child sessions
 	// where multiple agent windows share one session environment.
 	agentCount := fmt.Sprintf("#(ls %s/.sprawl/agents/*.json 2>/dev/null | wc -l | tr -d ' ')", quotedRoot)
-	mailCount := fmt.Sprintf("#(find %s/.sprawl/messages/\"$(tmux display-message -p '#{window_name}')\""+
+	mailCount := fmt.Sprintf("#(find %s/.sprawl/messages/$(tmux display-message -p '#{window_name}')"+
 		"/new/ -type f 2>/dev/null | wc -l | tr -d ' ')", quotedRoot)
 	versionFile := fmt.Sprintf("#(cat %s/.sprawl/state/version 2>/dev/null || echo '%s')", quotedRoot, version)
 
