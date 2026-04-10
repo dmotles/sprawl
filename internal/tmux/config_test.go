@@ -110,9 +110,37 @@ func TestGenerateConfig_UsesSprawlRootForDynamicContent(t *testing.T) {
 		Version:     "0.1.3",
 		SprawlRoot:  "/home/user/myproject",
 	})
-	// Root path should appear shell-quoted in the config
-	if !strings.Contains(cfg, "'/home/user/myproject'") {
-		t.Error("config should reference SPRAWL_ROOT (shell-quoted) for dynamic content paths")
+	// Root path should appear double-quoted (not single-quoted) inside #() commands
+	// to avoid nested single-quote conflicts with the outer set -g '...' value.
+	if !strings.Contains(cfg, `"/home/user/myproject"`) {
+		t.Error("config should reference SPRAWL_ROOT with double quotes for #() shell commands")
+	}
+}
+
+func TestGenerateConfig_NoNestedSingleQuotesInStatusRight(t *testing.T) {
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "0.1.3",
+		SprawlRoot:  "/home/user/myproject",
+	})
+	// Extract the status-right line and verify it doesn't have nested single quotes.
+	// The outer set -g status-right '...' value should not contain unescaped single
+	// quotes from ShellQuote inside #() expansions.
+	for _, line := range strings.Split(cfg, "\n") {
+		if !strings.Contains(line, "status-right") {
+			continue
+		}
+		// Find the content between the outer single quotes of set -g status-right '...'
+		idx := strings.Index(line, "status-right '")
+		if idx == -1 {
+			continue
+		}
+		inner := line[idx+len("status-right '"):]
+		// The inner content should not contain single-quoted paths like '/path/to/root'
+		if strings.Contains(inner, "'/home/user/myproject'") {
+			t.Error("status-right should not contain single-quoted paths inside #() commands — causes nested quote syntax errors in tmux")
+		}
 	}
 }
 

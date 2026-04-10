@@ -177,7 +177,9 @@ func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]st
 	cmd := exec.Command(r.TmuxPath, args...) //nolint:gosec // arguments are not user-controlled
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Stderr is intentionally not set (defaults to nil / discarded) because callers
+	// use NewWindow in a try-then-fallback pattern where failure is expected and
+	// handled programmatically. Leaking tmux error messages to stderr confuses users.
 	return cmd.Run()
 }
 

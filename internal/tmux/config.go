@@ -34,8 +34,11 @@ func GenerateConfig(params ConfigParams) string {
 		version = "dev"
 	}
 
-	// Shell-quote the root path to handle paths with spaces or special characters.
-	quotedRoot := ShellQuote(root)
+	// Double-quote the root path for use inside #() shell commands in the status bar.
+	// These #() expansions are embedded within an outer single-quoted set -g value,
+	// so we must use double quotes (not single quotes via ShellQuote) to avoid
+	// nested single-quote syntax errors in tmux's parser.
+	quotedRoot := `"` + root + `"`
 
 	// Shell commands for dynamic status bar content (run every status-interval).
 	// These must be fast (sub-millisecond) since they run every 5 seconds.
