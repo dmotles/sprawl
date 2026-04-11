@@ -11,7 +11,7 @@ import (
 type ConfigParams struct {
 	AccentColor string // tmux colour name, e.g. "colour39"
 	Namespace   string // namespace emoji, e.g. "⚡"
-	Version     string // sprawl version, e.g. "0.1.3"
+	Version     string // sprawl version, e.g. "v0.1.3"
 	SprawlRoot  string // absolute path to project root
 }
 
@@ -82,7 +82,7 @@ func GenerateConfig(params ConfigParams) string {
 
 	// Right status: mail count + agent count + version
 	b.WriteString(fmt.Sprintf(
-		"set -g status-right \"%s#[fg=colour245,bg=colour233] │ agents: %s │ #[fg=%s]v%s #[default]\"\n\n",
+		"set -g status-right \"%s#[fg=colour245,bg=colour233] │ agents: %s │ #[fg=%s]%s #[default]\"\n\n",
 		mailIndicator, agentCount, accent, versionFile,
 	))
 

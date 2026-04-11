@@ -198,6 +198,31 @@ func TestGenerateConfig_NoNestedDoubleQuotesInStatusRight(t *testing.T) {
 	t.Error("no 'set -g status-right' line found in generated config")
 }
 
+func TestGenerateConfig_NoDoubleVPrefix(t *testing.T) {
+	// Version from git describe already has 'v' prefix (e.g. "v0.1.4-5-gce26a6e").
+	// The format string should NOT prepend another 'v' — that would produce "vv0.1.4"
+	// at tmux runtime when the #() command returns a v-prefixed version.
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "v0.1.4",
+		SprawlRoot:  "/tmp/test",
+	})
+	for _, line := range strings.Split(cfg, "\n") {
+		if !strings.HasPrefix(line, "set -g status-right ") {
+			continue
+		}
+		// The status-right line should NOT have a literal 'v' before the #() version command.
+		// Pattern like `v#(cat ...` means tmux will display "v" + result of cat, and if the
+		// version file contains "v0.1.4", the display becomes "vv0.1.4".
+		if strings.Contains(line, "v#(cat") {
+			t.Error("status-right should not prepend 'v' before the version #() command — version string already includes 'v' prefix")
+		}
+		return
+	}
+	t.Error("no 'set -g status-right' line found in generated config")
+}
+
 func TestGenerateConfig_UsesWindowNameForIdentity(t *testing.T) {
 	cfg := GenerateConfig(ConfigParams{
 		AccentColor: "colour39",
