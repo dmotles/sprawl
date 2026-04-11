@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -169,6 +170,7 @@ func newTestAgentLoopDeps(t *testing.T) (*agentLoopDeps, string, *mockProcessMan
 				Release: func() error { return nil },
 			}, nil
 		},
+		getpid: func() int { return 1 },
 	}
 
 	// Suppress unused variable warnings by using them in a closure.
@@ -3157,5 +3159,159 @@ func TestRunAgentLoop_InitialPromptNotInterrupted_NoRequeue(t *testing.T) {
 	output := outBuf.String()
 	if strings.Contains(output, "initial prompt interrupted") {
 		t.Errorf("did not expect 'initial prompt interrupted' in output for successful initial turn")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle logging tests (QUM-189)
+// These tests verify log lines emitted by runAgentLoop for lifecycle events.
+// They reference deps.getpid and deps.signalCh which will be added to
+// agentLoopDeps as part of the implementation.
+// ---------------------------------------------------------------------------
+
+func TestRunAgentLoop_ReadyLine(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	// Set up the new deps fields for lifecycle logging.
+	deps.getpid = func() int { return 12345 }
+	deps.signalCh = nil // no signal handling needed for this test
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	output := outBuf.String()
+	// After successful launch, the READY line should include agent name and PID.
+	if !strings.Contains(output, "[agent-loop] READY agent=finn pid=12345") {
+		t.Errorf("expected READY line with agent=finn pid=12345 in output, got:\n%s", output)
+	}
+}
+
+func TestRunAgentLoop_StoppedLine_NormalShutdown(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	deps.getpid = func() int { return 99 }
+	deps.signalCh = nil
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	output := outBuf.String()
+	// The deferred STOPPED line should appear on every exit path.
+	if !strings.Contains(output, "[agent-loop] STOPPED agent=finn") {
+		t.Errorf("expected STOPPED line with agent=finn in output, got:\n%s", output)
+	}
+}
+
+func TestRunAgentLoop_StoppedLine_KillSentinel(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	deps.getpid = func() int { return 42 }
+	deps.signalCh = nil
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+	}
+
+	// Kill sentinel causes immediate exit after initial prompt.
+	expectedKillPath := filepath.Join(tmpDir, ".sprawl", "agents", "finn.kill")
+	deps.readFile = func(path string) ([]byte, error) {
+		if path == expectedKillPath {
+			return []byte(""), nil
+		}
+		return nil, errors.New("file not found")
+	}
+	deps.removeFile = func(path string) error { return nil }
+	deps.nextTask = func(root, name string) (*state.Task, error) { return nil, nil }
+	deps.listMessages = func(root, agent, filter string) ([]*messages.Message, error) { return nil, nil }
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	ctx := context.Background()
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	output := outBuf.String()
+	// STOPPED should fire even when exit is caused by kill sentinel.
+	if !strings.Contains(output, "[agent-loop] STOPPED agent=finn") {
+		t.Errorf("expected STOPPED line on kill sentinel exit, got:\n%s", output)
+	}
+}
+
+func TestRunAgentLoop_SignalLogging(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	deps.getpid = func() int { return 7777 }
+
+	// Create a buffered signal channel and pre-load a SIGTERM.
+	sigCh := make(chan os.Signal, 1)
+	sigCh <- syscall.SIGTERM
+	deps.signalCh = sigCh
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+	}
+
+	// The signal should trigger context cancellation inside runAgentLoop,
+	// causing the loop to exit.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	output := outBuf.String()
+	// Verify the signal name is logged.
+	if !strings.Contains(output, "[agent-loop] received signal terminated, shutting down") {
+		// Also accept the raw signal string representation.
+		if !strings.Contains(output, "[agent-loop] received signal") || !strings.Contains(output, "shutting down") {
+			t.Errorf("expected signal log line in output, got:\n%s", output)
+		}
+	}
+}
+
+func TestRunAgentLoop_ShutdownReason(t *testing.T) {
+	deps, _, mockProc := newTestAgentLoopDeps(t)
+
+	deps.getpid = func() int { return 5555 }
+	deps.signalCh = nil
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+	}
+
+	// Cancel context immediately after the initial prompt completes,
+	// so the main loop hits ctx.Done() at the top of the next iteration.
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	var outBuf bytes.Buffer
+	deps.stdout = &outBuf
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	output := outBuf.String()
+	// When the loop exits via ctx.Done(), it should log the reason.
+	if !strings.Contains(output, "[agent-loop] shutting down: context canceled") {
+		t.Errorf("expected 'shutting down: context canceled' in output, got:\n%s", output)
 	}
 }

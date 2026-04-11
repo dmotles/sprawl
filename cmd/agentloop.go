@@ -57,6 +57,8 @@ type agentLoopDeps struct {
 	exit         func(int)
 	newProcess   func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager
 	newWorkLock  func(lockDir, agentName string) (*workLock, error)
+	getpid       func() int
+	signalCh     <-chan os.Signal
 }
 
 // defaultAgentLoopDeps wires real implementations.
@@ -114,6 +116,7 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 				Release: func() error { return fl.Unlock() },
 			}, nil
 		},
+		getpid: os.Getpid,
 	}
 }
 
@@ -244,16 +247,11 @@ var agentLoopCmd = &cobra.Command{
 	RunE: func(_ *cobra.Command, args []string) error {
 		deps := defaultAgentLoopDeps()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-		go func() {
-			<-sigCh
-			cancel()
-		}()
+		deps.signalCh = sigCh
 
+		ctx := context.Background()
 		return runAgentLoop(ctx, deps, args[0])
 	},
 }
@@ -414,6 +412,23 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		nowFunc: time.Now,
 	}
 
+	defer fmt.Fprintf(deps.stdout, "[agent-loop] STOPPED agent=%s\n", agentName)
+
+	// Set up signal handling inside runAgentLoop so log lines go through the
+	// timestamped writer and into the log file.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if deps.signalCh != nil {
+		go func() {
+			select {
+			case sig := <-deps.signalCh:
+				fmt.Fprintf(deps.stdout, "[agent-loop] received signal %s, shutting down\n", sig)
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+
 	fmt.Fprintf(deps.stdout, "[agent-loop] starting for agent %q\n", agentName)
 
 	// Build process config
@@ -465,6 +480,9 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	if !ok {
 		return nil
 	}
+
+	fmt.Fprintf(deps.stdout, "[agent-loop] READY agent=%s pid=%d\n", agentName, deps.getpid())
+
 	// Use a closure defer so it always stops the most-recently-assigned proc.
 	// Guard against nil in case a restart failure left proc unset.
 	defer func() {
@@ -523,6 +541,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	for {
 		select {
 		case <-ctx.Done():
+			fmt.Fprintf(deps.stdout, "[agent-loop] shutting down: %v\n", ctx.Err())
 			return nil
 		default:
 		}
