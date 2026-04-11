@@ -146,17 +146,8 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		env["SPRAWL_BIN"] = v
 	}
 
-	// Create or add to tmux session
+	// Compute children session name (pure computation, no tmux dependency).
 	childrenSession := tmux.ChildrenSessionName(namespace, parentTreePath)
-	if deps.tmuxRunner.HasSession(childrenSession) {
-		if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
-			return fmt.Errorf("creating tmux window for %s: %w", agentName, err)
-		}
-	} else {
-		if err := deps.tmuxRunner.NewSessionWithWindow(childrenSession, agentName, env, shellCmd); err != nil {
-			return fmt.Errorf("creating tmux session for %s: %w", agentName, err)
-		}
-	}
 
 	// Generate a UUID for the Claude session ID
 	sessionID, err := state.GenerateUUID()
@@ -164,7 +155,8 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 		return fmt.Errorf("generating session ID: %w", err)
 	}
 
-	// Save subagent state — note Subagent: true and parent's worktree/branch
+	// Save subagent state BEFORE creating tmux session/window.
+	// The agent-loop command started by tmux needs the state file at startup.
 	agentState := &state.AgentState{
 		Name:        agentName,
 		Type:        agentType,
@@ -183,6 +175,19 @@ func runSpawnSubagent(deps *spawnSubagentDeps, family, agentType, prompt string)
 	}
 	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)
+	}
+
+	// Create or add to tmux session
+	if deps.tmuxRunner.HasSession(childrenSession) {
+		if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
+			_ = state.DeleteAgent(sprawlRoot, agentName)
+			return fmt.Errorf("creating tmux window for %s: %w", agentName, err)
+		}
+	} else {
+		if err := deps.tmuxRunner.NewSessionWithWindow(childrenSession, agentName, env, shellCmd); err != nil {
+			_ = state.DeleteAgent(sprawlRoot, agentName)
+			return fmt.Errorf("creating tmux session for %s: %w", agentName, err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Spawned subagent %s %s (on parent worktree: %s)\n", agentType, agentName, parentState.Worktree)

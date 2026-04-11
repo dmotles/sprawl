@@ -241,26 +241,8 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		env["SPRAWL_TEST_MODE"] = v
 	}
 
-	// Create or add to tmux session using try-then-fallback to avoid TOCTOU race.
-	// Multiple concurrent spawns may all try to create the session simultaneously.
+	// Compute children session name (pure computation, no tmux dependency).
 	childrenSession := tmux.ChildrenSessionName(namespace, parentTreePath)
-	if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
-		// Session may not exist yet — try creating it
-		if err := deps.tmuxRunner.NewSessionWithWindow(childrenSession, agentName, env, shellCmd); err != nil {
-			// Another concurrent spawn may have just created the session — retry NewWindow
-			if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
-				return fmt.Errorf("creating tmux window/session for %s: %w", agentName, err)
-			}
-		}
-	}
-
-	// Apply the branded tmux config if it exists (generated at init time).
-	confPath := filepath.Join(sprawlRoot, ".sprawl", "tmux.conf")
-	if _, statErr := os.Stat(confPath); statErr == nil {
-		if err := deps.tmuxRunner.SourceFile(childrenSession, confPath); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not apply tmux config: %v\n", err)
-		}
-	}
 
 	// Generate a UUID for the Claude session ID
 	sessionID, err := state.GenerateUUID()
@@ -274,7 +256,8 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 		return fmt.Errorf("writing initial prompt file: %w", err)
 	}
 
-	// Save agent state
+	// Save agent state BEFORE creating tmux session/window.
+	// The agent-loop command started by tmux needs the state file at startup.
 	agentState := &state.AgentState{
 		Name:        agentName,
 		Type:        agentType,
@@ -292,6 +275,29 @@ func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) error {
 	}
 	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("saving agent state: %w", err)
+	}
+
+	// Create or add to tmux session using try-then-fallback to avoid TOCTOU race.
+	// Multiple concurrent spawns may all try to create the session simultaneously.
+	if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
+		// Session may not exist yet — try creating it
+		if err := deps.tmuxRunner.NewSessionWithWindow(childrenSession, agentName, env, shellCmd); err != nil {
+			// Another concurrent spawn may have just created the session — retry NewWindow
+			if err := deps.tmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
+				// Clean up state and prompt files since tmux creation failed
+				_ = state.DeleteAgent(sprawlRoot, agentName)
+				_ = os.RemoveAll(filepath.Dir(promptPath))
+				return fmt.Errorf("creating tmux window/session for %s: %w", agentName, err)
+			}
+		}
+	}
+
+	// Apply the branded tmux config if it exists (generated at init time).
+	confPath := filepath.Join(sprawlRoot, ".sprawl", "tmux.conf")
+	if _, statErr := os.Stat(confPath); statErr == nil {
+		if err := deps.tmuxRunner.SourceFile(childrenSession, confPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not apply tmux config: %v\n", err)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "Spawned %s %s (branch: %s)\n", agentType, agentName, branchName)

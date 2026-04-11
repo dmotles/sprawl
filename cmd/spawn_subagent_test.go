@@ -604,3 +604,48 @@ func TestSpawnSubagentCmd_Registered(t *testing.T) {
 		t.Error("expected 'subagent' to be a subcommand of 'spawn', but it was not found")
 	}
 }
+
+// TestSpawnSubagent_StateFileExistsBeforeTmux verifies that the agent state file
+// is written BEFORE the tmux session/window is created (QUM-190 fix).
+func TestSpawnSubagent_StateFileExistsBeforeTmux(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	expectedName := agent.EngineerNames[0]
+	var stateExistedAtTmuxCall bool
+
+	checkState := func(_, _ string) {
+		_, err := state.LoadAgent(tmpDir, expectedName)
+		stateExistedAtTmuxCall = err == nil
+	}
+	runner.onNewWindow = checkState
+	runner.onNewSessionWithWindow = checkState
+
+	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !stateExistedAtTmuxCall {
+		t.Error("agent state file should exist BEFORE tmux session/window is created")
+	}
+}
+
+// TestSpawnSubagent_TmuxFailure_CleansUpStateFile verifies that when tmux fails,
+// the already-written state file is cleaned up (QUM-190).
+func TestSpawnSubagent_TmuxFailure_CleansUpStateFile(t *testing.T) {
+	deps, runner, tmpDir := newTestSpawnSubagentDeps(t)
+
+	runner.newSessionWithWindowErr = errors.New("tmux exploded")
+
+	err := runSpawnSubagent(deps, "engineering", "engineer", "task")
+	if err == nil {
+		t.Fatal("expected error for tmux failure")
+	}
+
+	// State file should have been cleaned up
+	expectedName := agent.EngineerNames[0]
+	_, loadErr := state.LoadAgent(tmpDir, expectedName)
+	if loadErr == nil {
+		t.Error("agent state file should be cleaned up after tmux failure")
+	}
+}

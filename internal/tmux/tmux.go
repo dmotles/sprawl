@@ -124,10 +124,16 @@ func (r *RealRunner) HasSession(name string) bool {
 }
 
 // HasWindow returns true if a tmux window with the given name exists in the session.
+// It checks both the exit code AND the output content, because tmux display-message
+// can return exit 0 with empty output for non-existent targets (QUM-191).
 func (r *RealRunner) HasWindow(sessionName, windowName string) bool {
 	target := exactTarget(sessionName) + ":" + windowName
 	cmd := exec.Command(r.TmuxPath, "display-message", "-t", target, "-p", "#{window_name}") //nolint:gosec // arguments are not user-controlled
-	return cmd.Run() == nil
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == windowName
 }
 
 // NewSession creates a new detached tmux session running the given shell command.

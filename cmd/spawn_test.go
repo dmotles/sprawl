@@ -40,6 +40,16 @@ type spawnMockRunner struct {
 	sourceFileCalled  bool
 	sourceFileSession string
 	sourceFilePath    string
+
+	// callLog records the order of tmux operations for ordering verification.
+	callLog []string
+
+	// onNewWindow is called when NewWindow is invoked (before error checking).
+	// Useful for verifying preconditions like state file existence.
+	onNewWindow func(sessionName, windowName string)
+
+	// onNewSessionWithWindow is called when NewSessionWithWindow is invoked.
+	onNewSessionWithWindow func(sessionName, windowName string)
 }
 
 func (m *spawnMockRunner) HasWindow(string, string) bool { return false }
@@ -53,6 +63,10 @@ func (m *spawnMockRunner) NewSession(name string, env map[string]string, shellCm
 }
 
 func (m *spawnMockRunner) NewSessionWithWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	m.callLog = append(m.callLog, "NewSessionWithWindow")
+	if m.onNewSessionWithWindow != nil {
+		m.onNewSessionWithWindow(sessionName, windowName)
+	}
 	m.newSessionWithWindowCalled = true
 	m.newSessionWithWindowSession = sessionName
 	m.newSessionWithWindowWindow = windowName
@@ -62,6 +76,10 @@ func (m *spawnMockRunner) NewSessionWithWindow(sessionName, windowName string, e
 }
 
 func (m *spawnMockRunner) NewWindow(sessionName, windowName string, env map[string]string, shellCmd string) error {
+	m.callLog = append(m.callLog, "NewWindow")
+	if m.onNewWindow != nil {
+		m.onNewWindow(sessionName, windowName)
+	}
 	m.newWindowCalled = true
 	idx := m.newWindowCallCount
 	m.newWindowCallCount++
@@ -1112,5 +1130,81 @@ func TestSpawn_SkipsSourceFileWhenNoConfig(t *testing.T) {
 
 	if runner.sourceFileCalled {
 		t.Error("expected SourceFile NOT to be called when tmux.conf doesn't exist")
+	}
+}
+
+// TestSpawn_StateFileExistsBeforeTmux verifies that the agent state file is
+// written BEFORE the tmux session/window is created (QUM-190 fix).
+func TestSpawn_StateFileExistsBeforeTmux(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	expectedName := agent.EngineerNames[0]
+	var stateExistedAtTmuxCall bool
+
+	// Hook into tmux calls to check if state file exists at that point
+	checkState := func(_, _ string) {
+		_, err := state.LoadAgent(tmpDir, expectedName)
+		stateExistedAtTmuxCall = err == nil
+	}
+	runner.onNewWindow = checkState
+	runner.onNewSessionWithWindow = checkState
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !stateExistedAtTmuxCall {
+		t.Error("agent state file should exist BEFORE tmux session/window is created")
+	}
+}
+
+// TestSpawn_TmuxFailure_CleansUpStateFile verifies that when all tmux attempts
+// fail, the already-written state file is cleaned up (QUM-190).
+func TestSpawn_TmuxFailure_CleansUpStateFile(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// All tmux attempts fail
+	runner.newWindowErrs = []error{
+		errors.New("session not found"),
+		errors.New("session not found again"),
+	}
+	runner.newSessionWithWindowErr = errors.New("session creation failed")
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err == nil {
+		t.Fatal("expected error when all tmux attempts fail")
+	}
+
+	// State file should have been cleaned up
+	expectedName := agent.EngineerNames[0]
+	_, loadErr := state.LoadAgent(tmpDir, expectedName)
+	if loadErr == nil {
+		t.Error("agent state file should be cleaned up after tmux failure")
+	}
+}
+
+// TestSpawn_TmuxFailure_CleansUpPromptFile verifies that when all tmux attempts
+// fail, the prompt file is also cleaned up.
+func TestSpawn_TmuxFailure_CleansUpPromptFile(t *testing.T) {
+	deps, runner, _, tmpDir := newTestSpawnDeps(t)
+
+	// All tmux attempts fail
+	runner.newWindowErrs = []error{
+		errors.New("session not found"),
+		errors.New("session not found again"),
+	}
+	runner.newSessionWithWindowErr = errors.New("session creation failed")
+
+	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err == nil {
+		t.Fatal("expected error when all tmux attempts fail")
+	}
+
+	// Prompt file should have been cleaned up
+	expectedName := agent.EngineerNames[0]
+	promptPath := filepath.Join(tmpDir, ".sprawl", "agents", expectedName, "prompts", "initial.md")
+	if _, statErr := os.Stat(promptPath); statErr == nil {
+		t.Error("prompt file should be cleaned up after tmux failure")
 	}
 }
