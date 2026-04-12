@@ -152,6 +152,9 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 		// If so, skip the entire missed-handoff path to avoid false positives.
 		alreadySummarized, _ := deps.hasSessionSummary(sprawlRoot, prevSessionID)
 		if alreadySummarized {
+			// Summary exists but consolidation may not have run (e.g., session
+			// killed after handoff before post-session housekeeping).
+			runConsolidationPipeline(ctx, deps, sprawlRoot)
 			// Clear stale last-session-id so we don't check again next session.
 			_ = deps.writeLastSessionID(sprawlRoot, "")
 		} else {
@@ -232,12 +235,14 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 	// 6. Housekeeping: check handoff signal.
 	handoffPath := filepath.Join(sprawlRoot, ".sprawl", "memory", "handoff-signal")
 	if _, readErr := deps.readFile(handoffPath); readErr == nil {
-		_ = deps.removeFile(handoffPath)
-		// Clear last-session-id so the next session doesn't false-positive on missed handoff.
-		_ = deps.writeLastSessionID(sprawlRoot, "")
 		fmt.Fprintf(deps.stdout, "[root-loop] handoff signal detected, restarting\n")
 
 		runConsolidationPipeline(ctx, deps, sprawlRoot)
+
+		// Clean up after consolidation for crash safety — if killed during
+		// consolidation, the next session retries.
+		_ = deps.removeFile(handoffPath)
+		_ = deps.writeLastSessionID(sprawlRoot, "")
 	} else {
 		fmt.Fprintf(deps.stdout, "[root-loop] session ended, restarting\n")
 	}

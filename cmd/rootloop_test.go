@@ -431,6 +431,79 @@ func TestRunRootSession_MissedHandoff_AlreadySummarized(t *testing.T) {
 	}
 }
 
+func TestRunRootSession_AlreadySummarized_RunsConsolidation(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+
+	var consolidateCalled bool
+	var updatePKCalled bool
+	var callOrder []string
+
+	deps.readLastSessionID = func(sprawlRoot string) (string, error) {
+		return "prev-session-id", nil
+	}
+
+	// Summary already exists for this session (handoff happened, session killed)
+	deps.hasSessionSummary = func(sprawlRoot, sessionID string) (bool, error) {
+		return true, nil
+	}
+
+	deps.writeLastSessionID = func(root, id string) error {
+		if id == "" {
+			callOrder = append(callOrder, "clearSessionID")
+		}
+		return nil
+	}
+
+	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		consolidateCalled = true
+		callOrder = append(callOrder, "consolidate")
+		return nil
+	}
+
+	deps.updatePersistentKnowledge = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error {
+		updatePKCalled = true
+		callOrder = append(callOrder, "updatePersistentKnowledge")
+		return nil
+	}
+
+	deps.runCommand = func(name string, args []string) error {
+		return nil
+	}
+
+	err := runRootSession(context.Background(), deps)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	if !consolidateCalled {
+		t.Error("expected consolidate to be called when session summary already exists")
+	}
+	if !updatePKCalled {
+		t.Error("expected updatePersistentKnowledge to be called when session summary already exists")
+	}
+
+	// Verify consolidation runs before clearing the session ID
+	consolidateIdx := -1
+	clearIdx := -1
+	for i, name := range callOrder {
+		if name == "consolidate" && consolidateIdx == -1 {
+			consolidateIdx = i
+		}
+		if name == "clearSessionID" && clearIdx == -1 {
+			clearIdx = i
+		}
+	}
+	if consolidateIdx == -1 {
+		t.Fatal("consolidate was not recorded in callOrder")
+	}
+	if clearIdx == -1 {
+		t.Fatal("clearSessionID was not recorded in callOrder")
+	}
+	if consolidateIdx >= clearIdx {
+		t.Errorf("expected consolidate (idx=%d) to be called before clearSessionID (idx=%d)", consolidateIdx, clearIdx)
+	}
+}
+
 func TestRunRootSession_MissedHandoff_Error_Continues(t *testing.T) {
 	deps := newTestRootLoopDeps(t)
 
@@ -494,6 +567,7 @@ func TestRunRootSession_HandoffSignal_CallsConsolidate(t *testing.T) {
 
 	var consolidateCalled bool
 	var consolidateSprawlRoot string
+	var callOrder []string
 
 	// Handoff signal file exists
 	deps.readFile = func(path string) ([]byte, error) {
@@ -502,11 +576,24 @@ func TestRunRootSession_HandoffSignal_CallsConsolidate(t *testing.T) {
 		}
 		return nil, os.ErrNotExist
 	}
-	deps.removeFile = func(path string) error { return nil }
+	deps.removeFile = func(path string) error {
+		if strings.Contains(path, "handoff-signal") {
+			callOrder = append(callOrder, "removeHandoffSignal")
+		}
+		return nil
+	}
+
+	deps.writeLastSessionID = func(root, id string) error {
+		if id == "" {
+			callOrder = append(callOrder, "clearSessionID")
+		}
+		return nil
+	}
 
 	deps.consolidate = func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 		consolidateCalled = true
 		consolidateSprawlRoot = sprawlRoot
+		callOrder = append(callOrder, "consolidate")
 		return nil
 	}
 
@@ -524,6 +611,37 @@ func TestRunRootSession_HandoffSignal_CallsConsolidate(t *testing.T) {
 	}
 	if consolidateSprawlRoot != "/fake/root" {
 		t.Errorf("expected consolidate called with sprawlRoot '/fake/root', got %q", consolidateSprawlRoot)
+	}
+
+	// Verify cleanup happens AFTER consolidation for crash safety
+	consolidateIdx := -1
+	removeIdx := -1
+	clearIdx := -1
+	for i, name := range callOrder {
+		if name == "consolidate" && consolidateIdx == -1 {
+			consolidateIdx = i
+		}
+		if name == "removeHandoffSignal" && removeIdx == -1 {
+			removeIdx = i
+		}
+		if name == "clearSessionID" && clearIdx == -1 {
+			clearIdx = i
+		}
+	}
+	if consolidateIdx == -1 {
+		t.Fatal("consolidate was not recorded in callOrder")
+	}
+	if removeIdx == -1 {
+		t.Fatal("removeHandoffSignal was not recorded in callOrder")
+	}
+	if clearIdx == -1 {
+		t.Fatal("clearSessionID was not recorded in callOrder")
+	}
+	if consolidateIdx > removeIdx {
+		t.Errorf("expected consolidate (idx=%d) before removeHandoffSignal (idx=%d)", consolidateIdx, removeIdx)
+	}
+	if consolidateIdx > clearIdx {
+		t.Errorf("expected consolidate (idx=%d) before clearSessionID (idx=%d)", consolidateIdx, clearIdx)
 	}
 }
 
