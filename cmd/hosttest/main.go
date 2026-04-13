@@ -89,6 +89,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--verbose",
+		"--permission-mode", "bypassPermissions",
 	}
 	if cfg.model != "" {
 		args = append(args, "--model", cfg.model)
