@@ -388,6 +388,41 @@ func TestMapProtocolMessage_ResultWithError(t *testing.T) {
 	}
 }
 
+func TestMapProtocolMessage_AssistantWithOnlyThinking(t *testing.T) {
+	// Assistant messages that only have thinking blocks should return nil
+	// (they contain no displayable content)
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this..."}]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	if result != nil {
+		t.Errorf("mapProtocolMessage for thinking-only assistant returned %T, want nil", result)
+	}
+}
+
+func TestMapProtocolMessage_ResultWithResultText(t *testing.T) {
+	// Result messages should preserve the Result field text
+	raw := `{"type":"result","subtype":"success","is_error":false,"result":"\n\npong","duration_ms":100,"num_turns":1,"total_cost_usd":0.03}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	resultMsg, ok := result.(SessionResultMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want SessionResultMsg", result)
+	}
+	if resultMsg.Result != "\n\npong" {
+		t.Errorf("Result = %q, want %q", resultMsg.Result, "\n\npong")
+	}
+}
+
 func TestMapProtocolMessage_UnknownType(t *testing.T) {
 	raw := `{"type":"unknown_thing","data":"foo"}`
 	var msg protocol.Message
@@ -404,6 +439,8 @@ func TestMapProtocolMessage_UnknownType(t *testing.T) {
 }
 
 func TestMapProtocolMessage_SystemInit(t *testing.T) {
+	// System messages during event streaming should return nil — they are
+	// informational and session initialization is handled by Bridge.Initialize().
 	raw := `{"type":"system","subtype":"init","session_id":"s-1","cwd":"/tmp","tools":["Bash"],"model":"claude-4","permissionMode":"auto"}`
 	var msg protocol.Message
 	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
@@ -412,8 +449,8 @@ func TestMapProtocolMessage_SystemInit(t *testing.T) {
 	msg.Raw = json.RawMessage(raw)
 
 	result := mapProtocolMessage(&msg)
-	if _, ok := result.(SessionInitializedMsg); !ok {
-		t.Errorf("mapProtocolMessage for system/init returned %T, want SessionInitializedMsg", result)
+	if result != nil {
+		t.Errorf("mapProtocolMessage for system/init returned %T, want nil (system messages are skipped during event stream)", result)
 	}
 }
 

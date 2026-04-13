@@ -174,6 +174,15 @@ func (m *ViewportModel) AppendError(text string) {
 	m.renderAndUpdate()
 }
 
+// HasPendingAssistant returns true if there is an incomplete assistant message
+// (i.e., assistant text was streamed but not yet finalized).
+func (m *ViewportModel) HasPendingAssistant() bool {
+	if n := len(m.messages); n > 0 {
+		return m.messages[n-1].Type == MessageAssistant && !m.messages[n-1].Complete
+	}
+	return false
+}
+
 // IsAutoScroll returns whether auto-scroll is enabled.
 func (m *ViewportModel) IsAutoScroll() bool {
 	return m.autoScroll

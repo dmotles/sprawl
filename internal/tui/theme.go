@@ -1,11 +1,13 @@
 package tui
 
 import (
+	"strings"
+
 	"charm.land/lipgloss/v2"
 )
 
 const (
-	defaultAccentColor = "colour39"
+	defaultAccentColor = "39"
 	backgroundColor    = "233"
 	dimColor           = "240"
 )
@@ -28,6 +30,9 @@ func NewTheme(accentColor string) Theme {
 	if accentColor == "" {
 		accentColor = defaultAccentColor
 	}
+	// Lip Gloss v2 doesn't understand tmux color names like "colour141".
+	// Strip the prefix so we pass just the ANSI number (e.g., "141").
+	accentColor = strings.TrimPrefix(accentColor, "colour")
 
 	accent := lipgloss.Color(accentColor)
 	bg := lipgloss.Color(backgroundColor)

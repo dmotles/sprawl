@@ -275,6 +275,52 @@ func TestAppModel_UserMessageSentMsg_ProducesWaitCmd(t *testing.T) {
 	}
 }
 
+func TestAppModel_SessionResultMsg_DisplaysResultText(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionResultMsg{
+		Result:       "\n\npong",
+		IsError:      false,
+		DurationMs:   100,
+		TotalCostUsd: 0.001,
+		NumTurns:     1,
+	})
+	app = updated.(AppModel)
+
+	// The result text should be displayed as an assistant message in the viewport.
+	found := false
+	for _, entry := range app.viewport.messages {
+		if entry.Type == MessageAssistant && strings.Contains(entry.Content, "pong") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("SessionResultMsg with non-empty Result should display result text as assistant message in viewport")
+	}
+}
+
+func TestAppModel_SessionResultMsg_ErrorDoesNotDisplayResultAsAssistant(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionResultMsg{
+		Result:  "something went wrong",
+		IsError: true,
+	})
+	app = updated.(AppModel)
+
+	// Error result should NOT be displayed as assistant message
+	for _, entry := range app.viewport.messages {
+		if entry.Type == MessageAssistant {
+			t.Error("Error SessionResultMsg should not create an assistant message entry")
+		}
+	}
+}
+
 func TestAppModel_TurnStateMsg_UpdatesTurnState(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

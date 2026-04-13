@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -42,7 +43,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge) AppModel
 	if bridge != nil {
 		startPanel = PanelInput
 	}
-	return AppModel{
+	app := AppModel{
 		tree:        NewTreeModel(&theme),
 		viewport:    NewViewportModel(&theme),
 		input:       NewInputModel(&theme),
@@ -52,6 +53,8 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge) AppModel
 		activePanel: startPanel,
 		theme:       theme,
 	}
+	app.updateFocus()
+	return app
 }
 
 // Init returns the bridge initialize command if a bridge is present,
@@ -128,6 +131,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SessionResultMsg:
+		// Display result text only if no assistant text was already streamed.
+		// When Claude returns text in the assistant message, it also appears
+		// in result.Result — avoid duplicating it.
+		if !msg.IsError && strings.TrimSpace(msg.Result) != "" && !m.viewport.HasPendingAssistant() {
+			m.viewport.AppendAssistantChunk(strings.TrimSpace(msg.Result))
+		}
 		m.viewport.FinalizeAssistantMessage()
 		if msg.IsError {
 			m.viewport.AppendError(fmt.Sprintf("Error: %s", msg.Result))

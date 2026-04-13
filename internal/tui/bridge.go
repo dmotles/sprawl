@@ -113,9 +113,9 @@ func mapProtocolMessage(msg *protocol.Message) tea.Msg {
 	case "result":
 		return mapResultMessage(msg)
 	case "system":
-		if msg.Subtype == "init" {
-			return SessionInitializedMsg{}
-		}
+		// System messages (init, session_state_changed, etc.) are informational
+		// during the event stream. The session initialization is handled by
+		// Bridge.Initialize(). Return nil to skip and wait for the next message.
 		return nil
 	default:
 		return nil
