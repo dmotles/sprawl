@@ -520,7 +520,7 @@ This suggests input can be queued while Claude is processing. However, based on 
 2. The V2 `SDKSession` API (`send()` / `stream()`) supports **multi-turn** — you can call `send()` after iterating
 3. The `interrupt()` method sends a `control_request` with `subtype: "interrupt"` to cancel the current turn
 
-**For Dendra's use case:**
+**For Sprawl's use case:**
 
 - After a `result` message (turn complete), send the next user message on stdin
 - The `session_state_changed` → `idle` event is the authoritative signal that Claude is ready
@@ -576,7 +576,7 @@ This suggests input can be queued while Claude is processing. However, based on 
 - Messages will be delivered when the buffer fills OR when Claude Code flushes
 - In practice, assistant messages and results flush reliably; partial streaming tokens may batch
 
-**Mitigation:** Set `stdbuf -oL` or use pseudo-TTY, or accept slight latency for streaming tokens. For Dendra's wrapper loop, we primarily care about `result` and `session_state_changed` messages, which flush reliably.
+**Mitigation:** Set `stdbuf -oL` or use pseudo-TTY, or accept slight latency for streaming tokens. For Sprawl's wrapper loop, we primarily care about `result` and `session_state_changed` messages, which flush reliably.
 
 ### 8.2 `--input-format stream-json` is Underdocumented
 
@@ -592,7 +592,7 @@ Anthropic recommends `--bare` for SDK/scripted usage and plans to make it the de
 - Deterministic behavior across machines
 - No side effects from user or project settings
 
-For Dendra agents, use `--bare` and pass all configuration explicitly via flags and the `initialize` control request.
+For Sprawl agents, use `--bare` and pass all configuration explicitly via flags and the `initialize` control request.
 
 ---
 
@@ -610,7 +610,7 @@ For Dendra agents, use `--bare` and pass all configuration explicitly via flags 
 │  │ claude -p --input-format stream-json   │ │
 │  │   --output-format stream-json          │ │
 │  │   --verbose --bare                     │ │
-│  │   --session-id dendra-<name>           │ │
+│  │   --session-id sprawl-<name>           │ │
 │  │   --system-prompt "..."                │ │
 │  │   --permission-mode bypassPermissions  │ │
 │  └─────────┬──────────────┬───────────────┘ │
@@ -623,7 +623,7 @@ For Dendra agents, use `--bare` and pass all configuration explicitly via flags 
 │  │ - Track session state                  │ │
 │  └────────────────────────────────────────┘ │
 │                                             │
-│  Poll loop (check .dendra/messages/)        │
+│  Poll loop (check .sprawl/messages/)        │
 │  On new message → send user message stdin   │
 └─────────────────────────────────────────────┘
 ```
@@ -638,11 +638,11 @@ For Dendra agents, use `--bare` and pass all configuration explicitly via flags 
 
 4. **Use `--bare` mode** for faster startup and deterministic behavior. Pass all configuration via CLI flags.
 
-5. **Session persistence** is valuable. Use `--session-id dendra-<agent-name>` and let Claude Code persist sessions. On respawn, `--resume dendra-<agent-name>` recovers full conversation history.
+5. **Session persistence** is valuable. Use `--session-id sprawl-<agent-name>` and let Claude Code persist sessions. On respawn, `--resume sprawl-<agent-name>` recovers full conversation history.
 
 6. **NDJSON reader in Go.** Use `bufio.Scanner` with line splitting. Parse each line as JSON. Dispatch on `type` field. This is trivial in Go.
 
-7. **Don't use `--include-partial-messages`** unless needed for UI. Reduces output volume significantly. For Dendra agents (no interactive UI), we only need complete turns and results.
+7. **Don't use `--include-partial-messages`** unless needed for UI. Reduces output volume significantly. For Sprawl agents (no interactive UI), we only need complete turns and results.
 
 ### 9.3 Go Types (Proposed)
 
@@ -718,7 +718,7 @@ type SessionStateChanged struct {
 
 ```go
 func RunAgent(agentName, systemPrompt, initialPrompt string) error {
-    sessionID := "dendra-" + agentName
+    sessionID := "sprawl-" + agentName
 
     // Spawn Claude Code
     cmd := exec.Command("claude",
@@ -732,7 +732,7 @@ func RunAgent(agentName, systemPrompt, initialPrompt string) error {
         "--permission-mode", "bypassPermissions",
     )
     cmd.Env = append(os.Environ(),
-        "DENDRA_AGENT_IDENTITY="+agentName,
+        "SPRAWL_AGENT_IDENTITY="+agentName,
         "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1",
     )
 
@@ -766,7 +766,7 @@ func RunAgent(agentName, systemPrompt, initialPrompt string) error {
                 // Ready for next turn. Check inbox.
                 if hasNewMessages(agentName) {
                     sendUserMessage(stdin,
-                        "You have new messages. Check your inbox with: dendra messages inbox")
+                        "You have new messages. Check your inbox with: sprawl messages inbox")
                 }
                 // Otherwise, poll periodically
             }
@@ -801,7 +801,7 @@ func RunAgent(agentName, systemPrompt, initialPrompt string) error {
 
 ### 9.7 Open Questions for Implementation
 
-1. **Should we use `--resume` on process crash/restart?** If the Claude Code process dies (OOM, crash), we can restart it with `--resume dendra-<name>` to recover conversation history. The stream-json mode supports this.
+1. **Should we use `--resume` on process crash/restart?** If the Claude Code process dies (OOM, crash), we can restart it with `--resume sprawl-<name>` to recover conversation history. The stream-json mode supports this.
 
 2. **How to handle `--bare` vs loading CLAUDE.md?** With `--bare`, project CLAUDE.md files are not loaded. We can pass them via `--append-system-prompt-file` or include their content in the system prompt. Alternatively, use `--setting-sources project` instead of `--bare`.
 
@@ -809,7 +809,7 @@ func RunAgent(agentName, systemPrompt, initialPrompt string) error {
 
 4. **tmux integration.** The Go process manager should still run inside tmux for observability. Claude's stdout flows through our Go process — we should tee it to the terminal (via os.Stdout) so `tmux attach` still shows live agent output.
 
-5. **Graceful shutdown.** On `dendra kill`, send SIGTERM to the Go process. The Go process should send an `end_session` control request, wait briefly, then SIGTERM the Claude Code subprocess.
+5. **Graceful shutdown.** On `sprawl kill`, send SIGTERM to the Go process. The Go process should send an `end_session` control request, wait briefly, then SIGTERM the Claude Code subprocess.
 
 ---
 

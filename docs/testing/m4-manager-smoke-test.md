@@ -1,5 +1,7 @@
 # M4 Manager Agent Smoke Test
 
+> **Note:** This document references historical milestones (M4, M7) that have been completed. Kept for reference.
+
 This document describes how to validate the manager agent type end-to-end for Milestone 4. Full automated E2E testing with real Claude agents is deferred to M7. For M4, we rely on:
 
 1. **Unit tests** covering mechanical parts (prompt construction, spawn, agent-loop routing, merge).

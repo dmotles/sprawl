@@ -43,7 +43,7 @@ git commit -m "initial commit" >/dev/null 2>&1
 OLD_MAIN=$(git rev-parse HEAD)
 
 # Create agent branch with multiple commits
-git checkout -b dendra/test-agent >/dev/null 2>&1
+git checkout -b test-agent >/dev/null 2>&1
 echo "feature 1" > feature1.txt
 git add feature1.txt
 git commit -m "agent commit 1" >/dev/null 2>&1
@@ -60,7 +60,7 @@ AGENT_HEAD_BEFORE=$(git rev-parse HEAD)
 AGENT_COMMIT_COUNT=$(git rev-list --count main..HEAD)
 
 echo "  Main at: $OLD_MAIN"
-echo "  Agent branch: dendra/test-agent ($AGENT_COMMIT_COUNT commits ahead)"
+echo "  Agent branch: test-agent ($AGENT_COMMIT_COUNT commits ahead)"
 echo
 
 # -------------------------------------------------------------------
@@ -69,7 +69,7 @@ echo
 echo "--- Test 1: Squash + Rebase + Fast-Forward Merge ---"
 
 # Step 1: Find merge base
-MERGE_BASE=$(git merge-base main dendra/test-agent)
+MERGE_BASE=$(git merge-base main test-agent)
 
 # Step 2: Squash (reset --soft to merge base, then commit)
 git reset --soft "$MERGE_BASE" >/dev/null 2>&1
@@ -91,7 +91,7 @@ REBASED_SHA=$(git rev-parse HEAD)
 
 # Step 4: Fast-forward merge on main
 git checkout main >/dev/null 2>&1
-git merge --ff-only dendra/test-agent >/dev/null 2>&1
+git merge --ff-only test-agent >/dev/null 2>&1
 
 NEW_MAIN=$(git rev-parse HEAD)
 
@@ -116,7 +116,7 @@ else
 fi
 
 # 3. Main and agent branch point to same commit
-AGENT_NOW=$(git rev-parse dendra/test-agent)
+AGENT_NOW=$(git rev-parse test-agent)
 if [ "$NEW_MAIN" = "$AGENT_NOW" ]; then
     pass "Main and agent branch point to same commit"
 else
@@ -133,10 +133,10 @@ fi
 
 # 5. THE KEY TEST: git branch --merged includes the agent branch
 MERGED_BRANCHES=$(git branch --merged main)
-if echo "$MERGED_BRANCHES" | grep -q "dendra/test-agent"; then
-    pass "git branch --merged includes dendra/test-agent"
+if echo "$MERGED_BRANCHES" | grep -q "test-agent"; then
+    pass "git branch --merged includes test-agent"
 else
-    fail "git branch --merged does NOT include dendra/test-agent"
+    fail "git branch --merged does NOT include test-agent"
     echo "    Merged branches: $MERGED_BRANCHES"
 fi
 
@@ -154,8 +154,8 @@ echo
 echo "--- Test 2: Zero-Commit Case (No-Op) ---"
 
 # Agent branch and main are at the same commit now
-MERGE_BASE2=$(git merge-base main dendra/test-agent)
-AGENT_HEAD2=$(git rev-parse dendra/test-agent)
+MERGE_BASE2=$(git merge-base main test-agent)
+AGENT_HEAD2=$(git rev-parse test-agent)
 
 if [ "$MERGE_BASE2" = "$AGENT_HEAD2" ]; then
     pass "Zero-commit detected: merge-base == agent HEAD"
@@ -169,7 +169,7 @@ fi
 echo
 echo "--- Test 3: Agent Continues After Merge ---"
 
-git checkout dendra/test-agent >/dev/null 2>&1
+git checkout test-agent >/dev/null 2>&1
 echo "more work" > feature4.txt
 git add feature4.txt
 git commit -m "agent commit after merge" >/dev/null 2>&1
@@ -178,14 +178,14 @@ PRE_MERGE_MAIN=$(git -C "$TMPDIR/repo" rev-parse main)
 AGENT_HEAD3=$(git rev-parse HEAD)
 
 # Squash new work
-MERGE_BASE3=$(git merge-base main dendra/test-agent)
+MERGE_BASE3=$(git merge-base main test-agent)
 git reset --soft "$MERGE_BASE3" >/dev/null 2>&1
 git commit -m "squashed: more agent work" >/dev/null 2>&1
 
 # Rebase and ff-merge
 git rebase main >/dev/null 2>&1
 git checkout main >/dev/null 2>&1
-git merge --ff-only dendra/test-agent >/dev/null 2>&1
+git merge --ff-only test-agent >/dev/null 2>&1
 
 FINAL_MAIN=$(git rev-parse HEAD)
 
@@ -208,10 +208,10 @@ else
 fi
 
 MERGED_BRANCHES2=$(git branch --merged main)
-if echo "$MERGED_BRANCHES2" | grep -q "dendra/test-agent"; then
-    pass "git branch --merged still includes dendra/test-agent after second merge"
+if echo "$MERGED_BRANCHES2" | grep -q "test-agent"; then
+    pass "git branch --merged still includes test-agent after second merge"
 else
-    fail "git branch --merged does NOT include dendra/test-agent after second merge"
+    fail "git branch --merged does NOT include test-agent after second merge"
 fi
 
 # -------------------------------------------------------------------
