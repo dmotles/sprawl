@@ -235,6 +235,60 @@ func TestWriterConcurrentWrites(t *testing.T) {
 	}
 }
 
+func TestWriterWriteJSON(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	msg := map[string]any{
+		"type":    "custom",
+		"payload": "test-data",
+	}
+	if err := w.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON() error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.HasSuffix(output, "\n") {
+		t.Error("WriteJSON() output does not end with newline")
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if got["type"] != "custom" {
+		t.Errorf("type = %v, want %q", got["type"], "custom")
+	}
+	if got["payload"] != "test-data" {
+		t.Errorf("payload = %v, want %q", got["payload"], "test-data")
+	}
+}
+
+func TestWriterWriteJSONStruct(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	type testMsg struct {
+		Type string `json:"type"`
+		Val  int    `json:"val"`
+	}
+	msg := testMsg{Type: "test", Val: 42}
+	if err := w.WriteJSON(msg); err != nil {
+		t.Fatalf("WriteJSON() error: %v", err)
+	}
+
+	var got testMsg
+	if err := json.Unmarshal([]byte(strings.TrimSpace(buf.String())), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Type != "test" {
+		t.Errorf("Type = %q, want %q", got.Type, "test")
+	}
+	if got.Val != 42 {
+		t.Errorf("Val = %d, want 42", got.Val)
+	}
+}
+
 func TestWriterMultipleMessages(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)

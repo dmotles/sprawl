@@ -67,6 +67,12 @@ func (w *Writer) Close() error {
 	return nil
 }
 
+// WriteJSON marshals v as JSON and writes it as an NDJSON line.
+// This is the public equivalent of the private writeJSON method.
+func (w *Writer) WriteJSON(v any) error {
+	return w.writeJSON(v)
+}
+
 func (w *Writer) writeJSON(v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
