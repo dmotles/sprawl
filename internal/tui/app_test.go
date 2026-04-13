@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -9,7 +11,12 @@ import (
 
 func newTestAppModel(t *testing.T) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0")
+	return NewAppModel("colour212", "testrepo", "v0.1.0", nil)
+}
+
+func newTestAppModelWithBridge(t *testing.T, bridge *Bridge) AppModel {
+	t.Helper()
+	return NewAppModel("colour212", "testrepo", "v0.1.0", bridge)
 }
 
 func TestAppModel_InitReturnsNil(t *testing.T) {
@@ -126,5 +133,157 @@ func TestAppModel_CtrlCQuits(t *testing.T) {
 	result := cmd()
 	if _, ok := result.(tea.QuitMsg); !ok {
 		t.Errorf("Ctrl+C cmd() = %T, want tea.QuitMsg", result)
+	}
+}
+
+// --- Bridge integration tests ---
+
+func TestAppModel_InitWithBridge(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init() with bridge should return a cmd, got nil")
+	}
+}
+
+func TestAppModel_SubmitMsg_SendsViabridge(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, cmd := app.Update(SubmitMsg{Text: "hello claude"})
+	app = updated.(AppModel)
+
+	if cmd == nil {
+		t.Error("SubmitMsg should return a cmd to send message via bridge")
+	}
+	if app.turnState != TurnThinking {
+		t.Errorf("turnState = %v after SubmitMsg, want TurnThinking", app.turnState)
+	}
+}
+
+func TestAppModel_SubmitMsg_EmptyTextIgnored(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	_, cmd := app.Update(SubmitMsg{Text: ""})
+	if cmd != nil {
+		t.Error("empty SubmitMsg should not return a cmd")
+	}
+}
+
+func TestAppModel_SubmitMsg_NoBridge(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	_, cmd := app.Update(SubmitMsg{Text: "hello"})
+	if cmd != nil {
+		t.Error("SubmitMsg with no bridge should not return a cmd")
+	}
+}
+
+func TestAppModel_AssistantTextMsg_SetsTurnStateStreaming(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(AssistantTextMsg{Text: "some text"})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnStreaming {
+		t.Errorf("turnState = %v after AssistantTextMsg, want TurnStreaming", app.turnState)
+	}
+}
+
+func TestAppModel_SessionResultMsg_SetsTurnStateIdle(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionResultMsg{
+		Result:     "done",
+		NumTurns:   1,
+		DurationMs: 100,
+	})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v after SessionResultMsg, want TurnIdle", app.turnState)
+	}
+}
+
+func TestAppModel_SessionResultMsg_WithError(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionResultMsg{
+		IsError: true,
+		Result:  "something went wrong",
+	})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v after error SessionResultMsg, want TurnIdle", app.turnState)
+	}
+}
+
+func TestAppModel_SessionErrorMsg_SetsTurnStateIdle(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("connection lost")})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v after SessionErrorMsg, want TurnIdle", app.turnState)
+	}
+}
+
+func TestAppModel_UserMessageSentMsg_ProducesWaitCmd(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// First send a message to set up bridge.events
+	sendCmd := bridge.SendMessage("test")
+	sendCmd() // sets bridge.events
+
+	updated, cmd := app.Update(UserMessageSentMsg{})
+	_ = updated
+
+	if cmd == nil {
+		t.Fatal("UserMessageSentMsg should produce a cmd to wait for next event")
+	}
+}
+
+func TestAppModel_TurnStateMsg_UpdatesTurnState(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(TurnStateMsg{State: TurnThinking})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnThinking {
+		t.Errorf("turnState = %v, want TurnThinking", app.turnState)
 	}
 }

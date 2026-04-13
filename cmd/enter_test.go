@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dmotles/sprawl/internal/tui"
 )
 
 func newTestEnterDeps(t *testing.T) *enterDeps {
@@ -17,6 +18,7 @@ func newTestEnterDeps(t *testing.T) *enterDeps {
 		runProgram: func(tea.Model) error {
 			return nil
 		},
+		newSession: nil,
 	}
 }
 
@@ -59,6 +61,7 @@ func TestEnter_Success(t *testing.T) {
 			programCalled = true
 			return nil
 		},
+		newSession: nil,
 	}
 
 	err := runEnter(deps)
@@ -91,6 +94,7 @@ func TestEnter_ProgramError(t *testing.T) {
 		runProgram: func(tea.Model) error {
 			return programErr
 		},
+		newSession: nil,
 	}
 
 	err := runEnter(deps)
@@ -123,6 +127,7 @@ func TestEnter_DefaultAccentColor(t *testing.T) {
 			programCalled = true
 			return nil
 		},
+		newSession: nil,
 	}
 
 	err := runEnter(deps)
@@ -131,5 +136,133 @@ func TestEnter_DefaultAccentColor(t *testing.T) {
 	}
 	if !programCalled {
 		t.Error("runProgram should have been called even without accent-color file")
+	}
+}
+
+// --- New tests for session integration ---
+
+// mockSessionFactory returns a newSession function and tracks whether it was called.
+type mockSessionFactory struct {
+	bridge    *tui.Bridge
+	err       error
+	called    bool
+	sprawlDir string
+}
+
+func (f *mockSessionFactory) newSession(sprawlRoot string) (*tui.Bridge, error) {
+	f.called = true
+	f.sprawlDir = sprawlRoot
+	return f.bridge, f.err
+}
+
+func TestEnter_WithSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "accent-color"), []byte("colour212"), 0o644); err != nil {
+		t.Fatalf("setup write accent-color: %v", err)
+	}
+
+	factory := &mockSessionFactory{}
+
+	var capturedModel tea.Model
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(m tea.Model) error {
+			capturedModel = m
+			return nil
+		},
+		newSession: factory.newSession,
+	}
+
+	err := runEnter(deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !factory.called {
+		t.Error("newSession should have been called")
+	}
+	if factory.sprawlDir != tmpDir {
+		t.Errorf("newSession sprawlRoot = %q, want %q", factory.sprawlDir, tmpDir)
+	}
+	if capturedModel == nil {
+		t.Fatal("runProgram should have received a model")
+	}
+}
+
+func TestEnter_SessionError(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "accent-color"), []byte("colour212"), 0o644); err != nil {
+		t.Fatalf("setup write accent-color: %v", err)
+	}
+
+	factory := &mockSessionFactory{
+		err: errors.New("failed to create session"),
+	}
+
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(tea.Model) error {
+			return nil
+		},
+		newSession: factory.newSession,
+	}
+
+	err := runEnter(deps)
+	if err == nil {
+		t.Fatal("expected error when newSession fails")
+	}
+	if !strings.Contains(err.Error(), "failed to create session") {
+		t.Errorf("error = %q, want it to contain 'failed to create session'", err.Error())
+	}
+}
+
+func TestEnter_NilNewSessionSkipsBridge(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "accent-color"), []byte("colour212"), 0o644); err != nil {
+		t.Fatalf("setup write accent-color: %v", err)
+	}
+
+	var programCalled bool
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(m tea.Model) error {
+			programCalled = true
+			return nil
+		},
+		newSession: nil, // no session factory
+	}
+
+	err := runEnter(deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !programCalled {
+		t.Error("runProgram should still be called when newSession is nil")
 	}
 }

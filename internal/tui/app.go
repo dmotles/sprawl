@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -22,6 +24,9 @@ type AppModel struct {
 	input     InputModel
 	statusBar StatusBarModel
 
+	bridge    *Bridge
+	turnState TurnState
+
 	activePanel Panel
 	theme       Theme
 	width       int
@@ -30,24 +35,35 @@ type AppModel struct {
 }
 
 // NewAppModel constructs the root model with all sub-models.
-func NewAppModel(accentColor, repoName, version string) AppModel {
+// bridge may be nil for static placeholder mode.
+func NewAppModel(accentColor, repoName, version string, bridge *Bridge) AppModel {
 	theme := NewTheme(accentColor)
+	startPanel := PanelTree
+	if bridge != nil {
+		startPanel = PanelInput
+	}
 	return AppModel{
 		tree:        NewTreeModel(&theme),
 		viewport:    NewViewportModel(&theme),
 		input:       NewInputModel(&theme),
 		statusBar:   NewStatusBarModel(&theme, repoName, version, 0),
-		activePanel: PanelTree,
+		bridge:      bridge,
+		turnState:   TurnIdle,
+		activePanel: startPanel,
 		theme:       theme,
 	}
 }
 
-// Init returns nil; the app waits for WindowSizeMsg.
+// Init returns the bridge initialize command if a bridge is present,
+// otherwise nil (the app waits for WindowSizeMsg).
 func (m AppModel) Init() tea.Cmd {
+	if m.bridge != nil {
+		return m.bridge.Initialize()
+	}
 	return nil
 }
 
-// Update handles messages: window resize, global keybinds, and panel delegation.
+// Update handles messages: window resize, global keybinds, bridge messages, and panel delegation.
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -75,6 +91,65 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Delegate to active panel.
 		return m.delegateKey(msg)
+
+	case SessionInitializedMsg:
+		m.viewport.AppendStatus("Session ready")
+		return m, nil
+
+	case SubmitMsg:
+		if msg.Text == "" || m.bridge == nil || m.turnState != TurnIdle {
+			return m, nil
+		}
+		m.viewport.AppendUserMessage(msg.Text)
+		m.setTurnState(TurnThinking)
+		m.input.SetDisabled(true)
+		return m, m.bridge.SendMessage(msg.Text)
+
+	case UserMessageSentMsg:
+		m.setTurnState(TurnStreaming)
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
+		return m, nil
+
+	case AssistantTextMsg:
+		m.setTurnState(TurnStreaming)
+		m.viewport.AppendAssistantChunk(msg.Text)
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
+		return m, nil
+
+	case ToolCallMsg:
+		m.viewport.AppendToolCall(msg.ToolName, msg.Approved)
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
+		return m, nil
+
+	case SessionResultMsg:
+		m.viewport.FinalizeAssistantMessage()
+		if msg.IsError {
+			m.viewport.AppendError(fmt.Sprintf("Error: %s", msg.Result))
+		} else {
+			m.viewport.AppendStatus(fmt.Sprintf("Completed in %dms, cost $%.4f", msg.DurationMs, msg.TotalCostUsd))
+		}
+		m.setTurnState(TurnIdle)
+		m.input.SetDisabled(false)
+		return m, nil
+
+	case SessionErrorMsg:
+		m.viewport.AppendError(msg.Err.Error())
+		m.setTurnState(TurnIdle)
+		m.input.SetDisabled(false)
+		return m, nil
+
+	case TurnStateMsg:
+		m.setTurnState(msg.State)
+		if msg.State == TurnIdle {
+			m.input.SetDisabled(false)
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -118,6 +193,11 @@ func (m AppModel) View() tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
+}
+
+func (m *AppModel) setTurnState(state TurnState) {
+	m.turnState = state
+	m.statusBar.SetTurnState(state)
 }
 
 func (m *AppModel) resizePanels() {

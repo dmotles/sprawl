@@ -43,3 +43,52 @@ func TestStatusBar_SetWidth(t *testing.T) {
 	// Should not panic.
 	m.SetWidth(120)
 }
+
+// --- New tests for turn state display ---
+
+func TestStatusBar_SetTurnState_Thinking(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(80)
+	m.SetTurnState(TurnThinking)
+	view := m.View()
+	if !strings.Contains(view, "Thinking") {
+		t.Errorf("View() with TurnThinking should contain 'Thinking', got:\n%s", view)
+	}
+}
+
+func TestStatusBar_SetTurnState_Streaming(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(80)
+	m.SetTurnState(TurnStreaming)
+	view := m.View()
+	if !strings.Contains(view, "Streaming") {
+		t.Errorf("View() with TurnStreaming should contain 'Streaming', got:\n%s", view)
+	}
+}
+
+func TestStatusBar_SetTurnState_Idle(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(80)
+	// Set to thinking first, then back to idle
+	m.SetTurnState(TurnThinking)
+	m.SetTurnState(TurnIdle)
+	view := m.View()
+	// Should NOT contain thinking/streaming when idle
+	if strings.Contains(view, "Thinking") {
+		t.Errorf("View() with TurnIdle should not contain 'Thinking', got:\n%s", view)
+	}
+	if strings.Contains(view, "Streaming") {
+		t.Errorf("View() with TurnIdle should not contain 'Streaming', got:\n%s", view)
+	}
+}
+
+func TestStatusBar_SetTurnState_Complete(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(80)
+	m.SetTurnState(TurnComplete)
+	view := m.View()
+	// Complete state should not show Thinking or Streaming
+	if strings.Contains(view, "Thinking") {
+		t.Errorf("View() with TurnComplete should not contain 'Thinking', got:\n%s", view)
+	}
+}

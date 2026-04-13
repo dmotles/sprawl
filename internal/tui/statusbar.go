@@ -10,6 +10,7 @@ type StatusBarModel struct {
 	repoName   string
 	version    string
 	agentCount int
+	turnState  TurnState
 	width      int
 	theme      *Theme
 }
@@ -27,7 +28,25 @@ func NewStatusBarModel(theme *Theme, repoName, version string, agentCount int) S
 // View renders the status bar as a single line.
 func (m StatusBarModel) View() string {
 	left := fmt.Sprintf(" %s", m.repoName)
-	right := fmt.Sprintf("%s | agents: %d ", m.version, m.agentCount)
+
+	var stateStr string
+	switch m.turnState {
+	case TurnThinking:
+		stateStr = "Thinking..."
+	case TurnStreaming:
+		stateStr = "Streaming..."
+	case TurnComplete:
+		stateStr = "Complete"
+	default:
+		stateStr = ""
+	}
+
+	var right string
+	if stateStr != "" {
+		right = fmt.Sprintf("%s | %s | agents: %d ", m.version, stateStr, m.agentCount)
+	} else {
+		right = fmt.Sprintf("%s | agents: %d ", m.version, m.agentCount)
+	}
 
 	gap := m.width - len(left) - len(right)
 	if gap < 0 {
@@ -41,4 +60,9 @@ func (m StatusBarModel) View() string {
 // SetWidth updates the status bar width.
 func (m *StatusBarModel) SetWidth(w int) {
 	m.width = w
+}
+
+// SetTurnState updates the displayed turn state.
+func (m *StatusBarModel) SetTurnState(state TurnState) {
+	m.turnState = state
 }
