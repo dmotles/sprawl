@@ -98,3 +98,4 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 1. `make validate` — full pipeline: build, fmt-check, lint, test
 2. Manual smoke test: run the built `./sprawl` binary with relevant commands
 3. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
+4. For TUI changes, read `/tui-testing` for the E2E validation harness and manual testing workflow. TUI validation is mandatory for all TUI-related changes.
