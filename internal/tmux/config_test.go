@@ -281,6 +281,91 @@ func TestWriteConfig_CreatesFile(t *testing.T) {
 	}
 }
 
+func TestGenerateConfig_StatusRightContainsRepoName(t *testing.T) {
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "0.1.3",
+		SprawlRoot:  "/home/user/myproject",
+	})
+	// The repo basename should appear as a visible label in status-right,
+	// between mail indicator and agent count (e.g. "│ myproject │")
+	for _, line := range strings.Split(cfg, "\n") {
+		if !strings.HasPrefix(line, "set -g status-right ") {
+			continue
+		}
+		if !strings.Contains(line, "│ myproject │") {
+			t.Error("status-right should contain the repo basename as a label like '│ myproject │'")
+		}
+		return
+	}
+	t.Error("no 'set -g status-right' line found in generated config")
+}
+
+func TestGenerateConfig_LongRepoNameTruncated(t *testing.T) {
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "0.1.3",
+		SprawlRoot:  "/home/user/a-very-long-project-name-here",
+	})
+	for _, line := range strings.Split(cfg, "\n") {
+		if !strings.HasPrefix(line, "set -g status-right ") {
+			continue
+		}
+		// Full basename is 29 chars (>15), should be truncated to "...ct-name-here"
+		// The label should appear as "│ ...ct-name-here │"
+		if !strings.Contains(line, "│ ...") {
+			t.Error("status-right should show '...' prefix for truncated repo names")
+		}
+		// Should NOT contain the full untruncated basename as a label
+		if strings.Contains(line, "│ a-very-long-project-name-here │") {
+			t.Error("status-right should truncate long repo names, but found the full name as a label")
+		}
+		return
+	}
+	t.Error("no 'set -g status-right' line found in generated config")
+}
+
+func TestGenerateConfig_ShortRepoNameNotTruncated(t *testing.T) {
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "0.1.3",
+		SprawlRoot:  "/home/user/myrepo",
+	})
+	for _, line := range strings.Split(cfg, "\n") {
+		if !strings.HasPrefix(line, "set -g status-right ") {
+			continue
+		}
+		if !strings.Contains(line, "│ myrepo │") {
+			t.Error("status-right should contain the repo basename as '│ myrepo │'")
+		}
+		if strings.Contains(line, "...") {
+			t.Error("status-right should not truncate short repo names")
+		}
+		return
+	}
+	t.Error("no 'set -g status-right' line found in generated config")
+}
+
+func TestGenerateConfig_WindowTabShowsNumberOnly(t *testing.T) {
+	cfg := GenerateConfig(ConfigParams{
+		AccentColor: "colour39",
+		Namespace:   "⚡",
+		Version:     "0.1.3",
+		SprawlRoot:  "/tmp/test",
+	})
+	for _, line := range strings.Split(cfg, "\n") {
+		if strings.HasPrefix(line, "set -g window-status-format ") ||
+			strings.HasPrefix(line, "set -g window-status-current-format ") {
+			if strings.Contains(line, "#I:#W") {
+				t.Errorf("window tab format should not contain '#I:#W' (redundant with status-left): %s", line)
+			}
+		}
+	}
+}
+
 func TestPickAccentColor_ReturnsFromPool(t *testing.T) {
 	color := PickAccentColor()
 	found := false

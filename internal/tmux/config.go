@@ -34,6 +34,13 @@ func GenerateConfig(params ConfigParams) string {
 		version = "dev"
 	}
 
+	// Compute repo basename for display in status-right, truncated if too long.
+	repoName := filepath.Base(root)
+	const maxRepoLen = 15
+	if len(repoName) > maxRepoLen {
+		repoName = "..." + repoName[len(repoName)-(maxRepoLen-3):]
+	}
+
 	// Single-quote the root path for use inside #() shell commands in the status bar.
 	// The outer status-right value uses double quotes, so single-quoting the path
 	// (via ShellQuote) avoids nested double-quote conflicts.
@@ -69,7 +76,7 @@ func GenerateConfig(params ConfigParams) string {
 	// Status bar styling
 	b.WriteString("set -g status-style 'bg=colour233,fg=colour245'\n")
 	b.WriteString("set -g status-left-length 50\n")
-	b.WriteString("set -g status-right-length 60\n\n")
+	b.WriteString("set -g status-right-length 75\n\n")
 
 	// Left status: namespace + branding + agent identity
 	// Use #W (tmux built-in window name format variable) for agent identity — this
@@ -80,15 +87,15 @@ func GenerateConfig(params ConfigParams) string {
 		accent, ns, accent,
 	))
 
-	// Right status: mail count + agent count + version
+	// Right status: mail count + repo name + agent count + version
 	b.WriteString(fmt.Sprintf(
-		"set -g status-right \"%s#[fg=colour245,bg=colour233] │ agents: %s │ #[fg=%s]%s #[default]\"\n\n",
-		mailIndicator, agentCount, accent, versionFile,
+		"set -g status-right \"%s#[fg=colour245,bg=colour233] │ %s │ agents: %s │ #[fg=%s]%s #[default]\"\n\n",
+		mailIndicator, repoName, agentCount, accent, versionFile,
 	))
 
 	// Window list styling
-	b.WriteString("set -g window-status-format '#[fg=colour245,bg=colour233] #I:#W '\n")
-	b.WriteString(fmt.Sprintf("set -g window-status-current-format '#[fg=colour233,bg=%s,bold] #I:#W '\n\n", accent))
+	b.WriteString("set -g window-status-format '#[fg=colour245,bg=colour233] #I '\n")
+	b.WriteString(fmt.Sprintf("set -g window-status-current-format '#[fg=colour233,bg=%s,bold] #I '\n\n", accent))
 
 	// Pane borders
 	b.WriteString("set -g pane-border-style 'fg=colour238'\n")
