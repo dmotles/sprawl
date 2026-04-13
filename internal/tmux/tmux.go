@@ -16,6 +16,26 @@ const (
 	RootWindowName   = "weave"
 )
 
+// AccentColor represents a tmux color with human-readable aliases.
+type AccentColor struct {
+	Name    string   // tmux colour name, e.g. "colour39"
+	Aliases []string // human-readable names, e.g. ["cyan", "DeepSkyBlue1"]
+}
+
+// AccentColors is the structured palette with aliases for each color.
+var AccentColors = []AccentColor{
+	{Name: "colour39", Aliases: []string{"cyan", "DeepSkyBlue1"}},
+	{Name: "colour198", Aliases: []string{"magenta", "DeepPink1"}},
+	{Name: "colour82", Aliases: []string{"green", "Chartreuse2"}},
+	{Name: "colour208", Aliases: []string{"orange", "DarkOrange"}},
+	{Name: "colour141", Aliases: []string{"purple", "MediumPurple1"}},
+	{Name: "colour196", Aliases: []string{"red", "Red1"}},
+	{Name: "colour220", Aliases: []string{"yellow", "Gold1"}},
+	{Name: "colour43", Aliases: []string{"teal", "DarkCyan"}},
+	{Name: "colour205", Aliases: []string{"pink", "HotPink"}},
+	{Name: "colour69", Aliases: []string{"blue", "CornflowerBlue"}},
+}
+
 // AccentColorPool is a curated palette of tmux colors that look good on dark backgrounds.
 // Used to assign a per-namespace accent color during sprawl init.
 var AccentColorPool = []string{
@@ -31,9 +51,39 @@ var AccentColorPool = []string{
 	"colour69",  // blue / CornflowerBlue
 }
 
+// FindColor looks up a color by its tmux name or any alias (case-insensitive).
+func FindColor(nameOrAlias string) (AccentColor, bool) {
+	lower := strings.ToLower(nameOrAlias)
+	for _, c := range AccentColors {
+		if strings.ToLower(c.Name) == lower {
+			return c, true
+		}
+		for _, a := range c.Aliases {
+			if strings.ToLower(a) == lower {
+				return c, true
+			}
+		}
+	}
+	return AccentColor{}, false
+}
+
 // PickAccentColor randomly selects an accent color from the curated palette.
 func PickAccentColor() string {
 	return AccentColorPool[rand.IntN(len(AccentColorPool))] //nolint:gosec // G404: weak RNG is fine for cosmetic color selection
+}
+
+// PickAccentColorExcluding randomly selects an accent color, excluding the given one.
+func PickAccentColorExcluding(current string) string {
+	candidates := make([]string, 0, len(AccentColorPool)-1)
+	for _, c := range AccentColorPool {
+		if c != current {
+			candidates = append(candidates, c)
+		}
+	}
+	if len(candidates) == 0 {
+		return PickAccentColor()
+	}
+	return candidates[rand.IntN(len(candidates))] //nolint:gosec // G404: weak RNG is fine for cosmetic color selection
 }
 
 // NamespacePool is a curated list of electric/cyberpunk emojis used for auto-selecting

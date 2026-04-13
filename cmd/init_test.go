@@ -1149,3 +1149,61 @@ func TestRunInit_GeneratesTmuxConfigAndSources(t *testing.T) {
 		t.Errorf("SourceFile path = %q, want %q", runner.sourceFilePath, confPath)
 	}
 }
+
+func TestRunInit_ReusesExistingAccentColor(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	// Pre-write a specific accent color
+	if err := state.WriteAccentColor(tmpDir, "colour198"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The pre-written color should be preserved, not overwritten with a random one
+	got := state.ReadAccentColor(tmpDir)
+	if got != "colour198" {
+		t.Errorf("accent color = %q, want %q (should reuse existing)", got, "colour198")
+	}
+}
+
+func TestRunInit_PicksNewColorWhenNoneSaved(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := state.ReadAccentColor(tmpDir)
+	if got == "" {
+		t.Error("expected a color to be picked and persisted when none exists")
+	}
+}

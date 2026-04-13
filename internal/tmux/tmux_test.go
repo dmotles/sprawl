@@ -289,6 +289,76 @@ func TestHasWindow_FalsePositive_EmptyOutput(t *testing.T) {
 	// This is validated by the mock tests and integration behavior.
 }
 
+func TestAccentColors_MatchesPool(t *testing.T) {
+	if len(AccentColors) != len(AccentColorPool) {
+		t.Fatalf("AccentColors has %d entries, AccentColorPool has %d — they must stay in sync",
+			len(AccentColors), len(AccentColorPool))
+	}
+	for i, c := range AccentColors {
+		if c.Name != AccentColorPool[i] {
+			t.Errorf("AccentColors[%d].Name = %q, AccentColorPool[%d] = %q — mismatch",
+				i, c.Name, i, AccentColorPool[i])
+		}
+	}
+}
+
+func TestFindColor_ByName(t *testing.T) {
+	c, ok := FindColor("colour39")
+	if !ok {
+		t.Fatal("FindColor(\"colour39\") returned false")
+	}
+	if c.Name != "colour39" {
+		t.Errorf("Name = %q, want %q", c.Name, "colour39")
+	}
+}
+
+func TestFindColor_ByAlias(t *testing.T) {
+	c, ok := FindColor("cyan")
+	if !ok {
+		t.Fatal("FindColor(\"cyan\") returned false")
+	}
+	if c.Name != "colour39" {
+		t.Errorf("Name = %q, want %q", c.Name, "colour39")
+	}
+}
+
+func TestFindColor_CaseInsensitive(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantName string
+	}{
+		{"CYAN", "colour39"},
+		{"deeppink1", "colour198"},
+		{"Colour39", "colour39"},
+	}
+	for _, tt := range tests {
+		c, ok := FindColor(tt.input)
+		if !ok {
+			t.Errorf("FindColor(%q) returned false", tt.input)
+			continue
+		}
+		if c.Name != tt.wantName {
+			t.Errorf("FindColor(%q).Name = %q, want %q", tt.input, c.Name, tt.wantName)
+		}
+	}
+}
+
+func TestFindColor_Invalid(t *testing.T) {
+	_, ok := FindColor("nonexistent")
+	if ok {
+		t.Error("FindColor(\"nonexistent\") should return false")
+	}
+}
+
+func TestPickAccentColorExcluding_Different(t *testing.T) {
+	for range 50 {
+		got := PickAccentColorExcluding("colour39")
+		if got == "colour39" {
+			t.Fatal("PickAccentColorExcluding returned the excluded color")
+		}
+	}
+}
+
 var errNoServer = errorf("no server running")
 
 func errorf(msg string) error {

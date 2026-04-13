@@ -170,10 +170,13 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 		return fmt.Errorf("persisting root name: %w", err)
 	}
 
-	// Pick and persist accent color for the tmux theme.
-	accentColor := tmux.PickAccentColor()
-	if err := state.WriteAccentColor(cwd, accentColor); err != nil {
-		return fmt.Errorf("persisting accent color: %w", err)
+	// Reuse persisted accent color, or pick a new one if none exists.
+	accentColor := state.ReadAccentColor(cwd)
+	if accentColor == "" {
+		accentColor = tmux.PickAccentColor()
+		if err := state.WriteAccentColor(cwd, accentColor); err != nil {
+			return fmt.Errorf("persisting accent color: %w", err)
+		}
 	}
 
 	// Cache the version so the tmux status bar can read it cheaply.
