@@ -45,8 +45,21 @@ func (w *Writer) SendControlResponse(requestID, subtype string, errMsg string) e
 }
 
 // ApproveToolUse sends a success control response approving a tool use request.
+// It includes the required behavior:"allow" payload that Claude Code expects.
 func (w *Writer) ApproveToolUse(requestID string) error {
-	return w.SendControlResponse(requestID, "success", "")
+	msg := ControlResponse{
+		Type: "control_response",
+		Response: ControlResponseInner{
+			Subtype:   "success",
+			RequestID: requestID,
+			Response: map[string]any{
+				"behavior":  "allow",
+				"toolUseID": "",
+				"message":   "Allowed by host",
+			},
+		},
+	}
+	return w.writeJSON(msg)
 }
 
 // SendInterrupt sends an interrupt control_request to cancel the current turn.

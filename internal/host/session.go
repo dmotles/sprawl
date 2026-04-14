@@ -129,7 +129,12 @@ func (s *Session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 		return
 	}
 
-	// Auto-approve by sending a success control_response
+	// Parse the subtype to determine the response format.
+	var req struct {
+		Subtype string `json:"subtype"`
+	}
+	_ = json.Unmarshal(cr.Request, &req)
+
 	resp := protocol.ControlResponse{
 		Type: "control_response",
 		Response: protocol.ControlResponseInner{
@@ -137,6 +142,16 @@ func (s *Session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 			RequestID: cr.RequestID,
 		},
 	}
+
+	// can_use_tool requires a nested response with behavior:"allow"
+	if req.Subtype == "can_use_tool" {
+		resp.Response.Response = map[string]any{
+			"behavior":  "allow",
+			"toolUseID": "",
+			"message":   "Allowed by host",
+		}
+	}
+
 	_ = s.transport.Send(ctx, resp)
 }
 

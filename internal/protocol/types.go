@@ -143,4 +143,5 @@ type ControlResponseInner struct {
 	Subtype   string `json:"subtype"`
 	RequestID string `json:"request_id"`
 	Error     string `json:"error,omitempty"`
+	Response  any    `json:"response,omitempty"`
 }

@@ -247,3 +247,79 @@ func TestSession_FullLifecycle(t *testing.T) {
 		t.Error("transport not closed after session Close()")
 	}
 }
+
+func TestSession_SendUserMessageAutoApprovesToolUse(t *testing.T) {
+	mt := newMockTransport()
+	cfg := SessionConfig{}
+	sess := NewSession(mt, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		// Consume the user message
+		<-mt.sendCh
+
+		// Feed a can_use_tool control request
+		mt.feedMessage(t, `{"type":"control_request","request_id":"cr-1","request":{"subtype":"can_use_tool","tool_name":"Bash"}}`)
+
+		// Give time for the approval to be sent
+		time.Sleep(50 * time.Millisecond)
+
+		// End the turn
+		mt.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":50,"num_turns":1,"total_cost_usd":0.01}`)
+		close(mt.recvCh)
+	}()
+
+	events, err := sess.SendUserMessage(ctx, "run a command")
+	if err != nil {
+		t.Fatalf("SendUserMessage() error: %v", err)
+	}
+
+	// Drain events
+	for range events { //nolint:revive // intentionally draining channel
+	}
+
+	// Read the approval response that session sent back via transport
+	var approvalMsg any
+	select {
+	case approvalMsg = <-mt.sendCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no approval response sent for can_use_tool control request")
+	}
+
+	// Marshal and verify the nested JSON structure
+	data, err := json.Marshal(approvalMsg)
+	if err != nil {
+		t.Fatalf("marshal approval: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal approval: %v", err)
+	}
+
+	if parsed["type"] != "control_response" {
+		t.Fatalf("approval type = %v, want control_response", parsed["type"])
+	}
+
+	resp, ok := parsed["response"].(map[string]any)
+	if !ok {
+		t.Fatal("response field is not an object")
+	}
+
+	if resp["request_id"] != "cr-1" {
+		t.Errorf("response.request_id = %v, want cr-1", resp["request_id"])
+	}
+
+	// The bug: the approval response must include a nested "response" field
+	// with behavior:"allow" for can_use_tool requests. Without it, the TUI hangs.
+	innerResp, ok := resp["response"].(map[string]any)
+	if !ok {
+		t.Fatal("response.response field is missing or not an object — approval payload not included")
+	}
+
+	if innerResp["behavior"] != "allow" {
+		t.Errorf("response.response.behavior = %v, want allow", innerResp["behavior"])
+	}
+}

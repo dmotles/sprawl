@@ -327,3 +327,47 @@ func TestWriterMultipleMessages(t *testing.T) {
 		t.Errorf("second message Content = %q, want %q", msg2.Message.Content, "second")
 	}
 }
+
+func TestWriterApproveToolUseIncludesAllowBehavior(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	if err := w.ApproveToolUse("req-4"); err != nil {
+		t.Fatalf("ApproveToolUse error: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &parsed); err != nil {
+		t.Fatalf("unmarshal output: %v", err)
+	}
+
+	if parsed["type"] != "control_response" {
+		t.Fatalf("type = %v, want control_response", parsed["type"])
+	}
+
+	resp, ok := parsed["response"].(map[string]any)
+	if !ok {
+		t.Fatal("response field is not an object")
+	}
+
+	// The bug: ApproveToolUse must include a nested "response" field with the
+	// approval payload. Without it, Claude Code doesn't recognize the approval.
+	innerResp, ok := resp["response"].(map[string]any)
+	if !ok {
+		t.Fatal("response.response field is missing or not an object — approval payload not included")
+	}
+
+	if innerResp["behavior"] != "allow" {
+		t.Errorf("response.response.behavior = %v, want allow", innerResp["behavior"])
+	}
+
+	// toolUseID should exist (can be empty string)
+	if _, exists := innerResp["toolUseID"]; !exists {
+		t.Error("response.response.toolUseID field is missing")
+	}
+
+	// message should exist
+	if _, exists := innerResp["message"]; !exists {
+		t.Error("response.response.message field is missing")
+	}
+}
