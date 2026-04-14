@@ -313,6 +313,26 @@ func TestEnter_GracefulShutdown(t *testing.T) {
 	}
 }
 
+func TestBuildSessionEnv_ContainsAgentIdentity(t *testing.T) {
+	env := buildSessionEnv()
+
+	var foundIdentity, foundEmitEvents bool
+	for _, e := range env {
+		if e == "SPRAWL_AGENT_IDENTITY=weave" {
+			foundIdentity = true
+		}
+		if e == "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1" {
+			foundEmitEvents = true
+		}
+	}
+	if !foundIdentity {
+		t.Error("buildSessionEnv should include SPRAWL_AGENT_IDENTITY=weave")
+	}
+	if !foundEmitEvents {
+		t.Error("buildSessionEnv should include CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+	}
+}
+
 func TestEnter_NilNewSessionSkipsBridge(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".sprawl", "state")

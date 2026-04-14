@@ -47,6 +47,7 @@ type AppModel struct {
 	sprawlRoot    string
 	observedAgent string
 	rootAgent     string
+	childNodes    []TreeNode
 	agentBuffers  map[string]*AgentBuffer
 
 	activePanel Panel
@@ -72,7 +73,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 	if bridge != nil {
 		startPanel = PanelInput
 	}
-	rootAgent := "enter"
+	rootAgent := "weave"
 	app := AppModel{
 		tree:          NewTreeModel(&theme),
 		viewport:      NewViewportModel(&theme),
@@ -92,6 +93,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		restartFunc:   restartFunc,
 	}
 	app.updateFocus()
+	app.rebuildTree()
 	return app
 }
 
@@ -272,24 +274,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AgentTreeMsg:
-		m.tree.SetNodes(msg.Nodes)
-		m.statusBar.SetAgentCount(len(msg.Nodes))
-		// Update rootAgent to the tree root (first depth-0 node) if available.
-		for _, n := range msg.Nodes {
-			if n.Depth == 0 {
-				// If the observedAgent was the old rootAgent, migrate it to the new root.
-				if m.observedAgent == m.rootAgent && m.rootAgent != n.Name {
-					// Transfer current viewport buffer to the new root agent name.
-					m.agentBuffers[n.Name] = &AgentBuffer{
-						Messages:   m.viewport.GetMessages(),
-						AutoScroll: m.viewport.IsAutoScroll(),
-					}
-					m.observedAgent = n.Name
-				}
-				m.rootAgent = n.Name
-				break
-			}
-		}
+		m.childNodes = msg.Nodes
+		m.rebuildTree()
+		m.statusBar.SetAgentCount(len(msg.Nodes) + 1) // +1 for weave root
 		if m.supervisor != nil {
 			return m, scheduleAgentTick(m.supervisor, m.sprawlRoot)
 		}
@@ -403,6 +390,12 @@ func (m AppModel) View() tea.View {
 func (m *AppModel) setTurnState(state TurnState) {
 	m.turnState = state
 	m.statusBar.SetTurnState(state)
+	m.rebuildTree()
+}
+
+func (m *AppModel) rebuildTree() {
+	nodes := PrependWeaveRoot(m.childNodes, m.turnState.String())
+	m.tree.SetNodes(nodes)
 }
 
 func (m *AppModel) resizePanels() {

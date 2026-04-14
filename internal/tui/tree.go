@@ -151,6 +151,24 @@ func (m *TreeModel) SetSize(w, h int) {
 	m.height = h
 }
 
+// PrependWeaveRoot inserts a synthetic weave node at depth 0 and shifts all
+// existing nodes down by one depth level, returning the combined slice.
+func PrependWeaveRoot(nodes []TreeNode, status string) []TreeNode {
+	weave := TreeNode{
+		Name:   "weave",
+		Type:   "weave",
+		Status: status,
+		Depth:  0,
+	}
+	result := make([]TreeNode, 0, len(nodes)+1)
+	result = append(result, weave)
+	for _, n := range nodes {
+		n.Depth++
+		result = append(result, n)
+	}
+	return result
+}
+
 // buildTreeNodes converts a flat list of AgentInfo into a depth-ordered tree.
 func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []TreeNode {
 	if len(agents) == 0 {

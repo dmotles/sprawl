@@ -728,17 +728,19 @@ func TestAppModel_AgentTreeMsg_UpdatesTree(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
+	// Send 3 child nodes. PrependWeaveRoot adds weave as the permanent root,
+	// so the final tree should have 4 nodes total (weave + 3 children).
 	nodes := []TreeNode{
-		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
-		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
-		{Name: "finn", Type: "engineer", Status: "active", Depth: 2},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
+		{Name: "finn", Type: "engineer", Status: "active", Depth: 1},
+		{Name: "oak", Type: "engineer", Status: "idle", Depth: 1},
 	}
 
 	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
 	app = updated.(AppModel)
 
-	if len(app.tree.nodes) != 3 {
-		t.Errorf("tree.nodes = %d after AgentTreeMsg, want 3", len(app.tree.nodes))
+	if len(app.tree.nodes) != 4 {
+		t.Errorf("tree.nodes = %d after AgentTreeMsg, want 4 (weave root + 3 children)", len(app.tree.nodes))
 	}
 	if app.tree.nodes[0].Name != "weave" {
 		t.Errorf("tree.nodes[0].Name = %q, want %q", app.tree.nodes[0].Name, "weave")
@@ -751,10 +753,9 @@ func TestAppModel_AgentSelectedMsg_SwapsViewport(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// Set up tree nodes so we have agents to select.
+	// Set up tree nodes (child agents only — weave is prepended automatically).
 	nodes := []TreeNode{
-		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
-		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
 	}
 	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
 	app = updated.(AppModel)
@@ -794,8 +795,7 @@ func TestAppModel_AgentSelectedMsg_DisablesInputForNonRoot(t *testing.T) {
 	app := resized.(AppModel)
 
 	nodes := []TreeNode{
-		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
-		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
 	}
 	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
 	app = updated.(AppModel)
@@ -817,8 +817,7 @@ func TestAppModel_AgentSelectedMsg_EnablesInputForRoot(t *testing.T) {
 	app := resized.(AppModel)
 
 	nodes := []TreeNode{
-		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
-		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
 	}
 	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
 	app = updated.(AppModel)
@@ -833,5 +832,131 @@ func TestAppModel_AgentSelectedMsg_EnablesInputForRoot(t *testing.T) {
 
 	if app.input.disabled {
 		t.Error("input should be enabled when observing root agent 'weave'")
+	}
+}
+
+// --- Tests for QUM-235: Weave as permanent root node in agent tree ---
+
+func TestAppModel_WeaveVisibleBeforeFirstTick(t *testing.T) {
+	m := newTestAppModel(t)
+
+	// A freshly constructed app should have weave in the tree without any
+	// AgentTreeMsg being dispatched.
+	found := false
+	for _, node := range m.tree.nodes {
+		if node.Name == "weave" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("freshly constructed AppModel should have weave node in tree before any AgentTreeMsg")
+	}
+}
+
+func TestAppModel_RootAgentIsWeave(t *testing.T) {
+	m := newTestAppModel(t)
+
+	if m.rootAgent != "weave" {
+		t.Errorf("rootAgent = %q, want %q", m.rootAgent, "weave")
+	}
+}
+
+func TestAppModel_AgentTreeMsg_AlwaysHasWeaveRoot(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Send an empty AgentTreeMsg (no child nodes).
+	updated, _ := app.Update(AgentTreeMsg{Nodes: []TreeNode{}})
+	app = updated.(AppModel)
+
+	// Even with no children, weave should always appear in the tree.
+	if len(app.tree.nodes) == 0 {
+		t.Fatal("tree should never be empty after AgentTreeMsg — weave root must always be present")
+	}
+	if app.tree.nodes[0].Name != "weave" {
+		t.Errorf("tree.nodes[0].Name = %q, want %q", app.tree.nodes[0].Name, "weave")
+	}
+}
+
+func TestAppModel_AgentTreeMsg_WeaveRootIsDepthZero(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	nodes := []TreeNode{
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
+	}
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
+	app = updated.(AppModel)
+
+	// First node must be weave at depth 0.
+	if app.tree.nodes[0].Name != "weave" {
+		t.Errorf("tree.nodes[0].Name = %q, want %q", app.tree.nodes[0].Name, "weave")
+	}
+	if app.tree.nodes[0].Depth != 0 {
+		t.Errorf("tree.nodes[0].Depth = %d, want 0 (weave should always be at depth 0)", app.tree.nodes[0].Depth)
+	}
+}
+
+func TestAppModel_AgentTreeMsg_ChildrenShiftedByOne(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Send nodes where tower is depth 0 and finn is depth 1.
+	nodes := []TreeNode{
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
+		{Name: "finn", Type: "engineer", Status: "active", Depth: 1},
+	}
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
+	app = updated.(AppModel)
+
+	// tree should be: weave(0), tower(1), finn(2)
+	if len(app.tree.nodes) != 3 {
+		t.Fatalf("len(tree.nodes) = %d, want 3 (weave + tower + finn)", len(app.tree.nodes))
+	}
+	// tower (originally depth 0) should now be depth 1.
+	if app.tree.nodes[1].Name != "tower" {
+		t.Errorf("tree.nodes[1].Name = %q, want %q", app.tree.nodes[1].Name, "tower")
+	}
+	if app.tree.nodes[1].Depth != 1 {
+		t.Errorf("tree.nodes[1].Depth = %d, want 1 (shifted by 1 to accommodate weave root)", app.tree.nodes[1].Depth)
+	}
+	// finn (originally depth 1) should now be depth 2.
+	if app.tree.nodes[2].Name != "finn" {
+		t.Errorf("tree.nodes[2].Name = %q, want %q", app.tree.nodes[2].Name, "finn")
+	}
+	if app.tree.nodes[2].Depth != 2 {
+		t.Errorf("tree.nodes[2].Depth = %d, want 2 (shifted by 1 to accommodate weave root)", app.tree.nodes[2].Depth)
+	}
+}
+
+func TestAppModel_TurnState_UpdatesWeaveStatus(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Trigger a turn state change that should propagate to the weave node status.
+	updated, _ := app.Update(TurnStateMsg{State: TurnThinking})
+	app = updated.(AppModel)
+
+	// The weave node in the tree should reflect the new turn state.
+	if len(app.tree.nodes) == 0 {
+		t.Fatal("tree should not be empty after TurnStateMsg")
+	}
+	weaveNode := app.tree.nodes[0]
+	if weaveNode.Name != "weave" {
+		t.Fatalf("tree.nodes[0].Name = %q, want %q", weaveNode.Name, "weave")
+	}
+	// The status of the weave node should not be the zero-value empty string
+	// — it should reflect the turn state.
+	if weaveNode.Status == "" {
+		t.Error("weave node Status should be non-empty after TurnStateMsg (should reflect turn state)")
 	}
 }

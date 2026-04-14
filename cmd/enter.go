@@ -80,6 +80,14 @@ func resolveEnterDeps() *enterDeps {
 	}
 }
 
+// buildSessionEnv returns the environment variables for the Claude Code subprocess.
+func buildSessionEnv() []string {
+	return append(os.Environ(),
+		"CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1",
+		"SPRAWL_AGENT_IDENTITY=weave",
+	)
+}
+
 // defaultNewSession launches a Claude Code subprocess and returns a Bridge.
 func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
 	claudePath, err := exec.LookPath("claude")
@@ -108,7 +116,7 @@ func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
 	cmd := exec.Command(claudePath, args...) //nolint:gosec // claudePath is from LookPath, not untrusted input
 	cmd.Dir = sprawlRoot
 	cmd.Stderr = os.Stderr
-	cmd.Env = append(os.Environ(), "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
+	cmd.Env = buildSessionEnv()
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

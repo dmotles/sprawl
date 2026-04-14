@@ -137,10 +137,10 @@ fi
 PANE_CONTENT=$(capture_pane "$SESSION_NAME")
 
 # Check for tree panel content
-if echo "$PANE_CONTENT" | grep -q "weave (root)"; then
-    pass "tree panel shows 'weave (root)'"
+if echo "$PANE_CONTENT" | grep -q "weave (idle)"; then
+    pass "tree panel shows 'weave (idle)'"
 else
-    fail "tree panel missing 'weave (root)'"
+    fail "tree panel missing 'weave (idle)'"
 fi
 
 # Check for status bar content (agents: N)

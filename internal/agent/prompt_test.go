@@ -1419,6 +1419,51 @@ func TestBuildManagerPrompt_TuiMode_NoCLICommands(t *testing.T) {
 	}
 }
 
+// --- TUI mode regression: no tmux or CLI-only references ---
+
+func TestBuildRootPrompt_TuiMode_NoTmuxReferences(t *testing.T) {
+	cfg := defaultRootConfig("weave")
+	cfg.Mode = "tui"
+	prompt := BuildRootPrompt(cfg)
+
+	if strings.Contains(prompt, "tmux") {
+		t.Error("root prompt with tui mode should NOT contain any 'tmux' references")
+	}
+}
+
+func TestBuildRootPrompt_TuiMode_NoCLIOnlyCommandPatterns(t *testing.T) {
+	cfg := defaultRootConfig("weave")
+	cfg.Mode = "tui"
+	prompt := BuildRootPrompt(cfg)
+
+	cliOnlyPatterns := []string{
+		"sprawl spawn agent",
+		"sprawl spawn subagent",
+		"sprawl messages send",
+		"sprawl messages inbox",
+		"sprawl messages read",
+		"sprawl messages list",
+		"sprawl messages broadcast",
+		"sprawl messages archive",
+		"sprawl report done",
+		"sprawl retire --merge",
+		"sprawl retire --abandon",
+		"sprawl merge <agent-name>",
+		"sprawl cleanup branches",
+		"sprawl logs <agent",
+		"(via --family)",
+		"--type engineer",
+		"--dry-run",
+		"--no-validate",
+		"--message/-m",
+	}
+	for _, pat := range cliOnlyPatterns {
+		if strings.Contains(prompt, pat) {
+			t.Errorf("root prompt with tui mode should NOT contain CLI-only pattern %q", pat)
+		}
+	}
+}
+
 func TestBuildManagerPrompt_SharedContent_BothModes(t *testing.T) {
 	sharedPhrases := []string{
 		"DECOMPOSITION:",

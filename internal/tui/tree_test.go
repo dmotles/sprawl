@@ -416,3 +416,111 @@ func TestBuildTreeNodes_OrphanedParent(t *testing.T) {
 		t.Errorf("nodes[0].Name = %q, want %q", nodes[0].Name, "finn")
 	}
 }
+
+// --- Tests for QUM-235: PrependWeaveRoot ---
+
+func TestPrependWeaveRoot_EmptyChildren(t *testing.T) {
+	result := PrependWeaveRoot(nil, "idle")
+
+	if len(result) != 1 {
+		t.Fatalf("PrependWeaveRoot(nil) returned %d nodes, want 1", len(result))
+	}
+	if result[0].Name != "weave" {
+		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "weave")
+	}
+}
+
+func TestPrependWeaveRoot_ShiftsChildDepths(t *testing.T) {
+	children := []TreeNode{
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
+		{Name: "finn", Type: "engineer", Status: "active", Depth: 1},
+	}
+
+	result := PrependWeaveRoot(children, "idle")
+
+	// Result has weave + 2 children = 3 nodes.
+	if len(result) != 3 {
+		t.Fatalf("len(result) = %d, want 3", len(result))
+	}
+	// tower was depth 0, should now be depth 1.
+	if result[1].Depth != 1 {
+		t.Errorf("result[1].Depth = %d, want 1 (tower shifted by 1)", result[1].Depth)
+	}
+	// finn was depth 1, should now be depth 2.
+	if result[2].Depth != 2 {
+		t.Errorf("result[2].Depth = %d, want 2 (finn shifted by 1)", result[2].Depth)
+	}
+}
+
+func TestPrependWeaveRoot_PreservesChildOrder(t *testing.T) {
+	children := []TreeNode{
+		{Name: "alpha", Type: "manager", Status: "active", Depth: 0},
+		{Name: "beta", Type: "engineer", Status: "active", Depth: 1},
+		{Name: "gamma", Type: "engineer", Status: "idle", Depth: 1},
+	}
+
+	result := PrependWeaveRoot(children, "idle")
+
+	if len(result) != 4 {
+		t.Fatalf("len(result) = %d, want 4", len(result))
+	}
+	// First node is always weave.
+	if result[0].Name != "weave" {
+		t.Errorf("result[0].Name = %q, want %q", result[0].Name, "weave")
+	}
+	// Children should preserve order.
+	if result[1].Name != "alpha" {
+		t.Errorf("result[1].Name = %q, want %q", result[1].Name, "alpha")
+	}
+	if result[2].Name != "beta" {
+		t.Errorf("result[2].Name = %q, want %q", result[2].Name, "beta")
+	}
+	if result[3].Name != "gamma" {
+		t.Errorf("result[3].Name = %q, want %q", result[3].Name, "gamma")
+	}
+}
+
+func TestPrependWeaveRoot_DoesNotMutateInput(t *testing.T) {
+	children := []TreeNode{
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
+		{Name: "finn", Type: "engineer", Status: "active", Depth: 1},
+	}
+	originalDepths := []int{children[0].Depth, children[1].Depth}
+
+	PrependWeaveRoot(children, "idle")
+
+	// Original slice must not be mutated.
+	if children[0].Depth != originalDepths[0] {
+		t.Errorf("children[0].Depth mutated: got %d, want %d", children[0].Depth, originalDepths[0])
+	}
+	if children[1].Depth != originalDepths[1] {
+		t.Errorf("children[1].Depth mutated: got %d, want %d", children[1].Depth, originalDepths[1])
+	}
+}
+
+func TestPrependWeaveRoot_StatusReflected(t *testing.T) {
+	result := PrependWeaveRoot(nil, "thinking")
+
+	if result[0].Status != "thinking" {
+		t.Errorf("result[0].Status = %q, want %q", result[0].Status, "thinking")
+	}
+}
+
+func TestPrependWeaveRoot_WeaveUnreadIsZero(t *testing.T) {
+	result := PrependWeaveRoot(nil, "idle")
+
+	if result[0].Unread != 0 {
+		t.Errorf("result[0].Unread = %d, want 0 (weave unread should always be 0)", result[0].Unread)
+	}
+}
+
+func TestPrependWeaveRoot_WeaveIsDepthZero(t *testing.T) {
+	children := []TreeNode{
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
+	}
+	result := PrependWeaveRoot(children, "idle")
+
+	if result[0].Depth != 0 {
+		t.Errorf("result[0].Depth = %d, want 0 (weave always at depth 0)", result[0].Depth)
+	}
+}
