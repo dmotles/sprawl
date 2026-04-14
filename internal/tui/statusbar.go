@@ -51,6 +51,7 @@ func (m StatusBarModel) View() string {
 	}
 	parts = append(parts, m.version)
 	parts = append(parts, fmt.Sprintf("agents: %d", m.agentCount))
+	parts = append(parts, "? Help")
 	right := " " + strings.Join(parts, " | ") + " "
 
 	gap := m.width - len(left) - len(right)

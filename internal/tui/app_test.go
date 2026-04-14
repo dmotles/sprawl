@@ -13,12 +13,12 @@ import (
 
 func newTestAppModel(t *testing.T) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "")
+	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 }
 
 func newTestAppModelWithBridge(t *testing.T, bridge *Bridge) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "")
+	return NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", nil)
 }
 
 func TestAppModel_InitReturnsNil(t *testing.T) {
@@ -124,17 +124,115 @@ func TestAppModel_TabWrapsAround(t *testing.T) {
 	}
 }
 
-func TestAppModel_CtrlCQuits(t *testing.T) {
+func TestAppModel_CtrlCShowsConfirm(t *testing.T) {
 	m := newTestAppModel(t)
 	msg := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
-	_, cmd := m.Update(msg)
-	if cmd == nil {
-		t.Fatal("Ctrl+C should return a command")
+	updated, cmd := m.Update(msg)
+	app := updated.(AppModel)
+	if !app.showConfirm {
+		t.Error("Ctrl+C should set showConfirm to true")
 	}
-	// Execute the command and check it produces QuitMsg.
+	if cmd != nil {
+		t.Error("Ctrl+C should not return a cmd (no immediate quit)")
+	}
+}
+
+func TestAppModel_ConfirmYQuitsApp(t *testing.T) {
+	m := newTestAppModel(t)
+	// Show confirm dialog first.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app := updated.(AppModel)
+
+	// Confirm with y.
+	updated, cmd := app.Update(ConfirmResultMsg{Confirmed: true})
+	app = updated.(AppModel)
+	if cmd == nil {
+		t.Fatal("ConfirmResultMsg{Confirmed:true} should return a quit cmd")
+	}
 	result := cmd()
 	if _, ok := result.(tea.QuitMsg); !ok {
-		t.Errorf("Ctrl+C cmd() = %T, want tea.QuitMsg", result)
+		t.Errorf("cmd() = %T, want tea.QuitMsg", result)
+	}
+	if app.showConfirm {
+		t.Error("showConfirm should be false after confirmation")
+	}
+}
+
+func TestAppModel_ConfirmNDismisses(t *testing.T) {
+	m := newTestAppModel(t)
+	// Show confirm dialog.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app := updated.(AppModel)
+
+	// Dismiss with n.
+	updated, cmd := app.Update(ConfirmResultMsg{Confirmed: false})
+	app = updated.(AppModel)
+	if app.showConfirm {
+		t.Error("showConfirm should be false after dismissal")
+	}
+	if cmd != nil {
+		t.Error("dismissing confirm should not return a cmd")
+	}
+}
+
+func TestAppModel_ConfirmSwallowsKeys(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Show confirm dialog.
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app = updated.(AppModel)
+	initialPanel := app.activePanel
+
+	// Tab should not change panel while confirm is visible.
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	app = updated.(AppModel)
+	if app.activePanel != initialPanel {
+		t.Errorf("Tab should be swallowed when confirm is showing, panel changed from %d to %d", initialPanel, app.activePanel)
+	}
+}
+
+func TestAppModel_SignalMsgShowsConfirm(t *testing.T) {
+	m := newTestAppModel(t)
+	updated, _ := m.Update(SignalMsg{})
+	app := updated.(AppModel)
+	if !app.showConfirm {
+		t.Error("SignalMsg should set showConfirm to true")
+	}
+}
+
+func TestAppModel_DoubleCtrlCIgnored(t *testing.T) {
+	m := newTestAppModel(t)
+	// First Ctrl+C.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app := updated.(AppModel)
+	if !app.showConfirm {
+		t.Fatal("first Ctrl+C should show confirm")
+	}
+
+	// Second Ctrl+C should not crash or change state.
+	updated, cmd := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app = updated.(AppModel)
+	if !app.showConfirm {
+		t.Error("showConfirm should still be true after second Ctrl+C")
+	}
+	if cmd != nil {
+		t.Error("second Ctrl+C should not produce a cmd")
+	}
+}
+
+func TestAppModel_ViewShowsConfirmOverlay(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app = updated.(AppModel)
+
+	view := stripANSI(app.View().Content)
+	if !strings.Contains(view, "Quit") {
+		t.Errorf("View should show confirm overlay with 'Quit', got:\n%s", view)
 	}
 }
 
@@ -257,6 +355,256 @@ func TestAppModel_SessionErrorMsg_SetsTurnStateIdle(t *testing.T) {
 	}
 }
 
+func TestAppModel_SessionErrorMsg_ShowsDialog_WhenStreaming(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Simulate being mid-stream
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("subprocess crashed")})
+	app = updated.(AppModel)
+
+	if !app.showError {
+		t.Error("showError should be true when SessionErrorMsg received during streaming")
+	}
+}
+
+func TestAppModel_SessionErrorMsg_NoDialog_WhenIdle(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// turnState is TurnIdle by default
+	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("some error")})
+	app = updated.(AppModel)
+
+	if app.showError {
+		t.Error("showError should be false when SessionErrorMsg received during idle")
+	}
+}
+
+func TestAppModel_SessionErrorMsg_ShowsDialog_WhenThinking(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.turnState = TurnThinking
+
+	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("process died")})
+	app = updated.(AppModel)
+
+	if !app.showError {
+		t.Error("showError should be true when SessionErrorMsg received during thinking")
+	}
+}
+
+func TestAppModel_ErrorDialog_BlocksKeys(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Set up error dialog state
+	app.showError = true
+	app.errorDialog = NewErrorDialog(&app.theme, fmt.Errorf("crash"))
+	app.errorDialog.SetSize(80, 24)
+
+	initial := app.activePanel
+	tabMsg := tea.KeyPressMsg{Code: tea.KeyTab}
+	updated, _ := app.Update(tabMsg)
+	app = updated.(AppModel)
+
+	if app.activePanel != initial {
+		t.Errorf("Tab should not cycle panels when error dialog is shown, panel changed from %d to %d", initial, app.activePanel)
+	}
+}
+
+func TestAppModel_RestartSessionMsg_ClearsError(t *testing.T) {
+	restartCalled := false
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		restartCalled = true
+		newMock := newMockSession()
+		return NewBridge(context.Background(), newMock), nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.showError = true
+	app.errorDialog = NewErrorDialog(&app.theme, fmt.Errorf("crash"))
+
+	updated, cmd := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+
+	if app.showError {
+		t.Error("showError should be false after RestartSessionMsg")
+	}
+	if !restartCalled {
+		t.Error("restartFunc should have been called")
+	}
+	if cmd == nil {
+		t.Error("RestartSessionMsg should return a cmd to initialize the new bridge")
+	}
+}
+
+func TestAppModel_RestartSessionMsg_RestartFails(t *testing.T) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", func() (*Bridge, error) {
+		return nil, fmt.Errorf("failed to restart")
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+
+	if !app.showError {
+		t.Error("showError should be true when restart fails")
+	}
+}
+
+func TestAppModel_ErrorDialog_RendersOverlay(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.showError = true
+	app.errorDialog = NewErrorDialog(&app.theme, fmt.Errorf("subprocess crashed"))
+	app.errorDialog.SetSize(80, 24)
+
+	v := app.View()
+	content := stripANSI(v.Content)
+	if !strings.Contains(content, "subprocess crashed") {
+		t.Errorf("View() should show error dialog overlay with error text, got:\n%s", content)
+	}
+}
+
+func TestAppModel_RestartSessionMsg_NoRestartFunc_Quits(t *testing.T) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	_, cmd := app.Update(RestartSessionMsg{})
+	if cmd == nil {
+		t.Fatal("RestartSessionMsg with no restartFunc should return quit cmd")
+	}
+	result := cmd()
+	if _, ok := result.(tea.QuitMsg); !ok {
+		t.Errorf("RestartSessionMsg with no restartFunc should produce QuitMsg, got %T", result)
+	}
+}
+
+func TestAppModel_SessionErrorMsg_WhenIdle_AppendsToViewport(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("some transient error")})
+	app = updated.(AppModel)
+
+	// Should not show dialog
+	if app.showError {
+		t.Error("showError should be false for idle error")
+	}
+	// Error text should be in viewport
+	found := false
+	for _, entry := range app.viewport.messages {
+		if entry.Type == MessageError && strings.Contains(entry.Content, "some transient error") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("error text should be appended to viewport when error arrives during idle")
+	}
+}
+
+func TestAppModel_SessionErrorMsg_WhenStreaming_DisablesInput(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("process died")})
+	app = updated.(AppModel)
+
+	if !app.input.disabled {
+		t.Error("input should be disabled when error dialog is shown")
+	}
+}
+
+func TestAppModel_RestartSessionMsg_ReenablesInput(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		return NewBridge(context.Background(), newMockSession()), nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.showError = true
+	app.input.SetDisabled(true)
+
+	updated, _ := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+
+	if app.input.disabled {
+		t.Error("input should be re-enabled after successful restart")
+	}
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState should be TurnIdle after restart, got %v", app.turnState)
+	}
+}
+
+func TestAppModel_RestartSessionMsg_ClosesOldBridge(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		return NewBridge(context.Background(), newMockSession()), nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.Update(RestartSessionMsg{})
+
+	if !mock.closeCalled {
+		t.Error("old bridge session should be closed on restart")
+	}
+}
+
+func TestAppModel_CtrlC_ShowsConfirmDuringErrorDialog(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.showError = true
+	app.errorDialog = NewErrorDialog(&app.theme, fmt.Errorf("crash"))
+
+	msg := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+	updated, _ := app.Update(msg)
+	app = updated.(AppModel)
+	if !app.showConfirm {
+		t.Error("Ctrl+C during error dialog should show confirm dialog")
+	}
+}
+
 func TestAppModel_UserMessageSentMsg_ProducesWaitCmd(t *testing.T) {
 	mock := newMockSession()
 	ctx := context.Background()
@@ -360,7 +708,7 @@ func (m *mockSupervisor) Shutdown(_ context.Context) error                    { 
 
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl")
+	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)
 }
 
 func TestAppModel_NewAppModelWithSupervisor(t *testing.T) {

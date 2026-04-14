@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 )
 
@@ -230,6 +232,84 @@ func TestEnter_SessionError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to create session") {
 		t.Errorf("error = %q, want it to contain 'failed to create session'", err.Error())
+	}
+}
+
+// --- Graceful shutdown tests ---
+
+type shutdownMockSupervisor struct {
+	agents       []supervisor.AgentInfo
+	statusErr    error
+	killCalled   []string
+	shutdownDone bool
+}
+
+func (s *shutdownMockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
+	return nil, nil
+}
+
+func (s *shutdownMockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
+	return s.agents, s.statusErr
+}
+
+func (s *shutdownMockSupervisor) Delegate(_ context.Context, _, _ string) error   { return nil }
+func (s *shutdownMockSupervisor) Message(_ context.Context, _, _, _ string) error { return nil }
+func (s *shutdownMockSupervisor) Merge(_ context.Context, _, _ string, _ bool) error {
+	return nil
+}
+func (s *shutdownMockSupervisor) Retire(_ context.Context, _ string, _, _ bool) error { return nil }
+
+func (s *shutdownMockSupervisor) Kill(_ context.Context, name string) error {
+	s.killCalled = append(s.killCalled, name)
+	return nil
+}
+
+func (s *shutdownMockSupervisor) Shutdown(_ context.Context) error {
+	s.shutdownDone = true
+	return nil
+}
+
+func TestEnter_GracefulShutdown(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "accent-color"), []byte("colour212"), 0o644); err != nil {
+		t.Fatalf("setup write accent-color: %v", err)
+	}
+
+	mockSup := &shutdownMockSupervisor{
+		agents: []supervisor.AgentInfo{
+			{Name: "tower", Status: "active"},
+			{Name: "finn", Status: "active"},
+		},
+	}
+
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(tea.Model) error {
+			return nil
+		},
+		newSession:    nil,
+		newSupervisor: func(_ string) supervisor.Supervisor { return mockSup },
+	}
+
+	err := runEnter(deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(mockSup.killCalled) != 2 {
+		t.Errorf("expected 2 Kill calls, got %d: %v", len(mockSup.killCalled), mockSup.killCalled)
+	}
+	if !mockSup.shutdownDone {
+		t.Error("Shutdown should have been called")
 	}
 }
 

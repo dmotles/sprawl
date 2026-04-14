@@ -35,6 +35,10 @@ type AppModel struct {
 	viewport  ViewportModel
 	input     InputModel
 	statusBar StatusBarModel
+	confirm   ConfirmModel
+
+	help     HelpModel
+	showHelp bool
 
 	bridge    *Bridge
 	turnState TurnState
@@ -46,16 +50,23 @@ type AppModel struct {
 	agentBuffers  map[string]*AgentBuffer
 
 	activePanel Panel
+	showConfirm bool
 	theme       Theme
 	width       int
 	height      int
 	ready       bool
+	tooSmall    bool
+
+	showError   bool
+	errorDialog ErrorDialogModel
+	restartFunc func() (*Bridge, error)
 }
 
 // NewAppModel constructs the root model with all sub-models.
 // bridge may be nil for static placeholder mode.
 // sup and sprawlRoot are optional; when provided, the tree polls agent status.
-func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supervisor.Supervisor, sprawlRoot string) AppModel {
+// restartFunc is called when the user requests a session restart after a crash.
+func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supervisor.Supervisor, sprawlRoot string, restartFunc func() (*Bridge, error)) AppModel {
 	theme := NewTheme(accentColor)
 	startPanel := PanelTree
 	if bridge != nil {
@@ -67,6 +78,8 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		viewport:      NewViewportModel(&theme),
 		input:         NewInputModel(&theme),
 		statusBar:     NewStatusBarModel(&theme, repoName, version, 0),
+		help:          NewHelpModel(&theme),
+		confirm:       NewConfirmModel(&theme),
 		bridge:        bridge,
 		turnState:     TurnIdle,
 		supervisor:    sup,
@@ -76,6 +89,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		agentBuffers:  make(map[string]*AgentBuffer),
 		activePanel:   startPanel,
 		theme:         theme,
+		restartFunc:   restartFunc,
 	}
 	app.updateFocus()
 	return app
@@ -104,13 +118,49 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
-		m.resizePanels()
+		m.tooSmall = IsTooSmall(m.width, m.height)
+		if !m.tooSmall {
+			m.resizePanels()
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
-		// Global keybinds.
+		// Ctrl+C: show confirmation dialog (or ignore if already showing).
 		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'c' {
-			return m, tea.Quit
+			if m.showConfirm {
+				return m, nil
+			}
+			m.showConfirm = true
+			m.confirm.Show()
+			m.confirm.SetSize(m.width, m.height)
+			return m, nil
+		}
+
+		// When confirm dialog is visible, route all keys to it.
+		if m.showConfirm {
+			var cmd tea.Cmd
+			m.confirm, cmd = m.confirm.Update(msg)
+			return m, cmd
+		}
+
+		// Toggle help on ? or F1.
+		if msg.Code == '?' || msg.Code == tea.KeyF1 {
+			m.showHelp = !m.showHelp
+			return m, nil
+		}
+
+		// When help is shown, only Esc dismisses; swallow everything else.
+		if m.showHelp {
+			if msg.Code == tea.KeyEscape {
+				m.showHelp = false
+			}
+			return m, nil
+		}
+
+		// When error dialog is shown, delegate all keys to it.
+		if m.showError {
+			cmd := m.errorDialog.Update(msg)
+			return m, cmd
 		}
 
 		if msg.Code == tea.KeyTab {
@@ -180,10 +230,39 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SessionErrorMsg:
+		if m.turnState == TurnThinking || m.turnState == TurnStreaming {
+			m.errorDialog = NewErrorDialog(&m.theme, msg.Err)
+			m.errorDialog.SetSize(m.width, m.height)
+			m.showError = true
+			m.setTurnState(TurnIdle)
+			m.input.SetDisabled(true)
+			return m, nil
+		}
 		m.viewport.AppendError(msg.Err.Error())
 		m.setTurnState(TurnIdle)
 		m.input.SetDisabled(false)
 		return m, nil
+
+	case RestartSessionMsg:
+		m.showError = false
+		if m.bridge != nil {
+			_ = m.bridge.Close()
+		}
+		if m.restartFunc != nil {
+			newBridge, err := m.restartFunc()
+			if err != nil {
+				m.errorDialog = NewErrorDialog(&m.theme, err)
+				m.errorDialog.SetSize(m.width, m.height)
+				m.showError = true
+				return m, nil
+			}
+			m.bridge = newBridge
+			m.viewport.AppendStatus("Session restarting...")
+			m.setTurnState(TurnIdle)
+			m.input.SetDisabled(false)
+			return m, m.bridge.Initialize()
+		}
+		return m, tea.Quit
 
 	case TurnStateMsg:
 		m.setTurnState(msg.State)
@@ -213,6 +292,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.supervisor != nil {
 			return m, scheduleAgentTick(m.supervisor, m.sprawlRoot)
+		}
+		return m, nil
+
+	case ConfirmResultMsg:
+		m.showConfirm = false
+		m.confirm.Hide()
+		if msg.Confirmed {
+			return m, tea.Quit
+		}
+		return m, nil
+
+	case SignalMsg:
+		if !m.showConfirm {
+			m.showConfirm = true
+			m.confirm.Show()
+			m.confirm.SetSize(m.width, m.height)
 		}
 		return m, nil
 
@@ -252,6 +347,13 @@ func (m AppModel) View() tea.View {
 		return tea.NewView("  Initializing...")
 	}
 
+	if m.tooSmall {
+		msg := fmt.Sprintf("Terminal too small (minimum %dx%d)", MinTermWidth, MinTermHeight)
+		v := tea.NewView(msg)
+		v.AltScreen = true
+		return v
+	}
+
 	layout := ComputeLayout(m.width, m.height)
 
 	// Render tree panel with border.
@@ -281,6 +383,18 @@ func (m AppModel) View() tea.View {
 	// Stack vertically.
 	content := lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
 
+	if m.showHelp {
+		content = m.help.View()
+	}
+
+	if m.showConfirm {
+		content = m.confirm.View()
+	}
+
+	if m.showError {
+		content = m.errorDialog.View()
+	}
+
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
@@ -299,6 +413,9 @@ func (m *AppModel) resizePanels() {
 	m.viewport.SetSize(layout.ViewportWidth-2, layout.ViewportHeight-2)
 	m.input.SetWidth(layout.InputWidth - 2)
 	m.statusBar.SetWidth(layout.StatusWidth)
+	m.help.SetSize(m.width, m.height)
+	m.confirm.SetSize(m.width, m.height)
+	m.errorDialog.SetSize(m.width, m.height)
 }
 
 func (m *AppModel) updateFocus() {

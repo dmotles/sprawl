@@ -197,8 +197,11 @@ func TestTreeModel_SetNodes_Empty(t *testing.T) {
 		t.Errorf("selected = %d after empty SetNodes, want 0", m.selected)
 	}
 
-	// View should not panic on empty nodes.
-	_ = m.View()
+	// View should render a placeholder on empty nodes.
+	view := m.View()
+	if !strings.Contains(view, "No agents running") {
+		t.Errorf("empty tree View() should contain placeholder text, got: %q", view)
+	}
 }
 
 func TestTreeModel_ViewRendersTypeIcons(t *testing.T) {

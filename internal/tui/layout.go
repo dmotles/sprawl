@@ -5,7 +5,18 @@ const (
 	maxTreeWidth    = 50
 	inputHeight     = 3
 	statusBarHeight = 1
+
+	// MinTermWidth is the minimum terminal width for rendering panels.
+	MinTermWidth = 40
+	// MinTermHeight is the minimum terminal height for rendering panels.
+	MinTermHeight = 10
 )
+
+// IsTooSmall returns true if the terminal dimensions are below the minimum
+// required to render the TUI panels.
+func IsTooSmall(width, height int) bool {
+	return width < MinTermWidth || height < MinTermHeight
+}
 
 // Layout holds computed panel dimensions for the TUI.
 type Layout struct {

@@ -14,14 +14,15 @@ const (
 
 // Theme holds all Lip Gloss styles for the TUI, parameterized by accent color.
 type Theme struct {
-	AccentColor    string
-	Background     lipgloss.Style
-	ActiveBorder   lipgloss.Style
-	InactiveBorder lipgloss.Style
-	AccentText     lipgloss.Style
-	NormalText     lipgloss.Style
-	StatusBar      lipgloss.Style
-	SelectedItem   lipgloss.Style
+	AccentColor      string
+	Background       lipgloss.Style
+	ActiveBorder     lipgloss.Style
+	InactiveBorder   lipgloss.Style
+	AccentText       lipgloss.Style
+	NormalText       lipgloss.Style
+	StatusBar        lipgloss.Style
+	SelectedItem     lipgloss.Style
+	PlaceholderStyle lipgloss.Style
 }
 
 // NewTheme constructs a Theme with the given accent color.
@@ -63,6 +64,10 @@ func NewTheme(accentColor string) Theme {
 		SelectedItem: lipgloss.NewStyle().
 			Foreground(accent).
 			Bold(true).
+			Background(bg),
+		PlaceholderStyle: lipgloss.NewStyle().
+			Foreground(dim).
+			Faint(true).
 			Background(bg),
 	}
 }

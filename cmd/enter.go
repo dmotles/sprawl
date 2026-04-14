@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/agent"
@@ -21,9 +24,10 @@ import (
 
 // enterDeps holds dependencies for the enter command, enabling testability.
 type enterDeps struct {
-	getenv     func(string) string
-	runProgram func(tea.Model) error
-	newSession func(sprawlRoot string) (*tui.Bridge, error)
+	getenv        func(string) string
+	runProgram    func(tea.Model) error
+	newSession    func(sprawlRoot string) (*tui.Bridge, error)
+	newSupervisor func(sprawlRoot string) supervisor.Supervisor
 }
 
 var defaultEnterDeps *enterDeps
@@ -52,10 +56,27 @@ func resolveEnterDeps() *enterDeps {
 		getenv: os.Getenv,
 		runProgram: func(model tea.Model) error {
 			p := tea.NewProgram(model)
+
+			// Catch SIGTERM/SIGHUP and forward as quit to the Bubble Tea program.
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
+			go func() {
+				if _, ok := <-sigCh; ok {
+					p.Quit()
+				}
+			}()
+			defer signal.Stop(sigCh)
+
 			_, err := p.Run()
 			return err
 		},
 		newSession: defaultNewSession,
+		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
+			return supervisor.NewReal(supervisor.Config{
+				SprawlRoot: sprawlRoot,
+				CallerName: "enter",
+			})
+		},
 	}
 }
 
@@ -182,12 +203,37 @@ func runEnter(deps *enterDeps) error {
 	}
 
 	// Create a supervisor for the tree panel to poll agent status.
-	sup := supervisor.NewReal(supervisor.Config{
-		SprawlRoot: sprawlRoot,
-		CallerName: "enter",
-	})
-	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot)
+	var sup supervisor.Supervisor
+	if deps.newSupervisor != nil {
+		sup = deps.newSupervisor(sprawlRoot)
+	}
+	var restartFunc func() (*tui.Bridge, error)
+	if deps.newSession != nil {
+		restartFunc = func() (*tui.Bridge, error) {
+			newBridge, err := deps.newSession(sprawlRoot)
+			if err == nil {
+				bridge = newBridge // update so runEnter closes the latest bridge
+			}
+			return newBridge, err
+		}
+	}
+	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
 	err := deps.runProgram(model)
+
+	// Graceful shutdown: stop all agents with a timeout.
+	if sup != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		agents, statusErr := sup.Status(shutdownCtx)
+		if statusErr == nil {
+			for _, a := range agents {
+				fmt.Fprintf(os.Stderr, "Stopping agent %s...\n", a.Name)
+				_ = sup.Kill(shutdownCtx, a.Name)
+				fmt.Fprintf(os.Stderr, "  %s -> stopped\n", a.Name)
+			}
+		}
+		_ = sup.Shutdown(shutdownCtx)
+	}
 
 	if bridge != nil {
 		_ = bridge.Close()

@@ -86,3 +86,14 @@ type AgentTreeMsg struct {
 type AgentSelectedMsg struct {
 	Name string
 }
+
+// ConfirmResultMsg carries the user's response from the confirmation dialog.
+type ConfirmResultMsg struct {
+	Confirmed bool
+}
+
+// SignalMsg indicates an OS signal (SIGTERM, SIGHUP) was received.
+type SignalMsg struct{}
+
+// RestartSessionMsg signals that the user wants to restart the Claude subprocess.
+type RestartSessionMsg struct{}

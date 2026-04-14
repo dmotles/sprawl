@@ -117,7 +117,7 @@ func (m TreeModel) Update(msg tea.Msg) (TreeModel, tea.Cmd) {
 // View renders the tree panel.
 func (m TreeModel) View() string {
 	if len(m.nodes) == 0 {
-		return ""
+		return m.theme.PlaceholderStyle.Render("No agents running.")
 	}
 
 	var b strings.Builder
