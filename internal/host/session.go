@@ -16,6 +16,7 @@ type SessionConfig struct {
 	MCPServerNames []string
 	SystemPrompt   string
 	ToolHandler    ControlHandler
+	MCPBridge      *MCPBridge
 }
 
 // Session manages a high-level session with Claude Code.
@@ -42,13 +43,17 @@ func (s *Session) nextRequestID() string {
 func (s *Session) Initialize(ctx context.Context) error {
 	requestID := s.nextRequestID()
 
+	request := map[string]any{
+		"subtype":       "initialize",
+		"system_prompt": s.config.SystemPrompt,
+	}
+	if len(s.config.MCPServerNames) > 0 {
+		request["sdkMcpServers"] = s.config.MCPServerNames
+	}
 	msg := map[string]any{
 		"type":       "control_request",
 		"request_id": requestID,
-		"request": map[string]any{
-			"subtype":       "initialize",
-			"system_prompt": s.config.SystemPrompt,
-		},
+		"request":    request,
 	}
 
 	if err := s.transport.Send(ctx, msg); err != nil {
@@ -143,12 +148,28 @@ func (s *Session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 		},
 	}
 
-	// can_use_tool requires a nested response with behavior:"allow"
-	if req.Subtype == "can_use_tool" {
+	switch req.Subtype {
+	case "can_use_tool":
 		resp.Response.Response = map[string]any{
 			"behavior":  "allow",
 			"toolUseID": "",
 			"message":   "Allowed by host",
+		}
+	case "mcp_message":
+		if s.config.MCPBridge != nil {
+			var mcpReq struct {
+				ServerName string          `json:"server_name"`
+				Message    json.RawMessage `json:"message"`
+			}
+			if err := json.Unmarshal(cr.Request, &mcpReq); err == nil {
+				mcpResp, mcpErr := s.config.MCPBridge.HandleIncoming(ctx, mcpReq.ServerName, mcpReq.Message)
+				if mcpErr != nil {
+					resp.Response.Subtype = "error"
+					resp.Response.Response = map[string]any{"error": mcpErr.Error()}
+				} else {
+					resp.Response.Response = map[string]any{"mcp_response": mcpResp}
+				}
+			}
 		}
 	}
 

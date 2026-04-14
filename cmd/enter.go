@@ -12,7 +12,9 @@ import (
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -112,8 +114,19 @@ func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
 		},
 	}
 
+	// Create supervisor and MCP server
+	sup := supervisor.NewReal(supervisor.Config{
+		SprawlRoot: sprawlRoot,
+		CallerName: rootName,
+	})
+	mcpServer := sprawlmcp.New(sup)
+	mcpBridge := host.NewMCPBridge()
+	mcpBridge.Register("sprawl-ops", mcpServer)
+
 	session := host.NewSession(transport, host.SessionConfig{
-		SystemPrompt: systemPrompt,
+		SystemPrompt:   systemPrompt,
+		MCPServerNames: []string{"sprawl-ops"},
+		MCPBridge:      mcpBridge,
 	})
 
 	ctx := context.Background()
@@ -168,7 +181,12 @@ func runEnter(deps *enterDeps) error {
 		}
 	}
 
-	model := tui.NewAppModel(accentColor, repoName, version, bridge)
+	// Create a supervisor for the tree panel to poll agent status.
+	sup := supervisor.NewReal(supervisor.Config{
+		SprawlRoot: sprawlRoot,
+		CallerName: "enter",
+	})
+	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot)
 	err := deps.runProgram(model)
 
 	if bridge != nil {

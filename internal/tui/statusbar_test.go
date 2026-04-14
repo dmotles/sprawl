@@ -92,3 +92,24 @@ func TestStatusBar_SetTurnState_Complete(t *testing.T) {
 		t.Errorf("View() with TurnComplete should not contain 'Thinking', got:\n%s", view)
 	}
 }
+
+func TestStatusBar_SetTurnCost(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(80)
+	m.SetTurnCost(0.0123)
+	view := m.View()
+	if !strings.Contains(view, "$0.0123") {
+		t.Errorf("View() should contain cost '$0.0123', got:\n%s", view)
+	}
+}
+
+func TestStatusBar_CumulativeCost(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(80)
+	m.SetTurnCost(0.01)
+	m.SetTurnCost(0.02)
+	view := m.View()
+	if !strings.Contains(view, "$0.0300") {
+		t.Errorf("View() should contain cumulative cost '$0.0300', got:\n%s", view)
+	}
+}

@@ -1198,3 +1198,249 @@ func TestBuildEngineerPrompt_BranchRebaseNotification(t *testing.T) {
 		t.Error("engineer prompt should mention that parent may rebase their branch")
 	}
 }
+
+// --- Dual-mode prompt tests (tmux vs tui) ---
+
+func TestResolveMode_DefaultsToTmux(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", "tmux"},
+		{"tmux", "tmux"},
+		{"tui", "tui"},
+	}
+	for _, tt := range tests {
+		got := resolveMode(tt.input)
+		if got != tt.want {
+			t.Errorf("resolveMode(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestBuildRootPrompt_DefaultMode_ContainsCLICommands(t *testing.T) {
+	cfg := defaultRootConfig("weave")
+	// Mode is empty (default)
+	prompt := BuildRootPrompt(cfg)
+
+	cliCommands := []string{
+		"sprawl spawn agent",
+		"sprawl messages send",
+		"sprawl merge",
+		"sprawl retire",
+		"sprawl delegate",
+	}
+	for _, cmd := range cliCommands {
+		if !strings.Contains(prompt, cmd) {
+			t.Errorf("root prompt with default mode should contain CLI command %q", cmd)
+		}
+	}
+}
+
+func TestBuildRootPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
+	cfg := defaultRootConfig("weave")
+	cfg.Mode = "tui"
+	prompt := BuildRootPrompt(cfg)
+
+	mcpTools := []string{
+		"sprawl_spawn",
+		"sprawl_message",
+		"sprawl_merge",
+		"sprawl_retire",
+		"sprawl_delegate",
+		"sprawl_kill",
+		"sprawl_status",
+	}
+	for _, tool := range mcpTools {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("root prompt with tui mode should contain MCP tool %q", tool)
+		}
+	}
+}
+
+func TestBuildRootPrompt_TuiMode_NoCLISpawnCommand(t *testing.T) {
+	cfg := defaultRootConfig("weave")
+	cfg.Mode = "tui"
+	prompt := BuildRootPrompt(cfg)
+
+	if strings.Contains(prompt, "sprawl spawn agent") {
+		t.Error("root prompt with tui mode should NOT contain CLI command 'sprawl spawn agent'")
+	}
+}
+
+func TestBuildRootPrompt_TmuxMode_NoMCPToolNames(t *testing.T) {
+	cfg := defaultRootConfig("weave")
+	cfg.Mode = "tmux"
+	prompt := BuildRootPrompt(cfg)
+
+	if strings.Contains(prompt, "sprawl_spawn(") {
+		t.Error("root prompt with tmux mode should NOT contain MCP tool call 'sprawl_spawn('")
+	}
+}
+
+func TestBuildRootPrompt_SharedContent_BothModes(t *testing.T) {
+	sharedPhrases := []string{
+		"YOUR ROLE:",
+		"orchestrator",
+		"SPRAWL OVERVIEW",
+		"AGENT FAMILIES",
+		"PARALLELISM VS. SERIALIZATION",
+		"VERIFYING AGENT WORK",
+		"FOLLOW THROUGH",
+	}
+
+	for _, mode := range []string{"", "tmux", "tui"} {
+		cfg := defaultRootConfig("weave")
+		cfg.Mode = mode
+		prompt := BuildRootPrompt(cfg)
+		label := mode
+		if label == "" {
+			label = "(empty/default)"
+		}
+
+		for _, phrase := range sharedPhrases {
+			if !strings.Contains(prompt, phrase) {
+				t.Errorf("root prompt with mode %s should contain shared content %q", label, phrase)
+			}
+		}
+	}
+}
+
+func TestBuildEngineerPrompt_DefaultMode_ContainsCLICommands(t *testing.T) {
+	env := testEnvConfig()
+	// Mode is empty (default)
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
+
+	cliCommands := []string{
+		"sprawl report done",
+		"sprawl messages send",
+	}
+	for _, cmd := range cliCommands {
+		if !strings.Contains(prompt, cmd) {
+			t.Errorf("engineer prompt with default mode should contain CLI command %q", cmd)
+		}
+	}
+}
+
+func TestBuildEngineerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
+
+	if !strings.Contains(prompt, "sprawl_message") {
+		t.Error("engineer prompt with tui mode should contain MCP tool 'sprawl_message'")
+	}
+}
+
+func TestBuildEngineerPrompt_TuiMode_NoCLIReportCommand(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
+
+	if strings.Contains(prompt, "sprawl report done") {
+		t.Error("engineer prompt with tui mode should NOT contain 'sprawl report done'")
+	}
+	if strings.Contains(prompt, "sprawl messages send") {
+		t.Error("engineer prompt with tui mode should NOT contain 'sprawl messages send'")
+	}
+}
+
+func TestBuildResearcherPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
+
+	if !strings.Contains(prompt, "sprawl_message") {
+		t.Error("researcher prompt with tui mode should contain MCP tool references")
+	}
+}
+
+func TestBuildResearcherPrompt_TuiMode_NoCLICommands(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
+
+	if strings.Contains(prompt, "sprawl report done") {
+		t.Error("researcher prompt with tui mode should NOT contain CLI command 'sprawl report done'")
+	}
+	if strings.Contains(prompt, "sprawl messages send") {
+		t.Error("researcher prompt with tui mode should NOT contain CLI command 'sprawl messages send'")
+	}
+}
+
+func TestBuildManagerPrompt_DefaultMode_ContainsCLICommands(t *testing.T) {
+	env := testEnvConfig()
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+
+	cliCommands := []string{
+		"sprawl spawn agent",
+		"sprawl merge",
+		"sprawl retire",
+		"sprawl delegate",
+		"sprawl messages send",
+	}
+	for _, cmd := range cliCommands {
+		if !strings.Contains(prompt, cmd) {
+			t.Errorf("manager prompt with default mode should contain CLI command %q", cmd)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+
+	mcpTools := []string{
+		"sprawl_spawn",
+		"sprawl_merge",
+		"sprawl_retire",
+		"sprawl_delegate",
+		"sprawl_message",
+		"sprawl_status",
+	}
+	for _, tool := range mcpTools {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("manager prompt with tui mode should contain MCP tool %q", tool)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_TuiMode_NoCLICommands(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+
+	if strings.Contains(prompt, "sprawl spawn agent") {
+		t.Error("manager prompt with tui mode should NOT contain 'sprawl spawn agent'")
+	}
+	if strings.Contains(prompt, "sprawl messages send") {
+		t.Error("manager prompt with tui mode should NOT contain 'sprawl messages send'")
+	}
+}
+
+func TestBuildManagerPrompt_SharedContent_BothModes(t *testing.T) {
+	sharedPhrases := []string{
+		"DECOMPOSITION:",
+		"VERIFICATION:",
+		"INTEGRATION:",
+		"AGENT LIFECYCLE:",
+		"PARALLELISM VS. SERIALIZATION",
+	}
+
+	for _, mode := range []string{"", "tui"} {
+		env := testEnvConfig()
+		env.Mode = mode
+		prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+		label := mode
+		if label == "" {
+			label = "(empty/default)"
+		}
+
+		for _, phrase := range sharedPhrases {
+			if !strings.Contains(prompt, phrase) {
+				t.Errorf("manager prompt with mode %s should contain shared content %q", label, phrase)
+			}
+		}
+	}
+}

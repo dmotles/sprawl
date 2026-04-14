@@ -7,12 +7,13 @@ import (
 
 // StatusBarModel renders a single-line status bar.
 type StatusBarModel struct {
-	repoName   string
-	version    string
-	agentCount int
-	turnState  TurnState
-	width      int
-	theme      *Theme
+	repoName       string
+	version        string
+	agentCount     int
+	turnState      TurnState
+	width          int
+	theme          *Theme
+	sessionCostUsd float64
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -41,12 +42,16 @@ func (m StatusBarModel) View() string {
 		stateStr = ""
 	}
 
-	var right string
-	if stateStr != "" {
-		right = fmt.Sprintf("%s | %s | agents: %d ", m.version, stateStr, m.agentCount)
-	} else {
-		right = fmt.Sprintf("%s | agents: %d ", m.version, m.agentCount)
+	var parts []string
+	if m.sessionCostUsd > 0 {
+		parts = append(parts, fmt.Sprintf("$%.4f", m.sessionCostUsd))
 	}
+	if stateStr != "" {
+		parts = append(parts, stateStr)
+	}
+	parts = append(parts, m.version)
+	parts = append(parts, fmt.Sprintf("agents: %d", m.agentCount))
+	right := " " + strings.Join(parts, " | ") + " "
 
 	gap := m.width - len(left) - len(right)
 	if gap < 0 {
@@ -65,4 +70,14 @@ func (m *StatusBarModel) SetWidth(w int) {
 // SetTurnState updates the displayed turn state.
 func (m *StatusBarModel) SetTurnState(state TurnState) {
 	m.turnState = state
+}
+
+// SetTurnCost updates the cumulative session cost.
+func (m *StatusBarModel) SetTurnCost(cost float64) {
+	m.sessionCostUsd += cost
+}
+
+// SetAgentCount updates the displayed agent count.
+func (m *StatusBarModel) SetAgentCount(n int) {
+	m.agentCount = n
 }

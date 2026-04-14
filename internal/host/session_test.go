@@ -54,6 +54,136 @@ func TestSession_InitializeSendsControlRequest(t *testing.T) {
 	}
 }
 
+func TestSession_InitializeIncludesMCPServers(t *testing.T) {
+	mt := newMockTransport()
+
+	cfg := SessionConfig{
+		SystemPrompt:   "test",
+		MCPServerNames: []string{"sprawl-ops"},
+	}
+	sess := NewSession(mt, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	go func() {
+		select {
+		case sent := <-mt.sendCh:
+			data, err := json.Marshal(sent)
+			if err != nil {
+				t.Errorf("marshal: %v", err)
+				return
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Errorf("unmarshal: %v", err)
+				return
+			}
+
+			request, ok := parsed["request"].(map[string]any)
+			if !ok {
+				t.Error("request field is not an object")
+				mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+				close(mt.recvCh)
+				return
+			}
+
+			servers, ok := request["sdkMcpServers"].([]any)
+			if !ok {
+				t.Error("sdkMcpServers not present or not an array")
+			} else if len(servers) != 1 || servers[0] != "sprawl-ops" {
+				t.Errorf("sdkMcpServers = %v, want [sprawl-ops]", servers)
+			}
+
+			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+			close(mt.recvCh)
+		case <-ctx.Done():
+			return
+		}
+	}()
+
+	if err := sess.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error: %v", err)
+	}
+}
+
+func TestSession_MCPMessageRouting(t *testing.T) {
+	mt := newMockTransport()
+
+	// Set up a bridge with a mock MCP server
+	bridge := NewMCPBridge()
+	bridge.Register("test-server", &mockMCPServer{
+		handler: func(_ context.Context, msg json.RawMessage) (json.RawMessage, error) {
+			return json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`), nil
+		},
+	})
+
+	cfg := SessionConfig{
+		MCPBridge: bridge,
+	}
+	sess := NewSession(mt, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		// Consume the user message
+		<-mt.sendCh
+
+		// Feed an mcp_message control request
+		mt.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"test-server","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
+
+		time.Sleep(50 * time.Millisecond)
+
+		mt.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":50,"num_turns":1,"total_cost_usd":0.01}`)
+		close(mt.recvCh)
+	}()
+
+	events, err := sess.SendUserMessage(ctx, "test")
+	if err != nil {
+		t.Fatalf("SendUserMessage() error: %v", err)
+	}
+
+	for range events { //nolint:revive // drain
+	}
+
+	// Verify the MCP response was sent back
+	var mcpResponse any
+	select {
+	case mcpResponse = <-mt.sendCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no MCP response sent")
+	}
+
+	data, err := json.Marshal(mcpResponse)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if parsed["type"] != "control_response" {
+		t.Fatalf("type = %v, want control_response", parsed["type"])
+	}
+
+	resp, ok := parsed["response"].(map[string]any)
+	if !ok {
+		t.Fatal("response is not an object")
+	}
+
+	innerResp, ok := resp["response"].(map[string]any)
+	if !ok {
+		t.Fatal("response.response missing — MCP response not included")
+	}
+
+	if innerResp["mcp_response"] == nil {
+		t.Error("mcp_response field missing in response")
+	}
+}
+
 func TestSession_SendUserMessageReturnsEvents(t *testing.T) {
 	mt := newMockTransport()
 	cfg := SessionConfig{}

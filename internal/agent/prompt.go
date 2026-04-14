@@ -13,6 +13,7 @@ type EnvConfig struct {
 	Platform string // OS platform (e.g. "linux", "darwin").
 	Shell    string // The user's shell (e.g. "/bin/zsh").
 	TestMode bool   // When true, inject sandbox warning into prompt.
+	Mode     string // Runtime mode: "tmux" (default) or "tui" (MCP tools).
 }
 
 // DefaultEnvConfig returns an EnvConfig populated from the current runtime.
@@ -29,6 +30,7 @@ type PromptConfig struct {
 	AgentCLI    string // The underlying agent CLI: "claude-code", future: "codex", etc.
 	ContextBlob string // Markdown blob from memory.BuildContextBlob; appended if non-empty.
 	TestMode    bool   // When true, inject sandbox warning into prompt.
+	Mode        string // Runtime mode: "tmux" (default) or "tui" (MCP tools).
 }
 
 // rootSystemPromptFmt is the format string for the root agent system prompt.
@@ -294,14 +296,20 @@ You are operating in a testing sandbox for sprawl. Take care to:
 func BuildRootPrompt(cfg PromptConfig) string {
 	base := fmt.Sprintf(rootSystemPromptFmt, cfg.RootName)
 
+	mode := resolveMode(cfg.Mode)
+	if mode == "tui" {
+		base = applyRootTUIMode(base)
+	}
+
 	if cfg.AgentCLI == "claude-code" {
 		// Insert sub-agent guidance before the VERIFYING AGENT WORK section.
+		guidance := claudeCodeSubAgentGuidanceForMode(mode)
 		const marker = "\nVERIFYING AGENT WORK:"
 		idx := strings.Index(base, marker)
 		if idx != -1 {
-			base = base[:idx] + claudeCodeSubAgentGuidance + base[idx:]
+			base = base[:idx] + guidance + base[idx:]
 		} else {
-			base += claudeCodeSubAgentGuidance
+			base += guidance
 		}
 	}
 
@@ -314,6 +322,26 @@ func BuildRootPrompt(cfg PromptConfig) string {
 	}
 
 	return base
+}
+
+// applyRootTUIMode replaces CLI command references in the root prompt with MCP tool equivalents.
+func applyRootTUIMode(base string) string {
+	base = strings.Replace(base, rootOverviewTmuxLine, rootOverviewTUILine, 1)
+	base = strings.Replace(base, rootRemindersTmux, rootRemindersTUI, 1)
+	base = strings.Replace(base, rootAgentTypesTmux, rootAgentTypesTUI, 1)
+	base = strings.Replace(base, rootMergeRetireTmux, rootMergeRetireTUI, 1)
+	base = strings.Replace(base, rootCommandsTmux, rootCommandsTUI, 1)
+	base = strings.Replace(base, rootDelegateVsMessagesTmux, rootDelegateVsMessagesTUI, 1)
+	base = strings.Replace(base, rootRulesTmux, rootRulesTUI, 1)
+	return base
+}
+
+// claudeCodeSubAgentGuidanceTUIMode returns the appropriate sub-agent guidance for the mode.
+func claudeCodeSubAgentGuidanceForMode(mode string) string {
+	if mode == "tui" {
+		return claudeCodeSubAgentGuidanceTUI
+	}
+	return claudeCodeSubAgentGuidance
 }
 
 // engineerSystemPromptFmt is the format string for engineer agent system prompts.
@@ -445,6 +473,11 @@ RULES:
 func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	prompt := fmt.Sprintf(engineerSystemPromptFmt, agentName, parentName, branchName, parentName)
 
+	mode := resolveMode(env.Mode)
+	if mode == "tui" {
+		prompt = applyEngineerTUIMode(prompt, parentName)
+	}
+
 	var b strings.Builder
 	b.WriteString("\n\n# Environment\n")
 	if env.WorkDir != "" {
@@ -464,6 +497,21 @@ func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig
 		result += testSandboxWarning
 	}
 	return result
+}
+
+// applyEngineerTUIMode replaces CLI command references in the engineer prompt with MCP tool equivalents.
+func applyEngineerTUIMode(prompt, parentName string) string {
+	// Replace tmux window reference in System section
+	prompt = strings.Replace(prompt, tmuxWindowSystemLine, tuiSystemLine, 1)
+	// Replace TDD step 8
+	prompt = strings.Replace(prompt,
+		`8. Report done via: sprawl report done "<summary>"`,
+		engineerReportDoneLine("tui", parentName), 1)
+	// Replace RULES section
+	prompt = strings.Replace(prompt,
+		engineerRulesTmux(parentName),
+		childRulesBlock("tui", parentName), 1)
+	return prompt
 }
 
 // researcherSystemPromptFmt is the format string for researcher agent system prompts.
@@ -512,9 +560,23 @@ RULES:
 // BuildResearcherPrompt constructs the system prompt for a researcher agent.
 func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConfig) string {
 	prompt := fmt.Sprintf(researcherSystemPromptFmt, agentName, parentName, branchName, agentName, parentName)
+
+	mode := resolveMode(env.Mode)
+	if mode == "tui" {
+		prompt = applyResearcherTUIMode(prompt, parentName)
+	}
+
 	if env.TestMode {
 		prompt += testSandboxWarning
 	}
+	return prompt
+}
+
+// applyResearcherTUIMode replaces CLI command references in the researcher prompt with MCP tool equivalents.
+func applyResearcherTUIMode(prompt, parentName string) string {
+	prompt = strings.Replace(prompt,
+		researcherRulesTmuxRendered(parentName),
+		researcherRulesBlock("tui", parentName), 1)
 	return prompt
 }
 
@@ -745,6 +807,11 @@ RULES:
 func BuildManagerPrompt(agentName, parentName, branchName, family string, env EnvConfig) string {
 	prompt := fmt.Sprintf(managerSystemPromptFmt, agentName, parentName, branchName, family, parentName)
 
+	mode := resolveMode(env.Mode)
+	if mode == "tui" {
+		prompt = applyManagerTUIMode(prompt, parentName)
+	}
+
 	var b strings.Builder
 	b.WriteString("\n\n# Environment\n")
 	if env.WorkDir != "" {
@@ -764,4 +831,23 @@ func BuildManagerPrompt(agentName, parentName, branchName, family string, env En
 		result += testSandboxWarning
 	}
 	return result
+}
+
+// applyManagerTUIMode replaces CLI command references in the manager prompt with MCP tool equivalents.
+func applyManagerTUIMode(prompt, parentName string) string {
+	// Replace tmux window reference in System section
+	prompt = strings.Replace(prompt, tmuxWindowSystemLine, tuiSystemLine, 1)
+	prompt = strings.Replace(prompt, managerCommandsTmux, managerCommandsTUI, 1)
+	prompt = strings.Replace(prompt, managerDelegateVsMessagesTmux, managerDelegateVsMessagesTUI, 1)
+	prompt = strings.Replace(prompt, managerPostDispatchTmux, managerPostDispatchTUI, 1)
+	prompt = strings.Replace(prompt, managerIntegrationTmux, managerIntegrationTUI, 1)
+	prompt = strings.Replace(prompt, managerLifecycleTmux, managerLifecycleTUI, 1)
+	prompt = strings.Replace(prompt,
+		managerRulesTmuxRendered(parentName),
+		managerRulesBlock("tui", parentName), 1)
+	// Replace scope management report reference
+	prompt = strings.Replace(prompt,
+		"`sprawl report problem`",
+		"`sprawl_message`", 1)
+	return prompt
 }

@@ -39,6 +39,7 @@ type ToolCallMsg struct {
 	ToolName string
 	ToolID   string
 	Approved bool
+	Input    string // concise summary of tool input
 }
 
 // TurnStateMsg signals a change in the conversation turn lifecycle.
@@ -74,4 +75,14 @@ type SessionInitializedMsg struct{}
 // SubmitMsg is sent by InputModel when the user presses Enter with non-empty text.
 type SubmitMsg struct {
 	Text string
+}
+
+// AgentTreeMsg carries refreshed agent tree data from the supervisor.
+type AgentTreeMsg struct {
+	Nodes []TreeNode
+}
+
+// AgentSelectedMsg is emitted when the user presses Enter on a tree node.
+type AgentSelectedMsg struct {
+	Name string
 }

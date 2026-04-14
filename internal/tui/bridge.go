@@ -93,10 +93,11 @@ func (b *Bridge) Close() error {
 
 // contentBlock represents a single content block in an assistant message.
 type contentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	Name string `json:"name,omitempty"`
-	ID   string `json:"id,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // assistantContent is used to parse the "message" field of an assistant message.
@@ -143,11 +144,67 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 				ToolName: block.Name,
 				ToolID:   block.ID,
 				Approved: true, // Session auto-approves tool calls
+				Input:    summarizeToolInput(block.Name, block.Input),
 			}
 		}
 	}
 
 	return nil
+}
+
+// summarizeToolInput extracts a concise description from tool input JSON.
+func summarizeToolInput(toolName string, raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var input map[string]interface{}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return ""
+	}
+
+	// Extract the most relevant field based on tool name.
+	switch toolName {
+	case "Bash":
+		if cmd, ok := input["command"].(string); ok {
+			return truncateString(cmd, 120)
+		}
+	case "Read":
+		if path, ok := input["file_path"].(string); ok {
+			return path
+		}
+	case "Edit":
+		if path, ok := input["file_path"].(string); ok {
+			return path
+		}
+	case "Write":
+		if path, ok := input["file_path"].(string); ok {
+			return path
+		}
+	case "Glob":
+		if pattern, ok := input["pattern"].(string); ok {
+			return pattern
+		}
+	case "Grep":
+		if pattern, ok := input["pattern"].(string); ok {
+			return pattern
+		}
+	}
+
+	// Fallback: compact JSON, truncated.
+	compact, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	return truncateString(string(compact), 120)
+}
+
+func truncateString(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen-3]) + "..."
 }
 
 func mapResultMessage(msg *protocol.Message) tea.Msg {

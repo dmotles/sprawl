@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -451,6 +452,84 @@ func TestMapProtocolMessage_SystemInit(t *testing.T) {
 	result := mapProtocolMessage(&msg)
 	if result != nil {
 		t.Errorf("mapProtocolMessage for system/init returned %T, want nil (system messages are skipped during event stream)", result)
+	}
+}
+
+// --- Tool input summary tests ---
+
+func TestSummarizeToolInput_Bash(t *testing.T) {
+	input := []byte(`{"command":"ls -la /tmp"}`)
+	result := summarizeToolInput("Bash", input)
+	if result != "ls -la /tmp" {
+		t.Errorf("summarizeToolInput(Bash) = %q, want %q", result, "ls -la /tmp")
+	}
+}
+
+func TestSummarizeToolInput_Read(t *testing.T) {
+	input := []byte(`{"file_path":"/home/user/main.go"}`)
+	result := summarizeToolInput("Read", input)
+	if result != "/home/user/main.go" {
+		t.Errorf("summarizeToolInput(Read) = %q, want %q", result, "/home/user/main.go")
+	}
+}
+
+func TestSummarizeToolInput_Edit(t *testing.T) {
+	input := []byte(`{"file_path":"/home/user/main.go","old_string":"foo","new_string":"bar"}`)
+	result := summarizeToolInput("Edit", input)
+	if result != "/home/user/main.go" {
+		t.Errorf("summarizeToolInput(Edit) = %q, want %q", result, "/home/user/main.go")
+	}
+}
+
+func TestSummarizeToolInput_Unknown(t *testing.T) {
+	input := []byte(`{"key":"value"}`)
+	result := summarizeToolInput("CustomTool", input)
+	if result == "" {
+		t.Error("summarizeToolInput for unknown tool should return JSON summary, got empty")
+	}
+}
+
+func TestSummarizeToolInput_EmptyInput(t *testing.T) {
+	result := summarizeToolInput("Bash", nil)
+	if result != "" {
+		t.Errorf("summarizeToolInput with nil input = %q, want empty", result)
+	}
+}
+
+func TestTruncateString(t *testing.T) {
+	short := "hello"
+	if truncateString(short, 10) != "hello" {
+		t.Errorf("truncateString short = %q, want %q", truncateString(short, 10), "hello")
+	}
+	long := strings.Repeat("x", 200)
+	result := truncateString(long, 50)
+	if len(result) != 50 {
+		t.Errorf("truncateString long len = %d, want 50", len(result))
+	}
+	if !strings.HasSuffix(result, "...") {
+		t.Errorf("truncateString long should end with '...', got %q", result)
+	}
+}
+
+func TestBridge_WaitForEvent_ToolCallWithInput(t *testing.T) {
+	ms := newMockSession()
+	ctx := context.Background()
+	b := NewBridge(ctx, ms)
+
+	cmd := b.SendMessage("test")
+	cmd()
+
+	ms.feedMessage(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"Bash","input":{"command":"ls -la"}}]}}`)
+
+	waitCmd := b.WaitForEvent()
+	msg := waitCmd()
+
+	toolMsg, ok := msg.(ToolCallMsg)
+	if !ok {
+		t.Fatalf("WaitForEvent() returned %T, want ToolCallMsg", msg)
+	}
+	if toolMsg.Input != "ls -la" {
+		t.Errorf("Input = %q, want %q", toolMsg.Input, "ls -la")
 	}
 }
 

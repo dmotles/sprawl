@@ -39,16 +39,18 @@ const (
 
 // MessageEntry is a single item in the conversation buffer.
 type MessageEntry struct {
-	Type     MessageType
-	Content  string
-	Complete bool
-	Approved bool // only used for MessageToolCall
+	Type      MessageType
+	Content   string
+	Complete  bool
+	Approved  bool   // only used for MessageToolCall
+	ToolInput string // concise tool input summary (MessageToolCall only)
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
 type ViewportModel struct {
 	vp            viewport.Model
 	theme         *Theme
+	renderer      *MarkdownRenderer
 	messages      []MessageEntry
 	autoScroll    bool
 	hasNewContent bool
@@ -61,6 +63,7 @@ func NewViewportModel(theme *Theme) ViewportModel {
 	return ViewportModel{
 		vp:         vp,
 		theme:      theme,
+		renderer:   NewMarkdownRenderer(80),
 		autoScroll: true,
 	}
 }
@@ -102,6 +105,9 @@ func (m ViewportModel) View() string {
 func (m *ViewportModel) SetSize(w, h int) {
 	m.vp.SetWidth(w)
 	m.vp.SetHeight(h)
+	if m.renderer != nil {
+		m.renderer.SetWidth(w)
+	}
 	if len(m.messages) > 0 {
 		m.renderAndUpdate()
 	}
@@ -144,12 +150,13 @@ func (m *ViewportModel) FinalizeAssistantMessage() {
 }
 
 // AppendToolCall adds a tool call notification line.
-func (m *ViewportModel) AppendToolCall(name string, approved bool) {
+func (m *ViewportModel) AppendToolCall(name string, approved bool, input string) {
 	m.messages = append(m.messages, MessageEntry{
-		Type:     MessageToolCall,
-		Content:  name,
-		Complete: true,
-		Approved: approved,
+		Type:      MessageToolCall,
+		Content:   name,
+		Complete:  true,
+		Approved:  approved,
+		ToolInput: input,
 	})
 	m.renderAndUpdate()
 }
@@ -193,6 +200,20 @@ func (m *ViewportModel) SetAutoScroll(v bool) {
 	m.autoScroll = v
 }
 
+// GetMessages returns a copy of the current message buffer.
+func (m *ViewportModel) GetMessages() []MessageEntry {
+	result := make([]MessageEntry, len(m.messages))
+	copy(result, m.messages)
+	return result
+}
+
+// SetMessages replaces the message buffer and re-renders.
+func (m *ViewportModel) SetMessages(msgs []MessageEntry) {
+	m.messages = make([]MessageEntry, len(msgs))
+	copy(m.messages, msgs)
+	m.renderAndUpdate()
+}
+
 func (m *ViewportModel) renderAndUpdate() {
 	rendered := m.renderMessages()
 	m.vp.SetContent(rendered)
@@ -211,28 +232,40 @@ func (m *ViewportModel) renderMessages() string {
 		}
 		switch msg.Type {
 		case MessageUser:
-			sb.WriteString("You: ")
+			sb.WriteString(m.theme.AccentText.Render("You: "))
 			sb.WriteString(msg.Content)
 		case MessageAssistant:
-			sb.WriteString(msg.Content)
+			sb.WriteString(m.renderer.Render(msg.Content))
 			if !msg.Complete {
 				sb.WriteString(StreamingCursor)
 			}
 		case MessageToolCall:
-			indicator := "⏳"
-			if msg.Approved {
-				indicator = "✓"
-			}
-			sb.WriteString(fmt.Sprintf(" %s Tool: %s ", indicator, msg.Content))
+			m.renderToolCall(&sb, msg)
 		case MessageStatus:
-			sb.WriteString("― ")
-			sb.WriteString(msg.Content)
-			sb.WriteString(" ―")
+			sb.WriteString(m.theme.NormalText.Render("― " + msg.Content + " ―"))
 		case MessageError:
-			sb.WriteString("ERROR: ")
+			sb.WriteString(m.theme.AccentText.Render("ERROR: "))
 			sb.WriteString(msg.Content)
 		}
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
+	indicator := "⏳"
+	if msg.Approved {
+		indicator = "✓"
+	}
+	// Tool name line with accent color
+	toolHeader := fmt.Sprintf("┌ %s %s", indicator, msg.Content)
+	sb.WriteString(m.theme.AccentText.Render(toolHeader))
+	// Input summary on next line if present
+	if msg.ToolInput != "" {
+		sb.WriteString("\n")
+		inputLine := fmt.Sprintf("│ %s", msg.ToolInput)
+		sb.WriteString(m.theme.NormalText.Render(inputLine))
+	}
+	sb.WriteString("\n")
+	sb.WriteString(m.theme.AccentText.Render("└"))
 }

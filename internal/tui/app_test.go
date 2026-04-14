@@ -7,16 +7,18 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
 func newTestAppModel(t *testing.T) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", nil)
+	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "")
 }
 
 func newTestAppModelWithBridge(t *testing.T, bridge *Bridge) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", bridge)
+	return NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "")
 }
 
 func TestAppModel_InitReturnsNil(t *testing.T) {
@@ -331,5 +333,157 @@ func TestAppModel_TurnStateMsg_UpdatesTurnState(t *testing.T) {
 
 	if app.turnState != TurnThinking {
 		t.Errorf("turnState = %v, want TurnThinking", app.turnState)
+	}
+}
+
+// --- Tests for QUM-200 5c: App Model Agent Tree + Observation ---
+
+// mockSupervisor implements supervisor.Supervisor for testing.
+type mockSupervisor struct {
+	agents    []supervisor.AgentInfo
+	statusErr error
+}
+
+func (m *mockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
+	return nil, nil
+}
+
+func (m *mockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
+	return m.agents, m.statusErr
+}
+func (m *mockSupervisor) Delegate(_ context.Context, _, _ string) error       { return nil }
+func (m *mockSupervisor) Message(_ context.Context, _, _, _ string) error     { return nil }
+func (m *mockSupervisor) Merge(_ context.Context, _, _ string, _ bool) error  { return nil }
+func (m *mockSupervisor) Retire(_ context.Context, _ string, _, _ bool) error { return nil }
+func (m *mockSupervisor) Kill(_ context.Context, _ string) error              { return nil }
+func (m *mockSupervisor) Shutdown(_ context.Context) error                    { return nil }
+
+func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
+	t.Helper()
+	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl")
+}
+
+func TestAppModel_NewAppModelWithSupervisor(t *testing.T) {
+	sup := &mockSupervisor{
+		agents: []supervisor.AgentInfo{
+			{Name: "weave", Type: "weave", Status: "active"},
+		},
+	}
+	// Should not panic with supervisor and sprawlRoot params.
+	m := newTestAppModelWithSupervisor(t, sup)
+	_ = m.View()
+}
+
+func TestAppModel_AgentTreeMsg_UpdatesTree(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
+		{Name: "finn", Type: "engineer", Status: "active", Depth: 2},
+	}
+
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
+	app = updated.(AppModel)
+
+	if len(app.tree.nodes) != 3 {
+		t.Errorf("tree.nodes = %d after AgentTreeMsg, want 3", len(app.tree.nodes))
+	}
+	if app.tree.nodes[0].Name != "weave" {
+		t.Errorf("tree.nodes[0].Name = %q, want %q", app.tree.nodes[0].Name, "weave")
+	}
+}
+
+func TestAppModel_AgentSelectedMsg_SwapsViewport(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Set up tree nodes so we have agents to select.
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
+	}
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
+	app = updated.(AppModel)
+
+	// Add a message to the root agent's viewport.
+	app.viewport.AppendUserMessage("root message")
+
+	// Switch to observing tower.
+	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
+	app = updated.(AppModel)
+
+	// The observed agent should now be "tower".
+	if app.observedAgent != "tower" {
+		t.Errorf("observedAgent = %q after selecting tower, want %q", app.observedAgent, "tower")
+	}
+
+	// The viewport should NOT contain the root message (it should be buffered).
+	view := app.viewport.View()
+	if strings.Contains(view, "root message") {
+		t.Error("viewport should not show root agent's messages when observing tower")
+	}
+
+	// Switch back to weave — root message should be restored.
+	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
+	app = updated.(AppModel)
+
+	view = app.viewport.View()
+	if !strings.Contains(view, "root message") {
+		t.Errorf("viewport should show root agent's messages after switching back, got:\n%s", view)
+	}
+}
+
+func TestAppModel_AgentSelectedMsg_DisablesInputForNonRoot(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
+	}
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
+	app = updated.(AppModel)
+
+	// Select a non-root agent.
+	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
+	app = updated.(AppModel)
+
+	// Input should be disabled when observing a non-root agent.
+	if !app.input.disabled {
+		t.Error("input should be disabled when observing non-root agent 'tower'")
+	}
+}
+
+func TestAppModel_AgentSelectedMsg_EnablesInputForRoot(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Status: "active", Depth: 0},
+		{Name: "tower", Type: "manager", Status: "active", Depth: 1},
+	}
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
+	app = updated.(AppModel)
+
+	// Select non-root first.
+	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
+	app = updated.(AppModel)
+
+	// Select root agent — input should be enabled.
+	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
+	app = updated.(AppModel)
+
+	if app.input.disabled {
+		t.Error("input should be enabled when observing root agent 'weave'")
 	}
 }
