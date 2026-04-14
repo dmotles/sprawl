@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -1464,6 +1465,205 @@ func TestBuildRootPrompt_TuiMode_NoCLIOnlyCommandPatterns(t *testing.T) {
 	}
 }
 
+// TestBuildRootPrompt_GoldenSnapshot_TmuxMode captures the exact current tmux-mode
+// output and asserts character-for-character identity. This is the regression safety net
+// for the root prompt refactor (QUM-243 Wave A).
+func TestBuildRootPrompt_GoldenSnapshot_TmuxMode(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "weave",
+		AgentCLI: "claude-code",
+		Mode:     "",
+	}
+	got := BuildRootPrompt(cfg)
+
+	// Explicit tmux mode must produce identical output to default (empty) mode.
+	cfgExplicit := cfg
+	cfgExplicit.Mode = "tmux"
+	gotExplicit := BuildRootPrompt(cfgExplicit)
+	if got != gotExplicit {
+		t.Error("default mode and explicit 'tmux' mode produce different output")
+	}
+
+	// Golden snapshot: the exact output must not change.
+	// If this test fails after the refactor, the refactor broke tmux mode output.
+	if len(got) == 0 {
+		t.Fatal("BuildRootPrompt returned empty string")
+	}
+
+	// Character-for-character comparison against golden file.
+	golden, err := os.ReadFile("testdata/golden_tmux_claude_code.txt")
+	if err != nil {
+		t.Fatalf("failed to read golden file: %v", err)
+	}
+	if got != string(golden) {
+		// Find first difference for debugging
+		g := string(golden)
+		diffIdx := 0
+		for diffIdx < len(got) && diffIdx < len(g) && got[diffIdx] == g[diffIdx] {
+			diffIdx++
+		}
+		context := 80
+		start := diffIdx - context
+		if start < 0 {
+			start = 0
+		}
+		end := diffIdx + context
+		if end > len(got) {
+			end = len(got)
+		}
+		endG := diffIdx + context
+		if endG > len(g) {
+			endG = len(g)
+		}
+		t.Fatalf("tmux mode output differs from golden snapshot at byte %d\ngot context:    %q\ngolden context: %q",
+			diffIdx, got[start:end], g[start:endG])
+	}
+
+	// Verify key structural markers are present in exact expected order.
+	markers := []string{
+		`Your name is "weave".`,
+		"# YOUR ROLE:",
+		"# System",
+		"# Doing Tasks",
+		"# Executing actions with care",
+		"# Tone and style",
+		"# SPRAWL OVERVIEW",
+		"## REMINDERS",
+		"AGENT TYPES YOU CAN SPAWN",
+		"KEY COMMANDS:",
+		"DELEGATE VS. MESSAGES",
+		"RULES:",
+		"PARALLELISM VS. SERIALIZATION:",
+		"FOLLOW THROUGH:",
+		"TASK TRACKING FOR MULTI-WAVE ORCHESTRATION:",
+		"# Using your tools",
+		"AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS",
+		"VERIFYING AGENT WORK:",
+	}
+	lastIdx := -1
+	for _, m := range markers {
+		idx := strings.Index(got, m)
+		if idx == -1 {
+			t.Fatalf("golden snapshot missing marker: %q", m)
+		}
+		if idx <= lastIdx {
+			t.Errorf("marker %q (idx %d) appears out of order (previous was at %d)", m, idx, lastIdx)
+		}
+		lastIdx = idx
+	}
+}
+
+// TestBuildRootPrompt_GoldenSnapshot_NoCLI verifies the output without AgentCLI set.
+func TestBuildRootPrompt_GoldenSnapshot_NoCLI(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "weave",
+		AgentCLI: "",
+		Mode:     "",
+	}
+	got := BuildRootPrompt(cfg)
+
+	// Character-for-character comparison against golden file.
+	golden, err := os.ReadFile("testdata/golden_tmux_no_cli.txt")
+	if err != nil {
+		t.Fatalf("failed to read golden file: %v", err)
+	}
+	if got != string(golden) {
+		g := string(golden)
+		diffIdx := 0
+		for diffIdx < len(got) && diffIdx < len(g) && got[diffIdx] == g[diffIdx] {
+			diffIdx++
+		}
+		t.Fatalf("no-CLI tmux mode output differs from golden snapshot at byte %d", diffIdx)
+	}
+
+	// Should NOT contain sub-agent guidance
+	if strings.Contains(got, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS") {
+		t.Error("no-CLI prompt should not contain sub-agent guidance")
+	}
+	if strings.Contains(got, "# Using your tools") {
+		t.Error("no-CLI prompt should not contain '# Using your tools'")
+	}
+
+	// Should still contain all the standard sections
+	standardMarkers := []string{
+		`Your name is "weave".`,
+		"# YOUR ROLE:",
+		"# Doing Tasks",
+		"KEY COMMANDS:",
+		"RULES:",
+		"VERIFYING AGENT WORK:",
+	}
+	for _, m := range standardMarkers {
+		if !strings.Contains(got, m) {
+			t.Errorf("no-CLI prompt missing standard marker: %q", m)
+		}
+	}
+}
+
+// TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences exhaustively checks
+// that TUI mode has absolutely zero tmux/CLI-only references.
+func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "weave",
+		AgentCLI: "claude-code",
+		Mode:     "tui",
+	}
+	got := BuildRootPrompt(cfg)
+
+	// Must not contain tmux references
+	if strings.Contains(got, "tmux") {
+		t.Error("TUI mode must not contain 'tmux'")
+	}
+
+	// Must not contain CLI-only command patterns
+	forbidden := []string{
+		"sprawl spawn agent",
+		"sprawl spawn subagent",
+		"sprawl messages send",
+		"sprawl messages inbox",
+		"sprawl messages read",
+		"sprawl messages list",
+		"sprawl messages broadcast",
+		"sprawl messages archive",
+		"sprawl report done",
+		"sprawl report problem",
+		"sprawl retire --merge",
+		"sprawl retire --abandon",
+		"sprawl merge <agent-name>",
+		"sprawl cleanup branches",
+		"sprawl logs <agent",
+		"(via --family)",
+		"--type engineer",
+		"--type researcher",
+		"--type manager",
+		"--dry-run",
+		"--no-validate",
+		"--message/-m",
+		"--yes",
+	}
+	for _, pat := range forbidden {
+		if strings.Contains(got, pat) {
+			t.Errorf("TUI mode must not contain CLI-only pattern %q", pat)
+		}
+	}
+
+	// Must contain MCP tool references
+	required := []string{
+		"sprawl_spawn",
+		"sprawl_message",
+		"sprawl_merge",
+		"sprawl_retire",
+		"sprawl_delegate",
+		"sprawl_kill",
+		"sprawl_status",
+	}
+	for _, tool := range required {
+		if !strings.Contains(got, tool) {
+			t.Errorf("TUI mode must contain MCP tool %q", tool)
+		}
+	}
+}
+
 func TestBuildManagerPrompt_SharedContent_BothModes(t *testing.T) {
 	sharedPhrases := []string{
 		"DECOMPOSITION:",
@@ -1488,4 +1688,115 @@ func TestBuildManagerPrompt_SharedContent_BothModes(t *testing.T) {
 			}
 		}
 	}
+}
+
+// --- Golden snapshot regression tests ---
+// These capture the exact output of each child prompt builder and assert
+// character-for-character identity. If you change prompt content intentionally,
+// regenerate golden files: GENERATE_GOLDEN=1 go test ./internal/agent/ -run TestGenerateGoldenFiles
+
+func readGolden(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatalf("reading golden file testdata/%s: %v", name, err)
+	}
+	return string(data)
+}
+
+func TestGenerateGoldenFiles(t *testing.T) {
+	if os.Getenv("GENERATE_GOLDEN") != "1" {
+		t.Skip("set GENERATE_GOLDEN=1 to regenerate golden files")
+	}
+	env := testEnvConfig()
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile("testdata/"+name, []byte(content), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+		t.Logf("wrote testdata/%s (%d bytes)", name, len(content))
+	}
+	write("engineer_tmux.golden", BuildEngineerPrompt("zone", "root", "sprawl/zone", env))
+	write("researcher_tmux.golden", BuildResearcherPrompt("birch", "root", "sprawl/birch", env))
+	write("manager_tmux.golden", BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env))
+	env.Mode = "tui"
+	write("engineer_tui.golden", BuildEngineerPrompt("zone", "root", "sprawl/zone", env))
+	write("researcher_tui.golden", BuildResearcherPrompt("birch", "root", "sprawl/birch", env))
+	write("manager_tui.golden", BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env))
+}
+
+func TestBuildEngineerPrompt_TmuxGolden(t *testing.T) {
+	got := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
+	want := readGolden(t, "engineer_tmux.golden")
+	if got != want {
+		t.Fatalf("engineer tmux prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
+			len(got), len(want), firstDiffIndex(got, want))
+	}
+}
+
+func TestBuildResearcherPrompt_TmuxGolden(t *testing.T) {
+	got := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
+	want := readGolden(t, "researcher_tmux.golden")
+	if got != want {
+		t.Fatalf("researcher tmux prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
+			len(got), len(want), firstDiffIndex(got, want))
+	}
+}
+
+func TestBuildManagerPrompt_TmuxGolden(t *testing.T) {
+	got := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
+	want := readGolden(t, "manager_tmux.golden")
+	if got != want {
+		t.Fatalf("manager tmux prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
+			len(got), len(want), firstDiffIndex(got, want))
+	}
+}
+
+func TestBuildEngineerPrompt_TuiGolden(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	got := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
+	want := readGolden(t, "engineer_tui.golden")
+	if got != want {
+		t.Fatalf("engineer tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
+			len(got), len(want), firstDiffIndex(got, want))
+	}
+}
+
+func TestBuildResearcherPrompt_TuiGolden(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	got := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
+	want := readGolden(t, "researcher_tui.golden")
+	if got != want {
+		t.Fatalf("researcher tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
+			len(got), len(want), firstDiffIndex(got, want))
+	}
+}
+
+func TestBuildManagerPrompt_TuiGolden(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = "tui"
+	got := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env)
+	want := readGolden(t, "manager_tui.golden")
+	if got != want {
+		t.Fatalf("manager tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
+			len(got), len(want), firstDiffIndex(got, want))
+	}
+}
+
+func firstDiffIndex(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	if len(a) != len(b) {
+		return n
+	}
+	return -1
 }
