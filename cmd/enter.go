@@ -88,12 +88,13 @@ func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
 	}
 
 	// Build system prompt using the same pattern as rootloop.go.
-	rootName := "enter"
+	rootName := "weave"
 	contextBlob, _ := memory.BuildContextBlob(sprawlRoot, rootName)
 	systemPrompt := agent.BuildRootPrompt(agent.PromptConfig{
 		RootName:    rootName,
 		AgentCLI:    "claude-code",
 		ContextBlob: contextBlob,
+		Mode:        "tui",
 	})
 
 	args := []string{
