@@ -145,8 +145,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// Toggle help on ? or F1.
-		if msg.Code == '?' || msg.Code == tea.KeyF1 {
+		// Toggle help on ? (but not while typing in the input panel) or F1.
+		// F1 remains global since it's unambiguous — no one types F1 as text.
+		if (msg.Code == '?' && m.activePanel != PanelInput) || msg.Code == tea.KeyF1 {
 			m.showHelp = !m.showHelp
 			return m, nil
 		}

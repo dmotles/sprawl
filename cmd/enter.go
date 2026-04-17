@@ -12,6 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -25,6 +26,7 @@ import (
 // enterDeps holds dependencies for the enter command, enabling testability.
 type enterDeps struct {
 	getenv        func(string) string
+	getwd         func() (string, error)
 	runProgram    func(tea.Model) error
 	newSession    func(sprawlRoot string) (*tui.Bridge, error)
 	newSupervisor func(sprawlRoot string) supervisor.Supervisor
@@ -54,6 +56,7 @@ func resolveEnterDeps() *enterDeps {
 
 	return &enterDeps{
 		getenv: os.Getenv,
+		getwd:  os.Getwd,
 		runProgram: func(model tea.Model) error {
 			p := tea.NewProgram(model)
 
@@ -78,6 +81,41 @@ func resolveEnterDeps() *enterDeps {
 			})
 		},
 	}
+}
+
+// sprawlOpsMCPTools returns the Claude-addressable tool names for the in-process
+// sprawl-ops MCP server. Keep in sync with the definitions in
+// internal/sprawlmcp/tools.go.
+func sprawlOpsMCPTools() []string {
+	return []string{
+		"mcp__sprawl-ops__sprawl_spawn",
+		"mcp__sprawl-ops__sprawl_status",
+		"mcp__sprawl-ops__sprawl_delegate",
+		"mcp__sprawl-ops__sprawl_message",
+		"mcp__sprawl-ops__sprawl_merge",
+		"mcp__sprawl-ops__sprawl_retire",
+		"mcp__sprawl-ops__sprawl_kill",
+	}
+}
+
+// buildEnterClaudeArgs returns the argv for the Claude subprocess launched by
+// `sprawl enter`. Combines the stream-json flags with the same tool whitelist
+// the tmux root loop applies (rootTools) plus the sprawl-ops MCP tool names.
+func buildEnterClaudeArgs() []string {
+	allowed := make([]string, 0, len(rootTools)+len(sprawlOpsMCPTools()))
+	allowed = append(allowed, rootTools...)
+	allowed = append(allowed, sprawlOpsMCPTools()...)
+
+	opts := claude.LaunchOpts{
+		Print:           true,
+		InputFormat:     "stream-json",
+		OutputFormat:    "stream-json",
+		Verbose:         true,
+		PermissionMode:  "bypassPermissions",
+		AllowedTools:    allowed,
+		DisallowedTools: []string{"Edit", "Write", "NotebookEdit"},
+	}
+	return opts.BuildArgs()
 }
 
 // buildSessionEnv returns the environment variables for the Claude Code subprocess.
@@ -105,13 +143,7 @@ func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
 		Mode:        "tui",
 	})
 
-	args := []string{
-		"-p",
-		"--input-format", "stream-json",
-		"--output-format", "stream-json",
-		"--verbose",
-		"--permission-mode", "bypassPermissions",
-	}
+	args := buildEnterClaudeArgs()
 
 	cmd := exec.Command(claudePath, args...) //nolint:gosec // claudePath is from LookPath, not untrusted input
 	cmd.Dir = sprawlRoot
@@ -192,7 +224,12 @@ func (t *enterTransport) Close() error {
 func runEnter(deps *enterDeps) error {
 	sprawlRoot := deps.getenv("SPRAWL_ROOT")
 	if sprawlRoot == "" {
-		return fmt.Errorf("SPRAWL_ROOT environment variable is not set — run 'sprawl init' first")
+		cwd, err := deps.getwd()
+		if err != nil {
+			return fmt.Errorf("SPRAWL_ROOT not set and cannot determine working directory: %w", err)
+		}
+		sprawlRoot = cwd
+		fmt.Fprintf(os.Stderr, "SPRAWL_ROOT not set — defaulting to %s\n", sprawlRoot)
 	}
 
 	accentColor := state.ReadAccentColor(sprawlRoot)

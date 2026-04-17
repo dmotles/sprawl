@@ -158,6 +158,48 @@ func TestAppModel_ConfirmYQuitsApp(t *testing.T) {
 	}
 }
 
+func TestAppModel_QuestionMarkOpensHelpOnTreePanel(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.activePanel = PanelTree
+	app.updateFocus()
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
+	app = updated.(AppModel)
+	if !app.showHelp {
+		t.Error("? on tree panel should toggle help")
+	}
+}
+
+func TestAppModel_QuestionMarkIgnoredOnInputPanel(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.activePanel = PanelInput
+	app.updateFocus()
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
+	app = updated.(AppModel)
+	if app.showHelp {
+		t.Error("? on input panel should NOT open help; it should be delegated as text")
+	}
+}
+
+func TestAppModel_F1OpensHelpOnInputPanel(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.activePanel = PanelInput
+	app.updateFocus()
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	app = updated.(AppModel)
+	if !app.showHelp {
+		t.Error("F1 should toggle help even on input panel")
+	}
+}
+
 func TestAppModel_ConfirmNDismisses(t *testing.T) {
 	m := newTestAppModel(t)
 	// Show confirm dialog.

@@ -13,27 +13,76 @@ import (
 	"github.com/dmotles/sprawl/internal/tui"
 )
 
-func newTestEnterDeps(t *testing.T) *enterDeps {
-	t.Helper()
-	return &enterDeps{
+func TestEnter_DefaultsToCwdWhenSprawlRootEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+
+	var programCalled bool
+	deps := &enterDeps{
 		getenv: func(string) string { return "" },
+		getwd:  func() (string, error) { return tmpDir, nil },
+		runProgram: func(tea.Model) error {
+			programCalled = true
+			return nil
+		},
+		newSession: nil,
+	}
+
+	err := runEnter(deps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !programCalled {
+		t.Error("runProgram should have been called when SPRAWL_ROOT empty but cwd available")
+	}
+}
+
+func TestEnter_GetwdErrorReturnsError(t *testing.T) {
+	deps := &enterDeps{
+		getenv: func(string) string { return "" },
+		getwd:  func() (string, error) { return "", errors.New("no cwd") },
 		runProgram: func(tea.Model) error {
 			return nil
 		},
 		newSession: nil,
 	}
-}
-
-func TestEnter_NoSprawlRoot(t *testing.T) {
-	deps := newTestEnterDeps(t)
-	deps.getenv = func(key string) string { return "" }
 
 	err := runEnter(deps)
 	if err == nil {
-		t.Fatal("expected error when SPRAWL_ROOT is empty")
+		t.Fatal("expected error when getwd fails and SPRAWL_ROOT empty")
 	}
-	if !strings.Contains(err.Error(), "SPRAWL_ROOT") {
-		t.Errorf("error = %q, want it to mention SPRAWL_ROOT", err.Error())
+	if !strings.Contains(err.Error(), "no cwd") {
+		t.Errorf("error = %q, want it to mention getwd failure", err.Error())
+	}
+}
+
+func TestEnter_EnvVarOverridesCwd(t *testing.T) {
+	envDir := t.TempDir()
+	cwdDir := t.TempDir()
+
+	factory := &mockSessionFactory{}
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return envDir
+			}
+			return ""
+		},
+		getwd: func() (string, error) { return cwdDir, nil },
+		runProgram: func(tea.Model) error {
+			return nil
+		},
+		newSession: factory.newSession,
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if factory.sprawlDir != envDir {
+		t.Errorf("sprawlRoot = %q, want env override %q", factory.sprawlDir, envDir)
 	}
 }
 
