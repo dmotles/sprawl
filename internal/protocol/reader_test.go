@@ -414,6 +414,74 @@ func TestReaderLargeMessage(t *testing.T) {
 	}
 }
 
+func TestReaderLineLargerThan1MB(t *testing.T) {
+	// Simulates a stream-json line (e.g. a base64-encoded screenshot) that
+	// exceeds the old 1MB bufio.Scanner limit. The reader must parse it
+	// without returning bufio.ErrTooLong.
+	bigResult := strings.Repeat("A", 5*1024*1024) // 5MB payload
+	line := `{"type":"result","subtype":"success","result":"` + bigResult + `","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0.0,"uuid":"big-5mb","session_id":"s1"}` + "\n"
+	r := NewReader(strings.NewReader(line))
+
+	msg, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next() error on 5MB line: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("Next() returned nil message")
+	}
+	if msg.UUID != "big-5mb" {
+		t.Errorf("UUID = %q, want %q", msg.UUID, "big-5mb")
+	}
+
+	var rm ResultMessage
+	if err := ParseAs(msg, &rm); err != nil {
+		t.Fatalf("ParseAs error: %v", err)
+	}
+	if len(rm.Result) != 5*1024*1024 {
+		t.Errorf("Result length = %d, want %d", len(rm.Result), 5*1024*1024)
+	}
+}
+
+func TestReaderLineExceedsCeiling(t *testing.T) {
+	// When a line exceeds the configured ceiling the reader must return a
+	// clean error rather than panic or allocate unbounded memory.
+	r := NewReaderWithMaxLine(strings.NewReader(strings.Repeat("x", 2048)+"\n"), 1024)
+
+	_, err := r.Next()
+	if err == nil {
+		t.Fatal("Next() expected error for oversize line, got nil")
+	}
+	if errors.Is(err, io.EOF) {
+		t.Fatalf("Next() returned io.EOF, expected oversize error")
+	}
+}
+
+func TestReaderFinalLineNoTrailingNewline(t *testing.T) {
+	// Stream whose last line is not terminated by '\n' must still be
+	// returned, then subsequent calls return io.EOF.
+	input := `{"type":"system","subtype":"session_state_changed","state":"idle","uuid":"sc-x","session_id":"s1"}`
+	r := NewReader(strings.NewReader(input))
+
+	msg, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next() error: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("Next() returned nil message")
+	}
+	if msg.UUID != "sc-x" {
+		t.Errorf("UUID = %q, want %q", msg.UUID, "sc-x")
+	}
+
+	msg2, err2 := r.Next()
+	if !errors.Is(err2, io.EOF) {
+		t.Errorf("second Next() error = %v, want io.EOF", err2)
+	}
+	if msg2 != nil {
+		t.Errorf("second Next() msg = %v, want nil", msg2)
+	}
+}
+
 func TestParseAsNilRaw(t *testing.T) {
 	msg := &Message{
 		Type: "system",
