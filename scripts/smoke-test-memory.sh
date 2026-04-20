@@ -134,9 +134,9 @@ echo "=== Setting up test environment ==="
 echo "Building sprawl..."
 make -C "$REPO_ROOT" build >/dev/null 2>&1
 
-SPRAWL_BIN="$REPO_ROOT/dendra"
+SPRAWL_BIN="$REPO_ROOT/sprawl"
 if [ ! -x "$SPRAWL_BIN" ]; then
-    echo "FATAL: dendra binary not found at $SPRAWL_BIN" >&2
+    echo "FATAL: sprawl binary not found at $SPRAWL_BIN" >&2
     exit 1
 fi
 

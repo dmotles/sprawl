@@ -3,13 +3,15 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/dmotles/sprawl/internal/rootinit"
 )
 
 func TestBuildEnterClaudeArgs_IncludesRootToolsAllowlist(t *testing.T) {
 	args := buildEnterClaudeArgs()
 
-	// Every rootTools entry should appear as an --allowed-tools argument.
-	for _, tool := range rootTools {
+	// Every rootinit.RootTools entry should appear as an --allowed-tools argument.
+	for _, tool := range rootinit.RootTools {
 		if !argsContainPair(args, "--allowed-tools", tool) {
 			t.Errorf("expected --allowed-tools %s in args; got %v", tool, args)
 		}

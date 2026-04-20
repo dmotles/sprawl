@@ -16,6 +16,7 @@ import (
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
@@ -100,10 +101,11 @@ func sprawlOpsMCPTools() []string {
 
 // buildEnterClaudeArgs returns the argv for the Claude subprocess launched by
 // `sprawl enter`. Combines the stream-json flags with the same tool whitelist
-// the tmux root loop applies (rootTools) plus the sprawl-ops MCP tool names.
+// the tmux root loop applies (rootinit.RootTools) plus the sprawl-ops MCP
+// tool names.
 func buildEnterClaudeArgs() []string {
-	allowed := make([]string, 0, len(rootTools)+len(sprawlOpsMCPTools()))
-	allowed = append(allowed, rootTools...)
+	allowed := make([]string, 0, len(rootinit.RootTools)+len(sprawlOpsMCPTools()))
+	allowed = append(allowed, rootinit.RootTools...)
 	allowed = append(allowed, sprawlOpsMCPTools()...)
 
 	opts := claude.LaunchOpts{
@@ -113,7 +115,7 @@ func buildEnterClaudeArgs() []string {
 		Verbose:         true,
 		PermissionMode:  "bypassPermissions",
 		AllowedTools:    allowed,
-		DisallowedTools: []string{"Edit", "Write", "NotebookEdit"},
+		DisallowedTools: rootinit.DisallowedTools,
 	}
 	return opts.BuildArgs()
 }
