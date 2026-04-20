@@ -1241,6 +1241,125 @@ func TestAppModel_HandoffRequestedMsg_TriggersRestart(t *testing.T) {
 	}
 }
 
+func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		nb := NewBridge(context.Background(), newMockSession())
+		nb.SetSessionID("newsession0000000000000000000000ffff")
+		return nb, nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Seed the viewport with prior-session conversation.
+	app.viewport.AppendUserMessage("old user message")
+	app.viewport.AppendAssistantChunk("old assistant reply")
+	app.viewport.FinalizeAssistantMessage()
+
+	updated, _ := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+
+	msgs := app.viewport.GetMessages()
+	for _, e := range msgs {
+		if strings.Contains(e.Content, "old user message") || strings.Contains(e.Content, "old assistant reply") {
+			t.Errorf("viewport should be cleared on restart; still contains prior message: %+v", e)
+		}
+	}
+}
+
+func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		nb := NewBridge(context.Background(), newMockSession())
+		nb.SetSessionID("abcdef12-3456-7890-abcd-ef1234567890")
+		return nb, nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+
+	msgs := app.viewport.GetMessages()
+	found := false
+	for _, e := range msgs {
+		if e.Type == MessageStatus && strings.Contains(e.Content, "New session started") && strings.Contains(e.Content, "abcdef12") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected viewport to contain status banner '— New session started (abcdef12) —', got messages: %+v", msgs)
+	}
+}
+
+func TestAppModel_RestartSessionMsg_UpdatesStatusBarSessionID(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		nb := NewBridge(context.Background(), newMockSession())
+		nb.SetSessionID("deadbeef-0000-0000-0000-000000000000")
+		return nb, nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+
+	if got := app.statusBar.sessionID; got != "deadbeef" {
+		t.Errorf("statusBar.sessionID = %q, want %q (8-char truncation of new session id)", got, "deadbeef")
+	}
+}
+
+func TestAppModel_SessionInitializedMsg_UpdatesStatusBarSessionID(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	bridge.SetSessionID("cafebabe-1111-2222-3333-444455556666")
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionInitializedMsg{})
+	app = updated.(AppModel)
+
+	if got := app.statusBar.sessionID; got != "cafebabe" {
+		t.Errorf("statusBar.sessionID = %q, want %q after SessionInitializedMsg", got, "cafebabe")
+	}
+}
+
+func TestAppModel_SessionInitializedMsg_DoesNotClearPreloadedTranscript(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	bridge.SetSessionID("aaaaaaaa-1111-2222-3333-444455556666")
+	m := newTestAppModelWithBridge(t, bridge)
+
+	entries := []MessageEntry{
+		{Type: MessageUser, Content: "resumed hello", Complete: true},
+		{Type: MessageAssistant, Content: "resumed reply", Complete: true},
+	}
+	m.PreloadTranscript(entries)
+
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionInitializedMsg{})
+	app = updated.(AppModel)
+
+	msgs := app.viewport.GetMessages()
+	if len(msgs) < 2 {
+		t.Fatalf("preloaded transcript was cleared by SessionInitializedMsg; got %d messages, want >=2", len(msgs))
+	}
+	if msgs[0].Content != "resumed hello" || msgs[1].Content != "resumed reply" {
+		t.Errorf("preloaded transcript was corrupted; got %+v", msgs)
+	}
+}
+
 func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 	m := newTestAppModel(t)
 	m.PreloadTranscript(nil)

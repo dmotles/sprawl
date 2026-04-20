@@ -22,9 +22,10 @@ type BridgeSession interface {
 // It converts protocol events from the session into tea.Msg types
 // that the TUI model can handle.
 type Bridge struct {
-	session BridgeSession
-	ctx     context.Context
-	events  <-chan *protocol.Message
+	session   BridgeSession
+	ctx       context.Context
+	events    <-chan *protocol.Message
+	sessionID string
 }
 
 // NewBridge creates a new Bridge wrapping the given session.
@@ -33,6 +34,19 @@ func NewBridge(ctx context.Context, session BridgeSession) *Bridge {
 		session: session,
 		ctx:     ctx,
 	}
+}
+
+// SetSessionID stores the Claude session ID for this bridge so the TUI can
+// display it (e.g. in the status bar) after Initialize. Separate from
+// construction because the ID is decided during session preparation, which
+// happens alongside (not inside) Bridge creation.
+func (b *Bridge) SetSessionID(id string) {
+	b.sessionID = id
+}
+
+// SessionID returns the Claude session ID set via SetSessionID, or "" if unset.
+func (b *Bridge) SessionID() string {
+	return b.sessionID
 }
 
 // Initialize returns a tea.Cmd that initializes the session.

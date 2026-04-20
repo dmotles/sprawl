@@ -64,6 +64,23 @@ func TestNewBridge(t *testing.T) {
 	}
 }
 
+func TestBridge_SessionID_DefaultEmpty(t *testing.T) {
+	ms := newMockSession()
+	b := NewBridge(context.Background(), ms)
+	if got := b.SessionID(); got != "" {
+		t.Errorf("SessionID() = %q, want empty string before SetSessionID", got)
+	}
+}
+
+func TestBridge_SetSessionID_Roundtrip(t *testing.T) {
+	ms := newMockSession()
+	b := NewBridge(context.Background(), ms)
+	b.SetSessionID("abcdef1234567890")
+	if got := b.SessionID(); got != "abcdef1234567890" {
+		t.Errorf("SessionID() = %q, want %q", got, "abcdef1234567890")
+	}
+}
+
 // --- Initialize tests ---
 
 func TestBridge_InitializeSuccess(t *testing.T) {

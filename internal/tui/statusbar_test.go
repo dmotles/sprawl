@@ -103,6 +103,25 @@ func TestStatusBar_SetTurnCost(t *testing.T) {
 	}
 }
 
+func TestStatusBar_SetSessionID_Displayed(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	m.SetSessionID("a1b2c3d4")
+	view := m.View()
+	if !strings.Contains(view, "sess:a1b2c3d4") {
+		t.Errorf("View() with SetSessionID should contain 'sess:a1b2c3d4', got:\n%s", view)
+	}
+}
+
+func TestStatusBar_SessionID_OmittedWhenEmpty(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	view := m.View()
+	if strings.Contains(view, "sess:") {
+		t.Errorf("View() without SetSessionID should not contain 'sess:', got:\n%s", view)
+	}
+}
+
 func TestStatusBar_CumulativeCost(t *testing.T) {
 	m := newTestStatusBarModel(t)
 	m.SetWidth(80)

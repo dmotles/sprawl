@@ -202,7 +202,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.delegateKey(msg)
 
 	case SessionInitializedMsg:
-		m.viewport.AppendStatus("Session ready")
+		// Only refresh the status bar session ID here. Do NOT touch the
+		// viewport: on first launch the resume-replay transcript lives there,
+		// and on restart the RestartSessionMsg handler already cleared the
+		// viewport and appended the boundary banner.
+		if m.bridge != nil {
+			m.statusBar.SetSessionID(shortSessionID(m.bridge.SessionID()))
+		}
 		return m, nil
 
 	case OpenPaletteMsg:
@@ -353,6 +359,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.bridge = newBridge
+			// Make the session boundary visible: clear prior-session
+			// conversation from the viewport, drop a banner marking the new
+			// session, and refresh the status bar so the user can see the
+			// handoff / crash-recovery actually succeeded.
+			shortID := shortSessionID(m.bridge.SessionID())
+			m.viewport.SetMessages(nil)
+			if shortID != "" {
+				m.viewport.AppendStatus(fmt.Sprintf("— New session started (%s) —", shortID))
+			} else {
+				m.viewport.AppendStatus("— New session started —")
+			}
+			m.statusBar.SetSessionID(shortID)
 			m.setTurnState(TurnIdle)
 			m.input.SetDisabled(false)
 			return m, m.bridge.Initialize()
@@ -571,6 +589,15 @@ func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 // sendMsgCmd wraps a plain tea.Msg value as a tea.Cmd for use with tea.Batch.
 func sendMsgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
+}
+
+// shortSessionID returns the first 8 chars of a Claude session ID (a UUID) for
+// display. Shorter IDs (e.g. from test fixtures) are returned unchanged.
+func shortSessionID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
 }
 
 func scheduleAgentTick(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {

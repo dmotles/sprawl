@@ -182,13 +182,15 @@ fi
 echo ""
 echo "=== Test 2: Session initialization ==="
 
-# Wait for "Session ready" (requires Claude subprocess to connect)
-if wait_for_content "$SESSION_NAME" "Session ready" 30; then
-    pass "session initialized — 'Session ready' appeared"
+# Wait for "sess:<id>" in the status bar (the status bar updates with the
+# Claude session ID once Initialize() returns, which is the new signal that
+# the subprocess has connected).
+if wait_for_content "$SESSION_NAME" "sess:" 30; then
+    pass "session initialized — status bar shows 'sess:<id>'"
 else
     # Check if the session is still alive
     if session_alive "$SESSION_NAME"; then
-        fail "session did not show 'Session ready' within 30 seconds"
+        fail "session did not show 'sess:<id>' within 30 seconds"
     else
         fail "TUI exited before session could initialize"
         # Dump stderr

@@ -14,6 +14,7 @@ type StatusBarModel struct {
 	width          int
 	theme          *Theme
 	sessionCostUsd float64
+	sessionID      string
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -45,6 +46,9 @@ func (m StatusBarModel) View() string {
 	var parts []string
 	if m.sessionCostUsd > 0 {
 		parts = append(parts, fmt.Sprintf("$%.4f", m.sessionCostUsd))
+	}
+	if m.sessionID != "" {
+		parts = append(parts, "sess:"+m.sessionID)
 	}
 	if stateStr != "" {
 		parts = append(parts, stateStr)
@@ -81,4 +85,10 @@ func (m *StatusBarModel) SetTurnCost(cost float64) {
 // SetAgentCount updates the displayed agent count.
 func (m *StatusBarModel) SetAgentCount(n int) {
 	m.agentCount = n
+}
+
+// SetSessionID updates the displayed Claude session ID. The caller should
+// pass the short (8-char) display form; the status bar renders it verbatim.
+func (m *StatusBarModel) SetSessionID(id string) {
+	m.sessionID = id
 }

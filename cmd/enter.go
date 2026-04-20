@@ -297,6 +297,7 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 
 	ctx := context.Background()
 	bridge := tui.NewBridge(ctx, session)
+	bridge.SetSessionID(prepared.SessionID)
 	return bridge, prepared.Resume, nil
 }
 
