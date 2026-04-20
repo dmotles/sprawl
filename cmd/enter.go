@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/host"
+	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
@@ -366,6 +367,21 @@ func runEnter(deps *enterDeps) error {
 		restartFunc = makeRestartFunc(deps.newSession, deps.finalizeHandoff, sprawlRoot, state, &bridge, os.Stderr)
 	}
 	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
+
+	if bridge != nil && state.lastWasResume {
+		if sessionID, sErr := memory.ReadLastSessionID(sprawlRoot); sErr == nil && sessionID != "" {
+			if homeDir, hErr := os.UserHomeDir(); hErr == nil {
+				path := memory.SessionLogPath(homeDir, sprawlRoot, sessionID)
+				entries, lErr := tui.LoadTranscript(path, tui.ReplayMaxMessages)
+				if lErr != nil {
+					fmt.Fprintf(os.Stderr, "[enter] transcript replay failed: %v (continuing with empty viewport)\n", lErr)
+				} else if len(entries) > 0 {
+					model.PreloadTranscript(entries)
+				}
+			}
+		}
+	}
+
 	err = deps.runProgram(model)
 
 	// Phase D on clean shutdown: if the TUI exited normally (e.g. the user

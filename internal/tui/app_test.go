@@ -1193,3 +1193,35 @@ func TestAppModel_TurnState_UpdatesWeaveStatus(t *testing.T) {
 		t.Error("weave node Status should be non-empty after TurnStateMsg (should reflect turn state)")
 	}
 }
+
+func TestAppModel_PreloadTranscript_SetsViewportMessages(t *testing.T) {
+	m := newTestAppModel(t)
+	entries := []MessageEntry{
+		{Type: MessageUser, Content: "hello", Complete: true},
+		{Type: MessageAssistant, Content: "hi", Complete: true},
+		{Type: MessageStatus, Content: "Resumed from prior session", Complete: true},
+	}
+	m.PreloadTranscript(entries)
+
+	got := m.viewport.GetMessages()
+	if len(got) != 3 {
+		t.Fatalf("len(viewport messages) = %d, want 3", len(got))
+	}
+	if got[0].Type != MessageUser || got[0].Content != "hello" {
+		t.Errorf("got[0] = %+v, want MessageUser 'hello'", got[0])
+	}
+	if got[1].Type != MessageAssistant || got[1].Content != "hi" {
+		t.Errorf("got[1] = %+v, want MessageAssistant 'hi'", got[1])
+	}
+	if got[2].Type != MessageStatus || got[2].Content != "Resumed from prior session" {
+		t.Errorf("got[2] = %+v, want trailing status", got[2])
+	}
+}
+
+func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
+	m := newTestAppModel(t)
+	m.PreloadTranscript(nil)
+	if got := m.viewport.GetMessages(); len(got) != 0 {
+		t.Errorf("len(viewport messages) = %d, want 0", len(got))
+	}
+}

@@ -430,6 +430,16 @@ func (m *AppModel) setTurnState(state TurnState) {
 	m.rebuildTree()
 }
 
+// PreloadTranscript replaces the viewport's message buffer with the given
+// entries. Used on session resume to populate the viewport with the prior
+// transcript before the TUI starts. No-op if entries is empty.
+func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	m.viewport.SetMessages(entries)
+}
+
 func (m *AppModel) rebuildTree() {
 	nodes := PrependWeaveRoot(m.childNodes, m.turnState.String())
 	m.tree.SetNodes(nodes)
