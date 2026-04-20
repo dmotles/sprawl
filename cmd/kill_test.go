@@ -71,16 +71,16 @@ func newTestKillDeps(t *testing.T) (*killDeps, *killMockRunner, string) {
 	runner := &killMockRunner{}
 
 	deps := &killDeps{
-		tmuxRunner: runner,
-		getenv: func(key string) string {
+		TmuxRunner: runner,
+		Getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
 		},
-		writeFile:  func(path string, data []byte, perm os.FileMode) error { return nil },
-		removeFile: func(path string) error { return nil },
-		sleepFunc:  func(d time.Duration) {},
+		WriteFile:  func(path string, data []byte, perm os.FileMode) error { return nil },
+		RemoveFile: func(path string) error { return nil },
+		SleepFunc:  func(d time.Duration) {},
 	}
 
 	// Ensure agents dir exists
@@ -112,7 +112,7 @@ func TestKill_HappyPath(t *testing.T) {
 
 	// Track writeFile calls to verify sentinel path.
 	var writtenPaths []string
-	deps.writeFile = func(path string, data []byte, perm os.FileMode) error {
+	deps.WriteFile = func(path string, data []byte, perm os.FileMode) error {
 		writtenPaths = append(writtenPaths, path)
 		return nil
 	}
@@ -171,13 +171,13 @@ func TestKill_GracefulTimeout_FallsBackToForce(t *testing.T) {
 	deps, runner, tmpDir := newTestKillDeps(t)
 
 	var writtenPaths []string
-	deps.writeFile = func(path string, data []byte, perm os.FileMode) error {
+	deps.WriteFile = func(path string, data []byte, perm os.FileMode) error {
 		writtenPaths = append(writtenPaths, path)
 		return nil
 	}
 
 	var removedPaths []string
-	deps.removeFile = func(path string) error {
+	deps.RemoveFile = func(path string) error {
 		removedPaths = append(removedPaths, path)
 		return nil
 	}
@@ -242,7 +242,7 @@ func TestKill_ForceSkipsGraceful(t *testing.T) {
 
 	// Track writeFile calls: sentinel should NOT be written with force.
 	var writtenPaths []string
-	deps.writeFile = func(path string, data []byte, perm os.FileMode) error {
+	deps.WriteFile = func(path string, data []byte, perm os.FileMode) error {
 		writtenPaths = append(writtenPaths, path)
 		return nil
 	}
@@ -323,7 +323,7 @@ func TestKill_AgentNotFound(t *testing.T) {
 
 func TestKill_MissingSprawlRoot(t *testing.T) {
 	deps, _, _ := newTestKillDeps(t)
-	deps.getenv = func(key string) string { return "" }
+	deps.Getenv = func(key string) string { return "" }
 
 	err := runKill(deps, "alice", false)
 	if err == nil {
@@ -339,13 +339,13 @@ func TestKill_NoProcesses_StillUpdatesState(t *testing.T) {
 
 	// Track sentinel writes: sentinel should still be written even when window is already gone.
 	var writtenPaths []string
-	deps.writeFile = func(path string, data []byte, perm os.FileMode) error {
+	deps.WriteFile = func(path string, data []byte, perm os.FileMode) error {
 		writtenPaths = append(writtenPaths, path)
 		return nil
 	}
 
 	// Window is already gone (ListWindowPIDs returns error).
-	deps.tmuxRunner.(*killMockRunner).pidsErr = errors.New("window not found")
+	deps.TmuxRunner.(*killMockRunner).pidsErr = errors.New("window not found")
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
@@ -385,7 +385,7 @@ func TestKill_PreservesState(t *testing.T) {
 	deps, _, tmpDir := newTestKillDeps(t)
 
 	// Window is gone immediately so no polling needed.
-	deps.tmuxRunner.(*killMockRunner).pidsErr = errors.New("window not found")
+	deps.TmuxRunner.(*killMockRunner).pidsErr = errors.New("window not found")
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:        "alice",
@@ -435,7 +435,7 @@ func TestKill_SentinelFileCleanup(t *testing.T) {
 	deps, runner, tmpDir := newTestKillDeps(t)
 
 	var removedPaths []string
-	deps.removeFile = func(path string) error {
+	deps.RemoveFile = func(path string) error {
 		removedPaths = append(removedPaths, path)
 		return nil
 	}

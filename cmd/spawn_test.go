@@ -166,9 +166,9 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 	state.WriteRootName(tmpDir, tmux.DefaultRootName)
 
 	deps := &spawnDeps{
-		tmuxRunner:      runner,
-		worktreeCreator: creator,
-		getenv: func(key string) string {
+		TmuxRunner:      runner,
+		WorktreeCreator: creator,
+		Getenv: func(key string) string {
 			switch key {
 			case "SPRAWL_AGENT_IDENTITY":
 				return "root"
@@ -181,18 +181,18 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 			}
 			return ""
 		},
-		currentBranch: func(repoRoot string) (string, error) {
+		CurrentBranch: func(repoRoot string) (string, error) {
 			return "main", nil
 		},
-		findSprawl: func() (string, error) {
+		FindSprawl: func() (string, error) {
 			return "/usr/local/bin/sprawl", nil
 		},
-		newSpawnLock: func(lockPath string) (func() error, func() error) {
+		NewSpawnLock: func(lockPath string) (func() error, func() error) {
 			return func() error { return nil }, func() error { return nil }
 		},
-		loadConfig:     func(string) (*config.Config, error) { return &config.Config{}, nil },
-		runScript:      func(string, string, map[string]string) ([]byte, error) { return nil, nil },
-		worktreeRemove: func(string, string, bool) error { return nil },
+		LoadConfig:     func(string) (*config.Config, error) { return &config.Config{}, nil },
+		RunScript:      func(string, string, map[string]string) ([]byte, error) { return nil, nil },
+		WorktreeRemove: func(string, string, bool) error { return nil },
 	}
 
 	// Ensure agents dir exists
@@ -204,7 +204,7 @@ func newTestSpawnDeps(t *testing.T) (*spawnDeps, *spawnMockRunner, *mockWorktree
 func TestSpawn_HappyPath(t *testing.T) {
 	deps, runner, creator, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "implement login page", "feature/login")
+	_, err := runSpawn(deps, "engineering", "engineer", "implement login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
 	// First spawn creates session (NewWindow fails, falls back to NewSessionWithWindow)
-	err := runSpawn(deps, "engineering", "engineer", "task 1", "feature/task1")
+	_, err := runSpawn(deps, "engineering", "engineer", "task 1", "feature/task1")
 	if err != nil {
 		t.Fatalf("first spawn: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 	runner.newSessionWithWindowCalled = false
 
 	// Second spawn should add a window (NewWindow succeeds directly)
-	err = runSpawn(deps, "engineering", "engineer", "task 2", "feature/task2")
+	_, err = runSpawn(deps, "engineering", "engineer", "task 2", "feature/task2")
 	if err != nil {
 		t.Fatalf("second spawn: %v", err)
 	}
@@ -312,14 +312,14 @@ func TestSpawn_SecondChild_AddsWindow(t *testing.T) {
 
 func TestSpawn_MissingIdentity(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		if key == "SPRAWL_ROOT" {
 			return "/tmp/test"
 		}
 		return ""
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for missing identity")
 	}
@@ -330,14 +330,14 @@ func TestSpawn_MissingIdentity(t *testing.T) {
 
 func TestSpawn_MissingSprawlRoot(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "root"
 		}
 		return ""
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for missing SPRAWL_ROOT")
 	}
@@ -355,7 +355,7 @@ func TestSpawn_NamePoolExhausted_UsesFallback(t *testing.T) {
 		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
@@ -370,7 +370,7 @@ func TestSpawn_WorktreeCreationFails(t *testing.T) {
 	deps, runner, creator, _ := newTestSpawnDeps(t)
 	creator.err = errors.New("git worktree failed")
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for worktree failure")
 	}
@@ -388,7 +388,7 @@ func TestSpawn_TmuxFails(t *testing.T) {
 	// All tmux attempts fail: NewWindow (default err) -> NewSessionWithWindow -> NewWindow retry
 	runner.newSessionWithWindowErr = errors.New("tmux exploded")
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for tmux failure")
 	}
@@ -400,7 +400,7 @@ func TestSpawn_TmuxFails(t *testing.T) {
 func TestSpawn_UnsupportedType(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "tester", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "tester", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
@@ -412,7 +412,7 @@ func TestSpawn_UnsupportedType(t *testing.T) {
 func TestSpawn_InvalidType(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "foo", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "foo", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for invalid type")
 	}
@@ -424,7 +424,7 @@ func TestSpawn_InvalidType(t *testing.T) {
 func TestSpawn_ResearcherType_HappyPath(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries", "feature/research")
+	_, err := runSpawn(deps, "engineering", "researcher", "investigate auth libraries", "feature/research")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -447,7 +447,7 @@ func TestSpawn_ResearcherType_HappyPath(t *testing.T) {
 func TestSpawn_ManagerType_HappyPath(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "manager", "coordinate feature work", "feature/manage")
+	_, err := runSpawn(deps, "engineering", "manager", "coordinate feature work", "feature/manage")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -482,7 +482,7 @@ func TestSpawn_ResearcherInSupportedTypes(t *testing.T) {
 func TestSpawn_InvalidFamily(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "foo", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "foo", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for invalid family")
 	}
@@ -497,7 +497,7 @@ func TestSpawn_InvalidFamily(t *testing.T) {
 func TestSpawn_ShellCmd_ContainsSprawlAgentLoop(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "build login page", "feature/login")
+	_, err := runSpawn(deps, "engineering", "engineer", "build login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,11 +541,11 @@ func TestSpawnAgentCmd_Registered(t *testing.T) {
 // runSpawn propagates it.
 func TestSpawn_FindSprawlFails(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
-	deps.findSprawl = func() (string, error) {
+	deps.FindSprawl = func() (string, error) {
 		return "", errors.New("sprawl binary not found")
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when findSprawl fails")
 	}
@@ -564,7 +564,7 @@ func TestSpawn_FindSprawlFails(t *testing.T) {
 func TestSpawn_WritesInitialPromptFile(t *testing.T) {
 	deps, _, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "implement the login page", "feature/login")
+	_, err := runSpawn(deps, "engineering", "engineer", "implement the login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -586,7 +586,7 @@ func TestSpawn_WritesInitialPromptFile(t *testing.T) {
 func TestSpawn_AgentPromptContainsFileRef(t *testing.T) {
 	deps, _, _, tmpDir := newTestSpawnDeps(t)
 
-	err := runSpawn(deps, "engineering", "engineer", "implement the login page", "feature/login")
+	_, err := runSpawn(deps, "engineering", "engineer", "implement the login page", "feature/login")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -643,15 +643,15 @@ func TestSpawn_BranchFlagRequired(t *testing.T) {
 
 func TestSpawn_SprawlBinPropagated(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
-	originalGetenv := deps.getenv
-	deps.getenv = func(key string) string {
+	originalGetenv := deps.Getenv
+	deps.Getenv = func(key string) string {
 		if key == "SPRAWL_BIN" {
 			return "/custom/sprawl"
 		}
 		return originalGetenv(key)
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestSpawn_SprawlBinNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	// Default getenv returns "" for SPRAWL_BIN
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -679,7 +679,7 @@ func TestSpawn_SprawlBinNotPropagatedWhenUnset(t *testing.T) {
 
 func TestSpawn_EmptyBranch(t *testing.T) {
 	deps, _, _, _ := newTestSpawnDeps(t)
-	err := runSpawn(deps, "engineering", "engineer", "task", "")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "")
 	if err == nil {
 		t.Fatal("expected error for empty branch")
 	}
@@ -690,15 +690,15 @@ func TestSpawn_EmptyBranch(t *testing.T) {
 
 func TestSpawn_SprawlTestModePropagated(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
-	originalGetenv := deps.getenv
-	deps.getenv = func(key string) string {
+	originalGetenv := deps.Getenv
+	deps.Getenv = func(key string) string {
 		if key == "SPRAWL_TEST_MODE" {
 			return "1"
 		}
 		return originalGetenv(key)
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("runSpawn error: %v", err)
 	}
@@ -713,7 +713,7 @@ func TestSpawn_SprawlTestModeNotPropagatedWhenUnset(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 	// Default getenv returns "" for SPRAWL_TEST_MODE
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("runSpawn error: %v", err)
 	}
@@ -730,7 +730,7 @@ func TestSpawn_CrossTypeIsolation(t *testing.T) {
 	deps, runner, _, tmpDir := newTestSpawnDeps(t)
 
 	// Spawn an engineer (NewWindow fails, falls back to NewSessionWithWindow)
-	err := runSpawn(deps, "engineering", "engineer", "build feature", "feature/eng")
+	_, err := runSpawn(deps, "engineering", "engineer", "build feature", "feature/eng")
 	if err != nil {
 		t.Fatalf("engineer spawn: %v", err)
 	}
@@ -741,7 +741,7 @@ func TestSpawn_CrossTypeIsolation(t *testing.T) {
 	runner.newSessionWithWindowCalled = false
 
 	// Spawn a researcher
-	err = runSpawn(deps, "engineering", "researcher", "investigate auth", "feature/research")
+	_, err = runSpawn(deps, "engineering", "researcher", "investigate auth", "feature/research")
 	if err != nil {
 		t.Fatalf("researcher spawn: %v", err)
 	}
@@ -751,7 +751,7 @@ func TestSpawn_CrossTypeIsolation(t *testing.T) {
 	runner.newWindowCalled = false
 
 	// Spawn a manager
-	err = runSpawn(deps, "engineering", "manager", "coordinate work", "feature/manage")
+	_, err = runSpawn(deps, "engineering", "manager", "coordinate work", "feature/manage")
 	if err != nil {
 		t.Fatalf("manager spawn: %v", err)
 	}
@@ -792,7 +792,7 @@ func TestSpawn_ResearcherPoolExhausted_UsesFallback(t *testing.T) {
 		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
-	err := runSpawn(deps, "engineering", "researcher", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "researcher", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
@@ -811,7 +811,7 @@ func TestSpawn_ManagerPoolExhausted_UsesFallback(t *testing.T) {
 		os.WriteFile(filepath.Join(agentsDir, name+".json"), []byte("{}"), 0o644)
 	}
 
-	err := runSpawn(deps, "engineering", "manager", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "manager", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v (should fall back to numeric names)", err)
 	}
@@ -829,7 +829,7 @@ func TestSpawn_TmuxNewWindow_FallsBackToNewSession(t *testing.T) {
 	// NewWindow fails on first call (no session yet), succeeds after
 	runner.newWindowErrs = []error{errors.New("session not found")}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -859,7 +859,7 @@ func TestSpawn_TmuxBothPathsFail_RetryNewWindowSucceeds(t *testing.T) {
 	runner.newWindowErrs = []error{errors.New("session not found"), nil}
 	runner.newSessionWithWindowErr = errors.New("duplicate session")
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -891,7 +891,7 @@ func TestSpawn_TmuxAllAttemptsExhausted_ReturnsError(t *testing.T) {
 	}
 	runner.newSessionWithWindowErr = errors.New("duplicate session")
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when all tmux attempts fail")
 	}
@@ -911,7 +911,7 @@ func TestSpawn_SpawnLockAcquiredAndReleased(t *testing.T) {
 
 	acquireCount := 0
 	releaseCount := 0
-	deps.newSpawnLock = func(lockPath string) (func() error, func() error) {
+	deps.NewSpawnLock = func(lockPath string) (func() error, func() error) {
 		return func() error {
 				acquireCount++
 				return nil
@@ -921,7 +921,7 @@ func TestSpawn_SpawnLockAcquiredAndReleased(t *testing.T) {
 			}
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -942,7 +942,7 @@ func TestSpawn_SpawnLockReleasedOnError(t *testing.T) {
 
 	acquireCount := 0
 	releaseCount := 0
-	deps.newSpawnLock = func(lockPath string) (func() error, func() error) {
+	deps.NewSpawnLock = func(lockPath string) (func() error, func() error) {
 		return func() error {
 				acquireCount++
 				return nil
@@ -952,7 +952,7 @@ func TestSpawn_SpawnLockReleasedOnError(t *testing.T) {
 			}
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error for worktree failure")
 	}
@@ -970,7 +970,7 @@ func TestSpawn_SpawnLockReleasedOnError(t *testing.T) {
 func TestSpawn_SpawnLockAcquireFailure(t *testing.T) {
 	deps, runner, _, _ := newTestSpawnDeps(t)
 
-	deps.newSpawnLock = func(lockPath string) (func() error, func() error) {
+	deps.NewSpawnLock = func(lockPath string) (func() error, func() error) {
 		return func() error {
 				return errors.New("lock held by another process")
 			}, func() error {
@@ -978,7 +978,7 @@ func TestSpawn_SpawnLockAcquireFailure(t *testing.T) {
 			}
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when lock acquisition fails")
 	}
@@ -1000,14 +1000,14 @@ func TestSpawn_SetupScript_Runs(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Set("worktree.setup", setupScript)
 
-	deps.loadConfig = func(string) (*config.Config, error) {
+	deps.LoadConfig = func(string) (*config.Config, error) {
 		return cfg, nil
 	}
 
 	var scriptCalled bool
 	var gotScript, gotWorkDir string
 	var gotEnv map[string]string
-	deps.runScript = func(script, workDir string, env map[string]string) ([]byte, error) {
+	deps.RunScript = func(script, workDir string, env map[string]string) ([]byte, error) {
 		scriptCalled = true
 		gotScript = script
 		gotWorkDir = workDir
@@ -1015,7 +1015,7 @@ func TestSpawn_SetupScript_Runs(t *testing.T) {
 		return []byte("ok"), nil
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1047,20 +1047,20 @@ func TestSpawn_SetupScript_Failure_CleansUpWorktree(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Set("worktree.setup", "npm install")
 
-	deps.loadConfig = func(string) (*config.Config, error) {
+	deps.LoadConfig = func(string) (*config.Config, error) {
 		return cfg, nil
 	}
-	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+	deps.RunScript = func(string, string, map[string]string) ([]byte, error) {
 		return []byte("ERR"), errors.New("script failed")
 	}
 
 	var worktreeRemoved bool
-	deps.worktreeRemove = func(repoRoot, worktreePath string, force bool) error {
+	deps.WorktreeRemove = func(repoRoot, worktreePath string, force bool) error {
 		worktreeRemoved = true
 		return nil
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when setup script fails")
 	}
@@ -1080,12 +1080,12 @@ func TestSpawn_SetupScript_NotConfigured_Skipped(t *testing.T) {
 
 	// Default empty config (no worktree.setup)
 	var scriptCalled bool
-	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+	deps.RunScript = func(string, string, map[string]string) ([]byte, error) {
 		scriptCalled = true
 		return nil, nil
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1105,7 +1105,7 @@ func TestSpawn_SourcesTmuxConfigWhenExists(t *testing.T) {
 		t.Fatalf("writing tmux.conf: %v", err)
 	}
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1123,7 +1123,7 @@ func TestSpawn_SkipsSourceFileWhenNoConfig(t *testing.T) {
 
 	// Don't create tmux.conf — simulate init not having been run yet
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1149,7 +1149,7 @@ func TestSpawn_StateFileExistsBeforeTmux(t *testing.T) {
 	runner.onNewWindow = checkState
 	runner.onNewSessionWithWindow = checkState
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1171,7 +1171,7 @@ func TestSpawn_TmuxFailure_CleansUpStateFile(t *testing.T) {
 	}
 	runner.newSessionWithWindowErr = errors.New("session creation failed")
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when all tmux attempts fail")
 	}
@@ -1196,7 +1196,7 @@ func TestSpawn_TmuxFailure_CleansUpPromptFile(t *testing.T) {
 	}
 	runner.newSessionWithWindowErr = errors.New("session creation failed")
 
-	err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
 	if err == nil {
 		t.Fatal("expected error when all tmux attempts fail")
 	}

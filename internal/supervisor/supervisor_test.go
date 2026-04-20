@@ -12,10 +12,13 @@ func newTestSupervisor(t *testing.T) (*Real, string) {
 	t.Helper()
 	tmpDir := t.TempDir()
 
-	sup := NewReal(Config{
+	sup, err := NewReal(Config{
 		SprawlRoot: tmpDir,
 		CallerName: "weave",
 	})
+	if err != nil {
+		t.Fatalf("NewReal: %v", err)
+	}
 
 	return sup, tmpDir
 }

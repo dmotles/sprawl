@@ -25,47 +25,47 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, *retireMockRunner, string) {
 	runner := &retireMockRunner{}
 
 	deps := &retireDeps{
-		tmuxRunner: runner,
-		getenv: func(key string) string {
+		TmuxRunner: runner,
+		Getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
 				return tmpDir
 			}
 			return ""
 		},
-		writeFile:  func(path string, data []byte, perm os.FileMode) error { return nil },
-		removeFile: func(path string) error { return nil },
-		sleepFunc:  func(d time.Duration) {},
-		worktreeRemove: func(repoRoot, worktreePath string, force bool) error {
+		WriteFile:  func(path string, data []byte, perm os.FileMode) error { return nil },
+		RemoveFile: func(path string) error { return nil },
+		SleepFunc:  func(d time.Duration) {},
+		WorktreeRemove: func(repoRoot, worktreePath string, force bool) error {
 			return nil
 		},
-		gitStatus: func(worktreePath string) (string, error) {
+		GitStatus: func(worktreePath string) (string, error) {
 			return "", nil // clean
 		},
-		removeAll:       func(path string) error { return nil },
-		gitBranchDelete: func(repoRoot, branchName string) error { return nil },
-		gitBranchIsMerged: func(repoRoot, branchName string) (bool, error) {
+		RemoveAll:       func(path string) error { return nil },
+		GitBranchDelete: func(repoRoot, branchName string) error { return nil },
+		GitBranchIsMerged: func(repoRoot, branchName string) (bool, error) {
 			return false, nil
 		},
-		gitBranchSafeDelete: func(repoRoot, branchName string) error {
+		GitBranchSafeDelete: func(repoRoot, branchName string) error {
 			return nil
 		},
-		doMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
+		DoMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
 			return &merge.Result{}, nil
 		},
-		newMergeDeps: func() *merge.Deps {
+		NewMergeDeps: func() *merge.Deps {
 			return &merge.Deps{}
 		},
-		loadAgent: state.LoadAgent,
-		currentBranch: func(repoRoot string) (string, error) {
+		LoadAgent: state.LoadAgent,
+		CurrentBranch: func(repoRoot string) (string, error) {
 			return "main", nil
 		},
-		gitUnmergedCommits: func(repoRoot, branchName string) ([]string, error) {
+		GitUnmergedCommits: func(repoRoot, branchName string) ([]string, error) {
 			return nil, nil
 		},
-		loadConfig: func(sprawlRoot string) (*config.Config, error) {
+		LoadConfig: func(sprawlRoot string) (*config.Config, error) {
 			return &config.Config{}, nil
 		},
-		runScript: func(string, string, map[string]string) ([]byte, error) { return nil, nil },
+		RunScript: func(string, string, map[string]string) ([]byte, error) { return nil, nil },
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
@@ -126,7 +126,7 @@ func TestRetire_AgentNotFound(t *testing.T) {
 
 func TestRetire_MissingSprawlRoot(t *testing.T) {
 	deps, _, _ := newTestRetireDeps(t)
-	deps.getenv = func(key string) string { return "" }
+	deps.Getenv = func(key string) string { return "" }
 
 	err := runRetire(deps, "alice", false, false, false, false, false)
 	if err == nil {
@@ -139,7 +139,7 @@ func TestRetire_MissingSprawlRoot(t *testing.T) {
 
 func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
-	deps.gitStatus = func(worktreePath string) (string, error) {
+	deps.GitStatus = func(worktreePath string) (string, error) {
 		return "M some/file.go", nil // dirty
 	}
 
@@ -173,12 +173,12 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 
 func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
-	deps.gitStatus = func(worktreePath string) (string, error) {
+	deps.GitStatus = func(worktreePath string) (string, error) {
 		return "M some/file.go", nil // dirty
 	}
 
 	var removedForce bool
-	deps.worktreeRemove = func(repoRoot, worktreePath string, force bool) error {
+	deps.WorktreeRemove = func(repoRoot, worktreePath string, force bool) error {
 		removedForce = force
 		return nil
 	}
@@ -370,7 +370,7 @@ func TestRetire_EmptyWorktree_SkipsRemoval(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
 	worktreeRemoveCalled := false
-	deps.worktreeRemove = func(repoRoot, worktreePath string, force bool) error {
+	deps.WorktreeRemove = func(repoRoot, worktreePath string, force bool) error {
 		worktreeRemoveCalled = true
 		return nil
 	}
@@ -398,7 +398,7 @@ func TestRetire_EmptyWorktree_SkipsRemoval(t *testing.T) {
 
 func TestRetire_WorktreeRemoveFailure_WarnsButContinues(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
-	deps.worktreeRemove = func(repoRoot, worktreePath string, force bool) error {
+	deps.WorktreeRemove = func(repoRoot, worktreePath string, force bool) error {
 		return os.ErrNotExist
 	}
 
@@ -430,7 +430,7 @@ func TestRetire_ForceKillsProcess(t *testing.T) {
 
 	// Track writeFile calls: no sentinel should be written with force.
 	var writtenPaths []string
-	deps.writeFile = func(path string, data []byte, perm os.FileMode) error {
+	deps.WriteFile = func(path string, data []byte, perm os.FileMode) error {
 		writtenPaths = append(writtenPaths, path)
 		return nil
 	}
@@ -471,7 +471,7 @@ func TestRetire_CascadeDirtyChild_Aborts(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
 	statusCalls := 0
-	deps.gitStatus = func(worktreePath string) (string, error) {
+	deps.GitStatus = func(worktreePath string) (string, error) {
 		statusCalls++
 		if strings.Contains(worktreePath, "bob") {
 			return "M dirty-file.go", nil
@@ -512,7 +512,7 @@ func TestRetire_Subagent_SkipsWorktreeCleanup(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
 	worktreeRemoveCalled := false
-	deps.worktreeRemove = func(repoRoot, worktreePath string, force bool) error {
+	deps.WorktreeRemove = func(repoRoot, worktreePath string, force bool) error {
 		worktreeRemoveCalled = true
 		return nil
 	}
@@ -570,7 +570,7 @@ func TestRetire_CleansUpLogsDirectory(t *testing.T) {
 
 	// Track what path removeAll is called with.
 	var removedPath string
-	deps.removeAll = func(path string) error {
+	deps.RemoveAll = func(path string) error {
 		removedPath = path
 		return os.RemoveAll(path)
 	}
@@ -595,7 +595,7 @@ func TestRetire_Abandon_DeletesBranch(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
 	var deletedBranch string
-	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchDelete = func(repoRoot, branchName string) error {
 		deletedBranch = branchName
 		return nil
 	}
@@ -629,7 +629,7 @@ func TestRetire_Abandon_DeletesBranch(t *testing.T) {
 func TestRetire_Abandon_BranchDeleteFails_WarnsButSucceeds(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchDelete = func(repoRoot, branchName string) error {
 		return fmt.Errorf("branch not found")
 	}
 
@@ -659,7 +659,7 @@ func TestRetire_NoAbandon_PreservesBranch(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
 	branchDeleteCalled := false
-	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchDelete = func(repoRoot, branchName string) error {
 		branchDeleteCalled = true
 		return nil
 	}
@@ -761,12 +761,12 @@ func TestRealGitBranchDelete_NonexistentBranch(t *testing.T) {
 func TestRetire_Default_MergedBranch_DeletesBranch(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.gitBranchIsMerged = func(repoRoot, branchName string) (bool, error) {
+	deps.GitBranchIsMerged = func(repoRoot, branchName string) (bool, error) {
 		return true, nil
 	}
 
 	var safeDeletedBranch string
-	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchSafeDelete = func(repoRoot, branchName string) error {
 		safeDeletedBranch = branchName
 		return nil
 	}
@@ -794,12 +794,12 @@ func TestRetire_Default_MergedBranch_DeletesBranch(t *testing.T) {
 func TestRetire_Default_UnmergedBranch_PreservesBranch(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.gitBranchIsMerged = func(repoRoot, branchName string) (bool, error) {
+	deps.GitBranchIsMerged = func(repoRoot, branchName string) (bool, error) {
 		return false, nil
 	}
 
 	safeDeleteCalled := false
-	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchSafeDelete = func(repoRoot, branchName string) error {
 		safeDeleteCalled = true
 		return nil
 	}
@@ -833,7 +833,7 @@ func TestRetire_Default_UnmergedBranch_PreservesBranch(t *testing.T) {
 func TestRetire_MergeFlag_HappyPath(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -843,18 +843,18 @@ func TestRetire_MergeFlag_HappyPath(t *testing.T) {
 		return ""
 	}
 
-	deps.currentBranch = func(repoRoot string) (string, error) {
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
 		return "main", nil
 	}
 
 	var doMergeCalled bool
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		doMergeCalled = true
 		return &merge.Result{CommitHash: "abc123"}, nil
 	}
 
 	var safeDeletedBranch string
-	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchSafeDelete = func(repoRoot, branchName string) error {
 		safeDeletedBranch = branchName
 		return nil
 	}
@@ -914,7 +914,7 @@ func TestRetire_MergeAndAbandon_MutualExclusion(t *testing.T) {
 func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -924,7 +924,7 @@ func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
 		return ""
 	}
 
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		return nil, fmt.Errorf("merge conflict: cannot rebase")
 	}
 
@@ -959,7 +959,7 @@ func TestRetire_MergeFlag_MergeFails_AbortsRetire(t *testing.T) {
 func TestRetire_ForcePlusMerge(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -969,18 +969,18 @@ func TestRetire_ForcePlusMerge(t *testing.T) {
 		return ""
 	}
 
-	deps.currentBranch = func(repoRoot string) (string, error) {
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
 		return "main", nil
 	}
 
 	var doMergeCalled bool
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		doMergeCalled = true
 		return &merge.Result{CommitHash: "def456"}, nil
 	}
 
 	var safeDeletedBranch string
-	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchSafeDelete = func(repoRoot, branchName string) error {
 		safeDeletedBranch = branchName
 		return nil
 	}
@@ -1018,7 +1018,7 @@ func TestRetire_ForcePlusMerge(t *testing.T) {
 func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -1028,12 +1028,12 @@ func TestRetire_CascadePlusMerge_ChildrenNotMerged(t *testing.T) {
 		return ""
 	}
 
-	deps.currentBranch = func(repoRoot string) (string, error) {
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
 		return "main", nil
 	}
 
 	var mergedAgents []string
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		mergedAgents = append(mergedAgents, cfg.AgentName)
 		return &merge.Result{CommitHash: "abc123"}, nil
 	}
@@ -1086,7 +1086,7 @@ func TestRetire_CascadePlusAbandon_PropagatesAbandon(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
 	var deletedBranches []string
-	deps.gitBranchDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchDelete = func(repoRoot, branchName string) error {
 		deletedBranches = append(deletedBranches, branchName)
 		return nil
 	}
@@ -1139,7 +1139,7 @@ func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
 	var removedFiles []string
-	deps.removeFile = func(path string) error {
+	deps.RemoveFile = func(path string) error {
 		removedFiles = append(removedFiles, path)
 		return nil
 	}
@@ -1185,7 +1185,7 @@ func TestRetire_CleansUpLockAndPokeFiles(t *testing.T) {
 func TestRetire_Abandon_UnmergedCommits_BlocksWithoutYes(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+	deps.GitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
 		return []string{"abc1234 Add initial implementation", "def5678 Fix edge case"}, nil
 	}
 
@@ -1223,7 +1223,7 @@ func TestRetire_Abandon_UnmergedCommits_BlocksWithoutYes(t *testing.T) {
 func TestRetire_Abandon_UnmergedCommits_ProceedsWithYes(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+	deps.GitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
 		return []string{"abc1234 Add initial implementation"}, nil
 	}
 
@@ -1305,7 +1305,7 @@ func TestRetire_Abandon_LiveProcess_ProceedsWithYes(t *testing.T) {
 func TestRetire_Abandon_BothGuards_BlocksWithoutYes(t *testing.T) {
 	deps, runner, tmpDir := newTestRetireDeps(t)
 
-	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+	deps.GitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
 		return []string{"abc1234 Some commit"}, nil
 	}
 	runner.pids = []int{12345}
@@ -1363,7 +1363,7 @@ func TestRetire_Abandon_NoGuards_ProceedsWithoutYes(t *testing.T) {
 func TestRetire_Abandon_Subagent_SkipsGuards(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+	deps.GitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
 		return []string{"abc1234 Some commit"}, nil
 	}
 
@@ -1393,7 +1393,7 @@ func TestRetire_Abandon_Subagent_SkipsGuards(t *testing.T) {
 func TestRetire_Abandon_Cascade_PropagatesYes(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.gitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
+	deps.GitUnmergedCommits = func(repoRoot, branchName string) ([]string, error) {
 		return []string{"abc1234 Some commit"}, nil
 	}
 
@@ -1434,7 +1434,7 @@ func TestRetire_Abandon_Cascade_PropagatesYes(t *testing.T) {
 func TestRetire_MergeFlag_PassesValidateCmdFromConfig(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -1444,21 +1444,21 @@ func TestRetire_MergeFlag_PassesValidateCmdFromConfig(t *testing.T) {
 		return ""
 	}
 
-	deps.currentBranch = func(repoRoot string) (string, error) {
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
 		return "main", nil
 	}
 
-	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+	deps.LoadConfig = func(sprawlRoot string) (*config.Config, error) {
 		return &config.Config{Validate: "make validate"}, nil
 	}
 
 	var capturedCfg *merge.Config
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
 		return &merge.Result{CommitHash: "abc123"}, nil
 	}
 
-	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchSafeDelete = func(repoRoot, branchName string) error {
 		return nil
 	}
 
@@ -1488,7 +1488,7 @@ func TestRetire_MergeFlag_PassesValidateCmdFromConfig(t *testing.T) {
 func TestRetire_MergeFlag_NoValidate_SkipsValidation(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -1498,21 +1498,21 @@ func TestRetire_MergeFlag_NoValidate_SkipsValidation(t *testing.T) {
 		return ""
 	}
 
-	deps.currentBranch = func(repoRoot string) (string, error) {
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
 		return "main", nil
 	}
 
-	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+	deps.LoadConfig = func(sprawlRoot string) (*config.Config, error) {
 		return &config.Config{Validate: "make validate"}, nil
 	}
 
 	var capturedCfg *merge.Config
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
 		return &merge.Result{CommitHash: "abc123"}, nil
 	}
 
-	deps.gitBranchSafeDelete = func(repoRoot, branchName string) error {
+	deps.GitBranchSafeDelete = func(repoRoot, branchName string) error {
 		return nil
 	}
 
@@ -1545,7 +1545,7 @@ func TestRetire_MergeFlag_NoValidate_SkipsValidation(t *testing.T) {
 func TestRetire_MergeFlag_ConfigLoadError(t *testing.T) {
 	deps, _, tmpDir := newTestRetireDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -1555,11 +1555,11 @@ func TestRetire_MergeFlag_ConfigLoadError(t *testing.T) {
 		return ""
 	}
 
-	deps.currentBranch = func(repoRoot string) (string, error) {
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
 		return "main", nil
 	}
 
-	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+	deps.LoadConfig = func(sprawlRoot string) (*config.Config, error) {
 		return nil, fmt.Errorf("permission denied reading config.yaml")
 	}
 
@@ -1600,14 +1600,14 @@ func TestRetire_TeardownScript_Runs(t *testing.T) {
 	teardownScript := "rm -rf node_modules"
 	cfg := &config.Config{}
 	cfg.Set("worktree.teardown", teardownScript)
-	deps.loadConfig = func(string) (*config.Config, error) {
+	deps.LoadConfig = func(string) (*config.Config, error) {
 		return cfg, nil
 	}
 
 	var scriptCalled bool
 	var gotScript, gotWorkDir string
 	var gotEnv map[string]string
-	deps.runScript = func(script, workDir string, env map[string]string) ([]byte, error) {
+	deps.RunScript = func(script, workDir string, env map[string]string) ([]byte, error) {
 		scriptCalled = true
 		gotScript = script
 		gotWorkDir = workDir
@@ -1656,10 +1656,10 @@ func TestRetire_TeardownScript_Failure_ContinuesRetirement(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Set("worktree.teardown", "exit 1")
-	deps.loadConfig = func(string) (*config.Config, error) {
+	deps.LoadConfig = func(string) (*config.Config, error) {
 		return cfg, nil
 	}
-	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+	deps.RunScript = func(string, string, map[string]string) ([]byte, error) {
 		return []byte("ERR"), errors.New("teardown failed")
 	}
 
@@ -1690,7 +1690,7 @@ func TestRetire_TeardownScript_NotConfigured_Skipped(t *testing.T) {
 	})
 
 	var scriptCalled bool
-	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+	deps.RunScript = func(string, string, map[string]string) ([]byte, error) {
 		scriptCalled = true
 		return nil, nil
 	}
@@ -1722,12 +1722,12 @@ func TestRetire_TeardownScript_SubagentSkipped(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Set("worktree.teardown", "cleanup")
-	deps.loadConfig = func(string) (*config.Config, error) {
+	deps.LoadConfig = func(string) (*config.Config, error) {
 		return cfg, nil
 	}
 
 	var scriptCalled bool
-	deps.runScript = func(string, string, map[string]string) ([]byte, error) {
+	deps.RunScript = func(string, string, map[string]string) ([]byte, error) {
 		scriptCalled = true
 		return nil, nil
 	}

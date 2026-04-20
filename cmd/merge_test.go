@@ -18,7 +18,7 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 	tmpDir := t.TempDir()
 
 	deps := &mergeDeps{
-		getenv: func(key string) string {
+		Getenv: func(key string) string {
 			switch key {
 			case "SPRAWL_ROOT":
 				return tmpDir
@@ -27,19 +27,19 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 			}
 			return ""
 		},
-		loadAgent:     state.LoadAgent,
-		listAgents:    state.ListAgents,
-		gitStatus:     func(worktree string) (string, error) { return "", nil },
-		branchExists:  func(repoRoot, branchName string) bool { return true },
-		currentBranch: func(repoRoot string) (string, error) { return "main", nil },
-		loadConfig: func(sprawlRoot string) (*config.Config, error) {
+		LoadAgent:     state.LoadAgent,
+		ListAgents:    state.ListAgents,
+		GitStatus:     func(worktree string) (string, error) { return "", nil },
+		BranchExists:  func(repoRoot, branchName string) bool { return true },
+		CurrentBranch: func(repoRoot string) (string, error) { return "main", nil },
+		LoadConfig: func(sprawlRoot string) (*config.Config, error) {
 			return &config.Config{Validate: "make validate"}, nil
 		},
-		doMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
+		DoMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
 			return &merge.Result{CommitHash: "abc1234"}, nil
 		},
-		newMergeDeps: func() *merge.Deps { return &merge.Deps{} },
-		stderr:       io.Discard,
+		NewMergeDeps: func() *merge.Deps { return &merge.Deps{} },
+		Stderr:       io.Discard,
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
@@ -73,13 +73,13 @@ func TestMerge_HappyPath(t *testing.T) {
 	})
 
 	var mergeCalled bool
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		mergeCalled = true
 		return &merge.Result{CommitHash: "abc1234"}, nil
 	}
 
 	var stderr bytes.Buffer
-	deps.stderr = &stderr
+	deps.Stderr = &stderr
 
 	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
@@ -146,7 +146,7 @@ func TestMerge_SubagentRejected(t *testing.T) {
 func TestMerge_NotParent(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_ROOT":
 			return tmpDir
@@ -276,7 +276,7 @@ func TestMerge_BranchNotFound(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
-	deps.branchExists = func(repoRoot, branchName string) bool { return false }
+	deps.BranchExists = func(repoRoot, branchName string) bool { return false }
 
 	err := runMerge(deps, "target-agent", "", true, false)
 	if err == nil {
@@ -300,7 +300,7 @@ func TestMerge_CallerDirtyWorktree(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
-	deps.gitStatus = func(worktree string) (string, error) {
+	deps.GitStatus = func(worktree string) (string, error) {
 		if worktree == "/worktree/parent" {
 			return "M  some-file.go", nil
 		}
@@ -329,7 +329,7 @@ func TestMerge_AgentDirtyWorktree(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
-	deps.gitStatus = func(worktree string) (string, error) {
+	deps.GitStatus = func(worktree string) (string, error) {
 		if worktree == "/worktree/target" {
 			return "M  dirty-file.go", nil
 		}
@@ -348,7 +348,7 @@ func TestMerge_AgentDirtyWorktree(t *testing.T) {
 func TestMerge_MissingSprawlRoot(t *testing.T) {
 	deps, _ := newTestMergeDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		if key == "SPRAWL_AGENT_IDENTITY" {
 			return "parent-agent"
 		}
@@ -367,7 +367,7 @@ func TestMerge_MissingSprawlRoot(t *testing.T) {
 func TestMerge_MissingCallerIdentity(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
-	deps.getenv = func(key string) string {
+	deps.Getenv = func(key string) string {
 		if key == "SPRAWL_ROOT" {
 			return tmpDir
 		}
@@ -401,12 +401,12 @@ func TestMerge_NoOp(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		return &merge.Result{WasNoOp: true}, nil
 	}
 
 	var stderr bytes.Buffer
-	deps.stderr = &stderr
+	deps.Stderr = &stderr
 
 	err := runMerge(deps, "target-agent", "", true, false)
 	if err != nil {
@@ -432,7 +432,7 @@ func TestMerge_MergeError_Propagated(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		return nil, fmt.Errorf("rebase conflict in main.go")
 	}
 
@@ -460,7 +460,7 @@ func TestMerge_ConfigWiring(t *testing.T) {
 	})
 
 	var capturedCfg *merge.Config
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
 		return &merge.Result{CommitHash: "abc"}, nil
 	}
@@ -516,7 +516,7 @@ func TestMerge_DryRun_PassedToConfig(t *testing.T) {
 	})
 
 	var capturedCfg *merge.Config
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
 		return &merge.Result{}, nil
 	}
@@ -538,7 +538,7 @@ func TestMerge_SuccessOutput(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
 	var stderr bytes.Buffer
-	deps.stderr = &stderr
+	deps.Stderr = &stderr
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name: "parent-agent", Status: "active", Branch: "main",
@@ -551,7 +551,7 @@ func TestMerge_SuccessOutput(t *testing.T) {
 		LastReportMessage: "implement QUM-42 broadcast fix",
 	})
 
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		return &merge.Result{CommitHash: "a1b2c3d"}, nil
 	}
 
@@ -593,13 +593,13 @@ func TestMerge_ConfigValidateCmd_PassedThrough(t *testing.T) {
 	})
 
 	var configLoadedFrom string
-	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+	deps.LoadConfig = func(sprawlRoot string) (*config.Config, error) {
 		configLoadedFrom = sprawlRoot
 		return &config.Config{Validate: "go test ./..."}, nil
 	}
 
 	var capturedCfg *merge.Config
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
 		return &merge.Result{CommitHash: "abc1234"}, nil
 	}
@@ -633,12 +633,12 @@ func TestMerge_NoConfig_SkipsValidation(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
-	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+	deps.LoadConfig = func(sprawlRoot string) (*config.Config, error) {
 		return &config.Config{}, nil
 	}
 
 	var capturedCfg *merge.Config
-	deps.doMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
 		capturedCfg = cfg
 		return &merge.Result{CommitHash: "abc1234"}, nil
 	}
@@ -669,7 +669,7 @@ func TestMerge_ConfigLoadError(t *testing.T) {
 		Type: "engineer", Family: "engineering",
 	})
 
-	deps.loadConfig = func(sprawlRoot string) (*config.Config, error) {
+	deps.LoadConfig = func(sprawlRoot string) (*config.Config, error) {
 		return nil, fmt.Errorf("permission denied reading config.yaml")
 	}
 

@@ -5,20 +5,15 @@ import (
 	"os"
 	"time"
 
-	"github.com/dmotles/sprawl/internal/agent"
-	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
-// killDeps holds the dependencies for the kill command, enabling testability.
-type killDeps struct {
-	tmuxRunner tmux.Runner
-	getenv     func(string) string
-	writeFile  func(string, []byte, os.FileMode) error
-	removeFile func(string) error
-	sleepFunc  func(time.Duration)
-}
+// Aliases so existing tests continue to compile.
+type killDeps = agentops.KillDeps
+
+var runKill = agentops.Kill
 
 var defaultKillDeps *killDeps
 
@@ -54,51 +49,10 @@ func resolveKillDeps() (*killDeps, error) {
 	}
 
 	return &killDeps{
-		tmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
-		getenv:     os.Getenv,
-		writeFile:  os.WriteFile,
-		removeFile: os.Remove,
-		sleepFunc:  time.Sleep,
+		TmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
+		Getenv:     os.Getenv,
+		WriteFile:  os.WriteFile,
+		RemoveFile: os.Remove,
+		SleepFunc:  time.Sleep,
 	}, nil
-}
-
-func runKill(deps *killDeps, agentName string, force bool) error {
-	if err := agent.ValidateName(agentName); err != nil {
-		return err
-	}
-
-	sprawlRoot := deps.getenv("SPRAWL_ROOT")
-	if sprawlRoot == "" {
-		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
-	}
-
-	// Load agent state
-	agentState, err := state.LoadAgent(sprawlRoot, agentName)
-	if err != nil {
-		return fmt.Errorf("agent %q not found: %w", agentName, err)
-	}
-
-	// Idempotent: already killed is a no-op with warning
-	if agentState.Status == "killed" {
-		fmt.Fprintf(os.Stderr, "Warning: agent %q is already killed\n", agentName)
-		return nil
-	}
-
-	// Graceful shutdown (or force kill)
-	sd := &agent.ShutdownDeps{
-		TmuxRunner: deps.tmuxRunner,
-		WriteFile:  deps.writeFile,
-		RemoveFile: deps.removeFile,
-		SleepFunc:  deps.sleepFunc,
-	}
-	agent.GracefulShutdown(sd, sprawlRoot, agentState, force)
-
-	// Update status to killed
-	agentState.Status = "killed"
-	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
-		return fmt.Errorf("updating agent state: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "Killed agent %q\n", agentName)
-	return nil
 }

@@ -128,10 +128,15 @@ func resolveEnterDeps() *enterDeps {
 			return rootinit.FinalizeHandoff(ctx, rootinit.DefaultDeps(), sprawlRoot, stdout)
 		},
 		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
-			return supervisor.NewReal(supervisor.Config{
+			sup, err := supervisor.NewReal(supervisor.Config{
 				SprawlRoot: sprawlRoot,
 				CallerName: "enter",
 			})
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "[enter] supervisor unavailable: %v\n", err)
+				return nil
+			}
+			return sup
 		},
 	}
 }
@@ -269,10 +274,13 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 	}
 
 	// Create supervisor and MCP server
-	sup := supervisor.NewReal(supervisor.Config{
+	sup, err := supervisor.NewReal(supervisor.Config{
 		SprawlRoot: sprawlRoot,
 		CallerName: rootName,
 	})
+	if err != nil {
+		return nil, false, fmt.Errorf("creating supervisor: %w", err)
+	}
 	mcpServer := sprawlmcp.New(sup)
 	mcpBridge := host.NewMCPBridge()
 	mcpBridge.Register("sprawl-ops", mcpServer)
