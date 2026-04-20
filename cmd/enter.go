@@ -25,11 +25,60 @@ import (
 
 // enterDeps holds dependencies for the enter command, enabling testability.
 type enterDeps struct {
-	getenv        func(string) string
-	getwd         func() (string, error)
-	runProgram    func(tea.Model) error
-	newSession    func(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error)
-	newSupervisor func(sprawlRoot string) supervisor.Supervisor
+	getenv          func(string) string
+	getwd           func() (string, error)
+	runProgram      func(tea.Model) error
+	newSession      func(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error)
+	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
+	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer) error
+}
+
+// restartState holds the rolling state tracked across restarts: when the last
+// subprocess was started and whether it was launched via --resume. Used by the
+// restart function to decide whether a resume attempt died fast enough to
+// warrant a force-fresh fallback.
+type restartState struct {
+	lastStartedAt time.Time
+	lastWasResume bool
+}
+
+// makeRestartFunc builds the closure that the TUI calls when it wants a fresh
+// subprocess (after a crash, EOF, or /handoff).
+//
+// state is mutated in-place on each call; pass the same pointer across the
+// lifetime of runEnter. bridgeOut, if non-nil, is updated on success so
+// runEnter closes the latest bridge on shutdown.
+func makeRestartFunc(
+	newSession func(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error),
+	finalize func(ctx context.Context, sprawlRoot string, stdout io.Writer) error,
+	sprawlRoot string,
+	state *restartState,
+	bridgeOut **tui.Bridge,
+	logW io.Writer,
+) func() (*tui.Bridge, error) {
+	return func() (*tui.Bridge, error) {
+		forceFresh := state.lastWasResume && time.Since(state.lastStartedAt) < resumeFailureWindow
+		if forceFresh {
+			fmt.Fprintf(logW, "[enter] resume died fast — falling back to fresh session\n")
+		}
+		// Phase D: run post-session housekeeping (consolidation when a handoff
+		// signal is present, otherwise a noop). Errors are logged and do not
+		// block the restart — matches cmd/rootloop.go's tmux-mode behavior.
+		if finalize != nil {
+			if err := finalize(context.Background(), sprawlRoot, logW); err != nil {
+				fmt.Fprintf(logW, "[enter] finalize handoff failed: %v\n", err)
+			}
+		}
+		newBridge, wasResume, err := newSession(sprawlRoot, forceFresh)
+		if err == nil {
+			if bridgeOut != nil {
+				*bridgeOut = newBridge
+			}
+			state.lastStartedAt = time.Now()
+			state.lastWasResume = wasResume
+		}
+		return newBridge, err
+	}
 }
 
 var defaultEnterDeps *enterDeps
@@ -74,6 +123,9 @@ func resolveEnterDeps() *enterDeps {
 			return err
 		},
 		newSession: defaultNewSession,
+		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer) error {
+			return rootinit.FinalizeHandoff(ctx, rootinit.DefaultDeps(), sprawlRoot, stdout)
+		},
 		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
 			return supervisor.NewReal(supervisor.Config{
 				SprawlRoot: sprawlRoot,
@@ -290,8 +342,7 @@ func runEnter(deps *enterDeps) error {
 	// Track last session's start time + whether it was a resume attempt so
 	// that the TUI's restartFunc can fall back to a fresh session if a
 	// resume attempt died within resumeFailureWindow.
-	var lastStartedAt time.Time
-	var lastWasResume bool
+	state := &restartState{}
 
 	var bridge *tui.Bridge
 	if deps.newSession != nil {
@@ -301,8 +352,8 @@ func runEnter(deps *enterDeps) error {
 		if err != nil {
 			return fmt.Errorf("creating session: %w", err)
 		}
-		lastStartedAt = time.Now()
-		lastWasResume = wasResume
+		state.lastStartedAt = time.Now()
+		state.lastWasResume = wasResume
 	}
 
 	// Create a supervisor for the tree panel to poll agent status.
@@ -312,22 +363,21 @@ func runEnter(deps *enterDeps) error {
 	}
 	var restartFunc func() (*tui.Bridge, error)
 	if deps.newSession != nil {
-		restartFunc = func() (*tui.Bridge, error) {
-			forceFresh := lastWasResume && time.Since(lastStartedAt) < resumeFailureWindow
-			if forceFresh {
-				fmt.Fprintf(os.Stderr, "[enter] resume died fast — falling back to fresh session\n")
-			}
-			newBridge, wasResume, err := deps.newSession(sprawlRoot, forceFresh)
-			if err == nil {
-				bridge = newBridge // update so runEnter closes the latest bridge
-				lastStartedAt = time.Now()
-				lastWasResume = wasResume
-			}
-			return newBridge, err
-		}
+		restartFunc = makeRestartFunc(deps.newSession, deps.finalizeHandoff, sprawlRoot, state, &bridge, os.Stderr)
 	}
 	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
 	err = deps.runProgram(model)
+
+	// Phase D on clean shutdown: if the TUI exited normally (e.g. the user
+	// quit via the Ctrl-C confirm dialog after `/handoff`), run the
+	// consolidation pipeline one last time so the final session's handoff
+	// signal (if any) is consumed. Skipped on TUI crash — we don't want to
+	// consolidate off the back of a broken transcript.
+	if err == nil && deps.finalizeHandoff != nil {
+		if finErr := deps.finalizeHandoff(context.Background(), sprawlRoot, os.Stderr); finErr != nil {
+			fmt.Fprintf(os.Stderr, "[enter] finalize handoff on shutdown failed: %v\n", finErr)
+		}
+	}
 
 	// Graceful shutdown: stop all agents with a timeout.
 	if sup != nil {

@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -61,6 +63,13 @@ type AppModel struct {
 	showError   bool
 	errorDialog ErrorDialogModel
 	restartFunc func() (*Bridge, error)
+
+	// quitting is set when the user confirms shutdown (Ctrl-C confirm
+	// dialog). It guards against a late RestartSessionMsg triggered from an
+	// EOF that arrived just before the user confirmed quit; without the
+	// guard that restart would spawn a fresh Claude subprocess the user is
+	// about to abandon.
+	quitting bool
 }
 
 // NewAppModel constructs the root model with all sub-models.
@@ -233,6 +242,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SessionErrorMsg:
+		// Transport EOF is the normal end-of-session signal (clean exit or
+		// /handoff). Auto-restart via Phase D rather than showing the crash
+		// dialog — the user experience matches tmux weave's bash-loop
+		// restart, but in-process.
+		if errors.Is(msg.Err, io.EOF) {
+			reason := "session ended"
+			return m, tea.Batch(
+				sendMsgCmd(SessionRestartingMsg{Reason: reason}),
+				sendMsgCmd(RestartSessionMsg{}),
+			)
+		}
 		if m.turnState == TurnThinking || m.turnState == TurnStreaming {
 			m.errorDialog = NewErrorDialog(&m.theme, msg.Err)
 			m.errorDialog.SetSize(m.width, m.height)
@@ -246,7 +266,23 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetDisabled(false)
 		return m, nil
 
+	case SessionRestartingMsg:
+		reason := msg.Reason
+		if reason == "" {
+			reason = "session ended"
+		}
+		m.viewport.AppendStatus(fmt.Sprintf("Session restarting (%s)...", reason))
+		m.setTurnState(TurnIdle)
+		m.input.SetDisabled(true)
+		return m, nil
+
 	case RestartSessionMsg:
+		// Ctrl-C confirm may have fired between the EOF that scheduled this
+		// restart and its delivery. If the user already asked to quit, honor
+		// that — do NOT spawn a new subprocess.
+		if m.quitting {
+			return m, tea.Quit
+		}
 		m.showError = false
 		if m.bridge != nil {
 			_ = m.bridge.Close()
@@ -260,7 +296,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.bridge = newBridge
-			m.viewport.AppendStatus("Session restarting...")
 			m.setTurnState(TurnIdle)
 			m.input.SetDisabled(false)
 			return m, m.bridge.Initialize()
@@ -287,6 +322,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showConfirm = false
 		m.confirm.Hide()
 		if msg.Confirmed {
+			m.quitting = true
 			return m, tea.Quit
 		}
 		return m, nil
@@ -458,6 +494,11 @@ func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 		}
 		return AgentTreeMsg{Nodes: buildTreeNodes(agents, unread)}
 	}
+}
+
+// sendMsgCmd wraps a plain tea.Msg value as a tea.Cmd for use with tea.Batch.
+func sendMsgCmd(msg tea.Msg) tea.Cmd {
+	return func() tea.Msg { return msg }
 }
 
 func scheduleAgentTick(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {

@@ -161,7 +161,7 @@ func FinalizeHandoff(ctx context.Context, deps Deps) error
 
 Both should use the same code path.
 
-### Recommendation: TUI owns its restart loop; do **not** inherit the exit-code contract
+### Recommendation: TUI owns its restart loop; do **not** inherit the exit-code contract *(Implemented in Phase 4 — QUM-259.)*
 
 The tmux bash-loop exit-code contract (`0=restart, 1=retry, 42=shutdown`) is specific to a single-process lifecycle. In the TUI, the outer process (the `sprawl enter` Go process running Bubble Tea) is **long-lived**, and Claude is a child subprocess that gets rebuilt. That's a different topology.
 
@@ -211,11 +211,12 @@ Phased so tmux mode cannot break.
 - Inline `memory.BuildContextBlob` + `agent.BuildRootPrompt` at the TUI call site deleted — that work lives inside `rootinit.Prepare` now.
 - **Check:** `make validate` green; `scripts/smoke-test-memory.sh` 45/45; `/tui-testing` quick + full harness (known failures in tests 5/6/8 pre-date Phase 3); manual validation confirmed SYSTEM.md persisted to `.sprawl/agents/weave/SYSTEM.md`, last-session-id matches subprocess `--session-id`, resume path preserves prior id and skips SYSTEM.md rewrite.
 
-### Phase 4 — Wire TUI Phase D (handoff + restart)
+### Phase 4 — Wire TUI Phase D (handoff + restart) *(QUM-259, merged)*
 
-- Extend the TUI's session-end path: on transport EOF, run `rootinit.FinalizeHandoff`, then decide restart vs. exit.
-- Handoff from inside TUI now triggers consolidation + restart with fresh session ID and re-prepared prompt.
-- **Check:** invoke `/handoff` inside TUI weave, confirm consolidation runs, confirm new session starts with updated memory context, confirm persistent.md is updated.
+- `cmd/enter.go` now threads `finalizeHandoff` through `enterDeps` and `makeRestartFunc`; restart path calls `rootinit.FinalizeHandoff` before `rootinit.Prepare`. Clean-shutdown path (after `runProgram` returns nil) also calls FinalizeHandoff so a final `/handoff` before Ctrl-C quit consolidates.
+- `internal/tui/app.go` auto-routes `SessionErrorMsg{Err: io.EOF}` (including wrapped EOF) to a `tea.Batch(SessionRestartingMsg, RestartSessionMsg)` instead of the crash dialog. Non-EOF errors during streaming/thinking keep the dialog path (`r` to retry). An `AppModel.quitting` flag set from `ConfirmResultMsg{Confirmed:true}` short-circuits a late `RestartSessionMsg` to `tea.Quit`, preventing a race where a new subprocess would leak after the user confirms shutdown.
+- `internal/tui/messages.go` adds `SessionRestartingMsg{Reason string}`; the App renders a "Session restarting (<reason>)..." banner and disables input during the transition.
+- **Check:** `make validate` green; `scripts/smoke-test-memory.sh` 45/45; `/tui-testing --quick` 5/5 (test 1). Manual validation confirmed: killing the Claude subprocess → user types → error dialog → `r` → restart path runs consolidation (spinner visible in stderr) → `persistent.md` written → `handoff-signal` cleared → `last-session-id` rotated → new subprocess launches and `― Session ready ―` re-appears. Handoff-signal consolidation pipeline exercised end-to-end via a planted signal file.
 
 ### Phase 1.5 — Resume-by-default (QUM-255, merged)
 

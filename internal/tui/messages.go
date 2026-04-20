@@ -97,3 +97,10 @@ type SignalMsg struct{}
 
 // RestartSessionMsg signals that the user wants to restart the Claude subprocess.
 type RestartSessionMsg struct{}
+
+// SessionRestartingMsg signals that the TUI is transitioning between Claude
+// subprocess sessions (e.g. after transport EOF or /handoff). The App renders
+// a status banner carrying Reason while the restart work runs.
+type SessionRestartingMsg struct {
+	Reason string
+}

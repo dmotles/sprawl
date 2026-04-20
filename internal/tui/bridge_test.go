@@ -244,6 +244,34 @@ func TestBridge_WaitForEvent_ChannelClosed(t *testing.T) {
 	}
 }
 
+// TestBridge_WaitForEvent_EOF_WrapsIoEOF_ForErrorsIs locks in the contract that
+// the app's auto-restart EOF branch relies on: when the session events channel
+// closes, SessionErrorMsg.Err must be identifiable via errors.Is(err, io.EOF).
+// If bridge.go later wraps the EOF, this test forces the wrapper to preserve
+// the chain (fmt.Errorf with %w).
+func TestBridge_WaitForEvent_EOF_WrapsIoEOF_ForErrorsIs(t *testing.T) {
+	ms := newMockSession()
+	ctx := context.Background()
+	b := NewBridge(ctx, ms)
+
+	cmd := b.SendMessage("test")
+	cmd()
+
+	close(ms.events)
+
+	msg := b.WaitForEvent()()
+	errMsg, ok := msg.(SessionErrorMsg)
+	if !ok {
+		t.Fatalf("WaitForEvent returned %T, want SessionErrorMsg", msg)
+	}
+	if errMsg.Err == nil {
+		t.Fatal("SessionErrorMsg.Err is nil, want an error wrapping io.EOF")
+	}
+	if !errors.Is(errMsg.Err, io.EOF) {
+		t.Errorf("errors.Is(err, io.EOF) = false, want true (err=%v). The app EOF branch depends on this chain.", errMsg.Err)
+	}
+}
+
 func TestBridge_WaitForEvent_ContextCancelled(t *testing.T) {
 	ms := newMockSession()
 	ctx, cancel := context.WithCancel(context.Background())

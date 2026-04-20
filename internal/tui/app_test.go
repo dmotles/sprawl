@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -975,6 +976,196 @@ func TestAppModel_AgentTreeMsg_ChildrenShiftedByOne(t *testing.T) {
 	}
 	if app.tree.nodes[2].Depth != 2 {
 		t.Errorf("tree.nodes[2].Depth = %d, want 2 (shifted by 1 to accommodate weave root)", app.tree.nodes[2].Depth)
+	}
+}
+
+// --- QUM-259 Phase 4: auto-restart on EOF + quit-during-restart race ---
+
+// collectBatchMsgs invokes a tea.Cmd and flattens any tea.BatchMsg into a
+// slice of tea.Msg. Non-batch results are returned as a single-element slice.
+// Nested batches are expanded recursively.
+func collectBatchMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	raw := cmd()
+	return expandBatch(t, raw)
+}
+
+func expandBatch(t *testing.T, msg tea.Msg) []tea.Msg {
+	t.Helper()
+	if msg == nil {
+		return nil
+	}
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			if c == nil {
+				continue
+			}
+			out = append(out, expandBatch(t, c())...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+func hasMsgOfType[T any](msgs []tea.Msg) bool {
+	for _, m := range msgs {
+		if _, ok := m.(T); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAppModel_SessionErrorMsg_EOF_AutoRestarts(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.turnState = TurnStreaming
+
+	updated, cmd := app.Update(SessionErrorMsg{Err: io.EOF})
+	app = updated.(AppModel)
+
+	if app.showError {
+		t.Error("showError should be false when EOF triggers auto-restart")
+	}
+	msgs := collectBatchMsgs(t, cmd)
+	if !hasMsgOfType[SessionRestartingMsg](msgs) {
+		t.Errorf("expected SessionRestartingMsg in returned batch, got %v", msgs)
+	}
+	if !hasMsgOfType[RestartSessionMsg](msgs) {
+		t.Errorf("expected RestartSessionMsg in returned batch, got %v", msgs)
+	}
+}
+
+func TestAppModel_SessionErrorMsg_EOF_AutoRestartsEvenFromIdle(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// turnState is TurnIdle by default.
+	updated, cmd := app.Update(SessionErrorMsg{Err: io.EOF})
+	app = updated.(AppModel)
+
+	if app.showError {
+		t.Error("showError should be false for EOF even from idle")
+	}
+	msgs := collectBatchMsgs(t, cmd)
+	if !hasMsgOfType[SessionRestartingMsg](msgs) {
+		t.Errorf("expected SessionRestartingMsg in batch when EOF fires from idle, got %v", msgs)
+	}
+}
+
+func TestAppModel_SessionErrorMsg_WrappedEOF_AutoRestarts(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.turnState = TurnStreaming
+	wrapped := fmt.Errorf("wrap: %w", io.EOF)
+
+	updated, cmd := app.Update(SessionErrorMsg{Err: wrapped})
+	app = updated.(AppModel)
+
+	if app.showError {
+		t.Error("showError should be false for wrapped EOF")
+	}
+	msgs := collectBatchMsgs(t, cmd)
+	if !hasMsgOfType[SessionRestartingMsg](msgs) {
+		t.Errorf("wrapped EOF should still trigger auto-restart, got msgs=%v", msgs)
+	}
+}
+
+func TestAppModel_SessionErrorMsg_NonEOFStreamingStillShowsDialog(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("non-eof failure")})
+	app = updated.(AppModel)
+
+	if !app.showError {
+		t.Error("non-EOF streaming error must still show the error dialog (regression check)")
+	}
+}
+
+func TestAppModel_SessionRestartingMsg_AppendsStatusAndDisablesInput(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(SessionRestartingMsg{Reason: "session ended"})
+	app = updated.(AppModel)
+
+	if !app.input.disabled {
+		t.Error("SessionRestartingMsg should disable input")
+	}
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v, want TurnIdle", app.turnState)
+	}
+	found := false
+	for _, entry := range app.viewport.messages {
+		if strings.Contains(entry.Content, "session ended") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("SessionRestartingMsg should append a status line to the viewport containing the reason")
+	}
+}
+
+func TestAppModel_RestartSessionMsg_AfterQuitConfirmed_ReturnsTeaQuit(t *testing.T) {
+	restartCalled := false
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		restartCalled = true
+		return NewBridge(context.Background(), newMockSession()), nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	// Simulate the user confirming Ctrl-C.
+	updated, _ := app.Update(ConfirmResultMsg{Confirmed: true})
+	app = updated.(AppModel)
+	if !app.quitting {
+		t.Fatal("ConfirmResultMsg{Confirmed:true} should set quitting=true")
+	}
+
+	// A pending RestartSessionMsg arriving after quit confirmation must
+	// short-circuit to tea.Quit and MUST NOT invoke restartFunc (that would
+	// leak a new bridge).
+	updated, cmd := app.Update(RestartSessionMsg{})
+	_ = updated
+	if cmd == nil {
+		t.Fatal("RestartSessionMsg while quitting should return a tea.Quit cmd")
+	}
+	if result, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("cmd() = %T, want tea.QuitMsg", result)
+	}
+	if restartCalled {
+		t.Error("restartFunc must NOT be called when quitting=true")
 	}
 }
 
