@@ -19,9 +19,9 @@ This doc proposes the primary path to converge the two, with the `sprawl-ops` MC
 |---|---|---|
 | Prompt construction | `agent.BuildRootPrompt(PromptConfig{Mode: "tmux"})` | `agent.BuildRootPrompt(PromptConfig{Mode: "tui"})` |
 | Context blob | `memory.BuildContextBlob(sprawlRoot, "weave")` before launch | same — good, already shared |
-| Prompt delivery | On disk: `state.WriteSystemPrompt` → `.sprawl/agents/weave/SYSTEM.md` → passed via `--system-prompt-file` | In-memory string, injected via SDK `initialize` control request (`host.SessionConfig.SystemPrompt`, session.go:48). Not on disk, not inspectable. |
-| `LaunchOpts` fields used | `SystemPromptFile`, `Tools`, `AllowedTools`, `DisallowedTools`, `Name`, `Model: "opus[1m]"`, `SessionID` | `Print`, `InputFormat`, `OutputFormat`, `Verbose`, `PermissionMode`, `AllowedTools` (+ MCP tool names), `DisallowedTools`. **No `Model`, no `SessionID`, no `SystemPromptFile`.** |
-| Session ID | `state.GenerateUUID()` → `memory.WriteLastSessionID` → `--session-id` flag | Not generated. Not written. Not passed. |
+| Prompt delivery | On disk: `state.WriteSystemPrompt` → `.sprawl/agents/weave/SYSTEM.md` → passed via `--system-prompt-file` | Same — on disk via `rootinit.Prepare` and passed as `--system-prompt-file` (Phase 3, QUM-257). `host.SessionConfig.SystemPrompt` removed; no `system_prompt` in SDK `initialize`. |
+| `LaunchOpts` fields used | `SystemPromptFile`, `Tools`, `AllowedTools`, `DisallowedTools`, `Name`, `Model: "opus[1m]"`, `SessionID` | `Print`, `InputFormat`, `OutputFormat`, `Verbose`, `PermissionMode`, `AllowedTools` (+ MCP tool names), `DisallowedTools`, **`SystemPromptFile`, `SessionID`, `Model: "opus[1m]"`, `Resume`** (added in Phase 3, QUM-257). |
+| Session ID | `state.GenerateUUID()` → `memory.WriteLastSessionID` → `--session-id` flag | Same (Phase 3, QUM-257): via `rootinit.Prepare` → `--session-id` on fresh, `--resume <id>` on resume. |
 | `--resume` | Not used today (fresh session every loop iteration — handoff path is the "resume" mechanism) | Not used. |
 | Missed-handoff detection | Yes: `readLastSessionID` → `hasSessionSummary` → `autoSummarize` fallback before launch | No. |
 | Post-session consolidation | Yes: check `.sprawl/memory/handoff-signal` → `memory.Consolidate` → `memory.UpdatePersistentKnowledge` → clear signal → restart | No. Process exits and that's it. |
@@ -204,11 +204,12 @@ Phased so tmux mode cannot break.
 - Ship `rootinit.WeaveLock`. Both tmux and TUI acquire it before Phase A.
 - **Check:** can start tmux weave; can start `sprawl enter`; second one shows friendly error. No deadlock on normal exit or crash (flock releases on fd close).
 
-### Phase 3 — Wire TUI Phase A
+### Phase 3 — Wire TUI Phase A (QUM-257, merged)
 
-- `defaultNewSession` calls `rootinit.Prepare` → adds `--system-prompt-file`, `--session-id`, `--model opus[1m]` to the subprocess args.
-- Drop `SystemPrompt` from `host.SessionConfig` (or make it a no-op when empty) and patch `session.go` to omit the key when empty.
-- **Check:** TUI weave now has memory context loaded; SYSTEM.md on disk is inspectable; session-id is recorded in `last-session-id`; `make test` green; `/tui-testing` harness passes; tmux mode still works.
+- `defaultNewSession` calls `rootinit.Prepare` / `PrepareFresh`; a new `buildEnterLaunchOpts(*PreparedSession)` helper builds the subprocess args with `--system-prompt-file`, `--session-id`, `--model opus[1m]` on the fresh path and `--resume <id>` on the resume path (mutual exclusion enforced by `claude.LaunchOpts.BuildArgs`).
+- `SystemPrompt` field removed from `host.SessionConfig`; `internal/host/session.go` no longer sends `system_prompt` in the `initialize` control request (the subprocess already has the prompt from `--system-prompt-file`).
+- Inline `memory.BuildContextBlob` + `agent.BuildRootPrompt` at the TUI call site deleted — that work lives inside `rootinit.Prepare` now.
+- **Check:** `make validate` green; `scripts/smoke-test-memory.sh` 45/45; `/tui-testing` quick + full harness (known failures in tests 5/6/8 pre-date Phase 3); manual validation confirmed SYSTEM.md persisted to `.sprawl/agents/weave/SYSTEM.md`, last-session-id matches subprocess `--session-id`, resume path preserves prior id and skips SYSTEM.md rewrite.
 
 ### Phase 4 — Wire TUI Phase D (handoff + restart)
 
@@ -237,7 +238,7 @@ Originally scoped as "add `--resume` support later." Superseded by Phase 1.5 —
 4. **Does dropping `SystemPrompt` from the SDK `initialize` message break any MCP server discovery?** I believe `initialize`'s `sdkMcpServers` key is independent of `system_prompt`, but worth verifying against the Claude Code SDK docs before landing Phase 3.
 5. **Timeline integration.** Tmux weave sessions appear in `.sprawl/memory/timeline.md` via consolidation. TUI weave sessions currently don't. After Phase 4 they will — confirm there's no deduping issue when the same `sessionID` is consolidated twice (e.g., due to a retry after crash).
 6. **`handoff-signal` lifecycle edge case.** Today tmux clears the signal *after* consolidation. If consolidation crashes, next launch sees the signal and retries — good. But the TUI restart loop happens in-process; if the TUI crashes between handoff and consolidation, is the signal still there for the next `sprawl enter`? Yes (on-disk file), so we're consistent — but confirm by trace.
-7. **Should `host.SessionConfig.SystemPrompt` be removed outright?** Only `defaultNewSession` sets it, and the unifier drops it. Removing the field cleans up the surface, but may break unrelated consumers (tests?). Scan before deleting.
+7. **Should `host.SessionConfig.SystemPrompt` be removed outright?** ~~Resolved (Phase 3, QUM-257).~~ Removed. Only `defaultNewSession` set it; no other production consumer. `internal/host/session.go` no longer includes `system_prompt` in the `initialize` control request; `sdkMcpServers` key is independent so MCP discovery is unaffected.
 
 ## Rejected Alternatives
 

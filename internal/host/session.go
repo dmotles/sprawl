@@ -12,9 +12,12 @@ import (
 )
 
 // SessionConfig holds configuration for a host session.
+//
+// Note: the system prompt is not carried here. The Claude subprocess receives
+// it via the `--system-prompt-file` CLI flag (see rootinit.Prepare). Sending
+// it again in the SDK `initialize` request would duplicate it.
 type SessionConfig struct {
 	MCPServerNames []string
-	SystemPrompt   string
 	ToolHandler    ControlHandler
 	MCPBridge      *MCPBridge
 }
@@ -44,8 +47,7 @@ func (s *Session) Initialize(ctx context.Context) error {
 	requestID := s.nextRequestID()
 
 	request := map[string]any{
-		"subtype":       "initialize",
-		"system_prompt": s.config.SystemPrompt,
+		"subtype": "initialize",
 	}
 	if len(s.config.MCPServerNames) > 0 {
 		request["sdkMcpServers"] = s.config.MCPServerNames

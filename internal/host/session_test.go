@@ -12,9 +12,7 @@ import (
 func TestSession_InitializeSendsControlRequest(t *testing.T) {
 	mt := newMockTransport()
 
-	cfg := SessionConfig{
-		SystemPrompt: "You are a helpful assistant.",
-	}
+	cfg := SessionConfig{}
 	sess := NewSession(mt, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -54,11 +52,57 @@ func TestSession_InitializeSendsControlRequest(t *testing.T) {
 	}
 }
 
+func TestSession_InitializeOmitsSystemPromptKey(t *testing.T) {
+	// After QUM-257, the system prompt is delivered to the Claude subprocess
+	// via `--system-prompt-file`, not in the SDK `initialize` control request.
+	// Sending it both places would duplicate the prompt. Verify the
+	// `system_prompt` key is absent from the request payload.
+	mt := newMockTransport()
+	sess := NewSession(mt, SessionConfig{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case sent := <-mt.sendCh:
+			data, err := json.Marshal(sent)
+			if err != nil {
+				t.Errorf("marshal: %v", err)
+				return
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				t.Errorf("unmarshal: %v", err)
+				return
+			}
+			request, ok := parsed["request"].(map[string]any)
+			if !ok {
+				t.Error("request field missing from initialize payload")
+				return
+			}
+			if _, has := request["system_prompt"]; has {
+				t.Errorf("initialize request must omit system_prompt key; got request=%v", request)
+			}
+			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+			close(mt.recvCh)
+		case <-ctx.Done():
+			t.Error("context canceled before initialize send")
+		}
+	}()
+
+	if err := sess.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error: %v", err)
+	}
+	<-done
+}
+
 func TestSession_InitializeIncludesMCPServers(t *testing.T) {
 	mt := newMockTransport()
 
 	cfg := SessionConfig{
-		SystemPrompt:   "test",
 		MCPServerNames: []string{"sprawl-ops"},
 	}
 	sess := NewSession(mt, cfg)
@@ -312,9 +356,7 @@ func TestSession_CloseSendsEndSession(t *testing.T) {
 
 func TestSession_FullLifecycle(t *testing.T) {
 	mt := newMockTransport()
-	cfg := SessionConfig{
-		SystemPrompt: "You are a test assistant.",
-	}
+	cfg := SessionConfig{}
 	sess := NewSession(mt, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

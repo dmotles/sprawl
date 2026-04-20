@@ -12,10 +12,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/host"
-	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
@@ -100,13 +98,18 @@ func sprawlOpsMCPTools() []string {
 	}
 }
 
-// buildEnterClaudeArgs returns the argv for the Claude subprocess launched by
-// `sprawl enter`. Combines the stream-json flags with the same tool whitelist
-// the tmux root loop applies (rootinit.RootTools) plus the sprawl-ops MCP
-// tool names.
-func buildEnterClaudeArgs() []string {
-	allowed := make([]string, 0, len(rootinit.RootTools)+len(sprawlOpsMCPTools()))
-	allowed = append(allowed, rootinit.RootTools...)
+// buildEnterLaunchOpts constructs claude.LaunchOpts for the TUI-mode weave
+// subprocess from a rootinit.PreparedSession. Matches the tmux root loop's
+// launch shape (--system-prompt-file, --session-id, --model opus[1m], plus
+// the root tool allowlist) and adds the stream-json flag block the TUI
+// transport needs.
+//
+// On resume (prepared.Resume == true), --system-prompt-file and --session-id
+// are intentionally omitted — BuildArgs enforces this because the resumed
+// transcript carries its own session ID and system prompt.
+func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts {
+	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlOpsMCPTools()))
+	allowed = append(allowed, prepared.RootTools...)
 	allowed = append(allowed, sprawlOpsMCPTools()...)
 
 	opts := claude.LaunchOpts{
@@ -116,9 +119,16 @@ func buildEnterClaudeArgs() []string {
 		Verbose:         true,
 		PermissionMode:  "bypassPermissions",
 		AllowedTools:    allowed,
-		DisallowedTools: rootinit.DisallowedTools,
+		DisallowedTools: prepared.Disallowed,
+		Model:           prepared.Model,
+		SessionID:       prepared.SessionID,
 	}
-	return opts.BuildArgs()
+	if prepared.Resume {
+		opts.Resume = true
+	} else {
+		opts.SystemPromptFile = prepared.PromptPath
+	}
+	return opts
 }
 
 // buildSessionEnv returns the environment variables for the Claude Code subprocess.
@@ -153,9 +163,9 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 	rootName := "weave"
 
 	// Phase A: decide between resume and fresh paths. Writes last-session-id
-	// and (on fresh path) persists SYSTEM.md to disk. The TUI does not yet
-	// consume SYSTEM.md via --system-prompt-file (Phase 3); we still inject
-	// the system prompt through the SDK initialize message on fresh paths.
+	// and (on fresh path) persists SYSTEM.md to disk and renders the system
+	// prompt. The Claude subprocess consumes the rendered prompt via
+	// --system-prompt-file below.
 	var prepared *rootinit.PreparedSession
 	if forceFresh {
 		prepared, err = rootinit.PrepareFresh(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
@@ -166,40 +176,11 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 		return nil, false, fmt.Errorf("preparing session: %w", err)
 	}
 
-	// Claude subprocess args. Resume short-circuits --session-id and any
-	// --system-prompt-file (enforced by LaunchOpts.BuildArgs); on fresh we
-	// pass --session-id so the transcript Claude writes matches what we
-	// persisted to last-session-id, enabling resume on next launch.
-	allowed := make([]string, 0, len(rootinit.RootTools)+len(sprawlOpsMCPTools()))
-	allowed = append(allowed, rootinit.RootTools...)
-	allowed = append(allowed, sprawlOpsMCPTools()...)
-	opts := claude.LaunchOpts{
-		Print:           true,
-		InputFormat:     "stream-json",
-		OutputFormat:    "stream-json",
-		Verbose:         true,
-		PermissionMode:  "bypassPermissions",
-		AllowedTools:    allowed,
-		DisallowedTools: rootinit.DisallowedTools,
-		SessionID:       prepared.SessionID,
-		Resume:          prepared.Resume,
-	}
-	args := opts.BuildArgs()
+	args := buildEnterLaunchOpts(prepared).BuildArgs()
 
-	// System prompt: only inject on fresh paths. On resume, Claude restores
-	// the original system prompt from the resumed transcript; sending one
-	// again would duplicate it.
-	var systemPrompt string
 	if prepared.Resume {
 		fmt.Fprintf(logW, "[enter] resuming session %s\n", prepared.SessionID)
 	} else {
-		contextBlob, _ := memory.BuildContextBlob(sprawlRoot, rootName)
-		systemPrompt = agent.BuildRootPrompt(agent.PromptConfig{
-			RootName:    rootName,
-			AgentCLI:    "claude-code",
-			ContextBlob: contextBlob,
-			Mode:        "tui",
-		})
 		fmt.Fprintf(logW, "[enter] starting session %s\n", prepared.SessionID)
 	}
 
@@ -244,7 +225,6 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 	mcpBridge.Register("sprawl-ops", mcpServer)
 
 	session := host.NewSession(transport, host.SessionConfig{
-		SystemPrompt:   systemPrompt,
 		MCPServerNames: []string{"sprawl-ops"},
 		MCPBridge:      mcpBridge,
 	})
