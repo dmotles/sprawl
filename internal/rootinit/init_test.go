@@ -221,62 +221,63 @@ func TestPrepare_SessionIDWritten(t *testing.T) {
 	}
 }
 
-func TestPrepare_MissedHandoff_AutoSummarizes(t *testing.T) {
+func TestPrepare_ResumesWhenPrevSessionHasNoSummary(t *testing.T) {
 	deps := newTestDeps(t)
 	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
 
-	var autoCalled bool
-	var capturedID, capturedCWD string
-	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
-		autoCalled = true
-		capturedID = id
-		capturedCWD = cwd
-		return true, nil
+	// Must NOT write a new session ID, run consolidation, auto-summarize, or
+	// write a fresh prompt file on the resume path.
+	var writeIDCalled, consolidateCalled, autoCalled, writePromptCalled bool
+	deps.WriteLastSessionID = func(root, id string) error {
+		writeIDCalled = true
+		return nil
 	}
-
-	var buf strings.Builder
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", &buf)
-	if err != nil {
-		t.Fatalf("Prepare error: %v", err)
+	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		consolidateCalled = true
+		return nil
 	}
-	if !autoCalled {
-		t.Fatal("expected AutoSummarize to be called")
-	}
-	if capturedID != "prev-session-id" {
-		t.Errorf("autoSummarize sessionID: got %q", capturedID)
-	}
-	if capturedCWD != "/fake/root" {
-		t.Errorf("autoSummarize cwd: got %q", capturedCWD)
-	}
-	if !strings.Contains(buf.String(), "Detected missed handoff") {
-		t.Errorf("expected missed-handoff log, got %q", buf.String())
-	}
-}
-
-func TestPrepare_MissedHandoff_AlreadySummarized_SkipsAutoSummarize(t *testing.T) {
-	deps := newTestDeps(t)
-	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
-	deps.HasSessionSummary = func(root, id string) (bool, error) { return true, nil }
-
-	var autoCalled bool
 	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
 		autoCalled = true
 		return false, nil
 	}
+	deps.WriteSystemPrompt = func(root, name, content string) (string, error) {
+		writePromptCalled = true
+		return "/should/not/be/written", nil
+	}
+
 	var buf strings.Builder
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", &buf)
+	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", &buf)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
-	if autoCalled {
-		t.Error("should not call AutoSummarize when summary already exists")
+	if !got.Resume {
+		t.Error("expected Resume=true")
 	}
-	if strings.Contains(buf.String(), "Detected missed handoff") {
-		t.Error("should not print 'Detected missed handoff' when summary already exists")
+	if got.SessionID != "prev-session-id" {
+		t.Errorf("SessionID: got %q, want %q", got.SessionID, "prev-session-id")
+	}
+	if got.PromptPath != "" {
+		t.Errorf("expected empty PromptPath on resume, got %q", got.PromptPath)
+	}
+	if writeIDCalled {
+		t.Error("resume path must not write last-session-id")
+	}
+	if consolidateCalled {
+		t.Error("resume path must not consolidate")
+	}
+	if autoCalled {
+		t.Error("resume path must not auto-summarize")
+	}
+	if writePromptCalled {
+		t.Error("resume path must not write system prompt")
+	}
+	if !strings.Contains(buf.String(), "resuming session prev-session-id") {
+		t.Errorf("expected 'resuming session prev-session-id' log, got %q", buf.String())
 	}
 }
 
-func TestPrepare_AlreadySummarized_RunsConsolidationBeforeClearingSessionID(t *testing.T) {
+func TestPrepare_ConsolidateThenFreshWhenSummaryExists(t *testing.T) {
 	deps := newTestDeps(t)
 	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
 	deps.HasSessionSummary = func(root, id string) (bool, error) { return true, nil }
@@ -285,6 +286,8 @@ func TestPrepare_AlreadySummarized_RunsConsolidationBeforeClearingSessionID(t *t
 	deps.WriteLastSessionID = func(root, id string) error {
 		if id == "" {
 			callOrder = append(callOrder, "clearSessionID")
+		} else {
+			callOrder = append(callOrder, "writeSessionID:"+id)
 		}
 		return nil
 	}
@@ -292,85 +295,28 @@ func TestPrepare_AlreadySummarized_RunsConsolidationBeforeClearingSessionID(t *t
 		callOrder = append(callOrder, "consolidate")
 		return nil
 	}
-	deps.UpdatePersistentKnowledge = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
-		callOrder = append(callOrder, "updatePK")
-		return nil
-	}
+	deps.NewUUID = func() (string, error) { return "new-sess", nil }
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
+	if got.Resume {
+		t.Error("expected Resume=false on consolidate-then-fresh path")
+	}
+	if got.SessionID != "new-sess" {
+		t.Errorf("SessionID: got %q", got.SessionID)
+	}
 
-	consolidateIdx, clearIdx := -1, -1
-	for i, name := range callOrder {
-		if name == "consolidate" && consolidateIdx == -1 {
-			consolidateIdx = i
+	// Order must be: consolidate, clearSessionID, writeSessionID:new-sess
+	wantOrder := []string{"consolidate", "clearSessionID", "writeSessionID:new-sess"}
+	if len(callOrder) != len(wantOrder) {
+		t.Fatalf("callOrder: got %v, want %v", callOrder, wantOrder)
+	}
+	for i := range wantOrder {
+		if callOrder[i] != wantOrder[i] {
+			t.Errorf("callOrder[%d]: got %q, want %q (full: %v)", i, callOrder[i], wantOrder[i], callOrder)
 		}
-		if name == "clearSessionID" && clearIdx == -1 {
-			clearIdx = i
-		}
-	}
-	if consolidateIdx == -1 {
-		t.Fatal("consolidate not called")
-	}
-	if clearIdx == -1 {
-		t.Fatal("clearSessionID not called")
-	}
-	if consolidateIdx >= clearIdx {
-		t.Errorf("expected consolidate before clearSessionID (got %d vs %d)", consolidateIdx, clearIdx)
-	}
-}
-
-func TestPrepare_MissedHandoff_AutoSummarize_RunsConsolidation(t *testing.T) {
-	deps := newTestDeps(t)
-	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
-	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
-		return true, nil
-	}
-	var consolidateCalled bool
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
-		consolidateCalled = true
-		return nil
-	}
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
-	if err != nil {
-		t.Fatalf("Prepare error: %v", err)
-	}
-	if !consolidateCalled {
-		t.Error("expected Consolidate to be called after auto-summarize")
-	}
-}
-
-func TestPrepare_MissedHandoff_AutoSummarize_NoOp_SkipsConsolidation(t *testing.T) {
-	deps := newTestDeps(t)
-	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
-	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
-		return false, nil
-	}
-	var consolidateCalled bool
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
-		consolidateCalled = true
-		return nil
-	}
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
-	if err != nil {
-		t.Fatalf("Prepare error: %v", err)
-	}
-	if consolidateCalled {
-		t.Error("expected Consolidate NOT to be called when auto-summarize is a no-op")
-	}
-}
-
-func TestPrepare_MissedHandoff_AutoSummarizeError_Continues(t *testing.T) {
-	deps := newTestDeps(t)
-	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
-	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
-		return false, errors.New("summarize failed")
-	}
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
-	if err != nil {
-		t.Fatalf("should not return error on AutoSummarize failure, got %v", err)
 	}
 }
 
@@ -378,16 +324,167 @@ func TestPrepare_FirstSession_NoLastID(t *testing.T) {
 	deps := newTestDeps(t)
 	deps.ReadLastSessionID = func(string) (string, error) { return "", nil }
 
+	var autoCalled, consolidateCalled bool
+	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
+		autoCalled = true
+		return false, nil
+	}
+	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		consolidateCalled = true
+		return nil
+	}
+
+	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if got.Resume {
+		t.Error("expected Resume=false on first session")
+	}
+	if autoCalled {
+		t.Error("expected AutoSummarize NOT to be called on first session")
+	}
+	if consolidateCalled {
+		t.Error("expected Consolidate NOT to be called on first session")
+	}
+}
+
+func TestPrepareFresh_ForcesFreshEvenWithResumableSession(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+	deps.NewUUID = func() (string, error) { return "fresh-id", nil }
+
+	got, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("PrepareFresh error: %v", err)
+	}
+	if got.Resume {
+		t.Error("PrepareFresh must return Resume=false")
+	}
+	if got.SessionID != "fresh-id" {
+		t.Errorf("SessionID: got %q, want 'fresh-id'", got.SessionID)
+	}
+	if got.PromptPath == "" {
+		t.Error("expected non-empty PromptPath on fresh path")
+	}
+}
+
+func TestPrepareFresh_AutoSummarizesDeadSession(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "dead-sess", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+
+	var autoCalled bool
+	var capturedID string
+	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
+		autoCalled = true
+		capturedID = id
+		return true, nil
+	}
+	var consolidateCalled bool
+	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		consolidateCalled = true
+		return nil
+	}
+
+	var buf strings.Builder
+	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", &buf)
+	if err != nil {
+		t.Fatalf("PrepareFresh error: %v", err)
+	}
+	if !autoCalled {
+		t.Error("expected AutoSummarize to be called on fresh-fallback with unsummarized session")
+	}
+	if capturedID != "dead-sess" {
+		t.Errorf("auto-summarize sessionID: got %q", capturedID)
+	}
+	if !consolidateCalled {
+		t.Error("expected Consolidate after successful auto-summarize")
+	}
+	if !strings.Contains(buf.String(), "Detected missed handoff") {
+		t.Errorf("expected missed-handoff log, got %q", buf.String())
+	}
+}
+
+func TestPrepareFresh_AutoSummarizeNoOp_SkipsConsolidation(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "dead-sess", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
+		return false, nil
+	}
+	var consolidateCalled bool
+	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		consolidateCalled = true
+		return nil
+	}
+	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("PrepareFresh error: %v", err)
+	}
+	if consolidateCalled {
+		t.Error("Consolidate must not run when auto-summarize is a no-op")
+	}
+}
+
+func TestPrepareFresh_AutoSummarizeError_Continues(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "dead-sess", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
+		return false, errors.New("summarize failed")
+	}
+	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("should not return error on AutoSummarize failure, got %v", err)
+	}
+}
+
+func TestPrepareFresh_SummarizedDeadSession_RunsConsolidation(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "dead-sess", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return true, nil }
+
+	var consolidateCalled, clearCalled bool
+	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		consolidateCalled = true
+		return nil
+	}
+	deps.WriteLastSessionID = func(root, id string) error {
+		if id == "" {
+			clearCalled = true
+		}
+		return nil
+	}
+	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("PrepareFresh error: %v", err)
+	}
+	if !consolidateCalled {
+		t.Error("expected Consolidate when dead session already had a summary")
+	}
+	if !clearCalled {
+		t.Error("expected last-session-id cleared on fresh-fallback with summarized dead session")
+	}
+}
+
+func TestPrepareFresh_NoPrevSession(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "", nil }
 	var autoCalled bool
 	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
 		autoCalled = true
 		return false, nil
 	}
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
 	if err != nil {
-		t.Fatalf("Prepare error: %v", err)
+		t.Fatalf("PrepareFresh error: %v", err)
+	}
+	if got.Resume {
+		t.Error("expected Resume=false")
 	}
 	if autoCalled {
-		t.Error("expected AutoSummarize NOT to be called on first session")
+		t.Error("expected AutoSummarize NOT to be called when no prev session")
 	}
 }

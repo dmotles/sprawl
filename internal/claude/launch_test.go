@@ -213,8 +213,63 @@ func TestBuildArgs_Resume(t *testing.T) {
 		Resume:       true,
 	}.BuildArgs()
 
-	assertContains(t, args, "--session-id", "sess-42")
+	// --resume carries the session ID; --session-id must NOT be emitted
+	// separately because Claude Code rejects the combination.
 	assertContains(t, args, "--resume", "sess-42")
+	for i, a := range args {
+		if a == "--session-id" {
+			t.Errorf("expected no --session-id flag when Resume=true, got args %v (index %d)", args, i)
+		}
+	}
+}
+
+func TestBuildArgs_Resume_OmitsSystemPromptFile(t *testing.T) {
+	args := LaunchOpts{
+		SessionID:        "sess-42",
+		SystemPromptFile: "/tmp/SYSTEM.md",
+		Resume:           true,
+	}.BuildArgs()
+
+	assertContains(t, args, "--resume", "sess-42")
+	for _, a := range args {
+		if a == "--system-prompt-file" {
+			t.Errorf("expected no --system-prompt-file when Resume=true, got %v", args)
+		}
+		if a == "--system-prompt" {
+			t.Errorf("expected no --system-prompt when Resume=true, got %v", args)
+		}
+	}
+}
+
+func TestBuildArgs_Resume_OmitsSystemPrompt(t *testing.T) {
+	args := LaunchOpts{
+		SessionID:    "sess-42",
+		SystemPrompt: "inline",
+		Resume:       true,
+	}.BuildArgs()
+
+	assertContains(t, args, "--resume", "sess-42")
+	for _, a := range args {
+		if a == "--system-prompt" {
+			t.Errorf("expected no --system-prompt when Resume=true, got %v", args)
+		}
+	}
+}
+
+func TestBuildArgs_NoResume_KeepsSessionIDAndPromptFile(t *testing.T) {
+	args := LaunchOpts{
+		SessionID:        "sess-42",
+		SystemPromptFile: "/tmp/SYSTEM.md",
+		Resume:           false,
+	}.BuildArgs()
+
+	assertContains(t, args, "--session-id", "sess-42")
+	assertContains(t, args, "--system-prompt-file", "/tmp/SYSTEM.md")
+	for _, a := range args {
+		if a == "--resume" {
+			t.Errorf("expected no --resume when Resume=false, got %v", args)
+		}
+	}
 }
 
 func TestBuildArgs_SettingSources(t *testing.T) {
@@ -274,11 +329,13 @@ func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 
 	args := opts.BuildArgs()
 
+	// Note: --session-id and --system-prompt are intentionally NOT expected here
+	// — Resume=true suppresses them (see TestBuildArgs_Resume*).
 	expected := map[string]bool{
 		"-p": false, "--input-format": false, "--output-format": false,
 		"--verbose": false, "--model": false, "--effort": false,
 		"--permission-mode": false,
-		"--session-id":      false, "--system-prompt": false, "--resume": false,
+		"--resume":          false,
 	}
 	for _, arg := range args {
 		if _, ok := expected[arg]; ok {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -29,7 +30,7 @@ type enterDeps struct {
 	getenv        func(string) string
 	getwd         func() (string, error)
 	runProgram    func(tea.Model) error
-	newSession    func(sprawlRoot string) (*tui.Bridge, error)
+	newSession    func(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error)
 	newSupervisor func(sprawlRoot string) supervisor.Supervisor
 }
 
@@ -129,23 +130,78 @@ func buildSessionEnv() []string {
 }
 
 // defaultNewSession launches a Claude Code subprocess and returns a Bridge.
-func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
+//
+// When forceFresh is true, Prepare's resume decision is bypassed and a fresh
+// session is built. Callers use this for resume-failure fallback — the TUI's
+// restartFunc forces fresh if the previous subprocess was a resume attempt
+// that exited within resumeFailureWindow.
+//
+// Returns (bridge, wasResume, error). wasResume indicates whether Prepare
+// took the resume path; callers use it to decide if a fast exit warrants a
+// force-fresh retry.
+func defaultNewSession(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error) {
+	return newSessionImpl(sprawlRoot, forceFresh, rootinit.DefaultDeps(), os.Stderr)
+}
+
+// newSessionImpl is the testable body of defaultNewSession.
+func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer) (*tui.Bridge, bool, error) {
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
-		return nil, fmt.Errorf("finding claude binary: %w", err)
+		return nil, false, fmt.Errorf("finding claude binary: %w", err)
 	}
 
-	// Build system prompt using the same pattern as rootloop.go.
 	rootName := "weave"
-	contextBlob, _ := memory.BuildContextBlob(sprawlRoot, rootName)
-	systemPrompt := agent.BuildRootPrompt(agent.PromptConfig{
-		RootName:    rootName,
-		AgentCLI:    "claude-code",
-		ContextBlob: contextBlob,
-		Mode:        "tui",
-	})
 
-	args := buildEnterClaudeArgs()
+	// Phase A: decide between resume and fresh paths. Writes last-session-id
+	// and (on fresh path) persists SYSTEM.md to disk. The TUI does not yet
+	// consume SYSTEM.md via --system-prompt-file (Phase 3); we still inject
+	// the system prompt through the SDK initialize message on fresh paths.
+	var prepared *rootinit.PreparedSession
+	if forceFresh {
+		prepared, err = rootinit.PrepareFresh(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
+	} else {
+		prepared, err = rootinit.Prepare(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("preparing session: %w", err)
+	}
+
+	// Claude subprocess args. Resume short-circuits --session-id and any
+	// --system-prompt-file (enforced by LaunchOpts.BuildArgs); on fresh we
+	// pass --session-id so the transcript Claude writes matches what we
+	// persisted to last-session-id, enabling resume on next launch.
+	allowed := make([]string, 0, len(rootinit.RootTools)+len(sprawlOpsMCPTools()))
+	allowed = append(allowed, rootinit.RootTools...)
+	allowed = append(allowed, sprawlOpsMCPTools()...)
+	opts := claude.LaunchOpts{
+		Print:           true,
+		InputFormat:     "stream-json",
+		OutputFormat:    "stream-json",
+		Verbose:         true,
+		PermissionMode:  "bypassPermissions",
+		AllowedTools:    allowed,
+		DisallowedTools: rootinit.DisallowedTools,
+		SessionID:       prepared.SessionID,
+		Resume:          prepared.Resume,
+	}
+	args := opts.BuildArgs()
+
+	// System prompt: only inject on fresh paths. On resume, Claude restores
+	// the original system prompt from the resumed transcript; sending one
+	// again would duplicate it.
+	var systemPrompt string
+	if prepared.Resume {
+		fmt.Fprintf(logW, "[enter] resuming session %s\n", prepared.SessionID)
+	} else {
+		contextBlob, _ := memory.BuildContextBlob(sprawlRoot, rootName)
+		systemPrompt = agent.BuildRootPrompt(agent.PromptConfig{
+			RootName:    rootName,
+			AgentCLI:    "claude-code",
+			ContextBlob: contextBlob,
+			Mode:        "tui",
+		})
+		fmt.Fprintf(logW, "[enter] starting session %s\n", prepared.SessionID)
+	}
 
 	cmd := exec.Command(claudePath, args...) //nolint:gosec // claudePath is from LookPath, not untrusted input
 	cmd.Dir = sprawlRoot
@@ -154,15 +210,15 @@ func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("creating stdin pipe: %w", err)
+		return nil, false, fmt.Errorf("creating stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+		return nil, false, fmt.Errorf("creating stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("starting claude: %w", err)
+		return nil, false, fmt.Errorf("starting claude: %w", err)
 	}
 
 	reader := protocol.NewReader(stdout)
@@ -195,7 +251,7 @@ func defaultNewSession(sprawlRoot string) (*tui.Bridge, error) {
 
 	ctx := context.Background()
 	bridge := tui.NewBridge(ctx, session)
-	return bridge, nil
+	return bridge, prepared.Resume, nil
 }
 
 // enterTransport wraps a Claude Code subprocess for the host protocol.
@@ -241,13 +297,22 @@ func runEnter(deps *enterDeps) error {
 		version = buildVersion
 	}
 
+	// Track last session's start time + whether it was a resume attempt so
+	// that the TUI's restartFunc can fall back to a fresh session if a
+	// resume attempt died within resumeFailureWindow.
+	var lastStartedAt time.Time
+	var lastWasResume bool
+
 	var bridge *tui.Bridge
 	if deps.newSession != nil {
 		var err error
-		bridge, err = deps.newSession(sprawlRoot)
+		var wasResume bool
+		bridge, wasResume, err = deps.newSession(sprawlRoot, false)
 		if err != nil {
 			return fmt.Errorf("creating session: %w", err)
 		}
+		lastStartedAt = time.Now()
+		lastWasResume = wasResume
 	}
 
 	// Create a supervisor for the tree panel to poll agent status.
@@ -258,9 +323,15 @@ func runEnter(deps *enterDeps) error {
 	var restartFunc func() (*tui.Bridge, error)
 	if deps.newSession != nil {
 		restartFunc = func() (*tui.Bridge, error) {
-			newBridge, err := deps.newSession(sprawlRoot)
+			forceFresh := lastWasResume && time.Since(lastStartedAt) < resumeFailureWindow
+			if forceFresh {
+				fmt.Fprintf(os.Stderr, "[enter] resume died fast — falling back to fresh session\n")
+			}
+			newBridge, wasResume, err := deps.newSession(sprawlRoot, forceFresh)
 			if err == nil {
 				bridge = newBridge // update so runEnter closes the latest bridge
+				lastStartedAt = time.Now()
+				lastWasResume = wasResume
 			}
 			return newBridge, err
 		}

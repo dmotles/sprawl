@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/rootinit"
@@ -19,6 +20,13 @@ import (
 // `sprawl init` checks for this code and breaks.
 const ExitCodeShutdown = 42
 
+// resumeFailureWindow is the max runtime of a --resume invocation before we
+// stop suspecting a resume-initialization failure. If claude exits within this
+// window while Resume was requested, we fall back to a fresh session; if it
+// ran longer, we assume the resume succeeded and later crashed mid-session
+// (which is the normal bash-loop-restart case, not a retry).
+const resumeFailureWindow = 5 * time.Second
+
 // errShutdownRequested is a sentinel error indicating that the root session
 // should exit with ExitCodeShutdown, causing the bash restart loop to stop.
 var errShutdownRequested = errors.New("shutdown requested")
@@ -30,6 +38,7 @@ type rootLoopDeps struct {
 	getenv     func(string) string
 	findClaude func() (string, error)
 	runCommand func(name string, args []string) error
+	now        func() time.Time
 	stdout     io.Writer
 	rootinit   *rootinit.Deps
 }
@@ -46,6 +55,7 @@ func defaultRootLoopDeps() *rootLoopDeps {
 			cmd.Stderr = os.Stderr
 			return cmd.Run()
 		},
+		now:      time.Now,
 		stdout:   os.Stdout,
 		rootinit: rootinit.DefaultDeps(),
 	}
@@ -84,6 +94,13 @@ func init() {
 // Note: Claude exiting non-zero (exec.ExitError) is treated as a normal exit
 // (returns nil / exit 0) so the bash loop restarts. Only true startup failures
 // (e.g., binary not found, missing env vars) return an error.
+//
+// Resume-failure fallback: if rootinit.Prepare returns a resume-mode session
+// and the claude process exits with an error within resumeFailureWindow, we
+// assume `--resume` failed at init (e.g., server evicted the transcript) and
+// retry once with rootinit.PrepareFresh. This cannot distinguish a genuine
+// resume failure from a very fast crash, so the time window is the pragmatic
+// heuristic.
 func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 	sprawlRoot := deps.getenv("SPRAWL_ROOT")
 	if sprawlRoot == "" {
@@ -103,19 +120,21 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 		return err
 	}
 
-	opts := claude.LaunchOpts{
-		SystemPromptFile: prepared.PromptPath,
-		Tools:            prepared.RootTools,
-		AllowedTools:     prepared.RootTools,
-		DisallowedTools:  prepared.Disallowed,
-		Name:             namespace + rootName,
-		Model:            prepared.Model,
-		SessionID:        prepared.SessionID,
+	elapsed, runErr := launchClaude(deps, claudePath, namespace, rootName, prepared)
+
+	// Resume-failure retry: if we asked claude to --resume and it died within
+	// the detection window, fall back to a fresh session. Only retry once.
+	// Beyond the window we assume resume succeeded and the exit was a genuine
+	// mid-session termination (normal bash-loop-restart case).
+	if runErr != nil && prepared.Resume && elapsed < resumeFailureWindow {
+		fmt.Fprintf(deps.stdout, "[root-loop] resume failed for %s: %v — falling back to fresh session\n", prepared.SessionID, runErr)
+		freshPrepared, freshErr := rootinit.PrepareFresh(ctx, deps.rootinit, rootinit.ModeTmux, sprawlRoot, rootName, deps.stdout)
+		if freshErr != nil {
+			return freshErr
+		}
+		_, runErr = launchClaude(deps, claudePath, namespace, rootName, freshPrepared)
 	}
 
-	fmt.Fprintf(deps.stdout, "[root-loop] starting session %s\n", prepared.SessionID)
-
-	runErr := deps.runCommand(claudePath, opts.BuildArgs())
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
@@ -126,4 +145,34 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 	}
 
 	return rootinit.FinalizeHandoff(ctx, deps.rootinit, sprawlRoot, deps.stdout)
+}
+
+// launchClaude builds LaunchOpts from the prepared session and invokes the
+// claude binary via deps.runCommand. It returns (runErr, elapsed) so the
+// caller can decide whether a fast exit on a resume attempt warrants a
+// fresh-session retry.
+//
+// If prepared.Resume is true, `--resume` is used and `--system-prompt-file` /
+// `--session-id` are intentionally omitted (LaunchOpts.BuildArgs enforces
+// this).
+func launchClaude(deps *rootLoopDeps, claudePath, namespace, rootName string, prepared *rootinit.PreparedSession) (time.Duration, error) {
+	opts := claude.LaunchOpts{
+		Tools:           prepared.RootTools,
+		AllowedTools:    prepared.RootTools,
+		DisallowedTools: prepared.Disallowed,
+		Name:            namespace + rootName,
+		Model:           prepared.Model,
+		SessionID:       prepared.SessionID,
+	}
+	if prepared.Resume {
+		opts.Resume = true
+		fmt.Fprintf(deps.stdout, "[root-loop] starting session %s (resume)\n", prepared.SessionID)
+	} else {
+		opts.SystemPromptFile = prepared.PromptPath
+		fmt.Fprintf(deps.stdout, "[root-loop] starting session %s\n", prepared.SessionID)
+	}
+
+	start := deps.now()
+	runErr := deps.runCommand(claudePath, opts.BuildArgs())
+	return deps.now().Sub(start), runErr
 }

@@ -20,36 +20,80 @@ const (
 
 // PreparedSession is the output of Prepare. Callers use it to build the
 // mode-specific claude.LaunchOpts.
+//
+// When Resume is true the prior session's transcript is still live on
+// Claude's side. The caller should launch with `--resume SessionID` and
+// MUST NOT pass `--system-prompt-file` or `--session-id` (the
+// `claude.LaunchOpts.BuildArgs` helper enforces this automatically).
+// PromptPath is empty in the resume case and no new last-session-id is
+// written.
 type PreparedSession struct {
-	PromptPath string   // path to the persisted SYSTEM.md
-	SessionID  string   // fresh UUID written to last-session-id
+	Resume     bool     // if true, launch via --resume SessionID
+	PromptPath string   // path to persisted SYSTEM.md (empty when Resume==true)
+	SessionID  string   // resumed session ID or freshly generated UUID
 	Model      string   // DefaultModel (currently "opus[1m]")
 	RootTools  []string // tools available to the root agent
 	Disallowed []string // tools explicitly denied
 }
 
-// Prepare runs Phase A (pre-launch housekeeping) for the root weave agent:
+// Prepare runs Phase A (pre-launch housekeeping) for the root weave agent.
 //
-//  1. Detects a missed handoff from the previous session and auto-summarizes
-//     or consolidates as appropriate.
-//  2. Builds the context blob (best-effort).
-//  3. Builds the system prompt with the caller's Mode and persists it to
-//     disk.
-//  4. Generates a fresh session ID and writes it to last-session-id.
+// Decision logic:
 //
-// stdout receives progress / warning log lines. The returned
-// PreparedSession is ready to feed into a mode-specific claude.LaunchOpts.
+//  1. If last-session-id is present AND no session summary exists for it,
+//     return a resume-mode PreparedSession pointing at the prior ID. No
+//     new prompt file is written, no new session ID is generated.
+//  2. If last-session-id is present AND a session summary exists (i.e. the
+//     previous session ended via /handoff), run the consolidation pipeline,
+//     clear last-session-id, and fall through to the fresh path.
+//  3. Otherwise (no prior ID), take the fresh path directly: build the
+//     context blob, render the system prompt, persist it to disk, generate a
+//     new session ID, and write it to last-session-id.
+//
+// Handoff is now the explicit "start fresh next time" trigger. Ordinary
+// crash/restart cases resume the prior session instead of starting over.
 func Prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer) (*PreparedSession, error) {
-	// 0. Detect missed handoff from previous session.
+	return prepare(ctx, deps, mode, sprawlRoot, rootName, stdout, false)
+}
+
+// PrepareFresh is the "force fresh" entry point used as a fallback when
+// `--resume` fails at launch time (e.g. Claude's server evicted the prior
+// session, or the stored transcript is corrupt). It skips the resume
+// decision and takes the fresh path directly. If a prior session ID exists
+// without a summary, it is auto-summarized into memory so its context is
+// preserved before the new session launches. Chosen over a `forceFresh bool`
+// parameter so call sites read clearly at the use point.
+func PrepareFresh(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer) (*PreparedSession, error) {
+	return prepare(ctx, deps, mode, sprawlRoot, rootName, stdout, true)
+}
+
+func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer, forceFresh bool) (*PreparedSession, error) {
 	prevSessionID, _ := deps.ReadLastSessionID(sprawlRoot)
-	if prevSessionID != "" {
+
+	if prevSessionID != "" && !forceFresh {
 		alreadySummarized, _ := deps.HasSessionSummary(sprawlRoot, prevSessionID)
-		if alreadySummarized {
-			// Summary exists but consolidation may not have run (e.g., session
-			// killed after handoff before post-session housekeeping).
-			runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
-			_ = deps.WriteLastSessionID(sprawlRoot, "")
-		} else {
+		if !alreadySummarized {
+			// Resume path: prior session is still live on Claude's side.
+			fmt.Fprintf(stdout, "[root-loop] resuming session %s\n", prevSessionID)
+			return &PreparedSession{
+				Resume:     true,
+				SessionID:  prevSessionID,
+				Model:      DefaultModel,
+				RootTools:  RootTools,
+				Disallowed: DisallowedTools,
+			}, nil
+		}
+		// Consolidate-then-fresh: summary exists (prior session handed off),
+		// run consolidation and fall through to the fresh path below.
+		runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
+		_ = deps.WriteLastSessionID(sprawlRoot, "")
+	} else if forceFresh && prevSessionID != "" {
+		// Fresh fallback after a failed resume: the prior session ID is now
+		// effectively dead on Claude's side. If it has no summary yet,
+		// preserve whatever context we can by running the missed-handoff
+		// auto-summarize path.
+		alreadySummarized, _ := deps.HasSessionSummary(sprawlRoot, prevSessionID)
+		if !alreadySummarized {
 			homeDir, homeErr := deps.UserHomeDir()
 			if homeErr != nil {
 				fmt.Fprintf(stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
@@ -65,16 +109,19 @@ func Prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 					runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
 				}
 			}
+		} else {
+			// Summary exists but consolidation may not have run.
+			runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
 		}
+		_ = deps.WriteLastSessionID(sprawlRoot, "")
 	}
 
-	// 1. Build context blob (best-effort).
+	// Fresh path.
 	contextBlob, ctxErr := deps.BuildContextBlob(sprawlRoot, rootName)
 	if ctxErr != nil {
 		fmt.Fprintf(stdout, "[root-loop] warning: context blob partial or failed: %v\n", ctxErr)
 	}
 
-	// 2. Build system prompt.
 	systemPrompt := deps.BuildPrompt(agent.PromptConfig{
 		RootName:    rootName,
 		AgentCLI:    "claude-code",
@@ -87,7 +134,6 @@ func Prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		return nil, fmt.Errorf("writing system prompt: %w", err)
 	}
 
-	// 3. Generate session ID.
 	sessionID, err := deps.NewUUID()
 	if err != nil {
 		return nil, fmt.Errorf("generating session ID: %w", err)
@@ -97,6 +143,7 @@ func Prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 	}
 
 	return &PreparedSession{
+		Resume:     false,
 		PromptPath: promptPath,
 		SessionID:  sessionID,
 		Model:      DefaultModel,

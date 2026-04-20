@@ -63,6 +63,7 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 		},
 		findClaude: func() (string, error) { return "/usr/bin/claude", nil },
 		runCommand: func(name string, args []string) error { return nil },
+		now:        time.Now,
 		stdout:     io.Discard,
 		rootinit:   newStubRootinitDeps(),
 	}
@@ -153,6 +154,122 @@ func TestRunRootSession_LaunchOptsUseTmuxMode(t *testing.T) {
 	}
 	if capturedMode != string(rootinit.ModeTmux) {
 		t.Errorf("expected Mode=%q, got %q", rootinit.ModeTmux, capturedMode)
+	}
+}
+
+func TestRunRootSession_ResumePath_UsesResumeFlag(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+	// Set up resume scenario: prior session ID present, no summary → resume.
+	deps.rootinit.ReadLastSessionID = func(string) (string, error) { return "prev-sess", nil }
+	deps.rootinit.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+
+	var capturedArgs []string
+	deps.runCommand = func(name string, args []string) error {
+		capturedArgs = args
+		return nil
+	}
+
+	if err := runRootSession(context.Background(), deps); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !argsContainPair(capturedArgs, "--resume", "prev-sess") {
+		t.Errorf("expected --resume prev-sess; got %v", capturedArgs)
+	}
+	for i, a := range capturedArgs {
+		if a == "--system-prompt-file" {
+			t.Errorf("resume must omit --system-prompt-file (found at %d); got %v", i, capturedArgs)
+		}
+		if a == "--session-id" {
+			t.Errorf("resume must omit --session-id (found at %d); got %v", i, capturedArgs)
+		}
+	}
+}
+
+func TestRunRootSession_ResumeFailure_RetriesFresh(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+	deps.rootinit.ReadLastSessionID = func(string) (string, error) { return "dead-sess", nil }
+	deps.rootinit.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+	deps.rootinit.NewUUID = func() (string, error) { return "fresh-sess", nil }
+	deps.rootinit.WriteSystemPrompt = func(root, name, content string) (string, error) {
+		return "/tmp/SYSTEM.md", nil
+	}
+
+	// Force the clock to return an instant-exit elapsed < resumeFailureWindow.
+	fakeNow := time.Unix(0, 0)
+	deps.now = func() time.Time {
+		t := fakeNow
+		fakeNow = fakeNow.Add(100 * time.Millisecond)
+		return t
+	}
+
+	var logBuf strings.Builder
+	deps.stdout = &logBuf
+
+	calls := 0
+	var secondArgs []string
+	deps.runCommand = func(name string, args []string) error {
+		calls++
+		if calls == 1 {
+			// First invocation (resume) fails fast.
+			return &exec.ExitError{}
+		}
+		// Second invocation is the fresh retry.
+		secondArgs = args
+		return nil
+	}
+
+	if err := runRootSession(context.Background(), deps); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 2 {
+		t.Fatalf("expected 2 claude invocations (resume + retry), got %d", calls)
+	}
+	if !argsContainPair(secondArgs, "--session-id", "fresh-sess") {
+		t.Errorf("retry should use fresh session ID; got args %v", secondArgs)
+	}
+	if !argsContainPair(secondArgs, "--system-prompt-file", "/tmp/SYSTEM.md") {
+		t.Errorf("retry should use --system-prompt-file; got args %v", secondArgs)
+	}
+	for _, a := range secondArgs {
+		if a == "--resume" {
+			t.Errorf("retry must not use --resume; got %v", secondArgs)
+		}
+	}
+	if !strings.Contains(logBuf.String(), "resume failed for dead-sess") {
+		t.Errorf("expected resume-failure log message; got %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "falling back to fresh session") {
+		t.Errorf("expected fallback log message; got %q", logBuf.String())
+	}
+}
+
+func TestRunRootSession_ResumeFailure_OutsideWindow_DoesNotRetry(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+	deps.rootinit.ReadLastSessionID = func(string) (string, error) { return "live-sess", nil }
+	deps.rootinit.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+
+	// Clock advances past the detection window on the first call, so a
+	// non-zero exit is treated as a normal mid-session exit (bash loop case).
+	fakeNow := time.Unix(0, 0)
+	deps.now = func() time.Time {
+		t := fakeNow
+		fakeNow = fakeNow.Add(resumeFailureWindow + time.Second)
+		return t
+	}
+
+	calls := 0
+	deps.runCommand = func(name string, args []string) error {
+		calls++
+		return &exec.ExitError{}
+	}
+
+	if err := runRootSession(context.Background(), deps); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected 1 invocation (no retry beyond window); got %d", calls)
 	}
 }
 

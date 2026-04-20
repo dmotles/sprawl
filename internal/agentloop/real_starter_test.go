@@ -85,11 +85,13 @@ func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 
 	args := config.Args.BuildArgs()
 
+	// Note: --session-id and --system-prompt are intentionally NOT expected —
+	// Resume=true suppresses them (see internal/claude TestBuildArgs_Resume*).
 	expected := map[string]bool{
 		"-p": false, "--input-format": false, "--output-format": false,
 		"--verbose": false, "--model": false, "--effort": false,
 		"--permission-mode": false,
-		"--session-id":      false, "--system-prompt": false, "--resume": false,
+		"--resume":          false,
 	}
 	for _, arg := range args {
 		if _, ok := expected[arg]; ok {

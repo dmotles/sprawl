@@ -37,14 +37,16 @@ The flow decomposes into four phases. Each phase is either **shared** (identical
 
 ### Phase A — Pre-launch housekeeping (shared)
 
+**Resume-by-default decision (implemented in Phase 1.5, QUM-255).** `rootinit.Prepare` picks between three paths based on `last-session-id`:
+
 1. Resolve `sprawlRoot` and `rootName` ("weave").
-2. Read `last-session-id`. If present:
-   - If `HasSessionSummary` → run the consolidation pipeline, clear `last-session-id`.
-   - Else → auto-summarize (`memory.AutoSummarize`), then consolidate, then clear.
-3. Build context blob (`memory.BuildContextBlob`).
-4. Build system prompt (`agent.BuildRootPrompt`) — passing `Mode` so the child-rules / merge-retire / communication blocks render correctly.
-5. Persist system prompt via `state.WriteSystemPrompt`. **See §3 for filename.**
-6. Generate fresh session ID, write to `last-session-id`.
+2. Read `last-session-id`.
+   - **Present AND no session summary → resume path.** Return `PreparedSession{Resume: true, SessionID: prev}`; caller launches with `--resume <prev>`. No new prompt file, no new session ID, no change to `last-session-id`. Log: `[root-loop] resuming session <id>` (tmux) / `[enter] resuming session <id>` (TUI).
+   - **Present AND session summary exists → consolidate-then-fresh.** The previous session ran `/handoff` (which writes the summary) — so we run the consolidation pipeline, clear `last-session-id`, and fall through to the fresh path.
+   - **Not present (or just cleared) → fresh path.** Build context blob (`memory.BuildContextBlob`), build system prompt (`agent.BuildRootPrompt`) with `Mode` propagated, persist it via `state.WriteSystemPrompt` (see §3 for filename), generate a fresh UUID, and write it to `last-session-id`.
+3. `PrepareFresh` is the "force fresh" entry point — same as the fresh path above, plus a missed-handoff detection block for the prior session (auto-summarize + consolidate) since that session's transcript is about to be abandoned. Used by the resume-failure fallback (see §5).
+
+Under this model `/handoff` is the explicit "start fresh next time" trigger: it writes a summary → next startup sees the summary → consolidate-then-fresh. Ordinary crash/restart cases (SIGINT, closed laptop, Claude exited) now resume instead of starting cold.
 
 ### Phase B — Launch (mode-specific)
 
@@ -173,16 +175,19 @@ Proposed TUI restart lifecycle:
 
 No exit-code contract needed; the TUI decides locally whether to restart based on why the subprocess ended (handoff signal present vs. user quit vs. crash).
 
-### Session resume
+### Session resume (implemented in Phase 1.5, QUM-255)
 
 Two flavors worth distinguishing:
 
-- **Between handoffs:** new `sessionID` is generated — this is consistent with tmux behavior and preserves the memory/handoff model. Do the same in TUI.
-- **Across `sprawl enter` invocations:** a different question. Should re-opening the TUI resume the previous (unhandoffed) session?
+- **Between handoffs:** new `sessionID` is generated. The handoff path (summary written) triggers `consolidate-then-fresh` in Phase A. Same in tmux and TUI.
+- **Across restarts without handoff:** resume the prior session. `last-session-id` exists + no summary → Phase A returns `PreparedSession{Resume: true}` and the caller launches with `--resume <prev>`.
 
-**Recommendation:** For initial implementation, **do not** pass `--resume`. Match tmux semantics: every launch is a fresh session; memory is the continuity mechanism via the context blob, not SDK-level resume. Adding `--resume` later is a small increment (set `LaunchOpts.Resume = true` + `SessionID = prevID` when `last-session-id` exists and has no summary yet). This is appropriate for a follow-up issue.
+`LaunchOpts.Resume = true` emits `--resume <SessionID>` and **omits** both `--system-prompt-file` and `--session-id` (the resumed transcript carries its own). Passing them alongside `--resume` causes Claude Code to reject the invocation, so `BuildArgs` enforces the mutual exclusion.
 
-Rationale for deferring: `--resume` semantics across stream-json mode are not stress-tested in this codebase. The missed-handoff detection + auto-summarize already handles the "TUI died mid-session" case — it just summarizes the JSONL transcript post-hoc instead of resuming live. That's sufficient to start.
+**Resume-failure fallback.** If `claude --resume` fails at launch (server evicted the transcript, corrupt JSONL, etc.) the subprocess usually exits quickly with a non-zero code. Detection is a pragmatic time heuristic — if the launch exited within `resumeFailureWindow` (5s) AND we requested resume, we assume resume-init failed and retry once via `rootinit.PrepareFresh`. The fresh path's missed-handoff detection picks up the dead session and auto-summarizes it into memory before launching.
+
+- **tmux** — `cmd/rootloop.go` tracks `elapsed = now() - start` around `deps.runCommand`. On `*exec.ExitError && elapsed < resumeFailureWindow`, it logs `[root-loop] resume failed for <id>: <err> — falling back to fresh session` and retries once with `PrepareFresh`.
+- **TUI** — `cmd/enter.go` tracks the last `defaultNewSession` invocation's start time and whether it took the resume path (`PreparedSession.Resume`). The `restartFunc` (called by the TUI when the subprocess exits / `RestartSessionMsg` fires) checks `lastWasResume && time.Since(lastStartedAt) < resumeFailureWindow` and passes `forceFresh=true` to `defaultNewSession` if so, which routes through `PrepareFresh`. The detection cannot distinguish genuine resume failure from a very fast user-initiated exit, but the trade-off favors recovery over a once-per-session false retry.
 
 ## 6. Migration Plan
 
@@ -211,10 +216,16 @@ Phased so tmux mode cannot break.
 - Handoff from inside TUI now triggers consolidation + restart with fresh session ID and re-prepared prompt.
 - **Check:** invoke `/handoff` inside TUI weave, confirm consolidation runs, confirm new session starts with updated memory context, confirm persistent.md is updated.
 
-### Phase 5 — (Optional, follow-up issue) Session resume
+### Phase 1.5 — Resume-by-default (QUM-255, merged)
 
-- Add `--resume` support gated on `last-session-id` existing and having no summary.
-- Defer until phases 1–4 are stable.
+- `rootinit.Prepare` rewrites Phase A decision logic around resume / consolidate-then-fresh / fresh (see §2).
+- `PreparedSession.Resume` added; `claude.LaunchOpts.BuildArgs` suppresses `--session-id` and `--system-prompt-file` when `Resume` is true.
+- `cmd/rootloop.go` + `cmd/enter.go` both wire the resume branch and retry-fresh-on-fast-failure.
+- `rootinit.PrepareFresh` is the explicit force-fresh entry point used by both retry paths.
+
+### Phase 5 — (Deferred / folded into 1.5)
+
+Originally scoped as "add `--resume` support later." Superseded by Phase 1.5 — resume is now the default.
 
 **Cross-phase check at every step:** run the tmux smoke test (`scripts/smoke-test-memory.sh`) and the TUI E2E harness. Phase 1 is pure refactor; phases 2–4 only add behavior to TUI, so tmux regressions are unlikely but the smoke test catches them.
 

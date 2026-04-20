@@ -194,16 +194,19 @@ func TestEnter_DefaultAccentColor(t *testing.T) {
 
 // mockSessionFactory returns a newSession function and tracks whether it was called.
 type mockSessionFactory struct {
-	bridge    *tui.Bridge
-	err       error
-	called    bool
-	sprawlDir string
+	bridge         *tui.Bridge
+	err            error
+	called         bool
+	sprawlDir      string
+	lastForceFresh bool
+	wasResume      bool
 }
 
-func (f *mockSessionFactory) newSession(sprawlRoot string) (*tui.Bridge, error) {
+func (f *mockSessionFactory) newSession(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error) {
 	f.called = true
 	f.sprawlDir = sprawlRoot
-	return f.bridge, f.err
+	f.lastForceFresh = forceFresh
+	return f.bridge, f.wasResume, f.err
 }
 
 func TestEnter_WithSession(t *testing.T) {
