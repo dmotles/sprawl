@@ -104,6 +104,27 @@ type RestartSessionMsg struct{}
 // channel event that `cmd/enter.go` converts into this msg via tea.Program.Send.
 type HandoffRequestedMsg struct{}
 
+// OpenPaletteMsg requests that the command palette overlay be shown. The
+// app gates this on input not being disabled and no other modal being active.
+type OpenPaletteMsg struct{}
+
+// ClosePaletteMsg requests that the command palette overlay be hidden.
+type ClosePaletteMsg struct{}
+
+// InjectPromptMsg carries a command's prompt template to be sent to Claude
+// via the bridge, without rendering it as a user message in the viewport.
+type InjectPromptMsg struct {
+	Template string
+}
+
+// ToggleHelpMsg flips the help overlay visibility (same effect as F1).
+type ToggleHelpMsg struct{}
+
+// PaletteQuitMsg requests an immediate app quit triggered by the palette's
+// /exit command. The app sets `quitting=true` then returns tea.Quit — same
+// post-confirm semantics as the Ctrl-C path.
+type PaletteQuitMsg struct{}
+
 // SessionRestartingMsg signals that the TUI is transitioning between Claude
 // subprocess sessions (e.g. after transport EOF or /handoff). The App renders
 // a status banner carrying Reason while the restart work runs.

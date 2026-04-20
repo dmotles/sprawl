@@ -31,6 +31,12 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 		if m.disabled {
 			return m, nil
 		}
+		// Intercept `/` as the very first character of an empty input: open
+		// the command palette rather than inserting the literal slash. `/`
+		// mid-text falls through and is inserted by textinput normally.
+		if keyMsg.Code == '/' && m.ti.Value() == "" {
+			return m, func() tea.Msg { return OpenPaletteMsg{} }
+		}
 		if keyMsg.Code == tea.KeyEnter {
 			text := strings.TrimSpace(m.ti.Value())
 			if text != "" {

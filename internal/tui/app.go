@@ -42,6 +42,9 @@ type AppModel struct {
 	help     HelpModel
 	showHelp bool
 
+	palette     PaletteModel
+	showPalette bool
+
 	bridge    *Bridge
 	turnState TurnState
 
@@ -90,6 +93,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		statusBar:     NewStatusBarModel(&theme, repoName, version, 0),
 		help:          NewHelpModel(&theme),
 		confirm:       NewConfirmModel(&theme),
+		palette:       NewPaletteModel(&theme),
 		bridge:        bridge,
 		turnState:     TurnIdle,
 		supervisor:    sup,
@@ -175,6 +179,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// When the command palette is open, route ALL keys to it — no
+		// panel cycling, no input typing. Palette emits ClosePaletteMsg on
+		// Esc or on command dispatch.
+		if m.showPalette {
+			var cmd tea.Cmd
+			m.palette, cmd = m.palette.Update(msg)
+			return m, cmd
+		}
+
 		if msg.Code == tea.KeyTab {
 			if msg.Mod&tea.ModShift != 0 {
 				m.activePanel = (m.activePanel - 1 + panelCount) % panelCount
@@ -191,6 +204,37 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SessionInitializedMsg:
 		m.viewport.AppendStatus("Session ready")
 		return m, nil
+
+	case OpenPaletteMsg:
+		if m.input.disabled || m.showConfirm || m.showError || m.showHelp || m.showPalette {
+			return m, nil
+		}
+		m.palette.SetSize(m.width, m.height)
+		m.palette.Show()
+		m.showPalette = true
+		return m, nil
+
+	case ClosePaletteMsg:
+		m.palette.Hide()
+		m.showPalette = false
+		return m, nil
+
+	case ToggleHelpMsg:
+		m.showHelp = !m.showHelp
+		return m, nil
+
+	case PaletteQuitMsg:
+		m.quitting = true
+		return m, tea.Quit
+
+	case InjectPromptMsg:
+		if msg.Template == "" || m.bridge == nil || m.turnState != TurnIdle {
+			return m, nil
+		}
+		m.viewport.AppendStatus("/handoff dispatched — see output below")
+		m.setTurnState(TurnThinking)
+		m.input.SetDisabled(true)
+		return m, m.bridge.SendMessage(msg.Template)
 
 	case SubmitMsg:
 		if msg.Text == "" || m.bridge == nil || m.turnState != TurnIdle {
@@ -280,6 +324,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if reason == "" {
 			reason = "session ended"
 		}
+		// Force-close the palette if open — a restart swaps out the bridge,
+		// so any pending palette dispatch would hit a stale channel.
+		m.palette.Hide()
+		m.showPalette = false
 		m.viewport.AppendStatus(fmt.Sprintf("Session restarting (%s)...", reason))
 		m.setTurnState(TurnIdle)
 		m.input.SetDisabled(true)
@@ -416,6 +464,10 @@ func (m AppModel) View() tea.View {
 	// Stack vertically.
 	content := lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
 
+	if m.showPalette {
+		content = m.palette.View()
+	}
+
 	if m.showHelp {
 		content = m.help.View()
 	}
@@ -465,6 +517,7 @@ func (m *AppModel) resizePanels() {
 	m.help.SetSize(m.width, m.height)
 	m.confirm.SetSize(m.width, m.height)
 	m.errorDialog.SetSize(m.width, m.height)
+	m.palette.SetSize(m.width, m.height)
 }
 
 func (m *AppModel) updateFocus() {
