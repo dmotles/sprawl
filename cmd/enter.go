@@ -290,6 +290,16 @@ func runEnter(deps *enterDeps) error {
 		fmt.Fprintf(os.Stderr, "SPRAWL_ROOT not set — defaulting to %s\n", sprawlRoot)
 	}
 
+	// Single-weave invariant: acquire the flock before any init work, and
+	// hold it for the lifetime of the sprawl enter process (including
+	// across TUI-driven session restarts). Released on return.
+	lock, err := rootinit.AcquireWeaveLock(sprawlRoot)
+	if err != nil {
+		printWeaveLockError(os.Stderr, err, deps.getenv("SPRAWL_NAMESPACE"), sprawlRoot)
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+
 	accentColor := state.ReadAccentColor(sprawlRoot)
 	repoName := filepath.Base(sprawlRoot)
 	version := state.ReadVersion(sprawlRoot)
@@ -337,7 +347,7 @@ func runEnter(deps *enterDeps) error {
 		}
 	}
 	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
-	err := deps.runProgram(model)
+	err = deps.runProgram(model)
 
 	// Graceful shutdown: stop all agents with a timeout.
 	if sup != nil {

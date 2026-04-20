@@ -66,8 +66,16 @@ func newTestRootLoopDeps(t *testing.T) *rootLoopDeps {
 		now:        time.Now,
 		stdout:     io.Discard,
 		rootinit:   newStubRootinitDeps(),
+		acquireLock: func(string) (weaveLockReleaser, error) {
+			return stubLock{}, nil
+		},
 	}
 }
+
+// stubLock is a no-op weaveLockReleaser used in unit tests.
+type stubLock struct{}
+
+func (stubLock) Release() error { return nil }
 
 func TestRunRootSession_MissingSprawlRoot(t *testing.T) {
 	deps := newTestRootLoopDeps(t)

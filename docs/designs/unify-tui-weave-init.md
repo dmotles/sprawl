@@ -86,7 +86,7 @@ Files involved:
 
 The user correctly flagged that running `sprawl enter` and a tmux weave against the same sprawl checkout at the same time creates a race.
 
-**Recommendation: single filename, enforce single-active-weave invariant with a process lock.**
+**Recommendation: single filename, enforce single-active-weave invariant with a process lock.** *(Implemented in Phase 2 — QUM-256.)*
 
 Rationale:
 
@@ -94,9 +94,9 @@ Rationale:
 2. The `/handoff` skill emits a single signal file; if we split per-mode files we'd need to split the whole handoff protocol, which cascades into `cmd/handoff.go`, the consolidation pipeline, etc.
 3. Separate files (`SYSTEM-tui.md`) would paper over the race on the prompt file but would not fix the races on `last-session-id`, `handoff-signal`, or the timeline. Fixing the race only on SYSTEM.md is a false sense of safety.
 
-**Proposed mechanism:** a file-lock at `.sprawl/memory/weave.lock` (flock-style, exclusive, non-blocking). Both `sprawl _root-session` and `defaultNewSession` acquire it before Phase A; whichever gets it runs, the other prints a friendly error ("Another weave session is active — reattach with `tmux attach` / `sprawl enter`") and exits.
+**Mechanism (implemented in Phase 2):** a file-lock at `.sprawl/memory/weave.lock` (flock-style, exclusive, non-blocking). `cmd/rootloop.go` (`runRootSession`) acquires it before `rootinit.Prepare`; `cmd/enter.go` (`runEnter`) acquires it at the top of the TUI lifecycle and holds it across session restarts. Whichever process gets it runs; the other prints a friendly error pointing at the holder's PID and exits non-zero. See `internal/rootinit/lock.go` (`AcquireWeaveLock`, `WeaveLock.Release`, `ErrWeaveAlreadyRunning`).
 
-Implementation note: Go's `syscall.Flock` on Linux/Mac is fine; the lockfile is process-scoped, so it auto-releases if the process dies. Store the PID in the lock file for debugging.
+Implementation: `golang.org/x/sys/unix.Flock(fd, LOCK_EX|LOCK_NB)` on unix (Linux/macOS); a `!unix` build-tag stub returns a clear "unsupported platform" error to keep cross-compile clean. The lockfile is process-scoped, so the kernel auto-releases on process exit even after `kill -9`. Stale lock files (holder died without clean release) are reclaimed transparently because `flock` only cares about live fd holders. The PID is written into the file on acquire for debugging.
 
 **Rejected alternative: separate filenames per mode (`SYSTEM-tui.md`, `last-session-id-tui`).** Splits state in a way that makes memory non-sharable across modes, doubles the surface area of the consolidation pipeline, and still doesn't prevent two weaves from concurrently spawning children.
 

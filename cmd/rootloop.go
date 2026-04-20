@@ -35,12 +35,20 @@ var errShutdownRequested = errors.New("shutdown requested")
 // command that are specific to the tmux launch path. The mode-agnostic
 // Phase A / Phase D work lives in internal/rootinit.
 type rootLoopDeps struct {
-	getenv     func(string) string
-	findClaude func() (string, error)
-	runCommand func(name string, args []string) error
-	now        func() time.Time
-	stdout     io.Writer
-	rootinit   *rootinit.Deps
+	getenv      func(string) string
+	findClaude  func() (string, error)
+	runCommand  func(name string, args []string) error
+	now         func() time.Time
+	stdout      io.Writer
+	rootinit    *rootinit.Deps
+	acquireLock func(sprawlRoot string) (weaveLockReleaser, error)
+}
+
+// weaveLockReleaser is the minimal interface the rootloop needs from an
+// acquired lock — just Release(). Abstracting this lets tests stub the
+// acquire call without touching the real filesystem.
+type weaveLockReleaser interface {
+	Release() error
 }
 
 // defaultRootLoopDeps wires real implementations.
@@ -58,6 +66,9 @@ func defaultRootLoopDeps() *rootLoopDeps {
 		now:      time.Now,
 		stdout:   os.Stdout,
 		rootinit: rootinit.DefaultDeps(),
+		acquireLock: func(sprawlRoot string) (weaveLockReleaser, error) {
+			return rootinit.AcquireWeaveLock(sprawlRoot)
+		},
 	}
 }
 
@@ -109,6 +120,17 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 
 	namespace := deps.getenv("SPRAWL_NAMESPACE")
 	rootName := tmux.DefaultRootName
+
+	// Single-weave invariant: acquire the flock before doing any init work.
+	// Released on return so the bash loop can re-acquire on the next
+	// iteration (which is always sequential — the loop waits for us to
+	// exit). The kernel drops the flock if this process is killed.
+	lock, err := deps.acquireLock(sprawlRoot)
+	if err != nil {
+		printWeaveLockError(deps.stdout, err, namespace, sprawlRoot)
+		return err
+	}
+	defer func() { _ = lock.Release() }()
 
 	claudePath, err := deps.findClaude()
 	if err != nil {
