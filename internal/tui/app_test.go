@@ -748,6 +748,8 @@ func (m *mockSupervisor) Merge(_ context.Context, _, _ string, _ bool) error  { 
 func (m *mockSupervisor) Retire(_ context.Context, _ string, _, _ bool) error { return nil }
 func (m *mockSupervisor) Kill(_ context.Context, _ string) error              { return nil }
 func (m *mockSupervisor) Shutdown(_ context.Context) error                    { return nil }
+func (m *mockSupervisor) Handoff(_ context.Context, _ string) error           { return nil }
+func (m *mockSupervisor) HandoffRequested() <-chan struct{}                   { return nil }
 
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
@@ -1215,6 +1217,27 @@ func TestAppModel_PreloadTranscript_SetsViewportMessages(t *testing.T) {
 	}
 	if got[2].Type != MessageStatus || got[2].Content != "Resumed from prior session" {
 		t.Errorf("got[2] = %+v, want trailing status", got[2])
+	}
+}
+
+func TestAppModel_HandoffRequestedMsg_TriggersRestart(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	_, cmd := app.Update(HandoffRequestedMsg{})
+	if cmd == nil {
+		t.Fatal("HandoffRequestedMsg should return a batch cmd")
+	}
+	msgs := collectBatchMsgs(t, cmd)
+	if !hasMsgOfType[SessionRestartingMsg](msgs) {
+		t.Errorf("expected SessionRestartingMsg in batch, got %v", msgs)
+	}
+	if !hasMsgOfType[RestartSessionMsg](msgs) {
+		t.Errorf("expected RestartSessionMsg in batch, got %v", msgs)
 	}
 }
 

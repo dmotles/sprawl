@@ -124,6 +124,20 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "sprawl_handoff",
+			"description": "Weave-only: persist a structured session summary and hand off to a fresh weave session. The host tears down the current subprocess and starts a new one with consolidated memory. Call this at the end of a session instead of `sprawl handoff` via bash.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "Structured session summary (markdown). See the /handoff skill for the template.",
+					},
+				},
+				"required": []string{"summary"},
+			},
+		},
+		{
 			"name":        "sprawl_kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{

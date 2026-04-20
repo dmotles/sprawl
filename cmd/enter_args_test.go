@@ -155,6 +155,7 @@ func TestSprawlOpsMCPTools_CoversAllServerTools(t *testing.T) {
 		"mcp__sprawl-ops__sprawl_merge",
 		"mcp__sprawl-ops__sprawl_retire",
 		"mcp__sprawl-ops__sprawl_kill",
+		"mcp__sprawl-ops__sprawl_handoff",
 	}
 	got := sprawlOpsMCPTools()
 	if len(got) != len(want) {

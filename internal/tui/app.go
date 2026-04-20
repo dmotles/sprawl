@@ -266,6 +266,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetDisabled(false)
 		return m, nil
 
+	case HandoffRequestedMsg:
+		// Weave invoked the sprawl_handoff MCP tool. Reuse the EOF restart
+		// path: status banner + restart, which closes the bridge and runs
+		// FinalizeHandoff (consuming the signal file the supervisor wrote).
+		return m, tea.Batch(
+			sendMsgCmd(SessionRestartingMsg{Reason: "handoff"}),
+			sendMsgCmd(RestartSessionMsg{}),
+		)
+
 	case SessionRestartingMsg:
 		reason := msg.Reason
 		if reason == "" {

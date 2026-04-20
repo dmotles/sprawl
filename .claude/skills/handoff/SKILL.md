@@ -37,9 +37,23 @@ Write a structured summary covering these categories:
 - Any explicit requests or directions from the user
 - Tone, style, or workflow preferences noticed
 
-## Step 2: Pipe the Summary into `sprawl handoff`
+## Step 2: Trigger the Handoff
 
-Once your summary is written, execute the handoff by piping it via a heredoc:
+You have two ways to execute the handoff — prefer the MCP tool when available.
+
+### Preferred: `mcp__sprawl-ops__sprawl_handoff` (TUI mode)
+
+If `mcp__sprawl-ops__sprawl_handoff` appears in your tool list (you are running inside `sprawl enter`), call it directly:
+
+```
+mcp__sprawl-ops__sprawl_handoff({ summary: "<your full summary here>" })
+```
+
+The host will persist the summary to `.sprawl/memory/sessions/<session-id>.md`, write `.sprawl/memory/handoff-signal`, tear down this subprocess, and start a fresh weave session with consolidated memory. The new weave starts automatically — the user does **not** need to exit and re-enter `sprawl enter`.
+
+### Fallback: `sprawl handoff` CLI (tmux mode)
+
+If the MCP tool is unavailable (you are under the classic tmux root loop), pipe the summary via heredoc:
 
 ```bash
 sprawl handoff <<'EOF'
@@ -47,10 +61,7 @@ sprawl handoff <<'EOF'
 EOF
 ```
 
-The `sprawl handoff` command will:
-- Save the summary as the session file for the current session ID
-- Remind you to instruct the user to kill the session when ready
-- When the user ctrl+c or ctrl+d or /exits the session, the weave loop will start a fresh version of weave with memories from the previous session, so weave has historical context of what happened.
+The summary is saved and a signal file is written; the root loop restarts a fresh weave when the user exits the current session (ctrl+c / ctrl+d / `/exit`).
 
 ## Reminders
 

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
@@ -45,6 +47,16 @@ type Real struct {
 	mergeFn  func(*agentops.MergeDeps, string, string, bool, bool) error
 	retireFn func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error
 	killFn   func(*agentops.KillDeps, string, bool) error
+
+	// Handoff seams + signal channel. The channel is buffered (size 1) and
+	// Handoff sends non-blocking so repeated calls never deadlock if no
+	// listener drains.
+	handoffCh                  chan struct{}
+	handoffReadLastSessionID   func(sprawlRoot string) (string, error)
+	handoffListAgents          func(sprawlRoot string) ([]*state.AgentState, error)
+	handoffWriteSessionSummary func(sprawlRoot string, session memory.Session, body string) error
+	handoffWriteSignalFile     func(sprawlRoot string) error
+	handoffNow                 func() time.Time
 }
 
 // NewReal creates a new real supervisor. It returns an error if required
@@ -149,6 +161,13 @@ func NewReal(cfg Config) (*Real, error) {
 		mergeFn:  agentops.Merge,
 		retireFn: agentops.Retire,
 		killFn:   agentops.Kill,
+
+		handoffCh:                  make(chan struct{}, 1),
+		handoffReadLastSessionID:   memory.ReadLastSessionID,
+		handoffListAgents:          state.ListAgents,
+		handoffWriteSessionSummary: memory.WriteSessionSummary,
+		handoffWriteSignalFile:     memory.WriteHandoffSignal,
+		handoffNow:                 time.Now,
 	}
 	return r, nil
 }
@@ -249,4 +268,62 @@ func (r *Real) Kill(_ context.Context, agentName string) error {
 
 func (r *Real) Shutdown(_ context.Context) error {
 	return nil
+}
+
+// Handoff persists the given summary as a session memory file (with
+// Handoff=true) and writes the handoff-signal file. On success it fires
+// HandoffRequested via a non-blocking send; consumers teardown+restart
+// asynchronously so the caller (the MCP tool) returns immediately.
+//
+// Mirrors the logic in cmd/handoff.go:runHandoff, minus stdin parsing and
+// the root-agent env check (the MCP tool is only wired into the weave root's
+// allowlist, which is the only caller).
+func (r *Real) Handoff(_ context.Context, summary string) error {
+	if strings.TrimSpace(summary) == "" {
+		return fmt.Errorf("handoff summary must not be empty")
+	}
+
+	sessionID, err := r.handoffReadLastSessionID(r.sprawlRoot)
+	if err != nil {
+		return fmt.Errorf("reading session ID: %w", err)
+	}
+	if sessionID == "" {
+		return fmt.Errorf("no session ID found; .sprawl/memory/last-session-id is missing or empty")
+	}
+
+	agents, err := r.handoffListAgents(r.sprawlRoot)
+	if err != nil {
+		return fmt.Errorf("listing agents: %w", err)
+	}
+	var agentNames []string
+	for _, a := range agents {
+		agentNames = append(agentNames, a.Name)
+	}
+
+	session := memory.Session{
+		SessionID:    sessionID,
+		Timestamp:    r.handoffNow().UTC(),
+		Handoff:      true,
+		AgentsActive: agentNames,
+	}
+	if err := r.handoffWriteSessionSummary(r.sprawlRoot, session, summary); err != nil {
+		return fmt.Errorf("writing session summary: %w", err)
+	}
+
+	if err := r.handoffWriteSignalFile(r.sprawlRoot); err != nil {
+		return fmt.Errorf("writing handoff signal: %w", err)
+	}
+
+	select {
+	case r.handoffCh <- struct{}{}:
+	default:
+		// Channel already has a pending signal — that's fine. The consumer
+		// will pick up the restart on its next drain.
+	}
+	return nil
+}
+
+// HandoffRequested returns the signal channel. See Handoff.
+func (r *Real) HandoffRequested() <-chan struct{} {
+	return r.handoffCh
 }

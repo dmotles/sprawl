@@ -28,7 +28,7 @@ import (
 type enterDeps struct {
 	getenv          func(string) string
 	getwd           func() (string, error)
-	runProgram      func(tea.Model) error
+	runProgram      func(model tea.Model, onStart func(sender func(tea.Msg))) error
 	newSession      func(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error)
 	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer) error
@@ -107,7 +107,7 @@ func resolveEnterDeps() *enterDeps {
 	return &enterDeps{
 		getenv: os.Getenv,
 		getwd:  os.Getwd,
-		runProgram: func(model tea.Model) error {
+		runProgram: func(model tea.Model, onStart func(sender func(tea.Msg))) error {
 			p := tea.NewProgram(model)
 
 			// Catch SIGTERM/SIGHUP and forward as quit to the Bubble Tea program.
@@ -119,6 +119,10 @@ func resolveEnterDeps() *enterDeps {
 				}
 			}()
 			defer signal.Stop(sigCh)
+
+			if onStart != nil {
+				onStart(func(msg tea.Msg) { p.Send(msg) })
+			}
 
 			_, err := p.Run()
 			return err
@@ -153,6 +157,7 @@ func sprawlOpsMCPTools() []string {
 		"mcp__sprawl-ops__sprawl_merge",
 		"mcp__sprawl-ops__sprawl_retire",
 		"mcp__sprawl-ops__sprawl_kill",
+		"mcp__sprawl-ops__sprawl_handoff",
 	}
 }
 
@@ -390,7 +395,34 @@ func runEnter(deps *enterDeps) error {
 		}
 	}
 
-	err = deps.runProgram(model)
+	// Shutdown signal for the handoff-forwarder goroutine; closed when the
+	// Bubble Tea program returns so the goroutine can exit.
+	handoffDone := make(chan struct{})
+	onStart := func(send func(tea.Msg)) {
+		if sup == nil {
+			return
+		}
+		ch := sup.HandoffRequested()
+		if ch == nil {
+			return
+		}
+		go func() {
+			for {
+				select {
+				case <-handoffDone:
+					return
+				case _, ok := <-ch:
+					if !ok {
+						return
+					}
+					send(tui.HandoffRequestedMsg{})
+				}
+			}
+		}()
+	}
+
+	err = deps.runProgram(model, onStart)
+	close(handoffDone)
 
 	// Phase D on clean shutdown: if the TUI exited normally (e.g. the user
 	// quit via the Ctrl-C confirm dialog after `/handoff`), run the

@@ -36,6 +36,9 @@ type mockSupervisor struct {
 	retireMerge    bool
 	retireAbandon  bool
 	killAgent      string
+	handoffSummary string
+	handoffErr     error
+	handoffCh      chan struct{}
 }
 
 func (m *mockSupervisor) Spawn(_ context.Context, req supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
@@ -81,6 +84,18 @@ func (m *mockSupervisor) Kill(_ context.Context, agentName string) error {
 
 func (m *mockSupervisor) Shutdown(_ context.Context) error {
 	return m.shutdownErr
+}
+
+func (m *mockSupervisor) Handoff(_ context.Context, summary string) error {
+	m.handoffSummary = summary
+	return m.handoffErr
+}
+
+func (m *mockSupervisor) HandoffRequested() <-chan struct{} {
+	if m.handoffCh == nil {
+		m.handoffCh = make(chan struct{}, 1)
+	}
+	return m.handoffCh
 }
 
 // makeJSONRPCRequest builds a raw JSON-RPC request for testing.
@@ -169,6 +184,7 @@ func TestServer_ToolsList(t *testing.T) {
 		"sprawl_merge",
 		"sprawl_retire",
 		"sprawl_kill",
+		"sprawl_handoff",
 	}
 
 	if len(toolsRaw) != len(expectedTools) {
@@ -456,6 +472,72 @@ func TestServer_ToolsCall_SprawlKill(t *testing.T) {
 	parsed := parseJSONRPCResponse(t, resp)
 	if _, ok := parsed["error"]; ok {
 		t.Errorf("unexpected error: %v", parsed["error"])
+	}
+}
+
+func TestServer_ToolsCall_SprawlHandoff(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(20, "tools/call", map[string]any{
+		"name": "sprawl_handoff",
+		"arguments": map[string]any{
+			"summary": "## What happened\nmerged QUM-263",
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	if mock.handoffSummary != "## What happened\nmerged QUM-263" {
+		t.Errorf("handoff summary = %q, want the posted body", mock.handoffSummary)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	if _, ok := parsed["error"]; ok {
+		t.Fatalf("unexpected JSON-RPC error: %v", parsed["error"])
+	}
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatal("missing result")
+	}
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Errorf("unexpected isError=true result: %v", result)
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatal("missing content")
+	}
+	first := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if text == "" {
+		t.Error("empty text response — weave needs some acknowledgement string")
+	}
+}
+
+func TestServer_ToolsCall_SprawlHandoff_SupervisorError(t *testing.T) {
+	mock := &mockSupervisor{handoffErr: fmt.Errorf("no session")}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(21, "tools/call", map[string]any{
+		"name":      "sprawl_handoff",
+		"arguments": map[string]any{"summary": "body"},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected MCP content result, not JSON-RPC error")
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Error("expected isError=true for supervisor error")
 	}
 }
 

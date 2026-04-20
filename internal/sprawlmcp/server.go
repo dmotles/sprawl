@@ -97,6 +97,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolRetire(ctx, args)
 	case "sprawl_kill":
 		return s.toolKill(ctx, args)
+	case "sprawl_handoff":
+		return s.toolHandoff(ctx, args)
 	default:
 		// Unknown tools get a JSON-RPC error, not a tool content error
 		return "", &unknownToolError{name: name}
@@ -198,6 +200,19 @@ func (s *Server) toolKill(ctx context.Context, args json.RawMessage) (string, er
 		return "", err
 	}
 	return fmt.Sprintf("Killed agent %s", p.AgentName), nil
+}
+
+func (s *Server) toolHandoff(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if err := s.sup.Handoff(ctx, p.Summary); err != nil {
+		return "", err
+	}
+	return "Handoff recorded. Session will restart momentarily with fresh context.", nil
 }
 
 // unknownToolError is used to distinguish unknown tool errors from supervisor errors.

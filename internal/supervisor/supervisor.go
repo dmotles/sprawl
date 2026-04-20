@@ -30,4 +30,16 @@ type Supervisor interface {
 	Retire(ctx context.Context, agentName string, merge, abandon bool) error
 	Kill(ctx context.Context, agentName string) error
 	Shutdown(ctx context.Context) error
+
+	// Handoff persists a session summary (marked Handoff=true) for the
+	// current weave session and writes the handoff-signal file consumed by
+	// FinalizeHandoff. On success, it fires the HandoffRequested channel so
+	// a host (e.g. the TUI) can tear down and restart the current session.
+	// Returns an error for empty summaries or when session state is missing.
+	Handoff(ctx context.Context, summary string) error
+
+	// HandoffRequested returns a channel that receives one value each time
+	// Handoff completes successfully. Consumers use it to trigger session
+	// restart without blocking the MCP tool response.
+	HandoffRequested() <-chan struct{}
 }

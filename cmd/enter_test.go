@@ -27,7 +27,7 @@ func TestEnter_DefaultsToCwdWhenSprawlRootEmpty(t *testing.T) {
 	deps := &enterDeps{
 		getenv: func(string) string { return "" },
 		getwd:  func() (string, error) { return tmpDir, nil },
-		runProgram: func(tea.Model) error {
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			programCalled = true
 			return nil
 		},
@@ -47,7 +47,7 @@ func TestEnter_GetwdErrorReturnsError(t *testing.T) {
 	deps := &enterDeps{
 		getenv: func(string) string { return "" },
 		getwd:  func() (string, error) { return "", errors.New("no cwd") },
-		runProgram: func(tea.Model) error {
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			return nil
 		},
 		newSession: nil,
@@ -75,7 +75,7 @@ func TestEnter_EnvVarOverridesCwd(t *testing.T) {
 			return ""
 		},
 		getwd: func() (string, error) { return cwdDir, nil },
-		runProgram: func(tea.Model) error {
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			return nil
 		},
 		newSession: factory.newSession,
@@ -111,7 +111,7 @@ func TestEnter_Success(t *testing.T) {
 				return ""
 			}
 		},
-		runProgram: func(m tea.Model) error {
+		runProgram: func(m tea.Model, _ func(func(tea.Msg))) error {
 			programCalled = true
 			return nil
 		},
@@ -145,7 +145,7 @@ func TestEnter_ProgramError(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(tea.Model) error {
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			return programErr
 		},
 		newSession: nil,
@@ -177,7 +177,7 @@ func TestEnter_DefaultAccentColor(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(tea.Model) error {
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			programCalled = true
 			return nil
 		},
@@ -232,7 +232,7 @@ func TestEnter_WithSession(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(m tea.Model) error {
+		runProgram: func(m tea.Model, _ func(func(tea.Msg))) error {
 			capturedModel = m
 			return nil
 		},
@@ -275,7 +275,7 @@ func TestEnter_SessionError(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(tea.Model) error {
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			return nil
 		},
 		newSession: factory.newSession,
@@ -323,6 +323,8 @@ func (s *shutdownMockSupervisor) Shutdown(_ context.Context) error {
 	s.shutdownDone = true
 	return nil
 }
+func (s *shutdownMockSupervisor) Handoff(_ context.Context, _ string) error { return nil }
+func (s *shutdownMockSupervisor) HandoffRequested() <-chan struct{}         { return nil }
 
 func TestEnter_GracefulShutdown(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -348,7 +350,7 @@ func TestEnter_GracefulShutdown(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(tea.Model) error {
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
 			return nil
 		},
 		newSession:    nil,
@@ -556,7 +558,7 @@ func TestEnter_ShutdownPath_CallsFinalizeOnCleanExit(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(tea.Model) error { return nil }, // clean exit
+		runProgram: func(tea.Model, func(func(tea.Msg))) error { return nil }, // clean exit
 		newSession: nil,
 		finalizeHandoff: func(_ context.Context, _ string, _ io.Writer) error {
 			atomic.AddInt32(&finCount, 1)
@@ -587,7 +589,7 @@ func TestEnter_ShutdownPath_SkipsFinalizeOnProgramError(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(tea.Model) error { return errors.New("tui crashed") },
+		runProgram: func(tea.Model, func(func(tea.Msg))) error { return errors.New("tui crashed") },
 		newSession: nil,
 		finalizeHandoff: func(_ context.Context, _ string, _ io.Writer) error {
 			atomic.AddInt32(&finCount, 1)
@@ -621,7 +623,7 @@ func TestEnter_NilNewSessionSkipsBridge(t *testing.T) {
 			}
 			return ""
 		},
-		runProgram: func(m tea.Model) error {
+		runProgram: func(m tea.Model, _ func(func(tea.Msg))) error {
 			programCalled = true
 			return nil
 		},
