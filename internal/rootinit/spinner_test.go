@@ -27,7 +27,7 @@ func (b *syncBuffer) String() string {
 
 func TestSpinner_StartsAndStops(t *testing.T) {
 	var buf syncBuffer
-	sp := startSpinner(&buf, "testing...")
+	sp := startSpinner(&buf, "[root-loop]", "testing...")
 	time.Sleep(500 * time.Millisecond)
 	sp.stop()
 
@@ -38,7 +38,7 @@ func TestSpinner_StartsAndStops(t *testing.T) {
 
 func TestSpinner_DisplaysElapsedTime(t *testing.T) {
 	var buf syncBuffer
-	sp := startSpinner(&buf, "working...")
+	sp := startSpinner(&buf, "[root-loop]", "working...")
 	time.Sleep(500 * time.Millisecond)
 	sp.stop()
 
@@ -50,7 +50,7 @@ func TestSpinner_DisplaysElapsedTime(t *testing.T) {
 
 func TestSpinner_StopClearsLine(t *testing.T) {
 	var buf syncBuffer
-	sp := startSpinner(&buf, "clearing...")
+	sp := startSpinner(&buf, "[root-loop]", "clearing...")
 	time.Sleep(500 * time.Millisecond)
 	sp.stop()
 
@@ -62,7 +62,7 @@ func TestSpinner_StopClearsLine(t *testing.T) {
 
 func TestSpinner_CyclesThroughFrames(t *testing.T) {
 	var buf syncBuffer
-	sp := startSpinner(&buf, "cycling...")
+	sp := startSpinner(&buf, "[root-loop]", "cycling...")
 	time.Sleep(2 * time.Second)
 	sp.stop()
 
@@ -79,9 +79,9 @@ func TestSpinner_CyclesThroughFrames(t *testing.T) {
 	}
 }
 
-func TestSpinner_IncludesRootLoopPrefix(t *testing.T) {
+func TestSpinner_IncludesPrefix(t *testing.T) {
 	var buf syncBuffer
-	sp := startSpinner(&buf, "prefixed...")
+	sp := startSpinner(&buf, "[root-loop]", "prefixed...")
 	time.Sleep(500 * time.Millisecond)
 	sp.stop()
 	if !strings.Contains(buf.String(), "[root-loop]") {
@@ -89,9 +89,37 @@ func TestSpinner_IncludesRootLoopPrefix(t *testing.T) {
 	}
 }
 
+func TestSpinner_UsesCustomPrefix(t *testing.T) {
+	var buf syncBuffer
+	sp := startSpinner(&buf, "[enter]", "prefixed...")
+	time.Sleep(500 * time.Millisecond)
+	sp.stop()
+	out := buf.String()
+	if !strings.Contains(out, "[enter]") {
+		t.Errorf("expected [enter] prefix, got %q", out)
+	}
+	if strings.Contains(out, "[root-loop]") {
+		t.Errorf("unexpected [root-loop] prefix in TUI-mode spinner output: %q", out)
+	}
+}
+
+func TestSpinner_EmptyPrefix(t *testing.T) {
+	var buf syncBuffer
+	sp := startSpinner(&buf, "", "naked...")
+	time.Sleep(500 * time.Millisecond)
+	sp.stop()
+	out := buf.String()
+	if strings.Contains(out, "[root-loop]") || strings.Contains(out, "[enter]") {
+		t.Errorf("expected no bracketed mode prefix, got %q", out)
+	}
+	if !strings.Contains(out, "naked...") {
+		t.Errorf("expected label to render without prefix, got %q", out)
+	}
+}
+
 func TestSpinner_ImmediateStop(t *testing.T) {
 	var buf syncBuffer
-	sp := startSpinner(&buf, "quick...")
+	sp := startSpinner(&buf, "[root-loop]", "quick...")
 	sp.stop()
 	if !strings.HasSuffix(buf.String(), "\033[2K\r") {
 		t.Errorf("expected clear-line after immediate stop, got %q", buf.String())

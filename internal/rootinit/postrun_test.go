@@ -163,6 +163,46 @@ func TestFinalizeHandoff_Signal_PassesSummaryAndTimelineToPK(t *testing.T) {
 	}
 }
 
+func TestFinalizeHandoff_LogPrefix_TUIDoesNotPrintRootLoop(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.LogPrefix = "[enter]"
+	// signal present so we hit the consolidation path too
+	deps.ReadFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	var buf strings.Builder
+	if err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf); err != nil {
+		t.Fatalf("FinalizeHandoff error: %v", err)
+	}
+	got := buf.String()
+	if strings.Contains(got, "[root-loop]") {
+		t.Errorf("TUI-mode output must not contain [root-loop] prefix; got: %q", got)
+	}
+	if !strings.Contains(got, "[enter]") {
+		t.Errorf("expected [enter] prefix in TUI-mode output; got: %q", got)
+	}
+}
+
+func TestFinalizeHandoff_LogPrefix_NoSignalPathRespectsPrefix(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.LogPrefix = "[enter]"
+	var buf strings.Builder
+	if err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf); err != nil {
+		t.Fatalf("FinalizeHandoff error: %v", err)
+	}
+	got := buf.String()
+	if strings.Contains(got, "[root-loop]") {
+		t.Errorf("expected no [root-loop] in TUI-mode no-signal output; got: %q", got)
+	}
+	if !strings.Contains(got, "[enter] session ended") {
+		t.Errorf("expected '[enter] session ended' prefix; got: %q", got)
+	}
+}
+
 func TestFinalizeHandoff_NoSignal_DoesNotConsolidate(t *testing.T) {
 	deps := newTestDeps(t)
 	var consolidateCalled bool

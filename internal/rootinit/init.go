@@ -68,13 +68,14 @@ func PrepareFresh(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootNa
 }
 
 func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer, forceFresh bool) (*PreparedSession, error) {
+	prefix := deps.LogPrefix
 	prevSessionID, _ := deps.ReadLastSessionID(sprawlRoot)
 
 	if prevSessionID != "" && !forceFresh {
 		alreadySummarized, _ := deps.HasSessionSummary(sprawlRoot, prevSessionID)
 		if !alreadySummarized {
 			// Resume path: prior session is still live on Claude's side.
-			fmt.Fprintf(stdout, "[root-loop] resuming session %s\n", prevSessionID)
+			fmt.Fprintf(stdout, "%s resuming session %s\n", prefix, prevSessionID)
 			return &PreparedSession{
 				Resume:     true,
 				SessionID:  prevSessionID,
@@ -96,16 +97,16 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		if !alreadySummarized {
 			homeDir, homeErr := deps.UserHomeDir()
 			if homeErr != nil {
-				fmt.Fprintf(stdout, "[root-loop] warning: could not determine home directory, skipping auto-summarize: %v\n", homeErr)
+				fmt.Fprintf(stdout, "%s warning: could not determine home directory, skipping auto-summarize: %v\n", prefix, homeErr)
 			} else {
-				fmt.Fprintf(stdout, "[root-loop] Detected missed handoff from previous session\n")
-				sp := startSpinner(stdout, "auto-summarizing...")
+				fmt.Fprintf(stdout, "%s Detected missed handoff from previous session\n", prefix)
+				sp := startSpinner(stdout, prefix, "auto-summarizing...")
 				summarized, sumErr := deps.AutoSummarize(ctx, sprawlRoot, sprawlRoot, homeDir, prevSessionID, deps.NewCLIInvoker())
 				sp.stop()
 				if sumErr != nil {
-					fmt.Fprintf(stdout, "[root-loop] warning: auto-summarize failed for %s: %v\n", prevSessionID, sumErr)
+					fmt.Fprintf(stdout, "%s warning: auto-summarize failed for %s: %v\n", prefix, prevSessionID, sumErr)
 				} else if summarized {
-					fmt.Fprintf(stdout, "[root-loop] auto-summarized missed handoff for session %s\n", prevSessionID)
+					fmt.Fprintf(stdout, "%s auto-summarized missed handoff for session %s\n", prefix, prevSessionID)
 					runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
 				}
 			}
@@ -119,7 +120,7 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 	// Fresh path.
 	contextBlob, ctxErr := deps.BuildContextBlob(sprawlRoot, rootName)
 	if ctxErr != nil {
-		fmt.Fprintf(stdout, "[root-loop] warning: context blob partial or failed: %v\n", ctxErr)
+		fmt.Fprintf(stdout, "%s warning: context blob partial or failed: %v\n", prefix, ctxErr)
 	}
 
 	systemPrompt := deps.BuildPrompt(agent.PromptConfig{

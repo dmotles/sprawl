@@ -326,7 +326,10 @@ func (s *shutdownMockSupervisor) Shutdown(_ context.Context) error {
 func (s *shutdownMockSupervisor) Handoff(_ context.Context, _ string) error { return nil }
 func (s *shutdownMockSupervisor) HandoffRequested() <-chan struct{}         { return nil }
 
-func TestEnter_GracefulShutdown(t *testing.T) {
+// Ctrl+C / clean TUI shutdown must NOT kill child agents. Users expect
+// `sprawl enter` to be a detachable UI — agents should keep running so the
+// next `sprawl enter` can reattach.
+func TestEnter_CleanShutdown_DoesNotKillAgents(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -362,11 +365,11 @@ func TestEnter_GracefulShutdown(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(mockSup.killCalled) != 2 {
-		t.Errorf("expected 2 Kill calls, got %d: %v", len(mockSup.killCalled), mockSup.killCalled)
+	if len(mockSup.killCalled) != 0 {
+		t.Errorf("expected 0 Kill calls on clean shutdown, got %d: %v", len(mockSup.killCalled), mockSup.killCalled)
 	}
 	if !mockSup.shutdownDone {
-		t.Error("Shutdown should have been called")
+		t.Error("Shutdown should have been called to release supervisor resources")
 	}
 }
 
@@ -543,7 +546,11 @@ func TestEnter_RestartFunc_NoForceFreshWhenNotResume(t *testing.T) {
 	}
 }
 
-func TestEnter_ShutdownPath_CallsFinalizeOnCleanExit(t *testing.T) {
+// Clean shutdown (Ctrl+C) must NOT invoke FinalizeHandoff. FinalizeHandoff
+// clears last-session-id when a handoff-signal is present, which would break
+// resume-by-default (QUM-255) on the next `sprawl enter`. The explicit
+// /handoff path still runs finalize via makeRestartFunc.
+func TestEnter_ShutdownPath_DoesNotCallFinalizeOnCleanExit(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -569,8 +576,8 @@ func TestEnter_ShutdownPath_CallsFinalizeOnCleanExit(t *testing.T) {
 	if err := runEnter(deps); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if finCount != 1 {
-		t.Errorf("finalizeHandoff called %d times on clean shutdown, want 1", finCount)
+	if finCount != 0 {
+		t.Errorf("finalizeHandoff called %d times on clean shutdown, want 0", finCount)
 	}
 }
 

@@ -22,9 +22,10 @@ import (
 // than propagated, matching the original behavior: the caller should
 // proceed to restart regardless.
 func FinalizeHandoff(ctx context.Context, deps *Deps, sprawlRoot string, stdout io.Writer) error {
+	prefix := deps.LogPrefix
 	handoffPath := filepath.Join(sprawlRoot, ".sprawl", "memory", "handoff-signal")
 	if _, readErr := deps.ReadFile(handoffPath); readErr == nil {
-		fmt.Fprintf(stdout, "[root-loop] handoff signal detected, restarting\n")
+		fmt.Fprintf(stdout, "%s handoff signal detected, restarting\n", prefix)
 
 		runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
 
@@ -33,7 +34,7 @@ func FinalizeHandoff(ctx context.Context, deps *Deps, sprawlRoot string, stdout 
 		_ = deps.RemoveFile(handoffPath)
 		_ = deps.WriteLastSessionID(sprawlRoot, "")
 	} else {
-		fmt.Fprintf(stdout, "[root-loop] session ended, restarting\n")
+		fmt.Fprintf(stdout, "%s session ended, restarting\n", prefix)
 	}
 	return nil
 }
@@ -42,23 +43,24 @@ func FinalizeHandoff(ctx context.Context, deps *Deps, sprawlRoot string, stdout 
 // knowledge update. Both steps are best-effort: failures are logged as
 // warnings. Used by Prepare (missed-handoff path) and FinalizeHandoff.
 func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string, stdout io.Writer) {
-	sp := startSpinner(stdout, "consolidating timeline...")
+	prefix := deps.LogPrefix
+	sp := startSpinner(stdout, prefix, "consolidating timeline...")
 	cErr := deps.Consolidate(ctx, sprawlRoot, deps.NewCLIInvoker(), nil, nil)
 	sp.stop()
 	if cErr != nil {
-		fmt.Fprintf(stdout, "[root-loop] warning: consolidation failed: %v\n", cErr)
+		fmt.Fprintf(stdout, "%s warning: consolidation failed: %v\n", prefix, cErr)
 	}
 
 	var sessionSummary string
 	if sessions, bodies, err := deps.ListRecentSessions(sprawlRoot, 1); err != nil {
-		fmt.Fprintf(stdout, "[root-loop] warning: reading latest session for persistent knowledge: %v\n", err)
+		fmt.Fprintf(stdout, "%s warning: reading latest session for persistent knowledge: %v\n", prefix, err)
 	} else if len(sessions) > 0 && len(bodies) > 0 {
 		sessionSummary = bodies[0]
 	}
 
 	var timelineBullets string
 	if entries, err := deps.ReadTimeline(sprawlRoot); err != nil {
-		fmt.Fprintf(stdout, "[root-loop] warning: reading timeline for persistent knowledge: %v\n", err)
+		fmt.Fprintf(stdout, "%s warning: reading timeline for persistent knowledge: %v\n", prefix, err)
 	} else {
 		var tlb strings.Builder
 		for _, e := range entries {
@@ -67,10 +69,10 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		timelineBullets = tlb.String()
 	}
 
-	sp = startSpinner(stdout, "updating persistent knowledge...")
+	sp = startSpinner(stdout, prefix, "updating persistent knowledge...")
 	pkErr := deps.UpdatePersistentKnowledge(ctx, sprawlRoot, deps.NewCLIInvoker(), nil, sessionSummary, timelineBullets)
 	sp.stop()
 	if pkErr != nil {
-		fmt.Fprintf(stdout, "[root-loop] warning: persistent knowledge update failed: %v\n", pkErr)
+		fmt.Fprintf(stdout, "%s warning: persistent knowledge update failed: %v\n", prefix, pkErr)
 	}
 }

@@ -129,7 +129,9 @@ func resolveEnterDeps() *enterDeps {
 		},
 		newSession: defaultNewSession,
 		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer) error {
-			return rootinit.FinalizeHandoff(ctx, rootinit.DefaultDeps(), sprawlRoot, stdout)
+			deps := rootinit.DefaultDeps()
+			deps.LogPrefix = "[enter]"
+			return rootinit.FinalizeHandoff(ctx, deps, sprawlRoot, stdout)
 		},
 		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
 			sup, err := supervisor.NewReal(supervisor.Config{
@@ -213,7 +215,9 @@ func buildSessionEnv() []string {
 // took the resume path; callers use it to decide if a fast exit warrants a
 // force-fresh retry.
 func defaultNewSession(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error) {
-	return newSessionImpl(sprawlRoot, forceFresh, rootinit.DefaultDeps(), os.Stderr)
+	deps := rootinit.DefaultDeps()
+	deps.LogPrefix = "[enter]"
+	return newSessionImpl(sprawlRoot, forceFresh, deps, os.Stderr)
 }
 
 // newSessionImpl is the testable body of defaultNewSession.
@@ -425,29 +429,24 @@ func runEnter(deps *enterDeps) error {
 	err = deps.runProgram(model, onStart)
 	close(handoffDone)
 
-	// Phase D on clean shutdown: if the TUI exited normally (e.g. the user
-	// quit via the Ctrl-C confirm dialog after `/handoff`), run the
-	// consolidation pipeline one last time so the final session's handoff
-	// signal (if any) is consumed. Skipped on TUI crash — we don't want to
-	// consolidate off the back of a broken transcript.
-	if err == nil && deps.finalizeHandoff != nil {
-		if finErr := deps.finalizeHandoff(context.Background(), sprawlRoot, os.Stderr); finErr != nil {
-			fmt.Fprintf(os.Stderr, "[enter] finalize handoff on shutdown failed: %v\n", finErr)
-		}
-	}
-
-	// Graceful shutdown: stop all agents with a timeout.
+	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff and
+	// does NOT kill child agents. Rationale:
+	//   - FinalizeHandoff clears last-session-id when a handoff-signal file
+	//     is present, which breaks resume-by-default (QUM-255) on the next
+	//     `sprawl enter`. A stale/in-flight signal can linger across
+	//     sessions; consuming it on Ctrl+C is the wrong trigger. The
+	//     consolidate-then-fresh path in rootinit.Prepare will handle any
+	//     pending handoff on the next launch.
+	//   - Killing child agents surprises the user: they expect `sprawl
+	//     enter` to be a detachable UI, not a process-group owner. The
+	//     tmux/supervisor-managed agents should keep running and be
+	//     reattachable via the next `sprawl enter`.
+	//
+	// The explicit /handoff path runs FinalizeHandoff via makeRestartFunc
+	// before starting the next session — that path is unchanged.
 	if sup != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		agents, statusErr := sup.Status(shutdownCtx)
-		if statusErr == nil {
-			for _, a := range agents {
-				fmt.Fprintf(os.Stderr, "Stopping agent %s...\n", a.Name)
-				_ = sup.Kill(shutdownCtx, a.Name)
-				fmt.Fprintf(os.Stderr, "  %s -> stopped\n", a.Name)
-			}
-		}
 		_ = sup.Shutdown(shutdownCtx)
 	}
 

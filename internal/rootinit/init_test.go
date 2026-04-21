@@ -19,6 +19,7 @@ import (
 func newTestDeps(t *testing.T) *Deps {
 	t.Helper()
 	return &Deps{
+		LogPrefix: "[root-loop]",
 		Getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
 				return "/fake/root"

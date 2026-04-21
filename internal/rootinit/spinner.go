@@ -9,18 +9,22 @@ import (
 
 // spinner displays an animated progress indicator on a single terminal line.
 type spinner struct {
-	w     io.Writer
-	label string
-	done  chan struct{}
-	wg    sync.WaitGroup
+	w      io.Writer
+	prefix string
+	label  string
+	done   chan struct{}
+	wg     sync.WaitGroup
 }
 
 // startSpinner starts a background goroutine that animates the spinner.
-func startSpinner(w io.Writer, label string) *spinner {
+// prefix is prepended to each frame (typically "[root-loop]" or "[enter]").
+// If empty, frames are rendered without a bracketed prefix.
+func startSpinner(w io.Writer, prefix, label string) *spinner {
 	s := &spinner{
-		w:     w,
-		label: label,
-		done:  make(chan struct{}),
+		w:      w,
+		prefix: prefix,
+		label:  label,
+		done:   make(chan struct{}),
 	}
 	s.wg.Add(1)
 	go s.run()
@@ -47,7 +51,11 @@ func (s *spinner) run() {
 			return
 		case <-tick.C:
 			elapsed := time.Since(start).Truncate(time.Second)
-			fmt.Fprintf(s.w, "\033[2K\r[root-loop]   %c %s (%s)", frames[i%len(frames)], s.label, elapsed)
+			if s.prefix != "" {
+				fmt.Fprintf(s.w, "\033[2K\r%s   %c %s (%s)", s.prefix, frames[i%len(frames)], s.label, elapsed)
+			} else {
+				fmt.Fprintf(s.w, "\033[2K\r  %c %s (%s)", frames[i%len(frames)], s.label, elapsed)
+			}
 			i++
 		}
 	}
