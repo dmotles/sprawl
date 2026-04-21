@@ -1367,3 +1367,99 @@ func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 		t.Errorf("len(viewport messages) = %d, want 0", len(got))
 	}
 }
+
+// seedScrollableViewport fills the app's viewport with enough assistant content
+// that mouse wheel scrolling has observable effect (content taller than viewport
+// height). Returns the app with viewport already populated.
+func seedScrollableViewport(t *testing.T, app AppModel) AppModel {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		app.viewport.AppendAssistantChunk(fmt.Sprintf("scroll line %d\n", i))
+	}
+	app.viewport.FinalizeAssistantMessage()
+	return app
+}
+
+// QUM-280: mouse support for viewport scroll.
+func TestAppModel_View_EnablesMouseCellMotion(t *testing.T) {
+	m := newTestAppModel(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := updated.(AppModel)
+	v := app.View()
+	if v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("View().MouseMode = %v, want tea.MouseModeCellMotion", v.MouseMode)
+	}
+}
+
+func TestAppModel_View_MouseModeStillSetWhenTooSmall(t *testing.T) {
+	// Even in the "too small" fallback view, mouse mode should be enabled —
+	// a later resize should not require a full re-init to activate wheel.
+	m := newTestAppModel(t)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 10, Height: 5})
+	app := updated.(AppModel)
+	if !app.tooSmall {
+		t.Fatal("precondition: expected tooSmall to be true for 10x5")
+	}
+	v := app.View()
+	if v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("View().MouseMode (too-small) = %v, want tea.MouseModeCellMotion", v.MouseMode)
+	}
+}
+
+func TestAppModel_MouseWheelUp_DisablesAutoScroll(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	if !app.viewport.IsAutoScroll() {
+		t.Fatal("precondition: autoScroll should be true after seeding")
+	}
+
+	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = out.(AppModel)
+
+	if app.viewport.IsAutoScroll() {
+		t.Error("expected autoScroll=false after MouseWheelUp; mouse wheel msg did not reach viewport")
+	}
+}
+
+func TestAppModel_MouseWheel_SuppressedByModalHelp(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	app.showHelp = true
+
+	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = out.(AppModel)
+
+	if !app.viewport.IsAutoScroll() {
+		t.Error("expected autoScroll to remain true when help modal is open")
+	}
+}
+
+func TestAppModel_MouseWheel_SuppressedByModalConfirm(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	app.showConfirm = true
+
+	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = out.(AppModel)
+
+	if !app.viewport.IsAutoScroll() {
+		t.Error("expected autoScroll to remain true when confirm dialog is open")
+	}
+}
+
+func TestAppModel_MouseClick_DoesNotCrash(t *testing.T) {
+	// Non-wheel mouse events should be accepted without panic; we don't route
+	// clicks anywhere today but they must be absorbed gracefully.
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	_, _ = app.Update(tea.MouseClickMsg{Button: tea.MouseLeft, X: 10, Y: 10})
+	_, _ = app.Update(tea.MouseMotionMsg{X: 10, Y: 10})
+	_, _ = app.Update(tea.MouseReleaseMsg{Button: tea.MouseLeft, X: 10, Y: 10})
+}

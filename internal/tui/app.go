@@ -139,6 +139,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case tea.MouseMsg:
+		// Mouse capture is enabled (see View().MouseMode) so scroll wheel
+		// events reach us. Suppress mouse events entirely while any modal is
+		// visible — wheel scrolling behind a dialog would be disorienting —
+		// and otherwise forward to the viewport (the only scrollable area).
+		// Non-wheel clicks/motion are accepted but currently ignored; they
+		// fall through viewport.Update harmlessly.
+		if m.showHelp || m.showConfirm || m.showError || m.showPalette {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+
 	case tea.KeyPressMsg:
 		// Ctrl+C: show confirmation dialog (or ignore if already showing).
 		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'c' {
@@ -461,6 +475,7 @@ func (m AppModel) View() tea.View {
 		msg := fmt.Sprintf("Terminal too small (minimum %dx%d)", MinTermWidth, MinTermHeight)
 		v := tea.NewView(msg)
 		v.AltScreen = true
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -511,6 +526,12 @@ func (m AppModel) View() tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
+	// QUM-280: mouse cell motion enables scroll-wheel events on the viewport.
+	// Tradeoff: this breaks native terminal text-select-and-copy. Users can
+	// typically hold Option/Alt (macOS) or Shift (most Linux terminals) while
+	// dragging to force native select. QUM-281 owns the proper
+	// selection-to-clipboard design.
+	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
 
