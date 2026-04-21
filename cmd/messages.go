@@ -180,7 +180,10 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 	}
 
 	var sendOpts []messages.SendOption
-	if deps.tmuxRunner != nil {
+	// Phase 4 deprecation: the tmux send-keys notification path is off by default.
+	// Delivery now flows through the Maildir + harness async queue (QUM-292/293/295).
+	// SPRAWL_MESSAGING=legacy restores the old behavior for rollback per design §7.
+	if deps.tmuxRunner != nil && deps.getenv("SPRAWL_MESSAGING") == "legacy" {
 		namespace := deps.getenv("SPRAWL_NAMESPACE")
 		if namespace == "" {
 			namespace = state.ReadNamespace(sprawlRoot)
