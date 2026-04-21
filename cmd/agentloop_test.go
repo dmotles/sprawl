@@ -3315,3 +3315,252 @@ func TestRunAgentLoop_ShutdownReason(t *testing.T) {
 		t.Errorf("expected 'shutting down: context canceled' in output, got:\n%s", output)
 	}
 }
+
+// --- flushQueue tests (QUM-293) ---
+
+func TestRunAgentLoop_FlushQueue_DeliversSingleEntry(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Populate the harness queue directly (simulates sprawl_send_async).
+	if _, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class:   agentloop.ClassAsync,
+		From:    "weave",
+		Subject: "ping",
+		Body:    "hello there",
+		Tags:    []string{"fyi"},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+		{Type: "result", Result: "read queue"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	// prompts[0] = initial, prompts[1] = queue flush frame.
+	if len(mockProc.prompts) < 2 {
+		t.Fatalf("expected at least two prompts (initial + flush), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+	p := mockProc.prompts[1]
+	for _, needle := range []string{
+		"[inbox] You received 1 message(s) since the last turn",
+		"from weave",
+		"[fyi]",
+		"subject: ping",
+		"hello there",
+	} {
+		if !strings.Contains(p, needle) {
+			t.Errorf("flush prompt missing %q, got:\n%s", needle, p)
+		}
+	}
+
+	// Entry should have moved from pending/ to delivered/.
+	pending, err := agentloop.ListPending(tmpDir, "finn")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("expected pending to be empty after flush, got %d entries", len(pending))
+	}
+	delivered, err := agentloop.ListDelivered(tmpDir, "finn")
+	if err != nil {
+		t.Fatalf("ListDelivered: %v", err)
+	}
+	if len(delivered) != 1 {
+		t.Errorf("expected 1 delivered entry after flush, got %d", len(delivered))
+	}
+}
+
+func TestRunAgentLoop_FlushQueue_BundlesMultipleEntries(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	for i := 1; i <= 3; i++ {
+		if _, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+			Class:   agentloop.ClassAsync,
+			From:    "weave",
+			Subject: fmt.Sprintf("s%d", i),
+			Body:    fmt.Sprintf("body %d", i),
+		}); err != nil {
+			t.Fatalf("enqueue %d: %v", i, err)
+		}
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+		{Type: "result", Result: "read queue"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	if len(mockProc.prompts) < 2 {
+		t.Fatalf("expected at least two prompts, got %d", len(mockProc.prompts))
+	}
+	p := mockProc.prompts[1]
+	if !strings.Contains(p, "3 message(s)") {
+		t.Errorf("expected frame to report 3 messages, got: %q", p)
+	}
+	for _, subj := range []string{"s1", "s2", "s3"} {
+		if !strings.Contains(p, "subject: "+subj) {
+			t.Errorf("expected frame to include subject %q, got: %q", subj, p)
+		}
+	}
+}
+
+func TestRunAgentLoop_FlushQueue_TruncatesLargeBody(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	big := strings.Repeat("x", maxQueueFlushBodyBytes+500)
+	entry, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class:   agentloop.ClassAsync,
+		From:    "weave",
+		Subject: "big",
+		Body:    big,
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+		{Type: "result", Result: "read"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	if len(mockProc.prompts) < 2 {
+		t.Fatalf("expected flush prompt, got %d prompts", len(mockProc.prompts))
+	}
+	p := mockProc.prompts[1]
+	if !strings.Contains(p, "[truncated — run `sprawl messages read "+entry.ID+"`") {
+		t.Errorf("expected truncation hint with message ID, got: %q", p)
+	}
+	if strings.Count(p, "x") > maxQueueFlushBodyBytes+32 {
+		t.Errorf("body was not bounded; saw %d x's", strings.Count(p, "x"))
+	}
+}
+
+func TestRunAgentLoop_FlushQueue_ClearsWakeFile(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	// Simulate a co-written .wake file (SendAsync writes both queue + wake).
+	wakePath := filepath.Join(tmpDir, ".sprawl", "agents", "finn.wake")
+	if err := os.MkdirAll(filepath.Dir(wakePath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(wakePath, []byte("stale wake"), 0o644); err != nil {
+		t.Fatalf("write wake: %v", err)
+	}
+
+	if _, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class: agentloop.ClassAsync, From: "weave", Subject: "s", Body: "b",
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	deps.readFile = os.ReadFile
+	deps.removeFile = os.Remove
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+		{Type: "result", Result: "read"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	if _, err := os.Stat(wakePath); err == nil {
+		t.Error("expected wake file to be consumed after queue flush, but it still exists")
+	}
+}
+
+func TestRunAgentLoop_FlushQueue_NoRedeliveryAfterFlush(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	if _, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class: agentloop.ClassAsync, From: "weave", Subject: "once", Body: "only",
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial"},
+		{Type: "result", Result: "flush1"},
+		{Type: "result", Result: "idle"},
+	}
+
+	// Cancel after the 2nd sleep so we run at least 2 main-loop iterations.
+	ctx, cancel := context.WithCancel(context.Background())
+	iters := 0
+	deps.sleepFunc = func(d time.Duration) {
+		iters++
+		if iters >= 2 {
+			cancel()
+		}
+	}
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	// Count flush-frame prompts. Must be exactly one — the entry is moved
+	// to delivered/ after the first successful send and must not be re-delivered.
+	flushes := 0
+	for _, p := range mockProc.prompts {
+		if strings.Contains(p, "[inbox] You received") {
+			flushes++
+		}
+	}
+	if flushes != 1 {
+		t.Errorf("expected exactly 1 flush-frame prompt, got %d. prompts=%v", flushes, mockProc.prompts)
+	}
+}
+
+func TestBuildQueueFlushPrompt_Empty(t *testing.T) {
+	if got := buildQueueFlushPrompt(nil); got != "" {
+		t.Errorf("expected empty string for nil entries, got %q", got)
+	}
+	if got := buildQueueFlushPrompt([]agentloop.Entry{}); got != "" {
+		t.Errorf("expected empty string for empty entries, got %q", got)
+	}
+}
+
+func TestBuildQueueFlushPrompt_TotalCap(t *testing.T) {
+	// Six entries each at the per-body cap sum to 12288 bytes — above the
+	// 10240 total cap — so later entries should be truncated.
+	chars := []string{"a", "b", "c", "d", "e", "f"}
+	var entries []agentloop.Entry
+	for i, c := range chars {
+		entries = append(entries, agentloop.Entry{
+			ID:      fmt.Sprintf("id%d", i),
+			From:    "x",
+			Subject: c,
+			Body:    strings.Repeat(c, maxQueueFlushBodyBytes),
+		})
+	}
+	out := buildQueueFlushPrompt(entries)
+	// Total body bytes (summed across distinct body characters — the
+	// subject/header tokens are tiny relative to the cap) must not exceed
+	// the total cap by more than a small margin for the trailing truncation
+	// hint text.
+	sum := 0
+	for _, c := range chars {
+		sum += strings.Count(out, c)
+	}
+	if sum > maxQueueFlushTotalBytes+200 {
+		t.Errorf("total body bytes %d exceeds cap %d+margin", sum, maxQueueFlushTotalBytes)
+	}
+	if !strings.Contains(out, "[truncated") {
+		t.Errorf("expected truncation hint when total cap is hit, got prompt starting with:\n%s", out[:min(500, len(out))])
+	}
+}
