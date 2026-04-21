@@ -41,6 +41,9 @@ type spawnMockRunner struct {
 	sourceFileSession string
 	sourceFilePath    string
 
+	// Recorded SetEnvironment calls for assertion.
+	setEnvCalls []setEnvCall
+
 	// callLog records the order of tmux operations for ordering verification.
 	callLog []string
 
@@ -119,6 +122,8 @@ func (m *spawnMockRunner) SourceFile(sessionName, filePath string) error {
 }
 
 func (m *spawnMockRunner) SetEnvironment(sessionName, key, value string) error {
+	m.callLog = append(m.callLog, "SetEnvironment")
+	m.setEnvCalls = append(m.setEnvCalls, setEnvCall{Session: sessionName, Key: key, Value: value})
 	return nil
 }
 
@@ -1215,5 +1220,143 @@ func TestSpawn_TmuxFailure_CleansUpPromptFile(t *testing.T) {
 	promptPath := filepath.Join(tmpDir, ".sprawl", "agents", expectedName, "prompts", "initial.md")
 	if _, statErr := os.Stat(promptPath); statErr == nil {
 		t.Error("prompt file should be cleaned up after tmux failure")
+	}
+}
+
+// TestSpawn_PropagatesSprawlMessaging verifies that when the spawning process
+// has SPRAWL_MESSAGING set in its environment, the value is propagated to the
+// child tmux session both via the new window's -e env AND via a
+// set-environment call on the session, so that subsequent windows and
+// `tmux show-environment -t <children-session>` see it.
+//
+// Covers QUM-309: without this, `sprawl messages send weave` from a child
+// agent never fires the tmux send-keys notification because the gate at
+// cmd/messages.go reads SPRAWL_MESSAGING from the child's environment.
+func TestSpawn_PropagatesSprawlMessaging(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+
+	// Override Getenv to include SPRAWL_MESSAGING (as it would be in a child
+	// spawned from within an init-launched weave session).
+	origGetenv := deps.Getenv
+	deps.Getenv = func(key string) string {
+		if key == "SPRAWL_MESSAGING" {
+			return "legacy"
+		}
+		return origGetenv(key)
+	}
+
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The env map passed to NewSessionWithWindow should include SPRAWL_MESSAGING.
+	if got := runner.newSessionWithWindowEnv["SPRAWL_MESSAGING"]; got != "legacy" {
+		t.Errorf("env SPRAWL_MESSAGING = %q, want %q", got, "legacy")
+	}
+
+	// SetEnvironment must be called on the children session with the var, so
+	// subsequent windows in that session inherit it and `tmux show-environment
+	// -t <children-session>` returns it.
+	expectedSession := tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName)
+	found := false
+	for _, c := range runner.setEnvCalls {
+		if c.Session == expectedSession && c.Key == "SPRAWL_MESSAGING" && c.Value == "legacy" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected SetEnvironment(%q, SPRAWL_MESSAGING, legacy) to be called, got: %+v",
+			expectedSession, runner.setEnvCalls)
+	}
+
+	// Ordering: the session must exist before SetEnvironment runs, so
+	// NewSessionWithWindow (or NewWindow) must precede SetEnvironment.
+	idxSession := -1
+	idxSetEnv := -1
+	for i, op := range runner.callLog {
+		if op == "NewSessionWithWindow" && idxSession == -1 {
+			idxSession = i
+		}
+		if op == "SetEnvironment" && idxSetEnv == -1 {
+			idxSetEnv = i
+		}
+	}
+	if idxSession == -1 || idxSetEnv == -1 || idxSession > idxSetEnv {
+		t.Errorf("SetEnvironment must run after session creation; callLog=%v", runner.callLog)
+	}
+}
+
+// TestSpawn_NoMessagingWhenUnset verifies that when SPRAWL_MESSAGING is not
+// set in the spawning process's environment, we do NOT add it to the env map
+// nor call SetEnvironment for it. This avoids forcing 'legacy' messaging onto
+// children of TUI-mode (sprawl enter) parents — where SPRAWL_MESSAGING is
+// intentionally unset.
+func TestSpawn_NoMessagingWhenUnset(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+	// Default newTestSpawnDeps Getenv does not return SPRAWL_MESSAGING.
+
+	_, err := runSpawn(deps, "engineering", "engineer", "task", "feature/x")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := runner.newSessionWithWindowEnv["SPRAWL_MESSAGING"]; ok {
+		t.Errorf("env should not contain SPRAWL_MESSAGING when unset, got: %v",
+			runner.newSessionWithWindowEnv)
+	}
+
+	for _, c := range runner.setEnvCalls {
+		if c.Key == "SPRAWL_MESSAGING" {
+			t.Errorf("SetEnvironment should not be called for SPRAWL_MESSAGING when unset, got: %+v", c)
+		}
+	}
+}
+
+// TestSpawn_MessagingPropagated_OnAddWindowPath verifies SPRAWL_MESSAGING
+// is propagated even on the second-spawn path where NewWindow succeeds
+// directly (session already exists from a prior spawn). Ensures we don't
+// gate the SetEnvironment call on the fallback/new-session branch.
+func TestSpawn_MessagingPropagated_OnAddWindowPath(t *testing.T) {
+	deps, runner, _, _ := newTestSpawnDeps(t)
+	origGetenv := deps.Getenv
+	deps.Getenv = func(key string) string {
+		if key == "SPRAWL_MESSAGING" {
+			return "legacy"
+		}
+		return origGetenv(key)
+	}
+
+	// First spawn creates the session (NewWindow fails, falls back).
+	if _, err := runSpawn(deps, "engineering", "engineer", "t1", "feature/t1"); err != nil {
+		t.Fatalf("first spawn: %v", err)
+	}
+
+	// Reset for second spawn: session now exists, NewWindow will succeed.
+	runner.newWindowErr = nil
+	runner.setEnvCalls = nil
+	runner.callLog = nil
+
+	if _, err := runSpawn(deps, "engineering", "engineer", "t2", "feature/t2"); err != nil {
+		t.Fatalf("second spawn: %v", err)
+	}
+
+	// NewWindow env map should carry the var for the new window's process.
+	if got := runner.newWindowEnv["SPRAWL_MESSAGING"]; got != "legacy" {
+		t.Errorf("NewWindow env SPRAWL_MESSAGING = %q, want %q", got, "legacy")
+	}
+
+	// And SetEnvironment must still fire on the add-window path.
+	found := false
+	for _, c := range runner.setEnvCalls {
+		if c.Key == "SPRAWL_MESSAGING" && c.Value == "legacy" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected SetEnvironment(SPRAWL_MESSAGING, legacy) on add-window path, got: %+v",
+			runner.setEnvCalls)
 	}
 }
