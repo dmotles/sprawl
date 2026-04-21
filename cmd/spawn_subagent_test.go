@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
+	"github.com/spf13/cobra"
 )
 
 // newTestSpawnSubagentDeps creates test fixtures for spawn subagent tests.
@@ -602,6 +604,39 @@ func TestSpawnSubagentCmd_Registered(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected 'subagent' to be a subcommand of 'spawn', but it was not found")
+	}
+}
+
+// TestSpawnSubagentCmd_BranchFlagNotRequired verifies that invoking the
+// `spawn subagent` cobra command without --branch does NOT fail flag-parsing
+// validation. Subagents share the parent's worktree and inherit its branch,
+// so --branch must not be required. (QUM-276)
+func TestSpawnSubagentCmd_BranchFlagNotRequired(t *testing.T) {
+	// Swap in a stub RunE on subagent and agent so we exercise only cobra's
+	// flag validation, not the full spawn machinery.
+	var subagentCmd *cobra.Command
+	for _, sub := range spawnCmd.Commands() {
+		if sub.Name() == "subagent" {
+			subagentCmd = sub
+			break
+		}
+	}
+	if subagentCmd == nil {
+		t.Fatal("subagent subcommand not found")
+	}
+
+	originalRunE := subagentCmd.RunE
+	t.Cleanup(func() { subagentCmd.RunE = originalRunE })
+	subagentCmd.RunE = func(_ *cobra.Command, _ []string) error { return nil }
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"spawn", "subagent", "--family", "engineering", "--type", "engineer", "--prompt", "do the thing"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("spawn subagent should not require --branch, got error: %v\noutput: %s", err, buf.String())
 	}
 }
 

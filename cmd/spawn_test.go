@@ -635,9 +635,14 @@ func TestSpawn_BareSpawnCmd_HasRunE(t *testing.T) {
 }
 
 func TestSpawn_BranchFlagRequired(t *testing.T) {
-	branchFlag := spawnCmd.PersistentFlags().Lookup("branch")
+	// --branch lives on `spawn agent` (not on `spawn` persistently), so that
+	// `spawn subagent` does not inherit the requirement. See QUM-276.
+	branchFlag := spawnAgentCmd.Flags().Lookup("branch")
 	if branchFlag == nil {
-		t.Fatal("expected 'branch' to be a persistent flag on spawnCmd")
+		t.Fatal("expected 'branch' to be a local flag on spawnAgentCmd")
+	}
+	if spawnCmd.PersistentFlags().Lookup("branch") != nil {
+		t.Error("'branch' must NOT be a persistent flag on spawnCmd (subagent would inherit it)")
 	}
 }
 

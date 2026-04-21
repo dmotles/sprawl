@@ -52,11 +52,15 @@ func init() {
 	spawnCmd.PersistentFlags().StringVar(&spawnFamily, "family", "", "agent family: engineering, product, qa")
 	spawnCmd.PersistentFlags().StringVar(&spawnType, "type", "", "agent type: manager, researcher, engineer, tester, code-merger")
 	spawnCmd.PersistentFlags().StringVar(&spawnPrompt, "prompt", "", "task description for the agent")
-	spawnCmd.PersistentFlags().StringVar(&spawnBranch, "branch", "", "git branch name for the agent's worktree")
 	_ = spawnCmd.MarkPersistentFlagRequired("family")
 	_ = spawnCmd.MarkPersistentFlagRequired("type")
 	_ = spawnCmd.MarkPersistentFlagRequired("prompt")
-	_ = spawnCmd.MarkPersistentFlagRequired("branch")
+
+	// --branch applies only to `spawn agent` (which creates its own worktree).
+	// `spawn subagent` shares the parent's worktree/branch and must not require it.
+	spawnAgentCmd.Flags().StringVar(&spawnBranch, "branch", "", "git branch name for the agent's worktree")
+	_ = spawnAgentCmd.MarkFlagRequired("branch")
+
 	spawnCmd.AddCommand(spawnAgentCmd)
 	rootCmd.AddCommand(spawnCmd)
 }
