@@ -107,6 +107,29 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "sprawl_report_status",
+			"description": "Report this agent's status to its parent. Canonical status channel (replaces ad-hoc `sprawl report`). Persists to agent state and delivers an async notification to the parent. Use at every meaningful step — not just at task end.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"state": map[string]any{
+						"type":        "string",
+						"description": "Current work state",
+						"enum":        []string{"working", "blocked", "complete", "failure"},
+					},
+					"summary": map[string]any{
+						"type":        "string",
+						"description": "≤160 char one-line summary (coder_report_task-compatible)",
+					},
+					"detail": map[string]any{
+						"type":        "string",
+						"description": "Optional markdown detail (no length cap)",
+					},
+				},
+				"required": []string{"state", "summary"},
+			},
+		},
+		{
 			"name":        "sprawl_message",
 			"description": "DEPRECATED: use sprawl_send_async. Kept as an alias that writes to the recipient's Maildir and harness queue, then returns a short acknowledgement.",
 			"inputSchema": map[string]any{

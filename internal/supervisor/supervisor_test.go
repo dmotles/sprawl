@@ -314,6 +314,69 @@ func TestPeek_AgentNotFound(t *testing.T) {
 	}
 }
 
+func TestReportStatus_PersistsAndNotifiesParent(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	// Caller is "weave"; report as the weave agent so ReportStatus resolves
+	// agentName from r.callerName (MCP flow).
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Parent: "root", Status: "active"})
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "root", Status: "active"})
+
+	res, err := sup.ReportStatus(context.Background(), "", "working", "halfway", "extra detail")
+	if err != nil {
+		t.Fatalf("ReportStatus: %v", err)
+	}
+	if res.ReportedAt == "" {
+		t.Error("ReportedAt empty")
+	}
+
+	got, _ := state.LoadAgent(tmpDir, "weave")
+	if got.LastReportState != "working" {
+		t.Errorf("LastReportState = %q", got.LastReportState)
+	}
+	if got.LastReportMessage != "halfway" {
+		t.Errorf("LastReportMessage = %q", got.LastReportMessage)
+	}
+	if got.LastReportDetail != "extra detail" {
+		t.Errorf("LastReportDetail = %q", got.LastReportDetail)
+	}
+
+	// Parent "root" gets both Maildir and queue entries.
+	msgs, _ := messages.Inbox(tmpDir, "root")
+	if len(msgs) != 1 {
+		t.Fatalf("inbox len = %d", len(msgs))
+	}
+	entries, _ := agentloop.ListPending(tmpDir, "root")
+	if len(entries) != 1 {
+		t.Fatalf("queue len = %d", len(entries))
+	}
+	if entries[0].From != "weave" {
+		t.Errorf("from = %q", entries[0].From)
+	}
+}
+
+func TestReportStatus_ExplicitAgentName(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ratz", Parent: "weave", Status: "active"})
+
+	_, err := sup.ReportStatus(context.Background(), "ratz", "complete", "done", "")
+	if err != nil {
+		t.Fatalf("ReportStatus: %v", err)
+	}
+	got, _ := state.LoadAgent(tmpDir, "ratz")
+	if got.Status != "done" {
+		t.Errorf("Status = %q, want done", got.Status)
+	}
+}
+
+func TestReportStatus_InvalidState(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Status: "active"})
+	_, err := sup.ReportStatus(context.Background(), "", "bogus", "x", "")
+	if err == nil {
+		t.Fatal("expected error for invalid state")
+	}
+}
+
 func TestPeek_DefaultsTailTo20(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Status: "active"})

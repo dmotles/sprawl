@@ -182,12 +182,14 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 	result := make([]AgentInfo, 0, len(agents))
 	for _, a := range agents {
 		result = append(result, AgentInfo{
-			Name:   a.Name,
-			Type:   a.Type,
-			Family: a.Family,
-			Parent: a.Parent,
-			Status: a.Status,
-			Branch: a.Branch,
+			Name:              a.Name,
+			Type:              a.Type,
+			Family:            a.Family,
+			Parent:            a.Parent,
+			Status:            a.Status,
+			Branch:            a.Branch,
+			LastReportState:   a.LastReportState,
+			LastReportSummary: a.LastReportMessage,
 		})
 	}
 	return result, nil
@@ -403,7 +405,30 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 			Type:    st.LastReportType,
 			Message: st.LastReportMessage,
 			At:      st.LastReportAt,
+			State:   st.LastReportState,
+			Detail:  st.LastReportDetail,
 		},
 		Activity: activity,
 	}, nil
+}
+
+// ReportStatus delegates to agentops.Report, which is the single persistence
+// path shared by the `sprawl report` CLI. See
+// docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
+//
+// An empty agentName defaults to r.callerName — the MCP tool invokes this
+// method with an empty name so child agents can report without passing their
+// own identity as a parameter.
+func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, detail string) (*ReportStatusResult, error) {
+	if agentName == "" {
+		agentName = r.callerName
+	}
+	if agentName == "" {
+		return nil, fmt.Errorf("reporter identity not set (callerName is empty)")
+	}
+	res, err := agentops.Report(&agentops.ReportDeps{}, r.sprawlRoot, agentName, reportState, summary, detail)
+	if err != nil {
+		return nil, err
+	}
+	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
 }

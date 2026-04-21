@@ -338,6 +338,10 @@ func (s *shutdownMockSupervisor) Peek(_ context.Context, _ string, _ int) (*supe
 	return &supervisor.PeekResult{}, nil
 }
 
+func (s *shutdownMockSupervisor) ReportStatus(_ context.Context, _, _, _, _ string) (*supervisor.ReportStatusResult, error) {
+	return &supervisor.ReportStatusResult{}, nil
+}
+
 // Ctrl+C / clean TUI shutdown must NOT kill child agents. Users expect
 // `sprawl enter` to be a detachable UI — agents should keep running so the
 // next `sprawl enter` can reattach.

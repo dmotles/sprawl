@@ -415,6 +415,75 @@ func TestBuildTreeNodes_Hierarchy(t *testing.T) {
 	}
 }
 
+func TestTreeModel_ReportChipRendering(t *testing.T) {
+	m := newTestTreeModel(t)
+	m.SetSize(80, 10)
+	m.SetNodes([]TreeNode{
+		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportSummary: "writing tests"},
+		{Name: "bob", Type: "engineer", Status: "active", LastReportState: "blocked", LastReportSummary: "awaiting review"},
+		{Name: "carol", Type: "engineer", Status: "done", LastReportState: "complete", LastReportSummary: "merged PR"},
+		{Name: "dave", Type: "engineer", Status: "problem", LastReportState: "failure", LastReportSummary: "tests fail"},
+		{Name: "eve", Type: "engineer", Status: "active"}, // no report → idle
+	})
+	view := m.View()
+
+	// Dot glyph appears for every row (once per node).
+	if n := strings.Count(view, "●"); n != 5 {
+		t.Errorf("expected 5 dots (one per node), got %d; view:\n%s", n, view)
+	}
+	// When a summary is present, it replaces the "(status)" rendering.
+	if !strings.Contains(view, "alice — writing tests") {
+		t.Errorf("working chip summary missing; view:\n%s", view)
+	}
+	if !strings.Contains(view, "bob — awaiting review") {
+		t.Errorf("blocked chip summary missing; view:\n%s", view)
+	}
+	if !strings.Contains(view, "carol — merged PR") {
+		t.Errorf("complete chip summary missing; view:\n%s", view)
+	}
+	if !strings.Contains(view, "dave — tests fail") {
+		t.Errorf("failure chip summary missing; view:\n%s", view)
+	}
+	// No-report node falls back to "(status)".
+	if !strings.Contains(view, "eve (active)") {
+		t.Errorf("idle fallback missing for eve; view:\n%s", view)
+	}
+}
+
+func TestTreeModel_ReportChip_ColorsDiffer(t *testing.T) {
+	// The five state classes should each yield a distinct ANSI-coded dot.
+	theme := NewTheme("colour212")
+	seen := map[string]bool{}
+	for _, s := range []string{"working", "blocked", "failure", "complete", "", "bogus"} {
+		rendered := theme.ReportDot(s)
+		if rendered == "" || !strings.Contains(rendered, "●") {
+			t.Errorf("ReportDot(%q) did not render the dot glyph: %q", s, rendered)
+		}
+		seen[rendered] = true
+	}
+	// working/blocked/failure/complete/idle should be 5 distinct values.
+	// "" and "bogus" fall through to idle.
+	if len(seen) != 5 {
+		t.Errorf("expected 5 distinct rendered dots, got %d (%v)", len(seen), seen)
+	}
+}
+
+func TestBuildTreeNodes_PropagatesReportFields(t *testing.T) {
+	agents := []supervisor.AgentInfo{
+		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportSummary: "in flight"},
+	}
+	nodes := buildTreeNodes(agents, nil)
+	if len(nodes) != 1 {
+		t.Fatalf("len = %d", len(nodes))
+	}
+	if nodes[0].LastReportState != "working" {
+		t.Errorf("LastReportState = %q", nodes[0].LastReportState)
+	}
+	if nodes[0].LastReportSummary != "in flight" {
+		t.Errorf("LastReportSummary = %q", nodes[0].LastReportSummary)
+	}
+}
+
 func TestBuildTreeNodes_Empty(t *testing.T) {
 	nodes := buildTreeNodes(nil, nil)
 	if len(nodes) != 0 {
