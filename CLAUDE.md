@@ -99,3 +99,4 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 2. Manual smoke test: run the built `./sprawl` binary with relevant commands
 3. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
 4. For TUI changes, read `/tui-testing` for the E2E validation harness and manual testing workflow. TUI validation is mandatory for all TUI-related changes.
+5. **Tmux-mode `sprawl init` changes are mandatory-tested.** Any change touching `cmd/rootloop.go` or `internal/claude/` must run `make test-init-e2e` and pass before merge. The script (`scripts/test-init-e2e.sh`) spins up an isolated sandbox under `/tmp/`, runs `sprawl init --detached`, and asserts the resulting tmux pane does not exhibit the QUM-261 class of regression (claude flipping to `--print` mode and the bash restart loop thrashing). Requires a real `claude` binary on PATH; set `SPRAWL_E2E_SKIP_NO_CLAUDE=1` to skip in environments without one.
