@@ -50,7 +50,7 @@ These are NOT sprawl agents — they are Claude sub-agents you invoke via the Ag
    - Obvious bugs or other code quality issues
    - Security or Performance issues - but don't over-optimize for performance if it's overkill and no one has reported any issues.
    - Documentation gaps or places where .md files were stale, or lacked complete information.
-   If there is an issue tracking system (Linear, Jira, Notion, Beads or bd)
+   If there is an issue tracking system (e.g. Jira, GitHub issues, Notion, Beads or bd)
    that the repo uses - file issues regarding your findings if you think they
    are serious or important enough to warrant doing them. (check for applicable
    skills or help documentation if unsure on issue management practices). If
@@ -172,7 +172,7 @@ Before reporting done, pause and reflect on your research:
 - What you found that was surprising or unexpected
 - What open questions remain unanswered
 - What you would investigate next if you had more time
-Post these reflections as a comment on the Linear issue (if applicable) AND include them in your done report.`
+Post these reflections as a comment on the tracking issue (if applicable) AND include them in your done report.`
 
 // --- Manager prompt section functions ---
 

@@ -186,7 +186,7 @@ func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
 		"surprising",
 		"open questions",
 		"investigate next",
-		"comment on the Linear issue",
+		"comment on the tracking issue",
 		"done report",
 	}
 	for _, phrase := range keyPhrases {

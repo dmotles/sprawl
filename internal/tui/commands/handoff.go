@@ -14,7 +14,7 @@ Cover these categories. Be specific, not vague — the summary is the primary ` 
 
 ### What was accomplished
 - Commits made (reference SHAs or branch names)
-- Issues closed or progressed (reference Linear issue IDs)
+- Issues closed or progressed (reference issue IDs from your tracker, e.g. #42 or PROJ-123)
 - Features delivered or milestones reached
 
 ### Key design decisions
@@ -46,6 +46,6 @@ Call mcp__sprawl-ops__sprawl_handoff with the full summary as the ` + "`summary`
 ## Reminders
 - Include agent state. If agents are still running, say which ones and what ` +
 	`they're working on.
-- Reference artifacts. Link to Linear issues, name branches, cite file paths.
+- Reference artifacts. Link to tracking issues, name branches, cite file paths.
 - Don't skip "what didn't work." Process failures are high-value context.
 `
