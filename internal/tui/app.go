@@ -35,6 +35,7 @@ type AgentBuffer struct {
 type AppModel struct {
 	tree      TreeModel
 	viewport  ViewportModel
+	activity  ActivityPanelModel
 	input     InputModel
 	statusBar StatusBarModel
 	confirm   ConfirmModel
@@ -89,6 +90,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 	app := AppModel{
 		tree:          NewTreeModel(&theme),
 		viewport:      NewViewportModel(&theme),
+		activity:      NewActivityPanelModel(&theme),
 		input:         NewInputModel(&theme),
 		statusBar:     NewStatusBarModel(&theme, repoName, version, 0),
 		help:          NewHelpModel(&theme),
@@ -107,6 +109,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 	}
 	app.updateFocus()
 	app.rebuildTree()
+	app.activity.SetAgent(rootAgent)
 	return app
 }
 
@@ -119,6 +122,7 @@ func (m AppModel) Init() tea.Cmd {
 	}
 	if m.supervisor != nil {
 		cmds = append(cmds, tickAgentsCmd(m.supervisor, m.sprawlRoot))
+		cmds = append(cmds, tickActivityCmd(m.supervisor, m.observedAgent))
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -417,6 +421,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ActivityTickMsg:
+		// Only apply the tick if it is for the currently-observed agent. A
+		// selection change that happened mid-flight can race us; dropping a
+		// stale tick is cheaper and simpler than cancelling the in-flight cmd.
+		if msg.Agent == m.observedAgent {
+			m.activity.SetEntries(msg.Entries)
+		}
+		if m.supervisor != nil {
+			return m, scheduleActivityTick(m.supervisor, m.observedAgent)
+		}
+		return m, nil
+
 	case AgentTreeMsg:
 		m.childNodes = msg.Nodes
 		m.rebuildTree()
@@ -467,6 +483,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.input.SetDisabled(false)
 		}
+
+		// Refresh the activity panel for the newly-observed agent.
+		m.activity.SetAgent(msg.Name)
+		m.activity.SetEntries(nil)
+		if m.supervisor != nil {
+			return m, tickActivityCmd(m.supervisor, msg.Name)
+		}
 		return m, nil
 	}
 
@@ -501,8 +524,18 @@ func (m AppModel) View() tea.View {
 		Height(layout.ViewportHeight - 2)
 	vpView := vpBorder.Render(m.viewport.View())
 
-	// Combine tree and viewport horizontally.
-	mainRow := lipgloss.JoinHorizontal(lipgloss.Top, treeView, vpView)
+	// Combine tree and viewport horizontally. On wide terminals, a third
+	// column (activity panel) is added to the right. See QUM-296.
+	var mainRow string
+	if layout.ActivityWidth > 0 {
+		actBorder := m.theme.InactiveBorder.
+			Width(layout.ActivityWidth - 2).
+			Height(layout.ActivityHeight - 2)
+		actView := actBorder.Render(m.activity.View())
+		mainRow = lipgloss.JoinHorizontal(lipgloss.Top, treeView, vpView, actView)
+	} else {
+		mainRow = lipgloss.JoinHorizontal(lipgloss.Top, treeView, vpView)
+	}
 
 	// Render input with border.
 	inputBorder := m.borderStyle(PanelInput).
@@ -603,6 +636,11 @@ func (m *AppModel) resizePanels() {
 	// Account for border (2 chars each side).
 	m.tree.SetSize(layout.TreeWidth-2, layout.TreeHeight-2)
 	m.viewport.SetSize(layout.ViewportWidth-2, layout.ViewportHeight-2)
+	if layout.ActivityWidth > 0 {
+		m.activity.SetSize(layout.ActivityWidth-2, layout.ActivityHeight-2)
+	} else {
+		m.activity.SetSize(0, 0)
+	}
 	m.input.SetWidth(layout.InputWidth - 2)
 	m.statusBar.SetWidth(layout.StatusWidth)
 	m.help.SetSize(m.width, m.height)
@@ -726,5 +764,28 @@ func scheduleAgentTick(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(2 * time.Second)
 		return tickAgentsCmd(sup, sprawlRoot)()
+	}
+}
+
+// tickActivityCmd fetches the activity tail for the given agent and emits
+// ActivityTickMsg. Errors yield an empty tick so the panel clears rather than
+// showing stale data. A nil/empty agent produces an empty tick.
+func tickActivityCmd(sup supervisor.Supervisor, agent string) tea.Cmd {
+	return func() tea.Msg {
+		if agent == "" {
+			return ActivityTickMsg{Agent: agent}
+		}
+		entries, err := sup.PeekActivity(context.Background(), agent, 200)
+		if err != nil {
+			return ActivityTickMsg{Agent: agent}
+		}
+		return ActivityTickMsg{Agent: agent, Entries: entries}
+	}
+}
+
+func scheduleActivityTick(sup supervisor.Supervisor, agent string) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(2 * time.Second)
+		return tickActivityCmd(sup, agent)()
 	}
 }

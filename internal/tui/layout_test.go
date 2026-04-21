@@ -181,6 +181,44 @@ func TestComputeLayout_ZeroSize(t *testing.T) {
 	}
 }
 
+func TestComputeLayout_WideTerminalHasActivityPanel(t *testing.T) {
+	l := ComputeLayout(160, 40)
+	if l.ActivityWidth <= 0 {
+		t.Errorf("ActivityWidth = %d, want > 0 at width=160", l.ActivityWidth)
+	}
+	if l.ActivityHeight <= 0 {
+		t.Errorf("ActivityHeight = %d, want > 0 at height=40", l.ActivityHeight)
+	}
+	// Three-column sum must not exceed terminal width.
+	if l.TreeWidth+l.ViewportWidth+l.ActivityWidth > l.TermWidth {
+		t.Errorf("tree(%d)+viewport(%d)+activity(%d)=%d exceeds term=%d",
+			l.TreeWidth, l.ViewportWidth, l.ActivityWidth,
+			l.TreeWidth+l.ViewportWidth+l.ActivityWidth, l.TermWidth)
+	}
+	if l.ActivityHeight != l.ViewportHeight {
+		t.Errorf("ActivityHeight (%d) should equal ViewportHeight (%d)", l.ActivityHeight, l.ViewportHeight)
+	}
+}
+
+func TestComputeLayout_NarrowTerminalHidesActivityPanel(t *testing.T) {
+	l := ComputeLayout(80, 24)
+	if l.ActivityWidth != 0 {
+		t.Errorf("ActivityWidth = %d, want 0 at narrow width=80 (activity panel hidden)", l.ActivityWidth)
+	}
+	// Viewport should still fill the remaining space (no activity reservation).
+	if l.TreeWidth+l.ViewportWidth != l.TermWidth {
+		t.Errorf("when activity panel hidden, tree(%d)+viewport(%d)=%d must equal term=%d",
+			l.TreeWidth, l.ViewportWidth, l.TreeWidth+l.ViewportWidth, l.TermWidth)
+	}
+}
+
+func TestComputeLayout_ActivityWidthClamped(t *testing.T) {
+	l := ComputeLayout(400, 50)
+	if l.ActivityWidth > 60 {
+		t.Errorf("ActivityWidth = %d, want capped (<=60) for very wide terminal", l.ActivityWidth)
+	}
+}
+
 func TestComputeLayout_BelowMinimum(t *testing.T) {
 	sizes := []struct {
 		name          string
