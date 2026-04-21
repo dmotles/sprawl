@@ -345,6 +345,49 @@ _ = deps.tmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
 
 ---
 
+## Subprocess stdio: TTY vs pipe
+
+**Hazard:** When you launch a child process with `os/exec`, the value you assign to `cmd.Stdout` / `cmd.Stderr` determines whether the child sees a TTY or a pipe on that file descriptor. Getting this wrong silently changes the child's behavior.
+
+### The `os/exec` rule
+
+From the [`os/exec` docs](https://pkg.go.dev/os/exec#Cmd): if `Stdout` or `Stderr` is an `*os.File`, the corresponding file descriptor of the child process is set directly to that file. Otherwise, Go allocates an anonymous pipe, hands the write end to the child, and copies from the read end into your writer in a goroutine.
+
+Short version:
+
+- `cmd.Stdout = os.Stdout` → child's fd 1 **is** the terminal (TTY passthrough).
+- `cmd.Stdout = someIoWriter` (bytes.Buffer, tee, markerWriter, io.MultiWriter, …) → child's fd 1 is an **anonymous pipe**. Not a TTY.
+
+This is true even for `io.MultiWriter(os.Stdout, buf)` — a MultiWriter is not an `*os.File`, so the child gets a pipe.
+
+### TTY-sensitive children
+
+Many modern CLIs gate behavior on `isatty(fd)`:
+
+- **Claude Code ≥2.1** — if stdout is not a TTY, silently switches into `--print` (non-interactive) mode. Requires a prompt on argv/stdin and exits on stdin EOF. Completely different UX.
+- **TUIs** (bubble tea, ink, etc.) — usually refuse to start, or fall back to a dumb line-mode.
+- **`git`, `less`, `ls`** — drop color, disable pagers, change output format.
+- **`ssh`** — requires `-t` to force a PTY when stdin/stdout aren't terminals.
+
+If you wrap stdout to scan or tee, the child sees a pipe and its behavior changes underneath you.
+
+### Guidance
+
+1. **Default to `os.Stdout` / `os.Stderr` directly** for any interactive or potentially-TTY-sensitive child. This is the only way the child keeps a real terminal on its stdio.
+2. **If you must intercept output, wrap stderr, not stdout.** Most tools only TTY-check stdout. Error/log scanning on stderr is typically safe. (`RunWithResumeWatch` in `internal/claude/resumewatch.go` does exactly this — it wraps stderr with a marker scanner and leaves stdout untouched.)
+3. **If you must capture or intercept stdout of a TTY-sensitive child, use a PTY.** [`github.com/creack/pty`](https://github.com/creack/pty) lets you allocate a pseudo-terminal; pass the PTY's slave end as `cmd.Stdout` (still an `*os.File`, so os/exec doesn't pipe it) and read from the master end. The child sees a TTY, you still get the bytes.
+4. **Never pass `io.MultiWriter(os.Stdout, …)` to a TTY-sensitive child** thinking it "just tees to the terminal". It silently downgrades the child's fd 1 to a pipe.
+
+### Concrete example — QUM-261
+
+`RunWithResumeWatch` originally wrapped `cmd.Stdout` with a markerWriter to scan for a "no conversation" string. Go's `os/exec` promoted the writer to an anonymous pipe. Claude Code saw a non-TTY stdout, auto-flipped to `--print` mode, and `sprawl init` bricked: Claude exited immediately on EOF without ever showing the interactive onboarding screen.
+
+Fix (commit `7c801f5`): move the marker scanner to stderr, leave `cmd.Stdout` as the inherited `os.Stdout`. The marker string is stderr-only anyway, so stdout scanning was wrong from the start — the TTY regression just made it loud.
+
+Follow-up documentation: QUM-308 (this section) and the hazard comment in `internal/claude/resumewatch.go`.
+
+---
+
 ## Go Module & Dependencies
 
 - **Module path:** `github.com/dmotles/sprawl`
