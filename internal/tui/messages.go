@@ -1,5 +1,7 @@
 package tui
 
+import "github.com/dmotles/sprawl/internal/agentloop"
+
 // tea.Msg types for protocol events from the host session.
 // These are consumed by the TUI's Update method to drive UI state.
 
@@ -124,6 +126,14 @@ type ToggleHelpMsg struct{}
 // /exit command. The app sets `quitting=true` then returns tea.Quit — same
 // post-confirm semantics as the Ctrl-C path.
 type PaletteQuitMsg struct{}
+
+// ActivityTickMsg carries a freshly-fetched tail of an agent's activity ring
+// (QUM-296). Agent names the agent this tail belongs to; the App applies it
+// only if Agent matches the currently-observed agent.
+type ActivityTickMsg struct {
+	Agent   string
+	Entries []agentloop.ActivityEntry
+}
 
 // SessionRestartingMsg signals that the TUI is transitioning between Claude
 // subprocess sessions (e.g. after transport EOF or /handoff). The App renders
