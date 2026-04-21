@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -96,6 +97,10 @@ func (m *mockSupervisor) HandoffRequested() <-chan struct{} {
 		m.handoffCh = make(chan struct{}, 1)
 	}
 	return m.handoffCh
+}
+
+func (m *mockSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]agentloop.ActivityEntry, error) {
+	return nil, nil
 }
 
 // makeJSONRPCRequest builds a raw JSON-RPC request for testing.

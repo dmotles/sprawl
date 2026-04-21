@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/memory"
@@ -326,4 +327,19 @@ func (r *Real) Handoff(_ context.Context, summary string) error {
 // HandoffRequested returns the signal channel. See Handoff.
 func (r *Real) HandoffRequested() <-chan struct{} {
 	return r.handoffCh
+}
+
+// PeekActivity reads the tail of the agent's activity.ndjson file and
+// returns the last `tail` entries. A missing file yields an empty slice.
+// tail ≤ 0 returns all available entries.
+func (r *Real) PeekActivity(_ context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error) {
+	if err := agent.ValidateName(agentName); err != nil {
+		return nil, err
+	}
+	path := agentloop.ActivityPath(r.sprawlRoot, agentName)
+	entries, err := agentloop.ReadActivityFile(path, tail)
+	if err != nil {
+		return nil, fmt.Errorf("reading activity for %q: %w", agentName, err)
+	}
+	return entries, nil
 }

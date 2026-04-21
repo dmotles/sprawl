@@ -1,6 +1,10 @@
 package supervisor
 
-import "context"
+import (
+	"context"
+
+	"github.com/dmotles/sprawl/internal/agentloop"
+)
 
 // AgentInfo describes an agent's current state as seen by the supervisor.
 type AgentInfo struct {
@@ -42,4 +46,10 @@ type Supervisor interface {
 	// Handoff completes successfully. Consumers use it to trigger session
 	// restart without blocking the MCP tool response.
 	HandoffRequested() <-chan struct{}
+
+	// PeekActivity returns up to `tail` of the most recent activity
+	// entries recorded for the named agent, oldest-first. See
+	// docs/designs/messaging-overhaul.md §4.4. A missing agent (no
+	// activity file yet) yields an empty slice and nil error.
+	PeekActivity(ctx context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error)
 }

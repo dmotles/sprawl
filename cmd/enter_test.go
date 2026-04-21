@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 )
@@ -325,6 +326,9 @@ func (s *shutdownMockSupervisor) Shutdown(_ context.Context) error {
 }
 func (s *shutdownMockSupervisor) Handoff(_ context.Context, _ string) error { return nil }
 func (s *shutdownMockSupervisor) HandoffRequested() <-chan struct{}         { return nil }
+func (s *shutdownMockSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]agentloop.ActivityEntry, error) {
+	return nil, nil
+}
 
 // Ctrl+C / clean TUI shutdown must NOT kill child agents. Users expect
 // `sprawl enter` to be a detachable UI — agents should keep running so the
