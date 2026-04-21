@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/rootinit"
 )
@@ -250,6 +251,63 @@ func TestRunRootSession_ResumeFailure_RetriesFresh(t *testing.T) {
 	}
 	if !strings.Contains(logBuf.String(), "falling back to fresh session") {
 		t.Errorf("expected fallback log message; got %q", logBuf.String())
+	}
+}
+
+// TestRunRootSession_ResumeFailure_MarkerError_RetriesRegardlessOfWindow
+// covers QUM-261: the subprocess stayed alive long past resumeFailureWindow
+// but the "No conversation found" marker scanner still tripped. The fallback
+// must fire whenever runCommand returns claude.ErrResumeFailed, regardless of
+// how long ago claude was launched.
+func TestRunRootSession_ResumeFailure_MarkerError_RetriesRegardlessOfWindow(t *testing.T) {
+	deps := newTestRootLoopDeps(t)
+	deps.rootinit.ReadLastSessionID = func(string) (string, error) { return "dead-sess", nil }
+	deps.rootinit.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+	deps.rootinit.NewUUID = func() (string, error) { return "fresh-sess", nil }
+	deps.rootinit.WriteSystemPrompt = func(root, name, content string) (string, error) {
+		return "/tmp/SYSTEM.md", nil
+	}
+
+	// Clock advances well past the elapsed-time heuristic. The marker-based
+	// fallback must still fire because runCommand returned ErrResumeFailed.
+	fakeNow := time.Unix(0, 0)
+	deps.now = func() time.Time {
+		t := fakeNow
+		fakeNow = fakeNow.Add(resumeFailureWindow + 30*time.Second)
+		return t
+	}
+
+	var logBuf strings.Builder
+	deps.stdout = &logBuf
+
+	calls := 0
+	var secondArgs []string
+	deps.runCommand = func(name string, args []string) error {
+		calls++
+		if calls == 1 {
+			return claude.ErrResumeFailed
+		}
+		secondArgs = args
+		return nil
+	}
+
+	if err := runRootSession(context.Background(), deps); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if calls != 2 {
+		t.Fatalf("expected 2 invocations (resume + fresh retry) on marker match; got %d", calls)
+	}
+	if !argsContainPair(secondArgs, "--session-id", "fresh-sess") {
+		t.Errorf("retry should use fresh session ID; got %v", secondArgs)
+	}
+	for _, a := range secondArgs {
+		if a == "--resume" {
+			t.Errorf("retry must not use --resume; got %v", secondArgs)
+		}
+	}
+	if !strings.Contains(logBuf.String(), "resume failed for dead-sess") {
+		t.Errorf("expected resume-failure log; got %q", logBuf.String())
 	}
 }
 

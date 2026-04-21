@@ -206,7 +206,7 @@ type mockSessionFactory struct {
 	wasResume      bool
 }
 
-func (f *mockSessionFactory) newSession(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error) {
+func (f *mockSessionFactory) newSession(sprawlRoot string, forceFresh bool, _ func()) (*tui.Bridge, bool, error) {
 	f.called = true
 	f.sprawlDir = sprawlRoot
 	f.lastForceFresh = forceFresh
@@ -393,6 +393,27 @@ func TestEnter_CleanShutdown_DoesNotKillAgents(t *testing.T) {
 	}
 }
 
+// TestWrapEnterStderrForResumeScan is the TUI-path unit coverage for QUM-261:
+// the stderr writer used by `sprawl enter`'s Claude subprocess must be wrapped
+// so that the "No conversation found with session ID:" marker fires a kill
+// callback. The subprocess exiting fast then satisfies makeRestartFunc's
+// existing resumeFailureWindow heuristic and force-freshes the next session.
+func TestWrapEnterStderrForResumeScan(t *testing.T) {
+	var sink strings.Builder
+	var killed int32
+	w := wrapEnterStderrForResumeScan(&sink, func() { atomic.AddInt32(&killed, 1) })
+
+	if _, err := w.Write([]byte("No conversation found with session ID: bogus\n")); err != nil {
+		t.Fatalf("unexpected write error: %v", err)
+	}
+	if atomic.LoadInt32(&killed) != 1 {
+		t.Errorf("kill callback should fire exactly once on marker; got %d", killed)
+	}
+	if !strings.Contains(sink.String(), "No conversation found") {
+		t.Errorf("underlying stderr must still receive the line for logging; got %q", sink.String())
+	}
+}
+
 func TestBuildSessionEnv_ContainsAgentIdentity(t *testing.T) {
 	env := buildSessionEnv()
 
@@ -435,17 +456,19 @@ func fakeFinalize(order *[]string, count *int32, errToReturn error) func(context
 // orderedSessionFactory appends "newSession" to order on every call and
 // returns the stored wasResume / err.
 type orderedSessionFactory struct {
-	order      *[]string
-	calls      int32
-	wasResume  bool
-	err        error
-	forceFresh []bool
+	order            *[]string
+	calls            int32
+	wasResume        bool
+	err              error
+	forceFresh       []bool
+	resumeFailureCBs []func()
 }
 
-func (f *orderedSessionFactory) newSession(_ string, forceFresh bool) (*tui.Bridge, bool, error) {
+func (f *orderedSessionFactory) newSession(_ string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
 	atomic.AddInt32(&f.calls, 1)
 	*f.order = append(*f.order, "newSession")
 	f.forceFresh = append(f.forceFresh, forceFresh)
+	f.resumeFailureCBs = append(f.resumeFailureCBs, onResumeFailure)
 	return nil, f.wasResume, f.err
 }
 
@@ -537,6 +560,73 @@ func TestEnter_RestartFunc_ForceFreshWhenResumeDiedFast(t *testing.T) {
 	}
 	if finCount != 1 {
 		t.Errorf("finalize should run exactly once, got %d", finCount)
+	}
+}
+
+// TestEnter_RestartFunc_MarkerTripped_ForcesFreshRegardlessOfWindow covers
+// QUM-261: claude printed "No conversation found with session ID:" and stayed
+// alive past resumeFailureWindow before we killed it. The restart must still
+// force-fresh — the elapsed-time heuristic alone would re-resume the dead ID.
+func TestEnter_RestartFunc_MarkerTripped_ForcesFreshRegardlessOfWindow(t *testing.T) {
+	var order []string
+	var finCount int32
+	fact := &orderedSessionFactory{order: &order}
+
+	state := &restartState{
+		lastWasResume: true,
+		// Pretend 1 minute has elapsed — well past the 5s window.
+		lastStartedAt: time.Now().Add(-time.Minute),
+	}
+	state.resumeMarkerTripped.Store(true)
+
+	rf := makeRestartFunc(
+		fact.newSession,
+		fakeFinalize(&order, &finCount, nil),
+		"/tmp/sprawl",
+		state,
+		nil,
+		io.Discard,
+	)
+
+	if _, err := rf(); err != nil {
+		t.Fatalf("restartFunc returned unexpected error: %v", err)
+	}
+	if len(fact.forceFresh) != 1 || !fact.forceFresh[0] {
+		t.Errorf("forceFresh history = %v, want [true] (marker-tripped path)", fact.forceFresh)
+	}
+	if state.resumeMarkerTripped.Load() {
+		t.Errorf("marker-tripped flag should be consumed (reset to false) after restart")
+	}
+}
+
+// TestEnter_RestartFunc_ResumeFailureCallback_SetsMarkerFlag verifies the
+// onResumeFailure callback threaded through newSession is the one runEnter /
+// restartFunc uses to flip the marker flag. Without this wiring the TUI
+// stderr scanner's kill + restart cycle would loop forever on the dead ID.
+func TestEnter_RestartFunc_ResumeFailureCallback_SetsMarkerFlag(t *testing.T) {
+	var order []string
+	var finCount int32
+	fact := &orderedSessionFactory{order: &order}
+	state := &restartState{}
+
+	rf := makeRestartFunc(
+		fact.newSession,
+		fakeFinalize(&order, &finCount, nil),
+		"/tmp/sprawl",
+		state,
+		nil,
+		io.Discard,
+	)
+	if _, err := rf(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fact.resumeFailureCBs) != 1 || fact.resumeFailureCBs[0] == nil {
+		t.Fatalf("expected newSession to receive a non-nil onResumeFailure callback")
+	}
+	// Simulate the stderr marker scanner firing after the subprocess launched.
+	fact.resumeFailureCBs[0]()
+	if !state.resumeMarkerTripped.Load() {
+		t.Errorf("onResumeFailure callback must flip state.resumeMarkerTripped")
 	}
 }
 

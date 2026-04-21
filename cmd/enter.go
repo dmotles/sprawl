@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -26,10 +28,14 @@ import (
 
 // enterDeps holds dependencies for the enter command, enabling testability.
 type enterDeps struct {
-	getenv          func(string) string
-	getwd           func() (string, error)
-	runProgram      func(model tea.Model, onStart func(sender func(tea.Msg))) error
-	newSession      func(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error)
+	getenv     func(string) string
+	getwd      func() (string, error)
+	runProgram func(model tea.Model, onStart func(sender func(tea.Msg))) error
+	// newSession launches a Claude Code subprocess and wires the TUI bridge.
+	// onResumeFailure, if non-nil, is invoked from the subprocess's stderr
+	// scanner when the "No conversation found" marker trips — used by the
+	// restart loop to force-fresh the next session regardless of elapsed time.
+	newSession      func(sprawlRoot string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error)
 	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer) error
 }
@@ -41,6 +47,11 @@ type enterDeps struct {
 type restartState struct {
 	lastStartedAt time.Time
 	lastWasResume bool
+	// resumeMarkerTripped is set by the subprocess stderr scanner when the
+	// "No conversation found with session ID:" marker fires (QUM-261). The
+	// next restart consumes and clears it to force a fresh session even when
+	// claude stayed alive past resumeFailureWindow before the marker arrived.
+	resumeMarkerTripped atomic.Bool
 }
 
 // makeRestartFunc builds the closure that the TUI calls when it wants a fresh
@@ -50,7 +61,7 @@ type restartState struct {
 // lifetime of runEnter. bridgeOut, if non-nil, is updated on success so
 // runEnter closes the latest bridge on shutdown.
 func makeRestartFunc(
-	newSession func(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error),
+	newSession func(sprawlRoot string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error),
 	finalize func(ctx context.Context, sprawlRoot string, stdout io.Writer) error,
 	sprawlRoot string,
 	state *restartState,
@@ -58,8 +69,12 @@ func makeRestartFunc(
 	logW io.Writer,
 ) func() (*tui.Bridge, error) {
 	return func() (*tui.Bridge, error) {
-		forceFresh := state.lastWasResume && time.Since(state.lastStartedAt) < resumeFailureWindow
-		if forceFresh {
+		markerTripped := state.resumeMarkerTripped.Swap(false)
+		forceFresh := markerTripped || (state.lastWasResume && time.Since(state.lastStartedAt) < resumeFailureWindow)
+		switch {
+		case markerTripped:
+			fmt.Fprintf(logW, "[enter] resume failed (no conversation found) — falling back to fresh session\n")
+		case forceFresh:
 			fmt.Fprintf(logW, "[enter] resume died fast — falling back to fresh session\n")
 		}
 		// Phase D: run post-session housekeeping (consolidation when a handoff
@@ -70,7 +85,8 @@ func makeRestartFunc(
 				fmt.Fprintf(logW, "[enter] finalize handoff failed: %v\n", err)
 			}
 		}
-		newBridge, wasResume, err := newSession(sprawlRoot, forceFresh)
+		onResumeFailure := func() { state.resumeMarkerTripped.Store(true) }
+		newBridge, wasResume, err := newSession(sprawlRoot, forceFresh, onResumeFailure)
 		if err == nil {
 			if bridgeOut != nil {
 				*bridgeOut = newBridge
@@ -214,14 +230,14 @@ func buildSessionEnv() []string {
 // Returns (bridge, wasResume, error). wasResume indicates whether Prepare
 // took the resume path; callers use it to decide if a fast exit warrants a
 // force-fresh retry.
-func defaultNewSession(sprawlRoot string, forceFresh bool) (*tui.Bridge, bool, error) {
+func defaultNewSession(sprawlRoot string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
 	deps := rootinit.DefaultDeps()
 	deps.LogPrefix = "[enter]"
-	return newSessionImpl(sprawlRoot, forceFresh, deps, os.Stderr)
+	return newSessionImpl(sprawlRoot, forceFresh, deps, os.Stderr, onResumeFailure)
 }
 
 // newSessionImpl is the testable body of defaultNewSession.
-func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer) (*tui.Bridge, bool, error) {
+func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer, onResumeFailure func()) (*tui.Bridge, bool, error) {
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
 		return nil, false, fmt.Errorf("finding claude binary: %w", err)
@@ -253,8 +269,21 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 
 	cmd := exec.Command(claudePath, args...) //nolint:gosec // claudePath is from LookPath, not untrusted input
 	cmd.Dir = sprawlRoot
-	cmd.Stderr = os.Stderr
 	cmd.Env = buildSessionEnv()
+
+	// QUM-261: wrap stderr so the "No conversation found with session ID:"
+	// marker — emitted when --resume targets an evicted session but claude
+	// stays alive awaiting input — kills the subprocess AND signals
+	// onResumeFailure so makeRestartFunc force-freshes the next session
+	// regardless of how long claude took to emit the error.
+	cmd.Stderr = wrapEnterStderrForResumeScan(logW, func() {
+		if onResumeFailure != nil {
+			onResumeFailure()
+		}
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -303,6 +332,14 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 	bridge := tui.NewBridge(ctx, session)
 	bridge.SetSessionID(prepared.SessionID)
 	return bridge, prepared.Resume, nil
+}
+
+// wrapEnterStderrForResumeScan wraps the TUI-mode Claude subprocess stderr
+// with a marker-aware writer. On the "No conversation found with session ID:"
+// substring, kill is invoked so the subprocess exits fast enough for the
+// restartFunc's resumeFailureWindow heuristic to force-fresh.
+func wrapEnterStderrForResumeScan(underlying io.Writer, kill func()) io.Writer {
+	return claude.NewMarkerWriter(underlying, claude.NoConversationMarker, claude.ResumeMarkerScanCap, kill)
 }
 
 // enterTransport wraps a Claude Code subprocess for the host protocol.
@@ -363,11 +400,26 @@ func runEnter(deps *enterDeps) error {
 	// resume attempt died within resumeFailureWindow.
 	state := &restartState{}
 
+	// resumeFailureCh is closed by the Claude subprocess's stderr marker
+	// scanner when "No conversation found" fires. The onStart hook drains it
+	// and posts RestartSessionMsg — the TUI cannot detect the dead subprocess
+	// on its own because Bridge.WaitForEvent is only called after the user
+	// submits a message, and Session.Initialize treats pre-init EOF as
+	// success. Without this prod, the TUI would sit idle on a zombie session
+	// until the user typed something. Buffered to size 1 so a second marker
+	// trip in the same session is absorbed without blocking.
+	resumeFailureCh := make(chan struct{}, 1)
+	var resumeFailureOnce sync.Once
+	onResumeFailure := func() {
+		state.resumeMarkerTripped.Store(true)
+		resumeFailureOnce.Do(func() { close(resumeFailureCh) })
+	}
+
 	var bridge *tui.Bridge
 	if deps.newSession != nil {
 		var err error
 		var wasResume bool
-		bridge, wasResume, err = deps.newSession(sprawlRoot, false)
+		bridge, wasResume, err = deps.newSession(sprawlRoot, false, onResumeFailure)
 		if err != nil {
 			return fmt.Errorf("creating session: %w", err)
 		}
@@ -400,10 +452,24 @@ func runEnter(deps *enterDeps) error {
 		}
 	}
 
-	// Shutdown signal for the handoff-forwarder goroutine; closed when the
-	// Bubble Tea program returns so the goroutine can exit.
+	// Shutdown signal for the forwarder goroutines; closed when the Bubble Tea
+	// program returns so the goroutines can exit.
 	handoffDone := make(chan struct{})
 	onStart := func(send func(tea.Msg)) {
+		// QUM-261: when the initial `--resume` subprocess trips the "No
+		// conversation found" stderr marker, prod the TUI to tear down and
+		// restart. Without this prod the TUI sits idle on a zombie session
+		// because WaitForEvent is only dispatched after a user message.
+		go func() {
+			select {
+			case <-handoffDone:
+				return
+			case <-resumeFailureCh:
+				send(tui.SessionRestartingMsg{Reason: "resume failed — no conversation found"})
+				send(tui.RestartSessionMsg{})
+			}
+		}()
+
 		if sup == nil {
 			return
 		}
