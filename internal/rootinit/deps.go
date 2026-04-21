@@ -2,10 +2,12 @@ package rootinit
 
 import (
 	"context"
+	"io"
 	"os"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -39,12 +41,30 @@ type Deps struct {
 	UpdatePersistentKnowledge func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error
 	ListRecentSessions        func(sprawlRoot string, n int) ([]memory.Session, []string, error)
 	ReadTimeline              func(sprawlRoot string) ([]memory.TimelineEntry, error)
+
+	// MemoryModel is the Claude model name to use for consolidation and
+	// persistent-knowledge invocations. Empty falls back to the claude CLI
+	// default. Initial value comes from DefaultMemoryModel; loadMemoryModel
+	// overrides from .sprawl/config.yaml `memory_model` if set.
+	MemoryModel string
+
+	// LoadMemoryModel reads the user's override (if any) for the memory
+	// distillation model from .sprawl/config.yaml. Injected for testability.
+	// Returns an empty string if no override is present.
+	LoadMemoryModel func(sprawlRoot string) string
+
+	// BackgroundConsolidate runs the consolidation pipeline off the
+	// handoff critical path and returns a channel closed when the
+	// pipeline completes. The default wiring uses StartBackgroundConsolidation
+	// (flock-protected goroutine). Tests swap in a synchronous implementation
+	// so they can assert ordering deterministically.
+	BackgroundConsolidate func(sprawlRoot string, stdout io.Writer) <-chan struct{}
 }
 
 // DefaultDeps wires Deps against real implementations from agent, memory,
 // and state packages.
 func DefaultDeps() *Deps {
-	return &Deps{
+	d := &Deps{
 		LogPrefix:   "[root-loop]",
 		Getenv:      os.Getenv,
 		BuildPrompt: agent.BuildRootPrompt,
@@ -65,5 +85,26 @@ func DefaultDeps() *Deps {
 		UpdatePersistentKnowledge: memory.UpdatePersistentKnowledge,
 		ListRecentSessions:        memory.ListRecentSessions,
 		ReadTimeline:              memory.ReadTimeline,
+		MemoryModel:               memory.DefaultMemoryModel,
+		LoadMemoryModel:           defaultLoadMemoryModel,
 	}
+	d.BackgroundConsolidate = func(sprawlRoot string, stdout io.Writer) <-chan struct{} {
+		return StartBackgroundConsolidation(d, sprawlRoot, stdout)
+	}
+	return d
+}
+
+// defaultLoadMemoryModel reads .sprawl/config.yaml and returns the
+// `memory_model` override if present. Returns "" on any error so callers
+// fall back to Deps.MemoryModel (which is DefaultMemoryModel unless set).
+func defaultLoadMemoryModel(sprawlRoot string) string {
+	cfg, err := config.Load(sprawlRoot)
+	if err != nil {
+		return ""
+	}
+	v, ok := cfg.Get("memory_model")
+	if !ok {
+		return ""
+	}
+	return v
 }

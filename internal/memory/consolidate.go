@@ -14,6 +14,11 @@ import (
 // than the 3 most recent are distilled into timeline entries; the 3 most recent
 // sessions are left untouched.
 //
+// Only sessions whose timestamp is newer than the most recent timeline entry
+// (minus OverlapSessions of back-context) are fed to the LLM — older sessions
+// are assumed to be already represented in the timeline. The resulting prompt
+// is further bounded by MaxPromptChars via TruncateWithNote (QUM-285).
+//
 // This function is designed to be called post-handoff when the root agent is
 // restarting. It assumes single-threaded execution — no concurrent access
 // protection is needed.
@@ -48,10 +53,39 @@ func Consolidate(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, 
 		return fmt.Errorf("reading timeline: %w", err)
 	}
 
-	// Build and invoke the consolidation prompt.
-	prompt := buildConsolidationPrompt(existingTimeline, candidateSessions, candidateBodies)
+	// Bound the prompt: drop sessions already covered by the timeline.
+	overlap := cfg.OverlapSessions
+	if overlap <= 0 {
+		overlap = DefaultOverlapSessions
+	}
+	candidateSessions, candidateBodies = filterCandidatesByTimeline(existingTimeline, candidateSessions, candidateBodies, overlap)
+	if len(candidateSessions) == 0 {
+		// Nothing new to distill — existing timeline already covers all
+		// candidate sessions. Skip the LLM call entirely.
+		return nil
+	}
 
-	output, err := invoker.Invoke(ctx, prompt)
+	maxPromptChars := cfg.MaxPromptChars
+	if maxPromptChars <= 0 {
+		maxPromptChars = DefaultMaxConsolidationPromptChars
+	}
+
+	// Build and invoke the consolidation prompt (capped at MaxPromptChars).
+	prompt := buildConsolidationPrompt(existingTimeline, candidateSessions, candidateBodies)
+	prompt = TruncateWithNote(prompt, maxPromptChars)
+
+	timeout := cfg.InvokeTimeout
+	if timeout <= 0 {
+		timeout = DefaultInvokeTimeout
+	}
+	invokeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var opts []InvokeOption
+	if cfg.Model != "" {
+		opts = append(opts, WithModel(cfg.Model))
+	}
+	output, err := invoker.Invoke(invokeCtx, prompt, opts...)
 	if err != nil {
 		return fmt.Errorf("invoking claude for consolidation: %w", err)
 	}
@@ -84,6 +118,40 @@ func Consolidate(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, 
 	}
 
 	return nil
+}
+
+// filterCandidatesByTimeline drops candidate sessions whose timestamp is
+// older than (latestTimelineEntry - overlap sessions) — those are assumed
+// to already be represented in the timeline. `overlap` sessions immediately
+// older than the cutoff are retained as back-context so the model can see
+// cross-session themes without re-feeding the full history.
+//
+// If the timeline is empty, all candidates are returned untouched.
+// Inputs are assumed to be oldest-first (matching ListRecentSessions).
+func filterCandidatesByTimeline(existingTimeline []TimelineEntry, sessions []Session, bodies []string, overlap int) ([]Session, []string) {
+	if len(existingTimeline) == 0 {
+		return sessions, bodies
+	}
+	var latest time.Time
+	for _, e := range existingTimeline {
+		if e.Timestamp.After(latest) {
+			latest = e.Timestamp
+		}
+	}
+	// Find the first index whose timestamp is strictly after `latest`.
+	cutoff := len(sessions)
+	for i, s := range sessions {
+		if s.Timestamp.After(latest) {
+			cutoff = i
+			break
+		}
+	}
+	// Step back `overlap` sessions to preserve back-context.
+	start := cutoff - overlap
+	if start < 0 {
+		start = 0
+	}
+	return sessions[start:], bodies[start:]
 }
 
 // buildConsolidationPrompt constructs the prompt sent to Claude for timeline
