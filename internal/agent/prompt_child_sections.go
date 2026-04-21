@@ -115,6 +115,13 @@ Examples of actions that require extra caution:
 - Hard-to-reverse operations: force-pushing, git reset --hard, amending published commits
 - Actions visible to others: pushing code, creating/closing/commenting on PRs or issues, posting to external services
 
+Destructive-var guardrail: rm -rf "$VAR" (or any destructive command driven by
+an env var or shell variable) is forbidden unless the immediately preceding
+line asserts $VAR is under /tmp/ — e.g. [[ "$VAR" == /tmp/* ]] || exit 1.
+Never rely on an env var's value when destroying files; variables get unset,
+inherited from the wrong shell, or point somewhere you didn't expect. Assert,
+then delete.
+
 When you encounter an obstacle, do not use destructive actions as a shortcut.
 Identify root causes and fix underlying issues rather than bypassing safety
 checks (e.g. --no-verify). If you discover unexpected state like unfamiliar
@@ -349,6 +356,13 @@ Be especially aware that you are likely not the only agent running. Other agents
 may be working in their own worktrees on the same repo. Avoid actions that could
 disrupt other agents' work — for example, don't kill processes you didn't start,
 don't modify shared branches, and don't touch files outside your worktree.
+
+Destructive-var guardrail: rm -rf "$VAR" (or any destructive command driven by
+an env var or shell variable) is forbidden unless the immediately preceding
+line asserts $VAR is under /tmp/ — e.g. [[ "$VAR" == /tmp/* ]] || exit 1.
+Never rely on an env var's value when destroying files; variables get unset,
+inherited from the wrong shell, or point somewhere you didn't expect. Assert,
+then delete.
 
 When you encounter an obstacle, do not use destructive actions as a shortcut.
 Identify root causes and fix underlying issues rather than bypassing safety
