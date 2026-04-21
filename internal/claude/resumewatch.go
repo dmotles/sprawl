@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // NoConversationMarker is the error string claude prints when `--resume <id>`
@@ -28,6 +29,11 @@ const ResumeMarkerScanCap = 64 * 1024
 // Callers use errors.Is to short-circuit the elapsed-time heuristic and
 // retry with a fresh session regardless of how long the subprocess lived.
 var ErrResumeFailed = errors.New("claude resume failed: no conversation found")
+
+// ResumeWatchPipeDrainDelay bounds how long cmd.Wait will block on pipe I/O
+// after the subprocess exits. Used as the default for cmd.WaitDelay in
+// RunWithResumeWatch. See that function's doc for rationale.
+const ResumeWatchPipeDrainDelay = 2 * time.Second
 
 // NewMarkerWriter returns an io.Writer that forwards every write to underlying
 // while scanning the first maxBytes of output for marker. On match, onMatch is
@@ -117,12 +123,21 @@ func (w *markerWriter) Write(p []byte) (int, error) {
 // Callers may pre-set cmd.Stdout / cmd.Stderr to route passthrough to a
 // specific writer; nil defaults to os.Stdout / os.Stderr. cmd.Stdin is left
 // untouched.
+//
+// If cmd.WaitDelay is zero, it is set to ResumeWatchPipeDrainDelay so that
+// orphaned grandchildren that inherited the stdout/stderr pipe FDs (e.g. an
+// MCP server spawned by claude, or `sleep` forked by a shell-based fake)
+// cannot block cmd.Wait's pipe-copy goroutines indefinitely after the main
+// process exits.
 func RunWithResumeWatch(cmd *exec.Cmd) error {
 	if cmd.Stdout == nil {
 		cmd.Stdout = os.Stdout
 	}
 	if cmd.Stderr == nil {
 		cmd.Stderr = os.Stderr
+	}
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = ResumeWatchPipeDrainDelay
 	}
 
 	var tripped sync.Once
