@@ -283,7 +283,7 @@ const managerFailureSection = `# FAILURE HANDLING:
 func managerScopeSection(mode string) string {
 	reportCmd := "`sprawl report problem`"
 	if mode == "tui" {
-		reportCmd = "`sprawl_message`"
+		reportCmd = "`sprawl_report_status` (state: \"blocked\") or `sprawl_send_async`"
 	}
 	return `# SCOPE MANAGEMENT:
 - Own your scope. Execute the task you were given.

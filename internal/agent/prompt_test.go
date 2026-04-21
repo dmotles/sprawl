@@ -1245,7 +1245,10 @@ func TestBuildRootPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 
 	mcpTools := []string{
 		"sprawl_spawn",
-		"sprawl_message",
+		"sprawl_send_async",
+		"sprawl_send_interrupt",
+		"sprawl_peek",
+		"sprawl_report_status",
 		"sprawl_merge",
 		"sprawl_retire",
 		"sprawl_delegate",
@@ -1328,8 +1331,11 @@ func TestBuildEngineerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	env.Mode = "tui"
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
-	if !strings.Contains(prompt, "sprawl_message") {
-		t.Error("engineer prompt with tui mode should contain MCP tool 'sprawl_message'")
+	required := []string{"sprawl_send_async", "sprawl_report_status"}
+	for _, tool := range required {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("engineer prompt with tui mode should contain MCP tool %q", tool)
+		}
 	}
 }
 
@@ -1351,8 +1357,11 @@ func TestBuildResearcherPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	env.Mode = "tui"
 	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
 
-	if !strings.Contains(prompt, "sprawl_message") {
-		t.Error("researcher prompt with tui mode should contain MCP tool references")
+	required := []string{"sprawl_send_async", "sprawl_report_status"}
+	for _, tool := range required {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("researcher prompt with tui mode should contain MCP tool %q", tool)
+		}
 	}
 }
 
@@ -1397,7 +1406,10 @@ func TestBuildManagerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 		"sprawl_merge",
 		"sprawl_retire",
 		"sprawl_delegate",
-		"sprawl_message",
+		"sprawl_send_async",
+		"sprawl_send_interrupt",
+		"sprawl_peek",
+		"sprawl_report_status",
 		"sprawl_status",
 	}
 	for _, tool := range mcpTools {
@@ -1650,7 +1662,10 @@ func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {
 	// Must contain MCP tool references
 	required := []string{
 		"sprawl_spawn",
-		"sprawl_message",
+		"sprawl_send_async",
+		"sprawl_send_interrupt",
+		"sprawl_peek",
+		"sprawl_report_status",
 		"sprawl_merge",
 		"sprawl_retire",
 		"sprawl_delegate",

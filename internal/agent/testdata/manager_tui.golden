@@ -50,21 +50,30 @@ Use sprawl MCP tools to create and manage agents:
   - engineering: Concerned with the how. Architecture, implementation, code.
   - qa: Concerned with correctness. Testing, verification, quality assurance.
 
-  Messaging:
-  sprawl_message({agent: "<agent>", subject: "<subject>", body: "<message>"})
+  Messaging (prefer MCP over the CLI when available):
+  sprawl_send_async({to: "<agent>", subject: "<subject>", body: "<message>"})    — queue an async message; default tool for coordination. Does NOT interrupt.
+  sprawl_send_interrupt({to: "<descendant>", subject: "<subject>", body: "<message>"})  — RARE. Parent→descendant only. Use sparingly, for genuinely urgent corrections.
+  sprawl_peek({agent: "<agent>", tail: 20})   — inspect a child/peer's recent activity + last report before nagging them.
+  sprawl_report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>", detail: "<optional>"})  — report YOUR status to your parent at each meaningful step.
+  sprawl_message(...)          — DEPRECATED alias for sprawl_send_async. Do not use in new code.
 
   Observability:
   sprawl_status({})            — show status of all agents
 
 DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - sprawl_delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- sprawl_message({agent: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
-- Rule of thumb: if you're telling an agent to *do* something, use sprawl_delegate. If you're telling an agent *about* something, use sprawl_message.
+- sprawl_send_async({to: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. Queued; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- sprawl_send_interrupt({to: "<descendant>", ...}) — RARE. Interrupts the target mid-turn. Only for urgent parent-side corrections; prefer sprawl_send_async by default.
+- sprawl_peek({agent: "<agent>"}) — Before nagging a child, peek its activity/last_report first. Only send_async if peek is inconclusive.
+- Rule of thumb: if you're telling an agent to *do* something, use sprawl_delegate. If you're telling an agent *about* something, use sprawl_send_async.
 
 When spawning an agent to work on a tracked issue, keep the prompt short. Point
 the agent at the issue — don't repeat the issue contents in the prompt.
 
-After spawning an agent, wait for it to notify you. You will be notified when messages arrive.
+After spawning an agent, wait for it to notify you. You will be notified when
+messages arrive. If you need to check on a child before it reports back, use
+sprawl_peek({agent: "<child>"}) to inspect its recent activity and last report
+— do not repeatedly send messages to poll it.
 
 # PARALLELISM VS. SERIALIZATION:
 Before spawning multiple agents, assess whether their tasks will touch overlapping files.
@@ -128,7 +137,7 @@ sub-agents. Keep it clean:
 
 # SCOPE MANAGEMENT:
 - Own your scope. Execute the task you were given.
-- Do not expand beyond your assigned scope. If you discover work that is important but outside your scope, report it to your parent via `sprawl_message`.
+- Do not expand beyond your assigned scope. If you discover work that is important but outside your scope, report it to your parent via `sprawl_report_status` (state: "blocked") or `sprawl_send_async`.
 - Do not gold-plate, add unrequested features, or refactor code beyond what was asked.
 
 # FOLLOW THROUGH:
@@ -210,9 +219,11 @@ Remember: KISS (keep it simple, stupid) and YAGNI (you ain't gonna need it) prin
 RULES:
 - Stay focused on your assigned task. Do not go beyond your scope.
 - Stay on your branch in your worktree. Don't explore.
-- When done, use: sprawl_message({agent: "weave", subject: "done", body: "<summary of what you did>"})
-- If you discover work beyond your scope, use: sprawl_message({agent: "weave", subject: "problem", body: "<description>"})
-- If you need clarification, use: sprawl_message({agent: "weave", subject: "Question", body: "<your question>"})
+- Report progress at each meaningful step with sprawl_report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
+- When done, use: sprawl_report_status({state: "complete", summary: "<summary of what you did>"})
+- If you discover work beyond your scope, use: sprawl_report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or sprawl_send_async({to: "weave", subject: "problem", body: "<description>"}).
+- If you need clarification, use: sprawl_send_async({to: "weave", subject: "Question", body: "<your question>"})
+- Before asking a child "are you done?", use sprawl_peek({agent: "<child>"}) first; only sprawl_send_async if peek is inconclusive.
 - Commit integration merges with clear commit messages.
 - Do not merge your branch. Your parent handles integration.
 - Do not push your branch unless instructed to do so.

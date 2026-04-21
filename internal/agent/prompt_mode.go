@@ -29,9 +29,10 @@ func childRulesBlock(mode, parentName string) string {
 		return `RULES:
 - Stay focused on your assigned task. Do not go beyond your scope.
 - Stay on your branch in your worktree. Don't explore.
-- When done, use: sprawl_message({agent: "` + parentName + `", subject: "done", body: "<summary of what you did>"})
-- If you discover work beyond your scope, use: sprawl_message({agent: "` + parentName + `", subject: "problem", body: "<description>"})
-- If you need clarification, use: sprawl_message({agent: "` + parentName + `", subject: "Question", body: "<your question>"})
+- Report progress at each meaningful step with sprawl_report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
+- When done, use: sprawl_report_status({state: "complete", summary: "<summary of what you did>"})
+- If you discover work beyond your scope, use: sprawl_report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or sprawl_send_async({to: "` + parentName + `", subject: "problem", body: "<description>"}).
+- If you need clarification, use: sprawl_send_async({to: "` + parentName + `", subject: "Question", body: "<your question>"})
 - Commit your work frequently with clear commit messages.
 - Do not merge your branch. Your manager handles integration.
 - Do not push your branch unless instructed to do so.`
@@ -58,9 +59,10 @@ func researcherRulesBlock(mode, parentName string) string {
 		return `RULES:
 - Stay focused on your assigned research task. Do not go beyond your scope.
 - Do NOT modify production code. You are a researcher, not an engineer.
-- When done, use: sprawl_message({agent: "` + parentName + `", subject: "done", body: "<summary of what you found>"})
-- If you discover work beyond your scope, use: sprawl_message({agent: "` + parentName + `", subject: "problem", body: "<description>"})
-- If you need clarification, use: sprawl_message({agent: "` + parentName + `", subject: "Question", body: "<your question>"})
+- Report progress at each meaningful step with sprawl_report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
+- When done, use: sprawl_report_status({state: "complete", summary: "<summary of what you found>"})
+- If you discover work beyond your scope, use: sprawl_report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or sprawl_send_async({to: "` + parentName + `", subject: "problem", body: "<description>"}).
+- If you need clarification, use: sprawl_send_async({to: "` + parentName + `", subject: "Question", body: "<your question>"})
 - Commit your documentation and findings with clear commit messages.
 - Do not merge your branch. Your manager handles integration.
 - Do not push your branch unless instructed to do so.`
@@ -71,7 +73,8 @@ func researcherRulesBlock(mode, parentName string) string {
 // engineerReportDoneLine returns the TDD step 8 "Report done" line.
 func engineerReportDoneLine(mode, parentName string) string {
 	if mode == "tui" {
-		return `8. Report done via: sprawl_message({agent: "` + parentName + `", subject: "done", body: "<summary>"})`
+		_ = parentName
+		return `8. Report done via: sprawl_report_status({state: "complete", summary: "<summary>"})`
 	}
 	return `8. Report done via: sprawl report done "<summary>"`
 }
@@ -95,9 +98,11 @@ func managerRulesBlock(mode, parentName string) string {
 		return `RULES:
 - Stay focused on your assigned task. Do not go beyond your scope.
 - Stay on your branch in your worktree. Don't explore.
-- When done, use: sprawl_message({agent: "` + parentName + `", subject: "done", body: "<summary of what you did>"})
-- If you discover work beyond your scope, use: sprawl_message({agent: "` + parentName + `", subject: "problem", body: "<description>"})
-- If you need clarification, use: sprawl_message({agent: "` + parentName + `", subject: "Question", body: "<your question>"})
+- Report progress at each meaningful step with sprawl_report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
+- When done, use: sprawl_report_status({state: "complete", summary: "<summary of what you did>"})
+- If you discover work beyond your scope, use: sprawl_report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or sprawl_send_async({to: "` + parentName + `", subject: "problem", body: "<description>"}).
+- If you need clarification, use: sprawl_send_async({to: "` + parentName + `", subject: "Question", body: "<your question>"})
+- Before asking a child "are you done?", use sprawl_peek({agent: "<child>"}) first; only sprawl_send_async if peek is inconclusive.
 - Commit integration merges with clear commit messages.
 - Do not merge your branch. Your parent handles integration.
 - Do not push your branch unless instructed to do so.`
@@ -238,8 +243,12 @@ const rootCommandsTUI = `KEY TOOLS (MCP):
   sprawl_merge({agent: "<agent>", message: "<msg>"})      — Override the default squash commit message.
   sprawl_merge({agent: "<agent>", no_validate: true})     — Skip pre-merge and post-merge test validation.
 
-  Messaging:
-  sprawl_message({agent: "<agent>", subject: "<subject>", body: "<message>"})  — send a message to an agent
+  Messaging (prefer MCP over the CLI when available):
+  sprawl_send_async({to: "<agent>", subject: "<subject>", body: "<message>"})    — queue an async message; recipient reads it on its next yield. Does NOT interrupt. Use this as your default.
+  sprawl_send_interrupt({to: "<descendant>", subject: "<subject>", body: "<message>"})  — RARE. Parent→descendant only. Interrupts mid-turn. Reserve for genuinely urgent corrections ("I forgot to tell you something important").
+  sprawl_peek({agent: "<agent>", tail: 20})               — inspect an agent's recent activity + last report. Use before asking "are you done?" or nagging a child.
+  sprawl_report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>", detail: "<optional>"})  — report YOUR status to your parent. Canonical status channel. Use at every meaningful step, not just at task end.
+  sprawl_message(...)                                     — DEPRECATED alias for sprawl_send_async. Do not use in new code.
 
   Observability:
   sprawl_status({})                                       — show status of all agents with state, type, family, mail count`
@@ -251,8 +260,10 @@ const rootDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 
 const rootDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - sprawl_delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- sprawl_message({agent: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
-- Rule of thumb: if you're telling an agent to *do* something, use sprawl_delegate. If you're telling an agent *about* something, use sprawl_message.`
+- sprawl_send_async({to: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. Queued; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- sprawl_send_interrupt({to: "<descendant>", ...}) — RARE. Interrupts the target mid-turn. Only for urgent parent-side corrections; prefer sprawl_send_async by default.
+- sprawl_peek({agent: "<agent>"}) — Before nagging a child ("are you done?"), peek its activity/last_report first. Only send_async if peek is inconclusive.
+- Rule of thumb: if you're telling an agent to *do* something, use sprawl_delegate. If you're telling an agent *about* something, use sprawl_send_async.`
 
 const rootRulesTmux = `RULES:
 - Keep your agent tree manageable. Do not have more than 3-10 active agents at a time.
@@ -273,7 +284,7 @@ const rootRulesTUI = `RULES:
 - If a task is atomic (one module, a few hundred lines, one commit), assign it to an engineer directly.
 - Leverage repo-level issue management systems when available.
 - When work comes back, you MUST verify it before reporting success.
-- After spawning an agent, wait for it to notify you. You will be notified when messages arrive.`
+- After spawning an agent, wait for it to notify you. You will be notified when messages arrive. If you do need to check on a child, use sprawl_peek first instead of sending a message.`
 
 // --- Shared text replacements for TUI mode ---
 
@@ -293,7 +304,10 @@ After spawning an agent, wait for it to message you. Do NOT repeatedly run
 const managerPostDispatchTUI = `When spawning an agent to work on a tracked issue, keep the prompt short. Point
 the agent at the issue — don't repeat the issue contents in the prompt.
 
-After spawning an agent, wait for it to notify you. You will be notified when messages arrive.`
+After spawning an agent, wait for it to notify you. You will be notified when
+messages arrive. If you need to check on a child before it reports back, use
+sprawl_peek({agent: "<child>"}) to inspect its recent activity and last report
+— do not repeatedly send messages to poll it.`
 
 // rootOverviewTmuxLine is the tmux-specific text in the SPRAWL OVERVIEW section.
 const (
@@ -354,8 +368,12 @@ Use sprawl MCP tools to create and manage agents:
   - engineering: Concerned with the how. Architecture, implementation, code.
   - qa: Concerned with correctness. Testing, verification, quality assurance.
 
-  Messaging:
-  sprawl_message({agent: "<agent>", subject: "<subject>", body: "<message>"})
+  Messaging (prefer MCP over the CLI when available):
+  sprawl_send_async({to: "<agent>", subject: "<subject>", body: "<message>"})    — queue an async message; default tool for coordination. Does NOT interrupt.
+  sprawl_send_interrupt({to: "<descendant>", subject: "<subject>", body: "<message>"})  — RARE. Parent→descendant only. Use sparingly, for genuinely urgent corrections.
+  sprawl_peek({agent: "<agent>", tail: 20})   — inspect a child/peer's recent activity + last report before nagging them.
+  sprawl_report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>", detail: "<optional>"})  — report YOUR status to your parent at each meaningful step.
+  sprawl_message(...)          — DEPRECATED alias for sprawl_send_async. Do not use in new code.
 
   Observability:
   sprawl_status({})            — show status of all agents`
@@ -367,8 +385,10 @@ const managerDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHI
 
 const managerDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - sprawl_delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- sprawl_message({agent: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
-- Rule of thumb: if you're telling an agent to *do* something, use sprawl_delegate. If you're telling an agent *about* something, use sprawl_message.`
+- sprawl_send_async({to: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. Queued; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- sprawl_send_interrupt({to: "<descendant>", ...}) — RARE. Interrupts the target mid-turn. Only for urgent parent-side corrections; prefer sprawl_send_async by default.
+- sprawl_peek({agent: "<agent>"}) — Before nagging a child, peek its activity/last_report first. Only send_async if peek is inconclusive.
+- Rule of thumb: if you're telling an agent to *do* something, use sprawl_delegate. If you're telling an agent *about* something, use sprawl_send_async.`
 
 const managerIntegrationTmux = `# INTEGRATION:
 Use ` + "`sprawl merge <agent>`" + ` to land work on your integration branch. The merge command
