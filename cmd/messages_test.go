@@ -1202,7 +1202,7 @@ func (m *mockTmuxRunner) ListSessionNames() ([]string, error) { return nil, nil 
 func (m *mockTmuxRunner) Attach(name string) error            { return nil }
 func (m *mockTmuxRunner) SourceFile(string, string) error     { return nil }
 
-func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
+func TestRunMessagesSend_NotifiesRootViaTmux_LegacyMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	state.WriteRootName(tmpDir, tmux.DefaultRootName)
 	mock := &mockTmuxRunner{}
@@ -1213,6 +1213,8 @@ func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 				return tmpDir
 			case "SPRAWL_AGENT_IDENTITY":
 				return "worker-1"
+			case "SPRAWL_MESSAGING":
+				return "legacy"
 			}
 			return ""
 		},
@@ -1244,6 +1246,35 @@ func TestRunMessagesSend_NotifiesRootViaTmux(t *testing.T) {
 	}
 	if !strings.Contains(call.keys, "sprawl messages read ") {
 		t.Errorf("SendKeys keys = %q, want it to contain 'sprawl messages read <id>'", call.keys)
+	}
+}
+
+func TestRunMessagesSend_RootNoTmuxNotificationByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	state.WriteRootName(tmpDir, tmux.DefaultRootName)
+	mock := &mockTmuxRunner{}
+	deps := &messagesDeps{
+		getenv: func(key string) string {
+			switch key {
+			case "SPRAWL_ROOT":
+				return tmpDir
+			case "SPRAWL_AGENT_IDENTITY":
+				return "worker-1"
+			}
+			return ""
+		},
+		stdout:     &bytes.Buffer{},
+		stderr:     &bytes.Buffer{},
+		tmuxRunner: mock,
+	}
+
+	err := runMessagesSend(deps, tmux.DefaultRootName, "build done", "all tests pass")
+	if err != nil {
+		t.Fatalf("runMessagesSend() unexpected error: %v", err)
+	}
+
+	if len(mock.sendKeysCalls) != 0 {
+		t.Errorf("expected 0 SendKeys calls by default (Phase 4 deprecation), got %d", len(mock.sendKeysCalls))
 	}
 }
 
