@@ -16,6 +16,28 @@ type AgentInfo struct {
 	Branch string `json:"branch"`
 }
 
+// SendAsyncResult is returned by Supervisor.SendAsync. See
+// docs/designs/messaging-overhaul.md §4.2.1.
+type SendAsyncResult struct {
+	MessageID string `json:"message_id"`
+	QueuedAt  string `json:"queued_at"` // RFC3339
+}
+
+// LastReport is the structured last_report_* block from an agent's state.
+type LastReport struct {
+	Type    string `json:"type,omitempty"`
+	Message string `json:"message,omitempty"`
+	At      string `json:"at,omitempty"`
+}
+
+// PeekResult is returned by Supervisor.Peek. See
+// docs/designs/messaging-overhaul.md §4.2.4.
+type PeekResult struct {
+	Status     string                    `json:"status"`
+	LastReport LastReport                `json:"last_report"`
+	Activity   []agentloop.ActivityEntry `json:"activity"`
+}
+
 // SpawnRequest holds parameters for spawning a new agent.
 type SpawnRequest struct {
 	Family string `json:"family"`
@@ -52,4 +74,13 @@ type Supervisor interface {
 	// docs/designs/messaging-overhaul.md §4.4. A missing agent (no
 	// activity file yet) yields an empty slice and nil error.
 	PeekActivity(ctx context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error)
+
+	// SendAsync queues a message for `to` via Maildir persist + harness
+	// queue append-only log. Non-blocking: returns as soon as both writes
+	// succeed. See docs/designs/messaging-overhaul.md §4.2.1.
+	SendAsync(ctx context.Context, to, subject, body, replyTo string, tags []string) (*SendAsyncResult, error)
+
+	// Peek returns an agent's status, last report, and the tail of its
+	// activity ring in one call. See §4.2.4.
+	Peek(ctx context.Context, agentName string, tail int) (*PeekResult, error)
 }
