@@ -51,6 +51,27 @@ func TestTreeModel_NavigateUp(t *testing.T) {
 	}
 }
 
+func TestTreeModel_NavigateDownWithJ(t *testing.T) {
+	m := newTestTreeModel(t)
+	m.SetNodes(newTestTreeNodes())
+	msg := tea.KeyPressMsg{Code: 'j'}
+	m, _ = m.Update(msg)
+	if m.selected != 1 {
+		t.Errorf("selected = %d, want 1 after 'j' key", m.selected)
+	}
+}
+
+func TestTreeModel_NavigateUpWithK(t *testing.T) {
+	m := newTestTreeModel(t)
+	m.SetNodes(newTestTreeNodes())
+	// Move down first, then up via 'k'.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'j'})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'k'})
+	if m.selected != 0 {
+		t.Errorf("selected = %d, want 0 after 'k' key", m.selected)
+	}
+}
+
 func TestTreeModel_BoundsCheckTop(t *testing.T) {
 	m := newTestTreeModel(t)
 	m.SetNodes(newTestTreeNodes())

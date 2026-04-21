@@ -30,8 +30,10 @@ func (m HelpModel) View() string {
 	bindings := [][2]string{
 		{"? / F1", "Toggle help"},
 		{"Tab / Shift+Tab", "Cycle panel focus"},
-		{"Up / Down", "Navigate agent tree"},
+		{"Up / Down / j / k", "Navigate agent tree"},
 		{"Enter", "Select agent"},
+		{"Ctrl+N / Ctrl+P", "Cycle observed agent"},
+		{"/switch <name>", "Switch agent (fuzzy match)"},
 		{"PgUp / PgDn", "Scroll output"},
 		{"Ctrl+C", "Quit"},
 		{"Esc", "Dismiss help"},

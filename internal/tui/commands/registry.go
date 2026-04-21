@@ -15,6 +15,10 @@ const (
 	// KindPromptInjection commands send PromptTemplate to Claude as a user
 	// message via the bridge.
 	KindPromptInjection
+	// KindAgentSwitch commands prompt for an agent name, fuzzy-matched, and
+	// dispatch an agent-switch on selection. Handled by the palette in a
+	// dedicated agent-selection mode.
+	KindAgentSwitch
 )
 
 // Action enumerates the UI-level actions a KindUI command can trigger.
@@ -60,6 +64,43 @@ var registry = []Command{
 		Kind:           KindPromptInjection,
 		PromptTemplate: HandoffPromptTemplate,
 	},
+	{
+		Name:        "/switch",
+		Description: "Switch observed agent (fuzzy match on name)",
+		Kind:        KindAgentSwitch,
+	},
+}
+
+// FuzzyMatchAgents returns names where the lowercase query appears as a
+// subsequence of the lowercase name. Empty query returns all names in input
+// order. Results preserve input order (stable).
+func FuzzyMatchAgents(query string, names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	if query == "" {
+		out := make([]string, len(names))
+		copy(out, names)
+		return out
+	}
+	q := strings.ToLower(query)
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if subsequenceMatch(q, strings.ToLower(n)) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func subsequenceMatch(needle, haystack string) bool {
+	i := 0
+	for j := 0; j < len(haystack) && i < len(needle); j++ {
+		if haystack[j] == needle[i] {
+			i++
+		}
+	}
+	return i == len(needle)
 }
 
 // All returns a copy of the registry in stable registration order.

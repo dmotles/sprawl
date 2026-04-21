@@ -94,11 +94,11 @@ func typeIcon(t string) string {
 func (m TreeModel) Update(msg tea.Msg) (TreeModel, tea.Cmd) {
 	if msg, ok := msg.(tea.KeyPressMsg); ok {
 		switch msg.Code {
-		case tea.KeyUp:
+		case tea.KeyUp, 'k':
 			if m.selected > 0 {
 				m.selected--
 			}
-		case tea.KeyDown:
+		case tea.KeyDown, 'j':
 			if m.selected < len(m.nodes)-1 {
 				m.selected++
 			}
