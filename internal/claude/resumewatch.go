@@ -115,20 +115,28 @@ func (w *markerWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// RunWithResumeWatch runs cmd, teeing its stdout and stderr through marker
-// scanners that watch for NoConversationMarker. If the marker fires on either
-// stream, cmd.Process is killed and the returned error wraps ErrResumeFailed
-// (joined with cmd.Wait's error for debugging).
+// RunWithResumeWatch runs cmd, teeing its stderr through a marker scanner
+// that watches for NoConversationMarker. If the marker fires, cmd.Process is
+// killed and the returned error wraps ErrResumeFailed (joined with cmd.Wait's
+// error for debugging).
+//
+// Only stderr is wrapped. cmd.Stdout is left as the caller set it so Claude
+// Code's stdout stays a TTY when the caller passes os.Stdout from an
+// interactive context (tmux pane). If stdout were replaced with an io.Writer
+// wrapper, os/exec would allocate an anonymous pipe for fd 1 and Claude would
+// auto-switch into --print mode, which errors out without a prompt or stdin.
+// The "No conversation found with session ID:" marker is emitted on stderr
+// only, so stdout scanning is unnecessary anyway.
 //
 // Callers may pre-set cmd.Stdout / cmd.Stderr to route passthrough to a
 // specific writer; nil defaults to os.Stdout / os.Stderr. cmd.Stdin is left
 // untouched.
 //
 // If cmd.WaitDelay is zero, it is set to ResumeWatchPipeDrainDelay so that
-// orphaned grandchildren that inherited the stdout/stderr pipe FDs (e.g. an
-// MCP server spawned by claude, or `sleep` forked by a shell-based fake)
-// cannot block cmd.Wait's pipe-copy goroutines indefinitely after the main
-// process exits.
+// orphaned grandchildren that inherited the stderr pipe FD (e.g. an MCP
+// server spawned by claude, or `sleep` forked by a shell-based fake) cannot
+// block cmd.Wait's pipe-copy goroutine indefinitely after the main process
+// exits.
 func RunWithResumeWatch(cmd *exec.Cmd) error {
 	if cmd.Stdout == nil {
 		cmd.Stdout = os.Stdout
@@ -151,7 +159,6 @@ func RunWithResumeWatch(cmd *exec.Cmd) error {
 		})
 	}
 
-	cmd.Stdout = NewMarkerWriter(cmd.Stdout, NoConversationMarker, ResumeMarkerScanCap, kill)
 	cmd.Stderr = NewMarkerWriter(cmd.Stderr, NoConversationMarker, ResumeMarkerScanCap, kill)
 
 	runErr := cmd.Run()

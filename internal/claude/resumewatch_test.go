@@ -159,27 +159,28 @@ func TestRunWithResumeWatch_MarkerInStderrKillsProcess(t *testing.T) {
 	}
 }
 
-// TestRunWithResumeWatch_MarkerInStdoutKillsProcess covers the stdout
-// emission path — the issue's fix direction calls for watching both streams.
-func TestRunWithResumeWatch_MarkerInStdoutKillsProcess(t *testing.T) {
+// TestRunWithResumeWatch_MarkerOnStdoutIgnored verifies that RunWithResumeWatch
+// does NOT scan stdout. Leaving stdout unwrapped is load-bearing: replacing
+// cmd.Stdout with an io.Writer causes os/exec to pipe fd 1, which makes Claude
+// Code auto-switch into --print mode and fail to launch interactively. The
+// real claude only emits the marker on stderr, so stdout scanning is
+// unnecessary; this test locks in that only-stderr contract.
+func TestRunWithResumeWatch_MarkerOnStdoutIgnored(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-c",
-		`printf 'No conversation found with session ID: dead\n'; sleep 30`)
+		`printf 'No conversation found with session ID: dead\n'; exit 3`)
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 
-	done := make(chan error, 1)
-	start := time.Now()
-	go func() { done <- RunWithResumeWatch(cmd) }()
-
-	select {
-	case err := <-done:
-		if !errors.Is(err, ErrResumeFailed) {
-			t.Errorf("expected error to wrap ErrResumeFailed, got %v", err)
-		}
-		if d := time.Since(start); d > 5*time.Second {
-			t.Errorf("fallback took %v, want < 5s", d)
-		}
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("RunWithResumeWatch never returned on stdout marker")
+	err := RunWithResumeWatch(cmd)
+	if errors.Is(err, ErrResumeFailed) {
+		t.Fatalf("expected marker on stdout to be ignored, but got ErrResumeFailed: %v", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *exec.ExitError for non-zero shell exit, got %T: %v", err, err)
+	}
+	if exitErr.ExitCode() != 3 {
+		t.Errorf("expected exit code 3, got %d", exitErr.ExitCode())
 	}
 }
 
