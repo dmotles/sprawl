@@ -38,6 +38,7 @@ func (m *mockRunner) ListSessionNames() ([]string, error)                       
 func (m *mockRunner) SendKeys(string, string, string) error                     { return nil }
 func (m *mockRunner) Attach(string) error                                       { return nil }
 func (m *mockRunner) SourceFile(string, string) error                           { return nil }
+func (m *mockRunner) SetEnvironment(string, string, string) error               { return nil }
 
 // Compile-time check that mockRunner satisfies tmux.Runner.
 var _ tmux.Runner = (*mockRunner)(nil)

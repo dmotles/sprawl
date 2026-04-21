@@ -118,6 +118,10 @@ func (m *spawnMockRunner) SourceFile(sessionName, filePath string) error {
 	return nil
 }
 
+func (m *spawnMockRunner) SetEnvironment(sessionName, key, value string) error {
+	return nil
+}
+
 // mockWorktreeCreator implements worktree.Creator for testing.
 type mockWorktreeCreator struct {
 	worktreePath string

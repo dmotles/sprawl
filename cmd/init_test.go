@@ -31,6 +31,14 @@ type mockRunner struct {
 	sourceFileCalled      bool
 	sourceFileSession     string
 	sourceFilePath        string
+	setEnvCalls           []setEnvCall
+	setEnvAfterNewSession bool
+}
+
+type setEnvCall struct {
+	Session string
+	Key     string
+	Value   string
 }
 
 func (m *mockRunner) HasWindow(string, string) bool { return false }
@@ -82,6 +90,14 @@ func (m *mockRunner) SourceFile(sessionName, filePath string) error {
 	m.sourceFileCalled = true
 	m.sourceFileSession = sessionName
 	m.sourceFilePath = filePath
+	return nil
+}
+
+func (m *mockRunner) SetEnvironment(sessionName, key, value string) error {
+	if m.newSessionWithWinName != "" {
+		m.setEnvAfterNewSession = true
+	}
+	m.setEnvCalls = append(m.setEnvCalls, setEnvCall{Session: sessionName, Key: key, Value: value})
 	return nil
 }
 
@@ -1147,6 +1163,75 @@ func TestRunInit_GeneratesTmuxConfigAndSources(t *testing.T) {
 	}
 	if runner.sourceFilePath != confPath {
 		t.Errorf("SourceFile path = %q, want %q", runner.sourceFilePath, confPath)
+	}
+}
+
+func TestRunInit_SetsSprawlMessagingLegacy(t *testing.T) {
+	tmpDir := t.TempDir()
+	runner := &mockRunner{hasSession: false}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: happyGitStatus, readFile: happyReadFile,
+		appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	origDir, _ := os.Getwd()
+	os.Chdir(tmpDir)
+	defer os.Chdir(origDir)
+
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// The first window (weave itself) must receive SPRAWL_MESSAGING=legacy via
+	// the new-session -e env — otherwise weave itself would not get it.
+	if runner.newSessionWithWinEnv["SPRAWL_MESSAGING"] != "legacy" {
+		t.Errorf("new-session env SPRAWL_MESSAGING = %q, want %q",
+			runner.newSessionWithWinEnv["SPRAWL_MESSAGING"], "legacy")
+	}
+
+	// The session env must also be set via set-environment so child windows
+	// (spawned later by `sprawl spawn`) inherit it automatically.
+	expectedSession := tmux.RootSessionName(tmux.DefaultNamespace)
+	found := false
+	for _, c := range runner.setEnvCalls {
+		if c.Session == expectedSession && c.Key == "SPRAWL_MESSAGING" && c.Value == "legacy" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected SetEnvironment(%q, SPRAWL_MESSAGING, legacy), got calls: %+v",
+			expectedSession, runner.setEnvCalls)
+	}
+
+	// Ordering: SetEnvironment requires the session to exist, so it must run
+	// after NewSessionWithWindow.
+	if !runner.setEnvAfterNewSession {
+		t.Error("SetEnvironment must be called after NewSessionWithWindow (session must exist first)")
+	}
+}
+
+func TestRunInit_ExistingSession_DoesNotSetEnvironment(t *testing.T) {
+	// When attaching to an existing session, we must not re-run SetEnvironment —
+	// the session was configured on its original init.
+	runner := &mockRunner{hasSession: true}
+	launcher := &mockLauncher{binary: "/usr/bin/claude"}
+
+	deps := &initDeps{
+		tmuxRunner: runner, claudeLauncher: launcher,
+		getenv:    defaultGetenv,
+		gitStatus: nil, readFile: nil, appendFile: nil, gitAdd: nil, gitCommit: nil,
+	}
+	err := runInit(deps, tmux.DefaultNamespace, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(runner.setEnvCalls) != 0 {
+		t.Errorf("SetEnvironment should not be called when attaching to existing session, got: %+v", runner.setEnvCalls)
 	}
 }
 
