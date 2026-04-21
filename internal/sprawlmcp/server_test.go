@@ -57,6 +57,28 @@ type mockSupervisor struct {
 	peekActivityTail  int
 	peekActivityRes   []agentloop.ActivityEntry
 	peekActivityErr   error
+
+	// ReportStatus recording + seams
+	reportStatusAgent   string
+	reportStatusState   string
+	reportStatusSummary string
+	reportStatusDetail  string
+	reportStatusResult  *supervisor.ReportStatusResult
+	reportStatusErr     error
+}
+
+func (m *mockSupervisor) ReportStatus(_ context.Context, agentName, reportState, summary, detail string) (*supervisor.ReportStatusResult, error) {
+	m.reportStatusAgent = agentName
+	m.reportStatusState = reportState
+	m.reportStatusSummary = summary
+	m.reportStatusDetail = detail
+	if m.reportStatusErr != nil {
+		return nil, m.reportStatusErr
+	}
+	if m.reportStatusResult != nil {
+		return m.reportStatusResult, nil
+	}
+	return &supervisor.ReportStatusResult{ReportedAt: "2026-04-21T10:00:00Z"}, nil
 }
 
 func (m *mockSupervisor) Spawn(_ context.Context, req supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
@@ -233,6 +255,7 @@ func TestServer_ToolsList(t *testing.T) {
 		"sprawl_delegate",
 		"sprawl_send_async",
 		"sprawl_peek",
+		"sprawl_report_status",
 		"sprawl_message",
 		"sprawl_merge",
 		"sprawl_retire",
@@ -837,6 +860,97 @@ func TestServer_ToolsCall_SprawlPeek_DefaultTail(t *testing.T) {
 
 	if mock.peekTail != 20 {
 		t.Errorf("default tail = %d, want 20", mock.peekTail)
+	}
+}
+
+func TestServer_ToolsCall_SprawlReportStatus(t *testing.T) {
+	mock := &mockSupervisor{
+		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-04-21T10:00:00Z"},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(35, "tools/call", map[string]any{
+		"name": "sprawl_report_status",
+		"arguments": map[string]any{
+			"state":   "working",
+			"summary": "halfway done",
+			"detail":  "wrote 3 tests",
+		},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.reportStatusState != "working" {
+		t.Errorf("state = %q", mock.reportStatusState)
+	}
+	if mock.reportStatusSummary != "halfway done" {
+		t.Errorf("summary = %q", mock.reportStatusSummary)
+	}
+	if mock.reportStatusDetail != "wrote 3 tests" {
+		t.Errorf("detail = %q", mock.reportStatusDetail)
+	}
+	// MCP tool passes empty agentName — supervisor uses its own callerName.
+	if mock.reportStatusAgent != "" {
+		t.Errorf("agentName = %q, want empty (caller-resolved)", mock.reportStatusAgent)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	content := result["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+
+	var body struct {
+		ReportedAt string `json:"reported_at"`
+	}
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v (text=%q)", err, text)
+	}
+	if body.ReportedAt != "2026-04-21T10:00:00Z" {
+		t.Errorf("reported_at = %q", body.ReportedAt)
+	}
+}
+
+func TestServer_ToolsCall_SprawlReportStatus_SupervisorError(t *testing.T) {
+	mock := &mockSupervisor{reportStatusErr: fmt.Errorf("invalid state")}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(36, "tools/call", map[string]any{
+		"name":      "sprawl_report_status",
+		"arguments": map[string]any{"state": "bogus", "summary": "x"},
+	})
+	resp, _ := srv.HandleMessage(context.Background(), msg)
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Error("expected isError=true for supervisor error")
+	}
+}
+
+func TestServer_ToolsList_IncludesReportStatus(t *testing.T) {
+	srv := New(&mockSupervisor{})
+	resp, err := srv.HandleMessage(context.Background(), makeJSONRPCRequest(37, "tools/list", nil))
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	tools := result["tools"].([]any)
+	found := false
+	for _, tool := range tools {
+		m := tool.(map[string]any)
+		if m["name"] == "sprawl_report_status" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("sprawl_report_status not in tools/list")
 	}
 }
 

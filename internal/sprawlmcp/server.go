@@ -93,6 +93,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolSendAsync(ctx, args)
 	case "sprawl_peek":
 		return s.toolPeek(ctx, args)
+	case "sprawl_report_status":
+		return s.toolReportStatus(ctx, args)
 	case "sprawl_message":
 		return s.toolMessage(ctx, args)
 	case "sprawl_merge":
@@ -208,6 +210,27 @@ func (s *Server) toolPeek(ctx context.Context, args json.RawMessage) (string, er
 		tail = maxPeekTail
 	}
 	result, err := s.sup.Peek(ctx, p.Agent, tail)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
+}
+
+func (s *Server) toolReportStatus(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		State   string `json:"state"`
+		Summary string `json:"summary"`
+		Detail  string `json:"detail"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	// Empty agentName → supervisor uses its own callerName.
+	result, err := s.sup.ReportStatus(ctx, "", p.State, p.Summary, p.Detail)
 	if err != nil {
 		return "", err
 	}

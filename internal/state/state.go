@@ -25,10 +25,13 @@ type AgentState struct {
 	Subagent    bool   `json:"subagent,omitempty"`
 	TreePath    string `json:"tree_path,omitempty"`
 
-	// Report fields — populated by "sprawl report" subcommands.
-	LastReportType    string `json:"last_report_type,omitempty"` // status, done, problem
+	// Report fields — populated by "sprawl report" subcommands and the
+	// sprawl_report_status MCP tool. See docs/designs/messaging-overhaul.md §4.2.3.
+	LastReportType    string `json:"last_report_type,omitempty"` // back-compat: status, done, problem
 	LastReportMessage string `json:"last_report_message,omitempty"`
-	LastReportAt      string `json:"last_report_at,omitempty"` // RFC3339
+	LastReportAt      string `json:"last_report_at,omitempty"`    // RFC3339
+	LastReportState   string `json:"last_report_state,omitempty"` // working, blocked, complete, failure
+	LastReportDetail  string `json:"last_report_detail,omitempty"`
 }
 
 // AgentsDir returns the path to the agents state directory under the given sprawl root.

@@ -763,6 +763,10 @@ func (m *mockSupervisor) Peek(_ context.Context, _ string, _ int) (*supervisor.P
 	return &supervisor.PeekResult{}, nil
 }
 
+func (m *mockSupervisor) ReportStatus(_ context.Context, _, _, _, _ string) (*supervisor.ReportStatusResult, error) {
+	return &supervisor.ReportStatusResult{}, nil
+}
+
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
 	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)

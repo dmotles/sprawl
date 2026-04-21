@@ -23,6 +23,31 @@ type Theme struct {
 	StatusBar        lipgloss.Style
 	SelectedItem     lipgloss.Style
 	PlaceholderStyle lipgloss.Style
+
+	// Per-agent report status chip colors (docs/designs/messaging-overhaul.md §4.7).
+	ReportDotWorking  lipgloss.Style
+	ReportDotBlocked  lipgloss.Style
+	ReportDotFailure  lipgloss.Style
+	ReportDotComplete lipgloss.Style
+	ReportDotIdle     lipgloss.Style
+}
+
+// ReportDot returns the colored "●" for the given report state. Empty or
+// unknown states render as the grey idle dot.
+func (t *Theme) ReportDot(state string) string {
+	const dot = "●"
+	switch state {
+	case "working":
+		return t.ReportDotWorking.Render(dot)
+	case "blocked":
+		return t.ReportDotBlocked.Render(dot)
+	case "failure":
+		return t.ReportDotFailure.Render(dot)
+	case "complete":
+		return t.ReportDotComplete.Render(dot)
+	default:
+		return t.ReportDotIdle.Render(dot)
+	}
 }
 
 // NewTheme constructs a Theme with the given accent color.
@@ -69,5 +94,10 @@ func NewTheme(accentColor string) Theme {
 			Foreground(dim).
 			Faint(true).
 			Background(bg),
+		ReportDotWorking:  lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Background(bg),  // green
+		ReportDotBlocked:  lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Background(bg), // yellow
+		ReportDotFailure:  lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Background(bg), // red
+		ReportDotComplete: lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Background(bg),  // cyan
+		ReportDotIdle:     lipgloss.NewStyle().Foreground(dim).Background(bg),                   // grey
 	}
 }

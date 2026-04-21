@@ -8,12 +8,14 @@ import (
 
 // AgentInfo describes an agent's current state as seen by the supervisor.
 type AgentInfo struct {
-	Name   string `json:"name"`
-	Type   string `json:"type"`
-	Family string `json:"family"`
-	Parent string `json:"parent"`
-	Status string `json:"status"`
-	Branch string `json:"branch"`
+	Name              string `json:"name"`
+	Type              string `json:"type"`
+	Family            string `json:"family"`
+	Parent            string `json:"parent"`
+	Status            string `json:"status"`
+	Branch            string `json:"branch"`
+	LastReportState   string `json:"last_report_state,omitempty"`
+	LastReportSummary string `json:"last_report_summary,omitempty"`
 }
 
 // SendAsyncResult is returned by Supervisor.SendAsync. See
@@ -28,6 +30,13 @@ type LastReport struct {
 	Type    string `json:"type,omitempty"`
 	Message string `json:"message,omitempty"`
 	At      string `json:"at,omitempty"`
+	State   string `json:"state,omitempty"`  // working, blocked, complete, failure
+	Detail  string `json:"detail,omitempty"` // long-form detail, optional
+}
+
+// ReportStatusResult is returned by Supervisor.ReportStatus.
+type ReportStatusResult struct {
+	ReportedAt string `json:"reported_at"` // RFC3339
 }
 
 // PeekResult is returned by Supervisor.Peek. See
@@ -83,4 +92,11 @@ type Supervisor interface {
 	// Peek returns an agent's status, last report, and the tail of its
 	// activity ring in one call. See §4.2.4.
 	Peek(ctx context.Context, agentName string, tail int) (*PeekResult, error)
+
+	// ReportStatus is the canonical status channel: persists the reporter's
+	// LastReport* fields, flips Status for complete/failure, and delivers a
+	// structured async notification to the reporter's parent. See
+	// docs/designs/messaging-overhaul.md §4.2.3. The reporter identity is
+	// the supervisor's caller (r.callerName) when agentName is empty.
+	ReportStatus(ctx context.Context, agentName, state, summary, detail string) (*ReportStatusResult, error)
 }

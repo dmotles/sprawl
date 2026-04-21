@@ -12,12 +12,14 @@ import (
 
 // TreeNode represents a single node in the agent tree.
 type TreeNode struct {
-	Name   string
-	Type   string
-	Family string
-	Status string
-	Depth  int
-	Unread int
+	Name              string
+	Type              string
+	Family            string
+	Status            string
+	Depth             int
+	Unread            int
+	LastReportState   string // working, blocked, complete, failure, ""
+	LastReportSummary string
 }
 
 // TreeModel is the agent tree panel displaying live agent hierarchy.
@@ -128,7 +130,13 @@ func (m TreeModel) View() string {
 
 		indent := strings.Repeat("  ", node.Depth)
 		icon := typeIcon(node.Type)
-		line := fmt.Sprintf("%s%s %s (%s)", indent, icon, node.Name, node.Status)
+		dot := m.theme.ReportDot(node.LastReportState)
+		var line string
+		if node.LastReportSummary != "" {
+			line = fmt.Sprintf("%s%s %s %s — %s", indent, dot, icon, node.Name, node.LastReportSummary)
+		} else {
+			line = fmt.Sprintf("%s%s %s %s (%s)", indent, dot, icon, node.Name, node.Status)
+		}
 		if node.Unread > 0 {
 			line += fmt.Sprintf(" (%d)", node.Unread)
 		}
@@ -211,12 +219,14 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 	var dfs func(a supervisor.AgentInfo, depth int)
 	dfs = func(a supervisor.AgentInfo, depth int) {
 		result = append(result, TreeNode{
-			Name:   a.Name,
-			Type:   a.Type,
-			Family: a.Family,
-			Status: a.Status,
-			Depth:  depth,
-			Unread: unread[a.Name],
+			Name:              a.Name,
+			Type:              a.Type,
+			Family:            a.Family,
+			Status:            a.Status,
+			Depth:             depth,
+			Unread:            unread[a.Name],
+			LastReportState:   a.LastReportState,
+			LastReportSummary: a.LastReportSummary,
 		})
 		for _, child := range children[a.Name] {
 			dfs(child, depth+1)

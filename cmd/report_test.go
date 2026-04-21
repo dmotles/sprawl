@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
@@ -29,7 +30,10 @@ func newTestReportDeps(t *testing.T) (*reportDeps, string) {
 		nowFunc: func() time.Time {
 			return time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
 		},
+		loadAgent:   state.LoadAgent,
+		saveAgent:   state.SaveAgent,
 		sendMessage: messages.Send,
+		enqueue:     agentloop.Enqueue,
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
@@ -126,14 +130,11 @@ func TestReportDone_HappyPath(t *testing.T) {
 	if msg.From != "alice" {
 		t.Errorf("From = %q, want %q", msg.From, "alice")
 	}
-	if !strings.Contains(msg.Subject, "[DONE]") {
-		t.Errorf("subject should contain [DONE], got: %q", msg.Subject)
+	if !strings.Contains(msg.Subject, "[COMPLETE]") {
+		t.Errorf("subject should contain [COMPLETE], got: %q", msg.Subject)
 	}
 	if !strings.Contains(msg.Subject, "alice") {
 		t.Errorf("subject should contain agent name, got: %q", msg.Subject)
-	}
-	if !strings.Contains(msg.Subject, "done") {
-		t.Errorf("subject should contain 'done', got: %q", msg.Subject)
 	}
 	if msg.Body != "finished implementing feature" {
 		t.Errorf("body = %q, want %q", msg.Body, "finished implementing feature")
@@ -173,8 +174,8 @@ func TestReportProblem_HappyPath(t *testing.T) {
 	if len(inbox) != 1 {
 		t.Fatalf("expected 1 message in root inbox, got %d", len(inbox))
 	}
-	if !strings.Contains(inbox[0].Subject, "[PROBLEM]") {
-		t.Errorf("subject should contain [PROBLEM], got: %q", inbox[0].Subject)
+	if !strings.Contains(inbox[0].Subject, "[FAILURE]") {
+		t.Errorf("subject should contain [FAILURE], got: %q", inbox[0].Subject)
 	}
 	if inbox[0].Body != "blocked on API access" {
 		t.Errorf("body = %q, want %q", inbox[0].Body, "blocked on API access")
@@ -216,8 +217,8 @@ func TestReportDone_NonRootParent_SendsMessage(t *testing.T) {
 	if msg.From != "alice" {
 		t.Errorf("From = %q, want %q", msg.From, "alice")
 	}
-	if !strings.Contains(msg.Subject, "[DONE]") {
-		t.Errorf("subject should contain [DONE], got: %q", msg.Subject)
+	if !strings.Contains(msg.Subject, "[COMPLETE]") {
+		t.Errorf("subject should contain [COMPLETE], got: %q", msg.Subject)
 	}
 	if msg.Body != "task complete" {
 		t.Errorf("body = %q, want %q", msg.Body, "task complete")
