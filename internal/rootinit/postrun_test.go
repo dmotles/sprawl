@@ -79,9 +79,8 @@ func TestFinalizeHandoff_Signal_CallsConsolidateAndClears(t *testing.T) {
 	if idx["consolidate"] > idx["clearSessionID"] {
 		t.Error("expected consolidate before clearSessionID")
 	}
-	if idx["consolidate"] > idx["updatePK"] {
-		t.Error("expected consolidate before updatePK")
-	}
+	// QUM-283: consolidate and updatePK now run in parallel under an
+	// errgroup, so their relative order is not specified.
 }
 
 func TestFinalizeHandoff_Signal_ConsolidateError_DoesNotFail(t *testing.T) {

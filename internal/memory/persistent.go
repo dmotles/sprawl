@@ -6,19 +6,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // PersistentKnowledgeConfig controls the persistent knowledge update behavior.
 type PersistentKnowledgeConfig struct {
 	MaxItems     int
 	MaxSizeChars int
+
+	// Model is the Claude model name passed to the invoker. Empty means
+	// "let the claude CLI pick" (typically the user's default).
+	Model string
+	// InvokeTimeout bounds the single claude -p call. Zero falls back to
+	// DefaultInvokeTimeout.
+	InvokeTimeout time.Duration
 }
 
 // DefaultPersistentKnowledgeConfig returns sensible defaults.
 func DefaultPersistentKnowledgeConfig() PersistentKnowledgeConfig {
 	return PersistentKnowledgeConfig{
-		MaxItems:     20,
-		MaxSizeChars: 10000,
+		MaxItems:      20,
+		MaxSizeChars:  10000,
+		Model:         DefaultMemoryModel,
+		InvokeTimeout: DefaultInvokeTimeout,
 	}
 }
 
@@ -130,7 +140,18 @@ func UpdatePersistentKnowledge(ctx context.Context, sprawlRoot string, invoker C
 
 	prompt := buildPersistentPrompt(existing, sessionSummary, timelineBullets, cfg.MaxItems)
 
-	output, err := invoker.Invoke(ctx, prompt)
+	timeout := cfg.InvokeTimeout
+	if timeout <= 0 {
+		timeout = DefaultInvokeTimeout
+	}
+	invokeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var opts []InvokeOption
+	if cfg.Model != "" {
+		opts = append(opts, WithModel(cfg.Model))
+	}
+	output, err := invoker.Invoke(invokeCtx, prompt, opts...)
 	if err != nil {
 		return fmt.Errorf("invoking claude for persistent knowledge: %w", err)
 	}

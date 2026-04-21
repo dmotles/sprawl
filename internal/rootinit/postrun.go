@@ -7,30 +7,49 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/dmotles/sprawl/internal/memory"
+	"golang.org/x/sync/errgroup"
 )
 
 // FinalizeHandoff runs Phase D (post-launch housekeeping):
 //
-//  1. Checks for the handoff-signal marker file.
-//  2. If present, runs the consolidation pipeline (timeline consolidate +
-//     persistent-knowledge update), then removes the signal file and clears
-//     last-session-id.
-//  3. If absent, logs a "session ended" notice.
+//  1. Waits briefly for any in-flight background consolidation from the
+//     prior handoff (flock on .sprawl/memory/.consolidating). Rapid back-
+//     to-back handoffs serialize through this wait.
+//  2. Checks for the handoff-signal marker file.
+//  3. If present, fires the consolidation pipeline in the background
+//     (flock-guarded goroutine — see QUM-282) and immediately removes
+//     the signal file + clears last-session-id so the caller can relaunch
+//     without waiting on the LLM round trips.
+//  4. If absent, logs a "session ended" notice.
 //
 // Returns nil on success (including the no-handoff-signal path). Individual
 // consolidation / persistent-knowledge errors are logged as warnings rather
 // than propagated, matching the original behavior: the caller should
 // proceed to restart regardless.
-func FinalizeHandoff(ctx context.Context, deps *Deps, sprawlRoot string, stdout io.Writer) error {
+//
+// Crash safety: if the process exits before the background goroutine
+// completes, the partially-consolidated sessions remain in
+// .sprawl/memory/sessions and are picked up automatically by the next
+// handoff's consolidation run.
+func FinalizeHandoff(_ context.Context, deps *Deps, sprawlRoot string, stdout io.Writer) error {
 	prefix := deps.LogPrefix
+
+	// Make sure any prior in-flight consolidation has finished before we
+	// schedule another. In the common case this is instantaneous (no
+	// lockfile or lockfile already released).
+	WaitForBackgroundConsolidation(sprawlRoot, BackgroundConsolidationTimeout, stdout, prefix)
+
 	handoffPath := filepath.Join(sprawlRoot, ".sprawl", "memory", "handoff-signal")
 	if _, readErr := deps.ReadFile(handoffPath); readErr == nil {
 		fmt.Fprintf(stdout, "%s handoff signal detected, restarting\n", prefix)
 
-		runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
+		// Fire-and-forget: the returned channel is ignored here so the
+		// caller returns to the user (launches the next session) without
+		// blocking on two LLM round-trips.
+		_ = deps.BackgroundConsolidate(sprawlRoot, stdout)
 
-		// Clean up after consolidation for crash safety — if killed during
-		// consolidation, the next session retries.
 		_ = deps.RemoveFile(handoffPath)
 		_ = deps.WriteLastSessionID(sprawlRoot, "")
 	} else {
@@ -40,17 +59,20 @@ func FinalizeHandoff(ctx context.Context, deps *Deps, sprawlRoot string, stdout 
 }
 
 // runConsolidationPipeline runs timeline consolidation and persistent
-// knowledge update. Both steps are best-effort: failures are logged as
-// warnings. Used by Prepare (missed-handoff path) and FinalizeHandoff.
+// knowledge update concurrently (QUM-283). Both steps are best-effort:
+// failures are logged as warnings. Used by Prepare (missed-handoff path)
+// and by the background goroutine launched from FinalizeHandoff.
+//
+// PK reads the pre-consolidation timeline (the run runs in parallel, so
+// there is no temporal ordering between them). This is deliberate: PK is
+// a multi-session distillation and a one-handoff skew on the timeline it
+// ingests has negligible impact on the output. See QUM-283 for context.
 func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string, stdout io.Writer) {
 	prefix := deps.LogPrefix
-	sp := startSpinner(stdout, prefix, "consolidating timeline...")
-	cErr := deps.Consolidate(ctx, sprawlRoot, deps.NewCLIInvoker(), nil, nil)
-	sp.stop()
-	if cErr != nil {
-		fmt.Fprintf(stdout, "%s warning: consolidation failed: %v\n", prefix, cErr)
-	}
 
+	// Pre-read the latest session body + existing timeline once, up front.
+	// PK receives these as inputs rather than waiting on Consolidate to
+	// rewrite the timeline — see function docstring.
 	var sessionSummary string
 	if sessions, bodies, err := deps.ListRecentSessions(sprawlRoot, 1); err != nil {
 		fmt.Fprintf(stdout, "%s warning: reading latest session for persistent knowledge: %v\n", prefix, err)
@@ -69,10 +91,35 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		timelineBullets = tlb.String()
 	}
 
-	sp = startSpinner(stdout, prefix, "updating persistent knowledge...")
-	pkErr := deps.UpdatePersistentKnowledge(ctx, sprawlRoot, deps.NewCLIInvoker(), nil, sessionSummary, timelineBullets)
-	sp.stop()
-	if pkErr != nil {
-		fmt.Fprintf(stdout, "%s warning: persistent knowledge update failed: %v\n", prefix, pkErr)
+	tlCfg := memory.DefaultTimelineCompressionConfig()
+	pkCfg := memory.DefaultPersistentKnowledgeConfig()
+	model := deps.MemoryModel
+	if deps.LoadMemoryModel != nil {
+		if override := deps.LoadMemoryModel(sprawlRoot); override != "" {
+			model = override
+		}
 	}
+	if model != "" {
+		tlCfg.Model = model
+		pkCfg.Model = model
+	}
+
+	var eg errgroup.Group
+	eg.Go(func() error {
+		sp := startSpinner(stdout, prefix, "consolidating timeline...")
+		defer sp.stop()
+		if err := deps.Consolidate(ctx, sprawlRoot, deps.NewCLIInvoker(), &tlCfg, nil); err != nil {
+			fmt.Fprintf(stdout, "%s warning: consolidation failed: %v\n", prefix, err)
+		}
+		return nil
+	})
+	eg.Go(func() error {
+		sp := startSpinner(stdout, prefix, "updating persistent knowledge...")
+		defer sp.stop()
+		if err := deps.UpdatePersistentKnowledge(ctx, sprawlRoot, deps.NewCLIInvoker(), &pkCfg, sessionSummary, timelineBullets); err != nil {
+			fmt.Fprintf(stdout, "%s warning: persistent knowledge update failed: %v\n", prefix, err)
+		}
+		return nil
+	})
+	_ = eg.Wait()
 }

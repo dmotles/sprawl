@@ -14,11 +14,24 @@ import (
 	"github.com/dmotles/sprawl/internal/memory"
 )
 
+// syncBackgroundConsolidate returns a BackgroundConsolidate function that
+// runs the pipeline inline and returns an already-closed channel. Tests
+// use this to keep consolidation ordering deterministic — the production
+// implementation fires a goroutine (see QUM-282).
+func syncBackgroundConsolidate(deps *Deps) func(sprawlRoot string, stdout io.Writer) <-chan struct{} {
+	return func(sprawlRoot string, stdout io.Writer) <-chan struct{} {
+		runConsolidationPipeline(context.Background(), deps, sprawlRoot, stdout)
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+}
+
 // newTestDeps returns a Deps struct with benign defaults suitable for
 // exercising Prepare / FinalizeHandoff in unit tests.
 func newTestDeps(t *testing.T) *Deps {
 	t.Helper()
-	return &Deps{
+	d := &Deps{
 		LogPrefix: "[root-loop]",
 		Getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
@@ -49,6 +62,8 @@ func newTestDeps(t *testing.T) *Deps {
 		ListRecentSessions: func(root string, n int) ([]memory.Session, []string, error) { return nil, nil, nil },
 		ReadTimeline:       func(root string) ([]memory.TimelineEntry, error) { return nil, nil },
 	}
+	d.BackgroundConsolidate = syncBackgroundConsolidate(d)
+	return d
 }
 
 func TestPrepare_ReturnsPreparedSession(t *testing.T) {
