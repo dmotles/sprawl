@@ -61,7 +61,7 @@ func defaultRootLoopDeps() *rootLoopDeps {
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
-			return cmd.Run()
+			return claude.RunWithResumeWatch(cmd)
 		},
 		now:      time.Now,
 		stdout:   os.Stdout,
@@ -148,7 +148,7 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 	// the detection window, fall back to a fresh session. Only retry once.
 	// Beyond the window we assume resume succeeded and the exit was a genuine
 	// mid-session termination (normal bash-loop-restart case).
-	if runErr != nil && prepared.Resume && elapsed < resumeFailureWindow {
+	if runErr != nil && prepared.Resume && (elapsed < resumeFailureWindow || errors.Is(runErr, claude.ErrResumeFailed)) {
 		fmt.Fprintf(deps.stdout, "[root-loop] resume failed for %s: %v — falling back to fresh session\n", prepared.SessionID, runErr)
 		freshPrepared, freshErr := rootinit.PrepareFresh(ctx, deps.rootinit, rootinit.ModeTmux, sprawlRoot, rootName, deps.stdout)
 		if freshErr != nil {
