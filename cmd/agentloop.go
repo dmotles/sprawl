@@ -375,6 +375,58 @@ func sendPromptWithInterrupt(
 // defaultPollInterval is the default interval for checking poke files during a turn.
 const defaultPollInterval = 500 * time.Millisecond
 
+// Queue flush frame size caps per docs/designs/messaging-overhaul.md §8.6.
+const (
+	maxQueueFlushBodyBytes  = 2 * 1024  // per-message body cap
+	maxQueueFlushTotalBytes = 10 * 1024 // aggregate body cap across a single frame
+)
+
+// buildQueueFlushPrompt renders the notification frame that bundles N pending
+// queue entries into a single user turn, per §4.5.1 of the messaging-overhaul
+// design. The frame inlines the subject, sender, tags, and (size-bounded) body
+// of each entry. Returns "" if entries is empty.
+func buildQueueFlushPrompt(entries []agentloop.Entry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[inbox] You received %d message(s) since the last turn:\n\n", len(entries))
+	totalBody := 0
+	for i, e := range entries {
+		tagStr := ""
+		if len(e.Tags) > 0 {
+			tagStr = " [" + strings.Join(e.Tags, ",") + "]"
+		}
+		fmt.Fprintf(&b, "%d. from %s%s  subject: %s\n", i+1, e.From, tagStr, e.Subject)
+		body := e.Body
+		truncated := false
+		if len(body) > maxQueueFlushBodyBytes {
+			body = body[:maxQueueFlushBodyBytes]
+			truncated = true
+		}
+		remaining := maxQueueFlushTotalBytes - totalBody
+		if remaining < 0 {
+			remaining = 0
+		}
+		if len(body) > remaining {
+			body = body[:remaining]
+			truncated = true
+		}
+		for _, line := range strings.Split(body, "\n") {
+			b.WriteString("   ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		if truncated {
+			fmt.Fprintf(&b, "   ...[truncated — run `sprawl messages read %s` for full body]\n", e.ID)
+		}
+		b.WriteString("\n")
+		totalBody += len(body)
+	}
+	b.WriteString("Continue your current work unless a message tells you otherwise.\n")
+	return b.String()
+}
+
 // runAgentLoop is the main loop logic for the agent-loop command.
 func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) error {
 	if err := agent.ValidateName(agentName); err != nil {
@@ -677,7 +729,62 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			continue
 		}
 
-		// 2. Check inbox for unread messages.
+		// 2a. Drain the harness queue — messages persisted by sprawl_send_async.
+		// Per docs/designs/messaging-overhaul.md §4.5.1, all pending async
+		// entries are bundled into a single notification frame and marked
+		// delivered after a successful send. Legacy messages.Send callers
+		// (maildir + .wake only, no queue entry) are handled by the .wake
+		// step below during the dual-delivery phase.
+		pending, pendErr := agentloop.ListPending(sprawlRoot, agentName)
+		if pendErr != nil {
+			fmt.Fprintf(deps.stdout, "[agent-loop] error listing pending queue: %v\n", pendErr)
+		}
+		if len(pending) > 0 {
+			prompt := buildQueueFlushPrompt(pending)
+			fmt.Fprintf(deps.stdout, "[agent-loop] flushing %d queued message(s) to agent\n", len(pending))
+			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
+			for _, line := range strings.Split(prompt, "\n") {
+				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
+			}
+			// Consume any co-written .wake file BEFORE starting the turn.
+			// sprawl_send_async writes both queue entry and .wake; once we've
+			// consumed the queue entry the wake is redundant, and leaving it
+			// in place would let sendPromptWithInterrupt's poller find a
+			// stale wake file and double-interrupt.
+			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
+			_ = deps.removeFile(wakePath)
+			_, pokeContent, sendErr := sendWithInterrupt(prompt)
+			if pokeContent != "" {
+				pendingPoke = pokeContent
+			}
+			if sendErr != nil {
+				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on queue flush, restarting: %v\n", sendErr)
+				if !restartWithResume() {
+					_ = wl.Release()
+					return nil
+				}
+			} else {
+				// Mark each entry delivered only after a successful send.
+				// On crash, the entries stay in pending/ and will be
+				// redelivered on the next iteration (at-least-once).
+				for _, e := range pending {
+					if err := agentloop.MarkDelivered(sprawlRoot, agentName, e.ID); err != nil {
+						fmt.Fprintf(deps.stdout, "[agent-loop] warn: failed to mark %s delivered: %v\n", e.ID, err)
+					}
+				}
+			}
+			_ = wl.Release()
+			deps.sleepFunc(3 * time.Second)
+			continue
+		}
+
+		// 2b. Legacy inbox-delivery fallback: during the dual-delivery phase
+		// (§7 Phase 1 of messaging-overhaul.md), messages sent via the legacy
+		// `sprawl messages send` CLI or pre-queue code paths only land in
+		// Maildir + .wake and never populate the harness queue. Scan the
+		// Maildir so agents still see them with the old "sprawl messages
+		// read" command format. Removed in §7 Phase 5 alongside the sentinel
+		// backstop.
 		msgs, err := deps.listMessages(sprawlRoot, agentName, "unread")
 		if err == nil && len(msgs) > 0 {
 			var cmdLines []string
@@ -699,9 +806,6 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			for _, line := range strings.Split(prompt, "\n") {
 				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
 			}
-			// Consume any pending wake file BEFORE starting the turn — inbox
-			// delivery already handles the notification, so don't let
-			// sendPromptWithInterrupt find a stale wake file and double-interrupt.
 			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
 			_ = deps.removeFile(wakePath)
 			_, pokeContent, sendErr := sendWithInterrupt(prompt)
