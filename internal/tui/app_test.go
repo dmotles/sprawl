@@ -1467,3 +1467,136 @@ func TestAppModel_MouseClick_DoesNotCrash(t *testing.T) {
 	_, _ = app.Update(tea.MouseMotionMsg{X: 10, Y: 10})
 	_, _ = app.Update(tea.MouseReleaseMsg{Button: tea.MouseLeft, X: 10, Y: 10})
 }
+
+// --- QUM-281: viewport selection & yank ---
+
+// seedViewportApp returns an app with the viewport panel active and a few
+// assistant messages present, ready for select-mode testing.
+func seedViewportApp(t *testing.T) AppModel {
+	t.Helper()
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app.viewport.AppendAssistantChunk("first reply")
+	app.viewport.FinalizeAssistantMessage()
+	app.viewport.AppendAssistantChunk("second reply")
+	app.viewport.FinalizeAssistantMessage()
+	app.viewport.AppendAssistantChunk("third reply")
+	app.viewport.FinalizeAssistantMessage()
+	app.activePanel = PanelViewport
+	app.updateFocus()
+	return app
+}
+
+func TestAppModel_VEntersSelectModeOnViewport(t *testing.T) {
+	app := seedViewportApp(t)
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
+	app = updated.(AppModel)
+	if !app.viewport.IsSelecting() {
+		t.Error("pressing 'v' on viewport panel should enter select mode")
+	}
+}
+
+func TestAppModel_VOnInputPanelDoesNotSelect(t *testing.T) {
+	app := seedViewportApp(t)
+	app.activePanel = PanelInput
+	app.updateFocus()
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
+	app = updated.(AppModel)
+	if app.viewport.IsSelecting() {
+		t.Error("pressing 'v' on input panel must NOT enter select mode")
+	}
+}
+
+func TestAppModel_EscExitsSelectMode(t *testing.T) {
+	app := seedViewportApp(t)
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+	if app.viewport.IsSelecting() {
+		t.Error("Esc should exit select mode")
+	}
+}
+
+func TestAppModel_YYanksRawMarkdownAndExits(t *testing.T) {
+	app := seedViewportApp(t)
+	// Enter select mode (cursor on last msg), extend up by 1, then yank.
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyPressMsg{Code: 'k'})
+	app = updated.(AppModel)
+	updated, cmd := app.Update(tea.KeyPressMsg{Code: 'y'})
+	app = updated.(AppModel)
+
+	if app.viewport.IsSelecting() {
+		t.Error("'y' should exit select mode after yank")
+	}
+	if cmd == nil {
+		t.Fatal("'y' should return a non-nil Cmd (clipboard + status)")
+	}
+	// The Cmd should produce a BatchMsg or a setClipboard-like Msg. We verify
+	// by executing it and collecting messages.
+	msgs := collectCmdMsgs(cmd)
+	found := false
+	for _, m := range msgs {
+		// bubbletea v2's setClipboardMsg is a private type, but its string form
+		// equals the payload. Cast-check via fmt.Sprint.
+		if s, ok := m.(fmt.Stringer); ok && strings.Contains(s.String(), "second reply") && strings.Contains(s.String(), "third reply") {
+			found = true
+			break
+		}
+		// Fallback: any msg whose stringified form contains the content.
+		if strings.Contains(fmt.Sprintf("%v", m), "second reply") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("yank cmd did not emit clipboard msg with selected content; msgs=%v", msgs)
+	}
+}
+
+// collectCmdMsgs executes a Cmd, unwrapping tea.BatchMsg into its constituent
+// cmds and collecting all resulting Msgs.
+func collectCmdMsgs(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	out := []tea.Msg{}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			out = append(out, collectCmdMsgs(c)...)
+		}
+		return out
+	}
+	return append(out, msg)
+}
+
+func TestAppModel_JKMoveSelectionCursor(t *testing.T) {
+	app := seedViewportApp(t)
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
+	app = updated.(AppModel)
+	// cursor starts at index 2 (last). 'k' moves up.
+	updated, _ = app.Update(tea.KeyPressMsg{Code: 'k'})
+	app = updated.(AppModel)
+	updated, _ = app.Update(tea.KeyPressMsg{Code: 'k'})
+	app = updated.(AppModel)
+	raw := app.viewport.SelectedRaw()
+	for _, want := range []string{"first reply", "second reply", "third reply"} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("SelectedRaw() after v+k+k should contain %q, got %q", want, raw)
+		}
+	}
+}
+
+func TestAppModel_StatusBarShowsSelectMode(t *testing.T) {
+	app := seedViewportApp(t)
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
+	app = updated.(AppModel)
+	view := stripAnsi(app.statusBar.View())
+	if !strings.Contains(view, "SELECT") {
+		t.Errorf("status bar should show SELECT indicator when selecting, got: %s", view)
+	}
+}

@@ -222,6 +222,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// QUM-281: viewport select mode. Scoped to PanelViewport so the input
+		// panel still types 'v'/'y'/'j'/'k' as literals.
+		if m.activePanel == PanelViewport {
+			if cmd, handled := m.handleViewportSelectKey(msg); handled {
+				return m, cmd
+			}
+		}
+
 		// Delegate to active panel.
 		return m.delegateKey(msg)
 
@@ -616,6 +624,55 @@ func (m AppModel) borderStyle(panel Panel) lipgloss.Style {
 		return m.theme.ActiveBorder
 	}
 	return m.theme.InactiveBorder
+}
+
+// handleViewportSelectKey handles 'v'/'j'/'k'/'y'/'g'/'G'/Esc for the
+// viewport select-mode UX (QUM-281). Returns handled=true to stop further
+// routing; returns handled=false when the key is not a select-mode key, in
+// which case the caller falls through to normal delegation.
+func (m *AppModel) handleViewportSelectKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	// Entry: 'v' with no selection active.
+	if !m.viewport.IsSelecting() {
+		if msg.Code == 'v' && msg.Mod == 0 {
+			m.viewport.EnterSelect()
+			m.statusBar.SetSelectMode(m.viewport.IsSelecting())
+			return nil, true
+		}
+		return nil, false
+	}
+
+	// Selection active — handle mode-specific keys.
+	switch msg.Code {
+	case tea.KeyEscape, 'v':
+		m.viewport.ExitSelect()
+		m.statusBar.SetSelectMode(false)
+		return nil, true
+	case 'j', tea.KeyDown:
+		m.viewport.MoveCursor(1)
+		return nil, true
+	case 'k', tea.KeyUp:
+		m.viewport.MoveCursor(-1)
+		return nil, true
+	case 'g':
+		// Jump cursor to first message: move by -len.
+		m.viewport.MoveCursor(-len(m.viewport.messages))
+		return nil, true
+	case 'G':
+		m.viewport.MoveCursor(len(m.viewport.messages))
+		return nil, true
+	case 'y':
+		raw := m.viewport.SelectedRaw()
+		m.viewport.ExitSelect()
+		m.statusBar.SetSelectMode(false)
+		if raw == "" {
+			return nil, true
+		}
+		m.viewport.AppendStatus("Copied selection to clipboard")
+		return tea.SetClipboard(raw), true
+	}
+	// While selecting, swallow all other keys so they don't scroll the
+	// viewport or leak to other panels.
+	return nil, true
 }
 
 func (m AppModel) delegateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
