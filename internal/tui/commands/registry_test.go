@@ -4,16 +4,71 @@ import (
 	"testing"
 )
 
-func TestAll_ReturnsThreeCommandsInStableOrder(t *testing.T) {
+func TestAll_ReturnsFourCommandsInStableOrder(t *testing.T) {
 	cmds := All()
-	if len(cmds) != 3 {
-		t.Fatalf("All() len = %d, want 3", len(cmds))
+	if len(cmds) != 4 {
+		t.Fatalf("All() len = %d, want 4", len(cmds))
 	}
-	want := []string{"/exit", "/help", "/handoff"}
+	want := []string{"/exit", "/help", "/handoff", "/switch"}
 	for i, w := range want {
 		if cmds[i].Name != w {
 			t.Errorf("All()[%d].Name = %q, want %q", i, cmds[i].Name, w)
 		}
+	}
+}
+
+func TestAll_SwitchIsAgentSwitchKind(t *testing.T) {
+	var s *Command
+	for _, c := range All() {
+		if c.Name == "/switch" {
+			cc := c
+			s = &cc
+			break
+		}
+	}
+	if s == nil {
+		t.Fatal("/switch not found")
+	}
+	if s.Kind != KindAgentSwitch {
+		t.Errorf("/switch Kind = %v, want KindAgentSwitch", s.Kind)
+	}
+	if s.Description == "" {
+		t.Error("/switch Description is empty")
+	}
+}
+
+func TestFuzzyMatchAgents(t *testing.T) {
+	agents := []string{"weave", "finn", "ghost", "ratz", "oak"}
+	cases := []struct {
+		query string
+		want  []string
+	}{
+		{"", agents},             // empty returns all in order
+		{"fi", []string{"finn"}}, // prefix match
+		{"fn", []string{"finn"}}, // subsequence match (issue doc example)
+		{"oa", []string{"oak"}},
+		{"zz", []string{}},           // no match
+		{"WEAVE", []string{"weave"}}, // case-insensitive
+		{"at", []string{"ratz"}},     // subsequence in middle
+	}
+	for _, tc := range cases {
+		got := FuzzyMatchAgents(tc.query, agents)
+		if len(got) != len(tc.want) {
+			t.Errorf("FuzzyMatchAgents(%q) = %v, want %v", tc.query, got, tc.want)
+			continue
+		}
+		for i, w := range tc.want {
+			if got[i] != w {
+				t.Errorf("FuzzyMatchAgents(%q)[%d] = %q, want %q", tc.query, i, got[i], w)
+			}
+		}
+	}
+}
+
+func TestFuzzyMatchAgents_NilNamesReturnsEmpty(t *testing.T) {
+	got := FuzzyMatchAgents("fi", nil)
+	if len(got) != 0 {
+		t.Errorf("FuzzyMatchAgents(_, nil) = %v, want empty", got)
 	}
 }
 
@@ -85,6 +140,8 @@ func TestFilter_PrefixMatchesCaseInsensitive(t *testing.T) {
 		{"e", []string{"/exit"}},
 		{"x", []string{}},
 		{"help", []string{"/help"}},
+		{"s", []string{"/switch"}},
+		{"sw", []string{"/switch"}},
 	}
 	for _, tc := range cases {
 		got := Filter(tc.filter)

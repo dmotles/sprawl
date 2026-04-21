@@ -188,6 +188,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Ctrl+N / Ctrl+P: cycle observed agent globally (works from any
+		// panel). Gated implicitly by the modal returns above.
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'n' || msg.Code == 'p') {
+			delta := 1
+			if msg.Code == 'p' {
+				delta = -1
+			}
+			return m, m.cycleAgent(delta)
+		}
+
 		if msg.Code == tea.KeyTab {
 			if msg.Mod&tea.ModShift != 0 {
 				m.activePanel = (m.activePanel - 1 + panelCount) % panelCount
@@ -216,6 +226,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.palette.SetSize(m.width, m.height)
+		m.palette.SetAgents(m.agentNames())
 		m.palette.Show()
 		m.showPalette = true
 		return m, nil
@@ -522,6 +533,39 @@ func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
 func (m *AppModel) rebuildTree() {
 	nodes := PrependWeaveRoot(m.childNodes, m.turnState.String())
 	m.tree.SetNodes(nodes)
+}
+
+// agentNames returns the ordered list of known agent names (weave + children
+// in tree order). Used by the palette's /switch agent-mode filter.
+func (m *AppModel) agentNames() []string {
+	names := []string{m.rootAgent}
+	for _, n := range m.childNodes {
+		names = append(names, n.Name)
+	}
+	return names
+}
+
+// cycleAgent returns a cmd that emits AgentSelectedMsg pointing at the next
+// (delta=+1) or previous (delta=-1) agent in the tree, wrapping around. It's
+// a no-op when there are fewer than two agents.
+func (m *AppModel) cycleAgent(delta int) tea.Cmd {
+	names := m.agentNames()
+	if len(names) < 2 {
+		return nil
+	}
+	idx := -1
+	for i, n := range names {
+		if n == m.observedAgent {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	next := (idx + delta + len(names)) % len(names)
+	selected := names[next]
+	return sendMsgCmd(AgentSelectedMsg{Name: selected})
 }
 
 func (m *AppModel) resizePanels() {

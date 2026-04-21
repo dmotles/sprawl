@@ -276,6 +276,148 @@ func TestPaletteModel_ViewVisibleListsCommands(t *testing.T) {
 	}
 }
 
+// --- Agent switching mode (QUM-279) ---
+
+func TestPaletteModel_TypingSwitchTransitionsToAgentMode(t *testing.T) {
+	p := newTestPaletteModel(t)
+	p.SetAgents([]string{"weave", "finn", "ghost"})
+	p.Show()
+	for _, r := range "switch" {
+		p, _ = p.Update(tea.KeyPressMsg{Code: r})
+	}
+	if !p.InAgentMode() {
+		t.Fatal("typing 'switch' should transition palette into agent-mode")
+	}
+	if p.filter != "" {
+		t.Errorf("filter after transition = %q, want empty", p.filter)
+	}
+	// Should now list all agents as matches.
+	if len(p.agentMatches) != 3 {
+		t.Errorf("agentMatches len = %d, want 3 (all agents)", len(p.agentMatches))
+	}
+}
+
+func TestPaletteModel_EnterOnSwitchCommandTransitionsToAgentMode(t *testing.T) {
+	p := newTestPaletteModel(t)
+	p.SetAgents([]string{"weave", "finn", "ghost"})
+	p.Show()
+	// Filter down to /switch exclusively.
+	for _, r := range "sw" {
+		p, _ = p.Update(tea.KeyPressMsg{Code: r})
+	}
+	if len(p.matches) != 1 || p.matches[0].Name != "/switch" {
+		t.Fatalf("setup: filter 'sw' matches = %v, want [/switch]", p.matches)
+	}
+	// Enter should transition to agent mode, not close.
+	p2, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !p2.InAgentMode() {
+		t.Error("Enter on /switch command should transition to agent mode")
+	}
+	if !p2.Visible() {
+		t.Error("palette should remain visible after /switch transition")
+	}
+	// The cmd (if any) should NOT emit ClosePaletteMsg.
+	if cmd != nil {
+		msg := cmd()
+		walkBatch(msg, func(m tea.Msg) {
+			if _, ok := m.(ClosePaletteMsg); ok {
+				t.Error("Enter on /switch should not emit ClosePaletteMsg — stays open for agent selection")
+			}
+		})
+	}
+}
+
+func TestPaletteModel_AgentModeFuzzyFilters(t *testing.T) {
+	p := newTestPaletteModel(t)
+	p.SetAgents([]string{"weave", "finn", "ghost", "ratz"})
+	p.Show()
+	for _, r := range "switch" {
+		p, _ = p.Update(tea.KeyPressMsg{Code: r})
+	}
+	// Type 'fi' — should match only finn via subsequence.
+	p, _ = p.Update(tea.KeyPressMsg{Code: 'f'})
+	p, _ = p.Update(tea.KeyPressMsg{Code: 'i'})
+	if len(p.agentMatches) != 1 || p.agentMatches[0] != "finn" {
+		t.Errorf("agentMatches after 'fi' = %v, want [finn]", p.agentMatches)
+	}
+}
+
+func TestPaletteModel_AgentModeEnterEmitsSwitchAndClose(t *testing.T) {
+	p := newTestPaletteModel(t)
+	p.SetAgents([]string{"weave", "finn", "ghost"})
+	p.Show()
+	for _, r := range "switch" {
+		p, _ = p.Update(tea.KeyPressMsg{Code: r})
+	}
+	p, _ = p.Update(tea.KeyPressMsg{Code: 'f'})
+	p, _ = p.Update(tea.KeyPressMsg{Code: 'i'})
+	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter in agent mode should emit a cmd")
+	}
+	msg := cmd()
+	gotClose := false
+	var sel *AgentSelectedMsg
+	walkBatch(msg, func(m tea.Msg) {
+		switch v := m.(type) {
+		case ClosePaletteMsg:
+			gotClose = true
+		case AgentSelectedMsg:
+			vv := v
+			sel = &vv
+		}
+	})
+	if !gotClose {
+		t.Error("Enter in agent mode should emit ClosePaletteMsg")
+	}
+	if sel == nil {
+		t.Fatal("Enter in agent mode should emit AgentSelectedMsg")
+	}
+	if sel.Name != "finn" {
+		t.Errorf("AgentSelectedMsg.Name = %q, want %q", sel.Name, "finn")
+	}
+}
+
+func TestPaletteModel_AgentModeBackspaceReturnsToCommandMode(t *testing.T) {
+	p := newTestPaletteModel(t)
+	p.SetAgents([]string{"weave", "finn"})
+	p.Show()
+	for _, r := range "switch" {
+		p, _ = p.Update(tea.KeyPressMsg{Code: r})
+	}
+	if !p.InAgentMode() {
+		t.Fatal("setup: should be in agent mode")
+	}
+	// Backspace on empty filter should drop back to command mode.
+	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if p.InAgentMode() {
+		t.Error("Backspace on empty agent-mode filter should return to command mode")
+	}
+}
+
+func TestPaletteModel_AgentModeEnterWithNoMatchesNoop(t *testing.T) {
+	p := newTestPaletteModel(t)
+	p.SetAgents([]string{"finn"})
+	p.Show()
+	for _, r := range "switch" {
+		p, _ = p.Update(tea.KeyPressMsg{Code: r})
+	}
+	p, _ = p.Update(tea.KeyPressMsg{Code: 'z'})
+	p, _ = p.Update(tea.KeyPressMsg{Code: 'z'})
+	if len(p.agentMatches) != 0 {
+		t.Fatalf("expected 0 agent matches, got %v", p.agentMatches)
+	}
+	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd != nil {
+		msg := cmd()
+		walkBatch(msg, func(m tea.Msg) {
+			if _, ok := m.(AgentSelectedMsg); ok {
+				t.Error("Enter with no agent matches should not emit AgentSelectedMsg")
+			}
+		})
+	}
+}
+
 // inspectBatch returns (gotClose, gotQuit) for the convenience of /exit test.
 func inspectBatch(msg tea.Msg) (bool, bool) {
 	var gotClose, gotQuit bool

@@ -213,6 +213,128 @@ func TestAppModel_KeysRouteToPaletteWhenVisible(t *testing.T) {
 	}
 }
 
+// --- QUM-279: Agent switching via keybindings + /switch ---
+
+func appWithAgents(t *testing.T) AppModel {
+	t.Helper()
+	app := readyApp(t)
+	// Feed an agent tree: weave (root, injected by rebuildTree) + finn + ghost.
+	app.childNodes = []TreeNode{
+		{Name: "finn", Type: "engineer", Status: "active", Depth: 0},
+		{Name: "ghost", Type: "researcher", Status: "active", Depth: 0},
+	}
+	app.rebuildTree()
+	return app
+}
+
+// pressKeyAndApply sends a KeyPressMsg, executes any returned cmd, and feeds
+// the resulting msg back into the app. Useful for keys whose effect is
+// expressed via a command (e.g. Ctrl+N emits AgentSelectedMsg via cmd).
+func pressKeyAndApply(t *testing.T, app AppModel, key tea.KeyPressMsg) AppModel {
+	t.Helper()
+	u, cmd := app.Update(key)
+	app = u.(AppModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			u2, _ := app.Update(msg)
+			app = u2.(AppModel)
+		}
+	}
+	return app
+}
+
+func TestAppModel_CtrlNCyclesObservedAgentForward(t *testing.T) {
+	app := appWithAgents(t)
+	if app.observedAgent != "weave" {
+		t.Fatalf("setup: observedAgent = %q, want weave", app.observedAgent)
+	}
+	app = pressKeyAndApply(t, app, tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	if app.observedAgent != "finn" {
+		t.Errorf("Ctrl+N: observedAgent = %q, want finn", app.observedAgent)
+	}
+	app = pressKeyAndApply(t, app, tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	if app.observedAgent != "ghost" {
+		t.Errorf("Ctrl+N x2: observedAgent = %q, want ghost", app.observedAgent)
+	}
+	// Wrap-around.
+	app = pressKeyAndApply(t, app, tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	if app.observedAgent != "weave" {
+		t.Errorf("Ctrl+N x3 (wrap): observedAgent = %q, want weave", app.observedAgent)
+	}
+}
+
+func TestAppModel_CtrlPCyclesObservedAgentBackward(t *testing.T) {
+	app := appWithAgents(t)
+	app = pressKeyAndApply(t, app, tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if app.observedAgent != "ghost" {
+		t.Errorf("Ctrl+P from weave: observedAgent = %q, want ghost (wraps)", app.observedAgent)
+	}
+	app = pressKeyAndApply(t, app, tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
+	if app.observedAgent != "finn" {
+		t.Errorf("Ctrl+P x2: observedAgent = %q, want finn", app.observedAgent)
+	}
+}
+
+func TestAppModel_CtrlN_FiresGloballyFromInputPanel(t *testing.T) {
+	app := appWithAgents(t)
+	app.activePanel = PanelInput
+	app.updateFocus()
+	app = pressKeyAndApply(t, app, tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	if app.observedAgent != "finn" {
+		t.Errorf("Ctrl+N from input panel: observedAgent = %q, want finn", app.observedAgent)
+	}
+}
+
+func TestAppModel_CtrlN_IgnoredWhenPaletteOpen(t *testing.T) {
+	app := appWithAgents(t)
+	u, _ := app.Update(OpenPaletteMsg{})
+	app = u.(AppModel)
+	u, _ = app.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	app = u.(AppModel)
+	if app.observedAgent != "weave" {
+		t.Errorf("Ctrl+N with palette open: observedAgent = %q, want weave (ignored)", app.observedAgent)
+	}
+}
+
+func TestAppModel_CtrlN_NoopWithOnlyOneAgent(t *testing.T) {
+	app := readyApp(t) // only weave synthesized
+	u, _ := app.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	app = u.(AppModel)
+	if app.observedAgent != "weave" {
+		t.Errorf("Ctrl+N with only weave: observedAgent = %q, want weave", app.observedAgent)
+	}
+}
+
+func TestAppModel_SwitchAgentMsgSwitchesViaAgentSelected(t *testing.T) {
+	app := appWithAgents(t)
+	// Reuse the existing AgentSelectedMsg path.
+	u, _ := app.Update(AgentSelectedMsg{Name: "finn"})
+	app = u.(AppModel)
+	if app.observedAgent != "finn" {
+		t.Errorf("observedAgent after AgentSelectedMsg{finn} = %q, want finn", app.observedAgent)
+	}
+}
+
+func TestAppModel_OpenPaletteMsg_PopulatesAgentsList(t *testing.T) {
+	app := appWithAgents(t)
+	u, _ := app.Update(OpenPaletteMsg{})
+	app = u.(AppModel)
+	if !app.showPalette {
+		t.Fatal("setup: palette should be open")
+	}
+	// Palette must know about the current agents so /switch can filter them.
+	got := app.palette.agents
+	want := []string{"weave", "finn", "ghost"}
+	if len(got) != len(want) {
+		t.Fatalf("palette.agents = %v, want %v", got, want)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Errorf("palette.agents[%d] = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
 func TestAppModel_TabDoesNotCyclePanelWhenPaletteVisible(t *testing.T) {
 	app := readyApp(t)
 	u, _ := app.Update(OpenPaletteMsg{})
