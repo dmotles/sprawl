@@ -120,14 +120,6 @@ func (w *markerWriter) Write(p []byte) (int, error) {
 // killed and the returned error wraps ErrResumeFailed (joined with cmd.Wait's
 // error for debugging).
 //
-// Only stderr is wrapped. cmd.Stdout is left as the caller set it so Claude
-// Code's stdout stays a TTY when the caller passes os.Stdout from an
-// interactive context (tmux pane). If stdout were replaced with an io.Writer
-// wrapper, os/exec would allocate an anonymous pipe for fd 1 and Claude would
-// auto-switch into --print mode, which errors out without a prompt or stdin.
-// The "No conversation found with session ID:" marker is emitted on stderr
-// only, so stdout scanning is unnecessary anyway.
-//
 // Callers may pre-set cmd.Stdout / cmd.Stderr to route passthrough to a
 // specific writer; nil defaults to os.Stdout / os.Stderr. cmd.Stdin is left
 // untouched.
@@ -137,7 +129,42 @@ func (w *markerWriter) Write(p []byte) (int, error) {
 // server spawned by claude, or `sleep` forked by a shell-based fake) cannot
 // block cmd.Wait's pipe-copy goroutine indefinitely after the main process
 // exits.
+//
+// ─────────────────────────────────────────────────────────────────────────
+// HAZARD: subprocess stdio TTY-vs-pipe — DO NOT WRAP cmd.Stdout
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Only stderr is wrapped by the marker scanner. cmd.Stdout MUST be left as
+// the caller's *os.File (normally os.Stdout inherited from the tmux pane).
+//
+// Why: os/exec assigns cmd.Stdout directly to the child's fd 1 ONLY when the
+// value is an *os.File. Any other io.Writer (e.g. our markerWriter, a
+// bytes.Buffer, a tee) forces os/exec to allocate an anonymous pipe, copy
+// from the pipe into the writer in a goroutine, and hand the pipe's write
+// end to the child. The child now sees fd 1 as a pipe, not a TTY.
+//
+// Claude Code ≥2.1 does an isatty() check on stdout at startup and, when fd
+// 1 is not a TTY, silently auto-switches into `--print` (non-interactive)
+// mode, which requires a prompt on argv or stdin and exits immediately on
+// stdin EOF. This bricks `sprawl init` and any other interactive spawn.
+//
+// Wrapping stderr is safe: Claude only TTY-checks stdout. The
+// "No conversation found with session ID:" marker is emitted on stderr
+// anyway, so stdout scanning would be pointless as well as broken.
+//
+// Rule of thumb for this repo: do NOT assign a non-*os.File io.Writer to
+// cmd.Stdout of a Claude / TUI / interactive subprocess unless you have
+// verified the child tolerates a pipe on fd 1. If you need to intercept
+// stdout, use a PTY (e.g. github.com/creack/pty) rather than an io.Writer
+// wrapper.
+//
+// Background: QUM-261 (the sprawl init regression) and QUM-308 (this
+// documentation pass). Fix commit: 7c801f5. See also the "Subprocess stdio:
+// TTY vs pipe" section in the /go-cli-best-practices skill.
+// ─────────────────────────────────────────────────────────────────────────
 func RunWithResumeWatch(cmd *exec.Cmd) error {
+	// See the HAZARD block above before touching cmd.Stdout: assigning a
+	// non-*os.File here silently flips Claude into --print mode.
 	if cmd.Stdout == nil {
 		cmd.Stdout = os.Stdout
 	}
