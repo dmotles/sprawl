@@ -157,8 +157,12 @@ func (tw *timestampWriter) Write(p []byte) (int, error) {
 }
 
 // tmuxObserver implements agentloop.Observer, writing formatted output to w.
+// If ring is non-nil, every protocol message is also recorded into the
+// activity ring (and, if the ring was constructed with a writer, appended to
+// the per-agent activity.ndjson file for cross-process readers).
 type tmuxObserver struct {
-	w io.Writer
+	w    io.Writer
+	ring *agentloop.ActivityRing
 }
 
 // truncateStr truncates s to maxLen bytes, appending "..." if truncated.
@@ -171,6 +175,9 @@ func truncateStr(s string, maxLen int) string {
 
 // OnMessage handles protocol messages from the Claude process.
 func (t *tmuxObserver) OnMessage(msg *protocol.Message) {
+	if t.ring != nil {
+		t.ring.RecordMessage(msg, time.Now)
+	}
 	switch msg.Type {
 	case "assistant":
 		var outer struct {
@@ -477,7 +484,30 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_AGENT_IDENTITY=%s\n", deps.getenv("SPRAWL_AGENT_IDENTITY"))
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_ROOT=%s\n", deps.getenv("SPRAWL_ROOT"))
 
-	observer := &tmuxObserver{w: deps.stdout}
+	// Open the append-only activity log for this agent. Errors are
+	// non-fatal — activity recording is observability-only. An ordinary
+	// os.OpenFile suffices here; the file is only written from this
+	// process and occasional tailing from other processes is safe given
+	// line-buffered writes.
+	activityDir := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName)
+	if err := deps.mkdirAll(activityDir, 0o755); err != nil {
+		fmt.Fprintf(deps.stdout, "[agent-loop] warn: could not create activity dir: %v\n", err)
+	}
+	var activityFile *os.File
+	activityFile, actErr := os.OpenFile(agentloop.ActivityPath(sprawlRoot, agentName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // G304: path is derived from trusted inputs
+	if actErr != nil {
+		fmt.Fprintf(deps.stdout, "[agent-loop] warn: could not open activity file: %v\n", actErr)
+		activityFile = nil
+	} else {
+		defer activityFile.Close()
+	}
+	var activityWriter io.Writer
+	if activityFile != nil {
+		activityWriter = activityFile
+	}
+	ring := agentloop.NewActivityRing(agentloop.DefaultActivityCapacity, activityWriter)
+
+	observer := &tmuxObserver{w: deps.stdout, ring: ring}
 
 	// Create and launch the initial process (without sending a prompt yet).
 	proc, ok := startProcess(ctx, deps, config, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process")

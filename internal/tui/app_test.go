@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -750,6 +751,9 @@ func (m *mockSupervisor) Kill(_ context.Context, _ string) error              { 
 func (m *mockSupervisor) Shutdown(_ context.Context) error                    { return nil }
 func (m *mockSupervisor) Handoff(_ context.Context, _ string) error           { return nil }
 func (m *mockSupervisor) HandoffRequested() <-chan struct{}                   { return nil }
+func (m *mockSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]agentloop.ActivityEntry, error) {
+	return nil, nil
+}
 
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
