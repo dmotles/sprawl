@@ -426,6 +426,43 @@ func runEnter(deps *enterDeps) error {
 		}()
 	}
 
+	// Redirect stderr to a log file for the lifetime of the TUI.
+	// Any fmt.Fprintf(os.Stderr, ...) from Go code or stderr writes from
+	// subprocesses that inherited FD 2 (notably the claude subprocess via
+	// cmd.Stderr = os.Stderr) would otherwise corrupt the Bubble Tea
+	// alt-screen render (QUM-304).
+	var stderrRedirect *tui.StderrRedirect
+	if deps.getenv("SPRAWL_TUI_NO_STDERR_REDIRECT") == "" {
+		logDir := filepath.Join(sprawlRoot, ".sprawl", "logs")
+		logPath := filepath.Join(logDir, fmt.Sprintf("tui-stderr-%s.log", time.Now().UTC().Format("20060102-150405")))
+		var rerr error
+		stderrRedirect, rerr = tui.RedirectStderr(logPath)
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "[enter] warning: could not redirect stderr to %s: %v\n", logPath, rerr)
+		}
+		// Defensive restore: if a panic or early return skips the explicit
+		// Restore below, the deferred call guarantees FD 2 is put back so the
+		// user's shell isn't left with stderr pointing at a log file.
+		// Restore is idempotent.
+		if stderrRedirect != nil {
+			defer func() { _ = stderrRedirect.Restore() }()
+		}
+	}
+
+	// QUM-304 regression test hook: if the sentinel env var is set, emit it to
+	// stderr after a brief delay so the TUI is fully rendered. The e2e harness
+	// asserts this sentinel lands in the log file, not on the terminal.
+	if sentinel := deps.getenv("SPRAWL_TUI_STDERR_LEAK_TEST"); sentinel != "" {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			fmt.Fprintln(os.Stderr, sentinel)
+			// Also simulate subprocess inheritance of FD 2.
+			c := exec.Command("sh", "-c", fmt.Sprintf("echo %s >&2", sentinel)) //nolint:gosec // sentinel comes from SPRAWL_TUI_STDERR_LEAK_TEST, a dev/test-only env var
+			c.Stderr = os.Stderr
+			_ = c.Run()
+		}()
+	}
+
 	err = deps.runProgram(model, onStart)
 	close(handoffDone)
 
@@ -452,6 +489,13 @@ func runEnter(deps *enterDeps) error {
 
 	if bridge != nil {
 		_ = bridge.Close()
+	}
+
+	// Restore stderr after supervisor/bridge shutdown so any cleanup-time
+	// stderr writes are still captured in the log. The trailing
+	// "TUI session ended." line below then goes to the real terminal.
+	if stderrRedirect != nil {
+		_ = stderrRedirect.Restore()
 	}
 
 	if err != nil {
