@@ -35,8 +35,11 @@ func (m HelpModel) View() string {
 		{"Ctrl+N / Ctrl+P", "Cycle observed agent"},
 		{"/switch <name>", "Switch agent (fuzzy match)"},
 		{"PgUp / PgDn", "Scroll output"},
+		{"v (viewport)", "Enter select mode"},
+		{"j / k (select)", "Move selection cursor"},
+		{"y (select)", "Yank selection to clipboard (raw markdown)"},
 		{"Ctrl+C", "Quit"},
-		{"Esc", "Dismiss help"},
+		{"Esc", "Dismiss help / exit select mode"},
 	}
 
 	// Find max key width for alignment.

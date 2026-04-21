@@ -54,7 +54,12 @@ type ViewportModel struct {
 	messages      []MessageEntry
 	autoScroll    bool
 	hasNewContent bool
+	selection     SelectionState
 }
+
+// SelectionGutter is the visual prefix placed on selected message blocks when
+// the viewport is in select mode.
+const SelectionGutter = "▌ "
 
 // NewViewportModel creates a viewport with placeholder content.
 func NewViewportModel(theme *Theme) ViewportModel {
@@ -211,7 +216,52 @@ func (m *ViewportModel) GetMessages() []MessageEntry {
 func (m *ViewportModel) SetMessages(msgs []MessageEntry) {
 	m.messages = make([]MessageEntry, len(msgs))
 	copy(m.messages, msgs)
+	// Replacing the buffer invalidates any active selection.
+	m.selection = SelectionState{}
 	m.renderAndUpdate()
+}
+
+// IsSelecting reports whether the viewport is in select mode.
+func (m *ViewportModel) IsSelecting() bool { return m.selection.Active }
+
+// EnterSelect puts the viewport into select mode with the anchor and cursor
+// both positioned on the most recent message. No-op when the message buffer
+// is empty. Disables auto-scroll so highlight updates don't yank the view.
+func (m *ViewportModel) EnterSelect() {
+	if len(m.messages) == 0 {
+		return
+	}
+	last := len(m.messages) - 1
+	m.selection = SelectionState{Active: true, Anchor: last, Cursor: last}
+	m.autoScroll = false
+	m.renderAndUpdate()
+}
+
+// ExitSelect leaves select mode without yanking. Auto-scroll state is left as
+// the user set it.
+func (m *ViewportModel) ExitSelect() {
+	m.selection = SelectionState{}
+	m.renderAndUpdate()
+}
+
+// MoveCursor shifts the selection cursor by delta (positive = down toward
+// newer messages). Clamps to the buffer bounds. No-op when not selecting.
+func (m *ViewportModel) MoveCursor(delta int) {
+	if !m.selection.Active {
+		return
+	}
+	m.selection = m.selection.MoveCursor(delta, len(m.messages))
+	m.renderAndUpdate()
+}
+
+// SelectedRaw returns the raw-markdown payload for the current selection, or
+// an empty string when not selecting.
+func (m *ViewportModel) SelectedRaw() string {
+	if !m.selection.Active {
+		return ""
+	}
+	lo, hi := m.selection.Range()
+	return AssembleRawMarkdown(m.messages, lo, hi)
 }
 
 func (m *ViewportModel) renderAndUpdate() {
@@ -225,31 +275,52 @@ func (m *ViewportModel) renderAndUpdate() {
 }
 
 func (m *ViewportModel) renderMessages() string {
+	var selLo, selHi int
+	selecting := m.selection.Active
+	if selecting {
+		selLo, selHi = m.selection.Range()
+	}
 	var sb strings.Builder
 	for i, msg := range m.messages {
 		if i > 0 {
 			sb.WriteString("\n")
 		}
+		var block strings.Builder
 		switch msg.Type {
 		case MessageUser:
-			sb.WriteString(m.theme.AccentText.Render("You: "))
-			sb.WriteString(msg.Content)
+			block.WriteString(m.theme.AccentText.Render("You: "))
+			block.WriteString(msg.Content)
 		case MessageAssistant:
-			sb.WriteString(m.renderer.Render(msg.Content))
+			block.WriteString(m.renderer.Render(msg.Content))
 			if !msg.Complete {
-				sb.WriteString(StreamingCursor)
+				block.WriteString(StreamingCursor)
 			}
 		case MessageToolCall:
-			m.renderToolCall(&sb, msg)
+			m.renderToolCall(&block, msg)
 		case MessageStatus:
-			sb.WriteString(m.theme.NormalText.Render("― " + msg.Content + " ―"))
+			block.WriteString(m.theme.NormalText.Render("― " + msg.Content + " ―"))
 		case MessageError:
-			sb.WriteString(m.theme.AccentText.Render("ERROR: "))
-			sb.WriteString(msg.Content)
+			block.WriteString(m.theme.AccentText.Render("ERROR: "))
+			block.WriteString(msg.Content)
+		}
+		if selecting && i >= selLo && i <= selHi {
+			sb.WriteString(addSelectionGutter(block.String(), m.theme.AccentText.Render(SelectionGutter)))
+		} else {
+			sb.WriteString(block.String())
 		}
 		sb.WriteString("\n")
 	}
 	return sb.String()
+}
+
+// addSelectionGutter prefixes each line of block with the gutter marker so
+// the whole selected message block is visually distinguished.
+func addSelectionGutter(block, gutter string) string {
+	lines := strings.Split(block, "\n")
+	for i, ln := range lines {
+		lines[i] = gutter + ln
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {

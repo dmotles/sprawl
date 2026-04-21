@@ -15,6 +15,7 @@ type StatusBarModel struct {
 	theme          *Theme
 	sessionCostUsd float64
 	sessionID      string
+	selectMode     bool
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -30,6 +31,9 @@ func NewStatusBarModel(theme *Theme, repoName, version string, agentCount int) S
 // View renders the status bar as a single line.
 func (m StatusBarModel) View() string {
 	left := fmt.Sprintf(" %s", m.repoName)
+	if m.selectMode {
+		left = " -- SELECT -- " + m.repoName
+	}
 
 	var stateStr string
 	switch m.turnState {
@@ -91,4 +95,9 @@ func (m *StatusBarModel) SetAgentCount(n int) {
 // pass the short (8-char) display form; the status bar renders it verbatim.
 func (m *StatusBarModel) SetSessionID(id string) {
 	m.sessionID = id
+}
+
+// SetSelectMode toggles the SELECT-mode indicator on the left of the bar.
+func (m *StatusBarModel) SetSelectMode(on bool) {
+	m.selectMode = on
 }

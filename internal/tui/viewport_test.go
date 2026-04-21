@@ -309,3 +309,89 @@ func TestViewportModel_SetMessages(t *testing.T) {
 		t.Errorf("View() should not contain 'original message' after SetMessages, got:\n%s", view)
 	}
 }
+
+// --- Tests for QUM-281: Viewport selection & yank ---
+
+func TestViewportModel_EnterSelectDisablesAutoScroll(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendAssistantChunk("one")
+	m.FinalizeAssistantMessage()
+	m.AppendAssistantChunk("two")
+	m.FinalizeAssistantMessage()
+
+	if !m.IsAutoScroll() {
+		t.Fatalf("precondition: auto-scroll should be on before EnterSelect")
+	}
+	m.EnterSelect()
+	if !m.IsSelecting() {
+		t.Error("IsSelecting() should be true after EnterSelect")
+	}
+	if m.IsAutoScroll() {
+		t.Error("EnterSelect should disable auto-scroll")
+	}
+}
+
+func TestViewportModel_EnterSelectNoOpWhenEmpty(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.EnterSelect()
+	if m.IsSelecting() {
+		t.Error("EnterSelect on empty buffer should not enter select mode")
+	}
+}
+
+func TestViewportModel_ExitSelect(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendAssistantChunk("x")
+	m.FinalizeAssistantMessage()
+	m.EnterSelect()
+	m.ExitSelect()
+	if m.IsSelecting() {
+		t.Error("IsSelecting() should be false after ExitSelect")
+	}
+}
+
+func TestViewportModel_SelectedRawAssistantVerbatim(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendAssistantChunk("# Title\n\nprose")
+	m.FinalizeAssistantMessage()
+	m.EnterSelect()
+	got := m.SelectedRaw()
+	if got != "# Title\n\nprose" {
+		t.Errorf("SelectedRaw() = %q, want raw markdown verbatim", got)
+	}
+}
+
+func TestViewportModel_SelectedRawEmptyWhenNotSelecting(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendAssistantChunk("x")
+	m.FinalizeAssistantMessage()
+	if m.SelectedRaw() != "" {
+		t.Error("SelectedRaw() should be empty when not selecting")
+	}
+}
+
+func TestViewportModel_MoveCursorExtendsSelection(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 40)
+	m.AppendAssistantChunk("first")
+	m.FinalizeAssistantMessage()
+	m.AppendAssistantChunk("second")
+	m.FinalizeAssistantMessage()
+	m.AppendAssistantChunk("third")
+	m.FinalizeAssistantMessage()
+
+	m.EnterSelect() // cursor starts at last (index 2)
+	m.MoveCursor(-2)
+	got := m.SelectedRaw()
+	// Selection should span all three messages.
+	for _, want := range []string{"first", "second", "third"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("SelectedRaw() after MoveCursor(-2) should contain %q, got %q", want, got)
+		}
+	}
+}
