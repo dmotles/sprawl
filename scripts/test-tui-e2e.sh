@@ -103,13 +103,23 @@ echo ""
 
 # --- Cleanup trap ---
 
+LEAK_SESSION=""
+LEAK_ROOT=""
+
 cleanup() {
     # Kill our tmux session
     if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
     fi
-    # Clean up temp directory
+    # Kill the stderr-leak regression tmux session (Test 9), if present
+    if [ -n "$LEAK_SESSION" ] && tmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
+        tmux kill-session -t "$LEAK_SESSION" 2>/dev/null || true
+    fi
+    # Clean up temp directories
     rm -rf "$TEST_ROOT"
+    if [ -n "$LEAK_ROOT" ] && [ -d "$LEAK_ROOT" ]; then
+        rm -rf "$LEAK_ROOT"
+    fi
     rm -f "$STDERR_LOG"
 }
 trap cleanup EXIT
@@ -366,6 +376,81 @@ if [ "$ORPHAN_COUNT" -eq 0 ]; then
     pass "no orphaned processes detected"
 else
     fail "found $ORPHAN_COUNT orphaned process(es) referencing test root"
+fi
+
+# --- Test 9: Stderr leak regression (QUM-304) ---
+#
+# Proves that stderr writes during the TUI lifetime (both from in-process Go
+# code and from subprocesses that inherit FD 2) land in the tui-stderr log
+# file rather than bleeding onto the terminal and corrupting the Bubble Tea
+# alt-screen render.
+
+echo ""
+echo "=== Test 9: Stderr leak regression (QUM-304) ==="
+
+LEAK_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sprawl-tui-leak-XXXXXX")
+git -C "$LEAK_ROOT" init -b main --quiet
+git -C "$LEAK_ROOT" -c user.name="Test" -c user.email="test@test" commit --allow-empty -m "init" --quiet
+mkdir -p "$LEAK_ROOT/.sprawl"
+echo "tui-leak-test" > "$LEAK_ROOT/.sprawl/root-name"
+
+LEAK_SESSION="test-tui-leak-$(head -c4 /dev/urandom | xxd -p)"
+SENTINEL="QUM304_SENTINEL_$$"
+
+# Launch WITHOUT a shell-level 2>redirect — the point of this test is to
+# prove the TUI's own stderr redirect handles stray writes.
+tmux new-session -d -s "$LEAK_SESSION" -x 120 -y 40 \
+    "SPRAWL_ROOT='$LEAK_ROOT' SPRAWL_TUI_STDERR_LEAK_TEST='$SENTINEL' '$SPRAWL_BIN' enter"
+
+# Wait for TUI to render and for the 500ms sentinel goroutine to fire.
+if wait_for_content "$LEAK_SESSION" "weave (idle)" 15; then
+    pass "leak-test TUI rendered"
+else
+    fail "leak-test TUI did not render within 15 seconds"
+fi
+
+# Give the sentinel goroutine (500ms delay + sh subprocess) ample time.
+sleep 3
+
+# Assert the sentinel is NOT visible in the pane — if it is, stderr bled
+# through the alt-screen, which is the QUM-304 bug.
+if capture_pane "$LEAK_SESSION" | grep -q "$SENTINEL"; then
+    fail "QUM-304 regression: sentinel '$SENTINEL' leaked onto TUI pane"
+    echo "  Pane snippet:" >&2
+    capture_pane "$LEAK_SESSION" | grep "$SENTINEL" | head -3 >&2
+else
+    pass "sentinel did not leak onto TUI pane"
+fi
+
+# Assert the sentinel IS present in the newest tui-stderr log file.
+LEAK_LOG_DIR="$LEAK_ROOT/.sprawl/logs"
+if [ -d "$LEAK_LOG_DIR" ]; then
+    LEAK_LOG=$(find "$LEAK_LOG_DIR" -name 'tui-stderr-*.log' -type f -print0 2>/dev/null \
+        | xargs -0 ls -t 2>/dev/null | head -1)
+else
+    LEAK_LOG=""
+fi
+
+if [ -z "$LEAK_LOG" ] || [ ! -f "$LEAK_LOG" ]; then
+    fail "no tui-stderr-*.log found under $LEAK_LOG_DIR"
+else
+    MATCHES=$(grep -c "$SENTINEL" "$LEAK_LOG" 2>/dev/null || echo 0)
+    if [ "$MATCHES" -ge 2 ]; then
+        pass "sentinel present $MATCHES times in log (in-process + subprocess)"
+    elif [ "$MATCHES" -ge 1 ]; then
+        pass "sentinel present $MATCHES time in log (subprocess inheritance may have missed)"
+    else
+        fail "sentinel '$SENTINEL' not found in $LEAK_LOG"
+        echo "  Log tail:" >&2
+        tail -20 "$LEAK_LOG" >&2 || true
+    fi
+fi
+
+# Tear down the leak-test tmux session.
+if tmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
+    tmux send-keys -t "$LEAK_SESSION" C-c 2>/dev/null || true
+    sleep 2
+    tmux kill-session -t "$LEAK_SESSION" 2>/dev/null || true
 fi
 
 # --- Summary ---
