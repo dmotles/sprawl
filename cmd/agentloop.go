@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -124,10 +125,13 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 type timestampWriter struct {
 	w       io.Writer
 	nowFunc func() time.Time
+	mu      sync.Mutex
 }
 
 // Write prepends a timestamp to each line in p.
 func (tw *timestampWriter) Write(p []byte) (int, error) {
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
 	if len(p) == 0 {
 		return 0, nil
 	}
