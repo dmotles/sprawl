@@ -138,6 +138,7 @@ func (m *mockPickRunner) ListWindowPIDs(string, string) ([]int, error)          
 func (m *mockPickRunner) SendKeys(string, string, string) error                     { return nil }
 func (m *mockPickRunner) Attach(string) error                                       { return nil }
 func (m *mockPickRunner) SourceFile(string, string) error                           { return nil }
+func (m *mockPickRunner) SetEnvironment(string, string, string) error               { return nil }
 func (m *mockPickRunner) ListSessionNames() ([]string, error)                       { return m.sessions, m.err }
 
 func TestPickNamespace_NoServer(t *testing.T) {

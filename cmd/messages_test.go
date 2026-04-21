@@ -1201,6 +1201,9 @@ func (m *mockTmuxRunner) SendKeys(sessionName, windowName string, keys string) e
 func (m *mockTmuxRunner) ListSessionNames() ([]string, error) { return nil, nil }
 func (m *mockTmuxRunner) Attach(name string) error            { return nil }
 func (m *mockTmuxRunner) SourceFile(string, string) error     { return nil }
+func (m *mockTmuxRunner) SetEnvironment(string, string, string) error {
+	return nil
+}
 
 func TestRunMessagesSend_NotifiesRootViaTmux_LegacyMode(t *testing.T) {
 	tmpDir := t.TempDir()

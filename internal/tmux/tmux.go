@@ -149,6 +149,7 @@ type Runner interface {
 	SendKeys(sessionName, windowName string, keys string) error
 	Attach(name string) error
 	SourceFile(sessionName, filePath string) error
+	SetEnvironment(sessionName, key, value string) error
 }
 
 // RealRunner implements Runner using the real tmux binary.
@@ -307,6 +308,15 @@ func (r *RealRunner) Attach(name string) error {
 // The config should use session-targeted set-option where possible.
 func (r *RealRunner) SourceFile(_ string, filePath string) error {
 	cmd := exec.Command(r.TmuxPath, "source-file", filePath) //nolint:gosec // arguments are not user-controlled
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// SetEnvironment sets an environment variable on a tmux session. Windows created
+// in the session after this call inherit the variable automatically.
+func (r *RealRunner) SetEnvironment(sessionName, key, value string) error {
+	cmd := exec.Command(r.TmuxPath, "set-environment", "-t", exactTarget(sessionName), key, value) //nolint:gosec // arguments are not user-controlled
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

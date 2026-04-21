@@ -46,6 +46,7 @@ func (m *retireTestRunner) NewWindow(sessionName, windowName string, env map[str
 func (m *retireTestRunner) SendKeys(sessionName, windowName string, keys string) error { return nil }
 func (m *retireTestRunner) Attach(name string) error                                   { return nil }
 func (m *retireTestRunner) SourceFile(string, string) error                            { return nil }
+func (m *retireTestRunner) SetEnvironment(string, string, string) error                { return nil }
 func (m *retireTestRunner) ListSessionNames() ([]string, error)                        { return nil, nil }
 
 func (m *retireTestRunner) KillWindow(sessionName, windowName string) error {

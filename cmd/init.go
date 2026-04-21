@@ -154,6 +154,11 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 		"SPRAWL_ROOT":           cwd,
 		"SPRAWL_NAMESPACE":      namespace,
 		"SPRAWL_TREE_PATH":      treePath,
+		// Legacy tty-based message delivery: weave launched via `sprawl init`
+		// runs in a tmux window and needs send-keys pokes from children. The
+		// TUI path (`sprawl enter`) uses the new queue-based delivery and does
+		// NOT set this var. See QUM-305.
+		"SPRAWL_MESSAGING": "legacy",
 	}
 	if v := deps.getenv("SPRAWL_BIN"); v != "" {
 		env["SPRAWL_BIN"] = v
@@ -198,6 +203,14 @@ func runInit(deps *initDeps, namespace string, detached bool) error {
 	fmt.Fprintln(os.Stderr, "Spawning root agent...")
 	if err := deps.tmuxRunner.NewSessionWithWindow(rootSession, tmux.RootWindowName, env, shellCmd); err != nil {
 		return fmt.Errorf("failed to create tmux session: %w", err)
+	}
+
+	// Propagate SPRAWL_MESSAGING=legacy to the session environment so child
+	// windows spawned later (via `sprawl spawn`) inherit it. The first window
+	// already received it via new-session -e above; this covers subsequent
+	// windows. See QUM-305.
+	if err := deps.tmuxRunner.SetEnvironment(rootSession, "SPRAWL_MESSAGING", "legacy"); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not set session environment: %v\n", err)
 	}
 
 	// Apply the branded tmux config (best-effort — cosmetic only).
