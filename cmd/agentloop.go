@@ -285,11 +285,33 @@ func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.Pro
 	return proc, true
 }
 
+// hasPendingInterrupt reports whether the agent's pending queue contains any
+// class=interrupt entry. Used by the mid-turn poller to trigger preemption
+// per docs/designs/messaging-overhaul.md §4.5.2.
+func hasPendingInterrupt(sprawlRoot, agentName string) bool {
+	if sprawlRoot == "" || agentName == "" {
+		return false
+	}
+	pending, err := agentloop.ListPending(sprawlRoot, agentName)
+	if err != nil {
+		return false
+	}
+	for _, e := range pending {
+		if e.Class == agentloop.ClassInterrupt {
+			return true
+		}
+	}
+	return false
+}
+
 // sendPromptWithInterrupt wraps SendPrompt with a concurrent poller that
 // watches for a .poke file and interrupts the turn if one appears.
 // It also watches for .wake files (written by messages.Send) and interrupts
 // when one appears — but without storing poke content, since the inbox
 // delivery (step 2 of the agent loop) will handle the actual notification.
+// Finally it watches for any class=interrupt entry in the harness pending
+// queue; when one appears mid-turn, it calls InterruptTurn so the main loop
+// can deliver the §4.5.2 interrupt frame on the next iteration.
 // Returns the SendPrompt result, any poke content (non-empty if interrupted), and error.
 func sendPromptWithInterrupt(
 	ctx context.Context,
@@ -328,6 +350,17 @@ func sendPromptWithInterrupt(
 					default:
 					}
 					// Trigger interrupt — ignore error (turn may have already ended).
+					_ = proc.InterruptTurn(ctx)
+					return
+				}
+
+				// Check for pending interrupt-class queue entry. When an
+				// interrupt is enqueued mid-turn (§4.5.2), we preempt the
+				// current turn so the main loop can deliver the interrupt
+				// frame. Like wake, no content is returned — the main-loop
+				// flush step formats and delivers the interrupt frame.
+				if hasPendingInterrupt(sprawlRoot, agentName) {
+					fmt.Fprintf(deps.stdout, "[agent-loop] interrupt-class queue entry detected mid-turn, interrupting for immediate delivery\n")
 					_ = proc.InterruptTurn(ctx)
 					return
 				}
@@ -425,6 +458,95 @@ func buildQueueFlushPrompt(entries []agentloop.Entry) string {
 	}
 	b.WriteString("Continue your current work unless a message tells you otherwise.\n")
 	return b.String()
+}
+
+// resumeHintPrefix is the tag prefix used by SendInterrupt to smuggle a
+// free-form resume_hint through the queue entry's Tags without needing a
+// dedicated field. See internal/supervisor/real.go:SendInterrupt.
+const resumeHintPrefix = "resume_hint:"
+
+// extractResumeHint returns the value after the first "resume_hint:" tag in
+// e.Tags, or "" if none.
+func extractResumeHint(e agentloop.Entry) string {
+	for _, tag := range e.Tags {
+		if strings.HasPrefix(tag, resumeHintPrefix) {
+			return tag[len(resumeHintPrefix):]
+		}
+	}
+	return ""
+}
+
+// buildInterruptFlushPrompt renders the §4.5.2 interrupt frame for one or
+// more interrupt-class queue entries. The frame names the in-flight work
+// (via the first entry's resume_hint, falling back to a generic description)
+// and the resume/stop contract. Returns "" if entries is empty.
+func buildInterruptFlushPrompt(entries []agentloop.Entry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	// Prefer the first entry's resume_hint as the "you were in the middle
+	// of" summary. The harness cannot otherwise know what the agent's
+	// current turn was about — conversation history survives Interrupt, so
+	// context-only resume (§8.1 option a) is sufficient in most cases.
+	hint := extractResumeHint(entries[0])
+	if hint == "" {
+		hint = "your previous task"
+	}
+
+	var b strings.Builder
+	senders := entries[0].From
+	if len(entries) > 1 {
+		senders = fmt.Sprintf("%d senders", len(entries))
+	}
+	fmt.Fprintf(&b, "[interrupt] %s has injected an important message. You were in the middle of: %s.\n\n", senders, hint)
+
+	totalBody := 0
+	for i, e := range entries {
+		if len(entries) > 1 {
+			fmt.Fprintf(&b, "--- %d of %d (from %s) ---\n", i+1, len(entries), e.From)
+		}
+		fmt.Fprintf(&b, "Subject: %s\n\n", e.Subject)
+		body := e.Body
+		truncated := false
+		if len(body) > maxQueueFlushBodyBytes {
+			body = body[:maxQueueFlushBodyBytes]
+			truncated = true
+		}
+		remaining := maxQueueFlushTotalBytes - totalBody
+		if remaining < 0 {
+			remaining = 0
+		}
+		if len(body) > remaining {
+			body = body[:remaining]
+			truncated = true
+		}
+		b.WriteString(body)
+		if !strings.HasSuffix(body, "\n") {
+			b.WriteString("\n")
+		}
+		if truncated {
+			fmt.Fprintf(&b, "...[truncated — run `sprawl messages read %s` for full body]\n", e.ID)
+		}
+		b.WriteString("\n")
+		totalBody += len(body)
+	}
+	b.WriteString("After reading, decide whether to:\n")
+	b.WriteString("- resume the interrupted work (default), OR\n")
+	b.WriteString("- stop / change direction if the message says so.\n")
+	return b.String()
+}
+
+// splitByClass separates pending entries into (interrupts, asyncs) preserving
+// original order within each slice.
+func splitByClass(entries []agentloop.Entry) (interrupts, asyncs []agentloop.Entry) {
+	for _, e := range entries {
+		if e.Class == agentloop.ClassInterrupt {
+			interrupts = append(interrupts, e)
+		} else {
+			asyncs = append(asyncs, e)
+		}
+	}
+	return interrupts, asyncs
 }
 
 // runAgentLoop is the main loop logic for the agent-loop command.
@@ -729,19 +851,57 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			continue
 		}
 
-		// 2a. Drain the harness queue — messages persisted by sprawl_send_async.
-		// Per docs/designs/messaging-overhaul.md §4.5.1, all pending async
-		// entries are bundled into a single notification frame and marked
-		// delivered after a successful send. Legacy messages.Send callers
-		// (maildir + .wake only, no queue entry) are handled by the .wake
-		// step below during the dual-delivery phase.
+		// 2a. Drain the harness queue — messages persisted by sprawl_send_async
+		// and sprawl_send_interrupt. Per docs/designs/messaging-overhaul.md
+		// §4.5.1 and §4.5.2:
+		//   - Interrupt entries take priority and are delivered in their own
+		//     frame (one user turn). Async entries in the same batch stay in
+		//     pending/ and flush on the next yield per §8.3 ordering.
+		//   - Async entries are bundled into a single notification frame and
+		//     marked delivered after a successful send.
+		// Legacy messages.Send callers (maildir + .wake only, no queue entry)
+		// are handled by the .wake step below during the dual-delivery phase.
 		pending, pendErr := agentloop.ListPending(sprawlRoot, agentName)
 		if pendErr != nil {
 			fmt.Fprintf(deps.stdout, "[agent-loop] error listing pending queue: %v\n", pendErr)
 		}
-		if len(pending) > 0 {
-			prompt := buildQueueFlushPrompt(pending)
-			fmt.Fprintf(deps.stdout, "[agent-loop] flushing %d queued message(s) to agent\n", len(pending))
+		interrupts, asyncs := splitByClass(pending)
+		if len(interrupts) > 0 {
+			prompt := buildInterruptFlushPrompt(interrupts)
+			fmt.Fprintf(deps.stdout, "[agent-loop] flushing %d interrupt message(s) to agent\n", len(interrupts))
+			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT (interrupt) ===\n")
+			for _, line := range strings.Split(prompt, "\n") {
+				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
+			}
+			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
+			_ = deps.removeFile(wakePath)
+			_, pokeContent, sendErr := sendWithInterrupt(prompt)
+			if pokeContent != "" {
+				pendingPoke = pokeContent
+			}
+			if sendErr != nil {
+				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on interrupt flush, restarting: %v\n", sendErr)
+				if !restartWithResume() {
+					_ = wl.Release()
+					return nil
+				}
+			} else {
+				// Mark interrupt entries delivered only after a successful
+				// send. On crash, entries stay in pending/ for redelivery.
+				for _, e := range interrupts {
+					if err := agentloop.MarkDelivered(sprawlRoot, agentName, e.ID); err != nil {
+						fmt.Fprintf(deps.stdout, "[agent-loop] warn: failed to mark interrupt %s delivered: %v\n", e.ID, err)
+					}
+				}
+			}
+			_ = wl.Release()
+			// Skip the idle sleep so async entries (if any) flush immediately
+			// on the next iteration rather than after a 3s delay.
+			continue
+		}
+		if len(asyncs) > 0 {
+			prompt := buildQueueFlushPrompt(asyncs)
+			fmt.Fprintf(deps.stdout, "[agent-loop] flushing %d queued message(s) to agent\n", len(asyncs))
 			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
 			for _, line := range strings.Split(prompt, "\n") {
 				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
@@ -767,7 +927,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 				// Mark each entry delivered only after a successful send.
 				// On crash, the entries stay in pending/ and will be
 				// redelivered on the next iteration (at-least-once).
-				for _, e := range pending {
+				for _, e := range asyncs {
 					if err := agentloop.MarkDelivered(sprawlRoot, agentName, e.ID); err != nil {
 						fmt.Fprintf(deps.stdout, "[agent-loop] warn: failed to mark %s delivered: %v\n", e.ID, err)
 					}

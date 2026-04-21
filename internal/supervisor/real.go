@@ -379,6 +379,95 @@ func (r *Real) SendAsync(_ context.Context, to, subject, body, replyTo string, t
 	}, nil
 }
 
+// isAncestor reports whether `maybeAncestor` appears anywhere in `agent`'s
+// parent chain. Returns true iff maybeAncestor == agent.Parent, or a parent
+// of that parent, and so on up to the root. The root agent (empty Parent)
+// terminates the walk. A depth cap (16) guards against accidental cycles in
+// state files.
+func isAncestor(sprawlRoot, maybeAncestor, agentName string) (bool, error) {
+	if maybeAncestor == "" || agentName == "" {
+		return false, nil
+	}
+	current := agentName
+	for depth := 0; depth < 16; depth++ {
+		st, err := state.LoadAgent(sprawlRoot, current)
+		if err != nil {
+			return false, err
+		}
+		if st.Parent == "" {
+			return false, nil
+		}
+		if st.Parent == maybeAncestor {
+			return true, nil
+		}
+		current = st.Parent
+	}
+	return false, fmt.Errorf("parent chain exceeds 16 levels starting from %q", agentName)
+}
+
+// SendInterrupt persists the message to Maildir and appends an
+// interrupt-class queue entry for the recipient. Gated to parent→descendants
+// per §8.5: the caller must be an ancestor of `to`. See
+// docs/designs/messaging-overhaul.md §4.2.2 and §4.5.2.
+func (r *Real) SendInterrupt(_ context.Context, to, subject, body, resumeHint string) (*SendInterruptResult, error) {
+	if err := agent.ValidateName(to); err != nil {
+		return nil, err
+	}
+	if _, err := state.LoadAgent(r.sprawlRoot, to); err != nil {
+		return nil, fmt.Errorf("agent %q not found: %w", to, err)
+	}
+
+	// Parent→descendants gate: the caller must be an ancestor of `to`.
+	// An empty callerName (e.g. when invoked from unidentified contexts)
+	// is rejected to avoid accidental self-or-upward interrupts.
+	if r.callerName == "" {
+		return nil, fmt.Errorf("send_interrupt: caller identity unknown; refusing to send")
+	}
+	if r.callerName == to {
+		return nil, fmt.Errorf("send_interrupt: cannot interrupt self")
+	}
+	ok, err := isAncestor(r.sprawlRoot, r.callerName, to)
+	if err != nil {
+		return nil, fmt.Errorf("checking ancestry: %w", err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("send_interrupt: %q is not an ancestor of %q (parent→descendants only per §8.5)", r.callerName, to)
+	}
+
+	// Assemble the enqueue body. We preserve the resume_hint separately in
+	// Tags so the agent-loop harness can render the §4.5.2 frame without
+	// re-parsing the body. Tag key pattern: "resume_hint:<value>".
+	var tags []string
+	if resumeHint != "" {
+		tags = append(tags, "resume_hint:"+resumeHint)
+	}
+
+	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body); err != nil {
+		return nil, err
+	}
+
+	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
+		Class:   agentloop.ClassInterrupt,
+		From:    r.callerName,
+		Subject: subject,
+		Body:    body,
+		Tags:    tags,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("enqueuing interrupt message: %w", err)
+	}
+
+	return &SendInterruptResult{
+		MessageID:   entry.ID,
+		DeliveredAt: entry.EnqueuedAt,
+		// Best-effort advisory: we report interrupted=true whenever the
+		// target exists and the entry was enqueued. The harness decides
+		// mid-turn preemption asynchronously; callers shouldn't rely on
+		// this for strict invariants. See §4.2.2.
+		Interrupted: true,
+	}, nil
+}
+
 // Peek loads the agent's state plus the tail of its activity ring.
 // A tail ≤ 0 defaults to 20; the caller should clamp the upper bound.
 func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResult, error) {

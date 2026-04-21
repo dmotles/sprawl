@@ -377,6 +377,142 @@ func TestReportStatus_InvalidState(t *testing.T) {
 	}
 }
 
+func TestSendInterrupt_WritesMaildirAndQueueWithInterruptClass(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	// weave → ghost direct child.
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "ghost",
+		Parent: "weave",
+		Status: "active",
+	})
+
+	result, err := sup.SendInterrupt(context.Background(), "ghost", "urgent", "stop what you're doing", "you were refactoring foo")
+	if err != nil {
+		t.Fatalf("SendInterrupt: %v", err)
+	}
+	if result.MessageID == "" {
+		t.Error("message_id empty")
+	}
+	if result.DeliveredAt == "" {
+		t.Error("delivered_at empty")
+	}
+	if !result.Interrupted {
+		t.Error("interrupted = false, want true (advisory)")
+	}
+
+	// Maildir side
+	msgs, err := messages.Inbox(tmpDir, "ghost")
+	if err != nil {
+		t.Fatalf("Inbox: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Subject != "urgent" || msgs[0].Body != "stop what you're doing" {
+		t.Errorf("maildir msg = %+v", msgs)
+	}
+
+	// Queue side
+	entries, err := agentloop.ListPending(tmpDir, "ghost")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("queue got %d entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Class != agentloop.ClassInterrupt {
+		t.Errorf("class = %q, want interrupt", e.Class)
+	}
+	if e.From != "weave" || e.Subject != "urgent" || e.Body != "stop what you're doing" {
+		t.Errorf("entry = %+v", e)
+	}
+	// resume_hint travels as a tag so the harness can render §4.5.2 frames
+	// without re-parsing the body.
+	var gotHint string
+	for _, tag := range e.Tags {
+		if len(tag) > len("resume_hint:") && tag[:len("resume_hint:")] == "resume_hint:" {
+			gotHint = tag[len("resume_hint:"):]
+		}
+	}
+	if gotHint != "you were refactoring foo" {
+		t.Errorf("resume_hint tag = %q, want 'you were refactoring foo' (tags=%v)", gotHint, e.Tags)
+	}
+	if e.ID != result.MessageID {
+		t.Errorf("message_id mismatch: result=%q entry=%q", result.MessageID, e.ID)
+	}
+}
+
+func TestSendInterrupt_BlocksNonAncestorCaller(t *testing.T) {
+	// peer (non-ancestor) attempts to interrupt ghost. caller = "weave" in
+	// test fixture, so set up a tree where weave is NOT ghost's ancestor.
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "other-root", // different root
+		Parent: "",
+		Status: "active",
+	})
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "ghost",
+		Parent: "other-root", // ghost's ancestor is other-root, not weave
+		Status: "active",
+	})
+
+	_, err := sup.SendInterrupt(context.Background(), "ghost", "s", "b", "")
+	if err == nil {
+		t.Fatal("expected error for non-ancestor caller")
+	}
+	// Ensure nothing was enqueued.
+	entries, _ := agentloop.ListPending(tmpDir, "ghost")
+	if len(entries) != 0 {
+		t.Errorf("queue got %d, want 0 (gate should block)", len(entries))
+	}
+}
+
+func TestSendInterrupt_AllowsAncestorChain(t *testing.T) {
+	// weave → midmgr → ghost. weave should be allowed to interrupt ghost
+	// via the grandparent path.
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "midmgr",
+		Parent: "weave",
+		Status: "active",
+	})
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "ghost",
+		Parent: "midmgr",
+		Status: "active",
+	})
+
+	_, err := sup.SendInterrupt(context.Background(), "ghost", "s", "b", "")
+	if err != nil {
+		t.Fatalf("SendInterrupt grandparent: %v", err)
+	}
+}
+
+func TestSendInterrupt_RejectsSelfInterrupt(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Status: "active"})
+
+	_, err := sup.SendInterrupt(context.Background(), "weave", "s", "b", "")
+	if err == nil {
+		t.Fatal("expected error for self-interrupt")
+	}
+}
+
+func TestSendInterrupt_AgentNotFound(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.SendInterrupt(context.Background(), "nobody", "s", "b", "")
+	if err == nil {
+		t.Fatal("expected error for missing agent")
+	}
+}
+
+func TestSendInterrupt_ValidatesName(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.SendInterrupt(context.Background(), "../evil", "s", "b", "")
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
 func TestPeek_DefaultsTailTo20(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Status: "active"})
