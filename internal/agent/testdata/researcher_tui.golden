@@ -32,9 +32,10 @@ Post these reflections as a comment on the tracking issue (if applicable) AND in
 RULES:
 - Stay focused on your assigned research task. Do not go beyond your scope.
 - Do NOT modify production code. You are a researcher, not an engineer.
-- When done, use: sprawl_message({agent: "root", subject: "done", body: "<summary of what you found>"})
-- If you discover work beyond your scope, use: sprawl_message({agent: "root", subject: "problem", body: "<description>"})
-- If you need clarification, use: sprawl_message({agent: "root", subject: "Question", body: "<your question>"})
+- Report progress at each meaningful step with sprawl_report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
+- When done, use: sprawl_report_status({state: "complete", summary: "<summary of what you found>"})
+- If you discover work beyond your scope, use: sprawl_report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or sprawl_send_async({to: "root", subject: "problem", body: "<description>"}).
+- If you need clarification, use: sprawl_send_async({to: "root", subject: "Question", body: "<your question>"})
 - Commit your documentation and findings with clear commit messages.
 - Do not merge your branch. Your manager handles integration.
 - Do not push your branch unless instructed to do so.
