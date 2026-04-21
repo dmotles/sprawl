@@ -65,6 +65,14 @@ type mockSupervisor struct {
 	reportStatusDetail  string
 	reportStatusResult  *supervisor.ReportStatusResult
 	reportStatusErr     error
+
+	// SendInterrupt recording + seams
+	sendInterruptTo         string
+	sendInterruptSubject    string
+	sendInterruptBody       string
+	sendInterruptResumeHint string
+	sendInterruptResult     *supervisor.SendInterruptResult
+	sendInterruptErr        error
 }
 
 func (m *mockSupervisor) ReportStatus(_ context.Context, agentName, reportState, summary, detail string) (*supervisor.ReportStatusResult, error) {
@@ -171,6 +179,20 @@ func (m *mockSupervisor) Peek(_ context.Context, agentName string, tail int) (*s
 	return &supervisor.PeekResult{Status: "active"}, nil
 }
 
+func (m *mockSupervisor) SendInterrupt(_ context.Context, to, subject, body, resumeHint string) (*supervisor.SendInterruptResult, error) {
+	m.sendInterruptTo = to
+	m.sendInterruptSubject = subject
+	m.sendInterruptBody = body
+	m.sendInterruptResumeHint = resumeHint
+	if m.sendInterruptErr != nil {
+		return nil, m.sendInterruptErr
+	}
+	if m.sendInterruptResult != nil {
+		return m.sendInterruptResult, nil
+	}
+	return &supervisor.SendInterruptResult{MessageID: "msg_int", DeliveredAt: "2026-04-21T00:00:00Z", Interrupted: true}, nil
+}
+
 // makeJSONRPCRequest builds a raw JSON-RPC request for testing.
 func makeJSONRPCRequest(id int, method string, params any) json.RawMessage {
 	req := map[string]any{
@@ -254,6 +276,7 @@ func TestServer_ToolsList(t *testing.T) {
 		"sprawl_status",
 		"sprawl_delegate",
 		"sprawl_send_async",
+		"sprawl_send_interrupt",
 		"sprawl_peek",
 		"sprawl_report_status",
 		"sprawl_message",
@@ -796,6 +819,105 @@ func TestServer_ToolsCall_SprawlSendAsync_SupervisorError(t *testing.T) {
 	}
 	if isErr, _ := result["isError"].(bool); !isErr {
 		t.Error("expected isError=true")
+	}
+}
+
+func TestServer_ToolsCall_SprawlSendInterrupt(t *testing.T) {
+	mock := &mockSupervisor{
+		sendInterruptResult: &supervisor.SendInterruptResult{
+			MessageID:   "int-42",
+			DeliveredAt: "2026-04-21T11:00:00Z",
+			Interrupted: true,
+		},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(40, "tools/call", map[string]any{
+		"name": "sprawl_send_interrupt",
+		"arguments": map[string]any{
+			"to":          "ghost",
+			"subject":     "urgent",
+			"body":        "stop what you are doing",
+			"resume_hint": "you were implementing X",
+		},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.sendInterruptTo != "ghost" {
+		t.Errorf("to = %q, want ghost", mock.sendInterruptTo)
+	}
+	if mock.sendInterruptSubject != "urgent" {
+		t.Errorf("subject = %q", mock.sendInterruptSubject)
+	}
+	if mock.sendInterruptBody != "stop what you are doing" {
+		t.Errorf("body = %q", mock.sendInterruptBody)
+	}
+	if mock.sendInterruptResumeHint != "you were implementing X" {
+		t.Errorf("resume_hint = %q", mock.sendInterruptResumeHint)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	content := result["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+
+	var body supervisor.SendInterruptResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v (text=%q)", err, text)
+	}
+	if body.MessageID != "int-42" {
+		t.Errorf("message_id = %q, want int-42", body.MessageID)
+	}
+	if !body.Interrupted {
+		t.Error("interrupted = false, want true")
+	}
+}
+
+func TestServer_ToolsCall_SprawlSendInterrupt_SupervisorError(t *testing.T) {
+	mock := &mockSupervisor{sendInterruptErr: fmt.Errorf("not an ancestor")}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(41, "tools/call", map[string]any{
+		"name": "sprawl_send_interrupt",
+		"arguments": map[string]any{
+			"to":      "ghost",
+			"subject": "s",
+			"body":    "b",
+		},
+	})
+	resp, _ := srv.HandleMessage(context.Background(), msg)
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Error("expected isError=true for ancestor-gate rejection")
+	}
+}
+
+func TestServer_ToolsList_IncludesSendInterrupt(t *testing.T) {
+	srv := New(&mockSupervisor{})
+	resp, err := srv.HandleMessage(context.Background(), makeJSONRPCRequest(42, "tools/list", nil))
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	tools := result["tools"].([]any)
+	found := false
+	for _, tAny := range tools {
+		tm := tAny.(map[string]any)
+		if tm["name"] == "sprawl_send_interrupt" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("sprawl_send_interrupt missing from tools/list")
 	}
 }
 

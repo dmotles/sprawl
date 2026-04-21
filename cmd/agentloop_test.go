@@ -3564,3 +3564,297 @@ func TestBuildQueueFlushPrompt_TotalCap(t *testing.T) {
 		t.Errorf("expected truncation hint when total cap is hit, got prompt starting with:\n%s", out[:min(500, len(out))])
 	}
 }
+
+// --- QUM-294: interrupt-class queue entries ---
+
+func TestBuildInterruptFlushPrompt_SingleEntryWithHint(t *testing.T) {
+	entries := []agentloop.Entry{{
+		ID:      "int-1",
+		Class:   agentloop.ClassInterrupt,
+		From:    "weave",
+		Subject: "stop!",
+		Body:    "we pivoted — use lib X instead",
+		Tags:    []string{"resume_hint:you were wiring lib Y"},
+	}}
+	out := buildInterruptFlushPrompt(entries)
+
+	for _, needle := range []string{
+		"[interrupt]",
+		"weave has injected an important message",
+		"You were in the middle of: you were wiring lib Y",
+		"Subject: stop!",
+		"we pivoted — use lib X instead",
+		"resume the interrupted work (default)",
+		"stop / change direction",
+	} {
+		if !strings.Contains(out, needle) {
+			t.Errorf("interrupt frame missing %q, got:\n%s", needle, out)
+		}
+	}
+}
+
+func TestBuildInterruptFlushPrompt_DefaultHintWhenMissing(t *testing.T) {
+	out := buildInterruptFlushPrompt([]agentloop.Entry{{
+		From: "weave", Subject: "s", Body: "b",
+	}})
+	if !strings.Contains(out, "your previous task") {
+		t.Errorf("expected default hint fallback, got:\n%s", out)
+	}
+}
+
+func TestBuildInterruptFlushPrompt_Empty(t *testing.T) {
+	if got := buildInterruptFlushPrompt(nil); got != "" {
+		t.Errorf("expected empty for nil, got %q", got)
+	}
+	if got := buildInterruptFlushPrompt([]agentloop.Entry{}); got != "" {
+		t.Errorf("expected empty for empty, got %q", got)
+	}
+}
+
+func TestSplitByClass(t *testing.T) {
+	entries := []agentloop.Entry{
+		{ID: "a", Class: agentloop.ClassAsync},
+		{ID: "i1", Class: agentloop.ClassInterrupt},
+		{ID: "b", Class: agentloop.ClassAsync},
+		{ID: "i2", Class: agentloop.ClassInterrupt},
+	}
+	ints, asyncs := splitByClass(entries)
+	if len(ints) != 2 || ints[0].ID != "i1" || ints[1].ID != "i2" {
+		t.Errorf("interrupts = %+v", ints)
+	}
+	if len(asyncs) != 2 || asyncs[0].ID != "a" || asyncs[1].ID != "b" {
+		t.Errorf("asyncs = %+v", asyncs)
+	}
+}
+
+func TestRunAgentLoop_FlushInterrupt_DeliversOwnFrame(t *testing.T) {
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	if _, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class:   agentloop.ClassInterrupt,
+		From:    "weave",
+		Subject: "urgent pivot",
+		Body:    "stop that, use the other library",
+		Tags:    []string{"resume_hint:you were wiring lib Y"},
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial done"},
+		{Type: "result", Result: "interrupt handled"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	deps.sleepFunc = func(d time.Duration) { cancel() }
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	if len(mockProc.prompts) < 2 {
+		t.Fatalf("expected ≥2 prompts, got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+	p := mockProc.prompts[1]
+	for _, needle := range []string{
+		"[interrupt]",
+		"You were in the middle of: you were wiring lib Y",
+		"Subject: urgent pivot",
+		"stop that, use the other library",
+	} {
+		if !strings.Contains(p, needle) {
+			t.Errorf("interrupt frame missing %q, got:\n%s", needle, p)
+		}
+	}
+
+	// Entry should move to delivered/.
+	pending, _ := agentloop.ListPending(tmpDir, "finn")
+	if len(pending) != 0 {
+		t.Errorf("pending = %d, want 0 after interrupt flush", len(pending))
+	}
+	delivered, _ := agentloop.ListDelivered(tmpDir, "finn")
+	if len(delivered) != 1 {
+		t.Errorf("delivered = %d, want 1", len(delivered))
+	}
+}
+
+func TestRunAgentLoop_InterruptPreemptsAsync_SameBatch(t *testing.T) {
+	// Per §8.3: when both classes are pending, the interrupt is delivered
+	// first as its own frame; the async stays in pending/ and flushes on
+	// the next yield.
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	_, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class: agentloop.ClassAsync, From: "weave", Subject: "async-1", Body: "later",
+	})
+	if err != nil {
+		t.Fatalf("enqueue async: %v", err)
+	}
+	_, err = agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class: agentloop.ClassInterrupt, From: "weave", Subject: "int-1", Body: "now",
+		Tags: []string{"resume_hint:you were coding"},
+	})
+	if err != nil {
+		t.Fatalf("enqueue interrupt: %v", err)
+	}
+
+	mockProc.sendResults = []*protocol.ResultMessage{
+		{Type: "result", Result: "initial"},
+		{Type: "result", Result: "interrupt"},
+		{Type: "result", Result: "async"},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	iters := 0
+	deps.sleepFunc = func(d time.Duration) {
+		iters++
+		if iters >= 1 {
+			cancel()
+		}
+	}
+
+	_ = runAgentLoop(ctx, deps, "finn")
+
+	// prompts[1] should be the interrupt frame; prompts[2] should be the async.
+	if len(mockProc.prompts) < 3 {
+		t.Fatalf("expected ≥3 prompts (initial/interrupt/async), got %d: %v", len(mockProc.prompts), mockProc.prompts)
+	}
+	if !strings.Contains(mockProc.prompts[1], "[interrupt]") {
+		t.Errorf("prompt[1] should be interrupt frame, got: %q", mockProc.prompts[1])
+	}
+	if strings.Contains(mockProc.prompts[1], "async-1") {
+		t.Errorf("prompt[1] should NOT include async body; got: %q", mockProc.prompts[1])
+	}
+	if !strings.Contains(mockProc.prompts[2], "[inbox]") || !strings.Contains(mockProc.prompts[2], "async-1") {
+		t.Errorf("prompt[2] should be async flush with async-1; got: %q", mockProc.prompts[2])
+	}
+}
+
+// cancelOnSecondSendProcessManager wraps a processManager so the 2nd
+// SendPrompt call (the first post-initial flush) returns an error AND cancels
+// the supplied context — lets tests verify crash-path behavior without
+// infinite-retry loops against deterministic mocks.
+type cancelOnSecondSendProcessManager struct {
+	*mockProcessManager
+	cancel    context.CancelFunc
+	callCount int
+}
+
+func (c *cancelOnSecondSendProcessManager) SendPrompt(ctx context.Context, prompt string) (*protocol.ResultMessage, error) {
+	c.mu.Lock()
+	c.callCount++
+	n := c.callCount
+	c.prompts = append(c.prompts, prompt)
+	c.mu.Unlock()
+	if n == 1 {
+		return &protocol.ResultMessage{Type: "result", Result: "initial"}, nil
+	}
+	c.cancel()
+	return nil, errors.New("subprocess died")
+}
+
+func TestRunAgentLoop_InterruptEntry_CrashLeavesPending(t *testing.T) {
+	// When the SendPrompt for the interrupt frame errors (process crash),
+	// the interrupt entry must NOT be marked delivered — it must stay in
+	// pending/ for redelivery on the next turn after restart.
+	deps, tmpDir, mockProc := newTestAgentLoopDeps(t)
+
+	if _, err := agentloop.Enqueue(tmpDir, "finn", agentloop.Entry{
+		Class: agentloop.ClassInterrupt, From: "weave", Subject: "s", Body: "b",
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	wrapped := &cancelOnSecondSendProcessManager{
+		mockProcessManager: mockProc,
+		cancel:             cancel,
+	}
+	deps.newProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager {
+		mockProc.mu.Lock()
+		mockProc.configs = append(mockProc.configs, config)
+		mockProc.mu.Unlock()
+		return wrapped
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = runAgentLoop(ctx, deps, "finn")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		cancel()
+		<-done
+		t.Fatal("runAgentLoop did not exit within 2s")
+	}
+
+	pending, _ := agentloop.ListPending(tmpDir, "finn")
+	delivered, _ := agentloop.ListDelivered(tmpDir, "finn")
+	if len(delivered) != 0 {
+		t.Errorf("delivered = %d, want 0 (must not mark delivered on crash). pending=%d", len(delivered), len(pending))
+	}
+	if len(pending) != 1 {
+		t.Errorf("pending = %d, want 1 (entry must survive crash for redelivery). delivered=%d", len(pending), len(delivered))
+	}
+}
+
+func TestSendPromptWithInterrupt_InterruptQueueEntryTriggersInterrupt(t *testing.T) {
+	// Given a pending interrupt-class queue entry, the mid-turn poller should
+	// call InterruptTurn so the main loop can deliver the frame.
+	tmpDir := t.TempDir()
+	sprawlRoot := tmpDir
+	agentName := "finn"
+
+	// Enqueue an interrupt-class entry up-front.
+	if _, err := agentloop.Enqueue(sprawlRoot, agentName, agentloop.Entry{
+		Class: agentloop.ClassInterrupt, From: "weave", Subject: "s", Body: "b",
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	sendCh := make(chan struct{})
+	mockProc := &mockProcessManager{running: true}
+	blockingProc := &blockingSendProcessManager{
+		mockProcessManager: mockProc,
+		sendCh:             sendCh,
+		result:             &protocol.ResultMessage{Type: "result", Result: "interrupted"},
+	}
+
+	deps := &agentLoopDeps{
+		readFile:     func(string) ([]byte, error) { return nil, errors.New("nope") },
+		removeFile:   func(string) error { return nil },
+		listMessages: func(string, string, string) ([]*messages.Message, error) { return nil, nil },
+		stdout:       io.Discard,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = sendPromptWithInterrupt(
+			context.Background(), blockingProc, deps, "/tmp/nowhere.poke", "hello",
+			10*time.Millisecond, sprawlRoot, agentName,
+		)
+	}()
+
+	// Wait for the poller to detect the interrupt entry and call InterruptTurn.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mockProc.mu.Lock()
+		called := mockProc.interruptCalled
+		mockProc.mu.Unlock()
+		if called {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(sendCh)
+	<-done
+
+	mockProc.mu.Lock()
+	defer mockProc.mu.Unlock()
+	if !mockProc.interruptCalled {
+		t.Error("InterruptTurn should have been called when pending interrupt entry is present")
+	}
+}

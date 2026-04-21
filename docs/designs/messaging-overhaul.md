@@ -589,6 +589,15 @@ discarded. We can:
 Recommendation: start with (a); add (c) if field experience shows model
 drift.
 
+**Status (QUM-294 shipped):** Implementation went with option (a) —
+context-only resume. The §4.5.2 interrupt frame names the in-flight work via
+the sender-supplied `resume_hint` (falling back to a generic "your previous
+task" when omitted) and relies on Claude's preserved conversation history to
+resume. Option (c) is deferred to a follow-up issue if empirical drift
+shows up in practice. The `resume_hint` parameter is already plumbed through
+`sprawl_send_interrupt` → `SendInterrupt` → queue entry tag (`resume_hint:…`)
+→ frame template, so upgrading to (c) later is purely additive.
+
 ### 8.2 Queue signalling
 
 - **Unix domain socket per agent:** low-latency (~µs), requires socket

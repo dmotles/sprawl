@@ -25,6 +25,19 @@ type SendAsyncResult struct {
 	QueuedAt  string `json:"queued_at"` // RFC3339
 }
 
+// SendInterruptResult is returned by Supervisor.SendInterrupt. See
+// docs/designs/messaging-overhaul.md §4.2.2. `DeliveredAt` is set when the
+// message lands in the target's queue; the harness then interrupts mid-turn
+// and injects the frame. `Interrupted` is best-effort — true iff the caller's
+// enqueue was observed to preempt an active turn. Because interrupt delivery
+// is asynchronous (harness polls), this field is reported as true whenever
+// the recipient has an active process; callers should treat it as advisory.
+type SendInterruptResult struct {
+	MessageID   string `json:"message_id"`
+	DeliveredAt string `json:"delivered_at"` // RFC3339
+	Interrupted bool   `json:"interrupted"`
+}
+
 // LastReport is the structured last_report_* block from an agent's state.
 type LastReport struct {
 	Type    string `json:"type,omitempty"`
@@ -99,4 +112,12 @@ type Supervisor interface {
 	// docs/designs/messaging-overhaul.md §4.2.3. The reporter identity is
 	// the supervisor's caller (r.callerName) when agentName is empty.
 	ReportStatus(ctx context.Context, agentName, state, summary, detail string) (*ReportStatusResult, error)
+	// SendInterrupt queues an interrupt-class message for `to` via Maildir
+	// persist + harness queue. The recipient's agent-loop harness polls the
+	// pending queue; on observing an interrupt entry it calls
+	// Session.Interrupt to preempt any in-flight turn, then injects the
+	// interrupt frame as a user turn. Gated to parent→descendants by
+	// default per §8.5 — callers that are not an ancestor of `to` get an
+	// error. See docs/designs/messaging-overhaul.md §4.2.2 and §4.5.2.
+	SendInterrupt(ctx context.Context, to, subject, body, resumeHint string) (*SendInterruptResult, error)
 }

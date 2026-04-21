@@ -767,6 +767,10 @@ func (m *mockSupervisor) ReportStatus(_ context.Context, _, _, _, _ string) (*su
 	return &supervisor.ReportStatusResult{}, nil
 }
 
+func (m *mockSupervisor) SendInterrupt(_ context.Context, _, _, _, _ string) (*supervisor.SendInterruptResult, error) {
+	return &supervisor.SendInterruptResult{}, nil
+}
+
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
 	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)

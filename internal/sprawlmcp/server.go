@@ -91,6 +91,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolDelegate(ctx, args)
 	case "sprawl_send_async":
 		return s.toolSendAsync(ctx, args)
+	case "sprawl_send_interrupt":
+		return s.toolSendInterrupt(ctx, args)
 	case "sprawl_peek":
 		return s.toolPeek(ctx, args)
 	case "sprawl_report_status":
@@ -179,6 +181,27 @@ func (s *Server) toolSendAsync(ctx context.Context, args json.RawMessage) (strin
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 	result, err := s.sup.SendAsync(ctx, p.To, p.Subject, p.Body, p.ReplyTo, p.Tags)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
+}
+
+func (s *Server) toolSendInterrupt(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		To         string `json:"to"`
+		Subject    string `json:"subject"`
+		Body       string `json:"body"`
+		ResumeHint string `json:"resume_hint"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	result, err := s.sup.SendInterrupt(ctx, p.To, p.Subject, p.Body, p.ResumeHint)
 	if err != nil {
 		return "", err
 	}

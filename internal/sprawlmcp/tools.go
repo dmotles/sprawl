@@ -89,6 +89,32 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "sprawl_send_interrupt",
+			"description": "Interrupt a descendant agent mid-turn and inject this message as a user turn. Gated to parent→descendants only (§8.5). Use sparingly — this is the \"I forgot to tell you something important\" channel. Target resumes its previous work unless the body directs it to stop.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"to": map[string]any{
+						"type":        "string",
+						"description": "Target descendant agent name",
+					},
+					"subject": map[string]any{
+						"type":        "string",
+						"description": "≤80 char human-readable label",
+					},
+					"body": map[string]any{
+						"type":        "string",
+						"description": "Markdown body of the interrupt message",
+					},
+					"resume_hint": map[string]any{
+						"type":        "string",
+						"description": "Optional free-form hint the target can quote back to itself after reading (e.g. \"you were implementing X\")",
+					},
+				},
+				"required": []string{"to", "subject", "body"},
+			},
+		},
+		{
 			"name":        "sprawl_peek",
 			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, and the last N protocol events (tool calls, text, results). Use to answer \"what is this agent doing?\" before sending a message.",
 			"inputSchema": map[string]any{
