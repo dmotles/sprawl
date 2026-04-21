@@ -755,6 +755,14 @@ func (m *mockSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]age
 	return nil, nil
 }
 
+func (m *mockSupervisor) SendAsync(_ context.Context, _, _, _, _ string, _ []string) (*supervisor.SendAsyncResult, error) {
+	return &supervisor.SendAsyncResult{}, nil
+}
+
+func (m *mockSupervisor) Peek(_ context.Context, _ string, _ int) (*supervisor.PeekResult, error) {
+	return &supervisor.PeekResult{}, nil
+}
+
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
 	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)

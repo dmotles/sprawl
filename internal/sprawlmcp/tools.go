@@ -58,8 +58,57 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "sprawl_send_async",
+			"description": "Queue an asynchronous message for a peer or child agent. The recipient reads it on its next yield (between turns). Does not interrupt. Persisted; survives crashes. Returns the queue message_id and queued_at.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"to": map[string]any{
+						"type":        "string",
+						"description": "Target agent name",
+					},
+					"subject": map[string]any{
+						"type":        "string",
+						"description": "≤80 char human-readable label",
+					},
+					"body": map[string]any{
+						"type":        "string",
+						"description": "Markdown body (no length cap)",
+					},
+					"reply_to": map[string]any{
+						"type":        "string",
+						"description": "Optional message ID this replies to (threading)",
+					},
+					"tags": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Optional labels, e.g. [\"status\", \"question\", \"fyi\"]",
+					},
+				},
+				"required": []string{"to", "subject", "body"},
+			},
+		},
+		{
+			"name":        "sprawl_peek",
+			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, and the last N protocol events (tool calls, text, results). Use to answer \"what is this agent doing?\" before sending a message.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"agent": map[string]any{
+						"type":        "string",
+						"description": "Target agent name",
+					},
+					"tail": map[string]any{
+						"type":        "integer",
+						"description": "Activity entries to return (default 20, max 200)",
+					},
+				},
+				"required": []string{"agent"},
+			},
+		},
+		{
 			"name":        "sprawl_message",
-			"description": "Send an informational message to an agent. Messages appear in the agent's inbox.",
+			"description": "DEPRECATED: use sprawl_send_async. Kept as an alias that writes to the recipient's Maildir and harness queue, then returns a short acknowledgement.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

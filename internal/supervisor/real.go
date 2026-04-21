@@ -343,3 +343,67 @@ func (r *Real) PeekActivity(_ context.Context, agentName string, tail int) ([]ag
 	}
 	return entries, nil
 }
+
+// SendAsync persists the message to Maildir and appends a harness queue
+// entry (class=async) for the recipient. See
+// docs/designs/messaging-overhaul.md §4.2.1.
+func (r *Real) SendAsync(_ context.Context, to, subject, body, replyTo string, tags []string) (*SendAsyncResult, error) {
+	if err := agent.ValidateName(to); err != nil {
+		return nil, err
+	}
+	if _, err := state.LoadAgent(r.sprawlRoot, to); err != nil {
+		return nil, fmt.Errorf("agent %q not found: %w", to, err)
+	}
+
+	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body); err != nil {
+		return nil, err
+	}
+
+	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
+		Class:   agentloop.ClassAsync,
+		From:    r.callerName,
+		Subject: subject,
+		Body:    body,
+		ReplyTo: replyTo,
+		Tags:    tags,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("enqueuing async message: %w", err)
+	}
+
+	return &SendAsyncResult{
+		MessageID: entry.ID,
+		QueuedAt:  entry.EnqueuedAt,
+	}, nil
+}
+
+// Peek loads the agent's state plus the tail of its activity ring.
+// A tail ≤ 0 defaults to 20; the caller should clamp the upper bound.
+func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResult, error) {
+	if err := agent.ValidateName(agentName); err != nil {
+		return nil, err
+	}
+	st, err := state.LoadAgent(r.sprawlRoot, agentName)
+	if err != nil {
+		return nil, fmt.Errorf("agent %q not found: %w", agentName, err)
+	}
+	if tail <= 0 {
+		tail = 20
+	}
+	activity, err := r.PeekActivity(ctx, agentName, tail)
+	if err != nil {
+		return nil, err
+	}
+	if activity == nil {
+		activity = []agentloop.ActivityEntry{}
+	}
+	return &PeekResult{
+		Status: st.Status,
+		LastReport: LastReport{
+			Type:    st.LastReportType,
+			Message: st.LastReportMessage,
+			At:      st.LastReportAt,
+		},
+		Activity: activity,
+	}, nil
+}

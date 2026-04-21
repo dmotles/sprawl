@@ -40,6 +40,23 @@ type mockSupervisor struct {
 	handoffSummary string
 	handoffErr     error
 	handoffCh      chan struct{}
+
+	// SendAsync / Peek recording + seams
+	sendAsyncTo       string
+	sendAsyncSubject  string
+	sendAsyncBody     string
+	sendAsyncReplyTo  string
+	sendAsyncTags     []string
+	sendAsyncResult   *supervisor.SendAsyncResult
+	sendAsyncErr      error
+	peekAgent         string
+	peekTail          int
+	peekResult        *supervisor.PeekResult
+	peekErr           error
+	peekActivityAgent string
+	peekActivityTail  int
+	peekActivityRes   []agentloop.ActivityEntry
+	peekActivityErr   error
 }
 
 func (m *mockSupervisor) Spawn(_ context.Context, req supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
@@ -99,8 +116,37 @@ func (m *mockSupervisor) HandoffRequested() <-chan struct{} {
 	return m.handoffCh
 }
 
-func (m *mockSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]agentloop.ActivityEntry, error) {
-	return nil, nil
+func (m *mockSupervisor) PeekActivity(_ context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error) {
+	m.peekActivityAgent = agentName
+	m.peekActivityTail = tail
+	return m.peekActivityRes, m.peekActivityErr
+}
+
+func (m *mockSupervisor) SendAsync(_ context.Context, to, subject, body, replyTo string, tags []string) (*supervisor.SendAsyncResult, error) {
+	m.sendAsyncTo = to
+	m.sendAsyncSubject = subject
+	m.sendAsyncBody = body
+	m.sendAsyncReplyTo = replyTo
+	m.sendAsyncTags = tags
+	if m.sendAsyncErr != nil {
+		return nil, m.sendAsyncErr
+	}
+	if m.sendAsyncResult != nil {
+		return m.sendAsyncResult, nil
+	}
+	return &supervisor.SendAsyncResult{MessageID: "msg_stub", QueuedAt: "2026-04-21T00:00:00Z"}, nil
+}
+
+func (m *mockSupervisor) Peek(_ context.Context, agentName string, tail int) (*supervisor.PeekResult, error) {
+	m.peekAgent = agentName
+	m.peekTail = tail
+	if m.peekErr != nil {
+		return nil, m.peekErr
+	}
+	if m.peekResult != nil {
+		return m.peekResult, nil
+	}
+	return &supervisor.PeekResult{Status: "active"}, nil
 }
 
 // makeJSONRPCRequest builds a raw JSON-RPC request for testing.
@@ -185,6 +231,8 @@ func TestServer_ToolsList(t *testing.T) {
 		"sprawl_spawn",
 		"sprawl_status",
 		"sprawl_delegate",
+		"sprawl_send_async",
+		"sprawl_peek",
 		"sprawl_message",
 		"sprawl_merge",
 		"sprawl_retire",
@@ -371,14 +419,18 @@ func TestServer_ToolsCall_SprawlMessage(t *testing.T) {
 		t.Fatalf("HandleMessage() error: %v", err)
 	}
 
-	if mock.messageAgent != "ghost" {
-		t.Errorf("message agent = %q, want ghost", mock.messageAgent)
+	// Deprecated alias now routes through SendAsync, so Message() should not be called.
+	if mock.messageAgent != "" {
+		t.Errorf("legacy Message() was called but alias must route through SendAsync; got agent %q", mock.messageAgent)
 	}
-	if mock.messageSubject != "status update" {
-		t.Errorf("message subject = %q, want 'status update'", mock.messageSubject)
+	if mock.sendAsyncTo != "ghost" {
+		t.Errorf("sendAsync to = %q, want ghost", mock.sendAsyncTo)
 	}
-	if mock.messageBody != "work is done" {
-		t.Errorf("message body = %q, want 'work is done'", mock.messageBody)
+	if mock.sendAsyncSubject != "status update" {
+		t.Errorf("sendAsync subject = %q, want 'status update'", mock.sendAsyncSubject)
+	}
+	if mock.sendAsyncBody != "work is done" {
+		t.Errorf("sendAsync body = %q, want 'work is done'", mock.sendAsyncBody)
 	}
 
 	parsed := parseJSONRPCResponse(t, resp)
@@ -636,5 +688,169 @@ func TestServer_UnknownMethod(t *testing.T) {
 	code, _ := errObj["code"].(float64)
 	if code != -32601 {
 		t.Errorf("error code = %v, want -32601 (method not found)", code)
+	}
+}
+
+func TestServer_ToolsCall_SprawlSendAsync(t *testing.T) {
+	mock := &mockSupervisor{
+		sendAsyncResult: &supervisor.SendAsyncResult{
+			MessageID: "abc-123",
+			QueuedAt:  "2026-04-21T10:00:00Z",
+		},
+	}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(30, "tools/call", map[string]any{
+		"name": "sprawl_send_async",
+		"arguments": map[string]any{
+			"to":       "ghost",
+			"subject":  "status",
+			"body":     "all done",
+			"reply_to": "prev-msg",
+			"tags":     []string{"status", "fyi"},
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.sendAsyncTo != "ghost" {
+		t.Errorf("to = %q, want ghost", mock.sendAsyncTo)
+	}
+	if mock.sendAsyncSubject != "status" {
+		t.Errorf("subject = %q", mock.sendAsyncSubject)
+	}
+	if mock.sendAsyncReplyTo != "prev-msg" {
+		t.Errorf("reply_to = %q", mock.sendAsyncReplyTo)
+	}
+	if len(mock.sendAsyncTags) != 2 || mock.sendAsyncTags[0] != "status" {
+		t.Errorf("tags = %v", mock.sendAsyncTags)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	if _, ok := parsed["error"]; ok {
+		t.Fatalf("unexpected error: %v", parsed["error"])
+	}
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError=true: %v", result)
+	}
+	content := result["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+
+	// Response body should contain the returned message_id and queued_at.
+	var body struct {
+		MessageID string `json:"message_id"`
+		QueuedAt  string `json:"queued_at"`
+	}
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal response text as JSON: %v (text=%q)", err, text)
+	}
+	if body.MessageID != "abc-123" {
+		t.Errorf("message_id = %q, want abc-123", body.MessageID)
+	}
+	if body.QueuedAt != "2026-04-21T10:00:00Z" {
+		t.Errorf("queued_at = %q", body.QueuedAt)
+	}
+}
+
+func TestServer_ToolsCall_SprawlSendAsync_SupervisorError(t *testing.T) {
+	mock := &mockSupervisor{sendAsyncErr: fmt.Errorf("agent not found")}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(31, "tools/call", map[string]any{
+		"name":      "sprawl_send_async",
+		"arguments": map[string]any{"to": "x", "subject": "s", "body": "b"},
+	})
+	resp, _ := srv.HandleMessage(context.Background(), msg)
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatal("expected MCP content result")
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Error("expected isError=true")
+	}
+}
+
+func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
+	mock := &mockSupervisor{
+		peekResult: &supervisor.PeekResult{
+			Status:     "active",
+			LastReport: supervisor.LastReport{Type: "status", Message: "working", At: "2026-04-21T09:00:00Z"},
+			Activity:   []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "hi"}},
+		},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(32, "tools/call", map[string]any{
+		"name":      "sprawl_peek",
+		"arguments": map[string]any{"agent": "ghost", "tail": 50},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.peekAgent != "ghost" {
+		t.Errorf("agent = %q, want ghost", mock.peekAgent)
+	}
+	if mock.peekTail != 50 {
+		t.Errorf("tail = %d, want 50", mock.peekTail)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	content := result["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+
+	var body supervisor.PeekResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Status != "active" {
+		t.Errorf("status = %q", body.Status)
+	}
+	if body.LastReport.Type != "status" {
+		t.Errorf("last_report.type = %q", body.LastReport.Type)
+	}
+	if len(body.Activity) != 1 || body.Activity[0].Kind != "assistant_text" {
+		t.Errorf("activity = %v", body.Activity)
+	}
+}
+
+func TestServer_ToolsCall_SprawlPeek_DefaultTail(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(33, "tools/call", map[string]any{
+		"name":      "sprawl_peek",
+		"arguments": map[string]any{"agent": "ghost"},
+	})
+	_, _ = srv.HandleMessage(context.Background(), msg)
+
+	if mock.peekTail != 20 {
+		t.Errorf("default tail = %d, want 20", mock.peekTail)
+	}
+}
+
+func TestServer_ToolsCall_SprawlPeek_TailClamp(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(34, "tools/call", map[string]any{
+		"name":      "sprawl_peek",
+		"arguments": map[string]any{"agent": "ghost", "tail": 9999},
+	})
+	_, _ = srv.HandleMessage(context.Background(), msg)
+
+	if mock.peekTail != 200 {
+		t.Errorf("clamped tail = %d, want 200", mock.peekTail)
 	}
 }

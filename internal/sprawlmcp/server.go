@@ -89,6 +89,10 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolStatus(ctx)
 	case "sprawl_delegate":
 		return s.toolDelegate(ctx, args)
+	case "sprawl_send_async":
+		return s.toolSendAsync(ctx, args)
+	case "sprawl_peek":
+		return s.toolPeek(ctx, args)
 	case "sprawl_message":
 		return s.toolMessage(ctx, args)
 	case "sprawl_merge":
@@ -153,10 +157,65 @@ func (s *Server) toolMessage(ctx context.Context, args json.RawMessage) (string,
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := s.sup.Message(ctx, p.AgentName, p.Subject, p.Body); err != nil {
+	// Deprecated alias: behaves as sprawl_send_async. Writes Maildir + enqueues
+	// harness queue entry. Return a short ack for backwards compatibility.
+	if _, err := s.sup.SendAsync(ctx, p.AgentName, p.Subject, p.Body, "", nil); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Message sent to %s: %s", p.AgentName, p.Subject), nil
+}
+
+func (s *Server) toolSendAsync(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		To      string   `json:"to"`
+		Subject string   `json:"subject"`
+		Body    string   `json:"body"`
+		ReplyTo string   `json:"reply_to"`
+		Tags    []string `json:"tags"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	result, err := s.sup.SendAsync(ctx, p.To, p.Subject, p.Body, p.ReplyTo, p.Tags)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
+}
+
+const (
+	defaultPeekTail = 20
+	maxPeekTail     = 200
+)
+
+func (s *Server) toolPeek(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Agent string `json:"agent"`
+		Tail  int    `json:"tail"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	tail := p.Tail
+	if tail <= 0 {
+		tail = defaultPeekTail
+	}
+	if tail > maxPeekTail {
+		tail = maxPeekTail
+	}
+	result, err := s.sup.Peek(ctx, p.Agent, tail)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
 }
 
 func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, error) {
