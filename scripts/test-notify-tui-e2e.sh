@@ -204,6 +204,9 @@ JSON
 # --- Test A: `sprawl report done` from a simulated child ---
 
 echo ""
+# QUM-323: distinctive body token that must appear in weave's prompt after
+# the 2s drain tick runs peekAndDrainCmd and the bridge forwards to claude.
+DRAIN_TOKEN_A="DRAIN-BODY-TOKEN-A-$$-$(date +%s)"
 echo "=== Test A: child 'sprawl report done' → TUI banner + (1) badge ==="
 REPORT_LOG="$(mktemp /tmp/notify-tui-e2e-report.XXXXXX)"
 set +e
@@ -211,7 +214,7 @@ env \
     SPRAWL_AGENT_IDENTITY="$CHILD_NAME" \
     SPRAWL_ROOT="$SPRAWL_ROOT" \
     SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" report done "e2e tui notify test A" \
+    "$SPRAWL_BIN" report done "e2e tui notify test A $DRAIN_TOKEN_A" \
     > "$REPORT_LOG" 2>&1
 REPORT_RC=$?
 set -e
@@ -241,11 +244,26 @@ else
     capture_pane "$SESSION" | tail -30 >&2
 fi
 
+# QUM-323: assert drained body reaches weave's prompt, not just the banner.
+# The 2s AgentTreeMsg tick fires peekAndDrainCmd which renders the flush
+# prompt (containing DRAIN_TOKEN_A) and sends it via the bridge into claude.
+# Claude echoes the user-turn in the viewport, so the token appears in the
+# pane capture. Generous timeout for slow sandbox + claude stream startup.
+if wait_for_pattern "$SESSION" "$DRAIN_TOKEN_A" 20; then
+    pass "DRAIN_TOKEN_A '$DRAIN_TOKEN_A' reached weave's prompt (QUM-323 drain fired in TUI)"
+else
+    fail "DRAIN_TOKEN_A '$DRAIN_TOKEN_A' did NOT reach weave's prompt within 20s — QUM-323 TUI regression"
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
+fi
+
 rm -f "$REPORT_LOG"
 
 # --- Test B: `sprawl messages send weave` from the same child ---
 
 echo ""
+# QUM-323: second body token for the messages.Send path.
+DRAIN_TOKEN_B="DRAIN-BODY-TOKEN-B-$$-$(date +%s)"
 echo "=== Test B: child 'sprawl messages send weave' → badge rises to (2) ==="
 SEND_LOG="$(mktemp /tmp/notify-tui-e2e-send.XXXXXX)"
 set +e
@@ -253,7 +271,7 @@ env \
     SPRAWL_AGENT_IDENTITY="$CHILD_NAME" \
     SPRAWL_ROOT="$SPRAWL_ROOT" \
     SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" messages send weave "tui e2e subject" "tui e2e body" \
+    "$SPRAWL_BIN" messages send weave "tui e2e subject" "tui e2e body $DRAIN_TOKEN_B" \
     > "$SEND_LOG" 2>&1
 SEND_RC=$?
 set -e
@@ -271,6 +289,18 @@ else
     fail "weave row did NOT rise to '(2)' after sprawl messages send"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -30 >&2
+fi
+
+# QUM-323: assert drained body B reaches weave's prompt.
+# Note: if Test A's drain is still mid-turn when B arrives, B stays pending
+# until claude finishes A; the tick backstop then drains it. Timeout tuned
+# accordingly (claude turn latency + 2s tick + send).
+if wait_for_pattern "$SESSION" "$DRAIN_TOKEN_B" 45; then
+    pass "DRAIN_TOKEN_B '$DRAIN_TOKEN_B' reached weave's prompt (QUM-323 drain fired in TUI)"
+else
+    fail "DRAIN_TOKEN_B '$DRAIN_TOKEN_B' did NOT reach weave's prompt within 45s — QUM-323 TUI regression"
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
 fi
 
 rm -f "$SEND_LOG"

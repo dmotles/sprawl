@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
@@ -48,6 +49,13 @@ type AppModel struct {
 
 	bridge    *Bridge
 	turnState TurnState
+
+	// pendingDrainIDs is populated by the InboxDrainMsg handler and consumed
+	// by UserMessageSentMsg: once the drained prompt has been successfully
+	// written to the bridge, these IDs are moved from weave's queue pending/
+	// to delivered/. Stored on the model so the commit happens strictly AFTER
+	// the send succeeds (crash-safety per QUM-323 §5).
+	pendingDrainIDs []string
 
 	supervisor    supervisor.Supervisor
 	sprawlRoot    string
@@ -296,6 +304,29 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetDisabled(true)
 		return m, m.bridge.SendMessage(msg.Template)
 
+	case InboxDrainMsg:
+		// QUM-323: drain weave's harness queue into Claude's next prompt.
+		// Dropped if mid-turn (the entries stay in pending/ and the next
+		// AgentTreeMsg backstop will re-peek when idle) or if no bridge.
+		if msg.Prompt == "" || m.bridge == nil || m.turnState != TurnIdle {
+			return m, nil
+		}
+		label := "async"
+		if msg.Class == "interrupt" {
+			label = "interrupt"
+		}
+		m.viewport.AppendStatus(fmt.Sprintf("inbox: draining %d %s message(s) into next prompt", len(msg.EntryIDs), label))
+		// QUM-323: render the flush prompt in the viewport so the human watching
+		// the TUI can see what got drained — parity with SubmitMsg which renders
+		// user-typed input. Without this, the drained frame is invisible (only
+		// the status line hints at it) and the only way to confirm drain worked
+		// is to grep logs — which also breaks the body-in-prompt e2e assertion.
+		m.viewport.AppendUserMessage(msg.Prompt)
+		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
+		m.setTurnState(TurnThinking)
+		m.input.SetDisabled(true)
+		return m, m.bridge.SendMessage(msg.Prompt)
+
 	case SubmitMsg:
 		if msg.Text == "" || m.bridge == nil || m.turnState != TurnIdle {
 			return m, nil
@@ -307,10 +338,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UserMessageSentMsg:
 		m.setTurnState(TurnStreaming)
-		if m.bridge != nil {
-			return m, m.bridge.WaitForEvent()
+		// QUM-323: if the user turn we just sent was a drained inbox frame,
+		// commit the drained entries to delivered/ now that the send is on
+		// the wire. Doing this AFTER SendMessage (which is synchronous in the
+		// current bridge impl) preserves the crash-safety invariant.
+		var commitCmd tea.Cmd
+		if len(m.pendingDrainIDs) > 0 {
+			commitCmd = commitDrainCmd(m.sprawlRoot, m.rootAgent, m.pendingDrainIDs)
+			m.pendingDrainIDs = nil
 		}
-		return m, nil
+		if m.bridge != nil {
+			return m, tea.Batch(m.bridge.WaitForEvent(), commitCmd)
+		}
+		return m, commitCmd
 
 	case AssistantTextMsg:
 		m.setTurnState(TurnStreaming)
@@ -512,10 +552,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rootUnread = msg.RootUnread
 		m.rebuildTree()
 		m.statusBar.SetAgentCount(len(msg.Nodes) + 1) // +1 for weave root
-		if m.supervisor != nil {
-			return m, scheduleAgentTick(m.supervisor, m.sprawlRoot)
+		// QUM-323: backstop drain. Every 2s the tree polls weave's unread
+		// counts; piggyback on that cadence to peek the harness queue and
+		// (when idle + non-empty) schedule an InboxDrainMsg. This covers both
+		// out-of-process senders (child agent `sprawl report done`) and
+		// in-process senders (MCP sprawl_send_async) with a single codepath.
+		var drainCmd tea.Cmd
+		if m.turnState == TurnIdle && m.sprawlRoot != "" && m.bridge != nil {
+			drainCmd = peekAndDrainCmd(m.sprawlRoot, m.rootAgent)
 		}
-		return m, nil
+		if m.supervisor != nil {
+			return m, tea.Batch(scheduleAgentTick(m.supervisor, m.sprawlRoot), drainCmd)
+		}
+		return m, drainCmd
 
 	case InboxArrivalMsg:
 		// QUM-311: a TUI-aware notifier installed by cmd/enter.go dispatches
@@ -854,6 +903,56 @@ func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 // sendMsgCmd wraps a plain tea.Msg value as a tea.Cmd for use with tea.Batch.
 func sendMsgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
+}
+
+// peekAndDrainCmd reads weave's harness queue and, if non-empty, returns an
+// InboxDrainMsg with the rendered prompt and entry IDs. Disk mutation
+// (MarkDelivered) happens later, in UserMessageSentMsg, strictly after the
+// bridge.SendMessage returns success. Returns nil msg if queue is empty or
+// unreadable. QUM-323.
+func peekAndDrainCmd(sprawlRoot, rootName string) tea.Cmd {
+	return func() tea.Msg {
+		pending, err := agentloop.ListPending(sprawlRoot, rootName)
+		if err != nil || len(pending) == 0 {
+			return nil
+		}
+		interrupts, asyncs := agentloop.SplitByClass(pending)
+		// Interrupts take priority; delivery of asyncs happens on the next
+		// tick after the interrupt turn settles.
+		if len(interrupts) > 0 {
+			ids := make([]string, 0, len(interrupts))
+			for _, e := range interrupts {
+				ids = append(ids, e.ID)
+			}
+			return InboxDrainMsg{
+				Prompt:   agentloop.BuildInterruptFlushPrompt(interrupts),
+				EntryIDs: ids,
+				Class:    "interrupt",
+			}
+		}
+		ids := make([]string, 0, len(asyncs))
+		for _, e := range asyncs {
+			ids = append(ids, e.ID)
+		}
+		return InboxDrainMsg{
+			Prompt:   agentloop.BuildQueueFlushPrompt(asyncs),
+			EntryIDs: ids,
+			Class:    "async",
+		}
+	}
+}
+
+// commitDrainCmd moves the given entry IDs from pending/ to delivered/ in
+// weave's harness queue. Errors are swallowed (logged by agentloop); missing
+// IDs are not fatal (a racing drainer may have already committed). Emits no
+// message — this is a fire-and-forget cleanup. QUM-323.
+func commitDrainCmd(sprawlRoot, rootName string, ids []string) tea.Cmd {
+	return func() tea.Msg {
+		for _, id := range ids {
+			_ = agentloop.MarkDelivered(sprawlRoot, rootName, id)
+		}
+		return nil
+	}
 }
 
 // restartClock returns the now-source used to compute restart elapsed

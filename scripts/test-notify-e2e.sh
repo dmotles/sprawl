@@ -230,6 +230,9 @@ JSON
 
 echo ""
 echo "=== Trigger: child runs 'sprawl report done' ==="
+# QUM-323: include a distinctive body token so we can assert weave's next
+# prompt contains the drained body (not just the [inbox] notifier hint).
+DRAIN_TOKEN="DRAIN-BODY-TOKEN-$$-$(date +%s)"
 REPORT_LOG="$(mktemp /tmp/notify-e2e-report.XXXXXX)"
 set +e
 env \
@@ -238,7 +241,7 @@ env \
     SPRAWL_NAMESPACE="$SPRAWL_NAMESPACE" \
     SPRAWL_MESSAGING=legacy \
     SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" report done "e2e notification test" \
+    "$SPRAWL_BIN" report done "e2e notification test $DRAIN_TOKEN" \
     > "$REPORT_LOG" 2>&1
 REPORT_RC=$?
 set -e
@@ -275,6 +278,33 @@ else
     echo "  --- end delta ---" >&2
     echo "  report output:" >&2
     sed 's/^/    /' "$REPORT_LOG" >&2
+fi
+
+# --- QUM-323: assert the drained body token reaches weave's pane ---
+#     The [inbox] line above is the QUM-310 legacy notifier (synchronous
+#     send-keys hint). QUM-323 adds a 2s poller that injects a fully-
+#     rendered `[inbox] You received N message(s)...` flush prompt into
+#     the pane via `tmux send-keys -l`. The body of that prompt contains
+#     the `sprawl report done` summary — and therefore DRAIN_TOKEN.
+#     Wait up to 15s for the drain tick to fire + the send-keys to land.
+
+echo ""
+echo "=== Test: QUM-323 drained body token reaches weave's pane ==="
+DRAIN_TIMEOUT=15
+elapsed=0
+while [ "$elapsed" -lt "$DRAIN_TIMEOUT" ]; do
+    if capture_pane "$SESSION" | grep -q "$DRAIN_TOKEN"; then
+        pass "pane contains DRAIN_TOKEN '$DRAIN_TOKEN' (QUM-323 drain fired)"
+        break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+if [ "$elapsed" -ge "$DRAIN_TIMEOUT" ]; then
+    fail "DRAIN_TOKEN '$DRAIN_TOKEN' did NOT reach weave's pane within ${DRAIN_TIMEOUT}s — QUM-323 regression"
+    echo "  --- pane DELTA ---" >&2
+    diff "$PANE_BEFORE_FILE" <(capture_pane "$SESSION") | grep '^>' | sed 's/^/    /' >&2 || true
+    echo "  --- end delta ---" >&2
 fi
 
 # --- Cleanup scratch files ---

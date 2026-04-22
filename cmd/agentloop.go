@@ -408,146 +408,28 @@ func sendPromptWithInterrupt(
 // defaultPollInterval is the default interval for checking poke files during a turn.
 const defaultPollInterval = 500 * time.Millisecond
 
-// Queue flush frame size caps per docs/designs/messaging-overhaul.md §8.6.
-const (
-	maxQueueFlushBodyBytes  = 2 * 1024  // per-message body cap
-	maxQueueFlushTotalBytes = 10 * 1024 // aggregate body cap across a single frame
-)
-
-// buildQueueFlushPrompt renders the notification frame that bundles N pending
-// queue entries into a single user turn, per §4.5.1 of the messaging-overhaul
-// design. The frame inlines the subject, sender, tags, and (size-bounded) body
-// of each entry. Returns "" if entries is empty.
+// Flush-prompt building is shared with the weave root-loop (tmux and TUI)
+// via internal/agentloop/flush.go. These thin wrappers keep the cmd-package
+// call sites stable; the canonical implementations live in that file.
+// QUM-323.
 func buildQueueFlushPrompt(entries []agentloop.Entry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "[inbox] You received %d message(s) since the last turn:\n\n", len(entries))
-	totalBody := 0
-	for i, e := range entries {
-		tagStr := ""
-		if len(e.Tags) > 0 {
-			tagStr = " [" + strings.Join(e.Tags, ",") + "]"
-		}
-		fmt.Fprintf(&b, "%d. from %s%s  subject: %s\n", i+1, e.From, tagStr, e.Subject)
-		body := e.Body
-		truncated := false
-		if len(body) > maxQueueFlushBodyBytes {
-			body = body[:maxQueueFlushBodyBytes]
-			truncated = true
-		}
-		remaining := maxQueueFlushTotalBytes - totalBody
-		if remaining < 0 {
-			remaining = 0
-		}
-		if len(body) > remaining {
-			body = body[:remaining]
-			truncated = true
-		}
-		for _, line := range strings.Split(body, "\n") {
-			b.WriteString("   ")
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-		if truncated {
-			fmt.Fprintf(&b, "   ...[truncated — run `sprawl messages read %s` for full body]\n", e.ID)
-		}
-		b.WriteString("\n")
-		totalBody += len(body)
-	}
-	b.WriteString("Continue your current work unless a message tells you otherwise.\n")
-	return b.String()
+	return agentloop.BuildQueueFlushPrompt(entries)
 }
 
-// resumeHintPrefix is the tag prefix used by SendInterrupt to smuggle a
-// free-form resume_hint through the queue entry's Tags without needing a
-// dedicated field. See internal/supervisor/real.go:SendInterrupt.
-const resumeHintPrefix = "resume_hint:"
-
-// extractResumeHint returns the value after the first "resume_hint:" tag in
-// e.Tags, or "" if none.
-func extractResumeHint(e agentloop.Entry) string {
-	for _, tag := range e.Tags {
-		if strings.HasPrefix(tag, resumeHintPrefix) {
-			return tag[len(resumeHintPrefix):]
-		}
-	}
-	return ""
-}
-
-// buildInterruptFlushPrompt renders the §4.5.2 interrupt frame for one or
-// more interrupt-class queue entries. The frame names the in-flight work
-// (via the first entry's resume_hint, falling back to a generic description)
-// and the resume/stop contract. Returns "" if entries is empty.
 func buildInterruptFlushPrompt(entries []agentloop.Entry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	// Prefer the first entry's resume_hint as the "you were in the middle
-	// of" summary. The harness cannot otherwise know what the agent's
-	// current turn was about — conversation history survives Interrupt, so
-	// context-only resume (§8.1 option a) is sufficient in most cases.
-	hint := extractResumeHint(entries[0])
-	if hint == "" {
-		hint = "your previous task"
-	}
-
-	var b strings.Builder
-	senders := entries[0].From
-	if len(entries) > 1 {
-		senders = fmt.Sprintf("%d senders", len(entries))
-	}
-	fmt.Fprintf(&b, "[interrupt] %s has injected an important message. You were in the middle of: %s.\n\n", senders, hint)
-
-	totalBody := 0
-	for i, e := range entries {
-		if len(entries) > 1 {
-			fmt.Fprintf(&b, "--- %d of %d (from %s) ---\n", i+1, len(entries), e.From)
-		}
-		fmt.Fprintf(&b, "Subject: %s\n\n", e.Subject)
-		body := e.Body
-		truncated := false
-		if len(body) > maxQueueFlushBodyBytes {
-			body = body[:maxQueueFlushBodyBytes]
-			truncated = true
-		}
-		remaining := maxQueueFlushTotalBytes - totalBody
-		if remaining < 0 {
-			remaining = 0
-		}
-		if len(body) > remaining {
-			body = body[:remaining]
-			truncated = true
-		}
-		b.WriteString(body)
-		if !strings.HasSuffix(body, "\n") {
-			b.WriteString("\n")
-		}
-		if truncated {
-			fmt.Fprintf(&b, "...[truncated — run `sprawl messages read %s` for full body]\n", e.ID)
-		}
-		b.WriteString("\n")
-		totalBody += len(body)
-	}
-	b.WriteString("After reading, decide whether to:\n")
-	b.WriteString("- resume the interrupted work (default), OR\n")
-	b.WriteString("- stop / change direction if the message says so.\n")
-	return b.String()
+	return agentloop.BuildInterruptFlushPrompt(entries)
 }
 
-// splitByClass separates pending entries into (interrupts, asyncs) preserving
-// original order within each slice.
 func splitByClass(entries []agentloop.Entry) (interrupts, asyncs []agentloop.Entry) {
-	for _, e := range entries {
-		if e.Class == agentloop.ClassInterrupt {
-			interrupts = append(interrupts, e)
-		} else {
-			asyncs = append(asyncs, e)
-		}
-	}
-	return interrupts, asyncs
+	return agentloop.SplitByClass(entries)
 }
+
+// Re-exported constants for tests that still reference the old lowercase names.
+// The canonical definitions live in internal/agentloop/flush.go.
+const (
+	maxQueueFlushBodyBytes  = agentloop.MaxQueueFlushBodyBytes
+	maxQueueFlushTotalBytes = agentloop.MaxQueueFlushTotalBytes
+)
 
 // runAgentLoop is the main loop logic for the agent-loop command.
 func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) error {
