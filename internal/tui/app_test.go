@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -493,11 +494,15 @@ func TestAppModel_RestartSessionMsg_ClearsError(t *testing.T) {
 	if app.showError {
 		t.Error("showError should be false after RestartSessionMsg")
 	}
+	app = driveAsyncRestart(t, app, cmd)
 	if !restartCalled {
 		t.Error("restartFunc should have been called")
 	}
-	if cmd == nil {
-		t.Error("RestartSessionMsg should return a cmd to initialize the new bridge")
+	if app.showError {
+		t.Error("showError should still be false after successful RestartCompleteMsg")
+	}
+	if app.restarting {
+		t.Error("restarting should be false after RestartCompleteMsg")
 	}
 }
 
@@ -508,11 +513,15 @@ func TestAppModel_RestartSessionMsg_RestartFails(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	updated, _ := app.Update(RestartSessionMsg{})
+	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
+	app = driveAsyncRestart(t, app, cmd)
 
 	if !app.showError {
 		t.Error("showError should be true when restart fails")
+	}
+	if app.restarting {
+		t.Error("restarting should be false after RestartCompleteMsg")
 	}
 }
 
@@ -604,8 +613,9 @@ func TestAppModel_RestartSessionMsg_ReenablesInput(t *testing.T) {
 	app.showError = true
 	app.input.SetDisabled(true)
 
-	updated, _ := app.Update(RestartSessionMsg{})
+	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
+	app = driveAsyncRestart(t, app, cmd)
 
 	if app.input.disabled {
 		t.Error("input should be re-enabled after successful restart")
@@ -1153,6 +1163,40 @@ func hasMsgOfType[T any](msgs []tea.Msg) bool {
 	return false
 }
 
+// driveAsyncRestart runs the Cmd returned by a RestartSessionMsg update,
+// extracts the RestartCompleteMsg it emits (ignoring the progress-tick
+// branch), and feeds it back into the app to complete the restart cycle
+// (QUM-260). Tests that previously relied on the synchronous restart
+// behavior use this to observe the post-completion state.
+func driveAsyncRestart(t *testing.T, app AppModel, cmd tea.Cmd) AppModel {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("driveAsyncRestart: RestartSessionMsg returned nil cmd")
+	}
+	raw := cmd()
+	batch, ok := raw.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("driveAsyncRestart: expected tea.BatchMsg, got %T", raw)
+	}
+	var completion RestartCompleteMsg
+	found := false
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		if msg, ok := sub().(RestartCompleteMsg); ok {
+			completion = msg
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("driveAsyncRestart: no RestartCompleteMsg produced by restart cmd")
+	}
+	updated, _ := app.Update(completion)
+	return updated.(AppModel)
+}
+
 func TestAppModel_SessionErrorMsg_EOF_AutoRestarts(t *testing.T) {
 	mock := newMockSession()
 	ctx := context.Background()
@@ -1263,6 +1307,236 @@ func TestAppModel_SessionRestartingMsg_AppendsStatusAndDisablesInput(t *testing.
 	}
 	if !found {
 		t.Error("SessionRestartingMsg should append a status line to the viewport containing the reason")
+	}
+}
+
+// --- QUM-260: async restart + ConsolidationProgressMsg ---
+
+func TestAppModel_RestartSessionMsg_DoesNotBlockOnRestartFunc(t *testing.T) {
+	// Regression test for QUM-260: RestartSessionMsg MUST return a cmd
+	// without running restartFunc synchronously, so the Bubble Tea main
+	// goroutine is not blocked for ~30s while FinalizeHandoff + Prepare
+	// execute.
+	release := make(chan struct{})
+	restartStarted := make(chan struct{})
+	restartCalls := 0
+
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		restartCalls++
+		close(restartStarted)
+		<-release
+		return NewBridge(context.Background(), newMockSession()), nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	done := make(chan struct{})
+	var cmd tea.Cmd
+	go func() {
+		_, c := app.Update(RestartSessionMsg{})
+		cmd = c
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Update(RestartSessionMsg) blocked longer than 1s — it should return immediately")
+	}
+	if restartCalls != 0 {
+		t.Error("restartFunc must not be invoked synchronously by Update")
+	}
+	if cmd == nil {
+		t.Fatal("RestartSessionMsg should return a non-nil cmd")
+	}
+
+	// Draining the cmd kicks off restartFunc in the background. The outer
+	// cmd returns a tea.BatchMsg; the real runtime iterates it and runs
+	// each sub-cmd concurrently, so we mimic that here.
+	go func() {
+		raw := cmd()
+		if batch, ok := raw.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				if sub != nil {
+					go func(c tea.Cmd) { _ = c() }(sub)
+				}
+			}
+		}
+	}()
+	select {
+	case <-restartStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restartFunc never started after draining the cmd")
+	}
+	close(release)
+}
+
+func TestAppModel_RestartSessionMsg_SetsRestartingAndSchedulesTick(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		<-release
+		return NewBridge(context.Background(), newMockSession()), nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	// Tiny interval so tea.Tick fires quickly in tests.
+	app.restartTick = time.Millisecond
+
+	updated, cmd := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+
+	if !app.restarting {
+		t.Fatal("restarting flag should be true after RestartSessionMsg")
+	}
+	if app.restartStartedAt.IsZero() {
+		t.Error("restartStartedAt should be set when restart begins")
+	}
+	if !app.input.disabled {
+		t.Error("input should be disabled while restart is in flight")
+	}
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd batch from RestartSessionMsg")
+	}
+
+	// Run just the tick sub-cmd: it's the one that doesn't block on release.
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
+	}
+	var tickMsg tea.Msg
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		// The tea.Tick branch yields ConsolidationProgressMsg; the restart
+		// branch blocks on <-release, so skip it.
+		done := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { done <- c() }(sub)
+		select {
+		case msg := <-done:
+			if _, ok := msg.(ConsolidationProgressMsg); ok {
+				tickMsg = msg
+			}
+		case <-time.After(200 * time.Millisecond):
+			// blocked branch (restart func) — skip it.
+		}
+		if tickMsg != nil {
+			break
+		}
+	}
+	if tickMsg == nil {
+		t.Fatal("expected a ConsolidationProgressMsg tick to be emitted")
+	}
+}
+
+func TestAppModel_ConsolidationProgressMsg_UpdatesStatusBar(t *testing.T) {
+	app := newTestAppModel(t)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app = resized.(AppModel)
+	app.restarting = true
+	app.restartStartedAt = time.Now()
+	app.restartTick = time.Millisecond
+
+	updated, cmd := app.Update(ConsolidationProgressMsg{Elapsed: 5 * time.Second})
+	app = updated.(AppModel)
+
+	if app.statusBar.restartElapsed != 5*time.Second {
+		t.Errorf("statusBar.restartElapsed = %v, want 5s", app.statusBar.restartElapsed)
+	}
+	if cmd == nil {
+		t.Error("should reschedule another tick while restart is in flight")
+	}
+}
+
+func TestAppModel_ConsolidationProgressMsg_WhenNotRestarting_NoOp(t *testing.T) {
+	app := newTestAppModel(t)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app = resized.(AppModel)
+
+	updated, cmd := app.Update(ConsolidationProgressMsg{Elapsed: 3 * time.Second})
+	app = updated.(AppModel)
+
+	if cmd != nil {
+		t.Error("should not reschedule tick when not restarting")
+	}
+	if app.statusBar.restartElapsed != 0 {
+		t.Errorf("restartElapsed should stay 0 when not restarting, got %v", app.statusBar.restartElapsed)
+	}
+}
+
+func TestAppModel_RestartCompleteMsg_Success_InstallsBridgeAndClearsRestarting(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app = resized.(AppModel)
+	app.restarting = true
+	app.statusBar.SetRestartElapsed(7 * time.Second)
+
+	newBridge := NewBridge(context.Background(), newMockSession())
+	newBridge.SetSessionID("abcdef12-3456-7890-abcd-ef1234567890")
+
+	updated, cmd := app.Update(RestartCompleteMsg{Bridge: newBridge, Err: nil})
+	app = updated.(AppModel)
+
+	if app.restarting {
+		t.Error("restarting flag should be cleared after RestartCompleteMsg")
+	}
+	if app.statusBar.restartElapsed != 0 {
+		t.Error("restartElapsed indicator should be cleared on completion")
+	}
+	if app.bridge != newBridge {
+		t.Error("new bridge should be installed")
+	}
+	if app.input.disabled {
+		t.Error("input should be re-enabled on successful completion")
+	}
+	if cmd == nil {
+		t.Error("expected bridge.Initialize cmd after successful restart")
+	}
+}
+
+func TestAppModel_RestartCompleteMsg_Error_ShowsDialog(t *testing.T) {
+	app := newTestAppModel(t)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app = resized.(AppModel)
+	app.restarting = true
+
+	updated, _ := app.Update(RestartCompleteMsg{Err: fmt.Errorf("boom")})
+	app = updated.(AppModel)
+
+	if !app.showError {
+		t.Error("error dialog should be shown when restart fails")
+	}
+	if app.restarting {
+		t.Error("restarting flag should be cleared even on error")
+	}
+}
+
+func TestAppModel_RestartSessionMsg_CoalescesWhileRestarting(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	restartCalls := 0
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+		restartCalls++
+		return NewBridge(context.Background(), newMockSession()), nil
+	})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.restarting = true // pretend a restart is already in flight
+
+	_, cmd := app.Update(RestartSessionMsg{})
+	if cmd != nil {
+		t.Error("second RestartSessionMsg while restarting should be a no-op")
+	}
+	if restartCalls != 0 {
+		t.Error("restartFunc should not be invoked while a restart is already in flight")
 	}
 }
 
@@ -1389,8 +1663,9 @@ func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
 	app.viewport.AppendAssistantChunk("old assistant reply")
 	app.viewport.FinalizeAssistantMessage()
 
-	updated, _ := app.Update(RestartSessionMsg{})
+	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
+	app = driveAsyncRestart(t, app, cmd)
 
 	msgs := app.viewport.GetMessages()
 	for _, e := range msgs {
@@ -1412,8 +1687,9 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	updated, _ := app.Update(RestartSessionMsg{})
+	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
+	app = driveAsyncRestart(t, app, cmd)
 
 	msgs := app.viewport.GetMessages()
 	found := false
@@ -1440,8 +1716,9 @@ func TestAppModel_RestartSessionMsg_UpdatesStatusBarSessionID(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	updated, _ := app.Update(RestartSessionMsg{})
+	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
+	app = driveAsyncRestart(t, app, cmd)
 
 	if got := app.statusBar.sessionID; got != "deadbeef" {
 		t.Errorf("statusBar.sessionID = %q, want %q (8-char truncation of new session id)", got, "deadbeef")
@@ -1725,5 +2002,137 @@ func TestAppModel_StatusBarShowsSelectMode(t *testing.T) {
 	view := stripAnsi(app.statusBar.View())
 	if !strings.Contains(view, "SELECT") {
 		t.Errorf("status bar should show SELECT indicator when selecting, got: %s", view)
+	}
+}
+
+// --- Tests for QUM-311 / QUM-205: TUI inbox notifier + weave root unread ---
+
+func TestAppModel_InboxArrivalMsg_AppendsStatusBanner(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(InboxArrivalMsg{From: "pretend-child", Subject: "hello"})
+	app = updated.(AppModel)
+
+	view := stripAnsi(app.viewport.View())
+	if !strings.Contains(view, "inbox: new message from pretend-child") {
+		t.Errorf("viewport should show inbox banner after InboxArrivalMsg, got:\n%s", view)
+	}
+}
+
+func TestAppModel_InboxArrivalMsg_BumpsRootUnreadWithoutSupervisor(t *testing.T) {
+	// Without a supervisor/sprawlRoot, the handler cannot poll disk, so it
+	// must bump the local rootUnread counter and rebuild the tree so the
+	// weave row reflects the arrival immediately.
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+
+	if app.rootUnread != 0 {
+		t.Fatalf("pre-condition: rootUnread = %d, want 0", app.rootUnread)
+	}
+
+	updated, _ := app.Update(InboxArrivalMsg{From: "pretend-child"})
+	app = updated.(AppModel)
+
+	if app.rootUnread != 1 {
+		t.Errorf("rootUnread = %d after InboxArrivalMsg, want 1", app.rootUnread)
+	}
+	// The synthesized weave root node in the tree should reflect the bump.
+	if len(app.tree.nodes) == 0 || app.tree.nodes[0].Name != "weave" {
+		t.Fatalf("tree.nodes[0] should be weave, got %+v", app.tree.nodes)
+	}
+	if app.tree.nodes[0].Unread != 1 {
+		t.Errorf("weave row Unread = %d, want 1", app.tree.nodes[0].Unread)
+	}
+}
+
+func TestAppModel_InboxArrivalMsg_EmptyFromUsesFallback(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(InboxArrivalMsg{})
+	app = updated.(AppModel)
+
+	view := stripAnsi(app.viewport.View())
+	if !strings.Contains(view, "inbox: new message from unknown") {
+		t.Errorf("viewport should show fallback banner when From empty, got:\n%s", view)
+	}
+}
+
+func TestAppModel_AgentTreeMsg_ThreadsRootUnread(t *testing.T) {
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nil, RootUnread: 7})
+	app = updated.(AppModel)
+
+	if app.rootUnread != 7 {
+		t.Errorf("rootUnread = %d after AgentTreeMsg, want 7", app.rootUnread)
+	}
+	if len(app.tree.nodes) == 0 || app.tree.nodes[0].Name != "weave" {
+		t.Fatalf("tree.nodes[0] should be weave, got %+v", app.tree.nodes)
+	}
+	if app.tree.nodes[0].Unread != 7 {
+		t.Errorf("weave row Unread = %d, want 7", app.tree.nodes[0].Unread)
+	}
+}
+
+func TestAppModel_AgentTreeMsg_RisingRootUnreadEmitsBanner(t *testing.T) {
+	// QUM-311: out-of-process inbox arrivals (child `sprawl messages send`)
+	// land on disk and are picked up on the next 2s tickAgentsCmd. The
+	// AgentTreeMsg handler must notice the rise and surface a banner so the
+	// user gets the same UX as in-process deliveries.
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+
+	// Seed with 0 unread — no banner expected.
+	updated, _ := app.Update(AgentTreeMsg{RootUnread: 0})
+	app = updated.(AppModel)
+	before := stripAnsi(app.viewport.View())
+	if strings.Contains(before, "inbox:") {
+		t.Fatalf("pre-condition: no banner expected before rise, got:\n%s", before)
+	}
+
+	// Tick reveals a new message on disk.
+	updated, _ = app.Update(AgentTreeMsg{RootUnread: 1})
+	app = updated.(AppModel)
+
+	view := stripAnsi(app.viewport.View())
+	if !strings.Contains(view, "inbox: 1 new message(s) for weave") {
+		t.Errorf("viewport should show rise banner after RootUnread 0→1, got:\n%s", view)
+	}
+}
+
+func TestAppModel_AgentTreeMsg_NoBannerWhenUnreadUnchanged(t *testing.T) {
+	// Subsequent ticks with an unchanged unread count must not re-fire the
+	// banner — otherwise the viewport spams a banner every 2s until the user
+	// reads the message.
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+
+	// First tick sets unread to 2 (one banner).
+	updated, _ := app.Update(AgentTreeMsg{RootUnread: 2})
+	app = updated.(AppModel)
+	firstView := stripAnsi(app.viewport.View())
+	firstBanners := strings.Count(firstView, "inbox:")
+	if firstBanners != 1 {
+		t.Fatalf("pre-condition: expected 1 banner after first rise, got %d in:\n%s", firstBanners, firstView)
+	}
+
+	// Second tick with the same count — no additional banner.
+	updated, _ = app.Update(AgentTreeMsg{RootUnread: 2})
+	app = updated.(AppModel)
+	secondView := stripAnsi(app.viewport.View())
+	if got := strings.Count(secondView, "inbox:"); got != firstBanners {
+		t.Errorf("banner count changed on unchanged-tick: got %d, want %d\n%s", got, firstBanners, secondView)
 	}
 }

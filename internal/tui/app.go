@@ -54,6 +54,7 @@ type AppModel struct {
 	observedAgent string
 	rootAgent     string
 	childNodes    []TreeNode
+	rootUnread    int
 	agentBuffers  map[string]*AgentBuffer
 
 	activePanel Panel
@@ -74,7 +75,23 @@ type AppModel struct {
 	// guard that restart would spawn a fresh Claude subprocess the user is
 	// about to abandon.
 	quitting bool
+
+	// restarting tracks whether an async restartFunc invocation is in
+	// flight (QUM-260). While set, ConsolidationProgressMsg ticks update
+	// the status-bar elapsed counter; RestartCompleteMsg clears it.
+	restarting       bool
+	restartStartedAt time.Time
+	// restartNow is the clock source for computing progress-tick elapsed
+	// times. Tests inject a deterministic source; production defaults to
+	// time.Now via restartClock().
+	restartNow func() time.Time
+	// restartTick is the interval between ConsolidationProgressMsg ticks
+	// while a restart is in flight. Tests shorten it; zero means use
+	// defaultRestartTick.
+	restartTick time.Duration
 }
+
+const defaultRestartTick = time.Second
 
 // NewAppModel constructs the root model with all sub-models.
 // bridge may be nil for static placeholder mode.
@@ -383,36 +400,84 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitting {
 			return m, tea.Quit
 		}
+		// Coalesce back-to-back RestartSessionMsg: if a restart is already
+		// running asynchronously, drop the new one. The outcome is delivered
+		// via RestartCompleteMsg regardless.
+		if m.restarting {
+			return m, nil
+		}
 		m.showError = false
 		if m.bridge != nil {
 			_ = m.bridge.Close()
+			m.bridge = nil
 		}
-		if m.restartFunc != nil {
-			newBridge, err := m.restartFunc()
-			if err != nil {
-				m.errorDialog = NewErrorDialog(&m.theme, err)
-				m.errorDialog.SetSize(m.width, m.height)
-				m.showError = true
-				return m, nil
-			}
-			m.bridge = newBridge
-			// Make the session boundary visible: clear prior-session
-			// conversation from the viewport, drop a banner marking the new
-			// session, and refresh the status bar so the user can see the
-			// handoff / crash-recovery actually succeeded.
-			shortID := shortSessionID(m.bridge.SessionID())
-			m.viewport.SetMessages(nil)
-			if shortID != "" {
-				m.viewport.AppendStatus(fmt.Sprintf("— New session started (%s) —", shortID))
-			} else {
-				m.viewport.AppendStatus("— New session started —")
-			}
-			m.statusBar.SetSessionID(shortID)
-			m.setTurnState(TurnIdle)
-			m.input.SetDisabled(false)
-			return m, m.bridge.Initialize()
+		if m.restartFunc == nil {
+			return m, tea.Quit
 		}
-		return m, tea.Quit
+		// QUM-260: run restartFunc off the Bubble Tea main goroutine so the
+		// UI stays responsive while FinalizeHandoff + Prepare + newSession
+		// execute (back-to-back handoffs can block up to 120s waiting on
+		// the prior background consolidation). Progress ticks drive the
+		// status bar elapsed counter; RestartCompleteMsg delivers the
+		// outcome.
+		m.restarting = true
+		m.restartStartedAt = m.restartClock()()
+		m.input.SetDisabled(true)
+		fn := m.restartFunc
+		return m, tea.Batch(
+			func() tea.Msg {
+				b, err := fn()
+				return RestartCompleteMsg{Bridge: b, Err: err}
+			},
+			m.restartTickCmd(),
+		)
+
+	case ConsolidationProgressMsg:
+		// Ticks that arrive after the restart already completed are
+		// harmless no-ops — drop them without rescheduling.
+		if !m.restarting {
+			m.statusBar.SetRestartElapsed(0)
+			return m, nil
+		}
+		m.statusBar.SetRestartElapsed(msg.Elapsed)
+		return m, m.restartTickCmd()
+
+	case RestartCompleteMsg:
+		m.restarting = false
+		m.restartStartedAt = time.Time{}
+		m.statusBar.SetRestartElapsed(0)
+		// A Ctrl-C confirm landing mid-restart also shuts us down here.
+		if m.quitting {
+			return m, tea.Quit
+		}
+		if msg.Err != nil {
+			m.errorDialog = NewErrorDialog(&m.theme, msg.Err)
+			m.errorDialog.SetSize(m.width, m.height)
+			m.showError = true
+			m.input.SetDisabled(true)
+			return m, nil
+		}
+		if msg.Bridge == nil {
+			// No bridge and no error — shouldn't happen, but degrade
+			// gracefully by showing a generic failure.
+			m.errorDialog = NewErrorDialog(&m.theme, fmt.Errorf("restart produced nil bridge"))
+			m.errorDialog.SetSize(m.width, m.height)
+			m.showError = true
+			m.input.SetDisabled(true)
+			return m, nil
+		}
+		m.bridge = msg.Bridge
+		shortID := shortSessionID(m.bridge.SessionID())
+		m.viewport.SetMessages(nil)
+		if shortID != "" {
+			m.viewport.AppendStatus(fmt.Sprintf("— New session started (%s) —", shortID))
+		} else {
+			m.viewport.AppendStatus("— New session started —")
+		}
+		m.statusBar.SetSessionID(shortID)
+		m.setTurnState(TurnIdle)
+		m.input.SetDisabled(false)
+		return m, m.bridge.Initialize()
 
 	case TurnStateMsg:
 		m.setTurnState(msg.State)
@@ -435,11 +500,37 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AgentTreeMsg:
 		m.childNodes = msg.Nodes
+		// QUM-311: detect out-of-process inbox arrivals (child agents calling
+		// `sprawl report done` / `sprawl messages send` from their own
+		// processes) by comparing the disk-polled unread count to the
+		// locally-tracked value. Any increase yields a banner so the user
+		// gets the same UX whether the sender was in-process (InboxArrivalMsg
+		// via the TUI notifier) or out-of-process (caught on the 2s tick).
+		if msg.RootUnread > m.rootUnread {
+			m.viewport.AppendStatus(fmt.Sprintf("inbox: %d new message(s) for weave", msg.RootUnread-m.rootUnread))
+		}
+		m.rootUnread = msg.RootUnread
 		m.rebuildTree()
 		m.statusBar.SetAgentCount(len(msg.Nodes) + 1) // +1 for weave root
 		if m.supervisor != nil {
 			return m, scheduleAgentTick(m.supervisor, m.sprawlRoot)
 		}
+		return m, nil
+
+	case InboxArrivalMsg:
+		// QUM-311: a TUI-aware notifier installed by cmd/enter.go dispatches
+		// this whenever an in-process messages.Send call (MCP sprawl_send_async
+		// from weave, or any Send in this process) delivers to the root
+		// agent's maildir. Append a short banner with sender identity and
+		// bump the unread counter; the next 2s tick reconciles the counter
+		// from disk, and out-of-process arrivals are banner-surfaced there.
+		from := msg.From
+		if from == "" {
+			from = "unknown"
+		}
+		m.viewport.AppendStatus(fmt.Sprintf("inbox: new message from %s", from))
+		m.rootUnread++
+		m.rebuildTree()
 		return m, nil
 
 	case ConfirmResultMsg:
@@ -593,7 +684,7 @@ func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
 }
 
 func (m *AppModel) rebuildTree() {
-	nodes := PrependWeaveRoot(m.childNodes, m.turnState.String())
+	nodes := PrependWeaveRoot(m.childNodes, m.turnState.String(), m.rootUnread)
 	m.tree.SetNodes(nodes)
 }
 
@@ -742,13 +833,50 @@ func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 			msgs, _ := messages.List(sprawlRoot, a.Name, "unread")
 			unread[a.Name] = len(msgs)
 		}
-		return AgentTreeMsg{Nodes: buildTreeNodes(agents, unread)}
+		// Poll the root agent's maildir too so the tree can render an unread
+		// badge on the synthesized weave row (QUM-205 / QUM-311). The root
+		// name is hardcoded to "weave" here to match the AppModel default;
+		// if/when that name becomes configurable, thread it through.
+		rootMsgs, _ := messages.List(sprawlRoot, "weave", "unread")
+		return AgentTreeMsg{Nodes: buildTreeNodes(agents, unread), RootUnread: len(rootMsgs)}
 	}
 }
 
 // sendMsgCmd wraps a plain tea.Msg value as a tea.Cmd for use with tea.Batch.
 func sendMsgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
+}
+
+// restartClock returns the now-source used to compute restart elapsed
+// times. Tests override AppModel.restartNow; production defaults to
+// time.Now.
+func (m *AppModel) restartClock() func() time.Time {
+	if m.restartNow != nil {
+		return m.restartNow
+	}
+	return time.Now
+}
+
+// restartTickInterval returns the configured tick cadence for restart
+// progress updates, defaulting to one second (QUM-260).
+func (m *AppModel) restartTickInterval() time.Duration {
+	if m.restartTick > 0 {
+		return m.restartTick
+	}
+	return defaultRestartTick
+}
+
+// restartTickCmd schedules the next ConsolidationProgressMsg while the
+// TUI is waiting on async restart work. The emitted Elapsed duration is
+// measured against restartStartedAt using restartClock so tests can
+// deliver deterministic values.
+func (m *AppModel) restartTickCmd() tea.Cmd {
+	interval := m.restartTickInterval()
+	startedAt := m.restartStartedAt
+	clock := m.restartClock()
+	return tea.Tick(interval, func(_ time.Time) tea.Msg {
+		return ConsolidationProgressMsg{Elapsed: clock().Sub(startedAt)}
+	})
 }
 
 // shortSessionID returns the first 8 chars of a Claude session ID (a UUID) for

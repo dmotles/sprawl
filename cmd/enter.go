@@ -17,6 +17,7 @@ import (
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
+	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
@@ -456,6 +457,16 @@ func runEnter(deps *enterDeps) error {
 	// program returns so the goroutines can exit.
 	handoffDone := make(chan struct{})
 	onStart := func(send func(tea.Msg)) {
+		// QUM-311: replace the process-level notifier (which in TUI mode is a
+		// legacy-gated no-op — see cmd/messages_notify.go) with one that
+		// dispatches an InboxArrivalMsg into the bubbletea program whenever a
+		// message is delivered to weave's maildir. Every sprawl CLI invocation
+		// in this process — children running MCP tools, `sprawl report done`,
+		// `sprawl messages send`, and the in-process supervisor — goes through
+		// messages.Send, so a single SetDefaultNotifier call covers all
+		// origins of the notification.
+		messages.SetDefaultNotifier(buildTUIRootNotifier("weave", send))
+
 		// QUM-261: when the initial `--resume` subprocess trips the "No
 		// conversation found" stderr marker, prod the TUI to tear down and
 		// restart. Without this prod the TUI sits idle on a zombie session
@@ -531,6 +542,11 @@ func runEnter(deps *enterDeps) error {
 
 	err = deps.runProgram(model, onStart)
 	close(handoffDone)
+	// QUM-311: the send function captured by the notifier closure becomes a
+	// no-op once the tea.Program has exited, but be explicit and unregister
+	// the TUI notifier so any lingering in-process messages.Send calls during
+	// shutdown don't try to dispatch into a dead program.
+	messages.SetDefaultNotifier(nil)
 
 	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff and
 	// does NOT kill child agents. Rationale:

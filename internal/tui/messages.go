@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/dmotles/sprawl/internal/agentloop"
+import (
+	"time"
+
+	"github.com/dmotles/sprawl/internal/agentloop"
+)
 
 // tea.Msg types for protocol events from the host session.
 // These are consumed by the TUI's Update method to drive UI state.
@@ -80,8 +84,23 @@ type SubmitMsg struct {
 }
 
 // AgentTreeMsg carries refreshed agent tree data from the supervisor.
+// RootUnread is the unread count in the root agent's (weave's) maildir,
+// polled alongside child-agent unread counts so the tree can render an
+// unread badge on the weave root row (QUM-205 / QUM-311).
 type AgentTreeMsg struct {
-	Nodes []TreeNode
+	Nodes      []TreeNode
+	RootUnread int
+}
+
+// InboxArrivalMsg signals that a message has been delivered to the root
+// agent's (weave's) maildir. Dispatched by the TUI-aware notifier installed
+// in `cmd/enter.go` before the bubbletea program starts (QUM-311). The App
+// responds by appending a short status banner and scheduling an immediate
+// agent-tree refresh so the weave row's unread badge updates within ~1s
+// instead of waiting for the next 2s tick.
+type InboxArrivalMsg struct {
+	From    string
+	Subject string
 }
 
 // AgentSelectedMsg is emitted when the user presses Enter on a tree node.
@@ -140,4 +159,24 @@ type ActivityTickMsg struct {
 // a status banner carrying Reason while the restart work runs.
 type SessionRestartingMsg struct {
 	Reason string
+}
+
+// ConsolidationProgressMsg is a periodic tick delivered while the TUI is
+// waiting for the async restart work (FinalizeHandoff + Prepare + new
+// session) to complete (QUM-260). Elapsed is the time since the restart
+// began. The App updates the status bar's restart-elapsed indicator and
+// reschedules another tick as long as the restart is still in flight so
+// the user sees visible progress instead of a frozen UI.
+type ConsolidationProgressMsg struct {
+	Elapsed time.Duration
+}
+
+// RestartCompleteMsg delivers the outcome of the async restart work
+// (QUM-260). Bridge carries the freshly-launched Claude subprocess on
+// success; Err is non-nil if restartFunc failed. The App installs the new
+// bridge, clears the restarting flag, and either shows an error dialog or
+// renders the New-Session banner.
+type RestartCompleteMsg struct {
+	Bridge *Bridge
+	Err    error
 }

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // StatusBarModel renders a single-line status bar.
@@ -16,6 +17,10 @@ type StatusBarModel struct {
 	sessionCostUsd float64
 	sessionID      string
 	selectMode     bool
+	// restartElapsed is non-zero while the TUI is waiting on async restart
+	// work (FinalizeHandoff + Prepare). Rendered as "restart Ns" so the
+	// user sees a live elapsed counter instead of a frozen UI (QUM-260).
+	restartElapsed time.Duration
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -48,6 +53,9 @@ func (m StatusBarModel) View() string {
 	}
 
 	var parts []string
+	if m.restartElapsed > 0 {
+		parts = append(parts, fmt.Sprintf("restart %ds", int(m.restartElapsed.Seconds())))
+	}
 	if m.sessionCostUsd > 0 {
 		parts = append(parts, fmt.Sprintf("$%.4f", m.sessionCostUsd))
 	}
@@ -100,4 +108,10 @@ func (m *StatusBarModel) SetSessionID(id string) {
 // SetSelectMode toggles the SELECT-mode indicator on the left of the bar.
 func (m *StatusBarModel) SetSelectMode(on bool) {
 	m.selectMode = on
+}
+
+// SetRestartElapsed updates the restart-in-flight indicator (QUM-260).
+// Pass 0 to clear.
+func (m *StatusBarModel) SetRestartElapsed(d time.Duration) {
+	m.restartElapsed = d
 }

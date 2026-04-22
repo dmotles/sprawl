@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-init-e2e test-notify-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-init-e2e test-notify-e2e test-notify-tui-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -56,3 +56,15 @@ test-init-e2e:
 # internal/messages/, internal/agentops/report.go, or internal/supervisor/real.go.
 test-notify-e2e:
 	bash scripts/test-notify-e2e.sh
+
+# Opt-in end-to-end smoke test for the TUI-mode parent-notification path
+# (QUM-312). Asserts that a child agent running `sprawl report done` or
+# `sprawl messages send weave` causes the `sprawl enter` TUI to surface
+# an 'inbox: N new message(s) for weave' viewport banner and a '(N)'
+# unread badge on the synthesized weave row. Not part of `make validate`
+# — runs real subprocesses, launches a real claude, and interacts with
+# tmux. See scripts/test-notify-tui-e2e.sh. Mandatory before merging
+# any change to the TUI-notifier path: cmd/enter.go, cmd/enter_notify.go,
+# internal/tui/app.go, internal/tui/messages.go, or internal/tui/tree.go.
+test-notify-tui-e2e:
+	bash scripts/test-notify-tui-e2e.sh

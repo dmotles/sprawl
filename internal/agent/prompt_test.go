@@ -1254,6 +1254,7 @@ func TestBuildRootPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 		"sprawl_delegate",
 		"sprawl_kill",
 		"sprawl_status",
+		"sprawl_handoff",
 	}
 	for _, tool := range mcpTools {
 		if !strings.Contains(prompt, tool) {
@@ -1671,6 +1672,7 @@ func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {
 		"sprawl_delegate",
 		"sprawl_kill",
 		"sprawl_status",
+		"sprawl_handoff",
 	}
 	for _, tool := range required {
 		if !strings.Contains(got, tool) {
