@@ -2177,3 +2177,210 @@ func TestAppModel_AgentTreeMsg_NoBannerWhenUnreadUnchanged(t *testing.T) {
 		t.Errorf("banner count changed on unchanged-tick: got %d, want %d\n%s", got, firstBanners, secondView)
 	}
 }
+
+// --- Tests for QUM-323: InboxDrainMsg wires the drained flush prompt into
+//     Claude's next user turn, with pendingDrainIDs committed after the send
+//     succeeds. ---
+
+func TestAppModel_InboxDrainMsg_NoBridge_NoOp(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	// bridge is nil in newTestAppModel; handler must short-circuit.
+	updated, cmd := app.Update(InboxDrainMsg{
+		Prompt: "[inbox] hi", EntryIDs: []string{"a1"},
+	})
+	app = updated.(AppModel)
+	if cmd != nil {
+		t.Errorf("expected nil cmd when bridge is nil, got %v", cmd)
+	}
+	if len(app.pendingDrainIDs) != 0 {
+		t.Errorf("expected pendingDrainIDs empty, got %v", app.pendingDrainIDs)
+	}
+}
+
+func TestAppModel_InboxDrainMsg_EmptyPrompt_NoOp(t *testing.T) {
+	ms := newMockSession()
+	bridge := NewBridge(context.Background(), ms)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = resized.(AppModel)
+
+	updated, cmd := app.Update(InboxDrainMsg{Prompt: "", EntryIDs: []string{"a1"}})
+	app = updated.(AppModel)
+	if cmd != nil {
+		t.Errorf("expected nil cmd for empty prompt, got %v", cmd)
+	}
+	if len(app.pendingDrainIDs) != 0 {
+		t.Errorf("expected pendingDrainIDs empty, got %v", app.pendingDrainIDs)
+	}
+}
+
+func TestAppModel_InboxDrainMsg_DroppedWhenMidTurn(t *testing.T) {
+	ms := newMockSession()
+	bridge := NewBridge(context.Background(), ms)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = resized.(AppModel)
+	app.turnState = TurnStreaming // mid-turn
+
+	updated, cmd := app.Update(InboxDrainMsg{
+		Prompt: "[inbox] body", EntryIDs: []string{"a1"},
+	})
+	app = updated.(AppModel)
+	if cmd != nil {
+		t.Errorf("expected nil cmd when not idle, got non-nil")
+	}
+	if len(app.pendingDrainIDs) != 0 {
+		t.Errorf("pending IDs should remain empty (entries stay in queue), got %v", app.pendingDrainIDs)
+	}
+}
+
+func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
+	ms := newMockSession()
+	bridge := NewBridge(context.Background(), ms)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = resized.(AppModel)
+
+	updated, cmd := app.Update(InboxDrainMsg{
+		Prompt:   "[inbox] You received 1 message(s)...",
+		EntryIDs: []string{"a1", "a2"},
+		Class:    "async",
+	})
+	app = updated.(AppModel)
+
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd (bridge.SendMessage)")
+	}
+	view := stripAnsi(app.viewport.View())
+	if !strings.Contains(view, "inbox: draining 2 async message(s) into next prompt") {
+		t.Errorf("expected draining banner, got:\n%s", view)
+	}
+	if app.turnState != TurnThinking {
+		t.Errorf("turnState = %v, want TurnThinking", app.turnState)
+	}
+	if len(app.pendingDrainIDs) != 2 || app.pendingDrainIDs[0] != "a1" || app.pendingDrainIDs[1] != "a2" {
+		t.Errorf("pendingDrainIDs = %v, want [a1 a2]", app.pendingDrainIDs)
+	}
+}
+
+func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {
+	ms := newMockSession()
+	bridge := NewBridge(context.Background(), ms)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = resized.(AppModel)
+
+	updated, _ := app.Update(InboxDrainMsg{
+		Prompt: "[interrupt] x", EntryIDs: []string{"i1"}, Class: "interrupt",
+	})
+	app = updated.(AppModel)
+	view := stripAnsi(app.viewport.View())
+	if !strings.Contains(view, "inbox: draining 1 interrupt message(s)") {
+		t.Errorf("expected interrupt-class banner, got:\n%s", view)
+	}
+}
+
+func TestAppModel_UserMessageSentMsg_ClearsPendingDrainIDs(t *testing.T) {
+	// After a drained prompt is on the wire, UserMessageSentMsg must clear
+	// pendingDrainIDs so subsequent turns don't re-commit the same entries.
+	ms := newMockSession()
+	bridge := NewBridge(context.Background(), ms)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = resized.(AppModel)
+	app.pendingDrainIDs = []string{"a1"}
+
+	updated, _ := app.Update(UserMessageSentMsg{})
+	app = updated.(AppModel)
+	if len(app.pendingDrainIDs) != 0 {
+		t.Errorf("pendingDrainIDs should be cleared after UserMessageSentMsg, got %v", app.pendingDrainIDs)
+	}
+}
+
+func TestPeekAndDrainCmd_EmptyQueue_ReturnsNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	msg := peekAndDrainCmd(tmpDir, "weave")()
+	if msg != nil {
+		t.Errorf("expected nil msg for empty queue, got %v", msg)
+	}
+}
+
+func TestPeekAndDrainCmd_AsyncEntries_ReturnsDrainMsg(t *testing.T) {
+	tmpDir := t.TempDir()
+	if _, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
+		Class: agentloop.ClassAsync, From: "ghost",
+		Subject: "s", Body: "RED-FLAG-BODY",
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	msg := peekAndDrainCmd(tmpDir, "weave")()
+	drain, ok := msg.(InboxDrainMsg)
+	if !ok {
+		t.Fatalf("expected InboxDrainMsg, got %T: %v", msg, msg)
+	}
+	if drain.Class != "async" {
+		t.Errorf("expected async class, got %q", drain.Class)
+	}
+	if !strings.Contains(drain.Prompt, "RED-FLAG-BODY") {
+		t.Errorf("expected body in prompt, got:\n%s", drain.Prompt)
+	}
+	if len(drain.EntryIDs) != 1 {
+		t.Errorf("expected 1 entry ID, got %d", len(drain.EntryIDs))
+	}
+}
+
+func TestPeekAndDrainCmd_InterruptPriority(t *testing.T) {
+	tmpDir := t.TempDir()
+	if _, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
+		Class: agentloop.ClassAsync, From: "a", Subject: "s", Body: "async-body",
+	}); err != nil {
+		t.Fatalf("enqueue async: %v", err)
+	}
+	if _, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
+		Class: agentloop.ClassInterrupt, From: "b", Subject: "s2", Body: "interrupt-body",
+	}); err != nil {
+		t.Fatalf("enqueue interrupt: %v", err)
+	}
+	msg := peekAndDrainCmd(tmpDir, "weave")()
+	drain, ok := msg.(InboxDrainMsg)
+	if !ok {
+		t.Fatalf("expected InboxDrainMsg, got %T", msg)
+	}
+	if drain.Class != "interrupt" {
+		t.Errorf("expected interrupt to take priority, got class=%q", drain.Class)
+	}
+	if !strings.Contains(drain.Prompt, "interrupt-body") {
+		t.Errorf("expected interrupt body in prompt, got:\n%s", drain.Prompt)
+	}
+}
+
+func TestCommitDrainCmd_MovesEntriesToDelivered(t *testing.T) {
+	tmpDir := t.TempDir()
+	e, err := agentloop.Enqueue(tmpDir, "weave", agentloop.Entry{
+		Class: agentloop.ClassAsync, From: "x", Subject: "s", Body: "b",
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	commitDrainCmd(tmpDir, "weave", []string{e.ID})()
+
+	pending, _ := agentloop.ListPending(tmpDir, "weave")
+	if len(pending) != 0 {
+		t.Errorf("expected pending empty after commit, got %d", len(pending))
+	}
+	delivered, _ := agentloop.ListDelivered(tmpDir, "weave")
+	if len(delivered) != 1 {
+		t.Errorf("expected 1 delivered entry, got %d", len(delivered))
+	}
+}
+
+func TestCommitDrainCmd_MissingIDsNotFatal(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Should not panic / return non-nil msg for nonexistent IDs.
+	msg := commitDrainCmd(tmpDir, "weave", []string{"does-not-exist"})()
+	if msg != nil {
+		t.Errorf("expected nil msg, got %v", msg)
+	}
+}

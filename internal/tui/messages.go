@@ -138,6 +138,21 @@ type InjectPromptMsg struct {
 	Template string
 }
 
+// InboxDrainMsg carries a pre-rendered flush-queue prompt that the TUI should
+// inject into the current bridge as a user turn. Dispatched by the AppModel's
+// AgentTreeMsg handler (or cmd/enter.go's notifier) when weave's harness
+// queue has pending entries AND the turn is idle. The AppModel treats this
+// like InjectPromptMsg but with an inbox-origin banner; after the send
+// succeeds, the entries are moved from pending/ to delivered/ so they are
+// not re-injected. QUM-323.
+type InboxDrainMsg struct {
+	Prompt   string
+	EntryIDs []string
+	// Class is "async" or "interrupt" — drives the banner wording. Empty
+	// defaults to "async".
+	Class string
+}
+
 // ToggleHelpMsg flips the help overlay visibility (same effect as F1).
 type ToggleHelpMsg struct{}
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/spf13/cobra"
 )
@@ -179,6 +180,20 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 	// uniformly triggers the same behavior.
 	if err := messages.Send(sprawlRoot, agentName, to, subject, body); err != nil {
 		return err
+	}
+
+	// QUM-323: populate the recipient's harness queue too, matching the shape
+	// `sprawl report` uses (internal/agentops/report.go). This is what lets
+	// the weave root-loop drain and inject the body into Claude's next prompt
+	// without depending on the legacy tmux send-keys path. Enqueue failures
+	// are non-fatal — the maildir delivery already succeeded.
+	if _, err := agentloop.Enqueue(sprawlRoot, to, agentloop.Entry{
+		Class:   agentloop.ClassAsync,
+		From:    agentName,
+		Subject: subject,
+		Body:    body,
+	}); err != nil {
+		fmt.Fprintf(deps.stderr, "warning: failed to enqueue harness entry for %s: %v\n", to, err)
 	}
 
 	fmt.Fprintf(deps.stderr, "Message sent to %s: %s\n", to, subject)

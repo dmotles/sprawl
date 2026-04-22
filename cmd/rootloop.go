@@ -142,7 +142,29 @@ func runRootSession(ctx context.Context, deps *rootLoopDeps) error {
 		return err
 	}
 
+	// QUM-323: drain weave's harness queue into the weave tmux pane while
+	// claude is running. The drainer polls .sprawl/agents/weave/queue/pending/
+	// every rootDrainInterval, renders the flush prompt, and tmux send-keys-
+	// injects it. Cancelled when claude exits so the poller doesn't outlive
+	// the pane it's targeting.
+	drainCtx, drainCancel := context.WithCancel(ctx)
+	tmuxPath, tmuxErr := tmux.FindTmux()
+	var drainWait func()
+	if tmuxErr == nil {
+		drainWait = startRootDrainLoop(
+			drainCtx, sprawlRoot, rootName, tmuxPath,
+			tmux.RootSessionName(namespace), tmux.RootWindowName, deps.stdout,
+		)
+	} else {
+		fmt.Fprintf(deps.stdout, "[root-loop] tmux not on PATH — queue drain disabled: %v\n", tmuxErr)
+	}
+
 	elapsed, runErr := launchClaude(deps, claudePath, namespace, rootName, prepared)
+
+	drainCancel()
+	if drainWait != nil {
+		drainWait()
+	}
 
 	// Resume-failure retry: if we asked claude to --resume and it died within
 	// the detection window, fall back to a fresh session. Only retry once.
