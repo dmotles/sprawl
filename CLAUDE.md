@@ -22,6 +22,12 @@ scripts/sprawl-test-env.sh     # set up isolated test environment
 
 > **Warning:** Do not run `make install` unless your agent identity is `weave` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./sprawl` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
 
+## tmux safety (QUM-325)
+
+> **Never run `tmux kill-server`.** All sprawl tmux sessions — production (`⚡*`) and sandbox (`test-*`) alike — currently share the user's default tmux socket (`/tmp/tmux-1000/default`), so `kill-server` destroys the user's attached interactive session along with everything sprawl is running. It killed a live user session on 2026-04-22 (ratz, during a QUM-324 repro); finn lost mid-flight QUM-323 work as collateral damage.
+>
+> To clear sandbox state, use the sanctioned `sprawl_sandbox_destroy` helper (from `scripts/sprawl-test-env.sh`) or `tmux kill-session -t $SPRAWL_NAMESPACE` — both target only the sandbox session. Avoid `kill-session -a` for the same reason. If you need a clean tmux server, ask the user; don't improvise.
+
 ## Project Configuration
 
 Sprawl reads `.sprawl/config.yaml` for project-level settings:
