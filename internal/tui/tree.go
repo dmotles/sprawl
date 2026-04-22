@@ -160,13 +160,17 @@ func (m *TreeModel) SetSize(w, h int) {
 }
 
 // PrependWeaveRoot inserts a synthetic weave node at depth 0 and shifts all
-// existing nodes down by one depth level, returning the combined slice.
-func PrependWeaveRoot(nodes []TreeNode, status string) []TreeNode {
+// existing nodes down by one depth level, returning the combined slice. The
+// rootUnread count is attached to the synthesized weave row so the tree can
+// render an unread badge on the root when weave's maildir has unread mail
+// (QUM-205 unread-counter subpoint + QUM-311 inbox notifier).
+func PrependWeaveRoot(nodes []TreeNode, status string, rootUnread int) []TreeNode {
 	weave := TreeNode{
 		Name:   "weave",
 		Type:   "weave",
 		Status: status,
 		Depth:  0,
+		Unread: rootUnread,
 	}
 	result := make([]TreeNode, 0, len(nodes)+1)
 	result = append(result, weave)

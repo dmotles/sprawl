@@ -251,7 +251,10 @@ const rootCommandsTUI = `KEY TOOLS (MCP):
   sprawl_message(...)                                     — DEPRECATED alias for sprawl_send_async. Do not use in new code.
 
   Observability:
-  sprawl_status({})                                       — show status of all agents with state, type, family, mail count`
+  sprawl_status({})                                       — show status of all agents with state, type, family, mail count
+
+  Session:
+  sprawl_handoff({summary: "<markdown summary>"})         — weave-only. Persist a structured session summary and hand off to a fresh weave session; the host tears down the current subprocess and starts a new one with consolidated memory. Use this at session end in place of bash ` + "`sprawl handoff`" + `. See the /handoff skill for the summary template.`
 
 const rootDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - ` + "`sprawl delegate <agent> \"<task>\"`" + ` — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
