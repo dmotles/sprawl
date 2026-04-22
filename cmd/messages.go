@@ -9,17 +9,14 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/messages"
-	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 // messagesDeps holds the dependencies for the messages commands, enabling testability.
 type messagesDeps struct {
-	getenv     func(string) string
-	stdout     io.Writer
-	stderr     io.Writer
-	tmuxRunner tmux.Runner
+	getenv func(string) string
+	stdout io.Writer
+	stderr io.Writer
 }
 
 var defaultMessagesDeps *messagesDeps
@@ -95,15 +92,11 @@ func resolveMessagesDeps() *messagesDeps {
 	if defaultMessagesDeps != nil {
 		return defaultMessagesDeps
 	}
-	deps := &messagesDeps{
+	return &messagesDeps{
 		getenv: os.Getenv,
 		stdout: os.Stdout,
 		stderr: os.Stderr,
 	}
-	if tmuxPath, err := tmux.FindTmux(); err == nil {
-		deps.tmuxRunner = &tmux.RealRunner{TmuxPath: tmuxPath}
-	}
-	return deps
 }
 
 func formatInboxTable(w io.Writer, msgs []*messages.Message) {
@@ -179,32 +172,12 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		return err
 	}
 
-	var sendOpts []messages.SendOption
-	// Phase 4 deprecation: the tmux send-keys notification path is off by default.
-	// Delivery now flows through the Maildir + harness async queue (QUM-292/293/295).
-	// SPRAWL_MESSAGING=legacy restores the old behavior for rollback per design §7.
-	if deps.tmuxRunner != nil && deps.getenv("SPRAWL_MESSAGING") == "legacy" {
-		namespace := deps.getenv("SPRAWL_NAMESPACE")
-		if namespace == "" {
-			namespace = state.ReadNamespace(sprawlRoot)
-		}
-		if namespace == "" {
-			namespace = tmux.DefaultNamespace
-		}
-		rootName := state.ReadRootName(sprawlRoot)
-		if rootName == "" {
-			rootName = tmux.DefaultRootName
-		}
-		if to == rootName {
-			rootSession := tmux.RootSessionName(namespace)
-			sendOpts = append(sendOpts, messages.WithNotify(func(from, _, msgID string) {
-				notification := fmt.Sprintf("[inbox] New message from %s. Run: `sprawl messages read %s`", from, msgID)
-				_ = deps.tmuxRunner.SendKeys(rootSession, tmux.RootWindowName, notification)
-			}))
-		}
-	}
-
-	if err := messages.Send(sprawlRoot, agentName, to, subject, body, sendOpts...); err != nil {
+	// QUM-310: notify wiring (tmux send-keys when SPRAWL_MESSAGING=legacy
+	// and recipient is root) now lives inside the messages library. It is
+	// registered once at process start via cmd.registerDefaultNotifier, so
+	// every caller of messages.Send — CLI, supervisor, agentloop, report —
+	// uniformly triggers the same behavior.
+	if err := messages.Send(sprawlRoot, agentName, to, subject, body); err != nil {
 		return err
 	}
 

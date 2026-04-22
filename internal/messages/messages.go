@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/state"
@@ -38,11 +39,15 @@ func MessagesDir(sprawlRoot string) string { //nolint:revive // stuttering name 
 	return filepath.Join(sprawlRoot, ".sprawl", "messages")
 }
 
-// NotifyFunc is called after successful delivery when provided via WithNotify.
-// It receives the sender name, subject, and the generated message ID so callers
-// can construct actionable instructions (e.g. "sprawl messages read <id>").
-// It is best-effort — errors and panics are swallowed.
-type NotifyFunc func(from, subject, msgID string)
+// NotifyFunc is called after successful delivery when either a per-call
+// WithNotify option is provided or a process-level default notifier has been
+// registered via SetDefaultNotifier. It receives the recipient, sender,
+// subject, and the generated (short) message ID so callers can construct
+// actionable instructions (e.g. "sprawl messages read <id>") and gate on the
+// recipient.
+//
+// It is best-effort — errors and panics are swallowed by Send.
+type NotifyFunc func(to, from, subject, msgID string)
 
 type sendOptions struct {
 	notify NotifyFunc
@@ -51,11 +56,41 @@ type sendOptions struct {
 // SendOption configures optional behavior for Send.
 type SendOption func(*sendOptions)
 
-// WithNotify registers a notification callback invoked after successful delivery.
+// WithNotify registers a per-call notification callback. When set, it takes
+// precedence over any process-level default notifier.
 func WithNotify(fn NotifyFunc) SendOption {
 	return func(o *sendOptions) {
 		o.notify = fn
 	}
+}
+
+// defaultNotifier is the process-level notifier used by Send when no explicit
+// WithNotify option is supplied. It is registered once at process start from
+// cmd/ (where env + state + tmux wiring live) so every caller of Send —
+// including callers in internal packages (agentops, supervisor, agentloop)
+// that have no access to those dependencies — uniformly triggers the same
+// notification behavior. See QUM-310.
+var (
+	defaultNotifierMu sync.RWMutex
+	defaultNotifier   NotifyFunc
+)
+
+// SetDefaultNotifier installs (or clears, if fn is nil) the process-level
+// notifier used by Send when no per-call WithNotify is provided. Safe to call
+// from multiple goroutines, though the expected pattern is one call at
+// process startup.
+func SetDefaultNotifier(fn NotifyFunc) {
+	defaultNotifierMu.Lock()
+	defaultNotifier = fn
+	defaultNotifierMu.Unlock()
+}
+
+// DefaultNotifier returns the currently-registered process-level notifier, or
+// nil if none is set. Primarily intended for tests.
+func DefaultNotifier() NotifyFunc {
+	defaultNotifierMu.RLock()
+	defer defaultNotifierMu.RUnlock()
+	return defaultNotifier
 }
 
 // Send delivers a message from one agent to another using Maildir-style atomic writes.
@@ -133,19 +168,24 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 	wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
 	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional
 
-	// Best-effort root notification
+	// Best-effort recipient notification. Per-call WithNotify takes precedence
+	// over the process-level default notifier registered via SetDefaultNotifier.
 	var sopts sendOptions
 	for _, o := range opts {
 		o(&sopts)
 	}
-	if sopts.notify != nil {
+	notify := sopts.notify
+	if notify == nil {
+		notify = DefaultNotifier()
+	}
+	if notify != nil {
 		func() {
 			defer func() { recover() }() //nolint:errcheck // intentional panic recovery
 			notifyID := shortID
 			if notifyID == "" {
 				notifyID = id
 			}
-			sopts.notify(from, subject, notifyID)
+			notify(to, from, subject, notifyID)
 		}()
 	}
 
