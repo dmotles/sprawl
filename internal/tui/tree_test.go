@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
@@ -447,6 +448,101 @@ func TestTreeModel_ReportChipRendering(t *testing.T) {
 	// No-report node falls back to "(status)".
 	if !strings.Contains(view, "eve (active)") {
 		t.Errorf("idle fallback missing for eve; view:\n%s", view)
+	}
+}
+
+// QUM-324: a LastReportSummary longer than the tree panel's inner width must
+// not bleed past the right border. Every rendered row — including the
+// ellipsised long-summary row — must fit inside m.width display cells.
+func TestTreeModel_ViewClipsLongSummary(t *testing.T) {
+	const panelWidth = 40
+	m := newTestTreeModel(t)
+	m.SetSize(panelWidth, 10)
+	m.SetNodes([]TreeNode{
+		{
+			Name:              "alice",
+			Type:              "engineer",
+			Status:            "active",
+			LastReportState:   "working",
+			LastReportSummary: strings.Repeat("abcdefghij", 200), // 2000 chars
+		},
+	})
+
+	view := m.View()
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > panelWidth {
+			t.Errorf("rendered line width %d exceeds panel width %d: %q", w, panelWidth, line)
+		}
+	}
+	// Sanity: the row should still contain the agent name, proving the clip
+	// didn't just eat the whole line.
+	if !strings.Contains(stripAnsi(view), "alice") {
+		t.Errorf("expected 'alice' in clipped view, got:\n%s", view)
+	}
+	// And it should end with the ellipsis — the summary is well past the
+	// truncation point.
+	if !strings.Contains(view, "…") {
+		t.Errorf("expected ellipsis in clipped long-summary row, got:\n%s", view)
+	}
+}
+
+// QUM-324: a multi-line summary must render as a single row so the tree
+// can't push past its configured height, and the panel-width invariant still
+// holds on the (now single-line) output.
+func TestTreeModel_ViewStripsMultilineSummary(t *testing.T) {
+	const panelWidth = 80
+	m := newTestTreeModel(t)
+	m.SetSize(panelWidth, 5)
+	m.SetNodes([]TreeNode{
+		{
+			Name:              "alice",
+			Type:              "engineer",
+			Status:            "active",
+			LastReportState:   "working",
+			LastReportSummary: "line1\nline2\nline3",
+		},
+	})
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) != 1 {
+		t.Errorf("multi-line summary should render as a single row, got %d:\n%s", len(lines), view)
+	}
+	stripped := stripAnsi(view)
+	for _, frag := range []string{"line1", "line2", "line3"} {
+		if !strings.Contains(stripped, frag) {
+			t.Errorf("expected fragment %q in flattened summary, got: %q", frag, stripped)
+		}
+	}
+	if strings.ContainsAny(stripped, "\n\r\t") {
+		t.Errorf("flattened summary still contains newline/tab: %q", stripped)
+	}
+}
+
+// QUM-324: the selected-row prefix ("> ") eats the same two cells as the
+// normal-row prefix ("  "), so both rows must fit the panel width when a
+// long summary is present.
+func TestTreeModel_ViewClipsLongSummary_SelectedRow(t *testing.T) {
+	const panelWidth = 30
+	m := newTestTreeModel(t)
+	m.SetSize(panelWidth, 10)
+	m.SetNodes([]TreeNode{
+		{Name: "bob", Type: "engineer", Status: "active"},
+		{
+			Name:              "alice",
+			Type:              "engineer",
+			Status:            "active",
+			LastReportState:   "working",
+			LastReportSummary: strings.Repeat("x", 500),
+		},
+	})
+	m.selected = 1 // select the row with the long summary
+
+	view := m.View()
+	for _, line := range strings.Split(view, "\n") {
+		if w := lipgloss.Width(line); w > panelWidth {
+			t.Errorf("rendered line width %d exceeds panel width %d: %q", w, panelWidth, line)
+		}
 	}
 }
 

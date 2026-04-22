@@ -6,7 +6,13 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 )
+
+// toolCallInputPrefix is the cell width of the `"│ "` gutter rendered before
+// each wrapped line of a tool-call input block. Subtracted from the viewport
+// inner width when deciding the wrap column.
+const toolCallInputPrefix = 2
 
 const placeholderContent = `Welcome to Sprawl TUI
 
@@ -55,6 +61,10 @@ type ViewportModel struct {
 	autoScroll    bool
 	hasNewContent bool
 	selection     SelectionState
+	// width tracks the viewport's inner cell width so row-rendering helpers
+	// (e.g. renderToolCall) can clip/wrap against the visible column count.
+	// Mirrors the value passed to SetSize; 0 means not-yet-sized.
+	width int
 }
 
 // SelectionGutter is the visual prefix placed on selected message blocks when
@@ -108,6 +118,7 @@ func (m ViewportModel) View() string {
 
 // SetSize updates the viewport dimensions.
 func (m *ViewportModel) SetSize(w, h int) {
+	m.width = w
 	m.vp.SetWidth(w)
 	m.vp.SetHeight(h)
 	if m.renderer != nil {
@@ -328,15 +339,48 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 	if msg.Approved {
 		indicator = "✓"
 	}
-	// Tool name line with accent color
+	// Tool name line with accent color. Truncated to the viewport width so a
+	// long tool name (or ANSI garbage in msg.Content) cannot bleed past the
+	// right border (QUM-324).
 	toolHeader := fmt.Sprintf("┌ %s %s", indicator, msg.Content)
+	if m.width > 0 {
+		toolHeader = ansi.Truncate(toolHeader, m.width, "…")
+	}
 	sb.WriteString(m.theme.AccentText.Render(toolHeader))
-	// Input summary on next line if present
+	// Input summary on following line(s) if present. Multi-line tool input
+	// is preserved but wrapped at the viewport inner width so each wrapped
+	// segment stays inside the `│ …` gutter (QUM-324).
 	if msg.ToolInput != "" {
 		sb.WriteString("\n")
-		inputLine := fmt.Sprintf("│ %s", msg.ToolInput)
-		sb.WriteString(m.theme.NormalText.Render(inputLine))
+		for i, ln := range wrapToolInput(msg.ToolInput, m.width-toolCallInputPrefix) {
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(m.theme.NormalText.Render("│ " + ln))
+		}
 	}
 	sb.WriteString("\n")
 	sb.WriteString(m.theme.AccentText.Render("└"))
+}
+
+// wrapToolInput prepares a tool-input string for rendering inside the tool
+// block. Carriage returns are dropped; each logical line is wrapped to at
+// most width cells (hard-breaking within words when needed) so the `│ `
+// gutter always lines up and nothing escapes the viewport. When width<=0 the
+// input is returned as-is (caller hasn't been sized yet).
+func wrapToolInput(input string, width int) []string {
+	input = strings.ReplaceAll(input, "\r", "")
+	if width <= 0 {
+		return strings.Split(input, "\n")
+	}
+	var out []string
+	for _, ln := range strings.Split(input, "\n") {
+		wrapped := ansi.Wrap(ln, width, "")
+		if wrapped == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, strings.Split(wrapped, "\n")...)
+	}
+	return out
 }
