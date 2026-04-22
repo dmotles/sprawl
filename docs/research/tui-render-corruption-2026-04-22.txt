@@ -1,0 +1,45 @@
+│                     ││ ────────────────────────────────────────────────────────────────────────╮
+│> ● [W] weave        ││  What's the call — verify first, or straight to Phase 2?                │
+│(streaming) (2)      ││                                                                         │
+│    ● [R] ghost —    ││― Completed in 13483ms, cost $0.2170 ―                                   │
+│smoketest ping 1 of 2││                                                                         │
+│                     ││You: lets do a quick smoketest                                           │
+│                     │││                                                                        │
+│                     ││┌ ✓ ToolSearch                                                           │
+│                     │││ {"max_results":4,"query":"select:mcp__sprawl-                          │
+│                     ││ops__sprawl_spawn,mcp__spr                                               │ep
+│                     ││└                                                                        │
+╰─────────────────────╯│              m                                                          │
+                       │┌ ✓ mcp__sprawl-ops__sprawl_spawn                                        │
+                       ││ {"branch":"dmotles/smoketest-tui-                                      │AD
+ is now at f378a6b towernotify","family":"engineering","prompt                                   │te
+d for EC2 (weave→sprawl_└                                                                        │tr
+ee), and EC6 (Session Er                                 a                                       │da
+│                     │)                                   v                                     │s
+│                     │o  Spawned ghost. Watch your TUI — you should see:                        │es
+│                     │o                                                                         │ng
+│                     │a  1. Badge on weave row tick to  (1)  + banner when ghost runs  sprawl   │fe
+│                     ││  report done                                                            │ph
+│                     ││  2. Tick to  (2)  + banner when ghost sends the second message          │
+│                     ││                                                                         │
+│                     ││  I'll wait for ghost's notification.                                    │
+│                     ││                                                                         │
+│                     ││― Completed in 14193ms, cost $0.5674 ―                                   │
+│                     ││                                                                         │
+│                     ││― inbox: 1 new message(s) for weave ―                                    │
+│                     ││                                                                         │
+│                     ││― inbox: 1 new message(s) for weave ―                                    │
+│                     ││                                                                         │
+│                     ││You: gross can u catpure pane on the only tmux session right now and     │
+│                     ││see                                                                      │
+│                     ││                                                                         │
+│                     ││┌ ✓ Bash                                                                 │
+│                     │││ tmux list-sessions 2>&1; echo "---"; tmux list-panes -a -F             │
+│                     ││'#{session_n                                                             │
+╰─────────────────────╯│└                                                                        │
+                       │                                                                         │
+                       │┌ ✓ Bash                                                                 │
+                       ││ tmux capture-pane -t yeehaw:1.1 -p -S -200 > /tmp/pane-yeehaw.txt; wc -│
+                       │└                                                                        │
+                       │                                                                         │
+                       ╰─────────────────────────────────────────────────────────────────────────╯
