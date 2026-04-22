@@ -72,8 +72,16 @@ type ViewportModel struct {
 const SelectionGutter = "▌ "
 
 // NewViewportModel creates a viewport with placeholder content.
+//
+// SoftWrap is enabled so the viewport never horizontally scrolls: content is
+// already width-constrained by the glamour markdown renderer, and the default
+// bubbles/v2 Left/Right bindings (h/l, ←/→) would otherwise bump `xOffset` and
+// render each line as `ansi.Cut(line, xOffset, xOffset+width)` — i.e. the
+// tail half of every line, with leading characters eaten. That surfaced as
+// the "unreadable viewport" seen on 2026-04-22 after a stray key press.
 func NewViewportModel(theme *Theme) ViewportModel {
 	vp := viewport.New()
+	vp.SoftWrap = true
 	vp.SetContent(placeholderContent)
 	return ViewportModel{
 		vp:         vp,
