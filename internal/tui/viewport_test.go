@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func newTestViewportModel(t *testing.T) ViewportModel {
@@ -392,6 +394,105 @@ func TestViewportModel_MoveCursorExtendsSelection(t *testing.T) {
 	for _, want := range []string{"first", "second", "third"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("SelectedRaw() after MoveCursor(-2) should contain %q, got %q", want, got)
+		}
+	}
+}
+
+// QUM-324: a long single-line tool input (e.g. compact JSON from
+// mcp__sprawl-ops__sprawl_spawn) must not bleed past the viewport width.
+// Rendered via renderToolCall directly so the assertion is independent of
+// the bubbles viewport's scroll/crop behaviour.
+func TestViewportModel_RenderToolCall_LongInputClipped(t *testing.T) {
+	const width = 40
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 20)
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: strings.Repeat("xyz", 200), // 600 chars, far wider than 40
+	})
+	for _, line := range strings.Split(sb.String(), "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("rendered line width %d exceeds viewport width %d: %q", w, width, line)
+		}
+	}
+}
+
+// QUM-324 (weave follow-up): multi-line tool-result stdout (e.g. `make
+// validate` output surfaced as a Bash tool_result) should wrap, not
+// truncate — every logical line must appear under the `│ ` gutter and
+// each wrapped display line must fit the viewport width.
+func TestViewportModel_RenderToolCall_MultilineInputWrapped(t *testing.T) {
+	const width = 40
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 30)
+
+	input := "make validate\nfmt OK\nlint OK\n" + strings.Repeat("a", 120)
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: input,
+	})
+
+	out := sb.String()
+	// Every display line must fit.
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("rendered line width %d exceeds viewport width %d: %q", w, width, line)
+		}
+	}
+	// Every logical input line should still be present (wrapping, not
+	// dropping, is the contract for multi-line tool bodies).
+	stripped := stripANSI(out)
+	for _, frag := range []string{"make validate", "fmt OK", "lint OK"} {
+		if !strings.Contains(stripped, frag) {
+			t.Errorf("expected %q in wrapped tool-call body, got:\n%s", frag, stripped)
+		}
+	}
+	// Every rendered body line should start with the `│ ` gutter so the
+	// left edge lines up under the `┌ ... ` header.
+	for _, line := range strings.Split(out, "\n") {
+		plain := stripANSI(line)
+		if plain == "" {
+			continue
+		}
+		if strings.HasPrefix(plain, "┌") || strings.HasPrefix(plain, "└") {
+			continue
+		}
+		if !strings.HasPrefix(plain, "│ ") {
+			t.Errorf("tool-call body line missing `│ ` gutter: %q", plain)
+		}
+	}
+}
+
+// QUM-324: a tool name containing lots of junk (or otherwise long) must not
+// bleed past the viewport width in the header row either.
+func TestViewportModel_RenderToolCall_LongNameHeaderClipped(t *testing.T) {
+	const width = 20
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 20)
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:     MessageToolCall,
+		Content:  strings.Repeat("mcp__sprawl_ops__sprawl_spawn__", 5),
+		Complete: true,
+		Approved: true,
+	})
+	for _, line := range strings.Split(sb.String(), "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("header line width %d exceeds viewport width %d: %q", w, width, line)
 		}
 	}
 }

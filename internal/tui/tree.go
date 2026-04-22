@@ -6,9 +6,29 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// rowPrefixWidth is the cell width of the `"> "` / `"  "` prefix rendered
+// before every tree row by TreeModel.View. It is subtracted from the tree
+// panel's inner width when clipping row content.
+const rowPrefixWidth = 2
+
+// clipTreeRow coerces an arbitrary row label into a single-line, width-bounded
+// string. Embedded newlines/tabs are replaced with spaces so a multi-line
+// LastReportSummary cannot push the tree onto extra visual rows, and the
+// result is then truncated (with an ellipsis) at width display cells. When
+// width <= 0 the content is returned with its newlines stripped but
+// otherwise unbounded — the caller hasn't been sized yet.
+func clipTreeRow(line string, width int) string {
+	line = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(line)
+	if width <= 0 {
+		return line
+	}
+	return ansi.Truncate(line, width, "…")
+}
 
 // TreeNode represents a single node in the agent tree.
 type TreeNode struct {
@@ -140,6 +160,10 @@ func (m TreeModel) View() string {
 		if node.Unread > 0 {
 			line += fmt.Sprintf(" (%d)", node.Unread)
 		}
+
+		// QUM-324: clip the row to the tree's inner width so a long or
+		// multi-line LastReportSummary cannot bleed past the panel border.
+		line = clipTreeRow(line, m.width-rowPrefixWidth)
 
 		if i == m.selected {
 			b.WriteString(m.theme.SelectedItem.Render(fmt.Sprintf("> %s", line)))
