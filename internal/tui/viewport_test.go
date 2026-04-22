@@ -13,6 +13,25 @@ func newTestViewportModel(t *testing.T) ViewportModel {
 	return NewViewportModel(&theme)
 }
 
+// TestViewportModel_SoftWrapPreventsHorizontalScroll guards the fix for the
+// 2026-04-22 unreadable-viewport incident: default bubbles/v2 viewport binds
+// `l`/`→` to bump xOffset, and rendering then shows only the tail half of
+// every line (ansi.Cut from xOffset to xOffset+width). SoftWrap must be
+// enabled so SetXOffset is a no-op and xOffset can never drift.
+func TestViewportModel_SoftWrapPreventsHorizontalScroll(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	if !m.vp.SoftWrap {
+		t.Fatal("viewport.SoftWrap must be true; a false value re-enables horizontal scroll which mangles rendering on stray l/right key presses")
+	}
+	// SetXOffset is a no-op when SoftWrap is true; a non-zero xOffset would
+	// indicate the guard broke.
+	m.vp.SetXOffset(30)
+	if m.vp.XOffset() != 0 {
+		t.Errorf("xOffset = %d, want 0 — SoftWrap must force xOffset to stay 0", m.vp.XOffset())
+	}
+}
+
 func TestViewportModel_InitialContent(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(60, 20)
