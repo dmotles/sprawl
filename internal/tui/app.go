@@ -724,15 +724,24 @@ func (m *AppModel) cycleAgent(delta int) tea.Cmd {
 func (m *AppModel) resizePanels() {
 	layout := ComputeLayout(m.width, m.height)
 
-	// Account for border (2 chars each side).
-	m.tree.SetSize(layout.TreeWidth-2, layout.TreeHeight-2)
-	m.viewport.SetSize(layout.ViewportWidth-2, layout.ViewportHeight-2)
+	// Panel borders take 2 cells total per axis (1 cell on each side). In
+	// lipgloss v2, a Border()+Width(N) style sets the OUTER width to N and
+	// reserves 2 of those cells for the border — leaving N-2 cells of inner
+	// content. The View() below sets each border's outer width to
+	// layout.<Panel>Width-2 (a 2-cell gutter between columns), so the inner
+	// content budget we pass to each sub-model must be layout.<Panel>Width-4
+	// (gutter + two border cells). Passing only -2 here is an off-by-two
+	// that lets long tree rows bleed past the border and soft-wrap, which
+	// then pushes the tree panel taller than its declared Height and clips
+	// the input box off the bottom of the screen (QUM-324 residual).
+	m.tree.SetSize(layout.TreeWidth-4, layout.TreeHeight-4)
+	m.viewport.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
 	if layout.ActivityWidth > 0 {
-		m.activity.SetSize(layout.ActivityWidth-2, layout.ActivityHeight-2)
+		m.activity.SetSize(layout.ActivityWidth-4, layout.ActivityHeight-4)
 	} else {
 		m.activity.SetSize(0, 0)
 	}
-	m.input.SetWidth(layout.InputWidth - 2)
+	m.input.SetWidth(layout.InputWidth - 4)
 	m.statusBar.SetWidth(layout.StatusWidth)
 	m.help.SetSize(m.width, m.height)
 	m.confirm.SetSize(m.width, m.height)

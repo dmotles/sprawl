@@ -469,10 +469,18 @@ func TestTreeModel_ViewClipsLongSummary(t *testing.T) {
 	})
 
 	view := m.View()
-	for _, line := range strings.Split(view, "\n") {
+	lines := strings.Split(view, "\n")
+	for _, line := range lines {
 		if w := lipgloss.Width(line); w > panelWidth {
 			t.Errorf("rendered line width %d exceeds panel width %d: %q", w, panelWidth, line)
 		}
+	}
+	// The view must render exactly one physical line per logical node — no
+	// soft-wrap into extra rows. This is the invariant that keeps the tree
+	// panel from overflowing its border's Height budget (which would push the
+	// input box off the bottom of the screen — QUM-324 follow-up).
+	if got, want := len(lines), len(m.nodes); got != want {
+		t.Errorf("view has %d physical lines, want %d (one per node); view:\n%s", got, want, view)
 	}
 	// Sanity: the row should still contain the agent name, proving the clip
 	// didn't just eat the whole line.

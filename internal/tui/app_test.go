@@ -74,6 +74,47 @@ func TestAppModel_ViewAfterReady(t *testing.T) {
 	}
 }
 
+// QUM-324 follow-up: at narrow widths the tree panel must not soft-wrap its
+// rows past its own border's Height, which would push the input box off the
+// bottom of the screen. Render the full app View at 40x15 with a nontrivial
+// tree population and assert the bottom of the composed content contains the
+// input panel's bottom border glyph (╰).
+func TestAppModel_ViewKeepsInputBoxAtNarrowWidths(t *testing.T) {
+	m := newTestAppModel(t)
+	// Seed the tree with enough nodes whose names, combined with the
+	// "  dot icon name (status) (unread)" formatting, exceed the tree-panel
+	// inner width so the pre-fix code soft-wraps each row into two physical
+	// lines — enough wrapped rows to push past the tree panel's declared
+	// Height, which drags the input box off the bottom of the screen.
+	var nodes []TreeNode
+	for i := 0; i < 6; i++ {
+		nodes = append(nodes, TreeNode{
+			Name: fmt.Sprintf("agent-with-a-longish-name-%d", i), Type: "engineer",
+			Status: "active", Unread: 1,
+		})
+	}
+	m.childNodes = nodes
+	m.rebuildTree()
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 15})
+	app := resized.(AppModel)
+	v := app.View()
+	lines := strings.Split(v.Content, "\n")
+	// Total rendered line count must not exceed the terminal height. If the
+	// tree soft-wraps its rows, lipgloss does NOT enforce the panel's
+	// Height() — it lets the panel grow taller — so the composed output
+	// overflows past the bottom of the terminal and the input box + status
+	// bar are clipped off-screen (QUM-324 residual, bug 2 from dmotles
+	// 2026-04-22 pane capture).
+	const termHeight = 15
+	if got := len(lines); got > termHeight {
+		t.Errorf("rendered view is %d lines tall, want <= terminal height %d — the tree panel grew past its declared Height and pushed the input box off-screen", got, termHeight)
+	}
+	// And the input box's bottom border must still be present.
+	if !strings.Contains(v.Content, "╰") {
+		t.Errorf("View content missing bottom-border glyphs — panel layout collapsed:\n%s", v.Content)
+	}
+}
+
 func TestAppModel_TabCyclesPanel(t *testing.T) {
 	m := newTestAppModel(t)
 	// Ensure ready state so panels are active.
