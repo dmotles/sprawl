@@ -1205,36 +1205,35 @@ func (m *mockTmuxRunner) SetEnvironment(string, string, string) error {
 	return nil
 }
 
-func TestRunMessagesSend_NotifiesRootViaTmux_LegacyMode(t *testing.T) {
+// --- buildLegacyRootNotifier (QUM-310) ---
+//
+// The notify wiring used to be assembled inline inside runMessagesSend. It
+// now lives in cmd/messages_notify.go as a pure function registered once at
+// process startup (see cmd/root.go). These tests target that function
+// directly; coverage of the 'runMessagesSend triggers notify' path is
+// handled end-to-end by scripts/test-notify-e2e.sh.
+
+func TestBuildLegacyRootNotifier_NotifiesRootInLegacyMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	state.WriteRootName(tmpDir, tmux.DefaultRootName)
 	mock := &mockTmuxRunner{}
-	deps := &messagesDeps{
-		getenv: func(key string) string {
-			switch key {
-			case "SPRAWL_ROOT":
-				return tmpDir
-			case "SPRAWL_AGENT_IDENTITY":
-				return "worker-1"
-			case "SPRAWL_MESSAGING":
-				return "legacy"
-			}
-			return ""
-		},
-		stdout:     &bytes.Buffer{},
-		stderr:     &bytes.Buffer{},
-		tmuxRunner: mock,
+	getenv := func(key string) string {
+		if key == "SPRAWL_MESSAGING" {
+			return "legacy"
+		}
+		return ""
 	}
 
-	err := runMessagesSend(deps, tmux.DefaultRootName, "build done", "all tests pass")
-	if err != nil {
-		t.Fatalf("runMessagesSend() unexpected error: %v", err)
+	notify := buildLegacyRootNotifier(getenv, mock, tmpDir)
+	if notify == nil {
+		t.Fatal("buildLegacyRootNotifier returned nil with valid inputs")
 	}
+
+	notify(tmux.DefaultRootName, "worker-1", "build done", "abc")
 
 	if len(mock.sendKeysCalls) != 1 {
 		t.Fatalf("expected 1 SendKeys call, got %d", len(mock.sendKeysCalls))
 	}
-
 	call := mock.sendKeysCalls[0]
 	if call.sessionName != tmux.RootSessionName(tmux.DefaultNamespace) {
 		t.Errorf("SendKeys session = %q, want %q", call.sessionName, tmux.RootSessionName(tmux.DefaultNamespace))
@@ -1242,70 +1241,122 @@ func TestRunMessagesSend_NotifiesRootViaTmux_LegacyMode(t *testing.T) {
 	if call.windowName != tmux.RootWindowName {
 		t.Errorf("SendKeys window = %q, want %q", call.windowName, tmux.RootWindowName)
 	}
-
-	// Notification should include the actionable read command with message ID
-	if !strings.Contains(call.keys, "[inbox] New message from worker-1. Run: `sprawl messages read ") {
-		t.Errorf("SendKeys keys = %q, want it to contain actionable read command", call.keys)
-	}
-	if !strings.Contains(call.keys, "sprawl messages read ") {
-		t.Errorf("SendKeys keys = %q, want it to contain 'sprawl messages read <id>'", call.keys)
+	if !strings.Contains(call.keys, "[inbox] New message from worker-1. Run: `sprawl messages read abc`") {
+		t.Errorf("SendKeys keys = %q, want it to contain '[inbox] New message from worker-1. Run: `sprawl messages read abc`'", call.keys)
 	}
 }
 
-func TestRunMessagesSend_RootNoTmuxNotificationByDefault(t *testing.T) {
+func TestBuildLegacyRootNotifier_NoopWhenNotLegacy(t *testing.T) {
 	tmpDir := t.TempDir()
 	state.WriteRootName(tmpDir, tmux.DefaultRootName)
 	mock := &mockTmuxRunner{}
-	deps := &messagesDeps{
-		getenv: func(key string) string {
-			switch key {
-			case "SPRAWL_ROOT":
-				return tmpDir
-			case "SPRAWL_AGENT_IDENTITY":
-				return "worker-1"
-			}
-			return ""
-		},
-		stdout:     &bytes.Buffer{},
-		stderr:     &bytes.Buffer{},
-		tmuxRunner: mock,
+	getenv := func(key string) string {
+		// No SPRAWL_MESSAGING — default path, notify must skip.
+		return ""
 	}
 
-	err := runMessagesSend(deps, tmux.DefaultRootName, "build done", "all tests pass")
-	if err != nil {
-		t.Fatalf("runMessagesSend() unexpected error: %v", err)
-	}
+	notify := buildLegacyRootNotifier(getenv, mock, tmpDir)
+	notify(tmux.DefaultRootName, "worker-1", "hello", "xyz")
 
 	if len(mock.sendKeysCalls) != 0 {
-		t.Errorf("expected 0 SendKeys calls by default (Phase 4 deprecation), got %d", len(mock.sendKeysCalls))
+		t.Errorf("expected 0 SendKeys calls when SPRAWL_MESSAGING != legacy, got %d", len(mock.sendKeysCalls))
 	}
 }
 
-func TestRunMessagesSend_NonRootNoTmuxNotification(t *testing.T) {
+func TestBuildLegacyRootNotifier_NoopForNonRootRecipient(t *testing.T) {
 	tmpDir := t.TempDir()
+	state.WriteRootName(tmpDir, tmux.DefaultRootName)
 	mock := &mockTmuxRunner{}
-	deps := &messagesDeps{
-		getenv: func(key string) string {
-			switch key {
-			case "SPRAWL_ROOT":
-				return tmpDir
-			case "SPRAWL_AGENT_IDENTITY":
-				return "worker-1"
-			}
-			return ""
-		},
-		stdout:     &bytes.Buffer{},
-		stderr:     &bytes.Buffer{},
-		tmuxRunner: mock,
+	getenv := func(key string) string {
+		if key == "SPRAWL_MESSAGING" {
+			return "legacy"
+		}
+		return ""
 	}
 
-	err := runMessagesSend(deps, "bob", "hello", "world")
-	if err != nil {
-		t.Fatalf("runMessagesSend() unexpected error: %v", err)
-	}
+	notify := buildLegacyRootNotifier(getenv, mock, tmpDir)
+	notify("bob", "worker-1", "hi", "xyz")
 
 	if len(mock.sendKeysCalls) != 0 {
 		t.Errorf("expected 0 SendKeys calls for non-root recipient, got %d", len(mock.sendKeysCalls))
+	}
+}
+
+func TestBuildLegacyRootNotifier_UsesEnvNamespaceOverState(t *testing.T) {
+	tmpDir := t.TempDir()
+	state.WriteRootName(tmpDir, tmux.DefaultRootName)
+	state.WriteNamespace(tmpDir, "💎")
+	mock := &mockTmuxRunner{}
+	getenv := func(key string) string {
+		switch key {
+		case "SPRAWL_MESSAGING":
+			return "legacy"
+		case "SPRAWL_NAMESPACE":
+			return "🌐"
+		}
+		return ""
+	}
+
+	notify := buildLegacyRootNotifier(getenv, mock, tmpDir)
+	notify(tmux.DefaultRootName, "worker-1", "hi", "abc")
+
+	if len(mock.sendKeysCalls) != 1 {
+		t.Fatalf("expected 1 SendKeys call, got %d", len(mock.sendKeysCalls))
+	}
+	if mock.sendKeysCalls[0].sessionName != "🌐" {
+		t.Errorf("SendKeys session = %q, want %q (env namespace overrides state)", mock.sendKeysCalls[0].sessionName, "🌐")
+	}
+}
+
+func TestBuildLegacyRootNotifier_FallsBackToStateNamespace(t *testing.T) {
+	tmpDir := t.TempDir()
+	state.WriteRootName(tmpDir, tmux.DefaultRootName)
+	state.WriteNamespace(tmpDir, "💎")
+	mock := &mockTmuxRunner{}
+	getenv := func(key string) string {
+		if key == "SPRAWL_MESSAGING" {
+			return "legacy"
+		}
+		return ""
+	}
+
+	notify := buildLegacyRootNotifier(getenv, mock, tmpDir)
+	notify(tmux.DefaultRootName, "worker-1", "hi", "abc")
+
+	if len(mock.sendKeysCalls) != 1 {
+		t.Fatalf("expected 1 SendKeys call, got %d", len(mock.sendKeysCalls))
+	}
+	if mock.sendKeysCalls[0].sessionName != "💎" {
+		t.Errorf("SendKeys session = %q, want %q (state namespace fallback)", mock.sendKeysCalls[0].sessionName, "💎")
+	}
+}
+
+func TestBuildLegacyRootNotifier_FallsBackToDefaultsWhenUnset(t *testing.T) {
+	tmpDir := t.TempDir()
+	// No state files written — everything falls to library defaults.
+	mock := &mockTmuxRunner{}
+	getenv := func(key string) string {
+		if key == "SPRAWL_MESSAGING" {
+			return "legacy"
+		}
+		return ""
+	}
+
+	notify := buildLegacyRootNotifier(getenv, mock, tmpDir)
+	notify(tmux.DefaultRootName, "worker-1", "hi", "abc")
+
+	if len(mock.sendKeysCalls) != 1 {
+		t.Fatalf("expected 1 SendKeys call, got %d", len(mock.sendKeysCalls))
+	}
+	if mock.sendKeysCalls[0].sessionName != tmux.DefaultNamespace {
+		t.Errorf("SendKeys session = %q, want %q (default namespace)", mock.sendKeysCalls[0].sessionName, tmux.DefaultNamespace)
+	}
+}
+
+func TestBuildLegacyRootNotifier_NilRunnerReturnsNil(t *testing.T) {
+	got := buildLegacyRootNotifier(func(string) string { return "" }, nil, "/tmp")
+	if got != nil {
+		t.Error("buildLegacyRootNotifier should return nil when tmuxRunner is nil")
 	}
 }
 

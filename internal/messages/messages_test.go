@@ -1734,10 +1734,11 @@ func writeMessageFile(t *testing.T, dir, filename string, msg *Message) {
 func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	var calledFrom, calledSubject, calledMsgID string
+	var calledTo, calledFrom, calledSubject, calledMsgID string
 	notifyCalled := false
-	notify := func(from, subject, msgID string) {
+	notify := func(to, from, subject, msgID string) {
 		notifyCalled = true
+		calledTo = to
 		calledFrom = from
 		calledSubject = subject
 		calledMsgID = msgID
@@ -1750,6 +1751,9 @@ func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 
 	if !notifyCalled {
 		t.Fatal("expected notify callback to be called for root recipient")
+	}
+	if calledTo != "root" {
+		t.Errorf("notify to = %q, want %q", calledTo, "root")
 	}
 	if calledFrom != "alice" {
 		t.Errorf("notify from = %q, want %q", calledFrom, "alice")
@@ -1790,7 +1794,7 @@ func TestSend_WithNotify_AnyRecipientCallsNotify(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	notifyCalled := false
-	notify := func(from, subject, msgID string) {
+	notify := func(to, from, subject, msgID string) {
 		notifyCalled = true
 	}
 
@@ -1836,7 +1840,7 @@ func TestSend_WithoutNotify_StillWorks(t *testing.T) {
 func TestSend_NotifyPanicDoesNotBreakSend(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	notify := func(from, subject, msgID string) {
+	notify := func(to, from, subject, msgID string) {
 		panic("notification system exploded")
 	}
 
@@ -2456,5 +2460,117 @@ func TestSend_ShortIDNotInFilename(t *testing.T) {
 	expectedFilename := msg.ID + ".json"
 	if filename != expectedFilename {
 		t.Errorf("filename = %q, want %q (short ID should not appear in filename)", filename, expectedFilename)
+	}
+}
+
+// --- Default-notifier behavior (QUM-310) ---
+//
+// These tests mutate package-level state (defaultNotifier). They must NOT
+// run in parallel, and each must clear the notifier on cleanup so
+// subsequent tests don't observe a left-over default.
+
+func withCleanDefaultNotifier(t *testing.T) {
+	t.Helper()
+	SetDefaultNotifier(nil)
+	t.Cleanup(func() { SetDefaultNotifier(nil) })
+}
+
+func TestSend_DefaultNotifier_CalledWhenNoOpt(t *testing.T) {
+	withCleanDefaultNotifier(t)
+	tmpDir := t.TempDir()
+
+	var gotTo, gotFrom, gotSubject, gotMsgID string
+	called := false
+	SetDefaultNotifier(func(to, from, subject, msgID string) {
+		called = true
+		gotTo = to
+		gotFrom = from
+		gotSubject = subject
+		gotMsgID = msgID
+	})
+
+	if err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected default notifier to be invoked when no WithNotify provided")
+	}
+	if gotTo != "root" || gotFrom != "alice" || gotSubject != "urgent" {
+		t.Errorf("default notifier got (to=%q from=%q subject=%q), want (root, alice, urgent)", gotTo, gotFrom, gotSubject)
+	}
+	if gotMsgID == "" {
+		t.Error("default notifier msgID should not be empty")
+	}
+}
+
+func TestSend_ExplicitNotifyOverridesDefault(t *testing.T) {
+	withCleanDefaultNotifier(t)
+	tmpDir := t.TempDir()
+
+	defaultCalled := false
+	SetDefaultNotifier(func(to, from, subject, msgID string) {
+		defaultCalled = true
+	})
+
+	explicitCalled := false
+	explicit := func(to, from, subject, msgID string) {
+		explicitCalled = true
+	}
+
+	if err := Send(tmpDir, "alice", "root", "urgent", "body", WithNotify(explicit)); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+	if !explicitCalled {
+		t.Error("expected explicit WithNotify callback to be invoked")
+	}
+	if defaultCalled {
+		t.Error("default notifier should NOT be invoked when WithNotify is provided")
+	}
+}
+
+func TestSend_DefaultNotifierUnset_NoInvocation(t *testing.T) {
+	withCleanDefaultNotifier(t)
+	tmpDir := t.TempDir()
+
+	// With no default notifier registered and no WithNotify option, Send
+	// must still deliver the message without error.
+	if err := Send(tmpDir, "alice", "bob", "hello", "world"); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file in new/, got %d", len(entries))
+	}
+}
+
+func TestSend_DefaultNotifierPanicDoesNotBreakSend(t *testing.T) {
+	withCleanDefaultNotifier(t)
+	tmpDir := t.TempDir()
+
+	SetDefaultNotifier(func(to, from, subject, msgID string) {
+		panic("default notifier exploded")
+	})
+
+	if err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
+		t.Fatalf("Send() should return nil even when default notifier panics, got: %v", err)
+	}
+}
+
+func TestSetDefaultNotifier_Clear(t *testing.T) {
+	withCleanDefaultNotifier(t)
+
+	SetDefaultNotifier(func(to, from, subject, msgID string) {})
+	if DefaultNotifier() == nil {
+		t.Fatal("DefaultNotifier() returned nil after SetDefaultNotifier with non-nil fn")
+	}
+
+	SetDefaultNotifier(nil)
+	if DefaultNotifier() != nil {
+		t.Error("DefaultNotifier() should return nil after SetDefaultNotifier(nil)")
 	}
 }
