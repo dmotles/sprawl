@@ -204,12 +204,15 @@ type mockSessionFactory struct {
 	sprawlDir      string
 	lastForceFresh bool
 	wasResume      bool
+	// capturedSup records the supervisor threaded into newSession. QUM-329.
+	capturedSup supervisor.Supervisor
 }
 
-func (f *mockSessionFactory) newSession(sprawlRoot string, forceFresh bool, _ func()) (*tui.Bridge, bool, error) {
+func (f *mockSessionFactory) newSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, _ func()) (*tui.Bridge, bool, error) {
 	f.called = true
 	f.sprawlDir = sprawlRoot
 	f.lastForceFresh = forceFresh
+	f.capturedSup = sup
 	return f.bridge, f.wasResume, f.err
 }
 
@@ -462,13 +465,15 @@ type orderedSessionFactory struct {
 	err              error
 	forceFresh       []bool
 	resumeFailureCBs []func()
+	capturedSup      []supervisor.Supervisor
 }
 
-func (f *orderedSessionFactory) newSession(_ string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
+func (f *orderedSessionFactory) newSession(_ string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
 	atomic.AddInt32(&f.calls, 1)
 	*f.order = append(*f.order, "newSession")
 	f.forceFresh = append(f.forceFresh, forceFresh)
 	f.resumeFailureCBs = append(f.resumeFailureCBs, onResumeFailure)
+	f.capturedSup = append(f.capturedSup, sup)
 	return nil, f.wasResume, f.err
 }
 
@@ -480,6 +485,7 @@ func TestEnter_RestartFunc_CallsFinalizeBeforeNewSession(t *testing.T) {
 	state := &restartState{}
 	rf := makeRestartFunc(
 		fact.newSession,
+		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
 		state,
@@ -515,6 +521,7 @@ func TestEnter_RestartFunc_FinalizeError_DoesNotBlockNewSession(t *testing.T) {
 
 	rf := makeRestartFunc(
 		fact.newSession,
+		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, errors.New("finalize failed")),
 		"/tmp/sprawl",
 		&restartState{},
@@ -545,6 +552,7 @@ func TestEnter_RestartFunc_ForceFreshWhenResumeDiedFast(t *testing.T) {
 	}
 	rf := makeRestartFunc(
 		fact.newSession,
+		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
 		state,
@@ -581,6 +589,7 @@ func TestEnter_RestartFunc_MarkerTripped_ForcesFreshRegardlessOfWindow(t *testin
 
 	rf := makeRestartFunc(
 		fact.newSession,
+		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
 		state,
@@ -611,6 +620,7 @@ func TestEnter_RestartFunc_ResumeFailureCallback_SetsMarkerFlag(t *testing.T) {
 
 	rf := makeRestartFunc(
 		fact.newSession,
+		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
 		state,
@@ -641,6 +651,7 @@ func TestEnter_RestartFunc_NoForceFreshWhenNotResume(t *testing.T) {
 	}
 	rf := makeRestartFunc(
 		fact.newSession,
+		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
 		state,
@@ -753,5 +764,96 @@ func TestEnter_NilNewSessionSkipsBridge(t *testing.T) {
 	}
 	if !programCalled {
 		t.Error("runProgram should still be called when newSession is nil")
+	}
+}
+
+// TestEnter_SharedSupervisor_ThreadedEndToEnd is the QUM-329 regression guard.
+//
+// Exactly ONE supervisor per `sprawl enter` must be shared across:
+//   - the MCP server wired to the claude subprocess (observed via the
+//     `sup` argument threaded into newSession → newSessionImpl →
+//     sprawlmcp.New)
+//   - the HandoffRequested() listener goroutine (observed via the
+//     supervisor passed to tui.NewAppModel)
+//
+// We prove the shared-instance invariant by pointer-equality: the
+// supervisor returned from deps.newSupervisor MUST equal the one
+// captured by the newSession factory AND the one captured when
+// restartFunc (re-)invokes newSession on a handoff teardown. If they
+// diverge, the sprawl_handoff MCP tool fires on a channel the TUI
+// never drains — exactly the QUM-329 failure mode.
+func TestEnter_SharedSupervisor_ThreadedEndToEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+
+	sentinelSup := &shutdownMockSupervisor{}
+	factory := &mockSessionFactory{}
+
+	deps := &enterDeps{
+		getenv: func(k string) string {
+			if k == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		getwd: func() (string, error) { return tmpDir, nil },
+		runProgram: func(tea.Model, func(func(tea.Msg))) error {
+			return nil
+		},
+		newSession:    factory.newSession,
+		newSupervisor: func(_ string) supervisor.Supervisor { return sentinelSup },
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("unexpected error from runEnter: %v", err)
+	}
+
+	if !factory.called {
+		t.Fatal("newSession should have been called")
+	}
+	if factory.capturedSup == nil {
+		t.Fatal("newSession received nil supervisor — QUM-329 regression (MCP server would own a separate instance)")
+	}
+	if factory.capturedSup != sentinelSup {
+		t.Errorf("newSession supervisor (%p) != newSupervisor return (%p); QUM-329 invariant broken — MCP and listener would hit different Handoff channels", factory.capturedSup, sentinelSup)
+	}
+}
+
+// TestMakeRestartFunc_ThreadsSupervisor ensures makeRestartFunc passes its
+// `sup` argument through to newSession on every restart invocation. Without
+// this wiring, the post-handoff restart would build a fresh MCP server
+// bound to the wrong supervisor.
+func TestMakeRestartFunc_ThreadsSupervisor(t *testing.T) {
+	var order []string
+	var finCount int32
+	fact := &orderedSessionFactory{order: &order}
+
+	sentinelSup := &shutdownMockSupervisor{}
+	rf := makeRestartFunc(
+		fact.newSession,
+		sentinelSup,
+		fakeFinalize(&order, &finCount, nil),
+		"/tmp/sprawl",
+		&restartState{},
+		nil,
+		io.Discard,
+	)
+
+	if _, err := rf(); err != nil {
+		t.Fatalf("restartFunc returned unexpected error: %v", err)
+	}
+	if _, err := rf(); err != nil {
+		t.Fatalf("restartFunc returned unexpected error on second invocation: %v", err)
+	}
+	if len(fact.capturedSup) != 2 {
+		t.Fatalf("expected 2 newSession invocations, got %d", len(fact.capturedSup))
+	}
+	for i, got := range fact.capturedSup {
+		if got != sentinelSup {
+			t.Errorf("call %d: newSession got supervisor %p, want %p (QUM-329)", i, got, sentinelSup)
+		}
 	}
 }

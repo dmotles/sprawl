@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-init-e2e test-notify-e2e test-notify-tui-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-init-e2e test-notify-e2e test-notify-tui-e2e test-handoff-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -68,3 +68,19 @@ test-notify-e2e:
 # internal/tui/app.go, internal/tui/messages.go, or internal/tui/tree.go.
 test-notify-tui-e2e:
 	bash scripts/test-notify-tui-e2e.sh
+
+# Opt-in end-to-end regression guard for QUM-329: TUI handoff restart
+# must fire when weave calls `sprawl_handoff` via MCP. Spins up an
+# isolated /tmp sandbox, launches `sprawl enter` in a detached tmux
+# pane, attaches a phantom client (QUM-327 workaround), drives weave
+# to call the MCP tool, and asserts handoff-signal fires, the old
+# claude pid dies, a new claude pid spawns with a different
+# --session-id, last-session-id changes, and the TUI shows the
+# "Session restarting (handoff)" banner. Not part of `make validate` —
+# runs real subprocesses, launches real claude, interacts with tmux.
+# See scripts/test-handoff-e2e.sh. Mandatory before merging any change
+# to cmd/enter.go, internal/supervisor/*.go, internal/sprawlmcp/*.go,
+# internal/rootinit/postrun.go, or internal/tui/app.go's
+# HandoffRequestedMsg/SessionRestartingMsg/RestartSessionMsg handlers.
+test-handoff-e2e:
+	bash scripts/test-handoff-e2e.sh
