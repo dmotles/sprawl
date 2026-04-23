@@ -1,3 +1,19 @@
+// Package cmd / enter.go — TUI-mode root weave launcher.
+//
+// Architectural contract: ONE supervisor per `sprawl enter` invocation.
+// The single `supervisor.Supervisor` built in runEnter is shared across
+// three call sites that must observe the same in-process state:
+//
+//  1. the tree-panel status poller (tickAgentsCmd in internal/tui),
+//  2. the HandoffRequested() channel listener goroutine (see runEnter),
+//  3. the MCP server wired to the claude subprocess (sprawlmcp.New).
+//
+// Do NOT create a second supervisor inside newSessionImpl or anywhere
+// else in this package. If two supervisors exist, the sprawl_handoff MCP
+// tool fires on one channel while the TUI listens on the other, the
+// teardown/restart never runs, and the user is stuck in a stale session.
+// See QUM-329 postmortem for the full failure mode and tests that guard
+// against regression.
 package cmd
 
 import (
@@ -36,7 +52,11 @@ type enterDeps struct {
 	// onResumeFailure, if non-nil, is invoked from the subprocess's stderr
 	// scanner when the "No conversation found" marker trips — used by the
 	// restart loop to force-fresh the next session regardless of elapsed time.
-	newSession      func(sprawlRoot string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error)
+	// sup is the runEnter-scoped supervisor (see architectural contract at
+	// top of this file). It is passed to the MCP server inside
+	// newSessionImpl so the sprawl_handoff tool and the TUI
+	// HandoffRequested() listener observe the same channel. QUM-329.
+	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error)
 	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer) error
 }
@@ -62,7 +82,8 @@ type restartState struct {
 // lifetime of runEnter. bridgeOut, if non-nil, is updated on success so
 // runEnter closes the latest bridge on shutdown.
 func makeRestartFunc(
-	newSession func(sprawlRoot string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error),
+	newSession func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error),
+	sup supervisor.Supervisor,
 	finalize func(ctx context.Context, sprawlRoot string, stdout io.Writer) error,
 	sprawlRoot string,
 	state *restartState,
@@ -87,7 +108,7 @@ func makeRestartFunc(
 			}
 		}
 		onResumeFailure := func() { state.resumeMarkerTripped.Store(true) }
-		newBridge, wasResume, err := newSession(sprawlRoot, forceFresh, onResumeFailure)
+		newBridge, wasResume, err := newSession(sprawlRoot, sup, forceFresh, onResumeFailure)
 		if err == nil {
 			if bridgeOut != nil {
 				*bridgeOut = newBridge
@@ -231,14 +252,21 @@ func buildSessionEnv() []string {
 // Returns (bridge, wasResume, error). wasResume indicates whether Prepare
 // took the resume path; callers use it to decide if a fast exit warrants a
 // force-fresh retry.
-func defaultNewSession(sprawlRoot string, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
+func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
 	deps := rootinit.DefaultDeps()
 	deps.LogPrefix = "[enter]"
-	return newSessionImpl(sprawlRoot, forceFresh, deps, os.Stderr, onResumeFailure)
+	return newSessionImpl(sprawlRoot, sup, forceFresh, deps, os.Stderr, onResumeFailure)
 }
 
 // newSessionImpl is the testable body of defaultNewSession.
-func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer, onResumeFailure func()) (*tui.Bridge, bool, error) {
+//
+// sup is the runEnter-scoped supervisor and MUST be the same instance that
+// runEnter registers with the TUI's HandoffRequested() listener. See the
+// architectural contract at the top of this file (QUM-329).
+func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer, onResumeFailure func()) (*tui.Bridge, bool, error) {
+	if sup == nil {
+		return nil, false, fmt.Errorf("newSessionImpl: supervisor must be non-nil (see QUM-329 architectural contract)")
+	}
 	claudePath, err := exec.LookPath("claude")
 	if err != nil {
 		return nil, false, fmt.Errorf("finding claude binary: %w", err)
@@ -312,14 +340,10 @@ func newSessionImpl(sprawlRoot string, forceFresh bool, rinitDeps *rootinit.Deps
 		},
 	}
 
-	// Create supervisor and MCP server
-	sup, err := supervisor.NewReal(supervisor.Config{
-		SprawlRoot: sprawlRoot,
-		CallerName: rootName,
-	})
-	if err != nil {
-		return nil, false, fmt.Errorf("creating supervisor: %w", err)
-	}
+	// Wire the MCP server to the shared supervisor passed in by runEnter.
+	// Creating a second supervisor here would give the sprawl_handoff MCP
+	// tool its own HandoffRequested channel, which the TUI listener never
+	// drains — the QUM-329 regression.
 	mcpServer := sprawlmcp.New(sup)
 	mcpBridge := host.NewMCPBridge()
 	mcpBridge.Register("sprawl-ops", mcpServer)
@@ -416,11 +440,21 @@ func runEnter(deps *enterDeps) error {
 		resumeFailureOnce.Do(func() { close(resumeFailureCh) })
 	}
 
+	// QUM-329: build the single supervisor BEFORE creating the session so
+	// the same instance is wired into (a) the MCP server inside
+	// newSession, (b) the tree-panel status poller (passed into AppModel
+	// below), and (c) the HandoffRequested() listener goroutine in
+	// onStart. A second supervisor would orphan the handoff signal.
+	var sup supervisor.Supervisor
+	if deps.newSupervisor != nil {
+		sup = deps.newSupervisor(sprawlRoot)
+	}
+
 	var bridge *tui.Bridge
 	if deps.newSession != nil {
 		var err error
 		var wasResume bool
-		bridge, wasResume, err = deps.newSession(sprawlRoot, false, onResumeFailure)
+		bridge, wasResume, err = deps.newSession(sprawlRoot, sup, false, onResumeFailure)
 		if err != nil {
 			return fmt.Errorf("creating session: %w", err)
 		}
@@ -428,14 +462,9 @@ func runEnter(deps *enterDeps) error {
 		state.lastWasResume = wasResume
 	}
 
-	// Create a supervisor for the tree panel to poll agent status.
-	var sup supervisor.Supervisor
-	if deps.newSupervisor != nil {
-		sup = deps.newSupervisor(sprawlRoot)
-	}
 	var restartFunc func() (*tui.Bridge, error)
 	if deps.newSession != nil {
-		restartFunc = makeRestartFunc(deps.newSession, deps.finalizeHandoff, sprawlRoot, state, &bridge, os.Stderr)
+		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, state, &bridge, os.Stderr)
 	}
 	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
 
