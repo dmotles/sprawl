@@ -3,7 +3,31 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
+
+// TestStatusBar_ViewFitsDeclaredWidth guards against the bug where
+// StatusBar style's Padding(0,1) plus View()'s Width(m.width).Render(line)
+// rendered m.width+2 cells and wrapped the trailing "? Help" onto a second
+// line at most terminal widths. Fix: drop Padding; View() manages its own
+// left/right spacing inside line.
+func TestStatusBar_ViewFitsDeclaredWidth(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	for _, w := range []int{40, 80, 120, 190, 300} {
+		m.SetWidth(w)
+		m.SetRestartElapsed(42 * 1000000000) // 42s — keeps the line longish
+		view := m.View()
+		for _, ln := range strings.Split(view, "\n") {
+			if ln == "" {
+				continue
+			}
+			if got := ansi.StringWidth(ln); got > w {
+				t.Errorf("width=%d: rendered line width=%d (want ≤ %d). line=%q", w, got, w, ln)
+			}
+		}
+	}
+}
 
 func newTestStatusBarModel(t *testing.T) StatusBarModel {
 	t.Helper()
