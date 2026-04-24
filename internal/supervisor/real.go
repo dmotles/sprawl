@@ -331,6 +331,13 @@ func (r *Real) HandoffRequested() <-chan struct{} {
 	return r.handoffCh
 }
 
+// CallerName returns the identity this supervisor stamps into children's
+// Parent field on Spawn and uses as the "From" in send-async/send-interrupt
+// deliveries. Exposed for tests (see QUM-333 regression guard).
+func (r *Real) CallerName() string {
+	return r.callerName
+}
+
 // PeekActivity reads the tail of the agent's activity.ndjson file and
 // returns the last `tail` entries. A missing file yields an empty slice.
 // tail ≤ 0 returns all available entries.

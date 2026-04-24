@@ -172,9 +172,21 @@ func resolveEnterDeps() *enterDeps {
 			return rootinit.FinalizeHandoff(ctx, deps, sprawlRoot, stdout)
 		},
 		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
+			// CallerName is what gets stamped into Parent when this
+			// supervisor's Spawn() creates a child (cmd/enter.go's supervisor
+			// now serves the MCP sprawl_spawn tool since QUM-329 unified it).
+			// Must be "weave" — the root agent's identity — so child agents'
+			// report/message deliveries route to weave's maildir + harness
+			// queue, not a phantom "enter" recipient.
+			//
+			// Before QUM-329 this field was "enter" because two separate
+			// supervisors coexisted: one here (tree polling — CallerName
+			// didn't matter) and one inside newSessionImpl with
+			// CallerName:rootName. QUM-329 merged them into this one, and
+			// kept the wrong CallerName — regression filed as QUM-333.
 			sup, err := supervisor.NewReal(supervisor.Config{
 				SprawlRoot: sprawlRoot,
-				CallerName: "enter",
+				CallerName: "weave",
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[enter] supervisor unavailable: %v\n", err)

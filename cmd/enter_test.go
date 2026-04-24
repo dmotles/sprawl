@@ -857,3 +857,44 @@ func TestMakeRestartFunc_ThreadsSupervisor(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultEnterDeps_SupervisorCallerIsWeave is a QUM-333 regression
+// guard. The TUI supervisor's CallerName is stamped into every child
+// agent's Parent field on Spawn (via the MCP sprawl_spawn tool) and used
+// as the "From" in every supervisor-originated message delivery. It MUST
+// be "weave" — the root agent's identity.
+//
+// Pre-fix the value was "enter", a ghost name with no agent state file.
+// Children got parent="enter" so their `sprawl report done` deliveries
+// landed in `.sprawl/messages/enter/` and `.sprawl/agents/enter/queue/`
+// instead of weave's maildir and harness queue. Weave's QUM-323 drain
+// found nothing and weave never woke up.
+//
+// The regression was introduced by QUM-329's supervisor unification:
+// before QUM-329 the MCP server owned a second supervisor created with
+// CallerName: rootName (= "weave"), so this one's "enter" placeholder
+// was harmless. QUM-329 merged the two but kept the wrong name.
+func TestDefaultEnterDeps_SupervisorCallerIsWeave(t *testing.T) {
+	// Nil the package-level override so we exercise the production
+	// defaultEnterDeps constructor, not a test shim.
+	prev := defaultEnterDeps
+	defaultEnterDeps = nil
+	defer func() { defaultEnterDeps = prev }()
+
+	deps := resolveEnterDeps()
+	if deps.newSupervisor == nil {
+		t.Fatal("newSupervisor is nil")
+	}
+	tmpDir := t.TempDir()
+	sup := deps.newSupervisor(tmpDir)
+	if sup == nil {
+		t.Fatal("newSupervisor returned nil")
+	}
+	realSup, ok := sup.(*supervisor.Real)
+	if !ok {
+		t.Fatalf("expected *supervisor.Real, got %T", sup)
+	}
+	if got := realSup.CallerName(); got != "weave" {
+		t.Errorf("CallerName = %q, want \"weave\" (QUM-333 — pre-fix was \"enter\", routed children's reports into a phantom queue)", got)
+	}
+}
