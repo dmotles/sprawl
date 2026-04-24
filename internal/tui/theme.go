@@ -82,10 +82,13 @@ func NewTheme(accentColor string) Theme {
 		NormalText: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
 			Background(bg),
+		// No Padding — StatusBarModel.View manages its own left/right spacing
+		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes
+		// the rendered width m.width+2 which wraps the trailing "? Help" onto
+		// a second line at most terminal widths.
 		StatusBar: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
-			Background(lipgloss.Color("236")).
-			Padding(0, 1),
+			Background(lipgloss.Color("236")),
 		SelectedItem: lipgloss.NewStyle().
 			Foreground(accent).
 			Bold(true).
