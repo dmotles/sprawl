@@ -236,6 +236,60 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "sprawl_messages_list",
+			"description": "List messages in the caller's mailbox. Scoped to the caller's agent identity — cannot read other agents' mailboxes. Returns newest-first summaries (id, from, subject, timestamp, read-state). Example: {\"filter\":\"unread\",\"limit\":20}.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"filter": map[string]any{
+						"type":        "string",
+						"description": "Mailbox filter. Default \"all\" (new+cur).",
+						"enum":        []string{"all", "unread", "read", "archived"},
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Max messages to return (newest-first). 0 or omitted = no limit; clamped to 500.",
+					},
+				},
+			},
+		},
+		{
+			"name":        "sprawl_messages_read",
+			"description": "Fetch the full body of a message by ID (short or long prefix). Auto-marks the message read if it was unread (mirrors `sprawl messages read`). Scoped to the caller's mailbox. Example: {\"id\":\"abc\"}.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Message ID (short ID preferred; long-ID prefix accepted).",
+					},
+				},
+				"required": []string{"id"},
+			},
+		},
+		{
+			"name":        "sprawl_messages_archive",
+			"description": "Archive a single message by ID (short or long prefix). Moves the file from new/ or cur/ into archive/. Scoped to the caller's mailbox. Example: {\"id\":\"abc\"}.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"id": map[string]any{
+						"type":        "string",
+						"description": "Message ID to archive.",
+					},
+				},
+				"required": []string{"id"},
+			},
+		},
+		{
+			"name":        "sprawl_messages_peek",
+			"description": "Cheap \"do I have mail?\" probe — returns the caller's unread count and up to 5 newest-first preview summaries. Scoped to the caller's mailbox. Takes no arguments.",
+			"inputSchema": map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
+		{
 			"name":        "sprawl_kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{

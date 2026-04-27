@@ -210,6 +210,10 @@ func sprawlOpsMCPTools() []string {
 		"mcp__sprawl-ops__sprawl_retire",
 		"mcp__sprawl-ops__sprawl_kill",
 		"mcp__sprawl-ops__sprawl_handoff",
+		"mcp__sprawl-ops__sprawl_messages_list",
+		"mcp__sprawl-ops__sprawl_messages_read",
+		"mcp__sprawl-ops__sprawl_messages_archive",
+		"mcp__sprawl-ops__sprawl_messages_peek",
 	}
 }
 

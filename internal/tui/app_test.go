@@ -822,6 +822,22 @@ func (m *mockSupervisor) SendInterrupt(_ context.Context, _, _, _, _ string) (*s
 	return &supervisor.SendInterruptResult{}, nil
 }
 
+func (m *mockSupervisor) MessagesList(_ context.Context, _ string, _ int) (*supervisor.MessagesListResult, error) {
+	return &supervisor.MessagesListResult{}, nil
+}
+
+func (m *mockSupervisor) MessagesRead(_ context.Context, _ string) (*supervisor.MessagesReadResult, error) {
+	return &supervisor.MessagesReadResult{}, nil
+}
+
+func (m *mockSupervisor) MessagesArchive(_ context.Context, _ string) (*supervisor.MessagesArchiveResult, error) {
+	return &supervisor.MessagesArchiveResult{}, nil
+}
+
+func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPeekResult, error) {
+	return &supervisor.MessagesPeekResult{}, nil
+}
+
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
 	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)
