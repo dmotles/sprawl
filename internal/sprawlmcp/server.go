@@ -292,14 +292,33 @@ func (s *Server) toolRetire(ctx context.Context, args json.RawMessage) (string, 
 		AgentName string `json:"agent_name"`
 		Merge     bool   `json:"merge"`
 		Abandon   bool   `json:"abandon"`
+		Cascade   bool   `json:"cascade"`
+		Validate  *bool  `json:"validate"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := s.sup.Retire(ctx, p.AgentName, p.Merge, p.Abandon); err != nil {
+	if p.Merge && p.Abandon {
+		return "", fmt.Errorf("merge and abandon are mutually exclusive")
+	}
+	noValidate := p.Validate != nil && !*p.Validate
+	if err := s.sup.Retire(ctx, p.AgentName, p.Merge, p.Abandon, p.Cascade, noValidate); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Retired agent %s", p.AgentName), nil
+	switch {
+	case p.Cascade && p.Abandon:
+		return fmt.Sprintf("Retired agent %s and descendants (branches abandoned)", p.AgentName), nil
+	case p.Cascade && p.Merge:
+		return fmt.Sprintf("Merged and retired agent %s and descendants", p.AgentName), nil
+	case p.Cascade:
+		return fmt.Sprintf("Retired agent %s and descendants", p.AgentName), nil
+	case p.Abandon:
+		return fmt.Sprintf("Retired agent %s (branch abandoned)", p.AgentName), nil
+	case p.Merge:
+		return fmt.Sprintf("Merged and retired agent %s", p.AgentName), nil
+	default:
+		return fmt.Sprintf("Retired agent %s", p.AgentName), nil
+	}
 }
 
 func (s *Server) toolKill(ctx context.Context, args json.RawMessage) (string, error) {

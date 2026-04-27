@@ -201,7 +201,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "sprawl_retire",
-			"description": "Shut down an agent. Optionally merge its work first or abandon (delete) its branch.",
+			"description": "Shut down an agent. Optionally merge its work first, abandon (delete) its branch, or cascade through descendants. Default refuses if the agent has unmerged commits or active children; pass `merge`, `abandon`, or `cascade` to override.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -211,11 +211,19 @@ func toolDefinitions() []map[string]any {
 					},
 					"merge": map[string]any{
 						"type":        "boolean",
-						"description": "Merge the agent's work before retiring",
+						"description": "Squash-merge the agent's work into the caller's branch before retiring. Mutually exclusive with abandon.",
 					},
 					"abandon": map[string]any{
 						"type":        "boolean",
-						"description": "Discard the agent's work and delete its branch",
+						"description": "Discard the agent's work and delete its branch, even if commits are unmerged. Mutually exclusive with merge.",
+					},
+					"cascade": map[string]any{
+						"type":        "boolean",
+						"description": "If the agent has descendants, retire them bottom-up applying the same flags. Without this, retire refuses when children exist.",
+					},
+					"validate": map[string]any{
+						"type":        "boolean",
+						"description": "Run project validate after merge (default true). Only meaningful with merge=true.",
 					},
 				},
 				"required": []string{"agent_name"},

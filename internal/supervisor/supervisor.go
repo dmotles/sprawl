@@ -124,7 +124,7 @@ type Supervisor interface {
 	Delegate(ctx context.Context, agentName, task string) error
 	Message(ctx context.Context, agentName, subject, body string) error
 	Merge(ctx context.Context, agentName, message string, noValidate bool) error
-	Retire(ctx context.Context, agentName string, merge, abandon bool) error
+	Retire(ctx context.Context, agentName string, merge, abandon, cascade, noValidate bool) error
 	Kill(ctx context.Context, agentName string) error
 	Shutdown(ctx context.Context) error
 

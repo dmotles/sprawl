@@ -24,22 +24,24 @@ type mockSupervisor struct {
 	shutdownErr  error
 
 	// Recorded calls
-	spawnCalled    *supervisor.SpawnRequest
-	delegateAgent  string
-	delegateTask   string
-	messageAgent   string
-	messageSubject string
-	messageBody    string
-	mergeAgent     string
-	mergeMessage   string
-	mergeNoVal     bool
-	retireAgent    string
-	retireMerge    bool
-	retireAbandon  bool
-	killAgent      string
-	handoffSummary string
-	handoffErr     error
-	handoffCh      chan struct{}
+	spawnCalled      *supervisor.SpawnRequest
+	delegateAgent    string
+	delegateTask     string
+	messageAgent     string
+	messageSubject   string
+	messageBody      string
+	mergeAgent       string
+	mergeMessage     string
+	mergeNoVal       bool
+	retireAgent      string
+	retireMerge      bool
+	retireAbandon    bool
+	retireCascade    bool
+	retireNoValidate bool
+	killAgent        string
+	handoffSummary   string
+	handoffErr       error
+	handoffCh        chan struct{}
 
 	// SendAsync / Peek recording + seams
 	sendAsyncTo       string
@@ -178,10 +180,12 @@ func (m *mockSupervisor) Merge(_ context.Context, agentName, message string, noV
 	return m.mergeErr
 }
 
-func (m *mockSupervisor) Retire(_ context.Context, agentName string, merge, abandon bool) error {
+func (m *mockSupervisor) Retire(_ context.Context, agentName string, merge, abandon, cascade, noValidate bool) error {
 	m.retireAgent = agentName
 	m.retireMerge = merge
 	m.retireAbandon = abandon
+	m.retireCascade = cascade
+	m.retireNoValidate = noValidate
 	return m.retireErr
 }
 
@@ -609,10 +613,117 @@ func TestServer_ToolsCall_SprawlRetire(t *testing.T) {
 	if mock.retireAbandon {
 		t.Error("retire abandon = true, want false")
 	}
+	if mock.retireCascade {
+		t.Error("retire cascade = true, want false")
+	}
+	if mock.retireNoValidate {
+		t.Error("retire noValidate = true, want false (validate defaults to true)")
+	}
 
 	parsed := parseJSONRPCResponse(t, resp)
 	if _, ok := parsed["error"]; ok {
 		t.Errorf("unexpected error: %v", parsed["error"])
+	}
+}
+
+func TestServer_ToolsCall_SprawlRetire_Cascade(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(80, "tools/call", map[string]any{
+		"name": "sprawl_retire",
+		"arguments": map[string]any{
+			"agent_name": "manager-x",
+			"cascade":    true,
+			"abandon":    true,
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	if !mock.retireCascade {
+		t.Error("retire cascade = false, want true")
+	}
+	if !mock.retireAbandon {
+		t.Error("retire abandon = false, want true")
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	if _, ok := parsed["error"]; ok {
+		t.Errorf("unexpected error: %v", parsed["error"])
+	}
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Errorf("unexpected isError=true: %v", result)
+	}
+	content := result["content"].([]any)
+	text, _ := content[0].(map[string]any)["text"].(string)
+	if text == "" || text == "Retired agent manager-x" {
+		t.Errorf("expected descendants mentioned in success text, got %q", text)
+	}
+}
+
+func TestServer_ToolsCall_SprawlRetire_ValidateFalse(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(81, "tools/call", map[string]any{
+		"name": "sprawl_retire",
+		"arguments": map[string]any{
+			"agent_name": "ratz",
+			"merge":      true,
+			"validate":   false,
+		},
+	})
+	if _, err := srv.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+	if !mock.retireNoValidate {
+		t.Error("retire noValidate = false, want true (validate=false)")
+	}
+}
+
+func TestServer_ToolsCall_SprawlRetire_MergeAndAbandonMutuallyExclusive(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(82, "tools/call", map[string]any{
+		"name": "sprawl_retire",
+		"arguments": map[string]any{
+			"agent_name": "ratz",
+			"merge":      true,
+			"abandon":    true,
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	if mock.retireAgent != "" {
+		t.Error("supervisor.Retire should not have been invoked when merge+abandon both set")
+	}
+	parsed := parseJSONRPCResponse(t, resp)
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing result: %v", parsed)
+	}
+	isErr, _ := result["isError"].(bool)
+	if !isErr {
+		t.Errorf("expected isError=true, got result=%v", result)
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("missing error content")
+	}
+	text, _ := content[0].(map[string]any)["text"].(string)
+	if text == "" {
+		t.Error("expected error message text")
 	}
 }
 
