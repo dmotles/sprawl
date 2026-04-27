@@ -134,6 +134,12 @@ type AppModel struct {
 	// no idle CPU is consumed.
 	spinner          spinner.Model
 	pendingToolCalls int
+
+	// pendingSubmit holds the next user message stashed while weave is mid-turn
+	// (QUM-340). Single slot — typing a fresh message and hitting Enter again
+	// replaces the previous queued content. Cleared when the turn finalizes
+	// (auto-submit), the user presses Esc, or a session restart fires.
+	pendingSubmit string
 }
 
 const (
@@ -320,6 +326,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// QUM-340: Esc with a queued submit revokes it. Only fire when there
+		// is something queued so the key is otherwise free for whatever the
+		// active panel does with it. The textinput buffer is left intact so
+		// the user keeps composing without losing partial typing.
+		if msg.Code == tea.KeyEscape && m.pendingSubmit != "" {
+			m.pendingSubmit = ""
+			m.input.SetPendingPreview("")
+			return m, nil
+		}
+
 		// Delegate to active panel.
 		return m.delegateKey(msg)
 
@@ -334,7 +350,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case OpenPaletteMsg:
-		if m.input.disabled || m.showConfirm || m.showError || m.showHelp || m.showPalette {
+		// Gate on modals AND observed-agent-is-root: when observing a child
+		// the input bar is hidden (QUM-340), so opening the palette would
+		// dispatch commands the user can't see typed into.
+		if m.input.disabled || m.showConfirm || m.showError || m.showHelp || m.showPalette || m.observedAgent != m.rootAgent {
 			return m, nil
 		}
 		m.palette.SetSize(m.width, m.height)
@@ -362,7 +381,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.rootVP().AppendStatus("/handoff dispatched — see output below")
 		m.setTurnState(TurnThinking)
-		m.input.SetDisabled(true)
 		return m, m.bridge.SendMessage(msg.Template)
 
 	case InboxDrainMsg:
@@ -388,16 +406,23 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rootVP().AppendSystemMessage(msg.Prompt)
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
-		m.input.SetDisabled(true)
 		return m, m.bridge.SendMessage(msg.Prompt)
 
 	case SubmitMsg:
-		if msg.Text == "" || m.bridge == nil || m.turnState != TurnIdle {
+		if msg.Text == "" || m.bridge == nil {
+			return m, nil
+		}
+		// QUM-340: while a turn is in flight, stash the message in the
+		// single-slot pending queue rather than dropping it. Replaces any
+		// previously-queued content (typing replaces, single-slot semantics).
+		// The auto-submit fires from the SessionResultMsg finalize path.
+		if m.turnState != TurnIdle {
+			m.pendingSubmit = msg.Text
+			m.input.SetPendingPreview(msg.Text)
 			return m, nil
 		}
 		m.rootVP().AppendUserMessage(msg.Text)
 		m.setTurnState(TurnThinking)
-		m.input.SetDisabled(true)
 		return m, m.bridge.SendMessage(msg.Text)
 
 	case UserMessageSentMsg:
@@ -497,7 +522,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
 		}
 		m.setTurnState(TurnIdle)
-		m.input.SetDisabled(false)
+		// QUM-340: auto-fire any queued submit by re-dispatching a SubmitMsg
+		// through the same code path as a real Enter. Clear the slot + the
+		// indicator before dispatching so re-entry sees a clean state.
+		if m.pendingSubmit != "" {
+			queued := m.pendingSubmit
+			m.pendingSubmit = ""
+			m.input.SetPendingPreview("")
+			return m, sendMsgCmd(SubmitMsg{Text: queued})
+		}
 		return m, nil
 
 	case SessionErrorMsg:
@@ -517,12 +550,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorDialog.SetSize(m.width, m.height)
 			m.showError = true
 			m.setTurnState(TurnIdle)
-			m.input.SetDisabled(true)
 			return m, nil
 		}
 		m.rootVP().AppendError(msg.Err.Error())
 		m.setTurnState(TurnIdle)
-		m.input.SetDisabled(false)
 		return m, nil
 
 	case HandoffRequestedMsg:
@@ -544,8 +575,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.palette.Hide()
 		m.showPalette = false
 		m.rootVP().AppendStatus(fmt.Sprintf("Session restarting (%s)...", reason))
+		// QUM-340: a session restart wipes the conversational context the user
+		// queued their next message against. Drop the slot and surface a
+		// one-line banner so the disappearance isn't silent.
+		if m.pendingSubmit != "" {
+			m.pendingSubmit = ""
+			m.input.SetPendingPreview("")
+			m.rootVP().AppendStatus("queued message dropped due to session restart")
+		}
 		m.setTurnState(TurnIdle)
-		m.input.SetDisabled(true)
 		return m, nil
 
 	case RestartSessionMsg:
@@ -577,7 +615,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// outcome.
 		m.restarting = true
 		m.restartStartedAt = m.restartClock()()
-		m.input.SetDisabled(true)
 		fn := m.restartFunc
 		return m, tea.Batch(
 			func() tea.Msg {
@@ -609,7 +646,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorDialog = NewErrorDialog(&m.theme, msg.Err)
 			m.errorDialog.SetSize(m.width, m.height)
 			m.showError = true
-			m.input.SetDisabled(true)
 			return m, nil
 		}
 		if msg.Bridge == nil {
@@ -618,7 +654,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorDialog = NewErrorDialog(&m.theme, fmt.Errorf("restart produced nil bridge"))
 			m.errorDialog.SetSize(m.width, m.height)
 			m.showError = true
-			m.input.SetDisabled(true)
 			return m, nil
 		}
 		m.bridge = msg.Bridge
@@ -635,14 +670,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusBar.SetSessionID(shortID)
 		m.setTurnState(TurnIdle)
-		m.input.SetDisabled(false)
 		return m, m.bridge.Initialize()
 
 	case TurnStateMsg:
 		m.setTurnState(msg.State)
-		if msg.State == TurnIdle {
-			m.input.SetDisabled(false)
-		}
 		return m, nil
 
 	case ActivityTickMsg:
@@ -740,11 +771,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// something to render against.
 		_ = m.viewportFor(msg.Name)
 
-		// Disable input for non-root agents.
-		if msg.Name != m.rootAgent {
-			m.input.SetDisabled(true)
-		} else {
-			m.input.SetDisabled(false)
+		// QUM-340: hide the input bar entirely while observing a non-root
+		// agent. The viewport reclaims the bar's vertical space; resizePanels
+		// recomputes per-agent viewport sizes against the new layout. The
+		// pendingSubmit slot is preserved across cycles intentionally — when
+		// the user cycles back to weave the indicator reappears alongside the
+		// restored input bar.
+		if m.ready && !m.tooSmall {
+			m.resizePanels()
 		}
 
 		// Refresh the activity panel for the newly-observed agent.
@@ -820,6 +854,17 @@ func (m AppModel) View() tea.View {
 	}
 
 	layout := ComputeLayout(m.width, m.height)
+	// QUM-340: when the user is observing a non-root agent, the input bar is
+	// hidden — they can only talk to weave. Reclaim its vertical space for
+	// the viewport so the layout doesn't waste rows on a bar we're not
+	// drawing.
+	inputVisible := m.observedAgent == m.rootAgent
+	if !inputVisible {
+		layout.ViewportHeight += layout.InputHeight
+		layout.TreeHeight += layout.InputHeight
+		layout.ActivityHeight += layout.InputHeight
+		layout.InputHeight = 0
+	}
 
 	// Render tree panel with border.
 	treeBorder := m.borderStyle(PanelTree).
@@ -846,17 +891,21 @@ func (m AppModel) View() tea.View {
 		mainRow = lipgloss.JoinHorizontal(lipgloss.Top, treeView, vpView)
 	}
 
-	// Render input with border.
-	inputBorder := m.borderStyle(PanelInput).
-		Width(layout.InputWidth - 2).
-		Height(layout.InputHeight - 2)
-	inputView := inputBorder.Render(m.input.View())
-
 	// Status bar.
 	statusView := m.statusBar.View()
 
-	// Stack vertically.
-	content := lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
+	// Stack vertically. The input bar is omitted while observing a non-root
+	// agent (QUM-340) — the viewport above already owns those rows.
+	var content string
+	if inputVisible {
+		inputBorder := m.borderStyle(PanelInput).
+			Width(layout.InputWidth - 2).
+			Height(layout.InputHeight - 2)
+		inputView := inputBorder.Render(m.input.View())
+		content = lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
+	} else {
+		content = lipgloss.JoinVertical(lipgloss.Left, mainRow, statusView)
+	}
 
 	if m.showPalette {
 		content = m.palette.View()
@@ -968,6 +1017,14 @@ func (m *AppModel) cycleAgent(delta int) tea.Cmd {
 
 func (m *AppModel) resizePanels() {
 	layout := ComputeLayout(m.width, m.height)
+	// QUM-340: when the user is observing a non-root agent the input bar is
+	// hidden in View(); the *observed* viewport reclaims InputHeight rows.
+	// Non-observed buffers stay sized to the input-visible layout so they
+	// already match when the user cycles back to them.
+	observedHeight := layout.ViewportHeight
+	if m.observedAgent != m.rootAgent {
+		observedHeight += layout.InputHeight
+	}
 
 	// Panel borders take 2 cells total per axis (1 cell on each side). In
 	// lipgloss v2, a Border()+Width(N) style sets the OUTER width to N and
@@ -980,8 +1037,15 @@ func (m *AppModel) resizePanels() {
 	// then pushes the tree panel taller than its declared Height and clips
 	// the input box off the bottom of the screen (QUM-324 residual).
 	m.tree.SetSize(layout.TreeWidth-4, layout.TreeHeight-4)
-	for _, buf := range m.agentBuffers {
-		buf.vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
+	for name, buf := range m.agentBuffers {
+		// The currently-observed viewport may need the input bar's reclaimed
+		// rows (QUM-340). Other buffers stay sized for the input-visible
+		// layout so they're correct on the next cycle-to-root.
+		h := layout.ViewportHeight
+		if name == m.observedAgent {
+			h = observedHeight
+		}
+		buf.vp.SetSize(layout.ViewportWidth-4, h-4)
 	}
 	if layout.ActivityWidth > 0 {
 		m.activity.SetSize(layout.ActivityWidth-4, layout.ActivityHeight-4)

@@ -129,8 +129,11 @@ func TestAppModel_InjectPromptMsg_SendsToBridgeWithoutAppendingUserMessage(t *te
 	if app.turnState != TurnThinking {
 		t.Errorf("turnState after InjectPromptMsg = %v, want TurnThinking", app.turnState)
 	}
-	if !app.input.disabled {
-		t.Error("input should be disabled after InjectPromptMsg")
+	// QUM-340: input is no longer disabled by turn state — the user can keep
+	// typing while the injected /handoff prompt is in flight, and a fresh
+	// Enter would queue into pendingSubmit. Verify the bar is unaffected.
+	if app.input.disabled {
+		t.Error("input must not be disabled by turn-state after QUM-340")
 	}
 	if cmd == nil {
 		t.Fatal("InjectPromptMsg must return a cmd that calls bridge.SendMessage")
