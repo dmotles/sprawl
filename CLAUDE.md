@@ -65,7 +65,7 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 
 This project tracks work in Linear. See `CLAUDE.local.md` for workspace-specific configuration (team name, issue prefix).
 
-When creating, managing, or querying issues, use the `/linear-issues` skill for conventions, required fields, and MCP tool usage.
+When creating, managing, or querying issues, **invoke the `/linear-issues` skill via the Skill tool first** — do not rely on remembered conventions. The skill defines required fields (label, milestone, state) that are easy to miss otherwise.
 
 **Issue lifecycle** — if you are working on a Linear issue:
 1. **Start**: Set the issue state to "In Progress" via `save_issue`. Add a comment via `save_comment` noting you're picking it up (include your agent name/identity if you have one).
