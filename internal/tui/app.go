@@ -12,7 +12,9 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -30,6 +32,13 @@ const (
 type AgentBuffer struct {
 	Messages   []MessageEntry
 	AutoScroll bool
+
+	// SessionID names the Claude session_id that the cached child transcript
+	// was hydrated against. Only populated for non-root agents. When the
+	// underlying agent state file's session_id changes (handoff / respawn),
+	// the cached buffer is invalidated and re-hydrated from offset zero.
+	// QUM-332.
+	SessionID string
 }
 
 // AppModel is the root Bubble Tea model composing all panels.
@@ -97,9 +106,24 @@ type AppModel struct {
 	// while a restart is in flight. Tests shorten it; zero means use
 	// defaultRestartTick.
 	restartTick time.Duration
+
+	// homeDir is the user's home directory, used to resolve Claude session
+	// log paths for child-agent transcript tailing (QUM-332). Set via
+	// SetHomeDir after construction. When empty, child transcripts can't be
+	// loaded and the viewport falls back to the legacy "Observing X..."
+	// banner.
+	homeDir string
+
+	// childTranscriptTick is the cadence between transcript re-reads while a
+	// non-root agent is observed. Tests shorten it; zero means use
+	// defaultChildTranscriptTick.
+	childTranscriptTick time.Duration
 }
 
-const defaultRestartTick = time.Second
+const (
+	defaultRestartTick         = time.Second
+	defaultChildTranscriptTick = 2 * time.Second
+)
 
 // NewAppModel constructs the root model with all sub-models.
 // bridge may be nil for static placeholder mode.
@@ -600,10 +624,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AgentSelectedMsg:
-		// Save current viewport to buffer.
+		// Save current viewport to buffer (preserve SessionID if the prior
+		// observed agent was a non-root with an active transcript cache).
+		prevSessionID := ""
+		if existing, ok := m.agentBuffers[m.observedAgent]; ok {
+			prevSessionID = existing.SessionID
+		}
 		m.agentBuffers[m.observedAgent] = &AgentBuffer{
 			Messages:   m.viewport.GetMessages(),
 			AutoScroll: m.viewport.IsAutoScroll(),
+			SessionID:  prevSessionID,
 		}
 
 		m.observedAgent = msg.Name
@@ -612,9 +642,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if buf, ok := m.agentBuffers[msg.Name]; ok {
 			m.viewport.SetMessages(buf.Messages)
 			m.viewport.SetAutoScroll(buf.AutoScroll)
-		} else {
+		} else if msg.Name == m.rootAgent {
 			m.viewport.SetMessages(nil)
 			m.viewport.AppendStatus(fmt.Sprintf("Observing %s...", msg.Name))
+		} else {
+			// Non-root: clear the viewport; the dispatched ChildTranscriptMsg
+			// will populate it (or render a "Waiting..." placeholder).
+			m.viewport.SetMessages(nil)
 		}
 
 		// Disable input for non-root agents.
@@ -627,10 +661,61 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Refresh the activity panel for the newly-observed agent.
 		m.activity.SetAgent(msg.Name)
 		m.activity.SetEntries(nil)
+
+		var cmds []tea.Cmd
 		if m.supervisor != nil {
-			return m, tickActivityCmd(m.supervisor, msg.Name)
+			cmds = append(cmds, tickActivityCmd(m.supervisor, msg.Name))
 		}
-		return m, nil
+		// Non-root agents: kick off transcript hydration (QUM-332).
+		if msg.Name != m.rootAgent {
+			cmds = append(cmds, loadChildTranscriptCmd(m.sprawlRoot, m.homeDir, msg.Name))
+		}
+		switch len(cmds) {
+		case 0:
+			return m, nil
+		case 1:
+			return m, cmds[0]
+		default:
+			return m, tea.Batch(cmds...)
+		}
+
+	case ChildTranscriptMsg:
+		// Drop stale ticks (the user has cycled to another agent since this
+		// load was scheduled).
+		if msg.Agent != m.observedAgent {
+			return m, nil
+		}
+		switch {
+		case msg.Err != nil:
+			m.viewport.AppendError(fmt.Sprintf("transcript load failed for %s: %v", msg.Agent, msg.Err))
+		case len(msg.Entries) > 0:
+			m.viewport.SetMessages(msg.Entries)
+			buf := m.agentBuffers[msg.Agent]
+			if buf == nil {
+				buf = &AgentBuffer{AutoScroll: m.viewport.IsAutoScroll()}
+			}
+			buf.Messages = msg.Entries
+			buf.SessionID = msg.SessionID
+			m.agentBuffers[msg.Agent] = buf
+		default:
+			// Empty entries: show "Waiting for X..." idempotently. Avoid
+			// re-appending on repeated empty ticks by checking whether the
+			// banner is already the only entry in the viewport.
+			cur := m.viewport.GetMessages()
+			banner := fmt.Sprintf("Waiting for %s to start...", msg.Agent)
+			alreadyShowing := len(cur) == 1 && cur[0].Type == MessageStatus && cur[0].Content == banner
+			if !alreadyShowing {
+				m.viewport.SetMessages([]MessageEntry{{
+					Type: MessageStatus, Content: banner, Complete: true,
+				}})
+			}
+		}
+		// Reschedule for the next tick while the same non-root agent is
+		// observed. Root agents (weave) don't need transcript polling.
+		if msg.Agent == m.rootAgent {
+			return m, nil
+		}
+		return m, scheduleChildTranscriptTick(m.sprawlRoot, m.homeDir, msg.Agent, m.childTranscriptTickInterval())
 	}
 
 	return m, nil
@@ -1023,5 +1108,74 @@ func scheduleActivityTick(sup supervisor.Supervisor, agent string) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(2 * time.Second)
 		return tickActivityCmd(sup, agent)()
+	}
+}
+
+// SetHomeDir injects the user's home directory used to resolve Claude session
+// log paths for child-agent transcript tailing (QUM-332). Wired by cmd/enter.go
+// after model construction.
+func (m *AppModel) SetHomeDir(homeDir string) {
+	m.homeDir = homeDir
+}
+
+// SetChildTranscriptTick overrides the polling cadence for child-agent
+// transcript re-reads. Used by tests to avoid sleeping a real interval.
+func (m *AppModel) SetChildTranscriptTick(d time.Duration) {
+	m.childTranscriptTick = d
+}
+
+func (m *AppModel) childTranscriptTickInterval() time.Duration {
+	if m.childTranscriptTick > 0 {
+		return m.childTranscriptTick
+	}
+	return defaultChildTranscriptTick
+}
+
+// loadChildTranscriptCmd returns a Cmd that reads .sprawl/agents/<name>.json
+// for the child's session_id + worktree, resolves the Claude session log path,
+// and parses entries up to ReplayMaxMessages. Returns a ChildTranscriptMsg
+// regardless of outcome — empty Entries with no error signal "no session yet"
+// or "log not on disk yet" so the AppModel can render the "Waiting for X..."
+// placeholder. QUM-332.
+func loadChildTranscriptCmd(sprawlRoot, homeDir, name string) tea.Cmd {
+	return func() tea.Msg {
+		return readChildTranscript(sprawlRoot, homeDir, name)
+	}
+}
+
+func readChildTranscript(sprawlRoot, homeDir, name string) ChildTranscriptMsg {
+	if sprawlRoot == "" || homeDir == "" {
+		return ChildTranscriptMsg{Agent: name}
+	}
+	agent, err := state.LoadAgent(sprawlRoot, name)
+	if err != nil {
+		// Missing state file → treat as "not yet booted" rather than hard
+		// error. The polling tick will pick up the file once it exists.
+		return ChildTranscriptMsg{Agent: name}
+	}
+	if agent.SessionID == "" {
+		return ChildTranscriptMsg{Agent: name}
+	}
+	var since time.Time
+	if agent.CreatedAt != "" {
+		if ts, perr := time.Parse(time.RFC3339, agent.CreatedAt); perr == nil {
+			since = ts
+		}
+	}
+	logPath := memory.SessionLogPath(homeDir, agent.Worktree, agent.SessionID)
+	entries, err := LoadChildTranscript(logPath, since, ReplayMaxMessages)
+	if err != nil {
+		return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Err: err}
+	}
+	return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Entries: entries}
+}
+
+// scheduleChildTranscriptTick fires a follow-up ChildTranscriptMsg after the
+// configured interval. Mirrors scheduleActivityTick — staleness is handled at
+// receive time rather than via cancellation.
+func scheduleChildTranscriptTick(sprawlRoot, homeDir, name string, interval time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		time.Sleep(interval)
+		return readChildTranscript(sprawlRoot, homeDir, name)
 	}
 }

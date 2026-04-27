@@ -186,6 +186,21 @@ type ConsolidationProgressMsg struct {
 	Elapsed time.Duration
 }
 
+// ChildTranscriptMsg carries a freshly-loaded snapshot of a child agent's
+// Claude session transcript. Emitted when the user observes a non-root agent
+// (initial hydrate on AgentSelectedMsg, plus periodic re-reads while observed).
+// The App applies it only if Agent matches the currently-observed agent.
+//
+// Empty Entries with no error → "Waiting for <agent>..." placeholder
+// (covers: agent has no session_id yet, or the session log has not been
+// created on disk yet). QUM-332.
+type ChildTranscriptMsg struct {
+	Agent     string
+	SessionID string
+	Entries   []MessageEntry
+	Err       error
+}
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new
