@@ -1,10 +1,12 @@
 package worktree
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // Creator abstracts git worktree operations for testability.
@@ -26,11 +28,21 @@ func (r *RealCreator) Create(repoRoot, agentName, branchName, baseBranch string)
 
 	worktreePath := filepath.Join(worktreesDir, agentName)
 
+	// Capture stdout and stderr instead of letting the subprocess inherit
+	// the parent's FD 1/2. In TUI mode (Bubble Tea alt-screen), git's
+	// "Preparing worktree (...)" / "HEAD is now at ..." progress lines
+	// otherwise paint on top of the rendered frame. See QUM-330 (stdout)
+	// and QUM-304 (stderr, fixed at the parent process level).
 	cmd := exec.Command("git", "worktree", "add", worktreePath, "-b", branchName, baseBranch)
 	cmd.Dir = repoRoot
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
 	if err := cmd.Run(); err != nil {
+		out := strings.TrimSpace(combined.String())
+		if out != "" {
+			return "", "", fmt.Errorf("creating git worktree: %w: %s", err, out)
+		}
 		return "", "", fmt.Errorf("creating git worktree: %w", err)
 	}
 
