@@ -611,7 +611,7 @@ func TestAppModel_SessionErrorMsg_WhenIdle_AppendsToViewport(t *testing.T) {
 	}
 	// Error text should be in viewport
 	found := false
-	for _, entry := range app.viewport.messages {
+	for _, entry := range app.viewportFor("weave").messages {
 		if entry.Type == MessageError && strings.Contains(entry.Content, "some transient error") {
 			found = true
 			break
@@ -736,7 +736,7 @@ func TestAppModel_SessionResultMsg_DisplaysResultText(t *testing.T) {
 
 	// The result text should be displayed as an assistant message in the viewport.
 	found := false
-	for _, entry := range app.viewport.messages {
+	for _, entry := range app.viewportFor("weave").messages {
 		if entry.Type == MessageAssistant && strings.Contains(entry.Content, "pong") {
 			found = true
 			break
@@ -759,7 +759,7 @@ func TestAppModel_SessionResultMsg_ErrorDoesNotDisplayResultAsAssistant(t *testi
 	app = updated.(AppModel)
 
 	// Error result should NOT be displayed as assistant message
-	for _, entry := range app.viewport.messages {
+	for _, entry := range app.viewportFor("weave").messages {
 		if entry.Type == MessageAssistant {
 			t.Error("Error SessionResultMsg should not create an assistant message entry")
 		}
@@ -895,7 +895,7 @@ func TestAppModel_AgentSelectedMsg_SwapsViewport(t *testing.T) {
 	app = updated.(AppModel)
 
 	// Add a message to the root agent's viewport.
-	app.viewport.AppendUserMessage("root message")
+	app.viewportFor("weave").AppendUserMessage("root message")
 
 	// Switch to observing tower.
 	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
@@ -906,8 +906,9 @@ func TestAppModel_AgentSelectedMsg_SwapsViewport(t *testing.T) {
 		t.Errorf("observedAgent = %q after selecting tower, want %q", app.observedAgent, "tower")
 	}
 
-	// The viewport should NOT contain the root message (it should be buffered).
-	view := app.viewport.View()
+	// The rendered (observed) viewport should NOT contain the root message
+	// while observing tower — tower's vp is independent.
+	view := app.observedVP().View()
 	if strings.Contains(view, "root message") {
 		t.Error("viewport should not show root agent's messages when observing tower")
 	}
@@ -916,7 +917,7 @@ func TestAppModel_AgentSelectedMsg_SwapsViewport(t *testing.T) {
 	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
 	app = updated.(AppModel)
 
-	view = app.viewport.View()
+	view = app.observedVP().View()
 	if !strings.Contains(view, "root message") {
 		t.Errorf("viewport should show root agent's messages after switching back, got:\n%s", view)
 	}
@@ -1358,7 +1359,7 @@ func TestAppModel_SessionRestartingMsg_AppendsStatusAndDisablesInput(t *testing.
 		t.Errorf("turnState = %v, want TurnIdle", app.turnState)
 	}
 	found := false
-	for _, entry := range app.viewport.messages {
+	for _, entry := range app.viewportFor("weave").messages {
 		if strings.Contains(entry.Content, "session ended") {
 			found = true
 			break
@@ -1669,7 +1670,7 @@ func TestAppModel_PreloadTranscript_SetsViewportMessages(t *testing.T) {
 	}
 	m.PreloadTranscript(entries)
 
-	got := m.viewport.GetMessages()
+	got := m.viewportFor("weave").GetMessages()
 	if len(got) != 3 {
 		t.Fatalf("len(viewport messages) = %d, want 3", len(got))
 	}
@@ -1718,15 +1719,15 @@ func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
 	app := resized.(AppModel)
 
 	// Seed the viewport with prior-session conversation.
-	app.viewport.AppendUserMessage("old user message")
-	app.viewport.AppendAssistantChunk("old assistant reply")
-	app.viewport.FinalizeAssistantMessage()
+	app.viewportFor("weave").AppendUserMessage("old user message")
+	app.viewportFor("weave").AppendAssistantChunk("old assistant reply")
+	app.viewportFor("weave").FinalizeAssistantMessage()
 
 	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
 	app = driveAsyncRestart(t, app, cmd)
 
-	msgs := app.viewport.GetMessages()
+	msgs := app.viewportFor("weave").GetMessages()
 	for _, e := range msgs {
 		if strings.Contains(e.Content, "old user message") || strings.Contains(e.Content, "old assistant reply") {
 			t.Errorf("viewport should be cleared on restart; still contains prior message: %+v", e)
@@ -1750,7 +1751,7 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 	app = updated.(AppModel)
 	app = driveAsyncRestart(t, app, cmd)
 
-	msgs := app.viewport.GetMessages()
+	msgs := app.viewportFor("weave").GetMessages()
 	found := false
 	for _, e := range msgs {
 		if e.Type == MessageStatus && strings.Contains(e.Content, "New session started") && strings.Contains(e.Content, "abcdef12") {
@@ -1818,7 +1819,7 @@ func TestAppModel_SessionInitializedMsg_DoesNotClearPreloadedTranscript(t *testi
 	updated, _ := app.Update(SessionInitializedMsg{})
 	app = updated.(AppModel)
 
-	msgs := app.viewport.GetMessages()
+	msgs := app.viewportFor("weave").GetMessages()
 	if len(msgs) < 2 {
 		t.Fatalf("preloaded transcript was cleared by SessionInitializedMsg; got %d messages, want >=2", len(msgs))
 	}
@@ -1830,7 +1831,7 @@ func TestAppModel_SessionInitializedMsg_DoesNotClearPreloadedTranscript(t *testi
 func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 	m := newTestAppModel(t)
 	m.PreloadTranscript(nil)
-	if got := m.viewport.GetMessages(); len(got) != 0 {
+	if got := m.viewportFor("weave").GetMessages(); len(got) != 0 {
 		t.Errorf("len(viewport messages) = %d, want 0", len(got))
 	}
 }
@@ -1841,9 +1842,9 @@ func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 func seedScrollableViewport(t *testing.T, app AppModel) AppModel {
 	t.Helper()
 	for i := 0; i < 200; i++ {
-		app.viewport.AppendAssistantChunk(fmt.Sprintf("scroll line %d\n", i))
+		app.viewportFor("weave").AppendAssistantChunk(fmt.Sprintf("scroll line %d\n", i))
 	}
-	app.viewport.FinalizeAssistantMessage()
+	app.viewportFor("weave").FinalizeAssistantMessage()
 	return app
 }
 
@@ -1878,14 +1879,14 @@ func TestAppModel_MouseWheelUp_DisablesAutoScroll(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
 	app = seedScrollableViewport(t, app)
-	if !app.viewport.IsAutoScroll() {
+	if !app.viewportFor("weave").IsAutoScroll() {
 		t.Fatal("precondition: autoScroll should be true after seeding")
 	}
 
 	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	app = out.(AppModel)
 
-	if app.viewport.IsAutoScroll() {
+	if app.viewportFor("weave").IsAutoScroll() {
 		t.Error("expected autoScroll=false after MouseWheelUp; mouse wheel msg did not reach viewport")
 	}
 }
@@ -1900,7 +1901,7 @@ func TestAppModel_MouseWheel_SuppressedByModalHelp(t *testing.T) {
 	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	app = out.(AppModel)
 
-	if !app.viewport.IsAutoScroll() {
+	if !app.viewportFor("weave").IsAutoScroll() {
 		t.Error("expected autoScroll to remain true when help modal is open")
 	}
 }
@@ -1915,7 +1916,7 @@ func TestAppModel_MouseWheel_SuppressedByModalConfirm(t *testing.T) {
 	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	app = out.(AppModel)
 
-	if !app.viewport.IsAutoScroll() {
+	if !app.viewportFor("weave").IsAutoScroll() {
 		t.Error("expected autoScroll to remain true when confirm dialog is open")
 	}
 }
@@ -1940,12 +1941,12 @@ func seedViewportApp(t *testing.T) AppModel {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
-	app.viewport.AppendAssistantChunk("first reply")
-	app.viewport.FinalizeAssistantMessage()
-	app.viewport.AppendAssistantChunk("second reply")
-	app.viewport.FinalizeAssistantMessage()
-	app.viewport.AppendAssistantChunk("third reply")
-	app.viewport.FinalizeAssistantMessage()
+	app.viewportFor("weave").AppendAssistantChunk("first reply")
+	app.viewportFor("weave").FinalizeAssistantMessage()
+	app.viewportFor("weave").AppendAssistantChunk("second reply")
+	app.viewportFor("weave").FinalizeAssistantMessage()
+	app.viewportFor("weave").AppendAssistantChunk("third reply")
+	app.viewportFor("weave").FinalizeAssistantMessage()
 	app.activePanel = PanelViewport
 	app.updateFocus()
 	return app
@@ -1955,7 +1956,7 @@ func TestAppModel_VEntersSelectModeOnViewport(t *testing.T) {
 	app := seedViewportApp(t)
 	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
 	app = updated.(AppModel)
-	if !app.viewport.IsSelecting() {
+	if !app.viewportFor("weave").IsSelecting() {
 		t.Error("pressing 'v' on viewport panel should enter select mode")
 	}
 }
@@ -1966,7 +1967,7 @@ func TestAppModel_VOnInputPanelDoesNotSelect(t *testing.T) {
 	app.updateFocus()
 	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
 	app = updated.(AppModel)
-	if app.viewport.IsSelecting() {
+	if app.viewportFor("weave").IsSelecting() {
 		t.Error("pressing 'v' on input panel must NOT enter select mode")
 	}
 }
@@ -1977,7 +1978,7 @@ func TestAppModel_EscExitsSelectMode(t *testing.T) {
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	app = updated.(AppModel)
-	if app.viewport.IsSelecting() {
+	if app.viewportFor("weave").IsSelecting() {
 		t.Error("Esc should exit select mode")
 	}
 }
@@ -1992,7 +1993,7 @@ func TestAppModel_YYanksRawMarkdownAndExits(t *testing.T) {
 	updated, cmd := app.Update(tea.KeyPressMsg{Code: 'y'})
 	app = updated.(AppModel)
 
-	if app.viewport.IsSelecting() {
+	if app.viewportFor("weave").IsSelecting() {
 		t.Error("'y' should exit select mode after yank")
 	}
 	if cmd == nil {
@@ -2046,7 +2047,7 @@ func TestAppModel_JKMoveSelectionCursor(t *testing.T) {
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyPressMsg{Code: 'k'})
 	app = updated.(AppModel)
-	raw := app.viewport.SelectedRaw()
+	raw := app.viewportFor("weave").SelectedRaw()
 	for _, want := range []string{"first reply", "second reply", "third reply"} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("SelectedRaw() after v+k+k should contain %q, got %q", want, raw)
@@ -2074,7 +2075,7 @@ func TestAppModel_InboxArrivalMsg_AppendsStatusBanner(t *testing.T) {
 	updated, _ := app.Update(InboxArrivalMsg{From: "pretend-child", Subject: "hello"})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewport.View())
+	view := stripAnsi(app.viewportFor("weave").View())
 	if !strings.Contains(view, "inbox: new message from pretend-child") {
 		t.Errorf("viewport should show inbox banner after InboxArrivalMsg, got:\n%s", view)
 	}
@@ -2115,7 +2116,7 @@ func TestAppModel_InboxArrivalMsg_EmptyFromUsesFallback(t *testing.T) {
 	updated, _ := app.Update(InboxArrivalMsg{})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewport.View())
+	view := stripAnsi(app.viewportFor("weave").View())
 	if !strings.Contains(view, "inbox: new message from unknown") {
 		t.Errorf("viewport should show fallback banner when From empty, got:\n%s", view)
 	}
@@ -2154,7 +2155,7 @@ func TestAppModel_AgentTreeMsg_RisingRootUnreadEmitsBanner(t *testing.T) {
 	// Seed with 0 unread — no banner expected.
 	updated, _ := app.Update(AgentTreeMsg{RootUnread: 0})
 	app = updated.(AppModel)
-	before := stripAnsi(app.viewport.View())
+	before := stripAnsi(app.viewportFor("weave").View())
 	if strings.Contains(before, "inbox:") {
 		t.Fatalf("pre-condition: no banner expected before rise, got:\n%s", before)
 	}
@@ -2163,7 +2164,7 @@ func TestAppModel_AgentTreeMsg_RisingRootUnreadEmitsBanner(t *testing.T) {
 	updated, _ = app.Update(AgentTreeMsg{RootUnread: 1})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewport.View())
+	view := stripAnsi(app.viewportFor("weave").View())
 	if !strings.Contains(view, "inbox: 1 new message(s) for weave") {
 		t.Errorf("viewport should show rise banner after RootUnread 0→1, got:\n%s", view)
 	}
@@ -2181,7 +2182,7 @@ func TestAppModel_AgentTreeMsg_NoBannerWhenUnreadUnchanged(t *testing.T) {
 	// First tick sets unread to 2 (one banner).
 	updated, _ := app.Update(AgentTreeMsg{RootUnread: 2})
 	app = updated.(AppModel)
-	firstView := stripAnsi(app.viewport.View())
+	firstView := stripAnsi(app.viewportFor("weave").View())
 	firstBanners := strings.Count(firstView, "inbox:")
 	if firstBanners != 1 {
 		t.Fatalf("pre-condition: expected 1 banner after first rise, got %d in:\n%s", firstBanners, firstView)
@@ -2190,7 +2191,7 @@ func TestAppModel_AgentTreeMsg_NoBannerWhenUnreadUnchanged(t *testing.T) {
 	// Second tick with the same count — no additional banner.
 	updated, _ = app.Update(AgentTreeMsg{RootUnread: 2})
 	app = updated.(AppModel)
-	secondView := stripAnsi(app.viewport.View())
+	secondView := stripAnsi(app.viewportFor("weave").View())
 	if got := strings.Count(secondView, "inbox:"); got != firstBanners {
 		t.Errorf("banner count changed on unchanged-tick: got %d, want %d\n%s", got, firstBanners, secondView)
 	}
@@ -2271,7 +2272,7 @@ func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd (bridge.SendMessage)")
 	}
-	view := stripAnsi(app.viewport.View())
+	view := stripAnsi(app.viewportFor("weave").View())
 	if !strings.Contains(view, "inbox: draining 2 async message(s) into next prompt") {
 		t.Errorf("expected draining banner, got:\n%s", view)
 	}
@@ -2294,7 +2295,7 @@ func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {
 		Prompt: "[interrupt] x", EntryIDs: []string{"i1"}, Class: "interrupt",
 	})
 	app = updated.(AppModel)
-	view := stripAnsi(app.viewport.View())
+	view := stripAnsi(app.viewportFor("weave").View())
 	if !strings.Contains(view, "inbox: draining 1 interrupt message(s)") {
 		t.Errorf("expected interrupt-class banner, got:\n%s", view)
 	}

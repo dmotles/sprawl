@@ -28,10 +28,11 @@ const (
 	panelCount // sentinel for wrapping
 )
 
-// AgentBuffer stores the viewport state for a specific agent.
+// AgentBuffer stores the viewport state for a specific agent. Each agent
+// owns its own ViewportModel so streamed assistant chunks, tool calls, and
+// status banners can never bleed across agent contexts (QUM-334).
 type AgentBuffer struct {
-	Messages   []MessageEntry
-	AutoScroll bool
+	vp ViewportModel
 
 	// SessionID names the Claude session_id that the cached child transcript
 	// was hydrated against. Only populated for non-root agents. When the
@@ -44,7 +45,6 @@ type AgentBuffer struct {
 // AppModel is the root Bubble Tea model composing all panels.
 type AppModel struct {
 	tree      TreeModel
-	viewport  ViewportModel
 	activity  ActivityPanelModel
 	input     InputModel
 	statusBar StatusBarModel
@@ -136,9 +136,13 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		startPanel = PanelInput
 	}
 	rootAgent := "weave"
+	agentBuffers := make(map[string]*AgentBuffer)
+	// Seed the root agent's buffer eagerly: PreloadTranscript can run before
+	// Init/Update fires, so lazy-init via viewportFor would arrive too late
+	// (QUM-334 §5). Child agent buffers are still lazy.
+	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme)}
 	app := AppModel{
 		tree:          NewTreeModel(&theme),
-		viewport:      NewViewportModel(&theme),
 		activity:      NewActivityPanelModel(&theme),
 		input:         NewInputModel(&theme),
 		statusBar:     NewStatusBarModel(&theme, repoName, version, 0),
@@ -151,7 +155,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		sprawlRoot:    sprawlRoot,
 		observedAgent: rootAgent,
 		rootAgent:     rootAgent,
-		agentBuffers:  make(map[string]*AgentBuffer),
+		agentBuffers:  agentBuffers,
 		activePanel:   startPanel,
 		theme:         theme,
 		restartFunc:   restartFunc,
@@ -202,8 +206,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showHelp || m.showConfirm || m.showError || m.showPalette {
 			return m, nil
 		}
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
+		vp := m.observedVP()
+		updated, cmd := vp.Update(msg)
+		*vp = updated
 		return m, cmd
 
 	case tea.KeyPressMsg:
@@ -323,7 +328,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Template == "" || m.bridge == nil || m.turnState != TurnIdle {
 			return m, nil
 		}
-		m.viewport.AppendStatus("/handoff dispatched — see output below")
+		m.rootVP().AppendStatus("/handoff dispatched — see output below")
 		m.setTurnState(TurnThinking)
 		m.input.SetDisabled(true)
 		return m, m.bridge.SendMessage(msg.Template)
@@ -339,13 +344,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Class == "interrupt" {
 			label = "interrupt"
 		}
-		m.viewport.AppendStatus(fmt.Sprintf("inbox: draining %d %s message(s) into next prompt", len(msg.EntryIDs), label))
+		m.rootVP().AppendStatus(fmt.Sprintf("inbox: draining %d %s message(s) into next prompt", len(msg.EntryIDs), label))
 		// QUM-323: render the flush prompt in the viewport so the human watching
 		// the TUI can see what got drained — parity with SubmitMsg which renders
 		// user-typed input. Without this, the drained frame is invisible (only
 		// the status line hints at it) and the only way to confirm drain worked
 		// is to grep logs — which also breaks the body-in-prompt e2e assertion.
-		m.viewport.AppendUserMessage(msg.Prompt)
+		m.rootVP().AppendUserMessage(msg.Prompt)
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
 		m.input.SetDisabled(true)
@@ -355,7 +360,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Text == "" || m.bridge == nil || m.turnState != TurnIdle {
 			return m, nil
 		}
-		m.viewport.AppendUserMessage(msg.Text)
+		m.rootVP().AppendUserMessage(msg.Text)
 		m.setTurnState(TurnThinking)
 		m.input.SetDisabled(true)
 		return m, m.bridge.SendMessage(msg.Text)
@@ -378,14 +383,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AssistantTextMsg:
 		m.setTurnState(TurnStreaming)
-		m.viewport.AppendAssistantChunk(msg.Text)
+		m.rootVP().AppendAssistantChunk(msg.Text)
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
 		return m, nil
 
 	case ToolCallMsg:
-		m.viewport.AppendToolCall(msg.ToolName, msg.Approved, msg.Input)
+		m.rootVP().AppendToolCall(msg.ToolName, msg.Approved, msg.Input)
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
@@ -395,14 +400,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Display result text only if no assistant text was already streamed.
 		// When Claude returns text in the assistant message, it also appears
 		// in result.Result — avoid duplicating it.
-		if !msg.IsError && strings.TrimSpace(msg.Result) != "" && !m.viewport.HasPendingAssistant() {
-			m.viewport.AppendAssistantChunk(strings.TrimSpace(msg.Result))
+		root := m.rootVP()
+		if !msg.IsError && strings.TrimSpace(msg.Result) != "" && !root.HasPendingAssistant() {
+			root.AppendAssistantChunk(strings.TrimSpace(msg.Result))
 		}
-		m.viewport.FinalizeAssistantMessage()
+		root.FinalizeAssistantMessage()
 		if msg.IsError {
-			m.viewport.AppendError(fmt.Sprintf("Error: %s", msg.Result))
+			root.AppendError(fmt.Sprintf("Error: %s", msg.Result))
 		} else {
-			m.viewport.AppendStatus(fmt.Sprintf("Completed in %dms, cost $%.4f", msg.DurationMs, msg.TotalCostUsd))
+			root.AppendStatus(fmt.Sprintf("Completed in %dms, cost $%.4f", msg.DurationMs, msg.TotalCostUsd))
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
 		}
 		m.setTurnState(TurnIdle)
@@ -429,7 +435,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetDisabled(true)
 			return m, nil
 		}
-		m.viewport.AppendError(msg.Err.Error())
+		m.rootVP().AppendError(msg.Err.Error())
 		m.setTurnState(TurnIdle)
 		m.input.SetDisabled(false)
 		return m, nil
@@ -452,7 +458,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// so any pending palette dispatch would hit a stale channel.
 		m.palette.Hide()
 		m.showPalette = false
-		m.viewport.AppendStatus(fmt.Sprintf("Session restarting (%s)...", reason))
+		m.rootVP().AppendStatus(fmt.Sprintf("Session restarting (%s)...", reason))
 		m.setTurnState(TurnIdle)
 		m.input.SetDisabled(true)
 		return m, nil
@@ -532,11 +538,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.bridge = msg.Bridge
 		shortID := shortSessionID(m.bridge.SessionID())
-		m.viewport.SetMessages(nil)
+		root := m.rootVP()
+		root.SetMessages(nil)
 		if shortID != "" {
-			m.viewport.AppendStatus(fmt.Sprintf("— New session started (%s) —", shortID))
+			root.AppendStatus(fmt.Sprintf("— New session started (%s) —", shortID))
 		} else {
-			m.viewport.AppendStatus("— New session started —")
+			root.AppendStatus("— New session started —")
 		}
 		m.statusBar.SetSessionID(shortID)
 		m.setTurnState(TurnIdle)
@@ -571,11 +578,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// gets the same UX whether the sender was in-process (InboxArrivalMsg
 		// via the TUI notifier) or out-of-process (caught on the 2s tick).
 		if msg.RootUnread > m.rootUnread {
-			m.viewport.AppendStatus(fmt.Sprintf("inbox: %d new message(s) for weave", msg.RootUnread-m.rootUnread))
+			m.rootVP().AppendStatus(fmt.Sprintf("inbox: %d new message(s) for weave", msg.RootUnread-m.rootUnread))
 		}
 		m.rootUnread = msg.RootUnread
 		m.rebuildTree()
 		m.statusBar.SetAgentCount(len(msg.Nodes) + 1) // +1 for weave root
+		// QUM-334: drop agentBuffers entries for retired agents to bound
+		// memory. Always preserve the root and currently-observed agent.
+		live := map[string]struct{}{m.rootAgent: {}, m.observedAgent: {}}
+		for _, n := range msg.Nodes {
+			live[n.Name] = struct{}{}
+		}
+		for name := range m.agentBuffers {
+			if _, ok := live[name]; !ok {
+				delete(m.agentBuffers, name)
+			}
+		}
 		// QUM-323: backstop drain. Every 2s the tree polls weave's unread
 		// counts; piggyback on that cadence to peek the harness queue and
 		// (when idle + non-empty) schedule an InboxDrainMsg. This covers both
@@ -601,7 +619,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if from == "" {
 			from = "unknown"
 		}
-		m.viewport.AppendStatus(fmt.Sprintf("inbox: new message from %s", from))
+		m.rootVP().AppendStatus(fmt.Sprintf("inbox: new message from %s", from))
 		m.rootUnread++
 		m.rebuildTree()
 		return m, nil
@@ -624,32 +642,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AgentSelectedMsg:
-		// Save current viewport to buffer (preserve SessionID if the prior
-		// observed agent was a non-root with an active transcript cache).
-		prevSessionID := ""
-		if existing, ok := m.agentBuffers[m.observedAgent]; ok {
-			prevSessionID = existing.SessionID
-		}
-		m.agentBuffers[m.observedAgent] = &AgentBuffer{
-			Messages:   m.viewport.GetMessages(),
-			AutoScroll: m.viewport.IsAutoScroll(),
-			SessionID:  prevSessionID,
-		}
-
+		// QUM-334: each agent owns its own ViewportModel inside agentBuffers,
+		// so cycling is just a pointer swap — no snapshot/restore.
 		m.observedAgent = msg.Name
-
-		// Load from buffer if exists, else show empty with status.
-		if buf, ok := m.agentBuffers[msg.Name]; ok {
-			m.viewport.SetMessages(buf.Messages)
-			m.viewport.SetAutoScroll(buf.AutoScroll)
-		} else if msg.Name == m.rootAgent {
-			m.viewport.SetMessages(nil)
-			m.viewport.AppendStatus(fmt.Sprintf("Observing %s...", msg.Name))
-		} else {
-			// Non-root: clear the viewport; the dispatched ChildTranscriptMsg
-			// will populate it (or render a "Waiting..." placeholder).
-			m.viewport.SetMessages(nil)
-		}
+		// Lazy-init the buffer so View() / select-mode helpers always have
+		// something to render against.
+		_ = m.viewportFor(msg.Name)
 
 		// Disable input for non-root agents.
 		if msg.Name != m.rootAgent {
@@ -680,39 +678,34 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ChildTranscriptMsg:
-		// Drop stale ticks (the user has cycled to another agent since this
-		// load was scheduled).
-		if msg.Agent != m.observedAgent {
-			return m, nil
-		}
+		// QUM-334: route directly to the named agent's vp. Per-agent
+		// ownership means writes to non-observed buffers are correct, not
+		// pollution.
+		vp := m.viewportFor(msg.Agent)
 		switch {
 		case msg.Err != nil:
-			m.viewport.AppendError(fmt.Sprintf("transcript load failed for %s: %v", msg.Agent, msg.Err))
+			vp.AppendError(fmt.Sprintf("transcript load failed for %s: %v", msg.Agent, msg.Err))
 		case len(msg.Entries) > 0:
-			m.viewport.SetMessages(msg.Entries)
-			buf := m.agentBuffers[msg.Agent]
-			if buf == nil {
-				buf = &AgentBuffer{AutoScroll: m.viewport.IsAutoScroll()}
+			vp.SetMessages(msg.Entries)
+			if buf, ok := m.agentBuffers[msg.Agent]; ok {
+				buf.SessionID = msg.SessionID
 			}
-			buf.Messages = msg.Entries
-			buf.SessionID = msg.SessionID
-			m.agentBuffers[msg.Agent] = buf
 		default:
 			// Empty entries: show "Waiting for X..." idempotently. Avoid
 			// re-appending on repeated empty ticks by checking whether the
 			// banner is already the only entry in the viewport.
-			cur := m.viewport.GetMessages()
+			cur := vp.GetMessages()
 			banner := fmt.Sprintf("Waiting for %s to start...", msg.Agent)
 			alreadyShowing := len(cur) == 1 && cur[0].Type == MessageStatus && cur[0].Content == banner
 			if !alreadyShowing {
-				m.viewport.SetMessages([]MessageEntry{{
+				vp.SetMessages([]MessageEntry{{
 					Type: MessageStatus, Content: banner, Complete: true,
 				}})
 			}
 		}
-		// Reschedule for the next tick while the same non-root agent is
-		// observed. Root agents (weave) don't need transcript polling.
-		if msg.Agent == m.rootAgent {
+		// Reschedule for the next tick only while the agent is still being
+		// observed; otherwise let the poll go quiet until re-selection.
+		if msg.Agent == m.rootAgent || msg.Agent != m.observedAgent {
 			return m, nil
 		}
 		return m, scheduleChildTranscriptTick(m.sprawlRoot, m.homeDir, msg.Agent, m.childTranscriptTickInterval())
@@ -747,7 +740,7 @@ func (m AppModel) View() tea.View {
 	vpBorder := m.borderStyle(PanelViewport).
 		Width(layout.ViewportWidth - 2).
 		Height(layout.ViewportHeight - 2)
-	vpView := vpBorder.Render(m.viewport.View())
+	vpView := vpBorder.Render(m.observedVP().View())
 
 	// Combine tree and viewport horizontally. On wide terminals, a third
 	// column (activity panel) is added to the right. See QUM-296.
@@ -814,13 +807,39 @@ func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
 	if len(entries) == 0 {
 		return
 	}
-	m.viewport.SetMessages(entries)
+	m.rootVP().SetMessages(entries)
 }
 
 func (m *AppModel) rebuildTree() {
 	nodes := PrependWeaveRoot(m.childNodes, m.turnState.String(), m.rootUnread)
 	m.tree.SetNodes(nodes)
 }
+
+// viewportFor returns the per-agent ViewportModel for name, lazy-creating it
+// on first access (QUM-334). Newly-created viewports are sized to match the
+// current resizePanels target so the first render fits the layout.
+func (m *AppModel) viewportFor(name string) *ViewportModel {
+	buf, ok := m.agentBuffers[name]
+	if !ok {
+		vp := NewViewportModel(&m.theme)
+		if m.ready && !m.tooSmall {
+			layout := ComputeLayout(m.width, m.height)
+			vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
+		}
+		buf = &AgentBuffer{vp: vp}
+		m.agentBuffers[name] = buf
+	}
+	return &buf.vp
+}
+
+// rootVP returns the viewport for the root agent (weave). Bridge events,
+// inbox banners, and other weave-only annotations target this viewport
+// regardless of which agent the user is currently observing.
+func (m *AppModel) rootVP() *ViewportModel { return m.viewportFor(m.rootAgent) }
+
+// observedVP returns the viewport for the currently-observed agent. Used
+// by View() and select-mode helpers.
+func (m *AppModel) observedVP() *ViewportModel { return m.viewportFor(m.observedAgent) }
 
 // agentNames returns the ordered list of known agent names (weave + children
 // in tree order). Used by the palette's /switch agent-mode filter.
@@ -869,7 +888,9 @@ func (m *AppModel) resizePanels() {
 	// then pushes the tree panel taller than its declared Height and clips
 	// the input box off the bottom of the screen (QUM-324 residual).
 	m.tree.SetSize(layout.TreeWidth-4, layout.TreeHeight-4)
-	m.viewport.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
+	for _, buf := range m.agentBuffers {
+		buf.vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
+	}
 	if layout.ActivityWidth > 0 {
 		m.activity.SetSize(layout.ActivityWidth-4, layout.ActivityHeight-4)
 	} else {
@@ -903,11 +924,12 @@ func (m AppModel) borderStyle(panel Panel) lipgloss.Style {
 // routing; returns handled=false when the key is not a select-mode key, in
 // which case the caller falls through to normal delegation.
 func (m *AppModel) handleViewportSelectKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
+	vp := m.observedVP()
 	// Entry: 'v' with no selection active.
-	if !m.viewport.IsSelecting() {
+	if !vp.IsSelecting() {
 		if msg.Code == 'v' && msg.Mod == 0 {
-			m.viewport.EnterSelect()
-			m.statusBar.SetSelectMode(m.viewport.IsSelecting())
+			vp.EnterSelect()
+			m.statusBar.SetSelectMode(vp.IsSelecting())
 			return nil, true
 		}
 		return nil, false
@@ -916,30 +938,30 @@ func (m *AppModel) handleViewportSelectKey(msg tea.KeyPressMsg) (tea.Cmd, bool) 
 	// Selection active — handle mode-specific keys.
 	switch msg.Code {
 	case tea.KeyEscape, 'v':
-		m.viewport.ExitSelect()
+		vp.ExitSelect()
 		m.statusBar.SetSelectMode(false)
 		return nil, true
 	case 'j', tea.KeyDown:
-		m.viewport.MoveCursor(1)
+		vp.MoveCursor(1)
 		return nil, true
 	case 'k', tea.KeyUp:
-		m.viewport.MoveCursor(-1)
+		vp.MoveCursor(-1)
 		return nil, true
 	case 'g':
 		// Jump cursor to first message: move by -len.
-		m.viewport.MoveCursor(-len(m.viewport.messages))
+		vp.MoveCursor(-vp.Len())
 		return nil, true
 	case 'G':
-		m.viewport.MoveCursor(len(m.viewport.messages))
+		vp.MoveCursor(vp.Len())
 		return nil, true
 	case 'y':
-		raw := m.viewport.SelectedRaw()
-		m.viewport.ExitSelect()
+		raw := vp.SelectedRaw()
+		vp.ExitSelect()
 		m.statusBar.SetSelectMode(false)
 		if raw == "" {
 			return nil, true
 		}
-		m.viewport.AppendStatus("Copied selection to clipboard")
+		vp.AppendStatus("Copied selection to clipboard")
 		return tea.SetClipboard(raw), true
 	}
 	// While selecting, swallow all other keys so they don't scroll the
@@ -954,8 +976,9 @@ func (m AppModel) delegateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.tree, cmd = m.tree.Update(msg)
 		return m, cmd
 	case PanelViewport:
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
+		vp := m.observedVP()
+		updated, cmd := vp.Update(msg)
+		*vp = updated
 		return m, cmd
 	case PanelInput:
 		var cmd tea.Cmd
