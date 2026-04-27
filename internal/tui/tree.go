@@ -88,6 +88,18 @@ func (m *TreeModel) SetNodes(nodes []TreeNode) {
 	}
 }
 
+// SetSelected moves the cursor to the row whose Name matches name.
+// No-op if the name is not in the current node list. (QUM-341: keeps the
+// tree panel's `>` cursor in sync with Ctrl+N / Ctrl+P agent cycling.)
+func (m *TreeModel) SetSelected(name string) {
+	for i, n := range m.nodes {
+		if n.Name == name {
+			m.selected = i
+			return
+		}
+	}
+}
+
 // SelectedAgent returns the name of the currently selected agent.
 func (m TreeModel) SelectedAgent() string {
 	if m.selected >= 0 && m.selected < len(m.nodes) {

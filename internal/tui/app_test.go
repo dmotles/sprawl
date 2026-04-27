@@ -923,6 +923,41 @@ func TestAppModel_AgentSelectedMsg_SwapsViewport(t *testing.T) {
 	}
 }
 
+func TestAppModel_AgentSelectedMsg_MovesTreeCursor(t *testing.T) {
+	// QUM-341: AgentSelectedMsg must move the tree panel's `>` cursor to the
+	// newly-observed agent's row, so Ctrl+N / Ctrl+P cycling stays in sync
+	// with tree-driven selection.
+	sup := &mockSupervisor{}
+	m := newTestAppModelWithSupervisor(t, sup)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	nodes := []TreeNode{
+		{Name: "tower", Type: "manager", Status: "active", Depth: 0},
+	}
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
+	app = updated.(AppModel)
+
+	// Initially the cursor sits on the synthesized weave root.
+	if got := app.tree.SelectedAgent(); got != "weave" {
+		t.Fatalf("initial tree.SelectedAgent() = %q, want %q", got, "weave")
+	}
+
+	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
+	app = updated.(AppModel)
+
+	if got := app.tree.SelectedAgent(); got != "tower" {
+		t.Errorf("tree.SelectedAgent() = %q after AgentSelectedMsg{tower}, want %q", got, "tower")
+	}
+
+	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
+	app = updated.(AppModel)
+
+	if got := app.tree.SelectedAgent(); got != "weave" {
+		t.Errorf("tree.SelectedAgent() = %q after AgentSelectedMsg{weave}, want %q", got, "weave")
+	}
+}
+
 func TestAppModel_AgentSelectedMsg_DisablesInputForNonRoot(t *testing.T) {
 	sup := &mockSupervisor{}
 	m := newTestAppModelWithSupervisor(t, sup)
@@ -2404,10 +2439,11 @@ func TestCommitDrainCmd_MissingIDsNotFatal(t *testing.T) {
 	}
 }
 
-// QUM-335: Ctrl+E flips the global toolInputsExpanded flag and propagates
+// QUM-335: Ctrl+O flips the global toolInputsExpanded flag and propagates
 // the new state to every per-agent viewport so already-rendered tool calls
-// flip immediately.
-func TestAppModel_CtrlEToggleToolInputsExpanded(t *testing.T) {
+// flip immediately. (Rebound from Ctrl+E to match Claude Code's expand
+// convention.)
+func TestAppModel_CtrlOToggleToolInputsExpanded(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	app := resized.(AppModel)
@@ -2418,19 +2454,19 @@ func TestAppModel_CtrlEToggleToolInputsExpanded(t *testing.T) {
 	// Seed a tool call so the viewport has something to flip.
 	app.rootVP().AppendToolCall("Bash", "", true, "ls", "ls -la /tmp")
 
-	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	app = pressed.(AppModel)
 	if !app.toolInputsExpanded {
-		t.Errorf("Ctrl+E should set toolInputsExpanded to true")
+		t.Errorf("Ctrl+O should set toolInputsExpanded to true")
 	}
 	if !app.rootVP().ToolInputsExpanded() {
-		t.Errorf("root viewport should mirror the global expanded flag after Ctrl+E")
+		t.Errorf("root viewport should mirror the global expanded flag after Ctrl+O")
 	}
 
-	pressed, _ = app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	pressed, _ = app.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	app = pressed.(AppModel)
 	if app.toolInputsExpanded {
-		t.Errorf("second Ctrl+E should toggle toolInputsExpanded back to false")
+		t.Errorf("second Ctrl+O should toggle toolInputsExpanded back to false")
 	}
 	if app.rootVP().ToolInputsExpanded() {
 		t.Errorf("root viewport flag should follow the global state on toggle-off")
@@ -2445,7 +2481,7 @@ func TestAppModel_NewAgentBufferInheritsExpandedFlag(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
 	app := resized.(AppModel)
 
-	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	app = pressed.(AppModel)
 
 	vp := app.viewportFor("finn")

@@ -120,7 +120,7 @@ type AppModel struct {
 	// defaultChildTranscriptTick.
 	childTranscriptTick time.Duration
 
-	// toolInputsExpanded is the global flag (QUM-335) toggled by Ctrl+E.
+	// toolInputsExpanded is the global flag (QUM-335) toggled by Ctrl+O.
 	// When true, every per-agent viewport renders tool calls with their
 	// full ToolInputFull body instead of the truncated summary. Default
 	// false; survives agent cycling because new viewports inherit it on
@@ -279,11 +279,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// Ctrl+E: toggle the global expand-tool-inputs flag (QUM-335).
+		// Ctrl+O: toggle the global expand-tool-inputs flag (QUM-335).
 		// Affects every per-agent viewport so the user can scan the full
 		// command / JSON for any tool call without leaving the TUI. Gated
-		// implicitly by the modal returns above.
-		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'e' {
+		// implicitly by the modal returns above. (Rebound from Ctrl+E to
+		// match Claude Code's expand convention.)
+		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'o' {
 			m.toolInputsExpanded = !m.toolInputsExpanded
 			for _, buf := range m.agentBuffers {
 				buf.vp.SetToolInputsExpanded(m.toolInputsExpanded)
@@ -729,6 +730,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-334: each agent owns its own ViewportModel inside agentBuffers,
 		// so cycling is just a pointer swap — no snapshot/restore.
 		m.observedAgent = msg.Name
+		// QUM-341: keep the tree panel's `>` cursor in sync with the observed
+		// agent so Ctrl+N / Ctrl+P cycling moves the cursor too.
+		m.tree.SetSelected(msg.Name)
 		// Lazy-init the buffer so View() / select-mode helpers always have
 		// something to render against.
 		_ = m.viewportFor(msg.Name)
