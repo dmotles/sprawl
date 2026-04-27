@@ -73,6 +73,66 @@ type mockSupervisor struct {
 	sendInterruptResumeHint string
 	sendInterruptResult     *supervisor.SendInterruptResult
 	sendInterruptErr        error
+
+	// Messages* recording + seams (QUM-316)
+	messagesListFilter    string
+	messagesListLimit     int
+	messagesListResult    *supervisor.MessagesListResult
+	messagesListErr       error
+	messagesReadID        string
+	messagesReadResult    *supervisor.MessagesReadResult
+	messagesReadErr       error
+	messagesArchiveID     string
+	messagesArchiveResult *supervisor.MessagesArchiveResult
+	messagesArchiveErr    error
+	messagesPeekCalled    bool
+	messagesPeekResult    *supervisor.MessagesPeekResult
+	messagesPeekErr       error
+}
+
+func (m *mockSupervisor) MessagesList(_ context.Context, filter string, limit int) (*supervisor.MessagesListResult, error) {
+	m.messagesListFilter = filter
+	m.messagesListLimit = limit
+	if m.messagesListErr != nil {
+		return nil, m.messagesListErr
+	}
+	if m.messagesListResult != nil {
+		return m.messagesListResult, nil
+	}
+	return &supervisor.MessagesListResult{Agent: "weave", Filter: filter}, nil
+}
+
+func (m *mockSupervisor) MessagesRead(_ context.Context, id string) (*supervisor.MessagesReadResult, error) {
+	m.messagesReadID = id
+	if m.messagesReadErr != nil {
+		return nil, m.messagesReadErr
+	}
+	if m.messagesReadResult != nil {
+		return m.messagesReadResult, nil
+	}
+	return &supervisor.MessagesReadResult{ID: id}, nil
+}
+
+func (m *mockSupervisor) MessagesArchive(_ context.Context, id string) (*supervisor.MessagesArchiveResult, error) {
+	m.messagesArchiveID = id
+	if m.messagesArchiveErr != nil {
+		return nil, m.messagesArchiveErr
+	}
+	if m.messagesArchiveResult != nil {
+		return m.messagesArchiveResult, nil
+	}
+	return &supervisor.MessagesArchiveResult{ID: id, Archived: true}, nil
+}
+
+func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPeekResult, error) {
+	m.messagesPeekCalled = true
+	if m.messagesPeekErr != nil {
+		return nil, m.messagesPeekErr
+	}
+	if m.messagesPeekResult != nil {
+		return m.messagesPeekResult, nil
+	}
+	return &supervisor.MessagesPeekResult{Agent: "weave"}, nil
 }
 
 func (m *mockSupervisor) ReportStatus(_ context.Context, agentName, reportState, summary, detail string) (*supervisor.ReportStatusResult, error) {
@@ -284,6 +344,10 @@ func TestServer_ToolsList(t *testing.T) {
 		"sprawl_retire",
 		"sprawl_kill",
 		"sprawl_handoff",
+		"sprawl_messages_list",
+		"sprawl_messages_read",
+		"sprawl_messages_archive",
+		"sprawl_messages_peek",
 	}
 
 	if len(toolsRaw) != len(expectedTools) {
@@ -1088,5 +1152,218 @@ func TestServer_ToolsCall_SprawlPeek_TailClamp(t *testing.T) {
 
 	if mock.peekTail != 200 {
 		t.Errorf("clamped tail = %d, want 200", mock.peekTail)
+	}
+}
+
+// --- QUM-316: sprawl_messages_list / _read / _archive / _peek ---
+
+func TestServer_ToolsCall_SprawlMessagesList(t *testing.T) {
+	mock := &mockSupervisor{
+		messagesListResult: &supervisor.MessagesListResult{
+			Agent:  "weave",
+			Filter: "unread",
+			Count:  1,
+			Messages: []supervisor.MessageSummary{
+				{ID: "abc", FullID: "1700000000.ratz.deadbeef", From: "ratz", Subject: "hi", Timestamp: "2026-04-21T10:00:00Z", Read: false, Dir: "new"},
+			},
+		},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(50, "tools/call", map[string]any{
+		"name":      "sprawl_messages_list",
+		"arguments": map[string]any{"filter": "unread", "limit": 25},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.messagesListFilter != "unread" {
+		t.Errorf("filter = %q, want unread", mock.messagesListFilter)
+	}
+	if mock.messagesListLimit != 25 {
+		t.Errorf("limit = %d, want 25", mock.messagesListLimit)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var body supervisor.MessagesListResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v (text=%q)", err, text)
+	}
+	if body.Count != 1 || len(body.Messages) != 1 || body.Messages[0].ID != "abc" {
+		t.Errorf("body = %+v", body)
+	}
+}
+
+func TestServer_ToolsCall_SprawlMessagesList_DefaultFilter(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(51, "tools/call", map[string]any{
+		"name":      "sprawl_messages_list",
+		"arguments": map[string]any{},
+	})
+	_, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if mock.messagesListFilter != "" {
+		t.Errorf("default filter = %q, want empty (supervisor treats as all)", mock.messagesListFilter)
+	}
+	if mock.messagesListLimit != 0 {
+		t.Errorf("default limit = %d, want 0", mock.messagesListLimit)
+	}
+}
+
+func TestServer_ToolsCall_SprawlMessagesList_SupervisorError(t *testing.T) {
+	mock := &mockSupervisor{messagesListErr: fmt.Errorf("bad filter")}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(52, "tools/call", map[string]any{
+		"name":      "sprawl_messages_list",
+		"arguments": map[string]any{"filter": "bogus"},
+	})
+	resp, _ := srv.HandleMessage(context.Background(), msg)
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Error("expected isError=true")
+	}
+}
+
+func TestServer_ToolsCall_SprawlMessagesRead(t *testing.T) {
+	mock := &mockSupervisor{
+		messagesReadResult: &supervisor.MessagesReadResult{
+			ID: "abc", FullID: "1700000000.ratz.deadbeef",
+			From: "ratz", To: "weave", Subject: "hi", Body: "hello body",
+			Timestamp: "2026-04-21T10:00:00Z", Dir: "cur", WasUnread: true,
+		},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(53, "tools/call", map[string]any{
+		"name":      "sprawl_messages_read",
+		"arguments": map[string]any{"id": "abc"},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if mock.messagesReadID != "abc" {
+		t.Errorf("id = %q, want abc", mock.messagesReadID)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var body supervisor.MessagesReadResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Body != "hello body" {
+		t.Errorf("body = %q", body.Body)
+	}
+	if !body.WasUnread {
+		t.Error("was_unread = false, want true")
+	}
+}
+
+func TestServer_ToolsCall_SprawlMessagesRead_NotFound(t *testing.T) {
+	mock := &mockSupervisor{messagesReadErr: fmt.Errorf("not found")}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(54, "tools/call", map[string]any{
+		"name":      "sprawl_messages_read",
+		"arguments": map[string]any{"id": "nope"},
+	})
+	resp, _ := srv.HandleMessage(context.Background(), msg)
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Error("expected isError=true")
+	}
+}
+
+func TestServer_ToolsCall_SprawlMessagesArchive(t *testing.T) {
+	mock := &mockSupervisor{
+		messagesArchiveResult: &supervisor.MessagesArchiveResult{ID: "abc", FullID: "full", Archived: true},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(55, "tools/call", map[string]any{
+		"name":      "sprawl_messages_archive",
+		"arguments": map[string]any{"id": "abc"},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if mock.messagesArchiveID != "abc" {
+		t.Errorf("id = %q", mock.messagesArchiveID)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var body supervisor.MessagesArchiveResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !body.Archived {
+		t.Error("archived = false")
+	}
+}
+
+func TestServer_ToolsCall_SprawlMessagesPeek(t *testing.T) {
+	mock := &mockSupervisor{
+		messagesPeekResult: &supervisor.MessagesPeekResult{
+			Agent:       "weave",
+			UnreadCount: 3,
+			Preview: []supervisor.MessageSummary{
+				{ID: "a", From: "ratz", Subject: "one"},
+			},
+		},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(56, "tools/call", map[string]any{
+		"name":      "sprawl_messages_peek",
+		"arguments": map[string]any{},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if !mock.messagesPeekCalled {
+		t.Error("MessagesPeek not invoked")
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var body supervisor.MessagesPeekResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.UnreadCount != 3 {
+		t.Errorf("unread_count = %d", body.UnreadCount)
+	}
+	if len(body.Preview) != 1 {
+		t.Fatalf("preview len = %d", len(body.Preview))
 	}
 }

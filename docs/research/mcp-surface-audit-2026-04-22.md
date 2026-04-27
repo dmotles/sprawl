@@ -174,21 +174,21 @@ its output so callers can reference it.
   (no CLI analogue; `sprawl poke` was the closest tmux primitive).
 - `sprawl_message{…}` — deprecated alias; ignore.
 
-**Missing entirely from MCP:**
-1. **`inbox` / `list` / `read`** — an agent cannot read its own mailbox via MCP.
-   Today child agents poll `sprawl messages inbox` (discouraged) or react to
-   poke wakes. Phase 2 cannot drop the CLI until MCP exposes a mailbox read
-   surface. Recommended shape:
-     - `sprawl_inbox{filter?: "unread"|"read"|"archived"|"sent"|"all", limit?}` → returns message summaries.
-     - `sprawl_read_message{message_id}` → returns full body; optionally marks read.
-2. **`archive` / `unread`** — lifecycle transitions. Recommended:
-     - `sprawl_archive_message{message_id? , all?: bool, read_only?: bool}`.
-     - `sprawl_mark_unread{message_id}`.
-3. **`broadcast`** — fan-out send. Either (a) add `sprawl_broadcast{subject, body, filter?}`
-   or (b) treat this as a client-loop over `sprawl_status` + `sprawl_send_async`
-   (simpler; documented pattern).
+**Resolved in QUM-316 (mailbox read/list/archive):**
+1. **`inbox` / `list` / `read`** — ✅ covered.
+     - `sprawl_messages_list{filter?: "all"|"unread"|"read"|"archived", limit?}` → newest-first summaries scoped to caller's mailbox.
+     - `sprawl_messages_read{id}` → full body; auto-marks read (mirrors CLI).
+     - `sprawl_messages_peek{}` → cheap unread count + up-to-5 preview.
+2. **`archive`** — ✅ `sprawl_messages_archive{id}` moves a single message to archive/.
 
-**Delta / gap:** **HIGH (blocker).** This is the bulk of the Phase 1 gap work.
+**Still missing from MCP (deferred):**
+- **`mark_unread`** — no `sprawl_messages_mark_unread` yet. Low traffic on the CLI equivalent; defer until a consumer surfaces.
+- **`sent`** — listing of the caller's outbox. Out of scope per QUM-316 AC; add if a consumer needs it.
+- **`broadcast`** — fan-out send. Either (a) add `sprawl_broadcast{subject, body, filter?}`
+   or (b) treat this as a client-loop over `sprawl_status` + `sprawl_send_async`
+   (simpler; documented pattern). Deferred — non-goal per QUM-316.
+
+**Delta / gap:** **LOW** — read/list/archive landed in QUM-316. Phase 2 `sprawl messages` deprecation is unblocked on the critical path; mark-unread + broadcast remain as polish.
 
 **Consumers of CLI:** Heavy. `cmd/agentloop.go` uses the Maildir/wake protocol
 internally (this is fine — it's the library, not the CLI). Agent prompts in
@@ -313,11 +313,12 @@ Ordered by how much they block Phase 2 cutover.
 
 ### P0 — blockers (must land before Phase 2 can ship)
 
-1. **Mailbox read surface for MCP.** Add (at minimum) `sprawl_inbox` and
-   `sprawl_read_message` MCP tools. Without these, child agents lose the ability
-   to read messages when the CLI goes away. See §2.5.
-2. **Mailbox lifecycle in MCP.** Add `sprawl_archive_message` and
-   `sprawl_mark_unread`. Without archive, inboxes grow without bound. See §2.5.
+1. ~~**Mailbox read surface for MCP.**~~ ✅ **Done in QUM-316** —
+   `sprawl_messages_list` / `sprawl_messages_read` / `sprawl_messages_peek`
+   landed. See §2.5.
+2. ~~**Mailbox lifecycle in MCP.**~~ ✅ **Partially done in QUM-316** —
+   `sprawl_messages_archive` landed. `sprawl_messages_mark_unread` remains
+   deferred (no known consumer).
 3. **`sprawl_retire` cascade + force.** Add `cascade`, `force`, `confirm`,
    `no_validate` fields. Parent managers need the full CLI workflow; without
    cascade they can't cleanly tear down subtrees. See §2.7.
@@ -433,10 +434,9 @@ content that references each command.
   concrete follow-up if fields are missing.
 - Enumerate the exact set of prompt changes needed in `prompt_mode.go` (line
   numbers, current text, proposed replacement) as a patch plan for QUM-235.
-- Spec the new mailbox MCP tools (`sprawl_inbox`, `sprawl_read_message`,
-  `sprawl_archive_message`, `sprawl_mark_unread`) in enough detail that an
-  implementer could just pick it up — schemas, semantics around
-  marking-read-on-read, pagination shape.
+- ~~Spec the new mailbox MCP tools~~ — shipped in QUM-316 as
+  `sprawl_messages_list` / `_read` / `_archive` / `_peek`. `sprawl_messages_mark_unread`
+  remains as optional follow-up if a consumer surfaces.
 
 ## Appendix A — References
 

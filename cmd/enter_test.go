@@ -349,6 +349,22 @@ func (s *shutdownMockSupervisor) SendInterrupt(_ context.Context, _, _, _, _ str
 	return &supervisor.SendInterruptResult{}, nil
 }
 
+func (s *shutdownMockSupervisor) MessagesList(_ context.Context, _ string, _ int) (*supervisor.MessagesListResult, error) {
+	return &supervisor.MessagesListResult{}, nil
+}
+
+func (s *shutdownMockSupervisor) MessagesRead(_ context.Context, _ string) (*supervisor.MessagesReadResult, error) {
+	return &supervisor.MessagesReadResult{}, nil
+}
+
+func (s *shutdownMockSupervisor) MessagesArchive(_ context.Context, _ string) (*supervisor.MessagesArchiveResult, error) {
+	return &supervisor.MessagesArchiveResult{}, nil
+}
+
+func (s *shutdownMockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPeekResult, error) {
+	return &supervisor.MessagesPeekResult{}, nil
+}
+
 // Ctrl+C / clean TUI shutdown must NOT kill child agents. Users expect
 // `sprawl enter` to be a detachable UI — agents should keep running so the
 // next `sprawl enter` can reattach.

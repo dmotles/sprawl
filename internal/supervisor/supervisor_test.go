@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/messages"
@@ -523,5 +524,325 @@ func TestPeek_DefaultsTailTo20(t *testing.T) {
 	}
 	if got.Activity == nil {
 		t.Error("activity should be non-nil empty slice, got nil")
+	}
+}
+
+// --- QUM-316: MessagesList / MessagesRead / MessagesArchive / MessagesPeek ---
+
+// seedClock advances NowFunc one second per call so Maildir timestamps are
+// strictly ordered for list/peek tests (RFC3339 is second-resolution).
+var seedClock int64
+
+func nextSeedTime() time.Time {
+	seedClock++
+	return time.Date(2026, 4, 21, 10, 0, int(seedClock), 0, time.UTC)
+}
+
+// seedInbox delivers a message to the caller ("weave") from `from`. Returns the short ID.
+func seedInbox(t *testing.T, sprawlRoot, from, subject, body string) string {
+	t.Helper()
+	prev := messages.NowFunc
+	messages.NowFunc = nextSeedTime
+	defer func() { messages.NowFunc = prev }()
+	if err := messages.Send(sprawlRoot, from, "weave", subject, body); err != nil {
+		t.Fatalf("seed Send: %v", err)
+	}
+	msgs, err := messages.List(sprawlRoot, "weave", "unread")
+	if err != nil {
+		t.Fatalf("seed List: %v", err)
+	}
+	if len(msgs) == 0 {
+		t.Fatal("seed: no unread messages after Send")
+	}
+	// Return the most recently delivered one's ShortID.
+	return msgs[len(msgs)-1].ShortID
+}
+
+func TestMessagesList_ReturnsInboxScopedToCaller(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t) // callerName=weave
+	seedInbox(t, tmpDir, "ratz", "hello", "world")
+	seedInbox(t, tmpDir, "ghost", "ping", "pong")
+
+	// A message to someone else must NOT appear in weave's list.
+	if err := messages.Send(tmpDir, "weave", "ratz", "fyi", "private"); err != nil {
+		t.Fatalf("cross-agent send: %v", err)
+	}
+
+	res, err := sup.MessagesList(context.Background(), "unread", 0)
+	if err != nil {
+		t.Fatalf("MessagesList: %v", err)
+	}
+	if res.Agent != "weave" {
+		t.Errorf("agent = %q, want weave", res.Agent)
+	}
+	if res.Count != 2 || len(res.Messages) != 2 {
+		t.Fatalf("got %d messages, want 2", len(res.Messages))
+	}
+	for _, m := range res.Messages {
+		if m.Read {
+			t.Errorf("unread filter returned a read msg: %+v", m)
+		}
+		if m.Dir != "new" {
+			t.Errorf("dir = %q, want new", m.Dir)
+		}
+		if m.From != "ratz" && m.From != "ghost" {
+			t.Errorf("unexpected from %q (cross-mailbox leak?)", m.From)
+		}
+	}
+}
+
+func TestMessagesList_FilterArchived(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	id := seedInbox(t, tmpDir, "ratz", "old", "body")
+	// Archive it.
+	full, err := messages.ResolvePrefix(tmpDir, "weave", id)
+	if err != nil {
+		t.Fatalf("ResolvePrefix: %v", err)
+	}
+	if err := messages.Archive(tmpDir, "weave", full); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	res, err := sup.MessagesList(context.Background(), "archived", 0)
+	if err != nil {
+		t.Fatalf("MessagesList: %v", err)
+	}
+	if len(res.Messages) != 1 {
+		t.Fatalf("got %d archived, want 1", len(res.Messages))
+	}
+	if res.Messages[0].Dir != "archive" {
+		t.Errorf("dir = %q, want archive", res.Messages[0].Dir)
+	}
+	if !res.Messages[0].Read {
+		t.Error("archived messages should report Read=true")
+	}
+}
+
+func TestMessagesList_FilterAllIncludesNewAndCur(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	unreadID := seedInbox(t, tmpDir, "ratz", "u", "b")
+	readID := seedInbox(t, tmpDir, "ghost", "r", "b")
+
+	// Mark the second one read.
+	full, err := messages.ResolvePrefix(tmpDir, "weave", readID)
+	if err != nil {
+		t.Fatalf("ResolvePrefix: %v", err)
+	}
+	if err := messages.MarkRead(tmpDir, "weave", full); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+
+	res, err := sup.MessagesList(context.Background(), "all", 0)
+	if err != nil {
+		t.Fatalf("MessagesList: %v", err)
+	}
+	if len(res.Messages) != 2 {
+		t.Fatalf("got %d all, want 2", len(res.Messages))
+	}
+	readFlags := map[string]bool{}
+	for _, m := range res.Messages {
+		readFlags[m.ID] = m.Read
+	}
+	if readFlags[unreadID] {
+		t.Errorf("unreadID %q reported Read=true", unreadID)
+	}
+	if !readFlags[readID] {
+		t.Errorf("readID %q reported Read=false", readID)
+	}
+}
+
+func TestMessagesList_LimitNewestFirst(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	seedInbox(t, tmpDir, "a", "1", "")
+	seedInbox(t, tmpDir, "b", "2", "")
+	seedInbox(t, tmpDir, "c", "3", "")
+
+	res, err := sup.MessagesList(context.Background(), "all", 2)
+	if err != nil {
+		t.Fatalf("MessagesList: %v", err)
+	}
+	if len(res.Messages) != 2 {
+		t.Fatalf("limit 2 got %d", len(res.Messages))
+	}
+	// Newest-first: subjects should be "3" then "2".
+	if res.Messages[0].Subject != "3" || res.Messages[1].Subject != "2" {
+		t.Errorf("expected newest-first [3,2], got [%s,%s]", res.Messages[0].Subject, res.Messages[1].Subject)
+	}
+}
+
+func TestMessagesList_RejectsInvalidFilter(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.MessagesList(context.Background(), "bogus", 0)
+	if err == nil {
+		t.Fatal("expected error for invalid filter")
+	}
+}
+
+func TestMessagesList_RejectsSentFilter(t *testing.T) {
+	// AC §2.5 says filter ∈ {unread, read, archived, all}. `sent` is not in scope.
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.MessagesList(context.Background(), "sent", 0)
+	if err == nil {
+		t.Fatal("expected error for 'sent' filter (out of AC scope)")
+	}
+}
+
+func TestMessagesRead_AutoMarksUnread(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	id := seedInbox(t, tmpDir, "ratz", "hi", "hello body")
+
+	res, err := sup.MessagesRead(context.Background(), id)
+	if err != nil {
+		t.Fatalf("MessagesRead: %v", err)
+	}
+	if res.Body != "hello body" {
+		t.Errorf("body = %q", res.Body)
+	}
+	if res.Subject != "hi" {
+		t.Errorf("subject = %q", res.Subject)
+	}
+	if res.From != "ratz" {
+		t.Errorf("from = %q", res.From)
+	}
+	if res.To != "weave" {
+		t.Errorf("to = %q", res.To)
+	}
+	if !res.WasUnread {
+		t.Error("expected WasUnread=true for first read")
+	}
+	if res.Dir != "cur" {
+		t.Errorf("dir = %q, want cur after auto-mark", res.Dir)
+	}
+
+	// Verify a second read reports WasUnread=false.
+	res2, err := sup.MessagesRead(context.Background(), id)
+	if err != nil {
+		t.Fatalf("MessagesRead 2: %v", err)
+	}
+	if res2.WasUnread {
+		t.Error("second read should have WasUnread=false")
+	}
+}
+
+func TestMessagesRead_NotFound(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.MessagesRead(context.Background(), "nope")
+	if err == nil {
+		t.Fatal("expected error for missing message")
+	}
+}
+
+func TestMessagesRead_EmptyIDRejected(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.MessagesRead(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for empty id")
+	}
+}
+
+func TestMessagesArchive_MovesToArchive(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	id := seedInbox(t, tmpDir, "ratz", "s", "b")
+
+	res, err := sup.MessagesArchive(context.Background(), id)
+	if err != nil {
+		t.Fatalf("MessagesArchive: %v", err)
+	}
+	if !res.Archived {
+		t.Error("Archived=false")
+	}
+
+	// File must now live in archive/, not in new/.
+	archived, err := messages.List(tmpDir, "weave", "archived")
+	if err != nil {
+		t.Fatalf("List archived: %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("got %d archived, want 1", len(archived))
+	}
+	unread, err := messages.List(tmpDir, "weave", "unread")
+	if err != nil {
+		t.Fatalf("List unread: %v", err)
+	}
+	if len(unread) != 0 {
+		t.Errorf("got %d unread after archive, want 0", len(unread))
+	}
+	// Verify file did not leak into another agent's maildir.
+	ratzDir := filepath.Join(tmpDir, ".sprawl", "messages", "ratz", "archive")
+	if entries, _ := os.ReadDir(ratzDir); len(entries) != 0 {
+		t.Errorf("leaked %d files into ratz archive", len(entries))
+	}
+}
+
+func TestMessagesArchive_NotFound(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.MessagesArchive(context.Background(), "nope")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestMessagesPeek_CountsUnreadAndPreviews(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	seedInbox(t, tmpDir, "a", "one", "")
+	seedInbox(t, tmpDir, "b", "two", "")
+	readID := seedInbox(t, tmpDir, "c", "three", "")
+	// Mark one read.
+	full, _ := messages.ResolvePrefix(tmpDir, "weave", readID)
+	if err := messages.MarkRead(tmpDir, "weave", full); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+
+	res, err := sup.MessagesPeek(context.Background())
+	if err != nil {
+		t.Fatalf("MessagesPeek: %v", err)
+	}
+	if res.UnreadCount != 2 {
+		t.Errorf("unread count = %d, want 2", res.UnreadCount)
+	}
+	if res.Agent != "weave" {
+		t.Errorf("agent = %q", res.Agent)
+	}
+	if len(res.Preview) != 2 {
+		t.Fatalf("preview len = %d, want 2", len(res.Preview))
+	}
+	// Newest-first.
+	if res.Preview[0].Subject != "two" || res.Preview[1].Subject != "one" {
+		t.Errorf("preview order = [%s,%s], want [two,one]", res.Preview[0].Subject, res.Preview[1].Subject)
+	}
+}
+
+func TestMessagesPeek_Empty(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	res, err := sup.MessagesPeek(context.Background())
+	if err != nil {
+		t.Fatalf("MessagesPeek: %v", err)
+	}
+	if res.UnreadCount != 0 {
+		t.Errorf("count = %d, want 0", res.UnreadCount)
+	}
+	if len(res.Preview) != 0 {
+		t.Errorf("preview = %v, want empty", res.Preview)
+	}
+}
+
+func TestMessagesList_RequiresCallerIdentity(t *testing.T) {
+	// An empty callerName (unidentified context) must be rejected — protects
+	// against agents being able to read mailboxes they don't own.
+	sup, err := NewReal(Config{SprawlRoot: t.TempDir(), CallerName: ""})
+	if err != nil {
+		t.Fatalf("NewReal: %v", err)
+	}
+	if _, err := sup.MessagesList(context.Background(), "all", 0); err == nil {
+		t.Error("MessagesList with empty callerName should fail")
+	}
+	if _, err := sup.MessagesRead(context.Background(), "x"); err == nil {
+		t.Error("MessagesRead with empty callerName should fail")
+	}
+	if _, err := sup.MessagesArchive(context.Background(), "x"); err == nil {
+		t.Error("MessagesArchive with empty callerName should fail")
+	}
+	if _, err := sup.MessagesPeek(context.Background()); err == nil {
+		t.Error("MessagesPeek with empty callerName should fail")
 	}
 }

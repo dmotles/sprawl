@@ -60,6 +60,55 @@ type PeekResult struct {
 	Activity   []agentloop.ActivityEntry `json:"activity"`
 }
 
+// MessageSummary is a compact listing entry for a message in the caller's mailbox.
+// See docs/designs/messaging-overhaul.md — returned by Supervisor.MessagesList
+// and MessagesPeek.
+type MessageSummary struct {
+	ID        string `json:"id"`      // short ID if available, otherwise full ID
+	FullID    string `json:"full_id"` // canonical maildir ID
+	From      string `json:"from"`
+	Subject   string `json:"subject"`
+	Timestamp string `json:"timestamp"` // RFC3339
+	Read      bool   `json:"read"`      // true iff sitting in cur/ (or archive/)
+	Dir       string `json:"dir"`       // "new" | "cur" | "archive"
+}
+
+// MessagesListResult is returned by Supervisor.MessagesList.
+type MessagesListResult struct {
+	Agent    string           `json:"agent"`
+	Filter   string           `json:"filter"`
+	Count    int              `json:"count"`
+	Messages []MessageSummary `json:"messages"`
+}
+
+// MessagesReadResult is returned by Supervisor.MessagesRead.
+type MessagesReadResult struct {
+	ID        string `json:"id"`
+	FullID    string `json:"full_id"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Subject   string `json:"subject"`
+	Body      string `json:"body"`
+	Timestamp string `json:"timestamp"`
+	Dir       string `json:"dir"`        // dir after auto-mark-read (cur/archive/sent)
+	WasUnread bool   `json:"was_unread"` // true iff found in new/ at read time
+}
+
+// MessagesArchiveResult is returned by Supervisor.MessagesArchive.
+type MessagesArchiveResult struct {
+	ID       string `json:"id"`
+	FullID   string `json:"full_id"`
+	Archived bool   `json:"archived"`
+}
+
+// MessagesPeekResult is returned by Supervisor.MessagesPeek. Provides a cheap
+// "do I have mail?" summary without requiring a full list.
+type MessagesPeekResult struct {
+	Agent       string           `json:"agent"`
+	UnreadCount int              `json:"unread_count"`
+	Preview     []MessageSummary `json:"preview"` // up to 5, newest-first
+}
+
 // SpawnRequest holds parameters for spawning a new agent.
 type SpawnRequest struct {
 	Family string `json:"family"`
@@ -112,6 +161,29 @@ type Supervisor interface {
 	// docs/designs/messaging-overhaul.md §4.2.3. The reporter identity is
 	// the supervisor's caller (r.callerName) when agentName is empty.
 	ReportStatus(ctx context.Context, agentName, state, summary, detail string) (*ReportStatusResult, error)
+	// MessagesList returns a listing of messages in the caller's mailbox.
+	// Identity is the supervisor's callerName; agents cannot read other
+	// agents' mailboxes via this API. `filter` ∈ {"", "all", "unread",
+	// "read", "archived"} — "" is treated as "all". `limit` ≤ 0 returns all
+	// matching messages; otherwise returns the newest-first top N. See
+	// QUM-316.
+	MessagesList(ctx context.Context, filter string, limit int) (*MessagesListResult, error)
+
+	// MessagesRead returns the full body of a message by its ID (short or
+	// long prefix accepted). If the message was in new/, it is auto-marked
+	// read (moved to cur/) — mirrors `sprawl messages read` CLI behavior.
+	// Scoped to the caller's mailbox.
+	MessagesRead(ctx context.Context, msgID string) (*MessagesReadResult, error)
+
+	// MessagesArchive moves a single message (by ID prefix) from new/ or
+	// cur/ into archive/. Scoped to the caller's mailbox.
+	MessagesArchive(ctx context.Context, msgID string) (*MessagesArchiveResult, error)
+
+	// MessagesPeek returns the unread count and a small preview (up to 5,
+	// newest-first) of the caller's inbox. Intended as a cheap "do I have
+	// mail?" probe.
+	MessagesPeek(ctx context.Context) (*MessagesPeekResult, error)
+
 	// SendInterrupt queues an interrupt-class message for `to` via Maildir
 	// persist + harness queue. The recipient's agent-loop harness polls the
 	// pending queue; on observing an interrupt entry it calls

@@ -107,6 +107,14 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolKill(ctx, args)
 	case "sprawl_handoff":
 		return s.toolHandoff(ctx, args)
+	case "sprawl_messages_list":
+		return s.toolMessagesList(ctx, args)
+	case "sprawl_messages_read":
+		return s.toolMessagesRead(ctx, args)
+	case "sprawl_messages_archive":
+		return s.toolMessagesArchive(ctx, args)
+	case "sprawl_messages_peek":
+		return s.toolMessagesPeek(ctx)
 	default:
 		// Unknown tools get a JSON-RPC error, not a tool content error
 		return "", &unknownToolError{name: name}
@@ -318,6 +326,75 @@ func (s *Server) toolHandoff(ctx context.Context, args json.RawMessage) (string,
 		return "", err
 	}
 	return "Handoff recorded. Session will restart momentarily with fresh context.", nil
+}
+
+func (s *Server) toolMessagesList(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Filter string `json:"filter"`
+		Limit  int    `json:"limit"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &p); err != nil {
+			return "", fmt.Errorf("invalid arguments: %w", err)
+		}
+	}
+	result, err := s.sup.MessagesList(ctx, p.Filter, p.Limit)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
+}
+
+func (s *Server) toolMessagesRead(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	result, err := s.sup.MessagesRead(ctx, p.ID)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
+}
+
+func (s *Server) toolMessagesArchive(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	result, err := s.sup.MessagesArchive(ctx, p.ID)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
+}
+
+func (s *Server) toolMessagesPeek(ctx context.Context) (string, error) {
+	result, err := s.sup.MessagesPeek(ctx)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	return string(data), nil
 }
 
 // unknownToolError is used to distinguish unknown tool errors from supervisor errors.

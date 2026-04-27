@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -527,4 +529,180 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, 
 		return nil, err
 	}
 	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
+}
+
+// --- QUM-316: mailbox read/list/archive tools ---
+
+// validFilters enumerates filter values the MCP mailbox tools accept. The
+// messages library also supports "sent", but that's out of scope for the MCP
+// surface per QUM-316 (non-goal).
+var validMessagesListFilters = map[string]bool{
+	"":         true,
+	"all":      true,
+	"unread":   true,
+	"read":     true,
+	"archived": true,
+}
+
+const (
+	defaultMessagesListLimit = 0 // 0 = no limit
+	maxMessagesListLimit     = 500
+	messagesPeekPreviewCap   = 5
+)
+
+func (r *Real) requireCallerIdentity() error {
+	if r.callerName == "" {
+		return fmt.Errorf("caller identity not set (SPRAWL_AGENT_IDENTITY unset); refusing mailbox operation")
+	}
+	return nil
+}
+
+// toSummaries maps *messages.Message slices to MessageSummary slices and
+// sorts them newest-first by timestamp. Truncated to `limit` (limit ≤ 0
+// returns all).
+func toSummaries(msgs []*messages.Message, limit int) []MessageSummary {
+	out := make([]MessageSummary, 0, len(msgs))
+	for _, m := range msgs {
+		id := m.ShortID
+		if id == "" {
+			id = m.ID
+		}
+		read := m.Dir != "new"
+		out = append(out, MessageSummary{
+			ID:        id,
+			FullID:    m.ID,
+			From:      m.From,
+			Subject:   m.Subject,
+			Timestamp: m.Timestamp,
+			Read:      read,
+			Dir:       m.Dir,
+		})
+	}
+	// Newest-first.
+	sort.SliceStable(out, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, out[i].Timestamp)
+		tj, _ := time.Parse(time.RFC3339, out[j].Timestamp)
+		return ti.After(tj)
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func (r *Real) MessagesList(_ context.Context, filter string, limit int) (*MessagesListResult, error) {
+	if err := r.requireCallerIdentity(); err != nil {
+		return nil, err
+	}
+	if !validMessagesListFilters[filter] {
+		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived", filter)
+	}
+	effective := filter
+	if effective == "" {
+		effective = "all"
+	}
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > maxMessagesListLimit {
+		limit = maxMessagesListLimit
+	}
+	msgs, err := messages.List(r.sprawlRoot, r.callerName, effective)
+	if err != nil {
+		return nil, fmt.Errorf("listing messages: %w", err)
+	}
+	summaries := toSummaries(msgs, limit)
+	return &MessagesListResult{
+		Agent:    r.callerName,
+		Filter:   effective,
+		Count:    len(summaries),
+		Messages: summaries,
+	}, nil
+}
+
+// isInNewDir reports whether the message with the given full ID is sitting in
+// the caller's new/ directory (i.e. unread). Used to report WasUnread without
+// perturbing the library's ReadMessage auto-mark behavior.
+func (r *Real) isInNewDir(msgID string) bool {
+	path := filepath.Join(messages.MessagesDir(r.sprawlRoot), r.callerName, "new", msgID+".json")
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func (r *Real) MessagesRead(_ context.Context, msgID string) (*MessagesReadResult, error) {
+	if err := r.requireCallerIdentity(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(msgID) == "" {
+		return nil, fmt.Errorf("message id must not be empty")
+	}
+	full, err := messages.ResolvePrefix(r.sprawlRoot, r.callerName, msgID)
+	if err != nil {
+		return nil, err
+	}
+	wasUnread := r.isInNewDir(full)
+	msg, err := messages.ReadMessage(r.sprawlRoot, r.callerName, full)
+	if err != nil {
+		return nil, err
+	}
+	short := msg.ShortID
+	if short == "" {
+		short = msg.ID
+	}
+	return &MessagesReadResult{
+		ID:        short,
+		FullID:    msg.ID,
+		From:      msg.From,
+		To:        msg.To,
+		Subject:   msg.Subject,
+		Body:      msg.Body,
+		Timestamp: msg.Timestamp,
+		Dir:       msg.Dir,
+		WasUnread: wasUnread,
+	}, nil
+}
+
+func (r *Real) MessagesArchive(_ context.Context, msgID string) (*MessagesArchiveResult, error) {
+	if err := r.requireCallerIdentity(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(msgID) == "" {
+		return nil, fmt.Errorf("message id must not be empty")
+	}
+	full, err := messages.ResolvePrefix(r.sprawlRoot, r.callerName, msgID)
+	if err != nil {
+		return nil, err
+	}
+	if err := messages.Archive(r.sprawlRoot, r.callerName, full); err != nil {
+		return nil, err
+	}
+	short := msgID
+	if len(full) >= len(msgID) {
+		// Prefer the short ID when we can retrieve it from the archived file.
+		archived, rerr := messages.ReadMessage(r.sprawlRoot, r.callerName, full)
+		if rerr == nil && archived.ShortID != "" {
+			short = archived.ShortID
+		}
+	}
+	return &MessagesArchiveResult{
+		ID:       short,
+		FullID:   full,
+		Archived: true,
+	}, nil
+}
+
+func (r *Real) MessagesPeek(_ context.Context) (*MessagesPeekResult, error) {
+	if err := r.requireCallerIdentity(); err != nil {
+		return nil, err
+	}
+	msgs, err := messages.List(r.sprawlRoot, r.callerName, "unread")
+	if err != nil {
+		return nil, fmt.Errorf("listing unread: %w", err)
+	}
+	preview := toSummaries(msgs, messagesPeekPreviewCap)
+	return &MessagesPeekResult{
+		Agent:       r.callerName,
+		UnreadCount: len(msgs),
+		Preview:     preview,
+	}, nil
 }
