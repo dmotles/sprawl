@@ -625,6 +625,64 @@ func TestViewportModel_SetToolInputsExpanded_TogglesRender(t *testing.T) {
 	}
 }
 
+// QUM-338: AppendSystemMessage adds a MessageSystem entry to the buffer with
+// Complete=true, mirroring AppendUserMessage but typed as a system message so
+// downstream renderers (and AssembleRawMarkdown skip lists) can distinguish it
+// from human-typed input.
+func TestViewportModel_AppendSystemMessage_AppendsEntry(t *testing.T) {
+	theme := NewTheme("")
+	m := NewViewportModel(&theme)
+	m.AppendSystemMessage("hello")
+	if m.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1", m.Len())
+	}
+	entries := m.GetMessages()
+	if entries[0].Type != MessageSystem {
+		t.Errorf("entries[0].Type = %v, want MessageSystem", entries[0].Type)
+	}
+	if entries[0].Content != "hello" {
+		t.Errorf("entries[0].Content = %q, want %q", entries[0].Content, "hello")
+	}
+	if !entries[0].Complete {
+		t.Errorf("entries[0].Complete = false, want true")
+	}
+}
+
+// QUM-338: A rendered system message must include the mail glyph "✉" and the
+// content text, distinguishing it from regular user/assistant/status entries.
+func TestViewportModel_RenderMessages_SystemMessageIncludesMailGlyph(t *testing.T) {
+	theme := NewTheme("")
+	m := NewViewportModel(&theme)
+	m.SetSize(80, 20)
+	m.AppendSystemMessage("hello")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "✉") {
+		t.Errorf("View() should contain mail glyph '✉' for system message, got:\n%s", view)
+	}
+	if !strings.Contains(view, "hello") {
+		t.Errorf("View() should contain system message content 'hello', got:\n%s", view)
+	}
+}
+
+// QUM-338: a system message must render with a distinct ANSI style from a user
+// message — the SystemText style (purple) plus the ✉ glyph differs from the
+// AccentText "You: " label, so raw ANSI output must differ.
+func TestViewportModel_RenderMessages_SystemMessageDistinctStyleFromUser(t *testing.T) {
+	themeA := NewTheme("")
+	mSys := NewViewportModel(&themeA)
+	mSys.SetSize(80, 20)
+	mSys.AppendSystemMessage("abc")
+
+	themeB := NewTheme("")
+	mUser := NewViewportModel(&themeB)
+	mUser.SetSize(80, 20)
+	mUser.AppendUserMessage("abc")
+
+	if mSys.View() == mUser.View() {
+		t.Errorf("system and user messages should render to distinct ANSI output, but both produced:\n%s", mSys.View())
+	}
+}
+
 // QUM-324: a tool name containing lots of junk (or otherwise long) must not
 // bleed past the viewport width in the header row either.
 func TestViewportModel_RenderToolCall_LongNameHeaderClipped(t *testing.T) {

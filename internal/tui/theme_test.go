@@ -62,3 +62,13 @@ func TestNewTheme_RenderStyles(t *testing.T) {
 	_ = theme.StatusBar.Render("status")
 	_ = theme.SelectedItem.Render("selected")
 }
+
+// QUM-338: SystemText must render distinctly from AccentText so inbox-drained
+// system messages are visually distinguishable from accent-styled labels.
+func TestNewTheme_SystemTextDistinctFromAccent(t *testing.T) {
+	theme := NewTheme("")
+	if theme.SystemText.Render("x") == theme.AccentText.Render("x") {
+		t.Errorf("SystemText.Render(x) should differ from AccentText.Render(x); both produced %q",
+			theme.SystemText.Render("x"))
+	}
+}

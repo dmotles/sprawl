@@ -382,7 +382,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// user-typed input. Without this, the drained frame is invisible (only
 		// the status line hints at it) and the only way to confirm drain worked
 		// is to grep logs — which also breaks the body-in-prompt e2e assertion.
-		m.rootVP().AppendUserMessage(msg.Prompt)
+		// QUM-338: render as a MessageSystem entry (mail glyph + distinct
+		// style) so the human can tell the system spoke, not them. The Claude
+		// session still receives the body as a user-role turn via SendMessage.
+		m.rootVP().AppendSystemMessage(msg.Prompt)
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
 		m.input.SetDisabled(true)
