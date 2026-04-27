@@ -124,6 +124,13 @@ func (m ViewportModel) View() string {
 	return view
 }
 
+// Len returns the number of message entries currently in the buffer.
+func (m *ViewportModel) Len() int { return len(m.messages) }
+
+// Width returns the inner cell width last applied via SetSize. Zero means
+// not-yet-sized.
+func (m *ViewportModel) Width() int { return m.width }
+
 // SetSize updates the viewport dimensions.
 func (m *ViewportModel) SetSize(w, h int) {
 	m.width = w

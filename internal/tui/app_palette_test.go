@@ -136,14 +136,14 @@ func TestAppModel_InjectPromptMsg_SendsToBridgeWithoutAppendingUserMessage(t *te
 		t.Fatal("InjectPromptMsg must return a cmd that calls bridge.SendMessage")
 	}
 	// Viewport must NOT contain the template as a user message (would blow up viewport for 2KB templates).
-	for _, m := range app.viewport.GetMessages() {
+	for _, m := range app.viewportFor("weave").GetMessages() {
 		if m.Type == MessageUser && m.Content == template {
 			t.Error("InjectPromptMsg must not AppendUserMessage with the template content")
 		}
 	}
 	// Viewport should have a status line indicating dispatch.
 	foundStatus := false
-	for _, m := range app.viewport.GetMessages() {
+	for _, m := range app.viewportFor("weave").GetMessages() {
 		if m.Type == MessageStatus && (strings.Contains(m.Content, "/handoff") || strings.Contains(m.Content, "dispatched")) {
 			foundStatus = true
 			break
