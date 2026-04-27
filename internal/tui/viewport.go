@@ -556,13 +556,19 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 	// pending) AND the bridge captured a non-empty result. Up to 3 non-empty
 	// lines, each truncated to the inner-gutter width, with a `+ N more
 	// lines` trailer when the source has more. Failures render in the
-	// error style so they stand out at a glance (QUM-336).
+	// error style so they stand out at a glance (QUM-336). When the global
+	// expand-tool-calls flag is on (QUM-343) we render every non-empty
+	// result line and skip the trailer.
 	if !msg.Pending && msg.Result != "" {
-		previewLines, more := previewResultLines(msg.Result, 3, m.width-toolCallInputPrefix)
 		previewStyle := m.theme.NormalText
 		if msg.Failed {
 			previewStyle = m.theme.ErrorText
 		}
+		maxLines := 3
+		if m.toolInputsExpanded {
+			maxLines = -1
+		}
+		previewLines, more := previewResultLines(msg.Result, maxLines, m.width-toolCallInputPrefix)
 		for _, ln := range previewLines {
 			sb.WriteString("\n")
 			sb.WriteString(previewStyle.Render("│ " + ln))
@@ -583,7 +589,8 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 // previewResultLines splits result on newlines, drops empty/whitespace-only
 // entries, returns up to maxLines truncated to width cells, and the count of
 // remaining (non-empty) source lines that did not fit. width <= 0 disables
-// truncation.
+// truncation. maxLines < 0 means "no cap" — every non-empty line is returned
+// (used by the QUM-343 expand-tool-calls path).
 func previewResultLines(result string, maxLines, width int) ([]string, int) {
 	var nonEmpty []string
 	for _, ln := range strings.Split(result, "\n") {
@@ -596,7 +603,7 @@ func previewResultLines(result string, maxLines, width int) ([]string, int) {
 		return nil, 0
 	}
 	take := maxLines
-	if len(nonEmpty) < take {
+	if maxLines < 0 || len(nonEmpty) < take {
 		take = len(nonEmpty)
 	}
 	out := make([]string, 0, take)

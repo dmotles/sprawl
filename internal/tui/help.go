@@ -33,7 +33,7 @@ func (m HelpModel) View() string {
 		{"Up / Down / j / k", "Navigate agent tree"},
 		{"Enter", "Select agent"},
 		{"Ctrl+N / Ctrl+P", "Cycle observed agent"},
-		{"Ctrl+O", "Toggle expand tool-call inputs"},
+		{"Ctrl+O", "Toggle expand tool-call inputs and outputs"},
 		{"/switch <name>", "Switch agent (fuzzy match)"},
 		{"PgUp / PgDn", "Scroll output"},
 		{"v (viewport)", "Enter select mode"},

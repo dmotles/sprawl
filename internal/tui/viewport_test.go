@@ -625,6 +625,118 @@ func TestViewportModel_SetToolInputsExpanded_TogglesRender(t *testing.T) {
 	}
 }
 
+// QUM-343: when the expand flag is on, renderToolCall renders the FULL tool
+// result (every non-empty line) under the `│ ` gutter instead of the 3-line
+// preview + `+ N more lines` trailer.
+func TestViewportModel_RenderToolCall_ExpandedRendersFullResult(t *testing.T) {
+	const width = 60
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 30)
+	m.SetToolInputsExpanded(true)
+
+	// 6 non-empty result lines — well past the 3-line preview cap.
+	result := "line-one\nline-two\nline-three\nline-four\nline-five\nline-six"
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:     MessageToolCall,
+		Content:  "Bash",
+		Complete: true,
+		Approved: true,
+		Result:   result,
+	})
+
+	stripped := stripANSI(sb.String())
+	for _, frag := range []string{"line-one", "line-two", "line-three", "line-four", "line-five", "line-six"} {
+		if !strings.Contains(stripped, frag) {
+			t.Errorf("expanded render missing result line %q, got:\n%s", frag, stripped)
+		}
+	}
+	if strings.Contains(stripped, "more lines") {
+		t.Errorf("expanded render must not include `+ N more lines` trailer, got:\n%s", stripped)
+	}
+	for _, line := range strings.Split(sb.String(), "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("expanded result line width %d exceeds viewport width %d: %q", w, width, line)
+		}
+	}
+	for _, line := range strings.Split(sb.String(), "\n") {
+		plain := stripANSI(line)
+		if plain == "" {
+			continue
+		}
+		if strings.HasPrefix(plain, "┌") || strings.HasPrefix(plain, "└") {
+			continue
+		}
+		if !strings.HasPrefix(plain, "│ ") {
+			t.Errorf("expanded result line missing `│ ` gutter: %q", plain)
+		}
+	}
+}
+
+// QUM-343: when the expand flag is OFF (default), renderToolCall still
+// honours the 3-line preview + `+ N more lines` trailer for tool results.
+func TestViewportModel_RenderToolCall_CollapsedPreservesPreviewTrailer(t *testing.T) {
+	const width = 60
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 30)
+
+	result := "r1\nr2\nr3\nr4\nr5"
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:     MessageToolCall,
+		Content:  "Bash",
+		Complete: true,
+		Approved: true,
+		Result:   result,
+	})
+
+	stripped := stripANSI(sb.String())
+	if !strings.Contains(stripped, "+ 2 more lines") {
+		t.Errorf("collapsed render should include `+ 2 more lines` trailer, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "r4") || strings.Contains(stripped, "r5") {
+		t.Errorf("collapsed render should not include lines past the 3-line preview, got:\n%s", stripped)
+	}
+}
+
+// QUM-343: SetToolInputsExpanded re-renders existing tool-call entries so a
+// completed tool result flips between 3-line preview and full output.
+func TestViewportModel_SetToolInputsExpanded_TogglesResultRender(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 30)
+	m.AppendToolCall("Bash", "tool-1", true, "ls", "ls -la")
+	m.MarkToolResult("tool-1", "out-1\nout-2\nout-3\nout-4\nout-5", false)
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "+ 2 more lines") {
+		t.Errorf("expected `+ 2 more lines` trailer before toggle, got:\n%s", view)
+	}
+	if strings.Contains(view, "out-5") {
+		t.Errorf("expected line past preview cap to be hidden before toggle, got:\n%s", view)
+	}
+
+	m.SetToolInputsExpanded(true)
+	view = stripANSI(m.View())
+	if strings.Contains(view, "more lines") {
+		t.Errorf("expected `more lines` trailer to disappear after toggle, got:\n%s", view)
+	}
+	for _, frag := range []string{"out-1", "out-2", "out-3", "out-4", "out-5"} {
+		if !strings.Contains(view, frag) {
+			t.Errorf("expected full result line %q after toggle, got:\n%s", frag, view)
+		}
+	}
+
+	m.SetToolInputsExpanded(false)
+	view = stripANSI(m.View())
+	if !strings.Contains(view, "+ 2 more lines") {
+		t.Errorf("expected `+ 2 more lines` trailer back after toggling off, got:\n%s", view)
+	}
+}
+
 // QUM-338: AppendSystemMessage adds a MessageSystem entry to the buffer with
 // Complete=true, mirroring AppendUserMessage but typed as a system message so
 // downstream renderers (and AssembleRawMarkdown skip lists) can distinguish it
