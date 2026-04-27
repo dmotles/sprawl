@@ -13,6 +13,12 @@ type InputModel struct {
 	theme    *Theme
 	width    int
 	disabled bool
+
+	// pendingPreview is a short preview of the queued submit (QUM-340). When
+	// non-empty the View() renders a dim indicator alongside the textinput
+	// signalling that an Enter while the agent was busy stashed a message that
+	// will auto-submit when the turn finalizes.
+	pendingPreview string
 }
 
 // NewInputModel creates an input model with a placeholder prompt.
@@ -51,16 +57,63 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 	return m, cmd
 }
 
-// View renders the input field.
+// View renders the input field. When a pending submit is queued (QUM-340),
+// a dim "⏸ queued: <preview>" suffix is appended on the same line; the
+// textinput's width is reduced via SetPendingPreview so the two co-exist
+// without wrapping.
 func (m InputModel) View() string {
-	return m.ti.View()
+	base := m.ti.View()
+	if m.pendingPreview == "" {
+		return base
+	}
+	suffix := m.theme.PlaceholderStyle.Render("  " + queuedIndicator(m.pendingPreview))
+	return base + suffix
 }
 
-// SetWidth updates the input width.
+// queuedPreviewMaxLen caps the indicator text so a long queued message
+// doesn't push past the input bar.
+const queuedPreviewMaxLen = 40
+
+// queuedIndicator builds the muted "⏸ queued: <preview>" string.
+func queuedIndicator(text string) string {
+	preview := text
+	if len(preview) > queuedPreviewMaxLen {
+		preview = preview[:queuedPreviewMaxLen] + "…"
+	}
+	return "⏸ queued: " + preview
+}
+
+// SetWidth updates the input width. When a pending preview is set, the
+// textinput receives the remaining width after the indicator's space so the
+// two render side-by-side without wrapping (QUM-340).
 func (m *InputModel) SetWidth(w int) {
 	m.width = w
-	m.ti.SetWidth(w)
+	m.ti.SetWidth(m.textInputWidth())
 }
+
+// textInputWidth returns the width budget the textinput should receive,
+// shrinking by the indicator's footprint when a queued preview is active.
+func (m *InputModel) textInputWidth() int {
+	if m.pendingPreview == "" {
+		return m.width
+	}
+	indicatorLen := len(queuedIndicator(m.pendingPreview)) + 2 // +2 for leading spaces
+	w := m.width - indicatorLen
+	if w < 4 {
+		w = 4
+	}
+	return w
+}
+
+// SetPendingPreview sets the queued-submit indicator text. Empty string clears
+// it. Re-applies width so the textinput re-allocates room for the suffix.
+func (m *InputModel) SetPendingPreview(text string) {
+	m.pendingPreview = text
+	m.ti.SetWidth(m.textInputWidth())
+}
+
+// PendingPreview returns the current queued-submit indicator text.
+func (m *InputModel) PendingPreview() string { return m.pendingPreview }
 
 // Focus activates the input for typing.
 func (m *InputModel) Focus() tea.Cmd {

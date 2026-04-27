@@ -168,6 +168,11 @@ func (m *ViewportModel) Len() int { return len(m.messages) }
 // not-yet-sized.
 func (m *ViewportModel) Width() int { return m.width }
 
+// Height returns the viewport's row count last applied via SetSize. Used by
+// tests to assert layout reflows correctly when the input bar is hidden
+// while observing a non-root agent (QUM-340).
+func (m *ViewportModel) Height() int { return m.vp.Height() }
+
 // SetSize updates the viewport dimensions.
 func (m *ViewportModel) SetSize(w, h int) {
 	m.width = w

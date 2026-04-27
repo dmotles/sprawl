@@ -622,7 +622,11 @@ func TestAppModel_SessionErrorMsg_WhenIdle_AppendsToViewport(t *testing.T) {
 	}
 }
 
-func TestAppModel_SessionErrorMsg_WhenStreaming_DisablesInput(t *testing.T) {
+func TestAppModel_SessionErrorMsg_WhenStreaming_ShowsErrorDialog(t *testing.T) {
+	// QUM-340: turn-state no longer drives input.disabled. The error dialog
+	// is its own modal — when it's up, the App routes all keys to it, so the
+	// "input is unreachable" guarantee is provided by showError, not the
+	// disabled flag.
 	mock := newMockSession()
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
@@ -635,12 +639,18 @@ func TestAppModel_SessionErrorMsg_WhenStreaming_DisablesInput(t *testing.T) {
 	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("process died")})
 	app = updated.(AppModel)
 
-	if !app.input.disabled {
-		t.Error("input should be disabled when error dialog is shown")
+	if !app.showError {
+		t.Error("error dialog should be shown after streaming-time SessionErrorMsg")
+	}
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v after error, want TurnIdle", app.turnState)
 	}
 }
 
-func TestAppModel_RestartSessionMsg_ReenablesInput(t *testing.T) {
+func TestAppModel_RestartSessionMsg_RestoresIdleState(t *testing.T) {
+	// QUM-340: input is no longer disabled by turn-state, so this test now
+	// verifies that a successful restart leaves the App in TurnIdle and
+	// dismisses the error dialog. The bar is always editable when visible.
 	mock := newMockSession()
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
@@ -652,14 +662,13 @@ func TestAppModel_RestartSessionMsg_ReenablesInput(t *testing.T) {
 	app := resized.(AppModel)
 
 	app.showError = true
-	app.input.SetDisabled(true)
 
 	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
 	app = driveAsyncRestart(t, app, cmd)
 
-	if app.input.disabled {
-		t.Error("input should be re-enabled after successful restart")
+	if app.showError {
+		t.Error("error dialog should be dismissed after successful restart")
 	}
 	if app.turnState != TurnIdle {
 		t.Errorf("turnState should be TurnIdle after restart, got %v", app.turnState)
@@ -958,7 +967,10 @@ func TestAppModel_AgentSelectedMsg_MovesTreeCursor(t *testing.T) {
 	}
 }
 
-func TestAppModel_AgentSelectedMsg_DisablesInputForNonRoot(t *testing.T) {
+func TestAppModel_AgentSelectedMsg_HidesInputBarForNonRoot(t *testing.T) {
+	// QUM-340: the input bar is hidden entirely while observing a non-root
+	// agent (cleaner UX than a disabled-but-visible bar). The viewport
+	// reclaims those rows.
 	sup := &mockSupervisor{}
 	m := newTestAppModelWithSupervisor(t, sup)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -969,18 +981,32 @@ func TestAppModel_AgentSelectedMsg_DisablesInputForNonRoot(t *testing.T) {
 	}
 	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
 	app = updated.(AppModel)
+
+	rootView := app.View().Content
+	// Capture the viewport height while observing root for comparison.
+	rootViewportH := app.viewportFor("weave").Height()
 
 	// Select a non-root agent.
 	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
 	app = updated.(AppModel)
 
-	// Input should be disabled when observing a non-root agent.
-	if !app.input.disabled {
-		t.Error("input should be disabled when observing non-root agent 'tower'")
+	childView := app.View().Content
+	if strings.Contains(childView, "ype a message") {
+		t.Error("input bar placeholder should not appear in View when observing non-root agent")
+	}
+	if strings.Count(childView, "╭") >= strings.Count(rootView, "╭") {
+		t.Errorf("expected one fewer bordered panel after hiding input bar; root borders=%d child borders=%d",
+			strings.Count(rootView, "╭"), strings.Count(childView, "╭"))
+	}
+	childViewportH := app.viewportFor("tower").Height()
+	if childViewportH <= rootViewportH {
+		t.Errorf("child viewport should be taller than root viewport after input-bar hide; child=%d root=%d", childViewportH, rootViewportH)
 	}
 }
 
-func TestAppModel_AgentSelectedMsg_EnablesInputForRoot(t *testing.T) {
+func TestAppModel_AgentSelectedMsg_RestoresInputBarOnCycleBack(t *testing.T) {
+	// QUM-340: cycling root → child → root re-renders the input bar and
+	// snaps the viewport back to its original size.
 	sup := &mockSupervisor{}
 	m := newTestAppModelWithSupervisor(t, sup)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -992,16 +1018,20 @@ func TestAppModel_AgentSelectedMsg_EnablesInputForRoot(t *testing.T) {
 	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
 	app = updated.(AppModel)
 
-	// Select non-root first.
+	rootViewportH := app.viewportFor("weave").Height()
+
 	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
 	app = updated.(AppModel)
-
-	// Select root agent — input should be enabled.
 	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
 	app = updated.(AppModel)
 
-	if app.input.disabled {
-		t.Error("input should be enabled when observing root agent 'weave'")
+	view := app.View().Content
+	if !strings.Contains(view, "ype a message") {
+		t.Error("input bar should be visible again after cycling back to weave")
+	}
+	weaveH := app.viewportFor("weave").Height()
+	if weaveH != rootViewportH {
+		t.Errorf("weave viewport height should match original after cycle-back; got %d, want %d", weaveH, rootViewportH)
 	}
 }
 
@@ -1387,9 +1417,8 @@ func TestAppModel_SessionRestartingMsg_AppendsStatusAndDisablesInput(t *testing.
 	updated, _ := app.Update(SessionRestartingMsg{Reason: "session ended"})
 	app = updated.(AppModel)
 
-	if !app.input.disabled {
-		t.Error("SessionRestartingMsg should disable input")
-	}
+	// QUM-340: input is no longer disabled by turn state. Only assert the
+	// status banner and idle reset.
 	if app.turnState != TurnIdle {
 		t.Errorf("turnState = %v, want TurnIdle", app.turnState)
 	}
@@ -1492,9 +1521,8 @@ func TestAppModel_RestartSessionMsg_SetsRestartingAndSchedulesTick(t *testing.T)
 	if app.restartStartedAt.IsZero() {
 		t.Error("restartStartedAt should be set when restart begins")
 	}
-	if !app.input.disabled {
-		t.Error("input should be disabled while restart is in flight")
-	}
+	// QUM-340: input is no longer disabled by turn state — restart-in-flight
+	// is signalled via the status bar elapsed counter, not the input bar.
 	if cmd == nil {
 		t.Fatal("expected a non-nil cmd batch from RestartSessionMsg")
 	}
@@ -2541,5 +2569,202 @@ func TestAppModel_ToolCallMsg_PreservesFullInput(t *testing.T) {
 	}
 	if last.ToolInputFull != "ls -la /tmp" {
 		t.Errorf("ToolInputFull = %q, want %q", last.ToolInputFull, "ls -la /tmp")
+	}
+}
+
+// --- QUM-340: type-while-busy queue ---
+
+// busyAppWithBridge returns a ready, sized AppModel mid-turn (TurnStreaming)
+// suitable for exercising the pendingSubmit state machine.
+func busyAppWithBridge(t *testing.T) AppModel {
+	t.Helper()
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app := resized.(AppModel)
+	app.turnState = TurnStreaming
+	return app
+}
+
+func TestAppModel_SubmitMsg_WhileBusy_QueuesPending(t *testing.T) {
+	app := busyAppWithBridge(t)
+
+	updated, cmd := app.Update(SubmitMsg{Text: "next prompt"})
+	app = updated.(AppModel)
+
+	if app.pendingSubmit != "next prompt" {
+		t.Errorf("pendingSubmit = %q, want %q", app.pendingSubmit, "next prompt")
+	}
+	if app.input.PendingPreview() != "next prompt" {
+		t.Errorf("input pending preview = %q, want %q", app.input.PendingPreview(), "next prompt")
+	}
+	if cmd != nil {
+		t.Errorf("queued SubmitMsg should not return a cmd, got %T", cmd())
+	}
+	for _, m := range app.viewportFor("weave").GetMessages() {
+		if m.Type == MessageUser && m.Content == "next prompt" {
+			t.Error("queued submit must not be appended as a user message until it dispatches")
+		}
+	}
+}
+
+func TestAppModel_SubmitMsg_SecondWhileBusy_ReplacesQueued(t *testing.T) {
+	app := busyAppWithBridge(t)
+	updated, _ := app.Update(SubmitMsg{Text: "first"})
+	app = updated.(AppModel)
+	updated, _ = app.Update(SubmitMsg{Text: "second"})
+	app = updated.(AppModel)
+
+	if app.pendingSubmit != "second" {
+		t.Errorf("pendingSubmit = %q, want %q (single-slot semantics)", app.pendingSubmit, "second")
+	}
+	if app.input.PendingPreview() != "second" {
+		t.Errorf("indicator preview = %q, want %q", app.input.PendingPreview(), "second")
+	}
+}
+
+func TestAppModel_SessionResultMsg_DispatchesPendingSubmit(t *testing.T) {
+	app := busyAppWithBridge(t)
+	app.pendingSubmit = "auto-fire me"
+	app.input.SetPendingPreview("auto-fire me")
+
+	updated, cmd := app.Update(SessionResultMsg{Result: "done", DurationMs: 10})
+	app = updated.(AppModel)
+
+	if app.pendingSubmit != "" {
+		t.Errorf("pendingSubmit should be cleared after auto-fire, got %q", app.pendingSubmit)
+	}
+	if app.input.PendingPreview() != "" {
+		t.Errorf("indicator preview should be cleared after auto-fire, got %q", app.input.PendingPreview())
+	}
+	if cmd == nil {
+		t.Fatal("SessionResultMsg with queued submit should return a cmd dispatching the SubmitMsg")
+	}
+	resolved := cmd()
+	subMsg, ok := resolved.(SubmitMsg)
+	if !ok {
+		t.Fatalf("auto-fire cmd resolved to %T, want SubmitMsg", resolved)
+	}
+	if subMsg.Text != "auto-fire me" {
+		t.Errorf("dispatched SubmitMsg.Text = %q, want %q", subMsg.Text, "auto-fire me")
+	}
+}
+
+func TestAppModel_SessionResultMsg_NoQueuedSubmit_NoCmd(t *testing.T) {
+	app := busyAppWithBridge(t)
+	updated, cmd := app.Update(SessionResultMsg{Result: "done", DurationMs: 5})
+	app = updated.(AppModel)
+	if cmd != nil {
+		t.Errorf("SessionResultMsg with empty queue should not return a cmd, got %T", cmd())
+	}
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v, want TurnIdle", app.turnState)
+	}
+}
+
+func TestAppModel_Esc_ClearsPendingSubmit(t *testing.T) {
+	app := busyAppWithBridge(t)
+	app.pendingSubmit = "draft"
+	app.input.SetPendingPreview("draft")
+	// Make sure a partial composition in the textinput buffer survives.
+	app.input.ti.SetValue("composing more")
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	if app.pendingSubmit != "" {
+		t.Errorf("Esc should clear pendingSubmit, got %q", app.pendingSubmit)
+	}
+	if app.input.PendingPreview() != "" {
+		t.Errorf("Esc should clear indicator preview, got %q", app.input.PendingPreview())
+	}
+	if app.input.ti.Value() != "composing more" {
+		t.Errorf("Esc must not clear the textinput buffer, got %q", app.input.ti.Value())
+	}
+}
+
+func TestAppModel_PendingSubmit_PersistsAcrossAgentCycle(t *testing.T) {
+	sup := &mockSupervisor{}
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app := resized.(AppModel)
+	updated, _ := app.Update(AgentTreeMsg{Nodes: []TreeNode{{Name: "tower", Type: "manager"}}})
+	app = updated.(AppModel)
+
+	app.turnState = TurnStreaming
+	updated, _ = app.Update(SubmitMsg{Text: "stash this"})
+	app = updated.(AppModel)
+	if app.pendingSubmit != "stash this" {
+		t.Fatalf("setup: pendingSubmit = %q, want %q", app.pendingSubmit, "stash this")
+	}
+
+	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
+	app = updated.(AppModel)
+	if app.pendingSubmit != "stash this" {
+		t.Errorf("pendingSubmit must survive cycle to child, got %q", app.pendingSubmit)
+	}
+	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
+	app = updated.(AppModel)
+	if app.pendingSubmit != "stash this" {
+		t.Errorf("pendingSubmit must survive cycle back to root, got %q", app.pendingSubmit)
+	}
+	if app.input.PendingPreview() != "stash this" {
+		t.Errorf("indicator preview should be restored after cycle-back, got %q", app.input.PendingPreview())
+	}
+}
+
+func TestAppModel_SessionRestartingMsg_DropsPendingSubmit(t *testing.T) {
+	app := busyAppWithBridge(t)
+	app.pendingSubmit = "won't survive restart"
+	app.input.SetPendingPreview("won't survive restart")
+
+	updated, _ := app.Update(SessionRestartingMsg{Reason: "handoff"})
+	app = updated.(AppModel)
+
+	if app.pendingSubmit != "" {
+		t.Errorf("pendingSubmit should be cleared on session restart, got %q", app.pendingSubmit)
+	}
+	if app.input.PendingPreview() != "" {
+		t.Errorf("indicator preview should be cleared on session restart, got %q", app.input.PendingPreview())
+	}
+	found := false
+	for _, m := range app.viewportFor("weave").GetMessages() {
+		if m.Type == MessageStatus && strings.Contains(m.Content, "queued message dropped") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected a 'queued message dropped' status banner after session restart")
+	}
+}
+
+func TestAppModel_InputAlwaysEditable_MidTurn(t *testing.T) {
+	// Regression for issue B: cycling root → child → root mid-turn must not
+	// leave the input bar in a state where SubmitMsg silently drops the input.
+	sup := &mockSupervisor{}
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app := resized.(AppModel)
+	updated, _ := app.Update(AgentTreeMsg{Nodes: []TreeNode{{Name: "tower", Type: "manager"}}})
+	app = updated.(AppModel)
+	app.turnState = TurnStreaming
+
+	// Cycle away then back.
+	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
+	app = updated.(AppModel)
+	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
+	app = updated.(AppModel)
+
+	// SubmitMsg while still streaming must queue, not be silently dropped.
+	updated, _ = app.Update(SubmitMsg{Text: "do not drop me"})
+	app = updated.(AppModel)
+	if app.pendingSubmit != "do not drop me" {
+		t.Errorf("post-cycle SubmitMsg must queue (regression QUM-340 issue B); got pendingSubmit=%q", app.pendingSubmit)
 	}
 }
