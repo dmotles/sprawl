@@ -182,6 +182,7 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 					}
 				case "tool_use":
 					name, _ := bm["name"].(string)
+					id, _ := bm["id"].(string)
 					var inputRaw json.RawMessage
 					if raw, err := json.Marshal(bm["input"]); err == nil {
 						inputRaw = raw
@@ -193,6 +194,9 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						Approved:      true,
 						ToolInput:     summarizeToolInput(name, inputRaw),
 						ToolInputFull: expandToolInput(name, inputRaw),
+						ToolID:        id,
+						// Replay-synthesized tool calls are not in flight —
+						// the spinner ticker only animates Pending entries.
 					})
 					// thinking + other types: skip
 				}

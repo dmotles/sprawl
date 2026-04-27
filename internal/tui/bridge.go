@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -105,13 +106,18 @@ func (b *Bridge) Close() error {
 	return b.session.Close()
 }
 
-// contentBlock represents a single content block in an assistant message.
+// contentBlock represents a single content block in an assistant or user
+// message. tool_use blocks (assistant) carry Name + ID + Input; tool_result
+// blocks (user) carry ToolUseID + Content + IsError. (QUM-336)
 type contentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Content   json.RawMessage `json:"content,omitempty"`
+	IsError   bool            `json:"is_error,omitempty"`
 }
 
 // assistantContent is used to parse the "message" field of an assistant message.
@@ -125,6 +131,8 @@ func mapProtocolMessage(msg *protocol.Message) tea.Msg {
 	switch msg.Type {
 	case "assistant":
 		return mapAssistantMessage(msg)
+	case "user":
+		return mapUserMessage(msg)
 	case "result":
 		return mapResultMessage(msg)
 	case "system":
@@ -250,6 +258,79 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen-3]) + "..."
+}
+
+// userMessageEnvelope mirrors the wire shape of a `user` protocol message.
+// `Content` is json.RawMessage because Claude Code sends either a plain
+// string (echo of a typed user prompt — already rendered locally; we ignore
+// it) or an array of content blocks (used for tool_result delivery).
+type userMessageEnvelope struct {
+	Message struct {
+		Content json.RawMessage `json:"content"`
+	} `json:"message"`
+}
+
+// mapUserMessage extracts the first tool_result content block from a `user`
+// message and emits ToolResultMsg. Returns nil for plain-string user echoes
+// or block arrays that contain no tool_result. (QUM-336)
+func mapUserMessage(msg *protocol.Message) tea.Msg {
+	var env userMessageEnvelope
+	if err := json.Unmarshal(msg.Raw, &env); err != nil {
+		return nil
+	}
+	if len(env.Message.Content) == 0 {
+		return nil
+	}
+	// Plain-string content (user prompt echo) — start of the JSON value will
+	// be `"`. Skip; the InputModel already rendered the typed prompt via
+	// SubmitMsg.
+	if env.Message.Content[0] == '"' {
+		return nil
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(env.Message.Content, &blocks); err != nil {
+		return nil
+	}
+	for _, b := range blocks {
+		if b.Type != "tool_result" {
+			continue
+		}
+		return ToolResultMsg{
+			ToolID:  b.ToolUseID,
+			Content: flattenToolResultContent(b.Content),
+			IsError: b.IsError,
+		}
+	}
+	return nil
+}
+
+// flattenToolResultContent decodes the polymorphic `content` field of a
+// tool_result block. The Anthropic protocol allows it to be either a plain
+// string or an array of `{type:"text", text:"..."}` blocks; the latter form
+// is joined with newlines so a single Result string can carry multi-block
+// output.
+func flattenToolResultContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+		return ""
+	}
+	var blocks []contentBlock
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			parts = append(parts, b.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func mapResultMessage(msg *protocol.Message) tea.Msg {
