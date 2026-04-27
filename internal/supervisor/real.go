@@ -247,8 +247,8 @@ func (r *Real) Merge(_ context.Context, agentName, message string, noValidate bo
 	return r.mergeFn(r.mergeDeps, agentName, message, noValidate, false)
 }
 
-func (r *Real) Retire(_ context.Context, agentName string, mergeFirst, abandon bool) error {
-	return r.retireFn(r.retireDeps, agentName, false /* cascade */, false /* force */, abandon, mergeFirst, true /* yes */, false /* noValidate */)
+func (r *Real) Retire(_ context.Context, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+	return r.retireFn(r.retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate)
 }
 
 // Kill is idempotent: if the agent is already gone (state file missing) or

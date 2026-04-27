@@ -49,7 +49,7 @@ Source: `internal/sprawlmcp/tools.go`. Twelve tools are defined:
 | `sprawl_report_status` | Child reports state to parent (`working`/`blocked`/`complete`/`failure`). |
 | `sprawl_message` | **Deprecated** alias for `sprawl_send_async`. |
 | `sprawl_merge` | Squash-merge agent branch (agent stays alive). |
-| `sprawl_retire` | Retire agent, optionally merging or abandoning. |
+| `sprawl_retire` | Retire agent, optionally merging, abandoning, or cascading through descendants. |
 | `sprawl_handoff` | Weave-only session handoff. |
 | `sprawl_kill` | Emergency stop; preserves state and worktree. |
 
@@ -226,19 +226,26 @@ e2e test adaptation already contemplated under M13 Phase 2 items.
 - `--yes` — acknowledge safety warnings (for dirty/live).
 - `--no-validate` — skip post-merge validation.
 
-**MCP surface:** `sprawl_retire{agent_name, merge?, abandon?}`.
+**MCP surface:** `sprawl_retire{agent_name, merge?, abandon?, cascade?, validate?}`
+(QUM-317).
 
-**Delta / gap:** **MODERATE.**
-1. No `--cascade`. Cascade is a real workflow (manager retiring subtree). Either
-   expose it (`cascade?: bool`) or document "call `sprawl_retire` per child
-   bottom-up". **Recommend exposing** — cascade ordering is nontrivial and the
-   CLI got it right.
-2. No `--force`. Escape hatch for broken state. Likely needed as `force?: bool`
-   for parity.
-3. No `--yes`. If MCP treats safety warnings as failures that require explicit
-   override, we need a `confirm?: bool` or similar.
-4. No `--no-validate` on the retire path. `sprawl_merge` already exposes
-   `no_validate`; the merge branch of `sprawl_retire` should too.
+**Delta / gap:** **LOW** (post-QUM-317).
+
+Resolved by [QUM-317](https://linear.app/qumulo-dmotles/issue/QUM-317):
+- `cascade?: bool` now retires the agent and all descendants bottom-up
+  (same semantics as `sprawl retire --cascade`).
+- `validate?: bool` (default true) inverts to `--no-validate` — only
+  meaningful together with `merge=true`.
+- `merge` and `abandon` are mutually-exclusive at the MCP boundary; the tool
+  returns an `isError` content block instead of hitting the supervisor.
+- MCP calls run in non-interactive mode — `--yes` is implied, so the abandon
+  safety warnings that trip the CLI become hard failures only when the
+  supervisor itself rejects them. A dedicated confirm flag is not exposed.
+
+Still CLI-only:
+- `--force` (orphan children without retiring them). The deliberate escape
+  hatch has no MCP equivalent — callers should use `cascade=true` to include
+  descendants or retire children individually first.
 
 **Consumers of CLI:** Agent prompts (`internal/agent/prompt_mode.go` — 11 refs),
 design docs (`docs/designs/agent-teardown.md` — 8 refs). Prompt rewrite under

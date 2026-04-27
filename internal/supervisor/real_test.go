@@ -159,7 +159,7 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 		return nil
 	}
 
-	if err := r.Retire(context.Background(), "ghost", true /* mergeFirst */, false /* abandon */); err != nil {
+	if err := r.Retire(context.Background(), "ghost", true /* mergeFirst */, false /* abandon */, false /* cascade */, false /* noValidate */); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if got.name != "ghost" {
@@ -180,6 +180,9 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 	if got.force {
 		t.Error("force should be false")
 	}
+	if got.noValidate {
+		t.Error("noValidate should be false")
+	}
 }
 
 func TestRetire_AbandonMode(t *testing.T) {
@@ -189,11 +192,29 @@ func TestRetire_AbandonMode(t *testing.T) {
 		gotAbandon, gotMergeFirst = abandon, mergeFirst
 		return nil
 	}
-	if err := r.Retire(context.Background(), "ghost", false, true); err != nil {
+	if err := r.Retire(context.Background(), "ghost", false, true, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !gotAbandon || gotMergeFirst {
 		t.Errorf("abandon=%v mergeFirst=%v, want abandon=true mergeFirst=false", gotAbandon, gotMergeFirst)
+	}
+}
+
+func TestRetire_CascadeAndNoValidate(t *testing.T) {
+	r, _ := newFakeReal(t)
+	var gotCascade, gotNoValidate bool
+	r.retireFn = func(_ *agentops.RetireDeps, _ string, cascade, _, _, _, _, noValidate bool) error {
+		gotCascade, gotNoValidate = cascade, noValidate
+		return nil
+	}
+	if err := r.Retire(context.Background(), "ghost", true /* merge */, false, true /* cascade */, true /* noValidate */); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if !gotCascade {
+		t.Error("cascade should be true")
+	}
+	if !gotNoValidate {
+		t.Error("noValidate should be true")
 	}
 }
 

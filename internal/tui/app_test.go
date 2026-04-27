@@ -794,14 +794,16 @@ func (m *mockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*s
 func (m *mockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
 	return m.agents, m.statusErr
 }
-func (m *mockSupervisor) Delegate(_ context.Context, _, _ string) error       { return nil }
-func (m *mockSupervisor) Message(_ context.Context, _, _, _ string) error     { return nil }
-func (m *mockSupervisor) Merge(_ context.Context, _, _ string, _ bool) error  { return nil }
-func (m *mockSupervisor) Retire(_ context.Context, _ string, _, _ bool) error { return nil }
-func (m *mockSupervisor) Kill(_ context.Context, _ string) error              { return nil }
-func (m *mockSupervisor) Shutdown(_ context.Context) error                    { return nil }
-func (m *mockSupervisor) Handoff(_ context.Context, _ string) error           { return nil }
-func (m *mockSupervisor) HandoffRequested() <-chan struct{}                   { return nil }
+func (m *mockSupervisor) Delegate(_ context.Context, _, _ string) error      { return nil }
+func (m *mockSupervisor) Message(_ context.Context, _, _, _ string) error    { return nil }
+func (m *mockSupervisor) Merge(_ context.Context, _, _ string, _ bool) error { return nil }
+func (m *mockSupervisor) Retire(_ context.Context, _ string, _, _, _, _ bool) error {
+	return nil
+}
+func (m *mockSupervisor) Kill(_ context.Context, _ string) error    { return nil }
+func (m *mockSupervisor) Shutdown(_ context.Context) error          { return nil }
+func (m *mockSupervisor) Handoff(_ context.Context, _ string) error { return nil }
+func (m *mockSupervisor) HandoffRequested() <-chan struct{}         { return nil }
 func (m *mockSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]agentloop.ActivityEntry, error) {
 	return nil, nil
 }

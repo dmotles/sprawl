@@ -316,7 +316,10 @@ func (s *shutdownMockSupervisor) Message(_ context.Context, _, _, _ string) erro
 func (s *shutdownMockSupervisor) Merge(_ context.Context, _, _ string, _ bool) error {
 	return nil
 }
-func (s *shutdownMockSupervisor) Retire(_ context.Context, _ string, _, _ bool) error { return nil }
+
+func (s *shutdownMockSupervisor) Retire(_ context.Context, _ string, _, _, _, _ bool) error {
+	return nil
+}
 
 func (s *shutdownMockSupervisor) Kill(_ context.Context, name string) error {
 	s.killCalled = append(s.killCalled, name)
