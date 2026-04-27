@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
@@ -125,6 +126,14 @@ type AppModel struct {
 	// false; survives agent cycling because new viewports inherit it on
 	// creation in viewportFor.
 	toolInputsExpanded bool
+
+	// spinner drives the in-flight indicator for pending tool calls
+	// (QUM-336). A single global spinner ticks while pendingToolCalls > 0,
+	// pushing its current frame to every per-agent viewport. When the
+	// counter drops to zero the AppModel stops re-issuing tick commands so
+	// no idle CPU is consumed.
+	spinner          spinner.Model
+	pendingToolCalls int
 }
 
 const (
@@ -148,6 +157,8 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 	// Init/Update fires, so lazy-init via viewportFor would arrive too late
 	// (QUM-334 §5). Child agent buffers are still lazy.
 	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme)}
+	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	sp.Style = theme.AccentText
 	app := AppModel{
 		tree:          NewTreeModel(&theme),
 		activity:      NewActivityPanelModel(&theme),
@@ -166,6 +177,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		activePanel:   startPanel,
 		theme:         theme,
 		restartFunc:   restartFunc,
+		spinner:       sp,
 	}
 	app.updateFocus()
 	app.rebuildTree()
@@ -409,11 +421,61 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ToolCallMsg:
-		m.rootVP().AppendToolCall(msg.ToolName, msg.Approved, msg.Input, msg.FullInput)
+		m.rootVP().AppendToolCall(msg.ToolName, msg.ToolID, msg.Approved, msg.Input, msg.FullInput)
+		// Bump the pending counter and (re)start the spinner ticker if this
+		// is the first in-flight call (QUM-336). The spinner self-perpetuates
+		// via spinner.Update returning the next tick cmd, but we gate that
+		// at the AppModel level — see spinner.TickMsg case below.
+		wasZero := m.pendingToolCalls == 0
+		m.pendingToolCalls++
+		var cmds []tea.Cmd
+		if wasZero {
+			cmds = append(cmds, m.spinner.Tick)
+		}
+		if m.bridge != nil {
+			cmds = append(cmds, m.bridge.WaitForEvent())
+		}
+		switch len(cmds) {
+		case 0:
+			return m, nil
+		case 1:
+			return m, cmds[0]
+		default:
+			return m, tea.Batch(cmds...)
+		}
+
+	case ToolResultMsg:
+		// Route to the root viewport (bridge events are weave-only per
+		// QUM-334's gating). MarkToolResult returns false for orphan IDs;
+		// only decrement the pending counter on a real match so the
+		// spinner keeps animating until every in-flight call resolves.
+		if m.rootVP().MarkToolResult(msg.ToolID, msg.Content, msg.IsError) {
+			if m.pendingToolCalls > 0 {
+				m.pendingToolCalls--
+			}
+		}
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
 		return m, nil
+
+	case spinner.TickMsg:
+		// Drop ticks once no tool call is in flight — this is how the
+		// ticker stops without leaking work (QUM-336 AC-7). The counter
+		// can drift if an entire session ends with calls still pending
+		// (e.g. an EOF mid-turn); reconcile against the viewport's actual
+		// state so a stale counter cannot keep ticking forever.
+		if m.pendingToolCalls == 0 || !m.rootVP().HasPendingToolCall() {
+			m.pendingToolCalls = 0
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		frame := m.spinner.View()
+		for _, buf := range m.agentBuffers {
+			buf.vp.SetSpinnerFrame(frame)
+		}
+		return m, cmd
 
 	case SessionResultMsg:
 		// Display result text only if no assistant text was already streamed.
@@ -559,6 +621,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		shortID := shortSessionID(m.bridge.SessionID())
 		root := m.rootVP()
 		root.SetMessages(nil)
+		// New session starts with no in-flight tool calls; reset the
+		// counter so any stale tick is dropped on next arrival (QUM-336).
+		m.pendingToolCalls = 0
 		if shortID != "" {
 			root.AppendStatus(fmt.Sprintf("— New session started (%s) —", shortID))
 		} else {

@@ -104,13 +104,13 @@ func TestViewportModel_AppendToolCall(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(60, 20)
 
-	m.AppendToolCall("read_file", true, "", "")
+	m.AppendToolCall("read_file", "", true, "", "")
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "read_file") {
 		t.Errorf("View() should contain approved tool call 'read_file', got:\n%s", view)
 	}
 
-	m.AppendToolCall("write_file", false, "", "")
+	m.AppendToolCall("write_file", "", false, "", "")
 	view = stripANSI(m.View())
 	if !strings.Contains(view, "write_file") {
 		t.Errorf("View() should contain unapproved tool call 'write_file', got:\n%s", view)
@@ -121,7 +121,7 @@ func TestViewportModel_AppendToolCall_WithInput(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(80, 20)
 
-	m.AppendToolCall("Bash", true, "ls -la /tmp", "")
+	m.AppendToolCall("Bash", "", true, "ls -la /tmp", "")
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "Bash") {
 		t.Errorf("View() should contain tool name 'Bash', got:\n%s", view)
@@ -158,7 +158,7 @@ func TestViewportModel_MixedMessages(t *testing.T) {
 	m.AppendUserMessage("what is sprawl?")
 	m.AppendAssistantChunk("Sprawl is a tool")
 	m.FinalizeAssistantMessage()
-	m.AppendToolCall("read_file", true, "", "")
+	m.AppendToolCall("read_file", "", true, "", "")
 	m.AppendStatus("processing...")
 	m.AppendError("timeout occurred")
 
@@ -577,7 +577,7 @@ func TestViewportModel_AppendToolCall_StoresFullInput(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(60, 20)
 
-	m.AppendToolCall("Bash", true, "ls", "ls -la /tmp")
+	m.AppendToolCall("Bash", "", true, "ls", "ls -la /tmp")
 	msgs := m.GetMessages()
 	if len(msgs) != 1 {
 		t.Fatalf("got %d messages, want 1", len(msgs))
@@ -596,7 +596,7 @@ func TestViewportModel_AppendToolCall_StoresFullInput(t *testing.T) {
 func TestViewportModel_SetToolInputsExpanded_TogglesRender(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(80, 20)
-	m.AppendToolCall("Bash", true, "short", "this is the full bash command being expanded")
+	m.AppendToolCall("Bash", "", true, "short", "this is the full bash command being expanded")
 
 	if m.ToolInputsExpanded() {
 		t.Fatal("expanded flag should default to false")

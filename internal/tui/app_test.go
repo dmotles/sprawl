@@ -2416,7 +2416,7 @@ func TestAppModel_CtrlEToggleToolInputsExpanded(t *testing.T) {
 		t.Fatal("toolInputsExpanded should default to false")
 	}
 	// Seed a tool call so the viewport has something to flip.
-	app.rootVP().AppendToolCall("Bash", true, "ls", "ls -la /tmp")
+	app.rootVP().AppendToolCall("Bash", "", true, "ls", "ls -la /tmp")
 
 	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
 	app = pressed.(AppModel)

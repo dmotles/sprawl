@@ -14,12 +14,15 @@ const (
 
 // Theme holds all Lip Gloss styles for the TUI, parameterized by accent color.
 type Theme struct {
-	AccentColor      string
-	Background       lipgloss.Style
-	ActiveBorder     lipgloss.Style
-	InactiveBorder   lipgloss.Style
-	AccentText       lipgloss.Style
-	NormalText       lipgloss.Style
+	AccentColor    string
+	Background     lipgloss.Style
+	ActiveBorder   lipgloss.Style
+	InactiveBorder lipgloss.Style
+	AccentText     lipgloss.Style
+	NormalText     lipgloss.Style
+	// ErrorText is the red foreground used for failure indicators (e.g. the
+	// ✗ glyph and result preview on a failed tool call — QUM-336).
+	ErrorText        lipgloss.Style
 	StatusBar        lipgloss.Style
 	SelectedItem     lipgloss.Style
 	PlaceholderStyle lipgloss.Style
@@ -81,6 +84,9 @@ func NewTheme(accentColor string) Theme {
 			Background(bg),
 		NormalText: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("252")).
+			Background(bg),
+		ErrorText: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
 			Background(bg),
 		// No Padding — StatusBarModel.View manages its own left/right spacing
 		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes

@@ -53,6 +53,19 @@ type ToolCallMsg struct {
 	FullInput string
 }
 
+// ToolResultMsg carries the result of a previously-emitted tool call. The
+// bridge produces one whenever Claude emits a `user` protocol message whose
+// content array contains a `tool_result` block. ToolID matches the originating
+// ToolCallMsg.ToolID so the AppModel can flip the lifecycle state on the right
+// MessageEntry. Content is the raw result text (string or joined text-block
+// array). IsError mirrors the `is_error` field of the tool_result block.
+// (QUM-336)
+type ToolResultMsg struct {
+	ToolID  string
+	Content string
+	IsError bool
+}
+
 // TurnStateMsg signals a change in the conversation turn lifecycle.
 type TurnStateMsg struct {
 	State TurnState

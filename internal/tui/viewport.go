@@ -55,6 +55,24 @@ type MessageEntry struct {
 	// expand-tool-inputs flag is on (QUM-335). May be empty for legacy
 	// messages or when the bridge couldn't parse the input.
 	ToolInputFull string
+	// ToolID is the tool_use_id from Claude's protocol — used by
+	// MarkToolResult to find the matching entry when a tool_result event
+	// arrives. MessageToolCall only. (QUM-336)
+	ToolID string
+	// Pending is true while a tool call is in flight (no tool_result yet).
+	// MessageToolCall only. AppendToolCall sets this; MarkToolResult clears
+	// it. The renderer uses Pending to decide whether to show a spinner
+	// frame or the success/failure glyph. (QUM-336)
+	Pending bool
+	// Failed is true when the corresponding tool_result arrived with
+	// is_error=true. Drives the ✗ failure indicator. MessageToolCall only.
+	// (QUM-336)
+	Failed bool
+	// Result is the raw tool result text (concatenated when the protocol
+	// content was an array of text blocks). The renderer derives a 3-line
+	// preview from this; the full text is retained for future expand
+	// integration. MessageToolCall only. (QUM-336)
+	Result string
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -75,6 +93,10 @@ type ViewportModel struct {
 	// instead of the truncated ToolInput summary. AppModel propagates the
 	// flag to every per-agent viewport via SetToolInputsExpanded.
 	toolInputsExpanded bool
+	// spinnerFrame is the latest single-glyph frame string injected by
+	// AppModel on every spinner.TickMsg (QUM-336). renderToolCall uses it
+	// as the indicator for any Pending tool call. Empty until first push.
+	spinnerFrame string
 }
 
 // SelectionGutter is the visual prefix placed on selected message blocks when
@@ -190,10 +212,13 @@ func (m *ViewportModel) FinalizeAssistantMessage() {
 	}
 }
 
-// AppendToolCall adds a tool call notification line. fullInput is the
-// un-truncated, multi-line representation surfaced by the global
-// expand-tool-inputs toggle (QUM-335); pass "" if not available.
-func (m *ViewportModel) AppendToolCall(name string, approved bool, input, fullInput string) {
+// AppendToolCall adds a tool call notification line. toolID is the
+// tool_use_id from Claude's protocol; MarkToolResult uses it to find this
+// entry when the result arrives. fullInput is the un-truncated, multi-line
+// representation surfaced by the global expand-tool-inputs toggle (QUM-335);
+// pass "" if not available. The new entry starts in the Pending state
+// (QUM-336) — its indicator animates until MarkToolResult flips it.
+func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input, fullInput string) {
 	m.messages = append(m.messages, MessageEntry{
 		Type:          MessageToolCall,
 		Content:       name,
@@ -201,8 +226,65 @@ func (m *ViewportModel) AppendToolCall(name string, approved bool, input, fullIn
 		Approved:      approved,
 		ToolInput:     input,
 		ToolInputFull: fullInput,
+		ToolID:        toolID,
+		Pending:       true,
 	})
 	m.renderAndUpdate()
+}
+
+// MarkToolResult finds the most recent pending MessageToolCall entry whose
+// ToolID matches and updates its Pending/Failed/Result fields. Returns true
+// if a matching entry was found and updated; false if the toolID does not
+// match any entry (orphan tool_result). Triggers a re-render on success
+// so the indicator and preview update immediately. (QUM-336)
+func (m *ViewportModel) MarkToolResult(toolID, content string, isError bool) bool {
+	if toolID == "" {
+		return false
+	}
+	// Walk newest → oldest so a duplicate ID (shouldn't happen with Claude's
+	// UUIDs, but be defensive) targets the most recent in-flight call.
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		if m.messages[i].Type != MessageToolCall {
+			continue
+		}
+		if m.messages[i].ToolID != toolID {
+			continue
+		}
+		m.messages[i].Pending = false
+		m.messages[i].Failed = isError
+		m.messages[i].Result = content
+		m.renderAndUpdate()
+		return true
+	}
+	return false
+}
+
+// SetSpinnerFrame stores the spinner frame string injected by AppModel on
+// every spinner.TickMsg. Pending tool calls read this frame as their
+// indicator glyph. AppModel re-renders the viewport after pushing each
+// frame so the animation visibly advances. (QUM-336)
+func (m *ViewportModel) SetSpinnerFrame(frame string) {
+	if m.spinnerFrame == frame {
+		return
+	}
+	m.spinnerFrame = frame
+	if m.hasPendingToolCall() {
+		m.renderAndUpdate()
+	}
+}
+
+// HasPendingToolCall reports whether at least one tool call entry is still
+// in flight (Pending=true). Used by AppModel to decide whether to push the
+// spinner frame to a particular agent's viewport.
+func (m *ViewportModel) HasPendingToolCall() bool { return m.hasPendingToolCall() }
+
+func (m *ViewportModel) hasPendingToolCall() bool {
+	for _, msg := range m.messages {
+		if msg.Type == MessageToolCall && msg.Pending {
+			return true
+		}
+	}
+	return false
 }
 
 // SetToolInputsExpanded toggles the per-viewport flag that controls whether
@@ -385,18 +467,43 @@ func addSelectionGutter(block, gutter string) string {
 }
 
 func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
-	indicator := "⏳"
-	if msg.Approved {
-		indicator = "✓"
+	// Indicator: spinner while pending, ✗ on failure, ✓ on success.
+	// Pre-render with the right style so the failure glyph stands out
+	// (QUM-336).
+	var renderedIndicator string
+	switch {
+	case msg.Pending:
+		frame := m.spinnerFrame
+		if frame == "" {
+			// First render before any spinner.TickMsg has propagated; show a
+			// static glyph so the entry isn't blank.
+			frame = "⠋"
+		}
+		renderedIndicator = m.theme.AccentText.Render(frame)
+	case msg.Failed:
+		renderedIndicator = m.theme.ErrorText.Render("✗")
+	default:
+		renderedIndicator = m.theme.AccentText.Render("✓")
 	}
 	// Tool name line with accent color. Truncated to the viewport width so a
 	// long tool name (or ANSI garbage in msg.Content) cannot bleed past the
-	// right border (QUM-324).
-	toolHeader := fmt.Sprintf("┌ %s %s", indicator, msg.Content)
+	// right border (QUM-324). The indicator is styled separately so the
+	// failure ✗ keeps its distinct color while the rest of the header is
+	// accent-styled.
+	name := msg.Content
 	if m.width > 0 {
-		toolHeader = ansi.Truncate(toolHeader, m.width, "…")
+		// "┌ " (2 cells) + indicator (1 cell) + " " (1 cell) + name. Budget
+		// the trailing name to whatever is left.
+		const fixedHeaderCells = 4
+		budget := m.width - fixedHeaderCells
+		if budget < 1 {
+			budget = 1
+		}
+		name = ansi.Truncate(msg.Content, budget, "…")
 	}
-	sb.WriteString(m.theme.AccentText.Render(toolHeader))
+	sb.WriteString(m.theme.AccentText.Render("┌ "))
+	sb.WriteString(renderedIndicator)
+	sb.WriteString(m.theme.AccentText.Render(" " + name))
 	// Input summary on following line(s) if present. Multi-line tool input
 	// is preserved but wrapped at the viewport inner width so each wrapped
 	// segment stays inside the `│ …` gutter (QUM-324). When the global
@@ -416,8 +523,62 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 			sb.WriteString(m.theme.NormalText.Render("│ " + ln))
 		}
 	}
+	// Result preview block: shown only after the tool has completed (not
+	// pending) AND the bridge captured a non-empty result. Up to 3 non-empty
+	// lines, each truncated to the inner-gutter width, with a `+ N more
+	// lines` trailer when the source has more. Failures render in the
+	// error style so they stand out at a glance (QUM-336).
+	if !msg.Pending && msg.Result != "" {
+		previewLines, more := previewResultLines(msg.Result, 3, m.width-toolCallInputPrefix)
+		previewStyle := m.theme.NormalText
+		if msg.Failed {
+			previewStyle = m.theme.ErrorText
+		}
+		for _, ln := range previewLines {
+			sb.WriteString("\n")
+			sb.WriteString(previewStyle.Render("│ " + ln))
+		}
+		if more > 0 {
+			trailer := fmt.Sprintf("+ %d more lines", more)
+			if m.width > toolCallInputPrefix {
+				trailer = ansi.Truncate(trailer, m.width-toolCallInputPrefix, "…")
+			}
+			sb.WriteString("\n")
+			sb.WriteString(m.theme.NormalText.Render("│ " + trailer))
+		}
+	}
 	sb.WriteString("\n")
 	sb.WriteString(m.theme.AccentText.Render("└"))
+}
+
+// previewResultLines splits result on newlines, drops empty/whitespace-only
+// entries, returns up to maxLines truncated to width cells, and the count of
+// remaining (non-empty) source lines that did not fit. width <= 0 disables
+// truncation.
+func previewResultLines(result string, maxLines, width int) ([]string, int) {
+	var nonEmpty []string
+	for _, ln := range strings.Split(result, "\n") {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		nonEmpty = append(nonEmpty, ln)
+	}
+	if len(nonEmpty) == 0 {
+		return nil, 0
+	}
+	take := maxLines
+	if len(nonEmpty) < take {
+		take = len(nonEmpty)
+	}
+	out := make([]string, 0, take)
+	for i := 0; i < take; i++ {
+		ln := nonEmpty[i]
+		if width > 0 {
+			ln = ansi.Truncate(ln, width, "…")
+		}
+		out = append(out, ln)
+	}
+	return out, len(nonEmpty) - take
 }
 
 // wrapToolInput prepares a tool-input string for rendering inside the tool
