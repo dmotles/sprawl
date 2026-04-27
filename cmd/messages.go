@@ -164,6 +164,7 @@ func runMessagesInboxDisplay(deps *messagesDeps, showAll bool) error {
 }
 
 func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
+	deprecationWarning("messages send", "sprawl_send_async")
 	if err := agent.ValidateName(to); err != nil {
 		return err
 	}
@@ -244,6 +245,7 @@ var messagesArchiveCmd = &cobra.Command{
 	Short: "Archive a message or bulk archive messages",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
+		deprecationWarning("messages archive", "sprawl_messages_archive")
 		deps := resolveMessagesDeps()
 
 		if (archiveAll || archiveRead) && len(args) > 0 {
@@ -288,6 +290,7 @@ var messagesUnreadCmd = &cobra.Command{
 }
 
 func runMessagesRead(deps *messagesDeps, msgID string) (*messages.Message, error) {
+	deprecationWarning("messages read", "sprawl_messages_read")
 	agentName, sprawlRoot, err := deps.resolveEnv()
 	if err != nil {
 		return nil, err
@@ -434,6 +437,7 @@ func displayShortID(msg *messages.Message) string {
 }
 
 func runMessagesListDisplay(deps *messagesDeps, filter string) error {
+	deprecationWarning("messages list", "sprawl_messages_list")
 	msgs, err := runMessagesList(deps, filter)
 	if err != nil {
 		return err

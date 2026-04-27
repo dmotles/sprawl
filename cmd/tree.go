@@ -62,6 +62,7 @@ func resolveTreeDeps() *treeDeps {
 }
 
 func runTree(deps *treeDeps, stdout io.Writer, jsonOutput bool, subtreeRoot string) error {
+	deprecationWarning("tree", "sprawl_status")
 	sprawlRoot := deps.getenv("SPRAWL_ROOT")
 	if sprawlRoot == "" {
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")

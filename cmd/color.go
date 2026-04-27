@@ -113,6 +113,7 @@ func resolveColorRoot(deps *colorDeps) (string, error) {
 }
 
 func runColorShow(deps *colorDeps) error {
+	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err
@@ -133,6 +134,7 @@ func runColorShow(deps *colorDeps) error {
 }
 
 func runColorList(deps *colorDeps) error {
+	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err
@@ -151,6 +153,7 @@ func runColorList(deps *colorDeps) error {
 }
 
 func runColorRotate(deps *colorDeps) error {
+	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err
@@ -168,6 +171,7 @@ func runColorRotate(deps *colorDeps) error {
 }
 
 func runColorSet(deps *colorDeps, nameOrAlias string) error {
+	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err

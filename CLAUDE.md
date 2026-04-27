@@ -80,7 +80,7 @@ The issue is the source of truth. The agent can read it via Linear MCP tools (`g
 
 ## Session Handoff
 
-At the end of a session, use `/handoff` to persist context for the next session. It guides you through writing a structured summary and piping it into `sprawl handoff`.
+At the end of a session, use `/handoff` to persist context for the next session. It guides you through writing a structured summary and calling the `sprawl_handoff` MCP tool. (The legacy `sprawl handoff` CLI still works as a tmux-mode fallback but is deprecated and emits a stderr warning; see QUM-337.)
 
 ## Sandbox Testing
 

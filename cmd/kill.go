@@ -13,7 +13,12 @@ import (
 // Aliases so existing tests continue to compile.
 type killDeps = agentops.KillDeps
 
-var runKill = agentops.Kill
+// runKill wraps agentops.Kill so the CLI entry point emits its deprecation
+// warning in a single place exercised by both the cobra RunE and tests.
+func runKill(deps *killDeps, agentName string, force bool) error {
+	deprecationWarning("kill", "sprawl_kill")
+	return agentops.Kill(deps, agentName, force)
+}
 
 var defaultKillDeps *killDeps
 

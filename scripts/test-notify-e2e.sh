@@ -34,6 +34,12 @@
 # with other tmux-mode e2e scripts.
 set -euo pipefail
 
+# QUM-337: this script drives `sprawl report done` and other deprecated
+# CLI paths on purpose to verify the QUM-310 notify contract. Suppress
+# the per-process deprecation warning so the captured tmux pane output
+# stays clean during the M13 cutover soak. Slated for deletion in 2.5.
+export SPRAWL_QUIET_DEPRECATIONS=1
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # --- Preflight: claude binary ---

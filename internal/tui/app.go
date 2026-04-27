@@ -118,6 +118,13 @@ type AppModel struct {
 	// non-root agent is observed. Tests shorten it; zero means use
 	// defaultChildTranscriptTick.
 	childTranscriptTick time.Duration
+
+	// toolInputsExpanded is the global flag (QUM-335) toggled by Ctrl+E.
+	// When true, every per-agent viewport renders tool calls with their
+	// full ToolInputFull body instead of the truncated summary. Default
+	// false; survives agent cycling because new viewports inherit it on
+	// creation in viewportFor.
+	toolInputsExpanded bool
 }
 
 const (
@@ -260,6 +267,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Ctrl+E: toggle the global expand-tool-inputs flag (QUM-335).
+		// Affects every per-agent viewport so the user can scan the full
+		// command / JSON for any tool call without leaving the TUI. Gated
+		// implicitly by the modal returns above.
+		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'e' {
+			m.toolInputsExpanded = !m.toolInputsExpanded
+			for _, buf := range m.agentBuffers {
+				buf.vp.SetToolInputsExpanded(m.toolInputsExpanded)
+			}
+			return m, nil
+		}
+
 		// Ctrl+N / Ctrl+P: cycle observed agent globally (works from any
 		// panel). Gated implicitly by the modal returns above.
 		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'n' || msg.Code == 'p') {
@@ -390,7 +409,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ToolCallMsg:
-		m.rootVP().AppendToolCall(msg.ToolName, msg.Approved, msg.Input)
+		m.rootVP().AppendToolCall(msg.ToolName, msg.Approved, msg.Input, msg.FullInput)
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
@@ -826,6 +845,7 @@ func (m *AppModel) viewportFor(name string) *ViewportModel {
 			layout := ComputeLayout(m.width, m.height)
 			vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
 		}
+		vp.SetToolInputsExpanded(m.toolInputsExpanded)
 		buf = &AgentBuffer{vp: vp}
 		m.agentBuffers[name] = buf
 	}

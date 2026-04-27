@@ -104,13 +104,13 @@ func TestViewportModel_AppendToolCall(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(60, 20)
 
-	m.AppendToolCall("read_file", true, "")
+	m.AppendToolCall("read_file", true, "", "")
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "read_file") {
 		t.Errorf("View() should contain approved tool call 'read_file', got:\n%s", view)
 	}
 
-	m.AppendToolCall("write_file", false, "")
+	m.AppendToolCall("write_file", false, "", "")
 	view = stripANSI(m.View())
 	if !strings.Contains(view, "write_file") {
 		t.Errorf("View() should contain unapproved tool call 'write_file', got:\n%s", view)
@@ -121,7 +121,7 @@ func TestViewportModel_AppendToolCall_WithInput(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(80, 20)
 
-	m.AppendToolCall("Bash", true, "ls -la /tmp")
+	m.AppendToolCall("Bash", true, "ls -la /tmp", "")
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "Bash") {
 		t.Errorf("View() should contain tool name 'Bash', got:\n%s", view)
@@ -158,7 +158,7 @@ func TestViewportModel_MixedMessages(t *testing.T) {
 	m.AppendUserMessage("what is sprawl?")
 	m.AppendAssistantChunk("Sprawl is a tool")
 	m.FinalizeAssistantMessage()
-	m.AppendToolCall("read_file", true, "")
+	m.AppendToolCall("read_file", true, "", "")
 	m.AppendStatus("processing...")
 	m.AppendError("timeout occurred")
 
@@ -491,6 +491,137 @@ func TestViewportModel_RenderToolCall_MultilineInputWrapped(t *testing.T) {
 		if !strings.HasPrefix(plain, "│ ") {
 			t.Errorf("tool-call body line missing `│ ` gutter: %q", plain)
 		}
+	}
+}
+
+// QUM-335: when the viewport's expand-tool-inputs flag is on, renderToolCall
+// substitutes the truncated summary with the full multi-line body and every
+// logical line still appears under the `│ ` gutter, wrapped to width.
+func TestViewportModel_RenderToolCall_ExpandedRendersFullInput(t *testing.T) {
+	const width = 40
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 30)
+	m.SetToolInputsExpanded(true)
+
+	short := "ls -la /tmp"
+	full := "find /var/log -type f -name '*.log' -mtime -7 -size +1M\nsort\nuniq -c"
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:          MessageToolCall,
+		Content:       "Bash",
+		Complete:      true,
+		Approved:      true,
+		ToolInput:     short,
+		ToolInputFull: full,
+	})
+
+	out := sb.String()
+	stripped := stripANSI(out)
+	if strings.Contains(stripped, short) {
+		t.Errorf("expanded render should not include the truncated summary %q, got:\n%s", short, stripped)
+	}
+	for _, frag := range []string{"find /var/log", "sort", "uniq -c"} {
+		if !strings.Contains(stripped, frag) {
+			t.Errorf("expanded render missing %q, got:\n%s", frag, stripped)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("expanded render line width %d exceeds viewport width %d: %q", w, width, line)
+		}
+	}
+	// Body lines must still wear the `│ ` gutter (QUM-324).
+	for _, line := range strings.Split(out, "\n") {
+		plain := stripANSI(line)
+		if plain == "" {
+			continue
+		}
+		if strings.HasPrefix(plain, "┌") || strings.HasPrefix(plain, "└") {
+			continue
+		}
+		if !strings.HasPrefix(plain, "│ ") {
+			t.Errorf("expanded body line missing `│ ` gutter: %q", plain)
+		}
+	}
+}
+
+// QUM-335: when the expand flag is on but the entry has no FullInput
+// (legacy / unparseable input), renderToolCall must still fall back to the
+// truncated summary instead of dropping the body.
+func TestViewportModel_RenderToolCall_ExpandedFallsBackWhenFullEmpty(t *testing.T) {
+	const width = 40
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 20)
+	m.SetToolInputsExpanded(true)
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: "ls -la",
+		// ToolInputFull intentionally empty.
+	})
+	if !strings.Contains(stripANSI(sb.String()), "ls -la") {
+		t.Errorf("expected fallback to truncated summary, got:\n%s", stripANSI(sb.String()))
+	}
+}
+
+// QUM-335: AppendToolCall must store both the summary and the full input on
+// the resulting MessageEntry so the global toggle can swap between them.
+func TestViewportModel_AppendToolCall_StoresFullInput(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+
+	m.AppendToolCall("Bash", true, "ls", "ls -la /tmp")
+	msgs := m.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].ToolInput != "ls" {
+		t.Errorf("ToolInput = %q, want %q", msgs[0].ToolInput, "ls")
+	}
+	if msgs[0].ToolInputFull != "ls -la /tmp" {
+		t.Errorf("ToolInputFull = %q, want %q", msgs[0].ToolInputFull, "ls -la /tmp")
+	}
+}
+
+// QUM-335: SetToolInputsExpanded flips the viewport's expand flag and
+// triggers a re-render so existing tool-call entries flip to/from their
+// full body without needing new input.
+func TestViewportModel_SetToolInputsExpanded_TogglesRender(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.AppendToolCall("Bash", true, "short", "this is the full bash command being expanded")
+
+	if m.ToolInputsExpanded() {
+		t.Fatal("expanded flag should default to false")
+	}
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "short") {
+		t.Errorf("expected truncated summary 'short' before toggle, got:\n%s", view)
+	}
+
+	m.SetToolInputsExpanded(true)
+	if !m.ToolInputsExpanded() {
+		t.Fatal("expanded flag should be true after SetToolInputsExpanded(true)")
+	}
+	view = stripANSI(m.View())
+	if !strings.Contains(view, "this is the full bash command being expanded") {
+		t.Errorf("expected full input after toggle, got:\n%s", view)
+	}
+	if strings.Contains(view, "│ short") {
+		t.Errorf("expected truncated summary suppressed after toggle, got:\n%s", view)
+	}
+
+	m.SetToolInputsExpanded(false)
+	view = stripANSI(m.View())
+	if !strings.Contains(view, "│ short") {
+		t.Errorf("expected truncated summary back after toggling off, got:\n%s", view)
 	}
 }
 

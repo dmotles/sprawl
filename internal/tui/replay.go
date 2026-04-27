@@ -187,11 +187,12 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						inputRaw = raw
 					}
 					entries = append(entries, MessageEntry{
-						Type:      MessageToolCall,
-						Content:   name,
-						Complete:  true,
-						Approved:  true,
-						ToolInput: summarizeToolInput(name, inputRaw),
+						Type:          MessageToolCall,
+						Content:       name,
+						Complete:      true,
+						Approved:      true,
+						ToolInput:     summarizeToolInput(name, inputRaw),
+						ToolInputFull: expandToolInput(name, inputRaw),
 					})
 					// thinking + other types: skip
 				}

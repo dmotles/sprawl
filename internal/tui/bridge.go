@@ -155,10 +155,11 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 			return AssistantTextMsg{Text: block.Text}
 		case "tool_use":
 			return ToolCallMsg{
-				ToolName: block.Name,
-				ToolID:   block.ID,
-				Approved: true, // Session auto-approves tool calls
-				Input:    summarizeToolInput(block.Name, block.Input),
+				ToolName:  block.Name,
+				ToolID:    block.ID,
+				Approved:  true, // Session auto-approves tool calls
+				Input:     summarizeToolInput(block.Name, block.Input),
+				FullInput: expandToolInput(block.Name, block.Input),
 			}
 		}
 	}
@@ -211,6 +212,36 @@ func summarizeToolInput(toolName string, raw json.RawMessage) string {
 		return ""
 	}
 	return truncateString(string(compact), 120)
+}
+
+// expandToolInput renders the un-truncated form of a tool's input for the
+// TUI's expanded-tool-call view (QUM-335). Bash returns the verbatim
+// `command` value (newlines preserved) so the user can read complex
+// one-liners. Every other tool — including Read/Edit/Write/Glob/Grep — is
+// rendered as pretty-printed JSON (one key per line) so all parameters are
+// visible, not just the summary field. Returns "" when input is empty or
+// unparseable.
+func expandToolInput(toolName string, raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var input map[string]interface{}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return ""
+	}
+
+	if toolName == "Bash" {
+		if cmd, ok := input["command"].(string); ok {
+			return cmd
+		}
+	}
+
+	pretty, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(pretty)
 }
 
 func truncateString(s string, maxLen int) string {

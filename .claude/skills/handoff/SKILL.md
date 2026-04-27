@@ -39,11 +39,7 @@ Write a structured summary covering these categories:
 
 ## Step 2: Trigger the Handoff
 
-You have two ways to execute the handoff — prefer the MCP tool when available.
-
-### Preferred: `mcp__sprawl-ops__sprawl_handoff` (TUI mode)
-
-If `mcp__sprawl-ops__sprawl_handoff` appears in your tool list (you are running inside `sprawl enter`), call it directly:
+Call the `mcp__sprawl-ops__sprawl_handoff` MCP tool directly with the full summary string:
 
 ```
 mcp__sprawl-ops__sprawl_handoff({ summary: "<your full summary here>" })
@@ -51,17 +47,7 @@ mcp__sprawl-ops__sprawl_handoff({ summary: "<your full summary here>" })
 
 The host will persist the summary to `.sprawl/memory/sessions/<session-id>.md`, write `.sprawl/memory/handoff-signal`, tear down this subprocess, and start a fresh weave session with consolidated memory. The new weave starts automatically — the user does **not** need to exit and re-enter `sprawl enter`.
 
-### Fallback: `sprawl handoff` CLI (tmux mode)
-
-If the MCP tool is unavailable (you are under the classic tmux root loop), pipe the summary via heredoc:
-
-```bash
-sprawl handoff <<'EOF'
-<paste your full summary here>
-EOF
-```
-
-The summary is saved and a signal file is written; the root loop restarts a fresh weave when the user exits the current session (ctrl+c / ctrl+d / `/exit`).
+> **Deprecated:** the legacy `sprawl handoff` CLI (tmux-mode fallback) still works but emits a deprecation warning and will be removed in a future release. Use the MCP tool instead.
 
 ## Reminders
 

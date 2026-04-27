@@ -27,6 +27,12 @@
 #   bash scripts/test-init-e2e.sh
 set -euo pipefail
 
+# QUM-337: this script intentionally exercises the deprecated `sprawl init`
+# CLI path. Suppress the per-process deprecation warning so the captured
+# output stays clean during the M13 cutover soak. Slated for deletion in
+# Phase 2.5 alongside the tmux-mode removal.
+export SPRAWL_QUIET_DEPRECATIONS=1
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # --- Preflight: claude binary ---

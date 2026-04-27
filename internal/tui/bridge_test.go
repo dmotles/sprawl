@@ -556,6 +556,73 @@ func TestTruncateString(t *testing.T) {
 	}
 }
 
+// QUM-335: expandToolInput returns the verbatim Bash command (no
+// truncation, newlines preserved) so multi-line one-liners are visible
+// when the user toggles the expand flag.
+func TestExpandToolInput_BashVerbatim(t *testing.T) {
+	cmd := "find /var/log -type f -name '*.log' -mtime -7 \\\n  -size +1M | sort | uniq -c"
+	raw := []byte(`{"command":` + mustJSONString(cmd) + `}`)
+	got := expandToolInput("Bash", raw)
+	if got != cmd {
+		t.Errorf("expandToolInput(Bash) = %q, want %q", got, cmd)
+	}
+}
+
+// QUM-335: expandToolInput renders non-Bash tools as pretty-printed JSON
+// so every parameter (not just the summary field) is visible when expanded.
+func TestExpandToolInput_NonBashPrettyJSON(t *testing.T) {
+	raw := []byte(`{"file_path":"/a/b.go","old_string":"foo","new_string":"bar"}`)
+	got := expandToolInput("Edit", raw)
+	if !strings.Contains(got, "\n") {
+		t.Errorf("expandToolInput(Edit) should be multi-line pretty JSON, got %q", got)
+	}
+	for _, k := range []string{"\"file_path\"", "\"old_string\"", "\"new_string\""} {
+		if !strings.Contains(got, k) {
+			t.Errorf("expandToolInput(Edit) missing key %s, got %q", k, got)
+		}
+	}
+}
+
+// QUM-335: empty input → empty expansion (no panic, no spurious "{}").
+func TestExpandToolInput_Empty(t *testing.T) {
+	if got := expandToolInput("Bash", nil); got != "" {
+		t.Errorf("expandToolInput nil = %q, want empty", got)
+	}
+}
+
+// QUM-335: mapAssistantMessage populates BOTH the truncated Input and the
+// full FullInput on the resulting ToolCallMsg so the viewport can flip
+// between them via the global expand toggle.
+func TestMapAssistantMessage_PopulatesFullInput(t *testing.T) {
+	longCmd := strings.Repeat("echo abcdef ", 20) // > 120 chars when joined
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"Bash","input":{"command":` + mustJSONString(longCmd) + `}}]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	tc, ok := result.(ToolCallMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want ToolCallMsg", result)
+	}
+	if tc.Input == "" || len(tc.Input) > 120 {
+		t.Errorf("Input summary should be present and ≤120 chars, got %q (len=%d)", tc.Input, len(tc.Input))
+	}
+	if tc.FullInput != longCmd {
+		t.Errorf("FullInput should be the verbatim command, got %q", tc.FullInput)
+	}
+}
+
+func mustJSONString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
 func TestBridge_WaitForEvent_ToolCallWithInput(t *testing.T) {
 	ms := newMockSession()
 	ctx := context.Background()

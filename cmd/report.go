@@ -95,6 +95,7 @@ func cliTypeToState(reportType string) string {
 }
 
 func runReport(deps *reportDeps, reportType, message string) error {
+	deprecationWarning("report "+reportType, "sprawl_report_status")
 	agentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
 		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report must be called from within a sprawl agent")

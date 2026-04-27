@@ -19,6 +19,7 @@ type retireDeps = agentops.RetireDeps
 // runRetire wraps agentops.Retire, threading the retireNoValidate flag value
 // through at call time (tests still use 7 positional args).
 func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, mergeFirst, yes bool) error {
+	deprecationWarning("retire", "sprawl_retire")
 	return agentops.Retire(deps, agentName, cascade, force, abandon, mergeFirst, yes, retireNoValidate)
 }
 
