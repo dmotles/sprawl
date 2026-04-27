@@ -343,16 +343,57 @@ func (r *Real) CallerName() string {
 // PeekActivity reads the tail of the agent's activity.ndjson file and
 // returns the last `tail` entries. A missing file yields an empty slice.
 // tail ≤ 0 returns all available entries.
+//
+// QUM-331: entries with TS earlier than the agent's CreatedAt are filtered
+// out before tail truncation. The on-disk activity.ndjson is append-only and
+// shared across spawns that reuse a name, so without this filter a respawned
+// agent's panel would render tool calls from the prior incarnation. Missing
+// state file or unparseable CreatedAt → no filter (fail-open: better to show
+// stale entries than to hide a live agent's activity).
 func (r *Real) PeekActivity(_ context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error) {
 	if err := agent.ValidateName(agentName); err != nil {
 		return nil, err
 	}
 	path := agentloop.ActivityPath(r.sprawlRoot, agentName)
-	entries, err := agentloop.ReadActivityFile(path, tail)
+	// Read all entries; we apply tail AFTER the CreatedAt filter so a tail
+	// window isn't consumed by stale pre-incarnation entries.
+	entries, err := agentloop.ReadActivityFile(path, 0)
 	if err != nil {
 		return nil, fmt.Errorf("reading activity for %q: %w", agentName, err)
 	}
+
+	if createdAt, ok := agentCreatedAt(r.sprawlRoot, agentName); ok {
+		filtered := entries[:0]
+		for _, e := range entries {
+			if !e.TS.Before(createdAt) {
+				filtered = append(filtered, e)
+			}
+		}
+		entries = filtered
+	}
+
+	if tail > 0 && len(entries) > tail {
+		entries = entries[len(entries)-tail:]
+	}
 	return entries, nil
+}
+
+// agentCreatedAt loads the agent's persisted CreatedAt and returns it parsed
+// as RFC3339. Returns ok=false when the state file is missing or the
+// timestamp is unparseable, so callers can fall back to no filtering.
+func agentCreatedAt(sprawlRoot, agentName string) (time.Time, bool) {
+	st, err := state.LoadAgent(sprawlRoot, agentName)
+	if err != nil {
+		return time.Time{}, false
+	}
+	if st.CreatedAt == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, st.CreatedAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // SendAsync persists the message to Maildir and appends a harness queue
