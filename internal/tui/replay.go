@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // ReplayMaxMessages is the default cap on messages loaded from a prior
@@ -23,6 +24,60 @@ const ReplayMaxMessages = 500
 // entries are dropped and a leading "earlier messages truncated" marker is
 // prepended.
 func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil || len(entries) == 0 {
+		return nil, err
+	}
+
+	if maxMessages > 0 && len(entries) > maxMessages {
+		entries = entries[len(entries)-maxMessages:]
+		entries = append([]MessageEntry{{
+			Type:     MessageStatus,
+			Content:  "earlier messages truncated",
+			Complete: true,
+		}}, entries...)
+	}
+
+	entries = append(entries, MessageEntry{
+		Type:     MessageStatus,
+		Content:  "Resumed from prior session",
+		Complete: true,
+	})
+	return entries, nil
+}
+
+// LoadChildTranscript reads a Claude session JSONL log and converts it into a
+// flat slice of MessageEntry values for live observation of a child agent.
+//
+// Differs from LoadTranscript:
+//   - Records whose top-level "timestamp" field is strictly before `since` are
+//     filtered out (use zero time.Time to disable). Guards against
+//     prior-incarnation pollution when an agent name is reused (QUM-331).
+//   - No trailing "Resumed from prior session" status marker — the viewport is
+//     a live tail, not a resumed session.
+//
+// Truncation behavior (leading "earlier messages truncated" status when capped)
+// matches LoadTranscript. Missing file → (nil, nil) (no error).
+func LoadChildTranscript(path string, since time.Time, maxMessages int) ([]MessageEntry, error) {
+	entries, err := scanTranscript(path, since)
+	if err != nil || len(entries) == 0 {
+		return nil, err
+	}
+	if maxMessages > 0 && len(entries) > maxMessages {
+		entries = entries[len(entries)-maxMessages:]
+		entries = append([]MessageEntry{{
+			Type:     MessageStatus,
+			Content:  "earlier messages truncated",
+			Complete: true,
+		}}, entries...)
+	}
+	return entries, nil
+}
+
+// scanTranscript opens the JSONL log at path and parses it into MessageEntry
+// values, skipping records whose top-level timestamp is before `since` when
+// `since` is non-zero. Missing file returns (nil, nil).
+func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -51,6 +106,18 @@ func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
 		}
 		if sc, ok := rec["isSidechain"].(bool); ok && sc {
 			continue
+		}
+		if !since.IsZero() {
+			tsStr, _ := rec["timestamp"].(string)
+			if tsStr == "" {
+				// Records without a timestamp predate the convention or come
+				// from a different writer; conservatively skip when filtering.
+				continue
+			}
+			ts, perr := time.Parse(time.RFC3339, tsStr)
+			if perr != nil || ts.Before(since) {
+				continue
+			}
 		}
 		msg, ok := rec["message"].(map[string]any)
 		if !ok {
@@ -134,24 +201,5 @@ func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scan transcript %s: %w", path, err)
 	}
-
-	if len(entries) == 0 {
-		return nil, nil
-	}
-
-	if maxMessages > 0 && len(entries) > maxMessages {
-		entries = entries[len(entries)-maxMessages:]
-		entries = append([]MessageEntry{{
-			Type:     MessageStatus,
-			Content:  "earlier messages truncated",
-			Complete: true,
-		}}, entries...)
-	}
-
-	entries = append(entries, MessageEntry{
-		Type:     MessageStatus,
-		Content:  "Resumed from prior session",
-		Complete: true,
-	})
 	return entries, nil
 }

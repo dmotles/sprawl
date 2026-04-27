@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeJSONL(t *testing.T, lines []string) string {
@@ -257,6 +258,99 @@ func TestLoadTranscript_NoCapWhenMaxZero(t *testing.T) {
 	}
 	if entries[10].Type != MessageStatus || entries[10].Content != "Resumed from prior session" {
 		t.Errorf("entries[10] = %+v, want trailing status", entries[10])
+	}
+}
+
+func TestLoadChildTranscript_NoTrailingResumedMarker(t *testing.T) {
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-25T10:00:00Z","message":{"role":"user","content":"hello"}}`,
+		`{"type":"assistant","timestamp":"2026-04-25T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadChildTranscript(path, time.Time{}, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2 (user + assistant, no trailing marker); entries=%+v", len(entries), entries)
+	}
+	for _, e := range entries {
+		if e.Type == MessageStatus && strings.Contains(e.Content, "Resumed from prior session") {
+			t.Errorf("LoadChildTranscript should not emit 'Resumed from prior session' marker; got %+v", e)
+		}
+	}
+	if entries[0].Type != MessageUser || entries[0].Content != "hello" {
+		t.Errorf("entries[0] = %+v, want MessageUser 'hello'", entries[0])
+	}
+	if entries[1].Type != MessageAssistant || entries[1].Content != "hi" {
+		t.Errorf("entries[1] = %+v, want MessageAssistant 'hi'", entries[1])
+	}
+}
+
+func TestLoadChildTranscript_FiltersBySince(t *testing.T) {
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-25T09:00:00Z","message":{"role":"user","content":"old"}}`,
+		`{"type":"user","timestamp":"2026-04-25T11:00:00Z","message":{"role":"user","content":"new"}}`,
+	}
+	path := writeJSONL(t, lines)
+	cutoff, _ := time.Parse(time.RFC3339, "2026-04-25T10:00:00Z")
+	entries, err := LoadChildTranscript(path, cutoff, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (filtered); entries=%+v", len(entries), entries)
+	}
+	if entries[0].Content != "new" {
+		t.Errorf("entries[0].Content = %q, want 'new' (older record should be filtered)", entries[0].Content)
+	}
+}
+
+func TestLoadChildTranscript_ZeroSinceNoFilter(t *testing.T) {
+	lines := []string{
+		`{"type":"user","timestamp":"2026-04-25T09:00:00Z","message":{"role":"user","content":"a"}}`,
+		`{"type":"user","timestamp":"2026-04-25T11:00:00Z","message":{"role":"user","content":"b"}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadChildTranscript(path, time.Time{}, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2; entries=%+v", len(entries), entries)
+	}
+}
+
+func TestLoadChildTranscript_MissingFile(t *testing.T) {
+	entries, err := LoadChildTranscript(filepath.Join(t.TempDir(), "nope.jsonl"), time.Time{}, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entries != nil {
+		t.Errorf("entries = %v, want nil", entries)
+	}
+}
+
+func TestLoadChildTranscript_TruncationMarker(t *testing.T) {
+	var lines []string
+	for i := 0; i < 10; i++ {
+		lines = append(lines, `{"type":"user","timestamp":"2026-04-25T10:00:00Z","message":{"role":"user","content":"msg`+string(rune('0'+i))+`"}}`)
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadChildTranscript(path, time.Time{}, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Expected: leading truncation marker + 5 user messages = 6 (no trailing marker)
+	if len(entries) != 6 {
+		t.Fatalf("len(entries) = %d, want 6; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageStatus || entries[0].Content != "earlier messages truncated" {
+		t.Errorf("entries[0] = %+v, want truncation marker", entries[0])
+	}
+	last := entries[len(entries)-1]
+	if last.Type == MessageStatus && strings.Contains(last.Content, "Resumed from prior session") {
+		t.Errorf("LoadChildTranscript should not emit trailing 'Resumed' marker; got %+v", last)
 	}
 }
 

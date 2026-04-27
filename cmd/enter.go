@@ -483,6 +483,11 @@ func runEnter(deps *enterDeps) error {
 		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, state, &bridge, os.Stderr)
 	}
 	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
+	if homeDir, hErr := os.UserHomeDir(); hErr == nil {
+		// QUM-332: child-agent transcript tailing resolves Claude session
+		// log paths via memory.SessionLogPath(homeDir, worktree, sessionID).
+		model.SetHomeDir(homeDir)
+	}
 
 	if bridge != nil && state.lastWasResume {
 		if sessionID, sErr := memory.ReadLastSessionID(sprawlRoot); sErr == nil && sessionID != "" {
