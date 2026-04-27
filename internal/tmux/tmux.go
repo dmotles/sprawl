@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -197,11 +198,22 @@ func (r *RealRunner) NewSession(name string, env map[string]string, shellCmd str
 
 	args = append(args, shellCmd)
 
+	// Capture rather than inherit FD 1/2: in TUI mode, any subprocess that
+	// inherits the parent's stdout would paint over the Bubble Tea
+	// alt-screen frame. tmux is generally silent on success, but errors
+	// ("session already exists", etc.) must not bleed through. See QUM-330.
 	cmd := exec.Command(r.TmuxPath, args...) //nolint:gosec // arguments are not user-controlled
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := cmd.Run(); err != nil {
+		out := strings.TrimSpace(combined.String())
+		if out != "" {
+			return fmt.Errorf("tmux new-session: %w: %s", err, out)
+		}
+		return err
+	}
+	return nil
 }
 
 // NewSessionWithWindow creates a new detached tmux session with a named first window.
@@ -215,10 +227,17 @@ func (r *RealRunner) NewSessionWithWindow(sessionName, windowName string, env ma
 	args = append(args, shellCmd)
 
 	cmd := exec.Command(r.TmuxPath, args...) //nolint:gosec // arguments are not user-controlled
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := cmd.Run(); err != nil {
+		out := strings.TrimSpace(combined.String())
+		if out != "" {
+			return fmt.Errorf("tmux new-session: %w: %s", err, out)
+		}
+		return err
+	}
+	return nil
 }
 
 // NewWindow adds a new named window to an existing tmux session.
@@ -232,11 +251,10 @@ func (r *RealRunner) NewWindow(sessionName, windowName string, env map[string]st
 	args = append(args, shellCmd)
 
 	cmd := exec.Command(r.TmuxPath, args...) //nolint:gosec // arguments are not user-controlled
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	// Stderr is intentionally not set (defaults to nil / discarded) because callers
-	// use NewWindow in a try-then-fallback pattern where failure is expected and
-	// handled programmatically. Leaking tmux error messages to stderr confuses users.
+	// Discard stdout/stderr: callers use NewWindow in a try-then-fallback
+	// pattern where failure is expected and handled programmatically, and
+	// in TUI mode any inherited stdout would corrupt the alt-screen frame
+	// (QUM-330).
 	return cmd.Run()
 }
 
@@ -308,18 +326,36 @@ func (r *RealRunner) Attach(name string) error {
 // The config should use session-targeted set-option where possible.
 func (r *RealRunner) SourceFile(_ string, filePath string) error {
 	cmd := exec.Command(r.TmuxPath, "source-file", filePath) //nolint:gosec // arguments are not user-controlled
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	// Capture rather than inherit FD 1/2 — see NewSession comment (QUM-330).
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := cmd.Run(); err != nil {
+		out := strings.TrimSpace(combined.String())
+		if out != "" {
+			return fmt.Errorf("tmux source-file: %w: %s", err, out)
+		}
+		return err
+	}
+	return nil
 }
 
 // SetEnvironment sets an environment variable on a tmux session. Windows created
 // in the session after this call inherit the variable automatically.
 func (r *RealRunner) SetEnvironment(sessionName, key, value string) error {
 	cmd := exec.Command(r.TmuxPath, "set-environment", "-t", exactTarget(sessionName), key, value) //nolint:gosec // arguments are not user-controlled
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	// Capture rather than inherit FD 1/2 — see NewSession comment (QUM-330).
+	var combined bytes.Buffer
+	cmd.Stdout = &combined
+	cmd.Stderr = &combined
+	if err := cmd.Run(); err != nil {
+		out := strings.TrimSpace(combined.String())
+		if out != "" {
+			return fmt.Errorf("tmux set-environment: %w: %s", err, out)
+		}
+		return err
+	}
+	return nil
 }
 
 // IsInsideTmux returns true if the current process is running inside a tmux session.
