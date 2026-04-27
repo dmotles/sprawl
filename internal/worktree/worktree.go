@@ -3,6 +3,7 @@ package worktree
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,8 +89,14 @@ func SetupBeadsRedirect(repoRoot, worktreePath string) error {
 }
 
 // branchExists checks whether a local git branch with the given name exists.
+//
+// stdio is explicitly redirected to io.Discard so that a missing ref — which
+// makes git print "fatal: Needed a single revision" to stderr — cannot inherit
+// the parent's FD 2 in TUI mode. See QUM-342.
 func branchExists(repoRoot, branchName string) bool {
 	cmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/"+branchName) //nolint:gosec // arguments are not user-controlled
 	cmd.Dir = repoRoot
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	return cmd.Run() == nil
 }
