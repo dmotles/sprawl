@@ -126,6 +126,22 @@ func TestTreeModel_SetSize(t *testing.T) {
 
 // --- Tests for QUM-200 5c: Agent Tree Panel + Observation ---
 
+func TestTreeModel_SetSelected(t *testing.T) {
+	m := newTestTreeModel(t)
+	m.SetNodes(newTestTreeNodes())
+
+	m.SetSelected("finn")
+	if got := m.SelectedAgent(); got != "finn" {
+		t.Errorf("SelectedAgent() = %q after SetSelected(\"finn\"), want %q", got, "finn")
+	}
+
+	// Setting a name not in the list is a no-op (selection unchanged).
+	m.SetSelected("nonexistent")
+	if got := m.SelectedAgent(); got != "finn" {
+		t.Errorf("SelectedAgent() = %q after SetSelected(\"nonexistent\"), want %q (unchanged)", got, "finn")
+	}
+}
+
 func newTestTreeNodes() []TreeNode {
 	return []TreeNode{
 		{Name: "weave", Type: "weave", Status: "active", Depth: 0, Unread: 2},
