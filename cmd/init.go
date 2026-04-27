@@ -105,6 +105,7 @@ func resolveDeps() (*initDeps, error) {
 }
 
 func runInit(deps *initDeps, namespace string, detached bool) error {
+	deprecationWarningCustom("init", "tmux mode is being removed; use `sprawl enter` for TUI mode.")
 	rootName := tmux.DefaultRootName
 	// Determine namespace: explicit flag > env var > auto-pick
 	if namespace == "" {

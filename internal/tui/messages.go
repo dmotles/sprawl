@@ -46,6 +46,11 @@ type ToolCallMsg struct {
 	ToolID   string
 	Approved bool
 	Input    string // concise summary of tool input
+	// FullInput is the un-truncated, multi-line representation of the raw
+	// tool input. Bash returns the verbatim command; everything else is
+	// pretty-printed JSON. Surfaced when the user toggles the global
+	// tool-input expand state in AppModel (QUM-335).
+	FullInput string
 }
 
 // TurnStateMsg signals a change in the conversation turn lifecycle.

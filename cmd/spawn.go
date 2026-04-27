@@ -6,6 +6,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/dmotles/sprawl/internal/worktree"
 	"github.com/gofrs/flock"
@@ -17,13 +18,20 @@ import (
 type spawnDeps = agentops.SpawnDeps
 
 var (
-	runSpawn       = agentops.Spawn
 	supportedTypes = agentops.SupportedTypes
 	validTypes     = agentops.ValidTypes
 	validFamilies  = agentops.ValidFamilies
 	isValidType    = agentops.IsValidType
 	isValidFamily  = agentops.IsValidFamily
 )
+
+// runSpawn wraps agentops.Spawn so the CLI entry point can emit its
+// deprecation warning in a single place that both the cobra RunE and
+// existing unit tests exercise.
+func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
+	deprecationWarning("spawn", "sprawl_spawn")
+	return agentops.Spawn(deps, family, agentType, prompt, branch)
+}
 
 var spawnAgentCmd = &cobra.Command{
 	Use:   "agent",

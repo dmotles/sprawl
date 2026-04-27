@@ -43,6 +43,7 @@ var delegateCmd = &cobra.Command{
 }
 
 func runDelegate(deps *delegateDeps, agentName, prompt string) error {
+	deprecationWarning("delegate", "sprawl_delegate")
 	if err := agent.ValidateName(agentName); err != nil {
 		return err
 	}

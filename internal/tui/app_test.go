@@ -2403,3 +2403,85 @@ func TestCommitDrainCmd_MissingIDsNotFatal(t *testing.T) {
 		t.Errorf("expected nil msg, got %v", msg)
 	}
 }
+
+// QUM-335: Ctrl+E flips the global toolInputsExpanded flag and propagates
+// the new state to every per-agent viewport so already-rendered tool calls
+// flip immediately.
+func TestAppModel_CtrlEToggleToolInputsExpanded(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := resized.(AppModel)
+
+	if app.toolInputsExpanded {
+		t.Fatal("toolInputsExpanded should default to false")
+	}
+	// Seed a tool call so the viewport has something to flip.
+	app.rootVP().AppendToolCall("Bash", true, "ls", "ls -la /tmp")
+
+	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	app = pressed.(AppModel)
+	if !app.toolInputsExpanded {
+		t.Errorf("Ctrl+E should set toolInputsExpanded to true")
+	}
+	if !app.rootVP().ToolInputsExpanded() {
+		t.Errorf("root viewport should mirror the global expanded flag after Ctrl+E")
+	}
+
+	pressed, _ = app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	app = pressed.(AppModel)
+	if app.toolInputsExpanded {
+		t.Errorf("second Ctrl+E should toggle toolInputsExpanded back to false")
+	}
+	if app.rootVP().ToolInputsExpanded() {
+		t.Errorf("root viewport flag should follow the global state on toggle-off")
+	}
+}
+
+// QUM-335: when the global expand flag is on, a viewport lazy-created for a
+// freshly-observed agent must inherit that flag so cycling agents preserves
+// the user's chosen mode.
+func TestAppModel_NewAgentBufferInheritsExpandedFlag(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := resized.(AppModel)
+
+	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'e', Mod: tea.ModCtrl})
+	app = pressed.(AppModel)
+
+	vp := app.viewportFor("finn")
+	if !vp.ToolInputsExpanded() {
+		t.Errorf("lazily-created agent viewport should inherit toolInputsExpanded=true, got false")
+	}
+}
+
+// QUM-335: ToolCallMsg with FullInput populated reaches the rootVP's
+// MessageEntry as ToolInputFull so a later toggle can render it.
+func TestAppModel_ToolCallMsg_PreservesFullInput(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app := resized.(AppModel)
+
+	updated, _ := app.Update(ToolCallMsg{
+		ToolName:  "Bash",
+		ToolID:    "t-1",
+		Approved:  true,
+		Input:     "ls",
+		FullInput: "ls -la /tmp",
+	})
+	app = updated.(AppModel)
+
+	msgs := app.rootVP().GetMessages()
+	if len(msgs) == 0 {
+		t.Fatal("expected at least one message after ToolCallMsg")
+	}
+	last := msgs[len(msgs)-1]
+	if last.Type != MessageToolCall {
+		t.Fatalf("last message type = %v, want MessageToolCall", last.Type)
+	}
+	if last.ToolInput != "ls" {
+		t.Errorf("ToolInput = %q, want %q", last.ToolInput, "ls")
+	}
+	if last.ToolInputFull != "ls -la /tmp" {
+		t.Errorf("ToolInputFull = %q, want %q", last.ToolInputFull, "ls -la /tmp")
+	}
+}

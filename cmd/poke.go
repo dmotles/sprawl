@@ -49,6 +49,7 @@ delivered immediately on the next poll cycle.`,
 }
 
 func runPoke(deps *pokeDeps, agentName, message string) error {
+	deprecationWarningCustom("poke", "this CLI form will be removed in a future release.")
 	if err := agent.ValidateName(agentName); err != nil {
 		return err
 	}

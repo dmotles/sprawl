@@ -39,6 +39,12 @@
 # Do not run it in parallel with other TUI-mode e2e scripts.
 set -euo pipefail
 
+# QUM-337: this script drives `sprawl report done` and `sprawl messages
+# send` on purpose to verify the QUM-312 TUI notifier path. Suppress the
+# per-process deprecation warning so the captured tmux pane output stays
+# clean during the M13 cutover soak. Slated for deletion in 2.5.
+export SPRAWL_QUIET_DEPRECATIONS=1
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # --- Preflight: claude binary ---

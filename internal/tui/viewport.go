@@ -50,6 +50,11 @@ type MessageEntry struct {
 	Complete  bool
 	Approved  bool   // only used for MessageToolCall
 	ToolInput string // concise tool input summary (MessageToolCall only)
+	// ToolInputFull is the un-truncated, multi-line representation of the
+	// raw tool input — surfaced by renderToolCall when the viewport's
+	// expand-tool-inputs flag is on (QUM-335). May be empty for legacy
+	// messages or when the bridge couldn't parse the input.
+	ToolInputFull string
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -65,6 +70,11 @@ type ViewportModel struct {
 	// (e.g. renderToolCall) can clip/wrap against the visible column count.
 	// Mirrors the value passed to SetSize; 0 means not-yet-sized.
 	width int
+	// toolInputsExpanded mirrors AppModel.toolInputsExpanded (QUM-335). When
+	// true, renderToolCall renders MessageEntry.ToolInputFull (multi-line)
+	// instead of the truncated ToolInput summary. AppModel propagates the
+	// flag to every per-agent viewport via SetToolInputsExpanded.
+	toolInputsExpanded bool
 }
 
 // SelectionGutter is the visual prefix placed on selected message blocks when
@@ -180,16 +190,41 @@ func (m *ViewportModel) FinalizeAssistantMessage() {
 	}
 }
 
-// AppendToolCall adds a tool call notification line.
-func (m *ViewportModel) AppendToolCall(name string, approved bool, input string) {
+// AppendToolCall adds a tool call notification line. fullInput is the
+// un-truncated, multi-line representation surfaced by the global
+// expand-tool-inputs toggle (QUM-335); pass "" if not available.
+func (m *ViewportModel) AppendToolCall(name string, approved bool, input, fullInput string) {
 	m.messages = append(m.messages, MessageEntry{
-		Type:      MessageToolCall,
-		Content:   name,
-		Complete:  true,
-		Approved:  approved,
-		ToolInput: input,
+		Type:          MessageToolCall,
+		Content:       name,
+		Complete:      true,
+		Approved:      approved,
+		ToolInput:     input,
+		ToolInputFull: fullInput,
 	})
 	m.renderAndUpdate()
+}
+
+// SetToolInputsExpanded toggles the per-viewport flag that controls whether
+// renderToolCall draws the truncated summary or the full multi-line input
+// (QUM-335). AppModel calls this on every per-agent viewport when the user
+// presses the global toggle binding; the call re-renders so the new state
+// is visible immediately.
+func (m *ViewportModel) SetToolInputsExpanded(expanded bool) {
+	if m.toolInputsExpanded == expanded {
+		return
+	}
+	m.toolInputsExpanded = expanded
+	if len(m.messages) > 0 {
+		m.renderAndUpdate()
+	}
+}
+
+// ToolInputsExpanded reports whether the viewport is currently rendering
+// tool calls in their expanded multi-line form (QUM-335). Exposed for
+// tests; production code drives the flag through AppModel.
+func (m *ViewportModel) ToolInputsExpanded() bool {
+	return m.toolInputsExpanded
 }
 
 // AppendStatus adds a status/system message.
@@ -364,10 +399,17 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 	sb.WriteString(m.theme.AccentText.Render(toolHeader))
 	// Input summary on following line(s) if present. Multi-line tool input
 	// is preserved but wrapped at the viewport inner width so each wrapped
-	// segment stays inside the `│ …` gutter (QUM-324).
-	if msg.ToolInput != "" {
+	// segment stays inside the `│ …` gutter (QUM-324). When the global
+	// expand-tool-inputs flag is on (QUM-335) and the entry carries a full
+	// representation, render that instead so the user sees the un-truncated
+	// command / pretty JSON. Falls back to the truncated summary otherwise.
+	body := msg.ToolInput
+	if m.toolInputsExpanded && msg.ToolInputFull != "" {
+		body = msg.ToolInputFull
+	}
+	if body != "" {
 		sb.WriteString("\n")
-		for i, ln := range wrapToolInput(msg.ToolInput, m.width-toolCallInputPrefix) {
+		for i, ln := range wrapToolInput(body, m.width-toolCallInputPrefix) {
 			if i > 0 {
 				sb.WriteString("\n")
 			}
