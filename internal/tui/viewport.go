@@ -41,6 +41,11 @@ const (
 	MessageToolCall
 	MessageStatus
 	MessageError
+	// MessageSystem is system-injected content (e.g. the inbox-drain body
+	// surfaced into the conversation buffer by InboxDrainMsg). Rendered with
+	// a mail glyph and the theme's SystemText style so it's visually
+	// unmistakable that the system spoke, not the user. (QUM-338)
+	MessageSystem
 )
 
 // MessageEntry is a single item in the conversation buffer.
@@ -319,6 +324,20 @@ func (m *ViewportModel) AppendStatus(text string) {
 	m.renderAndUpdate()
 }
 
+// AppendSystemMessage adds a system-injected message (e.g. an inbox-drain
+// body) to the conversation buffer. Rendered with a mail glyph and the
+// theme's SystemText style so it's visibly distinct from a user-typed turn.
+// The underlying Claude session still receives the body as a user-role
+// message — this entry is viewport-only display. (QUM-338)
+func (m *ViewportModel) AppendSystemMessage(text string) {
+	m.messages = append(m.messages, MessageEntry{
+		Type:     MessageSystem,
+		Content:  text,
+		Complete: true,
+	})
+	m.renderAndUpdate()
+}
+
 // AppendError adds an error message with visual distinction.
 func (m *ViewportModel) AppendError(text string) {
 	m.messages = append(m.messages, MessageEntry{
@@ -445,6 +464,11 @@ func (m *ViewportModel) renderMessages() string {
 		case MessageError:
 			block.WriteString(m.theme.AccentText.Render("ERROR: "))
 			block.WriteString(msg.Content)
+		case MessageSystem:
+			// QUM-338: system-injected content (inbox drains today). Mail
+			// glyph + distinct SystemText style so the human watching the TUI
+			// can tell at a glance the system spoke, not them.
+			block.WriteString(m.theme.SystemText.Render("✉ " + msg.Content))
 		}
 		if selecting && i >= selLo && i <= selHi {
 			sb.WriteString(addSelectionGutter(block.String(), m.theme.AccentText.Render(SelectionGutter)))

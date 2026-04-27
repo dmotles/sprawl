@@ -2317,6 +2317,28 @@ func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
 	if len(app.pendingDrainIDs) != 2 || app.pendingDrainIDs[0] != "a1" || app.pendingDrainIDs[1] != "a2" {
 		t.Errorf("pendingDrainIDs = %v, want [a1 a2]", app.pendingDrainIDs)
 	}
+
+	// QUM-338: the drained prompt should be surfaced in the weave viewport as
+	// a MessageSystem entry (not MessageUser) so the user sees it as a system
+	// notification rather than something they typed.
+	weaveVP := app.viewportFor("weave")
+	entries := weaveVP.GetMessages()
+	const wantPrompt = "[inbox] You received 1 message(s)..."
+	var foundSystem bool
+	for _, e := range entries {
+		if e.Type == MessageUser && e.Content == wantPrompt {
+			t.Errorf("drained prompt should not be a MessageUser entry, got: %+v", e)
+		}
+		if e.Type == MessageSystem && e.Content == wantPrompt {
+			foundSystem = true
+		}
+	}
+	if !foundSystem {
+		t.Errorf("expected a MessageSystem entry with the drained prompt %q; got entries: %+v", wantPrompt, entries)
+	}
+	if !strings.Contains(stripAnsi(weaveVP.View()), "✉") {
+		t.Errorf("expected mail glyph '✉' in rendered weave viewport for drained system message, got:\n%s", stripAnsi(weaveVP.View()))
+	}
 }
 
 func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {

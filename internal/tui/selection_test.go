@@ -95,6 +95,24 @@ func TestAssembleRawMarkdown_SkipsStatusAndError(t *testing.T) {
 	}
 }
 
+// QUM-338: system-injected entries (e.g. inbox-drain bodies) are TUI chrome
+// from the copy-selection perspective — the underlying body is already part
+// of the user-role turn the bridge delivered to Claude, so re-emitting it
+// here would double-count. Pin the skip behavior alongside Status/Error.
+func TestAssembleRawMarkdown_SkipsSystemMessage(t *testing.T) {
+	msgs := []MessageEntry{
+		{Type: MessageSystem, Content: "[inbox] You received 1 message(s)..."},
+		{Type: MessageAssistant, Content: "hello", Complete: true},
+	}
+	got := AssembleRawMarkdown(msgs, 0, 1)
+	if strings.Contains(got, "[inbox]") {
+		t.Errorf("system message should be skipped, got %q", got)
+	}
+	if !strings.Contains(got, "hello") {
+		t.Errorf("assistant content missing, got %q", got)
+	}
+}
+
 func TestAssembleRawMarkdown_MixedTypesBlankLineSeparated(t *testing.T) {
 	msgs := []MessageEntry{
 		{Type: MessageUser, Content: "hi", Complete: true},
