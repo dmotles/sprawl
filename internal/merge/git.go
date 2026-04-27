@@ -2,6 +2,7 @@ package merge
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,9 +93,16 @@ func RealGitRebase(worktree, onto string) error {
 
 // RealGitRebaseAbort aborts an in-progress rebase. Best-effort: errors are
 // intentionally swallowed since this is cleanup after a failed rebase.
+//
+// stdio is explicitly redirected to io.Discard so that any output (e.g.
+// "fatal: No rebase in progress?" on stderr when there's nothing to abort,
+// or rebase progress chatter on stdout) cannot inherit the parent's FD 1/2
+// in TUI mode (Bubble Tea alt-screen). See QUM-342 (extends QUM-330).
 func RealGitRebaseAbort(worktree string) error {
 	cmd := exec.Command("git", "rebase", "--abort")
 	cmd.Dir = worktree
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
 	_ = cmd.Run()
 	return nil
 }
