@@ -41,6 +41,8 @@ type Real struct {
 	sprawlRoot string
 	callerName string
 
+	runtimeRegistry *RuntimeRegistry
+
 	spawnDeps  *agentops.SpawnDeps
 	mergeDeps  *agentops.MergeDeps
 	retireDeps *agentops.RetireDeps
@@ -103,8 +105,9 @@ func NewReal(cfg Config) (*Real, error) {
 	}
 
 	r := &Real{
-		sprawlRoot: cfg.SprawlRoot,
-		callerName: cfg.CallerName,
+		sprawlRoot:      cfg.SprawlRoot,
+		callerName:      cfg.CallerName,
+		runtimeRegistry: NewRuntimeRegistry(),
 
 		spawnDeps: &agentops.SpawnDeps{
 			TmuxRunner:      tmuxRunner,
@@ -212,9 +215,12 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 		return fmt.Errorf("task prompt must not be empty")
 	}
 
-	_, err = state.EnqueueTask(r.sprawlRoot, agentName, task)
+	enqueuedTask, err := state.EnqueueTask(r.sprawlRoot, agentName, task)
 	if err != nil {
 		return fmt.Errorf("enqueuing task: %w", err)
+	}
+	if runtime, ok := r.runtimeRegistry.Get(agentName); ok {
+		runtime.RecordQueuedTask(enqueuedTask)
 	}
 	return nil
 }
@@ -233,6 +239,10 @@ func (r *Real) Spawn(_ context.Context, req SpawnRequest) (*AgentInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+		SprawlRoot: r.sprawlRoot,
+		Agent:      st,
+	})
 	return &AgentInfo{
 		Name:   st.Name,
 		Type:   st.Type,
@@ -248,7 +258,18 @@ func (r *Real) Merge(_ context.Context, agentName, message string, noValidate bo
 }
 
 func (r *Real) Retire(_ context.Context, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
-	return r.retireFn(r.retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate)
+	if err := r.retireFn(r.retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
+		if cascade {
+			r.reconcileRuntimeTreeFromState(agentName)
+		}
+		return err
+	}
+	if cascade {
+		r.runtimeRegistry.RemoveTree(agentName)
+	} else {
+		r.runtimeRegistry.Remove(agentName)
+	}
+	return nil
 }
 
 // Kill is idempotent: if the agent is already gone (state file missing) or
@@ -268,7 +289,11 @@ func (r *Real) Kill(_ context.Context, agentName string) error {
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
-	return r.killFn(r.killDeps, agentName, false)
+	if err := r.killFn(r.killDeps, agentName, false); err != nil {
+		return err
+	}
+	r.syncRuntimeFromState(agentName)
+	return nil
 }
 
 func (r *Real) Shutdown(_ context.Context) error {
@@ -569,7 +594,43 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, 
 	if err != nil {
 		return nil, err
 	}
+	r.syncRuntimeFromState(agentName)
 	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
+}
+
+func (r *Real) syncRuntimeFromState(agentName string) {
+	runtime, ok := r.runtimeRegistry.Get(agentName)
+	if !ok {
+		return
+	}
+	agentState, err := state.LoadAgent(r.sprawlRoot, agentName)
+	if err != nil {
+		return
+	}
+	runtime.SyncAgentState(agentState)
+}
+
+func (r *Real) reconcileRuntimeTreeFromState(rootName string) {
+	parentByName := make(map[string]string)
+	for _, runtime := range r.runtimeRegistry.List() {
+		snap := runtime.Snapshot()
+		parentByName[snap.Name] = snap.Parent
+	}
+
+	for name := range parentByName {
+		current := name
+		for current != "" {
+			if current == rootName {
+				if _, err := state.LoadAgent(r.sprawlRoot, name); err != nil {
+					if errors.Is(err, os.ErrNotExist) {
+						r.runtimeRegistry.Remove(name)
+					}
+				}
+				break
+			}
+			current = parentByName[current]
+		}
+	}
 }
 
 // --- QUM-316: mailbox read/list/archive tools ---
