@@ -30,6 +30,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	backend "github.com/dmotles/sprawl/internal/backend"
+	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
@@ -256,6 +258,38 @@ func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts 
 	return opts
 }
 
+func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession, logW io.Writer, onResumeFailure func()) backend.SessionSpec {
+	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlOpsMCPTools()))
+	allowed = append(allowed, prepared.RootTools...)
+	allowed = append(allowed, sprawlOpsMCPTools()...)
+
+	spec := backend.SessionSpec{
+		WorkDir:         sprawlRoot,
+		Identity:        "weave",
+		SprawlRoot:      sprawlRoot,
+		SessionID:       prepared.SessionID,
+		Model:           prepared.Model,
+		PermissionMode:  "bypassPermissions",
+		AllowedTools:    allowed,
+		DisallowedTools: prepared.Disallowed,
+		Stderr:          logW,
+		OnResumeFailure: onResumeFailure,
+	}
+	if prepared.Resume {
+		spec.Resume = true
+	} else {
+		spec.PromptFile = prepared.PromptPath
+	}
+	return spec
+}
+
+func buildEnterInitSpec(bridge backend.ToolBridge) backend.InitSpec {
+	return backend.InitSpec{
+		MCPServerNames: []string{"sprawl-ops"},
+		ToolBridge:     bridge,
+	}
+}
+
 // buildSessionEnv returns the environment variables for the Claude Code subprocess.
 func buildSessionEnv() []string {
 	return append(os.Environ(),
@@ -289,10 +323,6 @@ func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh boo
 	if sup == nil {
 		return nil, false, fmt.Errorf("newSessionImpl: supervisor must be non-nil (see QUM-329 architectural contract)")
 	}
-	claudePath, err := exec.LookPath("claude")
-	if err != nil {
-		return nil, false, fmt.Errorf("finding claude binary: %w", err)
-	}
 
 	rootName := "weave"
 
@@ -301,6 +331,7 @@ func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh boo
 	// prompt. The Claude subprocess consumes the rendered prompt via
 	// --system-prompt-file below.
 	var prepared *rootinit.PreparedSession
+	var err error
 	if forceFresh {
 		prepared, err = rootinit.PrepareFresh(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
 	} else {
@@ -310,56 +341,10 @@ func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh boo
 		return nil, false, fmt.Errorf("preparing session: %w", err)
 	}
 
-	args := buildEnterLaunchOpts(prepared).BuildArgs()
-
 	if prepared.Resume {
 		fmt.Fprintf(logW, "[enter] resuming session %s\n", prepared.SessionID)
 	} else {
 		fmt.Fprintf(logW, "[enter] starting session %s\n", prepared.SessionID)
-	}
-
-	cmd := exec.Command(claudePath, args...) //nolint:gosec // claudePath is from LookPath, not untrusted input
-	cmd.Dir = sprawlRoot
-	cmd.Env = buildSessionEnv()
-
-	// QUM-261: wrap stderr so the "No conversation found with session ID:"
-	// marker — emitted when --resume targets an evicted session but claude
-	// stays alive awaiting input — kills the subprocess AND signals
-	// onResumeFailure so makeRestartFunc force-freshes the next session
-	// regardless of how long claude took to emit the error.
-	cmd.Stderr = wrapEnterStderrForResumeScan(logW, func() {
-		if onResumeFailure != nil {
-			onResumeFailure()
-		}
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	})
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, false, fmt.Errorf("creating stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, false, fmt.Errorf("creating stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, false, fmt.Errorf("starting claude: %w", err)
-	}
-
-	reader := protocol.NewReader(stdout)
-	writer := protocol.NewWriter(stdin)
-	transport := &enterTransport{
-		reader: reader,
-		writer: writer,
-		kill: func() error {
-			if cmd.Process != nil {
-				return cmd.Process.Kill()
-			}
-			return nil
-		},
 	}
 
 	// Wire the MCP server to the shared supervisor passed in by runEnter.
@@ -370,13 +355,18 @@ func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh boo
 	mcpBridge := host.NewMCPBridge()
 	mcpBridge.Register("sprawl-ops", mcpServer)
 
-	session := host.NewSession(transport, host.SessionConfig{
-		MCPServerNames: []string{"sprawl-ops"},
-		MCPBridge:      mcpBridge,
-	})
+	adapter := backendclaude.NewAdapter(backendclaude.Config{})
+	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure))
+	if err != nil {
+		return nil, false, err
+	}
+	initSpec := buildEnterInitSpec(mcpBridge)
 
 	ctx := context.Background()
-	bridge := tui.NewBridge(ctx, session)
+	bridge := tui.NewBridge(ctx, &enterBridgeSession{
+		session:  session,
+		initSpec: initSpec,
+	})
 	bridge.SetSessionID(prepared.SessionID)
 	return bridge, prepared.Resume, nil
 }
@@ -389,29 +379,26 @@ func wrapEnterStderrForResumeScan(underlying io.Writer, kill func()) io.Writer {
 	return claude.NewMarkerWriter(underlying, claude.NoConversationMarker, claude.ResumeMarkerScanCap, kill)
 }
 
-// enterTransport wraps a Claude Code subprocess for the host protocol.
-type enterTransport struct {
-	reader *protocol.Reader
-	writer *protocol.Writer
-	kill   func() error
+type enterBridgeSession struct {
+	session  backend.Session
+	initSpec backend.InitSpec
 }
 
-func (t *enterTransport) Send(_ context.Context, msg any) error {
-	return t.writer.WriteJSON(msg)
+func (s *enterBridgeSession) Initialize(ctx context.Context) error {
+	return s.session.Initialize(ctx, s.initSpec)
 }
 
-func (t *enterTransport) Recv(_ context.Context) (*protocol.Message, error) {
-	return t.reader.Next()
+func (s *enterBridgeSession) SendUserMessage(ctx context.Context, prompt string) (<-chan *protocol.Message, error) {
+	return s.session.StartTurn(ctx, prompt, backend.TurnSpec{Init: s.initSpec})
 }
 
-func (t *enterTransport) Close() error {
-	closeErr := t.writer.Close()
+func (s *enterBridgeSession) Close() error {
+	closeErr := s.session.Close()
+	killErr := s.session.Kill()
 	if closeErr != nil {
-		_ = t.kill()
 		return closeErr
 	}
-	_ = t.kill()
-	return nil
+	return killErr
 }
 
 func runEnter(deps *enterDeps) error {
