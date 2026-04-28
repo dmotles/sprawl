@@ -16,6 +16,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
+	backend "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -42,25 +43,26 @@ type processManager interface {
 
 // agentLoopDeps holds all injectable dependencies for the agent loop command.
 type agentLoopDeps struct {
-	getenv       func(string) string
-	loadAgent    func(string, string) (*state.AgentState, error)
-	nextTask     func(string, string) (*state.Task, error)
-	updateTask   func(string, string, *state.Task) error
-	listMessages func(string, string, string) ([]*messages.Message, error)
-	sendMessage  func(string, string, string, string, string) error
-	findClaude   func() (string, error)
-	readFile     func(string) ([]byte, error)
-	removeFile   func(string) error
-	buildPrompt  func(*state.AgentState) string
-	sleepFunc    func(time.Duration)
-	mkdirAll     func(string, os.FileMode) error
-	createFile   func(string) (*os.File, error)
-	stdout       io.Writer
-	exit         func(int)
-	newProcess   func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager
-	newWorkLock  func(lockDir, agentName string) (*workLock, error)
-	getpid       func() int
-	signalCh     <-chan os.Signal
+	getenv            func(string) string
+	loadAgent         func(string, string) (*state.AgentState, error)
+	nextTask          func(string, string) (*state.Task, error)
+	updateTask        func(string, string, *state.Task) error
+	listMessages      func(string, string, string) ([]*messages.Message, error)
+	sendMessage       func(string, string, string, string, string) error
+	findClaude        func() (string, error)
+	readFile          func(string) ([]byte, error)
+	removeFile        func(string) error
+	buildPrompt       func(*state.AgentState) string
+	sleepFunc         func(time.Duration)
+	mkdirAll          func(string, os.FileMode) error
+	createFile        func(string) (*os.File, error)
+	stdout            io.Writer
+	exit              func(int)
+	newProcess        func(config agentloop.ProcessConfig, observer agentloop.Observer) processManager
+	newBackendProcess func(spec backend.SessionSpec, observer agentloop.Observer) processManager
+	newWorkLock       func(lockDir, agentName string) (*workLock, error)
+	getpid            func() int
+	signalCh          <-chan os.Signal
 }
 
 // defaultAgentLoopDeps wires real implementations.
@@ -107,6 +109,7 @@ func defaultAgentLoopDeps() *agentLoopDeps {
 			starter := &agentloop.RealCommandStarter{}
 			return agentloop.NewProcess(config, starter, agentloop.WithObserver(observer))
 		},
+		newBackendProcess: newClaudeBackendProcess,
 		newWorkLock: func(lockDir, agentName string) (*workLock, error) {
 			if err := os.MkdirAll(lockDir, 0o755); err != nil { //nolint:gosec // G301: world-readable lock dir is intentional
 				return nil, fmt.Errorf("creating locks directory: %w", err)
@@ -450,12 +453,6 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 		return fmt.Errorf("loading agent state: %w", err)
 	}
 
-	// Find claude binary
-	claudePath, err := deps.findClaude()
-	if err != nil {
-		return fmt.Errorf("finding claude binary: %w", err)
-	}
-
 	// Create log file
 	logsDir := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName, "logs")
 	if err := deps.mkdirAll(logsDir, 0o755); err != nil {
@@ -505,22 +502,32 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	if err != nil {
 		return fmt.Errorf("writing system prompt file: %w", err)
 	}
-	config := agentloop.ProcessConfig{
-		AgentName:  agentName,
-		WorkDir:    agentState.Worktree,
-		ClaudePath: claudePath,
-		SprawlRoot: sprawlRoot,
-		Args: claude.LaunchOpts{
-			SessionID:        agentState.SessionID,
-			SystemPromptFile: promptPath,
-			Print:            true,
-			InputFormat:      "stream-json",
-			OutputFormat:     "stream-json",
-			Verbose:          true,
-			Model:            rootinit.DefaultModel,
-			Effort:           "medium",
-			PermissionMode:   "bypassPermissions",
-		},
+	sessionSpec := buildAgentSessionSpec(agentState, promptPath, sprawlRoot)
+	var config agentloop.ProcessConfig
+	if deps.newBackendProcess == nil {
+		// Legacy compat path retained for existing command tests that still
+		// inject the older agentloop.Process constructor directly.
+		claudePath, findErr := deps.findClaude()
+		if findErr != nil {
+			return fmt.Errorf("finding claude binary: %w", findErr)
+		}
+		config = agentloop.ProcessConfig{
+			AgentName:  agentName,
+			WorkDir:    agentState.Worktree,
+			ClaudePath: claudePath,
+			SprawlRoot: sprawlRoot,
+			Args: claude.LaunchOpts{
+				SessionID:        agentState.SessionID,
+				SystemPromptFile: promptPath,
+				Print:            true,
+				InputFormat:      "stream-json",
+				OutputFormat:     "stream-json",
+				Verbose:          true,
+				Model:            rootinit.DefaultModel,
+				Effort:           "medium",
+				PermissionMode:   "bypassPermissions",
+			},
+		}
 	}
 
 	// Debug: print full configuration being passed to Claude
@@ -531,12 +538,11 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	fmt.Fprintf(deps.stdout, "[agent-loop] === INITIAL PROMPT/TASK ===\n")
 	fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", agentState.Prompt)
 	fmt.Fprintf(deps.stdout, "[agent-loop] === PROCESS CONFIG ===\n")
-	fmt.Fprintf(deps.stdout, "[agent-loop]   agent-name:      %s\n", config.AgentName)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   session-id:      %s\n", config.Args.SessionID)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   work-dir:        %s\n", config.WorkDir)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   claude-path:     %s\n", config.ClaudePath)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   setting-sources: %s\n", config.Args.SettingSources)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   sprawl-root:     %s\n", config.SprawlRoot)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   agent-name:      %s\n", sessionSpec.Identity)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   session-id:      %s\n", sessionSpec.SessionID)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   work-dir:        %s\n", sessionSpec.WorkDir)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   prompt-file:     %s\n", sessionSpec.PromptFile)
+	fmt.Fprintf(deps.stdout, "[agent-loop]   sprawl-root:     %s\n", sessionSpec.SprawlRoot)
 	fmt.Fprintf(deps.stdout, "[agent-loop] === KEY ENV VARS ===\n")
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_AGENT_IDENTITY=%s\n", deps.getenv("SPRAWL_AGENT_IDENTITY"))
 	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_ROOT=%s\n", deps.getenv("SPRAWL_ROOT"))
@@ -567,7 +573,13 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	observer := &tmuxObserver{w: deps.stdout, ring: ring}
 
 	// Create and launch the initial process (without sending a prompt yet).
-	proc, ok := startProcess(ctx, deps, config, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process")
+	var proc processManager
+	var ok bool
+	if deps.newBackendProcess != nil {
+		proc, ok = startBackendProcess(ctx, deps, sessionSpec, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process")
+	} else {
+		proc, ok = startProcess(ctx, deps, config, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process")
+	}
 	if !ok {
 		return nil
 	}
@@ -621,10 +633,16 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 	// restartWithResume creates a new process with Resume=true after a crash.
 	// Returns false (and exits) if the restart fails.
 	restartWithResume := func() bool {
-		resumeConfig := config
-		resumeConfig.Args.Resume = true
 		var ok bool
-		proc, ok = startProcess(ctx, deps, resumeConfig, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash")
+		if deps.newBackendProcess != nil {
+			resumeSpec := sessionSpec
+			resumeSpec.Resume = true
+			proc, ok = startBackendProcess(ctx, deps, resumeSpec, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash")
+		} else {
+			resumeConfig := config
+			resumeConfig.Args.Resume = true
+			proc, ok = startProcess(ctx, deps, resumeConfig, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash")
+		}
 		return ok
 	}
 
