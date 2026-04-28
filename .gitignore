@@ -18,4 +18,5 @@ hosttest
 !.sprawl/config.yaml
 
 .claude/settings.local.json
+.codex
 CLAUDE.local.md
