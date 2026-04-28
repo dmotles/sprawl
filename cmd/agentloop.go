@@ -19,6 +19,7 @@ import (
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
@@ -516,7 +517,7 @@ func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) er
 			InputFormat:      "stream-json",
 			OutputFormat:     "stream-json",
 			Verbose:          true,
-			Model:            "opus[1m]",
+			Model:            rootinit.DefaultModel,
 			Effort:           "medium",
 			PermissionMode:   "bypassPermissions",
 		},

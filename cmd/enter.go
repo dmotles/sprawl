@@ -225,7 +225,7 @@ func sprawlOpsMCPTools() []string {
 
 // buildEnterLaunchOpts constructs claude.LaunchOpts for the TUI-mode weave
 // subprocess from a rootinit.PreparedSession. Matches the tmux root loop's
-// launch shape (--system-prompt-file, --session-id, --model opus[1m], plus
+// launch shape (--system-prompt-file, --session-id, --model sonnet, plus
 // the root tool allowlist) and adds the stream-json flag block the TUI
 // transport needs.
 //
