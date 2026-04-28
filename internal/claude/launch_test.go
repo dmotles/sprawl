@@ -176,7 +176,7 @@ func TestBuildArgs_StreamJsonMode(t *testing.T) {
 		InputFormat:    "stream-json",
 		OutputFormat:   "stream-json",
 		Verbose:        true,
-		Model:          "opus[1m]",
+		Model:          "sonnet",
 		Effort:         "medium",
 		PermissionMode: "bypassPermissions",
 		SessionID:      "sess-1",
@@ -189,7 +189,7 @@ func TestBuildArgs_StreamJsonMode(t *testing.T) {
 	assertContains(t, args, "--input-format", "stream-json")
 	assertContains(t, args, "--output-format", "stream-json")
 	assertContainsFlag(t, args, "--verbose")
-	assertContains(t, args, "--model", "opus[1m]")
+	assertContains(t, args, "--model", "sonnet")
 	assertContains(t, args, "--effort", "medium")
 	assertContains(t, args, "--permission-mode", "bypassPermissions")
 	assertContains(t, args, "--session-id", "sess-1")
@@ -198,11 +198,11 @@ func TestBuildArgs_StreamJsonMode(t *testing.T) {
 
 func TestBuildArgs_ModelAndEffort(t *testing.T) {
 	args := LaunchOpts{
-		Model:  "opus[1m]",
+		Model:  "sonnet",
 		Effort: "medium",
 	}.BuildArgs()
 
-	assertContains(t, args, "--model", "opus[1m]")
+	assertContains(t, args, "--model", "sonnet")
 	assertContains(t, args, "--effort", "medium")
 }
 
@@ -285,7 +285,7 @@ func TestBuildArgs_VerboseAfterFormat(t *testing.T) {
 		Print:       true,
 		InputFormat: "stream-json",
 		Verbose:     true,
-		Model:       "opus[1m]",
+		Model:       "sonnet",
 		SessionID:   "s1",
 	}
 
@@ -319,7 +319,7 @@ func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 		InputFormat:    "stream-json",
 		OutputFormat:   "stream-json",
 		Verbose:        true,
-		Model:          "opus[1m]",
+		Model:          "sonnet",
 		Effort:         "medium",
 		PermissionMode: "bypassPermissions",
 		SessionID:      "sess-1",

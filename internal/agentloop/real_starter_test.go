@@ -13,7 +13,7 @@ func TestBuildArgs_IncludesModelOpus(t *testing.T) {
 			InputFormat:    "stream-json",
 			OutputFormat:   "stream-json",
 			Verbose:        true,
-			Model:          "opus[1m]",
+			Model:          "sonnet",
 			Effort:         "medium",
 			PermissionMode: "bypassPermissions",
 			SessionID:      "test-session",
@@ -29,7 +29,7 @@ func TestBuildArgs_IncludesModelOpus(t *testing.T) {
 		if arg == "--verbose" {
 			verboseIdx = i
 		}
-		if arg == "--model" && i+1 < len(args) && args[i+1] == "opus[1m]" {
+		if arg == "--model" && i+1 < len(args) && args[i+1] == "sonnet" {
 			modelIdx = i
 		}
 	}
@@ -74,7 +74,7 @@ func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 			InputFormat:    "stream-json",
 			OutputFormat:   "stream-json",
 			Verbose:        true,
-			Model:          "opus[1m]",
+			Model:          "sonnet",
 			Effort:         "medium",
 			PermissionMode: "bypassPermissions",
 			SessionID:      "sess-1",

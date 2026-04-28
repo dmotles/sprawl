@@ -19,4 +19,4 @@ var RootTools = []string{
 var DisallowedTools = []string{"Edit", "Write", "NotebookEdit"}
 
 // DefaultModel is the Claude model used for the root weave agent.
-const DefaultModel = "opus[1m]"
+const DefaultModel = "sonnet"
