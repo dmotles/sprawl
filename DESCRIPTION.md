@@ -12,7 +12,7 @@ The inspiration comes from Conway's Game of Life — not because Sprawl is a cel
 
 ## What
 
-Sprawl is a terminal-first CLI tool that orchestrates multiple Claude Code instances. You run `sprawl init`, it spawns the **root** agent in a tmux session, and you **seed** it with a goal. From there the system self-organizes to accomplish it.
+Sprawl is a terminal-first CLI tool that orchestrates multiple Claude Code instances. You run `sprawl enter`, it spawns the **root** agent inside the sprawl TUI, and you **seed** it with a goal. From there the system self-organizes to accomplish it.
 
 ### Seeding
 
@@ -125,7 +125,7 @@ The `sprawl` CLI is how agents interact with the system. Rather than providing t
 ### Core Commands
 
 ```
-sprawl init                          Launch the root agent
+sprawl enter                         Launch the root agent (TUI)
 ```
 
 ### Spawning & Agent Management
@@ -178,8 +178,8 @@ The name **Sprawl** is taken from William Gibson's *Sprawl trilogy* (*Neuromance
 
 ## Platform
 
-- **CLI entry point:** `sprawl init` launches the root agent
-- **Runtime:** Orchestrates Claude Code instances via tmux sessions
+- **CLI entry point:** `sprawl enter` launches the root agent inside the TUI
+- **Runtime:** Orchestrates Claude Code instances; child agents run in tmux sessions managed by sprawl
 - **Git strategy:** Each agent operates in its own git worktree. Issue tracking is external (users bring their own — Linear, GitHub Issues, etc.).
 
 ## Future / Potential Enhancements

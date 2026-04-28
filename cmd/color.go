@@ -121,7 +121,7 @@ func runColorShow(deps *colorDeps) error {
 
 	color := state.ReadAccentColor(root)
 	if color == "" {
-		return fmt.Errorf("no accent color set; run sprawl init first")
+		return fmt.Errorf("no accent color set; run sprawl enter first")
 	}
 
 	c, ok := tmux.FindColor(color)

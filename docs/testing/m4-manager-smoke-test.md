@@ -42,14 +42,14 @@ All packages should report `ok`. No failures expected.
 - A Git repository to test in (can be this repo or a throwaway)
 - No existing sprawl session running (or use a different namespace)
 
-### Step 1: Initialize sprawl
+### Step 1: Launch sprawl (TUI)
 
 ```bash
-./sprawl init
+./sprawl enter
 ```
 
 **Verify:**
-- `.sprawl/` directory created
+- `.sprawl/` directory present (`scripts/sprawl-test-env.sh` seeds it for sandbox runs)
 - Namespace file exists at `.sprawl/namespace`
 
 ### Step 2: Start root session

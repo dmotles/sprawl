@@ -32,20 +32,20 @@ make build
 
 ```bash
 cd your-repo
-sprawl init
+sprawl enter
 sprawl config set validate "make test"
 sprawl config set worktree.setup 'npm install && cp $SPRAWL_ROOT/.env .env'
 ```
 
 Use `sprawl config show` to view current settings, or `sprawl config --help` for all options.
 
-This launches **weave** (the root agent) in a tmux session. Give it a goal and it self-organizes from there — decomposing work, spawning agents, and managing everything autonomously.
+This launches **weave** (the root agent) inside the sprawl TUI. Give it a goal and it self-organizes from there — decomposing work, spawning agents, and managing everything autonomously.
 
 ## Usage
 
-- **Navigate agents**: Use tmux to watch agents work. `ctrl+b s` to switch sessions, `ctrl+b w` to switch windows.
-- **Context handoff**: When weave's context window fills up, ask weave to run `sprawl handoff`, then `/exit`. The next session picks up with memories of what happened. If you forget, the root loop will attempt to auto-summarize for you.
-- **Shut down**: Ask weave to make sure no agents are running, then `ctrl+b x` to kill weave's session.
+- **Navigate agents**: Use the TUI tree panel to watch agents work; child agents still run in tmux windows you can attach to.
+- **Context handoff**: When weave's context window fills up, ask weave to call the `sprawl_handoff` MCP tool. The TUI auto-restarts the session with memories of what happened.
+- **Shut down**: Ask weave to make sure no agents are running, then exit the TUI.
 
 ## State
 
