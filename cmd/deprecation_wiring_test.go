@@ -158,23 +158,6 @@ func TestDeprecation_Handoff_Wired(t *testing.T) {
 	assertDeprecation(t, buf, "handoff", "sprawl_handoff")
 }
 
-func TestDeprecation_Init_Wired(t *testing.T) {
-	buf := withDeprecationCapture(t, "")
-	defer func() { _ = recover() }()
-	deps := &initDeps{getenv: func(string) string { return "" }}
-	_ = runInit(deps, "ns", true)
-	out := buf.String()
-	if !strings.Contains(out, "warning:") || !strings.Contains(out, "`sprawl init`") {
-		t.Errorf("expected deprecation warning for init, got: %q", out)
-	}
-	if !strings.Contains(out, "tmux mode is being removed") {
-		t.Errorf("expected init warning to mention tmux removal, got: %q", out)
-	}
-	if !strings.Contains(out, "sprawl enter") {
-		t.Errorf("expected init warning to mention `sprawl enter`, got: %q", out)
-	}
-}
-
 func TestDeprecation_Poke_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	deps := &pokeDeps{

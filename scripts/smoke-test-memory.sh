@@ -168,24 +168,26 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Run sprawl init --detached
-echo "Running sprawl init --detached --namespace $TEST_NS..."
-(cd "$TEST_ROOT" && "$SPRAWL_BIN" init --detached --namespace "$TEST_NS") 2>&1
-
-# Kill the root tmux session immediately (we don't need it running)
-tmux kill-session -t "${TEST_NS}" 2>/dev/null || true
+# Seed the minimal `.sprawl/` state files (namespace + root-name) that the
+# memory-system tests below depend on. As of QUM-346 (M13 TUI cutover) the
+# tmux-mode `sprawl init` parent entrypoint has been removed, so this script
+# bootstraps the state directly instead of launching a parent agent loop.
+echo "Seeding sprawl state (namespace=$TEST_NS, root-name=weave)..."
+mkdir -p "$TEST_ROOT/.sprawl"
+printf '%s\n' "$TEST_NS" > "$TEST_ROOT/.sprawl/namespace"
+printf 'weave\n' > "$TEST_ROOT/.sprawl/root-name"
 
 echo "  SPRAWL_ROOT=$TEST_ROOT"
 echo "  TEST_NS=$TEST_NS"
 echo ""
 
-# --- Test 1: Init creates expected state files ---
+# --- Test 1: Sandbox seeded the expected state files ---
 
-echo "=== Test 1: Init creates expected state files ==="
+echo "=== Test 1: Sandbox state files present ==="
 
-assert_dir_exists "$TEST_ROOT/.sprawl" "init creates .sprawl directory"
-assert_file_exists "$TEST_ROOT/.sprawl/namespace" "init creates namespace file"
-assert_file_exists "$TEST_ROOT/.sprawl/root-name" "init creates root-name file"
+assert_dir_exists "$TEST_ROOT/.sprawl" "sandbox seeds .sprawl directory"
+assert_file_exists "$TEST_ROOT/.sprawl/namespace" "sandbox seeds namespace file"
+assert_file_exists "$TEST_ROOT/.sprawl/root-name" "sandbox seeds root-name file"
 assert_file_contains "$TEST_ROOT/.sprawl/namespace" "$TEST_NS" "namespace file contains test namespace"
 assert_file_contains "$TEST_ROOT/.sprawl/root-name" "weave" "root-name file contains weave"
 

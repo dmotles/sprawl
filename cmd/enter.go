@@ -43,6 +43,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// resumeFailureWindow is the max runtime of a --resume invocation before we
+// stop treating its exit as evidence the resume cookie is invalid. If claude
+// exits within this window the next launch is force-fresh; outside it, normal
+// restart logic applies.
+const resumeFailureWindow = 5 * time.Second
+
 // enterDeps holds dependencies for the enter command, enabling testability.
 type enterDeps struct {
 	getenv     func(string) string

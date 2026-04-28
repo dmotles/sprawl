@@ -8,7 +8,6 @@ Does NOT require a real Claude API key.
 
 - `tmux` installed and on `$PATH`
 - Go toolchain (for `make build`)
-- `claude` CLI on `$PATH` (required by `sprawl init`, but no API key needed)
 - `xxd` available (typically from `vim-common`)
 
 ## Running the Smoke Test
@@ -23,7 +22,7 @@ The script will:
 1. Build the `sprawl` binary
 2. Create a temp directory with an isolated git repo
 3. Generate a `test-*` namespaced environment
-4. Run `sprawl init --detached` to bootstrap state files
+4. Seed the minimal `.sprawl/` state files (namespace, root-name) directly — QUM-346 removed the legacy `sprawl init` parent entrypoint
 5. Execute test cases against the memory system
 6. Clean up all resources on exit (via trap)
 

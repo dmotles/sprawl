@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # sprawl-test-env.sh - Set up an isolated sprawl test environment.
 #
-# Creates a temp directory with a git repo, builds the sprawl binary,
-# and initializes sprawl in detached mode with a test namespace.
+# Creates a temp directory with a git repo, builds the sprawl binary, and
+# seeds the minimal `.sprawl/` state files (namespace, root-name) that
+# downstream commands need. As of QUM-346 (M13 TUI cutover) the tmux-mode
+# `sprawl init` parent entrypoint has been removed, so this script no longer
+# launches a parent agent loop — sandbox callers that need a live agent
+# session should `sprawl enter` (TUI) directly.
 #
 # Usage:
 #   bash scripts/sprawl-test-env.sh          # print env vars
@@ -71,14 +75,14 @@ git -C "$TEST_ROOT" -c user.name="Test" -c user.email="test@test" commit --allow
 # Generate test namespace (test- prefix + 8 hex chars)
 TEST_NS="test-$(head -c4 /dev/urandom | xxd -p)"
 
-# Run sprawl init --detached in the temp dir
-echo "Initializing sprawl in $TEST_ROOT with namespace $TEST_NS..." >&2
-(
-    cd "$TEST_ROOT"
-    SPRAWL_BIN="$SPRAWL_BIN" \
-    SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" init --detached --namespace "$TEST_NS"
-) >&2
+# Seed the minimal `.sprawl/` state files that downstream sprawl commands
+# read (namespace + root-name). This replaces the legacy `sprawl init
+# --detached` invocation that QUM-346 removed; no tmux session is created
+# here. Tests that need a live agent should launch `sprawl enter` themselves.
+echo "Seeding sprawl state in $TEST_ROOT with namespace $TEST_NS..." >&2
+mkdir -p "$TEST_ROOT/.sprawl"
+printf '%s\n' "$TEST_NS" > "$TEST_ROOT/.sprawl/namespace"
+printf 'weave\n' > "$TEST_ROOT/.sprawl/root-name"
 
 # Emit shell code to be eval'd by the caller. Installs:
 #   - exported env vars (SPRAWL_BIN, SPRAWL_ROOT, ...)
