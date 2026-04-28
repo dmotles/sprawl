@@ -174,11 +174,6 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		return err
 	}
 
-	// QUM-310: notify wiring (tmux send-keys when SPRAWL_MESSAGING=legacy
-	// and recipient is root) now lives inside the messages library. It is
-	// registered once at process start via cmd.registerDefaultNotifier, so
-	// every caller of messages.Send — CLI, supervisor, agentloop, report —
-	// uniformly triggers the same behavior.
 	if err := messages.Send(sprawlRoot, agentName, to, subject, body); err != nil {
 		return err
 	}

@@ -186,15 +186,6 @@ func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.Ag
 	if v := deps.Getenv("SPRAWL_TEST_MODE"); v != "" {
 		env["SPRAWL_TEST_MODE"] = v
 	}
-	// Propagate SPRAWL_MESSAGING from the spawning agent's env so the child
-	// window's process inherits it. Only the root session was getting this
-	// at init time — without propagation here, children created by `sprawl
-	// spawn` miss it, and their `sprawl messages send` calls skip the
-	// tmux send-keys notification. See QUM-309.
-	messagingMode := deps.Getenv("SPRAWL_MESSAGING")
-	if messagingMode != "" {
-		env["SPRAWL_MESSAGING"] = messagingMode
-	}
 
 	// Compute children session name (pure computation, no tmux dependency).
 	childrenSession := tmux.ChildrenSessionName(namespace, parentTreePath)
@@ -244,17 +235,6 @@ func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.Ag
 				_ = os.RemoveAll(filepath.Dir(promptPath))
 				return nil, fmt.Errorf("creating tmux window/session for %s: %w", agentName, err)
 			}
-		}
-	}
-
-	// Propagate SPRAWL_MESSAGING onto the children tmux session itself so
-	// `tmux show-environment -t <children-session>` returns it and windows
-	// added later (e.g. subsequent spawns) inherit it. The -e flag on
-	// new-session/new-window only scopes to the spawned process, not the
-	// session environment. See QUM-309.
-	if messagingMode != "" {
-		if err := deps.TmuxRunner.SetEnvironment(childrenSession, "SPRAWL_MESSAGING", messagingMode); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: could not set session environment: %v\n", err)
 		}
 	}
 
