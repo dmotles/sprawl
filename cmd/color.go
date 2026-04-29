@@ -6,40 +6,34 @@ import (
 	"os"
 	"strings"
 
+	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 type colorDeps struct {
-	getenv     func(string) string
-	stdout     io.Writer
-	stderr     io.Writer
-	tmuxRunner tmux.Runner
+	getenv func(string) string
+	stdout io.Writer
+	stderr io.Writer
 }
 
 var defaultColorDeps *colorDeps
 
-func resolveColorDeps() (*colorDeps, error) {
+func resolveColorDeps() *colorDeps {
 	if defaultColorDeps != nil {
-		return defaultColorDeps, nil
-	}
-	tmuxPath, err := tmux.FindTmux()
-	if err != nil {
-		return nil, fmt.Errorf("tmux is required but not found")
+		return defaultColorDeps
 	}
 	return &colorDeps{
-		getenv:     os.Getenv,
-		stdout:     os.Stdout,
-		stderr:     os.Stderr,
-		tmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
-	}, nil
+		getenv: os.Getenv,
+		stdout: os.Stdout,
+		stderr: os.Stderr,
+	}
 }
 
 var colorCmd = &cobra.Command{
 	Use:   "color",
-	Short: "Manage the tmux accent color",
-	Long: `View or change the tmux accent color used for the Sprawl status bar.
+	Short: "Manage the TUI accent color",
+	Long: `View or change the accent color used for the Sprawl TUI.
 
 Without subcommands, shows the current accent color.
 
@@ -50,10 +44,7 @@ Examples:
   sprawl color set cyan     Set a specific color by name or alias`,
 	Args: cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		deps, err := resolveColorDeps()
-		if err != nil {
-			return err
-		}
+		deps := resolveColorDeps()
 		return runColorShow(deps)
 	},
 }
@@ -63,10 +54,7 @@ var colorListCmd = &cobra.Command{
 	Short: "List all available accent colors",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		deps, err := resolveColorDeps()
-		if err != nil {
-			return err
-		}
+		deps := resolveColorDeps()
 		return runColorList(deps)
 	},
 }
@@ -76,10 +64,7 @@ var colorRotateCmd = &cobra.Command{
 	Short: "Pick a new random accent color",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		deps, err := resolveColorDeps()
-		if err != nil {
-			return err
-		}
+		deps := resolveColorDeps()
 		return runColorRotate(deps)
 	},
 }
@@ -89,10 +74,7 @@ var colorSetCmd = &cobra.Command{
 	Short: "Set a specific accent color by name or alias",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		deps, err := resolveColorDeps()
-		if err != nil {
-			return err
-		}
+		deps := resolveColorDeps()
 		return runColorSet(deps, args[0])
 	},
 }
@@ -124,7 +106,7 @@ func runColorShow(deps *colorDeps) error {
 		return fmt.Errorf("no accent color set; run sprawl enter first")
 	}
 
-	c, ok := tmux.FindColor(color)
+	c, ok := runtimecfg.FindAccentColor(color)
 	if ok {
 		fmt.Fprintf(deps.stdout, "%s (%s)\n", c.Name, strings.Join(c.Aliases, ", "))
 	} else {
@@ -142,7 +124,7 @@ func runColorList(deps *colorDeps) error {
 
 	current := state.ReadAccentColor(root)
 
-	for _, c := range tmux.AccentColors {
+	for _, c := range runtimecfg.AccentColors {
 		marker := "  "
 		if c.Name == current {
 			marker = "* "
@@ -160,7 +142,7 @@ func runColorRotate(deps *colorDeps) error {
 	}
 
 	current := state.ReadAccentColor(root)
-	newColor := tmux.PickAccentColorExcluding(current)
+	newColor := runtimecfg.PickAccentColorExcluding(current)
 
 	if err := applyColor(deps, root, newColor); err != nil {
 		return err
@@ -177,10 +159,10 @@ func runColorSet(deps *colorDeps, nameOrAlias string) error {
 		return err
 	}
 
-	c, ok := tmux.FindColor(nameOrAlias)
+	c, ok := runtimecfg.FindAccentColor(nameOrAlias)
 	if !ok {
 		var available []string
-		for _, ac := range tmux.AccentColors {
+		for _, ac := range runtimecfg.AccentColors {
 			available = append(available, fmt.Sprintf("%s (%s)", ac.Name, strings.Join(ac.Aliases, ", ")))
 		}
 		return fmt.Errorf("unknown color %q; available colors:\n  %s", nameOrAlias, strings.Join(available, "\n  "))
@@ -198,30 +180,6 @@ func applyColor(deps *colorDeps, root, color string) error {
 	if err := state.WriteAccentColor(root, color); err != nil {
 		return fmt.Errorf("persisting accent color: %w", err)
 	}
-
-	namespace := state.ReadNamespace(root)
-	if namespace == "" {
-		namespace = tmux.DefaultNamespace
-	}
-	version := state.ReadVersion(root)
-	if version == "" {
-		version = "dev"
-	}
-
-	confPath, err := tmux.WriteConfig(tmux.ConfigParams{
-		AccentColor: color,
-		Namespace:   namespace,
-		Version:     version,
-		SprawlRoot:  root,
-	})
-	if err != nil {
-		return fmt.Errorf("generating tmux config: %w", err)
-	}
-
-	session := tmux.RootSessionName(namespace)
-	if err := deps.tmuxRunner.SourceFile(session, confPath); err != nil {
-		fmt.Fprintf(deps.stderr, "Warning: could not apply tmux config (session may not be running): %v\n", err)
-	}
-
+	fmt.Fprintln(deps.stderr, "Accent color will take effect the next time you run `sprawl enter`.")
 	return nil
 }

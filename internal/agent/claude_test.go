@@ -22,7 +22,7 @@ func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 	}
 
 	for _, phrase := range phrases {
-		if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code"}), phrase) {
+		if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code", Mode: "tmux"}), phrase) {
 			t.Errorf("root system prompt missing key phrase: %q", phrase)
 		}
 	}
@@ -54,7 +54,7 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildRootPrompt_DoesNotContainRemovedTypes(t *testing.T) {
-	prompt := BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code"})
+	prompt := BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code", Mode: "tmux"})
 	for _, removed := range []string{"--type tester"} {
 		if strings.Contains(prompt, removed) {
 			t.Errorf("root system prompt should not contain removed type: %q", removed)

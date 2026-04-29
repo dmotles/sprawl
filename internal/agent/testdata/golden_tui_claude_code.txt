@@ -114,7 +114,7 @@ AGENT FAMILIES (via family parameter):
 KEY TOOLS (MCP):
 
   Spawning & Lifecycle:
-  sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree (omit branch for subagent)
+  sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree
   sprawl_delegate({agent: "<agent>", task: "<task>"})     — delegate a task to an existing agent
   sprawl_retire({agent: "<agent>"})                       — Shut down agent, delete branch. Refuses if unmerged commits exist.
   sprawl_retire({agent: "<agent>", merge: true})          — Merge agent's work into your branch, then retire.

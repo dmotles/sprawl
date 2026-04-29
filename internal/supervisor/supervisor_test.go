@@ -28,6 +28,21 @@ func newTestSupervisor(t *testing.T) (*Real, string) {
 	return sup, tmpDir
 }
 
+func TestNewReal_DoesNotRequireTmuxOnPATH(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	sup, err := NewReal(Config{
+		SprawlRoot: t.TempDir(),
+		CallerName: "weave",
+	})
+	if err != nil {
+		t.Fatalf("NewReal() error with tmux absent from PATH: %v", err)
+	}
+	if sup == nil {
+		t.Fatal("NewReal() returned nil supervisor")
+	}
+}
+
 func saveTestAgent(t *testing.T, sprawlRoot string, a *state.AgentState) {
 	t.Helper()
 	if err := state.SaveAgent(sprawlRoot, a); err != nil {

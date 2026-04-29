@@ -12,6 +12,7 @@ func testEnvConfig() EnvConfig {
 		Platform: "linux",
 		Shell:    "/bin/zsh",
 		TestMode: false,
+		Mode:     "tmux",
 	}
 }
 
@@ -271,6 +272,7 @@ func defaultRootConfig(name string) PromptConfig {
 	return PromptConfig{
 		RootName: name,
 		AgentCLI: "claude-code",
+		Mode:     "tmux",
 	}
 }
 
@@ -336,7 +338,7 @@ func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
 	keyPhrases := []string{
 		"AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS",
 		"Sprawl agents",
-		"sprawl spawn agent",
+		"sprawl_spawn",
 		"Claude Code sub-agents",
 		"Agent tool",
 		"fire off an agent",
@@ -1202,12 +1204,12 @@ func TestBuildEngineerPrompt_BranchRebaseNotification(t *testing.T) {
 
 // --- Dual-mode prompt tests (tmux vs tui) ---
 
-func TestResolveMode_DefaultsToTmux(t *testing.T) {
+func TestResolveMode_DefaultsToTUI(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
 	}{
-		{"", "tmux"},
+		{"", "tui"},
 		{"tmux", "tmux"},
 		{"tui", "tui"},
 	}
@@ -1219,21 +1221,22 @@ func TestResolveMode_DefaultsToTmux(t *testing.T) {
 	}
 }
 
-func TestBuildRootPrompt_DefaultMode_ContainsCLICommands(t *testing.T) {
+func TestBuildRootPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	cfg := defaultRootConfig("weave")
-	// Mode is empty (default)
+	cfg.Mode = ""
 	prompt := BuildRootPrompt(cfg)
 
-	cliCommands := []string{
-		"sprawl spawn agent",
-		"sprawl messages send",
-		"sprawl merge",
-		"sprawl retire",
-		"sprawl delegate",
+	mcpTools := []string{
+		"sprawl_spawn",
+		"sprawl_send_async",
+		"sprawl_merge",
+		"sprawl_retire",
+		"sprawl_delegate",
+		"sprawl_kill",
 	}
-	for _, cmd := range cliCommands {
-		if !strings.Contains(prompt, cmd) {
-			t.Errorf("root prompt with default mode should contain CLI command %q", cmd)
+	for _, tool := range mcpTools {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("root prompt with default mode should contain MCP tool %q", tool)
 		}
 	}
 }
@@ -1311,18 +1314,18 @@ func TestBuildRootPrompt_SharedContent_BothModes(t *testing.T) {
 	}
 }
 
-func TestBuildEngineerPrompt_DefaultMode_ContainsCLICommands(t *testing.T) {
+func TestBuildEngineerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	env := testEnvConfig()
-	// Mode is empty (default)
+	env.Mode = ""
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
-	cliCommands := []string{
-		"sprawl report done",
-		"sprawl messages send",
+	required := []string{
+		"sprawl_send_async",
+		"sprawl_report_status",
 	}
-	for _, cmd := range cliCommands {
-		if !strings.Contains(prompt, cmd) {
-			t.Errorf("engineer prompt with default mode should contain CLI command %q", cmd)
+	for _, tool := range required {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("engineer prompt with default mode should contain MCP tool %q", tool)
 		}
 	}
 }
@@ -1379,20 +1382,25 @@ func TestBuildResearcherPrompt_TuiMode_NoCLICommands(t *testing.T) {
 	}
 }
 
-func TestBuildManagerPrompt_DefaultMode_ContainsCLICommands(t *testing.T) {
+func TestBuildManagerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	env := testEnvConfig()
+	env.Mode = ""
 	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
 
-	cliCommands := []string{
-		"sprawl spawn agent",
-		"sprawl merge",
-		"sprawl retire",
-		"sprawl delegate",
-		"sprawl messages send",
+	mcpTools := []string{
+		"sprawl_spawn",
+		"sprawl_merge",
+		"sprawl_retire",
+		"sprawl_delegate",
+		"sprawl_send_async",
+		"sprawl_send_interrupt",
+		"sprawl_peek",
+		"sprawl_report_status",
+		"sprawl_status",
 	}
-	for _, cmd := range cliCommands {
-		if !strings.Contains(prompt, cmd) {
-			t.Errorf("manager prompt with default mode should contain CLI command %q", cmd)
+	for _, tool := range mcpTools {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("manager prompt with default mode should contain MCP tool %q", tool)
 		}
 	}
 }
@@ -1478,6 +1486,37 @@ func TestBuildRootPrompt_TuiMode_NoCLIOnlyCommandPatterns(t *testing.T) {
 	}
 }
 
+func TestBuildRootPrompt_DefaultMode_DoesNotAdvertiseLegacySubagentSpawn(t *testing.T) {
+	cfg := defaultRootConfig("weave")
+	cfg.Mode = ""
+	prompt := BuildRootPrompt(cfg)
+
+	for _, pat := range []string{
+		"sprawl spawn subagent",
+		`sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>"})`,
+		"omit branch for subagent",
+	} {
+		if strings.Contains(prompt, pat) {
+			t.Errorf("root prompt default mode should not advertise legacy subagent path %q", pat)
+		}
+	}
+}
+
+func TestBuildManagerPrompt_DefaultMode_DoesNotAdvertiseLegacySubagentSpawn(t *testing.T) {
+	env := testEnvConfig()
+	env.Mode = ""
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+
+	for _, pat := range []string{
+		"sprawl spawn subagent",
+		`sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>"})`,
+	} {
+		if strings.Contains(prompt, pat) {
+			t.Errorf("manager prompt default mode should not advertise legacy subagent path %q", pat)
+		}
+	}
+}
+
 // TestBuildRootPrompt_GoldenSnapshot_TmuxMode captures the exact current tmux-mode
 // output and asserts character-for-character identity. This is the regression safety net
 // for the root prompt refactor (QUM-243 Wave A).
@@ -1485,17 +1524,9 @@ func TestBuildRootPrompt_GoldenSnapshot_TmuxMode(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "claude-code",
-		Mode:     "",
+		Mode:     "tmux",
 	}
 	got := BuildRootPrompt(cfg)
-
-	// Explicit tmux mode must produce identical output to default (empty) mode.
-	cfgExplicit := cfg
-	cfgExplicit.Mode = "tmux"
-	gotExplicit := BuildRootPrompt(cfgExplicit)
-	if got != gotExplicit {
-		t.Error("default mode and explicit 'tmux' mode produce different output")
-	}
 
 	// Golden snapshot: the exact output must not change.
 	// If this test fails after the refactor, the refactor broke tmux mode output.
@@ -1571,7 +1602,7 @@ func TestBuildRootPrompt_GoldenSnapshot_NoCLI(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "",
-		Mode:     "",
+		Mode:     "tmux",
 	}
 	got := BuildRootPrompt(cfg)
 

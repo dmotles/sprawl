@@ -36,7 +36,6 @@ Use sprawl MCP tools to create and manage agents:
 
   Spawning & Lifecycle:
   sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree
-  sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>"})                      — spawn subagent (no branch)
   sprawl_delegate({agent: "<agent>", task: "<task>"})
   sprawl_retire({agent: "<agent>"})
   sprawl_kill({agent: "<agent>"})

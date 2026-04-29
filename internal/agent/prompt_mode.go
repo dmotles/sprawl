@@ -1,11 +1,11 @@
 package agent
 
-// resolveMode normalizes the mode string. Empty string defaults to "tmux".
+// resolveMode normalizes the mode string. Empty string defaults to "tui".
 func resolveMode(mode string) string {
-	if mode == "tui" {
-		return "tui"
+	if mode == "tmux" {
+		return "tmux"
 	}
-	return "tmux"
+	return "tui"
 }
 
 // engineerRulesTmux returns the engineer RULES section as it appears after fmt.Sprintf
@@ -176,7 +176,7 @@ AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS
 There are two ways to get work done through other agents:
 
 1. Sprawl agents (via the sprawl_spawn tool): Full agents with their own git worktrees
-   and agent loops. Use these for substantial work — code changes, multi-file implementations,
+   and shared backend sessions. Use these for substantial work — code changes, multi-file implementations,
    research tasks that produce artifacts. These are the primary mechanism for delegating work.
    When someone says "fire off an agent" or "spawn an agent", this is what they mean.
 
@@ -231,7 +231,7 @@ const rootCommandsTmux = `KEY COMMANDS:
 const rootCommandsTUI = `KEY TOOLS (MCP):
 
   Spawning & Lifecycle:
-  sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree (omit branch for subagent)
+  sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree
   sprawl_delegate({agent: "<agent>", task: "<task>"})     — delegate a task to an existing agent
   sprawl_retire({agent: "<agent>"})                       — Shut down agent, delete branch. Refuses if unmerged commits exist.
   sprawl_retire({agent: "<agent>", merge: true})          — Merge agent's work into your branch, then retire.
@@ -357,7 +357,6 @@ Use sprawl MCP tools to create and manage agents:
 
   Spawning & Lifecycle:
   sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>", branch: "<branch>"})  — spawn agent with own worktree
-  sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>"})                      — spawn subagent (no branch)
   sprawl_delegate({agent: "<agent>", task: "<task>"})
   sprawl_retire({agent: "<agent>"})
   sprawl_kill({agent: "<agent>"})

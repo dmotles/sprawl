@@ -3,26 +3,25 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestSaveAndLoadAgent(t *testing.T) {
 	dir := t.TempDir()
 	agent := &AgentState{
-		Name:        "frank",
-		Type:        "engineer",
-		Family:      "engineering",
-		Parent:      "root",
-		Prompt:      "implement the login page",
-		Branch:      "sprawl/frank",
-		Worktree:    "/tmp/worktrees/frank",
-		TmuxSession: "sprawl-root-children",
-		TmuxWindow:  "frank",
-		Status:      "active",
-		CreatedAt:   "2026-03-30T12:00:00Z",
-		SessionID:   "sprawl-frank",
-		Subagent:    true,
-		TreePath:    "weave├frank",
+		Name:      "frank",
+		Type:      "engineer",
+		Family:    "engineering",
+		Parent:    "root",
+		Prompt:    "implement the login page",
+		Branch:    "sprawl/frank",
+		Worktree:  "/tmp/worktrees/frank",
+		Status:    "active",
+		CreatedAt: "2026-03-30T12:00:00Z",
+		SessionID: "sprawl-frank",
+		Subagent:  true,
+		TreePath:  "weave├frank",
 	}
 
 	if err := SaveAgent(dir, agent); err != nil {
@@ -55,12 +54,6 @@ func TestSaveAndLoadAgent(t *testing.T) {
 	if loaded.Worktree != agent.Worktree {
 		t.Errorf("Worktree = %q, want %q", loaded.Worktree, agent.Worktree)
 	}
-	if loaded.TmuxSession != agent.TmuxSession {
-		t.Errorf("TmuxSession = %q, want %q", loaded.TmuxSession, agent.TmuxSession)
-	}
-	if loaded.TmuxWindow != agent.TmuxWindow {
-		t.Errorf("TmuxWindow = %q, want %q", loaded.TmuxWindow, agent.TmuxWindow)
-	}
 	if loaded.Status != agent.Status {
 		t.Errorf("Status = %q, want %q", loaded.Status, agent.Status)
 	}
@@ -75,6 +68,14 @@ func TestSaveAndLoadAgent(t *testing.T) {
 	}
 	if loaded.TreePath != agent.TreePath {
 		t.Errorf("TreePath = %q, want %q", loaded.TreePath, agent.TreePath)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(AgentsDir(dir), "frank.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(raw), "\"tmux_session\"") || strings.Contains(string(raw), "\"tmux_window\"") {
+		t.Fatalf("agent state JSON should not persist tmux fields:\n%s", raw)
 	}
 }
 

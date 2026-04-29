@@ -39,14 +39,14 @@ func TestDeprecation_Spawn_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	// Pass nil deps — runSpawn fires the warning before calling Spawn.
 	defer func() { _ = recover() }()
-	_, _ = runSpawn(nil, "engineering", "engineer", "task", "branch")
+	_ = runSpawn(nil, "engineering", "engineer", "task", "branch")
 	assertDeprecation(t, buf, "spawn", "sprawl_spawn")
 }
 
 func TestDeprecation_Spawn_QuietSuppresses(t *testing.T) {
 	buf := withDeprecationCapture(t, "1")
 	defer func() { _ = recover() }()
-	_, _ = runSpawn(nil, "engineering", "engineer", "task", "branch")
+	_ = runSpawn(nil, "engineering", "engineer", "task", "branch")
 	if buf.Len() != 0 {
 		t.Errorf("expected no warning under quiet env, got: %q", buf.String())
 	}

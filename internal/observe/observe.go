@@ -6,7 +6,6 @@ import (
 
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
-	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // AgentInfo wraps AgentState with runtime liveness and role info.
@@ -18,11 +17,9 @@ type AgentInfo struct {
 
 // Deps holds injected dependencies for the observe package.
 type Deps struct {
-	TmuxRunner    tmux.Runner
-	Status        func(context.Context) ([]supervisor.AgentInfo, error)
-	ListAgents    func(sprawlRoot string) ([]*state.AgentState, error)
-	ReadRootName  func(sprawlRoot string) string
-	ReadNamespace func(sprawlRoot string) string
+	Status       func(context.Context) ([]supervisor.AgentInfo, error)
+	ListAgents   func(sprawlRoot string) ([]*state.AgentState, error)
+	ReadRootName func(sprawlRoot string) string
 }
 
 // TreeNode represents a node in the agent hierarchy tree.
@@ -95,7 +92,6 @@ func loadFromState(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
 	}
 
 	rootName := deps.ReadRootName(sprawlRoot)
-	namespace := deps.ReadNamespace(sprawlRoot)
 
 	var result []*AgentInfo
 
@@ -112,20 +108,6 @@ func loadFromState(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
 			IsRoot:     true,
 		}
 		result = append(result, root)
-	}
-
-	// Annotate liveness.
-	for _, info := range result {
-		if deps.TmuxRunner == nil {
-			continue // ProcessAlive stays nil
-		}
-		if info.IsRoot {
-			alive := deps.TmuxRunner.HasSession(tmux.RootSessionName(namespace))
-			info.ProcessAlive = &alive
-		} else {
-			alive := deps.TmuxRunner.HasWindow(info.TmuxSession, info.TmuxWindow)
-			info.ProcessAlive = &alive
-		}
 	}
 
 	sort.Slice(result, func(i, j int) bool {

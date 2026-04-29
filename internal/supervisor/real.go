@@ -18,7 +18,6 @@ import (
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/dmotles/sprawl/internal/worktree"
 	"github.com/gofrs/flock"
 )
@@ -43,7 +42,6 @@ type Real struct {
 
 	runtimeRegistry *RuntimeRegistry
 	runtimeStarter  RuntimeStarter
-	tmuxAvailable   bool
 
 	spawnDeps  *agentops.SpawnDeps
 	mergeDeps  *agentops.MergeDeps
@@ -66,16 +64,8 @@ type Real struct {
 	handoffNow                 func() time.Time
 }
 
-// NewReal creates a new real supervisor. It returns an error if required
-// tooling is not available on PATH.
+// NewReal creates a new real supervisor.
 func NewReal(cfg Config) (*Real, error) {
-	var tmuxRunner tmux.Runner = &noopTmuxRunner{}
-	tmuxAvailable := false
-	if tmuxPath, err := tmux.FindTmux(); err == nil {
-		tmuxRunner = &tmux.RealRunner{TmuxPath: tmuxPath}
-		tmuxAvailable = true
-	}
-
 	// supervisorGetenv injects the supervisor's identity/root into env
 	// lookups that agentops performs. Everything else passes through to
 	// the process environment.
@@ -112,14 +102,11 @@ func NewReal(cfg Config) (*Real, error) {
 		callerName:      cfg.CallerName,
 		runtimeRegistry: NewRuntimeRegistry(),
 		runtimeStarter:  newInProcessRuntimeStarter(),
-		tmuxAvailable:   tmuxAvailable,
 
 		spawnDeps: &agentops.SpawnDeps{
-			TmuxRunner:      tmuxRunner,
 			WorktreeCreator: &worktree.RealCreator{},
 			Getenv:          supervisorGetenv,
 			CurrentBranch:   agentops.GitCurrentBranch,
-			FindSprawl:      agentops.FindSprawlBin,
 			NewSpawnLock: func(lockPath string) (func() error, func() error) {
 				fl := flock.New(lockPath)
 				return fl.Lock, fl.Unlock
@@ -142,11 +129,7 @@ func NewReal(cfg Config) (*Real, error) {
 			Stderr:        os.Stderr,
 		},
 		retireDeps: &agentops.RetireDeps{
-			TmuxRunner:          tmuxRunner,
 			Getenv:              supervisorGetenv,
-			WriteFile:           os.WriteFile,
-			RemoveFile:          os.Remove,
-			SleepFunc:           time.Sleep,
 			WorktreeRemove:      agentops.RealWorktreeRemove,
 			GitStatus:           agentops.RealGitStatus,
 			RemoveAll:           os.RemoveAll,
@@ -162,11 +145,7 @@ func NewReal(cfg Config) (*Real, error) {
 			RunScript:           agentops.RunBashScript,
 		},
 		killDeps: &agentops.KillDeps{
-			TmuxRunner: tmuxRunner,
-			Getenv:     supervisorGetenv,
-			WriteFile:  os.WriteFile,
-			RemoveFile: os.Remove,
-			SleepFunc:  time.Sleep,
+			Getenv: supervisorGetenv,
 		},
 
 		spawnFn:  agentops.PrepareSpawn,
@@ -322,10 +301,6 @@ func (r *Real) Retire(ctx context.Context, agentName string, mergeFirst, abandon
 		r.runtimeRegistry.Remove(agentName)
 		return nil
 	}
-	if !r.tmuxAvailable {
-		return fmt.Errorf("tmux is unavailable; cannot retire agent %q without a live in-process runtime", agentName)
-	}
-
 	if err := r.retireFn(r.retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)
@@ -378,10 +353,6 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 		runtime.SyncAgentState(updatedState)
 		return nil
 	}
-	if !r.tmuxAvailable {
-		return fmt.Errorf("tmux is unavailable; cannot kill agent %q without a live in-process runtime", agentName)
-	}
-
 	if err := r.killFn(r.killDeps, agentName, false); err != nil {
 		return err
 	}
@@ -634,7 +605,7 @@ func (r *Real) SendInterrupt(_ context.Context, to, subject, body, resumeHint st
 	}
 
 	// Assemble the enqueue body. We preserve the resume_hint separately in
-	// Tags so the agent-loop harness can render the §4.5.2 frame without
+	// Tags so the child runtime can render the §4.5.2 frame without
 	// re-parsing the body. Tag key pattern: "resume_hint:<value>".
 	var tags []string
 	if resumeHint != "" {

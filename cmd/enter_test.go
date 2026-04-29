@@ -368,10 +368,10 @@ func (s *shutdownMockSupervisor) MessagesPeek(_ context.Context) (*supervisor.Me
 	return &supervisor.MessagesPeekResult{}, nil
 }
 
-// Ctrl+C / clean TUI shutdown must NOT kill child agents. Users expect
-// `sprawl enter` to be a detachable UI — agents should keep running so the
-// next `sprawl enter` can reattach.
-func TestEnter_CleanShutdown_DoesNotKillAgents(t *testing.T) {
+// Clean `sprawl enter` shutdown must stop supervisor-owned child runtimes via
+// Supervisor.Shutdown. Same-process child runtimes are owned by the host
+// process and do not survive a clean host exit.
+func TestEnter_CleanShutdown_StopsRuntimeBackedAgentsViaShutdown(t *testing.T) {
 	tmpDir := t.TempDir()
 	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
@@ -408,10 +408,10 @@ func TestEnter_CleanShutdown_DoesNotKillAgents(t *testing.T) {
 	}
 
 	if len(mockSup.killCalled) != 0 {
-		t.Errorf("expected 0 Kill calls on clean shutdown, got %d: %v", len(mockSup.killCalled), mockSup.killCalled)
+		t.Errorf("clean shutdown should go through Supervisor.Shutdown, not per-agent Kill calls; got %d Kill calls: %v", len(mockSup.killCalled), mockSup.killCalled)
 	}
 	if !mockSup.shutdownDone {
-		t.Error("Shutdown should have been called to release supervisor resources")
+		t.Error("Shutdown should have been called to stop supervisor-owned runtimes")
 	}
 }
 
