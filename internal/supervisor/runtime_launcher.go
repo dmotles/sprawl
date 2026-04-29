@@ -33,6 +33,8 @@ func newInProcessRuntimeStarter() RuntimeStarter {
 func (s *inProcessRuntimeStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	deps := buildRunnerDeps(spec)
+	controlCh := make(chan agentloop.ControlSignal, 1)
+	deps.ControlCh = controlCh
 	runner, err := startRunnerFn(runCtx, deps, spec.Name)
 	if err != nil {
 		cancel()
@@ -40,9 +42,10 @@ func (s *inProcessRuntimeStarter) Start(_ context.Context, spec RuntimeStartSpec
 	}
 
 	handle := &runnerHandle{
-		runner: runner,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		runner:    runner,
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		controlCh: controlCh,
 	}
 	go func() {
 		handle.finish(runRunnerFn(runner, runCtx))
@@ -51,13 +54,14 @@ func (s *inProcessRuntimeStarter) Start(_ context.Context, spec RuntimeStartSpec
 }
 
 type runnerHandle struct {
-	runner   *agentloop.Runner
-	cancel   context.CancelFunc
-	done     chan struct{}
-	stopOnce sync.Once
-	mu       sync.Mutex
-	stopErr  error
-	waitErr  error
+	runner    *agentloop.Runner
+	cancel    context.CancelFunc
+	done      chan struct{}
+	controlCh chan agentloop.ControlSignal
+	stopOnce  sync.Once
+	mu        sync.Mutex
+	stopErr   error
+	waitErr   error
 }
 
 func (h *runnerHandle) finish(err error) {
@@ -69,6 +73,14 @@ func (h *runnerHandle) finish(err error) {
 
 func (h *runnerHandle) Interrupt(ctx context.Context) error {
 	return h.runner.Interrupt(ctx)
+}
+
+func (h *runnerHandle) Wake() error {
+	return h.sendControl(agentloop.ControlSignalWake)
+}
+
+func (h *runnerHandle) InterruptDelivery() error {
+	return h.sendControl(agentloop.ControlSignalInterrupt)
 }
 
 func (h *runnerHandle) Stop(ctx context.Context) error {
@@ -91,8 +103,43 @@ func (h *runnerHandle) Stop(ctx context.Context) error {
 	}
 }
 
+func (h *runnerHandle) sendControl(sig agentloop.ControlSignal) error {
+	if h.controlCh == nil {
+		return fmt.Errorf("runtime control channel not configured")
+	}
+	select {
+	case <-h.done:
+		return fmt.Errorf("runtime session not running")
+	default:
+	}
+
+	select {
+	case h.controlCh <- sig:
+		return nil
+	default:
+	}
+
+	// Collapse duplicate wake signals, but upgrade a buffered wake to an
+	// interrupt when a stronger delivery signal arrives.
+	if sig == agentloop.ControlSignalInterrupt {
+		select {
+		case <-h.controlCh:
+		default:
+		}
+		select {
+		case h.controlCh <- sig:
+		default:
+		}
+	}
+	return nil
+}
+
 func (h *runnerHandle) SessionID() string {
 	return h.runner.SessionID()
+}
+
+func (h *runnerHandle) Done() <-chan struct{} {
+	return h.done
 }
 
 func (h *runnerHandle) Capabilities() backendpkg.Capabilities {

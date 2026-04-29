@@ -13,10 +13,13 @@ import (
 )
 
 type runtimeTestSession struct {
-	sessionID  string
-	caps       backendpkg.Capabilities
-	interrupts int
-	stopCalls  int
+	sessionID           string
+	caps                backendpkg.Capabilities
+	interrupts          int
+	wakes               int
+	interruptDeliveries int
+	stopCalls           int
+	doneCh              chan struct{}
 }
 
 func (s *runtimeTestSession) Initialize(context.Context, backendpkg.InitSpec) error { return nil }
@@ -31,6 +34,16 @@ func (s *runtimeTestSession) Interrupt(context.Context) error {
 	return nil
 }
 
+func (s *runtimeTestSession) Wake() error {
+	s.wakes++
+	return nil
+}
+
+func (s *runtimeTestSession) InterruptDelivery() error {
+	s.interruptDeliveries++
+	return nil
+}
+
 func (s *runtimeTestSession) Stop(context.Context) error {
 	s.stopCalls++
 	return nil
@@ -41,6 +54,7 @@ func (s *runtimeTestSession) Kill() error                           { return nil
 func (s *runtimeTestSession) LastTurnError() error                  { return io.EOF }
 func (s *runtimeTestSession) SessionID() string                     { return s.sessionID }
 func (s *runtimeTestSession) Capabilities() backendpkg.Capabilities { return s.caps }
+func (s *runtimeTestSession) Done() <-chan struct{}                 { return s.doneCh }
 
 type runtimeTestStarter struct {
 	mu      sync.Mutex
@@ -237,6 +251,41 @@ func TestRuntimeRegistry_EnsureDeduplicatesAndHandlesConcurrentAccess(t *testing
 	}
 	if runtimes[0] != first {
 		t.Fatal("List()[0] returned a different runtime pointer")
+	}
+}
+
+func TestAgentRuntime_UnexpectedHandleExitMarksStopped(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps: backendpkg.Capabilities{
+			SupportsInterrupt: true,
+			SupportsResume:    true,
+		},
+		doneCh: make(chan struct{}),
+	}
+	starter := &runtimeTestStarter{session: session}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+		Starter:    starter,
+	})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	close(session.doneCh)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if snap := rt.Snapshot(); snap.Lifecycle == RuntimeLifecycleStopped {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("Lifecycle = %q, want %q", rt.Snapshot().Lifecycle, RuntimeLifecycleStopped)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 

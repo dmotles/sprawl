@@ -50,7 +50,8 @@ func MessagesDir(sprawlRoot string) string { //nolint:revive // stuttering name 
 type NotifyFunc func(to, from, subject, msgID string)
 
 type sendOptions struct {
-	notify NotifyFunc
+	notify       NotifyFunc
+	skipWakeFile bool
 }
 
 // SendOption configures optional behavior for Send.
@@ -61,6 +62,15 @@ type SendOption func(*sendOptions)
 func WithNotify(fn NotifyFunc) SendOption {
 	return func(o *sendOptions) {
 		o.notify = fn
+	}
+}
+
+// WithoutWakeFile suppresses the best-effort `.wake` sentinel side effect while
+// preserving normal maildir delivery and notifier behavior. Same-process
+// runtimes use this when the live wake/interrupt path is handled in-memory.
+func WithoutWakeFile() SendOption {
+	return func(o *sendOptions) {
+		o.skipWakeFile = true
 	}
 }
 
@@ -100,6 +110,11 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 	}
 	if to == "" {
 		return fmt.Errorf("recipient (to) must not be empty")
+	}
+
+	var sopts sendOptions
+	for _, o := range opts {
+		o(&sopts)
 	}
 
 	agentDir := filepath.Join(MessagesDir(sprawlRoot), to)
@@ -160,19 +175,16 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 		_ = os.WriteFile(filepath.Join(sentDir, filename), data, 0o644) //nolint:gosec // G306: world-readable message files are intentional
 	}
 
-	// Best-effort wake file to notify the recipient agent.
-	// The wake file serves dual purposes: (1) between turns, step 3 of the agent loop
-	// picks it up as a notification; (2) during a turn, sendPromptWithInterrupt detects
-	// it and interrupts the running Claude session so messages are received immediately.
-	wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", to+".wake")
-	wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
-	_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional
-
 	// Best-effort recipient notification. Per-call WithNotify takes precedence
 	// over the process-level default notifier registered via SetDefaultNotifier.
-	var sopts sendOptions
-	for _, o := range opts {
-		o(&sopts)
+	if !sopts.skipWakeFile {
+		// The wake file serves dual purposes: (1) between turns, step 3 of the
+		// agent loop picks it up as a notification; (2) during a turn,
+		// SendPromptWithInterrupt detects it and interrupts the running Claude
+		// session so messages are received immediately.
+		wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", to+".wake")
+		wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
+		_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional
 	}
 	notify := sopts.notify
 	if notify == nil {

@@ -1,9 +1,11 @@
 package observe
 
 import (
+	"context"
 	"sort"
 
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tmux"
 )
 
@@ -17,6 +19,7 @@ type AgentInfo struct {
 // Deps holds injected dependencies for the observe package.
 type Deps struct {
 	TmuxRunner    tmux.Runner
+	Status        func(context.Context) ([]supervisor.AgentInfo, error)
 	ListAgents    func(sprawlRoot string) ([]*state.AgentState, error)
 	ReadRootName  func(sprawlRoot string) string
 	ReadNamespace func(sprawlRoot string) string
@@ -30,7 +33,62 @@ type TreeNode struct {
 
 // LoadAll loads all agents, synthesizes the root if needed, and annotates liveness.
 // Agents are returned sorted by name for deterministic output.
-func LoadAll(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
+func LoadAll(ctx context.Context, deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
+	if deps.Status != nil {
+		return loadFromSupervisor(ctx, deps, sprawlRoot)
+	}
+	return loadFromState(deps, sprawlRoot)
+}
+
+func loadFromSupervisor(ctx context.Context, deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	statuses, err := deps.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rootName := ""
+	if deps.ReadRootName != nil {
+		rootName = deps.ReadRootName(sprawlRoot)
+	}
+
+	result := make([]*AgentInfo, 0, len(statuses)+1)
+	for _, info := range statuses {
+		result = append(result, &AgentInfo{
+			AgentState: state.AgentState{
+				Name:              info.Name,
+				Type:              info.Type,
+				Family:            info.Family,
+				Parent:            info.Parent,
+				Status:            info.Status,
+				Branch:            info.Branch,
+				TreePath:          info.TreePath,
+				LastReportType:    info.LastReportType,
+				LastReportState:   info.LastReportState,
+				LastReportMessage: firstNonEmpty(info.LastReportMessage, info.LastReportSummary),
+				LastReportDetail:  info.LastReportDetail,
+			},
+			ProcessAlive: info.ProcessAlive,
+		})
+	}
+
+	if rootName != "" {
+		result = append(result, &AgentInfo{
+			AgentState: state.AgentState{Name: rootName},
+			IsRoot:     true,
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+
+	return result, nil
+}
+
+func loadFromState(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
 	agents, err := deps.ListAgents(sprawlRoot)
 	if err != nil {
 		return nil, err
@@ -75,6 +133,15 @@ func LoadAll(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
 	})
 
 	return result, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // BuildTree organizes agents into a tree by parent relationships.

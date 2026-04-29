@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/observe"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tmux"
 )
 
@@ -60,6 +62,24 @@ func makeStatusTestDeps(agents []*state.AgentState, rootName string, runner tmux
 			ReadRootName:  func(string) string { return rootName },
 			ReadNamespace: func(string) string { return "test" },
 		},
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return "/fake"
+			}
+			return ""
+		},
+		stdout: buf,
+		stderr: io.Discard,
+	}, buf
+}
+
+func makeStatusSupervisorDeps(agents []supervisor.AgentInfo, rootName string) (*statusDeps, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	return &statusDeps{
+		listAgents: func(context.Context) ([]supervisor.AgentInfo, error) {
+			return agents, nil
+		},
+		readRootName: func(string) string { return rootName },
 		getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
 				return "/fake"
@@ -208,6 +228,28 @@ func TestRunStatus_ProcessDead(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "DEAD") {
 		t.Errorf("expected 'DEAD' in output for dead agent, got:\n%s", out)
+	}
+}
+
+func TestRunStatus_UsesSupervisorProcessAliveWithoutTmux(t *testing.T) {
+	alive := true
+	deps, buf := makeStatusSupervisorDeps([]supervisor.AgentInfo{
+		{
+			Name:         "alpha",
+			Status:       "active",
+			Parent:       "weave",
+			ProcessAlive: &alive,
+		},
+	}, "weave")
+
+	err := runStatus(deps, false, "", "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "alive") {
+		t.Fatalf("expected supervisor ProcessAlive to drive output, got:\n%s", out)
 	}
 }
 

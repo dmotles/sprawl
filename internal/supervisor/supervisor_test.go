@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -98,6 +99,87 @@ func TestStatus_EmptyReturnsEmpty(t *testing.T) {
 
 	if len(agents) != 0 {
 		t.Errorf("got %d agents, want 0", len(agents))
+	}
+}
+
+func TestStatus_ProcessAliveTriStateComesFromRuntimeKnowledge(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+
+	live := testAgentState("alive-agent")
+	knownStopped := testAgentState("stopped-agent")
+	knownStopped.Status = "killed"
+	stoppedActive := testAgentState("stopped-active-agent")
+	unknown := testAgentState("unknown-agent")
+	saveTestAgent(t, tmpDir, live)
+	saveTestAgent(t, tmpDir, knownStopped)
+	saveTestAgent(t, tmpDir, stoppedActive)
+	saveTestAgent(t, tmpDir, unknown)
+
+	liveRT := sup.runtimeRegistry.Ensure(AgentRuntimeConfig{
+		SprawlRoot: tmpDir,
+		Agent:      live,
+		Starter: &runtimeTestStarter{
+			session: &runtimeTestSession{
+				sessionID: "sess-alive",
+				caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+			},
+		},
+	})
+	if err := liveRT.Start(context.Background()); err != nil {
+		t.Fatalf("live runtime start: %v", err)
+	}
+
+	stoppedSession := &runtimeTestSession{
+		sessionID: "sess-stopped",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+		doneCh:    make(chan struct{}),
+	}
+	stoppedActiveRT := sup.runtimeRegistry.Ensure(AgentRuntimeConfig{
+		SprawlRoot: tmpDir,
+		Agent:      stoppedActive,
+		Starter:    &runtimeTestStarter{session: stoppedSession},
+	})
+	if err := stoppedActiveRT.Start(context.Background()); err != nil {
+		t.Fatalf("stopped runtime start: %v", err)
+	}
+	close(stoppedSession.doneCh)
+	deadline := time.After(2 * time.Second)
+	for stoppedActiveRT.Snapshot().Lifecycle != RuntimeLifecycleStopped {
+		select {
+		case <-deadline:
+			t.Fatalf("stopped-active runtime lifecycle = %q, want %q", stoppedActiveRT.Snapshot().Lifecycle, RuntimeLifecycleStopped)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	stoppedRT := sup.runtimeRegistry.Ensure(AgentRuntimeConfig{
+		SprawlRoot: tmpDir,
+		Agent:      knownStopped,
+	})
+	stoppedRT.SyncAgentState(knownStopped)
+
+	agents, err := sup.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status() error: %v", err)
+	}
+
+	byName := make(map[string]AgentInfo, len(agents))
+	for _, info := range agents {
+		byName[info.Name] = info
+	}
+
+	if byName["alive-agent"].ProcessAlive == nil || !*byName["alive-agent"].ProcessAlive {
+		t.Fatalf("alive-agent ProcessAlive = %+v, want true", byName["alive-agent"].ProcessAlive)
+	}
+	if byName["stopped-agent"].ProcessAlive == nil || *byName["stopped-agent"].ProcessAlive {
+		t.Fatalf("stopped-agent ProcessAlive = %+v, want false", byName["stopped-agent"].ProcessAlive)
+	}
+	if byName["stopped-active-agent"].ProcessAlive == nil || *byName["stopped-active-agent"].ProcessAlive {
+		t.Fatalf("stopped-active-agent ProcessAlive = %+v, want false", byName["stopped-active-agent"].ProcessAlive)
+	}
+	if byName["unknown-agent"].ProcessAlive != nil {
+		t.Fatalf("unknown-agent ProcessAlive = %+v, want nil", byName["unknown-agent"].ProcessAlive)
 	}
 }
 

@@ -26,6 +26,15 @@ type WorkLock struct {
 	Release func() error
 }
 
+// ControlSignal is a runtime-native wake/interrupt notification from the
+// in-process supervisor to a child runner.
+type ControlSignal int
+
+const (
+	ControlSignalWake ControlSignal = iota
+	ControlSignalInterrupt
+)
+
 // RunnerDeps holds the dependencies for the shared child runtime runner.
 type RunnerDeps struct {
 	Getenv            func(string) string
@@ -47,6 +56,11 @@ type RunnerDeps struct {
 	NewWorkLock       func(lockDir, agentName string) (*WorkLock, error)
 	Getpid            func() int
 	SignalCh          <-chan os.Signal
+	ControlCh         <-chan ControlSignal
+
+	controlMu               sync.Mutex
+	controlWakePending      bool
+	controlInterruptPending bool
 }
 
 // DefaultPollInterval is the default interrupt poll interval during a turn.
@@ -231,6 +245,45 @@ func hasPendingInterrupt(sprawlRoot, agentName string) bool {
 	return false
 }
 
+func (d *RunnerDeps) noteControlSignal(sig ControlSignal) {
+	if d == nil {
+		return
+	}
+	d.controlMu.Lock()
+	d.controlWakePending = true
+	if sig == ControlSignalInterrupt {
+		d.controlInterruptPending = true
+	}
+	d.controlMu.Unlock()
+}
+
+func (d *RunnerDeps) takeBusyInterrupt() bool {
+	if d == nil {
+		return false
+	}
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	if !d.controlInterruptPending {
+		return false
+	}
+	d.controlInterruptPending = false
+	return true
+}
+
+func (d *RunnerDeps) takeIdleWake() bool {
+	if d == nil {
+		return false
+	}
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	if !d.controlWakePending {
+		return false
+	}
+	d.controlWakePending = false
+	d.controlInterruptPending = false
+	return true
+}
+
 // SendPromptWithInterrupt wraps a turn with poke/wake/interrupt polling.
 func SendPromptWithInterrupt(
 	ctx context.Context,
@@ -258,6 +311,12 @@ func SendPromptWithInterrupt(
 			select {
 			case <-done:
 				return
+			case sig := <-deps.ControlCh:
+				deps.noteControlSignal(sig)
+				if deps.takeBusyInterrupt() {
+					_ = proc.InterruptTurn(ctx)
+					return
+				}
 			case <-ticker.C:
 				content, err := deps.ReadFile(pokePath)
 				if err == nil {
@@ -485,6 +544,40 @@ func (r *Runner) Capabilities() backend.Capabilities {
 		SupportsInterrupt:  true,
 		SupportsResume:     true,
 		SupportsToolBridge: false,
+	}
+}
+
+func waitForWork(ctx context.Context, deps *RunnerDeps, d time.Duration) {
+	if deps == nil {
+		return
+	}
+	if deps.ControlCh == nil {
+		if deps.SleepFunc != nil {
+			deps.SleepFunc(d)
+		}
+		return
+	}
+	if deps.takeIdleWake() {
+		return
+	}
+
+	sleepDone := make(chan struct{})
+	go func() {
+		if deps.SleepFunc != nil {
+			deps.SleepFunc(d)
+		}
+		close(sleepDone)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return
+	case sig := <-deps.ControlCh:
+		deps.noteControlSignal(sig)
+		_ = deps.takeIdleWake()
+		return
+	case <-sleepDone:
+		return
 	}
 }
 
@@ -748,7 +841,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 			_ = r.workLock.Release()
-			r.deps.SleepFunc(3 * time.Second)
+			waitForWork(ctx, r.deps, 3*time.Second)
 			continue
 		}
 
@@ -787,7 +880,7 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			}
 			_ = r.workLock.Release()
-			r.deps.SleepFunc(3 * time.Second)
+			waitForWork(ctx, r.deps, 3*time.Second)
 			continue
 		}
 
@@ -817,6 +910,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		_ = r.workLock.Release()
-		r.deps.SleepFunc(3 * time.Second)
+		waitForWork(ctx, r.deps, 3*time.Second)
 	}
 }

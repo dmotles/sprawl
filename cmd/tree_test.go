@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/observe"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tmux"
 )
 
@@ -66,6 +68,22 @@ func newTestTreeDeps(t *testing.T, agents []*state.AgentState, rootName, namespa
 				return namespace
 			},
 		},
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return "/fake/sprawl/root"
+			}
+			return ""
+		},
+	}
+}
+
+func newStatusBackedTreeDeps(t *testing.T, agents []supervisor.AgentInfo, rootName string) *treeDeps {
+	t.Helper()
+	return &treeDeps{
+		listAgents: func(context.Context) ([]supervisor.AgentInfo, error) {
+			return agents, nil
+		},
+		readRootName: func(string) string { return rootName },
 		getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
 				return "/fake/sprawl/root"
@@ -490,5 +508,30 @@ func TestTree_TypeFamilyLabel(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+func TestTree_UsesSupervisorProcessAliveWithoutTmux(t *testing.T) {
+	alive := true
+	deps := newStatusBackedTreeDeps(t, []supervisor.AgentInfo{
+		{
+			Name:         "finn",
+			Type:         "engineer",
+			Family:       "engineering",
+			Parent:       "weave",
+			Status:       "active",
+			ProcessAlive: &alive,
+		},
+	}, "weave")
+
+	var buf bytes.Buffer
+	err := runTree(deps, &buf, false, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "alive") {
+		t.Fatalf("expected supervisor ProcessAlive to drive tree output, got:\n%s", out)
 	}
 }

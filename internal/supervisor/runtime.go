@@ -16,6 +16,7 @@ type RuntimeLifecycle string
 const (
 	RuntimeLifecycleRegistered RuntimeLifecycle = "registered"
 	RuntimeLifecycleStarted    RuntimeLifecycle = "started"
+	RuntimeLifecycleStopped    RuntimeLifecycle = "stopped"
 	RuntimeLifecycleKilled     RuntimeLifecycle = "killed"
 	RuntimeLifecycleRetired    RuntimeLifecycle = "retired"
 )
@@ -25,6 +26,7 @@ type RuntimeEventKind string
 
 const (
 	RuntimeEventStarted     RuntimeEventKind = "started"
+	RuntimeEventStopped     RuntimeEventKind = "stopped"
 	RuntimeEventInterrupted RuntimeEventKind = "interrupted"
 	RuntimeEventTaskQueued  RuntimeEventKind = "task_queued"
 	RuntimeEventStateSynced RuntimeEventKind = "state_synced"
@@ -43,6 +45,8 @@ type RuntimeStartSpec struct {
 // RuntimeHandle is the live controller for a started in-process child runtime.
 type RuntimeHandle interface {
 	Interrupt(ctx context.Context) error
+	Wake() error
+	InterruptDelivery() error
 	Stop(ctx context.Context) error
 	SessionID() string
 	Capabilities() backendpkg.Capabilities
@@ -51,6 +55,10 @@ type RuntimeHandle interface {
 // RuntimeStarter starts a child runtime and returns its live handle.
 type RuntimeStarter interface {
 	Start(ctx context.Context, spec RuntimeStartSpec) (RuntimeHandle, error)
+}
+
+type runtimeHandleDone interface {
+	Done() <-chan struct{}
 }
 
 // RuntimeSnapshot is the internal-only live snapshot future status/tree/TUI
@@ -68,6 +76,7 @@ type RuntimeSnapshot struct {
 	CreatedAt      string
 	Lifecycle      RuntimeLifecycle
 	QueueDepth     int
+	WakeCount      int
 	InterruptCount int
 	LastReport     LastReport
 	Capabilities   backendpkg.Capabilities
@@ -208,6 +217,9 @@ func (r *AgentRuntime) Start(ctx context.Context) error {
 	}
 	r.mu.Unlock()
 	r.emit(RuntimeEventStarted)
+	if doneAware, ok := handle.(runtimeHandleDone); ok && doneAware.Done() != nil {
+		r.watchHandleExit(handle, doneAware.Done())
+	}
 	return nil
 }
 
@@ -234,6 +246,46 @@ func (r *AgentRuntime) Interrupt(ctx context.Context) error {
 	return nil
 }
 
+// Wake notifies an idle runtime that persisted work is ready to be observed.
+func (r *AgentRuntime) Wake() error {
+	r.mu.RLock()
+	handle := r.handle
+	r.mu.RUnlock()
+
+	if handle == nil {
+		return fmt.Errorf("runtime session not started")
+	}
+	if err := handle.Wake(); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.snapshot.WakeCount++
+	r.mu.Unlock()
+	return nil
+}
+
+// InterruptDelivery notifies a runtime that newly-persisted work should
+// preempt any in-flight turn and be delivered promptly on the next loop.
+func (r *AgentRuntime) InterruptDelivery() error {
+	r.mu.RLock()
+	handle := r.handle
+	r.mu.RUnlock()
+
+	if handle == nil {
+		return fmt.Errorf("runtime session not started")
+	}
+	if err := handle.InterruptDelivery(); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.snapshot.InterruptCount++
+	r.mu.Unlock()
+	r.emit(RuntimeEventInterrupted)
+	return nil
+}
+
 // Stop stops the tracked runtime handle, if any.
 func (r *AgentRuntime) Stop(ctx context.Context) error {
 	r.mu.RLock()
@@ -247,12 +299,17 @@ func (r *AgentRuntime) Stop(ctx context.Context) error {
 		return err
 	}
 
+	emitStopped := false
 	r.mu.Lock()
 	r.handle = nil
 	if r.snapshot.Lifecycle == RuntimeLifecycleStarted {
-		r.snapshot.Lifecycle = RuntimeLifecycleRegistered
+		r.snapshot.Lifecycle = RuntimeLifecycleStopped
+		emitStopped = true
 	}
 	r.mu.Unlock()
+	if emitStopped {
+		r.emit(RuntimeEventStopped)
+	}
 	return nil
 }
 
@@ -273,6 +330,7 @@ func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 	r.mu.Lock()
 	updated := snapshotFromAgentState(agentState)
 	updated.QueueDepth = r.snapshot.QueueDepth
+	updated.WakeCount = r.snapshot.WakeCount
 	updated.InterruptCount = r.snapshot.InterruptCount
 	updated.Capabilities = r.snapshot.Capabilities
 
@@ -281,6 +339,8 @@ func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 	case updated.Lifecycle == RuntimeLifecycleRetired:
 	case r.snapshot.Lifecycle == RuntimeLifecycleStarted:
 		updated.Lifecycle = RuntimeLifecycleStarted
+	case r.snapshot.Lifecycle == RuntimeLifecycleStopped:
+		updated.Lifecycle = RuntimeLifecycleStopped
 	default:
 		updated.Lifecycle = RuntimeLifecycleRegistered
 	}
@@ -288,6 +348,26 @@ func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 	r.snapshot = updated
 	r.mu.Unlock()
 	r.emit(RuntimeEventStateSynced)
+}
+
+func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{}) {
+	go func() {
+		<-done
+
+		emitStopped := false
+		r.mu.Lock()
+		if r.handle == handle {
+			r.handle = nil
+			if r.snapshot.Lifecycle == RuntimeLifecycleStarted {
+				r.snapshot.Lifecycle = RuntimeLifecycleStopped
+				emitStopped = true
+			}
+		}
+		r.mu.Unlock()
+		if emitStopped {
+			r.emit(RuntimeEventStopped)
+		}
+	}()
 }
 
 func (r *AgentRuntime) emit(kind RuntimeEventKind) {

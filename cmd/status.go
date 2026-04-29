@@ -17,15 +17,18 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/observe"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 type statusDeps struct {
-	observeDeps observe.Deps
-	getenv      func(string) string
-	stdout      io.Writer
-	stderr      io.Writer
+	observeDeps  observe.Deps
+	listAgents   func(context.Context) ([]supervisor.AgentInfo, error)
+	readRootName func(string) string
+	getenv       func(string) string
+	stdout       io.Writer
+	stderr       io.Writer
 }
 
 var defaultStatusDeps *statusDeps
@@ -98,6 +101,15 @@ func resolveStatusDeps() *statusDeps {
 		ReadRootName:  state.ReadRootName,
 		ReadNamespace: state.ReadNamespace,
 	}
+	deps.readRootName = state.ReadRootName
+	deps.listAgents = func(context.Context) ([]supervisor.AgentInfo, error) {
+		sprawlRoot := deps.getenv("SPRAWL_ROOT")
+		agents, err := deps.observeDeps.ListAgents(sprawlRoot)
+		if err != nil {
+			return nil, err
+		}
+		return agentStatesToSupervisorInfos(agents), nil
+	}
 	return deps
 }
 
@@ -118,7 +130,22 @@ func runStatus(deps *statusDeps, jsonOutput bool, family, typ, parent, statusFil
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	agents, err := observe.LoadAll(deps.observeDeps, sprawlRoot)
+	var (
+		agents []*observe.AgentInfo
+		err    error
+	)
+	if deps.listAgents != nil {
+		readRootName := deps.readRootName
+		if readRootName == nil {
+			readRootName = deps.observeDeps.ReadRootName
+		}
+		agents, err = observe.LoadAll(context.Background(), observe.Deps{
+			Status:       deps.listAgents,
+			ReadRootName: readRootName,
+		}, sprawlRoot)
+	} else {
+		agents, err = observe.LoadAll(context.Background(), deps.observeDeps, sprawlRoot)
+	}
 	if err != nil {
 		return fmt.Errorf("loading agents: %w", err)
 	}
@@ -211,6 +238,30 @@ func tolerantListAgents(stderr io.Writer) func(string) ([]*state.AgentState, err
 		}
 		return agents, nil
 	}
+}
+
+func agentStatesToSupervisorInfos(agents []*state.AgentState) []supervisor.AgentInfo {
+	out := make([]supervisor.AgentInfo, 0, len(agents))
+	for _, a := range agents {
+		if a == nil {
+			continue
+		}
+		out = append(out, supervisor.AgentInfo{
+			Name:              a.Name,
+			Type:              a.Type,
+			Family:            a.Family,
+			Parent:            a.Parent,
+			Status:            a.Status,
+			Branch:            a.Branch,
+			TreePath:          a.TreePath,
+			LastReportType:    a.LastReportType,
+			LastReportState:   a.LastReportState,
+			LastReportMessage: a.LastReportMessage,
+			LastReportSummary: a.LastReportMessage,
+			LastReportDetail:  a.LastReportDetail,
+		})
+	}
+	return out
 }
 
 func processDisplay(info *observe.AgentInfo) string {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,13 +9,16 @@ import (
 
 	"github.com/dmotles/sprawl/internal/observe"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
 type treeDeps struct {
-	observeDeps observe.Deps
-	getenv      func(string) string
+	observeDeps  observe.Deps
+	listAgents   func(context.Context) ([]supervisor.AgentInfo, error)
+	readRootName func(string) string
+	getenv       func(string) string
 }
 
 var defaultTreeDeps *treeDeps
@@ -57,7 +61,16 @@ func resolveTreeDeps() *treeDeps {
 			ReadRootName:  state.ReadRootName,
 			ReadNamespace: state.ReadNamespace,
 		},
-		getenv: os.Getenv,
+		listAgents: func(context.Context) ([]supervisor.AgentInfo, error) {
+			sprawlRoot := os.Getenv("SPRAWL_ROOT")
+			agents, err := state.ListAgents(sprawlRoot)
+			if err != nil {
+				return nil, err
+			}
+			return agentStatesToSupervisorInfos(agents), nil
+		},
+		readRootName: state.ReadRootName,
+		getenv:       os.Getenv,
 	}
 }
 
@@ -68,12 +81,29 @@ func runTree(deps *treeDeps, stdout io.Writer, jsonOutput bool, subtreeRoot stri
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	agents, err := observe.LoadAll(deps.observeDeps, sprawlRoot)
+	var (
+		agents   []*observe.AgentInfo
+		err      error
+		rootName string
+	)
+	if deps.listAgents != nil {
+		readRootName := deps.readRootName
+		if readRootName == nil {
+			readRootName = deps.observeDeps.ReadRootName
+		}
+		rootName = readRootName(sprawlRoot)
+		agents, err = observe.LoadAll(context.Background(), observe.Deps{
+			Status:       deps.listAgents,
+			ReadRootName: readRootName,
+		}, sprawlRoot)
+	} else {
+		rootName = deps.observeDeps.ReadRootName(sprawlRoot)
+		agents, err = observe.LoadAll(context.Background(), deps.observeDeps, sprawlRoot)
+	}
 	if err != nil {
 		return fmt.Errorf("loading agents: %w", err)
 	}
 
-	rootName := deps.observeDeps.ReadRootName(sprawlRoot)
 	root, orphans := observe.BuildTree(agents, rootName)
 
 	// Handle --root flag: find subtree.
