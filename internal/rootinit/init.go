@@ -31,7 +31,7 @@ type PreparedSession struct {
 	Resume     bool     // if true, launch via --resume SessionID
 	PromptPath string   // path to persisted SYSTEM.md (empty when Resume==true)
 	SessionID  string   // resumed session ID or freshly generated UUID
-	Model      string   // DefaultModel (currently "sonnet")
+	Model      string   // DefaultModel for weave/root launch
 	RootTools  []string // tools available to the root agent
 	Disallowed []string // tools explicitly denied
 }

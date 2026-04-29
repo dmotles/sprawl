@@ -18,5 +18,6 @@ var RootTools = []string{
 // The root agent does not edit files directly — it delegates to child agents.
 var DisallowedTools = []string{"Edit", "Write", "NotebookEdit"}
 
-// DefaultModel is the Claude model used for the root weave agent.
-const DefaultModel = "sonnet"
+// DefaultModel is the shared Claude model used for the root weave session and
+// child agent sessions. Memory distillation uses internal/memory.DefaultMemoryModel.
+const DefaultModel = "opus"
