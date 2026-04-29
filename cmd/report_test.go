@@ -10,7 +10,6 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 func newTestReportDeps(t *testing.T) (*reportDeps, string) {
@@ -307,17 +306,15 @@ func TestReportStatus_PreservesExistingFields(t *testing.T) {
 	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name:        "alice",
-		Type:        "engineer",
-		Family:      "engineering",
-		Parent:      "root",
-		Prompt:      "build something",
-		Branch:      "sprawl/alice",
-		Worktree:    "/path/to/worktree",
-		TmuxSession: tmux.ChildrenSessionName(tmux.DefaultNamespace, tmux.DefaultRootName),
-		TmuxWindow:  "alice",
-		Status:      "active",
-		CreatedAt:   "2026-01-01T00:00:00Z",
+		Name:      "alice",
+		Type:      "engineer",
+		Family:    "engineering",
+		Parent:    "root",
+		Prompt:    "build something",
+		Branch:    "sprawl/alice",
+		Worktree:  "/path/to/worktree",
+		Status:    "active",
+		CreatedAt: "2026-01-01T00:00:00Z",
 	})
 
 	err := runReport(deps, "status", "halfway done")

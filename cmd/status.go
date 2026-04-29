@@ -18,7 +18,6 @@ import (
 	"github.com/dmotles/sprawl/internal/observe"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
-	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -91,15 +90,9 @@ func resolveStatusDeps() *statusDeps {
 		stdout: os.Stdout,
 		stderr: os.Stderr,
 	}
-	var runner tmux.Runner
-	if tmuxPath, err := tmux.FindTmux(); err == nil {
-		runner = &tmux.RealRunner{TmuxPath: tmuxPath}
-	}
 	deps.observeDeps = observe.Deps{
-		TmuxRunner:    runner,
-		ListAgents:    tolerantListAgents(deps.stderr),
-		ReadRootName:  state.ReadRootName,
-		ReadNamespace: state.ReadNamespace,
+		ListAgents:   tolerantListAgents(deps.stderr),
+		ReadRootName: state.ReadRootName,
 	}
 	deps.readRootName = state.ReadRootName
 	deps.listAgents = func(context.Context) ([]supervisor.AgentInfo, error) {

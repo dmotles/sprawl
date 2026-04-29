@@ -3,24 +3,18 @@ package agentops
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // KillDeps holds the injectable dependencies for Kill.
 type KillDeps struct {
-	TmuxRunner tmux.Runner
-	Getenv     func(string) string
-	WriteFile  func(string, []byte, os.FileMode) error
-	RemoveFile func(string) error
-	SleepFunc  func(time.Duration)
+	Getenv func(string) string
 }
 
 // Kill stops an agent's process but preserves all state for inspection.
-func Kill(deps *KillDeps, agentName string, force bool) error {
+func Kill(deps *KillDeps, agentName string, _ bool) error {
 	if err := agent.ValidateName(agentName); err != nil {
 		return err
 	}
@@ -41,15 +35,6 @@ func Kill(deps *KillDeps, agentName string, force bool) error {
 		fmt.Fprintf(os.Stderr, "Warning: agent %q is already killed\n", agentName)
 		return nil
 	}
-
-	// Graceful shutdown (or force kill)
-	sd := &agent.ShutdownDeps{
-		TmuxRunner: deps.TmuxRunner,
-		WriteFile:  deps.WriteFile,
-		RemoveFile: deps.RemoveFile,
-		SleepFunc:  deps.SleepFunc,
-	}
-	agent.GracefulShutdown(sd, sprawlRoot, agentState, force)
 
 	// Update status to killed
 	agentState.Status = "killed"

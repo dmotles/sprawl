@@ -190,7 +190,7 @@ type Supervisor interface {
 	MessagesPeek(ctx context.Context) (*MessagesPeekResult, error)
 
 	// SendInterrupt queues an interrupt-class message for `to` via Maildir
-	// persist + harness queue. The recipient's agent-loop harness polls the
+	// persist + harness queue. The recipient's child runtime polls the
 	// pending queue; on observing an interrupt entry it calls
 	// Session.Interrupt to preempt any in-flight turn, then injects the
 	// interrupt frame as a user turn. Gated to parent→descendants by

@@ -591,18 +591,18 @@ func runEnter(deps *enterDeps) error {
 	// shutdown don't try to dispatch into a dead program.
 	messages.SetDefaultNotifier(nil)
 
-	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff and
-	// does NOT kill child agents. Rationale:
+	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff. It
+	// does stop runtime-backed children because this weave process owns them.
+	// Rationale:
 	//   - FinalizeHandoff clears last-session-id when a handoff-signal file
 	//     is present, which breaks resume-by-default (QUM-255) on the next
 	//     `sprawl enter`. A stale/in-flight signal can linger across
 	//     sessions; consuming it on Ctrl+C is the wrong trigger. The
 	//     consolidate-then-fresh path in rootinit.Prepare will handle any
 	//     pending handoff on the next launch.
-	//   - Killing child agents surprises the user: they expect `sprawl
-	//     enter` to be a detachable UI, not a process-group owner. The
-	//     tmux/supervisor-managed agents should keep running and be
-	//     reattachable via the next `sprawl enter`.
+	//   - The same-process runtime is not detachable. When weave exits, its
+	//     in-memory child runtimes must exit with it; persisted state remains
+	//     for inspection or follow-up cleanup.
 	//
 	// The explicit /handoff path runs FinalizeHandoff via makeRestartFunc
 	// before starting the next session — that path is unchanged.

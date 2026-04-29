@@ -10,7 +10,6 @@ import (
 	"github.com/dmotles/sprawl/internal/observe"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
-	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -48,18 +47,10 @@ func resolveTreeDeps() *treeDeps {
 		return defaultTreeDeps
 	}
 
-	var runner tmux.Runner
-	tmuxPath, err := tmux.FindTmux()
-	if err == nil {
-		runner = &tmux.RealRunner{TmuxPath: tmuxPath}
-	}
-
 	return &treeDeps{
 		observeDeps: observe.Deps{
-			TmuxRunner:    runner,
-			ListAgents:    state.ListAgents,
-			ReadRootName:  state.ReadRootName,
-			ReadNamespace: state.ReadNamespace,
+			ListAgents:   state.ListAgents,
+			ReadRootName: state.ReadRootName,
 		},
 		listAgents: func(context.Context) ([]supervisor.AgentInfo, error) {
 			sprawlRoot := os.Getenv("SPRAWL_ROOT")

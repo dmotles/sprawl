@@ -62,7 +62,7 @@ type runtimeHandleDone interface {
 }
 
 // RuntimeSnapshot is the internal-only live snapshot future status/tree/TUI
-// consumers can bind to without depending on tmux session/window concepts.
+// consumers can bind to without depending on legacy terminal-container state.
 type RuntimeSnapshot struct {
 	Name           string
 	Type           string
@@ -95,9 +95,9 @@ type AgentRuntimeConfig struct {
 	Starter    RuntimeStarter
 }
 
-// AgentRuntime is the in-memory container QUM-351 adds for future same-process
-// child lifecycles. It is intentionally passive: persisted state and the
-// existing tmux/agent-loop path remain authoritative until later phases.
+// AgentRuntime is the in-memory container for same-process child lifecycles.
+// Persisted state remains the durable source of truth for recovery/history,
+// while live lifecycle ownership sits here.
 type AgentRuntime struct {
 	mu         sync.RWMutex
 	sprawlRoot string

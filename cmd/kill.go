@@ -1,12 +1,9 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/agentops"
-	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -17,6 +14,14 @@ type killDeps = agentops.KillDeps
 // warning in a single place exercised by both the cobra RunE and tests.
 func runKill(deps *killDeps, agentName string, force bool) error {
 	deprecationWarning("kill", "sprawl_kill")
+	if deps != nil {
+		sprawlRoot := deps.Getenv("SPRAWL_ROOT")
+		lock, err := acquireOfflineLifecycle(sprawlRoot, "kill", "sprawl_kill")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = lock.Release() }()
+	}
 	return agentops.Kill(deps, agentName, force)
 }
 
@@ -31,33 +36,20 @@ func init() {
 
 var killCmd = &cobra.Command{
 	Use:   "kill <agent-name>",
-	Short: "Kill an agent process (preserves state for inspection)",
-	Long:  "Stop an agent's process but preserve all state (worktree, branch, state file) for inspection.",
+	Short: "Deprecated offline cleanup; use sprawl enter + sprawl_kill for live runtimes",
+	Long:  "When no weave session is running, mark an agent as killed while preserving its state for inspection. If `sprawl enter` is active, use the sprawl_kill MCP tool from the live weave session instead.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		deps, err := resolveKillDeps()
-		if err != nil {
-			return err
-		}
-		return runKill(deps, args[0], killForce)
+		return runKill(resolveKillDeps(), args[0], killForce)
 	},
 }
 
-func resolveKillDeps() (*killDeps, error) {
+func resolveKillDeps() *killDeps {
 	if defaultKillDeps != nil {
-		return defaultKillDeps, nil
-	}
-
-	tmuxPath, err := tmux.FindTmux()
-	if err != nil {
-		return nil, fmt.Errorf("tmux is required but not found")
+		return defaultKillDeps
 	}
 
 	return &killDeps{
-		TmuxRunner: &tmux.RealRunner{TmuxPath: tmuxPath},
-		Getenv:     os.Getenv,
-		WriteFile:  os.WriteFile,
-		RemoveFile: os.Remove,
-		SleepFunc:  time.Sleep,
-	}, nil
+		Getenv: os.Getenv,
+	}
 }

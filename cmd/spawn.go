@@ -2,14 +2,8 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/dmotles/sprawl/internal/agentops"
-	"github.com/dmotles/sprawl/internal/config"
-	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
-	"github.com/dmotles/sprawl/internal/worktree"
-	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
 )
 
@@ -17,37 +11,22 @@ import (
 // minimal churn while the real implementation lives in internal/agentops.
 type spawnDeps = agentops.SpawnDeps
 
-var (
-	supportedTypes = agentops.SupportedTypes
-	validTypes     = agentops.ValidTypes
-	validFamilies  = agentops.ValidFamilies
-	isValidType    = agentops.IsValidType
-	isValidFamily  = agentops.IsValidFamily
-)
-
 // runSpawn wraps agentops.Spawn so the CLI entry point can emit its
 // deprecation warning in a single place that both the cobra RunE and
 // existing unit tests exercise.
-func runSpawn(deps *spawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
+func runSpawn(_ *spawnDeps, _, _, _, _ string) error {
 	deprecationWarning("spawn", "sprawl_spawn")
-	return agentops.Spawn(deps, family, agentType, prompt, branch)
+	return fmt.Errorf("standalone `sprawl spawn` is no longer supported after the same-process cutover; start `sprawl enter` and use the `sprawl_spawn` MCP tool")
 }
 
 var spawnAgentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Spawn a new agent",
-	Long:  "Spawn a new agent with the given family, type, and task prompt.",
+	Short: "Deprecated: use sprawl enter + sprawl_spawn",
+	Long:  "The standalone spawn CLI no longer starts child runtimes. Start `sprawl enter` and use the `sprawl_spawn` MCP tool from the live weave session instead.",
 	RunE: func(_ *cobra.Command, _ []string) error {
-		deps, err := resolveSpawnDeps()
-		if err != nil {
-			return err
-		}
-		_, err = runSpawn(deps, spawnFamily, spawnType, spawnPrompt, spawnBranch)
-		return err
+		return runSpawn(nil, spawnFamily, spawnType, spawnPrompt, spawnBranch)
 	},
 }
-
-var defaultSpawnDeps *spawnDeps
 
 var (
 	spawnFamily string
@@ -64,8 +43,8 @@ func init() {
 	_ = spawnCmd.MarkPersistentFlagRequired("type")
 	_ = spawnCmd.MarkPersistentFlagRequired("prompt")
 
-	// --branch applies only to `spawn agent` (which creates its own worktree).
-	// `spawn subagent` shares the parent's worktree/branch and must not require it.
+	// Keep the legacy flag shape intact so deprecated CLI calls still surface the
+	// same guidance before they fail closed.
 	spawnAgentCmd.Flags().StringVar(&spawnBranch, "branch", "", "git branch name for the agent's worktree")
 	_ = spawnAgentCmd.MarkFlagRequired("branch")
 
@@ -75,43 +54,11 @@ func init() {
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn",
-	Short: "Spawn a new agent",
-	Long:  "Spawn a new agent with the given family, type, and task prompt.",
+	Short: "Deprecated: use sprawl enter + sprawl_spawn",
+	Long:  "The standalone spawn CLI no longer starts child runtimes. Start `sprawl enter` and use the `sprawl_spawn` MCP tool from the live weave session instead.",
 	RunE: func(_ *cobra.Command, _ []string) error {
-		deps, err := resolveSpawnDeps()
-		if err != nil {
-			return err
-		}
-		_, err = runSpawn(deps, spawnFamily, spawnType, spawnPrompt, spawnBranch)
-		return err
+		return runSpawn(nil, spawnFamily, spawnType, spawnPrompt, spawnBranch)
 	},
-}
-
-func resolveSpawnDeps() (*spawnDeps, error) {
-	if defaultSpawnDeps != nil {
-		return defaultSpawnDeps, nil
-	}
-
-	tmuxPath, err := tmux.FindTmux()
-	if err != nil {
-		return nil, fmt.Errorf("tmux is required but not found")
-	}
-
-	return &spawnDeps{
-		TmuxRunner:      &tmux.RealRunner{TmuxPath: tmuxPath},
-		WorktreeCreator: &worktree.RealCreator{},
-		Getenv:          os.Getenv,
-		CurrentBranch:   gitCurrentBranch,
-		FindSprawl:      FindSprawlBin,
-		NewSpawnLock: func(lockPath string) (func() error, func() error) {
-			fl := flock.New(lockPath)
-			return fl.Lock, fl.Unlock
-		},
-		LoadConfig:      config.Load,
-		RunScript:       runBashScript,
-		WorktreeRemove:  realWorktreeRemove,
-		GitBranchDelete: realGitBranchDelete,
-	}, nil
 }
 
 // Aliases for helper functions used across cmd/ (including by tests).

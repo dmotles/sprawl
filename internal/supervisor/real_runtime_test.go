@@ -14,35 +14,6 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-type spawnPathSpyRunner struct {
-	newSessionCalled bool
-	newWindowCalled  bool
-}
-
-func (s *spawnPathSpyRunner) HasSession(string) bool        { return false }
-func (s *spawnPathSpyRunner) HasWindow(string, string) bool { return false }
-func (s *spawnPathSpyRunner) NewSession(string, map[string]string, string) error {
-	s.newSessionCalled = true
-	return nil
-}
-
-func (s *spawnPathSpyRunner) NewSessionWithWindow(string, string, map[string]string, string) error {
-	s.newSessionCalled = true
-	return nil
-}
-
-func (s *spawnPathSpyRunner) NewWindow(string, string, map[string]string, string) error {
-	s.newWindowCalled = true
-	return nil
-}
-func (s *spawnPathSpyRunner) KillWindow(string, string) error              { return nil }
-func (s *spawnPathSpyRunner) ListWindowPIDs(string, string) ([]int, error) { return nil, nil }
-func (s *spawnPathSpyRunner) ListSessionNames() ([]string, error)          { return nil, nil }
-func (s *spawnPathSpyRunner) SendKeys(string, string, string) error        { return nil }
-func (s *spawnPathSpyRunner) Attach(string) error                          { return nil }
-func (s *spawnPathSpyRunner) SourceFile(string, string) error              { return nil }
-func (s *spawnPathSpyRunner) SetEnvironment(string, string, string) error  { return nil }
-
 type spawnPathWorktreeCreator struct {
 	path string
 }
@@ -150,11 +121,9 @@ func TestRealSpawn_StartsTrackedRuntime(t *testing.T) {
 
 func TestRealSpawn_FreshSpawnUsesBootstrapAndRuntimeStarter(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
-	spyRunner := &spawnPathSpyRunner{}
 	worktreePath := filepath.Join(tmpDir, ".sprawl", "worktrees", "alice")
 	r.spawnFn = agentops.PrepareSpawn
 	r.spawnDeps = &agentops.SpawnDeps{
-		TmuxRunner:      spyRunner,
 		WorktreeCreator: &spawnPathWorktreeCreator{path: worktreePath},
 		Getenv: func(key string) string {
 			switch key {
@@ -166,10 +135,6 @@ func TestRealSpawn_FreshSpawnUsesBootstrapAndRuntimeStarter(t *testing.T) {
 			return ""
 		},
 		CurrentBranch: func(string) (string, error) { return "main", nil },
-		FindSprawl: func() (string, error) {
-			t.Fatal("FindSprawl should not be called on supervisor spawn")
-			return "", nil
-		},
 		NewSpawnLock: func(string) (func() error, func() error) {
 			return func() error { return nil }, func() error { return nil }
 		},
@@ -195,9 +160,6 @@ func TestRealSpawn_FreshSpawnUsesBootstrapAndRuntimeStarter(t *testing.T) {
 		t.Fatalf("Spawn() error: %v", err)
 	}
 
-	if spyRunner.newWindowCalled || spyRunner.newSessionCalled {
-		t.Fatal("supervisor spawn should not create tmux sessions/windows")
-	}
 	rt, ok := r.runtimeRegistry.Get(info.Name)
 	if !ok {
 		t.Fatalf("runtime registry missing %s after fresh Spawn", info.Name)
@@ -1002,20 +964,29 @@ func TestBuildRunnerDeps_InjectsChildTreePathAndNamespace(t *testing.T) {
 	}
 }
 
-func TestRealKill_TmuxUnavailableForUnstartedAgentErrors(t *testing.T) {
+func TestRealKill_OfflineCleanupWhenNoRuntimeIsLive(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
-	r.tmuxAvailable = false
-	r.killDeps.TmuxRunner = &noopTmuxRunner{}
 	r.killFn = func(*agentops.KillDeps, string, bool) error {
-		t.Fatal("legacy killFn should not run when tmux is unavailable")
-		return nil
+		updated, err := state.LoadAgent(tmpDir, "alice")
+		if err != nil {
+			return err
+		}
+		updated.Status = "killed"
+		return state.SaveAgent(tmpDir, updated)
 	}
 
-	err := r.Kill(context.Background(), "alice")
-	if err == nil {
-		t.Fatal("Kill() error = nil, want tmux unavailable failure")
+	if err := r.Kill(context.Background(), "alice"); err != nil {
+		t.Fatalf("Kill() error: %v", err)
+	}
+
+	updated, err := state.LoadAgent(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if updated.Status != "killed" {
+		t.Fatalf("Status = %q, want killed", updated.Status)
 	}
 }
 
@@ -1024,8 +995,6 @@ func TestRealKill_TmuxUnavailableAlreadyKilledIsIdempotent(t *testing.T) {
 	agentState := testAgentState("alice")
 	agentState.Status = "killed"
 	saveTestAgent(t, tmpDir, agentState)
-	r.tmuxAvailable = false
-	r.killDeps.TmuxRunner = &noopTmuxRunner{}
 	r.killFn = func(*agentops.KillDeps, string, bool) error {
 		t.Fatal("legacy killFn should not run for already-killed agent")
 		return nil
@@ -1036,20 +1005,19 @@ func TestRealKill_TmuxUnavailableAlreadyKilledIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRealRetire_TmuxUnavailableForUnstartedAgentErrors(t *testing.T) {
+func TestRealRetire_OfflineCleanupWhenNoRuntimeIsLive(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
-	r.tmuxAvailable = false
-	r.retireDeps.TmuxRunner = &noopTmuxRunner{}
 	r.retireFn = func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
-		t.Fatal("legacy retireFn should not run when tmux is unavailable")
-		return nil
+		return state.DeleteAgent(tmpDir, "alice")
 	}
 
-	err := r.Retire(context.Background(), "alice", false, false, false, false)
-	if err == nil {
-		t.Fatal("Retire() error = nil, want tmux unavailable failure")
+	if err := r.Retire(context.Background(), "alice", false, false, false, false); err != nil {
+		t.Fatalf("Retire() error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(state.AgentsDir(tmpDir), "alice.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected alice state file to be removed, stat err=%v", err)
 	}
 }
 

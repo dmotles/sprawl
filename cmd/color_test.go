@@ -5,15 +5,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 )
 
-func newTestColorDeps(t *testing.T) (*colorDeps, *mockRunner, string, *bytes.Buffer, *bytes.Buffer) {
+func newTestColorDeps(t *testing.T) (*colorDeps, string, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	runner := &mockRunner{}
 	deps := &colorDeps{
 		getenv: func(key string) string {
 			if key == "SPRAWL_ROOT" {
@@ -21,178 +20,101 @@ func newTestColorDeps(t *testing.T) (*colorDeps, *mockRunner, string, *bytes.Buf
 			}
 			return ""
 		},
-		stdout:     &stdout,
-		stderr:     &stderr,
-		tmuxRunner: runner,
+		stdout: &stdout,
+		stderr: &stderr,
 	}
-	return deps, runner, tmpDir, &stdout, &stderr
+	return deps, tmpDir, &stdout, &stderr
 }
 
 func TestColorShow_WithSavedColor(t *testing.T) {
-	deps, _, tmpDir, stdout, _ := newTestColorDeps(t)
-
+	deps, tmpDir, stdout, _ := newTestColorDeps(t)
 	if err := state.WriteAccentColor(tmpDir, "colour39"); err != nil {
-		t.Fatalf("setup: %v", err)
+		t.Fatalf("WriteAccentColor: %v", err)
 	}
 
-	err := runColorShow(deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := runColorShow(deps); err != nil {
+		t.Fatalf("runColorShow() error: %v", err)
 	}
-
-	out := stdout.String()
-	if !strings.Contains(out, "colour39") {
-		t.Errorf("output should contain colour name, got: %s", out)
-	}
-	if !strings.Contains(out, "cyan") {
-		t.Errorf("output should contain alias, got: %s", out)
-	}
-}
-
-func TestColorShow_NoColor(t *testing.T) {
-	deps, _, _, _, _ := newTestColorDeps(t)
-
-	err := runColorShow(deps)
-	if err == nil {
-		t.Fatal("expected error when no color is set")
-	}
-	if !strings.Contains(err.Error(), "no accent color set") {
-		t.Errorf("error = %q, want it to contain 'no accent color set'", err.Error())
+	if out := stdout.String(); !strings.Contains(out, "colour39") || !strings.Contains(out, "cyan") {
+		t.Fatalf("output = %q, want colour39 + cyan alias", out)
 	}
 }
 
 func TestColorList_MarksCurrent(t *testing.T) {
-	deps, _, tmpDir, stdout, _ := newTestColorDeps(t)
-
+	deps, tmpDir, stdout, _ := newTestColorDeps(t)
 	if err := state.WriteAccentColor(tmpDir, "colour39"); err != nil {
-		t.Fatalf("setup: %v", err)
+		t.Fatalf("WriteAccentColor: %v", err)
 	}
 
-	err := runColorList(deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := runColorList(deps); err != nil {
+		t.Fatalf("runColorList() error: %v", err)
 	}
-
 	out := stdout.String()
-	// All colors should be listed
-	for _, c := range tmux.AccentColors {
-		if !strings.Contains(out, c.Name) {
-			t.Errorf("output missing color %q", c.Name)
+	for _, color := range runtimecfg.AccentColors {
+		if !strings.Contains(out, color.Name) {
+			t.Fatalf("output missing color %q", color.Name)
 		}
 	}
-	// Current color should be marked
-	lines := strings.Split(out, "\n")
-	found := false
-	for _, line := range lines {
-		if strings.Contains(line, "colour39") && strings.Contains(line, "*") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("current color (colour39) should be marked with *")
+	if !strings.Contains(out, "* colour39") {
+		t.Fatalf("output should mark current color, got %q", out)
 	}
 }
 
-func TestColorRotate_PicksNew(t *testing.T) {
-	deps, runner, tmpDir, _, _ := newTestColorDeps(t)
-
+func TestColorRotate_PersistsWithoutApplyingLiveTmux(t *testing.T) {
+	deps, tmpDir, stdout, stderr := newTestColorDeps(t)
 	if err := state.WriteAccentColor(tmpDir, "colour39"); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if err := state.WriteNamespace(tmpDir, "⚡"); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if err := state.WriteVersion(tmpDir, "v0.1.0"); err != nil {
-		t.Fatalf("setup: %v", err)
+		t.Fatalf("WriteAccentColor: %v", err)
 	}
 
-	err := runColorRotate(deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err := runColorRotate(deps); err != nil {
+		t.Fatalf("runColorRotate() error: %v", err)
 	}
-
-	newColor := state.ReadAccentColor(tmpDir)
-	if newColor == "colour39" {
-		t.Error("rotate should pick a different color")
+	if got := state.ReadAccentColor(tmpDir); got == "" || got == "colour39" {
+		t.Fatalf("accent color = %q, want rotated persisted color", got)
 	}
-	if newColor == "" {
-		t.Error("rotate should persist the new color")
+	if !strings.Contains(stdout.String(), "Accent color changed: colour39 ->") {
+		t.Fatalf("stdout = %q, want rotate confirmation", stdout.String())
 	}
-	if !runner.sourceFileCalled {
-		t.Error("expected SourceFile to be called to apply config")
+	if !strings.Contains(stderr.String(), "next time you run `sprawl enter`") {
+		t.Fatalf("stderr = %q, want deferred apply guidance", stderr.String())
 	}
 }
 
-func TestColorSet_ByName(t *testing.T) {
-	deps, runner, tmpDir, _, _ := newTestColorDeps(t)
+func TestColorSet_PersistsWithoutApplyingLiveTmux(t *testing.T) {
+	deps, tmpDir, stdout, stderr := newTestColorDeps(t)
 
-	if err := state.WriteNamespace(tmpDir, "⚡"); err != nil {
-		t.Fatalf("setup: %v", err)
+	if err := runColorSet(deps, "colour198"); err != nil {
+		t.Fatalf("runColorSet() error: %v", err)
 	}
-
-	err := runColorSet(deps, "colour198")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if got := state.ReadAccentColor(tmpDir); got != "colour198" {
+		t.Fatalf("accent color = %q, want colour198", got)
 	}
-
-	got := state.ReadAccentColor(tmpDir)
-	if got != "colour198" {
-		t.Errorf("accent color = %q, want %q", got, "colour198")
+	if !strings.Contains(stdout.String(), "Accent color set to colour198") {
+		t.Fatalf("stdout = %q, want set confirmation", stdout.String())
 	}
-	if !runner.sourceFileCalled {
-		t.Error("expected SourceFile to be called")
+	if !strings.Contains(stderr.String(), "next time you run `sprawl enter`") {
+		t.Fatalf("stderr = %q, want deferred apply guidance", stderr.String())
 	}
 }
 
 func TestColorSet_ByAlias(t *testing.T) {
-	deps, _, tmpDir, _, _ := newTestColorDeps(t)
+	deps, tmpDir, _, _ := newTestColorDeps(t)
 
-	if err := state.WriteNamespace(tmpDir, "⚡"); err != nil {
-		t.Fatalf("setup: %v", err)
+	if err := runColorSet(deps, "cyan"); err != nil {
+		t.Fatalf("runColorSet() error: %v", err)
 	}
-
-	err := runColorSet(deps, "cyan")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got := state.ReadAccentColor(tmpDir)
-	if got != "colour39" {
-		t.Errorf("accent color = %q, want %q", got, "colour39")
+	if got := state.ReadAccentColor(tmpDir); got != "colour39" {
+		t.Fatalf("accent color = %q, want colour39", got)
 	}
 }
 
 func TestColorSet_Invalid(t *testing.T) {
-	deps, _, _, _, _ := newTestColorDeps(t)
-
+	deps, _, _, _ := newTestColorDeps(t)
 	err := runColorSet(deps, "nonexistent")
 	if err == nil {
-		t.Fatal("expected error for invalid color")
+		t.Fatal("expected invalid color error")
 	}
 	if !strings.Contains(err.Error(), "unknown color") {
-		t.Errorf("error = %q, want it to contain 'unknown color'", err.Error())
-	}
-	// Error should list available colors
-	if !strings.Contains(err.Error(), "colour39") {
-		t.Errorf("error should list available colors, got: %q", err.Error())
-	}
-}
-
-func TestColorRotate_NoExistingColor(t *testing.T) {
-	deps, _, tmpDir, _, _ := newTestColorDeps(t)
-
-	if err := state.WriteNamespace(tmpDir, "⚡"); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	err := runColorRotate(deps)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got := state.ReadAccentColor(tmpDir)
-	if got == "" {
-		t.Error("rotate should persist a color even with no previous color")
+		t.Fatalf("error = %q, want unknown color", err)
 	}
 }

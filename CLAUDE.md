@@ -43,8 +43,8 @@ If no config file exists or the `validate` key is absent, post-merge validation 
 - `cmd/` — CLI commands (cobra). Each command has its own file + test file.
 - `internal/agent/` — Claude Code launcher, agent name allocation, prompt building
 - `internal/config/` — Project configuration loading (`.sprawl/config.yaml`)
+- `internal/supervisor/` — same-process child runtime registry and orchestration
 - `internal/state/` — Agent state persistence (JSON files in `.sprawl/agents/`)
-- `internal/tmux/` — tmux session/window management for running agents
 - `internal/worktree/` — Git worktree creation for agent isolation
 
 ## Meta: Developing Sprawl Inside Sprawl
@@ -53,7 +53,7 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 
 ## Code Patterns
 
-**Dependency injection**: Commands use a `deps` struct to inject interfaces for external dependencies (tmux, claude, git, env vars). See `cmd/spawn.go` (`spawnDeps`) for the canonical example. This enables testing without real subprocesses.
+**Dependency injection**: Commands use a `deps` struct to inject interfaces for external dependencies (backend processes, git, env vars, filesystem). See `cmd/merge.go` or `cmd/report.go` for representative examples. This enables testing without real subprocesses.
 
 **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way. **Read `/testing-practices` before writing any tests for the first time** — it covers the dependency injection pattern, mock conventions, and common pitfalls.
 

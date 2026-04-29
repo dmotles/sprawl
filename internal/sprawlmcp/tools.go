@@ -5,7 +5,7 @@ func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "sprawl_spawn",
-			"description": "Create a new agent subprocess with its own worktree and branch. The agent starts immediately and can receive tasks via sprawl_delegate or messages via sprawl_message.",
+			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via sprawl_delegate or messages via sprawl_send_async.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

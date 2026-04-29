@@ -5,23 +5,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 )
 
 // RetireDeps holds the injectable dependencies for Retire.
 type RetireDeps struct {
-	TmuxRunner          tmux.Runner
 	Getenv              func(string) string
-	WriteFile           func(string, []byte, os.FileMode) error
-	RemoveFile          func(string) error
-	SleepFunc           func(time.Duration)
 	WorktreeRemove      func(repoRoot, worktreePath string, force bool) error
 	GitStatus           func(worktreePath string) (string, error)
 	RemoveAll           func(string) error
@@ -37,7 +31,9 @@ type RetireDeps struct {
 	RunScript           func(script, workDir string, env map[string]string) ([]byte, error)
 }
 
-// Retire fully tears down an agent: stops process, closes tmux, removes worktree, deletes state.
+// Retire fully tears down an agent after its owning runtime has already been
+// stopped by the live weave session, or during offline cleanup with no live
+// weave session present.
 func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
 	if err := agent.ValidateName(agentName); err != nil {
 		return err
@@ -113,9 +109,9 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 		}
 		// Clean up lock and poke files
 		lockPath := filepath.Join(sprawlRoot, ".sprawl", "locks", agentState.Name+".lock")
-		_ = deps.RemoveFile(lockPath)
+		_ = os.Remove(lockPath)
 		pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".poke")
-		_ = deps.RemoveFile(pokePath)
+		_ = os.Remove(pokePath)
 		printRetireSuccess(agentState, abandon, mergeFirst, deps, sprawlRoot)
 		return nil
 	}
@@ -136,7 +132,7 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 		}
 	}
 
-	// Abandon safety guards: warn about unmerged commits and live processes.
+	// Abandon safety guard: warn about unmerged commits.
 	if abandon && agentState.Branch != "" && !agentState.Subagent {
 		var warnings []string
 
@@ -150,13 +146,6 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 				fmt.Fprintf(os.Stderr, "  %s\n", c)
 			}
 			warnings = append(warnings, "unmerged commits")
-		}
-
-		// Guard 2: Check for live tmux process.
-		pids, pidErr := deps.TmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
-		if pidErr == nil && len(pids) > 0 {
-			fmt.Fprintf(os.Stderr, "WARNING: Agent %q process is still alive.\n", agentName)
-			warnings = append(warnings, "live process")
 		}
 
 		if len(warnings) > 0 && !yes {
@@ -193,9 +182,9 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 
 	// Clean up lock and poke files
 	lockPath := filepath.Join(sprawlRoot, ".sprawl", "locks", agentState.Name+".lock")
-	_ = deps.RemoveFile(lockPath)
+	_ = os.Remove(lockPath)
 	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".poke")
-	_ = deps.RemoveFile(pokePath)
+	_ = os.Remove(pokePath)
 	printRetireSuccess(agentState, abandon, mergeFirst, deps, sprawlRoot)
 	return nil
 }
@@ -263,10 +252,6 @@ func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, 
 
 func buildRetireDeps(deps *RetireDeps) *agent.RetireDeps {
 	return &agent.RetireDeps{
-		TmuxRunner:     deps.TmuxRunner,
-		WriteFile:      deps.WriteFile,
-		RemoveFile:     deps.RemoveFile,
-		SleepFunc:      deps.SleepFunc,
 		WorktreeRemove: deps.WorktreeRemove,
 		GitStatus:      deps.GitStatus,
 		RemoveAll:      deps.RemoveAll,

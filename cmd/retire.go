@@ -1,15 +1,12 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +17,14 @@ type retireDeps = agentops.RetireDeps
 // through at call time (tests still use 7 positional args).
 func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, mergeFirst, yes bool) error {
 	deprecationWarning("retire", "sprawl_retire")
+	if deps != nil {
+		sprawlRoot := deps.Getenv("SPRAWL_ROOT")
+		lock, err := acquireOfflineLifecycle(sprawlRoot, "retire", "sprawl_retire")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = lock.Release() }()
+	}
 	return agentops.Retire(deps, agentName, cascade, force, abandon, mergeFirst, yes, retireNoValidate)
 }
 
@@ -46,34 +51,21 @@ func init() {
 
 var retireCmd = &cobra.Command{
 	Use:   "retire <agent-name>",
-	Short: "Full teardown: stop process, close tmux, remove worktree, delete state",
-	Long:  "Full agent teardown. Three workflows:\n\n  sprawl retire <agent>          preserve branch, warn if unmerged\n  sprawl retire --merge <agent>   merge into your branch, then retire\n  sprawl retire --abandon <agent> delete branch and all work",
+	Short: "Deprecated offline cleanup; use sprawl enter + sprawl_retire for live runtimes",
+	Long:  "When no weave session is running, fully retire an agent by removing its persisted state and worktree artifacts. If `sprawl enter` is active, use the sprawl_retire MCP tool from the live weave session instead.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		deps, err := resolveRetireDeps()
-		if err != nil {
-			return err
-		}
-		return runRetire(deps, args[0], retireCascade, retireForce, retireAbandon, retireMerge, retireYes)
+		return runRetire(resolveRetireDeps(), args[0], retireCascade, retireForce, retireAbandon, retireMerge, retireYes)
 	},
 }
 
-func resolveRetireDeps() (*retireDeps, error) {
+func resolveRetireDeps() *retireDeps {
 	if defaultRetireDeps != nil {
-		return defaultRetireDeps, nil
-	}
-
-	tmuxPath, err := tmux.FindTmux()
-	if err != nil {
-		return nil, fmt.Errorf("tmux is required but not found")
+		return defaultRetireDeps
 	}
 
 	return &retireDeps{
-		TmuxRunner:          &tmux.RealRunner{TmuxPath: tmuxPath},
 		Getenv:              os.Getenv,
-		WriteFile:           os.WriteFile,
-		RemoveFile:          os.Remove,
-		SleepFunc:           time.Sleep,
 		WorktreeRemove:      realWorktreeRemove,
 		GitStatus:           realGitStatus,
 		RemoveAll:           os.RemoveAll,
@@ -102,5 +94,5 @@ func resolveRetireDeps() (*retireDeps, error) {
 		GitUnmergedCommits: realGitUnmergedCommits,
 		LoadConfig:         config.Load,
 		RunScript:          runBashScript,
-	}, nil
+	}
 }

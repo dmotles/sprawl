@@ -5,57 +5,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/state"
-	"github.com/dmotles/sprawl/internal/tmux"
 )
 
-// ShutdownDeps holds the deps needed for graceful agent shutdown.
-type ShutdownDeps struct {
-	TmuxRunner tmux.Runner
-	WriteFile  func(string, []byte, os.FileMode) error
-	RemoveFile func(string) error
-	SleepFunc  func(time.Duration)
-}
+// ShutdownDeps is intentionally empty in the same-process runtime model.
+// Live child runtimes are stopped by supervisor-owned runtime handles.
+type ShutdownDeps struct{}
 
-// GracefulShutdown signals the agent-loop via sentinel file, waits for it to exit,
-// and falls back to killing the tmux window if it doesn't exit in time.
-func GracefulShutdown(deps *ShutdownDeps, sprawlRoot string, agentState *state.AgentState, force bool) {
-	if force {
-		_ = deps.TmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
-		return
-	}
-
-	// Write sentinel file
-	killPath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".kill")
-	_ = deps.WriteFile(killPath, []byte("kill"), 0o644)
-
-	// Poll: wait for window to disappear
-	graceful := false
-	for range 10 {
-		_, err := deps.TmuxRunner.ListWindowPIDs(agentState.TmuxSession, agentState.TmuxWindow)
-		if err != nil {
-			graceful = true
-			break
-		}
-		deps.SleepFunc(500 * time.Millisecond)
-	}
-
-	if !graceful {
-		_ = deps.TmuxRunner.KillWindow(agentState.TmuxSession, agentState.TmuxWindow)
-	}
-
-	// Clean up sentinel (may already be gone)
-	_ = deps.RemoveFile(killPath)
-}
+// GracefulShutdown is retained as a compatibility no-op for same-process
+// runtime cleanup paths. Offline lifecycle commands only operate on persisted
+// state after the owning weave session has stopped.
+func GracefulShutdown(_ *ShutdownDeps, _ string, _ *state.AgentState, _ bool) {}
 
 // RetireDeps holds the dependencies for RetireAgent.
 type RetireDeps struct {
-	TmuxRunner     tmux.Runner
-	WriteFile      func(string, []byte, os.FileMode) error
-	RemoveFile     func(string) error
-	SleepFunc      func(time.Duration)
 	WorktreeRemove func(repoRoot, worktreePath string, force bool) error
 	GitStatus      func(worktreePath string) (string, error)
 	RemoveAll      func(string) error
@@ -64,20 +28,11 @@ type RetireDeps struct {
 	Stderr         io.Writer
 }
 
-// RetireAgent performs core teardown. If skipShutdown is true, skips graceful shutdown and tmux cleanup.
+// RetireAgent performs core teardown after the child runtime has already been
+// stopped by the live weave session, or when an offline cleanup is running with
+// no live weave session present.
 func RetireAgent(deps *RetireDeps, sprawlRoot string, agent *state.AgentState, force bool, skipShutdown bool) error {
-	if !skipShutdown {
-		sd := &ShutdownDeps{
-			TmuxRunner: deps.TmuxRunner,
-			WriteFile:  deps.WriteFile,
-			RemoveFile: deps.RemoveFile,
-			SleepFunc:  deps.SleepFunc,
-		}
-		GracefulShutdown(sd, sprawlRoot, agent, force)
-
-		// Best-effort tmux window cleanup after graceful shutdown
-		_ = deps.TmuxRunner.KillWindow(agent.TmuxSession, agent.TmuxWindow)
-	}
+	_ = skipShutdown
 
 	// Worktree check + removal (skip if empty worktree or subagent)
 	if agent.Worktree != "" && !agent.Subagent {

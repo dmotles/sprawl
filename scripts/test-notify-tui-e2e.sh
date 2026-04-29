@@ -199,8 +199,6 @@ cat > "$CHILD_STATE_DIR/${CHILD_NAME}.json" <<JSON
   "prompt": "tui notify e2e test",
   "branch": "tui-notify-e2e",
   "worktree": "${SPRAWL_ROOT}",
-  "tmux_session": "${SESSION}",
-  "tmux_window": "${CHILD_NAME}",
   "status": "active",
   "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "tree_path": "weave├${CHILD_NAME}"

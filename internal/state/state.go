@@ -10,20 +10,18 @@ import (
 
 // AgentState holds the persistent metadata for a spawned agent.
 type AgentState struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Family      string `json:"family"`
-	Parent      string `json:"parent"`
-	Prompt      string `json:"prompt"`
-	Branch      string `json:"branch"`
-	Worktree    string `json:"worktree"`
-	TmuxSession string `json:"tmux_session"`
-	TmuxWindow  string `json:"tmux_window"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
-	SessionID   string `json:"session_id,omitempty"`
-	Subagent    bool   `json:"subagent,omitempty"`
-	TreePath    string `json:"tree_path,omitempty"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Family    string `json:"family"`
+	Parent    string `json:"parent"`
+	Prompt    string `json:"prompt"`
+	Branch    string `json:"branch"`
+	Worktree  string `json:"worktree"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+	SessionID string `json:"session_id,omitempty"`
+	Subagent  bool   `json:"subagent,omitempty"`
+	TreePath  string `json:"tree_path,omitempty"`
 
 	// Report fields — populated by "sprawl report" subcommands and the
 	// sprawl_report_status MCP tool. See docs/designs/messaging-overhaul.md §4.2.3.
