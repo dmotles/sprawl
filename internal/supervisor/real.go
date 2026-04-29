@@ -190,6 +190,19 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 		return nil, fmt.Errorf("listing agents: %w", err)
 	}
 
+	processAliveByName := make(map[string]*bool)
+	for _, runtime := range r.runtimeRegistry.List() {
+		snap := runtime.Snapshot()
+		switch snap.Lifecycle {
+		case RuntimeLifecycleStarted:
+			alive := true
+			processAliveByName[snap.Name] = &alive
+		case RuntimeLifecycleStopped, RuntimeLifecycleKilled, RuntimeLifecycleRetired:
+			alive := false
+			processAliveByName[snap.Name] = &alive
+		}
+	}
+
 	result := make([]AgentInfo, 0, len(agents))
 	for _, a := range agents {
 		result = append(result, AgentInfo{
@@ -199,8 +212,13 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			Parent:            a.Parent,
 			Status:            a.Status,
 			Branch:            a.Branch,
+			TreePath:          a.TreePath,
+			LastReportType:    a.LastReportType,
 			LastReportState:   a.LastReportState,
+			LastReportMessage: a.LastReportMessage,
 			LastReportSummary: a.LastReportMessage,
+			LastReportDetail:  a.LastReportDetail,
+			ProcessAlive:      processAliveByName[a.Name],
 		})
 	}
 	return result, nil
@@ -227,6 +245,9 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 	}
 	if runtime, ok := r.runtimeRegistry.Get(agentName); ok {
 		runtime.RecordQueuedTask(enqueuedTask)
+		if runtime.Snapshot().Lifecycle == RuntimeLifecycleStarted {
+			_ = runtime.Wake()
+		}
 	}
 	return nil
 }
@@ -525,7 +546,14 @@ func (r *Real) SendAsync(_ context.Context, to, subject, body, replyTo string, t
 		return nil, fmt.Errorf("agent %q not found: %w", to, err)
 	}
 
-	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body); err != nil {
+	runtime, runtimeBacked := r.startedRuntime(to)
+
+	var sendOpts []messages.SendOption
+	if runtimeBacked {
+		sendOpts = append(sendOpts, messages.WithoutWakeFile())
+	}
+
+	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body, sendOpts...); err != nil {
 		return nil, err
 	}
 
@@ -539,6 +567,9 @@ func (r *Real) SendAsync(_ context.Context, to, subject, body, replyTo string, t
 	})
 	if err != nil {
 		return nil, fmt.Errorf("enqueuing async message: %w", err)
+	}
+	if runtimeBacked {
+		_ = runtime.InterruptDelivery()
 	}
 
 	return &SendAsyncResult{
@@ -610,7 +641,14 @@ func (r *Real) SendInterrupt(_ context.Context, to, subject, body, resumeHint st
 		tags = append(tags, "resume_hint:"+resumeHint)
 	}
 
-	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body); err != nil {
+	runtime, runtimeBacked := r.startedRuntime(to)
+
+	var sendOpts []messages.SendOption
+	if runtimeBacked {
+		sendOpts = append(sendOpts, messages.WithoutWakeFile())
+	}
+
+	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body, sendOpts...); err != nil {
 		return nil, err
 	}
 
@@ -623,6 +661,9 @@ func (r *Real) SendInterrupt(_ context.Context, to, subject, body, resumeHint st
 	})
 	if err != nil {
 		return nil, fmt.Errorf("enqueuing interrupt message: %w", err)
+	}
+	if runtimeBacked {
+		_ = runtime.InterruptDelivery()
 	}
 
 	return &SendInterruptResult{
@@ -683,11 +724,28 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, 
 	if agentName == "" {
 		return nil, fmt.Errorf("reporter identity not set (callerName is empty)")
 	}
-	res, err := agentops.Report(&agentops.ReportDeps{}, r.sprawlRoot, agentName, reportState, summary, detail)
+
+	var parentRuntime *AgentRuntime
+	if agentState, err := state.LoadAgent(r.sprawlRoot, agentName); err == nil && agentState.Parent != "" {
+		parentRuntime, _ = r.startedRuntime(agentState.Parent)
+	}
+
+	reportDeps := &agentops.ReportDeps{
+		SendMessage: func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error {
+			if parentRuntime != nil {
+				opts = append(opts, messages.WithoutWakeFile())
+			}
+			return messages.Send(sprawlRoot, from, to, subject, body, opts...)
+		},
+	}
+	res, err := agentops.Report(reportDeps, r.sprawlRoot, agentName, reportState, summary, detail)
 	if err != nil {
 		return nil, err
 	}
 	r.syncRuntimeFromState(agentName)
+	if parentRuntime != nil && res.MessageID != "" {
+		_ = parentRuntime.InterruptDelivery()
+	}
 	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
 }
 

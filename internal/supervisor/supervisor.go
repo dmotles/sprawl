@@ -14,8 +14,13 @@ type AgentInfo struct {
 	Parent            string `json:"parent"`
 	Status            string `json:"status"`
 	Branch            string `json:"branch"`
+	TreePath          string `json:"tree_path,omitempty"`
+	LastReportType    string `json:"last_report_type,omitempty"`
 	LastReportState   string `json:"last_report_state,omitempty"`
+	LastReportMessage string `json:"last_report_message,omitempty"`
 	LastReportSummary string `json:"last_report_summary,omitempty"`
+	LastReportDetail  string `json:"last_report_detail,omitempty"`
+	ProcessAlive      *bool  `json:"process_alive"`
 }
 
 // SendAsyncResult is returned by Supervisor.SendAsync. See

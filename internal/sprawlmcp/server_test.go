@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
@@ -387,9 +388,10 @@ func TestServer_ToolsList(t *testing.T) {
 }
 
 func TestServer_ToolsCall_SprawlStatus(t *testing.T) {
+	alive := true
 	mock := &mockSupervisor{
 		statusResult: []supervisor.AgentInfo{
-			{Name: "ratz", Type: "engineer", Family: "engineering", Status: "active", Branch: "dmotles/feature"},
+			{Name: "ratz", Type: "engineer", Family: "engineering", Status: "active", Branch: "dmotles/feature", ProcessAlive: &alive},
 			{Name: "ghost", Type: "researcher", Family: "engineering", Status: "active", Branch: "dmotles/research"},
 		},
 	}
@@ -432,6 +434,9 @@ func TestServer_ToolsCall_SprawlStatus(t *testing.T) {
 	// Verify the text contains agent information
 	if len(text) == 0 {
 		t.Error("status text is empty")
+	}
+	if !strings.Contains(text, "process_alive") {
+		t.Errorf("status text should include process_alive when the supervisor returns it, got:\n%s", text)
 	}
 }
 

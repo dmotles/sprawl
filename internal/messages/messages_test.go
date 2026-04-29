@@ -2561,6 +2561,73 @@ func TestSend_DefaultNotifierPanicDoesNotBreakSend(t *testing.T) {
 	}
 }
 
+func TestSend_WithoutWakeFileSuppressesWakeButStillNotifies(t *testing.T) {
+	withCleanDefaultNotifier(t)
+	tmpDir := t.TempDir()
+
+	agentsDir := filepath.Join(tmpDir, ".sprawl", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("creating agents dir: %v", err)
+	}
+
+	called := false
+	if err := Send(tmpDir, "alice", "root", "urgent", "body",
+		WithoutWakeFile(),
+		WithNotify(func(to, from, subject, msgID string) {
+			called = true
+		}),
+	); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected notify callback to fire even when wake file is suppressed")
+	}
+
+	wakePath := filepath.Join(agentsDir, "root.wake")
+	if _, err := os.Stat(wakePath); !os.IsNotExist(err) {
+		t.Fatalf("wake file should not exist when WithoutWakeFile is set, stat err = %v", err)
+	}
+}
+
+func TestSend_DefaultWakeBehaviorStillWritesWakeFile(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	agentsDir := filepath.Join(tmpDir, ".sprawl", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("creating agents dir: %v", err)
+	}
+
+	if err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	wakePath := filepath.Join(agentsDir, "root.wake")
+	data, err := os.ReadFile(wakePath)
+	if err != nil {
+		t.Fatalf("reading wake file: %v", err)
+	}
+	if got, want := string(data), "New message from alice: urgent"; got != want {
+		t.Fatalf("wake file content = %q, want %q", got, want)
+	}
+}
+
+func TestSend_WithoutWakeFilePreservesDefaultNotifier(t *testing.T) {
+	withCleanDefaultNotifier(t)
+	tmpDir := t.TempDir()
+
+	called := false
+	SetDefaultNotifier(func(to, from, subject, msgID string) {
+		called = true
+	})
+
+	if err := Send(tmpDir, "alice", "root", "urgent", "body", WithoutWakeFile()); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected default notifier to fire when wake file is suppressed")
+	}
+}
+
 func TestSetDefaultNotifier_Clear(t *testing.T) {
 	withCleanDefaultNotifier(t)
 

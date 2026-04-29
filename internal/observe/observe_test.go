@@ -1,9 +1,11 @@
 package observe
 
 import (
+	"context"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tmux"
 )
 
@@ -61,7 +63,7 @@ func TestLoadAll_SynthesizesRoot(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -90,7 +92,7 @@ func TestLoadAll_NoRootName(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -125,7 +127,7 @@ func TestLoadAll_LivenessActiveAlive(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -174,7 +176,7 @@ func TestLoadAll_LivenessActiveDead(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -213,7 +215,7 @@ func TestLoadAll_LivenessTerminalDone(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -236,6 +238,44 @@ func TestLoadAll_LivenessTerminalDone(t *testing.T) {
 	}
 }
 
+func TestLoadAll_UsesSupervisorProcessAliveWithoutTmux(t *testing.T) {
+	alive := true
+	deps := Deps{
+		Status: func(context.Context) ([]supervisor.AgentInfo, error) {
+			return []supervisor.AgentInfo{
+				{
+					Name:         "agent1",
+					Status:       "active",
+					Parent:       "weave",
+					ProcessAlive: &alive,
+				},
+			}, nil
+		},
+		ReadRootName: func(string) string {
+			return "weave"
+		},
+	}
+
+	agents, err := LoadAll(context.Background(), deps, "/fake")
+	if err != nil {
+		t.Fatalf("LoadAll returned error: %v", err)
+	}
+
+	var found *AgentInfo
+	for _, a := range agents {
+		if a.Name == "agent1" {
+			found = a
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("agent1 not found in results")
+	}
+	if found.ProcessAlive == nil || !*found.ProcessAlive {
+		t.Fatalf("ProcessAlive = %+v, want true from supervisor status", found.ProcessAlive)
+	}
+}
+
 func TestLoadAll_LivenessTerminalProblem(t *testing.T) {
 	deps := Deps{
 		TmuxRunner: &mockRunner{},
@@ -252,7 +292,7 @@ func TestLoadAll_LivenessTerminalProblem(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -291,7 +331,7 @@ func TestLoadAll_LivenessTerminalRetiring(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -330,7 +370,7 @@ func TestLoadAll_LivenessTerminalDoneButAlive(t *testing.T) {
 		ReadNamespace: func(string) string { return "test" },
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -369,7 +409,7 @@ func TestLoadAll_LivenessNoTmux(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -408,7 +448,7 @@ func TestLoadAll_RootLiveness(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -450,7 +490,7 @@ func TestLoadAll_RootLivenessDead(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
@@ -491,7 +531,7 @@ func TestLoadAll_SortedByName(t *testing.T) {
 		},
 	}
 
-	agents, err := LoadAll(deps, "/fake")
+	agents, err := LoadAll(context.Background(), deps, "/fake")
 	if err != nil {
 		t.Fatalf("LoadAll returned error: %v", err)
 	}
