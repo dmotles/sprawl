@@ -14,22 +14,25 @@ import (
 )
 
 func TestBuildAgentSessionSpec_FromAgentState(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	state.WriteNamespace(sprawlRoot, "test-ns")
 	agentState := &state.AgentState{
 		Name:      "finn",
-		Worktree:  "/repo/.sprawl/worktrees/finn",
+		Worktree:  sprawlRoot,
 		SessionID: "sess-123",
+		TreePath:  "weave/finn",
 	}
 
-	spec := buildAgentSessionSpec(agentState, "/repo/.sprawl/agents/finn/SYSTEM.md", "/repo")
+	spec := buildAgentSessionSpec(agentState, "/repo/.sprawl/agents/finn/SYSTEM.md", sprawlRoot)
 
-	if spec.WorkDir != "/repo/.sprawl/worktrees/finn" {
+	if spec.WorkDir != sprawlRoot {
 		t.Errorf("WorkDir = %q, want agent worktree", spec.WorkDir)
 	}
 	if spec.Identity != "finn" {
 		t.Errorf("Identity = %q, want finn", spec.Identity)
 	}
-	if spec.SprawlRoot != "/repo" {
-		t.Errorf("SprawlRoot = %q, want /repo", spec.SprawlRoot)
+	if spec.SprawlRoot != sprawlRoot {
+		t.Errorf("SprawlRoot = %q, want %q", spec.SprawlRoot, sprawlRoot)
 	}
 	if spec.SessionID != "sess-123" {
 		t.Errorf("SessionID = %q, want sess-123", spec.SessionID)
@@ -51,6 +54,12 @@ func TestBuildAgentSessionSpec_FromAgentState(t *testing.T) {
 	}
 	if spec.OnResumeFailure != nil {
 		t.Error("child sessions should not install the root resume watcher")
+	}
+	if spec.AdditionalEnv["SPRAWL_TREE_PATH"] != "weave/finn" {
+		t.Errorf("SPRAWL_TREE_PATH = %q, want weave/finn", spec.AdditionalEnv["SPRAWL_TREE_PATH"])
+	}
+	if spec.AdditionalEnv["SPRAWL_NAMESPACE"] != "test-ns" {
+		t.Errorf("SPRAWL_NAMESPACE = %q, want test-ns", spec.AdditionalEnv["SPRAWL_NAMESPACE"])
 	}
 }
 
