@@ -200,28 +200,20 @@ func resolveEnterDeps() *enterDeps {
 				fmt.Fprintf(os.Stderr, "[enter] supervisor unavailable: %v\n", err)
 				return nil
 			}
+			// Two-phase init: the child MCP server needs a reference to the
+			// supervisor, so we create it after construction and wire it in.
+			mcpServer := sprawlmcp.New(sup)
+			childBridge := host.NewMCPBridge()
+			childBridge.Register("sprawl-ops", mcpServer)
+			sup.SetChildMCPConfig(
+				backend.InitSpec{
+					MCPServerNames: []string{"sprawl-ops"},
+					ToolBridge:     childBridge,
+				},
+				sprawlmcp.MCPToolNames(),
+			)
 			return sup
 		},
-	}
-}
-
-// sprawlOpsMCPTools returns the Claude-addressable tool names for the in-process
-// sprawl-ops MCP server. Keep in sync with the definitions in
-// internal/sprawlmcp/tools.go.
-func sprawlOpsMCPTools() []string {
-	return []string{
-		"mcp__sprawl-ops__sprawl_spawn",
-		"mcp__sprawl-ops__sprawl_status",
-		"mcp__sprawl-ops__sprawl_delegate",
-		"mcp__sprawl-ops__sprawl_message",
-		"mcp__sprawl-ops__sprawl_merge",
-		"mcp__sprawl-ops__sprawl_retire",
-		"mcp__sprawl-ops__sprawl_kill",
-		"mcp__sprawl-ops__sprawl_handoff",
-		"mcp__sprawl-ops__sprawl_messages_list",
-		"mcp__sprawl-ops__sprawl_messages_read",
-		"mcp__sprawl-ops__sprawl_messages_archive",
-		"mcp__sprawl-ops__sprawl_messages_peek",
 	}
 }
 
@@ -235,9 +227,9 @@ func sprawlOpsMCPTools() []string {
 // are intentionally omitted — BuildArgs enforces this because the resumed
 // transcript carries its own session ID and system prompt.
 func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts {
-	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlOpsMCPTools()))
+	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlmcp.MCPToolNames()))
 	allowed = append(allowed, prepared.RootTools...)
-	allowed = append(allowed, sprawlOpsMCPTools()...)
+	allowed = append(allowed, sprawlmcp.MCPToolNames()...)
 
 	opts := claude.LaunchOpts{
 		Print:           true,
@@ -259,9 +251,9 @@ func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts 
 }
 
 func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession, logW io.Writer, onResumeFailure func()) backend.SessionSpec {
-	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlOpsMCPTools()))
+	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlmcp.MCPToolNames()))
 	allowed = append(allowed, prepared.RootTools...)
-	allowed = append(allowed, sprawlOpsMCPTools()...)
+	allowed = append(allowed, sprawlmcp.MCPToolNames()...)
 
 	spec := backend.SessionSpec{
 		WorkDir:         sprawlRoot,

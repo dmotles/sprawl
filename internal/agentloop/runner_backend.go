@@ -59,7 +59,7 @@ func StartBackendProcess(
 	spec backend.SessionSpec,
 	observer Observer,
 ) (ProcessManager, error) {
-	proc := deps.NewBackendProcess(spec, observer)
+	proc := deps.NewBackendProcess(spec, deps.InitSpec, observer)
 	if err := proc.Launch(ctx); err != nil {
 		return nil, err
 	}
@@ -67,16 +67,18 @@ func StartBackendProcess(
 }
 
 // NewClaudeBackendProcess constructs a ProcessManager backed by the shared Claude adapter.
-func NewClaudeBackendProcess(spec backend.SessionSpec, observer Observer) ProcessManager {
+func NewClaudeBackendProcess(spec backend.SessionSpec, initSpec backend.InitSpec, observer Observer) ProcessManager {
 	spec.Observer = observer
 	return &claudeBackendProcess{
-		spec: spec,
+		spec:     spec,
+		initSpec: initSpec,
 	}
 }
 
 type claudeBackendProcess struct {
-	spec    backend.SessionSpec
-	session backend.Session
+	spec     backend.SessionSpec
+	initSpec backend.InitSpec
+	session  backend.Session
 
 	mu          sync.Mutex
 	running     bool
@@ -88,6 +90,12 @@ func (p *claudeBackendProcess) Launch(ctx context.Context) error {
 	session, err := adapter.Start(ctx, p.spec)
 	if err != nil {
 		return err
+	}
+
+	if p.initSpec.ToolBridge != nil || len(p.initSpec.MCPServerNames) > 0 {
+		if err := session.Initialize(ctx, p.initSpec); err != nil {
+			return err
+		}
 	}
 
 	p.mu.Lock()
@@ -114,7 +122,7 @@ func (p *claudeBackendProcess) SendPrompt(ctx context.Context, prompt string) (*
 		p.mu.Unlock()
 	}()
 
-	events, err := session.StartTurn(ctx, prompt)
+	events, err := session.StartTurn(ctx, prompt, backend.TurnSpec{Init: p.initSpec})
 	if err != nil {
 		return nil, err
 	}

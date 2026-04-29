@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/host"
+	"github.com/dmotles/sprawl/internal/sprawlmcp"
 )
 
 func TestBuildEnterSessionSpec_FreshPathUsesRootSessionData(t *testing.T) {
@@ -35,7 +36,7 @@ func TestBuildEnterSessionSpec_FreshPathUsesRootSessionData(t *testing.T) {
 	if spec.PermissionMode != "bypassPermissions" {
 		t.Errorf("PermissionMode = %q, want bypassPermissions", spec.PermissionMode)
 	}
-	wantAllowed := append(append([]string{}, freshPrepared().RootTools...), sprawlOpsMCPTools()...)
+	wantAllowed := append(append([]string{}, freshPrepared().RootTools...), sprawlmcp.MCPToolNames()...)
 	if len(spec.AllowedTools) != len(wantAllowed) {
 		t.Fatalf("AllowedTools length = %d, want %d", len(spec.AllowedTools), len(wantAllowed))
 	}
@@ -73,7 +74,7 @@ func TestBuildEnterSessionSpec_ResumePathPreservesResumeState(t *testing.T) {
 	if spec.PermissionMode != "bypassPermissions" {
 		t.Errorf("PermissionMode = %q, want bypassPermissions", spec.PermissionMode)
 	}
-	wantAllowed := append(append([]string{}, resumePrepared().RootTools...), sprawlOpsMCPTools()...)
+	wantAllowed := append(append([]string{}, resumePrepared().RootTools...), sprawlmcp.MCPToolNames()...)
 	if len(spec.AllowedTools) != len(wantAllowed) {
 		t.Fatalf("AllowedTools length = %d, want %d", len(spec.AllowedTools), len(wantAllowed))
 	}

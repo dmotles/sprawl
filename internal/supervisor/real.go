@@ -13,6 +13,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
+	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/merge"
@@ -24,8 +25,10 @@ import (
 
 // Config holds configuration for the real supervisor.
 type Config struct {
-	SprawlRoot string
-	CallerName string
+	SprawlRoot        string
+	CallerName        string
+	ChildInitSpec     backendpkg.InitSpec
+	ChildAllowedTools []string
 }
 
 // Real is the production implementation of Supervisor.
@@ -101,7 +104,6 @@ func NewReal(cfg Config) (*Real, error) {
 		sprawlRoot:      cfg.SprawlRoot,
 		callerName:      cfg.CallerName,
 		runtimeRegistry: NewRuntimeRegistry(),
-		runtimeStarter:  newInProcessRuntimeStarter(),
 
 		spawnDeps: &agentops.SpawnDeps{
 			WorktreeCreator: &worktree.RealCreator{},
@@ -160,7 +162,15 @@ func NewReal(cfg Config) (*Real, error) {
 		handoffWriteSignalFile:     memory.WriteHandoffSignal,
 		handoffNow:                 time.Now,
 	}
+	r.runtimeStarter = newInProcessRuntimeStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
 	return r, nil
+}
+
+// SetChildMCPConfig updates the child runtime starter with the given MCP
+// init spec and allowed tools. Use this for two-phase init when the MCP
+// server needs a reference to the supervisor itself.
+func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []string) {
+	r.runtimeStarter = newInProcessRuntimeStarter(initSpec, allowedTools)
 }
 
 func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {

@@ -19,7 +19,10 @@ import (
 	"github.com/gofrs/flock"
 )
 
-type inProcessRuntimeStarter struct{}
+type inProcessRuntimeStarter struct {
+	initSpec     backendpkg.InitSpec
+	allowedTools []string
+}
 
 var (
 	startRunnerFn = agentloop.StartRunner
@@ -27,13 +30,17 @@ var (
 	stopRunnerFn  = func(r *agentloop.Runner, ctx context.Context) error { return r.Stop(ctx) }
 )
 
-func newInProcessRuntimeStarter() RuntimeStarter {
-	return &inProcessRuntimeStarter{}
+func newInProcessRuntimeStarter(initSpec backendpkg.InitSpec, allowedTools []string) RuntimeStarter {
+	return &inProcessRuntimeStarter{initSpec: initSpec, allowedTools: allowedTools}
 }
 
 func (s *inProcessRuntimeStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	deps := buildRunnerDeps(spec)
+	if s.initSpec.ToolBridge != nil || len(s.initSpec.MCPServerNames) > 0 {
+		deps.InitSpec = s.initSpec
+		deps.AllowedTools = s.allowedTools
+	}
 	controlCh := make(chan agentloop.ControlSignal, 1)
 	deps.ControlCh = controlCh
 	runner, err := startRunnerFn(runCtx, deps, spec.Name)

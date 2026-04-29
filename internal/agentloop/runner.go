@@ -52,7 +52,9 @@ type RunnerDeps struct {
 	CreateFile        func(string) (*os.File, error)
 	Stdout            io.Writer
 	NewProcess        func(config ProcessConfig, observer Observer) ProcessManager
-	NewBackendProcess func(spec backend.SessionSpec, observer Observer) ProcessManager
+	InitSpec          backend.InitSpec
+	AllowedTools      []string
+	NewBackendProcess func(spec backend.SessionSpec, initSpec backend.InitSpec, observer Observer) ProcessManager
 	NewWorkLock       func(lockDir, agentName string) (*WorkLock, error)
 	Getpid            func() int
 	SignalCh          <-chan os.Signal
@@ -430,6 +432,9 @@ func StartRunner(ctx context.Context, deps *RunnerDeps, agentName string) (*Runn
 		return nil, fmt.Errorf("writing system prompt file: %w", err)
 	}
 	sessionSpec := BuildAgentSessionSpec(agentState, promptPath, sprawlRoot, output)
+	if len(deps.AllowedTools) > 0 {
+		sessionSpec.AllowedTools = deps.AllowedTools
+	}
 
 	var config ProcessConfig
 	usingBackend := deps.NewBackendProcess != nil
@@ -543,7 +548,7 @@ func (r *Runner) Capabilities() backend.Capabilities {
 	return backend.Capabilities{
 		SupportsInterrupt:  true,
 		SupportsResume:     true,
-		SupportsToolBridge: false,
+		SupportsToolBridge: len(r.deps.InitSpec.MCPServerNames) > 0,
 	}
 }
 
