@@ -8,6 +8,7 @@ import (
 
 	backend "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 type stopTestSession struct {
@@ -54,5 +55,112 @@ func TestClaudeBackendProcess_StopKillsOnContextDeadline(t *testing.T) {
 	}
 	if proc.IsRunning() {
 		t.Fatal("process should report not running after Stop")
+	}
+}
+
+func TestBuildAgentSessionSpec_BaseFields(t *testing.T) {
+	agentState := &state.AgentState{
+		Name:      "finn",
+		Worktree:  "/tmp/worktrees/finn",
+		TreePath:  "weave/finn",
+		SessionID: "sess-finn",
+	}
+	spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
+
+	// AllowedTools are set by the caller (runtime_launcher) via
+	// RunnerDeps.AllowedTools, not by BuildAgentSessionSpec itself.
+	// Verify base fields are correct.
+	if spec.Identity != "finn" {
+		t.Errorf("Identity = %q, want \"finn\"", spec.Identity)
+	}
+	if spec.SessionID != "sess-finn" {
+		t.Errorf("SessionID = %q, want \"sess-finn\"", spec.SessionID)
+	}
+	if spec.PermissionMode != "bypassPermissions" {
+		t.Errorf("PermissionMode = %q, want \"bypassPermissions\"", spec.PermissionMode)
+	}
+}
+
+// initTestSession records Initialize and StartTurn calls so tests can verify
+// that the child backend wiring passes InitSpec and TurnSpec correctly.
+type initTestSession struct {
+	stopTestSession
+
+	initCalled bool
+	initSpec   backend.InitSpec
+	turnSpecs  []backend.TurnSpec
+}
+
+func (s *initTestSession) Initialize(_ context.Context, spec backend.InitSpec) error {
+	s.initCalled = true
+	s.initSpec = spec
+	return nil
+}
+
+func (s *initTestSession) StartTurn(_ context.Context, _ string, specs ...backend.TurnSpec) (<-chan *protocol.Message, error) {
+	s.turnSpecs = append(s.turnSpecs, specs...)
+	ch := make(chan *protocol.Message, 1)
+	result := &protocol.Message{
+		Type: "result",
+		Raw:  []byte(`{"type":"result","result":"ok","is_error":false,"stop_reason":"end_turn","num_turns":1}`),
+	}
+	ch <- result
+	close(ch)
+	return ch, nil
+}
+
+func TestClaudeBackendProcess_InitSpecFieldExists(t *testing.T) {
+	// Verify that claudeBackendProcess has an initSpec field and that it is
+	// preserved. After implementation, Launch() will call
+	// session.Initialize(ctx, initSpec). This test just verifies the struct
+	// carries the field — the Launch-based initialization test below covers
+	// the full flow.
+	session := &initTestSession{
+		stopTestSession: stopTestSession{waitDone: make(chan error, 1)},
+	}
+	initSpec := backend.InitSpec{
+		MCPServerNames: []string{"sprawl-ops"},
+	}
+
+	proc := &claudeBackendProcess{
+		session:  session,
+		running:  true,
+		initSpec: initSpec,
+	}
+
+	// The initSpec should be stored on the struct.
+	if len(proc.initSpec.MCPServerNames) == 0 {
+		t.Error("claudeBackendProcess.initSpec.MCPServerNames is empty after construction")
+	}
+	if proc.initSpec.MCPServerNames[0] != "sprawl-ops" {
+		t.Errorf("claudeBackendProcess.initSpec.MCPServerNames[0] = %q, want \"sprawl-ops\"", proc.initSpec.MCPServerNames[0])
+	}
+}
+
+func TestClaudeBackendProcess_SendPromptPassesTurnSpec(t *testing.T) {
+	session := &initTestSession{
+		stopTestSession: stopTestSession{waitDone: make(chan error, 1)},
+	}
+	initSpec := backend.InitSpec{
+		MCPServerNames: []string{"sprawl-ops"},
+	}
+
+	proc := &claudeBackendProcess{
+		session:  session,
+		running:  true,
+		initSpec: initSpec,
+	}
+
+	_, err := proc.SendPrompt(context.Background(), "do the thing")
+	if err != nil {
+		t.Fatalf("SendPrompt() error: %v", err)
+	}
+
+	if len(session.turnSpecs) == 0 {
+		t.Fatal("SendPrompt() did not pass TurnSpec to StartTurn; MCP bridge not threaded through turns")
+	}
+	ts := session.turnSpecs[0]
+	if len(ts.Init.MCPServerNames) == 0 {
+		t.Error("TurnSpec.Init.MCPServerNames is empty; expected sprawl-ops server name")
 	}
 }

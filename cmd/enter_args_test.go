@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/rootinit"
+	"github.com/dmotles/sprawl/internal/sprawlmcp"
 )
 
 // freshPrepared is a test fixture representing a fresh-path PreparedSession.
@@ -94,7 +95,7 @@ func TestBuildEnterLaunchOpts_IncludesRootToolsAndMCPTools(t *testing.T) {
 			t.Errorf("expected --allowed-tools %s in args; got %v", tool, args)
 		}
 	}
-	for _, tool := range sprawlOpsMCPTools() {
+	for _, tool := range sprawlmcp.MCPToolNames() {
 		if !argsContainPair(args, "--allowed-tools", tool) {
 			t.Errorf("expected --allowed-tools %s in args (mcp); got %v", tool, args)
 		}
@@ -132,10 +133,10 @@ func TestBuildEnterLaunchOpts_StreamJSONFlags(t *testing.T) {
 	}
 }
 
-func TestSprawlOpsMCPTools_AllPrefixed(t *testing.T) {
-	tools := sprawlOpsMCPTools()
+func TestMCPToolNames_AllPrefixed(t *testing.T) {
+	tools := sprawlmcp.MCPToolNames()
 	if len(tools) == 0 {
-		t.Fatal("sprawlOpsMCPTools returned empty slice")
+		t.Fatal("MCPToolNames returned empty slice")
 	}
 	for _, tool := range tools {
 		if !strings.HasPrefix(tool, "mcp__sprawl-ops__") {
@@ -144,30 +145,34 @@ func TestSprawlOpsMCPTools_AllPrefixed(t *testing.T) {
 	}
 }
 
-func TestSprawlOpsMCPTools_CoversAllServerTools(t *testing.T) {
+func TestMCPToolNames_CoversAllServerTools(t *testing.T) {
 	// Pin the expected set — if sprawlmcp adds a tool, update both here and
-	// sprawlOpsMCPTools(). This guards against silent drift.
+	// toolDefinitions(). This guards against silent drift.
 	want := []string{
 		"mcp__sprawl-ops__sprawl_spawn",
 		"mcp__sprawl-ops__sprawl_status",
 		"mcp__sprawl-ops__sprawl_delegate",
+		"mcp__sprawl-ops__sprawl_send_async",
+		"mcp__sprawl-ops__sprawl_send_interrupt",
+		"mcp__sprawl-ops__sprawl_peek",
+		"mcp__sprawl-ops__sprawl_report_status",
 		"mcp__sprawl-ops__sprawl_message",
 		"mcp__sprawl-ops__sprawl_merge",
 		"mcp__sprawl-ops__sprawl_retire",
-		"mcp__sprawl-ops__sprawl_kill",
 		"mcp__sprawl-ops__sprawl_handoff",
 		"mcp__sprawl-ops__sprawl_messages_list",
 		"mcp__sprawl-ops__sprawl_messages_read",
 		"mcp__sprawl-ops__sprawl_messages_archive",
 		"mcp__sprawl-ops__sprawl_messages_peek",
+		"mcp__sprawl-ops__sprawl_kill",
 	}
-	got := sprawlOpsMCPTools()
+	got := sprawlmcp.MCPToolNames()
 	if len(got) != len(want) {
-		t.Fatalf("sprawlOpsMCPTools length = %d, want %d: %v", len(got), len(want), got)
+		t.Fatalf("MCPToolNames length = %d, want %d: %v", len(got), len(want), got)
 	}
 	for i, w := range want {
 		if got[i] != w {
-			t.Errorf("sprawlOpsMCPTools[%d] = %q, want %q", i, got[i], w)
+			t.Errorf("MCPToolNames[%d] = %q, want %q", i, got[i], w)
 		}
 	}
 }

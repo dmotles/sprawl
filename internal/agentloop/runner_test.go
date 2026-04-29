@@ -114,7 +114,7 @@ func TestStartRunner_DefersInitialPromptUntilRun(t *testing.T) {
 		MkdirAll:     os.MkdirAll,
 		CreateFile:   os.Create,
 		Stdout:       io.Discard,
-		NewBackendProcess: func(backend.SessionSpec, Observer) ProcessManager {
+		NewBackendProcess: func(backend.SessionSpec, backend.InitSpec, Observer) ProcessManager {
 			return proc
 		},
 		NewWorkLock: func(string, string) (*WorkLock, error) {
@@ -327,7 +327,7 @@ func TestRunnerRun_WakeSignalPreemptsIdleSleepAndDeliversTask(t *testing.T) {
 		CreateFile: os.Create,
 		Stdout:     io.Discard,
 		ControlCh:  controlCh,
-		NewBackendProcess: func(backend.SessionSpec, Observer) ProcessManager {
+		NewBackendProcess: func(backend.SessionSpec, backend.InitSpec, Observer) ProcessManager {
 			return proc
 		},
 		NewWorkLock: func(string, string) (*WorkLock, error) {
@@ -383,6 +383,82 @@ func TestRunnerRun_WakeSignalPreemptsIdleSleepAndDeliversTask(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
+}
+
+func TestRunnerCapabilities_SupportsToolBridgeWhenInitSpecSet(t *testing.T) {
+	// After implementation, Runner.Capabilities() should report
+	// SupportsToolBridge: true when the runner's InitSpec has a ToolBridge.
+	// Currently it hardcodes false — this test will fail until the
+	// implementation wires InitSpec through RunnerDeps into the Runner.
+	sprawlRoot := t.TempDir()
+	agentState := &state.AgentState{
+		Name:      "finn",
+		Type:      "engineer",
+		Family:    "engineering",
+		Parent:    "weave",
+		Prompt:    "implement the feature",
+		Branch:    "dmotles/finn",
+		Worktree:  sprawlRoot,
+		Status:    "active",
+		CreatedAt: "2026-04-28T00:00:00Z",
+		SessionID: "sess-finn",
+		TreePath:  "weave/finn",
+	}
+	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	proc := &testRunnerProcess{}
+	deps := &RunnerDeps{
+		Getenv: func(key string) string {
+			switch key {
+			case "SPRAWL_ROOT":
+				return sprawlRoot
+			case "SPRAWL_AGENT_IDENTITY":
+				return "finn"
+			default:
+				return ""
+			}
+		},
+		LoadAgent:    state.LoadAgent,
+		NextTask:     func(string, string) (*state.Task, error) { return nil, nil },
+		UpdateTask:   func(string, string, *state.Task) error { return nil },
+		ListMessages: func(string, string, string) ([]*messages.Message, error) { return nil, nil },
+		SendMessage:  func(string, string, string, string, string) error { return nil },
+		ReadFile:     os.ReadFile,
+		RemoveFile:   os.Remove,
+		BuildPrompt:  func(*state.AgentState) string { return "system prompt" },
+		SleepFunc:    func(time.Duration) {},
+		MkdirAll:     os.MkdirAll,
+		CreateFile:   os.Create,
+		Stdout:       io.Discard,
+		NewBackendProcess: func(backend.SessionSpec, backend.InitSpec, Observer) ProcessManager {
+			return proc
+		},
+		NewWorkLock: func(string, string) (*WorkLock, error) {
+			return &WorkLock{
+				Acquire: func() error { return nil },
+				Release: func() error { return nil },
+			}, nil
+		},
+		Getpid:   func() int { return 1234 },
+		InitSpec: backend.InitSpec{MCPServerNames: []string{"sprawl-ops"}},
+	}
+
+	runner, err := StartRunner(context.Background(), deps, "finn")
+	if err != nil {
+		t.Fatalf("StartRunner() error: %v", err)
+	}
+
+	caps := runner.Capabilities()
+	if !caps.SupportsToolBridge {
+		t.Fatal("Capabilities().SupportsToolBridge = false, want true when InitSpec has MCP servers")
+	}
+
+	// Cleanup
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = runner.Run(runCtx)
 }
 
 func TestRunnerRun_InterruptSignalAlsoPreemptsIdleSleepAndDeliversTask(t *testing.T) {
@@ -454,7 +530,7 @@ func TestRunnerRun_InterruptSignalAlsoPreemptsIdleSleepAndDeliversTask(t *testin
 		CreateFile: os.Create,
 		Stdout:     io.Discard,
 		ControlCh:  controlCh,
-		NewBackendProcess: func(backend.SessionSpec, Observer) ProcessManager {
+		NewBackendProcess: func(backend.SessionSpec, backend.InitSpec, Observer) ProcessManager {
 			return proc
 		},
 		NewWorkLock: func(string, string) (*WorkLock, error) {

@@ -2,13 +2,23 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	backend "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/host"
 )
+
+// dummyMCPServer satisfies host.MCPServer for tests that need an MCP bridge.
+type dummyMCPServer struct{}
+
+func (d *dummyMCPServer) HandleMessage(_ context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	return json.RawMessage(`{}`), nil
+}
 
 func TestRunnerHandle_StopStopsRunnerBeforeCancel(t *testing.T) {
 	oldStart := startRunnerFn
@@ -44,7 +54,7 @@ func TestRunnerHandle_StopStopsRunnerBeforeCancel(t *testing.T) {
 		return nil
 	}
 
-	handle, err := newInProcessRuntimeStarter().Start(context.Background(), RuntimeStartSpec{
+	handle, err := newInProcessRuntimeStarter(backend.InitSpec{}, nil).Start(context.Background(), RuntimeStartSpec{
 		Name:       "alice",
 		Worktree:   "/repo/.sprawl/worktrees/alice",
 		SprawlRoot: "/repo",
@@ -102,7 +112,7 @@ func TestRunnerHandle_StopSuppressesExitErrorFromStop(t *testing.T) {
 		return fmt.Errorf("waiting for process: %w", exitErr)
 	}
 
-	handle, err := newInProcessRuntimeStarter().Start(context.Background(), RuntimeStartSpec{
+	handle, err := newInProcessRuntimeStarter(backend.InitSpec{}, nil).Start(context.Background(), RuntimeStartSpec{
 		Name: "alice", Worktree: "/repo/.sprawl/worktrees/alice",
 		SprawlRoot: "/repo", SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -141,7 +151,7 @@ func TestRunnerHandle_StopSuppressesExitErrorFromWaitErr(t *testing.T) {
 		return nil
 	}
 
-	handle, err := newInProcessRuntimeStarter().Start(context.Background(), RuntimeStartSpec{
+	handle, err := newInProcessRuntimeStarter(backend.InitSpec{}, nil).Start(context.Background(), RuntimeStartSpec{
 		Name: "alice", Worktree: "/repo/.sprawl/worktrees/alice",
 		SprawlRoot: "/repo", SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -179,7 +189,7 @@ func TestRunnerHandle_StopPropagatesNonExitError(t *testing.T) {
 		return fmt.Errorf("closing writer: broken pipe")
 	}
 
-	handle, err := newInProcessRuntimeStarter().Start(context.Background(), RuntimeStartSpec{
+	handle, err := newInProcessRuntimeStarter(backend.InitSpec{}, nil).Start(context.Background(), RuntimeStartSpec{
 		Name: "alice", Worktree: "/repo/.sprawl/worktrees/alice",
 		SprawlRoot: "/repo", SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -220,7 +230,7 @@ func TestRunnerHandle_StopPropagatesNonExitErrorFromWaitErr(t *testing.T) {
 		return nil
 	}
 
-	handle, err := newInProcessRuntimeStarter().Start(context.Background(), RuntimeStartSpec{
+	handle, err := newInProcessRuntimeStarter(backend.InitSpec{}, nil).Start(context.Background(), RuntimeStartSpec{
 		Name: "alice", Worktree: "/repo/.sprawl/worktrees/alice",
 		SprawlRoot: "/repo", SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -242,3 +252,154 @@ func TestRunnerHandle_StopPropagatesNonExitErrorFromWaitErr(t *testing.T) {
 		t.Fatalf("Stop() error = %q, want %q", err.Error(), want)
 	}
 }
+
+func TestBuildRunnerDeps_IncludesInitSpecWithMCPBridge(t *testing.T) {
+	// When inProcessRuntimeStarter has a non-nil supervisor, Start() wires
+	// the MCP bridge into RunnerDeps.InitSpec. This test captures deps via
+	// startRunnerFn to verify the wiring.
+	oldStart := startRunnerFn
+	oldRun := runRunnerFn
+	oldStop := stopRunnerFn
+	defer func() {
+		startRunnerFn = oldStart
+		runRunnerFn = oldRun
+		stopRunnerFn = oldStop
+	}()
+
+	var capturedDeps *agentloop.RunnerDeps
+	startRunnerFn = func(_ context.Context, deps *agentloop.RunnerDeps, _ string) (*agentloop.Runner, error) {
+		capturedDeps = deps
+		return nil, nil
+	}
+	runRunnerFn = func(_ *agentloop.Runner, ctx context.Context) error {
+		<-ctx.Done()
+		return nil
+	}
+	stopRunnerFn = func(_ *agentloop.Runner, _ context.Context) error {
+		return nil
+	}
+
+	mcpBridge := host.NewMCPBridge()
+	mcpBridge.Register("sprawl-ops", &dummyMCPServer{})
+	initSpec := backend.InitSpec{
+		MCPServerNames: []string{"sprawl-ops"},
+		ToolBridge:     mcpBridge,
+	}
+	allowedTools := []string{
+		"mcp__sprawl-ops__sprawl_spawn",
+		"mcp__sprawl-ops__sprawl_status",
+		"mcp__sprawl-ops__sprawl_report_status",
+	}
+
+	starter := newInProcessRuntimeStarter(initSpec, allowedTools)
+	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+		Name:       "alice",
+		Worktree:   "/repo/.sprawl/worktrees/alice",
+		SprawlRoot: "/repo",
+		SessionID:  "sess-alice",
+		TreePath:   "weave/alice",
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer handle.Stop(context.Background()) //nolint:errcheck
+
+	if capturedDeps == nil {
+		t.Fatal("startRunnerFn was not called")
+	}
+
+	// InitSpec should carry the sprawl-ops MCP server name.
+	if len(capturedDeps.InitSpec.MCPServerNames) == 0 {
+		t.Fatal("RunnerDeps.InitSpec.MCPServerNames is empty; expected [\"sprawl-ops\"]")
+	}
+	found := false
+	for _, name := range capturedDeps.InitSpec.MCPServerNames {
+		if name == "sprawl-ops" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("RunnerDeps.InitSpec.MCPServerNames = %v, want to contain \"sprawl-ops\"", capturedDeps.InitSpec.MCPServerNames)
+	}
+
+	// InitSpec.ToolBridge should be non-nil.
+	if capturedDeps.InitSpec.ToolBridge == nil {
+		t.Fatal("RunnerDeps.InitSpec.ToolBridge is nil; expected MCP bridge")
+	}
+
+	// AllowedTools should be passed through.
+	if len(capturedDeps.AllowedTools) != len(allowedTools) {
+		t.Fatalf("RunnerDeps.AllowedTools length = %d, want %d", len(capturedDeps.AllowedTools), len(allowedTools))
+	}
+	toolSet := make(map[string]bool, len(capturedDeps.AllowedTools))
+	for _, tool := range capturedDeps.AllowedTools {
+		toolSet[tool] = true
+	}
+	for _, tool := range allowedTools {
+		if !toolSet[tool] {
+			t.Errorf("RunnerDeps.AllowedTools missing %q", tool)
+		}
+	}
+}
+
+func TestInProcessRuntimeStarter_ChildCapabilitiesIncludeToolBridge(t *testing.T) {
+	// After implementation, a child started via inProcessRuntimeStarter should
+	// report SupportsToolBridge: true in its Capabilities.
+	oldStart := startRunnerFn
+	oldRun := runRunnerFn
+	oldStop := stopRunnerFn
+	defer func() {
+		startRunnerFn = oldStart
+		runRunnerFn = oldRun
+		stopRunnerFn = oldStop
+	}()
+
+	var capturedDeps *agentloop.RunnerDeps
+	startRunnerFn = func(ctx context.Context, deps *agentloop.RunnerDeps, name string) (*agentloop.Runner, error) {
+		capturedDeps = deps
+		return nil, nil
+	}
+	runRunnerFn = func(_ *agentloop.Runner, ctx context.Context) error {
+		<-ctx.Done()
+		return nil
+	}
+	stopRunnerFn = func(_ *agentloop.Runner, _ context.Context) error {
+		return nil
+	}
+
+	mcpBridge := host.NewMCPBridge()
+	mcpBridge.Register("sprawl-ops", &dummyMCPServer{})
+	initSpec := backend.InitSpec{
+		MCPServerNames: []string{"sprawl-ops"},
+		ToolBridge:     mcpBridge,
+	}
+	handle, err := newInProcessRuntimeStarter(initSpec, []string{"mcp__sprawl-ops__sprawl_spawn"}).Start(context.Background(), RuntimeStartSpec{
+		Name:       "alice",
+		Worktree:   "/repo/.sprawl/worktrees/alice",
+		SprawlRoot: "/repo",
+		SessionID:  "sess-alice",
+		TreePath:   "weave/alice",
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer handle.Stop(context.Background()) //nolint:errcheck
+
+	// The captured deps should have InitSpec with MCP bridge configured.
+	if capturedDeps == nil {
+		t.Fatal("startRunnerFn was not called with deps")
+	}
+	if capturedDeps.InitSpec.ToolBridge == nil {
+		t.Error("RunnerDeps.InitSpec.ToolBridge is nil; child MCP bridge not wired")
+	}
+	if len(capturedDeps.InitSpec.MCPServerNames) == 0 {
+		t.Error("RunnerDeps.InitSpec.MCPServerNames is empty; expected sprawl-ops")
+	}
+	if len(capturedDeps.AllowedTools) == 0 {
+		t.Error("RunnerDeps.AllowedTools is empty; expected MCP tool names")
+	}
+}
+
+// Ensure the backend import is used (compile guard).
+var _ backend.InitSpec
