@@ -16,6 +16,7 @@ type runtimeTestSession struct {
 	sessionID  string
 	caps       backendpkg.Capabilities
 	interrupts int
+	stopCalls  int
 }
 
 func (s *runtimeTestSession) Initialize(context.Context, backendpkg.InitSpec) error { return nil }
@@ -29,6 +30,11 @@ func (s *runtimeTestSession) Interrupt(context.Context) error {
 	s.interrupts++
 	return nil
 }
+
+func (s *runtimeTestSession) Stop(context.Context) error {
+	s.stopCalls++
+	return nil
+}
 func (s *runtimeTestSession) Close() error                          { return nil }
 func (s *runtimeTestSession) Wait() error                           { return nil }
 func (s *runtimeTestSession) Kill() error                           { return nil }
@@ -39,13 +45,17 @@ func (s *runtimeTestSession) Capabilities() backendpkg.Capabilities { return s.c
 type runtimeTestStarter struct {
 	mu      sync.Mutex
 	specs   []RuntimeStartSpec
-	session backendpkg.Session
+	session RuntimeHandle
+	err     error
 }
 
-func (s *runtimeTestStarter) Start(_ context.Context, spec RuntimeStartSpec) (backendpkg.Session, error) {
+func (s *runtimeTestStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.specs = append(s.specs, spec)
+	if s.err != nil {
+		return nil, s.err
+	}
 	return s.session, nil
 }
 

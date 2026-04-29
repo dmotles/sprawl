@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentops"
+	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -15,6 +16,15 @@ import (
 func newFakeReal(t *testing.T) (*Real, string) {
 	t.Helper()
 	r, tmpDir := newTestSupervisor(t)
+	r.runtimeStarter = &runtimeTestStarter{
+		session: &runtimeTestSession{
+			sessionID: "test-session",
+			caps: backendpkg.Capabilities{
+				SupportsInterrupt: true,
+				SupportsResume:    true,
+			},
+		},
+	}
 	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error) {
 		return nil, errors.New("spawnFn not overridden")
 	}
@@ -303,6 +313,20 @@ func TestNewReal_BuildsDepsWithRealAgentops(t *testing.T) {
 	}
 	if v := sup.killDeps.Getenv("SPRAWL_ROOT"); v == "" {
 		t.Error("killDeps.Getenv(SPRAWL_ROOT) should return the configured sprawlRoot")
+	}
+}
+
+func TestNewReal_DoesNotRequireTmuxOnPath(t *testing.T) {
+	t.Setenv("PATH", "")
+	sup, err := NewReal(Config{
+		SprawlRoot: t.TempDir(),
+		CallerName: "weave",
+	})
+	if err != nil {
+		t.Fatalf("NewReal: %v", err)
+	}
+	if sup == nil {
+		t.Fatal("NewReal returned nil supervisor")
 	}
 }
 

@@ -37,11 +37,20 @@ type RuntimeStartSpec struct {
 	Worktree   string
 	SprawlRoot string
 	SessionID  string
+	TreePath   string
 }
 
-// RuntimeStarter starts a backend session for a child runtime.
+// RuntimeHandle is the live controller for a started in-process child runtime.
+type RuntimeHandle interface {
+	Interrupt(ctx context.Context) error
+	Stop(ctx context.Context) error
+	SessionID() string
+	Capabilities() backendpkg.Capabilities
+}
+
+// RuntimeStarter starts a child runtime and returns its live handle.
 type RuntimeStarter interface {
-	Start(ctx context.Context, spec RuntimeStartSpec) (backendpkg.Session, error)
+	Start(ctx context.Context, spec RuntimeStartSpec) (RuntimeHandle, error)
 }
 
 // RuntimeSnapshot is the internal-only live snapshot future status/tree/TUI
@@ -84,7 +93,7 @@ type AgentRuntime struct {
 	mu         sync.RWMutex
 	sprawlRoot string
 	starter    RuntimeStarter
-	session    backendpkg.Session
+	handle     RuntimeHandle
 	snapshot   RuntimeSnapshot
 
 	nextSubscriberID int
@@ -178,22 +187,23 @@ func (r *AgentRuntime) Start(ctx context.Context) error {
 		Worktree:   r.snapshot.Worktree,
 		SprawlRoot: r.sprawlRoot,
 		SessionID:  r.snapshot.SessionID,
+		TreePath:   r.snapshot.TreePath,
 	}
 	r.mu.RUnlock()
 
 	if starter == nil {
 		return fmt.Errorf("runtime starter not configured")
 	}
-	session, err := starter.Start(ctx, spec)
+	handle, err := starter.Start(ctx, spec)
 	if err != nil {
 		return err
 	}
 
 	r.mu.Lock()
-	r.session = session
+	r.handle = handle
 	r.snapshot.Lifecycle = RuntimeLifecycleStarted
-	r.snapshot.Capabilities = session.Capabilities()
-	if sessionID := session.SessionID(); sessionID != "" {
+	r.snapshot.Capabilities = handle.Capabilities()
+	if sessionID := handle.SessionID(); sessionID != "" {
 		r.snapshot.SessionID = sessionID
 	}
 	r.mu.Unlock()
@@ -204,16 +214,16 @@ func (r *AgentRuntime) Start(ctx context.Context) error {
 // Interrupt forwards an interrupt to the tracked backend session when one is attached.
 func (r *AgentRuntime) Interrupt(ctx context.Context) error {
 	r.mu.RLock()
-	session := r.session
+	handle := r.handle
 	r.mu.RUnlock()
 
-	if session == nil {
+	if handle == nil {
 		return fmt.Errorf("runtime session not started")
 	}
-	if !session.Capabilities().SupportsInterrupt {
+	if !handle.Capabilities().SupportsInterrupt {
 		return fmt.Errorf("runtime session does not support interrupt")
 	}
-	if err := session.Interrupt(ctx); err != nil {
+	if err := handle.Interrupt(ctx); err != nil {
 		return err
 	}
 
@@ -221,6 +231,28 @@ func (r *AgentRuntime) Interrupt(ctx context.Context) error {
 	r.snapshot.InterruptCount++
 	r.mu.Unlock()
 	r.emit(RuntimeEventInterrupted)
+	return nil
+}
+
+// Stop stops the tracked runtime handle, if any.
+func (r *AgentRuntime) Stop(ctx context.Context) error {
+	r.mu.RLock()
+	handle := r.handle
+	r.mu.RUnlock()
+
+	if handle == nil {
+		return nil
+	}
+	if err := handle.Stop(ctx); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.handle = nil
+	if r.snapshot.Lifecycle == RuntimeLifecycleStarted {
+		r.snapshot.Lifecycle = RuntimeLifecycleRegistered
+	}
+	r.mu.Unlock()
 	return nil
 }
 

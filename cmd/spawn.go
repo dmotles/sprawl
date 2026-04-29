@@ -107,9 +107,10 @@ func resolveSpawnDeps() (*spawnDeps, error) {
 			fl := flock.New(lockPath)
 			return fl.Lock, fl.Unlock
 		},
-		LoadConfig:     config.Load,
-		RunScript:      runBashScript,
-		WorktreeRemove: realWorktreeRemove,
+		LoadConfig:      config.Load,
+		RunScript:       runBashScript,
+		WorktreeRemove:  realWorktreeRemove,
+		GitBranchDelete: realGitBranchDelete,
 	}, nil
 }
 

@@ -42,6 +42,8 @@ type Real struct {
 	callerName string
 
 	runtimeRegistry *RuntimeRegistry
+	runtimeStarter  RuntimeStarter
+	tmuxAvailable   bool
 
 	spawnDeps  *agentops.SpawnDeps
 	mergeDeps  *agentops.MergeDeps
@@ -65,13 +67,14 @@ type Real struct {
 }
 
 // NewReal creates a new real supervisor. It returns an error if required
-// tooling (tmux) is not available on PATH.
+// tooling is not available on PATH.
 func NewReal(cfg Config) (*Real, error) {
-	tmuxPath, err := tmux.FindTmux()
-	if err != nil {
-		return nil, fmt.Errorf("tmux is required but not found")
+	var tmuxRunner tmux.Runner = &noopTmuxRunner{}
+	tmuxAvailable := false
+	if tmuxPath, err := tmux.FindTmux(); err == nil {
+		tmuxRunner = &tmux.RealRunner{TmuxPath: tmuxPath}
+		tmuxAvailable = true
 	}
-	tmuxRunner := &tmux.RealRunner{TmuxPath: tmuxPath}
 
 	// supervisorGetenv injects the supervisor's identity/root into env
 	// lookups that agentops performs. Everything else passes through to
@@ -108,6 +111,8 @@ func NewReal(cfg Config) (*Real, error) {
 		sprawlRoot:      cfg.SprawlRoot,
 		callerName:      cfg.CallerName,
 		runtimeRegistry: NewRuntimeRegistry(),
+		runtimeStarter:  newInProcessRuntimeStarter(),
+		tmuxAvailable:   tmuxAvailable,
 
 		spawnDeps: &agentops.SpawnDeps{
 			TmuxRunner:      tmuxRunner,
@@ -119,9 +124,10 @@ func NewReal(cfg Config) (*Real, error) {
 				fl := flock.New(lockPath)
 				return fl.Lock, fl.Unlock
 			},
-			LoadConfig:     config.Load,
-			RunScript:      agentops.RunBashScript,
-			WorktreeRemove: agentops.RealWorktreeRemove,
+			LoadConfig:      config.Load,
+			RunScript:       agentops.RunBashScript,
+			WorktreeRemove:  agentops.RealWorktreeRemove,
+			GitBranchDelete: agentops.RealGitBranchDelete,
 		},
 		mergeDeps: &agentops.MergeDeps{
 			Getenv:        supervisorGetenv,
@@ -163,7 +169,7 @@ func NewReal(cfg Config) (*Real, error) {
 			SleepFunc:  time.Sleep,
 		},
 
-		spawnFn:  agentops.Spawn,
+		spawnFn:  agentops.PrepareSpawn,
 		mergeFn:  agentops.Merge,
 		retireFn: agentops.Retire,
 		killFn:   agentops.Kill,
@@ -239,10 +245,15 @@ func (r *Real) Spawn(_ context.Context, req SpawnRequest) (*AgentInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+	runtime := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
 		SprawlRoot: r.sprawlRoot,
 		Agent:      st,
+		Starter:    r.runtimeStarter,
 	})
+	if err := runtime.Start(context.Background()); err != nil {
+		r.rollbackSpawnArtifacts(st.Name)
+		return nil, fmt.Errorf("starting runtime for %s: %w", st.Name, err)
+	}
 	return &AgentInfo{
 		Name:   st.Name,
 		Type:   st.Type,
@@ -257,7 +268,43 @@ func (r *Real) Merge(_ context.Context, agentName, message string, noValidate bo
 	return r.mergeFn(r.mergeDeps, agentName, message, noValidate, false)
 }
 
-func (r *Real) Retire(_ context.Context, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+func (r *Real) Retire(ctx context.Context, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+	if runtime, ok := r.startedRuntime(agentName); ok {
+		children, err := r.listDirectChildren(agentName)
+		if err != nil {
+			return fmt.Errorf("checking children: %w", err)
+		}
+		if len(children) > 0 && !cascade {
+			names := make([]string, len(children))
+			for i, child := range children {
+				names[i] = child.Name
+			}
+			sort.Strings(names)
+			return fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
+				agentName, len(children), strings.Join(names, ", "), agentName, agentName)
+		}
+		if cascade {
+			for _, child := range children {
+				if err := r.Retire(ctx, child.Name, false, false, true, noValidate); err != nil {
+					return err
+				}
+			}
+		}
+		stopCtx, cancel := withRuntimeStopTimeout(ctx)
+		defer cancel()
+		if err := runtime.Stop(stopCtx); err != nil {
+			return err
+		}
+		if err := r.retireFn(r.retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
+			return err
+		}
+		r.runtimeRegistry.Remove(agentName)
+		return nil
+	}
+	if !r.tmuxAvailable {
+		return fmt.Errorf("tmux is unavailable; cannot retire agent %q without a live in-process runtime", agentName)
+	}
+
 	if err := r.retireFn(r.retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)
@@ -275,18 +322,43 @@ func (r *Real) Retire(_ context.Context, agentName string, mergeFirst, abandon, 
 // Kill is idempotent: if the agent is already gone (state file missing) or
 // was already killed, it returns nil. Enter.go's graceful shutdown iterates
 // every agent and calls Kill, so transient absence must not fail.
-func (r *Real) Kill(_ context.Context, agentName string) error {
+func (r *Real) Kill(ctx context.Context, agentName string) error {
 	if err := agent.ValidateName(agentName); err != nil {
 		return err
 	}
 
 	// Swallow "agent not found" — idempotent shutdown contract.
-	if _, err := state.LoadAgent(r.sprawlRoot, agentName); err != nil {
+	agentState, err := state.LoadAgent(r.sprawlRoot, agentName)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		// Unknown error reading state — propagate.
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
+	}
+	if agentState.Status == "killed" {
+		return nil
+	}
+
+	if runtime, ok := r.startedRuntime(agentName); ok {
+		stopCtx, cancel := withRuntimeStopTimeout(ctx)
+		defer cancel()
+		if err := runtime.Stop(stopCtx); err != nil {
+			return err
+		}
+		updatedState, err := state.LoadAgent(r.sprawlRoot, agentName)
+		if err != nil {
+			return fmt.Errorf("agent %q not found: %w", agentName, err)
+		}
+		updatedState.Status = "killed"
+		if err := state.SaveAgent(r.sprawlRoot, updatedState); err != nil {
+			return fmt.Errorf("updating agent state: %w", err)
+		}
+		runtime.SyncAgentState(updatedState)
+		return nil
+	}
+	if !r.tmuxAvailable {
+		return fmt.Errorf("tmux is unavailable; cannot kill agent %q without a live in-process runtime", agentName)
 	}
 
 	if err := r.killFn(r.killDeps, agentName, false); err != nil {
@@ -296,7 +368,28 @@ func (r *Real) Kill(_ context.Context, agentName string) error {
 	return nil
 }
 
-func (r *Real) Shutdown(_ context.Context) error {
+func (r *Real) Shutdown(ctx context.Context) error {
+	for _, runtime := range r.runtimeRegistry.List() {
+		snap := runtime.Snapshot()
+		if snap.Lifecycle != RuntimeLifecycleStarted {
+			continue
+		}
+		stopCtx, cancel := withRuntimeStopTimeout(ctx)
+		if err := runtime.Stop(stopCtx); err != nil {
+			cancel()
+			return err
+		}
+		cancel()
+		agentState, err := state.LoadAgent(r.sprawlRoot, snap.Name)
+		if err != nil {
+			continue
+		}
+		agentState.Status = "killed"
+		if err := state.SaveAgent(r.sprawlRoot, agentState); err != nil {
+			return fmt.Errorf("updating agent state: %w", err)
+		}
+		runtime.SyncAgentState(agentState)
+	}
 	return nil
 }
 
@@ -608,6 +701,58 @@ func (r *Real) syncRuntimeFromState(agentName string) {
 		return
 	}
 	runtime.SyncAgentState(agentState)
+}
+
+const runtimeStopTimeout = 10 * time.Second
+
+func withRuntimeStopTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		return context.WithTimeout(context.Background(), runtimeStopTimeout)
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, runtimeStopTimeout)
+}
+
+func (r *Real) startedRuntime(agentName string) (*AgentRuntime, bool) {
+	runtime, ok := r.runtimeRegistry.Get(agentName)
+	if !ok {
+		return nil, false
+	}
+	if runtime.Snapshot().Lifecycle != RuntimeLifecycleStarted {
+		return nil, false
+	}
+	return runtime, true
+}
+
+func (r *Real) rollbackSpawnArtifacts(agentName string) {
+	r.runtimeRegistry.Remove(agentName)
+	agentState, err := state.LoadAgent(r.sprawlRoot, agentName)
+	if err == nil {
+		if agentState.Worktree != "" && r.spawnDeps != nil && r.spawnDeps.WorktreeRemove != nil {
+			_ = r.spawnDeps.WorktreeRemove(r.sprawlRoot, agentState.Worktree, true)
+		}
+		if agentState.Branch != "" && r.spawnDeps != nil && r.spawnDeps.GitBranchDelete != nil {
+			_ = r.spawnDeps.GitBranchDelete(r.sprawlRoot, agentState.Branch)
+		}
+	}
+	_ = state.DeleteAgent(r.sprawlRoot, agentName)
+	_ = os.RemoveAll(filepath.Join(state.AgentsDir(r.sprawlRoot), agentName))
+}
+
+func (r *Real) listDirectChildren(parentName string) ([]*state.AgentState, error) {
+	agents, err := state.ListAgents(r.sprawlRoot)
+	if err != nil {
+		return nil, err
+	}
+	var children []*state.AgentState
+	for _, agentState := range agents {
+		if agentState.Parent == parentName {
+			children = append(children, agentState)
+		}
+	}
+	return children, nil
 }
 
 func (r *Real) reconcileRuntimeTreeFromState(rootName string) {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,10 +18,8 @@ import (
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/protocol"
-	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
@@ -275,20 +274,6 @@ func init() {
 	rootCmd.AddCommand(agentLoopCmd)
 }
 
-// startProcess creates and launches a process (without sending a prompt).
-// On failure it reports to parent and calls exit(1).
-// Returns (proc, true) on success, or (nil, false) on failure (after reporting and exiting).
-func startProcess(ctx context.Context, deps *agentLoopDeps, config agentloop.ProcessConfig, observer agentloop.Observer, sprawlRoot, agentName, parent, reason string) (processManager, bool) {
-	proc := deps.newProcess(config, observer)
-	if err := proc.Launch(ctx); err != nil {
-		fmt.Fprintf(deps.stdout, "[agent-loop] %s: %v\n", reason, err)
-		_ = deps.sendMessage(sprawlRoot, agentName, parent, "[PROBLEM] agent-loop failure", fmt.Sprintf("%s: %v", reason, err))
-		deps.exit(1)
-		return nil, false
-	}
-	return proc, true
-}
-
 // hasPendingInterrupt reports whether the agent's pending queue contains any
 // class=interrupt entry. Used by the mid-turn poller to trigger preemption
 // per docs/designs/messaging-overhaul.md §4.5.2.
@@ -317,6 +302,8 @@ func hasPendingInterrupt(sprawlRoot, agentName string) bool {
 // queue; when one appears mid-turn, it calls InterruptTurn so the main loop
 // can deliver the §4.5.2 interrupt frame on the next iteration.
 // Returns the SendPrompt result, any poke content (non-empty if interrupted), and error.
+//
+//nolint:unparam // test helpers exercise different prompts and poll intervals across scenarios.
 func sendPromptWithInterrupt(
 	ctx context.Context,
 	proc processManager,
@@ -409,9 +396,6 @@ func sendPromptWithInterrupt(
 	return result, pokeContent, err
 }
 
-// defaultPollInterval is the default interval for checking poke files during a turn.
-const defaultPollInterval = 500 * time.Millisecond
-
 // Flush-prompt building is shared with the weave root-loop (tmux and TUI)
 // via internal/agentloop/flush.go. These thin wrappers keep the cmd-package
 // call sites stable; the canonical implementations live in that file.
@@ -437,484 +421,92 @@ const (
 
 // runAgentLoop is the main loop logic for the agent-loop command.
 func runAgentLoop(ctx context.Context, deps *agentLoopDeps, agentName string) error {
-	if err := agent.ValidateName(agentName); err != nil {
+	runner, err := agentloop.StartRunner(ctx, toSharedRunnerDeps(deps), agentName)
+	if err != nil {
+		var fatal *agentloop.FatalError
+		if errors.As(err, &fatal) {
+			deps.exit(1)
+			return nil
+		}
 		return err
 	}
-
-	// Validate SPRAWL_ROOT
-	sprawlRoot := deps.getenv("SPRAWL_ROOT")
-	if sprawlRoot == "" {
-		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
+	if err := runner.Run(ctx); err != nil {
+		var fatal *agentloop.FatalError
+		if errors.As(err, &fatal) {
+			deps.exit(1)
+			return nil
+		}
+		return err
 	}
+	return nil
+}
 
-	// Load agent state
-	agentState, err := deps.loadAgent(sprawlRoot, agentName)
-	if err != nil {
-		return fmt.Errorf("loading agent state: %w", err)
-	}
-
-	// Create log file
-	logsDir := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName, "logs")
-	if err := deps.mkdirAll(logsDir, 0o755); err != nil {
-		return fmt.Errorf("creating logs directory: %w", err)
-	}
-	logFile, err := deps.createFile(filepath.Join(logsDir, agentState.SessionID+".log"))
-	if err != nil {
-		return fmt.Errorf("creating log file: %w", err)
-	}
-	defer logFile.Close()
-
-	// Create work lock for synchronization with merge operations.
-	lockDir := filepath.Join(sprawlRoot, ".sprawl", "locks")
-	wl, err := deps.newWorkLock(lockDir, agentName)
-	if err != nil {
-		return fmt.Errorf("creating work lock: %w", err)
-	}
-
-	// Tee output to both stdout and log file, then wrap with timestamps
-	deps.stdout = &timestampWriter{
-		w:       io.MultiWriter(deps.stdout, logFile),
-		nowFunc: time.Now,
-	}
-
-	defer fmt.Fprintf(deps.stdout, "[agent-loop] STOPPED agent=%s\n", agentName)
-
-	// Set up signal handling inside runAgentLoop so log lines go through the
-	// timestamped writer and into the log file.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	if deps.signalCh != nil {
-		go func() {
-			select {
-			case sig := <-deps.signalCh:
-				fmt.Fprintf(deps.stdout, "[agent-loop] received signal %s, shutting down\n", sig)
-				cancel()
-			case <-ctx.Done():
+func toSharedRunnerDeps(deps *agentLoopDeps) *agentloop.RunnerDeps {
+	shared := &agentloop.RunnerDeps{
+		Getenv: func(key string) string {
+			return deps.getenv(key)
+		},
+		LoadAgent: func(root, name string) (*state.AgentState, error) {
+			return deps.loadAgent(root, name)
+		},
+		NextTask: func(root, name string) (*state.Task, error) {
+			return deps.nextTask(root, name)
+		},
+		UpdateTask: func(root, name string, task *state.Task) error {
+			return deps.updateTask(root, name, task)
+		},
+		ListMessages: func(root, agentName, filter string) ([]*messages.Message, error) {
+			return deps.listMessages(root, agentName, filter)
+		},
+		SendMessage: func(root, from, to, subject, body string) error {
+			return deps.sendMessage(root, from, to, subject, body)
+		},
+		FindClaude: func() (string, error) {
+			return deps.findClaude()
+		},
+		ReadFile: func(path string) ([]byte, error) {
+			return deps.readFile(path)
+		},
+		RemoveFile: func(path string) error {
+			return deps.removeFile(path)
+		},
+		BuildPrompt: func(agentState *state.AgentState) string {
+			return deps.buildPrompt(agentState)
+		},
+		SleepFunc: func(d time.Duration) {
+			deps.sleepFunc(d)
+		},
+		MkdirAll: func(path string, mode os.FileMode) error {
+			return deps.mkdirAll(path, mode)
+		},
+		CreateFile: func(path string) (*os.File, error) {
+			return deps.createFile(path)
+		},
+		Stdout: deps.stdout,
+		NewWorkLock: func(lockDir, agentName string) (*agentloop.WorkLock, error) {
+			lock, err := deps.newWorkLock(lockDir, agentName)
+			if err != nil {
+				return nil, err
 			}
-		}()
+			return &agentloop.WorkLock{
+				Acquire: lock.Acquire,
+				Release: lock.Release,
+			}, nil
+		},
+		Getpid: func() int {
+			return deps.getpid()
+		},
+		SignalCh: deps.signalCh,
 	}
-
-	fmt.Fprintf(deps.stdout, "[agent-loop] starting for agent %q\n", agentName)
-
-	// Build process config
-	systemPrompt := deps.buildPrompt(agentState)
-	promptPath, err := state.WriteSystemPrompt(sprawlRoot, agentName, systemPrompt)
-	if err != nil {
-		return fmt.Errorf("writing system prompt file: %w", err)
-	}
-	sessionSpec := buildAgentSessionSpec(agentState, promptPath, sprawlRoot)
-	var config agentloop.ProcessConfig
-	if deps.newBackendProcess == nil {
-		// Legacy compat path retained for existing command tests that still
-		// inject the older agentloop.Process constructor directly.
-		claudePath, findErr := deps.findClaude()
-		if findErr != nil {
-			return fmt.Errorf("finding claude binary: %w", findErr)
-		}
-		config = agentloop.ProcessConfig{
-			AgentName:  agentName,
-			WorkDir:    agentState.Worktree,
-			ClaudePath: claudePath,
-			SprawlRoot: sprawlRoot,
-			Args: claude.LaunchOpts{
-				SessionID:        agentState.SessionID,
-				SystemPromptFile: promptPath,
-				Print:            true,
-				InputFormat:      "stream-json",
-				OutputFormat:     "stream-json",
-				Verbose:          true,
-				Model:            rootinit.DefaultModel,
-				Effort:           "medium",
-				PermissionMode:   "bypassPermissions",
-			},
+	if deps.newProcess != nil {
+		shared.NewProcess = func(config agentloop.ProcessConfig, observer agentloop.Observer) agentloop.ProcessManager {
+			return deps.newProcess(config, observer)
 		}
 	}
-
-	// Debug: print full configuration being passed to Claude
-	fmt.Fprintf(deps.stdout, "[agent-loop] === SYSTEM PROMPT ===\n")
-	for _, line := range strings.Split(systemPrompt, "\n") {
-		fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-	}
-	fmt.Fprintf(deps.stdout, "[agent-loop] === INITIAL PROMPT/TASK ===\n")
-	fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", agentState.Prompt)
-	fmt.Fprintf(deps.stdout, "[agent-loop] === PROCESS CONFIG ===\n")
-	fmt.Fprintf(deps.stdout, "[agent-loop]   agent-name:      %s\n", sessionSpec.Identity)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   session-id:      %s\n", sessionSpec.SessionID)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   work-dir:        %s\n", sessionSpec.WorkDir)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   prompt-file:     %s\n", sessionSpec.PromptFile)
-	fmt.Fprintf(deps.stdout, "[agent-loop]   sprawl-root:     %s\n", sessionSpec.SprawlRoot)
-	fmt.Fprintf(deps.stdout, "[agent-loop] === KEY ENV VARS ===\n")
-	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_AGENT_IDENTITY=%s\n", deps.getenv("SPRAWL_AGENT_IDENTITY"))
-	fmt.Fprintf(deps.stdout, "[agent-loop]   SPRAWL_ROOT=%s\n", deps.getenv("SPRAWL_ROOT"))
-
-	// Open the append-only activity log for this agent. Errors are
-	// non-fatal — activity recording is observability-only. An ordinary
-	// os.OpenFile suffices here; the file is only written from this
-	// process and occasional tailing from other processes is safe given
-	// line-buffered writes.
-	activityDir := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName)
-	if err := deps.mkdirAll(activityDir, 0o755); err != nil {
-		fmt.Fprintf(deps.stdout, "[agent-loop] warn: could not create activity dir: %v\n", err)
-	}
-	var activityFile *os.File
-	activityFile, actErr := os.OpenFile(agentloop.ActivityPath(sprawlRoot, agentName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // G304: path is derived from trusted inputs
-	if actErr != nil {
-		fmt.Fprintf(deps.stdout, "[agent-loop] warn: could not open activity file: %v\n", actErr)
-		activityFile = nil
-	} else {
-		defer activityFile.Close()
-	}
-	var activityWriter io.Writer
-	if activityFile != nil {
-		activityWriter = activityFile
-	}
-	ring := agentloop.NewActivityRing(agentloop.DefaultActivityCapacity, activityWriter)
-
-	observer := &tmuxObserver{w: deps.stdout, ring: ring}
-
-	// Create and launch the initial process (without sending a prompt yet).
-	var proc processManager
-	var ok bool
 	if deps.newBackendProcess != nil {
-		proc, ok = startBackendProcess(ctx, deps, sessionSpec, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process")
-	} else {
-		proc, ok = startProcess(ctx, deps, config, observer, sprawlRoot, agentName, agentState.Parent, "failed to start process")
+		shared.NewBackendProcess = func(spec backend.SessionSpec, observer agentloop.Observer) agentloop.ProcessManager {
+			return deps.newBackendProcess(spec, observer)
+		}
 	}
-	if !ok {
-		return nil
-	}
-
-	fmt.Fprintf(deps.stdout, "[agent-loop] READY agent=%s pid=%d\n", agentName, deps.getpid())
-
-	// Use a closure defer so it always stops the most-recently-assigned proc.
-	// Guard against nil in case a restart failure left proc unset.
-	defer func() {
-		if proc != nil {
-			_ = proc.Stop(ctx)
-		}
-	}()
-
-	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")
-
-	// sendWithInterrupt wraps sendPromptWithInterrupt with the poke path and default interval.
-	sendWithInterrupt := func(prompt string) (*protocol.ResultMessage, string, error) {
-		return sendPromptWithInterrupt(ctx, proc, deps, pokePath, prompt, defaultPollInterval, sprawlRoot, agentName)
-	}
-
-	// pendingPoke holds poke content from a mid-turn interrupt, delivered on the next iteration.
-	var pendingPoke string
-
-	// Clear any stale wake file before the initial turn — a leftover wake
-	// file from a previous agent (or a message sent before launch) would
-	// trigger a spurious interrupt on the very first turn.
-	wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
-	_ = deps.removeFile(wakePath)
-
-	// Send the initial prompt through the interrupt-aware path so poke/wake
-	// files are detected during the first turn, not just subsequent turns.
-	fmt.Fprintf(deps.stdout, "[agent-loop] sending initial prompt with interrupt support\n")
-	_, initialPoke, initialSendErr := sendWithInterrupt(agentState.Prompt)
-	if initialSendErr != nil {
-		fmt.Fprintf(deps.stdout, "[agent-loop] failed to send initial prompt: %v\n", initialSendErr)
-		_ = deps.sendMessage(sprawlRoot, agentName, agentState.Parent, "[PROBLEM] agent-loop failure",
-			fmt.Sprintf("failed to send initial prompt: %v", initialSendErr))
-		deps.exit(1)
-		return nil
-	}
-	if initialPoke != "" {
-		pendingPoke = initialPoke
-	}
-	// If the initial turn was interrupted by a wake (no poke content),
-	// do NOT re-queue the initial prompt. The agent already has session
-	// context from the partially-completed first turn and knows its task.
-	// Let the main loop fall through to inbox delivery so the message
-	// that triggered the interrupt gets delivered immediately.
-
-	// restartWithResume creates a new process with Resume=true after a crash.
-	// Returns false (and exits) if the restart fails.
-	restartWithResume := func() bool {
-		var ok bool
-		if deps.newBackendProcess != nil {
-			resumeSpec := sessionSpec
-			resumeSpec.Resume = true
-			proc, ok = startBackendProcess(ctx, deps, resumeSpec, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash")
-		} else {
-			resumeConfig := config
-			resumeConfig.Args.Resume = true
-			proc, ok = startProcess(ctx, deps, resumeConfig, observer, sprawlRoot, agentName, agentState.Parent, "failed to restart process after crash")
-		}
-		return ok
-	}
-
-	// Main loop
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Fprintf(deps.stdout, "[agent-loop] shutting down: %v\n", ctx.Err())
-			return nil
-		default:
-		}
-
-		// 0. Check for kill sentinel file.
-		killFilePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".kill")
-		if _, readErr := deps.readFile(killFilePath); readErr == nil {
-			fmt.Fprintf(deps.stdout, "[agent-loop] kill sentinel detected, shutting down\n")
-			_ = deps.removeFile(killFilePath)
-			return nil // triggers deferred proc.Stop()
-		}
-
-		// 0.1. Check if agent state file still exists (defense against external retirement).
-		if _, loadErr := deps.loadAgent(sprawlRoot, agentName); loadErr != nil {
-			fmt.Fprintf(deps.stdout, "[agent-loop] agent state file missing, shutting down\n")
-			return nil
-		}
-
-		// Acquire the work lock before checking for work and invoking Claude.
-		// This synchronizes with merge operations that need exclusive branch access.
-		if err := wl.Acquire(); err != nil {
-			return fmt.Errorf("acquiring work lock: %w", err)
-		}
-
-		// 0.5. Check for poke file between turns (or consume pending poke from interrupt).
-		if pendingPoke == "" {
-			if content, readErr := deps.readFile(pokePath); readErr == nil {
-				pendingPoke = strings.TrimSpace(string(content))
-				_ = deps.removeFile(pokePath)
-			}
-		}
-
-		// If we have pending poke content, deliver it immediately.
-		if pendingPoke != "" {
-			prompt := pendingPoke
-			pendingPoke = ""
-			fmt.Fprintf(deps.stdout, "[agent-loop] delivering poke message\n")
-			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
-			for _, line := range strings.Split(prompt, "\n") {
-				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-			}
-			_, pokeContent, sendErr := sendWithInterrupt(prompt)
-			if pokeContent != "" {
-				pendingPoke = pokeContent
-			}
-			if sendErr != nil {
-				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on poke delivery, restarting: %v\n", sendErr)
-				if !restartWithResume() {
-					_ = wl.Release()
-					return nil
-				}
-			}
-			_ = wl.Release()
-			continue
-		}
-
-		// 1. Check for a queued task.
-		task, err := deps.nextTask(sprawlRoot, agentName)
-		if err != nil {
-			fmt.Fprintf(deps.stdout, "[agent-loop] error fetching next task: %v\n", err)
-		} else if task != nil {
-			task.Status = "in-progress"
-			_ = deps.updateTask(sprawlRoot, agentName, task)
-
-			fmt.Fprintf(deps.stdout, "[agent-loop] starting task %s\n", task.ID)
-			var taskPrompt string
-			if task.PromptFile != "" {
-				taskPrompt = fmt.Sprintf("You have a new task. Read it from @%s and begin working.", task.PromptFile)
-			} else {
-				taskPrompt = task.Prompt
-			}
-			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
-			for _, line := range strings.Split(taskPrompt, "\n") {
-				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-			}
-			_, pokeContent, sendErr := sendWithInterrupt(taskPrompt)
-			if pokeContent != "" {
-				pendingPoke = pokeContent
-			}
-			if sendErr != nil {
-				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on task %s, restarting: %v\n", task.ID, sendErr)
-				if !restartWithResume() {
-					_ = wl.Release()
-					return nil
-				}
-				// Retry on recovered process.
-				_, retryPoke, _ := sendWithInterrupt(taskPrompt)
-				if retryPoke != "" {
-					pendingPoke = retryPoke
-				}
-			}
-
-			// Only mark task done if it wasn't interrupted by a poke.
-			// An interrupted task still completed its turn (Claude emits a result),
-			// but the poke message takes priority for the next turn.
-			task.Status = "done"
-			_ = deps.updateTask(sprawlRoot, agentName, task)
-			_ = wl.Release()
-			continue
-		}
-
-		// 2a. Drain the harness queue — messages persisted by sprawl_send_async
-		// and sprawl_send_interrupt. Per docs/designs/messaging-overhaul.md
-		// §4.5.1 and §4.5.2:
-		//   - Interrupt entries take priority and are delivered in their own
-		//     frame (one user turn). Async entries in the same batch stay in
-		//     pending/ and flush on the next yield per §8.3 ordering.
-		//   - Async entries are bundled into a single notification frame and
-		//     marked delivered after a successful send.
-		// Legacy messages.Send callers (maildir + .wake only, no queue entry)
-		// are handled by the .wake step below during the dual-delivery phase.
-		pending, pendErr := agentloop.ListPending(sprawlRoot, agentName)
-		if pendErr != nil {
-			fmt.Fprintf(deps.stdout, "[agent-loop] error listing pending queue: %v\n", pendErr)
-		}
-		interrupts, asyncs := splitByClass(pending)
-		if len(interrupts) > 0 {
-			prompt := buildInterruptFlushPrompt(interrupts)
-			fmt.Fprintf(deps.stdout, "[agent-loop] flushing %d interrupt message(s) to agent\n", len(interrupts))
-			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT (interrupt) ===\n")
-			for _, line := range strings.Split(prompt, "\n") {
-				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-			}
-			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
-			_ = deps.removeFile(wakePath)
-			_, pokeContent, sendErr := sendWithInterrupt(prompt)
-			if pokeContent != "" {
-				pendingPoke = pokeContent
-			}
-			if sendErr != nil {
-				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on interrupt flush, restarting: %v\n", sendErr)
-				if !restartWithResume() {
-					_ = wl.Release()
-					return nil
-				}
-			} else {
-				// Mark interrupt entries delivered only after a successful
-				// send. On crash, entries stay in pending/ for redelivery.
-				for _, e := range interrupts {
-					if err := agentloop.MarkDelivered(sprawlRoot, agentName, e.ID); err != nil {
-						fmt.Fprintf(deps.stdout, "[agent-loop] warn: failed to mark interrupt %s delivered: %v\n", e.ID, err)
-					}
-				}
-			}
-			_ = wl.Release()
-			// Skip the idle sleep so async entries (if any) flush immediately
-			// on the next iteration rather than after a 3s delay.
-			continue
-		}
-		if len(asyncs) > 0 {
-			prompt := buildQueueFlushPrompt(asyncs)
-			fmt.Fprintf(deps.stdout, "[agent-loop] flushing %d queued message(s) to agent\n", len(asyncs))
-			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
-			for _, line := range strings.Split(prompt, "\n") {
-				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-			}
-			// Consume any co-written .wake file BEFORE starting the turn.
-			// sprawl_send_async writes both queue entry and .wake; once we've
-			// consumed the queue entry the wake is redundant, and leaving it
-			// in place would let sendPromptWithInterrupt's poller find a
-			// stale wake file and double-interrupt.
-			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
-			_ = deps.removeFile(wakePath)
-			_, pokeContent, sendErr := sendWithInterrupt(prompt)
-			if pokeContent != "" {
-				pendingPoke = pokeContent
-			}
-			if sendErr != nil {
-				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on queue flush, restarting: %v\n", sendErr)
-				if !restartWithResume() {
-					_ = wl.Release()
-					return nil
-				}
-			} else {
-				// Mark each entry delivered only after a successful send.
-				// On crash, the entries stay in pending/ and will be
-				// redelivered on the next iteration (at-least-once).
-				for _, e := range asyncs {
-					if err := agentloop.MarkDelivered(sprawlRoot, agentName, e.ID); err != nil {
-						fmt.Fprintf(deps.stdout, "[agent-loop] warn: failed to mark %s delivered: %v\n", e.ID, err)
-					}
-				}
-			}
-			_ = wl.Release()
-			deps.sleepFunc(3 * time.Second)
-			continue
-		}
-
-		// 2b. Legacy inbox-delivery fallback: during the dual-delivery phase
-		// (§7 Phase 1 of messaging-overhaul.md), messages sent via the legacy
-		// `sprawl messages send` CLI or pre-queue code paths only land in
-		// Maildir + .wake and never populate the harness queue. Scan the
-		// Maildir so agents still see them with the old "sprawl messages
-		// read" command format. Removed in §7 Phase 5 alongside the sentinel
-		// backstop.
-		msgs, err := deps.listMessages(sprawlRoot, agentName, "unread")
-		if err == nil && len(msgs) > 0 {
-			var cmdLines []string
-			for _, msg := range msgs {
-				msgID := msg.ShortID
-				if msgID == "" {
-					msgID = msg.ID
-				}
-				cmdLines = append(cmdLines, fmt.Sprintf(
-					"Run `sprawl messages read %s` to read a message from %s (subject: %q)",
-					msgID, msg.From, msg.Subject,
-				))
-			}
-
-			prompt := fmt.Sprintf("You have %d new message(s). Read them with the commands below:\n\n%s",
-				len(cmdLines), strings.Join(cmdLines, "\n"))
-			fmt.Fprintf(deps.stdout, "[agent-loop] delivering %d inbox message(s) to agent\n", len(cmdLines))
-			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
-			for _, line := range strings.Split(prompt, "\n") {
-				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-			}
-			wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
-			_ = deps.removeFile(wakePath)
-			_, pokeContent, sendErr := sendWithInterrupt(prompt)
-			if pokeContent != "" {
-				pendingPoke = pokeContent
-			}
-			if sendErr != nil {
-				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on inbox delivery, restarting: %v\n", sendErr)
-				if !restartWithResume() {
-					_ = wl.Release()
-					return nil
-				}
-			}
-			_ = wl.Release()
-			deps.sleepFunc(3 * time.Second)
-			continue
-		}
-
-		// 3. Check for a wake file.
-		wakeFilePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".wake")
-		wakeContent, readErr := deps.readFile(wakeFilePath)
-		if readErr == nil {
-			fmt.Fprintf(deps.stdout, "[agent-loop] wake file detected\n")
-			wakePrompt := string(wakeContent)
-			fmt.Fprintf(deps.stdout, "[agent-loop] === INJECTED PROMPT ===\n")
-			for _, line := range strings.Split(wakePrompt, "\n") {
-				fmt.Fprintf(deps.stdout, "[agent-loop]   %s\n", line)
-			}
-			_, pokeContent, sendErr := sendWithInterrupt(wakePrompt)
-			if pokeContent != "" {
-				pendingPoke = pokeContent
-			}
-			if sendErr != nil {
-				fmt.Fprintf(deps.stdout, "[agent-loop] process crash on wake, restarting: %v\n", sendErr)
-				if !restartWithResume() {
-					_ = wl.Release()
-					return nil
-				}
-			}
-			// Only remove the wake file after it has been successfully delivered.
-			_ = deps.removeFile(wakeFilePath)
-			// Continue immediately — let the inbox check pick up message details on the next iteration.
-			_ = wl.Release()
-			continue
-		}
-
-		// 4. Nothing to do — release lock and sleep.
-		_ = wl.Release()
-		deps.sleepFunc(3 * time.Second)
-	}
+	return shared
 }

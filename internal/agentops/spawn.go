@@ -37,6 +37,14 @@ type SpawnDeps struct {
 	LoadConfig      func(sprawlRoot string) (*config.Config, error)
 	RunScript       func(script, workDir string, env map[string]string) ([]byte, error)
 	WorktreeRemove  func(repoRoot, worktreePath string, force bool) error
+	GitBranchDelete func(repoRoot, branchName string) error
+}
+
+type preparedSpawn struct {
+	agentState      *state.AgentState
+	promptPath      string
+	childrenSession string
+	env             map[string]string
 }
 
 // IsValidType reports whether t is in ValidTypes.
@@ -59,9 +67,7 @@ func IsValidFamily(f string) bool {
 	return false
 }
 
-// Spawn creates a new agent with its own worktree and tmux window.
-// On success, returns the persisted AgentState so callers can surface the allocated name.
-func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
+func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*preparedSpawn, error) {
 	// Validate type
 	if !IsValidType(agentType) {
 		return nil, fmt.Errorf("invalid agent type %q; valid types: %v", agentType, ValidTypes)
@@ -139,15 +145,6 @@ func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.Ag
 		}
 	}
 
-	// Find sprawl binary
-	sprawlPath, err := deps.FindSprawl()
-	if err != nil {
-		return nil, fmt.Errorf("finding sprawl binary: %w", err)
-	}
-
-	// Build shell command: cd to worktree, then run sprawl agent-loop
-	shellCmd := fmt.Sprintf("cd %s && %s", tmux.ShellQuote(worktreePath), tmux.BuildShellCmd(sprawlPath, []string{"agent-loop", agentName}))
-
 	// Resolve namespace: env var > persisted file > default
 	namespace := deps.Getenv("SPRAWL_NAMESPACE")
 	if namespace == "" {
@@ -223,17 +220,53 @@ func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.Ag
 		return nil, fmt.Errorf("saving agent state: %w", err)
 	}
 
+	return &preparedSpawn{
+		agentState:      agentState,
+		promptPath:      promptPath,
+		childrenSession: childrenSession,
+		env:             env,
+	}, nil
+}
+
+// PrepareSpawn performs the runtime-neutral child bootstrap: validation,
+// worktree creation, prompt/session metadata generation, and persisted state.
+func PrepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
+	prepared, err := prepareSpawn(deps, family, agentType, prompt, branch)
+	if err != nil {
+		return nil, err
+	}
+	return prepared.agentState, nil
+}
+
+// Spawn creates a new agent with its own worktree and tmux window.
+// On success, returns the persisted AgentState so callers can surface the allocated name.
+func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
+	prepared, err := prepareSpawn(deps, family, agentType, prompt, branch)
+	if err != nil {
+		return nil, err
+	}
+	sprawlRoot := deps.Getenv("SPRAWL_ROOT")
+
+	// Find sprawl binary
+	sprawlPath, err := deps.FindSprawl()
+	if err != nil {
+		return nil, fmt.Errorf("finding sprawl binary: %w", err)
+	}
+
+	// Build shell command: cd to worktree, then run sprawl agent-loop
+	shellCmd := fmt.Sprintf("cd %s && %s", tmux.ShellQuote(prepared.agentState.Worktree), tmux.BuildShellCmd(sprawlPath, []string{"agent-loop", prepared.agentState.Name}))
+
 	// Create or add to tmux session using try-then-fallback to avoid TOCTOU race.
 	// Multiple concurrent spawns may all try to create the session simultaneously.
-	if err := deps.TmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
+	if err := deps.TmuxRunner.NewWindow(prepared.childrenSession, prepared.agentState.Name, prepared.env, shellCmd); err != nil {
 		// Session may not exist yet — try creating it
-		if err := deps.TmuxRunner.NewSessionWithWindow(childrenSession, agentName, env, shellCmd); err != nil {
+		if err := deps.TmuxRunner.NewSessionWithWindow(prepared.childrenSession, prepared.agentState.Name, prepared.env, shellCmd); err != nil {
 			// Another concurrent spawn may have just created the session — retry NewWindow
-			if err := deps.TmuxRunner.NewWindow(childrenSession, agentName, env, shellCmd); err != nil {
+			if err := deps.TmuxRunner.NewWindow(prepared.childrenSession, prepared.agentState.Name, prepared.env, shellCmd); err != nil {
 				// Clean up state and prompt files since tmux creation failed
-				_ = state.DeleteAgent(sprawlRoot, agentName)
-				_ = os.RemoveAll(filepath.Dir(promptPath))
-				return nil, fmt.Errorf("creating tmux window/session for %s: %w", agentName, err)
+				_ = state.DeleteAgent(sprawlRoot, prepared.agentState.Name)
+				_ = os.RemoveAll(filepath.Dir(prepared.promptPath))
+				return nil, fmt.Errorf("creating tmux window/session for %s: %w", prepared.agentState.Name, err)
 			}
 		}
 	}
@@ -241,12 +274,12 @@ func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.Ag
 	// Apply the branded tmux config if it exists (generated at init time).
 	confPath := filepath.Join(sprawlRoot, ".sprawl", "tmux.conf")
 	if _, statErr := os.Stat(confPath); statErr == nil {
-		if err := deps.TmuxRunner.SourceFile(childrenSession, confPath); err != nil {
+		if err := deps.TmuxRunner.SourceFile(prepared.childrenSession, confPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not apply tmux config: %v\n", err)
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "Spawned %s %s (branch: %s)\n", agentType, agentName, branchName)
+	fmt.Fprintf(os.Stderr, "Spawned %s %s (branch: %s)\n", agentType, prepared.agentState.Name, prepared.agentState.Branch)
 	fmt.Fprintf(os.Stderr, "Agent will message you when done — no need to poll.\n")
-	return agentState, nil
+	return prepared.agentState, nil
 }
