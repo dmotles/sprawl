@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -90,17 +91,28 @@ func (h *runnerHandle) Stop(ctx context.Context) error {
 			h.cancel()
 		}
 	})
-	if h.stopErr != nil {
+	if h.stopErr != nil && !isExitError(h.stopErr) {
 		return h.stopErr
 	}
 	select {
 	case <-h.done:
 		h.mu.Lock()
 		defer h.mu.Unlock()
-		return h.waitErr
+		if h.waitErr != nil && !isExitError(h.waitErr) {
+			return h.waitErr
+		}
+		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// isExitError reports whether err wraps an *exec.ExitError. During intentional
+// shutdown the child process typically exits non-zero (exit status 1, signal:
+// killed); these are expected teardown noise, not real failures.
+func isExitError(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
 }
 
 func (h *runnerHandle) sendControl(sig agentloop.ControlSignal) error {
