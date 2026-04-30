@@ -166,23 +166,26 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 		return nil
 	}
 
-	// Return the first significant content block.
+	// QUM-386: collect ALL content blocks instead of returning the first.
+	var msgs []tea.Msg
 	for _, block := range content.Content {
 		switch block.Type {
 		case "text":
-			return AssistantTextMsg{Text: block.Text}
+			msgs = append(msgs, AssistantTextMsg{Text: block.Text})
 		case "tool_use":
-			return ToolCallMsg{
+			msgs = append(msgs, ToolCallMsg{
 				ToolName:  block.Name,
 				ToolID:    block.ID,
 				Approved:  true, // Session auto-approves tool calls
 				Input:     summarizeToolInput(block.Name, block.Input),
 				FullInput: expandToolInput(block.Name, block.Input),
-			}
+			})
 		}
 	}
-
-	return nil
+	if len(msgs) == 0 {
+		return nil
+	}
+	return AssistantContentMsg{Msgs: msgs}
 }
 
 // summarizeToolInput extracts a concise description from tool input JSON.

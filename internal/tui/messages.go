@@ -3,8 +3,17 @@ package tui
 import (
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/dmotles/sprawl/internal/agentloop"
 )
+
+// AssistantContentMsg batches all content blocks from a single assistant
+// message so parallel Agent tool_use blocks are all delivered to the App.
+// (QUM-386)
+type AssistantContentMsg struct {
+	Msgs []tea.Msg
+}
 
 // tea.Msg types for protocol events from the host session.
 // These are consumed by the TUI's Update method to drive UI state.

@@ -827,9 +827,11 @@ func TestViewportModel_AppendToolCall_AgentNesting_SetsDepth(t *testing.T) {
 	}
 }
 
-// TestViewportModel_AppendToolCall_NestedAgentDepth2 verifies two levels of
-// Agent nesting: Agent inside Agent gives Depth 2.
-func TestViewportModel_AppendToolCall_NestedAgentDepth2(t *testing.T) {
+// TestViewportModel_AppendToolCall_SequentialAgents verifies that sequential
+// Agent calls (Agent inside Agent) both get Depth 0 since Agent entries are
+// always top-level containers (QUM-386 depth capped at 1). Non-Agent tool
+// calls inside active agents still get Depth 1.
+func TestViewportModel_AppendToolCall_SequentialAgents(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(80, 40)
 
@@ -838,16 +840,25 @@ func TestViewportModel_AppendToolCall_NestedAgentDepth2(t *testing.T) {
 	m.AppendToolCall("Bash", "b1", true, "ls", "")
 
 	msgs := m.GetMessages()
-	if msgs[2].Depth != 2 {
-		t.Errorf("Bash Depth = %d, want 2 (nested under two Agents)", msgs[2].Depth)
+	// QUM-386: Agent entries are always depth 0 (top-level containers).
+	if msgs[0].Depth != 0 {
+		t.Errorf("Agent a1 Depth = %d, want 0", msgs[0].Depth)
+	}
+	if msgs[1].Depth != 0 {
+		t.Errorf("Agent a2 Depth = %d, want 0 (Agent entries always top-level)", msgs[1].Depth)
+	}
+	// Non-Agent tool calls inside active agents get depth 1.
+	if msgs[2].Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1 (nested under active Agent)", msgs[2].Depth)
 	}
 
 	m.MarkToolResult("a2", "inner done", false)
 	m.AppendToolCall("Read", "r1", true, "/tmp/y", "")
 
 	msgs = m.GetMessages()
+	// a1 is still active, so Read gets depth 1.
 	if msgs[3].Depth != 1 {
-		t.Errorf("Read Depth = %d, want 1 (inner Agent popped)", msgs[3].Depth)
+		t.Errorf("Read Depth = %d, want 1 (a1 still active)", msgs[3].Depth)
 	}
 
 	m.MarkToolResult("a1", "outer done", false)
@@ -978,16 +989,16 @@ func TestViewportModel_RenderMessages_NoBlankLineBetweenNestedEntries(t *testing
 	m.SetSize(80, 40)
 
 	m.SetMessages([]MessageEntry{
-		{Type: MessageToolCall, Content: "Agent", Complete: true, Approved: true, ToolID: "a1", Depth: 0},
-		{Type: MessageToolCall, Content: "Bash", Complete: true, Approved: true, ToolInput: "ls", Depth: 1},
-		{Type: MessageToolCall, Content: "Read", Complete: true, Approved: true, ToolInput: "/tmp/x", Depth: 1},
+		{Type: MessageToolCall, Content: "Agent", Complete: true, Approved: true, ToolID: "a1", Depth: 0, Pending: true},
+		{Type: MessageToolCall, Content: "Bash", Complete: true, Approved: true, ToolInput: "ls", Depth: 1, ParentToolID: "a1"},
+		{Type: MessageToolCall, Content: "Read", Complete: true, Approved: true, ToolInput: "/tmp/x", Depth: 1, ParentToolID: "a1"},
 	})
 
 	rendered := m.renderMessages()
 	stripped := stripANSI(rendered)
 
 	// Find the Bash and Read entries in the output and check there's no blank
-	// line between them.
+	// line between them. Children are rendered inside the Agent container.
 	bashIdx := strings.Index(stripped, "Bash")
 	readIdx := strings.Index(stripped, "Read")
 	if bashIdx < 0 || readIdx < 0 {
@@ -1105,5 +1116,226 @@ func TestViewportModel_RenderToolCall_LongNameHeaderClipped(t *testing.T) {
 		if w := lipgloss.Width(line); w > width {
 			t.Errorf("header line width %d exceeds viewport width %d: %q", w, width, line)
 		}
+	}
+}
+
+// --- Tests for QUM-386: Parallel Agent sub-agent rendering ---
+
+// TestViewportModel_ParallelAgents_BothDepth0 verifies that two parallel
+// Agent tool calls both get Depth 0 (siblings, not nested).
+func TestViewportModel_ParallelAgents_BothDepth0(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "task A", "")
+	m.AppendToolCall("Agent", "a2", true, "task B", "")
+
+	msgs := m.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].Depth != 0 {
+		t.Errorf("Agent a1 Depth = %d, want 0", msgs[0].Depth)
+	}
+	if msgs[1].Depth != 0 {
+		t.Errorf("Agent a2 Depth = %d, want 0 (parallel sibling, not nested)", msgs[1].Depth)
+	}
+}
+
+// TestViewportModel_ParallelAgents_NestedCallsDepth1 verifies that tool calls
+// after two parallel Agents get Depth 1 (nested under the last active Agent).
+func TestViewportModel_ParallelAgents_NestedCallsDepth1(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "task A", "")
+	m.AppendToolCall("Agent", "a2", true, "task B", "")
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3", len(msgs))
+	}
+	if msgs[2].Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1 (nested under active Agent)", msgs[2].Depth)
+	}
+	// a2 was the most recently started Agent, so Bash should be attributed to it.
+	if msgs[2].ParentToolID != "a2" {
+		t.Errorf("Bash ParentToolID = %q, want %q (most recent Agent)", msgs[2].ParentToolID, "a2")
+	}
+}
+
+// TestViewportModel_ParallelAgents_Attribution verifies that nested tool calls
+// are attributed to the correct parent Agent via ParentToolID.
+func TestViewportModel_ParallelAgents_Attribution(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "task A", "")
+	m.AppendToolCall("Bash", "b1", true, "ls for A", "")
+	m.AppendToolCall("Agent", "a2", true, "task B", "")
+	m.AppendToolCall("Read", "r1", true, "/tmp/x", "")
+
+	msgs := m.GetMessages()
+	if msgs[1].ParentToolID != "a1" {
+		t.Errorf("Bash ParentToolID = %q, want %q", msgs[1].ParentToolID, "a1")
+	}
+	if msgs[3].ParentToolID != "a2" {
+		t.Errorf("Read ParentToolID = %q, want %q", msgs[3].ParentToolID, "a2")
+	}
+}
+
+// TestViewportModel_ParallelAgents_OneCompletes verifies that when one of two
+// parallel Agents completes, the other continues; nested calls still get Depth 1.
+func TestViewportModel_ParallelAgents_OneCompletes(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "task A", "")
+	m.AppendToolCall("Agent", "a2", true, "task B", "")
+	m.MarkToolResult("a1", "done A", false)
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if msgs[len(msgs)-1].Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1 (a2 still active)", msgs[len(msgs)-1].Depth)
+	}
+	if msgs[len(msgs)-1].ParentToolID != "a2" {
+		t.Errorf("Bash ParentToolID = %q, want %q (a2 is remaining)", msgs[len(msgs)-1].ParentToolID, "a2")
+	}
+}
+
+// TestViewportModel_ParallelAgents_BothComplete verifies that after all parallel
+// Agents complete, subsequent tool calls return to Depth 0.
+func TestViewportModel_ParallelAgents_BothComplete(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "task A", "")
+	m.AppendToolCall("Agent", "a2", true, "task B", "")
+	m.MarkToolResult("a1", "done A", false)
+	m.MarkToolResult("a2", "done B", false)
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if msgs[len(msgs)-1].Depth != 0 {
+		t.Errorf("Bash Depth = %d, want 0 (all agents completed)", msgs[len(msgs)-1].Depth)
+	}
+	if msgs[len(msgs)-1].ParentToolID != "" {
+		t.Errorf("Bash ParentToolID = %q, want empty (no active agent)", msgs[len(msgs)-1].ParentToolID)
+	}
+}
+
+// TestViewportModel_SetMessages_ClearsActiveAgents verifies that SetMessages
+// resets the active agents state so subsequent calls start at Depth 0.
+func TestViewportModel_SetMessages_ClearsActiveAgents(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+
+	m.AppendToolCall("Agent", "a1", true, "task", "")
+	m.AppendToolCall("Agent", "a2", true, "task", "")
+	m.SetMessages(nil)
+
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+	msgs := m.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].Depth != 0 {
+		t.Errorf("Bash Depth = %d, want 0 (activeAgents should have been cleared by SetMessages)", msgs[0].Depth)
+	}
+}
+
+// TestViewportModel_RenderAgentContainer_Pending verifies that a pending Agent
+// renders as a container with its nested children visible.
+func TestViewportModel_RenderAgentContainer_Pending(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "sub-task", "")
+	m.AppendToolCall("Bash", "b1", true, "ls -la", "")
+	m.MarkToolResult("b1", "file1\nfile2", false)
+	m.AppendToolCall("Read", "r1", true, "/tmp/x", "")
+
+	rendered := stripANSI(m.renderMessages())
+
+	// Should contain the Agent container with ┌ and └
+	headerIdx := strings.Index(rendered, "┌")
+	footerIdx := strings.Index(rendered, "└")
+	if headerIdx < 0 {
+		t.Fatalf("expected ┌ in agent container, got:\n%s", rendered)
+	}
+	if footerIdx < 0 {
+		t.Fatalf("expected └ in agent container, got:\n%s", rendered)
+	}
+	// Nested children must appear BETWEEN the ┌ header and └ footer.
+	between := rendered[headerIdx:footerIdx]
+	if !strings.Contains(between, "Bash") {
+		t.Errorf("expected nested Bash between ┌ and └, got:\n%s", between)
+	}
+	if !strings.Contains(between, "Read") {
+		t.Errorf("expected nested Read between ┌ and └, got:\n%s", between)
+	}
+}
+
+// TestViewportModel_RenderAgentContainer_Collapsed verifies that a completed Agent
+// container collapses to show only the result, not its nested children.
+func TestViewportModel_RenderAgentContainer_Collapsed(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "sub-task", "")
+	m.AppendToolCall("Bash", "b1", true, "ls -la", "")
+	m.MarkToolResult("b1", "file1\nfile2", false)
+	m.MarkToolResult("a1", "The analysis found 3 issues", false)
+
+	rendered := stripANSI(m.renderMessages())
+
+	// Should still have the container box
+	if !strings.Contains(rendered, "┌") {
+		t.Errorf("expected ┌ in collapsed container, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "└") {
+		t.Errorf("expected └ in collapsed container, got:\n%s", rendered)
+	}
+	// Should contain the result text
+	if !strings.Contains(rendered, "The analysis found 3 issues") {
+		t.Errorf("expected result text in collapsed container, got:\n%s", rendered)
+	}
+	// Nested children should NOT appear (collapsed)
+	if strings.Contains(rendered, "ls -la") {
+		t.Errorf("collapsed container should not show nested tool input 'ls -la', got:\n%s", rendered)
+	}
+}
+
+// TestViewportModel_RenderMessages_TwoParallelContainers verifies that two
+// parallel Agent tool calls render as two independent containers.
+func TestViewportModel_RenderMessages_TwoParallelContainers(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	// Two parallel agents
+	m.AppendToolCall("Agent", "a1", true, "task A", "")
+	m.AppendToolCall("Agent", "a2", true, "task B", "")
+	// a1's work
+	m.AppendToolCall("Bash", "b1", true, "ls for A", "")
+	m.MarkToolResult("b1", "output A", false)
+	// a2's work
+	m.AppendToolCall("Read", "r1", true, "/tmp/B", "")
+
+	rendered := stripANSI(m.renderMessages())
+
+	// Both Agent names should be present
+	if !strings.Contains(rendered, "task A") {
+		t.Errorf("expected 'task A' in rendered output, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "task B") {
+		t.Errorf("expected 'task B' in rendered output, got:\n%s", rendered)
+	}
+
+	// Should have two ┌ markers (one per container)
+	count := strings.Count(rendered, "┌")
+	if count < 2 {
+		t.Errorf("expected at least 2 '┌' markers for two containers, got %d in:\n%s", count, rendered)
 	}
 }
