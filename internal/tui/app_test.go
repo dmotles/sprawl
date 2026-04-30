@@ -1818,16 +1818,12 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 	app = updated.(AppModel)
 	app = driveAsyncRestart(t, app, cmd)
 
-	msgs := app.viewportFor("weave").GetMessages()
-	found := false
-	for _, e := range msgs {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "New session started") && strings.Contains(e.Content, "abcdef12") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected viewport to contain status banner '— New session started (abcdef12) —', got messages: %+v", msgs)
+	// After restart, the viewport content should contain the session banner
+	// with the new session ID (QUM-390).
+	vp := app.viewportFor("weave")
+	view := vp.View()
+	if !strings.Contains(view, "abcdef12") {
+		t.Errorf("expected viewport to contain session ID 'abcdef12' in banner, got: %s", view)
 	}
 }
 

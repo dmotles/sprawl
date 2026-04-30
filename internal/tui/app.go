@@ -140,6 +140,10 @@ type AppModel struct {
 	// replaces the previous queued content. Cleared when the turn finalizes
 	// (auto-submit), the user presses Esc, or a session restart fires.
 	pendingSubmit string
+
+	// version is the build version string (e.g. "v0.2.0"), stored so the
+	// session banner can include it on fresh launch and after restarts.
+	version string
 }
 
 const (
@@ -165,6 +169,13 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme)}
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	sp.Style = theme.AccentText
+	// Set the root viewport's initial content to the session banner.
+	initialSessionID := ""
+	if bridge != nil {
+		initialSessionID = shortSessionID(bridge.SessionID())
+	}
+	agentBuffers[rootAgent].vp.SetContent(SessionBanner(initialSessionID, version))
+
 	app := AppModel{
 		tree:          NewTreeModel(&theme),
 		activity:      NewActivityPanelModel(&theme),
@@ -184,6 +195,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		theme:         theme,
 		restartFunc:   restartFunc,
 		spinner:       sp,
+		version:       version,
 	}
 	app.updateFocus()
 	app.rebuildTree()
@@ -702,11 +714,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// New session starts with no in-flight tool calls; reset the
 		// counter so any stale tick is dropped on next arrival (QUM-336).
 		m.pendingToolCalls = 0
-		if shortID != "" {
-			root.AppendStatus(fmt.Sprintf("— New session started (%s) —", shortID))
-		} else {
-			root.AppendStatus("— New session started —")
-		}
+		// Show the session banner with the new session ID (QUM-390).
+		root.SetContent(SessionBanner(shortID, m.version))
 		m.statusBar.SetSessionID(shortID)
 		m.setTurnState(TurnIdle)
 		return m, m.bridge.Initialize()
