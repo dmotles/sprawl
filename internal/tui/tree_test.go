@@ -432,6 +432,69 @@ func TestBuildTreeNodes_Hierarchy(t *testing.T) {
 	}
 }
 
+// Regression test: when weave.json exists in .sprawl/agents/, the status
+// response includes a weave AgentInfo entry (Parent: ""). buildTreeNodes
+// places it at depth 0 as a root, and PrependWeaveRoot adds a *second*
+// synthetic weave node — resulting in a duplicate. The fix should filter out
+// the root agent before passing agents to buildTreeNodes so that weave
+// appears exactly once after PrependWeaveRoot.
+func TestBuildTreeNodes_ExcludesRootWeave(t *testing.T) {
+	agents := []supervisor.AgentInfo{
+		{Name: "weave", Type: "weave", Family: "", Parent: "", Status: "active"},
+		{Name: "tower", Type: "manager", Family: "tower", Parent: "weave", Status: "active"},
+		{Name: "finn", Type: "engineer", Family: "tower", Parent: "tower", Status: "active"},
+		{Name: "scout", Type: "researcher", Family: "scout", Parent: "weave", Status: "active"},
+	}
+	unread := map[string]int{
+		"weave": 2,
+		"finn":  1,
+	}
+
+	// Simulate the full flow: filter out root agent, build tree, prepend root.
+	// This mirrors tickAgentsCmd which filters before calling buildTreeNodes.
+	var filtered []supervisor.AgentInfo
+	for _, a := range agents {
+		if a.Name != "weave" {
+			filtered = append(filtered, a)
+		}
+	}
+	nodes := buildTreeNodes(filtered, unread)
+	nodes = PrependWeaveRoot(nodes, "active", unread["weave"])
+
+	// Count how many times "weave" appears in the final node list.
+	weaveCount := 0
+	for _, n := range nodes {
+		if n.Name == "weave" {
+			weaveCount++
+		}
+	}
+
+	if weaveCount != 1 {
+		t.Errorf("weave appears %d time(s) in final tree, want exactly 1 (duplicate weave bug)", weaveCount)
+		for i, n := range nodes {
+			t.Logf("  nodes[%d] = {Name:%q, Depth:%d, Type:%q}", i, n.Name, n.Depth, n.Type)
+		}
+	}
+
+	// The single weave node should be at depth 0.
+	if nodes[0].Name != "weave" || nodes[0].Depth != 0 {
+		t.Errorf("nodes[0] = {Name:%q, Depth:%d}, want {Name:weave, Depth:0}", nodes[0].Name, nodes[0].Depth)
+	}
+
+	// Child agents should still be present and correctly nested.
+	childNames := make(map[string]bool)
+	for _, n := range nodes {
+		if n.Name != "weave" {
+			childNames[n.Name] = true
+		}
+	}
+	for _, expected := range []string{"tower", "finn", "scout"} {
+		if !childNames[expected] {
+			t.Errorf("expected child %q in tree, not found", expected)
+		}
+	}
+}
+
 func TestTreeModel_ReportChipRendering(t *testing.T) {
 	m := newTestTreeModel(t)
 	m.SetSize(80, 10)
