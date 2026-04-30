@@ -499,10 +499,10 @@ func TestTreeModel_ReportChipRendering(t *testing.T) {
 	m := newTestTreeModel(t)
 	m.SetSize(80, 10)
 	m.SetNodes([]TreeNode{
-		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportSummary: "writing tests"},
-		{Name: "bob", Type: "engineer", Status: "active", LastReportState: "blocked", LastReportSummary: "awaiting review"},
-		{Name: "carol", Type: "engineer", Status: "done", LastReportState: "complete", LastReportSummary: "merged PR"},
-		{Name: "dave", Type: "engineer", Status: "problem", LastReportState: "failure", LastReportSummary: "tests fail"},
+		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportMessage: "writing tests"},
+		{Name: "bob", Type: "engineer", Status: "active", LastReportState: "blocked", LastReportMessage: "awaiting review"},
+		{Name: "carol", Type: "engineer", Status: "done", LastReportState: "complete", LastReportMessage: "merged PR"},
+		{Name: "dave", Type: "engineer", Status: "problem", LastReportState: "failure", LastReportMessage: "tests fail"},
 		{Name: "eve", Type: "engineer", Status: "active"}, // no report → idle
 	})
 	view := m.View()
@@ -530,7 +530,7 @@ func TestTreeModel_ReportChipRendering(t *testing.T) {
 	}
 }
 
-// QUM-324: a LastReportSummary longer than the tree panel's inner width must
+// QUM-324: a LastReportMessage longer than the tree panel's inner width must
 // not bleed past the right border. Every rendered row — including the
 // ellipsised long-summary row — must fit inside m.width display cells.
 func TestTreeModel_ViewClipsLongSummary(t *testing.T) {
@@ -543,7 +543,7 @@ func TestTreeModel_ViewClipsLongSummary(t *testing.T) {
 			Type:              "engineer",
 			Status:            "active",
 			LastReportState:   "working",
-			LastReportSummary: strings.Repeat("abcdefghij", 200), // 2000 chars
+			LastReportMessage: strings.Repeat("abcdefghij", 200), // 2000 chars
 		},
 	})
 
@@ -586,7 +586,7 @@ func TestTreeModel_ViewStripsMultilineSummary(t *testing.T) {
 			Type:              "engineer",
 			Status:            "active",
 			LastReportState:   "working",
-			LastReportSummary: "line1\nline2\nline3",
+			LastReportMessage: "line1\nline2\nline3",
 		},
 	})
 
@@ -620,7 +620,7 @@ func TestTreeModel_ViewClipsLongSummary_SelectedRow(t *testing.T) {
 			Type:              "engineer",
 			Status:            "active",
 			LastReportState:   "working",
-			LastReportSummary: strings.Repeat("x", 500),
+			LastReportMessage: strings.Repeat("x", 500),
 		},
 	})
 	m.selected = 1 // select the row with the long summary
@@ -687,7 +687,7 @@ func TestBuildTreeNodes_PropagatesCostField(t *testing.T) {
 
 func TestBuildTreeNodes_PropagatesReportFields(t *testing.T) {
 	agents := []supervisor.AgentInfo{
-		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportSummary: "in flight"},
+		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportMessage: "in flight"},
 	}
 	nodes := buildTreeNodes(agents, nil)
 	if len(nodes) != 1 {
@@ -696,8 +696,8 @@ func TestBuildTreeNodes_PropagatesReportFields(t *testing.T) {
 	if nodes[0].LastReportState != "working" {
 		t.Errorf("LastReportState = %q", nodes[0].LastReportState)
 	}
-	if nodes[0].LastReportSummary != "in flight" {
-		t.Errorf("LastReportSummary = %q", nodes[0].LastReportSummary)
+	if nodes[0].LastReportMessage != "in flight" {
+		t.Errorf("LastReportMessage = %q", nodes[0].LastReportMessage)
 	}
 }
 

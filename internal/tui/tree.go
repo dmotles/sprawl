@@ -18,7 +18,7 @@ const rowPrefixWidth = 2
 
 // clipTreeRow coerces an arbitrary row label into a single-line, width-bounded
 // string. Embedded newlines/tabs are replaced with spaces so a multi-line
-// LastReportSummary cannot push the tree onto extra visual rows, and the
+// LastReportMessage cannot push the tree onto extra visual rows, and the
 // result is then truncated (with an ellipsis) at width display cells. When
 // width <= 0 the content is returned with its newlines stripped but
 // otherwise unbounded — the caller hasn't been sized yet.
@@ -39,7 +39,7 @@ type TreeNode struct {
 	Depth             int
 	Unread            int
 	LastReportState   string // working, blocked, complete, failure, ""
-	LastReportSummary string
+	LastReportMessage string
 	TotalCostUsd      float64
 }
 
@@ -169,8 +169,8 @@ func (m TreeModel) View() string {
 			costTag = fmt.Sprintf(" [$%.4f]", node.TotalCostUsd)
 		}
 		var line string
-		if node.LastReportSummary != "" {
-			line = fmt.Sprintf("%s%s %s %s%s — %s", indent, dot, icon, node.Name, costTag, node.LastReportSummary)
+		if node.LastReportMessage != "" {
+			line = fmt.Sprintf("%s%s %s %s%s — %s", indent, dot, icon, node.Name, costTag, node.LastReportMessage)
 		} else {
 			line = fmt.Sprintf("%s%s %s %s%s (%s)", indent, dot, icon, node.Name, costTag, node.Status)
 		}
@@ -179,7 +179,7 @@ func (m TreeModel) View() string {
 		}
 
 		// QUM-324: clip the row to the tree's inner width so a long or
-		// multi-line LastReportSummary cannot bleed past the panel border.
+		// multi-line LastReportMessage cannot bleed past the panel border.
 		line = clipTreeRow(line, m.width-rowPrefixWidth)
 
 		if i == m.selected {
@@ -271,7 +271,7 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 			Depth:             depth,
 			Unread:            unread[a.Name],
 			LastReportState:   a.LastReportState,
-			LastReportSummary: a.LastReportSummary,
+			LastReportMessage: a.LastReportMessage,
 			TotalCostUsd:      a.TotalCostUsd,
 		})
 		for _, child := range children[a.Name] {
