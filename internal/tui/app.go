@@ -260,9 +260,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyPressMsg:
-		// Ctrl+C: show confirmation dialog (or ignore if already showing).
+		// Ctrl+C: REPL convention (QUM-409). With non-empty input, clear the
+		// textarea and consume the event. With empty (or whitespace-only)
+		// input, fall through to the existing quit-confirm dialog.
 		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'c' {
 			if m.showConfirm {
+				return m, nil
+			}
+			if strings.TrimSpace(m.input.Value()) != "" {
+				m.input.SetValue("")
 				return m, nil
 			}
 			m.showConfirm = true
