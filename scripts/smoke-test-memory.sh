@@ -14,17 +14,25 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- Dedicated tmux socket for sandbox isolation (QUM-325) ---
+# Use SPRAWL_TMUX_SOCKET if set by sprawl-test-env.sh, otherwise generate one.
+SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-smoke-$$}"
+export SPRAWL_TMUX_SOCKET
+
+# _stmux wraps tmux with the dedicated sandbox socket.
+_stmux() { tmux ${SPRAWL_TMUX_SOCKET:+-L "$SPRAWL_TMUX_SOCKET"} "$@"; }
+
 # --- Cleanup modes ---
 
 cleanup_namespace() {
     local ns="$1"
     echo "Cleaning up sessions for namespace: $ns"
     local sessions
-    sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${ns}" || true)
+    sessions=$(_stmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${ns}" || true)
     if [ -n "$sessions" ]; then
         echo "$sessions" | while read -r s; do
             echo "  Killing session: $s"
-            tmux kill-session -t "$s" 2>/dev/null || true
+            _stmux kill-session -t "$s" 2>/dev/null || true
         done
     fi
 }
@@ -32,11 +40,11 @@ cleanup_namespace() {
 cleanup_all() {
     echo "Cleaning up all test-* sessions"
     local sessions
-    sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^test-" || true)
+    sessions=$(_stmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^test-" || true)
     if [ -n "$sessions" ]; then
         echo "$sessions" | while read -r s; do
             echo "  Killing session: $s"
-            tmux kill-session -t "$s" 2>/dev/null || true
+            _stmux kill-session -t "$s" 2>/dev/null || true
         done
     fi
 }
@@ -155,12 +163,12 @@ export SPRAWL_NAMESPACE="$TEST_NS"
 
 # Teardown trap - uses targeted session kills only
 cleanup() {
-    # Kill only our test namespace sessions
+    # Kill only our test namespace sessions on the dedicated socket
     local sessions
-    sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${TEST_NS}" || true)
+    sessions=$(_stmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${TEST_NS}" || true)
     if [ -n "$sessions" ]; then
         echo "$sessions" | while read -r s; do
-            tmux kill-session -t "$s" 2>/dev/null || true
+            _stmux kill-session -t "$s" 2>/dev/null || true
         done
     fi
     # Remove temp dir
@@ -442,15 +450,15 @@ echo "=== Test 10: Cleanup flags ==="
 
 # Create a temporary test session to verify cleanup works
 TEST_CLEANUP_NS="test-cleanup-$$"
-tmux new-session -d -s "${TEST_CLEANUP_NS}" "sleep 300" 2>/dev/null || true
+_stmux new-session -d -s "${TEST_CLEANUP_NS}" "sleep 300" 2>/dev/null || true
 
-if tmux has-session -t "${TEST_CLEANUP_NS}" 2>/dev/null; then
-    # Test --cleanup with specific namespace
+if _stmux has-session -t "${TEST_CLEANUP_NS}" 2>/dev/null; then
+    # Test --cleanup with specific namespace (inherits SPRAWL_TMUX_SOCKET)
     bash "$REPO_ROOT/scripts/smoke-test-memory.sh" --cleanup "$TEST_CLEANUP_NS" >/dev/null 2>&1
 
-    if tmux has-session -t "${TEST_CLEANUP_NS}" 2>/dev/null; then
+    if _stmux has-session -t "${TEST_CLEANUP_NS}" 2>/dev/null; then
         fail "--cleanup did not kill test session"
-        tmux kill-session -t "${TEST_CLEANUP_NS}" 2>/dev/null || true
+        _stmux kill-session -t "${TEST_CLEANUP_NS}" 2>/dev/null || true
     else
         pass "--cleanup killed targeted session"
     fi
@@ -461,14 +469,14 @@ fi
 
 # Test --cleanup-all: create a test-* session and verify it gets cleaned up
 TEST_ALL_NS="test-all-$$"
-tmux new-session -d -s "${TEST_ALL_NS}" "sleep 300" 2>/dev/null || true
+_stmux new-session -d -s "${TEST_ALL_NS}" "sleep 300" 2>/dev/null || true
 
-if tmux has-session -t "${TEST_ALL_NS}" 2>/dev/null; then
+if _stmux has-session -t "${TEST_ALL_NS}" 2>/dev/null; then
     bash "$REPO_ROOT/scripts/smoke-test-memory.sh" --cleanup-all >/dev/null 2>&1
 
-    if tmux has-session -t "${TEST_ALL_NS}" 2>/dev/null; then
+    if _stmux has-session -t "${TEST_ALL_NS}" 2>/dev/null; then
         fail "--cleanup-all did not kill test-* session"
-        tmux kill-session -t "${TEST_ALL_NS}" 2>/dev/null || true
+        _stmux kill-session -t "${TEST_ALL_NS}" 2>/dev/null || true
     else
         pass "--cleanup-all killed test-* sessions"
     fi

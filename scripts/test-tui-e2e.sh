@@ -16,6 +16,13 @@ if [ "${1:-}" = "--quick" ]; then
     QUICK_MODE=true
 fi
 
+# --- Dedicated tmux socket for sandbox isolation (QUM-325) ---
+SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-tui-e2e-$$}"
+export SPRAWL_TMUX_SOCKET
+
+# _stmux wraps tmux with the dedicated sandbox socket.
+_stmux() { tmux ${SPRAWL_TMUX_SOCKET:+-L "$SPRAWL_TMUX_SOCKET"} "$@"; }
+
 # --- Test infrastructure ---
 
 PASS_COUNT=0
@@ -39,7 +46,7 @@ skip() {
 
 # capture_pane captures the current tmux pane content as text.
 capture_pane() {
-    tmux capture-pane -t "$1" -p 2>/dev/null || true
+    _stmux capture-pane -t "$1" -p 2>/dev/null || true
 }
 
 # wait_for_content polls tmux pane content for a pattern with timeout.
@@ -60,7 +67,7 @@ wait_for_content() {
 
 # session_alive checks if a tmux session exists.
 session_alive() {
-    tmux has-session -t "$1" 2>/dev/null
+    _stmux has-session -t "$1" 2>/dev/null
 }
 
 # --- Setup ---
@@ -107,13 +114,13 @@ LEAK_SESSION=""
 LEAK_ROOT=""
 
 cleanup() {
-    # Kill our tmux session
-    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+    # Kill our tmux session on the dedicated socket
+    if _stmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        _stmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
     fi
     # Kill the stderr-leak regression tmux session (Test 9), if present
-    if [ -n "$LEAK_SESSION" ] && tmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
-        tmux kill-session -t "$LEAK_SESSION" 2>/dev/null || true
+    if [ -n "$LEAK_SESSION" ] && _stmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
+        _stmux kill-session -t "$LEAK_SESSION" 2>/dev/null || true
     fi
     # Clean up temp directories
     rm -rf "$TEST_ROOT"
@@ -129,7 +136,7 @@ trap cleanup EXIT
 echo "=== Test 1: Launch & render ==="
 
 # Launch sprawl enter in a detached tmux session with fixed dimensions
-tmux new-session -d -s "$SESSION_NAME" -x 120 -y 40 \
+_stmux new-session -d -s "$SESSION_NAME" -x 120 -y 40 \
     "SPRAWL_ROOT='$TEST_ROOT' '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
 
 # Wait for TUI to render (up to 15 seconds)
@@ -218,7 +225,7 @@ echo "=== Test 3: User input ==="
 if session_alive "$SESSION_NAME"; then
     # The default focused panel when bridge is present is PanelInput
     # Type a test message and submit
-    tmux send-keys -t "$SESSION_NAME" "hello from test harness" Enter
+    _stmux send-keys -t "$SESSION_NAME" "hello from test harness" Enter
 
     # Wait for the user message to appear in viewport
     if wait_for_content "$SESSION_NAME" "You: hello from test harness" 10; then
@@ -258,7 +265,7 @@ echo "=== Test 5: Tool call visibility ==="
 
 if session_alive "$SESSION_NAME"; then
     # Send a prompt designed to trigger tool use
-    tmux send-keys -t "$SESSION_NAME" "Use the Bash tool to run: echo hello-from-tui-test" Enter
+    _stmux send-keys -t "$SESSION_NAME" "Use the Bash tool to run: echo hello-from-tui-test" Enter
 
     # Wait for tool call indicator in viewport
     if wait_for_content "$SESSION_NAME" "Tool:" 60; then
@@ -278,7 +285,7 @@ echo "=== Test 6: Scrollback ==="
 if session_alive "$SESSION_NAME"; then
     # Send enough messages to potentially overflow the viewport
     for i in $(seq 1 30); do
-        tmux send-keys -t "$SESSION_NAME" "scroll test line $i" Enter
+        _stmux send-keys -t "$SESSION_NAME" "scroll test line $i" Enter
         sleep 0.2
     done
 
@@ -289,7 +296,7 @@ if session_alive "$SESSION_NAME"; then
     BEFORE_SCROLL=$(capture_pane "$SESSION_NAME")
 
     # Send PgUp
-    tmux send-keys -t "$SESSION_NAME" PgUp
+    _stmux send-keys -t "$SESSION_NAME" PgUp
 
     sleep 1
 
@@ -316,7 +323,7 @@ if session_alive "$SESSION_NAME"; then
     BEFORE_TAB=$(capture_pane "$SESSION_NAME")
 
     # Send Tab to switch panels
-    tmux send-keys -t "$SESSION_NAME" Tab
+    _stmux send-keys -t "$SESSION_NAME" Tab
 
     sleep 1
 
@@ -346,7 +353,7 @@ echo "=== Test 8: Clean shutdown ==="
 
 if session_alive "$SESSION_NAME"; then
     # Send Ctrl+C to shut down
-    tmux send-keys -t "$SESSION_NAME" C-c
+    _stmux send-keys -t "$SESSION_NAME" C-c
 
     # Wait for session to terminate (up to 10 seconds)
     SHUTDOWN_WAIT=0
@@ -363,7 +370,7 @@ if session_alive "$SESSION_NAME"; then
     else
         fail "TUI did not shut down within 10 seconds of Ctrl+C"
         # Force kill for cleanup
-        tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+        _stmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
     fi
 else
     skip "TUI was not running — cannot test shutdown"
@@ -399,7 +406,7 @@ SENTINEL="QUM304_SENTINEL_$$"
 
 # Launch WITHOUT a shell-level 2>redirect — the point of this test is to
 # prove the TUI's own stderr redirect handles stray writes.
-tmux new-session -d -s "$LEAK_SESSION" -x 120 -y 40 \
+_stmux new-session -d -s "$LEAK_SESSION" -x 120 -y 40 \
     "SPRAWL_ROOT='$LEAK_ROOT' SPRAWL_TUI_STDERR_LEAK_TEST='$SENTINEL' '$SPRAWL_BIN' enter"
 
 # Wait for TUI to render and for the 500ms sentinel goroutine to fire.
@@ -447,10 +454,10 @@ else
 fi
 
 # Tear down the leak-test tmux session.
-if tmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
-    tmux send-keys -t "$LEAK_SESSION" C-c 2>/dev/null || true
+if _stmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
+    _stmux send-keys -t "$LEAK_SESSION" C-c 2>/dev/null || true
     sleep 2
-    tmux kill-session -t "$LEAK_SESSION" 2>/dev/null || true
+    _stmux kill-session -t "$LEAK_SESSION" 2>/dev/null || true
 fi
 
 # --- Summary ---

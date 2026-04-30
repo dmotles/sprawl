@@ -49,6 +49,13 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- Dedicated tmux socket for sandbox isolation (QUM-325) ---
+SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-handoff-e2e-$$}"
+export SPRAWL_TMUX_SOCKET
+
+# _stmux wraps tmux with the dedicated sandbox socket.
+_stmux() { tmux ${SPRAWL_TMUX_SOCKET:+-L "$SPRAWL_TMUX_SOCKET"} "$@"; }
+
 # --- Preflight ---
 
 if ! command -v claude >/dev/null 2>&1; then
@@ -108,7 +115,7 @@ FAIL_COUNT=0
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS: $1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1" >&2; }
 
-capture_pane() { tmux capture-pane -t "$1" -p 2>/dev/null || true; }
+capture_pane() { _stmux capture-pane -t "$1" -p 2>/dev/null || true; }
 
 wait_for_pattern() {
     local session="$1" pattern="$2" timeout="$3"
@@ -178,8 +185,8 @@ cleanup() {
     if [ -n "${PHANTOM_PID:-}" ]; then
         kill "$PHANTOM_PID" 2>/dev/null || true
     fi
-    if tmux has-session -t "$SESSION" 2>/dev/null; then
-        tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if _stmux has-session -t "$SESSION" 2>/dev/null; then
+        _stmux kill-session -t "$SESSION" 2>/dev/null || true
     fi
     case "$SPRAWL_ROOT" in
         /tmp/*) rm -rf -- "$SPRAWL_ROOT" ;;
@@ -191,10 +198,10 @@ trap cleanup EXIT
 # --- Launch the TUI ---
 
 echo "=== Launching sprawl enter ==="
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+_stmux new-session -d -s "$SESSION" -x 200 -y 50 \
     "SPRAWL_ROOT='$SPRAWL_ROOT' '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
-tmux set-option -t "$SESSION" window-size manual >/dev/null
-tmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
+_stmux set-option -t "$SESSION" window-size manual >/dev/null
+_stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
 
 if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
     pass "TUI rendered"
@@ -210,7 +217,7 @@ else
 fi
 
 if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then
-    tmux send-keys -t "$SESSION" "1" Enter
+    _stmux send-keys -t "$SESSION" "1" Enter
     sleep 1
 fi
 
@@ -248,7 +255,7 @@ echo "  last-session-id (pre-handoff) = $OLD_LAST_SID"
 # client registered without opening a real terminal.
 echo ""
 echo "=== Attaching phantom tmux client (QUM-327 workaround) ==="
-script -q -c "tmux attach -t '$SESSION' -d" /dev/null >/dev/null 2>&1 &
+script -q -c "tmux ${SPRAWL_TMUX_SOCKET:+-L $SPRAWL_TMUX_SOCKET} attach -t '$SESSION' -d" /dev/null >/dev/null 2>&1 &
 PHANTOM_PID=$!
 sleep 1
 
@@ -264,7 +271,7 @@ echo ""
 echo "=== Firing handoff via MCP ==="
 HANDOFF_PROMPT="Call the mcp__sprawl__handoff tool with a short summary 'QUM-329 e2e test handoff'."
 
-tmux send-keys -t "$SESSION" "$HANDOFF_PROMPT" Enter
+_stmux send-keys -t "$SESSION" "$HANDOFF_PROMPT" Enter
 sleep 2
 
 # --- Assertions ---

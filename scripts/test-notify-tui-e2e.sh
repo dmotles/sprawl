@@ -47,6 +47,13 @@ export SPRAWL_QUIET_DEPRECATIONS=1
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- Dedicated tmux socket for sandbox isolation (QUM-325) ---
+SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-notify-e2e-$$}"
+export SPRAWL_TMUX_SOCKET
+
+# _stmux wraps tmux with the dedicated sandbox socket.
+_stmux() { tmux ${SPRAWL_TMUX_SOCKET:+-L "$SPRAWL_TMUX_SOCKET"} "$@"; }
+
 # --- Preflight: claude binary ---
 
 if ! command -v claude >/dev/null 2>&1; then
@@ -111,7 +118,7 @@ FAIL_COUNT=0
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS: $1"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1" >&2; }
 
-capture_pane() { tmux capture-pane -t "$1" -p 2>/dev/null || true; }
+capture_pane() { _stmux capture-pane -t "$1" -p 2>/dev/null || true; }
 
 # wait_for_pattern <session> <pattern> <timeout_secs>
 wait_for_pattern() {
@@ -129,8 +136,8 @@ wait_for_pattern() {
 
 cleanup() {
     local rc=$?
-    if tmux has-session -t "$SESSION" 2>/dev/null; then
-        tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if _stmux has-session -t "$SESSION" 2>/dev/null; then
+        _stmux kill-session -t "$SESSION" 2>/dev/null || true
     fi
     case "$SPRAWL_ROOT" in
         /tmp/*) rm -rf -- "$SPRAWL_ROOT" ;;
@@ -142,15 +149,15 @@ trap cleanup EXIT
 # --- Launch the TUI in a detached tmux session ---
 
 echo "=== Launching sprawl enter in tmux ==="
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+_stmux new-session -d -s "$SESSION" -x 200 -y 50 \
     "SPRAWL_ROOT='$SPRAWL_ROOT' '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
 # Pin the tmux session to 200x50 regardless of attached clients so the
 # TUI's tree panel renders wide enough (TreeWidth = termWidth/4, capped
 # at 50) to fit the 'weave (idle) (N)' unread badge. Without this the
 # detached session shrinks to the default ~80-col width and the badge
 # gets truncated.
-tmux set-option -t "$SESSION" window-size manual >/dev/null
-tmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
+_stmux set-option -t "$SESSION" window-size manual >/dev/null
+_stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
 
 if wait_for_pattern "$SESSION" "weave \\(idle\\)" 30; then
     pass "TUI rendered ('weave (idle)' visible in tree panel)"
@@ -176,7 +183,7 @@ fi
 #     downstream failure. ---
 
 if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then
-    tmux send-keys -t "$SESSION" "1" Enter
+    _stmux send-keys -t "$SESSION" "1" Enter
     sleep 1
 fi
 
