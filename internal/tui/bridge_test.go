@@ -14,11 +14,13 @@ import (
 
 // mockSession implements BridgeSession for testing.
 type mockSession struct {
-	initErr     error
-	sendErr     error
-	closeErr    error
-	closeCalled bool
-	events      chan *protocol.Message
+	initErr         error
+	sendErr         error
+	closeErr        error
+	interruptErr    error
+	closeCalled     bool
+	interruptCalled bool
+	events          chan *protocol.Message
 }
 
 func newMockSession() *mockSession {
@@ -36,6 +38,11 @@ func (m *mockSession) SendUserMessage(ctx context.Context, prompt string) (<-cha
 		return nil, m.sendErr
 	}
 	return m.events, nil
+}
+
+func (m *mockSession) Interrupt(ctx context.Context) error {
+	m.interruptCalled = true
+	return m.interruptErr
 }
 
 func (m *mockSession) Close() error {
