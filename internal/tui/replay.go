@@ -91,6 +91,8 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	var entries []MessageEntry
+	// QUM-379: track in-flight Agent tool calls to assign nesting depth.
+	var agentStack []string
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -149,7 +151,16 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 							parts = append(parts, txt)
 						}
 					}
-					// tool_result and others: skip
+					// QUM-379: tool_result blocks pop Agent IDs from the nesting stack.
+					if bt == "tool_result" {
+						tid, _ := bm["tool_use_id"].(string)
+						for j := len(agentStack) - 1; j >= 0; j-- {
+							if agentStack[j] == tid {
+								agentStack = append(agentStack[:j], agentStack[j+1:]...)
+								break
+							}
+						}
+					}
 				}
 				joined := strings.Join(parts, "\n")
 				if joined != "" {
@@ -187,6 +198,7 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 					if raw, err := json.Marshal(bm["input"]); err == nil {
 						inputRaw = raw
 					}
+					depth := len(agentStack)
 					entries = append(entries, MessageEntry{
 						Type:          MessageToolCall,
 						Content:       name,
@@ -195,9 +207,14 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						ToolInput:     summarizeToolInput(name, inputRaw),
 						ToolInputFull: expandToolInput(name, inputRaw),
 						ToolID:        id,
+						Depth:         depth,
 						// Replay-synthesized tool calls are not in flight —
 						// the spinner ticker only animates Pending entries.
 					})
+					// QUM-379: push Agent IDs onto the nesting stack.
+					if name == "Agent" && id != "" {
+						agentStack = append(agentStack, id)
+					}
 					// thinking + other types: skip
 				}
 			}

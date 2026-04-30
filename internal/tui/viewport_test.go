@@ -795,6 +795,297 @@ func TestViewportModel_RenderMessages_SystemMessageDistinctStyleFromUser(t *test
 	}
 }
 
+// --- Tests for QUM-379: Nest sub-agent tool calls under parent Agent tool call ---
+
+// TestViewportModel_AppendToolCall_AgentNesting_SetsDepth verifies that tool
+// calls appended after an "Agent" tool call get Depth 1, and after the Agent
+// result arrives, subsequent tool calls get Depth 0 again.
+func TestViewportModel_AppendToolCall_AgentNesting_SetsDepth(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "agent-1", true, "sub-task", "")
+	m.AppendToolCall("Bash", "bash-1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[1].Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1 (nested under Agent)", msgs[1].Depth)
+	}
+
+	m.MarkToolResult("agent-1", "done", false)
+	m.AppendToolCall("Read", "read-1", true, "/tmp/x", "")
+
+	msgs = m.GetMessages()
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3", len(msgs))
+	}
+	if msgs[2].Depth != 0 {
+		t.Errorf("Read Depth = %d, want 0 (Agent popped)", msgs[2].Depth)
+	}
+}
+
+// TestViewportModel_AppendToolCall_NestedAgentDepth2 verifies two levels of
+// Agent nesting: Agent inside Agent gives Depth 2.
+func TestViewportModel_AppendToolCall_NestedAgentDepth2(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.AppendToolCall("Agent", "a1", true, "outer", "")
+	m.AppendToolCall("Agent", "a2", true, "inner", "")
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if msgs[2].Depth != 2 {
+		t.Errorf("Bash Depth = %d, want 2 (nested under two Agents)", msgs[2].Depth)
+	}
+
+	m.MarkToolResult("a2", "inner done", false)
+	m.AppendToolCall("Read", "r1", true, "/tmp/y", "")
+
+	msgs = m.GetMessages()
+	if msgs[3].Depth != 1 {
+		t.Errorf("Read Depth = %d, want 1 (inner Agent popped)", msgs[3].Depth)
+	}
+
+	m.MarkToolResult("a1", "outer done", false)
+	m.AppendToolCall("Write", "w1", true, "/tmp/z", "")
+
+	msgs = m.GetMessages()
+	if msgs[4].Depth != 0 {
+		t.Errorf("Write Depth = %d, want 0 (both Agents popped)", msgs[4].Depth)
+	}
+}
+
+// TestViewportModel_RenderToolCall_NestedCompactFormat verifies that a nested
+// tool call (Depth > 0) renders in a compact format: no ┌ or └ box-drawing,
+// contains the │ gutter for indentation, and contains the tool name and input.
+func TestViewportModel_RenderToolCall_NestedCompactFormat(t *testing.T) {
+	const width = 80
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 20)
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: "ls",
+		Depth:     1,
+	})
+
+	out := sb.String()
+	stripped := stripANSI(out)
+
+	// Compact: should NOT have ┌ or └ box drawing.
+	if strings.Contains(stripped, "┌") {
+		t.Errorf("nested (Depth=1) tool call should not contain ┌, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "└") {
+		t.Errorf("nested (Depth=1) tool call should not contain └, got:\n%s", stripped)
+	}
+
+	// Should contain tool name and input.
+	if !strings.Contains(stripped, "Bash") {
+		t.Errorf("nested render missing tool name 'Bash', got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "ls") {
+		t.Errorf("nested render missing tool input 'ls', got:\n%s", stripped)
+	}
+
+	// Should contain │ gutter for indentation.
+	if !strings.Contains(stripped, "│") {
+		t.Errorf("nested render should contain │ gutter, got:\n%s", stripped)
+	}
+
+	// Every rendered line must fit within viewport width.
+	for _, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("rendered line width %d exceeds viewport width %d: %q", w, width, line)
+		}
+	}
+}
+
+// TestViewportModel_RenderToolCall_NestedDepth2Indent verifies that Depth 2
+// entries are indented more than Depth 1 entries.
+func TestViewportModel_RenderToolCall_NestedDepth2Indent(t *testing.T) {
+	const width = 80
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 20)
+
+	var sb1 strings.Builder
+	m.renderToolCall(&sb1, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: "ls",
+		Depth:     1,
+	})
+
+	var sb2 strings.Builder
+	m.renderToolCall(&sb2, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: "ls",
+		Depth:     2,
+	})
+
+	stripped1 := stripANSI(sb1.String())
+	stripped2 := stripANSI(sb2.String())
+
+	// Depth 2 output should have more leading whitespace or gutter characters
+	// than Depth 1. We compare the first non-empty line of each.
+	firstLine := func(s string) string {
+		for _, ln := range strings.Split(s, "\n") {
+			if strings.TrimSpace(ln) != "" {
+				return ln
+			}
+		}
+		return ""
+	}
+	line1 := firstLine(stripped1)
+	line2 := firstLine(stripped2)
+
+	// Count leading indentation characters (spaces, │, etc.) before the tool
+	// name appears.
+	indent := func(line, marker string) int {
+		idx := strings.Index(line, marker)
+		if idx < 0 {
+			return 0
+		}
+		return idx
+	}
+	i1 := indent(line1, "Bash")
+	i2 := indent(line2, "Bash")
+	if i2 <= i1 {
+		t.Errorf("Depth 2 indent (%d) should exceed Depth 1 indent (%d);\nDepth1: %q\nDepth2: %q", i2, i1, line1, line2)
+	}
+}
+
+// TestViewportModel_RenderMessages_NoBlankLineBetweenNestedEntries asserts that
+// two consecutive nested tool calls (Depth > 0) do not have a double-newline
+// gap between them in the rendered output.
+func TestViewportModel_RenderMessages_NoBlankLineBetweenNestedEntries(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	m.SetMessages([]MessageEntry{
+		{Type: MessageToolCall, Content: "Agent", Complete: true, Approved: true, ToolID: "a1", Depth: 0},
+		{Type: MessageToolCall, Content: "Bash", Complete: true, Approved: true, ToolInput: "ls", Depth: 1},
+		{Type: MessageToolCall, Content: "Read", Complete: true, Approved: true, ToolInput: "/tmp/x", Depth: 1},
+	})
+
+	rendered := m.renderMessages()
+	stripped := stripANSI(rendered)
+
+	// Find the Bash and Read entries in the output and check there's no blank
+	// line between them.
+	bashIdx := strings.Index(stripped, "Bash")
+	readIdx := strings.Index(stripped, "Read")
+	if bashIdx < 0 || readIdx < 0 {
+		t.Fatalf("expected both 'Bash' and 'Read' in rendered output, got:\n%s", stripped)
+	}
+	between := stripped[bashIdx:readIdx]
+	if strings.Contains(between, "\n\n") {
+		t.Errorf("should not have double-newline between nested entries, got:\n%s", stripped)
+	}
+}
+
+// TestViewportModel_RenderToolCall_NestedPendingShowsSpinner verifies that a
+// nested (Depth > 0) pending tool call renders with a spinner frame.
+func TestViewportModel_RenderToolCall_NestedPendingShowsSpinner(t *testing.T) {
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(80, 20)
+	m.SetSpinnerFrame("⠋")
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: "ls",
+		Pending:   true,
+		Depth:     1,
+	})
+
+	stripped := stripANSI(sb.String())
+	if !strings.Contains(stripped, "⠋") {
+		t.Errorf("nested pending tool call should contain spinner frame '⠋', got:\n%s", stripped)
+	}
+}
+
+// TestViewportModel_RenderToolCall_NestedFailedShowsX verifies that a nested
+// (Depth > 0) failed tool call renders with the ✗ indicator.
+func TestViewportModel_RenderToolCall_NestedFailedShowsX(t *testing.T) {
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(80, 20)
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		ToolInput: "ls",
+		Failed:    true,
+		Depth:     1,
+	})
+
+	stripped := stripANSI(sb.String())
+	if !strings.Contains(stripped, "✗") {
+		t.Errorf("nested failed tool call should contain '✗', got:\n%s", stripped)
+	}
+}
+
+// TestViewportModel_AgentToolCallItselfHasDepth0 verifies that an "Agent" tool
+// call appended at the top level gets Depth 0 (it's the parent, not nested).
+func TestViewportModel_AgentToolCallItselfHasDepth0(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+
+	m.AppendToolCall("Agent", "a1", true, "task", "")
+	msgs := m.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].Depth != 0 {
+		t.Errorf("Agent tool call Depth = %d, want 0", msgs[0].Depth)
+	}
+}
+
+// TestViewportModel_SetMessages_ClearsAgentStack verifies that SetMessages
+// resets the agent call stack so subsequent AppendToolCall calls start at
+// Depth 0 regardless of prior state.
+func TestViewportModel_SetMessages_ClearsAgentStack(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+
+	m.AppendToolCall("Agent", "a1", true, "task", "")
+	// After appending Agent, the stack should have a1.
+	// SetMessages clears everything.
+	m.SetMessages(nil)
+
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+	msgs := m.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("got %d messages, want 1", len(msgs))
+	}
+	if msgs[0].Depth != 0 {
+		t.Errorf("Bash Depth = %d, want 0 (stack should have been cleared by SetMessages)", msgs[0].Depth)
+	}
+}
+
 // QUM-324: a tool name containing lots of junk (or otherwise long) must not
 // bleed past the viewport width in the header row either.
 func TestViewportModel_RenderToolCall_LongNameHeaderClipped(t *testing.T) {

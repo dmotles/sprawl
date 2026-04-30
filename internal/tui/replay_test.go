@@ -368,3 +368,86 @@ func TestLoadTranscript_NoEntriesSkipsMarkers(t *testing.T) {
 		t.Errorf("entries = %+v, want nil (no markers when zero real records)", entries)
 	}
 }
+
+// --- Tests for QUM-379: Agent nesting depth in transcript replay ---
+
+// TestLoadTranscript_AgentNestingSetsDepth verifies that when an "Agent" tool_use
+// appears in the transcript, subsequent tool_use entries get Depth 1, and after
+// the corresponding tool_result, entries return to Depth 0.
+func TestLoadTranscript_AgentNestingSetsDepth(t *testing.T) {
+	lines := []string{
+		// Assistant emits Agent tool_use and Bash tool_use.
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"a1","name":"Agent","input":{"prompt":"do stuff"}},` +
+			`{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}` +
+			`]}}`,
+		// User turn with tool_result for the Agent call.
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"a1","content":"agent done"}` +
+			`]}}`,
+		// Assistant emits Read tool_use (should be Depth 0 now).
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"r1","name":"Read","input":{"path":"/tmp/x"}}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Find the Bash and Read entries.
+	var bashEntry, readEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall && entries[i].Content == "Bash" {
+			bashEntry = &entries[i]
+		}
+		if entries[i].Type == MessageToolCall && entries[i].Content == "Read" {
+			readEntry = &entries[i]
+		}
+	}
+	if bashEntry == nil {
+		t.Fatal("Bash tool call entry not found")
+	}
+	if readEntry == nil {
+		t.Fatal("Read tool call entry not found")
+	}
+	if bashEntry.Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1 (nested under Agent)", bashEntry.Depth)
+	}
+	if readEntry.Depth != 0 {
+		t.Errorf("Read Depth = %d, want 0 (Agent result already received)", readEntry.Depth)
+	}
+}
+
+// TestLoadTranscript_NestedAgentDepth2 verifies that two levels of Agent
+// nesting in the transcript produce Depth 2 for the innermost tool calls.
+func TestLoadTranscript_NestedAgentDepth2(t *testing.T) {
+	lines := []string{
+		// Two nested Agent tool_use blocks then a Bash.
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"a1","name":"Agent","input":{"prompt":"outer"}},` +
+			`{"type":"tool_use","id":"a2","name":"Agent","input":{"prompt":"inner"}},` +
+			`{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var bashEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall && entries[i].Content == "Bash" {
+			bashEntry = &entries[i]
+			break
+		}
+	}
+	if bashEntry == nil {
+		t.Fatal("Bash tool call entry not found")
+	}
+	if bashEntry.Depth != 2 {
+		t.Errorf("Bash Depth = %d, want 2 (nested under two Agents)", bashEntry.Depth)
+	}
+}
