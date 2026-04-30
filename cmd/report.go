@@ -72,12 +72,15 @@ func resolveReportDeps() *reportDeps {
 		return defaultReportDeps
 	}
 	return &reportDeps{
-		getenv:      os.Getenv,
-		nowFunc:     time.Now,
-		loadAgent:   state.LoadAgent,
-		saveAgent:   state.SaveAgent,
-		sendMessage: messages.Send,
-		enqueue:     agentloop.Enqueue,
+		getenv:    os.Getenv,
+		nowFunc:   time.Now,
+		loadAgent: state.LoadAgent,
+		saveAgent: state.SaveAgent,
+		sendMessage: func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error {
+			_, err := messages.Send(sprawlRoot, from, to, subject, body, opts...)
+			return err
+		},
+		enqueue: agentloop.Enqueue,
 	}
 }
 

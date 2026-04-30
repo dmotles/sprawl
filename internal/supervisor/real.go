@@ -247,7 +247,8 @@ func (r *Real) Message(ctx context.Context, agentName, subject, body string) err
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
-	return messages.Send(r.sprawlRoot, r.effectiveCaller(ctx), agentName, subject, body)
+	_, err = messages.Send(r.sprawlRoot, r.effectiveCaller(ctx), agentName, subject, body)
+	return err
 }
 
 func (r *Real) Spawn(_ context.Context, req SpawnRequest) (*AgentInfo, error) {
@@ -549,11 +550,13 @@ func (r *Real) SendAsync(ctx context.Context, to, subject, body, replyTo string,
 	}
 
 	caller := r.effectiveCaller(ctx)
-	if err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...); err != nil {
+	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...)
+	if err != nil {
 		return nil, err
 	}
 
 	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
+		ShortID: shortID,
 		Class:   agentloop.ClassAsync,
 		From:    caller,
 		Subject: subject,
@@ -645,11 +648,13 @@ func (r *Real) SendInterrupt(ctx context.Context, to, subject, body, resumeHint 
 		sendOpts = append(sendOpts, messages.WithoutWakeFile())
 	}
 
-	if err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...); err != nil {
+	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...)
+	if err != nil {
 		return nil, err
 	}
 
 	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
+		ShortID: shortID,
 		Class:   agentloop.ClassInterrupt,
 		From:    caller,
 		Subject: subject,
@@ -732,7 +737,8 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, 
 			if parentRuntime != nil {
 				opts = append(opts, messages.WithoutWakeFile())
 			}
-			return messages.Send(sprawlRoot, from, to, subject, body, opts...)
+			_, err := messages.Send(sprawlRoot, from, to, subject, body, opts...)
+			return err
 		},
 	}
 	res, err := agentops.Report(reportDeps, r.sprawlRoot, agentName, reportState, summary, detail)

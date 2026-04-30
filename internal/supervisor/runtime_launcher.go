@@ -190,7 +190,8 @@ func buildRunnerDeps(spec RuntimeStartSpec) *agentloop.RunnerDeps {
 		UpdateTask:   state.UpdateTask,
 		ListMessages: messages.List,
 		SendMessage: func(root, from, to, subject, body string) error {
-			return messages.Send(root, from, to, subject, body)
+			_, err := messages.Send(root, from, to, subject, body)
+			return err
 		},
 		FindClaude: func() (string, error) {
 			return exec.LookPath("claude")

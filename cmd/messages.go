@@ -174,7 +174,8 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 		return err
 	}
 
-	if err := messages.Send(sprawlRoot, agentName, to, subject, body); err != nil {
+	shortID, err := messages.Send(sprawlRoot, agentName, to, subject, body)
+	if err != nil {
 		return err
 	}
 
@@ -184,6 +185,7 @@ func runMessagesSend(deps *messagesDeps, to, subject, body string) error {
 	// without depending on the legacy tmux send-keys path. Enqueue failures
 	// are non-fatal — the maildir delivery already succeeded.
 	if _, err := agentloop.Enqueue(sprawlRoot, to, agentloop.Entry{
+		ShortID: shortID,
 		Class:   agentloop.ClassAsync,
 		From:    agentName,
 		Subject: subject,
