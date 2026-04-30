@@ -2671,8 +2671,8 @@ func TestAppModel_Esc_ClearsPendingSubmit(t *testing.T) {
 	app := busyAppWithBridge(t)
 	app.pendingSubmit = "draft"
 	app.input.SetPendingPreview("draft")
-	// Make sure a partial composition in the textinput buffer survives.
-	app.input.ti.SetValue("composing more")
+	// Make sure a partial composition in the textarea buffer survives.
+	app.input.ta.SetValue("composing more")
 
 	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	app = updated.(AppModel)
@@ -2683,8 +2683,8 @@ func TestAppModel_Esc_ClearsPendingSubmit(t *testing.T) {
 	if app.input.PendingPreview() != "" {
 		t.Errorf("Esc should clear indicator preview, got %q", app.input.PendingPreview())
 	}
-	if app.input.ti.Value() != "composing more" {
-		t.Errorf("Esc must not clear the textinput buffer, got %q", app.input.ti.Value())
+	if app.input.ta.Value() != "composing more" {
+		t.Errorf("Esc must not clear the textarea buffer, got %q", app.input.ta.Value())
 	}
 }
 

@@ -1,9 +1,13 @@
 package tui
 
 const (
-	minTreeWidth    = 20
-	maxTreeWidth    = 50
-	inputHeight     = 3
+	minTreeWidth = 20
+	maxTreeWidth = 50
+	// defaultInputHeight is the input box height when collapsed (1 line + 2
+	// border cells).
+	defaultInputHeight = 3
+	// maxInputHeight caps input growth so it doesn't eat the viewport.
+	maxInputHeight  = 12
 	statusBarHeight = 1
 
 	// Activity panel sizing (QUM-296). The panel is a third column to the
@@ -37,12 +41,21 @@ type Layout struct {
 }
 
 // ComputeLayout calculates panel dimensions from terminal size.
-// Tree panel is ~25% width (clamped to min/max). Input is 3 lines at bottom.
-// Status bar is 1 line at bottom. Viewport fills the rest. When the terminal
-// is at least activityPanelThreshold wide, a third column (activity panel)
-// is reserved on the right; otherwise ActivityWidth is 0 and the panel is
-// hidden.
-func ComputeLayout(width, height int) Layout {
+// Tree panel is ~25% width (clamped to min/max). Input height is dynamic
+// (driven by the textarea's current line count) and clamped to
+// [defaultInputHeight, maxInputHeight]. Status bar is 1 line at bottom.
+// Viewport fills the rest. When the terminal is at least
+// activityPanelThreshold wide, a third column (activity panel) is reserved
+// on the right; otherwise ActivityWidth is 0 and the panel is hidden.
+func ComputeLayout(width, height, inputHeight int) Layout {
+	// Clamp input height.
+	if inputHeight < defaultInputHeight {
+		inputHeight = defaultInputHeight
+	}
+	if inputHeight > maxInputHeight {
+		inputHeight = maxInputHeight
+	}
+
 	l := Layout{
 		TermWidth:  width,
 		TermHeight: height,
@@ -81,7 +94,7 @@ func ComputeLayout(width, height int) Layout {
 		l.ViewportWidth = 0
 	}
 
-	// Vertical: status bar (1) + input (3) + main panels (rest).
+	// Vertical: status bar (1) + input (dynamic) + main panels (rest).
 	l.StatusHeight = statusBarHeight
 	l.InputHeight = inputHeight
 	l.StatusWidth = width

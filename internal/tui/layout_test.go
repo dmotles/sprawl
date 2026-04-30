@@ -5,7 +5,7 @@ import (
 )
 
 func TestComputeLayout_StandardSize(t *testing.T) {
-	l := ComputeLayout(80, 24)
+	l := ComputeLayout(80, 24, defaultInputHeight)
 
 	// Tree should be roughly 25% of width.
 	if l.TreeWidth < 15 || l.TreeWidth > 30 {
@@ -33,7 +33,7 @@ func TestComputeLayout_StandardSize(t *testing.T) {
 }
 
 func TestComputeLayout_WideTerminal(t *testing.T) {
-	l := ComputeLayout(200, 50)
+	l := ComputeLayout(200, 50, defaultInputHeight)
 
 	// Tree width should be capped (not grow unbounded with terminal width).
 	if l.TreeWidth > 60 {
@@ -45,7 +45,7 @@ func TestComputeLayout_WideTerminal(t *testing.T) {
 }
 
 func TestComputeLayout_MinimumSize(t *testing.T) {
-	l := ComputeLayout(80, 24)
+	l := ComputeLayout(80, 24, defaultInputHeight)
 
 	// Nothing should be negative.
 	if l.TreeWidth < 0 {
@@ -76,7 +76,7 @@ func TestComputeLayout_MinimumSize(t *testing.T) {
 
 func TestComputeLayout_TinyTerminal(t *testing.T) {
 	// Should not panic on very small terminal.
-	l := ComputeLayout(20, 8)
+	l := ComputeLayout(20, 8, defaultInputHeight)
 
 	if l.TreeWidth < 0 {
 		t.Errorf("TreeWidth = %d, want >= 0", l.TreeWidth)
@@ -105,7 +105,7 @@ func TestComputeLayout_TinyTerminal(t *testing.T) {
 }
 
 func TestComputeLayout_DimensionsConsistent(t *testing.T) {
-	l := ComputeLayout(120, 40)
+	l := ComputeLayout(120, 40, defaultInputHeight)
 
 	// Tree width + viewport width should not exceed terminal width.
 	if l.TreeWidth+l.ViewportWidth > l.TermWidth {
@@ -153,7 +153,7 @@ func TestMinTermConstants(t *testing.T) {
 }
 
 func TestComputeLayout_ZeroSize(t *testing.T) {
-	l := ComputeLayout(0, 0)
+	l := ComputeLayout(0, 0, defaultInputHeight)
 
 	if l.TreeWidth < 0 {
 		t.Errorf("TreeWidth = %d, want >= 0", l.TreeWidth)
@@ -182,7 +182,7 @@ func TestComputeLayout_ZeroSize(t *testing.T) {
 }
 
 func TestComputeLayout_WideTerminalHasActivityPanel(t *testing.T) {
-	l := ComputeLayout(160, 40)
+	l := ComputeLayout(160, 40, defaultInputHeight)
 	if l.ActivityWidth <= 0 {
 		t.Errorf("ActivityWidth = %d, want > 0 at width=160", l.ActivityWidth)
 	}
@@ -201,7 +201,7 @@ func TestComputeLayout_WideTerminalHasActivityPanel(t *testing.T) {
 }
 
 func TestComputeLayout_NarrowTerminalHidesActivityPanel(t *testing.T) {
-	l := ComputeLayout(80, 24)
+	l := ComputeLayout(80, 24, defaultInputHeight)
 	if l.ActivityWidth != 0 {
 		t.Errorf("ActivityWidth = %d, want 0 at narrow width=80 (activity panel hidden)", l.ActivityWidth)
 	}
@@ -213,7 +213,7 @@ func TestComputeLayout_NarrowTerminalHidesActivityPanel(t *testing.T) {
 }
 
 func TestComputeLayout_ActivityWidthClamped(t *testing.T) {
-	l := ComputeLayout(400, 50)
+	l := ComputeLayout(400, 50, defaultInputHeight)
 	if l.ActivityWidth > 60 {
 		t.Errorf("ActivityWidth = %d, want capped (<=60) for very wide terminal", l.ActivityWidth)
 	}
@@ -230,7 +230,7 @@ func TestComputeLayout_BelowMinimum(t *testing.T) {
 
 	for _, sz := range sizes {
 		t.Run(sz.name, func(t *testing.T) {
-			l := ComputeLayout(sz.width, sz.height)
+			l := ComputeLayout(sz.width, sz.height, defaultInputHeight)
 
 			if l.TreeWidth < 0 {
 				t.Errorf("ComputeLayout(%d,%d): TreeWidth = %d, want >= 0", sz.width, sz.height, l.TreeWidth)
@@ -257,5 +257,36 @@ func TestComputeLayout_BelowMinimum(t *testing.T) {
 				t.Errorf("ComputeLayout(%d,%d): StatusHeight = %d, want >= 0", sz.width, sz.height, l.StatusHeight)
 			}
 		})
+	}
+}
+
+func TestComputeLayout_DynamicInputHeight(t *testing.T) {
+	small := ComputeLayout(80, 24, defaultInputHeight)
+	large := ComputeLayout(80, 24, 8)
+
+	if large.InputHeight != 8 {
+		t.Errorf("InputHeight = %d, want 8", large.InputHeight)
+	}
+	if large.ViewportHeight >= small.ViewportHeight {
+		t.Errorf("larger input should shrink viewport: small=%d, large=%d",
+			small.ViewportHeight, large.ViewportHeight)
+	}
+	if large.TreeHeight >= small.TreeHeight {
+		t.Errorf("larger input should shrink tree: small=%d, large=%d",
+			small.TreeHeight, large.TreeHeight)
+	}
+}
+
+func TestComputeLayout_InputHeightClampedToMax(t *testing.T) {
+	l := ComputeLayout(80, 24, 20)
+	if l.InputHeight != maxInputHeight {
+		t.Errorf("InputHeight = %d, want %d (clamped to max)", l.InputHeight, maxInputHeight)
+	}
+}
+
+func TestComputeLayout_InputHeightClampedToMin(t *testing.T) {
+	l := ComputeLayout(80, 24, 0)
+	if l.InputHeight != defaultInputHeight {
+		t.Errorf("InputHeight = %d, want %d (clamped to default)", l.InputHeight, defaultInputHeight)
 	}
 }

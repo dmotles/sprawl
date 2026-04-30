@@ -878,7 +878,7 @@ func (m AppModel) View() tea.View {
 		return v
 	}
 
-	layout := ComputeLayout(m.width, m.height)
+	layout := ComputeLayout(m.width, m.height, m.inputBoxHeight())
 	// QUM-340: when the user is observing a non-root agent, the input bar is
 	// hidden — they can only talk to weave. Reclaim its vertical space for
 	// the viewport so the layout doesn't waste rows on a bar we're not
@@ -988,7 +988,7 @@ func (m *AppModel) viewportFor(name string) *ViewportModel {
 	if !ok {
 		vp := NewViewportModel(&m.theme)
 		if m.ready && !m.tooSmall {
-			layout := ComputeLayout(m.width, m.height)
+			layout := ComputeLayout(m.width, m.height, m.inputBoxHeight())
 			vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
 		}
 		vp.SetToolInputsExpanded(m.toolInputsExpanded)
@@ -1041,7 +1041,12 @@ func (m *AppModel) cycleAgent(delta int) tea.Cmd {
 }
 
 func (m *AppModel) resizePanels() {
-	layout := ComputeLayout(m.width, m.height)
+	// Set the textarea width first so it can compute line wrapping and report
+	// an accurate Height() for layout. The input spans the full terminal
+	// width minus border + gutter (4 cells), same as layout.InputWidth - 4.
+	m.input.SetWidth(m.width - 4)
+
+	layout := ComputeLayout(m.width, m.height, m.inputBoxHeight())
 	// QUM-340: when the user is observing a non-root agent the input bar is
 	// hidden in View(); the *observed* viewport reclaims InputHeight rows.
 	// Non-observed buffers stay sized to the input-visible layout so they
@@ -1083,6 +1088,19 @@ func (m *AppModel) resizePanels() {
 	m.confirm.SetSize(m.width, m.height)
 	m.errorDialog.SetSize(m.width, m.height)
 	m.palette.SetSize(m.width, m.height)
+}
+
+// inputBoxHeight returns the total height the input box occupies including
+// its border (2 cells). The textarea's Height() reflects the current content
+// line count when DynamicHeight is enabled. Before the textarea has been
+// sized (SetWidth), its Height() returns a stale default — fall back to the
+// layout default in that case.
+func (m *AppModel) inputBoxHeight() int {
+	h := m.input.Height() + 2 // +2 for top/bottom border
+	if h < defaultInputHeight {
+		h = defaultInputHeight
+	}
+	return h
 }
 
 func (m *AppModel) updateFocus() {
