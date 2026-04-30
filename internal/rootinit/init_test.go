@@ -14,6 +14,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/gofrs/flock"
 )
 
 // syncBackgroundConsolidate returns a BackgroundConsolidate function that
@@ -716,6 +717,70 @@ func TestPrepareFresh_SavesRootAgentState(t *testing.T) {
 	}
 	if savedAgent.SessionID != "fresh-id" {
 		t.Errorf("SessionID: got %q, want %q", savedAgent.SessionID, "fresh-id")
+	}
+}
+
+// TestPrepare_WaitsForInFlightConsolidation verifies QUM-402: Prepare()
+// blocks at startup until any in-flight background consolidation from the
+// prior session has released its flock, so BuildContextBlob never reads a
+// stale persistent.md / timeline.md.
+func TestPrepare_WaitsForInFlightConsolidation(t *testing.T) {
+	root := t.TempDir()
+	memDir := filepath.Join(root, ".sprawl", "memory")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	lockPath := consolidatingLockPath(root)
+	if err := os.WriteFile(lockPath, []byte("99999\n"), 0o644); err != nil {
+		t.Fatalf("write lockfile: %v", err)
+	}
+	fl := flock.New(lockPath)
+	if err := fl.Lock(); err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+
+	hold := 300 * time.Millisecond
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(hold)
+		_ = fl.Unlock()
+		close(released)
+	}()
+
+	deps := newTestDeps(t)
+	var contextBlobCalledAt time.Time
+	deps.BuildContextBlob = func(sprawlRoot, rootName string) (string, error) {
+		contextBlobCalledAt = time.Now()
+		return "", nil
+	}
+
+	start := time.Now()
+	if _, err := Prepare(context.Background(), deps, ModeTmux, root, "weave", io.Discard); err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	<-released
+	if contextBlobCalledAt.IsZero() {
+		t.Fatal("expected BuildContextBlob to be called")
+	}
+	if elapsed < hold {
+		t.Errorf("Prepare returned in %s; expected to block at least %s while flock held", elapsed, hold)
+	}
+}
+
+// TestPrepare_NoLockfile_NoLatency verifies QUM-402: if no in-flight
+// consolidation lockfile exists, Prepare adds zero measurable latency.
+func TestPrepare_NoLockfile_NoLatency(t *testing.T) {
+	root := t.TempDir()
+	deps := newTestDeps(t)
+
+	start := time.Now()
+	if _, err := Prepare(context.Background(), deps, ModeTmux, root, "weave", io.Discard); err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Errorf("Prepare took %s with no lockfile; expected near-zero", elapsed)
 	}
 }
 
