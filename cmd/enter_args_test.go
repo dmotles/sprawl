@@ -20,11 +20,24 @@ func freshPrepared() *rootinit.PreparedSession {
 	}
 }
 
-// resumePrepared is a test fixture representing a resume-path PreparedSession.
+// resumePrepared is a test fixture representing a resume-path PreparedSession
+// where the SYSTEM.md file exists from a prior fresh start.
 func resumePrepared() *rootinit.PreparedSession {
 	return &rootinit.PreparedSession{
 		Resume:     true,
-		PromptPath: "", // empty on resume
+		PromptPath: "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md",
+		SessionID:  "prior-session-uuid",
+		Model:      rootinit.DefaultModel,
+		RootTools:  rootinit.RootTools,
+		Disallowed: rootinit.DisallowedTools,
+	}
+}
+
+// resumePreparedNoPrompt is a test fixture for resume when SYSTEM.md is missing.
+func resumePreparedNoPrompt() *rootinit.PreparedSession {
+	return &rootinit.PreparedSession{
+		Resume:     true,
+		PromptPath: "",
 		SessionID:  "prior-session-uuid",
 		Model:      rootinit.DefaultModel,
 		RootTools:  rootinit.RootTools,
@@ -66,17 +79,17 @@ func TestBuildEnterLaunchOpts_FreshIncludesModelAndSessionID(t *testing.T) {
 	}
 }
 
-func TestBuildEnterLaunchOpts_ResumeOmitsSystemPromptFileAndSessionIDFlag(t *testing.T) {
+func TestBuildEnterLaunchOpts_ResumeIncludesSystemPromptFileWhenSet(t *testing.T) {
 	opts := buildEnterLaunchOpts(resumePrepared())
 	if !opts.Resume {
 		t.Error("Resume must be true on resume path")
 	}
-	if opts.SystemPromptFile != "" {
-		t.Errorf("SystemPromptFile must be empty on resume; got %q", opts.SystemPromptFile)
+	if opts.SystemPromptFile != "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md" {
+		t.Errorf("SystemPromptFile = %q, want prepared.PromptPath", opts.SystemPromptFile)
 	}
 	args := opts.BuildArgs()
-	if argsContain(args, "--system-prompt-file") {
-		t.Errorf("resume args must not contain --system-prompt-file; got %v", args)
+	if !argsContainPair(args, "--system-prompt-file", "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md") {
+		t.Errorf("resume args must include --system-prompt-file; got %v", args)
 	}
 	if !argsContainPair(args, "--resume", "prior-session-uuid") {
 		t.Errorf("resume args missing --resume prior-session-uuid; got %v", args)
@@ -84,6 +97,23 @@ func TestBuildEnterLaunchOpts_ResumeOmitsSystemPromptFileAndSessionIDFlag(t *tes
 	// Mutual exclusion: BuildArgs omits --session-id when Resume=true.
 	if argsContain(args, "--session-id") {
 		t.Errorf("resume args must not contain --session-id flag; got %v", args)
+	}
+}
+
+func TestBuildEnterLaunchOpts_ResumeOmitsSystemPromptFileWhenEmpty(t *testing.T) {
+	opts := buildEnterLaunchOpts(resumePreparedNoPrompt())
+	if !opts.Resume {
+		t.Error("Resume must be true on resume path")
+	}
+	if opts.SystemPromptFile != "" {
+		t.Errorf("SystemPromptFile must be empty when PromptPath is empty; got %q", opts.SystemPromptFile)
+	}
+	args := opts.BuildArgs()
+	if argsContain(args, "--system-prompt-file") {
+		t.Errorf("resume args must not contain --system-prompt-file when PromptPath empty; got %v", args)
+	}
+	if !argsContainPair(args, "--resume", "prior-session-uuid") {
+		t.Errorf("resume args missing --resume; got %v", args)
 	}
 }
 

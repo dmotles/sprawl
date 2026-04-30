@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -296,6 +297,51 @@ func TestPrepare_ResumesWhenPrevSessionHasNoSummary(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "resuming session prev-session-id") {
 		t.Errorf("expected 'resuming session prev-session-id' log, got %q", buf.String())
+	}
+}
+
+func TestPrepare_ResumePath_SetsPromptPathWhenSystemMDExists(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+
+	// Simulate that the SYSTEM.md file exists on disk from a prior fresh start.
+	deps.ReadFile = func(path string) ([]byte, error) {
+		if strings.HasSuffix(path, filepath.Join(".sprawl", "agents", "weave", "SYSTEM.md")) {
+			return []byte("existing prompt"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if !got.Resume {
+		t.Error("expected Resume=true")
+	}
+	wantPath := filepath.Join("/fake/root", ".sprawl", "agents", "weave", "SYSTEM.md")
+	if got.PromptPath != wantPath {
+		t.Errorf("PromptPath: got %q, want %q", got.PromptPath, wantPath)
+	}
+}
+
+func TestPrepare_ResumePath_EmptyPromptPathWhenSystemMDMissing(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "prev-session-id", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+
+	// ReadFile returns ErrNotExist by default in newTestDeps, so SYSTEM.md
+	// does not exist. PromptPath should remain empty.
+	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if !got.Resume {
+		t.Error("expected Resume=true")
+	}
+	if got.PromptPath != "" {
+		t.Errorf("expected empty PromptPath when SYSTEM.md missing, got %q", got.PromptPath)
 	}
 }
 

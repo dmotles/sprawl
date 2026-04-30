@@ -244,9 +244,8 @@ func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts 
 	}
 	if prepared.Resume {
 		opts.Resume = true
-	} else {
-		opts.SystemPromptFile = prepared.PromptPath
 	}
+	opts.SystemPromptFile = prepared.PromptPath
 	return opts
 }
 
@@ -269,9 +268,8 @@ func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession
 	}
 	if prepared.Resume {
 		spec.Resume = true
-	} else {
-		spec.PromptFile = prepared.PromptPath
 	}
+	spec.PromptFile = prepared.PromptPath
 	return spec
 }
 

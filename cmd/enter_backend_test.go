@@ -65,8 +65,8 @@ func TestBuildEnterSessionSpec_ResumePathPreservesResumeState(t *testing.T) {
 	if !spec.Resume {
 		t.Fatal("Resume must be true on resume path")
 	}
-	if spec.PromptFile != "" {
-		t.Errorf("PromptFile = %q, want empty on resume path", spec.PromptFile)
+	if spec.PromptFile != "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md" {
+		t.Errorf("PromptFile = %q, want prepared.PromptPath on resume path", spec.PromptFile)
 	}
 	if spec.SessionID != "prior-session-uuid" {
 		t.Errorf("SessionID = %q, want prior-session-uuid", spec.SessionID)
