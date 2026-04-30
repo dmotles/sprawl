@@ -845,6 +845,10 @@ func (m *mockSupervisor) MessagesArchive(_ context.Context, _ string) (*supervis
 	return &supervisor.MessagesArchiveResult{}, nil
 }
 
+func (m *mockSupervisor) MessagesArchiveAll(_ context.Context, _ string) (*supervisor.MessagesArchiveAllResult, error) {
+	return &supervisor.MessagesArchiveAllResult{}, nil
+}
+
 func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPeekResult, error) {
 	return &supervisor.MessagesPeekResult{}, nil
 }

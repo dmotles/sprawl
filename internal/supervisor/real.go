@@ -977,6 +977,29 @@ func (r *Real) MessagesArchive(_ context.Context, msgID string) (*MessagesArchiv
 	}, nil
 }
 
+func (r *Real) MessagesArchiveAll(_ context.Context, mode string) (*MessagesArchiveAllResult, error) {
+	if err := r.requireCallerIdentity(); err != nil {
+		return nil, err
+	}
+	var count int
+	var err error
+	switch mode {
+	case "all":
+		count, err = messages.ArchiveAll(r.sprawlRoot, r.callerName)
+	case "read":
+		count, err = messages.ArchiveRead(r.sprawlRoot, r.callerName)
+	default:
+		return nil, fmt.Errorf("invalid archive mode %q: must be \"all\" or \"read\"", mode)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &MessagesArchiveAllResult{
+		ArchivedCount: count,
+		Archived:      true,
+	}, nil
+}
+
 func (r *Real) MessagesPeek(_ context.Context) (*MessagesPeekResult, error) {
 	if err := r.requireCallerIdentity(); err != nil {
 		return nil, err

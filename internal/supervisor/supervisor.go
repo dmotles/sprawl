@@ -106,6 +106,12 @@ type MessagesArchiveResult struct {
 	Archived bool   `json:"archived"`
 }
 
+// MessagesArchiveAllResult is returned by Supervisor.MessagesArchiveAll.
+type MessagesArchiveAllResult struct {
+	ArchivedCount int  `json:"archived_count"`
+	Archived      bool `json:"archived"`
+}
+
 // MessagesPeekResult is returned by Supervisor.MessagesPeek. Provides a cheap
 // "do I have mail?" summary without requiring a full list.
 type MessagesPeekResult struct {
@@ -183,6 +189,11 @@ type Supervisor interface {
 	// MessagesArchive moves a single message (by ID prefix) from new/ or
 	// cur/ into archive/. Scoped to the caller's mailbox.
 	MessagesArchive(ctx context.Context, msgID string) (*MessagesArchiveResult, error)
+
+	// MessagesArchiveAll archives messages in bulk. When mode is "all",
+	// archives everything in new/ + cur/. When mode is "read", archives
+	// only read messages from cur/. Scoped to the caller's mailbox.
+	MessagesArchiveAll(ctx context.Context, mode string) (*MessagesArchiveAllResult, error)
 
 	// MessagesPeek returns the unread count and a small preview (up to 5,
 	// newest-first) of the caller's inbox. Intended as a cheap "do I have

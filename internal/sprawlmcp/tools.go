@@ -277,16 +277,19 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "messages_archive",
-			"description": "Archive a single message by ID (short or long prefix). Moves the file from new/ or cur/ into archive/. Scoped to the caller's mailbox. Example: {\"id\":\"abc\"}.",
+			"description": "Archive messages. Pass {\"id\":\"abc\"} to archive a single message, or {\"all\":true} to archive all messages in the mailbox (new + read). Scoped to the caller's mailbox.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"id": map[string]any{
 						"type":        "string",
-						"description": "Message ID to archive.",
+						"description": "Message ID to archive. Required unless 'all' is true.",
+					},
+					"all": map[string]any{
+						"type":        "boolean",
+						"description": "Archive all messages (new + read). Ignores 'id' when true.",
 					},
 				},
-				"required": []string{"id"},
 			},
 		},
 		{
