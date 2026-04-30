@@ -353,3 +353,107 @@ func TestSpawn_AgentInfoRoundTrip(t *testing.T) {
 func TestRealErrorMessages_Format(t *testing.T) {
 	_ = fmt.Sprintf("%v", errors.New("x"))
 }
+
+// --- QUM-387: effectiveCaller context override ---
+
+func TestEffectiveCaller_ContextOverride(t *testing.T) {
+	r, _ := newFakeReal(t)
+
+	// No context override — falls back to callerName ("weave").
+	got := r.effectiveCaller(context.Background())
+	if got != "weave" {
+		t.Errorf("effectiveCaller(empty ctx) = %q, want %q", got, "weave")
+	}
+
+	// Context override takes precedence.
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "finn")
+	got = r.effectiveCaller(ctx)
+	if got != "finn" {
+		t.Errorf("effectiveCaller(ctx with finn) = %q, want %q", got, "finn")
+	}
+}
+
+func TestReportStatus_UsesExplicitAgentName(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "finn", Type: "engineer", Family: "engineering",
+		Parent: "weave", Status: "active",
+	})
+
+	// When agentName is passed explicitly, it should be used even without
+	// context override (this is the MCP path after QUM-387 fix).
+	result, err := r.ReportStatus(context.Background(), "finn", "complete", "done", "")
+	if err != nil {
+		t.Fatalf("ReportStatus: %v", err)
+	}
+	if result == nil || result.ReportedAt == "" {
+		t.Fatal("expected non-nil result with ReportedAt")
+	}
+
+	// Verify state was updated for "finn", not "weave".
+	st, err := state.LoadAgent(tmpDir, "finn")
+	if err != nil {
+		t.Fatalf("LoadAgent(finn): %v", err)
+	}
+	if st.Status != "done" {
+		t.Errorf("finn.Status = %q, want done", st.Status)
+	}
+}
+
+func TestSendAsync_ContextIdentitySetsSender(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	// Create both agents.
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "finn", Type: "engineer", Family: "engineering",
+		Parent: "weave", Status: "active",
+	})
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "weave", Type: "manager", Family: "engineering",
+		Status: "active",
+	})
+
+	// Child "finn" sends async to "weave" via MCP — context carries finn's identity.
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "finn")
+	result, err := r.SendAsync(ctx, "weave", "status update", "I'm done", "", nil)
+	if err != nil {
+		t.Fatalf("SendAsync: %v", err)
+	}
+	if result == nil || result.MessageID == "" {
+		t.Fatal("expected non-nil result with MessageID")
+	}
+}
+
+func TestMessagesList_ContextIdentityScopesMailbox(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "finn", Type: "engineer", Family: "engineering",
+		Parent: "weave", Status: "active",
+	})
+
+	// Child "finn" lists its own mailbox via MCP.
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "finn")
+	result, err := r.MessagesList(ctx, "", 0)
+	if err != nil {
+		t.Fatalf("MessagesList: %v", err)
+	}
+	if result.Agent != "finn" {
+		t.Errorf("MessagesList.Agent = %q, want %q", result.Agent, "finn")
+	}
+}
+
+func TestMessagesPeek_ContextIdentityScopesMailbox(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "finn", Type: "engineer", Family: "engineering",
+		Parent: "weave", Status: "active",
+	})
+
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "finn")
+	result, err := r.MessagesPeek(ctx)
+	if err != nil {
+		t.Fatalf("MessagesPeek: %v", err)
+	}
+	if result.Agent != "finn" {
+		t.Errorf("MessagesPeek.Agent = %q, want %q", result.Agent, "finn")
+	}
+}

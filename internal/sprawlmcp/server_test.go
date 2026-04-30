@@ -8,8 +8,15 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// withTestCallerIdentity injects a caller identity into context, matching what
+// the backend session does for child agents (QUM-387).
+func withTestCallerIdentity(ctx context.Context, identity string) context.Context {
+	return backendpkg.WithCallerIdentity(ctx, identity)
+}
 
 // mockSupervisor implements supervisor.Supervisor for testing.
 type mockSupervisor struct {
@@ -1282,6 +1289,67 @@ func TestServer_ToolsCall_SprawlPeek_TailClamp(t *testing.T) {
 
 	if mock.peekTail != 200 {
 		t.Errorf("clamped tail = %d, want 200", mock.peekTail)
+	}
+}
+
+// --- QUM-387: child MCP identity propagation ---
+
+func TestServer_ToolsCall_ReportStatus_UsesContextIdentity(t *testing.T) {
+	mock := &mockSupervisor{
+		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-04-30T10:00:00Z"},
+	}
+	srv := New(mock)
+
+	// Simulate a child agent calling report_status via MCP — context carries child identity.
+	ctx := context.Background()
+	ctx = withTestCallerIdentity(ctx, "finn")
+
+	msg := makeJSONRPCRequest(100, "tools/call", map[string]any{
+		"name": "report_status",
+		"arguments": map[string]any{
+			"state":   "complete",
+			"summary": "task done",
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	// The supervisor should receive the child's identity, not empty string.
+	if mock.reportStatusAgent != "finn" {
+		t.Errorf("reportStatusAgent = %q, want %q (child identity from context)", mock.reportStatusAgent, "finn")
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+}
+
+func TestServer_ToolsCall_ReportStatus_EmptyContextFallsBack(t *testing.T) {
+	mock := &mockSupervisor{
+		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-04-30T10:00:00Z"},
+	}
+	srv := New(mock)
+
+	// Root weave session — no identity in context.
+	msg := makeJSONRPCRequest(101, "tools/call", map[string]any{
+		"name": "report_status",
+		"arguments": map[string]any{
+			"state":   "working",
+			"summary": "still going",
+		},
+	})
+	_, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	// Empty agentName means supervisor uses its own callerName (backward compat).
+	if mock.reportStatusAgent != "" {
+		t.Errorf("reportStatusAgent = %q, want empty (supervisor falls back to callerName)", mock.reportStatusAgent)
 	}
 }
 

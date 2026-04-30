@@ -242,13 +242,13 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 	return nil
 }
 
-func (r *Real) Message(_ context.Context, agentName, subject, body string) error {
+func (r *Real) Message(ctx context.Context, agentName, subject, body string) error {
 	_, err := state.LoadAgent(r.sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
-	return messages.Send(r.sprawlRoot, r.callerName, agentName, subject, body)
+	return messages.Send(r.sprawlRoot, r.effectiveCaller(ctx), agentName, subject, body)
 }
 
 func (r *Real) Spawn(_ context.Context, req SpawnRequest) (*AgentInfo, error) {
@@ -461,6 +461,17 @@ func (r *Real) CallerName() string {
 	return r.callerName
 }
 
+// effectiveCaller returns the caller identity from context if set (child agent
+// MCP calls), otherwise falls back to the static r.callerName. This enables
+// the shared supervisor to act on behalf of the correct child agent when
+// processing MCP tool calls (QUM-387).
+func (r *Real) effectiveCaller(ctx context.Context) string {
+	if override := backendpkg.CallerIdentity(ctx); override != "" {
+		return override
+	}
+	return r.callerName
+}
+
 // PeekActivity reads the tail of the agent's activity.ndjson file and
 // returns the last `tail` entries. A missing file yields an empty slice.
 // tail ≤ 0 returns all available entries.
@@ -520,7 +531,7 @@ func agentCreatedAt(sprawlRoot, agentName string) (time.Time, bool) {
 // SendAsync persists the message to Maildir and appends a harness queue
 // entry (class=async) for the recipient. See
 // docs/designs/messaging-overhaul.md §4.2.1.
-func (r *Real) SendAsync(_ context.Context, to, subject, body, replyTo string, tags []string) (*SendAsyncResult, error) {
+func (r *Real) SendAsync(ctx context.Context, to, subject, body, replyTo string, tags []string) (*SendAsyncResult, error) {
 	if err := agent.ValidateName(to); err != nil {
 		return nil, err
 	}
@@ -535,13 +546,14 @@ func (r *Real) SendAsync(_ context.Context, to, subject, body, replyTo string, t
 		sendOpts = append(sendOpts, messages.WithoutWakeFile())
 	}
 
-	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body, sendOpts...); err != nil {
+	caller := r.effectiveCaller(ctx)
+	if err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...); err != nil {
 		return nil, err
 	}
 
 	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
 		Class:   agentloop.ClassAsync,
-		From:    r.callerName,
+		From:    caller,
 		Subject: subject,
 		Body:    body,
 		ReplyTo: replyTo,
@@ -590,7 +602,7 @@ func isAncestor(sprawlRoot, maybeAncestor, agentName string) (bool, error) {
 // interrupt-class queue entry for the recipient. Gated to parent→descendants
 // per §8.5: the caller must be an ancestor of `to`. See
 // docs/designs/messaging-overhaul.md §4.2.2 and §4.5.2.
-func (r *Real) SendInterrupt(_ context.Context, to, subject, body, resumeHint string) (*SendInterruptResult, error) {
+func (r *Real) SendInterrupt(ctx context.Context, to, subject, body, resumeHint string) (*SendInterruptResult, error) {
 	if err := agent.ValidateName(to); err != nil {
 		return nil, err
 	}
@@ -601,18 +613,19 @@ func (r *Real) SendInterrupt(_ context.Context, to, subject, body, resumeHint st
 	// Parent→descendants gate: the caller must be an ancestor of `to`.
 	// An empty callerName (e.g. when invoked from unidentified contexts)
 	// is rejected to avoid accidental self-or-upward interrupts.
-	if r.callerName == "" {
+	caller := r.effectiveCaller(ctx)
+	if caller == "" {
 		return nil, fmt.Errorf("send_interrupt: caller identity unknown; refusing to send")
 	}
-	if r.callerName == to {
+	if caller == to {
 		return nil, fmt.Errorf("send_interrupt: cannot interrupt self")
 	}
-	ok, err := isAncestor(r.sprawlRoot, r.callerName, to)
+	ok, err := isAncestor(r.sprawlRoot, caller, to)
 	if err != nil {
 		return nil, fmt.Errorf("checking ancestry: %w", err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("send_interrupt: %q is not an ancestor of %q (parent→descendants only per §8.5)", r.callerName, to)
+		return nil, fmt.Errorf("send_interrupt: %q is not an ancestor of %q (parent→descendants only per §8.5)", caller, to)
 	}
 
 	// Assemble the enqueue body. We preserve the resume_hint separately in
@@ -630,13 +643,13 @@ func (r *Real) SendInterrupt(_ context.Context, to, subject, body, resumeHint st
 		sendOpts = append(sendOpts, messages.WithoutWakeFile())
 	}
 
-	if err := messages.Send(r.sprawlRoot, r.callerName, to, subject, body, sendOpts...); err != nil {
+	if err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...); err != nil {
 		return nil, err
 	}
 
 	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
 		Class:   agentloop.ClassInterrupt,
-		From:    r.callerName,
+		From:    caller,
 		Subject: subject,
 		Body:    body,
 		Tags:    tags,
@@ -837,11 +850,12 @@ const (
 	messagesPeekPreviewCap   = 5
 )
 
-func (r *Real) requireCallerIdentity() error {
-	if r.callerName == "" {
-		return fmt.Errorf("caller identity not set (SPRAWL_AGENT_IDENTITY unset); refusing mailbox operation")
+func (r *Real) requireEffectiveCaller(ctx context.Context) (string, error) {
+	caller := r.effectiveCaller(ctx)
+	if caller == "" {
+		return "", fmt.Errorf("caller identity not set (SPRAWL_AGENT_IDENTITY unset); refusing mailbox operation")
 	}
-	return nil
+	return caller, nil
 }
 
 // toSummaries maps *messages.Message slices to MessageSummary slices and
@@ -877,8 +891,9 @@ func toSummaries(msgs []*messages.Message, limit int) []MessageSummary {
 	return out
 }
 
-func (r *Real) MessagesList(_ context.Context, filter string, limit int) (*MessagesListResult, error) {
-	if err := r.requireCallerIdentity(); err != nil {
+func (r *Real) MessagesList(ctx context.Context, filter string, limit int) (*MessagesListResult, error) {
+	caller, err := r.requireEffectiveCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if !validMessagesListFilters[filter] {
@@ -894,13 +909,13 @@ func (r *Real) MessagesList(_ context.Context, filter string, limit int) (*Messa
 	if limit > maxMessagesListLimit {
 		limit = maxMessagesListLimit
 	}
-	msgs, err := messages.List(r.sprawlRoot, r.callerName, effective)
+	msgs, err := messages.List(r.sprawlRoot, caller, effective)
 	if err != nil {
 		return nil, fmt.Errorf("listing messages: %w", err)
 	}
 	summaries := toSummaries(msgs, limit)
 	return &MessagesListResult{
-		Agent:    r.callerName,
+		Agent:    caller,
 		Filter:   effective,
 		Count:    len(summaries),
 		Messages: summaries,
@@ -910,25 +925,26 @@ func (r *Real) MessagesList(_ context.Context, filter string, limit int) (*Messa
 // isInNewDir reports whether the message with the given full ID is sitting in
 // the caller's new/ directory (i.e. unread). Used to report WasUnread without
 // perturbing the library's ReadMessage auto-mark behavior.
-func (r *Real) isInNewDir(msgID string) bool {
-	path := filepath.Join(messages.MessagesDir(r.sprawlRoot), r.callerName, "new", msgID+".json")
+func (r *Real) isInNewDir(caller, msgID string) bool {
+	path := filepath.Join(messages.MessagesDir(r.sprawlRoot), caller, "new", msgID+".json")
 	_, err := os.Stat(path)
 	return err == nil
 }
 
-func (r *Real) MessagesRead(_ context.Context, msgID string) (*MessagesReadResult, error) {
-	if err := r.requireCallerIdentity(); err != nil {
+func (r *Real) MessagesRead(ctx context.Context, msgID string) (*MessagesReadResult, error) {
+	caller, err := r.requireEffectiveCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(msgID) == "" {
 		return nil, fmt.Errorf("message id must not be empty")
 	}
-	full, err := messages.ResolvePrefix(r.sprawlRoot, r.callerName, msgID)
+	full, err := messages.ResolvePrefix(r.sprawlRoot, caller, msgID)
 	if err != nil {
 		return nil, err
 	}
-	wasUnread := r.isInNewDir(full)
-	msg, err := messages.ReadMessage(r.sprawlRoot, r.callerName, full)
+	wasUnread := r.isInNewDir(caller, full)
+	msg, err := messages.ReadMessage(r.sprawlRoot, caller, full)
 	if err != nil {
 		return nil, err
 	}
@@ -949,24 +965,25 @@ func (r *Real) MessagesRead(_ context.Context, msgID string) (*MessagesReadResul
 	}, nil
 }
 
-func (r *Real) MessagesArchive(_ context.Context, msgID string) (*MessagesArchiveResult, error) {
-	if err := r.requireCallerIdentity(); err != nil {
+func (r *Real) MessagesArchive(ctx context.Context, msgID string) (*MessagesArchiveResult, error) {
+	caller, err := r.requireEffectiveCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(msgID) == "" {
 		return nil, fmt.Errorf("message id must not be empty")
 	}
-	full, err := messages.ResolvePrefix(r.sprawlRoot, r.callerName, msgID)
+	full, err := messages.ResolvePrefix(r.sprawlRoot, caller, msgID)
 	if err != nil {
 		return nil, err
 	}
-	if err := messages.Archive(r.sprawlRoot, r.callerName, full); err != nil {
+	if err := messages.Archive(r.sprawlRoot, caller, full); err != nil {
 		return nil, err
 	}
 	short := msgID
 	if len(full) >= len(msgID) {
 		// Prefer the short ID when we can retrieve it from the archived file.
-		archived, rerr := messages.ReadMessage(r.sprawlRoot, r.callerName, full)
+		archived, rerr := messages.ReadMessage(r.sprawlRoot, caller, full)
 		if rerr == nil && archived.ShortID != "" {
 			short = archived.ShortID
 		}
@@ -978,17 +995,17 @@ func (r *Real) MessagesArchive(_ context.Context, msgID string) (*MessagesArchiv
 	}, nil
 }
 
-func (r *Real) MessagesArchiveAll(_ context.Context, mode string) (*MessagesArchiveAllResult, error) {
-	if err := r.requireCallerIdentity(); err != nil {
+func (r *Real) MessagesArchiveAll(ctx context.Context, mode string) (*MessagesArchiveAllResult, error) {
+	caller, err := r.requireEffectiveCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	var count int
-	var err error
 	switch mode {
 	case "all":
-		count, err = messages.ArchiveAll(r.sprawlRoot, r.callerName)
+		count, err = messages.ArchiveAll(r.sprawlRoot, caller)
 	case "read":
-		count, err = messages.ArchiveRead(r.sprawlRoot, r.callerName)
+		count, err = messages.ArchiveRead(r.sprawlRoot, caller)
 	default:
 		return nil, fmt.Errorf("invalid archive mode %q: must be \"all\" or \"read\"", mode)
 	}
@@ -1001,17 +1018,18 @@ func (r *Real) MessagesArchiveAll(_ context.Context, mode string) (*MessagesArch
 	}, nil
 }
 
-func (r *Real) MessagesPeek(_ context.Context) (*MessagesPeekResult, error) {
-	if err := r.requireCallerIdentity(); err != nil {
+func (r *Real) MessagesPeek(ctx context.Context) (*MessagesPeekResult, error) {
+	caller, err := r.requireEffectiveCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
-	msgs, err := messages.List(r.sprawlRoot, r.callerName, "unread")
+	msgs, err := messages.List(r.sprawlRoot, caller, "unread")
 	if err != nil {
 		return nil, fmt.Errorf("listing unread: %w", err)
 	}
 	preview := toSummaries(msgs, messagesPeekPreviewCap)
 	return &MessagesPeekResult{
-		Agent:       r.callerName,
+		Agent:       caller,
 		UnreadCount: len(msgs),
 		Preview:     preview,
 	}, nil
