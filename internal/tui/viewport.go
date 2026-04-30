@@ -78,6 +78,12 @@ type MessageEntry struct {
 	// preview from this; the full text is retained for future expand
 	// integration. MessageToolCall only. (QUM-336)
 	Result string
+	// Depth is the nesting level of a sub-agent tool call. Top-level calls
+	// have Depth 0. A tool call made inside an "Agent" tool call has Depth 1,
+	// nested two levels deep has Depth 2, etc. Used by the renderer to indent
+	// nested entries as compact single lines under their parent Agent call.
+	// (QUM-379)
+	Depth int
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -102,6 +108,12 @@ type ViewportModel struct {
 	// AppModel on every spinner.TickMsg (QUM-336). renderToolCall uses it
 	// as the indicator for any Pending tool call. Empty until first push.
 	spinnerFrame string
+	// agentCallStack tracks the tool IDs of in-flight "Agent" tool calls.
+	// When AppendToolCall receives a tool named "Agent", its ID is pushed.
+	// All subsequent tool calls get Depth = len(agentCallStack). When
+	// MarkToolResult matches a stacked Agent ID, it pops. SetMessages
+	// clears the stack. (QUM-379)
+	agentCallStack []string
 }
 
 // SelectionGutter is the visual prefix placed on selected message blocks when
@@ -229,6 +241,7 @@ func (m *ViewportModel) FinalizeAssistantMessage() {
 // pass "" if not available. The new entry starts in the Pending state
 // (QUM-336) — its indicator animates until MarkToolResult flips it.
 func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input, fullInput string) {
+	depth := len(m.agentCallStack)
 	m.messages = append(m.messages, MessageEntry{
 		Type:          MessageToolCall,
 		Content:       name,
@@ -238,7 +251,13 @@ func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input
 		ToolInputFull: fullInput,
 		ToolID:        toolID,
 		Pending:       true,
+		Depth:         depth,
 	})
+	// QUM-379: "Agent" tool calls push onto the nesting stack so subsequent
+	// tool calls get Depth = len(agentCallStack).
+	if name == "Agent" && toolID != "" {
+		m.agentCallStack = append(m.agentCallStack, toolID)
+	}
 	m.renderAndUpdate()
 }
 
@@ -263,6 +282,14 @@ func (m *ViewportModel) MarkToolResult(toolID, content string, isError bool) boo
 		m.messages[i].Pending = false
 		m.messages[i].Failed = isError
 		m.messages[i].Result = content
+		// QUM-379: if the completed tool call is an Agent, pop it from
+		// the nesting stack so subsequent entries return to the parent depth.
+		for j := len(m.agentCallStack) - 1; j >= 0; j-- {
+			if m.agentCallStack[j] == toolID {
+				m.agentCallStack = append(m.agentCallStack[:j], m.agentCallStack[j+1:]...)
+				break
+			}
+		}
 		m.renderAndUpdate()
 		return true
 	}
@@ -383,8 +410,9 @@ func (m *ViewportModel) GetMessages() []MessageEntry {
 func (m *ViewportModel) SetMessages(msgs []MessageEntry) {
 	m.messages = make([]MessageEntry, len(msgs))
 	copy(m.messages, msgs)
-	// Replacing the buffer invalidates any active selection.
+	// Replacing the buffer invalidates any active selection and agent nesting state.
 	m.selection = SelectionState{}
+	m.agentCallStack = nil
 	m.renderAndUpdate()
 }
 
@@ -450,7 +478,13 @@ func (m *ViewportModel) renderMessages() string {
 	var sb strings.Builder
 	for i, msg := range m.messages {
 		if i > 0 {
-			sb.WriteString("\n")
+			// QUM-379: suppress the blank separator between consecutive nested
+			// tool calls so they cluster tightly under the parent Agent.
+			prevNested := m.messages[i-1].Type == MessageToolCall && m.messages[i-1].Depth > 0
+			currNested := msg.Type == MessageToolCall && msg.Depth > 0
+			if !prevNested || !currNested {
+				sb.WriteString("\n")
+			}
 		}
 		var block strings.Builder
 		switch msg.Type {
@@ -496,6 +530,12 @@ func addSelectionGutter(block, gutter string) string {
 }
 
 func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
+	// QUM-379: nested tool calls (inside an Agent) render as compact single
+	// lines under the parent's │ gutter, indented by depth.
+	if msg.Depth > 0 {
+		m.renderNestedToolCall(sb, msg)
+		return
+	}
 	// Indicator: spinner while pending, ✗ on failure, ✓ on success.
 	// Pre-render with the right style so the failure glyph stands out
 	// (QUM-336).
@@ -584,6 +624,49 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 	}
 	sb.WriteString("\n")
 	sb.WriteString(m.theme.AccentText.Render("└"))
+}
+
+// nestedToolCallIndent is the number of extra spaces per nesting depth level
+// when rendering compact nested tool calls (QUM-379).
+const nestedToolCallIndent = 2
+
+// renderNestedToolCall renders a compact single-line representation of a tool
+// call inside an Agent invocation. Format: `│ {indent}{indicator} {name}  {input}`
+// No box-drawing (┌/└), no result preview, no multi-line body. (QUM-379)
+func (m *ViewportModel) renderNestedToolCall(sb *strings.Builder, msg MessageEntry) {
+	// Indicator: same logic as the full-box path.
+	var renderedIndicator string
+	switch {
+	case msg.Pending:
+		frame := m.spinnerFrame
+		if frame == "" {
+			frame = "⠋"
+		}
+		renderedIndicator = m.theme.AccentText.Render(frame)
+	case msg.Failed:
+		renderedIndicator = m.theme.ErrorText.Render("✗")
+	default:
+		renderedIndicator = m.theme.AccentText.Render("✓")
+	}
+
+	// Build the plain-text content: "{name}  {input}" — truncated to fit.
+	indent := strings.Repeat(" ", msg.Depth*nestedToolCallIndent)
+	// "│ " (2 cells) + indent + indicator (1 cell) + " " (1 cell) + name…
+	const fixedCells = 4 // "│ " + indicator + " "
+	budget := m.width - fixedCells - len(indent)
+	if budget < 1 {
+		budget = 1
+	}
+
+	body := msg.Content
+	if msg.ToolInput != "" {
+		body += "  " + msg.ToolInput
+	}
+	body = ansi.Truncate(body, budget, "…")
+
+	sb.WriteString(m.theme.AccentText.Render("│ " + indent))
+	sb.WriteString(renderedIndicator)
+	sb.WriteString(m.theme.NormalText.Render(" " + body))
 }
 
 // previewResultLines splits result on newlines, drops empty/whitespace-only
