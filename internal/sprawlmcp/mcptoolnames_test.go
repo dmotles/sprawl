@@ -12,10 +12,10 @@ func TestMCPToolNames_ReturnsAllToolDefinitions(t *testing.T) {
 		t.Fatalf("MCPToolNames() returned %d names, want %d (one per toolDefinition)", len(names), len(defs))
 	}
 
-	// Every name must have the mcp__sprawl-ops__ prefix.
+	// Every name must have the mcp__sprawl__ prefix.
 	for _, name := range names {
-		if !strings.HasPrefix(name, "mcp__sprawl-ops__") {
-			t.Errorf("MCPToolNames() entry %q missing mcp__sprawl-ops__ prefix", name)
+		if !strings.HasPrefix(name, "mcp__sprawl__") {
+			t.Errorf("MCPToolNames() entry %q missing mcp__sprawl__ prefix", name)
 		}
 	}
 
@@ -26,7 +26,7 @@ func TestMCPToolNames_ReturnsAllToolDefinitions(t *testing.T) {
 	}
 	for _, def := range defs {
 		rawName := def["name"].(string)
-		want := "mcp__sprawl-ops__" + rawName
+		want := "mcp__sprawl__" + rawName
 		if !nameSet[want] {
 			t.Errorf("MCPToolNames() missing entry for tool definition %q (expected %q)", rawName, want)
 		}

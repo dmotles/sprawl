@@ -107,7 +107,7 @@ func ValidReportState(state string) bool {
 }
 
 // Report is the canonical persistence path for agent status reports (both
-// `sprawl report` CLI and the `sprawl_report_status` MCP tool delegate here).
+// `sprawl report` CLI and the `report_status` MCP tool delegate here).
 //
 // It loads the reporter's agent state, updates the LastReport* fields and
 // (for complete/failure) the Status field, persists, and — if the reporter

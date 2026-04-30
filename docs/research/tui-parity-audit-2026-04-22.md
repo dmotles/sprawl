@@ -54,7 +54,7 @@ Validated by code review + a minimal manual smoke test (launched
 | Mouse scroll wheel on viewport | ✅ | `internal/tui/app.go:146-158,574-576` |
 | Activity panel (wide terminals) | ✅ (wired) | `internal/tui/app.go:770-791` polls `sup.PeekActivity` every 2s |
 | `/handoff` palette command → signal → FinalizeHandoff → consolidate → fresh session | ✅ (functional, with UX caveat) | `commands/handoff.go`, `app.go:356-363,379-415`, `cmd/enter.go:83-87` |
-| MCP sprawl-ops tools (spawn/status/delegate/message/merge/retire/kill/handoff) available to weave | ✅ | `cmd/enter.go:166-180,314-329`, `internal/sprawlmcp/` |
+| MCP sprawl tools (spawn/status/delegate/message/merge/retire/kill/handoff) available to weave | ✅ | `cmd/enter.go:166-180,314-329`, `internal/sprawlmcp/` |
 | Stderr redirect to log file so subprocess noise doesn't corrupt screen (QUM-304) | ✅ | `cmd/enter.go:495-516`, `internal/tui/stderr_redirect.go` |
 | Single-weave flock | ✅ | `cmd/enter.go:384-389` |
 | Error dialog on session crash + `r` to restart | ✅ | `internal/tui/app.go:331-354,379-415` |
@@ -66,7 +66,7 @@ Severity: **S1** blocks cutover; **S2** visible regression but tolerable; **S3**
 ### S1-1. No child→weave notification surfaces in TUI
 
 **Symptom.** When any child invokes `sprawl report done`, `sprawl messages
-send weave …`, or any MCP `sprawl_send_async` targeting weave, the message
+send weave …`, or any MCP `send_async` targeting weave, the message
 lands in `~/.sprawl/messages/weave/new/…`, the `weave.wake` sentinel is
 written, and **nothing in the bubbletea UI changes**. The status bar,
 viewport, and tree are all silent. The user has no passive signal that a
@@ -150,7 +150,7 @@ subpoint is not).
 
 Known issue. Weave introduces itself as "Claude", says it has no identity,
 and its system prompt still leads with tmux-mode CLI guidance (`sprawl
-spawn …`) rather than MCP tools (`sprawl_spawn`, …). Doesn't corrupt
+spawn …`) rather than MCP tools (`spawn`, …). Doesn't corrupt
 function but degrades the agent's own behavior in TUI mode: it'll try CLI
 escape hatches first. See QUM-235 for full remediation plan. Notable that
 `buildSessionEnv` in `cmd/enter.go:216-221` *does* now set

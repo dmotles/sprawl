@@ -557,7 +557,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case HandoffRequestedMsg:
-		// Weave invoked the sprawl_handoff MCP tool. Reuse the EOF restart
+		// Weave invoked the handoff MCP tool. Reuse the EOF restart
 		// path: status banner + restart, which closes the bridge and runs
 		// FinalizeHandoff (consuming the signal file the supervisor wrote).
 		return m, tea.Batch(
@@ -717,7 +717,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// counts; piggyback on that cadence to peek the harness queue and
 		// (when idle + non-empty) schedule an InboxDrainMsg. This covers both
 		// out-of-process senders (child agent `sprawl report done`) and
-		// in-process senders (MCP sprawl_send_async) with a single codepath.
+		// in-process senders (MCP send_async) with a single codepath.
 		var drainCmd tea.Cmd
 		if m.turnState == TurnIdle && m.sprawlRoot != "" && m.bridge != nil {
 			drainCmd = peekAndDrainCmd(m.sprawlRoot, m.rootAgent)
@@ -729,7 +729,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case InboxArrivalMsg:
 		// QUM-311: a TUI-aware notifier installed by cmd/enter.go dispatches
-		// this whenever an in-process messages.Send call (MCP sprawl_send_async
+		// this whenever an in-process messages.Send call (MCP send_async
 		// from weave, or any Send in this process) delivers to the root
 		// agent's maildir. Append a short banner with sender identity and
 		// bump the unread counter; the next 2s tick reconciles the counter

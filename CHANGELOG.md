@@ -18,18 +18,18 @@ not strictly semver while we are pre-1.0.
 
   | CLI form | Replacement |
   | --- | --- |
-  | `sprawl spawn` / `sprawl spawn agent` | `sprawl_spawn` |
-  | `sprawl retire` | `sprawl_retire` |
-  | `sprawl kill` | `sprawl_kill` |
-  | `sprawl delegate` | `sprawl_delegate` |
-  | `sprawl messages send` | `sprawl_send_async` (or `sprawl_send_interrupt` for the rare urgent case) |
-  | `sprawl messages list` | `sprawl_messages_list` |
-  | `sprawl messages read` | `sprawl_messages_read` |
-  | `sprawl messages archive` | `sprawl_messages_archive` |
-  | `sprawl report …` | `sprawl_report_status` |
-  | `sprawl status` | `sprawl_status` |
-  | `sprawl tree` | `sprawl_status` (or `sprawl_peek` for one agent) |
-  | `sprawl handoff` | `sprawl_handoff` |
+  | `sprawl spawn` / `sprawl spawn agent` | `spawn` |
+  | `sprawl retire` | `retire` |
+  | `sprawl kill` | `kill` |
+  | `sprawl delegate` | `delegate` |
+  | `sprawl messages send` | `send_async` (or `send_interrupt` for the rare urgent case) |
+  | `sprawl messages list` | `messages_list` |
+  | `sprawl messages read` | `messages_read` |
+  | `sprawl messages archive` | `messages_archive` |
+  | `sprawl report …` | `report_status` |
+  | `sprawl status` | `status` |
+  | `sprawl tree` | `status` (or `peek` for one agent) |
+  | `sprawl handoff` | `handoff` |
   | `sprawl init` | (no MCP equivalent; `sprawl enter` replaces tmux mode) |
   | `sprawl poke` | (no MCP equivalent; slated for deletion) |
   | `sprawl color` | (no MCP equivalent; slated for deletion) |
@@ -47,7 +47,7 @@ not strictly semver while we are pre-1.0.
   forms in 2.3.
 
   The `/handoff` skill has been migrated from the `sprawl handoff` CLI to
-  the `sprawl_handoff` MCP tool to stop self-inflicted warning noise from
+  the `handoff` MCP tool to stop self-inflicted warning noise from
   agent-prompted CLI calls.
 
 [QUM-337]: https://linear.app/qumulo-dmotles/issue/QUM-337

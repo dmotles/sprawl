@@ -40,7 +40,7 @@ func TestDeprecation_Spawn_Wired(t *testing.T) {
 	// Pass nil deps — runSpawn fires the warning before calling Spawn.
 	defer func() { _ = recover() }()
 	_ = runSpawn(nil, "engineering", "engineer", "task", "branch")
-	assertDeprecation(t, buf, "spawn", "sprawl_spawn")
+	assertDeprecation(t, buf, "spawn", "spawn")
 }
 
 func TestDeprecation_Spawn_QuietSuppresses(t *testing.T) {
@@ -56,21 +56,21 @@ func TestDeprecation_Retire_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	defer func() { _ = recover() }()
 	_ = runRetire(nil, "alice", false, false, false, false, false)
-	assertDeprecation(t, buf, "retire", "sprawl_retire")
+	assertDeprecation(t, buf, "retire", "retire")
 }
 
 func TestDeprecation_Kill_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	defer func() { _ = recover() }()
 	_ = runKill(nil, "alice", false)
-	assertDeprecation(t, buf, "kill", "sprawl_kill")
+	assertDeprecation(t, buf, "kill", "kill")
 }
 
 func TestDeprecation_Delegate_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	deps := &delegateDeps{getenv: func(string) string { return "" }}
 	_ = runDelegate(deps, "alice", "task")
-	assertDeprecation(t, buf, "delegate", "sprawl_delegate")
+	assertDeprecation(t, buf, "delegate", "delegate")
 }
 
 func TestDeprecation_MessagesSend_Wired(t *testing.T) {
@@ -81,7 +81,7 @@ func TestDeprecation_MessagesSend_Wired(t *testing.T) {
 		stderr: &bytes.Buffer{},
 	}
 	_ = runMessagesSend(deps, "alice", "subj", "body")
-	assertDeprecation(t, buf, "messages send", "sprawl_send_async")
+	assertDeprecation(t, buf, "messages send", "send_async")
 
 	// Verify the warning didn't leak into deps.stderr / deps.stdout.
 	if strings.Contains(deps.stderr.(*bytes.Buffer).String(), "warning:") {
@@ -100,7 +100,7 @@ func TestDeprecation_MessagesRead_Wired(t *testing.T) {
 		stderr: &bytes.Buffer{},
 	}
 	_, _ = runMessagesRead(deps, "abc")
-	assertDeprecation(t, buf, "messages read", "sprawl_messages_read")
+	assertDeprecation(t, buf, "messages read", "messages_read")
 }
 
 func TestDeprecation_MessagesList_Wired(t *testing.T) {
@@ -111,21 +111,21 @@ func TestDeprecation_MessagesList_Wired(t *testing.T) {
 		stderr: &bytes.Buffer{},
 	}
 	_ = runMessagesListDisplay(deps, "")
-	assertDeprecation(t, buf, "messages list", "sprawl_messages_list")
+	assertDeprecation(t, buf, "messages list", "messages_list")
 }
 
 func TestDeprecation_MessagesArchive_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	// Invoke the cobra RunE directly — archive's warning lives there.
 	_ = messagesArchiveCmd.RunE(messagesArchiveCmd, []string{"abc"})
-	assertDeprecation(t, buf, "messages archive", "sprawl_messages_archive")
+	assertDeprecation(t, buf, "messages archive", "messages_archive")
 }
 
 func TestDeprecation_Report_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	deps := &reportDeps{getenv: func(string) string { return "" }}
 	_ = runReport(deps, "status", "msg")
-	assertDeprecation(t, buf, "report status", "sprawl_report_status")
+	assertDeprecation(t, buf, "report status", "report_status")
 }
 
 func TestDeprecation_Status_Wired(t *testing.T) {
@@ -141,21 +141,21 @@ func TestDeprecation_Status_Wired(t *testing.T) {
 	}
 	t.Cleanup(func() { defaultStatusDeps = prev })
 	_ = statusCmd.RunE(statusCmd, []string{})
-	assertDeprecation(t, buf, "status", "sprawl_status")
+	assertDeprecation(t, buf, "status", "status")
 }
 
 func TestDeprecation_Tree_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	deps := &treeDeps{getenv: func(string) string { return "" }}
 	_ = runTree(deps, &bytes.Buffer{}, false, "")
-	assertDeprecation(t, buf, "tree", "sprawl_status")
+	assertDeprecation(t, buf, "tree", "status")
 }
 
 func TestDeprecation_Handoff_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	deps := &handoffDeps{getenv: func(string) string { return "" }}
 	_ = runHandoff(deps)
-	assertDeprecation(t, buf, "handoff", "sprawl_handoff")
+	assertDeprecation(t, buf, "handoff", "handoff")
 }
 
 func TestDeprecation_Poke_Wired(t *testing.T) {
@@ -209,7 +209,7 @@ func TestDeprecation_MessagesArchive_FiresBeforeArgValidation(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from messages archive with no args/flags")
 	}
-	assertDeprecation(t, buf, "messages archive", "sprawl_messages_archive")
+	assertDeprecation(t, buf, "messages archive", "messages_archive")
 }
 
 // Make sure we don't break a runX caller chain: state.AgentState is

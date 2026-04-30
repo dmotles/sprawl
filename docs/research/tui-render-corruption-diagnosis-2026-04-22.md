@@ -25,7 +25,7 @@ In `docs/research/tui-render-corruption-2026-04-22.txt`, the corrupting text is 
 
 That summary is >1200 characters long, single-line as received by `agentops.Report` but effectively wrapping across the tree panel when `lipgloss` composes the frame.
 
-The 2-char trailing fragments (`ep`, `AD`, `te`, `tr`, `da`, `s`, `es`, `ng`, `fe`, `ph`) are the last 2 chars of long JSON lines emitted by `ViewportModel.renderToolCall` for the `ToolSearch` and `mcp__sprawl-ops__sprawl_spawn` tool blocks — each JSON payload line is slightly wider than the inner viewport cell count, and the overflow escapes past the right `│`.
+The 2-char trailing fragments (`ep`, `AD`, `te`, `tr`, `da`, `s`, `es`, `ng`, `fe`, `ph`) are the last 2 chars of long JSON lines emitted by `ViewportModel.renderToolCall` for the `ToolSearch` and `mcp__sprawl__spawn` tool blocks — each JSON payload line is slightly wider than the inner viewport cell count, and the overflow escapes past the right `│`.
 
 ## Root cause (primary): Tree `LastReportSummary` rendered with no size guard
 
@@ -96,7 +96,7 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 }
 ```
 
-`msg.ToolInput` is the already-summarized tool-input string produced by the bridge, but for tools like `mcp__sprawl-ops__sprawl_spawn` the JSON (`{"branch":"dmotles/smoketest-tui-notify","family":"engineering","prompt":"…"}`) is still well over 100 characters. The bubbles/v2 `viewport.Model.SetContent` only soft-wraps when its `SoftWrap` option is enabled, and the current `NewViewportModel` does not enable it (see `viewport.go:64-74`). The result is a slice of very long ANSI-styled single lines that extend past the viewport's right border.
+`msg.ToolInput` is the already-summarized tool-input string produced by the bridge, but for tools like `mcp__sprawl__spawn` the JSON (`{"branch":"dmotles/smoketest-tui-notify","family":"engineering","prompt":"…"}`) is still well over 100 characters. The bubbles/v2 `viewport.Model.SetContent` only soft-wraps when its `SoftWrap` option is enabled, and the current `NewViewportModel` does not enable it (see `viewport.go:64-74`). The result is a slice of very long ANSI-styled single lines that extend past the viewport's right border.
 
 The 2-char right-side fragments are the trailing portion of each such long line, reaching the column after the viewport's right `│` because the border is drawn at position `Width` regardless of content length.
 
@@ -117,7 +117,7 @@ Two deterministic ways to reproduce from a clean sandbox:
    Within 2 s (the `tickAgentsCmd` poll interval, `app.go:825`) the child's row in the tree panel will render the whole summary, overflowing the tree column and garbling the frame exactly as in the evidence.
 
 2. **Long tool-input repro (viewport bleed):**
-   Invoke any MCP tool whose `ToolInput` summary exceeds the viewport width (e.g. `mcp__sprawl-ops__sprawl_spawn` with a long prompt). The `│ …` line under the tool header will overflow the viewport's right `│`, producing the 2-char trailing fragments.
+   Invoke any MCP tool whose `ToolInput` summary exceeds the viewport width (e.g. `mcp__sprawl__spawn` with a long prompt). The `│ …` line under the tool header will overflow the viewport's right `│`, producing the 2-char trailing fragments.
 
 Combined — which is the situation in the evidence — the two bleeds visually overlap because `JoinHorizontal` places the viewport column at the right of whatever the tree column rendered as.
 

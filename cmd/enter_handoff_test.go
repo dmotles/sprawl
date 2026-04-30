@@ -14,7 +14,7 @@ import (
 )
 
 // TestEnter_HandoffChannelDispatch_EndToEnd is the QUM-329 integration-level
-// guard: a call to sup.Handoff() (the code path that the sprawl_handoff MCP
+// guard: a call to sup.Handoff() (the code path that the handoff MCP
 // tool hits via sprawlmcp.New(sup)) MUST cause a tui.HandoffRequestedMsg to
 // be dispatched into the Bubble Tea program via the onStart-registered send
 // function. Before the QUM-329 fix this silently failed because the MCP

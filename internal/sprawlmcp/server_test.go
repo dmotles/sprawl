@@ -310,8 +310,8 @@ func TestServer_Initialize(t *testing.T) {
 	if !ok {
 		t.Fatal("missing serverInfo")
 	}
-	if serverInfo["name"] != "sprawl-ops" {
-		t.Errorf("serverInfo.name = %v, want sprawl-ops", serverInfo["name"])
+	if serverInfo["name"] != "sprawl" {
+		t.Errorf("serverInfo.name = %v, want sprawl", serverInfo["name"])
 	}
 }
 
@@ -337,22 +337,22 @@ func TestServer_ToolsList(t *testing.T) {
 	}
 
 	expectedTools := []string{
-		"sprawl_spawn",
-		"sprawl_status",
-		"sprawl_delegate",
-		"sprawl_send_async",
-		"sprawl_send_interrupt",
-		"sprawl_peek",
-		"sprawl_report_status",
-		"sprawl_message",
-		"sprawl_merge",
-		"sprawl_retire",
-		"sprawl_kill",
-		"sprawl_handoff",
-		"sprawl_messages_list",
-		"sprawl_messages_read",
-		"sprawl_messages_archive",
-		"sprawl_messages_peek",
+		"spawn",
+		"status",
+		"delegate",
+		"send_async",
+		"send_interrupt",
+		"peek",
+		"report_status",
+		"message",
+		"merge",
+		"retire",
+		"kill",
+		"handoff",
+		"messages_list",
+		"messages_read",
+		"messages_archive",
+		"messages_peek",
 	}
 
 	if len(toolsRaw) != len(expectedTools) {
@@ -399,7 +399,7 @@ func TestServer_ToolsCall_SprawlStatus(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(3, "tools/call", map[string]any{
-		"name":      "sprawl_status",
+		"name":      "status",
 		"arguments": map[string]any{},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -454,7 +454,7 @@ func TestServer_ToolsCall_SprawlSpawn(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(4, "tools/call", map[string]any{
-		"name": "sprawl_spawn",
+		"name": "spawn",
 		"arguments": map[string]any{
 			"family": "engineering",
 			"type":   "engineer",
@@ -496,7 +496,7 @@ func TestServer_ToolsCall_SprawlDelegate(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(5, "tools/call", map[string]any{
-		"name": "sprawl_delegate",
+		"name": "delegate",
 		"arguments": map[string]any{
 			"agent_name": "ratz",
 			"task":       "implement feature Y",
@@ -526,7 +526,7 @@ func TestServer_ToolsCall_SprawlMessage(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(6, "tools/call", map[string]any{
-		"name": "sprawl_message",
+		"name": "message",
 		"arguments": map[string]any{
 			"agent_name": "ghost",
 			"subject":    "status update",
@@ -564,7 +564,7 @@ func TestServer_ToolsCall_SprawlMerge(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(7, "tools/call", map[string]any{
-		"name": "sprawl_merge",
+		"name": "merge",
 		"arguments": map[string]any{
 			"agent_name":  "ratz",
 			"message":     "merge commit msg",
@@ -598,7 +598,7 @@ func TestServer_ToolsCall_SprawlRetire(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(8, "tools/call", map[string]any{
-		"name": "sprawl_retire",
+		"name": "retire",
 		"arguments": map[string]any{
 			"agent_name": "ratz",
 			"merge":      true,
@@ -637,7 +637,7 @@ func TestServer_ToolsCall_SprawlRetire_Cascade(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(80, "tools/call", map[string]any{
-		"name": "sprawl_retire",
+		"name": "retire",
 		"arguments": map[string]any{
 			"agent_name": "manager-x",
 			"cascade":    true,
@@ -677,7 +677,7 @@ func TestServer_ToolsCall_SprawlRetire_ValidateFalse(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(81, "tools/call", map[string]any{
-		"name": "sprawl_retire",
+		"name": "retire",
 		"arguments": map[string]any{
 			"agent_name": "ratz",
 			"merge":      true,
@@ -698,7 +698,7 @@ func TestServer_ToolsCall_SprawlRetire_MergeAndAbandonMutuallyExclusive(t *testi
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(82, "tools/call", map[string]any{
-		"name": "sprawl_retire",
+		"name": "retire",
 		"arguments": map[string]any{
 			"agent_name": "ratz",
 			"merge":      true,
@@ -738,7 +738,7 @@ func TestServer_ToolsCall_SprawlKill(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(9, "tools/call", map[string]any{
-		"name": "sprawl_kill",
+		"name": "kill",
 		"arguments": map[string]any{
 			"agent_name": "ratz",
 		},
@@ -764,7 +764,7 @@ func TestServer_ToolsCall_SprawlHandoff(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(20, "tools/call", map[string]any{
-		"name": "sprawl_handoff",
+		"name": "handoff",
 		"arguments": map[string]any{
 			"summary": "## What happened\nmerged QUM-263",
 		},
@@ -806,7 +806,7 @@ func TestServer_ToolsCall_SprawlHandoff_SupervisorError(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(21, "tools/call", map[string]any{
-		"name":      "sprawl_handoff",
+		"name":      "handoff",
 		"arguments": map[string]any{"summary": "body"},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -855,7 +855,7 @@ func TestServer_ToolsCall_SupervisorError(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(11, "tools/call", map[string]any{
-		"name": "sprawl_delegate",
+		"name": "delegate",
 		"arguments": map[string]any{
 			"agent_name": "nonexistent",
 			"task":       "do something",
@@ -928,7 +928,7 @@ func TestServer_ToolsCall_SprawlSendAsync(t *testing.T) {
 	ctx := context.Background()
 
 	msg := makeJSONRPCRequest(30, "tools/call", map[string]any{
-		"name": "sprawl_send_async",
+		"name": "send_async",
 		"arguments": map[string]any{
 			"to":       "ghost",
 			"subject":  "status",
@@ -987,7 +987,7 @@ func TestServer_ToolsCall_SprawlSendAsync_SupervisorError(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(31, "tools/call", map[string]any{
-		"name":      "sprawl_send_async",
+		"name":      "send_async",
 		"arguments": map[string]any{"to": "x", "subject": "s", "body": "b"},
 	})
 	resp, _ := srv.HandleMessage(context.Background(), msg)
@@ -1013,7 +1013,7 @@ func TestServer_ToolsCall_SprawlSendInterrupt(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(40, "tools/call", map[string]any{
-		"name": "sprawl_send_interrupt",
+		"name": "send_interrupt",
 		"arguments": map[string]any{
 			"to":          "ghost",
 			"subject":     "urgent",
@@ -1064,7 +1064,7 @@ func TestServer_ToolsCall_SprawlSendInterrupt_SupervisorError(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(41, "tools/call", map[string]any{
-		"name": "sprawl_send_interrupt",
+		"name": "send_interrupt",
 		"arguments": map[string]any{
 			"to":      "ghost",
 			"subject": "s",
@@ -1091,13 +1091,13 @@ func TestServer_ToolsList_IncludesSendInterrupt(t *testing.T) {
 	found := false
 	for _, tAny := range tools {
 		tm := tAny.(map[string]any)
-		if tm["name"] == "sprawl_send_interrupt" {
+		if tm["name"] == "send_interrupt" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("sprawl_send_interrupt missing from tools/list")
+		t.Error("send_interrupt missing from tools/list")
 	}
 }
 
@@ -1112,7 +1112,7 @@ func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(32, "tools/call", map[string]any{
-		"name":      "sprawl_peek",
+		"name":      "peek",
 		"arguments": map[string]any{"agent": "ghost", "tail": 50},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
@@ -1155,7 +1155,7 @@ func TestServer_ToolsCall_SprawlPeek_DefaultTail(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(33, "tools/call", map[string]any{
-		"name":      "sprawl_peek",
+		"name":      "peek",
 		"arguments": map[string]any{"agent": "ghost"},
 	})
 	_, _ = srv.HandleMessage(context.Background(), msg)
@@ -1172,7 +1172,7 @@ func TestServer_ToolsCall_SprawlReportStatus(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(35, "tools/call", map[string]any{
-		"name": "sprawl_report_status",
+		"name": "report_status",
 		"arguments": map[string]any{
 			"state":   "working",
 			"summary": "halfway done",
@@ -1222,7 +1222,7 @@ func TestServer_ToolsCall_SprawlReportStatus_SupervisorError(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(36, "tools/call", map[string]any{
-		"name":      "sprawl_report_status",
+		"name":      "report_status",
 		"arguments": map[string]any{"state": "bogus", "summary": "x"},
 	})
 	resp, _ := srv.HandleMessage(context.Background(), msg)
@@ -1246,13 +1246,13 @@ func TestServer_ToolsList_IncludesReportStatus(t *testing.T) {
 	found := false
 	for _, tool := range tools {
 		m := tool.(map[string]any)
-		if m["name"] == "sprawl_report_status" {
+		if m["name"] == "report_status" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("sprawl_report_status not in tools/list")
+		t.Error("report_status not in tools/list")
 	}
 }
 
@@ -1261,7 +1261,7 @@ func TestServer_ToolsCall_SprawlPeek_TailClamp(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(34, "tools/call", map[string]any{
-		"name":      "sprawl_peek",
+		"name":      "peek",
 		"arguments": map[string]any{"agent": "ghost", "tail": 9999},
 	})
 	_, _ = srv.HandleMessage(context.Background(), msg)
@@ -1271,7 +1271,7 @@ func TestServer_ToolsCall_SprawlPeek_TailClamp(t *testing.T) {
 	}
 }
 
-// --- QUM-316: sprawl_messages_list / _read / _archive / _peek ---
+// --- QUM-316: messages_list / _read / _archive / _peek ---
 
 func TestServer_ToolsCall_SprawlMessagesList(t *testing.T) {
 	mock := &mockSupervisor{
@@ -1287,7 +1287,7 @@ func TestServer_ToolsCall_SprawlMessagesList(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(50, "tools/call", map[string]any{
-		"name":      "sprawl_messages_list",
+		"name":      "messages_list",
 		"arguments": map[string]any{"filter": "unread", "limit": 25},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
@@ -1322,7 +1322,7 @@ func TestServer_ToolsCall_SprawlMessagesList_DefaultFilter(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(51, "tools/call", map[string]any{
-		"name":      "sprawl_messages_list",
+		"name":      "messages_list",
 		"arguments": map[string]any{},
 	})
 	_, err := srv.HandleMessage(context.Background(), msg)
@@ -1342,7 +1342,7 @@ func TestServer_ToolsCall_SprawlMessagesList_SupervisorError(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(52, "tools/call", map[string]any{
-		"name":      "sprawl_messages_list",
+		"name":      "messages_list",
 		"arguments": map[string]any{"filter": "bogus"},
 	})
 	resp, _ := srv.HandleMessage(context.Background(), msg)
@@ -1364,7 +1364,7 @@ func TestServer_ToolsCall_SprawlMessagesRead(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(53, "tools/call", map[string]any{
-		"name":      "sprawl_messages_read",
+		"name":      "messages_read",
 		"arguments": map[string]any{"id": "abc"},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
@@ -1398,7 +1398,7 @@ func TestServer_ToolsCall_SprawlMessagesRead_NotFound(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(54, "tools/call", map[string]any{
-		"name":      "sprawl_messages_read",
+		"name":      "messages_read",
 		"arguments": map[string]any{"id": "nope"},
 	})
 	resp, _ := srv.HandleMessage(context.Background(), msg)
@@ -1416,7 +1416,7 @@ func TestServer_ToolsCall_SprawlMessagesArchive(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(55, "tools/call", map[string]any{
-		"name":      "sprawl_messages_archive",
+		"name":      "messages_archive",
 		"arguments": map[string]any{"id": "abc"},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
@@ -1455,7 +1455,7 @@ func TestServer_ToolsCall_SprawlMessagesPeek(t *testing.T) {
 	srv := New(mock)
 
 	msg := makeJSONRPCRequest(56, "tools/call", map[string]any{
-		"name":      "sprawl_messages_peek",
+		"name":      "messages_peek",
 		"arguments": map[string]any{},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)

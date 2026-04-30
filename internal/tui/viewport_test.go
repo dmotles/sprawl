@@ -418,7 +418,7 @@ func TestViewportModel_MoveCursorExtendsSelection(t *testing.T) {
 }
 
 // QUM-324: a long single-line tool input (e.g. compact JSON from
-// mcp__sprawl-ops__sprawl_spawn) must not bleed past the viewport width.
+// mcp__sprawl__spawn) must not bleed past the viewport width.
 // Rendered via renderToolCall directly so the assertion is independent of
 // the bubbles viewport's scroll/crop behaviour.
 func TestViewportModel_RenderToolCall_LongInputClipped(t *testing.T) {
@@ -806,7 +806,7 @@ func TestViewportModel_RenderToolCall_LongNameHeaderClipped(t *testing.T) {
 	var sb strings.Builder
 	m.renderToolCall(&sb, MessageEntry{
 		Type:     MessageToolCall,
-		Content:  strings.Repeat("mcp__sprawl_ops__sprawl_spawn__", 5),
+		Content:  strings.Repeat("mcp__sprawl_ops__spawn__", 5),
 		Complete: true,
 		Approved: true,
 	})

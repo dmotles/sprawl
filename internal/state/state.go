@@ -24,7 +24,7 @@ type AgentState struct {
 	TreePath  string `json:"tree_path,omitempty"`
 
 	// Report fields — populated by "sprawl report" subcommands and the
-	// sprawl_report_status MCP tool. See docs/designs/messaging-overhaul.md §4.2.3.
+	// report_status MCP tool. See docs/designs/messaging-overhaul.md §4.2.3.
 	LastReportType    string `json:"last_report_type,omitempty"` // back-compat: status, done, problem
 	LastReportMessage string `json:"last_report_message,omitempty"`
 	LastReportAt      string `json:"last_report_at,omitempty"`    // RFC3339

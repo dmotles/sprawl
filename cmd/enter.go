@@ -9,7 +9,7 @@
 //  3. the MCP server wired to the claude subprocess (sprawlmcp.New).
 //
 // Do NOT create a second supervisor inside newSessionImpl or anywhere
-// else in this package. If two supervisors exist, the sprawl_handoff MCP
+// else in this package. If two supervisors exist, the handoff MCP
 // tool fires on one channel while the TUI listens on the other, the
 // teardown/restart never runs, and the user is stuck in a stale session.
 // See QUM-329 postmortem for the full failure mode and tests that guard
@@ -62,7 +62,7 @@ type enterDeps struct {
 	// restart loop to force-fresh the next session regardless of elapsed time.
 	// sup is the runEnter-scoped supervisor (see architectural contract at
 	// top of this file). It is passed to the MCP server inside
-	// newSessionImpl so the sprawl_handoff tool and the TUI
+	// newSessionImpl so the handoff tool and the TUI
 	// HandoffRequested() listener observe the same channel. QUM-329.
 	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error)
 	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
@@ -182,7 +182,7 @@ func resolveEnterDeps() *enterDeps {
 		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
 			// CallerName is what gets stamped into Parent when this
 			// supervisor's Spawn() creates a child (cmd/enter.go's supervisor
-			// now serves the MCP sprawl_spawn tool since QUM-329 unified it).
+			// now serves the MCP spawn tool since QUM-329 unified it).
 			// Must be "weave" — the root agent's identity — so child agents'
 			// report/message deliveries route to weave's maildir + harness
 			// queue, not a phantom "enter" recipient.
@@ -204,10 +204,10 @@ func resolveEnterDeps() *enterDeps {
 			// supervisor, so we create it after construction and wire it in.
 			mcpServer := sprawlmcp.New(sup)
 			childBridge := host.NewMCPBridge()
-			childBridge.Register("sprawl-ops", mcpServer)
+			childBridge.Register("sprawl", mcpServer)
 			sup.SetChildMCPConfig(
 				backend.InitSpec{
-					MCPServerNames: []string{"sprawl-ops"},
+					MCPServerNames: []string{"sprawl"},
 					ToolBridge:     childBridge,
 				},
 				sprawlmcp.MCPToolNames(),
@@ -277,7 +277,7 @@ func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession
 
 func buildEnterInitSpec(bridge backend.ToolBridge) backend.InitSpec {
 	return backend.InitSpec{
-		MCPServerNames: []string{"sprawl-ops"},
+		MCPServerNames: []string{"sprawl"},
 		ToolBridge:     bridge,
 	}
 }
@@ -340,12 +340,12 @@ func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh boo
 	}
 
 	// Wire the MCP server to the shared supervisor passed in by runEnter.
-	// Creating a second supervisor here would give the sprawl_handoff MCP
+	// Creating a second supervisor here would give the handoff MCP
 	// tool its own HandoffRequested channel, which the TUI listener never
 	// drains — the QUM-329 regression.
 	mcpServer := sprawlmcp.New(sup)
 	mcpBridge := host.NewMCPBridge()
-	mcpBridge.Register("sprawl-ops", mcpServer)
+	mcpBridge.Register("sprawl", mcpServer)
 
 	adapter := backendclaude.NewAdapter(backendclaude.Config{})
 	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure))

@@ -105,8 +105,8 @@ func TestBuildEnterInitSpec_UsesSprawlOpsBridge(t *testing.T) {
 	bridge := host.NewMCPBridge()
 	initSpec := buildEnterInitSpec(bridge)
 
-	if len(initSpec.MCPServerNames) != 1 || initSpec.MCPServerNames[0] != "sprawl-ops" {
-		t.Fatalf("MCPServerNames = %v, want [sprawl-ops]", initSpec.MCPServerNames)
+	if len(initSpec.MCPServerNames) != 1 || initSpec.MCPServerNames[0] != "sprawl" {
+		t.Fatalf("MCPServerNames = %v, want [sprawl]", initSpec.MCPServerNames)
 	}
 	if initSpec.ToolBridge != bridge {
 		t.Fatal("ToolBridge should be the provided MCP bridge")

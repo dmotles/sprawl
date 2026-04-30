@@ -180,8 +180,8 @@ func TestHandoffPromptTemplate_NonEmptyAndReferencesMCPTool(t *testing.T) {
 	if HandoffPromptTemplate == "" {
 		t.Fatal("HandoffPromptTemplate is empty")
 	}
-	if !contains(HandoffPromptTemplate, "sprawl_handoff") {
-		t.Error("HandoffPromptTemplate should reference the sprawl_handoff MCP tool")
+	if !contains(HandoffPromptTemplate, "handoff") {
+		t.Error("HandoffPromptTemplate should reference the handoff MCP tool")
 	}
 	if !contains(HandoffPromptTemplate, "/handoff") {
 		t.Error("HandoffPromptTemplate should mention /handoff palette invocation")

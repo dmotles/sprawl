@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # test-handoff-e2e.sh — End-to-end regression guard for QUM-329:
 # TUI handoff must actually tear down and restart the claude subprocess
-# when weave calls `sprawl_handoff` via MCP.
+# when weave calls `handoff` via MCP.
 #
 # Before the QUM-329 fix, `cmd/enter.go` created two separate
 # `supervisor.Supervisor` instances — one for the MCP server wired to the
 # claude subprocess, one for the TUI's HandoffRequested listener. A
-# `sprawl_handoff` call fired the non-blocking channel send on supervisor
+# `handoff` call fired the non-blocking channel send on supervisor
 # #2, but the TUI listened on supervisor #1: teardown never ran, the
 # subprocess survived indefinitely, and `persistent.md` was never
 # re-loaded. See QUM-329 postmortem and tests in cmd/enter_test.go +
@@ -22,7 +22,7 @@
 #      to render the TUI's tree + viewport panels (200×50).
 #   4. Waits for the TUI to render and claude subprocess #1 to spawn,
 #      capturing its pid and --session-id argv.
-#   5. Fires a handoff by driving weave to call `sprawl_handoff` via MCP.
+#   5. Fires a handoff by driving weave to call `handoff` via MCP.
 #      This MUST go through the in-process MCP path (not the out-of-proc
 #      `sprawl handoff` CLI) because the CLI spawns its own supervisor
 #      and cannot exercise the QUM-329 split-supervisor bug — only the
@@ -254,7 +254,7 @@ sleep 1
 
 # --- Fire the handoff via MCP ---
 #
-# We type a user prompt telling weave to call sprawl_handoff. The MCP
+# We type a user prompt telling weave to call handoff. The MCP
 # tool lives inside the claude subprocess and calls supervisor.Handoff
 # on the SAME supervisor instance the TUI listener subscribes to (post
 # QUM-329 fix). Pre-fix the channels diverge and the assertions below
@@ -262,7 +262,7 @@ sleep 1
 
 echo ""
 echo "=== Firing handoff via MCP ==="
-HANDOFF_PROMPT="Call the mcp__sprawl-ops__sprawl_handoff tool with a short summary 'QUM-329 e2e test handoff'."
+HANDOFF_PROMPT="Call the mcp__sprawl__handoff tool with a short summary 'QUM-329 e2e test handoff'."
 
 tmux send-keys -t "$SESSION" "$HANDOFF_PROMPT" Enter
 sleep 2
@@ -295,7 +295,7 @@ done
 if [ "$SIGNAL_APPEARED" -eq 1 ]; then
     pass "handoff fired (signal file or session summary observed)"
 else
-    fail "handoff never fired within 90s (claude didn't call sprawl_handoff; see pane tail)"
+    fail "handoff never fired within 90s (claude didn't call handoff; see pane tail)"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -40 >&2
 fi

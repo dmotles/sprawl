@@ -7,10 +7,10 @@
 │                     │││                                                                        │
 │                     ││┌ ✓ ToolSearch                                                           │
 │                     │││ {"max_results":4,"query":"select:mcp__sprawl-                          │
-│                     ││ops__sprawl_spawn,mcp__spr                                               │ep
+│                     ││ops__spawn,mcp__spr                                               │ep
 │                     ││└                                                                        │
 ╰─────────────────────╯│              m                                                          │
-                       │┌ ✓ mcp__sprawl-ops__sprawl_spawn                                        │
+                       │┌ ✓ mcp__sprawl__spawn                                        │
                        ││ {"branch":"dmotles/smoketest-tui-                                      │AD
  is now at f378a6b towernotify","family":"engineering","prompt                                   │te
 d for EC2 (weave→sprawl_└                                                                        │tr

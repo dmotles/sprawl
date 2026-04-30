@@ -139,8 +139,8 @@ func TestMCPToolNames_AllPrefixed(t *testing.T) {
 		t.Fatal("MCPToolNames returned empty slice")
 	}
 	for _, tool := range tools {
-		if !strings.HasPrefix(tool, "mcp__sprawl-ops__") {
-			t.Errorf("tool %q lacks mcp__sprawl-ops__ prefix", tool)
+		if !strings.HasPrefix(tool, "mcp__sprawl__") {
+			t.Errorf("tool %q lacks mcp__sprawl__ prefix", tool)
 		}
 	}
 }
@@ -149,22 +149,22 @@ func TestMCPToolNames_CoversAllServerTools(t *testing.T) {
 	// Pin the expected set — if sprawlmcp adds a tool, update both here and
 	// toolDefinitions(). This guards against silent drift.
 	want := []string{
-		"mcp__sprawl-ops__sprawl_spawn",
-		"mcp__sprawl-ops__sprawl_status",
-		"mcp__sprawl-ops__sprawl_delegate",
-		"mcp__sprawl-ops__sprawl_send_async",
-		"mcp__sprawl-ops__sprawl_send_interrupt",
-		"mcp__sprawl-ops__sprawl_peek",
-		"mcp__sprawl-ops__sprawl_report_status",
-		"mcp__sprawl-ops__sprawl_message",
-		"mcp__sprawl-ops__sprawl_merge",
-		"mcp__sprawl-ops__sprawl_retire",
-		"mcp__sprawl-ops__sprawl_handoff",
-		"mcp__sprawl-ops__sprawl_messages_list",
-		"mcp__sprawl-ops__sprawl_messages_read",
-		"mcp__sprawl-ops__sprawl_messages_archive",
-		"mcp__sprawl-ops__sprawl_messages_peek",
-		"mcp__sprawl-ops__sprawl_kill",
+		"mcp__sprawl__spawn",
+		"mcp__sprawl__status",
+		"mcp__sprawl__delegate",
+		"mcp__sprawl__send_async",
+		"mcp__sprawl__send_interrupt",
+		"mcp__sprawl__peek",
+		"mcp__sprawl__report_status",
+		"mcp__sprawl__message",
+		"mcp__sprawl__merge",
+		"mcp__sprawl__retire",
+		"mcp__sprawl__handoff",
+		"mcp__sprawl__messages_list",
+		"mcp__sprawl__messages_read",
+		"mcp__sprawl__messages_archive",
+		"mcp__sprawl__messages_peek",
+		"mcp__sprawl__kill",
 	}
 	got := sprawlmcp.MCPToolNames()
 	if len(got) != len(want) {

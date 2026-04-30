@@ -799,7 +799,7 @@ func TestEnter_NilNewSessionSkipsBridge(t *testing.T) {
 // supervisor returned from deps.newSupervisor MUST equal the one
 // captured by the newSession factory AND the one captured when
 // restartFunc (re-)invokes newSession on a handoff teardown. If they
-// diverge, the sprawl_handoff MCP tool fires on a channel the TUI
+// diverge, the handoff MCP tool fires on a channel the TUI
 // never drains — exactly the QUM-329 failure mode.
 func TestEnter_SharedSupervisor_ThreadedEndToEnd(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -879,7 +879,7 @@ func TestMakeRestartFunc_ThreadsSupervisor(t *testing.T) {
 
 // TestDefaultEnterDeps_SupervisorCallerIsWeave is a QUM-333 regression
 // guard. The TUI supervisor's CallerName is stamped into every child
-// agent's Parent field on Spawn (via the MCP sprawl_spawn tool) and used
+// agent's Parent field on Spawn (via the MCP spawn tool) and used
 // as the "From" in every supervisor-originated message delivery. It MUST
 // be "weave" — the root agent's identity.
 //

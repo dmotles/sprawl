@@ -59,7 +59,7 @@ func resolveHandoffDeps() *handoffDeps {
 }
 
 func runHandoff(deps *handoffDeps) error {
-	deprecationWarning("handoff", "sprawl_handoff")
+	deprecationWarning("handoff", "handoff")
 	agentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
 		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set")

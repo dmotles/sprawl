@@ -39,16 +39,16 @@ PASS — boot + render verified live; identical path exercised by
 `scripts/test-notify-tui-e2e.sh` which also asserts "weave (idle) visible in
 tree panel".
 
-### EC2 — Spawn a child agent via MCP (sprawl_spawn). Child appears in tree.
+### EC2 — Spawn a child agent via MCP (spawn). Child appears in tree.
 
 **Live-exercised.** A real `sprawl enter` (real claude via
 `/tmp/coder-script-data/bin/claude` v2.1.117) was prompted with:
 
-> "Invoke the sprawl_spawn MCP tool with family=engineering, type=researcher,
+> "Invoke the spawn MCP tool with family=engineering, type=researcher,
 > branch=dmotles/m13-ec2-pilot, prompt 'standing by for m13 validation'."
 
 Evidence: `m13-phase1-evidence/ec2-live-spawn.txt`. The middle panel shows
-weave invoking `mcp__sprawl-ops__sprawl_spawn` with the supplied args, the
+weave invoking `mcp__sprawl__spawn` with the supplied args, the
 response `Spawned agent ghost (researcher, engineering) on branch
 dmotles/m13-ec2-pilot`, and "Completed in 7725ms, cost $0.1992". The left
 tree panel updates on the next `tickAgentsCmd` poll (~2s later) to show:
@@ -76,7 +76,7 @@ change to the TUI-notifier files (CLAUDE.md mandate #7).
 
 PASS — live-captured and regression-guarded.
 
-### EC4 — Send a message from weave to the child (MCP `sprawl_send_async`); reply visible in TUI
+### EC4 — Send a message from weave to the child (MCP `send_async`); reply visible in TUI
 
 Two-directional evidence:
 
@@ -86,7 +86,7 @@ Two-directional evidence:
   ```
   The badge rose from `(1)` to `(2)` on the second send, confirming
   incremental-rise detection.
-- Weave → child (MCP): `sprawl_send_async` is a thin wrapper over
+- Weave → child (MCP): `send_async` is a thin wrapper over
   `messages.Send`, unit-tested in `internal/sprawlmcp/`. The `InboxArrivalMsg`
   wiring introduced by QUM-311 also fires for in-process MCP sends via the
   `tea.Program` sender (tested in `cmd/enter_notify_test.go` and
@@ -94,14 +94,14 @@ Two-directional evidence:
 
 PASS — live (incoming) + unit-tested (outgoing).
 
-### EC5 — Retire the child via MCP (`sprawl_retire`). Tree updates.
+### EC5 — Retire the child via MCP (`retire`). Tree updates.
 
 **Live-exercised.** Immediately after EC2, weave was prompted with:
 
-> "Invoke the sprawl_retire MCP tool with agent='ghost' abandon=true."
+> "Invoke the retire MCP tool with agent='ghost' abandon=true."
 
 Evidence: `m13-phase1-evidence/ec5-live-retire.txt`. The middle panel shows
-`mcp__sprawl-ops__sprawl_retire` invoked with `{"abandon":true,"agent_name":"ghost"}`
+`mcp__sprawl__retire` invoked with `{"abandon":true,"agent_name":"ghost"}`
 and the response `Retired agent ghost`. On the next poll, the ghost row
 disappears from the left tree panel; only `● [W] weave (idle)` remains.
 `sprawl status` on the sandbox confirms ghost gone.
@@ -166,13 +166,13 @@ Grep-based metrics from the live capture:
 
 | Metric | Count | Expected |
 |---|---|---|
-| MCP tool mentions (`sprawl_spawn`, `sprawl_send_async`, `sprawl_peek`, `sprawl_retire`, `sprawl_handoff`, `sprawl_status`) | **20** | >0 |
+| MCP tool mentions (`spawn`, `send_async`, `peek`, `retire`, `handoff`, `status`) | **20** | >0 |
 | Literal `tmux` references | **0** | 0 (fully rewritten) |
 | `sprawl spawn agent` CLI refs | **0** | 0 |
 | `Your name is "weave".` identity header | present | present |
 
 Manual validation on live tmux attach (QUM-235): "what is your name and how do
-you spawn agents" → "My name is weave." + leads with `sprawl_spawn` MCP block;
+you spawn agents" → "My name is weave." + leads with `spawn` MCP block;
 zero tmux references in the spawn-flow description; tree shows
 `● [W] weave (idle)` root row.
 
@@ -198,7 +198,7 @@ PASS — live-captured identity + MCP-first prompt.
 
 **Wave 2** (parallel):
 - finn (re-spawned) → QUM-235 prompt-rewrite completion (subpoints #1/#3
-  already landed via QUM-311/205; delta was `sprawl_handoff` Session
+  already landed via QUM-311/205; delta was `handoff` Session
   subheading in `rootCommandsTUI`).
 - ratz → QUM-260 async restart + progress ticker.
 - zone → QUM-312 e2e harness + CLAUDE.md mandate.
@@ -245,7 +245,7 @@ From sub-agent reflections posted on each issue:
 - `internal/agent/prompt_mode.go` contains near-duplicated tmux/TUI prompt
   constants — templating cleanup candidate (flagged on QUM-235 and QUM-299).
 - MCP surface gaps identified in QUM-313 for Phase 2 gate: mailbox read/archive
-  tools, `sprawl_retire` cascade/force. `sprawl poke` confirmed dead code.
+  tools, `retire` cascade/force. `sprawl poke` confirmed dead code.
 - Long-term: replace the 2s `tickAgentsCmd` polling with a file-watcher or
   real root-loop `agentloop` integration (architectural follow-up under the
   QUM-292 messaging overhaul umbrella).

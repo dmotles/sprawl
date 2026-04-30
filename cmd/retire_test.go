@@ -85,8 +85,8 @@ func TestRetire_FailsClosedWhenLiveWeaveSessionOwnsRuntimes(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected standalone retire rejection")
 	}
-	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "sprawl_retire") {
-		t.Fatalf("error = %q, want sprawl enter + sprawl_retire guidance", err)
+	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "retire") {
+		t.Fatalf("error = %q, want sprawl enter + retire guidance", err)
 	}
 }
 
