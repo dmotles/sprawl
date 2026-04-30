@@ -371,6 +371,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case SessionModelMsg:
+		// QUM-385: derive context window limit from the model name.
+		m.statusBar.SetContextLimit(modelContextLimit(msg.Model))
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
+		return m, nil
+
 	case OpenPaletteMsg:
 		// Gate on modals AND observed-agent-is-root: when observing a child
 		// the input bar is hidden (QUM-340), so opening the palette would
@@ -471,6 +479,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case AssistantTextMsg:
 				m.setTurnState(TurnStreaming)
 				m.rootVP().AppendAssistantChunk(im.Text)
+			case SessionUsageMsg:
+				m.statusBar.SetTokenUsage(im.InputTokens)
 			case ToolCallMsg:
 				m.rootVP().AppendToolCall(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput)
 				wasZero := m.pendingToolCalls == 0
@@ -714,6 +724,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// New session starts with no in-flight tool calls; reset the
 		// counter so any stale tick is dropped on next arrival (QUM-336).
 		m.pendingToolCalls = 0
+		// QUM-385: reset token usage; contextLimit is preserved across
+		// restarts since the model usually doesn't change.
+		m.statusBar.SetTokenUsage(0)
 		// Show the session banner with the new session ID (QUM-390).
 		root.SetContent(SessionBanner(shortID, m.version))
 		m.statusBar.SetSessionID(shortID)

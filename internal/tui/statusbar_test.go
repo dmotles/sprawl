@@ -162,3 +162,105 @@ func TestStatusBar_CumulativeCost(t *testing.T) {
 		t.Errorf("View() should NOT contain accumulated cost '$0.0300' (double-counting bug), got:\n%s", view)
 	}
 }
+
+// --- QUM-385: Token counter tests ---
+
+func TestFormatTokenCount(t *testing.T) {
+	tests := []struct {
+		input int
+		want  string
+	}{
+		{0, "0"},
+		{500, "500"},
+		{999, "999"},
+		{1000, "1k"},
+		{1500, "1.5k"},
+		{42300, "42.3k"},
+		{100000, "100k"},
+		{999999, "1000.0k"},
+		{1000000, "1M"},
+		{1500000, "1.5M"},
+	}
+	for _, tc := range tests {
+		got := formatTokenCount(tc.input)
+		if got != tc.want {
+			t.Errorf("formatTokenCount(%d) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestModelContextLimit_KnownModels(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{"claude-opus-4-7-20260301", 1_000_000},
+		{"claude-sonnet-4-6-20250514", 1_000_000},
+		{"claude-haiku-4-0-20260301", 200_000},
+	}
+	for _, tc := range tests {
+		got := modelContextLimit(tc.model)
+		if got != tc.want {
+			t.Errorf("modelContextLimit(%q) = %d, want %d", tc.model, got, tc.want)
+		}
+	}
+}
+
+func TestModelContextLimit_Unknown(t *testing.T) {
+	got := modelContextLimit("gpt-4o")
+	if got != defaultContextLimit {
+		t.Errorf("modelContextLimit(unknown) = %d, want %d", got, defaultContextLimit)
+	}
+}
+
+func TestModelContextLimit_Empty(t *testing.T) {
+	got := modelContextLimit("")
+	if got != defaultContextLimit {
+		t.Errorf("modelContextLimit(\"\") = %d, want %d", got, defaultContextLimit)
+	}
+}
+
+func TestStatusBar_TokenCounter_Displayed(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	m.SetContextLimit(1_000_000)
+	m.SetTokenUsage(42300)
+	view := m.View()
+	if !strings.Contains(view, "42.3k/1M tokens") {
+		t.Errorf("View() should contain '42.3k/1M tokens', got:\n%s", view)
+	}
+}
+
+func TestStatusBar_TokenCounter_OmittedWhenZero(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	view := m.View()
+	if strings.Contains(view, "tokens") {
+		t.Errorf("View() should not contain 'tokens' when no usage set, got:\n%s", view)
+	}
+}
+
+func TestStatusBar_TokenCounter_OmittedWhenNoLimit(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	m.SetTokenUsage(5000)
+	view := m.View()
+	if strings.Contains(view, "tokens") {
+		t.Errorf("View() should not contain 'tokens' when no limit set, got:\n%s", view)
+	}
+}
+
+func TestStatusBar_TokenCounter_UpdatesOnNewValue(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	m.SetContextLimit(1_000_000)
+	m.SetTokenUsage(10000)
+	m.SetTokenUsage(20000)
+	view := m.View()
+	if !strings.Contains(view, "20k/1M tokens") {
+		t.Errorf("View() should contain '20k/1M tokens' after update, got:\n%s", view)
+	}
+	if strings.Contains(view, "10k") {
+		t.Errorf("View() should not contain old '10k' value, got:\n%s", view)
+	}
+}

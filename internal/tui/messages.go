@@ -99,6 +99,20 @@ type SessionResultMsg struct {
 	TotalCostUsd float64
 }
 
+// SessionUsageMsg carries token usage data extracted from an assistant message.
+// InputTokens reflects the current context window consumption (not cumulative
+// across turns — each assistant message reports the latest snapshot).
+type SessionUsageMsg struct {
+	InputTokens  int
+	OutputTokens int
+}
+
+// SessionModelMsg carries the model name from the system/init message,
+// used to derive the context window limit.
+type SessionModelMsg struct {
+	Model string
+}
+
 // UserMessageSentMsg confirms that user input was dispatched to the session.
 type UserMessageSentMsg struct{}
 

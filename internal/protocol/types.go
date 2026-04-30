@@ -103,6 +103,14 @@ type StreamEvent struct {
 	ParentToolUseID *string         `json:"parent_tool_use_id"`
 }
 
+// Usage contains token consumption metrics from an Anthropic API response.
+type Usage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
 // --- Input messages (to Claude Code stdin) ---
 
 // UserMessage is sent on stdin to submit a new prompt.

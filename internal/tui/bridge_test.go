@@ -532,10 +532,29 @@ func TestMapProtocolMessage_UnknownType(t *testing.T) {
 	}
 }
 
-func TestMapProtocolMessage_SystemInit(t *testing.T) {
-	// System messages during event streaming should return nil — they are
-	// informational and session initialization is handled by Bridge.Initialize().
-	raw := `{"type":"system","subtype":"init","session_id":"s-1","cwd":"/tmp","tools":["Bash"],"model":"claude-4","permissionMode":"auto"}`
+func TestMapProtocolMessage_SystemInit_EmitsModel(t *testing.T) {
+	// QUM-385: system/init now emits SessionModelMsg so the TUI can derive
+	// the context window limit from the model name.
+	raw := `{"type":"system","subtype":"init","session_id":"s-1","cwd":"/tmp","tools":["Bash"],"model":"claude-opus-4-7-20260301","permissionMode":"auto"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	modelMsg, ok := result.(SessionModelMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage for system/init returned %T, want SessionModelMsg", result)
+	}
+	if modelMsg.Model != "claude-opus-4-7-20260301" {
+		t.Errorf("Model = %q, want %q", modelMsg.Model, "claude-opus-4-7-20260301")
+	}
+}
+
+func TestMapProtocolMessage_SystemInit_EmptyModel(t *testing.T) {
+	// system/init with empty model should return nil (no SessionModelMsg).
+	raw := `{"type":"system","subtype":"init","session_id":"s-1","cwd":"/tmp","tools":["Bash"],"model":"","permissionMode":"auto"}`
 	var msg protocol.Message
 	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
 		t.Fatal(err)
@@ -544,7 +563,22 @@ func TestMapProtocolMessage_SystemInit(t *testing.T) {
 
 	result := mapProtocolMessage(&msg)
 	if result != nil {
-		t.Errorf("mapProtocolMessage for system/init returned %T, want nil (system messages are skipped during event stream)", result)
+		t.Errorf("mapProtocolMessage for system/init with empty model returned %T, want nil", result)
+	}
+}
+
+func TestMapProtocolMessage_SystemNonInit(t *testing.T) {
+	// Non-init system messages should still return nil.
+	raw := `{"type":"system","subtype":"session_state_changed","state":"idle"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	if result != nil {
+		t.Errorf("mapProtocolMessage for system/session_state_changed returned %T, want nil", result)
 	}
 }
 
@@ -847,5 +881,88 @@ func TestBridge_FullTurnLifecycle(t *testing.T) {
 		t.Fatalf("expected SessionResultMsg, got %T", msg)
 	} else if resultMsg.DurationMs != 300 {
 		t.Errorf("DurationMs = %d, want 300", resultMsg.DurationMs)
+	}
+}
+
+// --- QUM-385: Usage extraction tests ---
+
+func TestMapAssistantMessage_ExtractsUsage(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":15000,"output_tokens":500,"cache_creation_input_tokens":100,"cache_read_input_tokens":50}}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	// Should contain both AssistantTextMsg and SessionUsageMsg.
+	var foundUsage bool
+	for _, inner := range acm.Msgs {
+		if u, ok := inner.(SessionUsageMsg); ok {
+			foundUsage = true
+			if u.InputTokens != 15000 {
+				t.Errorf("InputTokens = %d, want 15000", u.InputTokens)
+			}
+			if u.OutputTokens != 500 {
+				t.Errorf("OutputTokens = %d, want 500", u.OutputTokens)
+			}
+		}
+	}
+	if !foundUsage {
+		t.Error("AssistantContentMsg should contain a SessionUsageMsg when usage is present")
+	}
+}
+
+func TestMapAssistantMessage_NoUsage(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	for _, inner := range acm.Msgs {
+		if _, ok := inner.(SessionUsageMsg); ok {
+			t.Error("AssistantContentMsg should NOT contain SessionUsageMsg when usage is absent")
+		}
+	}
+}
+
+func TestMapAssistantMessage_UsageAlongsideContent(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":5000,"output_tokens":200}}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	var hasText, hasUsage bool
+	for _, inner := range acm.Msgs {
+		switch inner.(type) {
+		case AssistantTextMsg:
+			hasText = true
+		case SessionUsageMsg:
+			hasUsage = true
+		}
+	}
+	if !hasText {
+		t.Error("expected AssistantTextMsg in batch")
+	}
+	if !hasUsage {
+		t.Error("expected SessionUsageMsg in batch")
 	}
 }
