@@ -71,6 +71,14 @@ func PrepareFresh(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootNa
 
 func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer, forceFresh bool) (*PreparedSession, error) {
 	prefix := deps.LogPrefix
+
+	// QUM-402: a prior session's /handoff schedules consolidation in a
+	// background goroutine that may still be running when this session
+	// boots. Wait for it to release the flock so BuildContextBlob below
+	// reads the post-consolidation persistent.md / timeline.md instead of
+	// stale pre-consolidation versions. No-op when the lockfile is absent.
+	WaitForBackgroundConsolidation(sprawlRoot, BackgroundConsolidationTimeout, stdout, prefix)
+
 	prevSessionID, _ := deps.ReadLastSessionID(sprawlRoot)
 
 	if prevSessionID != "" && !forceFresh {
