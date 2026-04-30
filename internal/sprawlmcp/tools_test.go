@@ -8,13 +8,13 @@ import (
 func TestSprawlSpawnToolDefinition_DescribesSameProcessWorktreeAgents(t *testing.T) {
 	var spawn map[string]any
 	for _, def := range toolDefinitions() {
-		if def["name"] == "sprawl_spawn" {
+		if def["name"] == "spawn" {
 			spawn = def
 			break
 		}
 	}
 	if spawn == nil {
-		t.Fatal("sprawl_spawn tool definition not found")
+		t.Fatal("spawn tool definition not found")
 	}
 
 	desc, ok := spawn["description"].(string)
@@ -22,10 +22,10 @@ func TestSprawlSpawnToolDefinition_DescribesSameProcessWorktreeAgents(t *testing
 		t.Fatalf("description type = %T, want string", spawn["description"])
 	}
 	if strings.Contains(desc, "subprocess") {
-		t.Fatalf("sprawl_spawn description should not describe child runtimes as subprocesses: %q", desc)
+		t.Fatalf("spawn description should not describe child runtimes as subprocesses: %q", desc)
 	}
 	if strings.Contains(desc, "subagent") {
-		t.Fatalf("sprawl_spawn description should not advertise legacy subagent semantics: %q", desc)
+		t.Fatalf("spawn description should not advertise legacy subagent semantics: %q", desc)
 	}
 
 	schema, ok := spawn["inputSchema"].(map[string]any)
@@ -44,6 +44,6 @@ func TestSprawlSpawnToolDefinition_DescribesSameProcessWorktreeAgents(t *testing
 		}
 	}
 	if !foundBranch {
-		t.Fatal("sprawl_spawn should still require branch for worktree-backed child agents")
+		t.Fatal("spawn should still require branch for worktree-backed child agents")
 	}
 }

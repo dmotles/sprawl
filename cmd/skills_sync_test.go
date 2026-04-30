@@ -9,7 +9,7 @@ import (
 )
 
 var codexSkillWhitelist = map[string]string{
-	"handoff": "depends on sprawl-ops MCP tools that are not available in Codex sessions yet",
+	"handoff": "depends on sprawl MCP tools that are not available in Codex sessions yet",
 }
 
 func TestClaudeSkillsHaveCodexCounterparts(t *testing.T) {

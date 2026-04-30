@@ -54,8 +54,8 @@ func TestKill_FailsClosedWhenLiveWeaveSessionOwnsRuntimes(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected standalone kill rejection")
 	}
-	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "sprawl_kill") {
-		t.Fatalf("error = %q, want sprawl enter + sprawl_kill guidance", err)
+	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "kill") {
+		t.Fatalf("error = %q, want sprawl enter + kill guidance", err)
 	}
 }
 

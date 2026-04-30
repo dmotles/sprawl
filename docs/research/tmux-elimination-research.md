@@ -8,10 +8,10 @@
 
 ## Executive Summary
 
-Tmux is **not** dead in sprawl. It remains the process container for ALL child agents even in TUI mode. When `sprawl_spawn` fires, the current path is:
+Tmux is **not** dead in sprawl. It remains the process container for ALL child agents even in TUI mode. When `spawn` fires, the current path is:
 
 ```
-sprawl_spawn MCP call
+spawn MCP call
   → supervisor.Real.Spawn()
   → agentops.Spawn()
   → deps.TmuxRunner.NewWindow(session, name, env, shellCmd)
@@ -214,7 +214,7 @@ The plan is designed so each phase is independently verifiable (user can confirm
 - `internal/state/state.go` — add `ProcessPID int` field to `AgentState`
 - `internal/supervisor/real.go` — wire new subprocess deps
 
-**Verification:** Spawn an agent via `sprawl enter` → `sprawl_spawn`, confirm:
+**Verification:** Spawn an agent via `sprawl enter` → `spawn`, confirm:
 1. No new tmux windows: `tmux list-windows` shows only the weave window
 2. New process visible: `ps aux | grep "sprawl agent-loop"`
 3. Agent functions normally (receives messages, reports status)
@@ -229,7 +229,7 @@ The plan is designed so each phase is independently verifiable (user can confirm
 - `internal/agentops/retire.go` — remove `TmuxRunner` from `RetireDeps`
 - `internal/supervisor/real.go` — update kill/retire deps construction
 
-**Verification:** `sprawl_kill <agent>` terminates agent process, state shows "killed", no tmux interaction.
+**Verification:** `kill <agent>` terminates agent process, state shows "killed", no tmux interaction.
 
 ### Phase 3: Remove tmux from supervisor.NewReal()
 

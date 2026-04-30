@@ -280,15 +280,15 @@ func TestBuildRunnerDeps_IncludesInitSpecWithMCPBridge(t *testing.T) {
 	}
 
 	mcpBridge := host.NewMCPBridge()
-	mcpBridge.Register("sprawl-ops", &dummyMCPServer{})
+	mcpBridge.Register("sprawl", &dummyMCPServer{})
 	initSpec := backend.InitSpec{
-		MCPServerNames: []string{"sprawl-ops"},
+		MCPServerNames: []string{"sprawl"},
 		ToolBridge:     mcpBridge,
 	}
 	allowedTools := []string{
-		"mcp__sprawl-ops__sprawl_spawn",
-		"mcp__sprawl-ops__sprawl_status",
-		"mcp__sprawl-ops__sprawl_report_status",
+		"mcp__sprawl__spawn",
+		"mcp__sprawl__status",
+		"mcp__sprawl__report_status",
 	}
 
 	starter := newInProcessRuntimeStarter(initSpec, allowedTools)
@@ -308,19 +308,19 @@ func TestBuildRunnerDeps_IncludesInitSpecWithMCPBridge(t *testing.T) {
 		t.Fatal("startRunnerFn was not called")
 	}
 
-	// InitSpec should carry the sprawl-ops MCP server name.
+	// InitSpec should carry the sprawl MCP server name.
 	if len(capturedDeps.InitSpec.MCPServerNames) == 0 {
-		t.Fatal("RunnerDeps.InitSpec.MCPServerNames is empty; expected [\"sprawl-ops\"]")
+		t.Fatal("RunnerDeps.InitSpec.MCPServerNames is empty; expected [\"sprawl\"]")
 	}
 	found := false
 	for _, name := range capturedDeps.InitSpec.MCPServerNames {
-		if name == "sprawl-ops" {
+		if name == "sprawl" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("RunnerDeps.InitSpec.MCPServerNames = %v, want to contain \"sprawl-ops\"", capturedDeps.InitSpec.MCPServerNames)
+		t.Errorf("RunnerDeps.InitSpec.MCPServerNames = %v, want to contain \"sprawl\"", capturedDeps.InitSpec.MCPServerNames)
 	}
 
 	// InitSpec.ToolBridge should be non-nil.
@@ -369,12 +369,12 @@ func TestInProcessRuntimeStarter_ChildCapabilitiesIncludeToolBridge(t *testing.T
 	}
 
 	mcpBridge := host.NewMCPBridge()
-	mcpBridge.Register("sprawl-ops", &dummyMCPServer{})
+	mcpBridge.Register("sprawl", &dummyMCPServer{})
 	initSpec := backend.InitSpec{
-		MCPServerNames: []string{"sprawl-ops"},
+		MCPServerNames: []string{"sprawl"},
 		ToolBridge:     mcpBridge,
 	}
-	handle, err := newInProcessRuntimeStarter(initSpec, []string{"mcp__sprawl-ops__sprawl_spawn"}).Start(context.Background(), RuntimeStartSpec{
+	handle, err := newInProcessRuntimeStarter(initSpec, []string{"mcp__sprawl__spawn"}).Start(context.Background(), RuntimeStartSpec{
 		Name:       "alice",
 		Worktree:   "/repo/.sprawl/worktrees/alice",
 		SprawlRoot: "/repo",
@@ -394,7 +394,7 @@ func TestInProcessRuntimeStarter_ChildCapabilitiesIncludeToolBridge(t *testing.T
 		t.Error("RunnerDeps.InitSpec.ToolBridge is nil; child MCP bridge not wired")
 	}
 	if len(capturedDeps.InitSpec.MCPServerNames) == 0 {
-		t.Error("RunnerDeps.InitSpec.MCPServerNames is empty; expected sprawl-ops")
+		t.Error("RunnerDeps.InitSpec.MCPServerNames is empty; expected sprawl")
 	}
 	if len(capturedDeps.AllowedTools) == 0 {
 		t.Error("RunnerDeps.AllowedTools is empty; expected MCP tool names")

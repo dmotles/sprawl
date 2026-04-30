@@ -39,7 +39,7 @@ Cover these categories. Be specific, not vague — the summary is the primary ` 
 
 ## Step 2: Persist via the MCP tool
 
-Call mcp__sprawl-ops__sprawl_handoff with the full summary as the ` + "`summary`" + ` string argument. After the tool returns, end your turn — ` +
+Call mcp__sprawl__handoff with the full summary as the ` + "`summary`" + ` string argument. After the tool returns, end your turn — ` +
 	`the host will tear down this subprocess and start a fresh weave session ` +
 	`with consolidated memory.
 

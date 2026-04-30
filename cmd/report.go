@@ -14,7 +14,7 @@ import (
 )
 
 // reportDeps holds the dependencies for the report command, enabling testability.
-// Both `sprawl report` CLI and the `sprawl_report_status` MCP tool delegate to
+// Both `sprawl report` CLI and the `report_status` MCP tool delegate to
 // the same agentops.Report helper — there is one persistence path.
 type reportDeps struct {
 	getenv      func(string) string
@@ -95,7 +95,7 @@ func cliTypeToState(reportType string) string {
 }
 
 func runReport(deps *reportDeps, reportType, message string) error {
-	deprecationWarning("report "+reportType, "sprawl_report_status")
+	deprecationWarning("report "+reportType, "report_status")
 	agentName := deps.getenv("SPRAWL_AGENT_IDENTITY")
 	if agentName == "" {
 		return fmt.Errorf("SPRAWL_AGENT_IDENTITY environment variable is not set; report must be called from within a sprawl agent")

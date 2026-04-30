@@ -39,10 +39,10 @@ Write a structured summary covering these categories:
 
 ## Step 2: Trigger the Handoff
 
-Call the `mcp__sprawl-ops__sprawl_handoff` MCP tool directly with the full summary string:
+Call the `mcp__sprawl__handoff` MCP tool directly with the full summary string:
 
 ```
-mcp__sprawl-ops__sprawl_handoff({ summary: "<your full summary here>" })
+mcp__sprawl__handoff({ summary: "<your full summary here>" })
 ```
 
 The host will persist the summary to `.sprawl/memory/sessions/<session-id>.md`, write `.sprawl/memory/handoff-signal`, tear down this subprocess, and start a fresh weave session with consolidated memory. The new weave starts automatically — the user does **not** need to exit and re-enter `sprawl enter`.

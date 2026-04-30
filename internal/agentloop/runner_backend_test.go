@@ -119,7 +119,7 @@ func TestClaudeBackendProcess_InitSpecFieldExists(t *testing.T) {
 		stopTestSession: stopTestSession{waitDone: make(chan error, 1)},
 	}
 	initSpec := backend.InitSpec{
-		MCPServerNames: []string{"sprawl-ops"},
+		MCPServerNames: []string{"sprawl"},
 	}
 
 	proc := &claudeBackendProcess{
@@ -132,8 +132,8 @@ func TestClaudeBackendProcess_InitSpecFieldExists(t *testing.T) {
 	if len(proc.initSpec.MCPServerNames) == 0 {
 		t.Error("claudeBackendProcess.initSpec.MCPServerNames is empty after construction")
 	}
-	if proc.initSpec.MCPServerNames[0] != "sprawl-ops" {
-		t.Errorf("claudeBackendProcess.initSpec.MCPServerNames[0] = %q, want \"sprawl-ops\"", proc.initSpec.MCPServerNames[0])
+	if proc.initSpec.MCPServerNames[0] != "sprawl" {
+		t.Errorf("claudeBackendProcess.initSpec.MCPServerNames[0] = %q, want \"sprawl\"", proc.initSpec.MCPServerNames[0])
 	}
 }
 
@@ -142,7 +142,7 @@ func TestClaudeBackendProcess_SendPromptPassesTurnSpec(t *testing.T) {
 		stopTestSession: stopTestSession{waitDone: make(chan error, 1)},
 	}
 	initSpec := backend.InitSpec{
-		MCPServerNames: []string{"sprawl-ops"},
+		MCPServerNames: []string{"sprawl"},
 	}
 
 	proc := &claudeBackendProcess{
@@ -161,6 +161,6 @@ func TestClaudeBackendProcess_SendPromptPassesTurnSpec(t *testing.T) {
 	}
 	ts := session.turnSpecs[0]
 	if len(ts.Init.MCPServerNames) == 0 {
-		t.Error("TurnSpec.Init.MCPServerNames is empty; expected sprawl-ops server name")
+		t.Error("TurnSpec.Init.MCPServerNames is empty; expected sprawl server name")
 	}
 }

@@ -338,7 +338,7 @@ func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
 	keyPhrases := []string{
 		"AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS",
 		"Sprawl agents",
-		"sprawl_spawn",
+		"spawn",
 		"Claude Code sub-agents",
 		"Agent tool",
 		"fire off an agent",
@@ -1227,12 +1227,12 @@ func TestBuildRootPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	prompt := BuildRootPrompt(cfg)
 
 	mcpTools := []string{
-		"sprawl_spawn",
-		"sprawl_send_async",
-		"sprawl_merge",
-		"sprawl_retire",
-		"sprawl_delegate",
-		"sprawl_kill",
+		"spawn",
+		"send_async",
+		"merge",
+		"retire",
+		"delegate",
+		"kill",
 	}
 	for _, tool := range mcpTools {
 		if !strings.Contains(prompt, tool) {
@@ -1247,17 +1247,17 @@ func TestBuildRootPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	prompt := BuildRootPrompt(cfg)
 
 	mcpTools := []string{
-		"sprawl_spawn",
-		"sprawl_send_async",
-		"sprawl_send_interrupt",
-		"sprawl_peek",
-		"sprawl_report_status",
-		"sprawl_merge",
-		"sprawl_retire",
-		"sprawl_delegate",
-		"sprawl_kill",
-		"sprawl_status",
-		"sprawl_handoff",
+		"spawn",
+		"send_async",
+		"send_interrupt",
+		"peek",
+		"report_status",
+		"merge",
+		"retire",
+		"delegate",
+		"kill",
+		"status",
+		"handoff",
 	}
 	for _, tool := range mcpTools {
 		if !strings.Contains(prompt, tool) {
@@ -1281,8 +1281,8 @@ func TestBuildRootPrompt_TmuxMode_NoMCPToolNames(t *testing.T) {
 	cfg.Mode = "tmux"
 	prompt := BuildRootPrompt(cfg)
 
-	if strings.Contains(prompt, "sprawl_spawn(") {
-		t.Error("root prompt with tmux mode should NOT contain MCP tool call 'sprawl_spawn('")
+	if strings.Contains(prompt, "spawn(") {
+		t.Error("root prompt with tmux mode should NOT contain MCP tool call 'spawn('")
 	}
 }
 
@@ -1320,8 +1320,8 @@ func TestBuildEngineerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
 	required := []string{
-		"sprawl_send_async",
-		"sprawl_report_status",
+		"send_async",
+		"report_status",
 	}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
@@ -1335,7 +1335,7 @@ func TestBuildEngineerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	env.Mode = "tui"
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
-	required := []string{"sprawl_send_async", "sprawl_report_status"}
+	required := []string{"send_async", "report_status"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("engineer prompt with tui mode should contain MCP tool %q", tool)
@@ -1361,7 +1361,7 @@ func TestBuildResearcherPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	env.Mode = "tui"
 	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
 
-	required := []string{"sprawl_send_async", "sprawl_report_status"}
+	required := []string{"send_async", "report_status"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("researcher prompt with tui mode should contain MCP tool %q", tool)
@@ -1388,15 +1388,15 @@ func TestBuildManagerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
 
 	mcpTools := []string{
-		"sprawl_spawn",
-		"sprawl_merge",
-		"sprawl_retire",
-		"sprawl_delegate",
-		"sprawl_send_async",
-		"sprawl_send_interrupt",
-		"sprawl_peek",
-		"sprawl_report_status",
-		"sprawl_status",
+		"spawn",
+		"merge",
+		"retire",
+		"delegate",
+		"send_async",
+		"send_interrupt",
+		"peek",
+		"report_status",
+		"status",
 	}
 	for _, tool := range mcpTools {
 		if !strings.Contains(prompt, tool) {
@@ -1411,15 +1411,15 @@ func TestBuildManagerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
 
 	mcpTools := []string{
-		"sprawl_spawn",
-		"sprawl_merge",
-		"sprawl_retire",
-		"sprawl_delegate",
-		"sprawl_send_async",
-		"sprawl_send_interrupt",
-		"sprawl_peek",
-		"sprawl_report_status",
-		"sprawl_status",
+		"spawn",
+		"merge",
+		"retire",
+		"delegate",
+		"send_async",
+		"send_interrupt",
+		"peek",
+		"report_status",
+		"status",
 	}
 	for _, tool := range mcpTools {
 		if !strings.Contains(prompt, tool) {
@@ -1493,7 +1493,7 @@ func TestBuildRootPrompt_DefaultMode_DoesNotAdvertiseLegacySubagentSpawn(t *test
 
 	for _, pat := range []string{
 		"sprawl spawn subagent",
-		`sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>"})`,
+		`spawn({type: "<type>", family: "<family>", prompt: "<task>"})`,
 		"omit branch for subagent",
 	} {
 		if strings.Contains(prompt, pat) {
@@ -1509,7 +1509,7 @@ func TestBuildManagerPrompt_DefaultMode_DoesNotAdvertiseLegacySubagentSpawn(t *t
 
 	for _, pat := range []string{
 		"sprawl spawn subagent",
-		`sprawl_spawn({type: "<type>", family: "<family>", prompt: "<task>"})`,
+		`spawn({type: "<type>", family: "<family>", prompt: "<task>"})`,
 	} {
 		if strings.Contains(prompt, pat) {
 			t.Errorf("manager prompt default mode should not advertise legacy subagent path %q", pat)
@@ -1693,17 +1693,17 @@ func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {
 
 	// Must contain MCP tool references
 	required := []string{
-		"sprawl_spawn",
-		"sprawl_send_async",
-		"sprawl_send_interrupt",
-		"sprawl_peek",
-		"sprawl_report_status",
-		"sprawl_merge",
-		"sprawl_retire",
-		"sprawl_delegate",
-		"sprawl_kill",
-		"sprawl_status",
-		"sprawl_handoff",
+		"spawn",
+		"send_async",
+		"send_interrupt",
+		"peek",
+		"report_status",
+		"merge",
+		"retire",
+		"delegate",
+		"kill",
+		"status",
+		"handoff",
 	}
 	for _, tool := range required {
 		if !strings.Contains(got, tool) {

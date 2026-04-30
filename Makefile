@@ -53,7 +53,7 @@ test-notify-tui-e2e:
 	bash scripts/test-notify-tui-e2e.sh
 
 # Opt-in end-to-end regression guard for QUM-329: TUI handoff restart
-# must fire when weave calls `sprawl_handoff` via MCP. Spins up an
+# must fire when weave calls `handoff` via MCP. Spins up an
 # isolated /tmp sandbox, launches `sprawl enter` in a detached tmux
 # pane, attaches a phantom client (QUM-327 workaround), drives weave
 # to call the MCP tool, and asserts handoff-signal fires, the old

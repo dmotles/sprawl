@@ -1,12 +1,12 @@
 ╭──────────────────────────────────────────────╮╭────────────────────────────────────────────────────────────────────────────────────────────────╮╭──────────────────────────────────────────────╮
-│> ● [W] weave (idle)                          ││You: Invoke the sprawl_spawn MCP tool with family=engineering, type=researcher,                 ││Activity — weave                              │
+│> ● [W] weave (idle)                          ││You: Invoke the spawn MCP tool with family=engineering, type=researcher,                 ││Activity — weave                              │
 │                                              ││branch=dmotles/m13                                                                              ││No activity yet.                              │
 │                                              ││                                                                                                ││                                              │
 │                                              ││┌ ✓ ToolSearch                                                                                  ││                                              │
-│                                              │││ {"max_results":1,"query":"select:mcp__sprawl-ops__sprawl_spawn"}                              ││                                              │
+│                                              │││ {"max_results":1,"query":"select:mcp__sprawl__spawn"}                              ││                                              │
 │                                              ││└ Preparing worktree (new branch 'dmotles/m13-ec2-pilot')                                       ││                                              │
 │                                              ││                                                                                                ││                                              │
-│                                              ││┌ ✓ mcp__sprawl-ops__sprawl_spawn                                                               ││                                              │
+│                                              ││┌ ✓ mcp__sprawl__spawn                                                               ││                                              │
 │                                              │││ {"branch":"dmotles/m13-ec2-pilot","family":"engineering","prompt":"standing by for m13        ││                                              │
 │                                              ││validatio                                                                                       ││                                              │
 │                                              ││└                                                                                               ││                                              │
@@ -16,14 +16,14 @@
 │                                              ││                                                                                                ││                                              │
 │                                              ││― Completed in 7725ms, cost $0.1992 ―                                                           ││                                              │
 │                                              ││                                                                                                ││                                              │
-│                                              ││You: Invoke the sprawl_retire MCP tool with agent="ghost" abandon=true. Output only the result. ││                                              │
+│                                              ││You: Invoke the retire MCP tool with agent="ghost" abandon=true. Output only the result. ││                                              │
 │                                              ││Do                                                                                              ││                                              │
 │                                              ││                                                                                                ││                                              │
 │                                              ││┌ ✓ ToolSearch                                                                                  ││                                              │
-│                                              │││ {"max_results":1,"query":"select:mcp__sprawl-ops__sprawl_retire"}                             ││                                              │
+│                                              │││ {"max_results":1,"query":"select:mcp__sprawl__retire"}                             ││                                              │
 │                                              ││└                                                                                               ││                                              │
 │                                              ││                                                                                                ││                                              │
-│                                              ││┌ ✓ mcp__sprawl-ops__sprawl_retire                                                              ││                                              │
+│                                              ││┌ ✓ mcp__sprawl__retire                                                              ││                                              │
 │                                              │││ {"abandon":true,"agent_name":"ghost"}                                                         ││                                              │
 │                                              ││└                                                                                               ││                                              │
 │                                              ││                                                                                                ││                                              │

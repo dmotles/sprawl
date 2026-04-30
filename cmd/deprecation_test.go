@@ -34,13 +34,13 @@ func withDeprecationCapture(t *testing.T, quiet string) *bytes.Buffer {
 func TestDeprecationWarning_EmitsToStderr(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 
-	deprecationWarning("spawn", "sprawl_spawn")
+	deprecationWarning("spawn", "spawn")
 
 	out := buf.String()
 	for _, want := range []string{
 		"warning:",
 		"`sprawl spawn` is deprecated",
-		"Use the sprawl_spawn MCP tool",
+		"Use the spawn MCP tool",
 		"removed in a future release",
 		"SPRAWL_QUIET_DEPRECATIONS=1",
 	} {
@@ -53,7 +53,7 @@ func TestDeprecationWarning_EmitsToStderr(t *testing.T) {
 func TestDeprecationWarning_QuietEnvSuppresses(t *testing.T) {
 	buf := withDeprecationCapture(t, "1")
 
-	deprecationWarning("spawn", "sprawl_spawn")
+	deprecationWarning("spawn", "spawn")
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output with SPRAWL_QUIET_DEPRECATIONS=1, got: %q", buf.String())
@@ -65,7 +65,7 @@ func TestDeprecationWarning_QuietEnvAnyNonEmpty(t *testing.T) {
 	// require "1" specifically.
 	buf := withDeprecationCapture(t, "yes")
 
-	deprecationWarning("spawn", "sprawl_spawn")
+	deprecationWarning("spawn", "spawn")
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output with SPRAWL_QUIET_DEPRECATIONS=yes, got: %q", buf.String())
@@ -75,9 +75,9 @@ func TestDeprecationWarning_QuietEnvAnyNonEmpty(t *testing.T) {
 func TestDeprecationWarning_OnlyOncePerProcess(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 
-	deprecationWarning("spawn", "sprawl_spawn")
-	deprecationWarning("retire", "sprawl_retire")
-	deprecationWarning("kill", "sprawl_kill")
+	deprecationWarning("spawn", "spawn")
+	deprecationWarning("retire", "retire")
+	deprecationWarning("kill", "kill")
 
 	got := strings.Count(buf.String(), "warning:")
 	if got != 1 {
@@ -120,7 +120,7 @@ func TestDeprecationWarning_CustomAndPlainShareGate(t *testing.T) {
 	// only logs once.
 	buf := withDeprecationCapture(t, "")
 
-	deprecationWarning("spawn", "sprawl_spawn")
+	deprecationWarning("spawn", "spawn")
 	deprecationWarningCustom("init", "tmux mode is being removed")
 
 	got := strings.Count(buf.String(), "warning:")

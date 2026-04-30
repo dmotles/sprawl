@@ -9,7 +9,7 @@ import (
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
-// Server implements host.MCPServer for the sprawl-ops MCP server.
+// Server implements host.MCPServer for the sprawl MCP server.
 type Server struct {
 	sup supervisor.Supervisor
 }
@@ -47,7 +47,7 @@ func (s *Server) handleInitialize(id json.RawMessage) (json.RawMessage, error) {
 			"tools": map[string]any{},
 		},
 		"serverInfo": map[string]any{
-			"name":    "sprawl-ops",
+			"name":    "sprawl",
 			"version": "1.0.0",
 		},
 	})
@@ -83,37 +83,37 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 
 func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
-	case "sprawl_spawn":
+	case "spawn":
 		return s.toolSpawn(ctx, args)
-	case "sprawl_status":
+	case "status":
 		return s.toolStatus(ctx)
-	case "sprawl_delegate":
+	case "delegate":
 		return s.toolDelegate(ctx, args)
-	case "sprawl_send_async":
+	case "send_async":
 		return s.toolSendAsync(ctx, args)
-	case "sprawl_send_interrupt":
+	case "send_interrupt":
 		return s.toolSendInterrupt(ctx, args)
-	case "sprawl_peek":
+	case "peek":
 		return s.toolPeek(ctx, args)
-	case "sprawl_report_status":
+	case "report_status":
 		return s.toolReportStatus(ctx, args)
-	case "sprawl_message":
+	case "message":
 		return s.toolMessage(ctx, args)
-	case "sprawl_merge":
+	case "merge":
 		return s.toolMerge(ctx, args)
-	case "sprawl_retire":
+	case "retire":
 		return s.toolRetire(ctx, args)
-	case "sprawl_kill":
+	case "kill":
 		return s.toolKill(ctx, args)
-	case "sprawl_handoff":
+	case "handoff":
 		return s.toolHandoff(ctx, args)
-	case "sprawl_messages_list":
+	case "messages_list":
 		return s.toolMessagesList(ctx, args)
-	case "sprawl_messages_read":
+	case "messages_read":
 		return s.toolMessagesRead(ctx, args)
-	case "sprawl_messages_archive":
+	case "messages_archive":
 		return s.toolMessagesArchive(ctx, args)
-	case "sprawl_messages_peek":
+	case "messages_peek":
 		return s.toolMessagesPeek(ctx)
 	default:
 		// Unknown tools get a JSON-RPC error, not a tool content error
@@ -169,7 +169,7 @@ func (s *Server) toolMessage(ctx context.Context, args json.RawMessage) (string,
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	// Deprecated alias: behaves as sprawl_send_async. Writes Maildir + enqueues
+	// Deprecated alias: behaves as send_async. Writes Maildir + enqueues
 	// harness queue entry. Return a short ack for backwards compatibility.
 	if _, err := s.sup.SendAsync(ctx, p.AgentName, p.Subject, p.Body, "", nil); err != nil {
 		return "", err

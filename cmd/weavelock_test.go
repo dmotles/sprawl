@@ -11,7 +11,7 @@ import (
 func TestAcquireOfflineLifecycle_HoldsWeaveLockUntilRelease(t *testing.T) {
 	sprawlRoot := t.TempDir()
 
-	lock, err := acquireOfflineLifecycle(sprawlRoot, "kill", "sprawl_kill")
+	lock, err := acquireOfflineLifecycle(sprawlRoot, "kill", "kill")
 	if err != nil {
 		t.Fatalf("acquireOfflineLifecycle() error: %v", err)
 	}
@@ -35,11 +35,11 @@ func TestAcquireOfflineLifecycle_FailsClosedWhenWeaveOwnsLock(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = live.Release() })
 
-	_, err = acquireOfflineLifecycle(sprawlRoot, "retire", "sprawl_retire")
+	_, err = acquireOfflineLifecycle(sprawlRoot, "retire", "retire")
 	if err == nil {
 		t.Fatal("expected fail-closed error while live weave owns the lock")
 	}
-	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "sprawl_retire") {
+	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "retire") {
 		t.Fatalf("error = %q, want fail-closed guidance", err)
 	}
 }

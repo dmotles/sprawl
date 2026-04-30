@@ -16,10 +16,10 @@ type retireDeps = agentops.RetireDeps
 // runRetire wraps agentops.Retire, threading the retireNoValidate flag value
 // through at call time (tests still use 7 positional args).
 func runRetire(deps *retireDeps, agentName string, cascade, force, abandon, mergeFirst, yes bool) error {
-	deprecationWarning("retire", "sprawl_retire")
+	deprecationWarning("retire", "retire")
 	if deps != nil {
 		sprawlRoot := deps.Getenv("SPRAWL_ROOT")
-		lock, err := acquireOfflineLifecycle(sprawlRoot, "retire", "sprawl_retire")
+		lock, err := acquireOfflineLifecycle(sprawlRoot, "retire", "retire")
 		if err != nil {
 			return err
 		}
@@ -51,8 +51,8 @@ func init() {
 
 var retireCmd = &cobra.Command{
 	Use:   "retire <agent-name>",
-	Short: "Deprecated offline cleanup; use sprawl enter + sprawl_retire for live runtimes",
-	Long:  "When no weave session is running, fully retire an agent by removing its persisted state and worktree artifacts. If `sprawl enter` is active, use the sprawl_retire MCP tool from the live weave session instead.",
+	Short: "Deprecated offline cleanup; use sprawl enter + retire for live runtimes",
+	Long:  "When no weave session is running, fully retire an agent by removing its persisted state and worktree artifacts. If `sprawl enter` is active, use the retire MCP tool from the live weave session instead.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		return runRetire(resolveRetireDeps(), args[0], retireCascade, retireForce, retireAbandon, retireMerge, retireYes)

@@ -13,10 +13,10 @@ type killDeps = agentops.KillDeps
 // runKill wraps agentops.Kill so the CLI entry point emits its deprecation
 // warning in a single place exercised by both the cobra RunE and tests.
 func runKill(deps *killDeps, agentName string, force bool) error {
-	deprecationWarning("kill", "sprawl_kill")
+	deprecationWarning("kill", "kill")
 	if deps != nil {
 		sprawlRoot := deps.Getenv("SPRAWL_ROOT")
-		lock, err := acquireOfflineLifecycle(sprawlRoot, "kill", "sprawl_kill")
+		lock, err := acquireOfflineLifecycle(sprawlRoot, "kill", "kill")
 		if err != nil {
 			return err
 		}
@@ -36,8 +36,8 @@ func init() {
 
 var killCmd = &cobra.Command{
 	Use:   "kill <agent-name>",
-	Short: "Deprecated offline cleanup; use sprawl enter + sprawl_kill for live runtimes",
-	Long:  "When no weave session is running, mark an agent as killed while preserving its state for inspection. If `sprawl enter` is active, use the sprawl_kill MCP tool from the live weave session instead.",
+	Short: "Deprecated offline cleanup; use sprawl enter + kill for live runtimes",
+	Long:  "When no weave session is running, mark an agent as killed while preserving its state for inspection. If `sprawl enter` is active, use the kill MCP tool from the live weave session instead.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
 		return runKill(resolveKillDeps(), args[0], killForce)

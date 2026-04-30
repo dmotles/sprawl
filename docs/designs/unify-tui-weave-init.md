@@ -11,7 +11,7 @@ The root weave agent has two launch paths today:
 
 Every time the user restarts `sprawl enter`, weave starts with a blank context: no session log persisted, no timeline continuity, no resumable conversation, no handoff consolidation. Meanwhile tmux weave is stateful and self-healing. The two implementations have drifted to the point where "weave" means different things depending on how you entered the system — that is a maintenance trap and a UX regression for anyone who prefers the TUI.
 
-This doc proposes the primary path to converge the two, with the `sprawl-ops` MCP channel as the only mode-specific delta.
+This doc proposes the primary path to converge the two, with the `sprawl` MCP channel as the only mode-specific delta.
 
 ## 1. Side-by-Side Comparison
 
@@ -27,7 +27,7 @@ This doc proposes the primary path to converge the two, with the `sprawl-ops` MC
 | Post-session consolidation | Yes: check `.sprawl/memory/handoff-signal` → `memory.Consolidate` → `memory.UpdatePersistentKnowledge` → clear signal → restart | No. Process exits and that's it. |
 | Restart mechanics | Bash loop around `sprawl _root-session` with exit-code contract (0=restart, 1=retry, 42=shutdown) | One-shot Claude subprocess. TUI has `restartFunc` wired for crash recovery only. |
 | `/handoff` skill | Writes summary via `sprawl handoff` → `memory.WriteSessionSummary` + `memory.WriteHandoffSignal` | Same command is available, but nothing consumes the signal. |
-| MCP `sprawl-ops` | N/A — tmux weave uses the `sprawl` CLI directly | In-process via `sprawlmcp.New(sup)` → `host.MCPBridge` |
+| MCP `sprawl` | N/A — tmux weave uses the `sprawl` CLI directly | In-process via `sprawlmcp.New(sup)` → `host.MCPBridge` |
 | Process structure | Bash → `sprawl _root-session` → Claude (interactive tty) | `sprawl enter` (Go/Bubble Tea) → Claude (stream-json subprocess) |
 | User-facing impact | Full memory, handoff, resume, persistent knowledge | Blank slate every restart |
 

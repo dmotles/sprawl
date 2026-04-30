@@ -138,7 +138,7 @@ type SignalMsg struct{}
 type RestartSessionMsg struct{}
 
 // HandoffRequestedMsg signals that the weave subprocess invoked the
-// sprawl_handoff MCP tool. The App responds by tearing down the current
+// handoff MCP tool. The App responds by tearing down the current
 // bridge and triggering the same restart path EOF takes. Supervisors fire a
 // channel event that `cmd/enter.go` converts into this msg via tea.Program.Send.
 type HandoffRequestedMsg struct{}

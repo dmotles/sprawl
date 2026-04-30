@@ -69,7 +69,7 @@ as they land. Pre-existing entries are considered "already seen" and are not
 replayed; only new entries appearing after watch starts are printed.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		deprecationWarning("status", "sprawl_status")
+		deprecationWarning("status", "status")
 		deps := resolveStatusDeps()
 		if statusWatch {
 			return runStatusWatch(cmd.Context(), deps, defaultWatchPoll)

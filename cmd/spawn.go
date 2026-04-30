@@ -15,14 +15,14 @@ type spawnDeps = agentops.SpawnDeps
 // deprecation warning in a single place that both the cobra RunE and
 // existing unit tests exercise.
 func runSpawn(_ *spawnDeps, _, _, _, _ string) error {
-	deprecationWarning("spawn", "sprawl_spawn")
-	return fmt.Errorf("standalone `sprawl spawn` is no longer supported after the same-process cutover; start `sprawl enter` and use the `sprawl_spawn` MCP tool")
+	deprecationWarning("spawn", "spawn")
+	return fmt.Errorf("standalone `sprawl spawn` is no longer supported after the same-process cutover; start `sprawl enter` and use the `spawn` MCP tool")
 }
 
 var spawnAgentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Deprecated: use sprawl enter + sprawl_spawn",
-	Long:  "The standalone spawn CLI no longer starts child runtimes. Start `sprawl enter` and use the `sprawl_spawn` MCP tool from the live weave session instead.",
+	Short: "Deprecated: use sprawl enter + spawn",
+	Long:  "The standalone spawn CLI no longer starts child runtimes. Start `sprawl enter` and use the `spawn` MCP tool from the live weave session instead.",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runSpawn(nil, spawnFamily, spawnType, spawnPrompt, spawnBranch)
 	},
@@ -54,8 +54,8 @@ func init() {
 
 var spawnCmd = &cobra.Command{
 	Use:   "spawn",
-	Short: "Deprecated: use sprawl enter + sprawl_spawn",
-	Long:  "The standalone spawn CLI no longer starts child runtimes. Start `sprawl enter` and use the `sprawl_spawn` MCP tool from the live weave session instead.",
+	Short: "Deprecated: use sprawl enter + spawn",
+	Long:  "The standalone spawn CLI no longer starts child runtimes. Start `sprawl enter` and use the `spawn` MCP tool from the live weave session instead.",
 	RunE: func(_ *cobra.Command, _ []string) error {
 		return runSpawn(nil, spawnFamily, spawnType, spawnPrompt, spawnBranch)
 	},

@@ -1,11 +1,11 @@
 package sprawlmcp
 
-// toolDefinitions returns the MCP tool definitions for the sprawl-ops server.
+// toolDefinitions returns the MCP tool definitions for the sprawl MCP server.
 func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
-			"name":        "sprawl_spawn",
-			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via sprawl_delegate or messages via sprawl_send_async.",
+			"name":        "spawn",
+			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via delegate or messages via send_async.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -32,7 +32,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_status",
+			"name":        "status",
 			"description": "List all agents with their current state, type, family, and branch.",
 			"inputSchema": map[string]any{
 				"type":       "object",
@@ -40,7 +40,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_delegate",
+			"name":        "delegate",
 			"description": "Assign a tracked work item (task) to an existing agent. The task is queued and the agent picks it up when ready.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -58,7 +58,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_send_async",
+			"name":        "send_async",
 			"description": "Queue an asynchronous message for a peer or child agent. The recipient reads it on its next yield (between turns). Does not interrupt. Persisted; survives crashes. Returns the queue message_id and queued_at.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -89,7 +89,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_send_interrupt",
+			"name":        "send_interrupt",
 			"description": "Interrupt a descendant agent mid-turn and inject this message as a user turn. Gated to parent→descendants only (§8.5). Use sparingly — this is the \"I forgot to tell you something important\" channel. Target resumes its previous work unless the body directs it to stop.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -115,7 +115,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_peek",
+			"name":        "peek",
 			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, and the last N protocol events (tool calls, text, results). Use to answer \"what is this agent doing?\" before sending a message.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -133,7 +133,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_report_status",
+			"name":        "report_status",
 			"description": "Report this agent's status to its parent. Canonical status channel (replaces ad-hoc `sprawl report`). Persists to agent state and delivers an async notification to the parent. Use at every meaningful step — not just at task end.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -156,8 +156,8 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_message",
-			"description": "DEPRECATED: use sprawl_send_async. Kept as an alias that writes to the recipient's Maildir and harness queue, then returns a short acknowledgement.",
+			"name":        "message",
+			"description": "DEPRECATED: use send_async. Kept as an alias that writes to the recipient's Maildir and harness queue, then returns a short acknowledgement.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -178,7 +178,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_merge",
+			"name":        "merge",
 			"description": "Squash-merge an agent's branch into the current branch. The agent is NOT retired — it stays alive and can continue working.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -200,7 +200,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_retire",
+			"name":        "retire",
 			"description": "Shut down an agent. Optionally merge its work first, abandon (delete) its branch, or cascade through descendants. Default refuses if the agent has unmerged commits or active children; pass `merge`, `abandon`, or `cascade` to override.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -230,7 +230,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_handoff",
+			"name":        "handoff",
 			"description": "Weave-only: persist a structured session summary and hand off to a fresh weave session. The host tears down the current subprocess and starts a new one with consolidated memory. Call this at the end of a session instead of `sprawl handoff` via bash.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -244,7 +244,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_messages_list",
+			"name":        "messages_list",
 			"description": "List messages in the caller's mailbox. Scoped to the caller's agent identity — cannot read other agents' mailboxes. Returns newest-first summaries (id, from, subject, timestamp, read-state). Example: {\"filter\":\"unread\",\"limit\":20}.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -262,7 +262,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_messages_read",
+			"name":        "messages_read",
 			"description": "Fetch the full body of a message by ID (short or long prefix). Auto-marks the message read if it was unread (mirrors `sprawl messages read`). Scoped to the caller's mailbox. Example: {\"id\":\"abc\"}.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -276,7 +276,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_messages_archive",
+			"name":        "messages_archive",
 			"description": "Archive a single message by ID (short or long prefix). Moves the file from new/ or cur/ into archive/. Scoped to the caller's mailbox. Example: {\"id\":\"abc\"}.",
 			"inputSchema": map[string]any{
 				"type": "object",
@@ -290,7 +290,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_messages_peek",
+			"name":        "messages_peek",
 			"description": "Cheap \"do I have mail?\" probe — returns the caller's unread count and up to 5 newest-first preview summaries. Scoped to the caller's mailbox. Takes no arguments.",
 			"inputSchema": map[string]any{
 				"type":       "object",
@@ -298,7 +298,7 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "sprawl_kill",
+			"name":        "kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{
 				"type": "object",

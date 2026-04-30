@@ -10,7 +10,7 @@ func TestSpawn_StandaloneCLIRejectedAfterSameProcessCutover(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected standalone sprawl spawn rejection")
 	}
-	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "sprawl_spawn") {
-		t.Fatalf("error = %q, want sprawl enter + sprawl_spawn guidance", err)
+	if !strings.Contains(err.Error(), "sprawl enter") || !strings.Contains(err.Error(), "spawn") {
+		t.Fatalf("error = %q, want sprawl enter + spawn guidance", err)
 	}
 }

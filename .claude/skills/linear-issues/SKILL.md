@@ -181,11 +181,11 @@ save_issue:
 
 When an agent is working an issue, it should report status to its parent at each
 meaningful step — not just at task end. The canonical status channel is the
-`sprawl_report_status` MCP tool (preferred over the older `sprawl report` CLI
-and the deprecated `sprawl_message` tool):
+`report_status` MCP tool (preferred over the older `sprawl report` CLI
+and the deprecated `message` tool):
 
 ```
-sprawl_report_status({
+report_status({
   state: "working" | "blocked" | "complete" | "failure",
   summary: "<=160 char one-liner>",
   detail: "<optional markdown>"
@@ -200,14 +200,14 @@ in the TUI and in the parent's notification stream.
 
 Prefer the MCP tools over the `sprawl messages send` CLI when MCP is available:
 
-- `sprawl_send_async({to, subject, body})` — default messaging channel. Queues
+- `send_async({to, subject, body})` — default messaging channel. Queues
   an async message the recipient reads on its next yield. Does NOT interrupt.
   Use for questions, context-sharing, and "fyi" updates.
-- `sprawl_send_interrupt({to, subject, body, resume_hint?})` — **rare**.
+- `send_interrupt({to, subject, body, resume_hint?})` — **rare**.
   Parent->descendant only. Interrupts the target mid-turn. Reserve for
   genuinely urgent corrections ("I forgot to tell you: use the other API").
-- `sprawl_peek({agent, tail?})` — inspect a child/peer's recent activity and
+- `peek({agent, tail?})` — inspect a child/peer's recent activity and
   last report. **Use this before** sending a child "are you done?" — only
-  `sprawl_send_async` if peek is inconclusive.
-- `sprawl_message(...)` — **deprecated** alias for `sprawl_send_async`. Do not
+  `send_async` if peek is inconclusive.
+- `message(...)` — **deprecated** alias for `send_async`. Do not
   use in new code.

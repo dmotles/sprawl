@@ -44,7 +44,7 @@ This launches **weave** (the root agent) inside the sprawl TUI. Give it a goal a
 ## Usage
 
 - **Navigate agents**: Use the TUI tree panel to watch agents work; child agents still run in tmux windows you can attach to.
-- **Context handoff**: When weave's context window fills up, ask weave to call the `sprawl_handoff` MCP tool. The TUI auto-restarts the session with memories of what happened.
+- **Context handoff**: When weave's context window fills up, ask weave to call the `handoff` MCP tool. The TUI auto-restarts the session with memories of what happened.
 - **Shut down**: Ask weave to make sure no agents are running, then exit the TUI.
 
 ## State

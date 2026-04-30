@@ -103,7 +103,7 @@ func TestSession_InitializeIncludesMCPServers(t *testing.T) {
 	mt := newMockTransport()
 
 	cfg := SessionConfig{
-		MCPServerNames: []string{"sprawl-ops"},
+		MCPServerNames: []string{"sprawl"},
 	}
 	sess := NewSession(mt, cfg)
 
@@ -135,8 +135,8 @@ func TestSession_InitializeIncludesMCPServers(t *testing.T) {
 			servers, ok := request["sdkMcpServers"].([]any)
 			if !ok {
 				t.Error("sdkMcpServers not present or not an array")
-			} else if len(servers) != 1 || servers[0] != "sprawl-ops" {
-				t.Errorf("sdkMcpServers = %v, want [sprawl-ops]", servers)
+			} else if len(servers) != 1 || servers[0] != "sprawl" {
+				t.Errorf("sdkMcpServers = %v, want [sprawl]", servers)
 			}
 
 			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)

@@ -164,14 +164,14 @@ func TestSession_InitializeTreatsEOFAsSuccessAndSendsInitSpec(t *testing.T) {
 		servers, ok := request["sdkMcpServers"].([]any)
 		if !ok {
 			t.Error("sdkMcpServers not present")
-		} else if len(servers) != 1 || servers[0] != "sprawl-ops" {
-			t.Errorf("sdkMcpServers = %v, want [sprawl-ops]", servers)
+		} else if len(servers) != 1 || servers[0] != "sprawl" {
+			t.Errorf("sdkMcpServers = %v, want [sprawl]", servers)
 		}
 
 		close(transport.recvCh)
 	}()
 
-	if err := session.Initialize(ctx, InitSpec{MCPServerNames: []string{"sprawl-ops"}}); err != nil {
+	if err := session.Initialize(ctx, InitSpec{MCPServerNames: []string{"sprawl"}}); err != nil {
 		t.Fatalf("Initialize() error: %v", err)
 	}
 }
@@ -304,14 +304,14 @@ func TestSession_StartTurnRoutesMCPMessagesThroughToolBridge(t *testing.T) {
 	go func() {
 		<-transport.sendCh
 
-		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl-ops","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
+		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
 		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
 		close(transport.recvCh)
 	}()
 
 	events, err := session.StartTurn(ctx, "list tools", TurnSpec{
 		Init: InitSpec{
-			MCPServerNames: []string{"sprawl-ops"},
+			MCPServerNames: []string{"sprawl"},
 			ToolBridge:     bridge,
 		},
 	})
@@ -320,8 +320,8 @@ func TestSession_StartTurnRoutesMCPMessagesThroughToolBridge(t *testing.T) {
 	}
 	drainMessages(events)
 
-	if bridge.serverName != "sprawl-ops" {
-		t.Errorf("bridge server = %q, want sprawl-ops", bridge.serverName)
+	if bridge.serverName != "sprawl" {
+		t.Errorf("bridge server = %q, want sprawl", bridge.serverName)
 	}
 	if bridge.payload == "" {
 		t.Error("bridge payload should not be empty")

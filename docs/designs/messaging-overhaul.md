@@ -105,9 +105,9 @@ injection and interrupt; we don't need to invent new transport mechanics.
 
 ### 3.4 MCP server (`internal/sprawlmcp/{server,tools}.go`)
 
-Registered as `sprawl-ops` via `host.MCPBridge`. Exposes `sprawl_spawn`,
-`sprawl_status`, `sprawl_delegate`, `sprawl_message`, `sprawl_merge`,
-`sprawl_retire`, `sprawl_kill`, `sprawl_handoff`. `sprawl_message` today is
+Registered as `sprawl` via `host.MCPBridge`. Exposes `spawn`,
+`status`, `delegate`, `message`, `merge`,
+`retire`, `kill`, `handoff`. `message` today is
 functionally identical to `sprawl messages send` — it writes to Maildir and
 fires the same `.wake` notification as the CLI path.
 
@@ -166,13 +166,13 @@ the harness calls `Session.Interrupt` before flushing.
 
 ### 4.2 MCP tool surface
 
-Four new tools on `sprawl-ops`. `sprawl_message` is kept as a deprecated
-alias for `sprawl_send_async` during the migration window (§7).
+Four new tools on `sprawl`. `message` is kept as a deprecated
+alias for `send_async` during the migration window (§7).
 
-#### 4.2.1 `sprawl_send_async`
+#### 4.2.1 `send_async`
 
 ```
-name:        sprawl_send_async
+name:        send_async
 description: Queue an asynchronous message for a peer or child agent. The
              recipient will receive it on its next yield (between turns).
              Does not interrupt. Persisted; survives crashes.
@@ -193,10 +193,10 @@ Semantics:
 3. Return immediately. No tmux. No sender-side blocking beyond the
    persist+enqueue.
 
-#### 4.2.2 `sprawl_send_interrupt`
+#### 4.2.2 `send_interrupt`
 
 ```
-name:        sprawl_send_interrupt
+name:        send_interrupt
 description: Interrupt the target agent mid-turn and inject this message as
              a user turn. The target then resumes what it was doing unless
              the body explicitly directs it to stop. Use sparingly — this is
@@ -223,10 +223,10 @@ Semantics:
 5. `delivered_at` is set after the harness confirms the inject; `interrupted`
    is true iff the session was actively mid-turn at flush time.
 
-#### 4.2.3 `sprawl_report_status`
+#### 4.2.3 `report_status`
 
 ```
-name:        sprawl_report_status
+name:        report_status
 description: Report status to this agent's parent. Structured, first-class.
              Replaces ad-hoc `sprawl report` for MCP-aware agents.
 params:
@@ -246,10 +246,10 @@ Semantics:
 4. Emit a **status-tick event** on the harness event bus (§4.4) so the TUI
    and `sprawl status` can surface it live without polling.
 
-#### 4.2.4 `sprawl_peek`
+#### 4.2.4 `peek`
 
 ```
-name:        sprawl_peek
+name:        peek
 description: Inspect a child or peer agent's recent activity. Returns the
              last N protocol events (tool calls, text, results) plus the
              latest status report. Use to answer "what is this agent doing?"
@@ -293,7 +293,7 @@ Each queue entry:
 }
 ```
 
-- **Writers** (`sprawl_send_async`, `sprawl_send_interrupt`, and a shim for
+- **Writers** (`send_async`, `send_interrupt`, and a shim for
   CLI `sprawl messages send`) append under `pending/` and fsync. An atomic
   rename via `pending/.tmp-{id}` → `pending/{seq}-{class}-{id}.json` gives
   crash-safe delivery.
@@ -422,12 +422,12 @@ Three surfaces built on §4.4 and §4.2.4:
 2. **`sprawl status --watch`** and **`sprawl status <agent>`** — the CLI
    grows a `--watch` flag that tails the activity ring, and a positional
    argument that dumps the last 50 entries + `last_report` for one agent.
-3. **`sprawl_peek` MCP tool** — parent agents can query children
+3. **`peek` MCP tool** — parent agents can query children
    programmatically ("what's qa doing right now?").
 
 ### 4.7 Status reporting
 
-`sprawl_report_status` becomes the canonical channel. The existing `sprawl
+`report_status` becomes the canonical channel. The existing `sprawl
 report` CLI remains (for bash-scripted agents and tests) but is reimplemented
 on top of the same supervisor method, so there is exactly one persistence
 path.
@@ -440,12 +440,12 @@ yellow blocked, red failure, grey idle) + the ≤160-char `summary` from
 
 Agent system prompts need a short section teaching the model to prefer:
 
-- `sprawl_send_async` over `sprawl messages send` when MCP is available;
-- `sprawl_send_interrupt` — **rare** — only for genuinely urgent parent-side
+- `send_async` over `sprawl messages send` when MCP is available;
+- `send_interrupt` — **rare** — only for genuinely urgent parent-side
   corrections;
-- `sprawl_report_status` at each meaningful step (sub-agents reporting to
+- `report_status` at each meaningful step (sub-agents reporting to
   their parent), not just at task end;
-- `sprawl_peek` before asking a child "are you done?" — peek first, then
+- `peek` before asking a child "are you done?" — peek first, then
   send-async only if peek is inconclusive.
 
 ---
@@ -463,7 +463,7 @@ Agent system prompts need a short section teaching the model to prefer:
   │     async     │              │    │                           │
   └───────┬───────┘              ▼    │                           │
           │         ┌─────────────────────────────┐               │
-          │         │ sprawl-ops MCP (in weave    │               │
+          │         │ sprawl MCP (in weave    │               │
           │         │ harness process)             │               │
           │         │  1. persist Maildir          │               │
           │         │  2. append queue/pending/…   │               │
@@ -483,7 +483,7 @@ Agent system prompts need a short section teaching the model to prefer:
 
 ```
   weave (parent)                      ghost (child, mid-turn)
-  sprawl_send_interrupt ─────▶  MCP server enqueues
+  send_interrupt ─────▶  MCP server enqueues
                                      ├─ persist
                                      ├─ queue/pending/ {class:interrupt}
                                      └─ ghost harness signal
@@ -507,18 +507,18 @@ Each is a reasonable standalone PR. Ordering reflects dependencies.
 2. **Activity ring.** `internal/agentloop/activity.go`; hook into
    `tmuxObserver.OnMessage`; persistence to `activity.ndjson`; supervisor
    method `PeekActivity`.
-3. **MCP tools: `sprawl_send_async` + `sprawl_peek`.** Wire into existing
-   `sprawl-ops` server. `sprawl_send_async` writes to the new queue;
-   `sprawl_peek` reads the activity ring. Keep `sprawl_message` working as
+3. **MCP tools: `send_async` + `peek`.** Wire into existing
+   `sprawl` server. `send_async` writes to the new queue;
+   `peek` reads the activity ring. Keep `message` working as
    an alias.
 4. **Agent loop: flush from new queue, retire `.wake`/inbox-step.** Replace
    the inbox-delivery phase with a `flushQueue` that drains `queue/pending/`
    between turns. Existing Maildir messages still work (queue carries
    pointers to them).
-5. **MCP tool: `sprawl_send_interrupt` + `Session.Interrupt` wiring.**
+5. **MCP tool: `send_interrupt` + `Session.Interrupt` wiring.**
    Implement the interrupt-inject dance in §4.5.2. Add a test that exercises
    a full mid-turn interrupt against a stub transport.
-6. **MCP tool: `sprawl_report_status`; TUI status chip.** Move `cmd/report`
+6. **MCP tool: `report_status`; TUI status chip.** Move `cmd/report`
    onto the supervisor method; add the status chip rendering in
    `internal/tui`.
 7. **TUI activity panel.** New pane on the right; subscribes to activity
@@ -531,7 +531,7 @@ Each is a reasonable standalone PR. Ordering reflects dependencies.
    using it for notifications.
 10. **System prompt updates + skill docs.** Teach agents the new surface.
 11. **Migration shim removal.** After two release cycles, drop the
-    `sprawl_message` alias and the `.wake`/`.poke` sentinel reader.
+    `message` alias and the `.wake`/`.poke` sentinel reader.
 
 ---
 
@@ -542,12 +542,12 @@ Phased; no flag-day rewrite.
 **Phase 0 (prep).** Land items 1–2 above. No agent-visible change; purely
 infrastructure. All existing code paths still work.
 
-**Phase 1 (dual-delivery).** Land items 3–4. `sprawl_send_async` writes to
+**Phase 1 (dual-delivery).** Land items 3–4. `send_async` writes to
 **both** the new queue and, for compatibility, the old `.wake` sentinel. The
 agent loop's `flushQueue` supersedes the old inbox step, but the loop still
-honors `.wake` as a wake source. `sprawl_message` is kept as an alias. No
+honors `.wake` as a wake source. `message` is kept as an alias. No
 behavior regression: agents that still use `sprawl messages send` or
-`sprawl_message` continue to work.
+`message` continue to work.
 
 **Phase 2 (interrupt + reporting).** Land items 5–6. The interrupt tool is
 opt-in via system-prompt guidance — existing agents won't start using it
@@ -583,7 +583,7 @@ discarded. We can:
   interrupt-reply turn completes, the harness automatically re-injects
   the original user turn. Cleanest semantically but risks double-execution
   of side effects the model has already started.
-- **(c) Offer a `resume_mode` parameter** on `sprawl_send_interrupt`:
+- **(c) Offer a `resume_mode` parameter** on `send_interrupt`:
   `"soft"` (a) vs. `"hard"` (b). Punt the choice to the sender.
 
 Recommendation: start with (a); add (c) if field experience shows model
@@ -595,7 +595,7 @@ the sender-supplied `resume_hint` (falling back to a generic "your previous
 task" when omitted) and relies on Claude's preserved conversation history to
 resume. Option (c) is deferred to a follow-up issue if empirical drift
 shows up in practice. The `resume_hint` parameter is already plumbed through
-`sprawl_send_interrupt` → `SendInterrupt` → queue entry tag (`resume_hint:…`)
+`send_interrupt` → `SendInterrupt` → queue entry tag (`resume_hint:…`)
 → frame template, so upgrading to (c) later is purely additive.
 
 ### 8.2 Queue signalling
@@ -626,13 +626,13 @@ PII in prompts). Propose: summary-only by default, `SPRAWL_ACTIVITY_VERBOSE=1`
 records `Raw` bytes too. Redact a small denylist (`Authorization`,
 `ANTHROPIC_API_KEY`, etc.) in summary generation.
 
-### 8.5 Should `sprawl_send_interrupt` be available to child agents?
+### 8.5 Should `send_interrupt` be available to child agents?
 
 "Children interrupting their parent weave" could be useful ("I found
 something urgent, look now") but is also a recipe for user-experience
 disaster when three children all interrupt weave mid-conversation. Options:
 
-- Restrict `sprawl_send_interrupt` to parent → descendants by default;
+- Restrict `send_interrupt` to parent → descendants by default;
   gate peer/child-to-parent on an explicit `--allow-upstream-interrupt`
   config.
 - Or: allow but rate-limit (at most 1 upstream interrupt / 30 s per agent).

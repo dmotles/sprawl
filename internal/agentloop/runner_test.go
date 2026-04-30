@@ -442,7 +442,7 @@ func TestRunnerCapabilities_SupportsToolBridgeWhenInitSpecSet(t *testing.T) {
 			}, nil
 		},
 		Getpid:   func() int { return 1234 },
-		InitSpec: backend.InitSpec{MCPServerNames: []string{"sprawl-ops"}},
+		InitSpec: backend.InitSpec{MCPServerNames: []string{"sprawl"}},
 	}
 
 	runner, err := StartRunner(context.Background(), deps, "finn")
