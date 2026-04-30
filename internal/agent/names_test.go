@@ -138,6 +138,59 @@ func TestAllocateName_EngineerFallbackUsesRunnerPrefix(t *testing.T) {
 	}
 }
 
+// TestAllocateName_SkipsExistingDirectories pins the contract that AllocateName
+// treats a stale agent directory (no JSON) as "name in use", to prevent
+// collisions where DeleteAgent or a crashed spawn left behind <name>/ but no
+// <name>.json (QUM-404).
+func TestAllocateName_SkipsExistingDirectories(t *testing.T) {
+	t.Run("skips dirs with no JSON in main pool", func(t *testing.T) {
+		dir := t.TempDir()
+		// Create stale directories (no JSON) for the first two engineer names.
+		for _, name := range EngineerNames[:2] {
+			if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		name, err := AllocateName(dir, "engineer")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if name == EngineerNames[0] || name == EngineerNames[1] {
+			t.Fatalf("got %q, expected name to skip stale dirs %q and %q",
+				name, EngineerNames[0], EngineerNames[1])
+		}
+		if name != EngineerNames[2] {
+			t.Errorf("got %q, want %q", name, EngineerNames[2])
+		}
+	})
+
+	t.Run("fallback also skips stale dirs", func(t *testing.T) {
+		dir := t.TempDir()
+		// Mark every engineer name as used (json files).
+		for _, n := range EngineerNames {
+			if err := os.WriteFile(filepath.Join(dir, n+".json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Create a stale directory (no JSON) for runner-1.
+		if err := os.MkdirAll(filepath.Join(dir, "runner-1"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		name, err := AllocateName(dir, "engineer")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if name == "runner-1" {
+			t.Fatalf("expected fallback to skip stale runner-1 dir, got %q", name)
+		}
+		if name != "runner-2" {
+			t.Errorf("got %q, want %q", name, "runner-2")
+		}
+	})
+}
+
 func TestNamePoolNoDuplicates(t *testing.T) {
 	seen := make(map[string]bool)
 	for _, name := range NamePool {

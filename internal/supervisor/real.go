@@ -279,6 +279,9 @@ func (r *Real) Merge(_ context.Context, agentName, message string, noValidate bo
 }
 
 func (r *Real) Retire(ctx context.Context, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+	if err := r.reconcileStateFromRegistry(agentName); err != nil {
+		return err
+	}
 	if runtime, ok := r.startedRuntime(agentName); ok {
 		children, err := r.listDirectChildren(agentName)
 		if err != nil {
@@ -778,6 +781,50 @@ func (r *Real) startedRuntime(agentName string) (*AgentRuntime, bool) {
 	return runtime, true
 }
 
+// reconcileStateFromRegistry handles the QUM-404 divergence case: when the
+// supervisor's runtime registry knows the agent but the on-disk JSON has
+// gone missing, retire (and other state-driven flows) cannot proceed because
+// agentops.Retire calls state.LoadAgent which fails with ENOENT. We
+// synthesize an AgentState from the runtime snapshot and persist it so the
+// downstream retireFn sees a valid state file. If neither source has the
+// agent, return a clear "not found" error rather than silently no-oping.
+func (r *Real) reconcileStateFromRegistry(agentName string) error {
+	if _, err := state.LoadAgent(r.sprawlRoot, agentName); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	runtime, ok := r.runtimeRegistry.Get(agentName)
+	if !ok {
+		return fmt.Errorf("agent %q not found: no on-disk state and no runtime registry entry", agentName)
+	}
+	snap := runtime.Snapshot()
+	synth := &state.AgentState{
+		Name:              snap.Name,
+		Type:              snap.Type,
+		Family:            snap.Family,
+		Parent:            snap.Parent,
+		Branch:            snap.Branch,
+		Worktree:          snap.Worktree,
+		Status:            snap.Status,
+		SessionID:         snap.SessionID,
+		TreePath:          snap.TreePath,
+		CreatedAt:         snap.CreatedAt,
+		LastReportType:    snap.LastReport.Type,
+		LastReportMessage: snap.LastReport.Message,
+		LastReportAt:      snap.LastReport.At,
+		LastReportState:   snap.LastReport.State,
+		LastReportDetail:  snap.LastReport.Detail,
+	}
+	if synth.Status == "" {
+		synth.Status = "active"
+	}
+	if err := state.SaveAgent(r.sprawlRoot, synth); err != nil {
+		return fmt.Errorf("reconciling state for %q from registry: %w", agentName, err)
+	}
+	return nil
+}
+
 func (r *Real) rollbackSpawnArtifacts(agentName string) {
 	r.runtimeRegistry.Remove(agentName)
 	agentState, err := state.LoadAgent(r.sprawlRoot, agentName)
@@ -789,8 +836,8 @@ func (r *Real) rollbackSpawnArtifacts(agentName string) {
 			_ = r.spawnDeps.GitBranchDelete(r.sprawlRoot, agentState.Branch)
 		}
 	}
+	// state.DeleteAgent now removes the per-agent directory as well (QUM-404).
 	_ = state.DeleteAgent(r.sprawlRoot, agentName)
-	_ = os.RemoveAll(filepath.Join(state.AgentsDir(r.sprawlRoot), agentName))
 }
 
 func (r *Real) listDirectChildren(parentName string) ([]*state.AgentState, error) {
