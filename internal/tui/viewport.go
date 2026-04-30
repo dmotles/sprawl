@@ -46,6 +46,10 @@ const (
 	// a mail glyph and the theme's SystemText style so it's visually
 	// unmistakable that the system spoke, not the user. (QUM-338)
 	MessageSystem
+	// MessageBanner is a session banner (ASCII art + tagline) that lives in
+	// the messages slice so it survives renderAndUpdate() cycles. Rendered
+	// verbatim without markdown processing.
+	MessageBanner
 )
 
 // MessageEntry is a single item in the conversation buffer.
@@ -203,9 +207,17 @@ func (m *ViewportModel) SetSize(w, h int) {
 	}
 }
 
-// SetContent replaces the viewport content.
-func (m *ViewportModel) SetContent(s string) {
-	m.vp.SetContent(s)
+// AppendBanner adds a session banner to the conversation buffer. The banner
+// is stored as a MessageEntry so it survives renderAndUpdate() cycles —
+// unlike the old SetContent approach which was silently overwritten by the
+// first streaming message.
+func (m *ViewportModel) AppendBanner(text string) {
+	m.messages = append(m.messages, MessageEntry{
+		Type:     MessageBanner,
+		Content:  text,
+		Complete: true,
+	})
+	m.renderAndUpdate()
 }
 
 // AppendUserMessage adds a user message to the conversation buffer.
@@ -546,6 +558,8 @@ func (m *ViewportModel) renderMessages() string {
 			block.WriteString(msg.Content)
 		case MessageSystem:
 			block.WriteString(m.theme.SystemText.Render("✉ " + msg.Content))
+		case MessageBanner:
+			block.WriteString(msg.Content)
 		}
 		if selecting && i >= selLo && i <= selHi {
 			sb.WriteString(addSelectionGutter(block.String(), m.theme.AccentText.Render(SelectionGutter)))

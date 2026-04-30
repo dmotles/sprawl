@@ -185,7 +185,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 	if bridge != nil {
 		initialSessionID = shortSessionID(bridge.SessionID())
 	}
-	agentBuffers[rootAgent].vp.SetContent(SessionBanner(initialSessionID, version))
+	agentBuffers[rootAgent].vp.AppendBanner(SessionBanner(initialSessionID, version))
 
 	app := AppModel{
 		tree:          NewTreeModel(&theme),
@@ -782,7 +782,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// restarts since the model usually doesn't change.
 		m.statusBar.SetTokenUsage(0)
 		// Show the session banner with the new session ID (QUM-390).
-		root.SetContent(SessionBanner(shortID, m.version))
+		root.AppendBanner(SessionBanner(shortID, m.version))
 		m.statusBar.SetSessionID(shortID)
 		m.setTurnState(TurnIdle)
 		var cmds []tea.Cmd

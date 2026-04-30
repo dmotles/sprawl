@@ -24,7 +24,14 @@ func TestAppModel_ToolResultMsg_RoutesToRootViewport(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	rootMsgs := app.rootVP().GetMessages()
+	allMsgs := app.rootVP().GetMessages()
+	// Filter out banner entries to find tool call messages.
+	var rootMsgs []MessageEntry
+	for _, e := range allMsgs {
+		if e.Type != MessageBanner {
+			rootMsgs = append(rootMsgs, e)
+		}
+	}
 	if len(rootMsgs) != 1 || rootMsgs[0].Type != MessageToolCall {
 		t.Fatalf("root viewport entries = %+v, want one MessageToolCall", rootMsgs)
 	}
@@ -40,7 +47,13 @@ func TestAppModel_ToolResultMsg_RoutesToRootViewport(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	rootMsgs = app.rootVP().GetMessages()
+	allMsgs = app.rootVP().GetMessages()
+	rootMsgs = nil
+	for _, e := range allMsgs {
+		if e.Type != MessageBanner {
+			rootMsgs = append(rootMsgs, e)
+		}
+	}
 	if rootMsgs[0].Pending {
 		t.Errorf("Pending = true, want false after ToolResultMsg")
 	}
@@ -70,7 +83,11 @@ func TestAppModel_ToolResultMsg_NoMatchingEntry_NoOp(t *testing.T) {
 	updated, _ = app.Update(ToolResultMsg{ToolID: "nope", Content: "x"})
 	app = updated.(AppModel)
 
-	if got := len(app.rootVP().GetMessages()); got != 0 {
-		t.Errorf("root viewport entries = %d, want 0 (orphan tool result should not append)", got)
+	// Only the initial banner should be present — the orphan tool result
+	// should not have appended anything.
+	for _, e := range app.rootVP().GetMessages() {
+		if e.Type != MessageBanner {
+			t.Errorf("unexpected non-banner entry after orphan tool result: %+v", e)
+		}
 	}
 }
