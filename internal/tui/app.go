@@ -336,6 +336,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// QUM-380: Esc during an active turn sends an interrupt request to
+		// Claude. Checked after help/select/pendingSubmit so those actions
+		// take priority. The protocol confirms the interrupt asynchronously
+		// via SessionResultMsg/SessionErrorMsg; we show "Interrupting..."
+		// feedback immediately.
+		if msg.Code == tea.KeyEscape && (m.turnState == TurnStreaming || m.turnState == TurnThinking) && m.bridge != nil {
+			m.rootVP().AppendStatus("Interrupting...")
+			return m, m.bridge.Interrupt()
+		}
+
 		// Delegate to active panel.
 		return m.delegateKey(msg)
 
@@ -675,6 +685,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.SetSessionID(shortID)
 		m.setTurnState(TurnIdle)
 		return m, m.bridge.Initialize()
+
+	case InterruptResultMsg:
+		// QUM-380: the interrupt request was dispatched; show the outcome.
+		// Do NOT force TurnIdle here — the protocol will deliver a
+		// SessionResultMsg or SessionErrorMsg when Claude actually stops.
+		if msg.Err != nil {
+			m.rootVP().AppendStatus(fmt.Sprintf("Interrupt failed: %v", msg.Err))
+		} else {
+			m.rootVP().AppendStatus("Interrupt sent — waiting for turn to end")
+		}
+		return m, nil
 
 	case TurnStateMsg:
 		m.setTurnState(msg.State)

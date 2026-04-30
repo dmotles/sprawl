@@ -40,7 +40,7 @@ func (m HelpModel) View() string {
 		{"j / k (select)", "Move selection cursor"},
 		{"y (select)", "Yank selection to clipboard (raw markdown)"},
 		{"Ctrl+C", "Quit"},
-		{"Esc", "Dismiss help / exit select mode / clear queued message"},
+		{"Esc", "Dismiss help / exit select / clear queue / interrupt turn"},
 	}
 
 	// Find max key width for alignment.

@@ -2772,3 +2772,188 @@ func TestAppModel_InputAlwaysEditable_MidTurn(t *testing.T) {
 		t.Errorf("post-cycle SubmitMsg must queue (regression QUM-340 issue B); got pendingSubmit=%q", app.pendingSubmit)
 	}
 }
+
+// --- QUM-380: ESC interrupt during streaming/thinking ---
+
+func TestAppModel_Esc_InterruptsDuringStreaming(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+	app.statusBar.SetTurnState(TurnStreaming)
+
+	updated, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	if cmd == nil {
+		t.Fatal("ESC during streaming should return a cmd (interrupt)")
+	}
+	// The cmd should call bridge.Interrupt which calls mock.Interrupt.
+	result := cmd()
+	if !mock.interruptCalled {
+		t.Error("ESC during streaming should call Interrupt on the session")
+	}
+	// Should return an InterruptResultMsg.
+	if _, ok := result.(InterruptResultMsg); !ok {
+		t.Errorf("interrupt cmd should return InterruptResultMsg, got %T", result)
+	}
+}
+
+func TestAppModel_Esc_InterruptsDuringThinking(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnThinking
+	app.statusBar.SetTurnState(TurnThinking)
+
+	updated, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	if cmd == nil {
+		t.Fatal("ESC during thinking should return a cmd (interrupt)")
+	}
+	result := cmd()
+	if !mock.interruptCalled {
+		t.Error("ESC during thinking should call Interrupt on the session")
+	}
+	if _, ok := result.(InterruptResultMsg); !ok {
+		t.Errorf("interrupt cmd should return InterruptResultMsg, got %T", result)
+	}
+}
+
+func TestAppModel_Esc_NoInterruptDuringIdle(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnIdle
+
+	_, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	// When idle with no pendingSubmit, ESC should delegate to panel (no interrupt).
+	if mock.interruptCalled {
+		t.Error("ESC during idle should NOT call Interrupt")
+	}
+	_ = cmd
+}
+
+func TestAppModel_Esc_PendingSubmitTakesPriority(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+	app.pendingSubmit = "queued"
+	app.input.SetPendingPreview("queued")
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	// Pending submit clear takes priority over interrupt.
+	if app.pendingSubmit != "" {
+		t.Errorf("ESC with pendingSubmit should clear it first, got %q", app.pendingSubmit)
+	}
+	if mock.interruptCalled {
+		t.Error("ESC with pendingSubmit should NOT call Interrupt (clear queue takes priority)")
+	}
+}
+
+func TestAppModel_Esc_HelpDismissTakesPriority(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+	app.showHelp = true
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	if app.showHelp {
+		t.Error("ESC with help visible should dismiss help")
+	}
+	if mock.interruptCalled {
+		t.Error("ESC with help visible should NOT call Interrupt")
+	}
+}
+
+func TestAppModel_Esc_SelectModeTakesPriority(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	// Seed viewport with messages so select mode can activate.
+	app.viewportFor("weave").AppendAssistantChunk("some text")
+	app.viewportFor("weave").FinalizeAssistantMessage()
+	app.turnState = TurnStreaming
+	app.activePanel = PanelViewport
+	app.updateFocus()
+	// Enter select mode.
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
+	app = updated.(AppModel)
+	if !app.observedVP().IsSelecting() {
+		t.Fatal("precondition: should be in select mode")
+	}
+
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	if app.observedVP().IsSelecting() {
+		t.Error("ESC in select mode should exit select mode")
+	}
+	if mock.interruptCalled {
+		t.Error("ESC in select mode should NOT call Interrupt")
+	}
+}
+
+func TestAppModel_InterruptResultMsg_ShowsStatus(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(InterruptResultMsg{})
+	app = updated.(AppModel)
+
+	found := false
+	for _, m := range app.viewportFor("weave").GetMessages() {
+		if m.Type == MessageStatus && strings.Contains(m.Content, "Interrupt") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("InterruptResultMsg should append a status message about the interrupt")
+	}
+}
+
+func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(InterruptResultMsg{Err: fmt.Errorf("interrupt failed")})
+	app = updated.(AppModel)
+
+	found := false
+	for _, m := range app.viewportFor("weave").GetMessages() {
+		if m.Type == MessageStatus && strings.Contains(m.Content, "interrupt failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("InterruptResultMsg with error should show the error in status")
+	}
+}
+
+func TestAppModel_Esc_NoBridgeNoInterrupt(t *testing.T) {
+	app := newTestAppModel(t)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = resized.(AppModel)
+	app.turnState = TurnStreaming
+
+	_, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	// No bridge → no interrupt cmd, should not panic.
+	if cmd != nil {
+		t.Error("ESC during streaming with no bridge should not return a cmd")
+	}
+}

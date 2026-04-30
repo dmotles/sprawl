@@ -219,6 +219,13 @@ type ChildTranscriptMsg struct {
 	Err       error
 }
 
+// InterruptResultMsg signals the outcome of a bridge.Interrupt() call triggered
+// by the user pressing ESC during a streaming/thinking turn (QUM-380). Err is
+// non-nil if the interrupt request failed at the transport level.
+type InterruptResultMsg struct {
+	Err error
+}
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new

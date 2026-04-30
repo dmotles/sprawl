@@ -16,6 +16,7 @@ import (
 type BridgeSession interface {
 	Initialize(ctx context.Context) error
 	SendUserMessage(ctx context.Context, prompt string) (<-chan *protocol.Message, error)
+	Interrupt(ctx context.Context) error
 	Close() error
 }
 
@@ -98,6 +99,15 @@ func (b *Bridge) WaitForEvent() tea.Cmd {
 		case <-b.ctx.Done():
 			return SessionErrorMsg{Err: b.ctx.Err()}
 		}
+	}
+}
+
+// Interrupt returns a tea.Cmd that sends an interrupt request to the session.
+// The result is delivered as InterruptResultMsg.
+func (b *Bridge) Interrupt() tea.Cmd {
+	return func() tea.Msg {
+		err := b.session.Interrupt(b.ctx)
+		return InterruptResultMsg{Err: err}
 	}
 }
 

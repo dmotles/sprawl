@@ -384,6 +384,10 @@ func (s *enterBridgeSession) SendUserMessage(ctx context.Context, prompt string)
 	return s.session.StartTurn(ctx, prompt, backend.TurnSpec{Init: s.initSpec})
 }
 
+func (s *enterBridgeSession) Interrupt(ctx context.Context) error {
+	return s.session.Interrupt(ctx)
+}
+
 func (s *enterBridgeSession) Close() error {
 	closeErr := s.session.Close()
 	killErr := s.session.Kill()
