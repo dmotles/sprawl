@@ -54,6 +54,10 @@ type SessionSpec struct {
 	PermissionMode  string
 	AllowedTools    []string
 	DisallowedTools []string
+	// Agents carries the JSON payload for claude's `--agents` flag (Claude
+	// Code sub-agent definitions). Empty means the flag is omitted. See
+	// internal/agent.TDDSubAgentsJSON() for the engineer payload (QUM-408).
+	Agents          string
 	AdditionalEnv   map[string]string
 	Resume          bool
 	Stderr          io.Writer

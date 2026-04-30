@@ -80,6 +80,7 @@ func (a *Adapter) Start(ctx context.Context, spec backend.SessionSpec) (backend.
 		SystemPromptFile: spec.PromptFile,
 		AllowedTools:     spec.AllowedTools,
 		DisallowedTools:  spec.DisallowedTools,
+		Agents:           spec.Agents,
 		Resume:           spec.Resume,
 	}.BuildArgs()
 
