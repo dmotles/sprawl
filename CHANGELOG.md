@@ -31,7 +31,6 @@ not strictly semver while we are pre-1.0.
   | `sprawl tree` | `status` (or `peek` for one agent) |
   | `sprawl handoff` | `handoff` |
   | `sprawl init` | (no MCP equivalent; `sprawl enter` replaces tmux mode) |
-  | `sprawl poke` | (no MCP equivalent; slated for deletion) |
   | `sprawl color` | (no MCP equivalent; slated for deletion) |
 
   Set `SPRAWL_QUIET_DEPRECATIONS=1` in any environment that intentionally

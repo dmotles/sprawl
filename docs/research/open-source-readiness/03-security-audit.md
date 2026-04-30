@@ -34,7 +34,6 @@ A name like `../../etc` could escape the `.sprawl/` directory for reads, writes,
 
 | File | Line | Operation | Code |
 |------|------|-----------|------|
-| `cmd/poke.go` | 56 | Write poke file | `filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")` |
 | `cmd/logs.go` | 59 | Read logs dir | `filepath.Join(sprawlRoot, ".sprawl", "agents", agentName, "logs")` |
 | `internal/state/state.go` | 51 | Write state | `filepath.Join(dir, agent.Name+".json")` |
 | `internal/state/state.go` | 60 | Read state | `filepath.Join(AgentsDir(sprawlRoot), name+".json")` |
