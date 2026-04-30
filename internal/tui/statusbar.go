@@ -23,6 +23,10 @@ type StatusBarModel struct {
 	// work (FinalizeHandoff + Prepare). Rendered as "restart Ns" so the
 	// user sees a live elapsed counter instead of a frozen UI (QUM-260).
 	restartElapsed time.Duration
+	// restartLabel overrides the "restart" prefix in the elapsed indicator.
+	// When set (e.g. "consolidating timeline"), the status bar renders
+	// "consolidating timeline 12s" instead of "restart 12s". (QUM-391)
+	restartLabel string
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -56,7 +60,11 @@ func (m StatusBarModel) View() string {
 
 	var parts []string
 	if m.restartElapsed > 0 {
-		parts = append(parts, fmt.Sprintf("restart %ds", int(m.restartElapsed.Seconds())))
+		label := m.restartLabel
+		if label == "" {
+			label = "restart"
+		}
+		parts = append(parts, fmt.Sprintf("%s %ds", label, int(m.restartElapsed.Seconds())))
 	}
 	if m.sessionCostUsd > 0 {
 		parts = append(parts, fmt.Sprintf("$%.4f", m.sessionCostUsd))
@@ -130,6 +138,12 @@ func (m *StatusBarModel) SetTokenUsage(inputTokens int) {
 // (QUM-385)
 func (m *StatusBarModel) SetContextLimit(limit int) {
 	m.contextLimit = limit
+}
+
+// SetRestartLabel overrides the "restart" prefix in the elapsed indicator.
+// Pass empty string to restore the default "restart" label. (QUM-391)
+func (m *StatusBarModel) SetRestartLabel(label string) {
+	m.restartLabel = label
 }
 
 // SetRestartElapsed updates the restart-in-flight indicator (QUM-260).

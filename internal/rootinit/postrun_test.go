@@ -16,7 +16,7 @@ func TestFinalizeHandoff_NoSignal_LogsSessionEnded(t *testing.T) {
 	deps := newTestDeps(t)
 	var buf strings.Builder
 
-	err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf)
+	err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf, nil)
 	if err != nil {
 		t.Fatalf("FinalizeHandoff error: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestFinalizeHandoff_Signal_CallsConsolidateAndClears(t *testing.T) {
 		return nil
 	}
 
-	err := FinalizeHandoff(context.Background(), deps, "/fake/root", io.Discard)
+	err := FinalizeHandoff(context.Background(), deps, "/fake/root", io.Discard, nil)
 	if err != nil {
 		t.Fatalf("FinalizeHandoff error: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestFinalizeHandoff_Signal_ConsolidateError_DoesNotFail(t *testing.T) {
 		return fmt.Errorf("consolidation failed")
 	}
 	var buf strings.Builder
-	err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf)
+	err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf, nil)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -116,7 +116,7 @@ func TestFinalizeHandoff_Signal_UpdatePKError_DoesNotFail(t *testing.T) {
 		return fmt.Errorf("knowledge update failed")
 	}
 	var buf strings.Builder
-	err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf)
+	err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf, nil)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -150,7 +150,7 @@ func TestFinalizeHandoff_Signal_PassesSummaryAndTimelineToPK(t *testing.T) {
 		return nil
 	}
 
-	err := FinalizeHandoff(context.Background(), deps, "/fake/root", io.Discard)
+	err := FinalizeHandoff(context.Background(), deps, "/fake/root", io.Discard, nil)
 	if err != nil {
 		t.Fatalf("FinalizeHandoff error: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestFinalizeHandoff_LogPrefix_TUIDoesNotPrintRootLoop(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	if err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf); err != nil {
+	if err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf, nil); err != nil {
 		t.Fatalf("FinalizeHandoff error: %v", err)
 	}
 	got := buf.String()
@@ -190,7 +190,7 @@ func TestFinalizeHandoff_LogPrefix_NoSignalPathRespectsPrefix(t *testing.T) {
 	deps := newTestDeps(t)
 	deps.LogPrefix = "[enter]"
 	var buf strings.Builder
-	if err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf); err != nil {
+	if err := FinalizeHandoff(context.Background(), deps, "/fake/root", &buf, nil); err != nil {
 		t.Fatalf("FinalizeHandoff error: %v", err)
 	}
 	got := buf.String()
@@ -209,7 +209,7 @@ func TestFinalizeHandoff_NoSignal_DoesNotConsolidate(t *testing.T) {
 		consolidateCalled = true
 		return nil
 	}
-	err := FinalizeHandoff(context.Background(), deps, "/fake/root", io.Discard)
+	err := FinalizeHandoff(context.Background(), deps, "/fake/root", io.Discard, nil)
 	if err != nil {
 		t.Fatalf("FinalizeHandoff error: %v", err)
 	}

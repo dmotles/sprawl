@@ -71,7 +71,7 @@ type Deps struct {
 	// pipeline completes. The default wiring uses StartBackgroundConsolidation
 	// (flock-protected goroutine). Tests swap in a synchronous implementation
 	// so they can assert ordering deterministically.
-	BackgroundConsolidate func(sprawlRoot string, stdout io.Writer) <-chan struct{}
+	BackgroundConsolidate func(sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{}
 }
 
 // DefaultDeps wires Deps against real implementations from agent, memory,
@@ -104,8 +104,8 @@ func DefaultDeps() *Deps {
 		MemoryModel:               memory.DefaultMemoryModel,
 		LoadMemoryModel:           defaultLoadMemoryModel,
 	}
-	d.BackgroundConsolidate = func(sprawlRoot string, stdout io.Writer) <-chan struct{} {
-		return StartBackgroundConsolidation(d, sprawlRoot, stdout)
+	d.BackgroundConsolidate = func(sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{} {
+		return StartBackgroundConsolidation(d, sprawlRoot, stdout, events)
 	}
 	return d
 }

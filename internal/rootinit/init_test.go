@@ -20,9 +20,9 @@ import (
 // runs the pipeline inline and returns an already-closed channel. Tests
 // use this to keep consolidation ordering deterministic — the production
 // implementation fires a goroutine (see QUM-282).
-func syncBackgroundConsolidate(deps *Deps) func(sprawlRoot string, stdout io.Writer) <-chan struct{} {
-	return func(sprawlRoot string, stdout io.Writer) <-chan struct{} {
-		runConsolidationPipeline(context.Background(), deps, sprawlRoot, stdout)
+func syncBackgroundConsolidate(deps *Deps) func(sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{} {
+	return func(sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{} {
+		runConsolidationPipeline(context.Background(), deps, sprawlRoot, stdout, events)
 		ch := make(chan struct{})
 		close(ch)
 		return ch

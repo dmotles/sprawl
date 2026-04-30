@@ -33,7 +33,7 @@ import (
 // completes, the partially-consolidated sessions remain in
 // .sprawl/memory/sessions and are picked up automatically by the next
 // handoff's consolidation run.
-func FinalizeHandoff(_ context.Context, deps *Deps, sprawlRoot string, stdout io.Writer) error {
+func FinalizeHandoff(_ context.Context, deps *Deps, sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) error {
 	prefix := deps.LogPrefix
 
 	// Make sure any prior in-flight consolidation has finished before we
@@ -48,7 +48,7 @@ func FinalizeHandoff(_ context.Context, deps *Deps, sprawlRoot string, stdout io
 		// Fire-and-forget: the returned channel is ignored here so the
 		// caller returns to the user (launches the next session) without
 		// blocking on two LLM round-trips.
-		_ = deps.BackgroundConsolidate(sprawlRoot, stdout)
+		_ = deps.BackgroundConsolidate(sprawlRoot, stdout, events)
 
 		_ = deps.RemoveFile(handoffPath)
 		_ = deps.WriteLastSessionID(sprawlRoot, "")
@@ -67,7 +67,7 @@ func FinalizeHandoff(_ context.Context, deps *Deps, sprawlRoot string, stdout io
 // there is no temporal ordering between them). This is deliberate: PK is
 // a multi-session distillation and a one-handoff skew on the timeline it
 // ingests has negligible impact on the output. See QUM-283 for context.
-func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string, stdout io.Writer) {
+func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) {
 	prefix := deps.LogPrefix
 
 	// Pre-read the latest session body + existing timeline once, up front.
@@ -106,6 +106,7 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 
 	var eg errgroup.Group
 	eg.Go(func() error {
+		sendConsolidationEvent(events, ConsolidationEvent{Phase: "Consolidating timeline..."})
 		sp := startSpinner(stdout, prefix, "consolidating timeline...")
 		defer sp.stop()
 		if err := deps.Consolidate(ctx, sprawlRoot, deps.NewCLIInvoker(), &tlCfg, nil); err != nil {
@@ -114,6 +115,7 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		return nil
 	})
 	eg.Go(func() error {
+		sendConsolidationEvent(events, ConsolidationEvent{Phase: "Updating persistent knowledge..."})
 		sp := startSpinner(stdout, prefix, "updating persistent knowledge...")
 		defer sp.stop()
 		if err := deps.UpdatePersistentKnowledge(ctx, sprawlRoot, deps.NewCLIInvoker(), &pkCfg, sessionSummary, timelineBullets); err != nil {
