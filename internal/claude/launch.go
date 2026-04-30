@@ -34,10 +34,11 @@ type LaunchOpts struct {
 
 // BuildArgs constructs the claude CLI argument slice from the opts fields.
 //
-// When Resume is true, the resumed transcript carries its own session ID and
-// system prompt, so BuildArgs emits only `--resume <SessionID>` and omits
-// `--session-id`, `--system-prompt-file`, and `--system-prompt`. Passing any
-// of those alongside `--resume` causes Claude Code to reject the invocation.
+// When Resume is true, BuildArgs emits `--resume <SessionID>` and omits
+// `--session-id` (since --resume supplies its own session context).
+// System prompt flags (--system-prompt-file, --system-prompt) are always
+// emitted when set, regardless of Resume, so the resumed session picks up
+// the current system prompt.
 func (o LaunchOpts) BuildArgs() []string {
 	var args []string
 
@@ -66,12 +67,10 @@ func (o LaunchOpts) BuildArgs() []string {
 		args = append(args, "--session-id", o.SessionID)
 	}
 
-	if !o.Resume {
-		if o.SystemPromptFile != "" {
-			args = append(args, "--system-prompt-file", o.SystemPromptFile)
-		} else if o.SystemPrompt != "" {
-			args = append(args, "--system-prompt", o.SystemPrompt)
-		}
+	if o.SystemPromptFile != "" {
+		args = append(args, "--system-prompt-file", o.SystemPromptFile)
+	} else if o.SystemPrompt != "" {
+		args = append(args, "--system-prompt", o.SystemPrompt)
 	}
 
 	for _, t := range o.Tools {
