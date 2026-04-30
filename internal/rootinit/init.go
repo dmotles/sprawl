@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
@@ -24,11 +25,10 @@ const (
 // mode-specific claude.LaunchOpts.
 //
 // When Resume is true the prior session's transcript is still live on
-// Claude's side. The caller should launch with `--resume SessionID` and
-// MUST NOT pass `--system-prompt-file` or `--session-id` (the
-// `claude.LaunchOpts.BuildArgs` helper enforces this automatically).
-// PromptPath is empty in the resume case and no new last-session-id is
-// written.
+// Claude's side. The caller should launch with `--resume SessionID`.
+// PromptPath is set to the existing SYSTEM.md if one was written by a
+// prior fresh start, so the resumed session picks up the current system
+// prompt. No new last-session-id is written.
 type PreparedSession struct {
 	Resume     bool     // if true, launch via --resume SessionID
 	PromptPath string   // path to persisted SYSTEM.md (empty when Resume==true)
@@ -78,8 +78,18 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		if !alreadySummarized {
 			// Resume path: prior session is still live on Claude's side.
 			fmt.Fprintf(stdout, "%s resuming session %s\n", prefix, prevSessionID)
+
+			// Point at the existing SYSTEM.md written by a prior fresh start
+			// so the resumed session picks up the current system prompt.
+			var promptPath string
+			existingPrompt := filepath.Join(sprawlRoot, ".sprawl", "agents", rootName, "SYSTEM.md")
+			if _, err := deps.ReadFile(existingPrompt); err == nil {
+				promptPath = existingPrompt
+			}
+
 			ps := &PreparedSession{
 				Resume:     true,
+				PromptPath: promptPath,
 				SessionID:  prevSessionID,
 				Model:      DefaultModel,
 				RootTools:  RootTools,
