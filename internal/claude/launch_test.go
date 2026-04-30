@@ -221,9 +221,12 @@ func TestBuildArgs_Resume(t *testing.T) {
 			t.Errorf("expected no --session-id flag when Resume=true, got args %v (index %d)", args, i)
 		}
 	}
+
+	// --system-prompt SHOULD still be emitted alongside --resume.
+	assertContains(t, args, "--system-prompt", "prompt")
 }
 
-func TestBuildArgs_Resume_OmitsSystemPromptFile(t *testing.T) {
+func TestBuildArgs_Resume_KeepsSystemPromptFile(t *testing.T) {
 	args := LaunchOpts{
 		SessionID:        "sess-42",
 		SystemPromptFile: "/tmp/SYSTEM.md",
@@ -231,17 +234,10 @@ func TestBuildArgs_Resume_OmitsSystemPromptFile(t *testing.T) {
 	}.BuildArgs()
 
 	assertContains(t, args, "--resume", "sess-42")
-	for _, a := range args {
-		if a == "--system-prompt-file" {
-			t.Errorf("expected no --system-prompt-file when Resume=true, got %v", args)
-		}
-		if a == "--system-prompt" {
-			t.Errorf("expected no --system-prompt when Resume=true, got %v", args)
-		}
-	}
+	assertContains(t, args, "--system-prompt-file", "/tmp/SYSTEM.md")
 }
 
-func TestBuildArgs_Resume_OmitsSystemPrompt(t *testing.T) {
+func TestBuildArgs_Resume_KeepsSystemPrompt(t *testing.T) {
 	args := LaunchOpts{
 		SessionID:    "sess-42",
 		SystemPrompt: "inline",
@@ -249,11 +245,7 @@ func TestBuildArgs_Resume_OmitsSystemPrompt(t *testing.T) {
 	}.BuildArgs()
 
 	assertContains(t, args, "--resume", "sess-42")
-	for _, a := range args {
-		if a == "--system-prompt" {
-			t.Errorf("expected no --system-prompt when Resume=true, got %v", args)
-		}
-	}
+	assertContains(t, args, "--system-prompt", "inline")
 }
 
 func TestBuildArgs_NoResume_KeepsSessionIDAndPromptFile(t *testing.T) {
@@ -329,13 +321,14 @@ func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 
 	args := opts.BuildArgs()
 
-	// Note: --session-id and --system-prompt are intentionally NOT expected here
-	// — Resume=true suppresses them (see TestBuildArgs_Resume*).
+	// Note: --session-id is intentionally NOT expected here — Resume=true
+	// suppresses it. But --system-prompt IS emitted alongside --resume.
 	expected := map[string]bool{
 		"-p": false, "--input-format": false, "--output-format": false,
 		"--verbose": false, "--model": false, "--effort": false,
 		"--permission-mode": false,
 		"--resume":          false,
+		"--system-prompt":   false,
 	}
 	for _, arg := range args {
 		if _, ok := expected[arg]; ok {
