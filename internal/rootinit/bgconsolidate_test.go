@@ -2,6 +2,7 @@ package rootinit
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -40,8 +41,13 @@ func TestStartBackgroundConsolidation_RunsPipelineAndReleasesLock(t *testing.T) 
 		t.Error("expected deps.Consolidate to be called by the goroutine")
 	}
 
-	// Lockfile should still exist (we don't delete it), but flock should be
-	// released — WaitForBackgroundConsolidation must return quickly.
+	// Lockfile should be cleaned up after goroutine finishes.
+	lockPath := consolidatingLockPath(root)
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Errorf("expected lockfile to be removed after consolidation, but stat returned: %v", err)
+	}
+
+	// WaitForBackgroundConsolidation should return immediately (no lockfile).
 	start := time.Now()
 	WaitForBackgroundConsolidation(root, 2*time.Second, io.Discard, "[test]")
 	if elapsed := time.Since(start); elapsed > time.Second {
@@ -183,6 +189,33 @@ func TestWaitForBackgroundConsolidation_BlocksUntilGoroutineReleasesFlock(t *tes
 		t.Fatal("Wait did not return after goroutine finished")
 	}
 	<-done
+}
+
+// TestStartBackgroundConsolidation_RemovesLockfileOnError verifies the
+// lockfile is cleaned up even when the consolidation pipeline fails.
+func TestStartBackgroundConsolidation_RemovesLockfileOnError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	deps := newTestDeps(t)
+	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		return errors.New("simulated pipeline failure")
+	}
+
+	done := StartBackgroundConsolidation(deps, root, io.Discard)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background consolidation did not complete within 5s")
+	}
+
+	lockPath := consolidatingLockPath(root)
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Errorf("expected lockfile to be removed after failed consolidation, but stat returned: %v", err)
+	}
 }
 
 // TestWaitForBackgroundConsolidation_TimesOutAndProceeds verifies the

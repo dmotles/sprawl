@@ -98,6 +98,7 @@ func StartBackgroundConsolidation(deps *Deps, sprawlRoot string, stdout io.Write
 
 	go func() {
 		defer close(done)
+		defer func() { _ = os.Remove(path) }()
 		defer func() { _ = fl.Unlock() }()
 		sendConsolidationEvent(events, ConsolidationEvent{Phase: "consolidation started"})
 		start := time.Now()
