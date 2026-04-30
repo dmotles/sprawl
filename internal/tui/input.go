@@ -3,19 +3,22 @@ package tui
 import (
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 )
 
-// InputModel wraps a textinput for the bottom input panel.
+// maxInputLines caps how tall the input textarea can grow.
+const maxInputLines = 10
+
+// InputModel wraps a textarea for the bottom input panel.
 type InputModel struct {
-	ti       textinput.Model
+	ta       textarea.Model
 	theme    *Theme
 	width    int
 	disabled bool
 
 	// pendingPreview is a short preview of the queued submit (QUM-340). When
-	// non-empty the View() renders a dim indicator alongside the textinput
+	// non-empty the View() renders a dim indicator alongside the textarea
 	// signalling that an Enter while the agent was busy stashed a message that
 	// will auto-submit when the turn finalizes.
 	pendingPreview string
@@ -23,10 +26,17 @@ type InputModel struct {
 
 // NewInputModel creates an input model with a placeholder prompt.
 func NewInputModel(theme *Theme) InputModel {
-	ti := textinput.New()
-	ti.Placeholder = "Type a message..."
+	ta := textarea.New()
+	ta.Placeholder = "Type a message..."
+	ta.Prompt = ""
+	ta.ShowLineNumbers = false
+	ta.CharLimit = 0
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
+	ta.MaxHeight = maxInputLines
+	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
 	return InputModel{
-		ti:    ti,
+		ta:    ta,
 		theme: theme,
 	}
 }
@@ -39,30 +49,31 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 		}
 		// Intercept `/` as the very first character of an empty input: open
 		// the command palette rather than inserting the literal slash. `/`
-		// mid-text falls through and is inserted by textinput normally.
-		if keyMsg.Code == '/' && m.ti.Value() == "" {
+		// mid-text falls through and is inserted by textarea normally.
+		if keyMsg.Code == '/' && m.ta.Value() == "" {
 			return m, func() tea.Msg { return OpenPaletteMsg{} }
 		}
-		if keyMsg.Code == tea.KeyEnter {
-			text := strings.TrimSpace(m.ti.Value())
+		// Plain Enter (no shift) submits the message.
+		if keyMsg.Code == tea.KeyEnter && keyMsg.Mod&tea.ModShift == 0 {
+			text := strings.TrimSpace(m.ta.Value())
 			if text != "" {
-				m.ti.SetValue("")
+				m.ta.SetValue("")
 				return m, func() tea.Msg { return SubmitMsg{Text: text} }
 			}
 			return m, nil
 		}
 	}
 	var cmd tea.Cmd
-	m.ti, cmd = m.ti.Update(msg)
+	m.ta, cmd = m.ta.Update(msg)
 	return m, cmd
 }
 
 // View renders the input field. When a pending submit is queued (QUM-340),
-// a dim "⏸ queued: <preview>" suffix is appended on the same line; the
-// textinput's width is reduced via SetPendingPreview so the two co-exist
+// a dim "⏸ queued: <preview>" suffix is appended on the first line; the
+// textarea's width is reduced via SetPendingPreview so the two co-exist
 // without wrapping.
 func (m InputModel) View() string {
-	base := m.ti.View()
+	base := m.ta.View()
 	if m.pendingPreview == "" {
 		return base
 	}
@@ -84,14 +95,14 @@ func queuedIndicator(text string) string {
 }
 
 // SetWidth updates the input width. When a pending preview is set, the
-// textinput receives the remaining width after the indicator's space so the
+// textarea receives the remaining width after the indicator's space so the
 // two render side-by-side without wrapping (QUM-340).
 func (m *InputModel) SetWidth(w int) {
 	m.width = w
-	m.ti.SetWidth(m.textInputWidth())
+	m.ta.SetWidth(m.textInputWidth())
 }
 
-// textInputWidth returns the width budget the textinput should receive,
+// textInputWidth returns the width budget the textarea should receive,
 // shrinking by the indicator's footprint when a queued preview is active.
 func (m *InputModel) textInputWidth() int {
 	if m.pendingPreview == "" {
@@ -106,10 +117,10 @@ func (m *InputModel) textInputWidth() int {
 }
 
 // SetPendingPreview sets the queued-submit indicator text. Empty string clears
-// it. Re-applies width so the textinput re-allocates room for the suffix.
+// it. Re-applies width so the textarea re-allocates room for the suffix.
 func (m *InputModel) SetPendingPreview(text string) {
 	m.pendingPreview = text
-	m.ti.SetWidth(m.textInputWidth())
+	m.ta.SetWidth(m.textInputWidth())
 }
 
 // PendingPreview returns the current queued-submit indicator text.
@@ -117,20 +128,25 @@ func (m *InputModel) PendingPreview() string { return m.pendingPreview }
 
 // Focus activates the input for typing.
 func (m *InputModel) Focus() tea.Cmd {
-	return m.ti.Focus()
+	return m.ta.Focus()
 }
 
 // Blur deactivates the input.
 func (m *InputModel) Blur() {
-	m.ti.Blur()
+	m.ta.Blur()
+}
+
+// Height returns the current height of the textarea in rows.
+func (m *InputModel) Height() int {
+	return m.ta.Height()
 }
 
 // SetDisabled enables or disables the input.
 func (m *InputModel) SetDisabled(disabled bool) {
 	m.disabled = disabled
 	if disabled {
-		m.ti.Placeholder = "Thinking..."
+		m.ta.Placeholder = "Thinking..."
 	} else {
-		m.ti.Placeholder = "Type a message..."
+		m.ta.Placeholder = "Type a message..."
 	}
 }

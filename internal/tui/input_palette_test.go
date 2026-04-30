@@ -21,8 +21,8 @@ func TestInputModel_SlashOnEmptyEmitsOpenPaletteMsg(t *testing.T) {
 		t.Fatalf("'/' on empty input returned %T, want OpenPaletteMsg", msg)
 	}
 	// Must not insert `/` into the buffer.
-	if m.ti.Value() != "" {
-		t.Errorf("input value = %q, want empty (palette-trigger '/' should not be inserted)", m.ti.Value())
+	if m.ta.Value() != "" {
+		t.Errorf("input value = %q, want empty (palette-trigger '/' should not be inserted)", m.ta.Value())
 	}
 }
 
@@ -30,7 +30,7 @@ func TestInputModel_SlashMidTextInsertsLiterally(t *testing.T) {
 	m := newTestInputModel(t)
 	_ = m.Focus()
 
-	m.ti.SetValue("hello")
+	m.ta.SetValue("hello")
 
 	updated, cmd := m.Update(tea.KeyPressMsg{Code: '/'})
 	m = updated
@@ -66,7 +66,7 @@ func TestInputModel_LeadingSpaceSlashCommandSubmitsTrimmed(t *testing.T) {
 	m := newTestInputModel(t)
 	_ = m.Focus()
 
-	m.ti.SetValue(" /handoff")
+	m.ta.SetValue(" /handoff")
 
 	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
