@@ -166,6 +166,15 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 		}
 	}
 
+	// Pre-flight dirty worktree check: must run before any state mutation
+	// so that a failure leaves the agent state file untouched.
+	if agentState.Worktree != "" && !agentState.Subagent && !force {
+		statusOutput, err := deps.GitStatus(agentState.Worktree)
+		if err == nil && statusOutput != "" {
+			return fmt.Errorf("agent %s has uncommitted changes in worktree; commit first or use --force to discard", agentName)
+		}
+	}
+
 	// Crash-safe checkpoint: mark as "retiring"
 	agentState.Status = "retiring"
 	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {

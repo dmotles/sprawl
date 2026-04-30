@@ -135,8 +135,8 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("expected state file to remain: %v", loadErr)
 	}
-	if agentState.Status != "retiring" {
-		t.Fatalf("status = %q, want retiring", agentState.Status)
+	if agentState.Status != "active" {
+		t.Fatalf("status = %q, want active (state should be unchanged on precondition failure)", agentState.Status)
 	}
 }
 
