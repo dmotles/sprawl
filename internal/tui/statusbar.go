@@ -89,9 +89,11 @@ func (m *StatusBarModel) SetTurnState(state TurnState) {
 	m.turnState = state
 }
 
-// SetTurnCost updates the cumulative session cost.
+// SetTurnCost updates the session cost. The incoming cost is session-cumulative
+// (total_cost_usd from Claude's result message), so we replace rather than
+// accumulate to avoid double-counting across turns. (QUM-366)
 func (m *StatusBarModel) SetTurnCost(cost float64) {
-	m.sessionCostUsd += cost
+	m.sessionCostUsd = cost
 }
 
 // SetAgentCount updates the displayed agent count.

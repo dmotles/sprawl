@@ -522,6 +522,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
 		}
 		m.setTurnState(TurnIdle)
+		var costCmd tea.Cmd
+		if msg.TotalCostUsd > 0 && m.sprawlRoot != "" && m.rootAgent != "" {
+			costCmd = persistCostCmd(m.sprawlRoot, m.rootAgent, msg.TotalCostUsd)
+		}
 		// QUM-340: auto-fire any queued submit by re-dispatching a SubmitMsg
 		// through the same code path as a real Enter. Clear the slot + the
 		// indicator before dispatching so re-entry sees a clean state.
@@ -529,9 +533,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			queued := m.pendingSubmit
 			m.pendingSubmit = ""
 			m.input.SetPendingPreview("")
-			return m, sendMsgCmd(SubmitMsg{Text: queued})
+			return m, tea.Batch(costCmd, sendMsgCmd(SubmitMsg{Text: queued}))
 		}
-		return m, nil
+		return m, costCmd
 
 	case SessionErrorMsg:
 		// Transport EOF is the normal end-of-session signal (clean exit or
@@ -1356,5 +1360,20 @@ func scheduleChildTranscriptTick(sprawlRoot, homeDir, name string, interval time
 	return func() tea.Msg {
 		time.Sleep(interval)
 		return readChildTranscript(sprawlRoot, homeDir, name)
+	}
+}
+
+// persistCostCmd writes the session cost to the agent's state file. Fire-and-
+// forget: errors are swallowed because cost display is best-effort. (QUM-366)
+func persistCostCmd(sprawlRoot, agentName string, totalCostUsd float64) tea.Cmd {
+	return func() tea.Msg {
+		agent, err := state.LoadAgent(sprawlRoot, agentName)
+		if err != nil {
+			return nil
+		}
+		agent.TotalCostUsd = totalCostUsd
+		agent.LastCostUpdateAt = time.Now().UTC().Format(time.RFC3339)
+		_ = state.SaveAgent(sprawlRoot, agent)
+		return nil
 	}
 }

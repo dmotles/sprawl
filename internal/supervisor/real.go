@@ -207,6 +207,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			LastReportMessage: a.LastReportMessage,
 			LastReportSummary: a.LastReportMessage,
 			LastReportDetail:  a.LastReportDetail,
+			TotalCostUsd:      a.TotalCostUsd,
 			ProcessAlive:      processAliveByName[a.Name],
 		})
 	}

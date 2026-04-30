@@ -40,6 +40,7 @@ type TreeNode struct {
 	Unread            int
 	LastReportState   string // working, blocked, complete, failure, ""
 	LastReportSummary string
+	TotalCostUsd      float64
 }
 
 // TreeModel is the agent tree panel displaying live agent hierarchy.
@@ -163,11 +164,15 @@ func (m TreeModel) View() string {
 		indent := strings.Repeat("  ", node.Depth)
 		icon := typeIcon(node.Type)
 		dot := m.theme.ReportDot(node.LastReportState)
+		var costTag string
+		if node.TotalCostUsd > 0 {
+			costTag = fmt.Sprintf(" [$%.4f]", node.TotalCostUsd)
+		}
 		var line string
 		if node.LastReportSummary != "" {
-			line = fmt.Sprintf("%s%s %s %s — %s", indent, dot, icon, node.Name, node.LastReportSummary)
+			line = fmt.Sprintf("%s%s %s %s%s — %s", indent, dot, icon, node.Name, costTag, node.LastReportSummary)
 		} else {
-			line = fmt.Sprintf("%s%s %s %s (%s)", indent, dot, icon, node.Name, node.Status)
+			line = fmt.Sprintf("%s%s %s %s%s (%s)", indent, dot, icon, node.Name, costTag, node.Status)
 		}
 		if node.Unread > 0 {
 			line += fmt.Sprintf(" (%d)", node.Unread)
@@ -267,6 +272,7 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 			Unread:            unread[a.Name],
 			LastReportState:   a.LastReportState,
 			LastReportSummary: a.LastReportSummary,
+			TotalCostUsd:      a.TotalCostUsd,
 		})
 		for _, child := range children[a.Name] {
 			dfs(child, depth+1)

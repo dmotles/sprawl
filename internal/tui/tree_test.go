@@ -588,6 +588,40 @@ func TestTreeModel_ReportChip_ColorsDiffer(t *testing.T) {
 	}
 }
 
+func TestTreeModel_ViewRendersCostTag(t *testing.T) {
+	m := newTestTreeModel(t)
+	m.SetSize(80, 10)
+	m.SetNodes([]TreeNode{
+		{Name: "alice", Type: "engineer", Status: "active", TotalCostUsd: 0.0312},
+		{Name: "bob", Type: "engineer", Status: "active", TotalCostUsd: 0},
+	})
+	view := m.View()
+	if !strings.Contains(view, "[$0.0312]") {
+		t.Errorf("View() should contain cost tag '[$0.0312]' for alice, got:\n%s", view)
+	}
+	// Zero cost should not render a cost tag.
+	stripped := stripAnsi(view)
+	lines := strings.Split(stripped, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "bob") && strings.Contains(line, "[$") {
+			t.Errorf("View() should not contain cost tag for zero-cost bob, got:\n%s", view)
+		}
+	}
+}
+
+func TestBuildTreeNodes_PropagatesCostField(t *testing.T) {
+	agents := []supervisor.AgentInfo{
+		{Name: "alice", Type: "engineer", Status: "active", TotalCostUsd: 0.05},
+	}
+	nodes := buildTreeNodes(agents, nil)
+	if len(nodes) != 1 {
+		t.Fatalf("len = %d", len(nodes))
+	}
+	if nodes[0].TotalCostUsd != 0.05 {
+		t.Errorf("TotalCostUsd = %f, want 0.05", nodes[0].TotalCostUsd)
+	}
+}
+
 func TestBuildTreeNodes_PropagatesReportFields(t *testing.T) {
 	agents := []supervisor.AgentInfo{
 		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportSummary: "in flight"},

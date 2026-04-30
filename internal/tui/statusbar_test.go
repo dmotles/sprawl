@@ -146,13 +146,19 @@ func TestStatusBar_SessionID_OmittedWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestStatusBar_CumulativeCost verifies that SetTurnCost replaces (not
+// accumulates) because total_cost_usd from Claude is session-cumulative.
+// Two calls with 0.01 then 0.02 should show 0.02, not 0.03. (QUM-366)
 func TestStatusBar_CumulativeCost(t *testing.T) {
 	m := newTestStatusBarModel(t)
 	m.SetWidth(80)
 	m.SetTurnCost(0.01)
 	m.SetTurnCost(0.02)
 	view := m.View()
-	if !strings.Contains(view, "$0.0300") {
-		t.Errorf("View() should contain cumulative cost '$0.0300', got:\n%s", view)
+	if !strings.Contains(view, "$0.0200") {
+		t.Errorf("View() should contain replaced cost '$0.0200', got:\n%s", view)
+	}
+	if strings.Contains(view, "$0.0300") {
+		t.Errorf("View() should NOT contain accumulated cost '$0.0300' (double-counting bug), got:\n%s", view)
 	}
 }
