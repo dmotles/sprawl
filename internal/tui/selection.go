@@ -76,7 +76,7 @@ func AssembleRawMarkdown(msgs []MessageEntry, lo, hi int) string {
 			} else {
 				parts = append(parts, fmt.Sprintf("<!-- tool: %s -->", m.Content))
 			}
-		case MessageStatus, MessageError, MessageSystem:
+		case MessageStatus, MessageError, MessageSystem, MessageBanner:
 			// Skip: TUI chrome, not conversation content. MessageSystem
 			// (QUM-338) bodies are already part of the user-role turn the
 			// bridge delivered to Claude — re-emitting here would double-count.

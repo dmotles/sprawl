@@ -1818,12 +1818,19 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 	app = updated.(AppModel)
 	app = driveAsyncRestart(t, app, cmd)
 
-	// After restart, the viewport content should contain the session banner
+	// After restart, the messages slice should contain a MessageBanner entry
 	// with the new session ID (QUM-390).
 	vp := app.viewportFor("weave")
-	view := vp.View()
-	if !strings.Contains(view, "abcdef12") {
-		t.Errorf("expected viewport to contain session ID 'abcdef12' in banner, got: %s", view)
+	msgs := vp.GetMessages()
+	found := false
+	for _, e := range msgs {
+		if e.Type == MessageBanner && strings.Contains(e.Content, "abcdef12") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a MessageBanner entry containing session ID 'abcdef12', messages: %+v", msgs)
 	}
 }
 
@@ -1894,8 +1901,13 @@ func TestAppModel_SessionInitializedMsg_DoesNotClearPreloadedTranscript(t *testi
 func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 	m := newTestAppModel(t)
 	m.PreloadTranscript(nil)
-	if got := m.viewportFor("weave").GetMessages(); len(got) != 0 {
-		t.Errorf("len(viewport messages) = %d, want 0", len(got))
+	// The viewport starts with a banner entry; preloading nil should not add
+	// any conversation messages beyond the initial banner.
+	got := m.viewportFor("weave").GetMessages()
+	for _, e := range got {
+		if e.Type != MessageBanner {
+			t.Errorf("unexpected non-banner message after nil preload: %+v", e)
+		}
 	}
 }
 
@@ -2956,10 +2968,16 @@ func TestAppModel_AssistantContentMsg_DispatchesAll(t *testing.T) {
 	updated, _ := m.Update(contentMsg)
 	app := updated.(AppModel)
 
-	// Both tool calls should be in the root viewport.
-	msgs := app.rootVP().GetMessages()
+	// Both tool calls should be in the root viewport (filter out the initial banner).
+	allMsgs := app.rootVP().GetMessages()
+	var msgs []MessageEntry
+	for _, e := range allMsgs {
+		if e.Type != MessageBanner {
+			msgs = append(msgs, e)
+		}
+	}
 	if len(msgs) != 2 {
-		t.Fatalf("got %d messages in viewport, want 2", len(msgs))
+		t.Fatalf("got %d non-banner messages in viewport, want 2", len(msgs))
 	}
 	if msgs[0].Content != "Agent" || msgs[0].ToolID != "a1" {
 		t.Errorf("msgs[0] = {Content:%q, ToolID:%q}, want {Agent, a1}", msgs[0].Content, msgs[0].ToolID)

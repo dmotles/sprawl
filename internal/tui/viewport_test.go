@@ -41,13 +41,42 @@ func TestViewportModel_InitialContent(t *testing.T) {
 	}
 }
 
-func TestViewportModel_SetContent(t *testing.T) {
+func TestViewportModel_AppendBanner(t *testing.T) {
 	m := newTestViewportModel(t)
 	m.SetSize(60, 20)
-	m.SetContent("hello world test content")
+	m.AppendBanner("hello world test content")
 	view := m.View()
 	if !strings.Contains(view, "hello world test content") {
-		t.Errorf("View() should contain set content, got:\n%s", view)
+		t.Errorf("View() should contain banner content, got:\n%s", view)
+	}
+	msgs := m.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Type != MessageBanner {
+		t.Errorf("expected MessageBanner type, got %d", msgs[0].Type)
+	}
+}
+
+func TestViewportModel_BannerSurvivesStreamingMessage(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendBanner("SPRAWL BANNER")
+	m.AppendAssistantChunk("streaming text")
+	// The banner should still be in the messages slice and visible in View().
+	view := m.View()
+	if !strings.Contains(view, "SPRAWL BANNER") {
+		t.Errorf("banner should survive after streaming message, got:\n%s", view)
+	}
+	msgs := m.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages (banner + assistant), got %d", len(msgs))
+	}
+	if msgs[0].Type != MessageBanner {
+		t.Errorf("first message should be banner, got type %d", msgs[0].Type)
+	}
+	if msgs[1].Type != MessageAssistant {
+		t.Errorf("second message should be assistant, got type %d", msgs[1].Type)
 	}
 }
 
