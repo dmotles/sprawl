@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -262,5 +263,38 @@ func TestStatusBar_TokenCounter_UpdatesOnNewValue(t *testing.T) {
 	}
 	if strings.Contains(view, "10k") {
 		t.Errorf("View() should not contain old '10k' value, got:\n%s", view)
+	}
+}
+
+// --- QUM-391: SetRestartLabel tests ---
+
+// TestStatusBar_SetRestartLabel_UsesLabelInView verifies that when a custom
+// restart label is set (e.g. "consolidating timeline"), the status bar renders
+// that label instead of the default "restart" prefix.
+func TestStatusBar_SetRestartLabel_UsesLabelInView(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	m.SetRestartLabel("consolidating timeline")
+	m.SetRestartElapsed(12 * time.Second)
+	view := m.View()
+	if !strings.Contains(view, "consolidating timeline") {
+		t.Errorf("View() should contain custom label 'consolidating timeline', got:\n%s", view)
+	}
+	if strings.Contains(view, "restart 12s") {
+		t.Errorf("View() should NOT contain default 'restart' label when custom label is set, got:\n%s", view)
+	}
+}
+
+// TestStatusBar_SetRestartLabel_EmptyFallsBackToRestart verifies that when
+// the restart label is empty (or never set), the status bar falls back to the
+// default "restart" prefix.
+func TestStatusBar_SetRestartLabel_EmptyFallsBackToRestart(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(120)
+	m.SetRestartLabel("")
+	m.SetRestartElapsed(8 * time.Second)
+	view := m.View()
+	if !strings.Contains(view, "restart") {
+		t.Errorf("View() should contain default 'restart' label when label is empty, got:\n%s", view)
 	}
 }

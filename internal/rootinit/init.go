@@ -102,7 +102,7 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		}
 		// Consolidate-then-fresh: summary exists (prior session handed off),
 		// run consolidation and fall through to the fresh path below.
-		runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
+		runConsolidationPipeline(ctx, deps, sprawlRoot, stdout, nil)
 		_ = deps.WriteLastSessionID(sprawlRoot, "")
 	} else if forceFresh && prevSessionID != "" {
 		// Fresh fallback after a failed resume: the prior session ID is now
@@ -123,12 +123,12 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 					fmt.Fprintf(stdout, "%s warning: auto-summarize failed for %s: %v\n", prefix, prevSessionID, sumErr)
 				} else if summarized {
 					fmt.Fprintf(stdout, "%s auto-summarized missed handoff for session %s\n", prefix, prevSessionID)
-					runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
+					runConsolidationPipeline(ctx, deps, sprawlRoot, stdout, nil)
 				}
 			}
 		} else {
 			// Summary exists but consolidation may not have run.
-			runConsolidationPipeline(ctx, deps, sprawlRoot, stdout)
+			runConsolidationPipeline(ctx, deps, sprawlRoot, stdout, nil)
 		}
 		_ = deps.WriteLastSessionID(sprawlRoot, "")
 	}

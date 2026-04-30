@@ -108,6 +108,17 @@ type AppModel struct {
 	// defaultRestartTick.
 	restartTick time.Duration
 
+	// consolidating tracks whether a background consolidation pipeline is
+	// still running after a restart (QUM-391). Set on ConsolidationPhaseMsg,
+	// cleared on ConsolidationCompleteMsg. While set, progress ticks
+	// continue even after RestartCompleteMsg so the status bar stays live.
+	consolidating        bool
+	consolidationStarted time.Time
+	// consolidationPhase is the human-readable label for the current
+	// consolidation step (e.g. "Consolidating timeline..."). Shown in the
+	// status bar as "consolidating timeline 12s".
+	consolidationPhase string
+
 	// homeDir is the user's home directory, used to resolve Claude session
 	// log paths for child-agent transcript tailing (QUM-332). Set via
 	// SetHomeDir after construction. When empty, child transcripts can't be
@@ -686,19 +697,54 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case ConsolidationProgressMsg:
-		// Ticks that arrive after the restart already completed are
-		// harmless no-ops — drop them without rescheduling.
-		if !m.restarting {
+		// Ticks that arrive after both restart and consolidation completed
+		// are harmless no-ops — drop them without rescheduling.
+		if !m.restarting && !m.consolidating {
 			m.statusBar.SetRestartElapsed(0)
+			m.statusBar.SetRestartLabel("")
 			return m, nil
+		}
+		// QUM-391: if consolidation is active post-restart, compute elapsed
+		// from consolidation start instead of the restart start.
+		if !m.restarting && m.consolidating {
+			elapsed := m.restartClock()().Sub(m.consolidationStarted)
+			m.statusBar.SetRestartElapsed(elapsed)
+			return m, m.consolidationTickCmd()
 		}
 		m.statusBar.SetRestartElapsed(msg.Elapsed)
 		return m, m.restartTickCmd()
 
+	case ConsolidationPhaseMsg:
+		if !m.consolidating {
+			m.consolidating = true
+			m.consolidationStarted = m.restartClock()()
+		}
+		m.consolidationPhase = msg.Phase
+		m.statusBar.SetRestartLabel(msg.Phase)
+		m.rootVP().AppendStatus(msg.Phase)
+		return m, nil
+
+	case ConsolidationCompleteMsg:
+		m.consolidating = false
+		m.consolidationPhase = ""
+		m.statusBar.SetRestartLabel("")
+		m.statusBar.SetRestartElapsed(0)
+		if msg.Err != nil {
+			m.rootVP().AppendStatus(fmt.Sprintf("Consolidation failed: %v", msg.Err))
+		} else {
+			m.rootVP().AppendStatus(fmt.Sprintf("Consolidation complete (%ds)", int(msg.Duration.Seconds())))
+		}
+		return m, nil
+
 	case RestartCompleteMsg:
 		m.restarting = false
 		m.restartStartedAt = time.Time{}
-		m.statusBar.SetRestartElapsed(0)
+		// QUM-391: only clear the status bar if consolidation is not still
+		// running in the background.
+		if !m.consolidating {
+			m.statusBar.SetRestartElapsed(0)
+			m.statusBar.SetRestartLabel("")
+		}
 		// A Ctrl-C confirm landing mid-restart also shuts us down here.
 		if m.quitting {
 			return m, tea.Quit
@@ -720,7 +766,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bridge = msg.Bridge
 		shortID := shortSessionID(m.bridge.SessionID())
 		root := m.rootVP()
-		root.SetMessages(nil)
+		// QUM-391: preserve status messages (consolidation banners) across
+		// restart — only clear conversation messages.
+		var preserved []MessageEntry
+		for _, e := range root.GetMessages() {
+			if e.Type == MessageStatus {
+				preserved = append(preserved, e)
+			}
+		}
+		root.SetMessages(preserved)
 		// New session starts with no in-flight tool calls; reset the
 		// counter so any stale tick is dropped on next arrival (QUM-336).
 		m.pendingToolCalls = 0
@@ -731,7 +785,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		root.SetContent(SessionBanner(shortID, m.version))
 		m.statusBar.SetSessionID(shortID)
 		m.setTurnState(TurnIdle)
-		return m, m.bridge.Initialize()
+		var cmds []tea.Cmd
+		cmds = append(cmds, m.bridge.Initialize())
+		// QUM-391: keep consolidation ticks running if consolidation outlives
+		// the restart.
+		if m.consolidating {
+			cmds = append(cmds, m.consolidationTickCmd())
+		}
+		return m, tea.Batch(cmds...)
 
 	case InterruptResultMsg:
 		// QUM-380: the interrupt request was dispatched; show the outcome.
@@ -1345,6 +1406,18 @@ func (m *AppModel) restartTickInterval() time.Duration {
 func (m *AppModel) restartTickCmd() tea.Cmd {
 	interval := m.restartTickInterval()
 	startedAt := m.restartStartedAt
+	clock := m.restartClock()
+	return tea.Tick(interval, func(_ time.Time) tea.Msg {
+		return ConsolidationProgressMsg{Elapsed: clock().Sub(startedAt)}
+	})
+}
+
+// consolidationTickCmd is like restartTickCmd but uses consolidationStarted
+// instead of restartStartedAt. Used post-restart when background consolidation
+// outlives the restart cycle. (QUM-391)
+func (m *AppModel) consolidationTickCmd() tea.Cmd {
+	interval := m.restartTickInterval()
+	startedAt := m.consolidationStarted
 	clock := m.restartClock()
 	return tea.Tick(interval, func(_ time.Time) tea.Msg {
 		return ConsolidationProgressMsg{Elapsed: clock().Sub(startedAt)}

@@ -66,7 +66,7 @@ type enterDeps struct {
 	// HandoffRequested() listener observe the same channel. QUM-329.
 	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error)
 	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
-	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer) error
+	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error
 }
 
 // restartState holds the rolling state tracked across restarts: when the last
@@ -92,8 +92,9 @@ type restartState struct {
 func makeRestartFunc(
 	newSession func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error),
 	sup supervisor.Supervisor,
-	finalize func(ctx context.Context, sprawlRoot string, stdout io.Writer) error,
+	finalize func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error,
 	sprawlRoot string,
+	consolidationCh chan<- rootinit.ConsolidationEvent,
 	state *restartState,
 	bridgeOut **tui.Bridge,
 	logW io.Writer,
@@ -111,7 +112,7 @@ func makeRestartFunc(
 		// signal is present, otherwise a noop). Errors are logged and do not
 		// block the restart — matches cmd/rootloop.go's tmux-mode behavior.
 		if finalize != nil {
-			if err := finalize(context.Background(), sprawlRoot, logW); err != nil {
+			if err := finalize(context.Background(), sprawlRoot, logW, consolidationCh); err != nil {
 				fmt.Fprintf(logW, "[enter] finalize handoff failed: %v\n", err)
 			}
 		}
@@ -174,10 +175,10 @@ func resolveEnterDeps() *enterDeps {
 			return err
 		},
 		newSession: defaultNewSession,
-		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer) error {
+		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error {
 			deps := rootinit.DefaultDeps()
 			deps.LogPrefix = "[enter]"
-			return rootinit.FinalizeHandoff(ctx, deps, sprawlRoot, stdout)
+			return rootinit.FinalizeHandoff(ctx, deps, sprawlRoot, stdout, events)
 		},
 		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
 			// CallerName is what gets stamped into Parent when this
@@ -465,9 +466,14 @@ func runEnter(deps *enterDeps) error {
 		state.lastWasResume = wasResume
 	}
 
+	// QUM-391: consolidation events channel — long-lived, shared between
+	// makeRestartFunc (writer via finalize) and onStart (reader that forwards
+	// events to the TUI as tea.Msgs).
+	consolidationCh := make(chan rootinit.ConsolidationEvent, 16)
+
 	var restartFunc func() (*tui.Bridge, error)
 	if deps.newSession != nil {
-		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, state, &bridge, os.Stderr)
+		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, consolidationCh, state, &bridge, os.Stderr)
 	}
 	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
 	if homeDir, hErr := os.UserHomeDir(); hErr == nil {
@@ -515,6 +521,27 @@ func runEnter(deps *enterDeps) error {
 			case <-resumeFailureCh:
 				send(tui.SessionRestartingMsg{Reason: "resume failed — no conversation found"})
 				send(tui.RestartSessionMsg{})
+			}
+		}()
+
+		// QUM-391: forward consolidation events from the background goroutine
+		// to the TUI as tea.Msgs. The consolidationCh is written to by
+		// makeRestartFunc → finalize → StartBackgroundConsolidation.
+		go func() {
+			for {
+				select {
+				case <-handoffDone:
+					return
+				case ev, ok := <-consolidationCh:
+					if !ok {
+						return
+					}
+					if ev.Done {
+						send(tui.ConsolidationCompleteMsg{Err: ev.Err, Duration: ev.Duration})
+					} else {
+						send(tui.ConsolidationPhaseMsg{Phase: ev.Phase})
+					}
+				}
 			}
 		}()
 

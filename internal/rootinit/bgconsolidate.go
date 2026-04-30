@@ -73,7 +73,7 @@ func WaitForBackgroundConsolidation(sprawlRoot string, timeout time.Duration, st
 // The goroutine uses context.Background() so it outlives the caller's
 // context. Per-invocation timeouts inside the pipeline (see
 // memory.TimelineCompressionConfig.InvokeTimeout) keep it bounded.
-func StartBackgroundConsolidation(deps *Deps, sprawlRoot string, stdout io.Writer) <-chan struct{} {
+func StartBackgroundConsolidation(deps *Deps, sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{} {
 	done := make(chan struct{})
 	memDir := filepath.Join(sprawlRoot, ".sprawl", "memory")
 	if err := os.MkdirAll(memDir, 0o755); err != nil { //nolint:gosec // G301: match existing memory dir perms
@@ -99,7 +99,10 @@ func StartBackgroundConsolidation(deps *Deps, sprawlRoot string, stdout io.Write
 	go func() {
 		defer close(done)
 		defer func() { _ = fl.Unlock() }()
-		runConsolidationPipeline(context.Background(), deps, sprawlRoot, stdout)
+		sendConsolidationEvent(events, ConsolidationEvent{Phase: "consolidation started"})
+		start := time.Now()
+		runConsolidationPipeline(context.Background(), deps, sprawlRoot, stdout, events)
+		sendConsolidationEvent(events, ConsolidationEvent{Done: true, Duration: time.Since(start)})
 	}()
 	return done
 }

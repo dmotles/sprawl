@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 )
@@ -471,8 +472,8 @@ func TestBuildSessionEnv_ContainsAgentIdentity(t *testing.T) {
 // fakeFinalize returns a finalize callback that records every invocation and
 // appends the sentinel "finalize" to the order slice. If errToReturn is
 // non-nil, it is returned from the callback.
-func fakeFinalize(order *[]string, count *int32, errToReturn error) func(context.Context, string, io.Writer) error {
-	return func(_ context.Context, _ string, _ io.Writer) error {
+func fakeFinalize(order *[]string, count *int32, errToReturn error) func(context.Context, string, io.Writer, chan<- rootinit.ConsolidationEvent) error {
+	return func(_ context.Context, _ string, _ io.Writer, _ chan<- rootinit.ConsolidationEvent) error {
 		atomic.AddInt32(count, 1)
 		*order = append(*order, "finalize")
 		return errToReturn
@@ -511,6 +512,7 @@ func TestEnter_RestartFunc_CallsFinalizeBeforeNewSession(t *testing.T) {
 		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
+		nil, // consolidationCh
 		state,
 		nil,
 		io.Discard,
@@ -547,6 +549,7 @@ func TestEnter_RestartFunc_FinalizeError_DoesNotBlockNewSession(t *testing.T) {
 		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, errors.New("finalize failed")),
 		"/tmp/sprawl",
+		nil, // consolidationCh
 		&restartState{},
 		nil,
 		io.Discard,
@@ -578,6 +581,7 @@ func TestEnter_RestartFunc_ForceFreshWhenResumeDiedFast(t *testing.T) {
 		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
+		nil, // consolidationCh
 		state,
 		nil,
 		io.Discard,
@@ -615,6 +619,7 @@ func TestEnter_RestartFunc_MarkerTripped_ForcesFreshRegardlessOfWindow(t *testin
 		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
+		nil, // consolidationCh
 		state,
 		nil,
 		io.Discard,
@@ -646,6 +651,7 @@ func TestEnter_RestartFunc_ResumeFailureCallback_SetsMarkerFlag(t *testing.T) {
 		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
+		nil, // consolidationCh
 		state,
 		nil,
 		io.Discard,
@@ -677,6 +683,7 @@ func TestEnter_RestartFunc_NoForceFreshWhenNotResume(t *testing.T) {
 		nil, // sup — exercised in TestEnter_SharedSupervisor_ThreadedEndToEnd below
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
+		nil, // consolidationCh
 		state,
 		nil,
 		io.Discard,
@@ -711,7 +718,7 @@ func TestEnter_ShutdownPath_DoesNotCallFinalizeOnCleanExit(t *testing.T) {
 		},
 		runProgram: func(tea.Model, func(func(tea.Msg))) error { return nil }, // clean exit
 		newSession: nil,
-		finalizeHandoff: func(_ context.Context, _ string, _ io.Writer) error {
+		finalizeHandoff: func(_ context.Context, _ string, _ io.Writer, _ chan<- rootinit.ConsolidationEvent) error {
 			atomic.AddInt32(&finCount, 1)
 			return nil
 		},
@@ -742,7 +749,7 @@ func TestEnter_ShutdownPath_SkipsFinalizeOnProgramError(t *testing.T) {
 		},
 		runProgram: func(tea.Model, func(func(tea.Msg))) error { return errors.New("tui crashed") },
 		newSession: nil,
-		finalizeHandoff: func(_ context.Context, _ string, _ io.Writer) error {
+		finalizeHandoff: func(_ context.Context, _ string, _ io.Writer, _ chan<- rootinit.ConsolidationEvent) error {
 			atomic.AddInt32(&finCount, 1)
 			return nil
 		},
@@ -860,6 +867,7 @@ func TestMakeRestartFunc_ThreadsSupervisor(t *testing.T) {
 		sentinelSup,
 		fakeFinalize(&order, &finCount, nil),
 		"/tmp/sprawl",
+		nil, // consolidationCh
 		&restartState{},
 		nil,
 		io.Discard,
@@ -919,5 +927,71 @@ func TestDefaultEnterDeps_SupervisorCallerIsWeave(t *testing.T) {
 	}
 	if got := realSup.CallerName(); got != "weave" {
 		t.Errorf("CallerName = %q, want \"weave\" (QUM-333 — pre-fix was \"enter\", routed children's reports into a phantom queue)", got)
+	}
+}
+
+// --- QUM-391: Consolidation events threading ---
+
+// TestMakeRestartFunc_ThreadsConsolidationEvents verifies that makeRestartFunc
+// passes the consolidation events channel through to the finalize function so
+// the TUI can display consolidation progress in real-time.
+func TestMakeRestartFunc_ThreadsConsolidationEvents(t *testing.T) {
+	var order []string
+	fact := &orderedSessionFactory{order: &order}
+
+	consolidationCh := make(chan rootinit.ConsolidationEvent, 10)
+
+	// Capture the events channel threaded through finalize.
+	var capturedCh chan<- rootinit.ConsolidationEvent
+	var finCount int32
+	finalize := func(_ context.Context, _ string, _ io.Writer, ch chan<- rootinit.ConsolidationEvent) error {
+		capturedCh = ch
+		atomic.AddInt32(&finCount, 1)
+		*fact.order = append(*fact.order, "finalize")
+		if ch != nil {
+			ch <- rootinit.ConsolidationEvent{Phase: "test consolidation"}
+			ch <- rootinit.ConsolidationEvent{Done: true, Duration: 3 * time.Second}
+		}
+		return nil
+	}
+
+	rf := makeRestartFunc(
+		fact.newSession,
+		nil,
+		finalize,
+		"/tmp/sprawl",
+		consolidationCh,
+		&restartState{},
+		nil,
+		io.Discard,
+	)
+
+	_, err := rf()
+	if err != nil {
+		t.Fatalf("restartFunc returned unexpected error: %v", err)
+	}
+
+	if finCount != 1 {
+		t.Errorf("finalize should have been called once, got %d", finCount)
+	}
+	if capturedCh == nil {
+		t.Fatal("finalize should receive the consolidation events channel")
+	}
+	// Verify events were sent on the channel.
+	close(consolidationCh)
+	var gotPhase, gotDone bool
+	for ev := range consolidationCh {
+		if ev.Phase == "test consolidation" {
+			gotPhase = true
+		}
+		if ev.Done {
+			gotDone = true
+		}
+	}
+	if !gotPhase {
+		t.Error("expected phase event on consolidation channel")
+	}
+	if !gotDone {
+		t.Error("expected done event on consolidation channel")
 	}
 }

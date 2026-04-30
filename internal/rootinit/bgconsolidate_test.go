@@ -29,7 +29,7 @@ func TestStartBackgroundConsolidation_RunsPipelineAndReleasesLock(t *testing.T) 
 		return nil
 	}
 
-	done := StartBackgroundConsolidation(deps, root, io.Discard)
+	done := StartBackgroundConsolidation(deps, root, io.Discard, nil)
 
 	select {
 	case <-done:
@@ -74,12 +74,12 @@ func TestStartBackgroundConsolidation_SkipsIfAlreadyLocked(t *testing.T) {
 		return nil
 	}
 
-	done1 := StartBackgroundConsolidation(deps, root, io.Discard)
+	done1 := StartBackgroundConsolidation(deps, root, io.Discard, nil)
 
 	// Second call must return a closed channel immediately (flock contention).
 	var buf strings.Builder
 	start := time.Now()
-	done2 := StartBackgroundConsolidation(deps, root, &buf)
+	done2 := StartBackgroundConsolidation(deps, root, &buf, nil)
 	select {
 	case <-done2:
 	default:
@@ -119,8 +119,8 @@ func TestFinalizeHandoff_ReturnsQuicklyWhilePipelineRuns(t *testing.T) {
 		return nil
 	}
 	// Swap in the real async background consolidation.
-	deps.BackgroundConsolidate = func(sprawlRoot string, stdout io.Writer) <-chan struct{} {
-		ch := StartBackgroundConsolidation(deps, sprawlRoot, stdout)
+	deps.BackgroundConsolidate = func(sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{} {
+		ch := StartBackgroundConsolidation(deps, sprawlRoot, stdout, events)
 		go func() {
 			<-ch
 			close(finished)
@@ -129,7 +129,7 @@ func TestFinalizeHandoff_ReturnsQuicklyWhilePipelineRuns(t *testing.T) {
 	}
 
 	start := time.Now()
-	if err := FinalizeHandoff(context.Background(), deps, root, io.Discard); err != nil {
+	if err := FinalizeHandoff(context.Background(), deps, root, io.Discard, nil); err != nil {
 		t.Fatalf("FinalizeHandoff error: %v", err)
 	}
 	elapsed := time.Since(start)
@@ -158,7 +158,7 @@ func TestWaitForBackgroundConsolidation_BlocksUntilGoroutineReleasesFlock(t *tes
 		<-block
 		return nil
 	}
-	done := StartBackgroundConsolidation(deps, root, io.Discard)
+	done := StartBackgroundConsolidation(deps, root, io.Discard, nil)
 
 	waitReturned := make(chan time.Duration, 1)
 	go func() {
@@ -199,7 +199,7 @@ func TestWaitForBackgroundConsolidation_TimesOutAndProceeds(t *testing.T) {
 		<-block
 		return nil
 	}
-	_ = StartBackgroundConsolidation(deps, root, io.Discard)
+	_ = StartBackgroundConsolidation(deps, root, io.Discard, nil)
 
 	var buf strings.Builder
 	start := time.Now()
@@ -214,5 +214,129 @@ func TestWaitForBackgroundConsolidation_TimesOutAndProceeds(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "did not finish") {
 		t.Errorf("expected warning about timeout, got %q", buf.String())
+	}
+}
+
+// --- QUM-391: Consolidation event channel tests ---
+
+// TestStartBackgroundConsolidation_EmitsEvents verifies that when an events
+// channel is provided, StartBackgroundConsolidation emits lifecycle events:
+// a started event, at least one phase event, and a done event.
+func TestStartBackgroundConsolidation_EmitsEvents(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	deps := newTestDeps(t)
+	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		return nil
+	}
+
+	events := make(chan ConsolidationEvent, 10)
+	done := StartBackgroundConsolidation(deps, root, io.Discard, events)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background consolidation did not complete within 5s")
+	}
+
+	// Drain and categorize events.
+	close(events)
+	var gotPhase, gotDone bool
+	for ev := range events {
+		if ev.Phase != "" {
+			gotPhase = true
+		}
+		if ev.Done {
+			gotDone = true
+		}
+	}
+	if !gotPhase {
+		t.Error("expected at least one phase event from StartBackgroundConsolidation")
+	}
+	if !gotDone {
+		t.Error("expected a done event from StartBackgroundConsolidation")
+	}
+}
+
+// TestStartBackgroundConsolidation_NilEventsChannel_NoPanic verifies that
+// passing a nil events channel does not cause a panic — existing callers
+// that don't care about events should continue to work unchanged.
+func TestStartBackgroundConsolidation_NilEventsChannel_NoPanic(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	deps := newTestDeps(t)
+	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+		return nil
+	}
+
+	// Pass nil events channel — must not panic.
+	done := StartBackgroundConsolidation(deps, root, io.Discard, nil)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background consolidation did not complete within 5s")
+	}
+}
+
+// TestFinalizeHandoff_ThreadsEventsToBackgroundConsolidate verifies that
+// when FinalizeHandoff is called with an events channel, the events are
+// threaded through to the BackgroundConsolidate call and the channel
+// receives consolidation events.
+func TestFinalizeHandoff_ThreadsEventsToBackgroundConsolidate(t *testing.T) {
+	root := t.TempDir()
+
+	deps := newTestDeps(t)
+	// Read handoff-signal successfully.
+	deps.ReadFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	var capturedEvents chan<- ConsolidationEvent
+	deps.BackgroundConsolidate = func(sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{} {
+		capturedEvents = events
+		ch := make(chan struct{})
+		close(ch)
+		if events != nil {
+			events <- ConsolidationEvent{Phase: "test phase"}
+			events <- ConsolidationEvent{Done: true, Duration: 2 * time.Second}
+		}
+		return ch
+	}
+
+	events := make(chan ConsolidationEvent, 10)
+	if err := FinalizeHandoff(context.Background(), deps, root, io.Discard, events); err != nil {
+		t.Fatalf("FinalizeHandoff error: %v", err)
+	}
+
+	if capturedEvents == nil {
+		t.Fatal("BackgroundConsolidate should receive the events channel from FinalizeHandoff")
+	}
+
+	// Verify events were received.
+	close(events)
+	var gotPhase, gotDone bool
+	for ev := range events {
+		if ev.Phase == "test phase" {
+			gotPhase = true
+		}
+		if ev.Done {
+			gotDone = true
+		}
+	}
+	if !gotPhase {
+		t.Error("expected phase event threaded through FinalizeHandoff")
+	}
+	if !gotDone {
+		t.Error("expected done event threaded through FinalizeHandoff")
 	}
 }

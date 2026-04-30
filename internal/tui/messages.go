@@ -249,6 +249,23 @@ type InterruptResultMsg struct {
 	Err error
 }
 
+// ConsolidationPhaseMsg signals a phase change in the background consolidation
+// pipeline running after a handoff. Dispatched by the event-forwarder goroutine
+// in cmd/enter.go's onStart hook. The App appends a viewport status banner and
+// updates the status bar label so the user can see what the consolidation is
+// doing instead of a generic "restart Ns" counter. (QUM-391)
+type ConsolidationPhaseMsg struct {
+	Phase string
+}
+
+// ConsolidationCompleteMsg signals that the background consolidation pipeline
+// finished (successfully or with an error). The App appends a completion or
+// failure banner in the viewport. (QUM-391)
+type ConsolidationCompleteMsg struct {
+	Err      error
+	Duration time.Duration
+}
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new

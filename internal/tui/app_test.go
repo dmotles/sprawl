@@ -3089,3 +3089,121 @@ func TestAppModel_UsageAlongsideText_BothProcessed(t *testing.T) {
 		t.Errorf("contextTokens = %d, want 5000", app.statusBar.contextTokens)
 	}
 }
+
+// --- QUM-391: Consolidation visibility tests ---
+
+// TestAppModel_ConsolidationPhaseMsg_AppendsStatusAndUpdatesLabel verifies
+// that a ConsolidationPhaseMsg appends a status entry in the root viewport
+// containing the phase text and updates the status bar's restart label.
+func TestAppModel_ConsolidationPhaseMsg_AppendsStatusAndUpdatesLabel(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.restarting = true
+
+	updated, _ := app.Update(ConsolidationPhaseMsg{Phase: "Consolidating timeline..."})
+	app = updated.(AppModel)
+
+	// Verify the root viewport has a status entry containing the phase text.
+	msgs := app.rootVP().GetMessages()
+	found := false
+	for _, e := range msgs {
+		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidating timeline...") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("rootVP should contain a status message with 'Consolidating timeline...', got %d messages: %+v", len(msgs), msgs)
+	}
+
+	// Verify status bar label is set.
+	if app.statusBar.restartLabel == "" {
+		t.Error("statusBar.restartLabel should be set after ConsolidationPhaseMsg")
+	}
+}
+
+// TestAppModel_ConsolidationCompleteMsg_Success_AppendsCompleteBanner verifies
+// that a successful ConsolidationCompleteMsg appends a completion banner with
+// the duration in the root viewport.
+func TestAppModel_ConsolidationCompleteMsg_Success_AppendsCompleteBanner(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.restarting = true
+
+	updated, _ := app.Update(ConsolidationCompleteMsg{Duration: 15 * time.Second})
+	app = updated.(AppModel)
+
+	msgs := app.rootVP().GetMessages()
+	found := false
+	for _, e := range msgs {
+		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidation complete") && strings.Contains(e.Content, "15s") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("rootVP should contain 'Consolidation complete (15s)' status, got messages: %+v", msgs)
+	}
+}
+
+// TestAppModel_ConsolidationCompleteMsg_Error_AppendsFailureBanner verifies
+// that a ConsolidationCompleteMsg with an error appends a failure banner
+// containing the error message.
+func TestAppModel_ConsolidationCompleteMsg_Error_AppendsFailureBanner(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.restarting = true
+
+	updated, _ := app.Update(ConsolidationCompleteMsg{Err: fmt.Errorf("timeout")})
+	app = updated.(AppModel)
+
+	msgs := app.rootVP().GetMessages()
+	found := false
+	for _, e := range msgs {
+		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidation failed") && strings.Contains(e.Content, "timeout") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("rootVP should contain 'Consolidation failed: timeout' status, got messages: %+v", msgs)
+	}
+}
+
+// TestAppModel_RestartCompleteMsg_PreservesStatusMessages verifies that
+// status messages (e.g. consolidation phase banners) survive through
+// a RestartCompleteMsg and are not lost when the restart completes.
+func TestAppModel_RestartCompleteMsg_PreservesStatusMessages(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app = resized.(AppModel)
+
+	// Append a status message before restart.
+	app.rootVP().AppendStatus("Consolidating timeline...")
+
+	// Set up restart with a new bridge.
+	newBridge := NewBridge(context.Background(), newMockSession())
+	app.restartFunc = func() (*Bridge, error) { return newBridge, nil }
+
+	updated, cmd := app.Update(RestartSessionMsg{})
+	app = updated.(AppModel)
+	app = driveAsyncRestart(t, app, cmd)
+
+	// The status message should still be present after restart.
+	msgs := app.rootVP().GetMessages()
+	found := false
+	for _, e := range msgs {
+		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidating timeline...") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("status message 'Consolidating timeline...' should survive RestartCompleteMsg, got messages: %+v", msgs)
+	}
+}
