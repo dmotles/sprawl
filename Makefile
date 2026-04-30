@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-exit-code-preservation
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -67,6 +67,15 @@ test-notify-tui-e2e:
 # HandoffRequestedMsg/SessionRestartingMsg/RestartSessionMsg handlers.
 test-handoff-e2e:
 	bash scripts/test-handoff-e2e.sh
+
+# QUM-386: E2E test for parallel Agent tool call rendering in the TUI
+# viewport. Uses a fake claude binary (no real claude needed) to emit
+# parallel Agent tool_use blocks and verifies the TUI renders two
+# independent Agent containers. Mandatory before merging any change to
+# internal/tui/viewport.go's Agent container rendering or bridge.go's
+# AssistantContentMsg batching.
+test-parallel-agent-viewport-e2e:
+	bash scripts/test-parallel-agent-viewport-e2e.sh
 
 # QUM-328: regression guard — verifies E2E scripts preserve exit codes
 # across cleanup traps. Lightweight (no claude/tmux/spawl needed).

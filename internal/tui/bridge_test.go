@@ -180,9 +180,17 @@ func TestBridge_WaitForEvent_AssistantText(t *testing.T) {
 	}
 
 	msg := waitCmd()
-	textMsg, ok := msg.(AssistantTextMsg)
+	// QUM-386: assistant messages now return AssistantContentMsg wrapping all blocks.
+	acm, ok := msg.(AssistantContentMsg)
 	if !ok {
-		t.Fatalf("WaitForEvent() returned %T, want AssistantTextMsg", msg)
+		t.Fatalf("WaitForEvent() returned %T, want AssistantContentMsg", msg)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+	textMsg, ok := acm.Msgs[0].(AssistantTextMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want AssistantTextMsg", acm.Msgs[0])
 	}
 	if textMsg.Text != "Hello world" {
 		t.Errorf("Text = %q, want %q", textMsg.Text, "Hello world")
@@ -203,9 +211,17 @@ func TestBridge_WaitForEvent_ToolCall(t *testing.T) {
 	waitCmd := b.WaitForEvent()
 	msg := waitCmd()
 
-	toolMsg, ok := msg.(ToolCallMsg)
+	// QUM-386: assistant messages now return AssistantContentMsg.
+	acm, ok := msg.(AssistantContentMsg)
 	if !ok {
-		t.Fatalf("WaitForEvent() returned %T, want ToolCallMsg", msg)
+		t.Fatalf("WaitForEvent() returned %T, want AssistantContentMsg", msg)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+	toolMsg, ok := acm.Msgs[0].(ToolCallMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want ToolCallMsg", acm.Msgs[0])
 	}
 	if toolMsg.ToolName != "Bash" {
 		t.Errorf("ToolName = %q, want %q", toolMsg.ToolName, "Bash")
@@ -345,9 +361,17 @@ func TestMapProtocolMessage_AssistantWithText(t *testing.T) {
 	msg.Raw = json.RawMessage(raw)
 
 	result := mapProtocolMessage(&msg)
-	textMsg, ok := result.(AssistantTextMsg)
+	// QUM-386: all assistant messages now return AssistantContentMsg.
+	acm, ok := result.(AssistantContentMsg)
 	if !ok {
-		t.Fatalf("mapProtocolMessage returned %T, want AssistantTextMsg", result)
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+	textMsg, ok := acm.Msgs[0].(AssistantTextMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want AssistantTextMsg", acm.Msgs[0])
 	}
 	if textMsg.Text != "Hello" {
 		t.Errorf("Text = %q, want %q", textMsg.Text, "Hello")
@@ -363,9 +387,17 @@ func TestMapProtocolMessage_AssistantWithToolUse(t *testing.T) {
 	msg.Raw = json.RawMessage(raw)
 
 	result := mapProtocolMessage(&msg)
-	toolMsg, ok := result.(ToolCallMsg)
+	// QUM-386: all assistant messages now return AssistantContentMsg.
+	acm, ok := result.(AssistantContentMsg)
 	if !ok {
-		t.Fatalf("mapProtocolMessage returned %T, want ToolCallMsg", result)
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+	toolMsg, ok := acm.Msgs[0].(ToolCallMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want ToolCallMsg", acm.Msgs[0])
 	}
 	if toolMsg.ToolName != "Read" {
 		t.Errorf("ToolName = %q, want %q", toolMsg.ToolName, "Read")
@@ -376,8 +408,8 @@ func TestMapProtocolMessage_AssistantWithToolUse(t *testing.T) {
 }
 
 func TestMapProtocolMessage_AssistantWithMixedContent(t *testing.T) {
-	// When content has both text and tool_use, the first significant block wins.
-	// Text blocks come first.
+	// QUM-386: when content has both text and tool_use, ALL blocks are
+	// returned in AssistantContentMsg (not just the first).
 	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"t-1","name":"Bash","input":{}}]}}`
 	var msg protocol.Message
 	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
@@ -386,13 +418,22 @@ func TestMapProtocolMessage_AssistantWithMixedContent(t *testing.T) {
 	msg.Raw = json.RawMessage(raw)
 
 	result := mapProtocolMessage(&msg)
-	// Should return the first content block type found
-	textMsg, ok := result.(AssistantTextMsg)
+	acm, ok := result.(AssistantContentMsg)
 	if !ok {
-		t.Fatalf("mapProtocolMessage returned %T, want AssistantTextMsg", result)
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 2 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 2", len(acm.Msgs))
+	}
+	textMsg, ok := acm.Msgs[0].(AssistantTextMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want AssistantTextMsg", acm.Msgs[0])
 	}
 	if textMsg.Text != "Let me check" {
 		t.Errorf("Text = %q, want %q", textMsg.Text, "Let me check")
+	}
+	if _, ok := acm.Msgs[1].(ToolCallMsg); !ok {
+		t.Errorf("Msgs[1] is %T, want ToolCallMsg", acm.Msgs[1])
 	}
 }
 
@@ -610,9 +651,17 @@ func TestMapAssistantMessage_PopulatesFullInput(t *testing.T) {
 	msg.Raw = json.RawMessage(raw)
 
 	result := mapProtocolMessage(&msg)
-	tc, ok := result.(ToolCallMsg)
+	// QUM-386: all assistant messages now return AssistantContentMsg.
+	acm, ok := result.(AssistantContentMsg)
 	if !ok {
-		t.Fatalf("mapProtocolMessage returned %T, want ToolCallMsg", result)
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+	tc, ok := acm.Msgs[0].(ToolCallMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want ToolCallMsg", acm.Msgs[0])
 	}
 	if tc.Input == "" || len(tc.Input) > 120 {
 		t.Errorf("Input summary should be present and ≤120 chars, got %q (len=%d)", tc.Input, len(tc.Input))
@@ -630,6 +679,86 @@ func mustJSONString(s string) string {
 	return string(b)
 }
 
+// QUM-386: mapAssistantMessage must return ALL tool_use blocks from a single
+// assistant message, not just the first. Parallel Agent calls produce multiple
+// tool_use blocks.
+func TestMapAssistantMessage_MultipleToolUse_ReturnsAll(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"Agent","input":{"prompt":"task A"}},{"type":"tool_use","id":"t-2","name":"Agent","input":{"prompt":"task B"}}]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 2 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 2", len(acm.Msgs))
+	}
+	tc1, ok := acm.Msgs[0].(ToolCallMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want ToolCallMsg", acm.Msgs[0])
+	}
+	if tc1.ToolID != "t-1" || tc1.ToolName != "Agent" {
+		t.Errorf("Msgs[0] = {ID:%q, Name:%q}, want {t-1, Agent}", tc1.ToolID, tc1.ToolName)
+	}
+	tc2, ok := acm.Msgs[1].(ToolCallMsg)
+	if !ok {
+		t.Fatalf("Msgs[1] is %T, want ToolCallMsg", acm.Msgs[1])
+	}
+	if tc2.ToolID != "t-2" || tc2.ToolName != "Agent" {
+		t.Errorf("Msgs[1] = {ID:%q, Name:%q}, want {t-2, Agent}", tc2.ToolID, tc2.ToolName)
+	}
+}
+
+// QUM-386: assistant message with text + tool_use returns both in AssistantContentMsg.
+func TestMapAssistantMessage_TextAndToolUse_ReturnsBoth(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"Let me check"},{"type":"tool_use","id":"t-1","name":"Bash","input":{"command":"ls"}}]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 2 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 2", len(acm.Msgs))
+	}
+	if _, ok := acm.Msgs[0].(AssistantTextMsg); !ok {
+		t.Errorf("Msgs[0] is %T, want AssistantTextMsg", acm.Msgs[0])
+	}
+	if _, ok := acm.Msgs[1].(ToolCallMsg); !ok {
+		t.Errorf("Msgs[1] is %T, want ToolCallMsg", acm.Msgs[1])
+	}
+}
+
+// QUM-386: even a single tool_use block should be wrapped in AssistantContentMsg
+// for consistent handling in the App's Update loop.
+func TestMapAssistantMessage_SingleToolUse_WrappedInContentMsg(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"Bash","input":{"command":"ls"}}]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := mapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+}
+
 func TestBridge_WaitForEvent_ToolCallWithInput(t *testing.T) {
 	ms := newMockSession()
 	ctx := context.Background()
@@ -643,9 +772,17 @@ func TestBridge_WaitForEvent_ToolCallWithInput(t *testing.T) {
 	waitCmd := b.WaitForEvent()
 	msg := waitCmd()
 
-	toolMsg, ok := msg.(ToolCallMsg)
+	// QUM-386: assistant messages now return AssistantContentMsg.
+	acm, ok := msg.(AssistantContentMsg)
 	if !ok {
-		t.Fatalf("WaitForEvent() returned %T, want ToolCallMsg", msg)
+		t.Fatalf("WaitForEvent() returned %T, want AssistantContentMsg", msg)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+	toolMsg, ok := acm.Msgs[0].(ToolCallMsg)
+	if !ok {
+		t.Fatalf("Msgs[0] is %T, want ToolCallMsg", acm.Msgs[0])
 	}
 	if toolMsg.Input != "ls -la" {
 		t.Errorf("Input = %q, want %q", toolMsg.Input, "ls -la")
@@ -674,22 +811,30 @@ func TestBridge_FullTurnLifecycle(t *testing.T) {
 		t.Fatalf("SendMessage returned %T, want UserMessageSentMsg", sendMsg)
 	}
 
-	// Feed assistant text
+	// Feed assistant text (QUM-386: now wrapped in AssistantContentMsg)
 	ms.feedMessage(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"Let me check"}]}}`)
 	waitCmd := b.WaitForEvent()
 	msg := waitCmd()
-	if textMsg, ok := msg.(AssistantTextMsg); !ok {
-		t.Fatalf("expected AssistantTextMsg, got %T", msg)
+	acm, ok := msg.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("expected AssistantContentMsg, got %T", msg)
+	}
+	if textMsg, ok := acm.Msgs[0].(AssistantTextMsg); !ok {
+		t.Fatalf("expected AssistantTextMsg inside batch, got %T", acm.Msgs[0])
 	} else if textMsg.Text != "Let me check" {
 		t.Errorf("Text = %q, want %q", textMsg.Text, "Let me check")
 	}
 
-	// Feed tool call
+	// Feed tool call (QUM-386: now wrapped in AssistantContentMsg)
 	ms.feedMessage(t, `{"type":"assistant","uuid":"a-2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t-1","name":"Bash","input":{"command":"ls"}}]}}`)
 	waitCmd = b.WaitForEvent()
 	msg = waitCmd()
-	if toolMsg, ok := msg.(ToolCallMsg); !ok {
-		t.Fatalf("expected ToolCallMsg, got %T", msg)
+	acm2, ok := msg.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("expected AssistantContentMsg, got %T", msg)
+	}
+	if toolMsg, ok := acm2.Msgs[0].(ToolCallMsg); !ok {
+		t.Fatalf("expected ToolCallMsg inside batch, got %T", acm2.Msgs[0])
 	} else if toolMsg.ToolName != "Bash" {
 		t.Errorf("ToolName = %q, want %q", toolMsg.ToolName, "Bash")
 	}

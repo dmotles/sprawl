@@ -84,6 +84,10 @@ type MessageEntry struct {
 	// nested entries as compact single lines under their parent Agent call.
 	// (QUM-379)
 	Depth int
+	// ParentToolID is the ToolID of the enclosing Agent tool call, if any.
+	// Empty when Depth == 0. Used to attribute nested tool calls to the
+	// correct parallel Agent container. (QUM-386)
+	ParentToolID string
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -108,12 +112,13 @@ type ViewportModel struct {
 	// AppModel on every spinner.TickMsg (QUM-336). renderToolCall uses it
 	// as the indicator for any Pending tool call. Empty until first push.
 	spinnerFrame string
-	// agentCallStack tracks the tool IDs of in-flight "Agent" tool calls.
-	// When AppendToolCall receives a tool named "Agent", its ID is pushed.
-	// All subsequent tool calls get Depth = len(agentCallStack). When
-	// MarkToolResult matches a stacked Agent ID, it pops. SetMessages
-	// clears the stack. (QUM-379)
-	agentCallStack []string
+	// activeAgents tracks the tool IDs of in-flight "Agent" tool calls.
+	// Non-Agent tool calls inside any active agent get depth 1 and are
+	// attributed to lastActiveAgent. Agent tool calls are always top-level
+	// (depth 0). MarkToolResult removes completed agents. SetMessages
+	// clears the map. (QUM-386)
+	activeAgents    map[string]bool
+	lastActiveAgent string
 }
 
 // SelectionGutter is the visual prefix placed on selected message blocks when
@@ -241,7 +246,15 @@ func (m *ViewportModel) FinalizeAssistantMessage() {
 // pass "" if not available. The new entry starts in the Pending state
 // (QUM-336) — its indicator animates until MarkToolResult flips it.
 func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input, fullInput string) {
-	depth := len(m.agentCallStack)
+	depth := 0
+	parentID := ""
+	// Non-Agent tool calls inside any active agent get depth 1.
+	// Agent tool calls are always top-level (depth 0). (QUM-386)
+	if len(m.activeAgents) > 0 && name != "Agent" {
+		depth = 1
+		parentID = m.lastActiveAgent
+	}
+
 	m.messages = append(m.messages, MessageEntry{
 		Type:          MessageToolCall,
 		Content:       name,
@@ -252,11 +265,15 @@ func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input
 		ToolID:        toolID,
 		Pending:       true,
 		Depth:         depth,
+		ParentToolID:  parentID,
 	})
-	// QUM-379: "Agent" tool calls push onto the nesting stack so subsequent
-	// tool calls get Depth = len(agentCallStack).
+
 	if name == "Agent" && toolID != "" {
-		m.agentCallStack = append(m.agentCallStack, toolID)
+		if m.activeAgents == nil {
+			m.activeAgents = make(map[string]bool)
+		}
+		m.activeAgents[toolID] = true
+		m.lastActiveAgent = toolID
 	}
 	m.renderAndUpdate()
 }
@@ -282,12 +299,15 @@ func (m *ViewportModel) MarkToolResult(toolID, content string, isError bool) boo
 		m.messages[i].Pending = false
 		m.messages[i].Failed = isError
 		m.messages[i].Result = content
-		// QUM-379: if the completed tool call is an Agent, pop it from
-		// the nesting stack so subsequent entries return to the parent depth.
-		for j := len(m.agentCallStack) - 1; j >= 0; j-- {
-			if m.agentCallStack[j] == toolID {
-				m.agentCallStack = append(m.agentCallStack[:j], m.agentCallStack[j+1:]...)
-				break
+		// QUM-386: remove completed Agent from active set.
+		if m.activeAgents[toolID] {
+			delete(m.activeAgents, toolID)
+			if m.lastActiveAgent == toolID {
+				m.lastActiveAgent = ""
+				for id := range m.activeAgents {
+					m.lastActiveAgent = id
+					break
+				}
 			}
 		}
 		m.renderAndUpdate()
@@ -412,7 +432,8 @@ func (m *ViewportModel) SetMessages(msgs []MessageEntry) {
 	copy(m.messages, msgs)
 	// Replacing the buffer invalidates any active selection and agent nesting state.
 	m.selection = SelectionState{}
-	m.agentCallStack = nil
+	m.activeAgents = nil
+	m.lastActiveAgent = ""
 	m.renderAndUpdate()
 }
 
@@ -422,6 +443,10 @@ func (m *ViewportModel) IsSelecting() bool { return m.selection.Active }
 // EnterSelect puts the viewport into select mode with the anchor and cursor
 // both positioned on the most recent message. No-op when the message buffer
 // is empty. Disables auto-scroll so highlight updates don't yank the view.
+// NOTE: selection operates on raw buffer indices — child entries rendered
+// inside Agent containers (QUM-386) are included in SelectedRaw() yank
+// output but their visual gutter highlight is not visible (they're drawn
+// inside the container, not as standalone rows).
 func (m *ViewportModel) EnterSelect() {
 	if len(m.messages) == 0 {
 		return
@@ -470,22 +495,31 @@ func (m *ViewportModel) renderAndUpdate() {
 }
 
 func (m *ViewportModel) renderMessages() string {
+	// QUM-386 Pass 1: build parent→children index for Agent containers.
+	childrenOf := make(map[string][]int)
+	childRendered := make(map[int]bool)
+	for i, msg := range m.messages {
+		if msg.ParentToolID != "" {
+			childrenOf[msg.ParentToolID] = append(childrenOf[msg.ParentToolID], i)
+			childRendered[i] = true
+		}
+	}
+
 	var selLo, selHi int
 	selecting := m.selection.Active
 	if selecting {
 		selLo, selHi = m.selection.Range()
 	}
 	var sb strings.Builder
+	first := true
 	for i, msg := range m.messages {
-		if i > 0 {
-			// QUM-379: suppress the blank separator between consecutive nested
-			// tool calls so they cluster tightly under the parent Agent.
-			prevNested := m.messages[i-1].Type == MessageToolCall && m.messages[i-1].Depth > 0
-			currNested := msg.Type == MessageToolCall && msg.Depth > 0
-			if !prevNested || !currNested {
-				sb.WriteString("\n")
-			}
+		if childRendered[i] {
+			continue
 		}
+		if !first {
+			sb.WriteString("\n")
+		}
+		first = false
 		var block strings.Builder
 		switch msg.Type {
 		case MessageUser:
@@ -497,16 +531,20 @@ func (m *ViewportModel) renderMessages() string {
 				block.WriteString(StreamingCursor)
 			}
 		case MessageToolCall:
-			m.renderToolCall(&block, msg)
+			switch {
+			case msg.Content == "Agent":
+				m.renderAgentContainer(&block, msg, childrenOf[msg.ToolID])
+			case msg.Depth > 0:
+				m.renderNestedToolCall(&block, msg)
+			default:
+				m.renderToolCall(&block, msg)
+			}
 		case MessageStatus:
 			block.WriteString(m.theme.NormalText.Render("― " + msg.Content + " ―"))
 		case MessageError:
 			block.WriteString(m.theme.AccentText.Render("ERROR: "))
 			block.WriteString(msg.Content)
 		case MessageSystem:
-			// QUM-338: system-injected content (inbox drains today). Mail
-			// glyph + distinct SystemText style so the human watching the TUI
-			// can tell at a glance the system spoke, not them.
 			block.WriteString(m.theme.SystemText.Render("✉ " + msg.Content))
 		}
 		if selecting && i >= selLo && i <= selHi {
@@ -667,6 +705,90 @@ func (m *ViewportModel) renderNestedToolCall(sb *strings.Builder, msg MessageEnt
 	sb.WriteString(m.theme.AccentText.Render("│ " + indent))
 	sb.WriteString(renderedIndicator)
 	sb.WriteString(m.theme.NormalText.Render(" " + body))
+}
+
+// renderAgentContainer renders an Agent tool call as a visual container.
+// When pending: header + input + nested child tool calls (live activity).
+// When complete: header + collapsed result preview (children hidden). (QUM-386)
+func (m *ViewportModel) renderAgentContainer(sb *strings.Builder, msg MessageEntry, childIndices []int) {
+	// Indicator
+	var renderedIndicator string
+	switch {
+	case msg.Pending:
+		frame := m.spinnerFrame
+		if frame == "" {
+			frame = "⠋"
+		}
+		renderedIndicator = m.theme.AccentText.Render(frame)
+	case msg.Failed:
+		renderedIndicator = m.theme.ErrorText.Render("✗")
+	default:
+		renderedIndicator = m.theme.AccentText.Render("✓")
+	}
+
+	// Header: ┌ {indicator} Agent
+	name := msg.Content
+	if m.width > 0 {
+		const fixedHeaderCells = 4
+		budget := m.width - fixedHeaderCells
+		if budget < 1 {
+			budget = 1
+		}
+		name = ansi.Truncate(msg.Content, budget, "…")
+	}
+	sb.WriteString(m.theme.AccentText.Render("┌ "))
+	sb.WriteString(renderedIndicator)
+	sb.WriteString(m.theme.AccentText.Render(" " + name))
+
+	// Input summary
+	body := msg.ToolInput
+	if m.toolInputsExpanded && msg.ToolInputFull != "" {
+		body = msg.ToolInputFull
+	}
+	if body != "" {
+		sb.WriteString("\n")
+		for i, ln := range wrapToolInput(body, m.width-toolCallInputPrefix) {
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(m.theme.NormalText.Render("│ " + ln))
+		}
+	}
+
+	if msg.Pending {
+		// Show nested children while in-flight.
+		for _, ci := range childIndices {
+			child := m.messages[ci]
+			sb.WriteString("\n")
+			m.renderNestedToolCall(sb, child)
+		}
+	} else if msg.Result != "" {
+		// Collapsed: show result preview only (children hidden).
+		previewStyle := m.theme.NormalText
+		if msg.Failed {
+			previewStyle = m.theme.ErrorText
+		}
+		maxLines := 3
+		if m.toolInputsExpanded {
+			maxLines = -1
+		}
+		previewLines, more := previewResultLines(msg.Result, maxLines, m.width-toolCallInputPrefix)
+		for _, ln := range previewLines {
+			sb.WriteString("\n")
+			sb.WriteString(previewStyle.Render("│ " + ln))
+		}
+		if more > 0 {
+			trailer := fmt.Sprintf("+ %d more lines", more)
+			if m.width > toolCallInputPrefix {
+				trailer = ansi.Truncate(trailer, m.width-toolCallInputPrefix, "…")
+			}
+			sb.WriteString("\n")
+			sb.WriteString(m.theme.NormalText.Render("│ " + trailer))
+		}
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(m.theme.AccentText.Render("└"))
 }
 
 // previewResultLines splits result on newlines, drops empty/whitespace-only

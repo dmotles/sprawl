@@ -2944,6 +2944,39 @@ func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
 	}
 }
 
+// QUM-386: AssistantContentMsg dispatches each inner msg to the viewport.
+func TestAppModel_AssistantContentMsg_DispatchesAll(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = resized.(AppModel)
+
+	// Simulate receiving a batch of two parallel Agent tool calls.
+	contentMsg := AssistantContentMsg{
+		Msgs: []tea.Msg{
+			ToolCallMsg{ToolName: "Agent", ToolID: "a1", Approved: true, Input: "task A"},
+			ToolCallMsg{ToolName: "Agent", ToolID: "a2", Approved: true, Input: "task B"},
+		},
+	}
+	updated, _ := m.Update(contentMsg)
+	app := updated.(AppModel)
+
+	// Both tool calls should be in the root viewport.
+	msgs := app.rootVP().GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages in viewport, want 2", len(msgs))
+	}
+	if msgs[0].Content != "Agent" || msgs[0].ToolID != "a1" {
+		t.Errorf("msgs[0] = {Content:%q, ToolID:%q}, want {Agent, a1}", msgs[0].Content, msgs[0].ToolID)
+	}
+	if msgs[1].Content != "Agent" || msgs[1].ToolID != "a2" {
+		t.Errorf("msgs[1] = {Content:%q, ToolID:%q}, want {Agent, a2}", msgs[1].Content, msgs[1].ToolID)
+	}
+	// Both should be depth 0 (parallel siblings).
+	if msgs[0].Depth != 0 || msgs[1].Depth != 0 {
+		t.Errorf("parallel Agent depths = {%d, %d}, want {0, 0}", msgs[0].Depth, msgs[1].Depth)
+	}
+}
+
 func TestAppModel_Esc_NoBridgeNoInterrupt(t *testing.T) {
 	app := newTestAppModel(t)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})

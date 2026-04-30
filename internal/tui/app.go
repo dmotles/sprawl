@@ -451,6 +451,31 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, commitCmd
 
+	case AssistantContentMsg:
+		// QUM-386: batch of content blocks from a single assistant message.
+		var cmds []tea.Cmd
+		for _, inner := range msg.Msgs {
+			switch im := inner.(type) {
+			case AssistantTextMsg:
+				m.setTurnState(TurnStreaming)
+				m.rootVP().AppendAssistantChunk(im.Text)
+			case ToolCallMsg:
+				m.rootVP().AppendToolCall(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput)
+				wasZero := m.pendingToolCalls == 0
+				m.pendingToolCalls++
+				if wasZero {
+					cmds = append(cmds, m.spinner.Tick)
+				}
+			}
+		}
+		if m.bridge != nil {
+			cmds = append(cmds, m.bridge.WaitForEvent())
+		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
+
 	case AssistantTextMsg:
 		m.setTurnState(TurnStreaming)
 		m.rootVP().AppendAssistantChunk(msg.Text)
