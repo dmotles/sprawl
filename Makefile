@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-exit-code-preservation
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -67,3 +67,8 @@ test-notify-tui-e2e:
 # HandoffRequestedMsg/SessionRestartingMsg/RestartSessionMsg handlers.
 test-handoff-e2e:
 	bash scripts/test-handoff-e2e.sh
+
+# QUM-328: regression guard — verifies E2E scripts preserve exit codes
+# across cleanup traps. Lightweight (no claude/tmux/spawl needed).
+test-exit-code-preservation:
+	bash scripts/test-exit-code-preservation.sh

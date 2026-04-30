@@ -174,6 +174,7 @@ claude_session_id_for_pid() {
 }
 
 cleanup() {
+    local rc=$?
     if [ -n "${PHANTOM_PID:-}" ]; then
         kill "$PHANTOM_PID" 2>/dev/null || true
     fi
@@ -183,6 +184,7 @@ cleanup() {
     case "$SPRAWL_ROOT" in
         /tmp/*) rm -rf -- "$SPRAWL_ROOT" ;;
     esac
+    exit "$rc"
 }
 trap cleanup EXIT
 
