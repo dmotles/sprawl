@@ -107,14 +107,19 @@ func (o *recordingObserver) Types() []string {
 }
 
 type mockToolBridge struct {
+	mu         sync.Mutex
 	serverName string
 	payload    string
 	response   json.RawMessage
+	lastCtx    context.Context
 }
 
-func (b *mockToolBridge) HandleIncoming(_ context.Context, serverName string, msg json.RawMessage) (json.RawMessage, error) {
+func (b *mockToolBridge) HandleIncoming(ctx context.Context, serverName string, msg json.RawMessage) (json.RawMessage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.serverName = serverName
 	b.payload = string(msg)
+	b.lastCtx = ctx
 	return b.response, nil
 }
 
@@ -345,6 +350,92 @@ func TestSession_StartTurnRoutesMCPMessagesThroughToolBridge(t *testing.T) {
 	}
 	if parsed["type"] != "control_response" {
 		t.Fatalf("response type = %v, want control_response", parsed["type"])
+	}
+}
+
+func TestSession_MCPMessageCarriesCallerIdentity(t *testing.T) {
+	transport := newMockManagedTransport()
+	bridge := &mockToolBridge{
+		response: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`),
+	}
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-child",
+		Identity:  "finn",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		<-transport.sendCh
+		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"report_status","arguments":{"state":"working","summary":"test"}}}}}`)
+		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+		close(transport.recvCh)
+	}()
+
+	events, err := session.StartTurn(ctx, "do work", TurnSpec{
+		Init: InitSpec{
+			MCPServerNames: []string{"sprawl"},
+			ToolBridge:     bridge,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartTurn() error: %v", err)
+	}
+	drainMessages(events)
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+
+	if bridge.lastCtx == nil {
+		t.Fatal("bridge was not called")
+	}
+	identity := CallerIdentity(bridge.lastCtx)
+	if identity != "finn" {
+		t.Errorf("CallerIdentity(bridge ctx) = %q, want %q", identity, "finn")
+	}
+}
+
+func TestSession_MCPMessageNoIdentityWhenEmpty(t *testing.T) {
+	transport := newMockManagedTransport()
+	bridge := &mockToolBridge{
+		response: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`),
+	}
+	// No Identity set — simulates root weave session
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-root",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	go func() {
+		<-transport.sendCh
+		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
+		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+		close(transport.recvCh)
+	}()
+
+	events, err := session.StartTurn(ctx, "list tools", TurnSpec{
+		Init: InitSpec{
+			MCPServerNames: []string{"sprawl"},
+			ToolBridge:     bridge,
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartTurn() error: %v", err)
+	}
+	drainMessages(events)
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+
+	if bridge.lastCtx == nil {
+		t.Fatal("bridge was not called")
+	}
+	identity := CallerIdentity(bridge.lastCtx)
+	if identity != "" {
+		t.Errorf("CallerIdentity(bridge ctx) = %q, want empty for root session", identity)
 	}
 }
 

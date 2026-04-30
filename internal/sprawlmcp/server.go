@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -260,8 +261,10 @@ func (s *Server) toolReportStatus(ctx context.Context, args json.RawMessage) (st
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	// Empty agentName → supervisor uses its own callerName.
-	result, err := s.sup.ReportStatus(ctx, "", p.State, p.Summary, p.Detail)
+	// Pass caller identity from context so child agents report under their
+	// own name instead of the shared supervisor's callerName (QUM-387).
+	agentName := backendpkg.CallerIdentity(ctx)
+	result, err := s.sup.ReportStatus(ctx, agentName, p.State, p.Summary, p.Detail)
 	if err != nil {
 		return "", err
 	}

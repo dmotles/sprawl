@@ -76,6 +76,7 @@ type TurnSpec struct {
 // SessionConfig configures a Session instance.
 type SessionConfig struct {
 	SessionID    string
+	Identity     string
 	Capabilities Capabilities
 	Observer     Observer
 }
@@ -290,7 +291,11 @@ func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 				Message    json.RawMessage `json:"message"`
 			}
 			if err := json.Unmarshal(cr.Request, &mcpReq); err == nil {
-				mcpResp, mcpErr := initSpec.ToolBridge.HandleIncoming(ctx, mcpReq.ServerName, mcpReq.Message)
+				bridgeCtx := ctx
+				if s.config.Identity != "" {
+					bridgeCtx = WithCallerIdentity(ctx, s.config.Identity)
+				}
+				mcpResp, mcpErr := initSpec.ToolBridge.HandleIncoming(bridgeCtx, mcpReq.ServerName, mcpReq.Message)
 				if mcpErr != nil {
 					resp.Response.Subtype = "error"
 					resp.Response.Response = map[string]any{"error": mcpErr.Error()}

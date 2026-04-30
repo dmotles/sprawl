@@ -114,6 +114,7 @@ func (a *Adapter) Start(ctx context.Context, spec backend.SessionSpec) (backend.
 
 	return backend.NewSession(transport, backend.SessionConfig{
 		SessionID: spec.SessionID,
+		Identity:  spec.Identity,
 		Capabilities: backend.Capabilities{
 			SupportsInterrupt:  true,
 			SupportsResume:     true,
