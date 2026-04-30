@@ -1203,7 +1203,17 @@ func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 		// name is hardcoded to "weave" here to match the AppModel default;
 		// if/when that name becomes configurable, thread it through.
 		rootMsgs, _ := messages.List(sprawlRoot, "weave", "unread")
-		return AgentTreeMsg{Nodes: buildTreeNodes(agents, unread), RootUnread: len(rootMsgs)}
+		// Filter out the root agent from the child list — PrependWeaveRoot
+		// adds a synthetic root node, so including weave here would cause
+		// it to appear twice in the tree (once as a real root from
+		// buildTreeNodes and once from PrependWeaveRoot).
+		filtered := make([]supervisor.AgentInfo, 0, len(agents))
+		for _, a := range agents {
+			if a.Name != "weave" {
+				filtered = append(filtered, a)
+			}
+		}
+		return AgentTreeMsg{Nodes: buildTreeNodes(filtered, unread), RootUnread: len(rootMsgs)}
 	}
 }
 
