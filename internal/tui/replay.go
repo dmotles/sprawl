@@ -74,6 +74,33 @@ func LoadChildTranscript(path string, since time.Time, maxMessages int) ([]Messa
 	return entries, nil
 }
 
+// extractToolResultContent decodes the polymorphic `content` field of a
+// tool_result block from a generic JSON unmarshal (map[string]any). The
+// Anthropic protocol allows it to be a plain string or an array of
+// {type:"text", text:"..."} blocks.
+func extractToolResultContent(v any) string {
+	switch c := v.(type) {
+	case string:
+		return c
+	case []any:
+		var parts []string
+		for _, elem := range c {
+			m, ok := elem.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, _ := m["type"].(string); t == "text" {
+				if txt, ok := m["text"].(string); ok && txt != "" {
+					parts = append(parts, txt)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
 // scanTranscript opens the JSONL log at path and parses it into MessageEntry
 // values, skipping records whose top-level timestamp is before `since` when
 // `since` is non-zero. Missing file returns (nil, nil).
@@ -152,11 +179,21 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						}
 					}
 					// QUM-379: tool_result blocks pop Agent IDs from the nesting stack.
+					// QUM-388: also patch result content onto the matching tool call entry.
 					if bt == "tool_result" {
 						tid, _ := bm["tool_use_id"].(string)
 						for j := len(agentStack) - 1; j >= 0; j-- {
 							if agentStack[j] == tid {
 								agentStack = append(agentStack[:j], agentStack[j+1:]...)
+								break
+							}
+						}
+						content := extractToolResultContent(bm["content"])
+						isError, _ := bm["is_error"].(bool)
+						for k := len(entries) - 1; k >= 0; k-- {
+							if entries[k].Type == MessageToolCall && entries[k].ToolID == tid {
+								entries[k].Result = content
+								entries[k].Failed = isError
 								break
 							}
 						}
