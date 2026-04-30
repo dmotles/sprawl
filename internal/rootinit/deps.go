@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
@@ -53,6 +55,17 @@ type Deps struct {
 	// Returns an empty string if no override is present.
 	LoadMemoryModel func(sprawlRoot string) string
 
+	// SaveAgent persists an AgentState to disk. Used to create the root
+	// agent's state file during initialization.
+	SaveAgent func(sprawlRoot string, agent *state.AgentState) error
+
+	// LoadAgent reads an AgentState from disk. Used on the resume path
+	// to avoid overwriting meaningful fields.
+	LoadAgent func(sprawlRoot, name string) (*state.AgentState, error)
+
+	// CurrentBranch returns the current git branch for the given repo root.
+	CurrentBranch func(repoRoot string) (string, error)
+
 	// BackgroundConsolidate runs the consolidation pipeline off the
 	// handoff critical path and returns a channel closed when the
 	// pipeline completes. The default wiring uses StartBackgroundConsolidation
@@ -85,6 +98,9 @@ func DefaultDeps() *Deps {
 		UpdatePersistentKnowledge: memory.UpdatePersistentKnowledge,
 		ListRecentSessions:        memory.ListRecentSessions,
 		ReadTimeline:              memory.ReadTimeline,
+		SaveAgent:                 state.SaveAgent,
+		LoadAgent:                 state.LoadAgent,
+		CurrentBranch:             gitCurrentBranch,
 		MemoryModel:               memory.DefaultMemoryModel,
 		LoadMemoryModel:           defaultLoadMemoryModel,
 	}
@@ -92,6 +108,17 @@ func DefaultDeps() *Deps {
 		return StartBackgroundConsolidation(d, sprawlRoot, stdout)
 	}
 	return d
+}
+
+// gitCurrentBranch returns the current git branch for the given repo root.
+func gitCurrentBranch(repoRoot string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // defaultLoadMemoryModel reads .sprawl/config.yaml and returns the
