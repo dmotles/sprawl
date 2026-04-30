@@ -7,6 +7,8 @@ package commands
 const HandoffPromptTemplate = `The user invoked /handoff from the sprawl enter command palette. ` +
 	`Consolidate this session now.
 
+> **Safe with active children.** Handoff replaces ONLY weave's own Claude subprocess; the supervisor, runtime registry, running child agents, and inbox notifier all survive untouched. You do NOT need to wait for in-flight agents to finish — just call out what they are working on in the summary so the next weave knows what's running. This is an architectural invariant; if handoff ever kills or corrupts a child, that is a bug — file it.
+
 ## Step 1: Write the session summary
 
 Cover these categories. Be specific, not vague — the summary is the primary ` +

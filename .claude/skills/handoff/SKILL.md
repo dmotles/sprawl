@@ -8,6 +8,8 @@ user-invocable: true
 
 Use this skill at the end of a weave session to write a structured summary and hand off context to the next session. The summary you write is the **primary context** the next weave will have — make it count.
 
+> **Safe with active children.** Handoff replaces ONLY weave's own Claude subprocess; the supervisor, runtime registry, running child agents, and inbox notifier all survive untouched. You do NOT need to wait for in-flight agents to finish — just call out what they are working on in the summary so the next weave knows what's running. This is an architectural invariant; if handoff ever kills or corrupts a child, that is a bug — file it.
+
 ## Step 1: Write the Session Summary
 
 Write a structured summary covering these categories:

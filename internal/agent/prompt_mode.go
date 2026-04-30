@@ -254,7 +254,7 @@ const rootCommandsTUI = `KEY TOOLS (MCP):
   status({})                                       — show status of all agents with state, type, family, mail count
 
   Session:
-  handoff({summary: "<markdown summary>"})         — weave-only. Persist a structured session summary and hand off to a fresh weave session; the host tears down the current subprocess and starts a new one with consolidated memory. Use this at session end in place of bash ` + "`sprawl handoff`" + `. See the /handoff skill for the summary template.`
+  handoff({summary: "<markdown summary>"})         — weave-only. Persist a structured session summary and hand off to a fresh weave session with consolidated memory. Safe with active children: the host replaces ONLY weave's own Claude subprocess; the supervisor, runtime registry, all running child agents, and the inbox notifier survive untouched. You do NOT need to wait for in-flight agents to finish — mention what they are working on in the summary instead, so the next weave knows what's running. (This is an architectural invariant; if handoff ever kills or corrupts a child, that is a bug — file it.) Use this at session end in place of bash ` + "`sprawl handoff`" + `. See the /handoff skill for the summary template.`
 
 const rootDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - ` + "`sprawl delegate <agent> \"<task>\"`" + ` — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
