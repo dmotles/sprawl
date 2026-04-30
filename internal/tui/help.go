@@ -39,7 +39,7 @@ func (m HelpModel) View() string {
 		{"v (viewport)", "Enter select mode"},
 		{"j / k (select)", "Move selection cursor"},
 		{"y (select)", "Yank selection to clipboard (raw markdown)"},
-		{"Ctrl+C", "Quit"},
+		{"Ctrl+C", "Clear input / Quit if empty"},
 		{"Esc", "Dismiss help / exit select / clear queue / interrupt turn"},
 	}
 

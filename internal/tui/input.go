@@ -141,6 +141,16 @@ func (m *InputModel) Height() int {
 	return m.ta.Height()
 }
 
+// Value returns the current textarea contents.
+func (m *InputModel) Value() string {
+	return m.ta.Value()
+}
+
+// SetValue replaces the textarea contents.
+func (m *InputModel) SetValue(s string) {
+	m.ta.SetValue(s)
+}
+
 // SetDisabled enables or disables the input.
 func (m *InputModel) SetDisabled(disabled bool) {
 	m.disabled = disabled

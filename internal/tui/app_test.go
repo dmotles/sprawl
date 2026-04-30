@@ -181,6 +181,61 @@ func TestAppModel_CtrlCShowsConfirm(t *testing.T) {
 	}
 }
 
+// QUM-409: Ctrl+C with non-empty input clears the input rather than triggering
+// the quit-confirm dialog (REPL convention).
+func TestAppModel_CtrlCWithNonEmptyInputClears(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.input.SetValue("hello world")
+
+	updated, cmd := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app = updated.(AppModel)
+
+	if app.showConfirm {
+		t.Error("Ctrl+C with non-empty input must NOT show quit confirm")
+	}
+	if app.input.Value() != "" {
+		t.Errorf("Ctrl+C with non-empty input must clear input, got %q", app.input.Value())
+	}
+	if cmd != nil {
+		t.Error("Ctrl+C clearing input should not return a cmd")
+	}
+}
+
+// QUM-409: Ctrl+C when input is whitespace-only also clears (TrimSpace check)
+// rather than treating whitespace as content worth preserving.
+func TestAppModel_CtrlCWithWhitespaceOnlyInputQuits(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.input.SetValue("   \n\t ")
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app = updated.(AppModel)
+
+	if !app.showConfirm {
+		t.Error("Ctrl+C with whitespace-only input should fall through to quit confirm")
+	}
+}
+
+// QUM-409: explicit empty-input branch — preserves prior quit-confirm behavior.
+func TestAppModel_CtrlCWithEmptyInputShowsConfirm(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	if app.input.Value() != "" {
+		t.Fatalf("precondition: input should be empty, got %q", app.input.Value())
+	}
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app = updated.(AppModel)
+
+	if !app.showConfirm {
+		t.Error("Ctrl+C with empty input must show quit confirm (existing behavior)")
+	}
+}
+
 func TestAppModel_ConfirmYQuitsApp(t *testing.T) {
 	m := newTestAppModel(t)
 	// Show confirm dialog first.
