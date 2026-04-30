@@ -94,8 +94,12 @@ export SPRAWL_BIN="$SPRAWL_BIN"
 export SPRAWL_ROOT="$TEST_ROOT_REAL"
 export SPRAWL_TEST_MODE=1
 export SPRAWL_NAMESPACE="$TEST_NS"
+export SPRAWL_TMUX_SOCKET="sprawl-sandbox-$TEST_NS"
 export TEST_NS="$TEST_NS"
 export TEST_ROOT="$TEST_ROOT_REAL"
+
+# _stmux wraps tmux with the dedicated sandbox socket.
+_stmux() { tmux \${SPRAWL_TMUX_SOCKET:+-L "\$SPRAWL_TMUX_SOCKET"} "\$@"; }
 
 sprawl_sandbox_destroy() {
     local root="\${SPRAWL_ROOT:-}"
@@ -112,10 +116,10 @@ sprawl_sandbox_destroy() {
             ;;
     esac
     if [ -n "\$ns" ]; then
-        tmux kill-session -t "\$ns" 2>/dev/null || true
+        _stmux kill-session -t "\$ns" 2>/dev/null || true
     fi
     rm -rf -- "\$root"
-    unset SPRAWL_ROOT SPRAWL_NAMESPACE TEST_ROOT TEST_NS SPRAWL_TEST_MODE SPRAWL_BIN
+    unset SPRAWL_ROOT SPRAWL_NAMESPACE SPRAWL_TMUX_SOCKET TEST_ROOT TEST_NS SPRAWL_TEST_MODE SPRAWL_BIN
     trap - EXIT
     echo "sprawl_sandbox_destroy: cleaned up \$root" >&2
 }
@@ -130,7 +134,7 @@ _sprawl_sandbox_cleanup_trap() {
             return 0
             ;;
     esac
-    [ -n "\${SPRAWL_NAMESPACE:-}" ] && tmux kill-session -t "\$SPRAWL_NAMESPACE" 2>/dev/null || true
+    [ -n "\${SPRAWL_NAMESPACE:-}" ] && _stmux kill-session -t "\$SPRAWL_NAMESPACE" 2>/dev/null || true
     rm -rf -- "\$root"
 }
 trap _sprawl_sandbox_cleanup_trap EXIT
@@ -145,7 +149,8 @@ Test environment ready:
   SPRAWL_TEST_MODE=1
   SPRAWL_NAMESPACE=$TEST_NS
   Session: ${TEST_NS}
-  Attach:  tmux attach-session -t ${TEST_NS}
+  SPRAWL_TMUX_SOCKET=sprawl-sandbox-${TEST_NS}
+  Attach:  tmux -L sprawl-sandbox-${TEST_NS} attach-session -t ${TEST_NS}
   Cleanup: sprawl_sandbox_destroy   (or just exit the shell — auto-cleans)
 
 SAFETY: Never run 'rm -rf \$SPRAWL_ROOT' by hand. Use sprawl_sandbox_destroy.
