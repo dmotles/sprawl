@@ -107,7 +107,7 @@ func TestDeprecationWarningCustom_FreeFormBody(t *testing.T) {
 func TestDeprecationWarningCustom_QuietEnvSuppresses(t *testing.T) {
 	buf := withDeprecationCapture(t, "1")
 
-	deprecationWarningCustom("poke", "this CLI form will be removed in a future release")
+	deprecationWarningCustom("color", "this CLI form will be removed in a future release")
 
 	if buf.Len() != 0 {
 		t.Errorf("expected no output, got: %q", buf.String())

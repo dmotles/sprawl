@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"io/fs"
 	"strings"
 	"testing"
 
@@ -156,20 +155,6 @@ func TestDeprecation_Handoff_Wired(t *testing.T) {
 	deps := &handoffDeps{getenv: func(string) string { return "" }}
 	_ = runHandoff(deps)
 	assertDeprecation(t, buf, "handoff", "handoff")
-}
-
-func TestDeprecation_Poke_Wired(t *testing.T) {
-	buf := withDeprecationCapture(t, "")
-	deps := &pokeDeps{
-		getenv:    func(string) string { return "/tmp" },
-		writeFile: func(string, []byte, fs.FileMode) error { return nil },
-		stdout:    &bytes.Buffer{},
-	}
-	_ = runPoke(deps, "alice", "msg")
-	out := buf.String()
-	if !strings.Contains(out, "warning:") || !strings.Contains(out, "`sprawl poke`") {
-		t.Errorf("expected deprecation warning for poke, got: %q", out)
-	}
 }
 
 func TestDeprecation_Color_Wired(t *testing.T) {
