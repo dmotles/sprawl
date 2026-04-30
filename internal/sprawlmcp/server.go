@@ -388,11 +388,29 @@ func (s *Server) toolMessagesRead(ctx context.Context, args json.RawMessage) (st
 
 func (s *Server) toolMessagesArchive(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		ID string `json:"id"`
+		ID  string `json:"id"`
+		All bool   `json:"all"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
+
+	if p.All {
+		result, err := s.sup.MessagesArchiveAll(ctx, "all")
+		if err != nil {
+			return "", err
+		}
+		data, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("marshaling result: %w", err)
+		}
+		return string(data), nil
+	}
+
+	if p.ID == "" {
+		return "", fmt.Errorf("either 'id' or 'all' must be provided")
+	}
+
 	result, err := s.sup.MessagesArchive(ctx, p.ID)
 	if err != nil {
 		return "", err

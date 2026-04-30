@@ -78,19 +78,22 @@ type mockSupervisor struct {
 	sendInterruptErr        error
 
 	// Messages* recording + seams (QUM-316)
-	messagesListFilter    string
-	messagesListLimit     int
-	messagesListResult    *supervisor.MessagesListResult
-	messagesListErr       error
-	messagesReadID        string
-	messagesReadResult    *supervisor.MessagesReadResult
-	messagesReadErr       error
-	messagesArchiveID     string
-	messagesArchiveResult *supervisor.MessagesArchiveResult
-	messagesArchiveErr    error
-	messagesPeekCalled    bool
-	messagesPeekResult    *supervisor.MessagesPeekResult
-	messagesPeekErr       error
+	messagesListFilter       string
+	messagesListLimit        int
+	messagesListResult       *supervisor.MessagesListResult
+	messagesListErr          error
+	messagesReadID           string
+	messagesReadResult       *supervisor.MessagesReadResult
+	messagesReadErr          error
+	messagesArchiveID        string
+	messagesArchiveResult    *supervisor.MessagesArchiveResult
+	messagesArchiveErr       error
+	messagesArchiveAllMode   string
+	messagesArchiveAllResult *supervisor.MessagesArchiveAllResult
+	messagesArchiveAllErr    error
+	messagesPeekCalled       bool
+	messagesPeekResult       *supervisor.MessagesPeekResult
+	messagesPeekErr          error
 }
 
 func (m *mockSupervisor) MessagesList(_ context.Context, filter string, limit int) (*supervisor.MessagesListResult, error) {
@@ -125,6 +128,17 @@ func (m *mockSupervisor) MessagesArchive(_ context.Context, id string) (*supervi
 		return m.messagesArchiveResult, nil
 	}
 	return &supervisor.MessagesArchiveResult{ID: id, Archived: true}, nil
+}
+
+func (m *mockSupervisor) MessagesArchiveAll(_ context.Context, mode string) (*supervisor.MessagesArchiveAllResult, error) {
+	m.messagesArchiveAllMode = mode
+	if m.messagesArchiveAllErr != nil {
+		return nil, m.messagesArchiveAllErr
+	}
+	if m.messagesArchiveAllResult != nil {
+		return m.messagesArchiveAllResult, nil
+	}
+	return &supervisor.MessagesArchiveAllResult{ArchivedCount: 0, Archived: true}, nil
 }
 
 func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPeekResult, error) {
@@ -1439,6 +1453,104 @@ func TestServer_ToolsCall_SprawlMessagesArchive(t *testing.T) {
 	}
 	if !body.Archived {
 		t.Error("archived = false")
+	}
+}
+
+func TestServer_ToolsCall_MessagesArchiveBulkAll(t *testing.T) {
+	mock := &mockSupervisor{
+		messagesArchiveAllResult: &supervisor.MessagesArchiveAllResult{ArchivedCount: 13, Archived: true},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(57, "tools/call", map[string]any{
+		"name":      "messages_archive",
+		"arguments": map[string]any{"all": true},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if mock.messagesArchiveAllMode != "all" {
+		t.Errorf("mode = %q, want %q", mock.messagesArchiveAllMode, "all")
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var body supervisor.MessagesArchiveAllResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.ArchivedCount != 13 {
+		t.Errorf("archived_count = %d, want 13", body.ArchivedCount)
+	}
+	if !body.Archived {
+		t.Error("archived = false")
+	}
+}
+
+func TestServer_ToolsCall_MessagesArchiveNoParams(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(58, "tools/call", map[string]any{
+		"name":      "messages_archive",
+		"arguments": map[string]any{},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	isErr, _ := result["isError"].(bool)
+	if !isErr {
+		t.Fatal("expected isError for missing params")
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "either 'id' or 'all' must be provided") {
+		t.Errorf("unexpected error text: %s", text)
+	}
+}
+
+func TestServer_ToolsCall_MessagesArchiveSingleStillWorks(t *testing.T) {
+	mock := &mockSupervisor{
+		messagesArchiveResult: &supervisor.MessagesArchiveResult{ID: "xyz", FullID: "full-xyz", Archived: true},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(59, "tools/call", map[string]any{
+		"name":      "messages_archive",
+		"arguments": map[string]any{"id": "xyz"},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if mock.messagesArchiveID != "xyz" {
+		t.Errorf("id = %q, want %q", mock.messagesArchiveID, "xyz")
+	}
+	// Ensure bulk was NOT called
+	if mock.messagesArchiveAllMode != "" {
+		t.Errorf("bulk archive was called unexpectedly with mode %q", mock.messagesArchiveAllMode)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError: %v", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	var body supervisor.MessagesArchiveResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !body.Archived || body.ID != "xyz" {
+		t.Errorf("unexpected body: %+v", body)
 	}
 }
 

@@ -879,6 +879,68 @@ func TestMessagesArchive_NotFound(t *testing.T) {
 	}
 }
 
+func TestMessagesArchiveAll_ArchivesAll(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	seedInbox(t, tmpDir, "a", "one", "")
+	seedInbox(t, tmpDir, "b", "two", "")
+	seedInbox(t, tmpDir, "c", "three", "")
+
+	res, err := sup.MessagesArchiveAll(context.Background(), "all")
+	if err != nil {
+		t.Fatalf("MessagesArchiveAll: %v", err)
+	}
+	if res.ArchivedCount != 3 {
+		t.Errorf("archived_count = %d, want 3", res.ArchivedCount)
+	}
+	if !res.Archived {
+		t.Error("Archived=false")
+	}
+
+	archived, err := messages.List(tmpDir, "weave", "archived")
+	if err != nil {
+		t.Fatalf("List archived: %v", err)
+	}
+	if len(archived) != 3 {
+		t.Errorf("got %d archived, want 3", len(archived))
+	}
+}
+
+func TestMessagesArchiveAll_ArchivesReadOnly(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	seedInbox(t, tmpDir, "a", "one", "")
+	readID := seedInbox(t, tmpDir, "b", "two", "")
+	// Mark one read.
+	full, _ := messages.ResolvePrefix(tmpDir, "weave", readID)
+	if err := messages.MarkRead(tmpDir, "weave", full); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+
+	res, err := sup.MessagesArchiveAll(context.Background(), "read")
+	if err != nil {
+		t.Fatalf("MessagesArchiveAll read: %v", err)
+	}
+	if res.ArchivedCount != 1 {
+		t.Errorf("archived_count = %d, want 1", res.ArchivedCount)
+	}
+
+	// Unread message should still exist.
+	unread, err := messages.List(tmpDir, "weave", "unread")
+	if err != nil {
+		t.Fatalf("List unread: %v", err)
+	}
+	if len(unread) != 1 {
+		t.Errorf("got %d unread, want 1", len(unread))
+	}
+}
+
+func TestMessagesArchiveAll_InvalidMode(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	_, err := sup.MessagesArchiveAll(context.Background(), "bogus")
+	if err == nil {
+		t.Fatal("expected error for invalid mode")
+	}
+}
+
 func TestMessagesPeek_CountsUnreadAndPreviews(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	seedInbox(t, tmpDir, "a", "one", "")
