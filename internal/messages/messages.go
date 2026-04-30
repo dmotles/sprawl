@@ -103,13 +103,17 @@ func DefaultNotifier() NotifyFunc {
 	return defaultNotifier
 }
 
-// Send delivers a message from one agent to another using Maildir-style atomic writes.
-func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error {
+// Send delivers a message from one agent to another using Maildir-style
+// atomic writes. It returns the generated short ID (a 3- or 4-character
+// base36 token) on success — callers persist this so the truncation hints
+// in queue-flush prompts can cite an ID that `sprawl messages read` accepts.
+// See QUM-412.
+func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) (string, error) {
 	if from == "" {
-		return fmt.Errorf("sender (from) must not be empty")
+		return "", fmt.Errorf("sender (from) must not be empty")
 	}
 	if to == "" {
-		return fmt.Errorf("recipient (to) must not be empty")
+		return "", fmt.Errorf("recipient (to) must not be empty")
 	}
 
 	var sopts sendOptions
@@ -120,14 +124,14 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 	agentDir := filepath.Join(MessagesDir(sprawlRoot), to)
 	for _, sub := range []string{"tmp", "new", "cur", "archive"} {
 		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
-			return fmt.Errorf("creating directory %s: %w", sub, err)
+			return "", fmt.Errorf("creating directory %s: %w", sub, err)
 		}
 	}
 
 	// Generate random hex suffix
 	suffixBytes := make([]byte, 4)
 	if _, err := rand.Read(suffixBytes); err != nil {
-		return fmt.Errorf("generating random suffix: %w", err)
+		return "", fmt.Errorf("generating random suffix: %w", err)
 	}
 	hexSuffix := hex.EncodeToString(suffixBytes)
 
@@ -136,7 +140,7 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 
 	shortID, err := generateShortID(agentDir)
 	if err != nil {
-		return fmt.Errorf("generating short ID: %w", err)
+		return "", fmt.Errorf("generating short ID: %w", err)
 	}
 
 	msg := &Message{
@@ -151,7 +155,7 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 
 	data, err := json.MarshalIndent(msg, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshaling message: %w", err)
+		return "", fmt.Errorf("marshaling message: %w", err)
 	}
 
 	filename := id + ".json"
@@ -159,11 +163,11 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 	newPath := filepath.Join(agentDir, "new", filename)
 
 	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // G306: world-readable message files are intentional
-		return fmt.Errorf("writing tmp file: %w", err)
+		return "", fmt.Errorf("writing tmp file: %w", err)
 	}
 
 	if err := os.Rename(tmpPath, newPath); err != nil {
-		return fmt.Errorf("moving message to new/: %w", err)
+		return "", fmt.Errorf("moving message to new/: %w", err)
 	}
 
 	// Best-effort copy to sender's sent/ directory for outbox tracking.
@@ -201,7 +205,7 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) error 
 		}()
 	}
 
-	return nil
+	return shortID, nil
 }
 
 // Inbox returns all messages for an agent from both new/ and cur/ directories,
@@ -528,7 +532,7 @@ func Broadcast(sprawlRoot, sender, subject, body string) (int, error) {
 		if agent.Status != "active" || agent.Name == sender {
 			continue
 		}
-		if err := Send(sprawlRoot, sender, agent.Name, subject, body); err != nil {
+		if _, err := Send(sprawlRoot, sender, agent.Name, subject, body); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", agent.Name, err))
 			continue
 		}

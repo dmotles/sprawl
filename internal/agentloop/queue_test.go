@@ -357,3 +357,33 @@ func TestEnqueue_ConcurrentWritersAssignUniqueSeqs(t *testing.T) {
 		}
 	}
 }
+
+// TestEntry_ShortIDPersistsRoundTrip enqueues an entry whose ShortID has been
+// populated by the supervisor (mirroring what messages.Send returns) and
+// asserts that ListPending preserves that field. Without a ShortID field on
+// Entry, the JSON round-trip drops the value and the truncation hint cannot
+// cite a resolvable ID. See QUM-412.
+func TestEntry_ShortIDPersistsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	e := Entry{
+		ID:      "uuid-roundtrip",
+		ShortID: "xyz",
+		Class:   ClassAsync,
+		From:    "weave",
+		Subject: "s",
+		Body:    "b",
+	}
+	if _, err := Enqueue(root, testAgent, e); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	got, err := ListPending(root, testAgent)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].ShortID != "xyz" {
+		t.Errorf("ShortID = %q, want %q", got[0].ShortID, "xyz")
+	}
+}

@@ -52,7 +52,8 @@ func (d *ReportDeps) sendMessage(sprawlRoot, from, to, subject, body string, opt
 	if d.SendMessage != nil {
 		return d.SendMessage(sprawlRoot, from, to, subject, body, opts...)
 	}
-	return messages.Send(sprawlRoot, from, to, subject, body, opts...)
+	_, err := messages.Send(sprawlRoot, from, to, subject, body, opts...)
+	return err
 }
 
 func (d *ReportDeps) enqueue(sprawlRoot, to string, e agentloop.Entry) (agentloop.Entry, error) {

@@ -26,7 +26,7 @@ func TestMessagesDir(t *testing.T) {
 func TestSend_CreatesMessageInNewDir(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "hello", "world")
+	_, err := Send(tmpDir, "alice", "bob", "hello", "world")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestSend_CreatesMessageInNewDir(t *testing.T) {
 func TestSend_MessageIsValidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "test subject", "test body")
+	_, err := Send(tmpDir, "alice", "bob", "test subject", "test body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestSend_MessageIsValidJSON(t *testing.T) {
 func TestSend_MessageIDFormat(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "subj", "body")
+	_, err := Send(tmpDir, "alice", "bob", "subj", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestSend_ConcurrentSends(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			errs[idx] = Send(tmpDir, "alice", "bob", "concurrent", "message")
+			_, errs[idx] = Send(tmpDir, "alice", "bob", "concurrent", "message")
 		}(i)
 	}
 	wg.Wait()
@@ -216,7 +216,7 @@ func TestSend_ConcurrentSends(t *testing.T) {
 func TestSend_CreatesSentCopy(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "subj", "body")
+	_, err := Send(tmpDir, "alice", "bob", "subj", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestSend_CreatesSentCopy(t *testing.T) {
 func TestSend_SentCopyMatchesDelivered(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "subj", "body")
+	_, err := Send(tmpDir, "alice", "bob", "subj", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -439,7 +439,7 @@ func TestInbox_SortedByTimestamp(t *testing.T) {
 func TestSend_CreatesDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "subj", "body")
+	_, err := Send(tmpDir, "alice", "bob", "subj", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestSend_CreatesDirectories(t *testing.T) {
 func TestSend_EmptyRecipient(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "", "subj", "body")
+	_, err := Send(tmpDir, "alice", "", "subj", "body")
 	if err == nil {
 		t.Fatal("expected error for empty recipient")
 	}
@@ -482,7 +482,7 @@ func TestSend_EmptyRecipient(t *testing.T) {
 func TestSend_EmptySender(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "", "bob", "subj", "body")
+	_, err := Send(tmpDir, "", "bob", "subj", "body")
 	if err == nil {
 		t.Fatal("expected error for empty sender")
 	}
@@ -500,7 +500,7 @@ func TestSend_ConsistentTimestamp(t *testing.T) {
 	NowFunc = func() time.Time { return fixedTime }
 	t.Cleanup(func() { NowFunc = origNowFunc })
 
-	err := Send(tmpDir, "alice", "bob", "timestamp test", "body")
+	_, err := Send(tmpDir, "alice", "bob", "timestamp test", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -1432,7 +1432,7 @@ func TestSend_WritesWakeFile(t *testing.T) {
 		t.Fatalf("creating agents dir: %v", err)
 	}
 
-	err := Send(tmpDir, "alice", "bob", "hello there", "body")
+	_, err := Send(tmpDir, "alice", "bob", "hello there", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -1458,12 +1458,12 @@ func TestSend_WakeFileOverwritten(t *testing.T) {
 		t.Fatalf("creating agents dir: %v", err)
 	}
 
-	err := Send(tmpDir, "alice", "bob", "first subject", "body1")
+	_, err := Send(tmpDir, "alice", "bob", "first subject", "body1")
 	if err != nil {
 		t.Fatalf("Send() first unexpected error: %v", err)
 	}
 
-	err = Send(tmpDir, "charlie", "bob", "second subject", "body2")
+	_, err = Send(tmpDir, "charlie", "bob", "second subject", "body2")
 	if err != nil {
 		t.Fatalf("Send() second unexpected error: %v", err)
 	}
@@ -1485,7 +1485,7 @@ func TestSend_WakeFileIgnoresErrors(t *testing.T) {
 
 	// Intentionally do NOT create .sprawl/agents/ directory.
 	// Send should still succeed; wake file write is best-effort.
-	err := Send(tmpDir, "alice", "bob", "subj", "body")
+	_, err := Send(tmpDir, "alice", "bob", "subj", "body")
 	if err != nil {
 		t.Fatalf("Send() should succeed even when wake file cannot be written, got error: %v", err)
 	}
@@ -1744,7 +1744,7 @@ func TestSend_WithNotify_RootRecipientCallsNotify(t *testing.T) {
 		calledMsgID = msgID
 	}
 
-	err := Send(tmpDir, "alice", "root", "urgent", "please read", WithNotify(notify))
+	_, err := Send(tmpDir, "alice", "root", "urgent", "please read", WithNotify(notify))
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -1798,7 +1798,7 @@ func TestSend_WithNotify_AnyRecipientCallsNotify(t *testing.T) {
 		notifyCalled = true
 	}
 
-	err := Send(tmpDir, "alice", "bob", "hello", "world", WithNotify(notify))
+	_, err := Send(tmpDir, "alice", "bob", "hello", "world", WithNotify(notify))
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -1822,7 +1822,7 @@ func TestSend_WithoutNotify_StillWorks(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Send to root WITHOUT any options -- backward compatibility
-	err := Send(tmpDir, "alice", "root", "hello", "world")
+	_, err := Send(tmpDir, "alice", "root", "hello", "world")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -1844,7 +1844,7 @@ func TestSend_NotifyPanicDoesNotBreakSend(t *testing.T) {
 		panic("notification system exploded")
 	}
 
-	err := Send(tmpDir, "alice", "root", "urgent", "body", WithNotify(notify))
+	_, err := Send(tmpDir, "alice", "root", "urgent", "body", WithNotify(notify))
 	if err != nil {
 		t.Fatalf("Send() should return nil even when notify panics, got: %v", err)
 	}
@@ -1879,7 +1879,7 @@ func TestSend_SentCopyFailureDoesNotReturnError(t *testing.T) {
 	})
 
 	// Send should succeed (delivery to recipient) even though sent copy fails.
-	err := Send(tmpDir, "alice", "bob", "hello", "world")
+	_, err := Send(tmpDir, "alice", "bob", "hello", "world")
 	if err != nil {
 		t.Fatalf("Send() returned error %v; want nil (sent copy failure should be ignored)", err)
 	}
@@ -2161,7 +2161,7 @@ func TestArchiveRead_Empty(t *testing.T) {
 func TestSend_GeneratesShortID(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "short id test", "body")
+	_, err := Send(tmpDir, "alice", "bob", "short id test", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -2209,7 +2209,7 @@ func TestSend_GeneratesShortID(t *testing.T) {
 func TestSend_ShortIDInSentCopy(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "sent copy short id", "body")
+	_, err := Send(tmpDir, "alice", "bob", "sent copy short id", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -2266,7 +2266,7 @@ func TestSend_ShortIDInSentCopy(t *testing.T) {
 func TestResolvePrefix_ByShortID(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "resolve by short id", "body")
+	_, err := Send(tmpDir, "alice", "bob", "resolve by short id", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -2308,7 +2308,7 @@ func TestResolvePrefix_ByShortID(t *testing.T) {
 func TestResolvePrefix_FallbackToLongPrefix(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "long prefix", "body")
+	_, err := Send(tmpDir, "alice", "bob", "long prefix", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -2383,7 +2383,7 @@ func TestGenerateShortID_Uniqueness(t *testing.T) {
 
 	const n = 20
 	for i := range n {
-		err := Send(tmpDir, "alice", "bob", "msg "+strconv.Itoa(i), "body")
+		_, err := Send(tmpDir, "alice", "bob", "msg "+strconv.Itoa(i), "body")
 		if err != nil {
 			t.Fatalf("Send() message %d unexpected error: %v", i, err)
 		}
@@ -2424,7 +2424,7 @@ func TestGenerateShortID_Uniqueness(t *testing.T) {
 func TestSend_ShortIDNotInFilename(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	err := Send(tmpDir, "alice", "bob", "filename test", "body")
+	_, err := Send(tmpDir, "alice", "bob", "filename test", "body")
 	if err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
@@ -2489,7 +2489,7 @@ func TestSend_DefaultNotifier_CalledWhenNoOpt(t *testing.T) {
 		gotMsgID = msgID
 	})
 
-	if err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
+	if _, err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
 	if !called {
@@ -2517,7 +2517,7 @@ func TestSend_ExplicitNotifyOverridesDefault(t *testing.T) {
 		explicitCalled = true
 	}
 
-	if err := Send(tmpDir, "alice", "root", "urgent", "body", WithNotify(explicit)); err != nil {
+	if _, err := Send(tmpDir, "alice", "root", "urgent", "body", WithNotify(explicit)); err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
 	if !explicitCalled {
@@ -2534,7 +2534,7 @@ func TestSend_DefaultNotifierUnset_NoInvocation(t *testing.T) {
 
 	// With no default notifier registered and no WithNotify option, Send
 	// must still deliver the message without error.
-	if err := Send(tmpDir, "alice", "bob", "hello", "world"); err != nil {
+	if _, err := Send(tmpDir, "alice", "bob", "hello", "world"); err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
 
@@ -2556,7 +2556,7 @@ func TestSend_DefaultNotifierPanicDoesNotBreakSend(t *testing.T) {
 		panic("default notifier exploded")
 	})
 
-	if err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
+	if _, err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
 		t.Fatalf("Send() should return nil even when default notifier panics, got: %v", err)
 	}
 }
@@ -2571,7 +2571,7 @@ func TestSend_WithoutWakeFileSuppressesWakeButStillNotifies(t *testing.T) {
 	}
 
 	called := false
-	if err := Send(tmpDir, "alice", "root", "urgent", "body",
+	if _, err := Send(tmpDir, "alice", "root", "urgent", "body",
 		WithoutWakeFile(),
 		WithNotify(func(to, from, subject, msgID string) {
 			called = true
@@ -2597,7 +2597,7 @@ func TestSend_DefaultWakeBehaviorStillWritesWakeFile(t *testing.T) {
 		t.Fatalf("creating agents dir: %v", err)
 	}
 
-	if err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
+	if _, err := Send(tmpDir, "alice", "root", "urgent", "body"); err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
 
@@ -2620,7 +2620,7 @@ func TestSend_WithoutWakeFilePreservesDefaultNotifier(t *testing.T) {
 		called = true
 	})
 
-	if err := Send(tmpDir, "alice", "root", "urgent", "body", WithoutWakeFile()); err != nil {
+	if _, err := Send(tmpDir, "alice", "root", "urgent", "body", WithoutWakeFile()); err != nil {
 		t.Fatalf("Send() unexpected error: %v", err)
 	}
 	if !called {

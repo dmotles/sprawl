@@ -27,6 +27,18 @@ const (
 // needing a dedicated field. See internal/supervisor/real.go:SendInterrupt.
 const resumeHintPrefix = "resume_hint:"
 
+// displayMessageID returns the short maildir ID when available, falling back
+// to the queue UUID. The truncation hints in the flush prompts cite this so
+// `sprawl messages read <id>` accepts the value (ResolvePrefix matches
+// ShortID first). Entries enqueued before ShortID was added round-trip with
+// an empty ShortID and gracefully fall back to ID. See QUM-412.
+func displayMessageID(e Entry) string {
+	if e.ShortID != "" {
+		return e.ShortID
+	}
+	return e.ID
+}
+
 // extractResumeHint returns the value after the first "resume_hint:" tag in
 // e.Tags, or "" if none.
 func extractResumeHint(e Entry) string {
@@ -88,7 +100,7 @@ func BuildQueueFlushPrompt(entries []Entry) string {
 			b.WriteString("\n")
 		}
 		if truncated {
-			fmt.Fprintf(&b, "   ...[truncated — run `sprawl messages read %s` for full body]\n", e.ID)
+			fmt.Fprintf(&b, "   ...[truncated — run `sprawl messages read %s` for full body]\n", displayMessageID(e))
 		}
 		b.WriteString("\n")
 		totalBody += len(body)
@@ -142,7 +154,7 @@ func BuildInterruptFlushPrompt(entries []Entry) string {
 			b.WriteString("\n")
 		}
 		if truncated {
-			fmt.Fprintf(&b, "...[truncated — run `sprawl messages read %s` for full body]\n", e.ID)
+			fmt.Fprintf(&b, "...[truncated — run `sprawl messages read %s` for full body]\n", displayMessageID(e))
 		}
 		b.WriteString("\n")
 		totalBody += len(body)

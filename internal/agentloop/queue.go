@@ -33,6 +33,7 @@ const (
 type Entry struct {
 	Seq        int      `json:"seq"`
 	ID         string   `json:"id"`
+	ShortID    string   `json:"short_id,omitempty"`
 	Class      Class    `json:"class"`
 	From       string   `json:"from"`
 	Subject    string   `json:"subject"`

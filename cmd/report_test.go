@@ -29,10 +29,13 @@ func newTestReportDeps(t *testing.T) (*reportDeps, string) {
 		nowFunc: func() time.Time {
 			return time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
 		},
-		loadAgent:   state.LoadAgent,
-		saveAgent:   state.SaveAgent,
-		sendMessage: messages.Send,
-		enqueue:     agentloop.Enqueue,
+		loadAgent: state.LoadAgent,
+		saveAgent: state.SaveAgent,
+		sendMessage: func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error {
+			_, err := messages.Send(sprawlRoot, from, to, subject, body, opts...)
+			return err
+		},
+		enqueue: agentloop.Enqueue,
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)

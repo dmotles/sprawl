@@ -641,7 +641,7 @@ func seedInbox(t *testing.T, sprawlRoot, from, subject, body string) string {
 	prev := messages.NowFunc
 	messages.NowFunc = nextSeedTime
 	defer func() { messages.NowFunc = prev }()
-	if err := messages.Send(sprawlRoot, from, "weave", subject, body); err != nil {
+	if _, err := messages.Send(sprawlRoot, from, "weave", subject, body); err != nil {
 		t.Fatalf("seed Send: %v", err)
 	}
 	msgs, err := messages.List(sprawlRoot, "weave", "unread")
@@ -661,7 +661,7 @@ func TestMessagesList_ReturnsInboxScopedToCaller(t *testing.T) {
 	seedInbox(t, tmpDir, "ghost", "ping", "pong")
 
 	// A message to someone else must NOT appear in weave's list.
-	if err := messages.Send(tmpDir, "weave", "ratz", "fyi", "private"); err != nil {
+	if _, err := messages.Send(tmpDir, "weave", "ratz", "fyi", "private"); err != nil {
 		t.Fatalf("cross-agent send: %v", err)
 	}
 
