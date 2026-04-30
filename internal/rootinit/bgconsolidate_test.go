@@ -204,7 +204,7 @@ func TestStartBackgroundConsolidation_RemovesLockfileOnError(t *testing.T) {
 		return errors.New("simulated pipeline failure")
 	}
 
-	done := StartBackgroundConsolidation(deps, root, io.Discard)
+	done := StartBackgroundConsolidation(deps, root, io.Discard, nil)
 
 	select {
 	case <-done:
