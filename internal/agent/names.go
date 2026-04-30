@@ -54,7 +54,10 @@ var NamePool = func() []string {
 }()
 
 // AllocateName returns the first unused name from the pool for the given agent type.
-// A name is considered "used" if a file named <name>.json exists in stateDir.
+// A name is considered "used" if either <name>.json or a <name>/ directory
+// exists in stateDir. The directory check (QUM-404) prevents handing out a name
+// whose stale per-agent dir (SYSTEM.md, prompts, tasks) would silently get
+// inherited by the new spawn.
 // If the typed pool is exhausted, it falls back to numeric suffix names (e.g. "runner-1").
 func AllocateName(stateDir string, agentType string) (string, error) {
 	pool, ok := NamePools[agentType]
@@ -63,8 +66,7 @@ func AllocateName(stateDir string, agentType string) (string, error) {
 	}
 
 	for _, name := range pool {
-		path := filepath.Join(stateDir, name+".json")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		if !nameInUse(stateDir, name) {
 			return name, nil
 		}
 	}
@@ -73,12 +75,22 @@ func AllocateName(stateDir string, agentType string) (string, error) {
 	prefix := FallbackPrefix[agentType]
 	for i := 1; ; i++ {
 		name := fmt.Sprintf("%s-%d", prefix, i)
-		path := filepath.Join(stateDir, name+".json")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		if !nameInUse(stateDir, name) {
 			if i > 2*len(pool) {
 				log.Printf("WARNING: fallback name counter for %q reached %d (pool size: %d) — possible name leak", agentType, i, len(pool))
 			}
 			return name, nil
 		}
 	}
+}
+
+// nameInUse reports whether either <name>.json or <name>/ exists in stateDir.
+func nameInUse(stateDir, name string) bool {
+	if _, err := os.Stat(filepath.Join(stateDir, name+".json")); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, name)); err == nil {
+		return true
+	}
+	return false
 }

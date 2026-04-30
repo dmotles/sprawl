@@ -330,6 +330,64 @@ func TestWriteSystemPrompt(t *testing.T) {
 	}
 }
 
+// TestDeleteAgent_RemovesDirectory pins the contract that DeleteAgent fully
+// cleans up an agent's footprint: both the <name>.json state file AND the
+// <name>/ directory under .sprawl/agents/. Without removing the directory,
+// AllocateName can leak names (QUM-404).
+func TestDeleteAgent_RemovesDirectory(t *testing.T) {
+	t.Run("removes both json and directory", func(t *testing.T) {
+		dir := t.TempDir()
+		agent := &AgentState{
+			Name:   "foo",
+			Type:   "engineer",
+			Status: "active",
+		}
+		if err := SaveAgent(dir, agent); err != nil {
+			t.Fatalf("SaveAgent: %v", err)
+		}
+		if _, err := WriteSystemPrompt(dir, "foo", "system prompt body"); err != nil {
+			t.Fatalf("WriteSystemPrompt: %v", err)
+		}
+
+		jsonPath := filepath.Join(AgentsDir(dir), "foo.json")
+		dirPath := filepath.Join(AgentsDir(dir), "foo")
+
+		// Sanity: both should exist before delete
+		if _, err := os.Stat(jsonPath); err != nil {
+			t.Fatalf("expected json file to exist before delete: %v", err)
+		}
+		if _, err := os.Stat(dirPath); err != nil {
+			t.Fatalf("expected agent directory to exist before delete: %v", err)
+		}
+
+		if err := DeleteAgent(dir, "foo"); err != nil {
+			t.Fatalf("DeleteAgent: %v", err)
+		}
+
+		if _, err := os.Stat(jsonPath); !os.IsNotExist(err) {
+			t.Errorf("expected json file to be removed, stat err = %v", err)
+		}
+		if _, err := os.Stat(dirPath); !os.IsNotExist(err) {
+			t.Errorf("expected agent directory to be removed, stat err = %v", err)
+		}
+	})
+
+	t.Run("dir without json", func(t *testing.T) {
+		dir := t.TempDir()
+		dirPath := filepath.Join(AgentsDir(dir), "orphan")
+		if err := os.MkdirAll(dirPath, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+
+		if err := DeleteAgent(dir, "orphan"); err != nil {
+			t.Errorf("DeleteAgent should succeed when only directory exists, got: %v", err)
+		}
+		if _, err := os.Stat(dirPath); !os.IsNotExist(err) {
+			t.Errorf("expected orphan directory to be removed, stat err = %v", err)
+		}
+	})
+}
+
 func TestWriteSystemPrompt_CreatesDirectory(t *testing.T) {
 	dir := t.TempDir()
 

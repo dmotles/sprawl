@@ -101,14 +101,19 @@ func ListAgents(sprawlRoot string) ([]*AgentState, error) {
 	return agents, nil
 }
 
-// DeleteAgent removes the agent state file, freeing the name.
+// DeleteAgent removes the agent state file and the agent's directory under
+// .sprawl/agents/<name>/, freeing the name. Removing the directory prevents
+// orphaned per-agent artifacts (SYSTEM.md, prompts, tasks, activity logs)
+// from accumulating across spawn/retire cycles and from being silently
+// inherited when a name is reused (QUM-404).
 func DeleteAgent(sprawlRoot string, name string) error {
 	path := filepath.Join(AgentsDir(sprawlRoot), name+".json")
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil // already gone
-		}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing agent state for %q: %w", name, err)
+	}
+	dirPath := filepath.Join(AgentsDir(sprawlRoot), name)
+	if err := os.RemoveAll(dirPath); err != nil {
+		return fmt.Errorf("removing agent directory for %q: %w", name, err)
 	}
 	return nil
 }

@@ -4,10 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -152,7 +157,8 @@ func TestMerge_PropagatesError(t *testing.T) {
 }
 
 func TestRetire_ForwardsFlags(t *testing.T) {
-	r, _ := newFakeReal(t)
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 
 	var got struct {
 		name                                                 string
@@ -196,7 +202,8 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 }
 
 func TestRetire_AbandonMode(t *testing.T) {
-	r, _ := newFakeReal(t)
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	var gotAbandon, gotMergeFirst bool
 	r.retireFn = func(_ *agentops.RetireDeps, _ string, _, _, abandon, mergeFirst, _, _ bool) error {
 		gotAbandon, gotMergeFirst = abandon, mergeFirst
@@ -211,7 +218,8 @@ func TestRetire_AbandonMode(t *testing.T) {
 }
 
 func TestRetire_CascadeAndNoValidate(t *testing.T) {
-	r, _ := newFakeReal(t)
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	var gotCascade, gotNoValidate bool
 	r.retireFn = func(_ *agentops.RetireDeps, _ string, cascade, _, _, _, _, noValidate bool) error {
 		gotCascade, gotNoValidate = cascade, noValidate
@@ -455,5 +463,238 @@ func TestMessagesPeek_ContextIdentityScopesMailbox(t *testing.T) {
 	}
 	if result.Agent != "finn" {
 		t.Errorf("MessagesPeek.Agent = %q, want %q", result.Agent, "finn")
+	}
+}
+
+// TestRetire_FallsBackToRegistry_WhenJSONMissing pins the QUM-404 fix: when
+// Real.Retire is called for an agent whose JSON is missing but whose runtime
+// is in the registry, Retire must reconcile from the registry snapshot
+// (instead of failing) and still invoke retireFn + remove the registry entry.
+func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
+	t.Run("registry entry exists but JSON missing", func(t *testing.T) {
+		r, tmpDir := newFakeReal(t)
+
+		synth := &state.AgentState{
+			Name:     "orphan",
+			Type:     "manager",
+			Family:   "engineering",
+			Parent:   "weave",
+			Branch:   "dmotles/orphan",
+			Worktree: filepath.Join(tmpDir, "worktree-orphan"),
+			Status:   "active",
+		}
+		// Inject runtime via registry — do NOT save JSON.
+		rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+			SprawlRoot: tmpDir,
+			Agent:      synth,
+		})
+		if rt == nil {
+			t.Fatal("Ensure() returned nil runtime")
+		}
+
+		var retireCalls []string
+		r.retireFn = func(_ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+			// Load-bearing contract: by the time retireFn runs, the JSON
+			// must exist on disk so agentops.Retire's state.LoadAgent
+			// succeeds. Real.Retire must reconcile from the runtime
+			// registry before delegating.
+			loaded, err := state.LoadAgent(tmpDir, name)
+			if err != nil {
+				t.Fatalf("retireFn invoked but state.LoadAgent(%q) failed: %v (Real.Retire must reconcile JSON from registry before delegating)", name, err)
+			}
+			if loaded.Type != "manager" {
+				t.Errorf("synthesized state Type = %q, want %q", loaded.Type, "manager")
+			}
+			if loaded.Parent != "weave" {
+				t.Errorf("synthesized state Parent = %q, want %q", loaded.Parent, "weave")
+			}
+			if loaded.Branch != "dmotles/orphan" {
+				t.Errorf("synthesized state Branch = %q, want %q", loaded.Branch, "dmotles/orphan")
+			}
+			retireCalls = append(retireCalls, name)
+			return nil
+		}
+
+		err := r.Retire(context.Background(), "orphan",
+			false, /* mergeFirst */
+			true,  /* abandon */
+			false, /* cascade */
+			false, /* noValidate */
+		)
+		if err != nil {
+			t.Fatalf("Retire: unexpected error: %v", err)
+		}
+		if len(retireCalls) != 1 || retireCalls[0] != "orphan" {
+			t.Errorf("retireFn calls = %v, want [orphan]", retireCalls)
+		}
+		if _, ok := r.runtimeRegistry.Get("orphan"); ok {
+			t.Error("expected runtime registry to no longer contain orphan after Retire")
+		}
+	})
+
+	t.Run("registry also missing returns error", func(t *testing.T) {
+		r, _ := newFakeReal(t)
+
+		// retireFn returns nil if invoked; with no registry entry and no JSON,
+		// Retire has nothing to fall back to and should surface an error.
+		r.retireFn = func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
+			return nil
+		}
+
+		err := r.Retire(context.Background(), "ghost", false, true, false, false)
+		if err == nil {
+			t.Fatal("expected error when both JSON and registry are missing, got nil")
+		}
+		// Don't be too strict on wording — just sanity-check the error isn't a
+		// nil panic surrogate.
+		if !strings.Contains(strings.ToLower(err.Error()), "not found") &&
+			!strings.Contains(strings.ToLower(err.Error()), "missing") &&
+			!strings.Contains(strings.ToLower(err.Error()), "no such") &&
+			!strings.Contains(strings.ToLower(err.Error()), "ghost") {
+			t.Errorf("error %q should reference the missing agent", err)
+		}
+	})
+}
+
+// TestE2E_StateDivergenceFullFlow drives the QUM-404 acceptance scenario end
+// to end against a real Real supervisor with no-op runtime starter (no
+// Claude required): a researcher spawns a manager (PrepareSpawn writes the
+// JSON), divergence is simulated by deleting the manager's JSON, retire
+// reconciles from the registry, and after retire the dir + worktree are
+// gone and the name is free for reuse.
+func TestE2E_StateDivergenceFullFlow(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+
+	researcher := &state.AgentState{
+		Name:     "ghost",
+		Type:     "researcher",
+		Family:   "engineering",
+		Parent:   "weave",
+		Branch:   "dmotles/ghost",
+		Worktree: filepath.Join(tmpDir, ".sprawl", "worktrees", "ghost"),
+		Status:   "active",
+		TreePath: "weave/ghost",
+	}
+	saveTestAgent(t, tmpDir, researcher)
+
+	managerWorktree := filepath.Join(tmpDir, ".sprawl", "worktrees", "tower")
+	r.spawnFn = agentops.PrepareSpawn
+	r.spawnDeps = &agentops.SpawnDeps{
+		WorktreeCreator: &spawnPathWorktreeCreator{path: managerWorktree},
+		Getenv: func(key string) string {
+			switch key {
+			case "SPRAWL_AGENT_IDENTITY":
+				return "ghost" // researcher is the parent
+			case "SPRAWL_ROOT":
+				return tmpDir
+			}
+			return ""
+		},
+		CurrentBranch: func(string) (string, error) { return "main", nil },
+		NewSpawnLock: func(string) (func() error, func() error) {
+			return func() error { return nil }, func() error { return nil }
+		},
+		LoadConfig:      func(string) (*config.Config, error) { return &config.Config{}, nil },
+		RunScript:       agentops.RunBashScript,
+		WorktreeRemove:  func(_, p string, _ bool) error { return os.RemoveAll(p) },
+		GitBranchDelete: func(string, string) error { return nil },
+	}
+	r.runtimeStarter = &runtimeTestStarter{session: &runtimeTestSession{
+		sessionID: "sess-tower",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+	}}
+
+	// Spawn the manager via the live supervisor — researcher is the parent.
+	info, err := r.Spawn(context.Background(), SpawnRequest{
+		Family: "engineering",
+		Type:   "manager",
+		Prompt: "manage the work",
+		Branch: "dmotles/tower",
+	})
+	if err != nil {
+		t.Fatalf("Spawn(manager): %v", err)
+	}
+	mgrName := info.Name
+	if mgrName == "" {
+		t.Fatal("spawn returned empty manager name")
+	}
+
+	// AC: <manager>.json exists with parent=ghost.
+	mgrState, err := state.LoadAgent(tmpDir, mgrName)
+	if err != nil {
+		t.Fatalf("LoadAgent(%s) after spawn: %v", mgrName, err)
+	}
+	if mgrState.Parent != "ghost" {
+		t.Errorf("manager Parent = %q, want %q", mgrState.Parent, "ghost")
+	}
+	if mgrState.Type != "manager" {
+		t.Errorf("manager Type = %q, want manager", mgrState.Type)
+	}
+	mgrDir := filepath.Join(tmpDir, ".sprawl", "agents", mgrName)
+	if _, err := os.Stat(mgrDir); err != nil {
+		t.Fatalf("expected agent dir at %s: %v", mgrDir, err)
+	}
+
+	// Simulate divergence: delete the JSON only.
+	if err := os.Remove(filepath.Join(tmpDir, ".sprawl", "agents", mgrName+".json")); err != nil {
+		t.Fatalf("removing JSON to simulate divergence: %v", err)
+	}
+
+	// Retire the manager — must succeed via registry fallback. Use abandon
+	// to skip merge logic (no real git).
+	r.retireFn = agentops.Retire
+	r.retireDeps = &agentops.RetireDeps{
+		Getenv: func(key string) string {
+			switch key {
+			case "SPRAWL_AGENT_IDENTITY":
+				return "ghost"
+			case "SPRAWL_ROOT":
+				return tmpDir
+			}
+			return ""
+		},
+		WorktreeRemove:      func(_, p string, _ bool) error { return os.RemoveAll(p) },
+		GitStatus:           func(string) (string, error) { return "", nil },
+		RemoveAll:           os.RemoveAll,
+		GitBranchDelete:     func(string, string) error { return nil },
+		GitBranchIsMerged:   func(string, string) (bool, error) { return true, nil },
+		GitBranchSafeDelete: func(string, string) error { return nil },
+		LoadAgent:           state.LoadAgent,
+		CurrentBranch:       func(string) (string, error) { return "main", nil },
+		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
+		LoadConfig:          func(string) (*config.Config, error) { return &config.Config{}, nil },
+		RunScript:           func(string, string, map[string]string) ([]byte, error) { return nil, nil },
+	}
+	if err := r.Retire(context.Background(), mgrName,
+		false, /* mergeFirst */
+		true,  /* abandon */
+		false, /* cascade */
+		true,  /* noValidate */
+	); err != nil {
+		t.Fatalf("Retire after divergence: %v", err)
+	}
+
+	// AC: dir gone, worktree gone, JSON gone, name free for reuse.
+	if _, err := os.Stat(mgrDir); !os.IsNotExist(err) {
+		t.Errorf("expected manager dir to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(managerWorktree); !os.IsNotExist(err) {
+		t.Errorf("expected manager worktree to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, ".sprawl", "agents", mgrName+".json")); !os.IsNotExist(err) {
+		t.Errorf("expected manager JSON to be removed, stat err = %v", err)
+	}
+	if _, ok := r.runtimeRegistry.Get(mgrName); ok {
+		t.Errorf("expected runtime registry to no longer contain %q", mgrName)
+	}
+
+	// AllocateName should now hand out the same manager name (not a stale
+	// fallback like "fixer-1") because both JSON and dir are gone.
+	freed, err := agent.AllocateName(state.AgentsDir(tmpDir), "manager")
+	if err != nil {
+		t.Fatalf("AllocateName after retire: %v", err)
+	}
+	if freed != mgrName {
+		t.Errorf("AllocateName = %q, want %q (name should be reusable after clean retire)", freed, mgrName)
 	}
 }
