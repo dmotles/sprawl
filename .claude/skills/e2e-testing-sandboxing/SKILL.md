@@ -84,6 +84,48 @@ sprawl_sandbox_destroy
 
 Do **not** hand-roll `rm -rf "$SPRAWL_ROOT"`. See the DO-NOT section above.
 
+## Gotchas
+
+Hard-won lessons from prior e2e testing sessions. Read these before writing sandbox tests.
+
+### 1. Sandbox identity convention
+
+Sandbox test processes simulating child agents must use an identity that clearly screams "sandbox" — e.g. `sandbox-child`, `sandbox-pretend`, `test-harness-child`. **Do NOT use generic names like** `pretend-child`.
+
+Reason: the legacy tmux notifier's namespace resolution falls open to hardcoded defaults (`⚡:weave`) that collide with the outer developer tmux session (QUM-315). Any send-keys text bleeding out carries the identity, so making it self-labeled as sandbox work lets the human ignore it cleanly.
+
+### 2. TUI pane-size pin (200×50)
+
+Detached tmux sessions default to ~80-col width, which truncates the TUI badge/tree rendering (e.g. the `(N)` weave unread badge gets cut). When launching `sprawl enter` in a detached tmux session for e2e tests, pin window size:
+
+```bash
+tmux new-session -d -s <name> -x 200 -y 50 <cmd>
+tmux resize-window -t <name>:0 -x 200 -y 50   # required even after -x/-y on some tmux versions
+```
+
+Discovered in QUM-312.
+
+### 3. Trust-prompt advancement
+
+On a fresh sandbox, `claude` prompts for trust on first invocation ("Trust this directory? Y/n"). Any e2e script that launches `sprawl init`/`sprawl enter` must advance past this prompt before `tmux send-keys` assertions will render meaningful output. Detect the trust prompt (e.g. grep `capture-pane` for "Trust") and send Enter before the main test scenario.
+
+Discovered in QUM-310.
+
+### 4. Respawn-window verification trick
+
+To verify env-var propagation onto a tmux session without launching the full child agent, use `tmux respawn-window` to start a shell in the session and run `env | grep SPRAWL_` directly:
+
+```bash
+tmux respawn-window -t <session>:0 -k 'bash -c "env | grep SPRAWL_; sleep 5"'
+tmux capture-pane -t <session>:0 -p
+```
+
+Useful for QUM-309-class env-propagation tests.
+
+### 5. Manager merge target
+
+Managers spawned by weave share weave's supervisor identity (QUM-384). This means `sprawl merge` from a manager may commit to main instead of the manager's integration branch. When using managers, verify that merged work lands on the manager's branch — not main. If in doubt, use `git -C <worktree> log --oneline -5` to check where commits landed before reporting done.
+
 ## Scripted Smoke Tests
 
 For an example of automated sandbox assertions, see `scripts/smoke-test-memory.sh`. It sets up a sandbox, exercises the memory system, and asserts expected outcomes. Run it with:
