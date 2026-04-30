@@ -557,7 +557,8 @@ func (m *ViewportModel) renderMessages() string {
 			block.WriteString(m.theme.AccentText.Render("ERROR: "))
 			block.WriteString(msg.Content)
 		case MessageSystem:
-			block.WriteString(m.theme.SystemText.Render("✉ " + msg.Content))
+			formatted := formatSystemMessage(msg.Content, m.width)
+			block.WriteString(m.theme.SystemText.Render("✉ " + formatted))
 		case MessageBanner:
 			block.WriteString(msg.Content)
 		}
@@ -834,6 +835,59 @@ func previewResultLines(result string, maxLines, width int) ([]string, int) {
 		out = append(out, ln)
 	}
 	return out, len(nonEmpty) - take
+}
+
+// formatSystemMessage prepares a system-message body for rendering by:
+//  1. normalizing CRLF / lone CR into LF,
+//  2. collapsing runs of >=2 consecutive blank (whitespace-only) lines down to
+//     exactly one blank line (QUM-401 — drains and other system injections
+//     produced by upstream agent prompts often arrive with multi-blank gaps
+//     that bloat the viewport),
+//  3. dropping leading and trailing blank lines, and
+//  4. soft-wrapping each non-blank line at word boundaries using
+//     ansi.Wordwrap so long messages don't escape the viewport.
+//
+// Word-wrap is skipped when the wrap budget would be <1 (caller hasn't been
+// sized yet, or the budget is too small to be useful) — the collapse logic
+// still applies. We reserve 4 cells from `width` for the wrap budget: 2 for
+// the leading `"✉ "` glyph + space rendered before the first wrapped line
+// and another 2 of headroom so that the lipgloss SystemText.Render call
+// (which background-fills shorter lines to the longest line's width) leaves
+// every line at most `width-2` cells wide. This matches the QUM-401
+// soft-wrap budget asserted in TestViewportModel_RenderSystemMessage_*.
+func formatSystemMessage(content string, width int) string {
+	// Normalize line endings: CRLF -> LF, then any remaining CR -> LF.
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+
+	rawLines := strings.Split(content, "\n")
+	out := make([]string, 0, len(rawLines))
+	prevBlank := true // start as "blank" so leading blanks are dropped
+	wrapBudget := width - 4
+	for _, ln := range rawLines {
+		if strings.TrimSpace(ln) == "" {
+			if prevBlank {
+				continue
+			}
+			out = append(out, "")
+			prevBlank = true
+			continue
+		}
+		if wrapBudget > 0 {
+			wrapped := ansi.Wordwrap(ln, wrapBudget, "")
+			out = append(out, strings.Split(wrapped, "\n")...)
+		} else {
+			out = append(out, ln)
+		}
+		prevBlank = false
+	}
+	// Drop trailing blank lines (defensive — current logic already prevents
+	// them, but keep this so future edits to the loop don't regress the
+	// invariant).
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
 }
 
 // wrapToolInput prepares a tool-input string for rendering inside the tool
