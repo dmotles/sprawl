@@ -267,8 +267,10 @@ if session_alive "$SESSION_NAME"; then
     # Send a prompt designed to trigger tool use
     _stmux send-keys -t "$SESSION_NAME" "Use the Bash tool to run: echo hello-from-tui-test" Enter
 
-    # Wait for tool call indicator in viewport
-    if wait_for_content "$SESSION_NAME" "Tool:" 60; then
+    # Wait for tool call indicator in viewport. The TUI renders tool calls
+    # with a "┌ <indicator> <toolname>" header, not a "Tool:" prefix.
+    # Match the tool-call box-drawing character followed by a tool name.
+    if wait_for_content "$SESSION_NAME" "┌.*[Bb]ash" 60; then
         pass "tool call visible in viewport"
     else
         fail "tool call not visible within 60 seconds"
@@ -283,14 +285,23 @@ echo ""
 echo "=== Test 6: Scrollback ==="
 
 if session_alive "$SESSION_NAME"; then
-    # Send enough messages to potentially overflow the viewport
-    for i in $(seq 1 30); do
-        _stmux send-keys -t "$SESSION_NAME" "scroll test line $i" Enter
-        sleep 0.2
-    done
+    # Prior tests (3-5) have already generated user messages, assistant
+    # responses, and tool-call blocks — enough content to overflow a 40-row
+    # viewport. Rather than flooding 30 messages (which get dropped by the
+    # single-slot pendingSubmit queue when the turn isn't idle), we rely on
+    # the existing content and just test scroll mechanics.
 
-    # Wait a moment for messages to render
-    sleep 2
+    # Wait for the tool-call turn from Test 5 to complete so the viewport
+    # has its full content before we test scrolling.
+    wait_for_content "$SESSION_NAME" "Completed in" 60 || true
+    sleep 1
+
+    # Switch focus to the viewport panel. Default panel is PanelInput (2).
+    # Tab cycles: Input(2) -> Tree(0) -> Viewport(1). Need 2 Tabs.
+    _stmux send-keys -t "$SESSION_NAME" Tab
+    sleep 0.3
+    _stmux send-keys -t "$SESSION_NAME" Tab
+    sleep 0.5
 
     # Capture before PgUp
     BEFORE_SCROLL=$(capture_pane "$SESSION_NAME")
@@ -309,6 +320,10 @@ if session_alive "$SESSION_NAME"; then
     else
         fail "PgUp did not change viewport content"
     fi
+
+    # Tab back to Input panel for subsequent tests
+    _stmux send-keys -t "$SESSION_NAME" Tab
+    sleep 0.3
 else
     skip "TUI not running — cannot test scrollback"
 fi
@@ -352,12 +367,19 @@ echo ""
 echo "=== Test 8: Clean shutdown ==="
 
 if session_alive "$SESSION_NAME"; then
-    # Send Ctrl+C to shut down
+    # Send Ctrl+C to trigger the confirmation dialog
     _stmux send-keys -t "$SESSION_NAME" C-c
 
-    # Wait for session to terminate (up to 10 seconds)
+    # Wait for the confirm dialog to render ("Quit?" prompt)
+    sleep 1
+
+    # Confirm quit by pressing 'y'
+    _stmux send-keys -t "$SESSION_NAME" y
+
+    # Wait for session to terminate (up to 15 seconds — the supervisor's
+    # shutdown context needs up to 5s to drain child processes)
     SHUTDOWN_WAIT=0
-    while [ "$SHUTDOWN_WAIT" -lt 10 ]; do
+    while [ "$SHUTDOWN_WAIT" -lt 15 ]; do
         if ! session_alive "$SESSION_NAME"; then
             break
         fi
@@ -368,7 +390,7 @@ if session_alive "$SESSION_NAME"; then
     if ! session_alive "$SESSION_NAME"; then
         pass "TUI shut down cleanly on Ctrl+C"
     else
-        fail "TUI did not shut down within 10 seconds of Ctrl+C"
+        fail "TUI did not shut down within 15 seconds of Ctrl+C"
         # Force kill for cleanup
         _stmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
     fi
@@ -376,8 +398,9 @@ else
     skip "TUI was not running — cannot test shutdown"
 fi
 
-# Check for orphan sprawl enter processes from our test
-# (We check for processes with our test root in their environment)
+# Check for orphan sprawl processes from our test.
+# Give processes a moment to fully exit after the tmux session closes.
+sleep 2
 ORPHAN_COUNT=$(pgrep -f "SPRAWL_ROOT=$TEST_ROOT" 2>/dev/null | wc -l || echo 0)
 if [ "$ORPHAN_COUNT" -eq 0 ]; then
     pass "no orphaned processes detected"
