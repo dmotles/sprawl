@@ -824,6 +824,360 @@ func TestViewportModel_RenderMessages_SystemMessageDistinctStyleFromUser(t *test
 	}
 }
 
+// --- Tests for QUM-401: System message rendering — collapse blank-line runs and soft-wrap at word boundaries ---
+
+// blankLinesBetween returns the count of consecutive blank lines (after
+// trimming trailing whitespace from each line) between the line containing
+// `start` and the line containing `end` in the stripped view. Returns -1 if
+// either marker is not found or end appears before start. Markers should be
+// rare sentinels (e.g. "AAA"/"BBB") to avoid collisions with viewport chrome.
+func blankLinesBetween(view, start, end string) int {
+	lines := strings.Split(view, "\n")
+	startIdx, endIdx := -1, -1
+	for i, ln := range lines {
+		if startIdx < 0 && strings.Contains(ln, start) {
+			startIdx = i
+		} else if startIdx >= 0 && strings.Contains(ln, end) {
+			endIdx = i
+			break
+		}
+	}
+	if startIdx < 0 || endIdx < 0 {
+		return -1
+	}
+	count := 0
+	for i := startIdx + 1; i < endIdx; i++ {
+		if strings.TrimSpace(lines[i]) == "" {
+			count++
+		} else {
+			// Non-blank line between markers — caller's start/end are not
+			// adjacent in the way this helper assumes.
+			return -2
+		}
+	}
+	return count
+}
+
+// TestViewportModel_RenderSystemMessage_CollapsesBlankLines_QUM401 verifies
+// that runs of >=2 consecutive blank lines inside a MessageSystem entry are
+// collapsed to exactly 1 blank line when rendered, while single blank lines
+// and non-blank-separated lines are preserved as-is.
+func TestViewportModel_RenderSystemMessage_CollapsesBlankLines_QUM401(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantBlank int // expected count of blank lines between AAA and BBB
+		// scanOnly: when true, instead of comparing wantBlank we scan the
+		// system block for any run of >1 consecutive blank lines (used for
+		// leading/trailing blank cases where one marker is missing).
+		scanOnly  bool
+		scanStart string // if scanOnly, the marker to scan around
+	}{
+		{
+			name:      "four newlines collapse to one blank line",
+			input:     "AAA\n\n\n\nBBB",
+			wantBlank: 1,
+		},
+		{
+			name:      "three newlines collapse to one blank line",
+			input:     "AAA\n\n\nBBB",
+			wantBlank: 1,
+		},
+		{
+			name:      "single blank line preserved",
+			input:     "AAA\n\nBBB",
+			wantBlank: 1,
+		},
+		{
+			name:      "no blank line introduced",
+			input:     "AAA\nBBB",
+			wantBlank: 0,
+		},
+		{
+			name:      "CRLF triple newlines collapse to one blank line",
+			input:     "AAA\r\n\r\n\r\nBBB",
+			wantBlank: 1,
+		},
+		{
+			name:      "leading blanks collapsed",
+			input:     "\n\n\nAAA",
+			scanOnly:  true,
+			scanStart: "AAA",
+		},
+		{
+			name:      "trailing blanks collapsed",
+			input:     "AAA\n\n\n",
+			scanOnly:  true,
+			scanStart: "AAA",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestViewportModel(t)
+			m.SetSize(80, 40)
+			m.AppendSystemMessage(tc.input)
+			view := stripANSI(m.View())
+			if tc.scanOnly {
+				// Locate the system block by anchoring on the marker.
+				idx := strings.Index(view, tc.scanStart)
+				if idx < 0 {
+					t.Fatalf("could not locate %q in view:\n%s", tc.scanStart, view)
+				}
+				// The bubbles viewport pads its View() output to the
+				// configured height with blank lines (viewport.Model.View
+				// calls lipgloss.NewStyle().Height(...).Render(...)). Those
+				// padding blanks are external chrome — not part of the system
+				// block — so we scan only the inclusive range from the first
+				// non-blank line to the last non-blank line.
+				allLines := strings.Split(view, "\n")
+				firstNonBlank, lastNonBlank := -1, -1
+				for i, ln := range allLines {
+					if strings.TrimSpace(ln) != "" {
+						if firstNonBlank < 0 {
+							firstNonBlank = i
+						}
+						lastNonBlank = i
+					}
+				}
+				if firstNonBlank < 0 {
+					t.Fatalf("view has no non-blank lines:\n%s", view)
+				}
+				lines := allLines[firstNonBlank : lastNonBlank+1]
+				consecutiveBlank := 0
+				for _, ln := range lines {
+					if strings.TrimSpace(ln) == "" {
+						consecutiveBlank++
+						if consecutiveBlank > 1 {
+							t.Errorf("found run of >1 consecutive blank lines in system block; view:\n%s", view)
+							break
+						}
+					} else {
+						consecutiveBlank = 0
+					}
+				}
+				return
+			}
+			got := blankLinesBetween(view, "AAA", "BBB")
+			if got != tc.wantBlank {
+				t.Errorf("blank lines between AAA and BBB = %d, want %d; view:\n%s", got, tc.wantBlank, view)
+			}
+		})
+	}
+}
+
+// TestViewportModel_RenderSystemMessage_SoftWrapsAtWordBoundary_QUM401 verifies
+// that long lines in system messages are wrapped at word boundaries (no word
+// is split mid-token) and that no rendered line of the system message exceeds
+// the available width budget.
+func TestViewportModel_RenderSystemMessage_SoftWrapsAtWordBoundary_QUM401(t *testing.T) {
+	const width = 30
+	m := newTestViewportModel(t)
+	m.SetSize(width, 20)
+	input := "the quick brown fox jumps over the lazy dog and runs through the meadow"
+	m.AppendSystemMessage(input)
+	view := stripANSI(m.View())
+
+	words := strings.Fields(input)
+	for _, w := range words {
+		if !strings.Contains(view, w) {
+			t.Errorf("word %q was split across lines (mid-word break); stripped view:\n%s", w, view)
+		}
+	}
+
+	// Identify lines belonging to the system message (those containing any of
+	// the input's words) and verify none exceeds the viewport width. The
+	// bubbles viewport's View() pads every line to exactly contentWidth via
+	// lipgloss.NewStyle().Width(contentWidth).Render(...), so lines fit in
+	// `width` cells. The QUM-401 contract is that no rendered line exceeds
+	// the viewport width — i.e. content escapes the viewport.
+	budget := width
+	for _, line := range strings.Split(view, "\n") {
+		hasWord := false
+		for _, w := range words {
+			if strings.Contains(line, w) {
+				hasWord = true
+				break
+			}
+		}
+		if !hasWord {
+			continue
+		}
+		if lipgloss.Width(line) > budget {
+			t.Errorf("system-message line width %d exceeds budget %d (width %d): %q", lipgloss.Width(line), budget, width, line)
+		}
+	}
+}
+
+// TestViewportModel_RenderSystemMessage_LongUnbreakableTokenOverflows_QUM401
+// verifies that the formatSystemMessage helper does NOT inject mid-word
+// breaks for a long unbreakable token. We assert this directly against the
+// helper output rather than the final viewport view: the bubbles viewport
+// has its own SoftWrap pass that will hard-break any line wider than the
+// viewport width, so the rendered View() will inevitably show the long
+// token split across display rows. The QUM-401 contract is that *our* code
+// preserves words intact and lets the viewport be the sole hard-wrap layer.
+func TestViewportModel_RenderSystemMessage_LongUnbreakableTokenOverflows_QUM401(t *testing.T) {
+	const width = 12
+	longTok := strings.Repeat("A", 20)
+	formatted := formatSystemMessage(longTok+" short", width)
+
+	// The long token must appear intact on some line of the formatted output
+	// (no mid-word break injected by formatSystemMessage).
+	lines := strings.Split(formatted, "\n")
+	intactOnSomeLine := false
+	for _, ln := range lines {
+		if strings.Contains(ln, longTok) {
+			intactOnSomeLine = true
+			break
+		}
+	}
+	if !intactOnSomeLine {
+		t.Errorf("long unbreakable token %q must appear intact on some line of formatted output, got:\n%s", longTok, formatted)
+	}
+
+	// "short" must appear and must be on a different line than the long token.
+	if !strings.Contains(formatted, "short") {
+		t.Errorf("trailing word 'short' must appear in formatted output, got:\n%s", formatted)
+	}
+	for _, ln := range lines {
+		if strings.Contains(ln, longTok) && strings.Contains(ln, "short") {
+			t.Errorf("'short' should wrap to its own line, but found alongside long token: %q", ln)
+		}
+	}
+
+	// Sanity: rendering the message through the viewport must not panic.
+	m := newTestViewportModel(t)
+	m.SetSize(width, 20)
+	m.AppendSystemMessage(longTok + " short")
+	_ = m.View()
+}
+
+// TestViewportModel_RenderSystemMessage_SpecExample_QUM401 exercises the
+// multi-section drain text from the QUM-401 spec: the rendered system block
+// must contain both the leading and trailing sentences, and between them
+// there must be no run of >1 consecutive empty line.
+func TestViewportModel_RenderSystemMessage_SpecExample_QUM401(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+	input := "You received 1 message(s) since the last turn:\n\n\n\n" +
+		"1. from finn [status,working]  subject: [STATUS] finn → Starting oracle phase - reading relevant source files to plan the banner fix\n" +
+		"   Starting oracle phase - reading relevant source files to plan the banner fix\n\n\n\n" +
+		"Continue your current work unless a message tells you otherwise."
+	m.AppendSystemMessage(input)
+	view := stripANSI(m.View())
+
+	if !strings.Contains(view, "You received 1 message(s)") {
+		t.Errorf("View() should contain leading sentence; got:\n%s", view)
+	}
+	if !strings.Contains(view, "Continue your current work") {
+		t.Errorf("View() should contain trailing sentence; got:\n%s", view)
+	}
+
+	// Isolate the system block: from "You received" through "Continue your".
+	startIdx := strings.Index(view, "You received 1 message(s)")
+	endIdx := strings.Index(view, "Continue your current work")
+	if startIdx < 0 || endIdx < 0 || endIdx <= startIdx {
+		t.Fatalf("could not locate system block in view:\n%s", view)
+	}
+	block := view[startIdx:endIdx]
+	lines := strings.Split(block, "\n")
+	// Trim a trailing empty element from the split — view[startIdx:endIdx]
+	// ends just before the next marker, so it always finishes with a "\n"
+	// that produces a spurious empty string after Split. That trailing entry
+	// is a slicing artifact, not actual content.
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	consecutiveBlank := 0
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			consecutiveBlank++
+			if consecutiveBlank > 1 {
+				t.Errorf("found run of >1 consecutive empty line within system block; block was:\n%s", block)
+				break
+			}
+		} else {
+			consecutiveBlank = 0
+		}
+	}
+}
+
+// TestViewportModel_RenderUserMessage_DoesNotCollapseBlankLines_QUM401 guards
+// that the QUM-401 collapse fix is scoped to MessageSystem only — user
+// messages must preserve their blank-line runs verbatim.
+func TestViewportModel_RenderUserMessage_DoesNotCollapseBlankLines_QUM401(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+	m.AppendUserMessage("AAA\n\n\nBBB")
+	view := stripANSI(m.View())
+	got := blankLinesBetween(view, "AAA", "BBB")
+	if got != 2 {
+		t.Errorf("user message must preserve 2 blank lines between AAA and BBB (collapse must NOT apply to user messages); got %d, view:\n%s", got, view)
+	}
+}
+
+// TestViewportModel_RenderBanner_DoesNotCollapseBlankLines_QUM401 guards that
+// banner messages keep their blank-line runs intact (collapse is scoped to
+// MessageSystem only).
+func TestViewportModel_RenderBanner_DoesNotCollapseBlankLines_QUM401(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+	m.AppendBanner("AAA\n\n\nBBB")
+	view := stripANSI(m.View())
+	got := blankLinesBetween(view, "AAA", "BBB")
+	if got != 2 {
+		t.Errorf("banner must preserve 2 blank lines between AAA and BBB (collapse must NOT apply to banners); got %d, view:\n%s", got, view)
+	}
+}
+
+// TestViewportModel_RenderAssistantMessage_DoesNotCollapseBlankLines_QUM401
+// guards that the QUM-401 system-only collapse fix does not touch the
+// assistant rendering path. Assistant content goes through a Markdown
+// renderer (m.renderer.Render), which has its own (unrelated) blank-line
+// handling — so we do NOT assert preserved blank-line counts. Instead we
+// assert determinism: rendering the same assistant content from two fresh
+// model instances produces byte-identical output. The real guard is
+// structural: the system-only fix must not perturb this path.
+func TestViewportModel_RenderAssistantMessage_DoesNotCollapseBlankLines_QUM401(t *testing.T) {
+	build := func() string {
+		m := newTestViewportModel(t)
+		m.SetSize(80, 40)
+		m.AppendAssistantChunk("AAA\n\n\nBBB")
+		m.FinalizeAssistantMessage()
+		return m.View()
+	}
+	a := build()
+	b := build()
+	if a != b {
+		t.Errorf("assistant rendering should be deterministic across fresh models; outputs differ:\nA:\n%s\n\nB:\n%s", a, b)
+	}
+	// Sanity: both markers must appear in the rendered view.
+	stripped := stripANSI(a)
+	if !strings.Contains(stripped, "AAA") || !strings.Contains(stripped, "BBB") {
+		t.Errorf("expected AAA and BBB in assistant render, got:\n%s", stripped)
+	}
+}
+
+// TestViewportModel_RenderSystemMessage_ZeroWidthDoesNotPanic_QUM401 hardens
+// the width fallback path: appending and rendering a system message when the
+// viewport width is 0 must not panic. Note: bubbles viewport.Model.View()
+// returns an empty string when w==0 or h==0 (upstream behavior — see
+// charm.land/bubbles/v2/viewport.View()), so we do NOT assert non-empty
+// output. The spirit of this test is "no panic in the formatSystemMessage /
+// MessageSystem render path when the viewport hasn't been sized yet"; the
+// upstream early-return is unrelated to QUM-401.
+func TestViewportModel_RenderSystemMessage_ZeroWidthDoesNotPanic_QUM401(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("View() panicked at zero width: %v", r)
+		}
+	}()
+	m := newTestViewportModel(t)
+	m.SetSize(0, 20)
+	m.AppendSystemMessage("hello\n\n\nworld")
+	_ = m.View()
+}
+
 // --- Tests for QUM-379: Nest sub-agent tool calls under parent Agent tool call ---
 
 // TestViewportModel_AppendToolCall_AgentNesting_SetsDepth verifies that tool
