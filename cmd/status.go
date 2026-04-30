@@ -261,7 +261,6 @@ func agentStatesToSupervisorInfos(agents []*state.AgentState) []supervisor.Agent
 			LastReportType:    a.LastReportType,
 			LastReportState:   a.LastReportState,
 			LastReportMessage: a.LastReportMessage,
-			LastReportSummary: a.LastReportMessage,
 			LastReportDetail:  a.LastReportDetail,
 			TotalCostUsd:      a.TotalCostUsd,
 		})

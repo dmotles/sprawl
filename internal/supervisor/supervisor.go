@@ -18,7 +18,6 @@ type AgentInfo struct {
 	LastReportType    string  `json:"last_report_type,omitempty"`
 	LastReportState   string  `json:"last_report_state,omitempty"`
 	LastReportMessage string  `json:"last_report_message,omitempty"`
-	LastReportSummary string  `json:"last_report_summary,omitempty"`
 	LastReportDetail  string  `json:"last_report_detail,omitempty"`
 	TotalCostUsd      float64 `json:"total_cost_usd,omitempty"`
 	ProcessAlive      *bool   `json:"process_alive"`

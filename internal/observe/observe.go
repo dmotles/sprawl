@@ -65,7 +65,7 @@ func loadFromSupervisor(ctx context.Context, deps Deps, sprawlRoot string) ([]*A
 				TotalCostUsd:      info.TotalCostUsd,
 				LastReportType:    info.LastReportType,
 				LastReportState:   info.LastReportState,
-				LastReportMessage: firstNonEmpty(info.LastReportMessage, info.LastReportSummary),
+				LastReportMessage: info.LastReportMessage,
 				LastReportDetail:  info.LastReportDetail,
 			},
 			ProcessAlive: info.ProcessAlive,
@@ -116,15 +116,6 @@ func loadFromState(deps Deps, sprawlRoot string) ([]*AgentInfo, error) {
 	})
 
 	return result, nil
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 // BuildTree organizes agents into a tree by parent relationships.
