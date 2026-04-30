@@ -128,12 +128,14 @@ wait_for_pattern() {
 }
 
 cleanup() {
+    local rc=$?
     if tmux has-session -t "$SESSION" 2>/dev/null; then
         tmux kill-session -t "$SESSION" 2>/dev/null || true
     fi
     case "$SPRAWL_ROOT" in
         /tmp/*) rm -rf -- "$SPRAWL_ROOT" ;;
     esac
+    exit "$rc"
 }
 trap cleanup EXIT
 
