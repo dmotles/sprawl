@@ -451,3 +451,192 @@ func TestLoadTranscript_NestedAgentDepth2(t *testing.T) {
 		t.Errorf("Bash Depth = %d, want 2 (nested under two Agents)", bashEntry.Depth)
 	}
 }
+
+// --- Tests for QUM-388: Tool result patching in transcript replay ---
+
+func TestLoadTranscript_ToolResultPatchesStringContent(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo hi"}}` +
+			`]}}`,
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"t1","content":"hello world"}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var toolEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall && entries[i].ToolID == "t1" {
+			toolEntry = &entries[i]
+			break
+		}
+	}
+	if toolEntry == nil {
+		t.Fatal("tool call entry not found")
+	}
+	if toolEntry.Result != "hello world" {
+		t.Errorf("Result = %q, want %q", toolEntry.Result, "hello world")
+	}
+	if toolEntry.Failed {
+		t.Errorf("Failed = true, want false")
+	}
+}
+
+func TestLoadTranscript_ToolResultPatchesArrayContent(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}` +
+			`]}}`,
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"line1"},{"type":"text","text":"line2"}]}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var toolEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall && entries[i].ToolID == "t1" {
+			toolEntry = &entries[i]
+			break
+		}
+	}
+	if toolEntry == nil {
+		t.Fatal("tool call entry not found")
+	}
+	want := "line1\nline2"
+	if toolEntry.Result != want {
+		t.Errorf("Result = %q, want %q", toolEntry.Result, want)
+	}
+}
+
+func TestLoadTranscript_ToolResultIsError(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"false"}}` +
+			`]}}`,
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"t1","content":"command failed","is_error":true}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var toolEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall && entries[i].ToolID == "t1" {
+			toolEntry = &entries[i]
+			break
+		}
+	}
+	if toolEntry == nil {
+		t.Fatal("tool call entry not found")
+	}
+	if toolEntry.Result != "command failed" {
+		t.Errorf("Result = %q, want %q", toolEntry.Result, "command failed")
+	}
+	if !toolEntry.Failed {
+		t.Errorf("Failed = false, want true")
+	}
+}
+
+func TestLoadTranscript_OrphanToolResultNoPanic(t *testing.T) {
+	lines := []string{
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"orphan","content":"whatever"}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// No tool call entries should exist, and no panic should occur.
+	for _, e := range entries {
+		if e.Type == MessageToolCall && e.Result != "" {
+			t.Errorf("unexpected non-empty Result on entry: %+v", e)
+		}
+	}
+}
+
+func TestLoadTranscript_MultipleToolCallsInterleavedResults(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"echo 1"}},` +
+			`{"type":"tool_use","id":"t2","name":"Read","input":{"path":"/tmp/x"}}` +
+			`]}}`,
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"t1","content":"result1"},` +
+			`{"type":"tool_result","tool_use_id":"t2","content":"result2"}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var t1Entry, t2Entry *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall {
+			switch entries[i].ToolID {
+			case "t1":
+				t1Entry = &entries[i]
+			case "t2":
+				t2Entry = &entries[i]
+			}
+		}
+	}
+	if t1Entry == nil {
+		t.Fatal("t1 tool call entry not found")
+	}
+	if t2Entry == nil {
+		t.Fatal("t2 tool call entry not found")
+	}
+	if t1Entry.Result != "result1" {
+		t.Errorf("t1 Result = %q, want %q", t1Entry.Result, "result1")
+	}
+	if t2Entry.Result != "result2" {
+		t.Errorf("t2 Result = %q, want %q", t2Entry.Result, "result2")
+	}
+}
+
+func TestExtractToolResultContent(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"nil", nil, ""},
+		{"plain string", "hello", "hello"},
+		{"empty string", "", ""},
+		{"array of text blocks", []any{
+			map[string]any{"type": "text", "text": "a"},
+			map[string]any{"type": "text", "text": "b"},
+		}, "a\nb"},
+		{"array with non-text blocks", []any{
+			map[string]any{"type": "image", "data": "..."},
+			map[string]any{"type": "text", "text": "visible"},
+		}, "visible"},
+		{"array with empty text", []any{
+			map[string]any{"type": "text", "text": ""},
+			map[string]any{"type": "text", "text": "ok"},
+		}, "ok"},
+		{"unexpected type", 42, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractToolResultContent(tt.in)
+			if got != tt.want {
+				t.Errorf("extractToolResultContent(%v) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
