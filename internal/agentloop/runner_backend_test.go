@@ -61,6 +61,7 @@ func TestClaudeBackendProcess_StopKillsOnContextDeadline(t *testing.T) {
 func TestBuildAgentSessionSpec_BaseFields(t *testing.T) {
 	agentState := &state.AgentState{
 		Name:      "finn",
+		Type:      "engineer",
 		Worktree:  "/tmp/worktrees/finn",
 		TreePath:  "weave/finn",
 		SessionID: "sess-finn",
@@ -78,6 +79,35 @@ func TestBuildAgentSessionSpec_BaseFields(t *testing.T) {
 	}
 	if spec.PermissionMode != "bypassPermissions" {
 		t.Errorf("PermissionMode = %q, want \"bypassPermissions\"", spec.PermissionMode)
+	}
+}
+
+func TestBuildAgentSessionSpec_ModelByAgentType(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		wantModel string
+	}{
+		{"engineer gets opus", "engineer", "opus"},
+		{"researcher gets opus", "researcher", "opus"},
+		{"manager gets opus[1m]", "manager", "opus[1m]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agentState := &state.AgentState{
+				Name:      "test-agent",
+				Type:      tt.agentType,
+				Worktree:  "/tmp/worktrees/test",
+				SessionID: "sess-test",
+			}
+			spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
+			if spec.Model != tt.wantModel {
+				t.Errorf("Model = %q, want %q for agent type %q", spec.Model, tt.wantModel, tt.agentType)
+			}
+			if spec.Effort != "medium" {
+				t.Errorf("Effort = %q, want \"medium\"", spec.Effort)
+			}
+		})
 	}
 }
 

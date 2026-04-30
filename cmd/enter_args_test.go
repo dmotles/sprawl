@@ -14,7 +14,7 @@ func freshPrepared() *rootinit.PreparedSession {
 		Resume:     false,
 		PromptPath: "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md",
 		SessionID:  "fake-session-uuid",
-		Model:      rootinit.DefaultModel,
+		Model:      rootinit.DefaultRootModel,
 		RootTools:  rootinit.RootTools,
 		Disallowed: rootinit.DisallowedTools,
 	}
@@ -27,7 +27,7 @@ func resumePrepared() *rootinit.PreparedSession {
 		Resume:     true,
 		PromptPath: "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md",
 		SessionID:  "prior-session-uuid",
-		Model:      rootinit.DefaultModel,
+		Model:      rootinit.DefaultRootModel,
 		RootTools:  rootinit.RootTools,
 		Disallowed: rootinit.DisallowedTools,
 	}
@@ -39,7 +39,7 @@ func resumePreparedNoPrompt() *rootinit.PreparedSession {
 		Resume:     true,
 		PromptPath: "",
 		SessionID:  "prior-session-uuid",
-		Model:      rootinit.DefaultModel,
+		Model:      rootinit.DefaultRootModel,
 		RootTools:  rootinit.RootTools,
 		Disallowed: rootinit.DisallowedTools,
 	}
@@ -67,15 +67,15 @@ func TestBuildEnterLaunchOpts_FreshIncludesSystemPromptFile(t *testing.T) {
 
 func TestBuildEnterLaunchOpts_FreshIncludesModelAndSessionID(t *testing.T) {
 	opts := buildEnterLaunchOpts(freshPrepared())
-	if opts.Model != rootinit.DefaultModel {
-		t.Errorf("Model = %q, want %q", opts.Model, rootinit.DefaultModel)
+	if opts.Model != rootinit.DefaultRootModel {
+		t.Errorf("Model = %q, want %q", opts.Model, rootinit.DefaultRootModel)
 	}
 	if opts.SessionID != "fake-session-uuid" {
 		t.Errorf("SessionID = %q, want fake-session-uuid", opts.SessionID)
 	}
 	args := opts.BuildArgs()
-	if !argsContainPair(args, "--model", rootinit.DefaultModel) {
-		t.Errorf("args missing --model %s; got %v", rootinit.DefaultModel, args)
+	if !argsContainPair(args, "--model", rootinit.DefaultRootModel) {
+		t.Errorf("args missing --model %s; got %v", rootinit.DefaultRootModel, args)
 	}
 }
 

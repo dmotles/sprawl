@@ -44,7 +44,7 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 		SprawlRoot:     sprawlRoot,
 		SessionID:      agentState.SessionID,
 		PromptFile:     promptPath,
-		Model:          rootinit.DefaultModel,
+		Model:          rootinit.ModelForAgentType(agentState.Type),
 		Effort:         "medium",
 		PermissionMode: "bypassPermissions",
 		AdditionalEnv:  additionalEnv,
