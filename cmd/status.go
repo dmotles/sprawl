@@ -107,14 +107,15 @@ func resolveStatusDeps() *statusDeps {
 }
 
 type statusEntry struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	Family     string `json:"family"`
-	Parent     string `json:"parent"`
-	Status     string `json:"status"`
-	Process    string `json:"process"`
-	LastReport string `json:"last_report"`
-	IsRoot     bool   `json:"is_root"`
+	Name         string  `json:"name"`
+	Type         string  `json:"type"`
+	Family       string  `json:"family"`
+	Parent       string  `json:"parent"`
+	Status       string  `json:"status"`
+	Process      string  `json:"process"`
+	LastReport   string  `json:"last_report"`
+	TotalCostUsd float64 `json:"total_cost_usd,omitempty"`
+	IsRoot       bool    `json:"is_root"`
 }
 
 func runStatus(deps *statusDeps, jsonOutput bool, family, typ, parent, statusFilter string) error {
@@ -169,33 +170,43 @@ func runStatus(deps *statusDeps, jsonOutput bool, family, typ, parent, statusFil
 
 func renderStatusTable(w io.Writer, agents []*observe.AgentInfo) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "AGENT\tTYPE\tFAMILY\tPARENT\tSTATUS\tPROCESS\tLAST REPORT\n")
+	fmt.Fprintf(tw, "AGENT\tTYPE\tFAMILY\tPARENT\tSTATUS\tCOST\tPROCESS\tLAST REPORT\n")
+	var totalCost float64
 	for _, info := range agents {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		totalCost += info.TotalCostUsd
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			info.Name,
 			dash(info.Type),
 			dash(info.Family),
 			dash(info.Parent),
 			dash(info.Status),
+			costDisplay(info.TotalCostUsd),
 			processDisplay(info),
 			lastReportDisplay(info),
 		)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	if totalCost > 0 {
+		fmt.Fprintf(w, "\nTotal cost: $%.4f\n", totalCost)
+	}
+	return nil
 }
 
 func renderStatusJSON(w io.Writer, agents []*observe.AgentInfo) error {
 	entries := make([]statusEntry, 0, len(agents))
 	for _, info := range agents {
 		entries = append(entries, statusEntry{
-			Name:       info.Name,
-			Type:       info.Type,
-			Family:     info.Family,
-			Parent:     info.Parent,
-			Status:     info.Status,
-			Process:    processDisplay(info),
-			LastReport: lastReportDisplay(info),
-			IsRoot:     info.IsRoot,
+			Name:         info.Name,
+			Type:         info.Type,
+			Family:       info.Family,
+			Parent:       info.Parent,
+			Status:       info.Status,
+			Process:      processDisplay(info),
+			LastReport:   lastReportDisplay(info),
+			TotalCostUsd: info.TotalCostUsd,
+			IsRoot:       info.IsRoot,
 		})
 	}
 	enc := json.NewEncoder(w)
@@ -252,6 +263,7 @@ func agentStatesToSupervisorInfos(agents []*state.AgentState) []supervisor.Agent
 			LastReportMessage: a.LastReportMessage,
 			LastReportSummary: a.LastReportMessage,
 			LastReportDetail:  a.LastReportDetail,
+			TotalCostUsd:      a.TotalCostUsd,
 		})
 	}
 	return out
@@ -290,6 +302,13 @@ func dash(s string) string {
 	return s
 }
 
+func costDisplay(cost float64) string {
+	if cost <= 0 {
+		return "-"
+	}
+	return fmt.Sprintf("$%.4f", cost)
+}
+
 // runStatusAgent dumps the given agent's last_report plus the last `tail`
 // activity entries. See docs/designs/messaging-overhaul.md §4.6 item 2.
 func runStatusAgent(deps *statusDeps, agentName string, tail int) error {
@@ -312,6 +331,7 @@ func runStatusAgent(deps *statusDeps, agentName string, tail int) error {
 	fmt.Fprintf(w, "family: %s\n", dash(st.Family))
 	fmt.Fprintf(w, "parent: %s\n", dash(st.Parent))
 	fmt.Fprintf(w, "status: %s\n", dash(st.Status))
+	fmt.Fprintf(w, "cost:   %s\n", costDisplay(st.TotalCostUsd))
 
 	if st.LastReportType != "" {
 		fmt.Fprintf(w, "\nlast report: [%s] %s\n", strings.ToUpper(st.LastReportType), st.LastReportMessage)

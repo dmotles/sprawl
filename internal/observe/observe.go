@@ -62,6 +62,7 @@ func loadFromSupervisor(ctx context.Context, deps Deps, sprawlRoot string) ([]*A
 				Status:            info.Status,
 				Branch:            info.Branch,
 				TreePath:          info.TreePath,
+				TotalCostUsd:      info.TotalCostUsd,
 				LastReportType:    info.LastReportType,
 				LastReportState:   info.LastReportState,
 				LastReportMessage: firstNonEmpty(info.LastReportMessage, info.LastReportSummary),

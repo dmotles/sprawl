@@ -23,6 +23,10 @@ type AgentState struct {
 	Subagent  bool   `json:"subagent,omitempty"`
 	TreePath  string `json:"tree_path,omitempty"`
 
+	// Cost fields — persisted from Claude's result message after each turn.
+	TotalCostUsd     float64 `json:"total_cost_usd,omitempty"`
+	LastCostUpdateAt string  `json:"last_cost_update_at,omitempty"` // RFC3339
+
 	// Report fields — populated by "sprawl report" subcommands and the
 	// report_status MCP tool. See docs/designs/messaging-overhaul.md §4.2.3.
 	LastReportType    string `json:"last_report_type,omitempty"` // back-compat: status, done, problem

@@ -603,7 +603,26 @@ func (r *Runner) Stop(ctx context.Context) error {
 }
 
 func (r *Runner) sendWithInterrupt(ctx context.Context, prompt string) (*protocol.ResultMessage, string, error) {
-	return SendPromptWithInterrupt(ctx, r.proc, r.deps, r.pokePath, prompt, DefaultPollInterval, r.sprawlRoot, r.agentName)
+	result, poke, err := SendPromptWithInterrupt(ctx, r.proc, r.deps, r.pokePath, prompt, DefaultPollInterval, r.sprawlRoot, r.agentName)
+	if result != nil && result.TotalCostUsd > 0 {
+		r.persistCost(result.TotalCostUsd)
+	}
+	return result, poke, err
+}
+
+// persistCost writes the session cost to the agent's state file. Best-effort;
+// errors are logged but not propagated. (QUM-366)
+func (r *Runner) persistCost(totalCostUsd float64) {
+	agent, err := state.LoadAgent(r.sprawlRoot, r.agentName)
+	if err != nil {
+		fmt.Fprintf(r.output, "[agent-loop] warn: could not load agent state for cost persist: %v\n", err)
+		return
+	}
+	agent.TotalCostUsd = totalCostUsd
+	agent.LastCostUpdateAt = time.Now().UTC().Format(time.RFC3339)
+	if err := state.SaveAgent(r.sprawlRoot, agent); err != nil {
+		fmt.Fprintf(r.output, "[agent-loop] warn: could not persist cost: %v\n", err)
+	}
 }
 
 func (r *Runner) restartWithResume(ctx context.Context, observer Observer) error {

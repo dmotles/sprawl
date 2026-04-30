@@ -211,6 +211,57 @@ func TestUsedNames(t *testing.T) {
 	}
 }
 
+func TestSaveAndLoadAgent_CostFields(t *testing.T) {
+	dir := t.TempDir()
+	agent := &AgentState{
+		Name:             "alice",
+		Type:             "engineer",
+		Status:           "active",
+		TotalCostUsd:     0.0523,
+		LastCostUpdateAt: "2026-04-30T12:00:00Z",
+	}
+
+	if err := SaveAgent(dir, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "alice")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+
+	if loaded.TotalCostUsd != 0.0523 {
+		t.Errorf("TotalCostUsd = %f, want 0.0523", loaded.TotalCostUsd)
+	}
+	if loaded.LastCostUpdateAt != "2026-04-30T12:00:00Z" {
+		t.Errorf("LastCostUpdateAt = %q, want %q", loaded.LastCostUpdateAt, "2026-04-30T12:00:00Z")
+	}
+}
+
+func TestSaveAndLoadAgent_CostFieldsOmittedWhenZero(t *testing.T) {
+	dir := t.TempDir()
+	agent := &AgentState{
+		Name:   "bob",
+		Type:   "engineer",
+		Status: "active",
+	}
+
+	if err := SaveAgent(dir, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(AgentsDir(dir), "bob.json"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(raw), "total_cost_usd") {
+		t.Errorf("agent state JSON should not contain total_cost_usd when zero:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "last_cost_update_at") {
+		t.Errorf("agent state JSON should not contain last_cost_update_at when empty:\n%s", raw)
+	}
+}
+
 func TestWriteAndReadAccentColor(t *testing.T) {
 	dir := t.TempDir()
 
