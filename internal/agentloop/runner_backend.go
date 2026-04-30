@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	backend "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -38,6 +39,15 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 	if testMode := os.Getenv("SPRAWL_TEST_MODE"); testMode != "" {
 		additionalEnv["SPRAWL_TEST_MODE"] = testMode
 	}
+	// QUM-408: engineer agents launch claude with the curated TDD sub-agent
+	// set so they get oracle/test-writer/test-critic/implementer/code-reviewer/
+	// qa-validator. Researchers, managers, and weave do NOT receive the flag —
+	// they have different roles. The forward-compat requirement is documented
+	// in docs/designs/unified-runtime.md.
+	var agentsJSON string
+	if agentState.Type == "engineer" {
+		agentsJSON = agent.TDDSubAgentsJSON()
+	}
 	return backend.SessionSpec{
 		WorkDir:        agentState.Worktree,
 		Identity:       agentState.Name,
@@ -47,6 +57,7 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 		Model:          rootinit.ModelForAgentType(agentState.Type),
 		Effort:         "medium",
 		PermissionMode: "bypassPermissions",
+		Agents:         agentsJSON,
 		AdditionalEnv:  additionalEnv,
 		Stderr:         stderr,
 	}

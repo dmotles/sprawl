@@ -459,6 +459,7 @@ func StartRunner(ctx context.Context, deps *RunnerDeps, agentName string) (*Runn
 				Model:            rootinit.ModelForAgentType(agentState.Type),
 				Effort:           "medium",
 				PermissionMode:   "bypassPermissions",
+				Agents:           sessionSpec.Agents,
 			},
 		}
 	}

@@ -650,3 +650,40 @@ The existing `Observer` interface (`OnMessage(*protocol.Message)`) is used by th
 - `internal/agentloop/process.go` — `Observer` interface reused
 - `internal/agentloop/queue.go` — on-disk queue persistence reused
 - `internal/supervisor/real.go` — supervisor delegates to runtime, minimal changes
+
+## 9. Forward-Compat Requirement: TDD Sub-Agents (QUM-408)
+
+**The unified runtime engineer spawn path MUST pass `--agents <json>` to claude
+for engineer agents.** This wires Claude Code's `Agent` tool with the curated
+TDD sub-agent set (`oracle`, `test-writer`, `test-critic`, `implementer`,
+`code-reviewer`, `qa-validator`) defined in `internal/agent/subagents.go`.
+
+### Contract
+
+- The current spawn path (`agentloop.BuildAgentSessionSpec`) populates
+  `backend.SessionSpec.Agents` with `agent.TDDSubAgentsJSON()` if and only if
+  `agentState.Type == "engineer"`.
+- The Claude adapter (`internal/backend/claude/adapter.go`) threads
+  `SessionSpec.Agents` into `claudecli.LaunchOpts.Agents`, which emits the
+  `--agents <json>` argv pair.
+- Researchers, managers, and weave do NOT receive the flag — they have
+  different roles and should not run the engineer TDD workflow.
+
+### When migrating to UnifiedRuntime
+
+When the spawn path is rewritten as part of QUM-396 / QUM-398:
+
+1. Continue to populate `backend.SessionSpec.Agents` (or its successor field)
+   from `agent.TDDSubAgentsJSON()` for engineer agents.
+2. Preserve the `agentState.Type == "engineer"` gate. Do not broaden it.
+3. Preserve the regression test
+   `TestBuildAgentSessionSpec_AgentsByAgentType` (or port it to the unified
+   runtime equivalent), which asserts engineer specs carry the TDD JSON and
+   non-engineer specs do not.
+
+### History
+
+The wiring was originally added in `f4546ab` and dropped during the in-process
+agent-loop refactor (`ce30c36`). It was restored in QUM-408. dmotles confirmed
+engineer outcomes were stronger when these sub-agents were available; do not
+re-regress.

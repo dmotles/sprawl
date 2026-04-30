@@ -139,6 +139,44 @@ func TestAdapter_StartBuildsStreamJSONExecSpecFromSessionSpec(t *testing.T) {
 	}
 }
 
+func TestAdapter_StartPassesAgentsThrough(t *testing.T) {
+	starter := &mockStarter{transport: &mockManagedTransport{}}
+	adapter := NewAdapter(Config{
+		Path:    "/opt/bin/claude",
+		Starter: starter,
+	})
+
+	const agentsJSON = `{"oracle":{"description":"d","prompt":"p"}}`
+	_, err := adapter.Start(context.Background(), backendpkg.SessionSpec{
+		SessionID: "sess-1",
+		Agents:    agentsJSON,
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	if !argsContainPair(starter.specs[0].Args, "--agents", agentsJSON) {
+		t.Errorf("args missing --agents %q: %v", agentsJSON, starter.specs[0].Args)
+	}
+}
+
+func TestAdapter_StartOmitsAgentsWhenEmpty(t *testing.T) {
+	starter := &mockStarter{transport: &mockManagedTransport{}}
+	adapter := NewAdapter(Config{
+		Path:    "/opt/bin/claude",
+		Starter: starter,
+	})
+
+	_, err := adapter.Start(context.Background(), backendpkg.SessionSpec{SessionID: "sess-1"})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	if argsContain(starter.specs[0].Args, "--agents") {
+		t.Errorf("args should not contain --agents when SessionSpec.Agents is empty: %v", starter.specs[0].Args)
+	}
+}
+
 func TestAdapter_StartUsesConfiguredBinaryPathWithoutLookup(t *testing.T) {
 	starter := &mockStarter{transport: &mockManagedTransport{}}
 	lookupCalled := false
