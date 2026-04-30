@@ -456,7 +456,7 @@ func StartRunner(ctx context.Context, deps *RunnerDeps, agentName string) (*Runn
 				InputFormat:      "stream-json",
 				OutputFormat:     "stream-json",
 				Verbose:          true,
-				Model:            rootinit.DefaultModel,
+				Model:            rootinit.ModelForAgentType(agentState.Type),
 				Effort:           "medium",
 				PermissionMode:   "bypassPermissions",
 			},

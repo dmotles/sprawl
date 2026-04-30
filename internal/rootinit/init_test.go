@@ -90,8 +90,8 @@ func TestPrepare_ReturnsPreparedSession(t *testing.T) {
 	if got.PromptPath != "/tmp/SYSTEM.md" {
 		t.Errorf("PromptPath: got %q, want %q", got.PromptPath, "/tmp/SYSTEM.md")
 	}
-	if got.Model != DefaultModel {
-		t.Errorf("Model: got %q, want %q", got.Model, DefaultModel)
+	if got.Model != DefaultRootModel {
+		t.Errorf("Model: got %q, want %q", got.Model, DefaultRootModel)
 	}
 	if len(got.RootTools) == 0 {
 		t.Error("expected RootTools to be populated")

@@ -18,6 +18,19 @@ var RootTools = []string{
 // The root agent does not edit files directly — it delegates to child agents.
 var DisallowedTools = []string{"Edit", "Write", "NotebookEdit"}
 
-// DefaultModel is the shared Claude model used for the root weave session and
-// child agent sessions. Memory distillation uses internal/memory.DefaultMemoryModel.
-const DefaultModel = "claude-opus-4-6"
+// Per-role model constants. The root weave session and manager agents use
+// extended-thinking opus; engineer and researcher agents use standard opus.
+// Memory distillation uses internal/memory.DefaultMemoryModel.
+const (
+	DefaultRootModel    = "opus[1m]" // root weave session
+	DefaultManagerModel = "opus[1m]" // manager child agents
+	DefaultAgentModel   = "opus"     // engineer, researcher, etc.
+)
+
+// ModelForAgentType returns the model string for the given agent type.
+func ModelForAgentType(agentType string) string {
+	if agentType == "manager" {
+		return DefaultManagerModel
+	}
+	return DefaultAgentModel
+}

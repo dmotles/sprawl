@@ -33,7 +33,7 @@ type PreparedSession struct {
 	Resume     bool     // if true, launch via --resume SessionID
 	PromptPath string   // path to persisted SYSTEM.md (empty when Resume==true)
 	SessionID  string   // resumed session ID or freshly generated UUID
-	Model      string   // DefaultModel for weave/root launch
+	Model      string   // DefaultRootModel for weave/root launch
 	RootTools  []string // tools available to the root agent
 	Disallowed []string // tools explicitly denied
 }
@@ -91,7 +91,7 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 				Resume:     true,
 				PromptPath: promptPath,
 				SessionID:  prevSessionID,
-				Model:      DefaultModel,
+				Model:      DefaultRootModel,
 				RootTools:  RootTools,
 				Disallowed: DisallowedTools,
 			}
@@ -163,7 +163,7 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		Resume:     false,
 		PromptPath: promptPath,
 		SessionID:  sessionID,
-		Model:      DefaultModel,
+		Model:      DefaultRootModel,
 		RootTools:  RootTools,
 		Disallowed: DisallowedTools,
 	}
