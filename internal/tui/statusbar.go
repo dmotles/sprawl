@@ -17,6 +17,8 @@ type StatusBarModel struct {
 	sessionCostUsd float64
 	sessionID      string
 	selectMode     bool
+	contextTokens  int // latest input_tokens from assistant message
+	contextLimit   int // context window size derived from model name
 	// restartElapsed is non-zero while the TUI is waiting on async restart
 	// work (FinalizeHandoff + Prepare). Rendered as "restart Ns" so the
 	// user sees a live elapsed counter instead of a frozen UI (QUM-260).
@@ -58,6 +60,11 @@ func (m StatusBarModel) View() string {
 	}
 	if m.sessionCostUsd > 0 {
 		parts = append(parts, fmt.Sprintf("$%.4f", m.sessionCostUsd))
+	}
+	if m.contextTokens > 0 && m.contextLimit > 0 {
+		parts = append(parts, fmt.Sprintf("%s/%s tokens",
+			formatTokenCount(m.contextTokens),
+			formatTokenCount(m.contextLimit)))
 	}
 	if m.sessionID != "" {
 		parts = append(parts, "sess:"+m.sessionID)
@@ -112,8 +119,60 @@ func (m *StatusBarModel) SetSelectMode(on bool) {
 	m.selectMode = on
 }
 
+// SetTokenUsage updates the context token counter. The incoming value is the
+// latest input_tokens snapshot (not cumulative), so we replace rather than
+// accumulate. (QUM-385)
+func (m *StatusBarModel) SetTokenUsage(inputTokens int) {
+	m.contextTokens = inputTokens
+}
+
+// SetContextLimit sets the context window size derived from the model name.
+// (QUM-385)
+func (m *StatusBarModel) SetContextLimit(limit int) {
+	m.contextLimit = limit
+}
+
 // SetRestartElapsed updates the restart-in-flight indicator (QUM-260).
 // Pass 0 to clear.
 func (m *StatusBarModel) SetRestartElapsed(d time.Duration) {
 	m.restartElapsed = d
+}
+
+// formatTokenCount renders a token count in compact form: "500", "42.3k", "1M".
+func formatTokenCount(n int) string {
+	switch {
+	case n >= 1_000_000:
+		if n%1_000_000 == 0 {
+			return fmt.Sprintf("%dM", n/1_000_000)
+		}
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		if n%1_000 == 0 {
+			return fmt.Sprintf("%dk", n/1_000)
+		}
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+const defaultContextLimit = 1_000_000
+
+var modelContextWindows = map[string]int{
+	"claude-opus-4":   1_000_000,
+	"claude-sonnet-4": 1_000_000,
+	"claude-mythos":   1_000_000,
+	"claude-haiku-4":  200_000,
+}
+
+// modelContextLimit returns the context window size in tokens for the given
+// model name. Matches by prefix. Returns defaultContextLimit for unrecognized
+// models. (QUM-385)
+func modelContextLimit(model string) int {
+	for prefix, limit := range modelContextWindows {
+		if strings.HasPrefix(model, prefix) {
+			return limit
+		}
+	}
+	return defaultContextLimit
 }

@@ -131,8 +131,11 @@ type contentBlock struct {
 }
 
 // assistantContent is used to parse the "message" field of an assistant message.
+// The Anthropic API message object contains both `content` (array of blocks)
+// and `usage` (token counts); we parse both.
 type assistantContent struct {
-	Content []contentBlock `json:"content"`
+	Content []contentBlock  `json:"content"`
+	Usage   *protocol.Usage `json:"usage,omitempty"`
 }
 
 // mapProtocolMessage converts a protocol.Message into the appropriate tea.Msg.
@@ -146,9 +149,14 @@ func mapProtocolMessage(msg *protocol.Message) tea.Msg {
 	case "result":
 		return mapResultMessage(msg)
 	case "system":
-		// System messages (init, session_state_changed, etc.) are informational
-		// during the event stream. The session initialization is handled by
-		// Bridge.Initialize(). Return nil to skip and wait for the next message.
+		// QUM-385: system/init carries the model name, from which we derive the
+		// context window limit. Other system subtypes are still skipped.
+		if msg.Subtype == "init" {
+			var si protocol.SystemInit
+			if err := json.Unmarshal(msg.Raw, &si); err == nil && si.Model != "" {
+				return SessionModelMsg{Model: si.Model}
+			}
+		}
 		return nil
 	default:
 		return nil
@@ -182,6 +190,15 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 			})
 		}
 	}
+	// QUM-385: emit token usage alongside content blocks so the status bar
+	// can track context window consumption.
+	if content.Usage != nil {
+		msgs = append(msgs, SessionUsageMsg{
+			InputTokens:  content.Usage.InputTokens,
+			OutputTokens: content.Usage.OutputTokens,
+		})
+	}
+
 	if len(msgs) == 0 {
 		return nil
 	}

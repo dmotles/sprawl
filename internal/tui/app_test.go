@@ -2986,3 +2986,106 @@ func TestAppModel_Esc_NoBridgeNoInterrupt(t *testing.T) {
 		t.Error("ESC during streaming with no bridge should not return a cmd")
 	}
 }
+
+// --- QUM-385: Token counter wiring tests ---
+
+func TestAppModel_SessionUsageMsg_UpdatesStatusBar(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = resized.(AppModel)
+
+	// Deliver usage via AssistantContentMsg (as bridge does).
+	updated, _ := app.Update(AssistantContentMsg{
+		Msgs: []tea.Msg{SessionUsageMsg{InputTokens: 15000, OutputTokens: 300}},
+	})
+	app = updated.(AppModel)
+
+	if app.statusBar.contextTokens != 15000 {
+		t.Errorf("contextTokens = %d, want 15000", app.statusBar.contextTokens)
+	}
+}
+
+func TestAppModel_SessionModelMsg_SetsContextLimit(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = resized.(AppModel)
+
+	updated, cmd := app.Update(SessionModelMsg{Model: "claude-opus-4-7-20260301"})
+	app = updated.(AppModel)
+
+	if app.statusBar.contextLimit != 1_000_000 {
+		t.Errorf("contextLimit = %d, want 1000000", app.statusBar.contextLimit)
+	}
+	// Should return a WaitForEvent cmd since bridge is present.
+	if cmd == nil {
+		t.Error("expected non-nil cmd (WaitForEvent) after SessionModelMsg with bridge")
+	}
+}
+
+func TestAppModel_SessionModelMsg_NoBridge(t *testing.T) {
+	app := newTestAppModel(t)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = resized.(AppModel)
+
+	_, cmd := app.Update(SessionModelMsg{Model: "claude-opus-4-7-20260301"})
+
+	if cmd != nil {
+		t.Error("expected nil cmd when no bridge is present")
+	}
+}
+
+func TestAppModel_RestartComplete_ResetsTokenUsage(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = resized.(AppModel)
+
+	// Set some token usage.
+	app.statusBar.SetContextLimit(1_000_000)
+	app.statusBar.SetTokenUsage(50000)
+	app.restarting = true
+
+	// Deliver restart complete.
+	newBridge := NewBridge(context.Background(), newMockSession())
+	newBridge.SetSessionID("abcdef12-new")
+	updated, _ := app.Update(RestartCompleteMsg{Bridge: newBridge, Err: nil})
+	app = updated.(AppModel)
+
+	if app.statusBar.contextTokens != 0 {
+		t.Errorf("contextTokens should be 0 after restart, got %d", app.statusBar.contextTokens)
+	}
+	// contextLimit should be preserved (model usually doesn't change).
+	if app.statusBar.contextLimit != 1_000_000 {
+		t.Errorf("contextLimit should be preserved across restart, got %d", app.statusBar.contextLimit)
+	}
+}
+
+func TestAppModel_UsageAlongsideText_BothProcessed(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = resized.(AppModel)
+
+	updated, _ := app.Update(AssistantContentMsg{
+		Msgs: []tea.Msg{
+			AssistantTextMsg{Text: "hello"},
+			SessionUsageMsg{InputTokens: 5000, OutputTokens: 200},
+		},
+	})
+	app = updated.(AppModel)
+
+	// Verify text was processed (turn state should be streaming).
+	if app.turnState != TurnStreaming {
+		t.Errorf("turnState = %v, want TurnStreaming after receiving text", app.turnState)
+	}
+	// Verify usage was processed.
+	if app.statusBar.contextTokens != 5000 {
+		t.Errorf("contextTokens = %d, want 5000", app.statusBar.contextTokens)
+	}
+}
