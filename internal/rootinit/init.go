@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 // Mode identifies which launch mode the caller runs in. It is threaded
@@ -76,13 +78,17 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		if !alreadySummarized {
 			// Resume path: prior session is still live on Claude's side.
 			fmt.Fprintf(stdout, "%s resuming session %s\n", prefix, prevSessionID)
-			return &PreparedSession{
+			ps := &PreparedSession{
 				Resume:     true,
 				SessionID:  prevSessionID,
 				Model:      DefaultModel,
 				RootTools:  RootTools,
 				Disallowed: DisallowedTools,
-			}, nil
+			}
+			if err := saveRootAgentState(deps, sprawlRoot, rootName, ps.SessionID); err != nil {
+				return nil, err
+			}
+			return ps, nil
 		}
 		// Consolidate-then-fresh: summary exists (prior session handed off),
 		// run consolidation and fall through to the fresh path below.
@@ -143,12 +149,51 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		return nil, fmt.Errorf("writing session ID: %w", err)
 	}
 
-	return &PreparedSession{
+	ps := &PreparedSession{
 		Resume:     false,
 		PromptPath: promptPath,
 		SessionID:  sessionID,
 		Model:      DefaultModel,
 		RootTools:  RootTools,
 		Disallowed: DisallowedTools,
-	}, nil
+	}
+	if err := saveRootAgentState(deps, sprawlRoot, rootName, ps.SessionID); err != nil {
+		return nil, err
+	}
+	return ps, nil
+}
+
+// saveRootAgentState persists the root agent's state file. On resume it
+// loads the existing state and updates only SessionID and Status, preserving
+// cost/report fields. On first launch it creates a new state file.
+func saveRootAgentState(deps *Deps, sprawlRoot, rootName, sessionID string) error {
+	branch, _ := deps.CurrentBranch(sprawlRoot)
+
+	existing, loadErr := deps.LoadAgent(sprawlRoot, rootName)
+	if loadErr == nil && existing != nil {
+		// Update mutable fields, preserve the rest.
+		existing.SessionID = sessionID
+		existing.Status = "active"
+		if branch != "" {
+			existing.Branch = branch
+		}
+		return wrapSaveErr(deps.SaveAgent(sprawlRoot, existing))
+	}
+
+	// No existing state — create fresh.
+	agentState := &state.AgentState{
+		Name:      rootName,
+		Status:    "active",
+		Branch:    branch,
+		SessionID: sessionID,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	return wrapSaveErr(deps.SaveAgent(sprawlRoot, agentState))
+}
+
+func wrapSaveErr(err error) error {
+	if err != nil {
+		return fmt.Errorf("saving root agent state: %w", err)
+	}
+	return nil
 }

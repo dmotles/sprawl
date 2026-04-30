@@ -12,6 +12,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/memory"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 // syncBackgroundConsolidate returns a BackgroundConsolidate function that
@@ -62,6 +63,11 @@ func newTestDeps(t *testing.T) *Deps {
 		ListRecentSessions: func(root string, n int) ([]memory.Session, []string, error) { return nil, nil, nil },
 		ReadTimeline:       func(root string) ([]memory.TimelineEntry, error) { return nil, nil },
 	}
+	d.SaveAgent = func(sprawlRoot string, a *state.AgentState) error { return nil }
+	d.LoadAgent = func(sprawlRoot, name string) (*state.AgentState, error) {
+		return nil, os.ErrNotExist
+	}
+	d.CurrentBranch = func(repoRoot string) (string, error) { return "main", nil }
 	d.BackgroundConsolidate = syncBackgroundConsolidate(d)
 	return d
 }
@@ -502,5 +508,192 @@ func TestPrepareFresh_NoPrevSession(t *testing.T) {
 	}
 	if autoCalled {
 		t.Error("expected AutoSummarize NOT to be called when no prev session")
+	}
+}
+
+func TestPrepare_FreshPath_SavesRootAgentState(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.NewUUID = func() (string, error) { return "fresh-sess", nil }
+	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
+
+	var savedAgent *state.AgentState
+	deps.SaveAgent = func(sprawlRoot string, a *state.AgentState) error {
+		savedAgent = a
+		return nil
+	}
+
+	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if savedAgent == nil {
+		t.Fatal("expected SaveAgent to be called on fresh path")
+	}
+	if savedAgent.Name != "weave" {
+		t.Errorf("Name: got %q, want %q", savedAgent.Name, "weave")
+	}
+	if savedAgent.Status != "active" {
+		t.Errorf("Status: got %q, want %q", savedAgent.Status, "active")
+	}
+	if savedAgent.SessionID != "fresh-sess" {
+		t.Errorf("SessionID: got %q, want %q", savedAgent.SessionID, "fresh-sess")
+	}
+	if savedAgent.Branch != "main" {
+		t.Errorf("Branch: got %q, want %q", savedAgent.Branch, "main")
+	}
+	if savedAgent.Parent != "" {
+		t.Errorf("Parent: got %q, want empty", savedAgent.Parent)
+	}
+	if savedAgent.CreatedAt == "" {
+		t.Error("expected CreatedAt to be set")
+	}
+}
+
+func TestPrepare_ResumePath_SavesRootAgentState(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "prev-sess", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
+
+	var savedAgent *state.AgentState
+	deps.SaveAgent = func(sprawlRoot string, a *state.AgentState) error {
+		savedAgent = a
+		return nil
+	}
+
+	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if savedAgent == nil {
+		t.Fatal("expected SaveAgent to be called on resume path")
+	}
+	if savedAgent.Name != "weave" {
+		t.Errorf("Name: got %q, want %q", savedAgent.Name, "weave")
+	}
+	if savedAgent.Status != "active" {
+		t.Errorf("Status: got %q, want %q", savedAgent.Status, "active")
+	}
+	if savedAgent.SessionID != "prev-sess" {
+		t.Errorf("SessionID: got %q, want %q", savedAgent.SessionID, "prev-sess")
+	}
+}
+
+func TestPrepare_ResumePath_PreservesExistingFields(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.ReadLastSessionID = func(string) (string, error) { return "prev-sess", nil }
+	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
+	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
+
+	// Simulate an existing state file with meaningful fields.
+	deps.LoadAgent = func(sprawlRoot, name string) (*state.AgentState, error) {
+		return &state.AgentState{
+			Name:              "weave",
+			Status:            "active",
+			Branch:            "main",
+			CreatedAt:         "2026-04-01T00:00:00Z",
+			SessionID:         "old-sess",
+			TotalCostUsd:      42.5,
+			LastReportMessage: "all good",
+		}, nil
+	}
+
+	var savedAgent *state.AgentState
+	deps.SaveAgent = func(sprawlRoot string, a *state.AgentState) error {
+		savedAgent = a
+		return nil
+	}
+
+	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if savedAgent == nil {
+		t.Fatal("expected SaveAgent to be called")
+	}
+	// Session ID should be updated to current.
+	if savedAgent.SessionID != "prev-sess" {
+		t.Errorf("SessionID: got %q, want %q", savedAgent.SessionID, "prev-sess")
+	}
+	// CreatedAt should be preserved from original.
+	if savedAgent.CreatedAt != "2026-04-01T00:00:00Z" {
+		t.Errorf("CreatedAt: got %q, want preserved value", savedAgent.CreatedAt)
+	}
+	// Cost fields should be preserved.
+	if savedAgent.TotalCostUsd != 42.5 {
+		t.Errorf("TotalCostUsd: got %f, want 42.5", savedAgent.TotalCostUsd)
+	}
+	// Report fields should be preserved.
+	if savedAgent.LastReportMessage != "all good" {
+		t.Errorf("LastReportMessage: got %q, want preserved value", savedAgent.LastReportMessage)
+	}
+}
+
+func TestPrepare_SaveAgentError_ReturnsError(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.SaveAgent = func(sprawlRoot string, a *state.AgentState) error {
+		return fmt.Errorf("disk full")
+	}
+
+	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err == nil {
+		t.Fatal("expected error when SaveAgent fails")
+	}
+	if !strings.Contains(err.Error(), "saving root agent state") {
+		t.Errorf("expected error to mention saving root agent state, got %v", err)
+	}
+}
+
+func TestPrepareFresh_SavesRootAgentState(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.NewUUID = func() (string, error) { return "fresh-id", nil }
+	deps.CurrentBranch = func(string) (string, error) { return "feature-branch", nil }
+
+	var savedAgent *state.AgentState
+	deps.SaveAgent = func(sprawlRoot string, a *state.AgentState) error {
+		savedAgent = a
+		return nil
+	}
+
+	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("PrepareFresh error: %v", err)
+	}
+	if savedAgent == nil {
+		t.Fatal("expected SaveAgent to be called")
+	}
+	if savedAgent.Name != "weave" {
+		t.Errorf("Name: got %q, want %q", savedAgent.Name, "weave")
+	}
+	if savedAgent.Branch != "feature-branch" {
+		t.Errorf("Branch: got %q, want %q", savedAgent.Branch, "feature-branch")
+	}
+	if savedAgent.SessionID != "fresh-id" {
+		t.Errorf("SessionID: got %q, want %q", savedAgent.SessionID, "fresh-id")
+	}
+}
+
+func TestPrepare_CurrentBranchError_StillSaves(t *testing.T) {
+	deps := newTestDeps(t)
+	deps.CurrentBranch = func(string) (string, error) {
+		return "", fmt.Errorf("not a git repo")
+	}
+
+	var savedAgent *state.AgentState
+	deps.SaveAgent = func(sprawlRoot string, a *state.AgentState) error {
+		savedAgent = a
+		return nil
+	}
+
+	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	if err != nil {
+		t.Fatalf("Prepare error: %v", err)
+	}
+	if savedAgent == nil {
+		t.Fatal("expected SaveAgent to be called even when CurrentBranch fails")
+	}
+	// Branch should be empty if we couldn't determine it.
+	if savedAgent.Branch != "" {
+		t.Errorf("Branch: got %q, want empty on error", savedAgent.Branch)
 	}
 }
