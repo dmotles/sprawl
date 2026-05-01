@@ -134,6 +134,198 @@ func waitFor(t *testing.T, ch <-chan RuntimeEvent, d time.Duration, pred func(Ru
 	}
 }
 
+// TestTurnLoop_OnQueueItemDelivered_FiredAfterSuccess verifies that the
+// TurnLoop invokes its OnQueueItemDelivered callback once per drained
+// QueueItem after a successful turn (StartTurn returned no error). The
+// callback must receive each item with its EntryIDs intact and in queue
+// order. See QUM-441.
+func TestTurnLoop_OnQueueItemDelivered_FiredAfterSuccess(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassInterrupt, Prompt: "p1", EntryIDs: []string{"a", "b"}})
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p2", EntryIDs: []string{"c"}})
+
+	var (
+		cbMu  sync.Mutex
+		calls []QueueItem
+	)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			cbMu.Lock()
+			calls = append(calls, item)
+			cbMu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	cbMu.Lock()
+	got := append([]QueueItem(nil), calls...)
+	cbMu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("OnQueueItemDelivered call count = %d, want 2 (got=%+v)", len(got), got)
+	}
+	// Items drain together; class priority puts interrupt before async.
+	if len(got[0].EntryIDs) != 2 || got[0].EntryIDs[0] != "a" || got[0].EntryIDs[1] != "b" {
+		t.Errorf("call[0].EntryIDs = %v, want [a b]", got[0].EntryIDs)
+	}
+	if len(got[1].EntryIDs) != 1 || got[1].EntryIDs[0] != "c" {
+		t.Errorf("call[1].EntryIDs = %v, want [c]", got[1].EntryIDs)
+	}
+}
+
+// TestTurnLoop_OnQueueItemDelivered_NotFiredOnStartTurnError verifies that
+// the callback is NOT invoked when StartTurn returns an error: a failed
+// turn means the items were not actually delivered to the model, so the
+// caller must not record them as delivered. See QUM-441.
+func TestTurnLoop_OnQueueItemDelivered_NotFiredOnStartTurnError(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			return nil, errors.New("boom")
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "do work", EntryIDs: []string{"x"}})
+
+	var (
+		cbMu  sync.Mutex
+		calls []QueueItem
+	)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			cbMu.Lock()
+			calls = append(calls, item)
+			cbMu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnFailed
+	})
+	// Wait for QueueDrained too (the loop publishes it after a failed turn).
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	cbMu.Lock()
+	defer cbMu.Unlock()
+	if len(calls) != 0 {
+		t.Errorf("OnQueueItemDelivered invoked %d time(s) on failed turn, want 0; calls=%+v", len(calls), calls)
+	}
+}
+
+// TestTurnLoop_OnQueueItemDelivered_SkipsItemsWithNoEntryIDs verifies that
+// items with empty EntryIDs are NOT reported via the callback (they have
+// no persistent storage to clean up). Only items with EntryIDs trigger
+// the callback. See QUM-441.
+func TestTurnLoop_OnQueueItemDelivered_SkipsItemsWithNoEntryIDs(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "user-input", EntryIDs: nil})
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "from peer", EntryIDs: []string{"id1"}})
+
+	var (
+		cbMu  sync.Mutex
+		calls []QueueItem
+	)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			cbMu.Lock()
+			calls = append(calls, item)
+			cbMu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	cbMu.Lock()
+	got := append([]QueueItem(nil), calls...)
+	cbMu.Unlock()
+
+	if len(got) != 1 {
+		t.Fatalf("OnQueueItemDelivered call count = %d, want 1 (only the item with EntryIDs); got=%+v", len(got), got)
+	}
+	if len(got[0].EntryIDs) != 1 || got[0].EntryIDs[0] != "id1" {
+		t.Errorf("call[0].EntryIDs = %v, want [id1]", got[0].EntryIDs)
+	}
+}
+
 func TestTurnLoop(t *testing.T) {
 	t.Run("SingleTurnLifecycle", func(t *testing.T) {
 		assistant := makeAssistant("hello")

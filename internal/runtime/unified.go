@@ -56,6 +56,8 @@ type RuntimeConfig struct {
 	// via UnifiedRuntime.Capabilities(). The supervisor uses this to forward
 	// caps to its RuntimeHandle. See QUM-398.
 	Capabilities backend.Capabilities
+	// OnQueueItemDelivered is forwarded to TurnLoopConfig. See TurnLoopConfig.
+	OnQueueItemDelivered func(item QueueItem)
 }
 
 // sessionIDProvider is an optional interface a Session may satisfy to expose a
@@ -220,10 +222,11 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 	tracker := &stateTrackingSession{inner: rt.cfg.Session, rt: rt}
 
 	rt.turnLoop = NewTurnLoop(TurnLoopConfig{
-		Session:       tracker,
-		Queue:         rt.queue,
-		EventBus:      rt.eventBus,
-		InitialPrompt: rt.cfg.InitialPrompt,
+		Session:              tracker,
+		Queue:                rt.queue,
+		EventBus:             rt.eventBus,
+		InitialPrompt:        rt.cfg.InitialPrompt,
+		OnQueueItemDelivered: rt.cfg.OnQueueItemDelivered,
 	})
 
 	rt.mu.Unlock()
