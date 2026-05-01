@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -88,12 +89,20 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 	}
 
 	caps := session.Capabilities()
+	sprawlRoot, name := spec.SprawlRoot, spec.Name
 	rt := unifiedRuntimeNewFn(runtimepkg.RuntimeConfig{
 		Name:          spec.Name,
 		SprawlRoot:    spec.SprawlRoot,
 		Session:       session,
 		InitialPrompt: agentState.Prompt,
 		Capabilities:  caps,
+		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
+			for _, id := range it.EntryIDs {
+				if err := agentloop.MarkDelivered(sprawlRoot, name, id); err != nil {
+					fmt.Fprintf(os.Stderr, "[unified-runtime] mark delivered %s: %v\n", id, err)
+				}
+			}
+		},
 	})
 
 	// Activity subscriber: forwards EventProtocolMessage to the

@@ -42,6 +42,12 @@ type TurnLoopConfig struct {
 	Queue         *MessageQueue
 	EventBus      *EventBus
 	InitialPrompt string
+	// OnQueueItemDelivered, if non-nil, is invoked from the turn-loop goroutine
+	// once per QueueItem successfully sent to the backend (StartTurn returned
+	// nil error), and only for items where len(EntryIDs) > 0. Used by the
+	// supervisor to call agentloop.MarkDelivered after a turn consumes the
+	// item. Must not block.
+	OnQueueItemDelivered func(item QueueItem)
 }
 
 // TurnLoop owns the single-goroutine drive loop for an agent runtime.
@@ -64,7 +70,7 @@ func NewTurnLoop(cfg TurnLoopConfig) *TurnLoop {
 // EventStopped.
 func (l *TurnLoop) Run(ctx context.Context) error {
 	if l.cfg.InitialPrompt != "" {
-		l.executeTurn(ctx, l.cfg.InitialPrompt)
+		_ = l.executeTurn(ctx, l.cfg.InitialPrompt)
 	}
 
 	for {
@@ -80,7 +86,14 @@ func (l *TurnLoop) Run(ctx context.Context) error {
 		items := l.cfg.Queue.DrainAll()
 		if len(items) > 0 {
 			prompt := buildCompositePrompt(items)
-			l.executeTurn(ctx, prompt)
+			started := l.executeTurn(ctx, prompt)
+			if started && l.cfg.OnQueueItemDelivered != nil {
+				for _, it := range items {
+					if len(it.EntryIDs) > 0 {
+						l.cfg.OnQueueItemDelivered(it)
+					}
+				}
+			}
 			// Published regardless of turn outcome (success, failure, or
 			// interrupt): the items were consumed from the queue and won't be
 			// re-delivered, so subscribers tracking queue state need the
@@ -120,8 +133,10 @@ func (l *TurnLoop) Interrupt(_ context.Context) error {
 
 // executeTurn runs one turn end-to-end: install per-turn interrupt channel,
 // publish TurnStarted, call StartTurn, drain events into the bus, and
-// finalize with TurnCompleted/TurnFailed/Interrupted as appropriate.
-func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) {
+// finalize with TurnCompleted/TurnFailed/Interrupted as appropriate. Returns
+// true if StartTurn succeeded (the turn was actually delivered to the
+// backend), false if StartTurn returned an error.
+func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) bool {
 	thisTurn := make(chan struct{}, 1)
 
 	l.mu.Lock()
@@ -139,7 +154,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) {
 	events, err := l.cfg.Session.StartTurn(ctx, prompt)
 	if err != nil {
 		l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
-		return
+		return false
 	}
 
 	interrupted := false
@@ -148,7 +163,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) {
 		case <-ctx.Done():
 			// The backend's readTurn is also wired to ctx and will close
 			// `events`; let the goroutine exit here without further bookkeeping.
-			return
+			return true
 		case <-thisTurn:
 			// Best-effort: errors from the backend's interrupt control
 			// request are observable via the backend's own logging/observer.
@@ -159,7 +174,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) {
 			// terminal result message.
 		case msg, ok := <-events:
 			if !ok {
-				return
+				return true
 			}
 			l.cfg.EventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
 			if msg.Type == "result" {

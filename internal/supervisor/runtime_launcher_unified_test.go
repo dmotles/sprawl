@@ -645,6 +645,319 @@ func TestUnifiedHandle_InterruptDelivery_SeparatesInterruptAndAsync(t *testing.T
 	}
 }
 
+// ---------------------------------------------------------------------------
+// QUM-441: InterruptDelivery wires post-turn MarkDelivered into the queue
+// directories. After the unified runtime drains the queue (via the synthetic
+// turn the wrapper kicks off), the seeded pending entries must be moved to
+// delivered/. On a StartTurn error, pending must remain pending.
+// ---------------------------------------------------------------------------
+
+// fakeBackendSessionWithStartErr is a fakeBackendSession variant whose
+// StartTurn returns a configured error. Used to exercise the failure path
+// where the post-turn callback must NOT mark items delivered.
+type fakeBackendSessionWithStartErr struct {
+	*fakeBackendSession
+	startErr error
+}
+
+func (f *fakeBackendSessionWithStartErr) StartTurn(_ context.Context, _ string, _ ...backend.TurnSpec) (<-chan *protocol.Message, error) {
+	f.mu.Lock()
+	f.startCalls++
+	f.mu.Unlock()
+	return nil, f.startErr
+}
+
+// buildStartedUnifiedHandleWithStartErrForTest spins up an inProcessUnifiedStarter
+// backed by a fakeBackendSession whose StartTurn returns startErr. Mirrors
+// buildStartedUnifiedHandleForTest otherwise.
+func buildStartedUnifiedHandleWithStartErrForTest(t *testing.T, caps backend.Capabilities, startErr error) (*unifiedHandle, *fakeBackendSession, string) {
+	t.Helper()
+	oldStart := unifiedAdapterStartFn
+	oldNew := unifiedRuntimeNewFn
+	t.Cleanup(func() {
+		unifiedAdapterStartFn = oldStart
+		unifiedRuntimeNewFn = oldNew
+	})
+
+	sprawlRoot := t.TempDir()
+	worktree := filepath.Join(sprawlRoot, "wt")
+	_ = os.MkdirAll(worktree, 0o755)
+	writeAgentState(t, sprawlRoot, &state.AgentState{
+		Name: "alice", Type: "researcher", Worktree: worktree, SessionID: "sess-alice",
+	})
+
+	inner := newFakeBackendSession("sess-alice", caps)
+	wrapped := &fakeBackendSessionWithStartErr{fakeBackendSession: inner, startErr: startErr}
+	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
+		return wrapped, nil
+	}
+	unifiedRuntimeNewFn = runtimepkg.New
+
+	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
+		SessionID: "sess-alice", TreePath: "weave/alice",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	uh, ok := handle.(*unifiedHandle)
+	if !ok {
+		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
+	}
+	return uh, inner, sprawlRoot
+}
+
+// TestUnifiedHandle_InterruptDelivery_MarksPendingDelivered verifies that
+// after the runtime drains the queue items synthesized by InterruptDelivery,
+// the underlying pending/ entries are moved to delivered/ on disk. See
+// QUM-441 (closes the gap left by QUM-437).
+func TestUnifiedHandle_InterruptDelivery_MarksPendingDelivered(t *testing.T) {
+	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	// Seed two pending entries — one async, one interrupt — so that
+	// InterruptDelivery enqueues two QueueItems (one per class).
+	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-async-1", ShortID: "sa1", Class: agentloop.ClassAsync,
+		From: "child-alpha", Subject: "status", Body: "all green",
+	}); err != nil {
+		t.Fatalf("Enqueue async: %v", err)
+	}
+	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-int-1", ShortID: "si1", Class: agentloop.ClassInterrupt,
+		From: "weave", Subject: "stop", Body: "reprioritize",
+	}); err != nil {
+		t.Fatalf("Enqueue interrupt: %v", err)
+	}
+
+	// Subscribe BEFORE InterruptDelivery so we don't miss the drain event.
+	sub, unsub := uh.rt.EventBus().Subscribe(64)
+	defer unsub()
+
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	// Wait for the queue to drain. The runtime kicks off a synthetic turn
+	// to consume the queue; we wait for EventQueueDrained.
+	deadline := time.After(3 * time.Second)
+	gotDrain := false
+	for !gotDrain {
+		select {
+		case ev, ok := <-sub:
+			if !ok {
+				t.Fatal("event channel closed before drain")
+			}
+			if ev.Type == runtimepkg.EventQueueDrained {
+				gotDrain = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for EventQueueDrained")
+		}
+	}
+
+	// Poll for the on-disk transition: the post-turn MarkDelivered
+	// callback runs on the loop goroutine after the queue drain, so it
+	// may complete shortly after the EventQueueDrained publish.
+	pollDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(pollDeadline) {
+		pending, _ := agentloop.ListPending(sprawlRoot, "alice")
+		delivered, _ := agentloop.ListDelivered(sprawlRoot, "alice")
+		if len(pending) == 0 && len(delivered) == 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pending, _ := agentloop.ListPending(sprawlRoot, "alice")
+	delivered, _ := agentloop.ListDelivered(sprawlRoot, "alice")
+	t.Errorf("after drain: pending=%d (want 0), delivered=%d (want 2)", len(pending), len(delivered))
+}
+
+// TestUnifiedHandle_InterruptDelivery_KeepsPendingOnStartTurnError verifies
+// that if StartTurn fails, pending entries remain in pending/ — the
+// post-turn MarkDelivered callback must NOT fire on a failed turn. See
+// QUM-441.
+func TestUnifiedHandle_InterruptDelivery_KeepsPendingOnStartTurnError(t *testing.T) {
+	startErr := errStartTurnFakeFailure
+	uh, _, sprawlRoot := buildStartedUnifiedHandleWithStartErrForTest(t, backend.Capabilities{}, startErr)
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-async-1", ShortID: "sa1", Class: agentloop.ClassAsync,
+		From: "child-alpha", Subject: "status", Body: "all green",
+	}); err != nil {
+		t.Fatalf("Enqueue async: %v", err)
+	}
+
+	sub, unsub := uh.rt.EventBus().Subscribe(64)
+	defer unsub()
+
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	// Wait for QueueDrained (the loop publishes it even after a failed turn,
+	// since the items were consumed from the queue).
+	deadline := time.After(3 * time.Second)
+	gotDrain := false
+	gotFail := false
+	for !gotDrain {
+		select {
+		case ev, ok := <-sub:
+			if !ok {
+				t.Fatal("event channel closed before drain")
+			}
+			if ev.Type == runtimepkg.EventTurnFailed {
+				gotFail = true
+			}
+			if ev.Type == runtimepkg.EventQueueDrained {
+				gotDrain = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for EventQueueDrained (gotFail=%v)", gotFail)
+		}
+	}
+	if !gotFail {
+		t.Error("expected EventTurnFailed before EventQueueDrained")
+	}
+
+	// Allow any deferred callback to run; assert pending is preserved.
+	time.Sleep(50 * time.Millisecond)
+
+	pending, err := agentloop.ListPending(sprawlRoot, "alice")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	delivered, err := agentloop.ListDelivered(sprawlRoot, "alice")
+	if err != nil {
+		t.Fatalf("ListDelivered: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Errorf("pending count = %d, want 1 (failed turn must not mark delivered); pending=%+v", len(pending), pending)
+	}
+	if len(delivered) != 0 {
+		t.Errorf("delivered count = %d, want 0 (failed turn must not mark delivered); delivered=%+v", len(delivered), delivered)
+	}
+}
+
+// errStartTurnFakeFailure is the canned StartTurn error used by the
+// failure-path test above. Defined as a package-level var so the test can
+// match it without string-comparing.
+var errStartTurnFakeFailure = fakeStartTurnErr{}
+
+type fakeStartTurnErr struct{}
+
+func (fakeStartTurnErr) Error() string { return "fake StartTurn failure" }
+
+// TestE2E_QUM441_TwoMessagesOverTimeNoReinjection is the QUM-441 e2e gate:
+// seed a pending entry, drive a turn, observe pending → delivered. Then
+// (after turn 1 completes) seed a SECOND pending entry, drive another turn,
+// and assert the second turn's prompt contains only the second message —
+// the first must NOT be re-injected. Mirrors the QUM-438 e2e pattern of
+// driving real production code paths via Go tests rather than a live
+// claude TTY.
+func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
+	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	sub, unsub := uh.rt.EventBus().Subscribe(64)
+	defer unsub()
+
+	// Helper: wait for next EventTurnStarted and return its Prompt; also
+	// wait for matching EventQueueDrained so the post-turn callback has run.
+	waitTurnPrompt := func() string {
+		t.Helper()
+		var prompt string
+		gotStart, gotDrain := false, false
+		deadline := time.After(3 * time.Second)
+		for !gotStart || !gotDrain {
+			select {
+			case ev, ok := <-sub:
+				if !ok {
+					t.Fatal("event channel closed")
+				}
+				if ev.Type == runtimepkg.EventTurnStarted {
+					prompt = ev.Prompt
+					gotStart = true
+				}
+				if ev.Type == runtimepkg.EventQueueDrained {
+					gotDrain = true
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for turn (gotStart=%v gotDrain=%v)", gotStart, gotDrain)
+			}
+		}
+		return prompt
+	}
+
+	// --- Round 1: send first message, drive turn, verify transition. ---
+	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "msg-1", ShortID: "m1", Class: agentloop.ClassAsync,
+		From: "weave", Subject: "first", Body: "unique-token-AAA",
+	}); err != nil {
+		t.Fatalf("Enqueue 1: %v", err)
+	}
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery 1: %v", err)
+	}
+	prompt1 := waitTurnPrompt()
+	if !strings.Contains(prompt1, "unique-token-AAA") {
+		t.Fatalf("turn 1 prompt missing AAA token: %q", prompt1)
+	}
+
+	// Wait for the on-disk transition.
+	pollDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(pollDeadline) {
+		p, _ := agentloop.ListPending(sprawlRoot, "alice")
+		d, _ := agentloop.ListDelivered(sprawlRoot, "alice")
+		if len(p) == 0 && len(d) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if p, _ := agentloop.ListPending(sprawlRoot, "alice"); len(p) != 0 {
+		t.Fatalf("after turn 1: pending=%d, want 0", len(p))
+	}
+	if d, _ := agentloop.ListDelivered(sprawlRoot, "alice"); len(d) != 1 {
+		t.Fatalf("after turn 1: delivered=%d, want 1", len(d))
+	}
+
+	// --- Round 2: send second message, drive turn, verify NO re-injection. ---
+	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "msg-2", ShortID: "m2", Class: agentloop.ClassAsync,
+		From: "weave", Subject: "second", Body: "unique-token-BBB",
+	}); err != nil {
+		t.Fatalf("Enqueue 2: %v", err)
+	}
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery 2: %v", err)
+	}
+	prompt2 := waitTurnPrompt()
+
+	// Critical assertion: second turn's prompt must contain BBB but NOT AAA.
+	if !strings.Contains(prompt2, "unique-token-BBB") {
+		t.Errorf("turn 2 prompt missing BBB token: %q", prompt2)
+	}
+	if strings.Contains(prompt2, "unique-token-AAA") {
+		t.Errorf("turn 2 prompt RE-INJECTED first message (AAA found): %q", prompt2)
+	}
+
+	// Wait for second on-disk transition.
+	pollDeadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(pollDeadline) {
+		p, _ := agentloop.ListPending(sprawlRoot, "alice")
+		d, _ := agentloop.ListDelivered(sprawlRoot, "alice")
+		if len(p) == 0 && len(d) == 2 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	p, _ := agentloop.ListPending(sprawlRoot, "alice")
+	d, _ := agentloop.ListDelivered(sprawlRoot, "alice")
+	t.Errorf("after turn 2: pending=%d (want 0), delivered=%d (want 2)", len(p), len(d))
+}
+
 // drainQueueWithDeadline is a defensive poll-loop wrapper around
 // uh.rt.Queue().DrainAll() that retries until at least `want` items are
 // observed or the deadline elapses. The unified-runtime InterruptDelivery
