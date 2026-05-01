@@ -238,3 +238,7 @@ func (h *unifiedHandle) Capabilities() backendpkg.Capabilities {
 func (h *unifiedHandle) Done() <-chan struct{} {
 	return h.rt.Done()
 }
+
+// isUnifiedHandle marks this handle as a UnifiedRuntime-backed handle for
+// messages.RecipientResolver routing. See QUM-438.
+func (h *unifiedHandle) isUnifiedHandle() {}

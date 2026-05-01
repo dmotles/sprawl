@@ -166,6 +166,12 @@ func NewReal(cfg Config) (*Real, error) {
 	return r, nil
 }
 
+// RuntimeRegistry exposes the supervisor's in-memory runtime registry so
+// process-level wiring (e.g. messages.RecipientResolver) can consult it.
+func (r *Real) RuntimeRegistry() *RuntimeRegistry {
+	return r.runtimeRegistry
+}
+
 // SetChildMCPConfig updates the child runtime starter with the given MCP
 // init spec and allowed tools. Use this for two-phase init when the MCP
 // server needs a reference to the supervisor itself.
