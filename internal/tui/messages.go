@@ -277,6 +277,16 @@ type ChildStreamMsg struct {
 	Inner tea.Msg
 }
 
+// ActivityStreamMsg carries one batch of activity entries derived from an
+// agent's UnifiedRuntime EventBus (QUM-440). Agent identifies which agent the
+// entries belong to; Epoch matches the AppModel's activity-adapter epoch so
+// stale deliveries (after a viewport switch / cancellation) are dropped.
+type ActivityStreamMsg struct {
+	Agent   string
+	Epoch   uint64
+	Entries []agentloop.ActivityEntry
+}
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new
