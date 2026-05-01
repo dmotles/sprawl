@@ -10,6 +10,7 @@ package tuiruntime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 
@@ -23,6 +24,11 @@ import (
 // Sized generously so a TUI render hiccup doesn't drop content blocks.
 const adapterEventBufferSize = 64
 
+// ErrNoRuntime is returned by adapter operations invoked when the adapter has
+// no observed runtime (e.g. after Observe(nil)). Callers should call
+// Observe(rt) first. (QUM-436)
+var ErrNoRuntime = errors.New("tuiadapter: no runtime; call Observe(rt) first")
+
 // TUIAdapter exposes a UnifiedRuntime as bubbletea-friendly tea.Cmd values.
 type TUIAdapter struct {
 	mu          sync.Mutex
@@ -30,6 +36,10 @@ type TUIAdapter struct {
 	events      <-chan sprawlrt.RuntimeEvent
 	unsubscribe func()
 	cancelled   bool
+	// epoch is bumped each time a fresh subscription is installed (initial
+	// subscribe + each successful Observe swap). WaitForEvent uses it to tell
+	// an Observe-driven channel close apart from a real EOF. (QUM-436 Item 2)
+	epoch uint64
 }
 
 // NewTUIAdapter subscribes to the runtime's EventBus and returns an adapter
@@ -46,6 +56,7 @@ func (a *TUIAdapter) subscribe(rt *sprawlrt.UnifiedRuntime) {
 	ch, unsub := rt.EventBus().Subscribe(adapterEventBufferSize)
 	a.events = ch
 	a.unsubscribe = unsub
+	a.epoch++
 }
 
 // Initialize returns a tea.Cmd that starts the underlying runtime. On
@@ -56,6 +67,9 @@ func (a *TUIAdapter) Initialize() tea.Cmd {
 		a.mu.Lock()
 		rt := a.runtime
 		a.mu.Unlock()
+		if rt == nil {
+			return tui.SessionErrorMsg{Err: ErrNoRuntime}
+		}
 		if err := rt.Start(context.Background()); err != nil {
 			return tui.SessionErrorMsg{Err: err}
 		}
@@ -73,6 +87,7 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 			a.mu.Lock()
 			ch := a.events
 			cancelled := a.cancelled
+			epochAtRead := a.epoch
 			a.mu.Unlock()
 
 			if cancelled || ch == nil {
@@ -81,12 +96,31 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 
 			ev, ok := <-ch
 			if !ok {
+				// Distinguish a real EOF from an Observe()-driven channel
+				// swap: if epoch advanced and we still have a live (non-
+				// cancelled) subscription, transparently re-read from the
+				// new channel rather than surfacing a spurious EOF.
+				// (QUM-436 Item 2)
+				a.mu.Lock()
+				swapped := a.epoch != epochAtRead && !a.cancelled && a.events != nil
+				a.mu.Unlock()
+				if swapped {
+					continue
+				}
 				return tui.SessionErrorMsg{Err: io.EOF}
 			}
 
 			switch ev.Type {
 			case sprawlrt.EventProtocolMessage:
 				if ev.Message == nil {
+					continue
+				}
+				// QUM-436 Item 1: drop protocol "result" messages here. The
+				// terminal SessionResultMsg is emitted from
+				// EventTurnCompleted/EventTurnFailed/EventInterrupted; surfacing
+				// the protocol-result mapping as well would yield a duplicate
+				// SessionResultMsg per turn.
+				if ev.Message.Type == "result" {
 					continue
 				}
 				msg := tui.MapProtocolMessage(ev.Message)
@@ -134,6 +168,9 @@ func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 		a.mu.Lock()
 		rt := a.runtime
 		a.mu.Unlock()
+		if rt == nil {
+			return tui.SessionErrorMsg{Err: ErrNoRuntime}
+		}
 		rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: text})
 		return tui.UserMessageSentMsg{}
 	}
@@ -146,6 +183,9 @@ func (a *TUIAdapter) Interrupt() tea.Cmd {
 		a.mu.Lock()
 		rt := a.runtime
 		a.mu.Unlock()
+		if rt == nil {
+			return tui.InterruptResultMsg{Err: ErrNoRuntime}
+		}
 		err := rt.Interrupt(context.Background())
 		return tui.InterruptResultMsg{Err: err}
 	}
@@ -195,6 +235,10 @@ func (a *TUIAdapter) Observe(rt *sprawlrt.UnifiedRuntime) {
 		ch, unsub := rt.EventBus().Subscribe(adapterEventBufferSize)
 		a.events = ch
 		a.unsubscribe = unsub
+		// Bump epoch only on successful (re)subscription so a parked
+		// WaitForEvent goroutine can distinguish an Observe swap from a
+		// real channel close. (QUM-436 Item 2)
+		a.epoch++
 	} else {
 		a.events = nil
 	}

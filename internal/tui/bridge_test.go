@@ -360,7 +360,7 @@ func TestMapProtocolMessage_AssistantWithText(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	// QUM-386: all assistant messages now return AssistantContentMsg.
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
@@ -386,7 +386,7 @@ func TestMapProtocolMessage_AssistantWithToolUse(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	// QUM-386: all assistant messages now return AssistantContentMsg.
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
@@ -417,7 +417,7 @@ func TestMapProtocolMessage_AssistantWithMixedContent(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
@@ -445,7 +445,7 @@ func TestMapProtocolMessage_Result(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	resultMsg, ok := result.(SessionResultMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want SessionResultMsg", result)
@@ -469,7 +469,7 @@ func TestMapProtocolMessage_ResultWithError(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	resultMsg, ok := result.(SessionResultMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want SessionResultMsg", result)
@@ -492,7 +492,7 @@ func TestMapProtocolMessage_AssistantWithOnlyThinking(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	if result != nil {
 		t.Errorf("mapProtocolMessage for thinking-only assistant returned %T, want nil", result)
 	}
@@ -507,7 +507,7 @@ func TestMapProtocolMessage_ResultWithResultText(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	resultMsg, ok := result.(SessionResultMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want SessionResultMsg", result)
@@ -525,7 +525,7 @@ func TestMapProtocolMessage_UnknownType(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	// Unknown types should return nil (ignored)
 	if result != nil {
 		t.Errorf("mapProtocolMessage for unknown type returned %T, want nil", result)
@@ -542,7 +542,7 @@ func TestMapProtocolMessage_SystemInit_EmitsModel(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	modelMsg, ok := result.(SessionModelMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage for system/init returned %T, want SessionModelMsg", result)
@@ -561,7 +561,7 @@ func TestMapProtocolMessage_SystemInit_EmptyModel(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	if result != nil {
 		t.Errorf("mapProtocolMessage for system/init with empty model returned %T, want nil", result)
 	}
@@ -576,7 +576,7 @@ func TestMapProtocolMessage_SystemNonInit(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	if result != nil {
 		t.Errorf("mapProtocolMessage for system/session_state_changed returned %T, want nil", result)
 	}
@@ -684,7 +684,7 @@ func TestMapAssistantMessage_PopulatesFullInput(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	// QUM-386: all assistant messages now return AssistantContentMsg.
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
@@ -724,7 +724,7 @@ func TestMapAssistantMessage_MultipleToolUse_ReturnsAll(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
@@ -757,7 +757,7 @@ func TestMapAssistantMessage_TextAndToolUse_ReturnsBoth(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
@@ -783,7 +783,7 @@ func TestMapAssistantMessage_SingleToolUse_WrappedInContentMsg(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
@@ -894,7 +894,7 @@ func TestMapAssistantMessage_ExtractsUsage(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
@@ -925,7 +925,7 @@ func TestMapAssistantMessage_NoUsage(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
@@ -945,7 +945,7 @@ func TestMapAssistantMessage_UsageAlongsideContent(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	acm, ok := result.(AssistantContentMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
