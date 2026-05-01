@@ -466,6 +466,132 @@ func TestMessagesPeek_ContextIdentityScopesMailbox(t *testing.T) {
 	}
 }
 
+// --- QUM-384: grandchild parent identity ---
+
+// TestSpawn_UsesEffectiveCallerAsParentIdentity covers the QUM-384 bug: when
+// Spawn is invoked with a context carrying a caller identity (e.g. a manager
+// agent like "tower" calling spawn through the MCP server hosted by weave),
+// the SPRAWL_AGENT_IDENTITY passed to spawnFn must come from
+// effectiveCaller(ctx) — NOT from the shared spawnDeps's Getenv which always
+// returns r.callerName ("weave"). Otherwise prepareSpawn records "weave" as
+// the parent of every grandchild, flattening the agent tree.
+func TestSpawn_UsesEffectiveCallerAsParentIdentity(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	if r.callerName != "weave" {
+		t.Fatalf("precondition: r.callerName = %q, want weave", r.callerName)
+	}
+
+	captured := map[string]string{}
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+		captured["SPRAWL_AGENT_IDENTITY"] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		captured["SPRAWL_ROOT"] = deps.Getenv("SPRAWL_ROOT")
+		return &state.AgentState{Name: "byte"}, nil
+	}
+
+	// Manager "tower" (already a child of weave) is invoking spawn through
+	// the MCP server. Context carries tower's caller identity.
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "tower")
+	if _, err := r.Spawn(ctx, SpawnRequest{
+		Family: "engineering",
+		Type:   "engineer",
+		Prompt: "do work",
+		Branch: "dmotles/byte",
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if got := captured["SPRAWL_AGENT_IDENTITY"]; got != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q (grandchildren flatten under weave when this is wrong — QUM-384)", got, "tower")
+	}
+	// Regression: SPRAWL_ROOT must remain wired to the supervisor's root.
+	if got := captured["SPRAWL_ROOT"]; got != tmpDir {
+		t.Errorf("SPRAWL_ROOT = %q, want %q", got, tmpDir)
+	}
+}
+
+// TestSpawn_FallsBackToCallerNameWithoutContextOverride pins the existing
+// behavior: when ctx has no caller identity override, the SPRAWL_AGENT_IDENTITY
+// seen by spawnFn must equal r.callerName ("weave" in tests). Guards against
+// the fix accidentally breaking the common direct-call path.
+func TestSpawn_FallsBackToCallerNameWithoutContextOverride(t *testing.T) {
+	r, _ := newFakeReal(t)
+
+	var capturedIdentity string
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return &state.AgentState{Name: "x"}, nil
+	}
+
+	// Plain context.Background() — no caller identity attached.
+	if _, err := r.Spawn(context.Background(), SpawnRequest{
+		Family: "engineering", Type: "engineer", Prompt: "x", Branch: "b",
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if capturedIdentity != "weave" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q (callerName fallback)", capturedIdentity, "weave")
+	}
+}
+
+// TestStatus_ReturnsHierarchyIncludingGrandchildren pins that Status surfaces
+// agents with their actual Parent fields (i.e. supports a depth-2 tree).
+// This guards against a regression where Status drops or rewrites the Parent
+// field for grandchildren — even today this passes, but the test pins the
+// invariant the QUM-384 TUI tree depends on.
+func TestStatus_ReturnsHierarchyIncludingGrandchildren(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+
+	// weave (caller) -> tower (manager) -> byte (grandchild)
+	// weave -> finn (sibling of tower)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "tower", Type: "manager", Family: "engineering",
+		Parent: "weave", Status: "active", Branch: "dmotles/tower",
+	})
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "byte", Type: "engineer", Family: "engineering",
+		Parent: "tower", Status: "active", Branch: "dmotles/byte",
+	})
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "finn", Type: "engineer", Family: "engineering",
+		Parent: "weave", Status: "active", Branch: "dmotles/finn",
+	})
+
+	agents, err := r.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+
+	byName := make(map[string]AgentInfo, len(agents))
+	for _, a := range agents {
+		byName[a.Name] = a
+	}
+
+	tower, ok := byName["tower"]
+	if !ok {
+		t.Fatal("missing tower in Status result")
+	}
+	if tower.Parent != "weave" {
+		t.Errorf("tower.Parent = %q, want weave", tower.Parent)
+	}
+
+	byteAgent, ok := byName["byte"]
+	if !ok {
+		t.Fatal("missing byte (grandchild) in Status result")
+	}
+	if byteAgent.Parent != "tower" {
+		t.Errorf("byte.Parent = %q, want tower (grandchild must NOT be flattened to weave)", byteAgent.Parent)
+	}
+
+	finn, ok := byName["finn"]
+	if !ok {
+		t.Fatal("missing finn (sibling of tower) in Status result")
+	}
+	if finn.Parent != "weave" {
+		t.Errorf("finn.Parent = %q, want weave", finn.Parent)
+	}
+}
+
 // TestRetire_FallsBackToRegistry_WhenJSONMissing pins the QUM-404 fix: when
 // Real.Retire is called for an agent whose JSON is missing but whose runtime
 // is in the registry, Retire must reconcile from the registry snapshot
@@ -605,7 +731,8 @@ func TestE2E_StateDivergenceFullFlow(t *testing.T) {
 	}}
 
 	// Spawn the manager via the live supervisor — researcher is the parent.
-	info, err := r.Spawn(context.Background(), SpawnRequest{
+	spawnCtx := backendpkg.WithCallerIdentity(context.Background(), "ghost")
+	info, err := r.Spawn(spawnCtx, SpawnRequest{
 		Family: "engineering",
 		Type:   "manager",
 		Prompt: "manage the work",
