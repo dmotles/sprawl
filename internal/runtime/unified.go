@@ -52,6 +52,10 @@ type RuntimeConfig struct {
 	Session       SessionHandle
 	IsRoot        bool
 	InitialPrompt string
+	// Capabilities is the backend-reported feature set surfaced to callers
+	// via UnifiedRuntime.Capabilities(). The supervisor uses this to forward
+	// caps to its RuntimeHandle. See QUM-398.
+	Capabilities backend.Capabilities
 }
 
 // sessionIDProvider is an optional interface a Session may satisfy to expose a
@@ -356,6 +360,11 @@ func (rt *UnifiedRuntime) EventBus() *EventBus {
 // Name returns the configured agent name.
 func (rt *UnifiedRuntime) Name() string {
 	return rt.cfg.Name
+}
+
+// Capabilities returns the configured backend capabilities.
+func (rt *UnifiedRuntime) Capabilities() backend.Capabilities {
+	return rt.cfg.Capabilities
 }
 
 // SessionID returns the underlying Session's ID if it implements
