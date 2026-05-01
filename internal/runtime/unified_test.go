@@ -507,3 +507,80 @@ loop:
 		t.Errorf("State after Stop = %v, want StateStopped", got)
 	}
 }
+
+// TestDone_ClosedAfterStop pins QUM-434: rt.Done() must return a channel that
+// closes once the turn loop goroutine has exited following Stop().
+func TestDone_ClosedAfterStop(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := rt.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case <-rt.Done():
+		// good
+	case <-time.After(1 * time.Second):
+		t.Fatal("Done() did not close within 1s after Stop returned")
+	}
+}
+
+// TestDone_ClosedWithoutStart pins QUM-434: Stop()'s early-return branch (when
+// Start was never called) must still close Done() so callers can rely on it.
+func TestDone_ClosedWithoutStart(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop without Start: %v", err)
+	}
+
+	select {
+	case <-rt.Done():
+		// good
+	case <-time.After(1 * time.Second):
+		t.Fatal("Done() did not close within 1s after Stop on never-started runtime")
+	}
+}
+
+// TestDone_ClosesAfterLoopExit pins QUM-434: Done() must reflect the loop
+// goroutine's actual completion, not be pre-closed at New() or before the
+// loop has exited. While the runtime is running, Done() must NOT be closed.
+func TestDone_ClosesAfterLoopExit(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Done() must not be closed before Stop has happened.
+	select {
+	case <-rt.Done():
+		t.Fatal("Done() was already closed before Stop was called")
+	default:
+		// good — loop goroutine is still running.
+	}
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := rt.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case <-rt.Done():
+		// good
+	case <-time.After(1 * time.Second):
+		t.Fatal("Done() did not close within 1s after loop exit")
+	}
+}
