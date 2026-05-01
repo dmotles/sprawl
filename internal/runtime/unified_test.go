@@ -167,12 +167,19 @@ func TestStateTransitions_NormalTurn(t *testing.T) {
 
 	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
 
-	// We may miss the brief TurnActive window, so only require eventual return to Idle.
-	if !waitForState(t, rt, StateIdle, 2*time.Second) {
-		t.Fatalf("did not return to StateIdle; current=%v", rt.State())
+	// Wait for StartTurn to be invoked before asserting state, since State() no
+	// longer peeks at the queue and would otherwise read Idle before the loop
+	// has a chance to consume the queued item.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && mock.startCount() < 1 {
+		time.Sleep(5 * time.Millisecond)
 	}
 	if got := mock.startCount(); got < 1 {
 		t.Errorf("StartTurn calls = %d, want >= 1", got)
+	}
+	// We may miss the brief TurnActive window, so only require eventual return to Idle.
+	if !waitForState(t, rt, StateIdle, 2*time.Second) {
+		t.Fatalf("did not return to StateIdle; current=%v", rt.State())
 	}
 }
 
@@ -218,7 +225,10 @@ func TestStateTransitions_InitialPrompt(t *testing.T) {
 	}
 }
 
-func TestInterrupt_WhenIdle_NoOp(t *testing.T) {
+// TestInterrupt_WhenIdle_ForwardsToSession pins QUM-435 Option A: even when no
+// turn is active, UnifiedRuntime.Interrupt must unconditionally forward to the
+// backend session. State must NOT be mutated (no turn is in flight to abort).
+func TestInterrupt_WhenIdle_ForwardsToSession(t *testing.T) {
 	mock := &mockUnifiedSession{}
 	rt := New(RuntimeConfig{Name: "x", Session: mock})
 
@@ -236,11 +246,11 @@ func TestInterrupt_WhenIdle_NoOp(t *testing.T) {
 		t.Errorf("Interrupt while idle returned error: %v", err)
 	}
 
-	if got := mock.interruptCount(); got != 0 {
-		t.Errorf("Session.Interrupt called %d times while idle, want 0", got)
+	if got := mock.interruptCount(); got != 1 {
+		t.Errorf("Session.Interrupt called %d times while idle, want 1 (QUM-435 Option A: always forward)", got)
 	}
 	if got := rt.State(); got != StateIdle {
-		t.Errorf("State after idle Interrupt = %v, want StateIdle", got)
+		t.Errorf("State after idle Interrupt = %v, want StateIdle (no turn running, no state mutation)", got)
 	}
 }
 
@@ -281,12 +291,15 @@ func TestInterrupt_WhenActive(t *testing.T) {
 	}
 
 	// Wait for Session.Interrupt to be observed.
+	// QUM-435 Option A: under the new contract, UnifiedRuntime.Interrupt forwards
+	// directly to session.Interrupt AND the loop also issues its per-turn
+	// session.Interrupt while draining, so the count may be >= 1.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && mock.interruptCount() == 0 {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if got := mock.interruptCount(); got != 1 {
-		t.Errorf("Session.Interrupt count = %d, want 1", got)
+	if got := mock.interruptCount(); got < 1 {
+		t.Errorf("Session.Interrupt count = %d, want >= 1", got)
 	}
 
 	// Release the turn so the loop returns to Idle.
@@ -548,6 +561,107 @@ func TestDone_ClosedWithoutStart(t *testing.T) {
 		// good
 	case <-time.After(1 * time.Second):
 		t.Fatal("Done() did not close within 1s after Stop on never-started runtime")
+	}
+}
+
+// TestEnqueue_TurnStartedObservableViaEventBus pins QUM-413: callers wanting to
+// see a turn start after Enqueue should subscribe to EventBus EventTurnStarted
+// rather than poll State(). State() must not peek into the queue.
+func TestEnqueue_TurnStartedObservableViaEventBus(t *testing.T) {
+	released := make(chan struct{})
+	mock := &mockUnifiedSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			go func() {
+				<-released
+				ch <- makeResultMsg()
+				close(ch)
+			}()
+			return ch, nil
+		},
+	}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	// Subscribe BEFORE Start so we capture the EventTurnStarted event.
+	bus := rt.EventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		select {
+		case <-released:
+		default:
+			close(released)
+		}
+		_ = rt.Stop(context.Background())
+	}()
+
+	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+
+	// Use waitFor (turnloop_test.go, same package) to observe EventTurnStarted.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+
+	// Post-event the wrapper has flipped state to TurnActive.
+	if got := rt.State(); got != StateTurnActive {
+		t.Errorf("State() after EventTurnStarted = %v, want StateTurnActive", got)
+	}
+
+	// Release the turn and observe completion.
+	close(released)
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnCompleted
+	})
+
+	if !waitForState(t, rt, StateIdle, 2*time.Second) {
+		t.Errorf("did not return to StateIdle; current=%v", rt.State())
+	}
+}
+
+// TestState_DoesNotPeekAtQueue pins QUM-413 directly: State() returns the
+// stored runtime state and must NOT synthesize StateTurnActive based on queue
+// length. Items enqueued before the loop has dequeued them must not affect the
+// state read.
+func TestState_DoesNotPeekAtQueue(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	// Do NOT Start. Enqueue directly and observe State().
+	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+
+	if got := rt.State(); got != StateIdle {
+		t.Errorf("State() with queued item but no running loop = %v, want StateIdle (state must not peek at queue)", got)
+	}
+}
+
+// TestInterrupt_WhenStopped_NoOp pins the safety guard: after Stop, Interrupt
+// must be a no-op and must not call session.Interrupt.
+func TestInterrupt_WhenStopped_NoOp(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Snapshot count after Stop (Stop itself should not have called Interrupt
+	// in this scenario; record the baseline so the test is robust).
+	before := mock.interruptCount()
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Errorf("Interrupt after Stop returned error: %v", err)
+	}
+
+	if got := mock.interruptCount(); got != before {
+		t.Errorf("Session.Interrupt count = %d, want %d (no-op when stopped)", got, before)
 	}
 }
 

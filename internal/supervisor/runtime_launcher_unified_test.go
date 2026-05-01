@@ -378,6 +378,8 @@ func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 	// Interrupt should return nil and propagate to the underlying backend
 	// session (mirrors the mockUnifiedSession.interruptCount pattern from
 	// internal/runtime/unified_test.go).
+	// QUM-435: under the new contract, unifiedHandle.Interrupt is a single delegated call;
+	// the +1 is satisfied by rt.Interrupt's unconditional session forward.
 	beforeInterrupts := atomic.LoadInt32(&fakeSession.interrupted)
 	if err := uh.Interrupt(context.Background()); err != nil {
 		t.Errorf("Interrupt: %v", err)

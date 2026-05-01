@@ -182,16 +182,10 @@ type unifiedHandle struct {
 }
 
 func (h *unifiedHandle) Interrupt(ctx context.Context) error {
-	// Run rt.Interrupt for runtime-state bookkeeping (no-op when no turn is
-	// active) AND fire session.Interrupt directly so the backend always
-	// receives the interrupt regardless of runtime state. The rt.Interrupt
-	// error is intentionally dropped because session.Interrupt is the
-	// authoritative path here.
-	_ = h.rt.Interrupt(ctx)
-	if h.session != nil {
-		return h.session.Interrupt(ctx)
-	}
-	return nil
+	// Delegates to UnifiedRuntime.Interrupt, which forwards to the backend
+	// session unconditionally (QUM-435) and additionally drives runtime-state
+	// bookkeeping when a turn is in flight.
+	return h.rt.Interrupt(ctx)
 }
 
 func (h *unifiedHandle) Wake() error {
