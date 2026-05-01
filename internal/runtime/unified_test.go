@@ -441,6 +441,30 @@ func TestConcurrentStateReads(t *testing.T) {
 	}
 }
 
+// TestRuntimeConfig_CapabilitiesPlumbed pins the QUM-398 wiring: callers must
+// be able to plumb backend.Capabilities into the runtime config and recover
+// them from the constructed UnifiedRuntime via Capabilities(). The supervisor
+// uses this to forward capabilities into the RuntimeHandle for the registry
+// snapshot.
+func TestRuntimeConfig_CapabilitiesPlumbed(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	caps := backend.Capabilities{
+		SupportsInterrupt:  true,
+		SupportsResume:     true,
+		SupportsToolBridge: true,
+	}
+	rt := New(RuntimeConfig{
+		Name:         "x",
+		Session:      mock,
+		Capabilities: caps,
+	})
+
+	got := rt.Capabilities()
+	if got != caps {
+		t.Fatalf("Capabilities() = %+v, want %+v", got, caps)
+	}
+}
+
 func TestStop_BlocksUntilLoopExits(t *testing.T) {
 	mock := &mockUnifiedSession{}
 	rt := New(RuntimeConfig{Name: "x", Session: mock})

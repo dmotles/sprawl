@@ -162,7 +162,7 @@ func NewReal(cfg Config) (*Real, error) {
 		handoffWriteSignalFile:     memory.WriteHandoffSignal,
 		handoffNow:                 time.Now,
 	}
-	r.runtimeStarter = newInProcessRuntimeStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
+	r.runtimeStarter = newRuntimeStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
 	return r, nil
 }
 
@@ -170,7 +170,7 @@ func NewReal(cfg Config) (*Real, error) {
 // init spec and allowed tools. Use this for two-phase init when the MCP
 // server needs a reference to the supervisor itself.
 func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []string) {
-	r.runtimeStarter = newInProcessRuntimeStarter(initSpec, allowedTools)
+	r.runtimeStarter = newRuntimeStarter(initSpec, allowedTools)
 }
 
 func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {

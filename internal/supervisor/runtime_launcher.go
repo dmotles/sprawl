@@ -34,6 +34,21 @@ func newInProcessRuntimeStarter(initSpec backendpkg.InitSpec, allowedTools []str
 	return &inProcessRuntimeStarter{initSpec: initSpec, allowedTools: allowedTools}
 }
 
+// unifiedRuntimeEnabled reports whether the QUM-398 unified-runtime starter
+// should be used for new child agents. Tests swap this var.
+var unifiedRuntimeEnabled = func() bool {
+	return os.Getenv("SPRAWL_UNIFIED_RUNTIME") == "1"
+}
+
+// newRuntimeStarter returns the appropriate RuntimeStarter based on the
+// SPRAWL_UNIFIED_RUNTIME env flag. See QUM-398.
+func newRuntimeStarter(initSpec backendpkg.InitSpec, allowedTools []string) RuntimeStarter {
+	if unifiedRuntimeEnabled() {
+		return newInProcessUnifiedStarter(initSpec, allowedTools)
+	}
+	return newInProcessRuntimeStarter(initSpec, allowedTools)
+}
+
 func (s *inProcessRuntimeStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	deps := buildRunnerDeps(spec)
