@@ -95,6 +95,9 @@ type UnifiedRuntime struct {
 	cancel   context.CancelFunc
 	loopWG   sync.WaitGroup
 	turnLoop *TurnLoop
+
+	done          chan struct{}
+	closeDoneOnce sync.Once
 }
 
 // New constructs a UnifiedRuntime in StateIdle with a fresh queue and event
@@ -105,6 +108,7 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 		queue:    NewMessageQueue(),
 		eventBus: NewEventBus(),
 		state:    StateIdle,
+		done:     make(chan struct{}),
 	}
 }
 
@@ -230,6 +234,11 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 		_ = rt.turnLoop.Run(runCtx)
 	}()
 
+	go func() {
+		rt.loopWG.Wait()
+		rt.closeDoneOnce.Do(func() { close(rt.done) })
+	}()
+
 	return nil
 }
 
@@ -240,6 +249,7 @@ func (rt *UnifiedRuntime) Stop(ctx context.Context) error {
 	if !rt.started {
 		rt.stopped = true
 		rt.state = StateStopped
+		rt.closeDoneOnce.Do(func() { close(rt.done) })
 		rt.mu.Unlock()
 		return nil
 	}
@@ -361,6 +371,12 @@ func (rt *UnifiedRuntime) EventBus() *EventBus {
 func (rt *UnifiedRuntime) Name() string {
 	return rt.cfg.Name
 }
+
+// Done returns a channel that is closed after the turn loop goroutine has
+// exited (whether via Stop, ctx cancellation, or natural completion). If
+// Stop is called without Start ever having been called, the channel is
+// also closed. Safe to call before Start.
+func (rt *UnifiedRuntime) Done() <-chan struct{} { return rt.done }
 
 // Capabilities returns the configured backend capabilities.
 func (rt *UnifiedRuntime) Capabilities() backend.Capabilities {

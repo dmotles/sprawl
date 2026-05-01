@@ -99,27 +99,8 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 	// ObserverWriter (which writes activity.ndjson).
 	stopActivity := runActivitySubscriber(rt.EventBus(), observer)
 
-	done := make(chan struct{})
-	// Lifecycle subscriber: closes done when the runtime publishes
-	// EventStopped (loop exited naturally) so the supervisor's
-	// watchHandleExit can flip lifecycle to Stopped.
-	lifeCh, lifeUnsub := rt.EventBus().Subscribe(8)
-	go func() {
-		for ev := range lifeCh {
-			if ev.Type == runtimepkg.EventStopped {
-				select {
-				case <-done:
-				default:
-					close(done)
-				}
-				return
-			}
-		}
-	}()
-
 	if err := rt.Start(context.Background()); err != nil {
 		stopActivity()
-		lifeUnsub()
 		_ = session.Close()
 		_ = session.Wait()
 		if activityFile != nil {
@@ -133,10 +114,8 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		session:      session,
 		capabilities: caps,
 		sessionID:    session.SessionID(),
-		done:         done,
 		activityFile: activityFile,
 		stopActivity: stopActivity,
-		lifeUnsub:    lifeUnsub,
 	}, nil
 }
 
@@ -195,10 +174,8 @@ type unifiedHandle struct {
 	session      backendpkg.Session
 	capabilities backendpkg.Capabilities
 	sessionID    string
-	done         chan struct{}
 	activityFile *os.File
 	stopActivity func()
-	lifeUnsub    func()
 
 	stopOnce sync.Once
 	stopErr  error
@@ -239,20 +216,12 @@ func (h *unifiedHandle) Stop(ctx context.Context) error {
 		if h.stopActivity != nil {
 			h.stopActivity()
 		}
-		if h.lifeUnsub != nil {
-			h.lifeUnsub()
-		}
 		if h.session != nil {
 			_ = h.session.Close()
 			_ = h.session.Wait()
 		}
 		if h.activityFile != nil {
 			_ = h.activityFile.Close()
-		}
-		select {
-		case <-h.done:
-		default:
-			close(h.done)
 		}
 		if err != nil && !isExitError(err) {
 			h.stopErr = err
@@ -273,5 +242,5 @@ func (h *unifiedHandle) Capabilities() backendpkg.Capabilities {
 }
 
 func (h *unifiedHandle) Done() <-chan struct{} {
-	return h.done
+	return h.rt.Done()
 }
