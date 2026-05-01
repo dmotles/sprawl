@@ -251,8 +251,9 @@ func (r *Real) Message(ctx context.Context, agentName, subject, body string) err
 	return err
 }
 
-func (r *Real) Spawn(_ context.Context, req SpawnRequest) (*AgentInfo, error) {
-	st, err := r.spawnFn(r.spawnDeps, req.Family, req.Type, req.Prompt, req.Branch)
+func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) {
+	deps := r.spawnDepsForCaller(r.effectiveCaller(ctx))
+	st, err := r.spawnFn(deps, req.Family, req.Type, req.Prompt, req.Branch)
 	if err != nil {
 		return nil, err
 	}
@@ -473,6 +474,25 @@ func (r *Real) effectiveCaller(ctx context.Context) string {
 		return override
 	}
 	return r.callerName
+}
+
+// spawnDepsForCaller returns a copy of r.spawnDeps with Getenv overridden so
+// that SPRAWL_AGENT_IDENTITY reflects the effective caller (the agent whose
+// MCP tool call triggered the spawn), making child spawns get the correct
+// Parent linkage. See QUM-384.
+func (r *Real) spawnDepsForCaller(caller string) *agentops.SpawnDeps {
+	deps := *r.spawnDeps // shallow copy
+	deps.Getenv = func(key string) string {
+		switch key {
+		case "SPRAWL_AGENT_IDENTITY":
+			return caller
+		case "SPRAWL_ROOT":
+			return r.sprawlRoot
+		default:
+			return os.Getenv(key)
+		}
+	}
+	return &deps
 }
 
 // PeekActivity reads the tail of the agent's activity.ndjson file and
