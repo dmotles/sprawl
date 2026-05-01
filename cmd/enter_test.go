@@ -373,6 +373,10 @@ func (s *shutdownMockSupervisor) MessagesPeek(_ context.Context) (*supervisor.Me
 	return &supervisor.MessagesPeekResult{}, nil
 }
 
+func (s *shutdownMockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
+	return nil
+}
+
 // Clean `sprawl enter` shutdown must stop supervisor-owned child runtimes via
 // Supervisor.Shutdown. Same-process child runtimes are owned by the host
 // process and do not survive a clean host exit.

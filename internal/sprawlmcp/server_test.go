@@ -220,6 +220,10 @@ func (m *mockSupervisor) Shutdown(_ context.Context) error {
 	return m.shutdownErr
 }
 
+func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
+	return nil
+}
+
 func (m *mockSupervisor) Handoff(_ context.Context, summary string) error {
 	m.handoffSummary = summary
 	return m.handoffErr
