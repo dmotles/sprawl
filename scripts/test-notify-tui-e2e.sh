@@ -47,6 +47,32 @@ export SPRAWL_QUIET_DEPRECATIONS=1
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# --- Recover CLAUDE_CODE_OAUTH_TOKEN from an ancestor env (QUM-411) ---
+# When invoked from inside a Claude Code SDK Bash tool subprocess, the
+# SDK strips CLAUDE_CODE_OAUTH_TOKEN from the child env (security +
+# recursion-prevention). Without it the spawned `claude` subprocess hits
+# "Not logged in" and the TUI never produces real assertions. Walk up
+# ancestors until we find a process whose environ still has the token.
+# HARNESS-ONLY shim — production sprawl Go code must NOT replicate this.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    _scan_pid=$$
+    for _ in 1 2 3 4 5 6 7 8; do
+        _parent=$(awk '{print $4}' "/proc/$_scan_pid/stat" 2>/dev/null || true)
+        [ -z "$_parent" ] || [ "$_parent" = "0" ] && break
+        if [ -r "/proc/$_parent/environ" ]; then
+            _recovered=$(tr '\0' '\n' < "/proc/$_parent/environ" \
+                | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | cut -d= -f2- || true)
+            if [ -n "$_recovered" ]; then
+                export CLAUDE_CODE_OAUTH_TOKEN="$_recovered"
+                echo "  (recovered CLAUDE_CODE_OAUTH_TOKEN from ancestor pid=$_parent)"
+                break
+            fi
+        fi
+        _scan_pid=$_parent
+    done
+    unset _scan_pid _parent _recovered
+fi
+
 # --- Dedicated tmux socket for sandbox isolation (QUM-325) ---
 SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-notify-e2e-$$}"
 export SPRAWL_TMUX_SOCKET

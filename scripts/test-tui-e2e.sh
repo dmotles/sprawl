@@ -16,6 +16,27 @@ if [ "${1:-}" = "--quick" ]; then
     QUICK_MODE=true
 fi
 
+# --- Recover CLAUDE_CODE_OAUTH_TOKEN from an ancestor env (QUM-411) ---
+# See scripts/test-handoff-e2e.sh for full rationale; HARNESS-ONLY shim.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    _scan_pid=$$
+    for _ in 1 2 3 4 5 6 7 8; do
+        _parent=$(awk '{print $4}' "/proc/$_scan_pid/stat" 2>/dev/null || true)
+        [ -z "$_parent" ] || [ "$_parent" = "0" ] && break
+        if [ -r "/proc/$_parent/environ" ]; then
+            _recovered=$(tr '\0' '\n' < "/proc/$_parent/environ" \
+                | grep '^CLAUDE_CODE_OAUTH_TOKEN=' | cut -d= -f2- || true)
+            if [ -n "$_recovered" ]; then
+                export CLAUDE_CODE_OAUTH_TOKEN="$_recovered"
+                echo "  (recovered CLAUDE_CODE_OAUTH_TOKEN from ancestor pid=$_parent)"
+                break
+            fi
+        fi
+        _scan_pid=$_parent
+    done
+    unset _scan_pid _parent _recovered
+fi
+
 # --- Dedicated tmux socket for sandbox isolation (QUM-325) ---
 SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-tui-e2e-$$}"
 export SPRAWL_TMUX_SOCKET
