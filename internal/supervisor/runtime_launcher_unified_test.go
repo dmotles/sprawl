@@ -321,11 +321,71 @@ var _ backend.ToolBridge = dummyBridge{}
 // unifiedHandle behavior
 // ---------------------------------------------------------------------------
 
+// deliveredItemsCapture is a thread-safe sink for QueueItems delivered to the
+// turn loop's OnQueueItemDelivered callback. The runtime's loop goroutine
+// drains the queue before the test's goroutine can observe it, so polling
+// rt.Queue().DrainAll() races with the loop and is intermittently empty (this
+// was the QUM-445 flake). Capturing items via OnQueueItemDelivered is
+// race-free because the callback fires from inside the loop, after StartTurn
+// returns success, with the same QueueItem the test wants to inspect.
+type deliveredItemsCapture struct {
+	mu    sync.Mutex
+	items []runtimepkg.QueueItem
+	cond  *sync.Cond
+}
+
+func newDeliveredItemsCapture() *deliveredItemsCapture {
+	c := &deliveredItemsCapture{}
+	c.cond = sync.NewCond(&c.mu)
+	return c
+}
+
+func (c *deliveredItemsCapture) record(it runtimepkg.QueueItem) {
+	c.mu.Lock()
+	c.items = append(c.items, it)
+	c.cond.Broadcast()
+	c.mu.Unlock()
+}
+
+// waitFor blocks until at least n items are captured or timeout elapses.
+// Returns a copy of all captured items at return time.
+func (c *deliveredItemsCapture) waitFor(n int, timeout time.Duration) []runtimepkg.QueueItem {
+	deadline := time.Now().Add(timeout)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for len(c.items) < n {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		// sync.Cond doesn't support timeout natively; use a watchdog goroutine
+		// that broadcasts after the deadline.
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-time.After(remaining):
+				c.mu.Lock()
+				c.cond.Broadcast()
+				c.mu.Unlock()
+			case <-done:
+			}
+		}()
+		c.cond.Wait()
+		close(done)
+	}
+	out := make([]runtimepkg.QueueItem, len(c.items))
+	copy(out, c.items)
+	return out
+}
+
 // buildStartedUnifiedHandleForTest spins up an inProcessUnifiedStarter with
 // stubs and returns the resulting *unifiedHandle, the fake backend session,
-// and the sprawlRoot (so tests can seed pending queue entries on disk via
-// agentloop.Enqueue before calling InterruptDelivery — see QUM-437).
-func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (*unifiedHandle, *fakeBackendSession, string) {
+// the sprawlRoot (so tests can seed pending queue entries on disk via
+// agentloop.Enqueue before calling InterruptDelivery — see QUM-437), and a
+// deliveredItemsCapture that records every QueueItem the runtime's loop
+// hands to the backend. See deliveredItemsCapture for why direct queue
+// inspection races with the loop (QUM-445).
+func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (*unifiedHandle, *fakeBackendSession, string, *deliveredItemsCapture) {
 	t.Helper()
 	oldStart := unifiedAdapterStartFn
 	oldNew := unifiedRuntimeNewFn
@@ -345,7 +405,17 @@ func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (
 	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
 		return fakeSession, nil
 	}
-	unifiedRuntimeNewFn = runtimepkg.New
+	captured := newDeliveredItemsCapture()
+	unifiedRuntimeNewFn = func(cfg runtimepkg.RuntimeConfig) *runtimepkg.UnifiedRuntime {
+		orig := cfg.OnQueueItemDelivered
+		cfg.OnQueueItemDelivered = func(it runtimepkg.QueueItem) {
+			captured.record(it)
+			if orig != nil {
+				orig(it)
+			}
+		}
+		return runtimepkg.New(cfg)
+	}
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
 	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
@@ -359,12 +429,12 @@ func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (
 	if !ok {
 		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
 	}
-	return uh, fakeSession, sprawlRoot
+	return uh, fakeSession, sprawlRoot, captured
 }
 
 func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 	caps := backend.Capabilities{SupportsInterrupt: true}
-	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, caps)
+	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, caps)
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	if got := uh.Capabilities(); got != caps {
@@ -398,7 +468,7 @@ func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 }
 
 func TestUnifiedHandle_StopClosesDone(t *testing.T) {
-	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -418,7 +488,7 @@ func TestUnifiedHandle_StopClosesDone(t *testing.T) {
 func TestUnifiedHandle_StopUnsubscribesEventBus(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -480,7 +550,7 @@ func TestActivitySubscriber_WritesToObserver(t *testing.T) {
 // ClassInterrupt QueueItem; an empty pending dir enqueues nothing.
 
 func TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
-	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	e1, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
@@ -496,11 +566,11 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
 		t.Fatalf("InterruptDelivery: %v", err)
 	}
 
-	// synchronous enqueue contract: InterruptDelivery must enqueue before it
-	// returns. The poll loop is defensive in case an implementation defers it.
-	items := drainQueueWithDeadline(uh, 1, 50*time.Millisecond)
+	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
+	// polling rt.Queue().DrainAll(), which races with the runtime loop.
+	items := captured.waitFor(1, 2*time.Second)
 	if len(items) != 1 {
-		t.Fatalf("queue items = %d, want 1; items=%+v", len(items), items)
+		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
 	}
 	got := items[0]
 	if got.Class != runtimepkg.ClassInbox {
@@ -522,7 +592,7 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
 }
 
 func TestUnifiedHandle_InterruptDelivery_EnqueuesRealInterruptPrompt(t *testing.T) {
-	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	e1, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
@@ -538,11 +608,11 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealInterruptPrompt(t *testing.
 		t.Fatalf("InterruptDelivery: %v", err)
 	}
 
-	// synchronous enqueue contract: InterruptDelivery must enqueue before it
-	// returns. The poll loop is defensive in case an implementation defers it.
-	items := drainQueueWithDeadline(uh, 1, 50*time.Millisecond)
+	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
+	// polling rt.Queue().DrainAll(), which races with the runtime loop.
+	items := captured.waitFor(1, 2*time.Second)
 	if len(items) != 1 {
-		t.Fatalf("queue items = %d, want 1; items=%+v", len(items), items)
+		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
 	}
 	got := items[0]
 	if got.Class != runtimepkg.ClassInterrupt {
@@ -564,7 +634,7 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealInterruptPrompt(t *testing.
 }
 
 func TestUnifiedHandle_InterruptDelivery_EmptyPendingNoEnqueue(t *testing.T) {
-	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	if err := uh.InterruptDelivery(); err != nil {
@@ -578,7 +648,7 @@ func TestUnifiedHandle_InterruptDelivery_EmptyPendingNoEnqueue(t *testing.T) {
 }
 
 func TestUnifiedHandle_InterruptDelivery_SeparatesInterruptAndAsync(t *testing.T) {
-	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	asyncEntry, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
@@ -600,13 +670,14 @@ func TestUnifiedHandle_InterruptDelivery_SeparatesInterruptAndAsync(t *testing.T
 		t.Fatalf("InterruptDelivery: %v", err)
 	}
 
-	// synchronous enqueue contract: InterruptDelivery must enqueue before it
-	// returns. The poll loop is defensive in case an implementation defers it.
-	items := drainQueueWithDeadline(uh, 2, 50*time.Millisecond)
+	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
+	// polling rt.Queue().DrainAll(), which races with the runtime loop.
+	items := captured.waitFor(2, 2*time.Second)
 	if len(items) != 2 {
-		t.Fatalf("queue items = %d, want 2 (one interrupt + one inbox); items=%+v", len(items), items)
+		t.Fatalf("delivered items = %d, want 2 (one interrupt + one inbox); items=%+v", len(items), items)
 	}
-	// DrainAll sorts by class priority (interrupt before inbox).
+	// DrainAll sorts by class priority (interrupt before inbox), and the
+	// turn-loop fires OnQueueItemDelivered in that order.
 	if items[0].Class != runtimepkg.ClassInterrupt {
 		t.Errorf("items[0].Class = %q, want %q (interrupt must sort first)", items[0].Class, runtimepkg.ClassInterrupt)
 	}
@@ -713,7 +784,7 @@ func buildStartedUnifiedHandleWithStartErrForTest(t *testing.T, caps backend.Cap
 // the underlying pending/ entries are moved to delivered/ on disk. See
 // QUM-441 (closes the gap left by QUM-437).
 func TestUnifiedHandle_InterruptDelivery_MarksPendingDelivered(t *testing.T) {
-	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, sprawlRoot, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	// Seed two pending entries — one async, one interrupt — so that
@@ -858,7 +929,7 @@ func (fakeStartTurnErr) Error() string { return "fake StartTurn failure" }
 // driving real production code paths via Go tests rather than a live
 // claude TTY.
 func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
-	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, sprawlRoot, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	sub, unsub := uh.rt.EventBus().Subscribe(64)
@@ -958,34 +1029,13 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	t.Errorf("after turn 2: pending=%d (want 0), delivered=%d (want 2)", len(p), len(d))
 }
 
-// drainQueueWithDeadline is a defensive poll-loop wrapper around
-// uh.rt.Queue().DrainAll() that retries until at least `want` items are
-// observed or the deadline elapses. The unified-runtime InterruptDelivery
-// contract is synchronous (it must enqueue before returning), but this
-// helper protects the test suite from races if a future implementation
-// defers the enqueue. Returns whatever was drained at deadline expiry.
-func drainQueueWithDeadline(uh *unifiedHandle, want int, timeout time.Duration) []runtimepkg.QueueItem {
-	deadline := time.Now().Add(timeout)
-	var items []runtimepkg.QueueItem
-	for time.Now().Before(deadline) {
-		items = append(items, uh.rt.Queue().DrainAll()...)
-		if len(items) >= want {
-			return items
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	// final drain after deadline in case the loop missed a late publish
-	items = append(items, uh.rt.Queue().DrainAll()...)
-	return items
-}
-
 // TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody pins the
 // supervisor-level truncation path: an async entry whose body exceeds the
 // per-message cap must surface in the synthesized inbox prompt as a
 // truncated payload citing the entry's ShortID for the read-hint. Guards
 // against the supervisor path bypassing inboxprompt's size guards.
 func TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody(t *testing.T) {
-	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	body := strings.Repeat("z", inboxprompt.MaxQueueFlushBodyBytes+200)
@@ -1000,7 +1050,9 @@ func TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody(t *testing.T) {
 		t.Fatalf("InterruptDelivery: %v", err)
 	}
 
-	items := drainQueueWithDeadline(uh, 1, 50*time.Millisecond)
+	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
+	// polling rt.Queue().DrainAll(), which races with the runtime loop.
+	items := captured.waitFor(1, 2*time.Second)
 	var inbox *runtimepkg.QueueItem
 	for i := range items {
 		if items[i].Class == runtimepkg.ClassInbox {
