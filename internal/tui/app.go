@@ -15,6 +15,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
+	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
@@ -41,6 +42,12 @@ type AgentBuffer struct {
 	// the cached buffer is invalidated and re-hydrated from offset zero.
 	// QUM-332.
 	SessionID string
+
+	// seenToolIDs is populated only on the unified streaming path (QUM-439)
+	// from backfill-seeded MessageEntry.ToolID values, so a live ToolCallMsg
+	// re-delivered for a seeded tool call can be dropped instead of
+	// double-rendered.
+	seenToolIDs map[string]struct{}
 }
 
 // AppModel is the root Bubble Tea model composing all panels.
@@ -130,6 +137,25 @@ type AppModel struct {
 	// non-root agent is observed. Tests shorten it; zero means use
 	// defaultChildTranscriptTick.
 	childTranscriptTick time.Duration
+
+	// childAdapter, childAdapterAgent, childAdapterEpoch back the unified
+	// child-viewport streaming path (QUM-439). When the observed child has a
+	// UnifiedRuntime backing handle, AppModel installs an adapter pointed at
+	// the child's EventBus so live events route through ChildStreamMsg
+	// envelopes. The epoch increments on every install/swap/teardown so
+	// stale ChildStreamMsg deliveries (after a viewport switch) are dropped.
+	childAdapter      *ChildStreamAdapter
+	childAdapterAgent string
+	childAdapterEpoch uint64
+
+	// childBackfillPending is true between unified-attach (AgentSelectedMsg
+	// path) and the corresponding ChildTranscriptMsg arrival. While set,
+	// incoming ChildStreamMsg events for the current epoch are queued in
+	// childPendingEvents instead of being applied — otherwise a live event
+	// that races ahead of the backfill would be appended and then clobbered
+	// by ChildTranscriptMsg's vp.SetMessages call. (QUM-439, fix 2)
+	childBackfillPending bool
+	childPendingEvents   []ChildStreamMsg
 
 	// toolInputsExpanded is the global flag (QUM-335) toggled by Ctrl+O.
 	// When true, every per-agent viewport renders tool calls with their
@@ -995,10 +1021,56 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.supervisor != nil {
 			cmds = append(cmds, tickActivityCmd(m.supervisor, msg.Name))
 		}
-		// Non-root agents: kick off transcript hydration (QUM-332).
+
+		// QUM-439: try the unified streaming path for non-root children
+		// before falling back to JSONL polling. Resolve the child's
+		// AgentRuntime via the supervisor's RuntimeRegistry; if its handle
+		// exposes a UnifiedRuntime, install (or re-point) the per-child
+		// stream adapter and skip the polling tick. Otherwise — nil
+		// supervisor, nil registry, registry miss, or a legacy handle —
+		// keep the existing tick-based behaviour.
+		unifiedAttached := false
 		if msg.Name != m.rootAgent {
-			cmds = append(cmds, loadChildTranscriptCmd(m.sprawlRoot, m.homeDir, msg.Name))
+			urt := m.lookupUnifiedRuntime(msg.Name)
+			if urt != nil {
+				if m.childAdapter == nil {
+					m.childAdapter = NewChildStreamAdapter(urt)
+				} else {
+					m.childAdapter.Observe(urt)
+				}
+				m.childAdapterAgent = msg.Name
+				m.childAdapterEpoch++
+				// QUM-439 fix 2: gate live-event application on backfill
+				// arrival. Any ChildStreamMsg that races ahead of the
+				// ChildTranscriptMsg is queued and drained after the seed
+				// SetMessages, preventing a clobber-then-lose race.
+				m.childBackfillPending = true
+				m.childPendingEvents = nil
+				cmds = append(cmds,
+					loadChildTranscriptCmd(m.sprawlRoot, m.homeDir, msg.Name),
+					childStreamWaitCmd(m.childAdapter, msg.Name, m.childAdapterEpoch),
+				)
+				unifiedAttached = true
+			}
 		}
+
+		// On a switch back to root or any non-unified target, tear down
+		// any active child adapter and clear bookkeeping.
+		if !unifiedAttached {
+			if m.childAdapter != nil {
+				m.childAdapter.Cancel()
+				m.childAdapter = nil
+			}
+			m.childAdapterAgent = ""
+			m.childAdapterEpoch++
+			m.childBackfillPending = false
+			m.childPendingEvents = nil
+			// Non-root agents: kick off legacy transcript hydration + tick (QUM-332).
+			if msg.Name != m.rootAgent {
+				cmds = append(cmds, loadChildTranscriptCmd(m.sprawlRoot, m.homeDir, msg.Name))
+			}
+		}
+
 		switch len(cmds) {
 		case 0:
 			return m, nil
@@ -1008,18 +1080,60 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 
+	case ChildStreamMsg:
+		// QUM-439: live event from a per-child unified adapter. Drop stale
+		// deliveries from a previous adapter generation.
+		if msg.Epoch != m.childAdapterEpoch || msg.Agent != m.childAdapterAgent {
+			return m, nil
+		}
+		// On EOF / cancellation surface: stop the loop, do not re-issue.
+		if serr, ok := msg.Inner.(SessionErrorMsg); ok && errors.Is(serr.Err, io.EOF) {
+			return m, nil
+		}
+		// QUM-439 fix 2: if the backfill ChildTranscriptMsg has not landed
+		// yet, queue this event and re-issue WaitForEvent. The queue is
+		// drained — in arrival order — after the seed SetMessages call so
+		// live events never get clobbered by a late backfill.
+		if m.childBackfillPending {
+			m.childPendingEvents = append(m.childPendingEvents, msg)
+			return m, childStreamWaitCmd(m.childAdapter, msg.Agent, msg.Epoch)
+		}
+		m.applyChildStreamInner(msg.Agent, msg.Inner)
+		return m, childStreamWaitCmd(m.childAdapter, msg.Agent, msg.Epoch)
+
 	case ChildTranscriptMsg:
 		// QUM-334: route directly to the named agent's vp. Per-agent
 		// ownership means writes to non-observed buffers are correct, not
 		// pollution.
 		vp := m.viewportFor(msg.Agent)
+		// QUM-439: when the unified streaming path owns this agent,
+		// remember the seeded ToolIDs so a live ToolCallMsg re-delivering
+		// the same tool call dedupes against the backfill.
+		isUnified := m.childAdapter != nil && m.childAdapterAgent == msg.Agent
 		switch {
 		case msg.Err != nil:
 			vp.AppendError(fmt.Sprintf("transcript load failed for %s: %v", msg.Agent, msg.Err))
 		case len(msg.Entries) > 0:
 			vp.SetMessages(msg.Entries)
 			if buf, ok := m.agentBuffers[msg.Agent]; ok {
+				// QUM-439 fix 3: when the session_id changed (handoff /
+				// respawn) the previously-seeded ToolIDs no longer apply
+				// to the new session's stream — clear before re-seeding so
+				// dedupe is scoped to the active session.
+				if buf.SessionID != msg.SessionID {
+					buf.seenToolIDs = nil
+				}
 				buf.SessionID = msg.SessionID
+				if isUnified {
+					if buf.seenToolIDs == nil {
+						buf.seenToolIDs = make(map[string]struct{})
+					}
+					for _, e := range msg.Entries {
+						if e.Type == MessageToolCall && e.ToolID != "" {
+							buf.seenToolIDs[e.ToolID] = struct{}{}
+						}
+					}
+				}
 			}
 		default:
 			// Empty entries: show "Waiting for X..." idempotently. Avoid
@@ -1034,9 +1148,33 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}})
 			}
 		}
+		// QUM-439 fix 2: now that the seed (or banner) is applied, clear the
+		// backfill-pending gate and drain any live ChildStreamMsg events that
+		// arrived ahead of the transcript. Drain in arrival order using the
+		// normal applyChildStreamInner path so dedupe / routing semantics
+		// match a non-racy delivery.
+		if isUnified && m.childBackfillPending {
+			m.childBackfillPending = false
+			pending := m.childPendingEvents
+			m.childPendingEvents = nil
+			for _, ev := range pending {
+				if ev.Agent != m.childAdapterAgent || ev.Epoch != m.childAdapterEpoch {
+					continue
+				}
+				if serr, ok := ev.Inner.(SessionErrorMsg); ok && errors.Is(serr.Err, io.EOF) {
+					continue
+				}
+				m.applyChildStreamInner(ev.Agent, ev.Inner)
+			}
+		}
 		// Reschedule for the next tick only while the agent is still being
 		// observed; otherwise let the poll go quiet until re-selection.
 		if msg.Agent == m.rootAgent || msg.Agent != m.observedAgent {
+			return m, nil
+		}
+		// QUM-439: unified streaming path replaces JSONL polling; do not
+		// schedule a follow-up tick when the adapter is live for this agent.
+		if isUnified {
 			return m, nil
 		}
 		return m, scheduleChildTranscriptTick(m.sprawlRoot, m.homeDir, msg.Agent, m.childTranscriptTickInterval())
@@ -1668,6 +1806,83 @@ func (m *AppModel) childTranscriptTickInterval() time.Duration {
 		return m.childTranscriptTick
 	}
 	return defaultChildTranscriptTick
+}
+
+// ChildAdapter returns the child viewport streaming adapter, or nil when no
+// unified child is currently observed. (QUM-439)
+func (m AppModel) ChildAdapter() *ChildStreamAdapter { return m.childAdapter }
+
+// ChildAdapterAgent returns the agent name the child stream adapter is
+// currently pointed at, or "" when not observing. (QUM-439)
+func (m AppModel) ChildAdapterAgent() string { return m.childAdapterAgent }
+
+// ChildAdapterEpoch returns the current child-adapter epoch counter, used by
+// ChildStreamMsg routing to drop stale deliveries. (QUM-439)
+func (m AppModel) ChildAdapterEpoch() uint64 { return m.childAdapterEpoch }
+
+// lookupUnifiedRuntime resolves the supervisor's RuntimeRegistry entry for
+// name and returns the underlying UnifiedRuntime if the handle exposes one,
+// or nil if the supervisor is nil, the registry is nil, the agent is not
+// registered, or the handle is legacy. (QUM-439)
+func (m *AppModel) lookupUnifiedRuntime(name string) *sprawlrt.UnifiedRuntime {
+	if m.supervisor == nil {
+		return nil
+	}
+	reg := m.supervisor.RuntimeRegistry()
+	if reg == nil {
+		return nil
+	}
+	rt, ok := reg.Get(name)
+	if !ok || rt == nil {
+		return nil
+	}
+	return rt.UnifiedRuntime()
+}
+
+// childStreamWaitCmd wraps the adapter's WaitForEvent in a ChildStreamMsg
+// envelope keyed by agent + epoch so the AppModel can drop stale deliveries
+// from a prior adapter generation. (QUM-439)
+func childStreamWaitCmd(a *ChildStreamAdapter, agent string, epoch uint64) tea.Cmd {
+	if a == nil {
+		return nil
+	}
+	inner := a.WaitForEvent()
+	return func() tea.Msg {
+		raw := inner()
+		return ChildStreamMsg{Agent: agent, Epoch: epoch, Inner: raw}
+	}
+}
+
+// applyChildStreamInner routes a single live tea.Msg into the named child
+// agent's per-agent buffer. Mirrors the bridge-side handlers but writes to
+// the child viewport instead of the root viewport. ToolCallMsg entries
+// already seeded by the backfill are dropped to avoid double-render. (QUM-439)
+func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) {
+	vp := m.viewportFor(agent)
+	buf := m.agentBuffers[agent]
+	switch im := inner.(type) {
+	case AssistantContentMsg:
+		for _, sub := range im.Msgs {
+			m.applyChildStreamInner(agent, sub)
+		}
+	case AssistantTextMsg:
+		vp.AppendAssistantChunk(im.Text)
+	case ToolCallMsg:
+		if buf != nil && im.ToolID != "" {
+			if _, dup := buf.seenToolIDs[im.ToolID]; dup {
+				return
+			}
+			if buf.seenToolIDs == nil {
+				buf.seenToolIDs = make(map[string]struct{})
+			}
+			buf.seenToolIDs[im.ToolID] = struct{}{}
+		}
+		vp.AppendToolCall(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput)
+	case ToolResultMsg:
+		vp.MarkToolResult(im.ToolID, im.Content, im.IsError)
+	case SessionResultMsg:
+		vp.FinalizeAssistantMessage()
+	}
 }
 
 // loadChildTranscriptCmd returns a Cmd that reads .sprawl/agents/<name>.json

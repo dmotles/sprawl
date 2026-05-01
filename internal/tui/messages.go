@@ -266,6 +266,17 @@ type ConsolidationCompleteMsg struct {
 	Duration time.Duration
 }
 
+// ChildStreamMsg envelopes a live tea.Msg produced by the per-child
+// TUIAdapter observing a non-root agent's UnifiedRuntime EventBus (QUM-439).
+// Agent identifies which child the inner msg belongs to; Epoch matches the
+// AppModel's child-adapter epoch at the time the cmd was issued so stale
+// deliveries (after a viewport switch / cancellation) are dropped.
+type ChildStreamMsg struct {
+	Agent string
+	Epoch uint64
+	Inner tea.Msg
+}
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new
