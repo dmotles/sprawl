@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -9,6 +10,20 @@ import (
 
 // maxInputLines caps how tall the input textarea can grow.
 const maxInputLines = 10
+
+// nowFunc is the clock used by the time-based paste classifier (QUM-432).
+// Overridable in tests.
+var nowFunc = time.Now
+
+// pasteBurstWindow / pasteQuietWindow tune the QUM-432 stripped-bracketed-paste
+// classifier. An Enter arriving within pasteBurstWindow of the prior printable
+// keypress is treated as an embedded newline; once paste-mode is active it
+// remains active for pasteQuietWindow after the most recent paste activity.
+// vars (not consts) so tests / future tuning can override.
+var (
+	pasteBurstWindow = 10 * time.Millisecond
+	pasteQuietWindow = 50 * time.Millisecond
+)
 
 // InputModel wraps a textarea for the bottom input panel.
 type InputModel struct {
@@ -22,6 +37,14 @@ type InputModel struct {
 	// signalling that an Enter while the agent was busy stashed a message that
 	// will auto-submit when the turn finalizes.
 	pendingPreview string
+
+	// QUM-432 paste-classifier state. lastKeyAt is the timestamp of the most
+	// recent printable KeyPressMsg seen; pasteUntil is a deadline during which
+	// any Enter is treated as an embedded newline rather than a submit. Both
+	// zero outside of paste bursts. See package-level pasteBurstWindow /
+	// pasteQuietWindow for the tuning constants.
+	lastKeyAt  time.Time
+	pasteUntil time.Time
 }
 
 // NewInputModel creates an input model with a placeholder prompt.
@@ -53,14 +76,37 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 		if keyMsg.Code == '/' && m.ta.Value() == "" {
 			return m, func() tea.Msg { return OpenPaletteMsg{} }
 		}
-		// Plain Enter (no shift) submits the message.
+		now := nowFunc()
+		// Plain Enter (no shift) submits the message — unless the paste
+		// classifier (QUM-432) determines this Enter is an embedded newline
+		// from a stripped-bracketed-paste burst.
 		if keyMsg.Code == tea.KeyEnter && keyMsg.Mod&tea.ModShift == 0 {
+			embedded := (!m.pasteUntil.IsZero() && now.Before(m.pasteUntil)) ||
+				(!m.lastKeyAt.IsZero() && now.Sub(m.lastKeyAt) < pasteBurstWindow)
+			if embedded {
+				m.ta.InsertString("\n")
+				m.pasteUntil = now.Add(pasteQuietWindow)
+				m.lastKeyAt = now
+				return m, nil
+			}
 			text := strings.TrimSpace(m.ta.Value())
 			if text != "" {
 				m.ta.SetValue("")
+				m.lastKeyAt = time.Time{}
+				m.pasteUntil = time.Time{}
 				return m, func() tea.Msg { return SubmitMsg{Text: text} }
 			}
 			return m, nil
+		}
+		// Track timing for printable keys so the next Enter can be classified.
+		// keyMsg.Text is non-empty for character-producing keys (letters,
+		// digits, punctuation, space) and empty for control keys (arrows,
+		// Esc, etc.) — exactly the signal we want.
+		if keyMsg.Text != "" {
+			m.lastKeyAt = now
+			if !m.pasteUntil.IsZero() && now.Before(m.pasteUntil) {
+				m.pasteUntil = now.Add(pasteQuietWindow)
+			}
 		}
 	}
 	var cmd tea.Cmd
