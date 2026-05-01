@@ -6,13 +6,16 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
+	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
@@ -319,9 +322,10 @@ var _ backend.ToolBridge = dummyBridge{}
 // ---------------------------------------------------------------------------
 
 // buildStartedUnifiedHandleForTest spins up an inProcessUnifiedStarter with
-// stubs and returns the resulting *unifiedHandle plus the fake backend
-// session for assertions.
-func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (*unifiedHandle, *fakeBackendSession) {
+// stubs and returns the resulting *unifiedHandle, the fake backend session,
+// and the sprawlRoot (so tests can seed pending queue entries on disk via
+// agentloop.Enqueue before calling InterruptDelivery — see QUM-437).
+func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (*unifiedHandle, *fakeBackendSession, string) {
 	t.Helper()
 	oldStart := unifiedAdapterStartFn
 	oldNew := unifiedRuntimeNewFn
@@ -355,12 +359,12 @@ func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (
 	if !ok {
 		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
 	}
-	return uh, fakeSession
+	return uh, fakeSession, sprawlRoot
 }
 
 func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 	caps := backend.Capabilities{SupportsInterrupt: true}
-	uh, fakeSession := buildStartedUnifiedHandleForTest(t, caps)
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, caps)
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	if got := uh.Capabilities(); got != caps {
@@ -388,34 +392,13 @@ func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 		t.Errorf("session.Interrupt call count = %d, want %d (Interrupt did not propagate)", got, beforeInterrupts+1)
 	}
 
-	// InterruptDelivery should enqueue an inbox QueueItem so the next loop
-	// iteration has something to drain.
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Errorf("InterruptDelivery: %v", err)
-	}
-	// Drain the queue and assert an inbox item is present.
-	deadline := time.Now().Add(time.Second)
-	var sawInbox bool
-	for time.Now().Before(deadline) {
-		items := uh.rt.Queue().DrainAll()
-		for _, item := range items {
-			if item.Class == runtimepkg.ClassInbox {
-				sawInbox = true
-				break
-			}
-		}
-		if sawInbox {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !sawInbox {
-		t.Error("InterruptDelivery did not enqueue a ClassInbox QueueItem")
-	}
+	// InterruptDelivery enqueue/no-enqueue contract is exercised by the
+	// dedicated TestUnifiedHandle_InterruptDelivery_* tests below (QUM-437);
+	// this test no longer asserts that behavior.
 }
 
 func TestUnifiedHandle_StopClosesDone(t *testing.T) {
-	uh, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -435,7 +418,7 @@ func TestUnifiedHandle_StopClosesDone(t *testing.T) {
 func TestUnifiedHandle_StopUnsubscribesEventBus(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	uh, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -484,4 +467,241 @@ func TestActivitySubscriber_WritesToObserver(t *testing.T) {
 	}
 
 	stop()
+}
+
+// ---------------------------------------------------------------------------
+// QUM-437: InterruptDelivery enqueues a real inbox/interrupt prompt
+// ---------------------------------------------------------------------------
+//
+// Under the new contract InterruptDelivery reads pending/ off disk and
+// formats a real prompt via inboxprompt.Build{Queue,Interrupt}FlushPrompt
+// instead of the old "You have new messages" stub. Async entries become a
+// single ClassInbox QueueItem; interrupt entries become a single
+// ClassInterrupt QueueItem; an empty pending dir enqueues nothing.
+
+func TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
+	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	e1, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-async-1", ShortID: "sa1", Class: agentloop.ClassAsync,
+		From: "child-alpha", Subject: "status", Body: "all green",
+		Tags: []string{"fyi"},
+	})
+	if err != nil {
+		t.Fatalf("Enqueue async: %v", err)
+	}
+
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	// synchronous enqueue contract: InterruptDelivery must enqueue before it
+	// returns. The poll loop is defensive in case an implementation defers it.
+	items := drainQueueWithDeadline(uh, 1, 50*time.Millisecond)
+	if len(items) != 1 {
+		t.Fatalf("queue items = %d, want 1; items=%+v", len(items), items)
+	}
+	got := items[0]
+	if got.Class != runtimepkg.ClassInbox {
+		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassInbox)
+	}
+	want := inboxprompt.BuildQueueFlushPrompt([]inboxprompt.Entry{
+		{
+			Seq: e1.Seq, ID: e1.ID, ShortID: e1.ShortID, Class: inboxprompt.ClassAsync,
+			From: e1.From, Subject: e1.Subject, Body: e1.Body, Tags: e1.Tags,
+			EnqueuedAt: e1.EnqueuedAt,
+		},
+	})
+	if got.Prompt != want {
+		t.Errorf("Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", got.Prompt, want)
+	}
+	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != e1.ID {
+		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, e1.ID)
+	}
+}
+
+func TestUnifiedHandle_InterruptDelivery_EnqueuesRealInterruptPrompt(t *testing.T) {
+	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	e1, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-int-1", ShortID: "si1", Class: agentloop.ClassInterrupt,
+		From: "weave", Subject: "stop", Body: "reprioritize",
+		Tags: []string{"resume_hint:writing tests"},
+	})
+	if err != nil {
+		t.Fatalf("Enqueue interrupt: %v", err)
+	}
+
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	// synchronous enqueue contract: InterruptDelivery must enqueue before it
+	// returns. The poll loop is defensive in case an implementation defers it.
+	items := drainQueueWithDeadline(uh, 1, 50*time.Millisecond)
+	if len(items) != 1 {
+		t.Fatalf("queue items = %d, want 1; items=%+v", len(items), items)
+	}
+	got := items[0]
+	if got.Class != runtimepkg.ClassInterrupt {
+		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassInterrupt)
+	}
+	want := inboxprompt.BuildInterruptFlushPrompt([]inboxprompt.Entry{
+		{
+			Seq: e1.Seq, ID: e1.ID, ShortID: e1.ShortID, Class: inboxprompt.ClassInterrupt,
+			From: e1.From, Subject: e1.Subject, Body: e1.Body, Tags: e1.Tags,
+			EnqueuedAt: e1.EnqueuedAt,
+		},
+	})
+	if got.Prompt != want {
+		t.Errorf("Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", got.Prompt, want)
+	}
+	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != e1.ID {
+		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, e1.ID)
+	}
+}
+
+func TestUnifiedHandle_InterruptDelivery_EmptyPendingNoEnqueue(t *testing.T) {
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	items := uh.rt.Queue().DrainAll()
+	if len(items) != 0 {
+		t.Errorf("queue items = %d, want 0 (empty pending must not enqueue a stub); items=%+v", len(items), items)
+	}
+}
+
+func TestUnifiedHandle_InterruptDelivery_SeparatesInterruptAndAsync(t *testing.T) {
+	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	asyncEntry, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-async-1", ShortID: "sa1", Class: agentloop.ClassAsync,
+		From: "child-alpha", Subject: "status", Body: "all green",
+	})
+	if err != nil {
+		t.Fatalf("Enqueue async: %v", err)
+	}
+	intEntry, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-int-1", ShortID: "si1", Class: agentloop.ClassInterrupt,
+		From: "weave", Subject: "stop", Body: "reprioritize",
+	})
+	if err != nil {
+		t.Fatalf("Enqueue interrupt: %v", err)
+	}
+
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	// synchronous enqueue contract: InterruptDelivery must enqueue before it
+	// returns. The poll loop is defensive in case an implementation defers it.
+	items := drainQueueWithDeadline(uh, 2, 50*time.Millisecond)
+	if len(items) != 2 {
+		t.Fatalf("queue items = %d, want 2 (one interrupt + one inbox); items=%+v", len(items), items)
+	}
+	// DrainAll sorts by class priority (interrupt before inbox).
+	if items[0].Class != runtimepkg.ClassInterrupt {
+		t.Errorf("items[0].Class = %q, want %q (interrupt must sort first)", items[0].Class, runtimepkg.ClassInterrupt)
+	}
+	if items[1].Class != runtimepkg.ClassInbox {
+		t.Errorf("items[1].Class = %q, want %q", items[1].Class, runtimepkg.ClassInbox)
+	}
+
+	wantInterrupt := inboxprompt.BuildInterruptFlushPrompt([]inboxprompt.Entry{
+		{
+			Seq: intEntry.Seq, ID: intEntry.ID, ShortID: intEntry.ShortID,
+			Class: inboxprompt.ClassInterrupt, From: intEntry.From,
+			Subject: intEntry.Subject, Body: intEntry.Body, Tags: intEntry.Tags,
+			EnqueuedAt: intEntry.EnqueuedAt,
+		},
+	})
+	if items[0].Prompt != wantInterrupt {
+		t.Errorf("interrupt Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", items[0].Prompt, wantInterrupt)
+	}
+	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != intEntry.ID {
+		t.Errorf("interrupt EntryIDs = %v, want [%q]", items[0].EntryIDs, intEntry.ID)
+	}
+
+	wantAsync := inboxprompt.BuildQueueFlushPrompt([]inboxprompt.Entry{
+		{
+			Seq: asyncEntry.Seq, ID: asyncEntry.ID, ShortID: asyncEntry.ShortID,
+			Class: inboxprompt.ClassAsync, From: asyncEntry.From,
+			Subject: asyncEntry.Subject, Body: asyncEntry.Body, Tags: asyncEntry.Tags,
+			EnqueuedAt: asyncEntry.EnqueuedAt,
+		},
+	})
+	if items[1].Prompt != wantAsync {
+		t.Errorf("async Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", items[1].Prompt, wantAsync)
+	}
+	if len(items[1].EntryIDs) != 1 || items[1].EntryIDs[0] != asyncEntry.ID {
+		t.Errorf("async EntryIDs = %v, want [%q]", items[1].EntryIDs, asyncEntry.ID)
+	}
+}
+
+// drainQueueWithDeadline is a defensive poll-loop wrapper around
+// uh.rt.Queue().DrainAll() that retries until at least `want` items are
+// observed or the deadline elapses. The unified-runtime InterruptDelivery
+// contract is synchronous (it must enqueue before returning), but this
+// helper protects the test suite from races if a future implementation
+// defers the enqueue. Returns whatever was drained at deadline expiry.
+func drainQueueWithDeadline(uh *unifiedHandle, want int, timeout time.Duration) []runtimepkg.QueueItem {
+	deadline := time.Now().Add(timeout)
+	var items []runtimepkg.QueueItem
+	for time.Now().Before(deadline) {
+		items = append(items, uh.rt.Queue().DrainAll()...)
+		if len(items) >= want {
+			return items
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// final drain after deadline in case the loop missed a late publish
+	items = append(items, uh.rt.Queue().DrainAll()...)
+	return items
+}
+
+// TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody pins the
+// supervisor-level truncation path: an async entry whose body exceeds the
+// per-message cap must surface in the synthesized inbox prompt as a
+// truncated payload citing the entry's ShortID for the read-hint. Guards
+// against the supervisor path bypassing inboxprompt's size guards.
+func TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody(t *testing.T) {
+	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	body := strings.Repeat("z", inboxprompt.MaxQueueFlushBodyBytes+200)
+	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
+		ID: "id-async-big", ShortID: "sa1", Class: agentloop.ClassAsync,
+		From: "peer", Subject: "big", Body: body,
+	}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	if err := uh.InterruptDelivery(); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	items := drainQueueWithDeadline(uh, 1, 50*time.Millisecond)
+	var inbox *runtimepkg.QueueItem
+	for i := range items {
+		if items[i].Class == runtimepkg.ClassInbox {
+			inbox = &items[i]
+			break
+		}
+	}
+	if inbox == nil {
+		t.Fatalf("no ClassInbox item found; items=%+v", items)
+	}
+	if !strings.Contains(inbox.Prompt, "truncated") {
+		t.Errorf("prompt missing 'truncated' marker; prompt=%q", inbox.Prompt)
+	}
+	if !strings.Contains(inbox.Prompt, "sprawl messages read sa1") {
+		t.Errorf("prompt missing read-hint citing ShortID 'sa1'; prompt=%q", inbox.Prompt)
+	}
 }

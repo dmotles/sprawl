@@ -11,6 +11,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
@@ -116,6 +117,8 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		sessionID:    session.SessionID(),
 		activityFile: activityFile,
 		stopActivity: stopActivity,
+		sprawlRoot:   spec.SprawlRoot,
+		name:         spec.Name,
 	}, nil
 }
 
@@ -176,6 +179,8 @@ type unifiedHandle struct {
 	sessionID    string
 	activityFile *os.File
 	stopActivity func()
+	sprawlRoot   string
+	name         string
 
 	stopOnce sync.Once
 	stopErr  error
@@ -194,13 +199,32 @@ func (h *unifiedHandle) Wake() error {
 }
 
 func (h *unifiedHandle) InterruptDelivery() error {
-	// Enqueue an inbox stub so the next loop iteration has something to drain
-	// after we wake it. This mirrors the legacy ControlSignalInterrupt path
-	// which delivered "you have new messages" semantics.
-	h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-		Class:  runtimepkg.ClassInbox,
-		Prompt: "You have new messages. Run sprawl messages read.",
-	})
+	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
+	if err == nil && len(pending) > 0 {
+		interrupts, asyncs := inboxprompt.SplitByClass(pending)
+		if len(interrupts) > 0 {
+			ids := make([]string, 0, len(interrupts))
+			for _, e := range interrupts {
+				ids = append(ids, e.ID)
+			}
+			h.rt.Queue().Enqueue(runtimepkg.QueueItem{
+				Class:    runtimepkg.ClassInterrupt,
+				Prompt:   inboxprompt.BuildInterruptFlushPrompt(interrupts),
+				EntryIDs: ids,
+			})
+		}
+		if len(asyncs) > 0 {
+			ids := make([]string, 0, len(asyncs))
+			for _, e := range asyncs {
+				ids = append(ids, e.ID)
+			}
+			h.rt.Queue().Enqueue(runtimepkg.QueueItem{
+				Class:    runtimepkg.ClassInbox,
+				Prompt:   inboxprompt.BuildQueueFlushPrompt(asyncs),
+				EntryIDs: ids,
+			})
+		}
+	}
 	return h.rt.InterruptDelivery(context.Background())
 }
 

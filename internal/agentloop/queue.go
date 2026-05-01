@@ -17,31 +17,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// Class is the delivery class of a queued message.
-type Class string
+// Class is the delivery class of a queued message. Aliased to inboxprompt.Class
+// after QUM-437 extracted the prompt formatter into its own leaf package.
+type Class = inboxprompt.Class
+
+// Entry is one message in the per-agent harness queue. Aliased to
+// inboxprompt.Entry after QUM-437.
+type Entry = inboxprompt.Entry
 
 // Recognized message classes.
 const (
-	ClassAsync     Class = "async"
-	ClassInterrupt Class = "interrupt"
+	ClassAsync     = inboxprompt.ClassAsync
+	ClassInterrupt = inboxprompt.ClassInterrupt
 )
-
-// Entry is one message in the per-agent harness queue.
-type Entry struct {
-	Seq        int      `json:"seq"`
-	ID         string   `json:"id"`
-	ShortID    string   `json:"short_id,omitempty"`
-	Class      Class    `json:"class"`
-	From       string   `json:"from"`
-	Subject    string   `json:"subject"`
-	Body       string   `json:"body"`
-	ReplyTo    string   `json:"reply_to,omitempty"`
-	Tags       []string `json:"tags,omitempty"`
-	EnqueuedAt string   `json:"enqueued_at"`
-}
 
 // canonicalName matches a finalized queue file name:
 //
