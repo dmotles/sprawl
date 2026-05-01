@@ -274,6 +274,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		*vp = updated
 		return m, cmd
 
+	case tea.PasteMsg:
+		// Bracketed-paste from the terminal. Forward to the input panel so embedded
+		// newlines are inserted literally instead of being treated as Enter-submit.
+		// Only when the input bar is the active panel (root-agent view, no modal).
+		if m.observedAgent != m.rootAgent || m.activePanel != PanelInput || m.showHelp || m.showConfirm || m.showError || m.showPalette {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+
 	case tea.KeyPressMsg:
 		// QUM-410: while reverse-search is active, the search overlay owns
 		// every keystroke until accepted or cancelled. Handled before any
