@@ -7,8 +7,29 @@ import (
 	"sync"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 )
+
+// unifiedRuntimeProvider is implemented by RuntimeHandles backed by a
+// UnifiedRuntime, so consumers (e.g. the TUI viewport stream wiring) can
+// reach the underlying runtime's EventBus.
+type unifiedRuntimeProvider interface {
+	UnifiedRuntime() *runtimepkg.UnifiedRuntime
+}
+
+// UnifiedRuntime returns the underlying UnifiedRuntime when this AgentRuntime
+// is currently backed by a unified-handle; otherwise nil. (QUM-439)
+func (r *AgentRuntime) UnifiedRuntime() *runtimepkg.UnifiedRuntime {
+	handle := r.currentHandle()
+	if handle == nil {
+		return nil
+	}
+	if p, ok := handle.(unifiedRuntimeProvider); ok {
+		return p.UnifiedRuntime()
+	}
+	return nil
+}
 
 // RuntimeLifecycle describes the in-memory lifecycle of a tracked child runtime.
 type RuntimeLifecycle string

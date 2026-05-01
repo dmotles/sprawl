@@ -275,3 +275,7 @@ func (h *unifiedHandle) Done() <-chan struct{} {
 // isUnifiedHandle marks this handle as a UnifiedRuntime-backed handle for
 // messages.RecipientResolver routing. See QUM-438.
 func (h *unifiedHandle) isUnifiedHandle() {}
+
+// UnifiedRuntime returns the underlying UnifiedRuntime so the TUI viewport
+// stream wiring (QUM-439) can subscribe to its EventBus.
+func (h *unifiedHandle) UnifiedRuntime() *runtimepkg.UnifiedRuntime { return h.rt }
