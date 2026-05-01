@@ -232,13 +232,11 @@ func (a *TUIAdapter) Observe(rt *sprawlrt.UnifiedRuntime) {
 	a.runtime = rt
 	a.cancelled = false
 	if rt != nil {
-		ch, unsub := rt.EventBus().Subscribe(adapterEventBufferSize)
-		a.events = ch
-		a.unsubscribe = unsub
-		// Bump epoch only on successful (re)subscription so a parked
-		// WaitForEvent goroutine can distinguish an Observe swap from a
-		// real channel close. (QUM-436 Item 2)
-		a.epoch++
+		// Delegate to subscribe() so the (channel, unsubscribe, epoch++)
+		// setup lives in exactly one place. The epoch bump lets a parked
+		// WaitForEvent goroutine distinguish an Observe swap from a real
+		// channel close. (QUM-436 Item 2)
+		a.subscribe(rt)
 	} else {
 		a.events = nil
 	}
