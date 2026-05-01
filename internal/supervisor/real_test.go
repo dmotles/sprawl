@@ -825,3 +825,107 @@ func TestE2E_StateDivergenceFullFlow(t *testing.T) {
 		t.Errorf("AllocateName = %q, want %q (name should be reusable after clean retire)", freed, mgrName)
 	}
 }
+
+// --- QUM-416: SPRAWL_TREE_PATH derived from effective caller's persisted state ---
+
+// TestSpawn_UsesEffectiveCallerTreePathAsParentTreePath covers QUM-416: when a
+// non-root caller (e.g. "tower", a child of weave) spawns a child via the MCP
+// server, the SPRAWL_TREE_PATH passed to spawnFn must equal that caller's
+// persisted TreePath ("weave/tower"). Otherwise the grandchild's TreePath
+// becomes "weave/<child>" and the agent tree is flattened.
+func TestSpawn_UsesEffectiveCallerTreePathAsParentTreePath(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:     "tower",
+		Type:     "manager",
+		Family:   "engineering",
+		Parent:   "weave",
+		Status:   "active",
+		TreePath: "weave/tower",
+	})
+
+	captured := map[string]string{}
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+		captured["SPRAWL_TREE_PATH"] = deps.Getenv("SPRAWL_TREE_PATH")
+		captured["SPRAWL_AGENT_IDENTITY"] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return &state.AgentState{Name: "byte"}, nil
+	}
+
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "tower")
+	if _, err := r.Spawn(ctx, SpawnRequest{
+		Family: "engineering",
+		Type:   "engineer",
+		Prompt: "do work",
+		Branch: "dmotles/byte",
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if got := captured["SPRAWL_TREE_PATH"]; got != "weave/tower" {
+		t.Errorf("SPRAWL_TREE_PATH = %q, want %q (grandchildren flatten when this is wrong — QUM-416)", got, "weave/tower")
+	}
+	// QUM-384 regression guard: identity must still come from effective caller.
+	if got := captured["SPRAWL_AGENT_IDENTITY"]; got != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q (QUM-384 regression)", got, "tower")
+	}
+}
+
+// TestSpawn_TreePathFallsBackToProcessEnvWhenCallerHasNoState pins the
+// fallback path: when ctx carries no caller identity override, the
+// SPRAWL_TREE_PATH seen by spawnFn must come from the supervisor process's
+// own environment (i.e. weave's own tree path).
+func TestSpawn_TreePathFallsBackToProcessEnvWhenCallerHasNoState(t *testing.T) {
+	r, _ := newFakeReal(t)
+	t.Setenv("SPRAWL_TREE_PATH", "weave")
+
+	var capturedTreePath string
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+		capturedTreePath = deps.Getenv("SPRAWL_TREE_PATH")
+		return &state.AgentState{Name: "x"}, nil
+	}
+
+	if _, err := r.Spawn(context.Background(), SpawnRequest{
+		Family: "engineering", Type: "engineer", Prompt: "x", Branch: "b",
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if capturedTreePath != "weave" {
+		t.Errorf("SPRAWL_TREE_PATH = %q, want %q (process-env fallback)", capturedTreePath, "weave")
+	}
+}
+
+// TestSpawn_GrandchildTreePathDepth3 pins the depth-3 case: when "byte"
+// (TreePath "weave/tower/byte") spawns its own child, the child must inherit
+// SPRAWL_TREE_PATH "weave/tower/byte" — not "weave/byte" or anything shorter.
+func TestSpawn_GrandchildTreePathDepth3(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:     "byte",
+		Type:     "engineer",
+		Family:   "engineering",
+		Parent:   "tower",
+		Status:   "active",
+		TreePath: "weave/tower/byte",
+	})
+
+	var capturedTreePath string
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+		capturedTreePath = deps.Getenv("SPRAWL_TREE_PATH")
+		return &state.AgentState{Name: "great-grandchild"}, nil
+	}
+
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "byte")
+	if _, err := r.Spawn(ctx, SpawnRequest{
+		Family: "engineering",
+		Type:   "engineer",
+		Prompt: "do work",
+		Branch: "dmotles/ggchild",
+	}); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if capturedTreePath != "weave/tower/byte" {
+		t.Errorf("SPRAWL_TREE_PATH = %q, want %q (depth-3 ancestry must be preserved — QUM-416)", capturedTreePath, "weave/tower/byte")
+	}
+}

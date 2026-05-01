@@ -479,15 +479,27 @@ func (r *Real) effectiveCaller(ctx context.Context) string {
 // spawnDepsForCaller returns a copy of r.spawnDeps with Getenv overridden so
 // that SPRAWL_AGENT_IDENTITY reflects the effective caller (the agent whose
 // MCP tool call triggered the spawn), making child spawns get the correct
-// Parent linkage. See QUM-384.
+// Parent linkage. See QUM-384. Also overrides SPRAWL_TREE_PATH using the
+// caller's persisted state.TreePath so grandchild spawns get a tree path
+// rooted at the actual caller rather than the supervisor's process env
+// (QUM-416).
 func (r *Real) spawnDepsForCaller(caller string) *agentops.SpawnDeps {
 	deps := *r.spawnDeps // shallow copy
+	var callerTreePath string
+	if st, err := state.LoadAgent(r.sprawlRoot, caller); err == nil && st != nil {
+		callerTreePath = st.TreePath
+	}
 	deps.Getenv = func(key string) string {
 		switch key {
 		case "SPRAWL_AGENT_IDENTITY":
 			return caller
 		case "SPRAWL_ROOT":
 			return r.sprawlRoot
+		case "SPRAWL_TREE_PATH":
+			if callerTreePath != "" {
+				return callerTreePath
+			}
+			return os.Getenv(key)
 		default:
 			return os.Getenv(key)
 		}
