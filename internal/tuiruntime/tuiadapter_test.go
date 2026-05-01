@@ -1,11 +1,11 @@
-// Tests for TUIAdapter (QUM-397). The adapter wraps a UnifiedRuntime and
-// exposes its lifecycle/event stream as bubbletea-friendly tea.Cmd values.
+// Tests for TUIAdapter (QUM-397, repackaged in QUM-431). The adapter wraps
+// a UnifiedRuntime and exposes its lifecycle/event stream as
+// bubbletea-friendly tea.Cmd values.
 //
 // These tests construct a real EventBus + MessageQueue + TurnLoop +
-// UnifiedRuntime; only the underlying SessionHandle is mocked. They will
-// not compile until tuiadapter.go is added (red phase of TDD).
+// UnifiedRuntime; only the underlying SessionHandle is mocked.
 
-package runtime
+package tuiruntime
 
 import (
 	"context"
@@ -21,6 +21,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
+	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	tui "github.com/dmotles/sprawl/internal/tui"
 )
 
@@ -90,9 +91,9 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 // buildAdapter spins up a real UnifiedRuntime around the supplied mock
 // session and returns the runtime + adapter. t.Cleanup is registered to
 // stop the runtime.
-func buildAdapter(t *testing.T, mock SessionHandle) (*UnifiedRuntime, *TUIAdapter) {
+func buildAdapter(t *testing.T, mock sprawlrt.SessionHandle) (*sprawlrt.UnifiedRuntime, *TUIAdapter) {
 	t.Helper()
-	rt := New(RuntimeConfig{
+	rt := sprawlrt.New(sprawlrt.RuntimeConfig{
 		Name:    "tui-adapter-test",
 		Session: mock,
 	})
@@ -156,7 +157,7 @@ func TestTUIAdapter_WaitForEvent_AssistantText(t *testing.T) {
 	}
 
 	// Drive a turn so the adapter sees an EventProtocolMessage.
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "hi"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "hi"})
 	ch <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]}}`)
 
 	// First WaitForEvent should produce the AssistantContentMsg (lifecycle
@@ -190,7 +191,7 @@ func TestTUIAdapter_WaitForEvent_ToolCall(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
 	ch <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls"}}]}}`)
 
 	msg := runCmd(t, a.WaitForEvent())
@@ -222,7 +223,7 @@ func TestTUIAdapter_WaitForEvent_ToolResult(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
 	// user protocol message carrying a tool_result block
 	ch <- makeAssistantMsg(t, `{"type":"user","uuid":"u-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"output","is_error":false}]}}`)
 
@@ -251,7 +252,7 @@ func TestTUIAdapter_WaitForEvent_TurnCompleted_SessionResult(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
 	// Result message - turnLoop will emit EventProtocolMessage(result) +
 	// EventTurnCompleted. The adapter should surface the SessionResultMsg
 	// from EventTurnCompleted.
@@ -292,7 +293,7 @@ func TestTUIAdapter_WaitForEvent_TurnFailed_SessionResultError(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -326,14 +327,14 @@ func TestTUIAdapter_WaitForEvent_Interrupted_InterruptResultMsg(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
 
 	// Wait for runtime to enter TurnActive before interrupting.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != StateTurnActive {
+	for time.Now().Before(deadline) && rt.State() != sprawlrt.StateTurnActive {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if rt.State() != StateTurnActive {
+	if rt.State() != sprawlrt.StateTurnActive {
 		t.Fatalf("did not enter StateTurnActive; got %v", rt.State())
 	}
 
@@ -379,7 +380,7 @@ func TestTUIAdapter_WaitForEvent_SkipsLifecycleEvents(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
 	ch <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
 	ch <- makeAssistantMsg(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`)
 	close(ch)
@@ -434,8 +435,8 @@ func TestTUIAdapter_SendMessage_EnqueuesUserClass(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("queue depth = %d, want 1", len(items))
 	}
-	if items[0].Class != ClassUser {
-		t.Errorf("queued item class = %q, want %q", items[0].Class, ClassUser)
+	if items[0].Class != sprawlrt.ClassUser {
+		t.Errorf("queued item class = %q, want %q", items[0].Class, sprawlrt.ClassUser)
 	}
 	if items[0].Prompt != "hello" {
 		t.Errorf("queued item prompt = %q, want %q", items[0].Prompt, "hello")
@@ -454,14 +455,14 @@ func TestTUIAdapter_Interrupt_ForwardsToRuntime(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
 
 	// Wait for an in-flight turn before triggering Interrupt.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != StateTurnActive {
+	for time.Now().Before(deadline) && rt.State() != sprawlrt.StateTurnActive {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if rt.State() != StateTurnActive {
+	if rt.State() != sprawlrt.StateTurnActive {
 		t.Fatalf("not StateTurnActive; got %v", rt.State())
 	}
 
@@ -492,7 +493,7 @@ func TestTUIAdapter_Observe_SwapsSubscription(t *testing.T) {
 	mockA := &adapterMockSession{
 		onStart: func(_ int) (<-chan *protocol.Message, error) { return chA, nil },
 	}
-	rtA := New(RuntimeConfig{Name: "a", Session: mockA})
+	rtA := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "a", Session: mockA})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -508,7 +509,7 @@ func TestTUIAdapter_Observe_SwapsSubscription(t *testing.T) {
 	mockB := &adapterMockSession{
 		onStart: func(_ int) (<-chan *protocol.Message, error) { return chB, nil },
 	}
-	rtB := New(RuntimeConfig{Name: "b", Session: mockB})
+	rtB := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "b", Session: mockB})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -522,11 +523,11 @@ func TestTUIAdapter_Observe_SwapsSubscription(t *testing.T) {
 	a.Observe(rtB)
 
 	// Publish on A; the adapter should NOT see it.
-	rtA.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "from-A"})
+	rtA.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "from-A"})
 	chA <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"alpha"}]}}`)
 
 	// Publish on B; the adapter should see "beta".
-	rtB.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "from-B"})
+	rtB.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "from-B"})
 	chB <- makeAssistantMsg(t, `{"type":"assistant","uuid":"b-1","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}`)
 
 	// Drain msgs from the adapter; expect to see "beta" but never "alpha".

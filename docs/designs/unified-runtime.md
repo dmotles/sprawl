@@ -627,7 +627,7 @@ The existing `Observer` interface (`OnMessage(*protocol.Message)`) is used by th
 - `internal/runtime/eventbus.go`
 - `internal/runtime/queue.go`
 - `internal/runtime/turnloop.go`
-- `internal/runtime/tuiadapter.go`
+- `internal/tuiruntime/tuiadapter.go` (split out of `internal/runtime` in QUM-431)
 - `internal/runtime/*_test.go`
 
 ### Files to Modify (Phase 2 — Children)
