@@ -111,26 +111,28 @@ func TestBuildInterruptFlushPrompt_TruncatedHintUsesShortID(t *testing.T) {
 }
 
 func TestBuildQueueFlushPrompt_AggregateCap(t *testing.T) {
+	// Use a sentinel rune ('z') that appears nowhere in the prompt's
+	// header, per-entry preamble, truncation marker, or footer — so
+	// strings.Count(p, "z") returns *exactly* the surviving body bytes
+	// after the aggregate cap is enforced, with no header-byte slack
+	// needed. Six 2KB bodies of 'z' (12KB input) against a 10KB cap
+	// must produce exactly 10KB of 'z' in the rendered prompt.
+	const sentinel = "z"
 	var entries []inboxprompt.Entry
 	for i := 0; i < 6; i++ {
 		entries = append(entries, inboxprompt.Entry{
 			From:    "f",
 			Subject: "s",
-			Body:    strings.Repeat(string(rune('a'+i)), inboxprompt.MaxQueueFlushBodyBytes),
+			Body:    strings.Repeat(sentinel, inboxprompt.MaxQueueFlushBodyBytes),
 		})
 	}
 	p := inboxprompt.BuildQueueFlushPrompt(entries)
-	bodyBytes := 0
-	for _, r := range p {
-		if r >= 'a' && r <= 'f' {
-			bodyBytes++
-		}
-	}
-	// Allow slack for non-body 'a'-'f' chars in headers/markers (e.g.
-	// "from f", "subject: s") that this rune-counter inadvertently
-	// includes. Matches the slack in agentloop's flush_test.go.
-	if bodyBytes > inboxprompt.MaxQueueFlushTotalBytes+512 {
-		t.Errorf("aggregate body bytes %d exceeds cap %d+slack", bodyBytes, inboxprompt.MaxQueueFlushTotalBytes)
+	bodyBytes := strings.Count(p, sentinel)
+	if bodyBytes != inboxprompt.MaxQueueFlushTotalBytes {
+		t.Errorf("aggregate body bytes after cap = %d, want exactly %d (cap = %d, input = %d)",
+			bodyBytes, inboxprompt.MaxQueueFlushTotalBytes,
+			inboxprompt.MaxQueueFlushTotalBytes,
+			6*inboxprompt.MaxQueueFlushBodyBytes)
 	}
 }
 
