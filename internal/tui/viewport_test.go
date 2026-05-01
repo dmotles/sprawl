@@ -1722,3 +1722,114 @@ func TestViewportModel_RenderMessages_TwoParallelContainers(t *testing.T) {
 		t.Errorf("expected at least 2 '┌' markers for two containers, got %d in:\n%s", count, rendered)
 	}
 }
+
+// QUM-433: previewResultLines must normalize bare CR / CRLF so that progress
+// output (e.g. `git rebase`, `npm install`) does not bleed `\r` into the
+// rendered viewport — the host terminal would otherwise process the CR as
+// cursor-to-column-0 and draw text outside the activity panel boundary.
+func TestPreviewResultLines_StripsBareCR(t *testing.T) {
+	// Bare CR must be treated as a line separator: the input below contains
+	// one CR and one trailing LF, so the result is two non-empty lines and
+	// crucially no surviving \r byte.
+	lines, _ := previewResultLines("x\rSuccessfully rebased.\n", 3, 80)
+	for _, ln := range lines {
+		if strings.ContainsRune(ln, '\r') {
+			t.Errorf("preview line %q must not contain bare CR", ln)
+		}
+	}
+	want := []string{"x", "Successfully rebased."}
+	if len(lines) != len(want) {
+		t.Fatalf("len(lines) = %d, want %d; got %#v", len(lines), len(want), lines)
+	}
+	for i, w := range want {
+		if lines[i] != w {
+			t.Errorf("lines[%d] = %q, want %q", i, lines[i], w)
+		}
+	}
+}
+
+// QUM-433: table-driven coverage for CR / CRLF / LF variants. Each progress
+// segment between CRs collapses (intermediate ones are whitespace-only after
+// split and dropped); only the final segment of each rewritten line survives.
+func TestPreviewResultLines_CRVariants(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "lf only",
+			input: "alpha\nbeta\n",
+			want:  []string{"alpha", "beta"},
+		},
+		{
+			name:  "crlf normalized",
+			input: "alpha\r\nbeta\r\n",
+			want:  []string{"alpha", "beta"},
+		},
+		{
+			name:  "lone cr split",
+			input: "alpha\rbeta\rgamma\n",
+			want:  []string{"alpha", "beta", "gamma"},
+		},
+		{
+			name:  "git rebase progress",
+			input: "Rewinding\rApplying foo\rApplying bar\rSuccessfully rebased and updated refs/heads/x.\n",
+			want:  []string{"Rewinding", "Applying foo", "Applying bar", "Successfully rebased and updated refs/heads/x."},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lines, _ := previewResultLines(tc.input, -1, 0)
+			if len(lines) != len(tc.want) {
+				t.Fatalf("len(lines) = %d, want %d; got %#v", len(lines), len(tc.want), lines)
+			}
+			for i, w := range tc.want {
+				if lines[i] != w {
+					t.Errorf("lines[%d] = %q, want %q", i, lines[i], w)
+				}
+			}
+		})
+	}
+}
+
+// QUM-433: end-to-end render guarantee — a tool result containing git-rebase-
+// style `\r` progress output must NOT emit any `\r` byte in the rendered
+// viewport string. A bare `\r` reaching the host terminal is what causes the
+// QUM-433 panel-bleed: the terminal interprets it as cursor-to-column-0 and
+// the trailing segment ends up drawn outside the activity panel.
+func TestRenderToolCall_GitRebaseProgress_NoBleed(t *testing.T) {
+	const width = 80
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 30)
+
+	result := "Rewinding\rApplying foo\rApplying bar\rSuccessfully rebased and updated refs/heads/x.\n"
+
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:     MessageToolCall,
+		Content:  "Bash",
+		Complete: true,
+		Approved: true,
+		Result:   result,
+	})
+
+	rendered := sb.String()
+	// Primary invariant: no bare CR may reach the host terminal — that is what
+	// causes the QUM-433 panel-bleed.
+	if strings.ContainsRune(rendered, '\r') {
+		t.Errorf("renderToolCall output must not contain bare CR; got bytes %q", rendered)
+	}
+	// CR-separated segments should now appear as distinct preview lines under
+	// the `│ ` gutter (subject to the 3-line cap + trailer).
+	stripped := stripANSI(rendered)
+	for _, frag := range []string{"│ Rewinding", "│ Applying foo", "│ Applying bar"} {
+		if !strings.Contains(stripped, frag) {
+			t.Errorf("rendered output missing preview line %q, got:\n%s", frag, stripped)
+		}
+	}
+	if !strings.Contains(stripped, "more lines") {
+		t.Errorf("expected `+ N more lines` trailer for capped preview, got:\n%s", stripped)
+	}
+}
