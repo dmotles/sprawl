@@ -138,6 +138,13 @@ type assistantContent struct {
 	Usage   *protocol.Usage `json:"usage,omitempty"`
 }
 
+// MapProtocolMessage is the exported wrapper around mapProtocolMessage so
+// other packages (notably internal/runtime's TUIAdapter — QUM-397) can reuse
+// the protocol-to-tea.Msg mapping without duplicating the logic.
+func MapProtocolMessage(msg *protocol.Message) tea.Msg {
+	return mapProtocolMessage(msg)
+}
+
 // mapProtocolMessage converts a protocol.Message into the appropriate tea.Msg.
 // Returns nil for unrecognized message types.
 func mapProtocolMessage(msg *protocol.Message) tea.Msg {

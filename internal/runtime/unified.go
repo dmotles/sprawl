@@ -136,10 +136,22 @@ func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spe
 		return nil, err
 	}
 
-	// If an interrupt was requested before the turn actually started,
-	// fire Session.Interrupt now so the in-flight turn observes it.
+	// If an interrupt was requested before the turn actually started, route
+	// it through the TurnLoop so it sets `interrupted=true` and ultimately
+	// publishes EventInterrupted (not EventTurnCompleted) on the bus. The
+	// loop's interruptCh is buffered and is installed before StartTurn is
+	// invoked, so this send is guaranteed to land. Falling through to a
+	// direct Session.Interrupt call would bypass the loop's bookkeeping
+	// and cause the terminal event to be misclassified.
 	if pending {
-		_ = s.inner.Interrupt(context.Background())
+		s.rt.mu.RLock()
+		loop := s.rt.turnLoop
+		s.rt.mu.RUnlock()
+		if loop != nil {
+			_ = loop.Interrupt(context.Background())
+		} else {
+			_ = s.inner.Interrupt(context.Background())
+		}
 	}
 
 	// Forward channel and watch for close to flip state back.
