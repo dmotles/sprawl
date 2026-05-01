@@ -151,6 +151,23 @@ func (m *InputModel) SetValue(s string) {
 	m.ta.SetValue(s)
 }
 
+// AtFirstLine reports whether the textarea cursor sits on the first logical
+// line. Used to disambiguate Up keys between in-buffer cursor movement and
+// history navigation (QUM-410).
+func (m *InputModel) AtFirstLine() bool {
+	return m.ta.Line() == 0
+}
+
+// AtLastLine reports whether the textarea cursor sits on the last logical
+// line. Mirror of AtFirstLine for Down. (QUM-410)
+func (m *InputModel) AtLastLine() bool {
+	lc := m.ta.LineCount()
+	if lc == 0 {
+		return true
+	}
+	return m.ta.Line() >= lc-1
+}
+
 // SetDisabled enables or disables the input.
 func (m *InputModel) SetDisabled(disabled bool) {
 	m.disabled = disabled
