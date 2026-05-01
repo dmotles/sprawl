@@ -1,6 +1,7 @@
 package agentops
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -190,6 +191,96 @@ func TestReport_EmptySummary(t *testing.T) {
 	_, err := Report(deps, root, "alice", "working", "   ", "")
 	if err == nil || !strings.Contains(err.Error(), "summary") {
 		t.Errorf("err = %v, want summary error", err)
+	}
+}
+
+// TestReport_PropagatesShortIDToQueueEntry verifies QUM-442: when SendMessage
+// returns a short maildir ID, Report stuffs it into the enqueued
+// agentloop.Entry.ShortID so flush prompts can cite the friendly identifier.
+func TestReport_PropagatesShortIDToQueueEntry(t *testing.T) {
+	root, deps := setupReportTest(t, &state.AgentState{
+		Name: "alice", Parent: "bob", Status: "active",
+	})
+	deps.SendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
+		return "sh-abc123", nil
+	}
+
+	res, err := Report(deps, root, "alice", "working", "halfway done", "")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if res.MessageID == "" {
+		t.Fatal("MessageID should be populated when parent is set")
+	}
+
+	pending, err := agentloop.ListPending(root, "bob")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending len = %d, want 1", len(pending))
+	}
+	if pending[0].ShortID != "sh-abc123" {
+		t.Errorf("ShortID = %q, want %q", pending[0].ShortID, "sh-abc123")
+	}
+}
+
+// TestReport_EmptyShortIDTolerated covers the back-compat case where
+// SendMessage returns an empty shortID (e.g. legacy callers): the entry
+// must still be enqueued with a real UUID and ShortID="".
+func TestReport_EmptyShortIDTolerated(t *testing.T) {
+	root, deps := setupReportTest(t, &state.AgentState{
+		Name: "alice", Parent: "bob", Status: "active",
+	})
+	deps.SendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
+		return "", nil
+	}
+
+	_, err := Report(deps, root, "alice", "working", "halfway done", "")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	pending, err := agentloop.ListPending(root, "bob")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending len = %d, want 1", len(pending))
+	}
+	if pending[0].ShortID != "" {
+		t.Errorf("ShortID = %q, want empty", pending[0].ShortID)
+	}
+	if pending[0].ID == "" {
+		t.Error("Entry.ID should still be a non-empty UUID")
+	}
+}
+
+// TestReport_SendMessageErrorSkipsEnqueue: when SendMessage fails, Report
+// returns an error wrapping "sending message to parent" and does NOT enqueue
+// a queue entry (the parent should not see a phantom report).
+func TestReport_SendMessageErrorSkipsEnqueue(t *testing.T) {
+	root, deps := setupReportTest(t, &state.AgentState{
+		Name: "alice", Parent: "bob", Status: "active",
+	})
+	deps.SendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
+		return "", fmt.Errorf("maildir full")
+	}
+
+	_, err := Report(deps, root, "alice", "working", "halfway done", "")
+	if err == nil {
+		t.Fatal("Report should have returned an error when SendMessage fails")
+	}
+	if !strings.Contains(err.Error(), "sending message to parent") {
+		t.Errorf("err = %v, want wrap of 'sending message to parent'", err)
+	}
+
+	pending, err := agentloop.ListPending(root, "bob")
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("pending len = %d, want 0 when SendMessage failed", len(pending))
 	}
 }
 

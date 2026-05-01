@@ -21,7 +21,7 @@ type reportDeps struct {
 	nowFunc     func() time.Time
 	loadAgent   func(sprawlRoot, name string) (*state.AgentState, error)
 	saveAgent   func(sprawlRoot string, agent *state.AgentState) error
-	sendMessage func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error
+	sendMessage func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error)
 	enqueue     func(sprawlRoot, to string, e agentloop.Entry) (agentloop.Entry, error)
 }
 
@@ -72,15 +72,12 @@ func resolveReportDeps() *reportDeps {
 		return defaultReportDeps
 	}
 	return &reportDeps{
-		getenv:    os.Getenv,
-		nowFunc:   time.Now,
-		loadAgent: state.LoadAgent,
-		saveAgent: state.SaveAgent,
-		sendMessage: func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error {
-			_, err := messages.Send(sprawlRoot, from, to, subject, body, opts...)
-			return err
-		},
-		enqueue: agentloop.Enqueue,
+		getenv:      os.Getenv,
+		nowFunc:     time.Now,
+		loadAgent:   state.LoadAgent,
+		saveAgent:   state.SaveAgent,
+		sendMessage: messages.Send,
+		enqueue:     agentloop.Enqueue,
 	}
 }
 
