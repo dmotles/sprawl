@@ -243,6 +243,65 @@ func TestMessageQueue_ConcurrentEnqueueAndDrain(t *testing.T) {
 	}
 }
 
+func TestMessageQueue_Wake_UnblocksSignalReceiver(t *testing.T) {
+	q := NewMessageQueue()
+
+	// Wake on empty queue must produce a signal that a receiver can read.
+	q.Wake()
+
+	select {
+	case <-q.Signal():
+		// good
+	case <-time.After(time.Second):
+		t.Fatal("Signal did not fire after Wake on empty queue")
+	}
+
+	// Queue must still be empty — Wake doesn't enqueue anything.
+	if got := q.Len(); got != 0 {
+		t.Errorf("Len after Wake on empty queue: got %d, want 0", got)
+	}
+}
+
+func TestMessageQueue_Wake_CoalescesWithEnqueue(t *testing.T) {
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "hi"})
+	// Signal slot is now full from Enqueue. A subsequent Wake should be a
+	// no-op (coalesced) rather than blocking or stacking signals.
+	q.Wake()
+
+	// Exactly one signal is readable.
+	select {
+	case <-q.Signal():
+	case <-time.After(time.Second):
+		t.Fatal("Signal did not fire after Enqueue+Wake")
+	}
+
+	// No second signal should be available.
+	select {
+	case <-q.Signal():
+		t.Fatal("Wake produced a second buffered signal after Enqueue already filled the slot")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestMessageQueue_Wake_NoBlockOnRepeatedCalls(t *testing.T) {
+	q := NewMessageQueue()
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			q.Wake()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("repeated Wake calls blocked")
+	}
+}
+
 func TestMessageQueue_UnknownClassSortsLast(t *testing.T) {
 	// Defensive: an unrecognized class should not panic and should not jump
 	// ahead of known classes.
