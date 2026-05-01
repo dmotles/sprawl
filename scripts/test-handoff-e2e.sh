@@ -308,7 +308,16 @@ echo ""
 echo "=== Firing handoff via MCP ==="
 HANDOFF_PROMPT="Call the mcp__sprawl__handoff tool with a short summary 'QUM-329 e2e test handoff'."
 
-_stmux send-keys -t "$SESSION" "$HANDOFF_PROMPT" Enter
+# Send the prompt and Enter as separate keystrokes with a brief gap.
+# QUM-432 added a time-based paste classifier in the TUI that reclassifies
+# an Enter arriving < 10ms after a printable key as an embedded newline
+# (stripped-bracketed-paste burst). Sending "$PROMPT" Enter as one tmux
+# command delivers everything at machine speed and would trip the
+# classifier; pausing here mirrors human typing cadence and submits the
+# message normally.
+_stmux send-keys -t "$SESSION" "$HANDOFF_PROMPT"
+sleep 0.5
+_stmux send-keys -t "$SESSION" Enter
 sleep 2
 
 # --- Assertions ---
