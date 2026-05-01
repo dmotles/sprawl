@@ -29,7 +29,7 @@ type ReportResult struct {
 type ReportDeps struct {
 	LoadAgent   func(sprawlRoot, name string) (*state.AgentState, error)
 	SaveAgent   func(sprawlRoot string, agent *state.AgentState) error
-	SendMessage func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error
+	SendMessage func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error)
 	Enqueue     func(sprawlRoot, to string, e agentloop.Entry) (agentloop.Entry, error)
 	Now         func() time.Time
 }
@@ -48,12 +48,11 @@ func (d *ReportDeps) saveAgent(sprawlRoot string, a *state.AgentState) error {
 	return state.SaveAgent(sprawlRoot, a)
 }
 
-func (d *ReportDeps) sendMessage(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error {
+func (d *ReportDeps) sendMessage(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
 	if d.SendMessage != nil {
 		return d.SendMessage(sprawlRoot, from, to, subject, body, opts...)
 	}
-	_, err := messages.Send(sprawlRoot, from, to, subject, body, opts...)
-	return err
+	return messages.Send(sprawlRoot, from, to, subject, body, opts...)
 }
 
 func (d *ReportDeps) enqueue(sprawlRoot, to string, e agentloop.Entry) (agentloop.Entry, error) {
@@ -165,7 +164,8 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary, detail s
 		body = summary + "\n\n" + detail
 	}
 
-	if err := deps.sendMessage(sprawlRoot, agentState.Name, agentState.Parent, subject, body); err != nil {
+	shortID, err := deps.sendMessage(sprawlRoot, agentState.Name, agentState.Parent, subject, body)
+	if err != nil {
 		// Delivery failure is non-fatal — state is persisted.
 		return result, fmt.Errorf("sending message to parent: %w", err)
 	}
@@ -175,6 +175,7 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary, detail s
 		From:    agentState.Name,
 		Subject: subject,
 		Body:    body,
+		ShortID: shortID,
 		Tags:    []string{"status", stateVal},
 	})
 	if err != nil {

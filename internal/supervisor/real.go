@@ -771,12 +771,11 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, 
 	}
 
 	reportDeps := &agentops.ReportDeps{
-		SendMessage: func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) error {
+		SendMessage: func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
 			if parentRuntime != nil {
 				opts = append(opts, messages.WithoutWakeFile())
 			}
-			_, err := messages.Send(sprawlRoot, from, to, subject, body, opts...)
-			return err
+			return messages.Send(sprawlRoot, from, to, subject, body, opts...)
 		},
 	}
 	res, err := agentops.Report(reportDeps, r.sprawlRoot, agentName, reportState, summary, detail)
