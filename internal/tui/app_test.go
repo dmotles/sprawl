@@ -908,6 +908,10 @@ func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPe
 	return &supervisor.MessagesPeekResult{}, nil
 }
 
+func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
+	return nil
+}
+
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
 	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)

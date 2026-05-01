@@ -208,4 +208,11 @@ type Supervisor interface {
 	// default per §8.5 — callers that are not an ancestor of `to` get an
 	// error. See docs/designs/messaging-overhaul.md §4.2.2 and §4.5.2.
 	SendInterrupt(ctx context.Context, to, subject, body, resumeHint string) (*SendInterruptResult, error)
+
+	// RuntimeRegistry returns the in-process registry of started child
+	// runtimes. Callers use it to classify recipients (e.g. unified vs.
+	// legacy) when routing messages. Out-of-process Supervisor
+	// implementations may return nil; consumers must treat nil as "no
+	// in-process runtimes known" and fall back accordingly. See QUM-438.
+	RuntimeRegistry() *RuntimeRegistry
 }

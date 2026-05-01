@@ -513,9 +513,10 @@ func runEnter(deps *enterDeps) error {
 		// QUM-438: install a recipient-kind resolver backed by the supervisor's
 		// runtime registry so messages.Send skips the legacy `.wake` sentinel
 		// for recipients running on UnifiedRuntime (whose wake/interrupt path
-		// is in-memory). Out-of-process callers leave this nil.
-		if realSup, ok := sup.(*supervisor.Real); ok && realSup != nil {
-			messages.SetRecipientResolver(supervisor.NewRecipientResolver(realSup.RuntimeRegistry()))
+		// is in-memory). Out-of-process Supervisor implementations may return
+		// nil from RuntimeRegistry(); NewRecipientResolver tolerates that.
+		if sup != nil {
+			messages.SetRecipientResolver(supervisor.NewRecipientResolver(sup.RuntimeRegistry()))
 		}
 
 		// QUM-261: when the initial `--resume` subprocess trips the "No
