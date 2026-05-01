@@ -812,6 +812,12 @@ func (m *ViewportModel) renderAgentContainer(sb *strings.Builder, msg MessageEnt
 // truncation. maxLines < 0 means "no cap" — every non-empty line is returned
 // (used by the QUM-343 expand-tool-calls path).
 func previewResultLines(result string, maxLines, width int) ([]string, int) {
+	// Normalize CR / CRLF so progress output (e.g. `git rebase`, `npm install`)
+	// doesn't emit bare \r into the rendered viewport. A bare \r would reset
+	// the host terminal cursor to column 0 and bleed text outside the activity
+	// panel border (QUM-433). Mirrors the normalization in formatSystemMessage.
+	result = strings.ReplaceAll(result, "\r\n", "\n")
+	result = strings.ReplaceAll(result, "\r", "\n")
 	var nonEmpty []string
 	for _, ln := range strings.Split(result, "\n") {
 		if strings.TrimSpace(ln) == "" {
