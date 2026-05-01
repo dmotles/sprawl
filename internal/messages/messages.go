@@ -103,6 +103,44 @@ func DefaultNotifier() NotifyFunc {
 	return defaultNotifier
 }
 
+// RecipientKind classifies a recipient's runtime family for wake-file routing.
+type RecipientKind int
+
+// RecipientKind values used by RecipientResolver.
+const (
+	RecipientUnknown RecipientKind = iota
+	RecipientLegacy
+	RecipientUnified
+)
+
+// RecipientResolver maps a recipient agent name to its current RecipientKind.
+// It is consulted by Send to decide whether to write the legacy `.wake`
+// sentinel file. Out-of-process callers (CLI) leave it nil and fall through
+// to the legacy file-write path. See QUM-438.
+type RecipientResolver func(name string) RecipientKind
+
+var (
+	recipientResolverMu sync.RWMutex
+	recipientResolver   RecipientResolver
+)
+
+// SetRecipientResolver installs (or clears, if fn is nil) the process-level
+// recipient-kind resolver consulted by Send. Safe for concurrent use; the
+// expected pattern is one call at process startup.
+func SetRecipientResolver(fn RecipientResolver) {
+	recipientResolverMu.Lock()
+	recipientResolver = fn
+	recipientResolverMu.Unlock()
+}
+
+// CurrentRecipientResolver returns the currently registered resolver, or nil.
+// Primarily intended for tests.
+func CurrentRecipientResolver() RecipientResolver {
+	recipientResolverMu.RLock()
+	defer recipientResolverMu.RUnlock()
+	return recipientResolver
+}
+
 // Send delivers a message from one agent to another using Maildir-style
 // atomic writes. It returns the generated short ID (a 3- or 4-character
 // base36 token) on success — callers persist this so the truncation hints
@@ -181,7 +219,23 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) (strin
 
 	// Best-effort recipient notification. Per-call WithNotify takes precedence
 	// over the process-level default notifier registered via SetDefaultNotifier.
-	if !sopts.skipWakeFile {
+	skipWake := sopts.skipWakeFile
+	if !skipWake {
+		if r := CurrentRecipientResolver(); r != nil {
+			kind := func() (k RecipientKind) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						k = RecipientUnknown
+					}
+				}()
+				return r(to)
+			}()
+			if kind == RecipientUnified {
+				skipWake = true
+			}
+		}
+	}
+	if !skipWake {
 		// The wake file serves dual purposes: (1) between turns, step 3 of the
 		// agent loop picks it up as a notification; (2) during a turn,
 		// SendPromptWithInterrupt detects it and interrupts the running Claude

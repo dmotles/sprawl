@@ -157,6 +157,13 @@ func snapshotFromAgentState(agentState *state.AgentState) RuntimeSnapshot {
 	return snap
 }
 
+// currentHandle returns the live runtime handle (or nil if not started or stopped).
+func (r *AgentRuntime) currentHandle() RuntimeHandle {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.handle
+}
+
 // Snapshot returns the current runtime snapshot.
 func (r *AgentRuntime) Snapshot() RuntimeSnapshot {
 	r.mu.RLock()

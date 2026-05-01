@@ -510,6 +510,14 @@ func runEnter(deps *enterDeps) error {
 		// origins of the notification.
 		messages.SetDefaultNotifier(buildTUIRootNotifier("weave", send))
 
+		// QUM-438: install a recipient-kind resolver backed by the supervisor's
+		// runtime registry so messages.Send skips the legacy `.wake` sentinel
+		// for recipients running on UnifiedRuntime (whose wake/interrupt path
+		// is in-memory). Out-of-process callers leave this nil.
+		if realSup, ok := sup.(*supervisor.Real); ok && realSup != nil {
+			messages.SetRecipientResolver(supervisor.NewRecipientResolver(realSup.RuntimeRegistry()))
+		}
+
 		// QUM-261: when the initial `--resume` subprocess trips the "No
 		// conversation found" stderr marker, prod the TUI to tear down and
 		// restart. Without this prod the TUI sits idle on a zombie session
@@ -611,6 +619,10 @@ func runEnter(deps *enterDeps) error {
 	// the TUI notifier so any lingering in-process messages.Send calls during
 	// shutdown don't try to dispatch into a dead program.
 	messages.SetDefaultNotifier(nil)
+	// QUM-438: clear the recipient resolver alongside the notifier so any
+	// lingering in-process Send calls during shutdown fall back to the legacy
+	// `.wake` write path.
+	messages.SetRecipientResolver(nil)
 
 	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff. It
 	// does stop runtime-backed children because this weave process owns them.

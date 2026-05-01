@@ -2641,3 +2641,204 @@ func TestSetDefaultNotifier_Clear(t *testing.T) {
 		t.Error("DefaultNotifier() should return nil after SetDefaultNotifier(nil)")
 	}
 }
+
+// --- Recipient resolver behavior (QUM-438) ---
+//
+// These tests exercise the process-level RecipientResolver hook: when the
+// recipient resolves to RecipientUnified, Send must skip the legacy `.wake`
+// file emission because the same-process unified runtime drives wake/
+// interrupt in-memory. For RecipientLegacy, RecipientUnknown, nil resolver,
+// or panicking resolver, Send must fail-open and write the wake file. The
+// per-call WithoutWakeFile() option still wins over a resolver that says
+// legacy.
+//
+// Like the default-notifier tests above, these mutate package-level state
+// (the registered resolver) and must clean up after themselves.
+
+func withCleanRecipientResolver(t *testing.T) {
+	t.Helper()
+	SetRecipientResolver(nil)
+	t.Cleanup(func() { SetRecipientResolver(nil) })
+}
+
+func ensureAgentsDir(t *testing.T, sprawlRoot string) string {
+	t.Helper()
+	agentsDir := filepath.Join(sprawlRoot, ".sprawl", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("creating agents dir: %v", err)
+	}
+	return agentsDir
+}
+
+func TestSend_RecipientResolverUnifiedSkipsWakeFile(t *testing.T) {
+	withCleanRecipientResolver(t)
+	tmpDir := t.TempDir()
+	agentsDir := ensureAgentsDir(t, tmpDir)
+
+	SetRecipientResolver(func(name string) RecipientKind {
+		if name == "bob" {
+			return RecipientUnified
+		}
+		return RecipientUnknown
+	})
+
+	shortID, err := Send(tmpDir, "alice", "bob", "subj", "body")
+	if err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+	if shortID == "" {
+		t.Fatal("Send() returned empty short ID")
+	}
+
+	wakePath := filepath.Join(agentsDir, "bob.wake")
+	if _, err := os.Stat(wakePath); !os.IsNotExist(err) {
+		t.Fatalf("wake file should NOT exist for unified recipient, stat err = %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	entries, err := os.ReadDir(newDir)
+	if err != nil {
+		t.Fatalf("reading new dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 message file in new/, got %d", len(entries))
+	}
+}
+
+func TestSend_RecipientResolverLegacyWritesWakeFile(t *testing.T) {
+	withCleanRecipientResolver(t)
+	tmpDir := t.TempDir()
+	agentsDir := ensureAgentsDir(t, tmpDir)
+
+	var calls int
+	var seenNames []string
+	SetRecipientResolver(func(name string) RecipientKind {
+		calls++
+		seenNames = append(seenNames, name)
+		return RecipientLegacy
+	})
+
+	if _, err := Send(tmpDir, "alice", "bob", "urgent", "body"); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	if calls != 1 {
+		t.Fatalf("resolver calls = %d, want exactly 1 (resolver must be consulted on Send); seen=%v", calls, seenNames)
+	}
+	if len(seenNames) != 1 || seenNames[0] != "bob" {
+		t.Fatalf("resolver invoked with %v, want exactly [\"bob\"]", seenNames)
+	}
+
+	wakePath := filepath.Join(agentsDir, "bob.wake")
+	data, err := os.ReadFile(wakePath)
+	if err != nil {
+		t.Fatalf("wake file should exist for legacy recipient: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "New message from alice") {
+		t.Fatalf("wake file content = %q, want prefix %q", string(data), "New message from alice")
+	}
+}
+
+func TestSend_RecipientResolverUnknownWritesWakeFile(t *testing.T) {
+	withCleanRecipientResolver(t)
+	tmpDir := t.TempDir()
+	agentsDir := ensureAgentsDir(t, tmpDir)
+
+	SetRecipientResolver(func(name string) RecipientKind {
+		return RecipientUnknown
+	})
+
+	if _, err := Send(tmpDir, "alice", "bob", "subj", "body"); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	wakePath := filepath.Join(agentsDir, "bob.wake")
+	if _, err := os.Stat(wakePath); err != nil {
+		t.Fatalf("wake file should exist for unknown recipient (fail-open): %v", err)
+	}
+}
+
+func TestSend_RecipientResolverPanicWritesWakeFile(t *testing.T) {
+	withCleanRecipientResolver(t)
+	tmpDir := t.TempDir()
+	agentsDir := ensureAgentsDir(t, tmpDir)
+
+	SetRecipientResolver(func(name string) RecipientKind {
+		panic("resolver exploded")
+	})
+
+	shortID, err := Send(tmpDir, "alice", "bob", "subj", "body")
+	if err != nil {
+		t.Fatalf("Send() should not fail when resolver panics, got: %v", err)
+	}
+	if shortID == "" {
+		t.Fatal("Send() returned empty short ID after resolver panic")
+	}
+
+	wakePath := filepath.Join(agentsDir, "bob.wake")
+	if _, err := os.Stat(wakePath); err != nil {
+		t.Fatalf("wake file should be written when resolver panics (fail-open): %v", err)
+	}
+}
+
+func TestSend_WithoutWakeFileBeatsResolver(t *testing.T) {
+	withCleanRecipientResolver(t)
+	tmpDir := t.TempDir()
+	agentsDir := ensureAgentsDir(t, tmpDir)
+
+	SetRecipientResolver(func(name string) RecipientKind {
+		return RecipientLegacy
+	})
+
+	if _, err := Send(tmpDir, "alice", "bob", "subj", "body", WithoutWakeFile()); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	wakePath := filepath.Join(agentsDir, "bob.wake")
+	if _, err := os.Stat(wakePath); !os.IsNotExist(err) {
+		t.Fatalf("wake file should NOT exist when WithoutWakeFile is set, stat err = %v", err)
+	}
+}
+
+func TestSetRecipientResolver_Clear(t *testing.T) {
+	withCleanRecipientResolver(t)
+
+	SetRecipientResolver(func(name string) RecipientKind { return RecipientUnified })
+	if CurrentRecipientResolver() == nil {
+		t.Fatal("CurrentRecipientResolver() returned nil after SetRecipientResolver with non-nil fn")
+	}
+
+	SetRecipientResolver(nil)
+	if CurrentRecipientResolver() != nil {
+		t.Error("CurrentRecipientResolver() should return nil after SetRecipientResolver(nil)")
+	}
+
+	tmpDir := t.TempDir()
+	agentsDir := ensureAgentsDir(t, tmpDir)
+	if _, err := Send(tmpDir, "alice", "bob", "subj", "body"); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+	wakePath := filepath.Join(agentsDir, "bob.wake")
+	if _, err := os.Stat(wakePath); err != nil {
+		t.Fatalf("wake file should be written after resolver cleared: %v", err)
+	}
+}
+
+func TestSend_NoRecipientResolverWritesWakeFile(t *testing.T) {
+	withCleanRecipientResolver(t)
+	tmpDir := t.TempDir()
+	agentsDir := ensureAgentsDir(t, tmpDir)
+
+	// Explicitly clear; mirrors out-of-process / CLI fall-through where no
+	// resolver has been registered.
+	SetRecipientResolver(nil)
+
+	if _, err := Send(tmpDir, "alice", "bob", "subj", "body"); err != nil {
+		t.Fatalf("Send() unexpected error: %v", err)
+	}
+
+	wakePath := filepath.Join(agentsDir, "bob.wake")
+	if _, err := os.Stat(wakePath); err != nil {
+		t.Fatalf("wake file should be written when no resolver registered: %v", err)
+	}
+}
