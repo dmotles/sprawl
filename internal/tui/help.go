@@ -40,6 +40,9 @@ func (m HelpModel) View() string {
 		{"j / k (select)", "Move selection cursor"},
 		{"y (select)", "Yank selection to clipboard (raw markdown)"},
 		{"Ctrl+C", "Clear input / Quit if empty"},
+		{"Up / Down (input)", "Navigate input history"},
+		{"Ctrl+R", "Reverse-search input history"},
+		{"Esc (search)", "Cancel reverse search"},
 		{"Esc", "Dismiss help / exit select / clear queue / interrupt turn"},
 	}
 

@@ -155,6 +155,19 @@ type AppModel struct {
 	// version is the build version string (e.g. "v0.2.0"), stored so the
 	// session banner can include it on fresh launch and after restarts.
 	version string
+
+	// history is the persistent shell-style input history (QUM-410).
+	// Up/Down at the input panel walk it; Ctrl+R triggers reverse search.
+	history *History
+
+	// searchActive, searchQuery, searchMatchIdx, searchPriorInput drive the
+	// reverse-i-search overlay (QUM-410). When searchActive is true, the
+	// input panel is gated so keystrokes mutate the query / cycle matches
+	// rather than the textarea contents.
+	searchActive     bool
+	searchQuery      string
+	searchMatchIdx   int
+	searchPriorInput string
 }
 
 const (
@@ -207,7 +220,9 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		restartFunc:   restartFunc,
 		spinner:       sp,
 		version:       version,
+		history:       NewHistory(sprawlRoot),
 	}
+	_ = app.history.Load()
 	app.updateFocus()
 	app.rebuildTree()
 	app.activity.SetAgent(rootAgent)
@@ -260,6 +275,37 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyPressMsg:
+		// QUM-410: while reverse-search is active, the search overlay owns
+		// every keystroke until accepted or cancelled. Handled before any
+		// other key intercept so Ctrl+C cancels the search instead of
+		// opening the quit-confirm dialog.
+		if m.searchActive {
+			return m.handleSearchKey(msg)
+		}
+
+		// QUM-410: Ctrl+R from the input panel enters reverse-search mode.
+		// Stash the current input value so Esc can restore it.
+		if m.activePanel == PanelInput && msg.Mod&tea.ModCtrl != 0 && msg.Code == 'r' {
+			m.searchActive = true
+			m.searchQuery = ""
+			m.searchPriorInput = m.input.Value()
+			if m.history != nil {
+				m.searchMatchIdx = m.history.Len()
+			} else {
+				m.searchMatchIdx = 0
+			}
+			return m, nil
+		}
+
+		// QUM-410: input-panel history navigation. Up/Down walk history
+		// only when the textarea cursor is at the first / last line so
+		// multi-line editing isn't hijacked.
+		if m.activePanel == PanelInput && m.history != nil && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
+			if m.handleHistoryArrow(msg) {
+				return m, nil
+			}
+		}
+
 		// Ctrl+C: REPL convention (QUM-409). With non-empty input, clear the
 		// textarea and consume the event. With empty (or whitespace-only)
 		// input, fall through to the existing quit-confirm dialog.
@@ -456,7 +502,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.bridge.SendMessage(msg.Prompt)
 
 	case SubmitMsg:
-		if msg.Text == "" || m.bridge == nil {
+		if msg.Text == "" {
+			return m, nil
+		}
+		// QUM-410: record the user input in shell-style history before
+		// dispatch. Done unconditionally (even when bridge is nil in tests)
+		// because history is a UX concern independent of transport.
+		if m.history != nil {
+			m.history.Append(msg.Text)
+			m.history.Reset()
+		}
+		if m.bridge == nil {
 			return m, nil
 		}
 		// QUM-340: while a turn is in flight, stash the message in the
@@ -1041,7 +1097,11 @@ func (m AppModel) View() tea.View {
 			Width(layout.InputWidth - 2).
 			Height(layout.InputHeight - 2)
 		inputView := inputBorder.Render(m.input.View())
-		content = lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
+		if overlay := m.searchOverlay(); overlay != "" {
+			content = lipgloss.JoinVertical(lipgloss.Left, mainRow, overlay, inputView, statusView)
+		} else {
+			content = lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
+		}
 	} else {
 		content = lipgloss.JoinVertical(lipgloss.Left, mainRow, statusView)
 	}
@@ -1428,6 +1488,116 @@ func (m *AppModel) consolidationTickCmd() tea.Cmd {
 	return tea.Tick(interval, func(_ time.Time) tea.Msg {
 		return ConsolidationProgressMsg{Elapsed: clock().Sub(startedAt)}
 	})
+}
+
+// handleHistoryArrow drives Up/Down history navigation for the input panel
+// (QUM-410). Returns handled=false when the textarea cursor is mid-buffer so
+// the caller falls through to normal textarea movement.
+func (m *AppModel) handleHistoryArrow(msg tea.KeyPressMsg) bool {
+	if m.history == nil {
+		return false
+	}
+	switch msg.Code {
+	case tea.KeyUp:
+		if !m.input.AtFirstLine() {
+			return false
+		}
+		entry, ok := m.history.Prev(m.input.Value())
+		if !ok {
+			return true
+		}
+		m.input.SetValue(entry)
+		return true
+	case tea.KeyDown:
+		if !m.input.AtLastLine() {
+			return false
+		}
+		entry, _, ok := m.history.Next()
+		if !ok {
+			return false
+		}
+		m.input.SetValue(entry)
+		return true
+	}
+	return false
+}
+
+// handleSearchKey dispatches a key while reverse-i-search is active
+// (QUM-410). Ctrl+R cycles to the next-older match; Enter accepts; Esc and
+// Ctrl+C cancel and restore the pre-search input; Backspace shrinks the
+// query; printable runes append.
+func (m AppModel) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Mod&tea.ModCtrl != 0 && msg.Code == 'r':
+		// Cycle to the next-older match.
+		if m.history != nil && m.searchQuery != "" {
+			if entry, idx, ok := m.history.SearchOlder(m.searchQuery, m.searchMatchIdx); ok {
+				m.searchMatchIdx = idx
+				m.input.SetValue(entry)
+			}
+		}
+		return m, nil
+	case msg.Mod&tea.ModCtrl != 0 && msg.Code == 'c':
+		m.searchActive = false
+		m.searchQuery = ""
+		m.input.SetValue(m.searchPriorInput)
+		m.searchPriorInput = ""
+		return m, nil
+	case msg.Code == tea.KeyEscape:
+		m.searchActive = false
+		m.searchQuery = ""
+		m.input.SetValue(m.searchPriorInput)
+		m.searchPriorInput = ""
+		return m, nil
+	case msg.Code == tea.KeyEnter:
+		// Accept current match — input value is already set.
+		m.searchActive = false
+		m.searchQuery = ""
+		m.searchPriorInput = ""
+		return m, nil
+	case msg.Code == tea.KeyBackspace:
+		if len(m.searchQuery) > 0 {
+			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
+		}
+		m.refreshSearchMatch()
+		return m, nil
+	}
+	// Printable rune (no modifiers other than Shift): append to query.
+	if msg.Mod&^tea.ModShift == 0 && msg.Code >= 0x20 && msg.Code < 0x7f {
+		m.searchQuery += string(msg.Code)
+		m.refreshSearchMatch()
+		return m, nil
+	}
+	// Swallow other keys while in search.
+	return m, nil
+}
+
+// refreshSearchMatch re-runs the reverse search from the end of history
+// against the current query, updating the input value and matchIdx.
+func (m *AppModel) refreshSearchMatch() {
+	if m.history == nil || m.searchQuery == "" {
+		m.searchMatchIdx = 0
+		if m.history != nil {
+			m.searchMatchIdx = m.history.Len()
+		}
+		return
+	}
+	if entry, idx, ok := m.history.SearchOlder(m.searchQuery, m.history.Len()); ok {
+		m.searchMatchIdx = idx
+		m.input.SetValue(entry)
+	} else {
+		m.searchMatchIdx = m.history.Len()
+	}
+}
+
+// searchOverlay returns the bash-style "(reverse-i-search)`<q>': <match>"
+// line shown above the input bar while reverse-search is active. Returns ""
+// when the overlay should be hidden.
+func (m AppModel) searchOverlay() string {
+	if !m.searchActive {
+		return ""
+	}
+	return "(reverse-i-search)`" + m.searchQuery + "': " + m.input.Value()
 }
 
 // shortSessionID returns the first 8 chars of a Claude session ID (a UUID) for
