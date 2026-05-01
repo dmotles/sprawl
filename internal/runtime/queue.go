@@ -108,6 +108,16 @@ func (q *MessageQueue) DrainAll() []QueueItem {
 	return items
 }
 
+// Wake fires the signal channel without enqueuing an item. Used by
+// InterruptDelivery to wake a blocked TurnLoop so it can re-check state
+// even when no new work has been added. Non-blocking (coalescing).
+func (q *MessageQueue) Wake() {
+	select {
+	case q.signal <- struct{}{}:
+	default:
+	}
+}
+
 // Signal returns a channel that fires (non-blocking, buffered(1)) when
 // work is enqueued. Callers should re-select on it after each DrainAll.
 func (q *MessageQueue) Signal() <-chan struct{} {
