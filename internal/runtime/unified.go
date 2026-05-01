@@ -85,11 +85,11 @@ type UnifiedRuntime struct {
 	stopped     bool
 	turnRunning bool
 	// pendingInterrupt arms an interrupt for the *next* turn the loop
-	// starts. It is set when Interrupt() is called while the runtime is
-	// effectively-active (state Idle but queue.Len()>0) but the wrapper
-	// has not yet entered StartTurn. The wrapper consumes the flag on the
-	// next StartTurn and fires Session.Interrupt against that turn —
-	// which may include items enqueued after the original Interrupt call.
+	// starts. It is set when Interrupt() is called while no turn is
+	// currently running (state Idle but the loop may be about to consume
+	// queued work). The wrapper consumes the flag on the next StartTurn
+	// and routes it through TurnLoop.Interrupt so the terminal event is
+	// classified as EventInterrupted.
 	pendingInterrupt bool
 
 	cancel   context.CancelFunc
@@ -283,58 +283,50 @@ func (rt *UnifiedRuntime) Stop(ctx context.Context) error {
 	return nil
 }
 
-// State returns the current runtime state. The state reflects both stored
-// transitions (driven by the wrapped Session's StartTurn / channel-close
-// path) and pending work in the queue: if the stored state is Idle but the
-// MessageQueue has unprocessed items, the runtime is reported as
-// TurnActive — the loop is about to pick those items up. This avoids a
-// race window between Enqueue (publisher) and the loop's first iteration
-// where State() would briefly read Idle even though work is pending.
+// State returns the stored runtime state. Transitions are driven from the
+// wrapped Session's StartTurn / channel-close path. Callers that need to
+// observe a turn starting after Enqueue should subscribe to the EventBus
+// (EventTurnStarted) rather than poll State().
 func (rt *UnifiedRuntime) State() RuntimeState {
 	rt.mu.RLock()
 	s := rt.state
-	stopped := rt.stopped
 	rt.mu.RUnlock()
-	if s == StateIdle && !stopped && rt.queue.Len() > 0 {
-		return StateTurnActive
-	}
 	return s
 }
 
-// Interrupt requests that the active turn be interrupted. No-op when not in
-// StateTurnActive.
+// Interrupt always forwards to the underlying Session.Interrupt (Backends
+// must be idempotent). When a turn is in flight it additionally drives
+// runtime-state bookkeeping (TurnActive → Interrupting) and routes through
+// TurnLoop.Interrupt. No-op when stopped.
 func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	rt.mu.Lock()
-	// Effective state: same logic as State() but inside the lock.
-	effective := rt.state
-	if effective == StateIdle && !rt.stopped && rt.queue.Len() > 0 {
-		effective = StateTurnActive
-	}
-	if effective != StateTurnActive {
+	if rt.state == StateStopped {
 		rt.mu.Unlock()
 		return nil
 	}
-	rt.state = StateInterrupting
+	sess := rt.cfg.Session
 	loop := rt.turnLoop
 	turnRunning := rt.turnRunning
-	if !turnRunning {
-		// Queue items pending but the wrapper hasn't yet entered
-		// StartTurn for this work. Arm a pending-interrupt flag so
-		// the session wrapper fires Session.Interrupt the moment the
-		// turn begins.
+	state := rt.state
+	if state == StateTurnActive {
+		rt.state = StateInterrupting
+	} else if !turnRunning {
+		// Queue items may be pending but the wrapper hasn't entered StartTurn yet.
+		// Arm a pending-interrupt flag so the next StartTurn classifies its
+		// terminal event as EventInterrupted (not EventTurnCompleted).
 		rt.pendingInterrupt = true
 	}
 	rt.mu.Unlock()
 
-	if loop == nil {
-		return nil
+	// Always forward to the backend session so the supervisor wrapper can collapse
+	// to a single delegated call (QUM-435). Backends are required to be idempotent
+	// and to no-op when no turn is in flight.
+	_ = sess.Interrupt(ctx)
+
+	if loop != nil && turnRunning {
+		return loop.Interrupt(ctx)
 	}
-	if !turnRunning {
-		// turnLoop.Interrupt would no-op (interruptCh nil); the
-		// pending flag handles delivery.
-		return nil
-	}
-	return loop.Interrupt(ctx)
+	return nil
 }
 
 // InterruptDelivery wakes the turn loop's queue signal so a blocked loop can
