@@ -6,7 +6,7 @@
 // EventBus subscription and converts each RuntimeEvent it receives into the
 // existing tui.* tea.Msg types so the AppModel can stay unchanged.
 
-package runtime
+package tuiruntime
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	tui "github.com/dmotles/sprawl/internal/tui"
 )
 
@@ -25,15 +26,15 @@ const adapterEventBufferSize = 64
 // TUIAdapter exposes a UnifiedRuntime as bubbletea-friendly tea.Cmd values.
 type TUIAdapter struct {
 	mu          sync.Mutex
-	runtime     *UnifiedRuntime
-	events      <-chan RuntimeEvent
+	runtime     *sprawlrt.UnifiedRuntime
+	events      <-chan sprawlrt.RuntimeEvent
 	unsubscribe func()
 	cancelled   bool
 }
 
 // NewTUIAdapter subscribes to the runtime's EventBus and returns an adapter
 // ready for use by a Bubble Tea program.
-func NewTUIAdapter(rt *UnifiedRuntime) *TUIAdapter {
+func NewTUIAdapter(rt *sprawlrt.UnifiedRuntime) *TUIAdapter {
 	a := &TUIAdapter{runtime: rt}
 	a.subscribe(rt)
 	return a
@@ -41,7 +42,7 @@ func NewTUIAdapter(rt *UnifiedRuntime) *TUIAdapter {
 
 // subscribe registers a fresh subscription against rt. Caller must hold a.mu
 // or otherwise serialize access.
-func (a *TUIAdapter) subscribe(rt *UnifiedRuntime) {
+func (a *TUIAdapter) subscribe(rt *sprawlrt.UnifiedRuntime) {
 	ch, unsub := rt.EventBus().Subscribe(adapterEventBufferSize)
 	a.events = ch
 	a.unsubscribe = unsub
@@ -84,7 +85,7 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 			}
 
 			switch ev.Type {
-			case EventProtocolMessage:
+			case sprawlrt.EventProtocolMessage:
 				if ev.Message == nil {
 					continue
 				}
@@ -93,7 +94,7 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 					continue
 				}
 				return msg
-			case EventTurnCompleted:
+			case sprawlrt.EventTurnCompleted:
 				if ev.Result == nil {
 					return tui.SessionResultMsg{}
 				}
@@ -104,7 +105,7 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 					NumTurns:     ev.Result.NumTurns,
 					TotalCostUsd: ev.Result.TotalCostUsd,
 				}
-			case EventTurnFailed:
+			case sprawlrt.EventTurnFailed:
 				var errStr string
 				if ev.Error != nil {
 					errStr = ev.Error.Error()
@@ -113,9 +114,9 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 					IsError: true,
 					Result:  errStr,
 				}
-			case EventInterrupted:
+			case sprawlrt.EventInterrupted:
 				return tui.InterruptResultMsg{Err: nil}
-			case EventTurnStarted, EventQueueDrained, EventStopped:
+			case sprawlrt.EventTurnStarted, sprawlrt.EventQueueDrained, sprawlrt.EventStopped:
 				// Skip lifecycle-only events — read the next one.
 				continue
 			default:
@@ -133,7 +134,7 @@ func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 		a.mu.Lock()
 		rt := a.runtime
 		a.mu.Unlock()
-		rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: text})
+		rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: text})
 		return tui.UserMessageSentMsg{}
 	}
 }
@@ -181,7 +182,7 @@ func (a *TUIAdapter) SessionID() string {
 // torn down and a fresh one is registered against rt. Used when a session
 // restart yields a new UnifiedRuntime instance and the AppModel wants the
 // existing adapter to follow it.
-func (a *TUIAdapter) Observe(rt *UnifiedRuntime) {
+func (a *TUIAdapter) Observe(rt *sprawlrt.UnifiedRuntime) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.unsubscribe != nil {

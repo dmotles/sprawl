@@ -139,7 +139,7 @@ type assistantContent struct {
 }
 
 // MapProtocolMessage is the exported wrapper around mapProtocolMessage so
-// other packages (notably internal/runtime's TUIAdapter — QUM-397) can reuse
+// other packages (notably internal/tuiruntime's TUIAdapter — QUM-397) can reuse
 // the protocol-to-tea.Msg mapping without duplicating the logic.
 func MapProtocolMessage(msg *protocol.Message) tea.Msg {
 	return mapProtocolMessage(msg)
