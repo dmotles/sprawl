@@ -18,7 +18,7 @@ func TestMapProtocolMessage_UserToolResult_StringContent(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	rm, ok := result.(ToolResultMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want ToolResultMsg", result)
@@ -44,7 +44,7 @@ func TestMapProtocolMessage_UserToolResult_ArrayContent(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	rm, ok := result.(ToolResultMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want ToolResultMsg", result)
@@ -67,7 +67,7 @@ func TestMapProtocolMessage_UserToolResult_Error(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	result := mapProtocolMessage(&msg)
+	result := MapProtocolMessage(&msg)
 	rm, ok := result.(ToolResultMsg)
 	if !ok {
 		t.Fatalf("mapProtocolMessage returned %T, want ToolResultMsg", result)
@@ -92,8 +92,8 @@ func TestMapProtocolMessage_UserMessage_PlainString_ReturnsNil(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	if got := mapProtocolMessage(&msg); got != nil {
-		t.Errorf("mapProtocolMessage(user/plain-string) = %T, want nil", got)
+	if got := MapProtocolMessage(&msg); got != nil {
+		t.Errorf("MapProtocolMessage(user/plain-string) = %T, want nil", got)
 	}
 }
 
@@ -107,8 +107,8 @@ func TestMapProtocolMessage_UserMessage_NoToolResult_ReturnsNil(t *testing.T) {
 	}
 	msg.Raw = json.RawMessage(raw)
 
-	if got := mapProtocolMessage(&msg); got != nil {
-		t.Errorf("mapProtocolMessage(user/no-tool-result) = %T, want nil", got)
+	if got := MapProtocolMessage(&msg); got != nil {
+		t.Errorf("MapProtocolMessage(user/no-tool-result) = %T, want nil", got)
 	}
 }
 
