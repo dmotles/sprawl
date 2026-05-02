@@ -328,8 +328,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.observedAgent != m.rootAgent || m.activePanel != PanelInput || m.showHelp || m.showConfirm || m.showError || m.showPalette {
 			return m, nil
 		}
+		// QUM-448: track input-box height across the Update so we can
+		// re-propagate sizes to the cached tree/viewport/activity sub-models
+		// when a paste grows the textarea. Without this the cached panels
+		// keep rendering at their pre-grow height and the composed View
+		// overflows the terminal.
+		prevInputH := m.inputBoxHeight()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
+		if m.ready && !m.tooSmall && m.inputBoxHeight() != prevInputH {
+			m.resizePanels()
+		}
 		return m, cmd
 
 	case tea.KeyPressMsg:
@@ -1622,8 +1631,14 @@ func (m AppModel) delegateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		*vp = updated
 		return m, cmd
 	case PanelInput:
+		// QUM-448: re-propagate panel sizes if this keystroke grew (or
+		// shrank) the textarea. See PasteMsg branch for the same pattern.
+		prevInputH := m.inputBoxHeight()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
+		if m.ready && !m.tooSmall && m.inputBoxHeight() != prevInputH {
+			m.resizePanels()
+		}
 		return m, cmd
 	}
 	return m, nil
