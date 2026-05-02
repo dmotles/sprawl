@@ -665,6 +665,197 @@ func TestInterrupt_WhenStopped_NoOp(t *testing.T) {
 	}
 }
 
+// TestStop_DuringActiveTurn_CallsSessionInterrupt pins QUM-414: when Stop is
+// called while a turn is in flight, the runtime must forward Session.Interrupt
+// to the backend as a clean shutdown signal (independent of the ctx-cancel
+// path that closes the StartTurn channel).
+func TestStop_DuringActiveTurn_CallsSessionInterrupt(t *testing.T) {
+	released := make(chan struct{})
+	mock := &mockUnifiedSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			go func() {
+				<-released
+				ch <- makeResultMsg()
+				close(ch)
+			}()
+			return ch, nil
+		},
+	}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
+
+	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter StateTurnActive; current=%v", rt.State())
+	}
+
+	// Release the inner channel concurrently so Stop can drain.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(released)
+	}()
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := rt.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := mock.interruptCount(); got < 1 {
+		t.Errorf("Session.Interrupt count after Stop-during-active-turn = %d, want >= 1", got)
+	}
+	if got := rt.State(); got != StateStopped {
+		t.Errorf("State after Stop = %v, want StateStopped", got)
+	}
+}
+
+// TestStop_DuringActiveTurn_PublishesStoppedNotInterrupted pins QUM-414: the
+// terminal lifecycle event for Stop is EventStopped — Stop must NOT also
+// publish EventInterrupted. EventInterrupted is reserved for user-initiated
+// Interrupt drains; Stop is a lifecycle shutdown.
+func TestStop_DuringActiveTurn_PublishesStoppedNotInterrupted(t *testing.T) {
+	released := make(chan struct{})
+	mock := &mockUnifiedSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			go func() {
+				<-released
+				ch <- makeResultMsg()
+				close(ch)
+			}()
+			return ch, nil
+		},
+	}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	bus := rt.EventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
+
+	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter StateTurnActive; current=%v", rt.State())
+	}
+
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(released)
+	}()
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := rt.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// Drain published events with a short deadline; capture the lifecycle types.
+	sawStopped := false
+	sawInterrupted := false
+	deadline := time.After(500 * time.Millisecond)
+loop:
+	for {
+		select {
+		case ev, ok := <-sub:
+			if !ok {
+				break loop
+			}
+			switch ev.Type {
+			case EventStopped:
+				sawStopped = true
+			case EventInterrupted:
+				sawInterrupted = true
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	if !sawStopped {
+		t.Errorf("did not observe EventStopped after Stop")
+	}
+	if sawInterrupted {
+		t.Errorf("observed EventInterrupted after Stop; Stop must not publish it (use Interrupt for that)")
+	}
+}
+
+// TestStop_Idle_CallsSessionInterruptOnce pins QUM-414: Stop forwards
+// Session.Interrupt as a clean shutdown signal even when no turn is active.
+// Backends are contracted to be idempotent and to no-op when nothing is in
+// flight, so this is safe and gives the backend a uniform shutdown hook.
+func TestStop_Idle_CallsSessionInterruptOnce(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if !waitForState(t, rt, StateIdle, 1*time.Second) {
+		t.Fatalf("not idle before Stop; state=%v", rt.State())
+	}
+
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := mock.interruptCount(); got != 1 {
+		t.Errorf("Session.Interrupt count after Stop on idle runtime = %d, want 1", got)
+	}
+}
+
+// TestStop_Idempotent_NoExtraInterrupt pins QUM-414: a second Stop call must
+// be a no-op and must not re-issue Session.Interrupt.
+func TestStop_Idempotent_NoExtraInterrupt(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("first Stop: %v", err)
+	}
+	first := mock.interruptCount()
+
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop: %v", err)
+	}
+	second := mock.interruptCount()
+
+	if first != 1 {
+		t.Errorf("Session.Interrupt count after first Stop = %d, want 1", first)
+	}
+	if second != first {
+		t.Errorf("Session.Interrupt count grew on second Stop: first=%d second=%d, want equal (idempotent)", first, second)
+	}
+}
+
+// TestStop_WithoutStart_NoSessionInterrupt pins QUM-414: Stop on a never-
+// started runtime must not invoke Session.Interrupt — there is no live session
+// loop to wind down.
+func TestStop_WithoutStart_NoSessionInterrupt(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop without Start: %v", err)
+	}
+
+	if got := mock.interruptCount(); got != 0 {
+		t.Errorf("Session.Interrupt count after Stop on never-started runtime = %d, want 0", got)
+	}
+}
+
 // TestDone_ClosesAfterLoopExit pins QUM-434: Done() must reflect the loop
 // goroutine's actual completion, not be pre-closed at New() or before the
 // loop has exited. While the runtime is running, Done() must NOT be closed.

@@ -247,6 +247,17 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 
 // Stop cancels the turn loop and waits for it to drain. Idempotent and a
 // no-op if Start was never called. Bounded by ctx.
+//
+// Stop semantics during an active turn (QUM-414):
+//   - Session.Interrupt is forwarded to the backend before ctx is cancelled,
+//     giving the backend a clean shutdown signal independent of the
+//     ctx-cancel path. Backends are contracted to be idempotent and to
+//     no-op when no turn is in flight, so this is safe in all states.
+//   - The lifecycle event published is EventStopped (from the TurnLoop's
+//     outer Run loop). Stop does NOT publish EventInterrupted —
+//     EventInterrupted is reserved for user-initiated Interrupt drains.
+//   - Mid-turn protocol messages are not guaranteed to be delivered to
+//     EventBus subscribers: the wrapper forwarder returns on ctx.Done.
 func (rt *UnifiedRuntime) Stop(ctx context.Context) error {
 	rt.mu.Lock()
 	if !rt.started {
@@ -262,7 +273,16 @@ func (rt *UnifiedRuntime) Stop(ctx context.Context) error {
 	}
 	rt.stopped = true
 	cancel := rt.cancel
+	sess := rt.cfg.Session
 	rt.mu.Unlock()
+
+	// Best-effort: signal the backend to wind down its in-flight turn cleanly.
+	// Called before cancel() so ctx is still alive for the interrupt control
+	// request itself. Per SessionHandle contract, Interrupt is a no-op when
+	// no turn is in flight.
+	if sess != nil {
+		_ = sess.Interrupt(ctx)
+	}
 
 	if cancel != nil {
 		cancel()
