@@ -25,14 +25,6 @@ var (
 	pasteQuietWindow = 50 * time.Millisecond
 )
 
-// pasteFlushMsg signals that buffered runes accumulated during a paste burst
-// (QUM-449) should be drained into the textarea via a single InsertString.
-type pasteFlushMsg struct{}
-
-// pasteFlushDelay is how long after a buffered rune we wait before draining.
-// var (not const) so tests can override.
-var pasteFlushDelay = 30 * time.Millisecond
-
 // InputModel wraps a textarea for the bottom input panel.
 type InputModel struct {
 	ta       textarea.Model
@@ -53,19 +45,6 @@ type InputModel struct {
 	// pasteQuietWindow for the tuning constants.
 	lastKeyAt  time.Time
 	pasteUntil time.Time
-
-	// pasteBuf accumulates printable runes (and embedded "\n") during a paste
-	// burst so they can be flushed into the textarea via a single
-	// InsertString call rather than one Update+View cycle per rune (QUM-449).
-	// Pointer so InputModel can still be passed by value through Update
-	// without tripping strings.Builder's copy guard.
-	pasteBuf *strings.Builder
-}
-
-// armPasteFlush returns a cmd that schedules a pasteFlushMsg after
-// pasteFlushDelay. Used to drain pasteBuf when the burst goes quiet.
-func armPasteFlush() tea.Cmd {
-	return tea.Tick(pasteFlushDelay, func(time.Time) tea.Msg { return pasteFlushMsg{} })
 }
 
 // NewInputModel creates an input model with a placeholder prompt.
@@ -80,31 +59,13 @@ func NewInputModel(theme *Theme) InputModel {
 	ta.MaxHeight = maxInputLines
 	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
 	return InputModel{
-		ta:       ta,
-		theme:    theme,
-		pasteBuf: &strings.Builder{},
+		ta:    ta,
+		theme: theme,
 	}
 }
 
 // Update handles key events: Enter submits, disabled blocks all input.
 func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
-	// QUM-449: drain coalesced paste buffer before forwarding a real
-	// tea.PasteMsg so the paste content lands after the buffered runes.
-	if _, ok := msg.(tea.PasteMsg); ok {
-		if m.pasteBuf.Len() > 0 {
-			m.ta.InsertString(m.pasteBuf.String())
-			m.pasteBuf.Reset()
-		}
-		// fall through to existing textarea forward below
-	}
-	// QUM-449: pasteFlushMsg drains the buffered runes from a paste burst.
-	if _, ok := msg.(pasteFlushMsg); ok {
-		if m.pasteBuf.Len() > 0 {
-			m.ta.InsertString(m.pasteBuf.String())
-			m.pasteBuf.Reset()
-		}
-		return m, nil
-	}
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		if m.disabled {
 			return m, nil
@@ -123,25 +84,10 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 			embedded := (!m.pasteUntil.IsZero() && now.Before(m.pasteUntil)) ||
 				(!m.lastKeyAt.IsZero() && now.Sub(m.lastKeyAt) < pasteBurstWindow)
 			if embedded {
-				// QUM-449: if there are buffered runes, append the newline
-				// to the buffer so it drains in order. If the buffer is
-				// empty (Enter directly after a single direct keypress),
-				// insert the newline immediately so the textarea reflects
-				// it without waiting on a flush tick.
-				if m.pasteBuf.Len() > 0 {
-					m.pasteBuf.WriteString("\n")
-				} else {
-					m.ta.InsertString("\n")
-				}
+				m.ta.InsertString("\n")
 				m.pasteUntil = now.Add(pasteQuietWindow)
 				m.lastKeyAt = now
-				return m, armPasteFlush()
-			}
-			// QUM-449: drain any buffered runes before reading the value
-			// so a real submit sees the full multi-line content.
-			if m.pasteBuf.Len() > 0 {
-				m.ta.InsertString(m.pasteBuf.String())
-				m.pasteBuf.Reset()
+				return m, nil
 			}
 			text := strings.TrimSpace(m.ta.Value())
 			if text != "" {
@@ -157,25 +103,10 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 		// digits, punctuation, space) and empty for control keys (arrows,
 		// Esc, etc.) — exactly the signal we want.
 		if keyMsg.Text != "" {
-			// QUM-449: detect we're inside a paste burst. Either pasteUntil
-			// is currently active, OR this key arrived within
-			// pasteBurstWindow of the previous printable — which is the same
-			// signal we use for embedded-Enter classification.
-			inBurst := (!m.pasteUntil.IsZero() && now.Before(m.pasteUntil)) ||
-				(!m.lastKeyAt.IsZero() && now.Sub(m.lastKeyAt) < pasteBurstWindow)
-			if inBurst {
-				m.pasteBuf.WriteString(keyMsg.Text)
-				m.lastKeyAt = now
-				m.pasteUntil = now.Add(pasteQuietWindow)
-				return m, armPasteFlush()
-			}
 			m.lastKeyAt = now
-		} else if m.pasteBuf.Len() > 0 {
-			// Non-printable key (arrows, Backspace, Esc, etc.): drain any
-			// buffered runes so the control key sees the up-to-date textarea
-			// content (QUM-449).
-			m.ta.InsertString(m.pasteBuf.String())
-			m.pasteBuf.Reset()
+			if !m.pasteUntil.IsZero() && now.Before(m.pasteUntil) {
+				m.pasteUntil = now.Add(pasteQuietWindow)
+			}
 		}
 	}
 	var cmd tea.Cmd
