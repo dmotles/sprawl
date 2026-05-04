@@ -1988,7 +1988,11 @@ func activityStreamWaitCmd(a *ActivityStreamAdapter, agent string, epoch uint64)
 			v.Epoch = epoch
 			return v
 		default:
-			return raw
+			// Drop adapter-internal sentinels (e.g. SessionErrorMsg{io.EOF}
+			// emitted on cancellation). The AppModel only cares about
+			// ActivityStreamMsg from this adapter; leaking other msgs (notably
+			// SessionErrorMsg) up triggers spurious session restarts. (QUM-457)
+			return nil
 		}
 	}
 }

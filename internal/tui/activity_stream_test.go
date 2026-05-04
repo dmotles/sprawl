@@ -464,6 +464,62 @@ func TestApp_ActivityStream_LegacyAgent_KeepsPolling(t *testing.T) {
 	}
 }
 
+// -- QUM-457: activityStreamWaitCmd must swallow the adapter's EOF sentinel --
+//
+// activityStreamWaitCmd's default-branch returns the raw inner msg, leaking
+// SessionErrorMsg{io.EOF} (the adapter's cancellation sentinel) up to the
+// AppModel. The EOF handler at app.go:744-755 then fires a spurious
+// SessionRestartingMsg + RestartSessionMsg, restarting the root session
+// every time an activity adapter is torn down (e.g. on viewport switch).
+
+func TestActivityStreamWaitCmd_SwallowsAdapterEOF(t *testing.T) {
+	rt := newUnifiedRT(t, "alice")
+	a := NewActivityStreamAdapter(rt)
+	epoch := a.Epoch()
+	a.Cancel()
+
+	msg := activityStreamWaitCmd(a, "alice", epoch)()
+	if msg == nil {
+		// adapter EOF was swallowed entirely — fine
+		return
+	}
+	if serr, ok := msg.(SessionErrorMsg); ok && errors.Is(serr.Err, io.EOF) {
+		t.Fatalf("activityStreamWaitCmd leaked raw SessionErrorMsg{io.EOF}; got %+v", serr)
+	}
+}
+
+func TestAppModel_ActivityStreamWaitCmd_AdapterEOF_DoesNotRestart(t *testing.T) {
+	mock := newMockSession()
+	ctx := context.Background()
+	bridge := NewBridge(ctx, mock)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	rt := newUnifiedRT(t, "weave")
+	a := NewActivityStreamAdapter(rt)
+	epoch := a.Epoch()
+	a.Cancel()
+
+	raw := activityStreamWaitCmd(a, "weave", epoch)()
+	if raw == nil {
+		// Fix in place — adapter EOF was swallowed at the cmd boundary.
+		return
+	}
+
+	// Pre-fix path: the raw SessionErrorMsg{io.EOF} would be delivered to the
+	// AppModel and trigger a spurious restart. Assert it does NOT.
+	updated, cmd := app.Update(raw)
+	_ = updated
+	msgs := collectBatchMsgs(t, cmd)
+	if hasMsgOfType[SessionRestartingMsg](msgs) {
+		t.Errorf("adapter cancellation EOF must not trigger SessionRestartingMsg; got msgs=%v", msgs)
+	}
+	if hasMsgOfType[RestartSessionMsg](msgs) {
+		t.Errorf("adapter cancellation EOF must not trigger RestartSessionMsg; got msgs=%v", msgs)
+	}
+}
+
 // -- 8. AppModel — root-agent attach: weave (root) gets streaming path too -
 
 // QUM-440 goal: unlike the QUM-439 child-viewport carve-out, the activity
