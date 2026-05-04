@@ -302,6 +302,97 @@ func TestMessageQueue_Wake_NoBlockOnRepeatedCalls(t *testing.T) {
 	}
 }
 
+func TestMessageQueue_DedupesByEntryIDs(t *testing.T) {
+	// Enqueueing the same EntryID set twice should result in a single item
+	// in the drained output. Guards against double-delivery when two
+	// concurrent InterruptDelivery callers each ListPending the same disk
+	// state and both Enqueue overlapping entries (QUM-460).
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p1", EntryIDs: []string{"e1", "e2"}})
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p1-dup", EntryIDs: []string{"e1", "e2"}})
+
+	items := q.DrainAll()
+	if len(items) != 1 {
+		t.Fatalf("DrainAll after duplicate Enqueue: got %d items, want 1", len(items))
+	}
+	if items[0].Prompt != "p1" {
+		t.Errorf("items[0].Prompt = %q, want %q (first enqueue should win)", items[0].Prompt, "p1")
+	}
+}
+
+func TestMessageQueue_DedupeAllowsSubsetSupersetEnqueue(t *testing.T) {
+	// Skip only when *all* EntryIDs of the incoming item are already
+	// pending. If any EntryID is new, the item must be enqueued so its
+	// fresh content is delivered.
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "first", EntryIDs: []string{"e1"}})
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "second", EntryIDs: []string{"e1", "e2"}})
+
+	items := q.DrainAll()
+	if len(items) != 2 {
+		t.Fatalf("DrainAll: got %d items, want 2", len(items))
+	}
+}
+
+func TestMessageQueue_DedupeClearsAfterDrain(t *testing.T) {
+	// After DrainAll, the pending-EntryID set must be cleared so a later
+	// Enqueue with the same IDs is accepted (e.g. a redelivery for IDs
+	// that were never actually MarkDelivered on disk).
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p1", EntryIDs: []string{"e1"}})
+	_ = q.DrainAll()
+
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p1-again", EntryIDs: []string{"e1"}})
+	items := q.DrainAll()
+	if len(items) != 1 {
+		t.Fatalf("DrainAll after re-enqueue post-drain: got %d items, want 1", len(items))
+	}
+	if items[0].Prompt != "p1-again" {
+		t.Errorf("items[0].Prompt = %q, want %q", items[0].Prompt, "p1-again")
+	}
+}
+
+func TestMessageQueue_DedupeIgnoresEmptyEntryIDs(t *testing.T) {
+	// Items without EntryIDs (interrupts, user input, wake pings) must
+	// never dedupe against each other.
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "u1"})
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "u2"})
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "u3"})
+
+	items := q.DrainAll()
+	if len(items) != 3 {
+		t.Fatalf("DrainAll: got %d items, want 3", len(items))
+	}
+}
+
+func TestMessageQueue_DedupeSignalSuppressedOnSkip(t *testing.T) {
+	// If an Enqueue is skipped due to dedupe, the queue state and signal
+	// must reflect that no new work was added: drain the original signal
+	// from the first Enqueue, then the duplicate Enqueue should not refire
+	// the signal.
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p1", EntryIDs: []string{"e1"}})
+	// Consume the first signal.
+	select {
+	case <-q.Signal():
+	case <-time.After(time.Second):
+		t.Fatal("first Enqueue did not signal")
+	}
+
+	// Duplicate Enqueue: should be a no-op, no signal.
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p1-dup", EntryIDs: []string{"e1"}})
+	select {
+	case <-q.Signal():
+		t.Fatal("duplicate Enqueue produced a signal")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if got := q.Len(); got != 1 {
+		t.Errorf("Len after dedupe: got %d, want 1", got)
+	}
+}
+
 func TestMessageQueue_UnknownClassSortsLast(t *testing.T) {
 	// Defensive: an unrecognized class should not panic and should not jump
 	// ahead of known classes.

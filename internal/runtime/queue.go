@@ -57,21 +57,45 @@ type QueueItem struct {
 // produce a single wakeup. DrainAll resets the signal so the next enqueue
 // will fire it again.
 type MessageQueue struct {
-	mu     sync.Mutex
-	items  []QueueItem
-	signal chan struct{}
+	mu      sync.Mutex
+	items   []QueueItem
+	pending map[string]struct{} // EntryIDs currently in items; used for dedup
+	signal  chan struct{}
 }
 
 // NewMessageQueue returns an empty queue ready for use.
 func NewMessageQueue() *MessageQueue {
 	return &MessageQueue{
-		signal: make(chan struct{}, 1),
+		pending: make(map[string]struct{}),
+		signal:  make(chan struct{}, 1),
 	}
 }
 
 // Enqueue appends item and pokes the signal channel (non-blocking).
+//
+// If item has any EntryIDs and *all* of them are already present in the
+// queue, the item is dropped to prevent double-delivery when concurrent
+// InterruptDelivery callers each ListPending the same disk state and try
+// to enqueue overlapping entries (QUM-460). When dropped, the signal is
+// not poked since no new work was added.
 func (q *MessageQueue) Enqueue(item QueueItem) {
 	q.mu.Lock()
+	if len(item.EntryIDs) > 0 {
+		allPending := true
+		for _, id := range item.EntryIDs {
+			if _, ok := q.pending[id]; !ok {
+				allPending = false
+				break
+			}
+		}
+		if allPending {
+			q.mu.Unlock()
+			return
+		}
+		for _, id := range item.EntryIDs {
+			q.pending[id] = struct{}{}
+		}
+	}
 	q.items = append(q.items, item)
 	q.mu.Unlock()
 
@@ -89,6 +113,9 @@ func (q *MessageQueue) DrainAll() []QueueItem {
 	q.mu.Lock()
 	items := q.items
 	q.items = nil
+	if len(q.pending) > 0 {
+		q.pending = make(map[string]struct{})
+	}
 	q.mu.Unlock()
 
 	// Reset signal: drop any pending wakeup so the turn loop will block
