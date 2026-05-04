@@ -585,6 +585,98 @@ func TestInputModel_MultiParagraphPaste_dmotlesRepro(t *testing.T) {
 	}
 }
 
+// --- QUM-456: trailing-backslash line continuation ---
+//
+// Typing `foo\` and pressing plain Enter should NOT submit. Instead, the
+// trailing backslash is dropped and a newline is inserted so the user can
+// continue typing. Modeled after Claude Code / crush.
+
+// TestInputModel_TrailingBackslash_InsertsNewlineNoSubmit: foo\ + Enter
+// resolves through the lookahead tick and produces no SubmitMsg; the
+// textarea ends up with "foo\n".
+func TestInputModel_TrailingBackslash_InsertsNewlineNoSubmit(t *testing.T) {
+	m := newTestInputModel(t)
+	_ = m.Focus()
+	m.SetValue(`foo\`)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated
+	if cmd == nil {
+		t.Fatal("Enter should schedule a lookahead tick")
+	}
+	lk, ok := cmd().(pasteLookaheadMsg)
+	if !ok {
+		t.Fatalf("Enter cmd returned %T, want pasteLookaheadMsg", cmd())
+	}
+
+	updated, cmd = m.Update(lk)
+	m = updated
+	if cmd != nil {
+		if sub, ok := cmd().(SubmitMsg); ok {
+			t.Fatalf("trailing-backslash Enter must not submit; got SubmitMsg{Text: %q}", sub.Text)
+		}
+	}
+	if got, want := m.Value(), "foo\n"; got != want {
+		t.Errorf("textarea value = %q, want %q", got, want)
+	}
+	if m.pendingEnter {
+		t.Error("pendingEnter must be cleared after backslash continuation resolves")
+	}
+}
+
+// TestInputModel_NoTrailingBackslash_StillSubmits: regression guard for the
+// no-backslash case.
+func TestInputModel_NoTrailingBackslash_StillSubmits(t *testing.T) {
+	m := newTestInputModel(t)
+	_ = m.Focus()
+	m.SetValue("foo")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated
+	lk, ok := cmd().(pasteLookaheadMsg)
+	if !ok {
+		t.Fatalf("Enter cmd returned %T, want pasteLookaheadMsg", cmd())
+	}
+	updated, cmd = m.Update(lk)
+	m = updated
+	if cmd == nil {
+		t.Fatal("lookahead resolution should return SubmitMsg cmd")
+	}
+	sub, ok := cmd().(SubmitMsg)
+	if !ok {
+		t.Fatalf("cmd returned %T, want SubmitMsg", cmd())
+	}
+	if sub.Text != "foo" {
+		t.Errorf("SubmitMsg.Text = %q, want %q", sub.Text, "foo")
+	}
+}
+
+// TestInputModel_DoubleBackslash_StripsOnlyOne: `foo\\` + Enter strips ONE
+// trailing backslash and inserts a newline → "foo\\n" (literal backslash
+// then newline). Match crush behavior — only strip one.
+func TestInputModel_DoubleBackslash_StripsOnlyOne(t *testing.T) {
+	m := newTestInputModel(t)
+	_ = m.Focus()
+	m.SetValue(`foo\\`)
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated
+	lk, ok := cmd().(pasteLookaheadMsg)
+	if !ok {
+		t.Fatalf("Enter cmd returned %T, want pasteLookaheadMsg", cmd())
+	}
+	updated, cmd = m.Update(lk)
+	m = updated
+	if cmd != nil {
+		if _, ok := cmd().(SubmitMsg); ok {
+			t.Fatal("double-backslash Enter must not submit")
+		}
+	}
+	if got, want := m.Value(), "foo\\\n"; got != want {
+		t.Errorf("textarea value = %q, want %q", got, want)
+	}
+}
+
 // TestInputModel_EnterStillSubmitsMultiLine: pre-seeded multi-line value +
 // Enter still submits via the lookahead tick path with full content.
 func TestInputModel_EnterStillSubmitsMultiLine(t *testing.T) {
