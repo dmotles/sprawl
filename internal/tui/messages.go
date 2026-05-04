@@ -124,6 +124,13 @@ type SubmitMsg struct {
 	Text string
 }
 
+// pasteLookaheadMsg fires pasteLookaheadWindow after a plain Enter to
+// resolve the pending submit if no follow-up KeyPressMsg has reclassified
+// it as an embedded paste newline. seq matches the InputModel's
+// pendingEnterSeq at scheduling time; mismatched seqs are stale Ticks
+// from reclassified Enters and must be ignored.
+type pasteLookaheadMsg struct{ seq uint64 }
+
 // AgentTreeMsg carries refreshed agent tree data from the supervisor.
 // RootUnread is the unread count in the root agent's (weave's) maildir,
 // polled alongside child-agent unread counts so the tree can render an

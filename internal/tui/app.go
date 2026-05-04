@@ -348,6 +348,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case pasteLookaheadMsg:
+		// QUM-455: post-Enter lookahead tick. The input panel scheduled this
+		// via tea.Tick after a plain Enter; forward unconditionally so any
+		// pending Enter resolves (real submit) or is cleanly dropped (stale
+		// seq) regardless of current panel/modal state. Gating here would
+		// strand `pendingEnter` if the user changed panels mid-window.
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+
 	case tea.KeyPressMsg:
 		// QUM-410: while reverse-search is active, the search overlay owns
 		// every keystroke until accepted or cancelled. Handled before any
