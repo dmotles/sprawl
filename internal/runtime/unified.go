@@ -354,16 +354,28 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 
 // InterruptDelivery wakes the turn loop's queue signal so a blocked loop can
 // re-check state. Safe to call before Start.
+//
+// QUM-462: InterruptDelivery must NOT call rt.Interrupt against an idle
+// runtime. rt.Interrupt arms `pendingInterrupt = true` when no turn is in
+// flight (so a user-initiated Ctrl+B during queued work classifies the next
+// terminal event as EventInterrupted). InterruptDelivery, however, is a
+// pure wake signal triggered by inbox arrivals — arming pendingInterrupt
+// here causes the wrapper's next StartTurn to immediately interrupt the
+// very turn that would deliver the inbox prompt to Claude, so the user sees
+// a banner but no turn ever completes. We forward to rt.Interrupt only when
+// a turn is actually in flight (so a higher-priority queue item can preempt
+// it cleanly); otherwise queue.Wake is sufficient to unblock the loop.
 func (rt *UnifiedRuntime) InterruptDelivery(ctx context.Context) error {
 	rt.mu.RLock()
 	started := rt.started
 	stopped := rt.stopped
+	turnRunning := rt.turnRunning
 	rt.mu.RUnlock()
 
 	if stopped {
 		return nil
 	}
-	if started {
+	if started && turnRunning {
 		_ = rt.Interrupt(ctx)
 	}
 	rt.queue.Wake()

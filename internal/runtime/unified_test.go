@@ -889,3 +889,60 @@ func TestDone_ClosesAfterLoopExit(t *testing.T) {
 		t.Fatal("Done() did not close within 1s after loop exit")
 	}
 }
+
+// TestInterruptDelivery_DoesNotArmPendingInterrupt_WhenIdle pins QUM-462:
+// InterruptDelivery is the wake path used by the supervisor when a peer
+// agent has enqueued an inbox item (e.g. WeaveRuntimeHandle.InterruptDelivery
+// after sibling/child send_async). It must wake the loop so the queued item
+// gets drained, but it must NOT arm `pendingInterrupt` against an idle
+// runtime — doing so causes the wrapper to immediately interrupt the very
+// turn that would deliver the inbox, so the user sees a banner but Claude
+// never actually processes the message.
+//
+// Expected behaviour: enqueue a ClassInbox item, call InterruptDelivery
+// while the runtime is idle, and observe a normal EventTurnCompleted (not
+// EventInterrupted) on the EventBus.
+func TestInterruptDelivery_DoesNotArmPendingInterrupt_WhenIdle(t *testing.T) {
+	mock := &mockUnifiedSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			ch <- makeResultMsg()
+			close(ch)
+			return ch, nil
+		},
+	}
+	rt := New(RuntimeConfig{Name: "weave", Session: mock})
+
+	bus := rt.EventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	// Wait until the runtime is observably idle (loop blocked on Queue.Signal).
+	if !waitForState(t, rt, StateIdle, 1*time.Second) {
+		t.Fatalf("runtime did not reach StateIdle before InterruptDelivery; state=%v", rt.State())
+	}
+
+	// Mirror WeaveRuntimeHandle.InterruptDelivery: enqueue a ClassInbox item
+	// (as if a sibling agent had send_async'd weave) then wake the loop via
+	// InterruptDelivery.
+	rt.Queue().Enqueue(QueueItem{Class: ClassInbox, Prompt: "[inbox] hello from sibling"})
+	if err := rt.InterruptDelivery(context.Background()); err != nil {
+		t.Fatalf("InterruptDelivery: %v", err)
+	}
+
+	// The terminal event for this turn must be EventTurnCompleted. If the
+	// bug is present (pendingInterrupt armed against an idle runtime), the
+	// wrapper's StartTurn consumes the flag and immediately calls
+	// loop.Interrupt, so the terminal event is EventInterrupted instead.
+	ev, seen := waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnCompleted || ev.Type == EventInterrupted
+	})
+	if ev.Type != EventTurnCompleted {
+		t.Fatalf("terminal event = %v, want EventTurnCompleted (QUM-462: InterruptDelivery must not arm pendingInterrupt against an idle runtime); seen=%v", ev.Type, seen)
+	}
+}
