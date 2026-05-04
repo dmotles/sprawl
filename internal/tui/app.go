@@ -10,7 +10,6 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/memory"
@@ -213,6 +212,13 @@ type AppModel struct {
 	searchQuery      string
 	searchMatchIdx   int
 	searchPriorInput string
+
+	// cache memoizes bordered panel renders across View() calls so a paste
+	// burst (one View() per pasted rune) doesn't re-render unchanged panels
+	// (QUM-451). Held behind a pointer so the value-receiver View() can
+	// mutate it; safe because Bubble Tea discards prior AppModel values
+	// immediately after Update returns.
+	cache *viewCache
 }
 
 const (
@@ -268,6 +274,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		history:          NewHistory(sprawlRoot),
 		activityEntries:  make(map[string][]agentloop.ActivityEntry),
 		activitySeenKeys: make(map[string]map[string]struct{}),
+		cache:            newViewCache(),
 	}
 	_ = app.history.Load()
 	app.updateFocus()
@@ -1313,6 +1320,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the full TUI layout.
 func (m AppModel) View() tea.View {
+	return m.renderView(true)
+}
+
+// viewUncached returns the same content View() would, bypassing the panel
+// render cache. Used by tests as a byte-equivalence oracle (QUM-451).
+func (m AppModel) viewUncached() tea.View {
+	return m.renderView(false)
+}
+
+func (m AppModel) renderView(useCache bool) tea.View {
 	if !m.ready {
 		return tea.NewView("  Initializing...")
 	}
@@ -1338,50 +1355,42 @@ func (m AppModel) View() tea.View {
 		layout.InputHeight = 0
 	}
 
-	// Render tree panel with border.
-	treeBorder := m.borderStyle(PanelTree).
-		Width(layout.TreeWidth - 2).
-		Height(layout.TreeHeight - 2)
-	treeView := treeBorder.Render(m.tree.View())
+	// Per-panel cached bordered render. Fingerprint key is the inner
+	// View() output + dimensions + active-panel flag (border style differs).
+	// Inner View() is cheap relative to lipgloss border render; the cache
+	// avoids the latter on the hot path (QUM-451).
+	treeView := m.cachedPanel(useCache, panelSlotTree, m.tree.View(),
+		layout.TreeWidth-2, layout.TreeHeight-2,
+		m.activePanel == PanelTree)
 
-	// Render viewport panel with border.
-	vpBorder := m.borderStyle(PanelViewport).
-		Width(layout.ViewportWidth - 2).
-		Height(layout.ViewportHeight - 2)
-	vpView := vpBorder.Render(m.observedVP().View())
+	vpView := m.cachedPanel(useCache, panelSlotViewport, m.observedVP().View(),
+		layout.ViewportWidth-2, layout.ViewportHeight-2,
+		m.activePanel == PanelViewport)
 
 	// Combine tree and viewport horizontally. On wide terminals, a third
 	// column (activity panel) is added to the right. See QUM-296.
-	var mainRow string
-	if layout.ActivityWidth > 0 {
-		actBorder := m.theme.InactiveBorder.
-			Width(layout.ActivityWidth - 2).
-			Height(layout.ActivityHeight - 2)
-		actView := actBorder.Render(m.activity.View())
-		mainRow = lipgloss.JoinHorizontal(lipgloss.Top, treeView, vpView, actView)
-	} else {
-		mainRow = lipgloss.JoinHorizontal(lipgloss.Top, treeView, vpView)
+	hasActivity := layout.ActivityWidth > 0
+	var actView string
+	if hasActivity {
+		actView = m.cachedPanel(useCache, panelSlotActivity, m.activity.View(),
+			layout.ActivityWidth-2, layout.ActivityHeight-2,
+			false) // activity is never the active panel
 	}
+	mainRow := m.cachedMainRow(useCache, treeView, vpView, actView, hasActivity)
 
 	// Status bar.
-	statusView := m.statusBar.View()
+	statusView := m.cachedStatus(useCache, m.statusBar.View(), layout.StatusWidth)
 
 	// Stack vertically. The input bar is omitted while observing a non-root
 	// agent (QUM-340) — the viewport above already owns those rows.
-	var content string
+	var inputView, overlay string
 	if inputVisible {
-		inputBorder := m.borderStyle(PanelInput).
-			Width(layout.InputWidth - 2).
-			Height(layout.InputHeight - 2)
-		inputView := inputBorder.Render(m.input.View())
-		if overlay := m.searchOverlay(); overlay != "" {
-			content = lipgloss.JoinVertical(lipgloss.Left, mainRow, overlay, inputView, statusView)
-		} else {
-			content = lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
-		}
-	} else {
-		content = lipgloss.JoinVertical(lipgloss.Left, mainRow, statusView)
+		inputView = m.cachedPanel(useCache, panelSlotInput, m.input.View(),
+			layout.InputWidth-2, layout.InputHeight-2,
+			m.activePanel == PanelInput)
+		overlay = m.searchOverlay()
 	}
+	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, inputView, statusView, inputVisible)
 
 	if m.showPalette {
 		content = m.palette.View()
@@ -1560,13 +1569,6 @@ func (m *AppModel) updateFocus() {
 	} else {
 		m.input.Blur()
 	}
-}
-
-func (m AppModel) borderStyle(panel Panel) lipgloss.Style {
-	if panel == m.activePanel {
-		return m.theme.ActiveBorder
-	}
-	return m.theme.InactiveBorder
 }
 
 // handleViewportSelectKey handles 'v'/'j'/'k'/'y'/'g'/'G'/Esc for the

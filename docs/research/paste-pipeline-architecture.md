@@ -316,6 +316,34 @@ Two complementary moves:
    submit — a misfire that the rolling-progress view makes visible to the
    user, who can recover with `Up`-arrow history.
 
+   **Update (QUM-451 landed, 2026-05-04, finn):** measured numbers on a
+   200×60 layout, `internal/tui/app_bench_test.go`:
+
+   | Benchmark | Pre-cache | Post-cache | Speedup |
+   |---|---|---|---|
+   | `BenchmarkAppModel_View_SteadyState` (no model change) | 1.79 ms | 0.23 ms | **7.8×** |
+   | `BenchmarkAppModel_View_PasteBurst_BoundedInput` (≤500 char input) | ~4 ms | 0.49 ms | **~8×** |
+   | `BenchmarkAppModel_View_PasteBurst` (input grows unbounded) | 4.21 ms | 1.10 ms | 3.8× |
+
+   The hard <200 µs/View target was not reached. Per-line profile of
+   `renderView` on a cache-miss (paste burst with bounded input) shows
+   `m.input.View()` at ~253 µs/call — bubbles `textarea.View` is the floor,
+   and it gets called every iteration because the input panel genuinely
+   changes per pasted rune. The remaining ~240 µs is split across
+   `m.observedVP().View()` (~99 µs), the lipgloss border render of the
+   input panel (~90 µs of `Style.Render`), and the `strings.Join` compose
+   (~80 µs). Sub-200 µs would require either (a) skipping `textarea.View()`
+   per call by caching it on `InputModel` mutation events instead of per
+   call, or (b) replacing the lipgloss border render of the input panel
+   with a hand-rolled fast path. Both are out of scope for QUM-451 and
+   would warrant their own follow-up issues.
+
+   The user-facing acceptance criterion ("typewriter cadence visually
+   imperceptible during a multi-paragraph paste in a stripped-bracketed-
+   paste terminal") is met: 500 runes × 0.49 ms ≈ 245 ms total render
+   compute, well below the JND for "instant" and easily kept up with by
+   the 60 fps cursed-renderer flush ticker.
+
 **Estimated effort:** 0.5 day for docs (Option C.1); 1–2 days for view
 optimization with benchmarks (Option C.2). **Estimated risk:** low (docs are
 zero-risk; view caching is well-understood, with a clear regression signal in
