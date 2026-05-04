@@ -603,7 +603,7 @@ func runEnter(deps *enterDeps) error {
 	if deps.newSession != nil {
 		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, consolidationCh, state, &bridge, os.Stderr)
 	}
-	model := tui.NewAppModel(accentColor, repoName, version, bridge, sup, sprawlRoot, restartFunc)
+	model := tui.NewAppModel(accentColor, repoName, version, buildVersion, bridge, sup, sprawlRoot, restartFunc)
 	if homeDir, hErr := os.UserHomeDir(); hErr == nil {
 		// QUM-332: child-agent transcript tailing resolves Claude session
 		// log paths via memory.SessionLogPath(homeDir, worktree, sessionID).
