@@ -515,6 +515,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// viewport and appended the boundary banner.
 		if m.bridge != nil {
 			m.statusBar.SetSessionID(shortSessionID(m.bridge.SessionID()))
+			// QUM-399: continuous bridges (UnifiedRuntime/TUIAdapter) emit
+			// autonomous events outside of a user turn. Kick off WaitForEvent
+			// here so the event loop starts pulling immediately after init.
+			if m.bridge.IsContinuous() {
+				return m, m.bridge.WaitForEvent()
+			}
 		}
 		return m, nil
 
@@ -749,6 +755,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetPendingPreview("")
 			return m, tea.Batch(costCmd, sendMsgCmd(SubmitMsg{Text: queued}))
 		}
+		// QUM-399: in continuous-bridge mode (UnifiedRuntime/TUIAdapter) the
+		// event stream keeps emitting after a turn ends (e.g. when an
+		// InterruptDelivery enqueues a new item that triggers another turn).
+		// Keep WaitForEvent running so we don't park the event pump.
+		if m.bridge != nil && m.bridge.IsContinuous() {
+			return m, tea.Batch(costCmd, m.bridge.WaitForEvent())
+		}
 		return m, costCmd
 
 	case SessionErrorMsg:
@@ -933,6 +946,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setTurnState(TurnIdle)
 		var cmds []tea.Cmd
 		cmds = append(cmds, m.bridge.Initialize())
+		// QUM-399: continuous bridges need their event pump primed after a
+		// restart in addition to Initialize. SessionInitializedMsg also
+		// triggers WaitForEvent, but priming here is cheap and keeps the
+		// pump from idling if Init is fast enough that no events are queued
+		// when the SessionInitializedMsg arrives.
+		if m.bridge.IsContinuous() {
+			cmds = append(cmds, m.bridge.WaitForEvent())
+		}
 		// QUM-391: keep consolidation ticks running if consolidation outlives
 		// the restart.
 		if m.consolidating {
@@ -1045,6 +1066,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (when idle + non-empty) schedule an InboxDrainMsg. This covers both
 		// out-of-process senders (child agent `sprawl report done`) and
 		// in-process senders (MCP send_async) with a single codepath.
+		//
+		// QUM-399: this path is shared with the unified-runtime bridge. The
+		// resulting InboxDrainMsg → bridge.SendMessage either streams the
+		// drained prompt directly to claude (legacy bridge) or enqueues a
+		// ClassUser item via the TUIAdapter (unified bridge). Keeping a
+		// single drain pipeline preserves the user-facing AppendSystemMessage
+		// rendering and the commitDrainCmd MarkDelivered timing for both
+		// modes.
 		var drainCmd tea.Cmd
 		if m.turnState == TurnIdle && m.sprawlRoot != "" && m.bridge != nil {
 			drainCmd = peekAndDrainCmd(m.sprawlRoot, m.rootAgent)

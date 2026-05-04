@@ -1005,3 +1005,117 @@ func TestMessagesList_RequiresCallerIdentity(t *testing.T) {
 		t.Error("MessagesPeek with empty callerName should fail")
 	}
 }
+
+// --- QUM-399 RegisterRootRuntime tests ---
+
+// fakeRootHandle is a minimal RuntimeHandle that records InterruptDelivery
+// calls. Used by RegisterRootRuntime tests to confirm child reports route to
+// the registered weave runtime.
+type fakeRootHandle struct {
+	caps                backendpkg.Capabilities
+	sessionID           string
+	interruptDeliveries int32
+	stopCalls           int32
+	doneCh              chan struct{}
+}
+
+func (h *fakeRootHandle) Interrupt(context.Context) error { return nil }
+func (h *fakeRootHandle) Wake() error                     { return nil }
+func (h *fakeRootHandle) InterruptDelivery() error {
+	h.interruptDeliveries++
+	return nil
+}
+
+func (h *fakeRootHandle) Stop(context.Context) error            { h.stopCalls++; return nil }
+func (h *fakeRootHandle) SessionID() string                     { return h.sessionID }
+func (h *fakeRootHandle) Capabilities() backendpkg.Capabilities { return h.caps }
+func (h *fakeRootHandle) Done() <-chan struct{}                 { return h.doneCh }
+
+func TestRegisterRootRuntime_RegistersInRegistryAsStarted(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	h := &fakeRootHandle{
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
+		sessionID: "sess-weave",
+	}
+	st := &state.AgentState{Name: "weave", Status: "running"}
+	rt, err := sup.RegisterRootRuntime("weave", h, st)
+	if err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	if rt == nil {
+		t.Fatal("RegisterRootRuntime returned nil runtime")
+	}
+	got, ok := sup.RuntimeRegistry().Get("weave")
+	if !ok {
+		t.Fatal("registry Get(weave) miss")
+	}
+	if got != rt {
+		t.Error("registry Get returned a different runtime pointer")
+	}
+	if got.Snapshot().Lifecycle != RuntimeLifecycleStarted {
+		t.Errorf("Lifecycle = %q, want %q", got.Snapshot().Lifecycle, RuntimeLifecycleStarted)
+	}
+}
+
+func TestRegisterRootRuntime_LoadsAgentStateFromDisk_WhenNilProvided(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "weave",
+		Type:   "weave",
+		Status: "active",
+		Branch: "main",
+	})
+	h := &fakeRootHandle{}
+	rt, err := sup.RegisterRootRuntime("weave", h, nil)
+	if err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	snap := rt.Snapshot()
+	if snap.Branch != "main" {
+		t.Errorf("Branch = %q, want main (loaded from disk)", snap.Branch)
+	}
+}
+
+func TestRegisterRootRuntime_SynthesizesAgentState_WhenStateMissing(t *testing.T) {
+	sup, _ := newTestSupervisor(t)
+	h := &fakeRootHandle{}
+	rt, err := sup.RegisterRootRuntime("weave", h, nil)
+	if err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	if rt.Snapshot().Name != "weave" {
+		t.Errorf("Name = %q, want weave (synthesized)", rt.Snapshot().Name)
+	}
+}
+
+// QUM-399: when weave is registered as a root runtime and a child agent
+// reports status, the child→parent InterruptDelivery path must hit the
+// registered handle. This guarantees child reports drive weave's
+// UnifiedRuntime queue without going through the legacy `.wake` sentinel.
+func TestReportStatus_FromChildOfWeave_FiresInterruptDeliveryOnRegisteredRoot(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "weave",
+		Status: "active",
+	})
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "ratz",
+		Type:   "engineer",
+		Parent: "weave",
+		Status: "active",
+		Branch: "dmotles/ratz",
+	})
+
+	h := &fakeRootHandle{caps: backendpkg.Capabilities{SupportsInterrupt: true}}
+	if _, err := sup.RegisterRootRuntime("weave", h, nil); err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+
+	if _, err := sup.ReportStatus(context.Background(), "ratz", "working", "summary", ""); err != nil {
+		t.Fatalf("ReportStatus: %v", err)
+	}
+
+	if h.interruptDeliveries == 0 {
+		t.Errorf("registered weave handle's InterruptDelivery not called; want >=1")
+	}
+}

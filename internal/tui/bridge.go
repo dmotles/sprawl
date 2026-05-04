@@ -20,101 +20,150 @@ type BridgeSession interface {
 	Close() error
 }
 
+// BridgeDelegate is the abstract behavior a Bridge wraps. The legacy
+// BridgeSession-backed implementation lives below in legacyBridgeDelegate;
+// the unified-runtime path (QUM-399) adapts internal/tuiruntime.TUIAdapter to
+// this interface.
+type BridgeDelegate interface {
+	Initialize() tea.Cmd
+	SendMessage(text string) tea.Cmd
+	WaitForEvent() tea.Cmd
+	Interrupt() tea.Cmd
+	Close() error
+	SessionID() string
+	// IsContinuous reports whether the delegate's event stream is continuous
+	// (autonomous events flow without a user turn). Legacy delegates return
+	// false; the unified-runtime delegate returns true. The AppModel uses
+	// this to decide when to keep WaitForEvent running across turn
+	// boundaries.
+	IsContinuous() bool
+}
+
 // Bridge adapts a host session into Bubble Tea commands and messages.
 // It converts protocol events from the session into tea.Msg types
 // that the TUI model can handle.
+//
+// Bridge is a thin wrapper around a BridgeDelegate. The legacy session-backed
+// behavior is preserved by NewBridge (which constructs a legacyBridgeDelegate
+// internally). The unified-runtime path uses NewBridgeFromDelegate.
 type Bridge struct {
+	delegate BridgeDelegate
+}
+
+// NewBridge creates a new Bridge wrapping the given session. Preserves the
+// legacy per-turn event lifecycle.
+func NewBridge(ctx context.Context, session BridgeSession) *Bridge {
+	return &Bridge{
+		delegate: &legacyBridgeDelegate{
+			session: session,
+			ctx:     ctx,
+		},
+	}
+}
+
+// NewBridgeFromDelegate wraps an arbitrary BridgeDelegate. Used by the
+// unified-runtime path (QUM-399) to plug a TUIAdapter into the existing
+// AppModel without changing call sites.
+func NewBridgeFromDelegate(d BridgeDelegate) *Bridge {
+	return &Bridge{delegate: d}
+}
+
+// SetSessionID stores the Claude session ID for this bridge so the TUI can
+// display it (e.g. in the status bar) after Initialize. For the legacy
+// delegate this stores into its sessionID field; for non-legacy delegates
+// this is a no-op (the unified path's SessionID() already delegates to the
+// runtime).
+func (b *Bridge) SetSessionID(id string) {
+	if legacy, ok := b.delegate.(*legacyBridgeDelegate); ok {
+		legacy.sessionID = id
+	}
+}
+
+// SessionID returns the underlying delegate's session ID.
+func (b *Bridge) SessionID() string { return b.delegate.SessionID() }
+
+// IsContinuous reports whether the delegate produces autonomous events
+// outside of a user turn. See BridgeDelegate.
+func (b *Bridge) IsContinuous() bool { return b.delegate.IsContinuous() }
+
+// Initialize returns a tea.Cmd that initializes the session.
+func (b *Bridge) Initialize() tea.Cmd { return b.delegate.Initialize() }
+
+// SendMessage returns a tea.Cmd that sends a user message to the session.
+func (b *Bridge) SendMessage(text string) tea.Cmd { return b.delegate.SendMessage(text) }
+
+// WaitForEvent returns a tea.Cmd that reads the next event from the session.
+func (b *Bridge) WaitForEvent() tea.Cmd { return b.delegate.WaitForEvent() }
+
+// Interrupt returns a tea.Cmd that sends an interrupt request to the session.
+func (b *Bridge) Interrupt() tea.Cmd { return b.delegate.Interrupt() }
+
+// Close shuts down the bridge by closing the underlying delegate.
+func (b *Bridge) Close() error { return b.delegate.Close() }
+
+// legacyBridgeDelegate is the original BridgeSession-backed implementation,
+// preserved unchanged behaviorally so existing tests and the legacy enter.go
+// path keep working.
+type legacyBridgeDelegate struct {
 	session   BridgeSession
 	ctx       context.Context
 	events    <-chan *protocol.Message
 	sessionID string
 }
 
-// NewBridge creates a new Bridge wrapping the given session.
-func NewBridge(ctx context.Context, session BridgeSession) *Bridge {
-	return &Bridge{
-		session: session,
-		ctx:     ctx,
-	}
-}
-
-// SetSessionID stores the Claude session ID for this bridge so the TUI can
-// display it (e.g. in the status bar) after Initialize. Separate from
-// construction because the ID is decided during session preparation, which
-// happens alongside (not inside) Bridge creation.
-func (b *Bridge) SetSessionID(id string) {
-	b.sessionID = id
-}
-
-// SessionID returns the Claude session ID set via SetSessionID, or "" if unset.
-func (b *Bridge) SessionID() string {
-	return b.sessionID
-}
-
-// Initialize returns a tea.Cmd that initializes the session.
-// On success it returns SessionInitializedMsg; on failure, SessionErrorMsg.
-func (b *Bridge) Initialize() tea.Cmd {
+func (l *legacyBridgeDelegate) Initialize() tea.Cmd {
 	return func() tea.Msg {
-		if err := b.session.Initialize(b.ctx); err != nil {
+		if err := l.session.Initialize(l.ctx); err != nil {
 			return SessionErrorMsg{Err: fmt.Errorf("initializing session: %w", err)}
 		}
 		return SessionInitializedMsg{}
 	}
 }
 
-// SendMessage returns a tea.Cmd that sends a user message to the session.
-// On success it stores the events channel and returns UserMessageSentMsg.
-// On failure it returns SessionErrorMsg.
-func (b *Bridge) SendMessage(text string) tea.Cmd {
+func (l *legacyBridgeDelegate) SendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
-		events, err := b.session.SendUserMessage(b.ctx, text)
+		events, err := l.session.SendUserMessage(l.ctx, text)
 		if err != nil {
 			return SessionErrorMsg{Err: fmt.Errorf("sending message: %w", err)}
 		}
-		b.events = events
+		l.events = events
 		return UserMessageSentMsg{}
 	}
 }
 
-// WaitForEvent returns a tea.Cmd that reads the next event from the session's
-// event channel and converts it to the appropriate tea.Msg.
-// If no events channel is active, returns SessionErrorMsg.
-func (b *Bridge) WaitForEvent() tea.Cmd {
+func (l *legacyBridgeDelegate) WaitForEvent() tea.Cmd {
 	return func() tea.Msg {
-		if b.events == nil {
+		if l.events == nil {
 			return SessionErrorMsg{Err: fmt.Errorf("no active event stream")}
 		}
 
 		select {
-		case msg, ok := <-b.events:
+		case msg, ok := <-l.events:
 			if !ok {
 				return SessionErrorMsg{Err: io.EOF}
 			}
 			result := MapProtocolMessage(msg)
 			if result == nil {
 				// Unknown message type — skip and wait for next
-				return b.WaitForEvent()()
+				return l.WaitForEvent()()
 			}
 			return result
-		case <-b.ctx.Done():
-			return SessionErrorMsg{Err: b.ctx.Err()}
+		case <-l.ctx.Done():
+			return SessionErrorMsg{Err: l.ctx.Err()}
 		}
 	}
 }
 
-// Interrupt returns a tea.Cmd that sends an interrupt request to the session.
-// The result is delivered as InterruptResultMsg.
-func (b *Bridge) Interrupt() tea.Cmd {
+func (l *legacyBridgeDelegate) Interrupt() tea.Cmd {
 	return func() tea.Msg {
-		err := b.session.Interrupt(b.ctx)
+		err := l.session.Interrupt(l.ctx)
 		return InterruptResultMsg{Err: err}
 	}
 }
 
-// Close shuts down the bridge by closing the underlying session.
-func (b *Bridge) Close() error {
-	return b.session.Close()
-}
+func (l *legacyBridgeDelegate) Close() error       { return l.session.Close() }
+func (l *legacyBridgeDelegate) SessionID() string  { return l.sessionID }
+func (l *legacyBridgeDelegate) IsContinuous() bool { return false }
 
 // contentBlock represents a single content block in an assistant or user
 // message. tool_use blocks (assistant) carry Name + ID + Input; tool_result

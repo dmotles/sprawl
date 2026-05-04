@@ -569,19 +569,23 @@ Steps:
 
 **Rollback**: Revert to `agentloop.StartRunner` wrapper. The `RuntimeHandle` interface doesn't change, so the supervisor is unaffected.
 
-### 6.3 Phase 3: Migrate Root (1-2 days)
+### 6.3 Phase 3: Migrate Root (DONE — QUM-399)
 
 **Why root second**: The root has more complexity (TUI integration, restartFunc, resume-failure handling, handoff). Doing it second means we've already proven the runtime works on children.
 
-Steps:
-1. In `cmd/enter.go`, replace `newSessionImpl` / `tui.Bridge` with a `UnifiedRuntime` + `TUIAdapter`
-2. User input goes through `runtime.Queue().Enqueue()` instead of `Bridge.SendMessage()`
-3. `peekAndDrainCmd` is replaced by the runtime's autonomous queue drain
-4. `InboxArrivalMsg` feeds into `runtime.Queue()` instead of triggering a separate drain path
-5. `restartFunc` recreates the `UnifiedRuntime` instead of the Bridge
-6. Verify: full E2E tests (`make test-notify-tui-e2e`, `make test-handoff-e2e`)
+**Status: shipped behind `SPRAWL_UNIFIED_RUNTIME=1` env gate** (same flag children use). Phase 4 (QUM-400) drops the gate after soak.
 
-**Rollback**: Revert to Bridge-based flow. The TUI adapter is a drop-in replacement for Bridge.
+What landed:
+1. `cmd/enter.go` adds `newSessionImplUnified` (gated path); `defaultNewSession` routes here when env is set, else legacy `newSessionImpl`.
+2. User input flows through `tui.Bridge` → `BridgeDelegate` (TUIAdapter) → `runtime.Queue().Enqueue` (`ClassUser`).
+3. Out-of-process inbox drain: AgentTreeMsg's 2s tick calls `triggerRootInterruptDeliveryCmd` (which routes to `WeaveRuntimeHandle.InterruptDelivery` via the registry) when `m.bridge.IsContinuous()`. In-process arrivals reach weave via `Real.ReportStatus` → `parentRuntime.InterruptDelivery()`.
+4. New `Supervisor.RegisterRootRuntime(name, handle, agentState)` registers weave's UnifiedRuntime in the same `RuntimeRegistry` used for child runtimes — enabling the existing report_status / send_async InterruptDelivery path.
+5. `tui.Bridge` refactored to a thin wrapper around `BridgeDelegate`; legacy session-backed path preserved as `legacyBridgeDelegate`. `IsContinuous() bool` distinguishes the two; AppModel keeps `WaitForEvent` running across turn boundaries when continuous.
+6. `restartFunc` re-enters `newSessionImplUnified`, which self-cleans by stopping + removing any prior weave registry entry before building a new runtime.
+
+**Testing the unified root path**: `SPRAWL_UNIFIED_RUNTIME=1 sprawl enter`. Both `make test-handoff-e2e` and `make test-notify-tui-e2e` should be run with the env var set to validate the unified path; they continue to pass without the env var (legacy path).
+
+**Rollback**: drop `SPRAWL_UNIFIED_RUNTIME` (default unset) — runEnter uses the legacy `tui.Bridge` path.
 
 ### 6.4 Phase 4: Cleanup (1 day)
 

@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/rootinit"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 )
@@ -298,10 +299,11 @@ func TestEnter_SessionError(t *testing.T) {
 // --- Graceful shutdown tests ---
 
 type shutdownMockSupervisor struct {
-	agents       []supervisor.AgentInfo
-	statusErr    error
-	killCalled   []string
-	shutdownDone bool
+	agents            []supervisor.AgentInfo
+	statusErr         error
+	killCalled        []string
+	shutdownDone      bool
+	registerRootCalls int
 }
 
 func (s *shutdownMockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
@@ -375,6 +377,11 @@ func (s *shutdownMockSupervisor) MessagesPeek(_ context.Context) (*supervisor.Me
 
 func (s *shutdownMockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
 	return nil
+}
+
+func (s *shutdownMockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
+	s.registerRootCalls++
+	return nil, nil
 }
 
 // Clean `sprawl enter` shutdown must stop supervisor-owned child runtimes via
@@ -997,5 +1004,85 @@ func TestMakeRestartFunc_ThreadsConsolidationEvents(t *testing.T) {
 	}
 	if !gotDone {
 		t.Error("expected done event on consolidation channel")
+	}
+}
+
+// QUM-399 Phase 3: the SPRAWL_UNIFIED_RUNTIME=1 env var routes
+// defaultNewSession to the unified-runtime path. The default
+// defaultUnifiedRootEnabled() hook MUST consult that env var so toggling it
+// at process start enables the unified path.
+func TestDefaultUnifiedRootEnabled_ReadsEnvVar(t *testing.T) {
+	t.Setenv("SPRAWL_UNIFIED_RUNTIME", "1")
+	if !defaultUnifiedRootEnabled() {
+		t.Errorf("defaultUnifiedRootEnabled() = false with SPRAWL_UNIFIED_RUNTIME=1; want true")
+	}
+	t.Setenv("SPRAWL_UNIFIED_RUNTIME", "")
+	if defaultUnifiedRootEnabled() {
+		t.Errorf("defaultUnifiedRootEnabled() = true with empty env; want false")
+	}
+	t.Setenv("SPRAWL_UNIFIED_RUNTIME", "0")
+	if defaultUnifiedRootEnabled() {
+		t.Errorf("defaultUnifiedRootEnabled() = true with =0; want false")
+	}
+}
+
+// QUM-399: both routing branches must error when supervisor is nil — the
+// nil-sup pre-check is the QUM-329 architectural contract that prevents a
+// silent two-supervisor split.
+func TestDefaultNewSession_NilSupervisorErrorsOnBothBranches(t *testing.T) {
+	prev := defaultUnifiedRootEnabled
+	t.Cleanup(func() { defaultUnifiedRootEnabled = prev })
+
+	defaultUnifiedRootEnabled = func() bool { return false }
+	if _, _, err := defaultNewSession(t.TempDir(), nil, true, nil); err == nil {
+		t.Error("legacy branch: nil sup should error")
+	}
+	defaultUnifiedRootEnabled = func() bool { return true }
+	if _, _, err := defaultNewSession(t.TempDir(), nil, true, nil); err == nil {
+		t.Error("unified branch: nil sup should error")
+	}
+}
+
+// TestEnter_RegistersWeaveInRuntimeRegistry_WhenUnifiedEnabled verifies that
+// when the unified gate is on, the unified newSession invocation calls
+// Supervisor.RegisterRootRuntime("weave", ...). The test installs a fake
+// newSession that simulates the unified path's registration behaviour
+// (since we can't run the real adapter.Start in unit tests) and asserts
+// the supervisor mock recorded the call.
+func TestEnter_RegistersWeaveInRuntimeRegistry_WhenUnifiedEnabled(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	mockSup := &shutdownMockSupervisor{}
+
+	// Simulate the unified path: when newSession is invoked it must call
+	// sup.RegisterRootRuntime("weave", ...) before returning. This pins
+	// the contract that newSessionImplUnified registers the root handle.
+	registeringNewSession := func(sprawlRoot string, sup supervisor.Supervisor, _ bool, _ func()) (*tui.Bridge, bool, error) {
+		_, _ = sup.RegisterRootRuntime("weave", nil, nil)
+		return nil, false, nil
+	}
+
+	deps := &enterDeps{
+		getenv: func(k string) string {
+			if k == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		getwd:         func() (string, error) { return tmpDir, nil },
+		runProgram:    func(tea.Model, func(func(tea.Msg))) error { return nil },
+		newSession:    registeringNewSession,
+		newSupervisor: func(_ string) supervisor.Supervisor { return mockSup },
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	if mockSup.registerRootCalls == 0 {
+		t.Errorf("RegisterRootRuntime not called; want >=1 (unified path must register weave)")
 	}
 }

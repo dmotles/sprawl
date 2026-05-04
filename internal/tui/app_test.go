@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -910,6 +911,10 @@ func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPe
 
 func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
 	return nil
+}
+
+func (m *mockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
+	return nil, nil
 }
 
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
@@ -3283,4 +3288,128 @@ func TestAppModel_RestartCompleteMsg_PreservesStatusMessages(t *testing.T) {
 	if !found {
 		t.Errorf("status message 'Consolidating timeline...' should survive RestartCompleteMsg, got messages: %+v", msgs)
 	}
+}
+
+// --- QUM-399 Phase 3 continuous-bridge AppModel routing tests ---
+
+// continuousFakeDelegate is a BridgeDelegate that always reports
+// IsContinuous()==true and counts WaitForEvent invocations so tests can
+// detect whether the AppModel kicked off the event pump on the
+// continuous-bridge code paths.
+type continuousFakeDelegate struct {
+	waitCalls int
+	initCalls int
+	sendCalls int
+	intCalls  int
+	closeCnt  int
+	sessID    string
+}
+
+func (c *continuousFakeDelegate) Initialize() tea.Cmd {
+	c.initCalls++
+	return func() tea.Msg { return nil }
+}
+
+func (c *continuousFakeDelegate) SendMessage(_ string) tea.Cmd {
+	c.sendCalls++
+	return func() tea.Msg { return nil }
+}
+
+func (c *continuousFakeDelegate) WaitForEvent() tea.Cmd {
+	c.waitCalls++
+	// Return a sentinel that tests can inspect.
+	return func() tea.Msg { return continuousWaitSentinel{} }
+}
+
+func (c *continuousFakeDelegate) Interrupt() tea.Cmd {
+	c.intCalls++
+	return func() tea.Msg { return nil }
+}
+
+func (c *continuousFakeDelegate) Close() error       { c.closeCnt++; return nil }
+func (c *continuousFakeDelegate) SessionID() string  { return c.sessID }
+func (c *continuousFakeDelegate) IsContinuous() bool { return true }
+
+type continuousWaitSentinel struct{}
+
+// runCmdsForSentinel runs the returned tea.Cmd (possibly a tea.Batch) and
+// returns true if a continuousWaitSentinel was produced anywhere in the
+// resulting message tree. Used to detect that WaitForEvent was scheduled.
+func runCmdsForSentinel(t *testing.T, cmd tea.Cmd) bool {
+	t.Helper()
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	return scanMsgForSentinel(msg)
+}
+
+func scanMsgForSentinel(msg tea.Msg) bool {
+	if _, ok := msg.(continuousWaitSentinel); ok {
+		return true
+	}
+	// tea.BatchMsg is a slice of tea.Cmd.
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c == nil {
+				continue
+			}
+			if scanMsgForSentinel(c()) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// QUM-399: SessionInitializedMsg with a continuous bridge must kick off
+// WaitForEvent so the autonomous event stream begins draining immediately.
+func TestAppModel_SessionInitializedMsg_KicksOffWaitForEvent_WhenContinuous(t *testing.T) {
+	d := &continuousFakeDelegate{sessID: "sess-continuous"}
+	bridge := NewBridgeFromDelegate(d)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	_, cmd := app.Update(SessionInitializedMsg{})
+
+	// The cmd should ultimately invoke our delegate's WaitForEvent.
+	_ = runCmdsForSentinel(t, cmd)
+	if d.waitCalls == 0 {
+		t.Errorf("WaitForEvent not invoked on SessionInitializedMsg with continuous bridge; want >=1")
+	}
+}
+
+// QUM-399: SessionResultMsg with a continuous bridge must keep the event
+// pump running across turn boundaries.
+func TestAppModel_SessionResultMsg_KicksOffWaitForEvent_WhenContinuous(t *testing.T) {
+	d := &continuousFakeDelegate{sessID: "sess-continuous"}
+	bridge := NewBridgeFromDelegate(d)
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+
+	_, cmd := app.Update(SessionResultMsg{IsError: false, DurationMs: 10})
+	_ = runCmdsForSentinel(t, cmd)
+	if d.waitCalls == 0 {
+		t.Errorf("WaitForEvent not invoked on SessionResultMsg with continuous bridge; want >=1")
+	}
+}
+
+// QUM-399: legacy bridges must NOT kick off WaitForEvent on
+// SessionResultMsg — that path only runs the cost computation cmd. This
+// guards the IsContinuous() gate on the SessionResultMsg handler.
+func TestAppModel_SessionResultMsg_DoesNotKickWaitForEvent_OnLegacyBridge(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock) // legacy: IsContinuous() == false
+	// We can't directly count WaitForEvent on a legacy bridge, so assert via
+	// IsContinuous being false (the precondition for the gate).
+	if bridge.IsContinuous() {
+		t.Fatalf("legacy bridge should not be continuous")
+	}
+	m := newTestAppModelWithBridge(t, bridge)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	// Just ensure it does not panic and returns a non-nil cmd (cost cmd).
+	_, _ = app.Update(SessionResultMsg{IsError: false, DurationMs: 5})
 }

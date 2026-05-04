@@ -289,6 +289,100 @@ func TestAgentRuntime_UnexpectedHandleExitMarksStopped(t *testing.T) {
 	}
 }
 
+// fakeAttachHandle is a minimal RuntimeHandle for AttachHandle tests.
+type fakeAttachHandle struct {
+	caps      backendpkg.Capabilities
+	sessionID string
+	doneCh    chan struct{}
+}
+
+func (h *fakeAttachHandle) Interrupt(context.Context) error       { return nil }
+func (h *fakeAttachHandle) Wake() error                           { return nil }
+func (h *fakeAttachHandle) InterruptDelivery() error              { return nil }
+func (h *fakeAttachHandle) Stop(context.Context) error            { return nil }
+func (h *fakeAttachHandle) SessionID() string                     { return h.sessionID }
+func (h *fakeAttachHandle) Capabilities() backendpkg.Capabilities { return h.caps }
+func (h *fakeAttachHandle) Done() <-chan struct{}                 { return h.doneCh }
+
+// QUM-399: AttachHandle is the no-starter analog of Start. It marks the
+// runtime as Started and captures the handle's capabilities + sessionID.
+func TestAgentRuntime_AttachHandle_SetsLifecycleStartedAndCapabilities(t *testing.T) {
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+	})
+	if rt.Snapshot().Lifecycle != RuntimeLifecycleRegistered {
+		t.Fatalf("pre-attach Lifecycle = %q, want %q", rt.Snapshot().Lifecycle, RuntimeLifecycleRegistered)
+	}
+
+	h := &fakeAttachHandle{
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+		sessionID: "sess-attached",
+	}
+	rt.AttachHandle(h)
+
+	snap := rt.Snapshot()
+	if snap.Lifecycle != RuntimeLifecycleStarted {
+		t.Errorf("Lifecycle = %q, want %q", snap.Lifecycle, RuntimeLifecycleStarted)
+	}
+	if !snap.Capabilities.SupportsInterrupt {
+		t.Errorf("Capabilities.SupportsInterrupt = false, want true")
+	}
+	if snap.SessionID != "sess-attached" {
+		t.Errorf("SessionID = %q, want sess-attached", snap.SessionID)
+	}
+}
+
+func TestAgentRuntime_AttachHandle_EmitsStartedEvent(t *testing.T) {
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+	})
+	events, cancel := rt.Subscribe(4)
+	defer cancel()
+
+	rt.AttachHandle(&fakeAttachHandle{})
+
+	kinds := nextRuntimeEventKinds(t, events, 1)
+	if kinds[0] != RuntimeEventStarted {
+		t.Errorf("event kind = %q, want %q", kinds[0], RuntimeEventStarted)
+	}
+}
+
+// QUM-399: AttachHandle must wire a Done() watcher when the handle exposes
+// one, so that an unexpected exit transitions the runtime lifecycle to
+// Stopped (mirrors the Start() path's handle.Done watcher).
+func TestAgentRuntime_AttachHandle_WatchesHandleDone_TransitionsToStopped(t *testing.T) {
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+	})
+
+	doneCh := make(chan struct{})
+	h := &fakeAttachHandle{doneCh: doneCh}
+	rt.AttachHandle(h)
+	if rt.Snapshot().Lifecycle != RuntimeLifecycleStarted {
+		t.Fatalf("after AttachHandle Lifecycle = %q, want %q",
+			rt.Snapshot().Lifecycle, RuntimeLifecycleStarted)
+	}
+
+	close(doneCh)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if rt.Snapshot().Lifecycle == RuntimeLifecycleStopped {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("Lifecycle = %q, want %q after handle.Done close",
+				rt.Snapshot().Lifecycle, RuntimeLifecycleStopped)
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
 func TestAgentRuntime_CancelSubscriptionStopsDeliveryWithoutClosingChannel(t *testing.T) {
 	rt := NewAgentRuntime(AgentRuntimeConfig{
 		SprawlRoot: "/repo",

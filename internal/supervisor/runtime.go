@@ -251,6 +251,30 @@ func (r *AgentRuntime) Start(ctx context.Context) error {
 	return nil
 }
 
+// AttachHandle attaches a pre-built RuntimeHandle to this AgentRuntime
+// without invoking a RuntimeStarter. Used by Supervisor.RegisterRootRuntime
+// to register weave's UnifiedRuntime under the same registry as child
+// runtimes (QUM-399). Sets lifecycle to Started, captures Capabilities and
+// SessionID, emits RuntimeEventStarted, and watches the handle's Done()
+// channel for unexpected exits when supported.
+func (r *AgentRuntime) AttachHandle(handle RuntimeHandle) {
+	if handle == nil {
+		return
+	}
+	r.mu.Lock()
+	r.handle = handle
+	r.snapshot.Lifecycle = RuntimeLifecycleStarted
+	r.snapshot.Capabilities = handle.Capabilities()
+	if sessionID := handle.SessionID(); sessionID != "" {
+		r.snapshot.SessionID = sessionID
+	}
+	r.mu.Unlock()
+	r.emit(RuntimeEventStarted)
+	if doneAware, ok := handle.(runtimeHandleDone); ok && doneAware.Done() != nil {
+		r.watchHandleExit(handle, doneAware.Done())
+	}
+}
+
 // Interrupt forwards an interrupt to the tracked backend session when one is attached.
 func (r *AgentRuntime) Interrupt(ctx context.Context) error {
 	r.mu.RLock()
