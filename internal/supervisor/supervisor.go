@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/state"
 )
 
 // AgentInfo describes an agent's current state as seen by the supervisor.
@@ -215,4 +216,15 @@ type Supervisor interface {
 	// implementations may return nil; consumers must treat nil as "no
 	// in-process runtimes known" and fall back accordingly. See QUM-438.
 	RuntimeRegistry() *RuntimeRegistry
+
+	// RegisterRootRuntime attaches a pre-built RuntimeHandle to the in-memory
+	// runtime registry under the given name, marking it Started. Used by
+	// cmd/enter.go (QUM-399) to register weave's UnifiedRuntime so children's
+	// report_status / send_async InterruptDelivery calls reach the root via
+	// the same registry mechanism that child runtimes use.
+	//
+	// agentState is best-effort: when nil, implementations may load from disk
+	// and fall back to a synthesized minimal state. Returns the registered
+	// AgentRuntime.
+	RegisterRootRuntime(name string, handle RuntimeHandle, agentState *state.AgentState) (*AgentRuntime, error)
 }

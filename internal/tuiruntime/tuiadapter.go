@@ -191,6 +191,21 @@ func (a *TUIAdapter) Interrupt() tea.Cmd {
 	}
 }
 
+// Close cancels the adapter's EventBus subscription. Provided for
+// compatibility with the tui.BridgeDelegate interface so a TUIAdapter can be
+// dropped into a tui.Bridge wrapper. Always returns nil; idempotent.
+func (a *TUIAdapter) Close() error {
+	a.Cancel()
+	return nil
+}
+
+// IsContinuous reports whether the adapter's event stream is continuous (i.e.
+// produces autonomous events even when no user turn is in flight). Always
+// true for TUIAdapter — the underlying UnifiedRuntime emits events
+// independent of WaitForEvent's per-turn lifecycle (e.g. interrupt-delivery
+// drains).
+func (a *TUIAdapter) IsContinuous() bool { return true }
+
 // Cancel removes the adapter's subscription from the runtime EventBus.
 // Idempotent.
 func (a *TUIAdapter) Cancel() {

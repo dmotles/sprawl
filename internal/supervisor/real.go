@@ -166,6 +166,31 @@ func NewReal(cfg Config) (*Real, error) {
 	return r, nil
 }
 
+// RegisterRootRuntime attaches a pre-built RuntimeHandle to the runtime
+// registry under the given name, marks it Started, and returns the
+// AgentRuntime. See Supervisor.RegisterRootRuntime / QUM-399.
+func (r *Real) RegisterRootRuntime(name string, handle RuntimeHandle, agentState *state.AgentState) (*AgentRuntime, error) {
+	if name == "" {
+		return nil, fmt.Errorf("RegisterRootRuntime: name must not be empty")
+	}
+	if handle == nil {
+		return nil, fmt.Errorf("RegisterRootRuntime: handle must not be nil")
+	}
+	if agentState == nil {
+		if loaded, err := state.LoadAgent(r.sprawlRoot, name); err == nil && loaded != nil {
+			agentState = loaded
+		} else {
+			agentState = &state.AgentState{Name: name, Status: "running"}
+		}
+	}
+	rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+		SprawlRoot: r.sprawlRoot,
+		Agent:      agentState,
+	})
+	rt.AttachHandle(handle)
+	return rt, nil
+}
+
 // RuntimeRegistry exposes the supervisor's in-memory runtime registry so
 // process-level wiring (e.g. messages.RecipientResolver) can consult it.
 func (r *Real) RuntimeRegistry() *RuntimeRegistry {

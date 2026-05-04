@@ -907,3 +907,33 @@ func TestTUIAdapter_SessionID_NilRuntime(t *testing.T) {
 		t.Errorf("SessionID() with nil runtime = %q, want empty string", got)
 	}
 }
+
+// QUM-399: Close() must satisfy the tui.BridgeDelegate signature, returning
+// nil and idempotently cancelling the EventBus subscription.
+func TestTUIAdapter_Close_CancelsSubscriptionAndReturnsNil(t *testing.T) {
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
+
+	if err := a.Close(); err != nil {
+		t.Errorf("Close() = %v, want nil", err)
+	}
+	// Idempotent.
+	if err := a.Close(); err != nil {
+		t.Errorf("second Close() = %v, want nil", err)
+	}
+	// After Close, WaitForEvent must surface EOF.
+	msg := runCmd(t, a.WaitForEvent())
+	if _, ok := msg.(tui.SessionErrorMsg); !ok {
+		t.Errorf("WaitForEvent after Close = %T, want tui.SessionErrorMsg (EOF)", msg)
+	}
+}
+
+// QUM-399: IsContinuous must always return true so the AppModel keeps
+// WaitForEvent running across turn boundaries when wrapping a TUIAdapter.
+func TestTUIAdapter_IsContinuous_ReturnsTrue(t *testing.T) {
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
+	if !a.IsContinuous() {
+		t.Errorf("IsContinuous() = false, want true")
+	}
+}

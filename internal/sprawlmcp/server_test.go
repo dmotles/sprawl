@@ -9,6 +9,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -222,6 +223,10 @@ func (m *mockSupervisor) Shutdown(_ context.Context) error {
 
 func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
 	return nil
+}
+
+func (m *mockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
+	return nil, nil
 }
 
 func (m *mockSupervisor) Handoff(_ context.Context, summary string) error {

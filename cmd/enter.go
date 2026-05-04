@@ -30,6 +30,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
 	"github.com/dmotles/sprawl/internal/claude"
@@ -38,10 +39,12 @@ import (
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/rootinit"
+	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
+	"github.com/dmotles/sprawl/internal/tuiruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -108,6 +111,27 @@ func makeRestartFunc(
 		case forceFresh:
 			fmt.Fprintf(logW, "[enter] resume died fast — falling back to fresh session\n")
 		}
+		// QUM-399: in unified mode, the bridge's Close() only cancels the
+		// TUIAdapter's EventBus subscription — it does NOT kill the backing
+		// claude subprocess (the runtime owns the session). If we leave the
+		// old subprocess alive while consolidation runs, the new claude -p
+		// memory worker contends with it for the .sprawl/memory/weave.lock
+		// file (QUM-300), causing FinalizeHandoff to hang.
+		//
+		// Stop the registered weave runtime here, BEFORE finalize, so its
+		// session is closed and waited and the lock is released. No-op in
+		// legacy mode (registry never holds weave there).
+		if sup != nil {
+			if reg := sup.RuntimeRegistry(); reg != nil {
+				if existing, ok := reg.Get("weave"); ok {
+					stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					_ = existing.Stop(stopCtx)
+					cancel()
+					reg.Remove("weave")
+				}
+			}
+		}
+
 		// Phase D: run post-session housekeeping (consolidation when a handoff
 		// signal is present, otherwise a noop). Errors are logged and do not
 		// block the restart — matches cmd/rootloop.go's tmux-mode behavior.
@@ -289,6 +313,13 @@ func buildSessionEnv() []string {
 	)
 }
 
+// defaultUnifiedRootEnabled reports whether the SPRAWL_UNIFIED_RUNTIME=1
+// gate is set, switching defaultNewSession to the UnifiedRuntime + TUIAdapter
+// path (QUM-399 Phase 3). Tests swap this to force one branch or the other.
+var defaultUnifiedRootEnabled = func() bool {
+	return os.Getenv("SPRAWL_UNIFIED_RUNTIME") == "1"
+}
+
 // defaultNewSession launches a Claude Code subprocess and returns a Bridge.
 //
 // When forceFresh is true, Prepare's resume decision is bypassed and a fresh
@@ -302,7 +333,104 @@ func buildSessionEnv() []string {
 func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
 	deps := rootinit.DefaultDeps()
 	deps.LogPrefix = "[enter]"
+	if defaultUnifiedRootEnabled() {
+		return newSessionImplUnified(sprawlRoot, sup, forceFresh, deps, os.Stderr, onResumeFailure)
+	}
 	return newSessionImpl(sprawlRoot, sup, forceFresh, deps, os.Stderr, onResumeFailure)
+}
+
+// newSessionImplUnified is the QUM-399 Phase 3 root weave path. Builds a
+// UnifiedRuntime around the backend session, wraps it in a TUIAdapter
+// (consumed via BridgeDelegate), and registers a WeaveRuntimeHandle with
+// the supervisor so child report/send_async InterruptDelivery calls reach
+// the root via the same registry mechanism child runtimes use.
+//
+// Initialize timing: the backend session's Initialize is called here
+// (synchronously) to register MCP tools BEFORE the runtime loop starts —
+// matching the children's path in inProcessUnifiedStarter.Start. The
+// Bridge's Initialize() tea.Cmd then starts the runtime via the TUIAdapter
+// (rt.Start) when AppModel.Init dispatches it.
+func newSessionImplUnified(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer, onResumeFailure func()) (*tui.Bridge, bool, error) {
+	if sup == nil {
+		return nil, false, fmt.Errorf("newSessionImplUnified: supervisor must be non-nil (see QUM-329 architectural contract)")
+	}
+
+	const rootName = "weave"
+
+	// Self-cleaning restart: if a prior weave runtime is still registered
+	// (from a previous session in this process), stop it and remove from the
+	// registry before building a new one.
+	if reg := sup.RuntimeRegistry(); reg != nil {
+		if existing, ok := reg.Get(rootName); ok {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = existing.Stop(stopCtx)
+			cancel()
+			reg.Remove(rootName)
+		}
+	}
+
+	var prepared *rootinit.PreparedSession
+	var err error
+	if forceFresh {
+		prepared, err = rootinit.PrepareFresh(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
+	} else {
+		prepared, err = rootinit.Prepare(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("preparing session: %w", err)
+	}
+	if prepared.Resume {
+		fmt.Fprintf(logW, "[enter] resuming session %s (unified)\n", prepared.SessionID)
+	} else {
+		fmt.Fprintf(logW, "[enter] starting session %s (unified)\n", prepared.SessionID)
+	}
+
+	mcpServer := sprawlmcp.New(sup)
+	mcpBridge := host.NewMCPBridge()
+	mcpBridge.Register("sprawl", mcpServer)
+
+	adapter := backendclaude.NewAdapter(backendclaude.Config{})
+	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure))
+	if err != nil {
+		return nil, false, err
+	}
+	if err := session.Initialize(context.Background(), buildEnterInitSpec(mcpBridge)); err != nil {
+		_ = session.Close()
+		_ = session.Wait()
+		return nil, false, fmt.Errorf("initializing session: %w", err)
+	}
+
+	rt := runtimepkg.New(runtimepkg.RuntimeConfig{
+		Name:         rootName,
+		SprawlRoot:   sprawlRoot,
+		Session:      session,
+		IsRoot:       true,
+		Capabilities: session.Capabilities(),
+		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
+			for _, id := range it.EntryIDs {
+				if err := agentloop.MarkDelivered(sprawlRoot, rootName, id); err != nil {
+					fmt.Fprintf(logW, "[enter] mark delivered %s: %v\n", id, err)
+				}
+			}
+		},
+	})
+
+	handle, err := supervisor.NewWeaveRuntimeHandle(rt, session, sprawlRoot, rootName)
+	if err != nil {
+		_ = session.Close()
+		_ = session.Wait()
+		return nil, false, fmt.Errorf("building weave runtime handle: %w", err)
+	}
+
+	weaveAgentState, _ := state.LoadAgent(sprawlRoot, rootName)
+	if _, err := sup.RegisterRootRuntime(rootName, handle, weaveAgentState); err != nil {
+		_ = handle.Stop(context.Background())
+		return nil, false, fmt.Errorf("registering root runtime: %w", err)
+	}
+
+	tuiAdapter := tuiruntime.NewTUIAdapter(rt)
+	bridge := tui.NewBridgeFromDelegate(tuiAdapter)
+	return bridge, prepared.Resume, nil
 }
 
 // newSessionImpl is the testable body of defaultNewSession.

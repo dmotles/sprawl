@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/protocol"
 )
 
@@ -964,5 +965,87 @@ func TestMapAssistantMessage_UsageAlongsideContent(t *testing.T) {
 	}
 	if !hasUsage {
 		t.Error("expected SessionUsageMsg in batch")
+	}
+}
+
+// --- QUM-399 BridgeDelegate tests ---
+
+// fakeDelegate counts calls and returns canned values, used to verify Bridge
+// faithfully forwards every public method to its delegate.
+type fakeDelegate struct {
+	initCalls   int
+	sendCalls   int
+	sendText    string
+	waitCalls   int
+	intCalls    int
+	closeCalls  int
+	sessionID   string
+	continuous  bool
+	closeErrVal error
+}
+
+func (f *fakeDelegate) Initialize() tea.Cmd { f.initCalls++; return func() tea.Msg { return nil } }
+func (f *fakeDelegate) SendMessage(text string) tea.Cmd {
+	f.sendCalls++
+	f.sendText = text
+	return func() tea.Msg { return nil }
+}
+func (f *fakeDelegate) WaitForEvent() tea.Cmd { f.waitCalls++; return func() tea.Msg { return nil } }
+func (f *fakeDelegate) Interrupt() tea.Cmd    { f.intCalls++; return func() tea.Msg { return nil } }
+func (f *fakeDelegate) Close() error          { f.closeCalls++; return f.closeErrVal }
+func (f *fakeDelegate) SessionID() string     { return f.sessionID }
+func (f *fakeDelegate) IsContinuous() bool    { return f.continuous }
+
+func TestBridge_NewBridgeFromDelegate_DelegatesAllMethods(t *testing.T) {
+	d := &fakeDelegate{sessionID: "sess-x", continuous: true}
+	b := NewBridgeFromDelegate(d)
+
+	if b.SessionID() != "sess-x" {
+		t.Errorf("SessionID = %q, want sess-x", b.SessionID())
+	}
+	if !b.IsContinuous() {
+		t.Errorf("IsContinuous = false, want true")
+	}
+	_ = b.Initialize()
+	_ = b.SendMessage("hello")
+	_ = b.WaitForEvent()
+	_ = b.Interrupt()
+	if err := b.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+
+	if d.initCalls != 1 || d.sendCalls != 1 || d.waitCalls != 1 || d.intCalls != 1 || d.closeCalls != 1 {
+		t.Errorf("delegate calls = init:%d send:%d wait:%d int:%d close:%d; want all 1",
+			d.initCalls, d.sendCalls, d.waitCalls, d.intCalls, d.closeCalls)
+	}
+	if d.sendText != "hello" {
+		t.Errorf("send text = %q, want hello", d.sendText)
+	}
+}
+
+func TestBridge_IsContinuous_LegacyVsDelegate(t *testing.T) {
+	// Legacy (BridgeSession-backed) bridge: not continuous.
+	ms := newMockSession()
+	legacy := NewBridge(context.Background(), ms)
+	if legacy.IsContinuous() {
+		t.Errorf("legacy bridge IsContinuous = true, want false")
+	}
+
+	// Delegate-backed (continuous=true) bridge.
+	d := &fakeDelegate{continuous: true}
+	b := NewBridgeFromDelegate(d)
+	if !b.IsContinuous() {
+		t.Errorf("delegate-backed IsContinuous = false, want true")
+	}
+}
+
+func TestBridge_SetSessionID_NoOpOnDelegateBacked(t *testing.T) {
+	d := &fakeDelegate{sessionID: "from-delegate"}
+	b := NewBridgeFromDelegate(d)
+	// SetSessionID is the legacy-only seam; on delegate-backed bridges it
+	// must not panic and must not clobber the delegate's sessionID.
+	b.SetSessionID("ignored")
+	if b.SessionID() != "from-delegate" {
+		t.Errorf("SessionID = %q, want from-delegate (delegate's value)", b.SessionID())
 	}
 }
