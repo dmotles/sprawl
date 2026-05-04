@@ -69,6 +69,18 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 		if !m.pendingEnter || lk.seq != m.pendingEnterSeq {
 			return m, nil
 		}
+		// Trailing-backslash line continuation (Claude Code / crush
+		// convention, QUM-456). If the input ends with a literal `\`, drop
+		// the backslash and insert a newline instead of submitting. Checked
+		// against the raw value so a final backslash followed by trailing
+		// whitespace doesn't trigger continuation.
+		if v := m.ta.Value(); strings.HasSuffix(v, `\`) {
+			m.ta.SetValue(strings.TrimSuffix(v, `\`))
+			m.ta.InsertString("\n")
+			m.pendingEnter = false
+			m.pendingEnterSeq++
+			return m, nil
+		}
 		text := strings.TrimSpace(m.ta.Value())
 		m.pendingEnter = false
 		m.pendingEnterSeq++
