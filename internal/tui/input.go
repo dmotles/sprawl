@@ -11,19 +11,12 @@ import (
 // maxInputLines caps how tall the input textarea can grow.
 const maxInputLines = 10
 
-// nowFunc is the clock used by the time-based paste classifier (QUM-432).
-// Overridable in tests.
-var nowFunc = time.Now
-
-// pasteBurstWindow / pasteQuietWindow tune the QUM-432 stripped-bracketed-paste
-// classifier. An Enter arriving within pasteBurstWindow of the prior printable
-// keypress is treated as an embedded newline; once paste-mode is active it
-// remains active for pasteQuietWindow after the most recent paste activity.
-// vars (not consts) so tests / future tuning can override.
-var (
-	pasteBurstWindow = 10 * time.Millisecond
-	pasteQuietWindow = 50 * time.Millisecond
-)
+// pasteLookaheadWindow is how long after a plain Enter we wait for a follow-up
+// KeyPressMsg before resolving the Enter as a real submit. If another key
+// arrives within the window, the Enter is reclassified as an embedded newline
+// (a stripped bracketed-paste line break). var (not const) so tests / future
+// tuning can override. (QUM-455)
+var pasteLookaheadWindow = 40 * time.Millisecond
 
 // InputModel wraps a textarea for the bottom input panel.
 type InputModel struct {
@@ -38,13 +31,16 @@ type InputModel struct {
 	// will auto-submit when the turn finalizes.
 	pendingPreview string
 
-	// QUM-432 paste-classifier state. lastKeyAt is the timestamp of the most
-	// recent printable KeyPressMsg seen; pasteUntil is a deadline during which
-	// any Enter is treated as an embedded newline rather than a submit. Both
-	// zero outside of paste bursts. See package-level pasteBurstWindow /
-	// pasteQuietWindow for the tuning constants.
-	lastKeyAt  time.Time
-	pasteUntil time.Time
+	// pendingEnter / pendingEnterSeq drive the QUM-455 post-Enter lookahead
+	// debounce. A plain Enter does not submit synchronously; instead it sets
+	// pendingEnter=true, bumps pendingEnterSeq, and schedules a
+	// pasteLookaheadMsg via tea.Tick. If another KeyPressMsg arrives before
+	// the tick fires, the pending Enter is reclassified as an embedded
+	// newline. If the tick fires with a still-current seq, the pending Enter
+	// resolves as a real submit. seq is bumped on every state transition so
+	// stale ticks (from reclassified Enters) compare unequal and are ignored.
+	pendingEnter    bool
+	pendingEnterSeq uint64
 }
 
 // NewInputModel creates an input model with a placeholder prompt.
@@ -64,8 +60,26 @@ func NewInputModel(theme *Theme) InputModel {
 	}
 }
 
-// Update handles key events: Enter submits, disabled blocks all input.
+// Update handles key events: Enter submits (via lookahead tick), disabled
+// blocks all input.
 func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
+	// Lookahead tick resolution — handled before the KeyPressMsg branch so a
+	// late tick after disable still gets cleanly dropped via seq mismatch.
+	if lk, ok := msg.(pasteLookaheadMsg); ok {
+		if !m.pendingEnter || lk.seq != m.pendingEnterSeq {
+			return m, nil
+		}
+		text := strings.TrimSpace(m.ta.Value())
+		m.pendingEnter = false
+		m.pendingEnterSeq++
+		if text == "" {
+			m.ta.SetValue("")
+			return m, nil
+		}
+		m.ta.SetValue("")
+		return m, func() tea.Msg { return SubmitMsg{Text: text} }
+	}
+
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		if m.disabled {
 			return m, nil
@@ -76,37 +90,35 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 		if keyMsg.Code == '/' && m.ta.Value() == "" {
 			return m, func() tea.Msg { return OpenPaletteMsg{} }
 		}
-		now := nowFunc()
-		// Plain Enter (no shift) submits the message — unless the paste
-		// classifier (QUM-432) determines this Enter is an embedded newline
-		// from a stripped-bracketed-paste burst.
-		if keyMsg.Code == tea.KeyEnter && keyMsg.Mod&tea.ModShift == 0 {
-			embedded := (!m.pasteUntil.IsZero() && now.Before(m.pasteUntil)) ||
-				(!m.lastKeyAt.IsZero() && now.Sub(m.lastKeyAt) < pasteBurstWindow)
-			if embedded {
+
+		isPlainEnter := keyMsg.Code == tea.KeyEnter && keyMsg.Mod&tea.ModShift == 0
+
+		if m.pendingEnter {
+			if isPlainEnter {
+				// Two consecutive plain Enters: the prior one is reclassified
+				// as embedded ("\n"), and this new Enter becomes the new
+				// pending submit candidate.
 				m.ta.InsertString("\n")
-				m.pasteUntil = now.Add(pasteQuietWindow)
-				m.lastKeyAt = now
-				return m, nil
+				m.pendingEnterSeq++ // invalidate prior tick
+				m.pendingEnterSeq++ // seq for the new pending Enter
+				seq := m.pendingEnterSeq
+				return m, tea.Tick(pasteLookaheadWindow, func(time.Time) tea.Msg {
+					return pasteLookaheadMsg{seq: seq}
+				})
 			}
-			text := strings.TrimSpace(m.ta.Value())
-			if text != "" {
-				m.ta.SetValue("")
-				m.lastKeyAt = time.Time{}
-				m.pasteUntil = time.Time{}
-				return m, func() tea.Msg { return SubmitMsg{Text: text} }
-			}
-			return m, nil
-		}
-		// Track timing for printable keys so the next Enter can be classified.
-		// keyMsg.Text is non-empty for character-producing keys (letters,
-		// digits, punctuation, space) and empty for control keys (arrows,
-		// Esc, etc.) — exactly the signal we want.
-		if keyMsg.Text != "" {
-			m.lastKeyAt = now
-			if !m.pasteUntil.IsZero() && now.Before(m.pasteUntil) {
-				m.pasteUntil = now.Add(pasteQuietWindow)
-			}
+			// Any other key: prior Enter is embedded, then fall through so
+			// the new key gets forwarded to the textarea normally.
+			m.ta.InsertString("\n")
+			m.pendingEnter = false
+			m.pendingEnterSeq++
+			// Fall through to forward keyMsg to textarea below.
+		} else if isPlainEnter {
+			m.pendingEnter = true
+			m.pendingEnterSeq++
+			seq := m.pendingEnterSeq
+			return m, tea.Tick(pasteLookaheadWindow, func(time.Time) tea.Msg {
+				return pasteLookaheadMsg{seq: seq}
+			})
 		}
 	}
 	var cmd tea.Cmd

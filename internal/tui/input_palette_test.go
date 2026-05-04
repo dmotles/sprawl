@@ -63,14 +63,21 @@ func TestInputModel_SlashWhileDisabledIsSwallowed(t *testing.T) {
 
 func TestInputModel_LeadingSpaceSlashCommandSubmitsTrimmed(t *testing.T) {
 	// Escape hatch per spec: `" /handoff"` → submit `/handoff` literal.
+	// Under QUM-455 a plain Enter schedules a lookahead tick; resolve it by
+	// dispatching pasteLookaheadMsg directly rather than waiting on tea.Tick.
 	m := newTestInputModel(t)
 	_ = m.Focus()
 
 	m.ta.SetValue(" /handoff")
 
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated
+	if !m.pendingEnter {
+		t.Fatal("Enter should set pendingEnter=true")
+	}
+	_, cmd := m.Update(pasteLookaheadMsg{seq: m.pendingEnterSeq})
 	if cmd == nil {
-		t.Fatal("Enter with ' /handoff' should produce SubmitMsg")
+		t.Fatal("Lookahead resolution with ' /handoff' should produce SubmitMsg")
 	}
 	sm, ok := cmd().(SubmitMsg)
 	if !ok {
