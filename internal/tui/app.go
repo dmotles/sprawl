@@ -230,7 +230,7 @@ const (
 // bridge may be nil for static placeholder mode.
 // sup and sprawlRoot are optional; when provided, the tree polls agent status.
 // restartFunc is called when the user requests a session restart after a crash.
-func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supervisor.Supervisor, sprawlRoot string, restartFunc func() (*Bridge, error)) AppModel {
+func NewAppModel(accentColor, repoName, version, liveVersion string, bridge *Bridge, sup supervisor.Supervisor, sprawlRoot string, restartFunc func() (*Bridge, error)) AppModel {
 	theme := NewTheme(accentColor)
 	startPanel := PanelTree
 	if bridge != nil {
@@ -255,7 +255,7 @@ func NewAppModel(accentColor, repoName, version string, bridge *Bridge, sup supe
 		tree:             NewTreeModel(&theme),
 		activity:         NewActivityPanelModel(&theme),
 		input:            NewInputModel(&theme),
-		statusBar:        NewStatusBarModel(&theme, repoName, version, 0),
+		statusBar:        NewStatusBarModel(&theme, repoName, liveVersion, 0),
 		help:             NewHelpModel(&theme),
 		confirm:          NewConfirmModel(&theme),
 		palette:          NewPaletteModel(&theme),

@@ -54,7 +54,7 @@ func writeChildSessionFixture(t *testing.T, name string, jsonlLines []string) (s
 
 func newAppForChildTranscript(t *testing.T, sprawlRoot, homeDir string) AppModel {
 	t.Helper()
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, sprawlRoot, nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, sprawlRoot, nil)
 	m.SetHomeDir(homeDir)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return resized.(AppModel)
