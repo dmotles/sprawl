@@ -714,7 +714,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// can drift if an entire session ends with calls still pending
 		// (e.g. an EOF mid-turn); reconcile against the viewport's actual
 		// state so a stale counter cannot keep ticking forever.
-		if m.pendingToolCalls == 0 || !m.rootVP().HasPendingToolCall() {
+		if m.pendingToolCalls == 0 || !m.anyViewportHasPending() {
 			m.pendingToolCalls = 0
 			return m, nil
 		}
@@ -1280,8 +1280,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.childPendingEvents = append(m.childPendingEvents, msg)
 			return m, childStreamWaitCmd(m.childAdapter, msg.Agent, msg.Epoch)
 		}
-		m.applyChildStreamInner(msg.Agent, msg.Inner)
-		return m, childStreamWaitCmd(m.childAdapter, msg.Agent, msg.Epoch)
+		innerCmd := m.applyChildStreamInner(msg.Agent, msg.Inner)
+		waitCmd := childStreamWaitCmd(m.childAdapter, msg.Agent, msg.Epoch)
+		if innerCmd == nil {
+			return m, waitCmd
+		}
+		return m, tea.Batch(innerCmd, waitCmd)
 
 	case ChildTranscriptMsg:
 		// QUM-334: route directly to the named agent's vp. Per-agent
@@ -1335,6 +1339,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// arrived ahead of the transcript. Drain in arrival order using the
 		// normal applyChildStreamInner path so dedupe / routing semantics
 		// match a non-racy delivery.
+		var drainCmds []tea.Cmd
 		if isUnified && m.childBackfillPending {
 			m.childBackfillPending = false
 			pending := m.childPendingEvents
@@ -1346,20 +1351,32 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if serr, ok := ev.Inner.(SessionErrorMsg); ok && errors.Is(serr.Err, io.EOF) {
 					continue
 				}
-				m.applyChildStreamInner(ev.Agent, ev.Inner)
+				if c := m.applyChildStreamInner(ev.Agent, ev.Inner); c != nil {
+					drainCmds = append(drainCmds, c)
+				}
 			}
 		}
 		// Reschedule for the next tick only while the agent is still being
 		// observed; otherwise let the poll go quiet until re-selection.
 		if msg.Agent == m.rootAgent || msg.Agent != m.observedAgent {
+			if len(drainCmds) > 0 {
+				return m, tea.Batch(drainCmds...)
+			}
 			return m, nil
 		}
 		// QUM-439: unified streaming path replaces JSONL polling; do not
 		// schedule a follow-up tick when the adapter is live for this agent.
 		if isUnified {
+			if len(drainCmds) > 0 {
+				return m, tea.Batch(drainCmds...)
+			}
 			return m, nil
 		}
-		return m, scheduleChildTranscriptTick(m.sprawlRoot, m.homeDir, msg.Agent, m.childTranscriptTickInterval())
+		tickCmd := scheduleChildTranscriptTick(m.sprawlRoot, m.homeDir, msg.Agent, m.childTranscriptTickInterval())
+		if len(drainCmds) > 0 {
+			return m, tea.Batch(append(drainCmds, tickCmd)...)
+		}
+		return m, tickCmd
 	}
 
 	return m, nil
@@ -1509,6 +1526,17 @@ func (m *AppModel) viewportFor(name string) *ViewportModel {
 // inbox banners, and other weave-only annotations target this viewport
 // regardless of which agent the user is currently observing.
 func (m *AppModel) rootVP() *ViewportModel { return m.viewportFor(m.rootAgent) }
+
+// anyViewportHasPending reports whether any agent buffer's viewport has an
+// in-flight tool call. Used to gate spinner ticking across child viewports.
+func (m *AppModel) anyViewportHasPending() bool {
+	for _, buf := range m.agentBuffers {
+		if buf.vp.HasPendingToolCall() {
+			return true
+		}
+	}
+	return false
+}
 
 // observedVP returns the viewport for the currently-observed agent. Used
 // by View() and select-mode helpers.
@@ -2089,20 +2117,28 @@ func childStreamWaitCmd(a *ChildStreamAdapter, agent string, epoch uint64) tea.C
 // agent's per-agent buffer. Mirrors the bridge-side handlers but writes to
 // the child viewport instead of the root viewport. ToolCallMsg entries
 // already seeded by the backfill are dropped to avoid double-render. (QUM-439)
-func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) {
+func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 	vp := m.viewportFor(agent)
 	buf := m.agentBuffers[agent]
 	switch im := inner.(type) {
 	case AssistantContentMsg:
+		var cmds []tea.Cmd
 		for _, sub := range im.Msgs {
-			m.applyChildStreamInner(agent, sub)
+			if c := m.applyChildStreamInner(agent, sub); c != nil {
+				cmds = append(cmds, c)
+			}
 		}
+		if len(cmds) > 0 {
+			return tea.Batch(cmds...)
+		}
+		return nil
 	case AssistantTextMsg:
 		vp.AppendAssistantChunk(im.Text)
+		return nil
 	case ToolCallMsg:
 		if buf != nil && im.ToolID != "" {
 			if _, dup := buf.seenToolIDs[im.ToolID]; dup {
-				return
+				return nil
 			}
 			if buf.seenToolIDs == nil {
 				buf.seenToolIDs = make(map[string]struct{})
@@ -2110,11 +2146,24 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) {
 			buf.seenToolIDs[im.ToolID] = struct{}{}
 		}
 		vp.AppendToolCall(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput)
+		wasZero := m.pendingToolCalls == 0
+		m.pendingToolCalls++
+		if wasZero {
+			return m.spinner.Tick
+		}
+		return nil
 	case ToolResultMsg:
-		vp.MarkToolResult(im.ToolID, im.Content, im.IsError)
+		if vp.MarkToolResult(im.ToolID, im.Content, im.IsError) {
+			if m.pendingToolCalls > 0 {
+				m.pendingToolCalls--
+			}
+		}
+		return nil
 	case SessionResultMsg:
 		vp.FinalizeAssistantMessage()
+		return nil
 	}
+	return nil
 }
 
 // loadChildTranscriptCmd returns a Cmd that reads .sprawl/agents/<name>.json
