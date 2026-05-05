@@ -2248,9 +2248,11 @@ func TestAppModel_StatusBarShowsSelectMode(t *testing.T) {
 // --- Tests for QUM-311 / QUM-205: TUI inbox notifier + weave root unread ---
 
 func TestAppModel_InboxArrivalMsg_AppendsStatusBanner(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app := resized.(AppModel)
+	// QUM-465: handler now reconciles against disk-truth — seed an unread
+	// maildir entry so the rise check fires.
+	sprawlRoot := t.TempDir()
+	seedUnreadForWeave(t, sprawlRoot, 1)
+	app := newTestAppModelWithSprawlRoot(t, sprawlRoot)
 
 	updated, _ := app.Update(InboxArrivalMsg{From: "pretend-child", Subject: "hello"})
 	app = updated.(AppModel)
@@ -2262,12 +2264,14 @@ func TestAppModel_InboxArrivalMsg_AppendsStatusBanner(t *testing.T) {
 }
 
 func TestAppModel_InboxArrivalMsg_BumpsRootUnreadWithoutSupervisor(t *testing.T) {
-	// Without a supervisor/sprawlRoot, the handler cannot poll disk, so it
-	// must bump the local rootUnread counter and rebuild the tree so the
-	// weave row reflects the arrival immediately.
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app := resized.(AppModel)
+	// QUM-465: post-fix, the handler reconciles against disk-truth. With no
+	// sprawlRoot the disk poll is skipped and the handler is a no-op (this is
+	// safe — without sprawlRoot the 2s tick can't run either). With a
+	// sprawlRoot + a seeded unread, the handler bumps rootUnread to 1 and
+	// rebuilds the tree.
+	sprawlRoot := t.TempDir()
+	seedUnreadForWeave(t, sprawlRoot, 1)
+	app := newTestAppModelWithSprawlRoot(t, sprawlRoot)
 
 	if app.rootUnread != 0 {
 		t.Fatalf("pre-condition: rootUnread = %d, want 0", app.rootUnread)
@@ -2289,9 +2293,10 @@ func TestAppModel_InboxArrivalMsg_BumpsRootUnreadWithoutSupervisor(t *testing.T)
 }
 
 func TestAppModel_InboxArrivalMsg_EmptyFromUsesFallback(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app := resized.(AppModel)
+	// QUM-465: seed disk so the post-fix disk-truth gate lets the banner fire.
+	sprawlRoot := t.TempDir()
+	seedUnreadForWeave(t, sprawlRoot, 1)
+	app := newTestAppModelWithSprawlRoot(t, sprawlRoot)
 
 	updated, _ := app.Update(InboxArrivalMsg{})
 	app = updated.(AppModel)

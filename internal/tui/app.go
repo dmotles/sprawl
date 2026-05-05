@@ -1084,19 +1084,27 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, drainCmd
 
 	case InboxArrivalMsg:
-		// QUM-311: a TUI-aware notifier installed by cmd/enter.go dispatches
-		// this whenever an in-process messages.Send call (MCP send_async
-		// from weave, or any Send in this process) delivers to the root
-		// agent's maildir. Append a short banner with sender identity and
-		// bump the unread counter; the next 2s tick reconciles the counter
-		// from disk, and out-of-process arrivals are banner-surfaced there.
+		// QUM-465: under unified runtime the in-process notifier and the
+		// 2s tickAgentsCmd rise-detector can both observe the same maildir
+		// entry; race-ordering determined which fired the banner first
+		// (sometimes both). Reconcile against disk-truth here so this case
+		// and the AgentTreeMsg case converge: fire iff disk says we have
+		// more unread than we've already accounted for.
 		from := msg.From
 		if from == "" {
 			from = "unknown"
 		}
-		m.rootVP().AppendStatus(fmt.Sprintf("inbox: new message from %s", from))
-		m.rootUnread++
-		m.rebuildTree()
+		diskUnread := m.rootUnread
+		if m.sprawlRoot != "" && m.rootAgent != "" {
+			if entries, err := messages.List(m.sprawlRoot, m.rootAgent, "unread"); err == nil {
+				diskUnread = len(entries)
+			}
+		}
+		if diskUnread > m.rootUnread {
+			m.rootVP().AppendStatus(fmt.Sprintf("inbox: new message from %s", from))
+			m.rootUnread = diskUnread
+			m.rebuildTree()
+		}
 		return m, nil
 
 	case ConfirmResultMsg:

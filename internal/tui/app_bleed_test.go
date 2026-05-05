@@ -147,7 +147,12 @@ func TestBridge_MidStreamCycle_PreservesAssistantChunks(t *testing.T) {
 // inbox banners (weave-only events) never bleed into the observed child's
 // viewport.
 func TestInbox_ArrivalWhileObservingChild_TargetsWeaveViewport(t *testing.T) {
-	app := newBleedApp(t)
+	// QUM-465: handler reconciles against disk-truth — seed an unread
+	// maildir entry so the rise check fires.
+	sprawlRoot := t.TempDir()
+	homeDir := t.TempDir()
+	seedUnreadForWeave(t, sprawlRoot, 1)
+	app := newAppForChildTranscript(t, sprawlRoot, homeDir)
 	app = cycleTo(t, app, "finn")
 
 	updated, _ := app.Update(InboxArrivalMsg{From: "alice"})
