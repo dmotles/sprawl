@@ -81,8 +81,40 @@ type TurnStateMsg struct {
 }
 
 // SessionErrorMsg carries an error from the host session or process death.
+//
+// QUM-479: `Err: io.EOF` is reserved exclusively for the bridge adapters
+// (`internal/tuiruntime.TUIAdapter` and the legacy `legacyBridgeDelegate` in
+// `internal/tui/bridge.go`) — that producer signals
+// end-of-session and triggers AppModel's auto-restart path. Other EventBus
+// adapters (ActivityStreamAdapter, ChildStreamAdapter) MUST NOT emit
+// SessionErrorMsg{io.EOF} on subscription close; use the dedicated
+// ActivityStreamClosedMsg / ChildStreamClosedMsg sentinels instead, or the
+// AppModel will mis-interpret a harmless adapter teardown as the bridge
+// ending and fire a phantom "Session restarting..." cycle.
 type SessionErrorMsg struct {
 	Err error
+}
+
+// ActivityStreamClosedMsg signals that an ActivityStreamAdapter's EventBus
+// subscription has closed (Cancel or runtime stop). Carries the agent name
+// (filled in by activityStreamWaitCmd) and the adapter epoch at the moment of
+// the read so AppModel can ignore stale-generation deliveries. The handler
+// silently tears down the adapter — it does NOT trigger a bridge restart.
+// (QUM-479)
+type ActivityStreamClosedMsg struct {
+	Agent string
+	Epoch uint64
+}
+
+// ChildStreamClosedMsg signals that a ChildStreamAdapter's EventBus
+// subscription has closed (Cancel or runtime stop). Carries the agent name
+// (filled in by childStreamWaitCmd) and the adapter epoch at the moment of
+// the read so AppModel can ignore stale-generation deliveries. The handler
+// silently tears down the adapter — it does NOT trigger a bridge restart.
+// (QUM-479)
+type ChildStreamClosedMsg struct {
+	Agent string
+	Epoch uint64
 }
 
 // Error implements the error interface for convenience.

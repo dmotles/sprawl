@@ -970,6 +970,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.bridge.IsContinuous() {
 			cmds = append(cmds, m.bridge.WaitForEvent())
 		}
+		// QUM-479: when the activity adapter was streaming the root agent
+		// before the restart, the OLD UnifiedRuntime is gone — re-point the
+		// adapter at the freshly-registered runtime (if any) so the activity
+		// panel keeps streaming without the user manually re-selecting weave.
+		if m.activityAdapter != nil && m.activityAdapterAgent == m.rootAgent {
+			if urt := m.lookupUnifiedRuntime(m.rootAgent); urt != nil {
+				m.activityAdapter.Observe(urt)
+				m.activityAdapterEpoch++
+				cmds = append(cmds, activityStreamWaitCmd(m.activityAdapter, m.rootAgent, m.activityAdapterEpoch))
+			}
+		}
 		// QUM-391: keep consolidation ticks running if consolidation outlives
 		// the restart.
 		if m.consolidating {
@@ -1051,6 +1062,38 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.activity.SetEntries(tail)
 		}
 		return m, activityStreamWaitCmd(m.activityAdapter, msg.Agent, msg.Epoch)
+
+	case ActivityStreamClosedMsg:
+		// QUM-479: the activity-panel adapter's EventBus subscription closed
+		// (Cancel or runtime stop). Tear down silently — do NOT trigger a
+		// bridge restart. Stale-epoch deliveries from a prior generation are
+		// ignored.
+		if msg.Agent == m.activityAdapterAgent && msg.Epoch == m.activityAdapterEpoch {
+			if m.activityAdapter != nil {
+				m.activityAdapter.Cancel()
+				m.activityAdapter = nil
+			}
+			m.activityAdapterAgent = ""
+			m.activityAdapterEpoch++
+		}
+		return m, nil
+
+	case ChildStreamClosedMsg:
+		// QUM-479: the child viewport adapter's EventBus subscription closed
+		// (Cancel or runtime stop). Tear down silently — do NOT trigger a
+		// bridge restart. Stale-epoch deliveries from a prior generation are
+		// ignored.
+		if msg.Agent == m.childAdapterAgent && msg.Epoch == m.childAdapterEpoch {
+			if m.childAdapter != nil {
+				m.childAdapter.Cancel()
+				m.childAdapter = nil
+			}
+			m.childAdapterAgent = ""
+			m.childAdapterEpoch++
+			m.childBackfillPending = false
+			m.childPendingEvents = nil
+		}
+		return m, nil
 
 	case AgentTreeMsg:
 		m.childNodes = msg.Nodes
@@ -2103,11 +2146,17 @@ func activityStreamWaitCmd(a *ActivityStreamAdapter, agent string, epoch uint64)
 			v.Agent = agent
 			v.Epoch = epoch
 			return v
+		case ActivityStreamClosedMsg:
+			// QUM-479: forward the typed close sentinel so AppModel can tear
+			// down the adapter without mis-routing into the bridge-restart
+			// path. Fill in the agent name (the adapter only knows the epoch).
+			v.Agent = agent
+			return v
 		default:
-			// Drop adapter-internal sentinels (e.g. SessionErrorMsg{io.EOF}
-			// emitted on cancellation). The AppModel only cares about
-			// ActivityStreamMsg from this adapter; leaking other msgs (notably
-			// SessionErrorMsg) up triggers spurious session restarts. (QUM-457)
+			// Drop adapter-internal stragglers. The AppModel only cares about
+			// ActivityStreamMsg / ActivityStreamClosedMsg from this adapter;
+			// leaking other msgs (notably SessionErrorMsg) up triggers
+			// spurious session restarts. (QUM-457 / QUM-479)
 			return nil
 		}
 	}
@@ -2160,6 +2209,13 @@ func childStreamWaitCmd(a *ChildStreamAdapter, agent string, epoch uint64) tea.C
 	inner := a.WaitForEvent()
 	return func() tea.Msg {
 		raw := inner()
+		// QUM-479: forward the typed close sentinel directly so AppModel can
+		// tear down the adapter without mis-routing into the bridge-restart
+		// path. Fill in the agent name (the adapter only knows the epoch).
+		if closed, ok := raw.(ChildStreamClosedMsg); ok {
+			closed.Agent = agent
+			return closed
+		}
 		return ChildStreamMsg{Agent: agent, Epoch: epoch, Inner: raw}
 	}
 }

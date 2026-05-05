@@ -1381,7 +1381,18 @@ func expandBatch(t *testing.T, msg tea.Msg) []tea.Msg {
 			if c == nil {
 				continue
 			}
-			out = append(out, expandBatch(t, c())...)
+			// QUM-479: bubbletea executes batch cmds concurrently in
+			// goroutines; some cmds (notably activityStreamWaitCmd) may block
+			// indefinitely waiting on EventBus events. Mirror the concurrent
+			// semantics with a small timeout so tests don't deadlock.
+			done := make(chan tea.Msg, 1)
+			go func(cmd tea.Cmd) { done <- cmd() }(c)
+			select {
+			case sub := <-done:
+				out = append(out, expandBatch(t, sub)...)
+			case <-time.After(50 * time.Millisecond):
+				// Treat as a blocking wait cmd — no msg yet.
+			}
 		}
 		return out
 	}
