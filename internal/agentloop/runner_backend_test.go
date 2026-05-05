@@ -10,9 +10,80 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	backend "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/protocol"
+	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/state"
 )
+
+// TestBuildAgentSessionSpec_DisallowsLoopOnlyTools pins QUM-470: harness-only
+// tools (ScheduleWakeup, Monitor, CronCreate, etc.) must be surfaced as
+// SessionSpec.DisallowedTools for every child agent type, and must NOT appear
+// in AllowedTools. These tools require an outer harness and have no meaning
+// inside a child claude session.
+func TestBuildAgentSessionSpec_DisallowsLoopOnlyTools(t *testing.T) {
+	for _, agentType := range []string{"engineer", "researcher", "manager"} {
+		t.Run(agentType, func(t *testing.T) {
+			agentState := &state.AgentState{
+				Name:      "test-agent",
+				Type:      agentType,
+				Worktree:  "/tmp/worktrees/test",
+				SessionID: "sess-test",
+			}
+			spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
+
+			disallowed := make(map[string]bool, len(spec.DisallowedTools))
+			for _, name := range spec.DisallowedTools {
+				disallowed[name] = true
+			}
+			for _, want := range rootinit.ChildDisallowedTools {
+				if !disallowed[want] {
+					t.Errorf("SessionSpec.DisallowedTools missing %q for agent type %q (got %v)", want, agentType, spec.DisallowedTools)
+				}
+			}
+
+			allowed := make(map[string]bool, len(spec.AllowedTools))
+			for _, name := range spec.AllowedTools {
+				allowed[name] = true
+			}
+			for _, name := range rootinit.ChildDisallowedTools {
+				if allowed[name] {
+					t.Errorf("SessionSpec.AllowedTools contains harness-only tool %q for agent type %q (allowed=%v)", name, agentType, spec.AllowedTools)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildAgentSessionSpec_DisallowedRoundTripsToLaunchArgs verifies that
+// the SessionSpec.DisallowedTools list, when threaded through
+// claudecli.LaunchOpts, produces a `--disallowed-tools <name>` flag for each
+// pinned name. Catches regressions where the field is set on SessionSpec but
+// not propagated into the actual claude argv.
+func TestBuildAgentSessionSpec_DisallowedRoundTripsToLaunchArgs(t *testing.T) {
+	agentState := &state.AgentState{
+		Name:      "engineer-agent",
+		Type:      "engineer",
+		Worktree:  "/tmp/worktrees/test",
+		SessionID: "sess-engineer",
+	}
+	spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
+
+	args := claude.LaunchOpts{DisallowedTools: spec.DisallowedTools}.BuildArgs()
+
+	for _, name := range rootinit.ChildDisallowedTools {
+		found := false
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == "--disallowed-tools" && args[i+1] == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("claude argv missing `--disallowed-tools %s` (got %v)", name, args)
+		}
+	}
+}
 
 type stopTestSession struct {
 	closeCalls int
