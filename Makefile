@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -67,6 +67,21 @@ test-notify-tui-e2e: build
 # HandoffRequestedMsg/SessionRestartingMsg/RestartSessionMsg handlers.
 test-handoff-e2e: build
 	bash scripts/test-handoff-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+# Opt-in end-to-end regression guard for QUM-467: child agents must NOT
+# lose MCP connectivity when weave's claude subprocess is restarted.
+# Spins up an isolated /tmp sandbox, launches `sprawl enter`, plants a
+# synthetic child, has the child send a message to weave (asserts it
+# lands), drives weave to call mcp__sprawl__handoff (restart), then has
+# the SAME child send another message and asserts it ALSO lands. Pre-fix
+# the post-restart send fails with "stream closed" or the message
+# silently doesn't land in weave's maildir. Not part of `make validate`
+# — runs real subprocesses, launches real claude, interacts with tmux.
+# See scripts/test-bridge-lifecycle-e2e.sh. Mandatory before merging any
+# change to cmd/enter.go's bridge wiring or
+# internal/supervisor/runtime_launcher*.go's InitSpec capture.
+test-bridge-lifecycle-e2e: build
+	bash scripts/test-bridge-lifecycle-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # QUM-386: E2E test for parallel Agent tool call rendering in the TUI
 # viewport. Uses a fake claude binary (no real claude needed) to emit
