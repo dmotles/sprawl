@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/dmotles/sprawl/internal/procutil"
 )
 
 // FindSprawlBin returns the sprawl binary path for spawning child processes.
@@ -24,10 +26,11 @@ func FindSprawlBin() (string, error) {
 	return os.Executable()
 }
 
-// RunBashScript executes an inline bash script with bash -e.
-// The script runs in the given working directory with the provided env vars
-// merged into the current environment.
-func RunBashScript(script, workDir string, env map[string]string) ([]byte, error) {
+// buildBashScriptCmd constructs the *exec.Cmd used by RunBashScript.
+// Extracted as a seam (QUM-458) so tests can assert SysProcAttr (Pdeathsig)
+// without actually executing bash. The real implementer wires
+// procutil.SetPdeathsig here.
+func buildBashScriptCmd(script, workDir string, env map[string]string) *exec.Cmd {
 	cmd := exec.Command("bash", "-e")
 	cmd.Stdin = strings.NewReader(script)
 	cmd.Dir = workDir
@@ -35,6 +38,16 @@ func RunBashScript(script, workDir string, env map[string]string) ([]byte, error
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	// QUM-458: bash hooks should die if their sprawl host is SIGKILL'd.
+	procutil.SetPdeathsig(cmd)
+	return cmd
+}
+
+// RunBashScript executes an inline bash script with bash -e.
+// The script runs in the given working directory with the provided env vars
+// merged into the current environment.
+func RunBashScript(script, workDir string, env map[string]string) ([]byte, error) {
+	cmd := buildBashScriptCmd(script, workDir, env)
 	return cmd.CombinedOutput()
 }
 

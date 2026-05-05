@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -49,8 +49,8 @@ hooks:
 # tmux. See scripts/test-notify-tui-e2e.sh. Mandatory before merging
 # any change to the TUI-notifier path: cmd/enter.go, cmd/enter_notify.go,
 # internal/tui/app.go, internal/tui/messages.go, or internal/tui/tree.go.
-test-notify-tui-e2e:
-	bash scripts/test-notify-tui-e2e.sh
+test-notify-tui-e2e: build
+	bash scripts/test-notify-tui-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # Opt-in end-to-end regression guard for QUM-329: TUI handoff restart
 # must fire when weave calls `handoff` via MCP. Spins up an
@@ -65,8 +65,8 @@ test-notify-tui-e2e:
 # to cmd/enter.go, internal/supervisor/*.go, internal/sprawlmcp/*.go,
 # internal/rootinit/postrun.go, or internal/tui/app.go's
 # HandoffRequestedMsg/SessionRestartingMsg/RestartSessionMsg handlers.
-test-handoff-e2e:
-	bash scripts/test-handoff-e2e.sh
+test-handoff-e2e: build
+	bash scripts/test-handoff-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # QUM-386: E2E test for parallel Agent tool call rendering in the TUI
 # viewport. Uses a fake claude binary (no real claude needed) to emit
@@ -74,8 +74,20 @@ test-handoff-e2e:
 # independent Agent containers. Mandatory before merging any change to
 # internal/tui/viewport.go's Agent container rendering or bridge.go's
 # AssistantContentMsg batching.
-test-parallel-agent-viewport-e2e:
-	bash scripts/test-parallel-agent-viewport-e2e.sh
+test-parallel-agent-viewport-e2e: build
+	bash scripts/test-parallel-agent-viewport-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+# QUM-458: end-to-end gate for the broader TUI smoke harness, plus the
+# MCP-identity smoke harness, plus the leak-resistance harness that
+# SIGKILLs the e2e drivers and asserts no orphan claude/tmux/dir residue.
+test-tui-e2e: build
+	bash scripts/test-tui-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+test-mcp-identity-e2e: build
+	bash scripts/test-mcp-identity-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+test-leak-resistance-e2e: build
+	./sprawl sandbox-gc --max-age=10m || true; bash scripts/test-leak-resistance-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # QUM-328: regression guard — verifies E2E scripts preserve exit codes
 # across cleanup traps. Lightweight (no claude/tmux/spawl needed).

@@ -191,6 +191,31 @@ func resolveEnterDeps() *enterDeps {
 			}()
 			defer signal.Stop(sigCh)
 
+			// QUM-458 layer 3: arm the orphan watchdog when running under a
+			// sandbox/test context. installOrphanWatchdog gates internally on
+			// shouldEnableOrphanWatchdog and returns a no-op stop in
+			// production. STUB call site: implementer wires real getppid/stat
+			// and ticker.
+			stopWatchdog := installOrphanWatchdog(
+				os.Getenv,
+				os.Getenv("SPRAWL_ROOT"),
+				syscall.Getppid,
+				func() error {
+					root := os.Getenv("SPRAWL_ROOT")
+					if root == "" {
+						return nil
+					}
+					_, err := os.Stat(root)
+					return err
+				},
+				p.Quit,
+				func() (<-chan time.Time, func()) {
+					t := time.NewTicker(2 * time.Second)
+					return t.C, t.Stop
+				},
+			)
+			defer stopWatchdog()
+
 			if onStart != nil {
 				onStart(func(msg tea.Msg) { p.Send(msg) })
 			}

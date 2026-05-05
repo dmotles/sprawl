@@ -140,6 +140,40 @@ bash scripts/smoke-test-memory.sh
 - The sandbox is completely isolated — it won't affect your real `.sprawl/` directory or tmux sessions.
 - You can run multiple sandboxes concurrently; each gets a unique namespace.
 
+## Hygiene contract (QUM-458)
+
+The sandbox harness has a defense-in-depth lifecycle to prevent leaks (orphan
+`claude` processes, stale tmux sockets, leftover `/tmp/sprawl-*` dirs):
+
+1. **Agent responsibility.** Any agent running sandbox tests must call
+   `sprawl_sandbox_destroy` synchronously (and successfully) before reporting
+   done via `sprawl report done`. This is the primary cleanup path.
+2. **Bash watchdog (Layer 1).** Each e2e driver script (`scripts/test-*-e2e.sh`,
+   `scripts/sprawl-test-env.sh`) installs a `setsid`'d watchdog via
+   `scripts/lib/sandbox-traps.sh`. If the driver dies abnormally (including
+   `kill -9`, which bypasses `trap ... EXIT`), the watchdog kills the
+   sandbox tmux server and removes `SPRAWL_ROOT`.
+3. **Pdeathsig (Layer 2).** `sprawl enter` spawns `claude` with
+   `Pdeathsig=SIGKILL` and its own pgroup, so claude dies if the sprawl host
+   is `kill -9`'d.
+4. **Orphan watchdog (Layer 3).** `sprawl enter` polls `getppid()` and
+   `SPRAWL_ROOT`; if it gets reparented to init or its sandbox root vanishes,
+   it self-exits.
+5. **Janitor (Layer 4).** `sprawl sandbox-gc [--dry-run] [--max-age=DUR]`
+   reaps stale tmux sockets, old `/tmp/sprawl-*` dirs, and orphan claude
+   processes. Run it from cron, post-test hooks, or manually when in doubt.
+   The `make test-handoff-e2e`, `test-notify-tui-e2e`, `test-tui-e2e`,
+   `test-mcp-identity-e2e`, and `test-parallel-agent-viewport-e2e` targets
+   automatically invoke `./sprawl sandbox-gc --max-age=10m` after the script
+   regardless of pass/fail.
+
+Parent agents (e.g. weave) should periodically run
+`./sprawl sandbox-gc --max-age=2h` to catch anything that slipped past
+layers 1-4.
+
+See `docs/research/qum-458-e2e-leak-analysis.md` for the underlying root-cause
+analysis and design rationale.
+
 ## Why this matters
 
 On 2026-04-21 an agent ran `rm -rf "$SPRAWL_ROOT"` from inside its own worktree (`/home/coder/sprawl/.sprawl/worktrees/finn`) while `$SPRAWL_ROOT` still pointed into the real repo tree. The worktree — and then the real repo — were destroyed, and the root repo had to be re-cloned. The hardened script (cwd guard + `/tmp/` assertion + guarded cleanup trap + `sprawl_sandbox_destroy`) exists so this cannot happen again. Follow the DO-NOT list.

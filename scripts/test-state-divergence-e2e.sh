@@ -62,7 +62,16 @@ case "$SPRAWL_ROOT" in
     /tmp/*) ;;
     *) red "FATAL: sandbox path $SPRAWL_ROOT not under /tmp/" >&2; exit 1 ;;
 esac
-trap '[[ "$SPRAWL_ROOT" == /tmp/* ]] && rm -rf "$SPRAWL_ROOT"' EXIT
+cleanup() {
+    [[ "$SPRAWL_ROOT" == /tmp/* ]] && rm -rf "$SPRAWL_ROOT"
+}
+trap cleanup EXIT INT TERM HUP
+
+# QUM-458 layer 1: setsid'd watchdog reaps the sandbox if the driver dies via
+# SIGKILL (which bypasses bash's EXIT trap). No tmux socket here — pass empty.
+# shellcheck source=lib/sandbox-traps.sh
+. "$(dirname "$0")/lib/sandbox-traps.sh"
+sandbox_install_watchdog "$$" "" "$SPRAWL_ROOT"
 
 git -C "$SPRAWL_ROOT" init -b main --quiet
 git -C "$SPRAWL_ROOT" -c user.email=t@t -c user.name=t commit --allow-empty -m init --quiet

@@ -1,10 +1,42 @@
 package agentloop
 
 import (
+	"context"
+	"runtime"
+	"syscall"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/claude"
 )
+
+// TestStart_SetsPdeathsigOnClaudeCmd guards QUM-458 layer 2: the claude
+// subprocess MUST be spawned with Pdeathsig=SIGKILL so it dies when sprawl
+// enter is SIGKILL'd, and Setpgid=true so cancelFn can pgkill the whole tree.
+//
+// Red phase: buildClaudeCmd is a stub that does not yet call
+// procutil.SetPdeathsig. This test fails until the implementer wires it in.
+func TestStart_SetsPdeathsigOnClaudeCmd(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Pdeathsig is Linux-only")
+	}
+	ctx := context.Background()
+	config := ProcessConfig{
+		ClaudePath: "/bin/true",
+		Args: claude.LaunchOpts{
+			SessionID: "test-session",
+		},
+	}
+	cmd := buildClaudeCmd(ctx, config)
+	if cmd.SysProcAttr == nil {
+		t.Fatalf("buildClaudeCmd must set SysProcAttr (QUM-458 Pdeathsig wiring missing)")
+	}
+	if cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
+		t.Errorf("Pdeathsig = %v, want SIGKILL", cmd.SysProcAttr.Pdeathsig)
+	}
+	if !cmd.SysProcAttr.Setpgid {
+		t.Errorf("Setpgid = false, want true (required for KillProcessGroup cancelFn)")
+	}
+}
 
 func TestBuildArgs_IncludesModelOpus(t *testing.T) {
 	config := ProcessConfig{

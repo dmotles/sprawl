@@ -115,12 +115,13 @@ sprawl_sandbox_destroy() {
             return 1
             ;;
     esac
-    if [ -n "\$ns" ]; then
-        _stmux kill-session -t "\$ns" 2>/dev/null || true
+    if [ -n "\${SPRAWL_TMUX_SOCKET:-}" ]; then
+        tmux -L "\$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true
+        rm -f -- "/tmp/tmux-\$(id -u)/\$SPRAWL_TMUX_SOCKET" 2>/dev/null || true
     fi
     rm -rf -- "\$root"
     unset SPRAWL_ROOT SPRAWL_NAMESPACE SPRAWL_TMUX_SOCKET TEST_ROOT TEST_NS SPRAWL_TEST_MODE SPRAWL_BIN
-    trap - EXIT
+    trap - EXIT INT TERM HUP
     echo "sprawl_sandbox_destroy: cleaned up \$root" >&2
 }
 
@@ -134,10 +135,18 @@ _sprawl_sandbox_cleanup_trap() {
             return 0
             ;;
     esac
-    [ -n "\${SPRAWL_NAMESPACE:-}" ] && _stmux kill-session -t "\$SPRAWL_NAMESPACE" 2>/dev/null || true
+    if [ -n "\${SPRAWL_TMUX_SOCKET:-}" ]; then
+        tmux -L "\$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true
+        rm -f -- "/tmp/tmux-\$(id -u)/\$SPRAWL_TMUX_SOCKET" 2>/dev/null || true
+    fi
     rm -rf -- "\$root"
 }
-trap _sprawl_sandbox_cleanup_trap EXIT
+trap _sprawl_sandbox_cleanup_trap EXIT INT TERM HUP
+
+# QUM-458 layer 1: setsid'd watchdog reaps the sandbox if the eval'ing shell
+# dies via SIGKILL (which bypasses bash's EXIT trap).
+$(cat "$(dirname "$0")/lib/sandbox-traps.sh" | grep -v '^#!' )
+sandbox_install_watchdog "\$\$" "\$SPRAWL_TMUX_SOCKET" "\$SPRAWL_ROOT"
 EOF
 
 # Print info to stderr
