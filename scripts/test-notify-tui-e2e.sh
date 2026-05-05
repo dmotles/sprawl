@@ -146,6 +146,19 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1" >&2; }
 
 capture_pane() { _stmux capture-pane -t "$1" -p 2>/dev/null || true; }
 
+# Count occurrences of an inbox-banner pattern in the current pane capture.
+# Two distinct banner phrasings exist:
+#   - "inbox: N new message(s) for weave"  (from AgentTreeMsg rise-detector)
+#   - "inbox: new message from <sender>"   (from InboxArrivalMsg notifier)
+# QUM-465: a single send_async to weave must produce exactly one of these,
+# not both. Either flavor counts as a banner; total must be 1 per send.
+count_inbox_banners() {
+    local session="$1"
+    capture_pane "$session" \
+        | grep -cE "inbox: [0-9]+ new message\\(s\\) for weave|inbox: new message from " \
+        || true
+}
+
 # wait_for_pattern <session> <pattern> <timeout_secs>
 wait_for_pattern() {
     local session="$1" pattern="$2" timeout="$3"
@@ -254,6 +267,9 @@ echo ""
 # the 2s drain tick runs peekAndDrainCmd and the bridge forwards to claude.
 DRAIN_TOKEN_A="DRAIN-BODY-TOKEN-A-$$-$(date +%s)"
 echo "=== Test A: child 'sprawl report done' → TUI banner + (1) badge ==="
+# QUM-465: snapshot banner count before the send so we can assert the
+# delta is exactly 1 (not 2) after the send lands.
+BANNERS_BEFORE_A=$(count_inbox_banners "$SESSION")
 REPORT_LOG="$(mktemp /tmp/notify-tui-e2e-report.XXXXXX)"
 set +e
 env \
@@ -305,12 +321,29 @@ fi
 
 rm -f "$REPORT_LOG"
 
+# QUM-465: assert exactly ONE inbox banner was added by Test A's single
+# delivery. With the double-fire bug the delta is 2 (one from
+# InboxArrivalMsg, one from AgentTreeMsg's rise-detector).
+# Give the 2s tick a couple cycles to land before sampling.
+sleep 5
+BANNERS_AFTER_A=$(count_inbox_banners "$SESSION")
+DELTA_A=$((BANNERS_AFTER_A - BANNERS_BEFORE_A))
+if [ "$DELTA_A" -eq 1 ]; then
+    pass "QUM-465: exactly 1 banner added by Test A delivery (delta=$DELTA_A)"
+else
+    fail "QUM-465: Test A produced $DELTA_A banners (before=$BANNERS_BEFORE_A, after=$BANNERS_AFTER_A); expected exactly 1"
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
+fi
+
 # --- Test B: `sprawl messages send weave` from the same child ---
 
 echo ""
 # QUM-323: second body token for the messages.Send path.
 DRAIN_TOKEN_B="DRAIN-BODY-TOKEN-B-$$-$(date +%s)"
 echo "=== Test B: child 'sprawl messages send weave' → badge rises to (2) ==="
+# QUM-465: snapshot banner count before second send.
+BANNERS_BEFORE_B=$(count_inbox_banners "$SESSION")
 SEND_LOG="$(mktemp /tmp/notify-tui-e2e-send.XXXXXX)"
 set +e
 env \
@@ -350,6 +383,19 @@ else
 fi
 
 rm -f "$SEND_LOG"
+
+# QUM-465: assert exactly ONE inbox banner was added by Test B's single
+# delivery (delta from before-Test-B baseline).
+sleep 5
+BANNERS_AFTER_B=$(count_inbox_banners "$SESSION")
+DELTA_B=$((BANNERS_AFTER_B - BANNERS_BEFORE_B))
+if [ "$DELTA_B" -eq 1 ]; then
+    pass "QUM-465: exactly 1 banner added by Test B delivery (delta=$DELTA_B)"
+else
+    fail "QUM-465: Test B produced $DELTA_B banners (before=$BANNERS_BEFORE_B, after=$BANNERS_AFTER_B); expected exactly 1"
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
+fi
 
 # --- Summary ---
 
