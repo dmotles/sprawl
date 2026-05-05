@@ -149,7 +149,15 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 					Result:  errStr,
 				}
 			case sprawlrt.EventInterrupted:
-				return tui.InterruptResultMsg{Err: nil}
+				if ev.Result == nil {
+					return tui.InterruptCompletedMsg{}
+				}
+				return tui.InterruptCompletedMsg{
+					Result:       ev.Result.Result,
+					DurationMs:   ev.Result.DurationMs,
+					NumTurns:     ev.Result.NumTurns,
+					TotalCostUsd: ev.Result.TotalCostUsd,
+				}
 			case sprawlrt.EventTurnStarted, sprawlrt.EventQueueDrained, sprawlrt.EventStopped:
 				// Skip lifecycle-only events — read the next one.
 				continue

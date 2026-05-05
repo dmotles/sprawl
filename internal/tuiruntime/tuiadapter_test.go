@@ -315,7 +315,19 @@ func TestTUIAdapter_WaitForEvent_TurnFailed_SessionResultError(t *testing.T) {
 	}
 }
 
-func TestTUIAdapter_WaitForEvent_Interrupted_InterruptResultMsg(t *testing.T) {
+// QUM-475: EventInterrupted is a TERMINAL lifecycle event (the turn drained
+// after a user-initiated interrupt). The adapter must map it to a NEW
+// InterruptCompletedMsg carrying the same result fields as SessionResultMsg
+// (Result/DurationMs/NumTurns/TotalCostUsd) so the AppModel can drive
+// turnState back to TurnIdle and re-arm continuous-bridge bookkeeping.
+//
+// This is distinct from InterruptResultMsg, which is the request-ack from
+// Interrupt() (see TestTUIAdapter_Interrupt_ForwardsToRuntime). Conflating
+// the two — as the pre-fix code does — means the request-ack path drives
+// finalize logic (causing the wedge described in
+// docs/forensics/tui-weave-wedge-2026-05-05.md) and the terminal path is
+// invisible to the AppModel.
+func TestTUIAdapter_WaitForEvent_Interrupted_InterruptCompletedMsg(t *testing.T) {
 	ch := make(chan *protocol.Message, 4)
 	mock := &adapterMockSession{
 		onStart: func(_ int) (<-chan *protocol.Message, error) {
@@ -342,23 +354,35 @@ func TestTUIAdapter_WaitForEvent_Interrupted_InterruptResultMsg(t *testing.T) {
 		t.Fatalf("Interrupt: %v", err)
 	}
 
-	// Drain the turn so EventInterrupted fires.
-	resultRaw := `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0}`
+	// Drain the turn so EventInterrupted fires with the result payload.
+	resultRaw := `{"type":"result","subtype":"interrupted","is_error":false,"result":"stopped","duration_ms":10,"num_turns":2,"total_cost_usd":0.005}`
 	ch <- makeAssistantMsg(t, resultRaw)
 	close(ch)
 
 	deadline2 := time.After(3 * time.Second)
 	for {
 		msg := runCmd(t, a.WaitForEvent())
-		if ir, ok := msg.(tui.InterruptResultMsg); ok {
-			if ir.Err != nil {
-				t.Errorf("InterruptResultMsg.Err = %v, want nil", ir.Err)
+		if _, ok := msg.(tui.InterruptResultMsg); ok {
+			t.Fatalf("WaitForEvent surfaced tui.InterruptResultMsg for EventInterrupted; want tui.InterruptCompletedMsg (request-ack must not collide with terminal lifecycle)")
+		}
+		if ic, ok := msg.(tui.InterruptCompletedMsg); ok {
+			if ic.Result != "stopped" {
+				t.Errorf("InterruptCompletedMsg.Result = %q, want %q", ic.Result, "stopped")
+			}
+			if ic.DurationMs != 10 {
+				t.Errorf("InterruptCompletedMsg.DurationMs = %d, want 10", ic.DurationMs)
+			}
+			if ic.NumTurns != 2 {
+				t.Errorf("InterruptCompletedMsg.NumTurns = %d, want 2", ic.NumTurns)
+			}
+			if ic.TotalCostUsd != 0.005 {
+				t.Errorf("InterruptCompletedMsg.TotalCostUsd = %v, want 0.005", ic.TotalCostUsd)
 			}
 			return
 		}
 		select {
 		case <-deadline2:
-			t.Fatalf("did not see InterruptResultMsg; last=%T", msg)
+			t.Fatalf("did not see InterruptCompletedMsg; last=%T", msg)
 		default:
 		}
 	}
