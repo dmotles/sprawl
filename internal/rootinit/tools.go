@@ -18,6 +18,28 @@ var RootTools = []string{
 // The root agent does not edit files directly — it delegates to child agents.
 var DisallowedTools = []string{"Edit", "Write", "NotebookEdit"}
 
+// ChildDisallowedTools is the set of harness-tied tools that silently no-op
+// when claude runs in `--print` (stream-json) mode, which is how all sprawl
+// child agents are launched. Without this denylist, children can ToolSearch
+// these names and issue tool calls that "succeed" without doing anything —
+// e.g. ScheduleWakeup queues a wake that never fires because no idle session
+// loop exists in --print mode. See QUM-470 for the wake-loss footgun.
+//
+// Children should use `Bash run_in_background: true` plus synchronous
+// `mcp__sprawl__*` waits instead.
+var ChildDisallowedTools = []string{
+	"ScheduleWakeup",
+	"Monitor",
+	"PushNotification",
+	"RemoteTrigger",
+	"CronCreate",
+	"CronDelete",
+	"CronList",
+	"EnterWorktree",
+	"ExitWorktree",
+	"TaskStop",
+}
+
 // Per-role model constants. The root weave session and manager agents use
 // extended-thinking opus; engineer and researcher agents use standard opus.
 // Memory distillation uses internal/memory.DefaultMemoryModel.

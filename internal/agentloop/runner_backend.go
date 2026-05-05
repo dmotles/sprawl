@@ -49,17 +49,18 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 		agentsJSON = agent.TDDSubAgentsJSON()
 	}
 	return backend.SessionSpec{
-		WorkDir:        agentState.Worktree,
-		Identity:       agentState.Name,
-		SprawlRoot:     sprawlRoot,
-		SessionID:      agentState.SessionID,
-		PromptFile:     promptPath,
-		Model:          rootinit.ModelForAgentType(agentState.Type),
-		Effort:         "medium",
-		PermissionMode: "bypassPermissions",
-		Agents:         agentsJSON,
-		AdditionalEnv:  additionalEnv,
-		Stderr:         stderr,
+		WorkDir:         agentState.Worktree,
+		Identity:        agentState.Name,
+		SprawlRoot:      sprawlRoot,
+		SessionID:       agentState.SessionID,
+		PromptFile:      promptPath,
+		Model:           rootinit.ModelForAgentType(agentState.Type),
+		Effort:          "medium",
+		PermissionMode:  "bypassPermissions",
+		Agents:          agentsJSON,
+		AdditionalEnv:   additionalEnv,
+		Stderr:          stderr,
+		DisallowedTools: rootinit.ChildDisallowedTools,
 	}
 }
 
