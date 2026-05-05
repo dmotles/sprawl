@@ -442,10 +442,21 @@ func (m *ViewportModel) GetMessages() []MessageEntry {
 func (m *ViewportModel) SetMessages(msgs []MessageEntry) {
 	m.messages = make([]MessageEntry, len(msgs))
 	copy(m.messages, msgs)
-	// Replacing the buffer invalidates any active selection and agent nesting state.
 	m.selection = SelectionState{}
+	// QUM-476: rebuild Agent nesting state from in-flight Agent entries so
+	// re-seeding a child viewport (Ctrl+N round-trip) preserves depth=1
+	// nesting for subsequent tool calls.
 	m.activeAgents = nil
 	m.lastActiveAgent = ""
+	for _, e := range m.messages {
+		if e.Type == MessageToolCall && e.Content == "Agent" && e.ToolID != "" && e.Result == "" && !e.Failed {
+			if m.activeAgents == nil {
+				m.activeAgents = make(map[string]bool)
+			}
+			m.activeAgents[e.ToolID] = true
+			m.lastActiveAgent = e.ToolID
+		}
+	}
 	m.renderAndUpdate()
 }
 

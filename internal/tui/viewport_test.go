@@ -1629,6 +1629,176 @@ func TestViewportModel_SetMessages_ClearsActiveAgents(t *testing.T) {
 	}
 }
 
+// TestViewportModel_SetMessages_PreservesInFlightAgent verifies that when
+// SetMessages re-seeds a viewport with entries containing an in-flight Agent
+// tool call, the agent-nesting state is rebuilt so subsequent AppendToolCall
+// events render nested under that Agent. (QUM-476)
+func TestViewportModel_SetMessages_PreservesInFlightAgent(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	entries := []MessageEntry{
+		{
+			Type:      MessageToolCall,
+			Content:   "Agent",
+			ToolID:    "a1",
+			Complete:  true,
+			Approved:  true,
+			ToolInput: "sub-task",
+			Pending:   true,
+		},
+	}
+	m.SetMessages(entries)
+
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[1].Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1 (in-flight Agent should still be active after SetMessages)", msgs[1].Depth)
+	}
+	if msgs[1].ParentToolID != "a1" {
+		t.Errorf("Bash ParentToolID = %q, want %q", msgs[1].ParentToolID, "a1")
+	}
+}
+
+// TestViewportModel_SetMessages_CompletedAgentNotRestored verifies that an
+// Agent entry with a non-empty Result (completed) does not get re-added to
+// activeAgents on SetMessages — subsequent tool calls are top-level. (QUM-476)
+func TestViewportModel_SetMessages_CompletedAgentNotRestored(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	entries := []MessageEntry{
+		{
+			Type:      MessageToolCall,
+			Content:   "Agent",
+			ToolID:    "a1",
+			Complete:  true,
+			Approved:  true,
+			ToolInput: "sub-task",
+			Result:    "done",
+		},
+	}
+	m.SetMessages(entries)
+
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[1].Depth != 0 {
+		t.Errorf("Bash Depth = %d, want 0 (completed Agent should not be active)", msgs[1].Depth)
+	}
+	if msgs[1].ParentToolID != "" {
+		t.Errorf("Bash ParentToolID = %q, want empty", msgs[1].ParentToolID)
+	}
+}
+
+// TestViewportModel_SetMessages_FailedAgentNotRestored verifies that an Agent
+// entry with Failed=true does not get re-added to activeAgents on
+// SetMessages. (QUM-476)
+func TestViewportModel_SetMessages_FailedAgentNotRestored(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	entries := []MessageEntry{
+		{
+			Type:      MessageToolCall,
+			Content:   "Agent",
+			ToolID:    "a1",
+			Complete:  true,
+			Approved:  true,
+			ToolInput: "sub-task",
+			Failed:    true,
+			Result:    "boom",
+		},
+	}
+	m.SetMessages(entries)
+
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[1].Depth != 0 {
+		t.Errorf("Bash Depth = %d, want 0 (failed Agent should not be active)", msgs[1].Depth)
+	}
+	if msgs[1].ParentToolID != "" {
+		t.Errorf("Bash ParentToolID = %q, want empty", msgs[1].ParentToolID)
+	}
+}
+
+// TestViewportModel_SetMessages_MultipleInFlightAgents_LastWins verifies that
+// when SetMessages re-seeds with multiple in-flight Agent entries, the most
+// recently appended one becomes lastActiveAgent — matching AppendToolCall's
+// own ordering semantics. (QUM-476)
+func TestViewportModel_SetMessages_MultipleInFlightAgents_LastWins(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+
+	entries := []MessageEntry{
+		{
+			Type:      MessageToolCall,
+			Content:   "Agent",
+			ToolID:    "a1",
+			Complete:  true,
+			Approved:  true,
+			ToolInput: "task A",
+			Pending:   true,
+		},
+		{
+			Type:      MessageToolCall,
+			Content:   "Agent",
+			ToolID:    "a2",
+			Complete:  true,
+			Approved:  true,
+			ToolInput: "task B",
+			Pending:   true,
+		},
+	}
+	m.SetMessages(entries)
+
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+
+	msgs := m.GetMessages()
+	if len(msgs) != 3 {
+		t.Fatalf("got %d messages, want 3", len(msgs))
+	}
+	if msgs[2].Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1", msgs[2].Depth)
+	}
+	if msgs[2].ParentToolID != "a2" {
+		t.Errorf("Bash ParentToolID = %q, want %q (last in-flight Agent wins)", msgs[2].ParentToolID, "a2")
+	}
+}
+
+// TestViewportModel_SetMessages_RestoredAgentClearsOnResult verifies that
+// after SetMessages rebuilds activeAgents from an in-flight Agent entry,
+// MarkToolResult on that Agent properly removes it from the active set so
+// subsequent tool calls render at top level. Guards QUM-476 wiring.
+func TestViewportModel_SetMessages_RestoredAgentClearsOnResult(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.SetMessages([]MessageEntry{
+		{
+			Type: MessageToolCall, Content: "Agent", ToolID: "a1",
+			Complete: true, Approved: true, ToolInput: "task",
+		},
+	})
+	m.MarkToolResult("a1", "done", false)
+	m.AppendToolCall("Bash", "b1", true, "ls", "")
+	msgs := m.GetMessages()
+	bash := msgs[len(msgs)-1]
+	if bash.Depth != 0 || bash.ParentToolID != "" {
+		t.Errorf("after Agent result, Bash should be top-level, got Depth=%d Parent=%q", bash.Depth, bash.ParentToolID)
+	}
+}
+
 // TestViewportModel_RenderAgentContainer_Pending verifies that a pending Agent
 // renders as a container with its nested children visible.
 func TestViewportModel_RenderAgentContainer_Pending(t *testing.T) {
