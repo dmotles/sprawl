@@ -135,13 +135,10 @@ LEAK_SESSION=""
 LEAK_ROOT=""
 
 cleanup() {
-    # Kill our tmux session on the dedicated socket
-    if _stmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        _stmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
-    fi
-    # Kill the stderr-leak regression tmux session (Test 9), if present
-    if [ -n "$LEAK_SESSION" ] && _stmux has-session -t "$LEAK_SESSION" 2>/dev/null; then
-        _stmux kill-session -t "$LEAK_SESSION" 2>/dev/null || true
+    # QUM-458: kill the entire dedicated tmux server (catches phantom clients).
+    if [ -n "${SPRAWL_TMUX_SOCKET:-}" ]; then
+        tmux -L "$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true
+        rm -f -- "/tmp/tmux-$(id -u)/$SPRAWL_TMUX_SOCKET" 2>/dev/null || true
     fi
     # Clean up temp directories
     rm -rf "$TEST_ROOT"
@@ -150,7 +147,13 @@ cleanup() {
     fi
     rm -f "$STDERR_LOG"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM HUP
+
+# QUM-458 layer 1: setsid'd watchdog reaps the sandbox if the driver dies via
+# SIGKILL (which bypasses bash's EXIT trap).
+# shellcheck source=lib/sandbox-traps.sh
+. "$(dirname "$0")/lib/sandbox-traps.sh"
+sandbox_install_watchdog "$$" "$SPRAWL_TMUX_SOCKET" "$TEST_ROOT"
 
 # --- Test 1: Launch & Render ---
 

@@ -141,15 +141,22 @@ wait_for_pattern() {
 
 cleanup() {
     local rc=$?
-    if _stmux has-session -t "$SESSION" 2>/dev/null; then
-        _stmux kill-session -t "$SESSION" 2>/dev/null || true
+    if [ -n "${SPRAWL_TMUX_SOCKET:-}" ]; then
+        tmux -L "$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true
+        rm -f -- "/tmp/tmux-$(id -u)/$SPRAWL_TMUX_SOCKET" 2>/dev/null || true
     fi
     case "$SPRAWL_ROOT" in
         /tmp/*) rm -rf -- "$SPRAWL_ROOT" ;;
     esac
     exit "$rc"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM HUP
+
+# QUM-458 layer 1: setsid'd watchdog reaps the sandbox if the driver dies via
+# SIGKILL (which bypasses bash's EXIT trap).
+# shellcheck source=lib/sandbox-traps.sh
+. "$(dirname "$0")/lib/sandbox-traps.sh"
+sandbox_install_watchdog "$$" "$SPRAWL_TMUX_SOCKET" "$SPRAWL_ROOT"
 
 # --- Launch the TUI with fake claude ---
 echo "=== Launching sprawl enter with fake claude in tmux ==="

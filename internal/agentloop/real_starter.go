@@ -6,23 +6,33 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/dmotles/sprawl/internal/procutil"
 	"github.com/dmotles/sprawl/internal/protocol"
 )
 
 // RealCommandStarter launches a real Claude Code subprocess.
 type RealCommandStarter struct{}
 
-// Start builds the CLI args, launches the subprocess, and returns I/O handles.
-func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (MessageReader, MessageWriter, WaitFunc, CancelFunc, error) {
+// buildClaudeCmd constructs the *exec.Cmd for launching the claude subprocess.
+// Extracted as a seam (QUM-458) so tests can assert SysProcAttr wiring without
+// invoking Start(). The real implementer wires procutil.SetPdeathsig here.
+func buildClaudeCmd(ctx context.Context, config ProcessConfig) *exec.Cmd {
 	claudePath := config.ClaudePath
 	if claudePath == "" {
 		claudePath = "claude"
 	}
-
 	args := config.Args.BuildArgs()
-
 	cmd := exec.CommandContext(ctx, claudePath, args...)
 	cmd.Dir = config.WorkDir
+	// QUM-458: ensure claude dies if sprawl enter is SIGKILL'd, and runs in its
+	// own process group so cancelFn can kill the whole tree.
+	procutil.SetPdeathsig(cmd)
+	return cmd
+}
+
+// Start builds the CLI args, launches the subprocess, and returns I/O handles.
+func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (MessageReader, MessageWriter, WaitFunc, CancelFunc, error) {
+	cmd := buildClaudeCmd(ctx, config)
 
 	// Build environment.
 	env := os.Environ()
@@ -63,7 +73,7 @@ func (s *RealCommandStarter) Start(ctx context.Context, config ProcessConfig) (M
 
 	cancelFn := func() error {
 		if cmd.Process != nil {
-			return cmd.Process.Kill()
+			return procutil.KillProcessGroup(cmd.Process)
 		}
 		return nil
 	}
