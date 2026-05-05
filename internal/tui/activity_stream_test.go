@@ -34,9 +34,7 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"testing"
 	"time"
@@ -126,7 +124,10 @@ func TestActivityStreamAdapter_Observe_SwapsAndBumpsEpoch(t *testing.T) {
 	a.Cancel() // must not panic / not deadlock
 }
 
-func TestActivityStreamAdapter_WaitForEvent_ReturnsEOFOnCancel(t *testing.T) {
+func TestActivityStreamAdapter_WaitForEvent_ReturnsClosedSentinelOnCancel(t *testing.T) {
+	// QUM-479: adapter must NOT emit SessionErrorMsg{io.EOF} on cancel —
+	// that mis-routes into the AppModel's bridge-restart path. It must
+	// emit the dedicated ActivityStreamClosedMsg sentinel instead.
 	rt := newUnifiedRT(t, "alice")
 	a := NewActivityStreamAdapter(rt)
 
@@ -141,12 +142,8 @@ func TestActivityStreamAdapter_WaitForEvent_ReturnsEOFOnCancel(t *testing.T) {
 
 	select {
 	case msg := <-done:
-		serr, ok := msg.(SessionErrorMsg)
-		if !ok {
-			t.Fatalf("WaitForEvent after Cancel returned %T, want SessionErrorMsg", msg)
-		}
-		if !errors.Is(serr.Err, io.EOF) {
-			t.Errorf("SessionErrorMsg.Err = %v, want io.EOF", serr.Err)
+		if _, ok := msg.(ActivityStreamClosedMsg); !ok {
+			t.Fatalf("WaitForEvent after Cancel returned %T, want ActivityStreamClosedMsg (QUM-479)", msg)
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("WaitForEvent did not return after Cancel within deadline")
@@ -464,15 +461,15 @@ func TestApp_ActivityStream_LegacyAgent_KeepsPolling(t *testing.T) {
 	}
 }
 
-// -- QUM-457: activityStreamWaitCmd must swallow the adapter's EOF sentinel --
+// -- QUM-457 / QUM-479: activityStreamWaitCmd must NOT leak SessionErrorMsg --
 //
-// activityStreamWaitCmd's default-branch returns the raw inner msg, leaking
-// SessionErrorMsg{io.EOF} (the adapter's cancellation sentinel) up to the
-// AppModel. The EOF handler at app.go:744-755 then fires a spurious
-// SessionRestartingMsg + RestartSessionMsg, restarting the root session
-// every time an activity adapter is torn down (e.g. on viewport switch).
+// Pre-fix (QUM-457), activityStreamWaitCmd's default-branch returned the raw
+// inner msg, leaking SessionErrorMsg{io.EOF} (the adapter's cancellation
+// sentinel) up to the AppModel. The QUM-479 fix replaces the io.EOF sentinel
+// with the dedicated ActivityStreamClosedMsg type — so the wrapper either
+// drops it or forwards it as the typed sentinel, never as SessionErrorMsg.
 
-func TestActivityStreamWaitCmd_SwallowsAdapterEOF(t *testing.T) {
+func TestActivityStreamWaitCmd_DoesNotLeakSessionErrorMsg(t *testing.T) {
 	rt := newUnifiedRT(t, "alice")
 	a := NewActivityStreamAdapter(rt)
 	epoch := a.Epoch()
@@ -480,15 +477,20 @@ func TestActivityStreamWaitCmd_SwallowsAdapterEOF(t *testing.T) {
 
 	msg := activityStreamWaitCmd(a, "alice", epoch)()
 	if msg == nil {
-		// adapter EOF was swallowed entirely — fine
+		// adapter teardown was swallowed at the cmd boundary — fine
 		return
 	}
-	if serr, ok := msg.(SessionErrorMsg); ok && errors.Is(serr.Err, io.EOF) {
-		t.Fatalf("activityStreamWaitCmd leaked raw SessionErrorMsg{io.EOF}; got %+v", serr)
+	if _, ok := msg.(SessionErrorMsg); ok {
+		t.Fatalf("activityStreamWaitCmd leaked SessionErrorMsg; got %+v (QUM-479: must use ActivityStreamClosedMsg)", msg)
+	}
+	// QUM-479 tightening: if anything is forwarded, it must be the typed
+	// closed sentinel — not some other unexpected msg type.
+	if _, ok := msg.(ActivityStreamClosedMsg); !ok {
+		t.Fatalf("activityStreamWaitCmd forwarded %T; want ActivityStreamClosedMsg or nil", msg)
 	}
 }
 
-func TestAppModel_ActivityStreamWaitCmd_AdapterEOF_DoesNotRestart(t *testing.T) {
+func TestAppModel_ActivityStreamWaitCmd_AdapterClose_DoesNotRestart(t *testing.T) {
 	mock := newMockSession()
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
@@ -503,20 +505,30 @@ func TestAppModel_ActivityStreamWaitCmd_AdapterEOF_DoesNotRestart(t *testing.T) 
 
 	raw := activityStreamWaitCmd(a, "weave", epoch)()
 	if raw == nil {
-		// Fix in place — adapter EOF was swallowed at the cmd boundary.
+		// Fix in place — adapter close was swallowed at the cmd boundary.
 		return
 	}
 
-	// Pre-fix path: the raw SessionErrorMsg{io.EOF} would be delivered to the
-	// AppModel and trigger a spurious restart. Assert it does NOT.
+	// QUM-479 tightening: if anything is forwarded, it must be the typed
+	// closed sentinel — never SessionErrorMsg or some other shape.
+	if _, ok := raw.(SessionErrorMsg); ok {
+		t.Fatalf("activityStreamWaitCmd leaked SessionErrorMsg into AppModel; got %+v (QUM-479)", raw)
+	}
+	if _, ok := raw.(ActivityStreamClosedMsg); !ok {
+		t.Fatalf("activityStreamWaitCmd forwarded %T; want ActivityStreamClosedMsg or nil", raw)
+	}
+
+	// QUM-479: even when the wrapper forwards the close as a typed
+	// ActivityStreamClosedMsg, the AppModel must NOT trigger a bridge
+	// restart in response.
 	updated, cmd := app.Update(raw)
 	_ = updated
 	msgs := collectBatchMsgs(t, cmd)
 	if hasMsgOfType[SessionRestartingMsg](msgs) {
-		t.Errorf("adapter cancellation EOF must not trigger SessionRestartingMsg; got msgs=%v", msgs)
+		t.Errorf("adapter close must not trigger SessionRestartingMsg; got msgs=%v", msgs)
 	}
 	if hasMsgOfType[RestartSessionMsg](msgs) {
-		t.Errorf("adapter cancellation EOF must not trigger RestartSessionMsg; got msgs=%v", msgs)
+		t.Errorf("adapter close must not trigger RestartSessionMsg; got msgs=%v", msgs)
 	}
 }
 

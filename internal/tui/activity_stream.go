@@ -10,7 +10,6 @@
 package tui
 
 import (
-	"io"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -32,6 +31,7 @@ type ActivityStreamAdapter struct {
 	mu          sync.Mutex
 	rt          *sprawlrt.UnifiedRuntime
 	events      <-chan sprawlrt.RuntimeEvent
+	done        <-chan struct{}
 	unsubscribe func()
 	cancelled   bool
 	epoch       uint64
@@ -52,6 +52,7 @@ func NewActivityStreamAdapter(rt *sprawlrt.UnifiedRuntime) *ActivityStreamAdapte
 func (a *ActivityStreamAdapter) subscribe(rt *sprawlrt.UnifiedRuntime) {
 	ch, unsub := rt.EventBus().Subscribe(activityStreamAdapterBufferSize)
 	a.events = ch
+	a.done = rt.Done()
 	a.unsubscribe = unsub
 	a.epoch++
 }
@@ -71,6 +72,7 @@ func (a *ActivityStreamAdapter) Observe(rt *sprawlrt.UnifiedRuntime) {
 		a.subscribe(rt)
 	} else {
 		a.events = nil
+		a.done = nil
 	}
 }
 
@@ -87,6 +89,7 @@ func (a *ActivityStreamAdapter) Cancel() {
 		a.unsubscribe = nil
 	}
 	a.events = nil
+	a.done = nil
 }
 
 // Epoch returns the current adapter generation counter; bumped on every
@@ -99,22 +102,36 @@ func (a *ActivityStreamAdapter) Epoch() uint64 {
 
 // WaitForEvent returns a tea.Cmd that blocks on the next runtime event and
 // returns it as an ActivityStreamMsg-bearing tea.Msg. Returns
-// SessionErrorMsg{io.EOF} once the subscription is cancelled and the channel
-// drained. Non-protocol events are skipped silently.
+// ActivityStreamClosedMsg once the subscription is cancelled and the channel
+// drained (QUM-479: dedicated sentinel — must NOT use SessionErrorMsg{io.EOF},
+// which is reserved for the bridge adapter). Non-protocol events are skipped
+// silently.
 func (a *ActivityStreamAdapter) WaitForEvent() tea.Cmd {
 	return func() tea.Msg {
 		for {
 			a.mu.Lock()
 			ch := a.events
+			done := a.done
 			cancelled := a.cancelled
 			epochAtRead := a.epoch
 			a.mu.Unlock()
 
 			if cancelled || ch == nil {
-				return SessionErrorMsg{Err: io.EOF}
+				return ActivityStreamClosedMsg{Epoch: epochAtRead}
 			}
 
-			ev, ok := <-ch
+			var (
+				ev sprawlrt.RuntimeEvent
+				ok bool
+			)
+			select {
+			case ev, ok = <-ch:
+			case <-done:
+				// QUM-479: runtime stopped — surface the closed sentinel
+				// rather than block forever waiting on a channel that may
+				// never be closed by the EventBus itself.
+				return ActivityStreamClosedMsg{Epoch: epochAtRead}
+			}
 			if !ok {
 				a.mu.Lock()
 				swapped := a.epoch != epochAtRead && !a.cancelled && a.events != nil
@@ -122,7 +139,7 @@ func (a *ActivityStreamAdapter) WaitForEvent() tea.Cmd {
 				if swapped {
 					continue
 				}
-				return SessionErrorMsg{Err: io.EOF}
+				return ActivityStreamClosedMsg{Epoch: epochAtRead}
 			}
 
 			if ev.Type != sprawlrt.EventProtocolMessage || ev.Message == nil {

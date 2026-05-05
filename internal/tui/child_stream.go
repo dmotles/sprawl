@@ -9,7 +9,6 @@
 package tui
 
 import (
-	"io"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -30,6 +29,7 @@ type ChildStreamAdapter struct {
 	mu          sync.Mutex
 	rt          *sprawlrt.UnifiedRuntime
 	events      <-chan sprawlrt.RuntimeEvent
+	done        <-chan struct{}
 	unsubscribe func()
 	cancelled   bool
 	epoch       uint64
@@ -49,6 +49,7 @@ func NewChildStreamAdapter(rt *sprawlrt.UnifiedRuntime) *ChildStreamAdapter {
 func (a *ChildStreamAdapter) subscribe(rt *sprawlrt.UnifiedRuntime) {
 	ch, unsub := rt.EventBus().Subscribe(childStreamAdapterBufferSize)
 	a.events = ch
+	a.done = rt.Done()
 	a.unsubscribe = unsub
 	a.epoch++
 }
@@ -68,6 +69,7 @@ func (a *ChildStreamAdapter) Observe(rt *sprawlrt.UnifiedRuntime) {
 		a.subscribe(rt)
 	} else {
 		a.events = nil
+		a.done = nil
 	}
 }
 
@@ -84,26 +86,39 @@ func (a *ChildStreamAdapter) Cancel() {
 		a.unsubscribe = nil
 	}
 	a.events = nil
+	a.done = nil
 }
 
 // WaitForEvent returns a tea.Cmd that blocks on the next runtime event and
 // returns it as a tea.Msg suitable for routing to a child viewport. Returns
-// SessionErrorMsg{io.EOF} once the subscription is cancelled and the channel
-// drained.
+// ChildStreamClosedMsg once the subscription is cancelled and the channel
+// drained (QUM-479: dedicated sentinel — must NOT use SessionErrorMsg{io.EOF},
+// which is reserved for the bridge adapter).
 func (a *ChildStreamAdapter) WaitForEvent() tea.Cmd {
 	return func() tea.Msg {
 		for {
 			a.mu.Lock()
 			ch := a.events
+			done := a.done
 			cancelled := a.cancelled
 			epochAtRead := a.epoch
 			a.mu.Unlock()
 
 			if cancelled || ch == nil {
-				return SessionErrorMsg{Err: io.EOF}
+				return ChildStreamClosedMsg{Epoch: epochAtRead}
 			}
 
-			ev, ok := <-ch
+			var (
+				ev sprawlrt.RuntimeEvent
+				ok bool
+			)
+			select {
+			case ev, ok = <-ch:
+			case <-done:
+				// QUM-479: runtime stopped — surface the closed sentinel
+				// rather than block forever.
+				return ChildStreamClosedMsg{Epoch: epochAtRead}
+			}
 			if !ok {
 				a.mu.Lock()
 				swapped := a.epoch != epochAtRead && !a.cancelled && a.events != nil
@@ -111,7 +126,7 @@ func (a *ChildStreamAdapter) WaitForEvent() tea.Cmd {
 				if swapped {
 					continue
 				}
-				return SessionErrorMsg{Err: io.EOF}
+				return ChildStreamClosedMsg{Epoch: epochAtRead}
 			}
 
 			switch ev.Type {
