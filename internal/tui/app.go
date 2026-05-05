@@ -734,33 +734,51 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !msg.IsError && strings.TrimSpace(msg.Result) != "" && !root.HasPendingAssistant() {
 			root.AppendAssistantChunk(strings.TrimSpace(msg.Result))
 		}
-		root.FinalizeAssistantMessage()
+		// Finalize the assistant chunk before appending status/error so the
+		// last-entry probe in FinalizeAssistantMessage still sees an
+		// assistant entry.
+		finalizeCmd := m.finalizeTurn()
 		if msg.IsError {
 			root.AppendError(fmt.Sprintf("Error: %s", msg.Result))
 		} else {
 			root.AppendStatus(fmt.Sprintf("Completed in %dms, cost $%.4f", msg.DurationMs, msg.TotalCostUsd))
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
 		}
-		m.setTurnState(TurnIdle)
 		var costCmd tea.Cmd
 		if msg.TotalCostUsd > 0 && m.sprawlRoot != "" && m.rootAgent != "" {
 			costCmd = persistCostCmd(m.sprawlRoot, m.rootAgent, msg.TotalCostUsd)
 		}
-		// QUM-340: auto-fire any queued submit by re-dispatching a SubmitMsg
-		// through the same code path as a real Enter. Clear the slot + the
-		// indicator before dispatching so re-entry sees a clean state.
-		if m.pendingSubmit != "" {
-			queued := m.pendingSubmit
-			m.pendingSubmit = ""
-			m.input.SetPendingPreview("")
-			return m, tea.Batch(costCmd, sendMsgCmd(SubmitMsg{Text: queued}))
+		if costCmd != nil && finalizeCmd != nil {
+			return m, tea.Batch(costCmd, finalizeCmd)
 		}
-		// QUM-399: in continuous-bridge mode (UnifiedRuntime/TUIAdapter) the
-		// event stream keeps emitting after a turn ends (e.g. when an
-		// InterruptDelivery enqueues a new item that triggers another turn).
-		// Keep WaitForEvent running so we don't park the event pump.
-		if m.bridge != nil && m.bridge.IsContinuous() {
-			return m, tea.Batch(costCmd, m.bridge.WaitForEvent())
+		if finalizeCmd != nil {
+			return m, finalizeCmd
+		}
+		return m, costCmd
+
+	case InterruptCompletedMsg:
+		// QUM-475: terminal interrupted-turn event from the unified runtime.
+		// Mirror SessionResultMsg cleanup so the TUI returns to TurnIdle and
+		// the queue-drain gate re-opens.
+		root := m.rootVP()
+		if strings.TrimSpace(msg.Result) != "" && !root.HasPendingAssistant() {
+			root.AppendAssistantChunk(strings.TrimSpace(msg.Result))
+		}
+		// Finalize before status append (see SessionResultMsg comment).
+		finalizeCmd := m.finalizeTurn()
+		root.AppendStatus(fmt.Sprintf("Interrupted (%dms)", msg.DurationMs))
+		var costCmd tea.Cmd
+		if msg.TotalCostUsd > 0 {
+			m.statusBar.SetTurnCost(msg.TotalCostUsd)
+			if m.sprawlRoot != "" && m.rootAgent != "" {
+				costCmd = persistCostCmd(m.sprawlRoot, m.rootAgent, msg.TotalCostUsd)
+			}
+		}
+		if costCmd != nil && finalizeCmd != nil {
+			return m, tea.Batch(costCmd, finalizeCmd)
+		}
+		if finalizeCmd != nil {
+			return m, finalizeCmd
 		}
 		return m, costCmd
 
@@ -780,12 +798,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorDialog = NewErrorDialog(&m.theme, msg.Err)
 			m.errorDialog.SetSize(m.width, m.height)
 			m.showError = true
-			m.setTurnState(TurnIdle)
-			return m, nil
+			return m, m.finalizeTurn()
 		}
 		m.rootVP().AppendError(msg.Err.Error())
-		m.setTurnState(TurnIdle)
-		return m, nil
+		return m, m.finalizeTurn()
 
 	case HandoffRequestedMsg:
 		// Weave invoked the handoff MCP tool. Reuse the EOF restart
@@ -963,8 +979,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case InterruptResultMsg:
 		// QUM-380: the interrupt request was dispatched; show the outcome.
-		// Do NOT force TurnIdle here — the protocol will deliver a
-		// SessionResultMsg or SessionErrorMsg when Claude actually stops.
+		// Request-ack only — does not transition turnState; terminal cleanup
+		// happens in InterruptCompletedMsg (QUM-475).
 		if msg.Err != nil {
 			m.rootVP().AppendStatus(fmt.Sprintf("Interrupt failed: %v", msg.Err))
 		} else {
@@ -1487,6 +1503,41 @@ func (m *AppModel) setTurnState(state TurnState) {
 	m.turnState = state
 	m.statusBar.SetTurnState(state)
 	m.rebuildTree()
+}
+
+// finalizeTurn is the single chokepoint for terminal turn cleanup (QUM-475).
+// Every terminal handler (SessionResultMsg, InterruptCompletedMsg, error/abort
+// paths) must call this so the TUI returns to TurnIdle, the streaming
+// assistant message is finalized, any queued submit auto-fires, and
+// continuous-bridge event pumps stay armed. Returns a tea.Cmd (possibly nil)
+// that the caller should batch with kind-specific cmds.
+func (m *AppModel) finalizeTurn() tea.Cmd {
+	m.rootVP().FinalizeAssistantMessage()
+	m.setTurnState(TurnIdle)
+	var cmds []tea.Cmd
+	// QUM-340: auto-fire any queued submit by re-dispatching a SubmitMsg
+	// through the same code path as a real Enter. Clear the slot + the
+	// indicator before dispatching so re-entry sees a clean state.
+	if m.pendingSubmit != "" {
+		queued := m.pendingSubmit
+		m.pendingSubmit = ""
+		m.input.SetPendingPreview("")
+		cmds = append(cmds, sendMsgCmd(SubmitMsg{Text: queued}))
+	}
+	// QUM-399: in continuous-bridge mode (UnifiedRuntime/TUIAdapter) the
+	// event stream keeps emitting after a turn ends. Keep WaitForEvent
+	// running so we don't park the event pump.
+	if m.bridge != nil && m.bridge.IsContinuous() {
+		cmds = append(cmds, m.bridge.WaitForEvent())
+	}
+	switch len(cmds) {
+	case 0:
+		return nil
+	case 1:
+		return cmds[0]
+	default:
+		return tea.Batch(cmds...)
+	}
 }
 
 // PreloadTranscript replaces the viewport's message buffer with the given

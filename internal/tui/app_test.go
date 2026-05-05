@@ -3039,6 +3039,11 @@ func TestAppModel_InterruptResultMsg_ShowsStatus(t *testing.T) {
 	if !found {
 		t.Error("InterruptResultMsg should append a status message about the interrupt")
 	}
+	// QUM-475: the request-ack path must NOT transition turnState. Only the
+	// terminal InterruptCompletedMsg / SessionResultMsg events finalize a turn.
+	if app.turnState != TurnStreaming {
+		t.Errorf("InterruptResultMsg (request-ack) must not change turnState; got %v, want TurnStreaming", app.turnState)
+	}
 }
 
 func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
@@ -3059,6 +3064,230 @@ func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
 	}
 	if !found {
 		t.Error("InterruptResultMsg with error should show the error in status")
+	}
+	// QUM-475: even on the error branch, the request-ack must not finalize.
+	if app.turnState != TurnStreaming {
+		t.Errorf("InterruptResultMsg with error must not change turnState; got %v, want TurnStreaming", app.turnState)
+	}
+}
+
+// QUM-475: InterruptCompletedMsg is the new TERMINAL message dispatched by
+// the TUIAdapter when EventInterrupted fires (i.e. the interrupted turn has
+// drained). It must drive the same finalize behavior as SessionResultMsg:
+// move turnState back to TurnIdle, finalize any pending assistant chunk, and
+// fire pendingSubmit / drain side effects.
+func TestAppModel_InterruptCompletedMsg_ReturnsToIdle(t *testing.T) {
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+	// Plant a pending assistant chunk so we can assert it's finalized.
+	app.rootVP().AppendAssistantChunk("partial response ")
+
+	updated, _ := app.Update(InterruptCompletedMsg{Result: "stopped", DurationMs: 5})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v, want TurnIdle (InterruptCompletedMsg must finalize)", app.turnState)
+	}
+	if app.rootVP().HasPendingAssistant() {
+		t.Errorf("InterruptCompletedMsg must finalize pending assistant message, but HasPendingAssistant() is still true")
+	}
+}
+
+func TestAppModel_InterruptCompletedMsg_DispatchesQueuedSubmit(t *testing.T) {
+	app := busyAppWithBridge(t)
+	app.pendingSubmit = "hello"
+	app.input.SetPendingPreview("hello")
+
+	updated, cmd := app.Update(InterruptCompletedMsg{})
+	app = updated.(AppModel)
+
+	if app.pendingSubmit != "" {
+		t.Errorf("pendingSubmit should be cleared after auto-fire, got %q", app.pendingSubmit)
+	}
+	if app.input.PendingPreview() != "" {
+		t.Errorf("input pending preview should be cleared, got %q", app.input.PendingPreview())
+	}
+	if cmd == nil {
+		t.Fatal("InterruptCompletedMsg with queued submit should return a cmd dispatching SubmitMsg")
+	}
+	resolved := cmd()
+	// The cmd may be a tea.Batch; if so we walk it. Since SessionResultMsg's
+	// equivalent test (TestAppModel_SessionResultMsg_DispatchesPendingSubmit)
+	// asserts directly on the resolved msg, we mirror that expectation.
+	if subMsg, ok := resolved.(SubmitMsg); ok {
+		if subMsg.Text != "hello" {
+			t.Errorf("dispatched SubmitMsg.Text = %q, want %q", subMsg.Text, "hello")
+		}
+		return
+	}
+	// Fallback: a tea.BatchMsg-like aggregate. Walk it.
+	if batch, ok := resolved.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c == nil {
+				continue
+			}
+			if subMsg, ok := c().(SubmitMsg); ok {
+				if subMsg.Text == "hello" {
+					return
+				}
+			}
+		}
+	}
+	t.Fatalf("InterruptCompletedMsg cmd did not produce SubmitMsg{Text:hello}; got %T", resolved)
+}
+
+// QUM-475: when the interrupt completes the AppModel is back to idle, so the
+// next 2s tick (or any peekAndDrain) should see TurnIdle and be free to drain
+// queued inbox entries. Here we assert directly on the post-Update state: no
+// pendingSubmit, turnState=TurnIdle. The "drain fires next tick" coupling is
+// exercised by TestAppModel_AgentTreeMsg_*, which gates drainCmd on
+// `m.turnState == TurnIdle`.
+func TestAppModel_InterruptCompletedMsg_LeavesAppDrainable(t *testing.T) {
+	app := busyAppWithBridge(t)
+
+	updated, _ := app.Update(InterruptCompletedMsg{})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Fatalf("turnState = %v, want TurnIdle so the next tick can drain", app.turnState)
+	}
+	if app.pendingSubmit != "" {
+		t.Errorf("pendingSubmit = %q, want empty", app.pendingSubmit)
+	}
+}
+
+// QUM-475: an InboxArrivalMsg arriving DURING an in-flight interrupt (turnState
+// still TurnStreaming) must append a banner but NOT drain (drains require
+// idle). When the InterruptCompletedMsg subsequently arrives, the AppModel
+// must transition to TurnIdle so the very next tickAgentsCmd can drain. This
+// is the wedge scenario from docs/forensics/tui-weave-wedge-2026-05-05.md.
+func TestAppModel_InterruptCompletedMsg_NotificationDuringInterruptPending(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	seedUnreadForWeave(t, sprawlRoot, 1)
+
+	mock := newMockSession()
+	bridge := NewBridge(context.Background(), mock)
+	sup := &mockSupervisor{}
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, sup, sprawlRoot, nil)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app.turnState = TurnStreaming
+
+	// Notification first — banner appends, but no drain because non-idle.
+	updated, _ := app.Update(InboxArrivalMsg{From: "child", Subject: "ping"})
+	app = updated.(AppModel)
+	if app.turnState != TurnStreaming {
+		t.Fatalf("InboxArrivalMsg must not change turnState mid-interrupt; got %v", app.turnState)
+	}
+
+	// Now the interrupt drains.
+	updated, _ = app.Update(InterruptCompletedMsg{})
+	app = updated.(AppModel)
+	if app.turnState != TurnIdle {
+		t.Fatalf("after InterruptCompletedMsg turnState = %v, want TurnIdle", app.turnState)
+	}
+}
+
+// QUM-475: the SessionResultMsg path re-arms the continuous-bridge
+// WaitForEvent (see app.go:762). The InterruptCompletedMsg path must do the
+// same so we don't park the event pump after a user-initiated interrupt.
+// This test guards the existence of a finalizeTurn helper that both code
+// paths share. If the helper is missing, the test fails to compile.
+func TestAppModel_finalizeTurn_RearmsContinuousBridge(t *testing.T) {
+	delegate := &continuousFakeDelegate{}
+	bridge := NewBridgeFromDelegate(delegate)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+
+	cmd := app.finalizeTurn()
+	if cmd == nil {
+		t.Fatal("finalizeTurn() returned nil cmd; expected a re-arm cmd when bridge is continuous")
+	}
+	if delegate.waitCalls == 0 {
+		t.Errorf("finalizeTurn() should re-arm WaitForEvent on a continuous bridge; waitCalls = 0")
+	}
+}
+
+// QUM-475: SessionErrorMsg (non-EOF) is a terminal handler too. It must route
+// through finalizeTurn so a queued pendingSubmit auto-fires and the
+// continuous-bridge event pump stays armed — mirroring SessionResultMsg /
+// InterruptCompletedMsg behavior. The EOF branch is exempt: it triggers a
+// session restart, not idle, and is covered by the EOF_AutoRestarts tests.
+func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
+	delegate := &continuousFakeDelegate{}
+	bridge := NewBridgeFromDelegate(delegate)
+	app := readyAppWithBridge(t, bridge)
+	app.turnState = TurnStreaming
+	app.pendingSubmit = "queued"
+	app.input.SetPendingPreview("queued")
+
+	updated, cmd := app.Update(SessionErrorMsg{Err: fmt.Errorf("non-eof failure")})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Fatalf("turnState = %v, want TurnIdle after finalizeTurn", app.turnState)
+	}
+	if app.pendingSubmit != "" {
+		t.Errorf("pendingSubmit = %q, want empty (finalizeTurn should clear it)", app.pendingSubmit)
+	}
+	if app.input.PendingPreview() != "" {
+		t.Errorf("input pending preview = %q, want empty", app.input.PendingPreview())
+	}
+	if !app.showError {
+		t.Error("streaming non-EOF error must still show the error dialog")
+	}
+	if cmd == nil {
+		t.Fatal("SessionErrorMsg with queued submit + continuous bridge should return a cmd")
+	}
+
+	// Walk the resolved cmd looking for the dispatched SubmitMsg.
+	resolved := cmd()
+	foundSubmit := false
+	if subMsg, ok := resolved.(SubmitMsg); ok && subMsg.Text == "queued" {
+		foundSubmit = true
+	} else if batch, ok := resolved.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c == nil {
+				continue
+			}
+			if subMsg, ok := c().(SubmitMsg); ok && subMsg.Text == "queued" {
+				foundSubmit = true
+				break
+			}
+		}
+	}
+	if !foundSubmit {
+		t.Errorf("SessionErrorMsg cmd did not dispatch SubmitMsg{Text:queued}; got %T", resolved)
+	}
+	if delegate.waitCalls == 0 {
+		t.Error("SessionErrorMsg should re-arm WaitForEvent on a continuous bridge")
+	}
+}
+
+// QUM-475: SessionErrorMsg (non-EOF) from idle state — no dialog, viewport
+// gets the error, finalizeTurn still re-arms the continuous bridge.
+func TestAppModel_SessionErrorMsg_FromIdle_FinalizesTurn(t *testing.T) {
+	delegate := &continuousFakeDelegate{}
+	bridge := NewBridgeFromDelegate(delegate)
+	app := readyAppWithBridge(t, bridge)
+	// turnState is TurnIdle by default.
+
+	updated, cmd := app.Update(SessionErrorMsg{Err: fmt.Errorf("non-eof failure")})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Fatalf("turnState = %v, want TurnIdle", app.turnState)
+	}
+	if app.showError {
+		t.Error("non-streaming SessionErrorMsg must NOT show the error dialog")
+	}
+	if cmd == nil {
+		t.Fatal("SessionErrorMsg should re-arm WaitForEvent on a continuous bridge")
+	}
+	if delegate.waitCalls == 0 {
+		t.Error("SessionErrorMsg from idle should re-arm WaitForEvent on a continuous bridge")
 	}
 }
 

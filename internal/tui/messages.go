@@ -250,10 +250,24 @@ type ChildTranscriptMsg struct {
 }
 
 // InterruptResultMsg signals the outcome of a bridge.Interrupt() call triggered
-// by the user pressing ESC during a streaming/thinking turn (QUM-380). Err is
-// non-nil if the interrupt request failed at the transport level.
+// by the user pressing ESC during a streaming/thinking turn (QUM-380).
+// Request-ack only — see InterruptCompletedMsg for terminal. Err is non-nil if
+// the interrupt request failed at the transport level.
 type InterruptResultMsg struct {
 	Err error
+}
+
+// InterruptCompletedMsg signals a turn was terminated by an interrupt and the
+// runtime has finished draining it. Sibling of SessionResultMsg — its handler
+// must drive full turn cleanup (TurnIdle + finalize + re-arm + queue drain).
+// Distinct from InterruptResultMsg, which is the request-ack fired when
+// bridge.Interrupt() returns (Esc handler feedback only).
+// Currently emitted only by the unified-runtime TUIAdapter.
+type InterruptCompletedMsg struct {
+	Result       string
+	DurationMs   int
+	NumTurns     int
+	TotalCostUsd float64
 }
 
 // ConsolidationPhaseMsg signals a phase change in the background consolidation
