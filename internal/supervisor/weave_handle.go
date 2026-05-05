@@ -21,7 +21,6 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/inboxprompt"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 )
 
@@ -90,37 +89,17 @@ func (h *WeaveRuntimeHandle) Wake() error {
 	return nil
 }
 
-// InterruptDelivery flushes any pending agentloop entries into the runtime
-// queue (split by class, with formatted prompts) and calls
-// UnifiedRuntime.InterruptDelivery to wake the loop. Mirrors
-// unifiedHandle.InterruptDelivery (QUM-437).
+// InterruptDelivery is wake-only — pending entries are intentionally left on
+// disk for the TUI's peekAndDrainCmd to drain so the inbox banner and body
+// render in the viewport. See QUM-471.
+//
+// This diverges from unifiedHandle.InterruptDelivery (children), which still
+// flushes pending entries into the runtime queue from the handle: child
+// agents have no TUI poller, so the handle-side enqueue is their only drain
+// path. For weave, the TUI's peekAndDrainCmd (every 2s on AgentTreeMsg while
+// turnState == TurnIdle) handles AppendSystemMessage(prompt) → bridge.SendMessage
+// which enqueues a ClassUser item via TUIAdapter.SendMessage.
 func (h *WeaveRuntimeHandle) InterruptDelivery() error {
-	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
-	if err == nil && len(pending) > 0 {
-		interrupts, asyncs := inboxprompt.SplitByClass(pending)
-		if len(interrupts) > 0 {
-			ids := make([]string, 0, len(interrupts))
-			for _, e := range interrupts {
-				ids = append(ids, e.ID)
-			}
-			h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-				Class:    runtimepkg.ClassInterrupt,
-				Prompt:   inboxprompt.BuildInterruptFlushPrompt(interrupts),
-				EntryIDs: ids,
-			})
-		}
-		if len(asyncs) > 0 {
-			ids := make([]string, 0, len(asyncs))
-			for _, e := range asyncs {
-				ids = append(ids, e.ID)
-			}
-			h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-				Class:    runtimepkg.ClassInbox,
-				Prompt:   inboxprompt.BuildQueueFlushPrompt(asyncs),
-				EntryIDs: ids,
-			})
-		}
-	}
 	return h.rt.InterruptDelivery(context.Background())
 }
 
