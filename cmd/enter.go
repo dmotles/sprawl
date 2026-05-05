@@ -330,6 +330,31 @@ func buildEnterInitSpec(bridge backend.ToolBridge) backend.InitSpec {
 	}
 }
 
+// supervisorMCPBridge returns the host-scoped MCP bridge owned by sup.
+// If the supervisor exposes an MCPBridge() accessor (the production
+// *supervisor.Real does after QUM-467) and it returns non-nil, that
+// instance is reused. Otherwise we fall back to building a fresh bridge
+// (legacy/test-double path). Reusing the supervisor-owned bridge is the
+// fix for child agents losing MCP after a weave-claude restart: the bridge
+// must outlive the weave-claude session.
+func supervisorMCPBridge(sup supervisor.Supervisor) backend.ToolBridge {
+	type mcpBridgeAccessor interface {
+		MCPBridge() backend.ToolBridge
+	}
+	if acc, ok := sup.(mcpBridgeAccessor); ok {
+		if b := acc.MCPBridge(); b != nil {
+			return b
+		}
+	}
+	// Fallback: construct a fresh bridge with the sprawl server registered.
+	// Hit only when sup is a test double or the supervisor was constructed
+	// without going through newSupervisor's wiring.
+	mcpServer := sprawlmcp.New(sup)
+	bridge := host.NewMCPBridge()
+	bridge.Register("sprawl", mcpServer)
+	return bridge
+}
+
 // buildSessionEnv returns the environment variables for the Claude Code subprocess.
 func buildSessionEnv() []string {
 	return append(os.Environ(),
@@ -410,9 +435,11 @@ func newSessionImplUnified(sprawlRoot string, sup supervisor.Supervisor, forceFr
 		fmt.Fprintf(logW, "[enter] starting session %s (unified)\n", prepared.SessionID)
 	}
 
-	mcpServer := sprawlmcp.New(sup)
-	mcpBridge := host.NewMCPBridge()
-	mcpBridge.Register("sprawl", mcpServer)
+	// QUM-467: reuse the supervisor's host-scoped MCP bridge instead of
+	// constructing a fresh one here. Each weave-claude restart routes back
+	// through this function; constructing a new bridge per invocation
+	// severed any child agent already registered against the prior bridge.
+	mcpBridge := supervisorMCPBridge(sup)
 
 	adapter := backendclaude.NewAdapter(backendclaude.Config{})
 	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure))
@@ -495,9 +522,11 @@ func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh boo
 	// Creating a second supervisor here would give the handoff MCP
 	// tool its own HandoffRequested channel, which the TUI listener never
 	// drains — the QUM-329 regression.
-	mcpServer := sprawlmcp.New(sup)
-	mcpBridge := host.NewMCPBridge()
-	mcpBridge.Register("sprawl", mcpServer)
+	//
+	// QUM-467: reuse the supervisor's host-scoped MCP bridge installed by
+	// newSupervisor. Building a fresh bridge per weave-launch would sever
+	// children that registered against the prior instance.
+	mcpBridge := supervisorMCPBridge(sup)
 
 	adapter := backendclaude.NewAdapter(backendclaude.Config{})
 	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure))

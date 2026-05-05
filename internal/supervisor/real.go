@@ -65,6 +65,16 @@ type Real struct {
 	handoffWriteSessionSummary func(sprawlRoot string, session memory.Session, body string) error
 	handoffWriteSignalFile     func(sprawlRoot string) error
 	handoffNow                 func() time.Time
+
+	// mcpBridge is the host-scoped MCP tool bridge captured from the FIRST
+	// SetChildMCPConfig call (set-once). Subsequent calls update the runtime
+	// starter's allowed tools/InitSpec but do NOT replace the bridge that
+	// children and weave-self share. See QUM-467: previously cmd/enter.go's
+	// three weave-launch sites each constructed a fresh bridge, severing
+	// children that had registered against the original on weave-claude
+	// restart. Hoisting bridge identity onto the supervisor's lifetime fixes
+	// that.
+	mcpBridge backendpkg.ToolBridge
 }
 
 // NewReal creates a new real supervisor.
@@ -200,8 +210,32 @@ func (r *Real) RuntimeRegistry() *RuntimeRegistry {
 // SetChildMCPConfig updates the child runtime starter with the given MCP
 // init spec and allowed tools. Use this for two-phase init when the MCP
 // server needs a reference to the supervisor itself.
+//
+// Set-once bridge semantics (QUM-467): the FIRST call's initSpec.ToolBridge
+// is stashed into r.mcpBridge and is what MCPBridge() returns thereafter.
+// Subsequent calls still update the runtime starter (so allowed-tools
+// changes take effect for newly spawned children), but do NOT replace the
+// authoritative bridge identity. This preserves children's MCP path across
+// weave-claude restarts.
 func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []string) {
+	if r.mcpBridge == nil && initSpec.ToolBridge != nil {
+		r.mcpBridge = initSpec.ToolBridge
+	}
+	// Always re-flow the bridge field on the InitSpec to the canonical
+	// supervisor-owned bridge so the runtime starter wires children against
+	// it (the test-supplied subsequent bridge is intentionally ignored).
+	if r.mcpBridge != nil {
+		initSpec.ToolBridge = r.mcpBridge
+	}
 	r.runtimeStarter = newRuntimeStarter(initSpec, allowedTools)
+}
+
+// MCPBridge returns the host-scoped MCP tool bridge installed on this
+// supervisor. The bridge is captured from the first SetChildMCPConfig call
+// and reused across weave-claude restarts. Returns nil if no bridge has
+// been installed yet. See QUM-467.
+func (r *Real) MCPBridge() backendpkg.ToolBridge {
+	return r.mcpBridge
 }
 
 func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
