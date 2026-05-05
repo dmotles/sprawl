@@ -44,16 +44,28 @@ func TestWeaveRuntimeHandle_isUnifiedHandle_Marker(t *testing.T) {
 	}
 }
 
-// TestWeaveRuntimeHandle_InterruptDelivery_EnqueuesPendingEntries seeds
-// pending agentloop entries for weave on disk, then calls InterruptDelivery
-// and asserts the runtime delivers the resulting QueueItems via the
-// OnQueueItemDelivered callback. Mirrors the unifiedHandle equivalent
-// (TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt).
-func TestWeaveRuntimeHandle_InterruptDelivery_EnqueuesPendingEntries(t *testing.T) {
+// TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain
+// pins QUM-471: under the unified runtime, weave's WeaveRuntimeHandle.InterruptDelivery
+// must NOT enqueue ClassInbox/ClassInterrupt QueueItems against the runtime's queue.
+// The TUI's peekAndDrainCmd (a 2s disk-poll backstop fired on AgentTreeMsg while
+// idle) is the sole drain pipeline for weave's inbox: it reads pending entries
+// from disk, calls AppendSystemMessage(prompt), and routes through bridge.SendMessage
+// so the prompt body is rendered in the viewport.
+//
+// If InterruptDelivery enqueues directly, the runtime's TurnLoop pulls the
+// QueueItem and emits EventTurnStarted{Prompt} — but TUIAdapter.WaitForEvent
+// skips EventTurnStarted, so the prompt body never reaches the viewport. The
+// 2s peek-and-drain backstop loses the race, leaving the inbox prompt body
+// invisible (only the "[inbox]" banner shows up — see audit doc).
+//
+// Contract: pending entries on disk MUST remain in pending/ after
+// InterruptDelivery returns; the runtime queue MUST be empty.
+func TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	const name = "weave"
 
-	// Seed an async pending entry so SplitByClass yields a single inbox item.
+	// Seed an async pending entry. Under the old (buggy) behavior, this would
+	// be drained into a ClassInbox QueueItem by InterruptDelivery.
 	if _, err := agentloop.Enqueue(sprawlRoot, name, agentloop.Entry{
 		ID:      "id-async-1",
 		ShortID: "sa1",
@@ -65,16 +77,12 @@ func TestWeaveRuntimeHandle_InterruptDelivery_EnqueuesPendingEntries(t *testing.
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	captured := newDeliveredItemsCapture()
 	mock := newFakeBackendSession("sess-weave", backendpkg.Capabilities{})
 	rt := runtimepkg.New(runtimepkg.RuntimeConfig{
 		Name:       name,
 		SprawlRoot: sprawlRoot,
 		Session:    mock,
 		IsRoot:     true,
-		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
-			captured.record(it)
-		},
 	})
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatalf("rt.Start: %v", err)
@@ -94,40 +102,70 @@ func TestWeaveRuntimeHandle_InterruptDelivery_EnqueuesPendingEntries(t *testing.
 		t.Fatalf("InterruptDelivery: %v", err)
 	}
 
-	items := captured.waitFor(1, 2*time.Second)
-	if len(items) != 1 {
-		t.Fatalf("delivered items = %d, want 1", len(items))
+	// Note on wake-signal preservation (test-critic feedback on commit 8d1c496):
+	// This test only asserts the negative contract (no enqueue, pending stays
+	// on disk). The post-fix handle still needs to call rt.InterruptDelivery(ctx)
+	// — the runtime's contractual wake entry-point — so an idle TurnLoop wakes
+	// when peekAndDrainCmd later enqueues a ClassUser item via bridge.SendMessage.
+	//
+	// The wake call is exercised indirectly by the QUM-462 sibling test
+	// _TerminalEventIsCompleted_NotInterrupted below: it manually enqueues a
+	// ClassUser item and then calls h.InterruptDelivery, observing
+	// EventTurnCompleted within 2s. That observation depends on the wake firing
+	// (or, more precisely, on rt.InterruptDelivery's idempotent path against an
+	// idle runtime, which still nudges the TurnLoop). If a future refactor
+	// dropped the rt.InterruptDelivery(ctx) call entirely from the handle, the
+	// sibling test would still pass because runtime.MessageQueue.Enqueue itself
+	// calls Wake() (see queue.go) — so neither test pins the wake call as a
+	// load-bearing line in isolation. Pinning it would require either a spy on
+	// rt.InterruptDelivery or a runtime fixture with Enqueue's internal Wake
+	// disabled, both higher-cost than the bug class warrants. Acceptable per
+	// critic feedback: the contract entry-point is documented here and the
+	// sibling test catches the gross "handle-doesn't-wake-runtime" regression
+	// via its 2s timeout.
+	//
+	// Allow any (incorrect) enqueue + dispatch to occur. If the bug is
+	// present, the runtime would dequeue & dispatch the item, dropping
+	// queue.Len() back to 0 — so we sample multiple times to catch the
+	// transient enqueue too.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if rt.Queue().Len() != 0 {
+			t.Fatalf("rt.Queue().Len() = %d, want 0 (QUM-471: WeaveRuntimeHandle.InterruptDelivery must NOT enqueue — pending entries must remain on disk for peekAndDrainCmd to render via AppendSystemMessage)", rt.Queue().Len())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	if items[0].Class != runtimepkg.ClassInbox {
-		t.Errorf("Class = %q, want %q", items[0].Class, runtimepkg.ClassInbox)
+
+	// Pending entries on disk must remain (NOT marked delivered) — they are
+	// the peek-and-drain pipeline's input.
+	pending, err := agentloop.ListPending(sprawlRoot, name)
+	if err != nil {
+		t.Fatalf("ListPending: %v", err)
 	}
-	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != "id-async-1" {
-		t.Errorf("EntryIDs = %v, want [id-async-1]", items[0].EntryIDs)
+	if len(pending) != 1 {
+		t.Fatalf("ListPending = %d entries, want 1 (QUM-471: handle must not consume pending entries — peekAndDrainCmd owns that)", len(pending))
+	}
+	if pending[0].ID != "id-async-1" {
+		t.Errorf("pending[0].ID = %q, want %q", pending[0].ID, "id-async-1")
 	}
 }
 
 // TestWeaveRuntimeHandle_InterruptDelivery_TerminalEventIsCompleted_NotInterrupted
-// pins QUM-462: when WeaveRuntimeHandle.InterruptDelivery is invoked against an
-// idle runtime (the canonical inbox-arrival wake), the resulting turn must
-// terminate as EventTurnCompleted, not EventInterrupted. The earlier
-// regression armed UnifiedRuntime.pendingInterrupt against an idle runtime
-// inside InterruptDelivery, which caused the wrapper's next StartTurn to
-// immediately interrupt itself — banner appeared but Claude never actually
-// processed the inbox.
+// pins QUM-462 (preserved post-QUM-471): when WeaveRuntimeHandle.InterruptDelivery
+// is invoked against an idle runtime (the canonical inbox-arrival wake), it must
+// not arm UnifiedRuntime.pendingInterrupt — so a subsequent turn (driven by a
+// queued ClassUser item, which simulates what peekAndDrainCmd → bridge.SendMessage
+// does under unified mode) terminates as EventTurnCompleted, not EventInterrupted.
+//
+// Restructure note (QUM-471): under the new contract, InterruptDelivery no longer
+// enqueues anything itself. To exercise the wake-vs-pendingInterrupt invariant,
+// we manually enqueue a ClassUser item BEFORE calling InterruptDelivery. The
+// invariant being pinned is: rt.InterruptDelivery(ctx) is the exclusive wake
+// call from the handle, and it must NOT arm pendingInterrupt against an idle
+// runtime — even when a user item is then dispatched.
 func TestWeaveRuntimeHandle_InterruptDelivery_TerminalEventIsCompleted_NotInterrupted(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	const name = "weave"
-
-	if _, err := agentloop.Enqueue(sprawlRoot, name, agentloop.Entry{
-		ID:      "id-async-1",
-		ShortID: "sa1",
-		Class:   agentloop.ClassAsync,
-		From:    "child",
-		Subject: "status",
-		Body:    "all green",
-	}); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
 
 	inner := newFakeBackendSession("sess-weave", backendpkg.Capabilities{})
 	mock := &resultEmittingSession{fakeBackendSession: inner}
@@ -165,6 +203,15 @@ func TestWeaveRuntimeHandle_InterruptDelivery_TerminalEventIsCompleted_NotInterr
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+
+	// QUM-471: post-fix WeaveRuntimeHandle.InterruptDelivery does NOT enqueue
+	// anything itself. To drive a turn — so we can observe its terminal event
+	// — manually enqueue a ClassUser item, simulating what peekAndDrainCmd
+	// does in production via bridge.SendMessage under unified mode.
+	rt.Queue().Enqueue(runtimepkg.QueueItem{
+		Class:  runtimepkg.ClassUser,
+		Prompt: "simulated peekAndDrain user prompt",
+	})
 
 	if err := h.InterruptDelivery(); err != nil {
 		t.Fatalf("InterruptDelivery: %v", err)
