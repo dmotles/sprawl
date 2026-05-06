@@ -151,7 +151,19 @@ func (m AppModel) renderPanel(content string, w, h int, active bool) string {
 	} else {
 		style = m.theme.InactiveBorder
 	}
-	return style.Width(w).Height(h).Render(content)
+	// QUM-483: lipgloss treats Width/Height as minimums for the *content*
+	// area — a too-tall or too-wide content string grows the bordered panel
+	// past its declared size, breaking the composed JoinVertical layout and
+	// pushing the input bar off the bottom of the terminal. MaxWidth and
+	// MaxHeight clamp the *outer* (post-border) render, so we add the
+	// border's frame size to keep the visible panel at exactly (w+frame,
+	// h+frame) — matching the un-clamped behavior on well-sized content
+	// while truncating overflow.
+	return style.
+		Width(w).Height(h).
+		MaxWidth(w + style.GetHorizontalFrameSize()).
+		MaxHeight(h + style.GetVerticalFrameSize()).
+		Render(content)
 }
 
 // cachedMainRow memoizes lipgloss.JoinHorizontal of the tree+viewport(+activity)
