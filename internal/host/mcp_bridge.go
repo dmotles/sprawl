@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -67,7 +68,13 @@ func (b *MCPBridge) HandleIncoming(ctx context.Context, serverName string, msg j
 	}
 
 	if !hasID {
-		// Notification: return dummy success response
+		// Notification (no JSON-RPC id, e.g. notifications/initialized): the
+		// in-process server already received the message via HandleMessage above.
+		// Per Claude Code host protocol §11 (docs/reference/claude-code-host-protocol.md),
+		// the outer mcp_message control_request must still be acknowledged with a
+		// dummy successful mcp_response — id:0 / empty result is the canonical filler
+		// shown in the spec. This is wire-level filler, not delivered to any server,
+		// so it does not conflate notifications with id=0 requests downstream.
 		return json.RawMessage(`{"jsonrpc":"2.0","id":0,"result":{}}`), nil
 	}
 
@@ -93,6 +100,16 @@ func (b *MCPBridge) OnServerMessage(serverName string, jsonrpcID string, msg jso
 	b.mu.Unlock()
 
 	if ok {
-		ch <- msg
+		// Non-blocking send: if the waiter goroutine has already exited
+		// (timed out / context-cancelled) and the channel is unbuffered or
+		// already full, blocking here would leak the calling goroutine
+		// indefinitely. Drop the response instead — losing it is preferable
+		// to a permanent leak.
+		select {
+		case ch <- msg:
+		default:
+			slog.Warn("MCPBridge: dropped server message; waiter gone",
+				"server", serverName, "id", jsonrpcID)
+		}
 	}
 }

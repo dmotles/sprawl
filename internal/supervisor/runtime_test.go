@@ -152,12 +152,7 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 		t.Fatalf("Interrupt() error: %v", err)
 	}
 
-	rt.RecordQueuedTask(&state.Task{
-		ID:        "task-1",
-		Prompt:    "implement feature",
-		Status:    "queued",
-		CreatedAt: "2026-04-28T01:00:00Z",
-	})
+	rt.RecordQueuedTask()
 
 	updated := testAgentState("alice")
 	updated.LastReportState = "working"
@@ -391,12 +386,7 @@ func TestAgentRuntime_CancelSubscriptionStopsDeliveryWithoutClosingChannel(t *te
 
 	events, cancel := rt.Subscribe(1)
 	cancel()
-	rt.RecordQueuedTask(&state.Task{
-		ID:        "task-1",
-		Prompt:    "implement feature",
-		Status:    "queued",
-		CreatedAt: "2026-04-28T01:00:00Z",
-	})
+	rt.RecordQueuedTask()
 
 	select {
 	case _, ok := <-events:

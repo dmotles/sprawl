@@ -147,6 +147,31 @@ func TestMCPBridge_OnServerMessageNoPendingWaiter(t *testing.T) {
 	// Test passes if no panic
 }
 
+func TestMCPBridge_OnServerMessageDoesNotBlockWhenWaiterGone(t *testing.T) {
+	bridge := NewMCPBridge()
+
+	// Register a pending waiter with an unbuffered channel and no reader.
+	// This simulates the case where the waiter goroutine has already
+	// exited (timed out / context-cancelled) before the response arrives.
+	// Pre-fix, OnServerMessage blocks forever on the unbuffered send;
+	// post-fix it must return promptly and drop the response.
+	orphan := make(chan json.RawMessage)
+	bridge.AddPendingMCP("test-server", "lost", orphan)
+
+	done := make(chan struct{})
+	go func() {
+		bridge.OnServerMessage("test-server", "lost", json.RawMessage(`{"jsonrpc":"2.0","id":"lost","result":"orphan"}`))
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// expected: returned without a receiver
+	case <-time.After(time.Second):
+		t.Fatal("OnServerMessage blocked: deadlock when waiter is gone (channel send leaked)")
+	}
+}
+
 func TestMCPBridge_JSONRPCIDPreservation(t *testing.T) {
 	bridge := NewMCPBridge()
 
