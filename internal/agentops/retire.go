@@ -29,6 +29,10 @@ type RetireDeps struct {
 	GitUnmergedCommits  func(repoRoot, branchName string) ([]string, error)
 	LoadConfig          func(sprawlRoot string) (*config.Config, error)
 	RunScript           func(script, workDir string, env map[string]string) ([]byte, error)
+
+	// Checkpoint, if non-nil, is invoked at notable points during the
+	// retire for per-call observability (QUM-494). nil is allowed.
+	Checkpoint func(step string, kv ...any)
 }
 
 // Retire fully tears down an agent after its owning runtime has already been
@@ -89,7 +93,11 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 			ValidateCmd:    sprawlCfg.Validate,
 			AgentState:     agentState,
 		}
-		result, err := deps.DoMerge(cfg, deps.NewMergeDeps())
+		mergeDeps := deps.NewMergeDeps()
+		if mergeDeps != nil && deps.Checkpoint != nil {
+			mergeDeps.Checkpoint = deps.Checkpoint
+		}
+		result, err := deps.DoMerge(cfg, mergeDeps)
 		if err != nil {
 			return fmt.Errorf("merge before retire failed: %w", err)
 		}
@@ -174,12 +182,14 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 			return fmt.Errorf("agent %s has uncommitted changes in worktree; commit first or use --force to discard", agentName)
 		}
 	}
+	cpRetire(deps, "retire.preflight", "agent_name", agentName)
 
 	// Crash-safe checkpoint: mark as "retiring"
 	agentState.Status = "retiring"
 	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return fmt.Errorf("updating agent state: %w", err)
 	}
+	cpRetire(deps, "retire.checkpoint-saved", "agent_name", agentName)
 
 	// Run worktree teardown script if configured (before worktree removal)
 	runTeardownScript(deps, sprawlRoot, agentState)
@@ -188,6 +198,7 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 	if err := agent.RetireAgent(rd, sprawlRoot, agentState, force, false); err != nil {
 		return err
 	}
+	cpRetire(deps, "retire.worktree-removed", "agent_name", agentName)
 
 	// Clean up lock and poke files
 	lockPath := filepath.Join(sprawlRoot, ".sprawl", "locks", agentState.Name+".lock")
@@ -256,6 +267,13 @@ func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, 
 		if agentState.Branch != "" {
 			fmt.Fprintf(os.Stderr, "Warning: branch %s may contain unmerged commits. Use 'git branch -d %s' to delete if merged, or 'git branch -D %s' to force-delete.\n", agentState.Branch, agentState.Branch, agentState.Branch)
 		}
+	}
+}
+
+// cpRetire calls deps.Checkpoint if non-nil. Safe to call with nil dep.
+func cpRetire(deps *RetireDeps, step string, kv ...any) {
+	if deps != nil && deps.Checkpoint != nil {
+		deps.Checkpoint(step, kv...)
 	}
 }
 

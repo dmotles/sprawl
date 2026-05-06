@@ -640,3 +640,91 @@ func TestMerge_CommitMessage_NoReport(t *testing.T) {
 		t.Errorf("commit message should use fallback format, got: %q", capturedMessage)
 	}
 }
+
+// --- QUM-494: per-call checkpoint observability ---
+
+// recordingCheckpoint returns a Deps.Checkpoint and a pointer to the
+// recorded steps slice.
+func recordingCheckpoint() (func(step string, kv ...any), *[]string) {
+	var steps []string
+	return func(step string, _ ...any) {
+		steps = append(steps, step)
+	}, &steps
+}
+
+func TestMerge_EmitsCheckpointSequence(t *testing.T) {
+	deps := newTestDeps()
+	cfg := newTestConfig()
+
+	cp, steps := recordingCheckpoint()
+	deps.Checkpoint = cp
+
+	if _, err := Merge(cfg, deps); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	want := []string{
+		"merge.lock-acquired",
+		"merge.squash-committed",
+		"merge.rebased",
+		"merge.ff-merged",
+		"merge.validate-started",
+		"merge.validate-ended",
+		"merge.poke-written",
+	}
+	if len(*steps) != len(want) {
+		t.Fatalf("steps = %v, want %v", *steps, want)
+	}
+	for i, s := range want {
+		if (*steps)[i] != s {
+			t.Errorf("steps[%d] = %q, want %q (full: %v)", i, (*steps)[i], s, *steps)
+		}
+	}
+}
+
+func TestMerge_CheckpointStopsOnValidateError(t *testing.T) {
+	deps := newTestDeps()
+	cfg := newTestConfig()
+
+	deps.RunTests = func(dir, command string) (string, error) {
+		return "FAIL", fmt.Errorf("tests failed")
+	}
+
+	cp, steps := recordingCheckpoint()
+	deps.Checkpoint = cp
+
+	if _, err := Merge(cfg, deps); err == nil {
+		t.Fatal("expected merge to fail when validate fails")
+	}
+
+	if len(*steps) == 0 {
+		t.Fatal("expected at least one checkpoint")
+	}
+	last := (*steps)[len(*steps)-1]
+	if last != "merge.validate-started" {
+		t.Errorf("last step = %q, want merge.validate-started (steps=%v)", last, *steps)
+	}
+	for _, s := range *steps {
+		if s == "merge.validate-ended" {
+			t.Error("validate-ended should not be emitted on validate failure")
+		}
+		if s == "merge.poke-written" {
+			t.Error("poke-written should not be emitted on validate failure")
+		}
+	}
+}
+
+func TestMerge_NilCheckpointSafe(t *testing.T) {
+	deps := newTestDeps()
+	cfg := newTestConfig()
+	deps.Checkpoint = nil
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("merge with nil Checkpoint panicked: %v", r)
+		}
+	}()
+	if _, err := Merge(cfg, deps); err != nil {
+		t.Errorf("merge: %v", err)
+	}
+}

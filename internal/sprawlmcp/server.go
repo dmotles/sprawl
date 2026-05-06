@@ -7,17 +7,29 @@ import (
 	"fmt"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
 // Server implements host.MCPServer for the sprawl MCP server.
 type Server struct {
-	sup supervisor.Supervisor
+	sup     supervisor.Supervisor
+	callLog *calllog.Logger
 }
 
 // New creates a new MCP server backed by the given supervisor.
 func New(sup supervisor.Supervisor) *Server {
-	return &Server{sup: sup}
+	return &Server{sup: sup, callLog: calllog.NewNoop()}
+}
+
+// WithCallLog attaches a per-call observability logger to the server
+// (QUM-494). Returns the receiver for chaining. nil resets to no-op.
+func (s *Server) WithCallLog(l *calllog.Logger) *Server {
+	if l == nil {
+		l = calllog.NewNoop()
+	}
+	s.callLog = l
+	return s
 }
 
 // HandleMessage handles a JSON-RPC message per the MCP protocol.
@@ -71,14 +83,43 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 		}
 	}
 
-	text, err := s.dispatchTool(ctx, call.Name, call.Arguments)
+	caller := backendpkg.CallerIdentity(ctx)
+	var argsAny any
+	if len(call.Arguments) > 0 {
+		_ = json.Unmarshal(call.Arguments, &argsAny)
+	}
+	ctx, callID := s.callLog.Begin(ctx, call.Name, caller, argsAny)
+
+	var (
+		text     string
+		err      error
+		panicErr any
+		panicked bool
+	)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				panicErr = r
+				panicked = true
+			}
+		}()
+		text, err = s.dispatchTool(ctx, call.Name, call.Arguments)
+	}()
+
+	if panicked {
+		s.callLog.End(callID, "panic", fmt.Sprintf("%v", panicErr))
+		panic(panicErr)
+	}
+
 	if err != nil {
+		s.callLog.End(callID, "error", err.Error())
 		var ute *unknownToolError
 		if ok := isUnknownToolError(err, &ute); ok {
 			return jsonRPCError(id, -32602, ute.Error())
 		}
 		return toolErrorResult(id, err.Error())
 	}
+	s.callLog.End(callID, "ok", "")
 	return toolSuccessResult(id, text)
 }
 

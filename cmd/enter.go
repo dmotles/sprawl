@@ -40,6 +40,7 @@ import (
 	"github.com/dmotles/sprawl/internal/rootinit"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
+	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
@@ -68,7 +69,7 @@ type enterDeps struct {
 	// MCP tool and the TUI HandoffRequested() listener observe the same
 	// channel. QUM-329.
 	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error)
-	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
+	newSupervisor   func(sprawlRoot string, logger *calllog.Logger) supervisor.Supervisor
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error
 }
 
@@ -229,7 +230,7 @@ func resolveEnterDeps() *enterDeps {
 			deps.LogPrefix = "[enter]"
 			return rootinit.FinalizeHandoff(ctx, deps, sprawlRoot, stdout, events)
 		},
-		newSupervisor: func(sprawlRoot string) supervisor.Supervisor {
+		newSupervisor: func(sprawlRoot string, logger *calllog.Logger) supervisor.Supervisor {
 			// CallerName is what gets stamped into Parent when this
 			// supervisor's Spawn() creates a child (cmd/enter.go's supervisor
 			// now serves the MCP spawn tool since QUM-329 unified it).
@@ -250,9 +251,15 @@ func resolveEnterDeps() *enterDeps {
 				fmt.Fprintf(os.Stderr, "[enter] supervisor unavailable: %v\n", err)
 				return nil
 			}
+			// QUM-494: install the per-MCP-call observability logger on the
+			// supervisor and wire it into the MCP server so checkpoints emit
+			// during real tool calls.
+			if logger != nil {
+				sup.SetCallLogger(logger)
+			}
 			// Two-phase init: the child MCP server needs a reference to the
 			// supervisor, so we create it after construction and wire it in.
-			mcpServer := sprawlmcp.New(sup)
+			mcpServer := sprawlmcp.New(sup).WithCallLog(logger)
 			childBridge := host.NewMCPBridge()
 			childBridge.Register("sprawl", mcpServer)
 			sup.SetChildMCPConfig(
@@ -518,6 +525,16 @@ func runEnter(deps *enterDeps) error {
 		resumeFailureOnce.Do(func() { close(resumeFailureCh) })
 	}
 
+	// QUM-494: open the per-MCP-call observability logger. A failure to
+	// open the call log file should not break enter — fall back to a no-op
+	// logger and continue. The logger is closed at the end of runEnter.
+	callLogger, callLogErr := calllog.Open(sprawlRoot)
+	if callLogErr != nil {
+		fmt.Fprintf(os.Stderr, "[enter] warning: opening MCP call log failed: %v (continuing without per-call observability)\n", callLogErr)
+		callLogger = calllog.NewNoop()
+	}
+	defer func() { _ = callLogger.Close() }()
+
 	// QUM-329: build the single supervisor BEFORE creating the session so
 	// the same instance is wired into (a) the MCP server inside
 	// newSession, (b) the tree-panel status poller (passed into AppModel
@@ -525,7 +542,7 @@ func runEnter(deps *enterDeps) error {
 	// onStart. A second supervisor would orphan the handoff signal.
 	var sup supervisor.Supervisor
 	if deps.newSupervisor != nil {
-		sup = deps.newSupervisor(sprawlRoot)
+		sup = deps.newSupervisor(sprawlRoot, callLogger)
 	}
 
 	var bridge tui.SessionBackend
