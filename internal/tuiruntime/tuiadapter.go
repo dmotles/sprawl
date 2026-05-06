@@ -29,6 +29,10 @@ const adapterEventBufferSize = 64
 // Observe(rt) first. (QUM-436)
 var ErrNoRuntime = errors.New("tuiadapter: no runtime; call Observe(rt) first")
 
+// Compile-time assertion that *TUIAdapter satisfies tui.SessionBackend so
+// cmd/enter.go can return it directly to AppModel.
+var _ tui.SessionBackend = (*TUIAdapter)(nil)
+
 // TUIAdapter exposes a UnifiedRuntime as bubbletea-friendly tea.Cmd values.
 type TUIAdapter struct {
 	mu          sync.Mutex
@@ -199,9 +203,8 @@ func (a *TUIAdapter) Interrupt() tea.Cmd {
 	}
 }
 
-// Close cancels the adapter's EventBus subscription. Provided for
-// compatibility with the tui.BridgeDelegate interface so a TUIAdapter can be
-// dropped into a tui.Bridge wrapper. Always returns nil; idempotent.
+// Close cancels the adapter's EventBus subscription. Part of the
+// tui.SessionBackend contract. Always returns nil; idempotent.
 func (a *TUIAdapter) Close() error {
 	a.Cancel()
 	return nil

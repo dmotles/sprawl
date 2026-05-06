@@ -172,7 +172,7 @@ func NewReal(cfg Config) (*Real, error) {
 		handoffWriteSignalFile:     memory.WriteHandoffSignal,
 		handoffNow:                 time.Now,
 	}
-	r.runtimeStarter = newRuntimeStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
+	r.runtimeStarter = newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
 	return r, nil
 }
 
@@ -202,7 +202,7 @@ func (r *Real) RegisterRootRuntime(name string, handle RuntimeHandle, agentState
 }
 
 // RuntimeRegistry exposes the supervisor's in-memory runtime registry so
-// process-level wiring (e.g. messages.RecipientResolver) can consult it.
+// process-level wiring can consult it.
 func (r *Real) RuntimeRegistry() *RuntimeRegistry {
 	return r.runtimeRegistry
 }
@@ -227,7 +227,7 @@ func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []st
 	if r.mcpBridge != nil {
 		initSpec.ToolBridge = r.mcpBridge
 	}
-	r.runtimeStarter = newRuntimeStarter(initSpec, allowedTools)
+	r.runtimeStarter = newInProcessUnifiedStarter(initSpec, allowedTools)
 }
 
 // MCPBridge returns the host-scoped MCP tool bridge installed on this
@@ -702,13 +702,8 @@ func (r *Real) SendAsync(ctx context.Context, to, subject, body, replyTo string,
 
 	runtime, runtimeBacked := r.startedRuntime(to)
 
-	var sendOpts []messages.SendOption
-	if runtimeBacked {
-		sendOpts = append(sendOpts, messages.WithoutWakeFile())
-	}
-
 	caller := r.effectiveCaller(ctx)
-	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...)
+	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body)
 	if err != nil {
 		return nil, err
 	}
@@ -801,12 +796,7 @@ func (r *Real) SendInterrupt(ctx context.Context, to, subject, body, resumeHint 
 
 	runtime, runtimeBacked := r.startedRuntime(to)
 
-	var sendOpts []messages.SendOption
-	if runtimeBacked {
-		sendOpts = append(sendOpts, messages.WithoutWakeFile())
-	}
-
-	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body, sendOpts...)
+	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body)
 	if err != nil {
 		return nil, err
 	}
@@ -891,12 +881,7 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, 
 	}
 
 	reportDeps := &agentops.ReportDeps{
-		SendMessage: func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
-			if parentRuntime != nil {
-				opts = append(opts, messages.WithoutWakeFile())
-			}
-			return messages.Send(sprawlRoot, from, to, subject, body, opts...)
-		},
+		SendMessage: messages.Send,
 	}
 	res, err := agentops.Report(reportDeps, r.sprawlRoot, agentName, reportState, summary, detail)
 	if err != nil {

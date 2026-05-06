@@ -192,16 +192,9 @@ func TestAgentSelected_UnifiedPath_StartsAdapterAndSeeds(t *testing.T) {
 		t.Errorf("ChildAdapterEpoch() should be > 0 after first unified select")
 	}
 
-	// scheduleChildTranscriptTick must NOT be in the batch — the unified
-	// path replaces polling. We can't easily disambiguate "tick cmd" from
-	// "WaitForEvent cmd" by type alone, so assert behaviorally: the only
-	// immediately-resolving msg should be ChildTranscriptMsg (and possibly
-	// activity-tick). A scheduleChildTranscriptTick would resolve to a
-	// ChildTranscriptMsg only after the configured interval; with
-	// SetChildTranscriptTick unset we'd be at defaultChildTranscriptTick.
-	// If we set the tick interval extremely short, a poll cmd would emit a
-	// second ChildTranscriptMsg.
-	app.SetChildTranscriptTick(5 * time.Millisecond)
+	// QUM-400: JSONL polling re-tick has been deleted; backfill is one-shot
+	// only. Re-issuing AgentSelectedMsg should produce the backfill cmd
+	// without scheduling a second ChildTranscriptMsg.
 	updated2, cmd2 := app.Update(AgentSelectedMsg{Name: "alice"})
 	_ = updated2
 	msgs := collectBatchMsgsAllowAsync(t, cmd2, 60*time.Millisecond)
@@ -211,10 +204,8 @@ func TestAgentSelected_UnifiedPath_StartsAdapterAndSeeds(t *testing.T) {
 			count++
 		}
 	}
-	// Exactly ONE ChildTranscriptMsg (the backfill); a polling tick would
-	// add a second.
 	if count > 1 {
-		t.Errorf("got %d ChildTranscriptMsg; unified path should not also schedule a poll tick", count)
+		t.Errorf("got %d ChildTranscriptMsg; backfill is one-shot, not a poll", count)
 	}
 }
 

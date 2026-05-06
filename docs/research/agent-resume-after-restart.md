@@ -3,6 +3,7 @@
 **Date:** 2026-04-29
 **Author:** trace (research agent)
 **Question:** What would it take to make child agents survive a weave ctrl+c and resume when weave restarts?
+**Status:** Historical. Written before the unified runtime (QUM-392/-396/-398/-399) and Phase-4 cleanup (QUM-400). References to `agentloop.StartRunner` / `RunnerDeps` / `runtime_launcher.go`'s legacy starter describe code that has since been deleted; the surviving runtime is `runtime.UnifiedRuntime` driven through `internal/supervisor/runtime_launcher.go`'s `inProcessUnifiedStarter`. The resume-orchestration question is unchanged in shape but any implementation would target the new code.
 
 ## Executive Summary
 

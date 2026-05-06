@@ -2,6 +2,13 @@
 
 **Scope:** live-session forensics only. No code changes.
 
+> **Status: historical.** Captured while the unified runtime was a
+> `SPRAWL_UNIFIED_RUNTIME=1` opt-in alongside legacy `tui.Bridge` /
+> `agentloop.Runner`. QUM-400 retired the legacy paths, the env gate, and
+> renamed `runtime_launcher_unified.go` → `runtime_launcher.go`. References
+> to deleted symbols / files reflect code as it stood at the investigation
+> date.
+
 ---
 
 ## Snapshot

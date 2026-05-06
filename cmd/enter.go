@@ -8,7 +8,7 @@
 //  2. the HandoffRequested() channel listener goroutine (see runEnter),
 //  3. the MCP server wired to the claude subprocess (sprawlmcp.New).
 //
-// Do NOT create a second supervisor inside newSessionImpl or anywhere
+// Do NOT create a second supervisor inside defaultNewSession or anywhere
 // else in this package. If two supervisors exist, the handoff MCP
 // tool fires on one channel while the TUI listens on the other, the
 // teardown/restart never runs, and the user is stuck in a stale session.
@@ -37,7 +37,6 @@ import (
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
-	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
@@ -59,15 +58,16 @@ type enterDeps struct {
 	getenv     func(string) string
 	getwd      func() (string, error)
 	runProgram func(model tea.Model, onStart func(sender func(tea.Msg))) error
-	// newSession launches a Claude Code subprocess and wires the TUI bridge.
+	// newSession launches a Claude Code subprocess wrapped in a UnifiedRuntime
+	// and returns a tui.SessionBackend for AppModel to drive.
 	// onResumeFailure, if non-nil, is invoked from the subprocess's stderr
 	// scanner when the "No conversation found" marker trips — used by the
 	// restart loop to force-fresh the next session regardless of elapsed time.
 	// sup is the runEnter-scoped supervisor (see architectural contract at
-	// top of this file). It is passed to the MCP server inside
-	// newSessionImpl so the handoff tool and the TUI
-	// HandoffRequested() listener observe the same channel. QUM-329.
-	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error)
+	// top of this file). It is passed to defaultNewSession so the handoff
+	// MCP tool and the TUI HandoffRequested() listener observe the same
+	// channel. QUM-329.
+	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error)
 	newSupervisor   func(sprawlRoot string) supervisor.Supervisor
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error
 }
@@ -93,16 +93,16 @@ type restartState struct {
 // lifetime of runEnter. bridgeOut, if non-nil, is updated on success so
 // runEnter closes the latest bridge on shutdown.
 func makeRestartFunc(
-	newSession func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error),
+	newSession func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error),
 	sup supervisor.Supervisor,
 	finalize func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error,
 	sprawlRoot string,
 	consolidationCh chan<- rootinit.ConsolidationEvent,
 	state *restartState,
-	bridgeOut **tui.Bridge,
+	bridgeOut *tui.SessionBackend,
 	logW io.Writer,
-) func() (*tui.Bridge, error) {
-	return func() (*tui.Bridge, error) {
+) func() (tui.SessionBackend, error) {
+	return func() (tui.SessionBackend, error) {
 		markerTripped := state.resumeMarkerTripped.Swap(false)
 		forceFresh := markerTripped || (state.lastWasResume && time.Since(state.lastStartedAt) < resumeFailureWindow)
 		switch {
@@ -239,9 +239,9 @@ func resolveEnterDeps() *enterDeps {
 			//
 			// Before QUM-329 this field was "enter" because two separate
 			// supervisors coexisted: one here (tree polling — CallerName
-			// didn't matter) and one inside newSessionImpl with
-			// CallerName:rootName. QUM-329 merged them into this one, and
-			// kept the wrong CallerName — regression filed as QUM-333.
+			// didn't matter) and one inside the legacy session factory
+			// with CallerName:rootName. QUM-329 merged them into this one,
+			// and kept the wrong CallerName — regression filed as QUM-333.
 			sup, err := supervisor.NewReal(supervisor.Config{
 				SprawlRoot: sprawlRoot,
 				CallerName: "weave",
@@ -370,46 +370,29 @@ func buildSessionEnv() []string {
 	)
 }
 
-// defaultUnifiedRootEnabled reports whether the SPRAWL_UNIFIED_RUNTIME=1
-// gate is set, switching defaultNewSession to the UnifiedRuntime + TUIAdapter
-// path (QUM-399 Phase 3). Tests swap this to force one branch or the other.
-var defaultUnifiedRootEnabled = func() bool {
-	return os.Getenv("SPRAWL_UNIFIED_RUNTIME") == "1"
-}
-
-// defaultNewSession launches a Claude Code subprocess and returns a Bridge.
+// defaultNewSession launches a Claude Code subprocess wrapped in a
+// UnifiedRuntime + TUIAdapter and returns it as a tui.SessionBackend.
 //
 // When forceFresh is true, Prepare's resume decision is bypassed and a fresh
 // session is built. Callers use this for resume-failure fallback — the TUI's
 // restartFunc forces fresh if the previous subprocess was a resume attempt
 // that exited within resumeFailureWindow.
 //
-// Returns (bridge, wasResume, error). wasResume indicates whether Prepare
-// took the resume path; callers use it to decide if a fast exit warrants a
-// force-fresh retry.
-func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (*tui.Bridge, bool, error) {
-	deps := rootinit.DefaultDeps()
-	deps.LogPrefix = "[enter]"
-	if defaultUnifiedRootEnabled() {
-		return newSessionImplUnified(sprawlRoot, sup, forceFresh, deps, os.Stderr, onResumeFailure)
-	}
-	return newSessionImpl(sprawlRoot, sup, forceFresh, deps, os.Stderr, onResumeFailure)
-}
-
-// newSessionImplUnified is the QUM-399 Phase 3 root weave path. Builds a
-// UnifiedRuntime around the backend session, wraps it in a TUIAdapter
-// (consumed via BridgeDelegate), and registers a WeaveRuntimeHandle with
-// the supervisor so child report/send_async InterruptDelivery calls reach
-// the root via the same registry mechanism child runtimes use.
-//
 // Initialize timing: the backend session's Initialize is called here
 // (synchronously) to register MCP tools BEFORE the runtime loop starts —
 // matching the children's path in inProcessUnifiedStarter.Start. The
-// Bridge's Initialize() tea.Cmd then starts the runtime via the TUIAdapter
-// (rt.Start) when AppModel.Init dispatches it.
-func newSessionImplUnified(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer, onResumeFailure func()) (*tui.Bridge, bool, error) {
+// adapter's Initialize() tea.Cmd then starts the runtime (rt.Start) when
+// AppModel.Init dispatches it.
+//
+// Returns (backend, wasResume, error). wasResume indicates whether Prepare
+// took the resume path; callers use it to decide if a fast exit warrants a
+// force-fresh retry.
+func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error) {
+	rinitDeps := rootinit.DefaultDeps()
+	rinitDeps.LogPrefix = "[enter]"
+	logW := os.Stderr
 	if sup == nil {
-		return nil, false, fmt.Errorf("newSessionImplUnified: supervisor must be non-nil (see QUM-329 architectural contract)")
+		return nil, false, fmt.Errorf("defaultNewSession: supervisor must be non-nil (see QUM-329 architectural contract)")
 	}
 
 	const rootName = "weave"
@@ -488,101 +471,7 @@ func newSessionImplUnified(sprawlRoot string, sup supervisor.Supervisor, forceFr
 	}
 
 	tuiAdapter := tuiruntime.NewTUIAdapter(rt)
-	bridge := tui.NewBridgeFromDelegate(tuiAdapter)
-	return bridge, prepared.Resume, nil
-}
-
-// newSessionImpl is the testable body of defaultNewSession.
-//
-// sup is the runEnter-scoped supervisor and MUST be the same instance that
-// runEnter registers with the TUI's HandoffRequested() listener. See the
-// architectural contract at the top of this file (QUM-329).
-func newSessionImpl(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, rinitDeps *rootinit.Deps, logW io.Writer, onResumeFailure func()) (*tui.Bridge, bool, error) {
-	if sup == nil {
-		return nil, false, fmt.Errorf("newSessionImpl: supervisor must be non-nil (see QUM-329 architectural contract)")
-	}
-
-	rootName := "weave"
-
-	// Phase A: decide between resume and fresh paths. Writes last-session-id
-	// and (on fresh path) persists SYSTEM.md to disk and renders the system
-	// prompt. The Claude subprocess consumes the rendered prompt via
-	// --system-prompt-file below.
-	var prepared *rootinit.PreparedSession
-	var err error
-	if forceFresh {
-		prepared, err = rootinit.PrepareFresh(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
-	} else {
-		prepared, err = rootinit.Prepare(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("preparing session: %w", err)
-	}
-
-	if prepared.Resume {
-		fmt.Fprintf(logW, "[enter] resuming session %s\n", prepared.SessionID)
-	} else {
-		fmt.Fprintf(logW, "[enter] starting session %s\n", prepared.SessionID)
-	}
-
-	// Wire the MCP server to the shared supervisor passed in by runEnter.
-	// Creating a second supervisor here would give the handoff MCP
-	// tool its own HandoffRequested channel, which the TUI listener never
-	// drains — the QUM-329 regression.
-	//
-	// QUM-467: reuse the supervisor's host-scoped MCP bridge installed by
-	// newSupervisor. Building a fresh bridge per weave-launch would sever
-	// children that registered against the prior instance.
-	mcpBridge := supervisorMCPBridge(sup)
-
-	adapter := backendclaude.NewAdapter(backendclaude.Config{})
-	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure))
-	if err != nil {
-		return nil, false, err
-	}
-	initSpec := buildEnterInitSpec(mcpBridge)
-
-	ctx := context.Background()
-	bridge := tui.NewBridge(ctx, &enterBridgeSession{
-		session:  session,
-		initSpec: initSpec,
-	})
-	bridge.SetSessionID(prepared.SessionID)
-	return bridge, prepared.Resume, nil
-}
-
-// wrapEnterStderrForResumeScan wraps the TUI-mode Claude subprocess stderr
-// with a marker-aware writer. On the "No conversation found with session ID:"
-// substring, kill is invoked so the subprocess exits fast enough for the
-// restartFunc's resumeFailureWindow heuristic to force-fresh.
-func wrapEnterStderrForResumeScan(underlying io.Writer, kill func()) io.Writer {
-	return claude.NewMarkerWriter(underlying, claude.NoConversationMarker, claude.ResumeMarkerScanCap, kill)
-}
-
-type enterBridgeSession struct {
-	session  backend.Session
-	initSpec backend.InitSpec
-}
-
-func (s *enterBridgeSession) Initialize(ctx context.Context) error {
-	return s.session.Initialize(ctx, s.initSpec)
-}
-
-func (s *enterBridgeSession) SendUserMessage(ctx context.Context, prompt string) (<-chan *protocol.Message, error) {
-	return s.session.StartTurn(ctx, prompt, backend.TurnSpec{Init: s.initSpec})
-}
-
-func (s *enterBridgeSession) Interrupt(ctx context.Context) error {
-	return s.session.Interrupt(ctx)
-}
-
-func (s *enterBridgeSession) Close() error {
-	closeErr := s.session.Close()
-	killErr := s.session.Kill()
-	if closeErr != nil {
-		return closeErr
-	}
-	return killErr
+	return tuiAdapter, prepared.Resume, nil
 }
 
 func runEnter(deps *enterDeps) error {
@@ -639,7 +528,7 @@ func runEnter(deps *enterDeps) error {
 		sup = deps.newSupervisor(sprawlRoot)
 	}
 
-	var bridge *tui.Bridge
+	var bridge tui.SessionBackend
 	if deps.newSession != nil {
 		var err error
 		var wasResume bool
@@ -656,7 +545,7 @@ func runEnter(deps *enterDeps) error {
 	// events to the TUI as tea.Msgs).
 	consolidationCh := make(chan rootinit.ConsolidationEvent, 16)
 
-	var restartFunc func() (*tui.Bridge, error)
+	var restartFunc func() (tui.SessionBackend, error)
 	if deps.newSession != nil {
 		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, consolidationCh, state, &bridge, os.Stderr)
 	}
@@ -694,15 +583,6 @@ func runEnter(deps *enterDeps) error {
 		// messages.Send, so a single SetDefaultNotifier call covers all
 		// origins of the notification.
 		messages.SetDefaultNotifier(buildTUIRootNotifier("weave", send))
-
-		// QUM-438: install a recipient-kind resolver backed by the supervisor's
-		// runtime registry so messages.Send skips the legacy `.wake` sentinel
-		// for recipients running on UnifiedRuntime (whose wake/interrupt path
-		// is in-memory). Out-of-process Supervisor implementations may return
-		// nil from RuntimeRegistry(); NewRecipientResolver tolerates that.
-		if sup != nil {
-			messages.SetRecipientResolver(supervisor.NewRecipientResolver(sup.RuntimeRegistry()))
-		}
 
 		// QUM-261: when the initial `--resume` subprocess trips the "No
 		// conversation found" stderr marker, prod the TUI to tear down and
@@ -805,10 +685,6 @@ func runEnter(deps *enterDeps) error {
 	// the TUI notifier so any lingering in-process messages.Send calls during
 	// shutdown don't try to dispatch into a dead program.
 	messages.SetDefaultNotifier(nil)
-	// QUM-438: clear the recipient resolver alongside the notifier so any
-	// lingering in-process Send calls during shutdown fall back to the legacy
-	// `.wake` write path.
-	messages.SetRecipientResolver(nil)
 
 	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff. It
 	// does stop runtime-backed children because this weave process owns them.

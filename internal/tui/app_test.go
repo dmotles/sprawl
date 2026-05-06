@@ -20,7 +20,7 @@ func newTestAppModel(t *testing.T) AppModel {
 	return NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
 }
 
-func newTestAppModelWithBridge(t *testing.T, bridge *Bridge) AppModel {
+func newTestAppModelWithBridge(t *testing.T, bridge SessionBackend) AppModel {
 	t.Helper()
 	return NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", nil)
 }
@@ -613,7 +613,7 @@ func TestAppModel_RestartSessionMsg_ClearsError(t *testing.T) {
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalled = true
 		newMock := newMockSession()
 		return NewBridge(context.Background(), newMock), nil
@@ -643,7 +643,7 @@ func TestAppModel_RestartSessionMsg_ClearsError(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_RestartFails(t *testing.T) {
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", func() (SessionBackend, error) {
 		return nil, fmt.Errorf("failed to restart")
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -750,7 +750,7 @@ func TestAppModel_RestartSessionMsg_RestoresIdleState(t *testing.T) {
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -775,7 +775,7 @@ func TestAppModel_RestartSessionMsg_ClosesOldBridge(t *testing.T) {
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -1566,7 +1566,7 @@ func TestAppModel_RestartSessionMsg_DoesNotBlockOnRestartFunc(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalls++
 		close(restartStarted)
 		<-release
@@ -1621,7 +1621,7 @@ func TestAppModel_RestartSessionMsg_SetsRestartingAndSchedulesTick(t *testing.T)
 
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		<-release
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
@@ -1764,7 +1764,7 @@ func TestAppModel_RestartSessionMsg_CoalescesWhileRestarting(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 	restartCalls := 0
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalls++
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
@@ -1787,7 +1787,7 @@ func TestAppModel_RestartSessionMsg_AfterQuitConfirmed_ReturnsTeaQuit(t *testing
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalled = true
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
@@ -1891,7 +1891,7 @@ func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		nb := NewBridge(context.Background(), newMockSession())
 		nb.SetSessionID("newsession0000000000000000000000ffff")
 		return nb, nil
@@ -1920,7 +1920,7 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		nb := NewBridge(context.Background(), newMockSession())
 		nb.SetSessionID("abcdef12-3456-7890-abcd-ef1234567890")
 		return nb, nil
@@ -1952,7 +1952,7 @@ func TestAppModel_RestartSessionMsg_UpdatesStatusBarSessionID(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (*Bridge, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		nb := NewBridge(context.Background(), newMockSession())
 		nb.SetSessionID("deadbeef-0000-0000-0000-000000000000")
 		return nb, nil
@@ -3554,7 +3554,7 @@ func TestAppModel_RestartCompleteMsg_PreservesStatusMessages(t *testing.T) {
 
 	// Set up restart with a new bridge.
 	newBridge := NewBridge(context.Background(), newMockSession())
-	app.restartFunc = func() (*Bridge, error) { return newBridge, nil }
+	app.restartFunc = func() (SessionBackend, error) { return newBridge, nil }
 
 	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)

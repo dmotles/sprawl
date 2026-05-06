@@ -11,8 +11,8 @@ import (
 
 // QUM-465 — failing tests guarding the inbox-notifier double-fire bug.
 //
-// Symptom: every send_async to weave under SPRAWL_UNIFIED_RUNTIME=1 produces
-// TWO `[inbox]` banners — one from InboxArrivalMsg (in-process notifier) and
+// Symptom: every send_async to weave produces TWO `[inbox]` banners — one
+// from InboxArrivalMsg (in-process notifier) and
 // one from AgentTreeMsg (2s tickAgentsCmd rise-detector reading the same
 // maildir entry). Race ordering decides which lands first; both fire banners.
 //
@@ -38,8 +38,8 @@ func newTestAppModelWithSprawlRoot(t *testing.T, sprawlRoot string) AppModel {
 }
 
 // seedUnreadForWeave drops `count` unread maildir entries into weave's queue
-// at sprawlRoot. Uses the public messages.Send API with WithoutWakeFile and a
-// no-op notifier so the seed has zero side effects beyond the maildir write.
+// at sprawlRoot. Uses the public messages.Send API with a no-op notifier so
+// the seed has zero side effects beyond the maildir write.
 func seedUnreadForWeave(t *testing.T, sprawlRoot string, count int) {
 	t.Helper()
 	noop := func(_, _, _, _ string) {}
@@ -47,7 +47,6 @@ func seedUnreadForWeave(t *testing.T, sprawlRoot string, count int) {
 		if _, err := messages.Send(
 			sprawlRoot, "trace", "weave",
 			"qum-465 test", "body",
-			messages.WithoutWakeFile(),
 			messages.WithNotify(noop),
 		); err != nil {
 			t.Fatalf("seed messages.Send: %v", err)

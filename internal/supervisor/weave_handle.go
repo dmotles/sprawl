@@ -106,14 +106,13 @@ func (h *WeaveRuntimeHandle) InterruptDelivery() error {
 // Stop tears down the runtime, activity subscriber, session, and activity
 // file. Idempotent.
 //
-// Session teardown mirrors the legacy enterBridgeSession.Close pattern: we
-// call Close (signal EOF to claude's stdin) AND Kill (SIGKILL the subprocess)
-// before Wait. Without Kill, Wait can block indefinitely when claude is
-// mid-turn — Close alone signals stdin EOF, but claude is not contracted to
-// exit promptly on that signal during an active turn. The legacy path
-// avoided this hang by always Kill-ing on bridge.Close; we replicate it
-// here so the QUM-329 handoff cycle (Stop old runtime → consolidation →
-// new runtime) doesn't deadlock on weave.lock when consolidation runs.
+// Session teardown calls Close (signal EOF to claude's stdin) AND Kill
+// (SIGKILL the subprocess) before Wait. Without Kill, Wait can block
+// indefinitely when claude is mid-turn — Close alone signals stdin EOF, but
+// claude is not contracted to exit promptly on that signal during an active
+// turn. Always Kill-ing here ensures the QUM-329 handoff cycle (Stop old
+// runtime → consolidation → new runtime) doesn't deadlock on weave.lock
+// when consolidation runs.
 func (h *WeaveRuntimeHandle) Stop(ctx context.Context) error {
 	h.stopOnce.Do(func() {
 		err := h.rt.Stop(ctx)
@@ -149,10 +148,6 @@ func (h *WeaveRuntimeHandle) Capabilities() backendpkg.Capabilities { return h.c
 
 // Done returns a channel that closes when the underlying runtime exits.
 func (h *WeaveRuntimeHandle) Done() <-chan struct{} { return h.rt.Done() }
-
-// isUnifiedHandle marks WeaveRuntimeHandle as a UnifiedRuntime-backed handle
-// for messages.RecipientResolver routing. See QUM-438.
-func (h *WeaveRuntimeHandle) isUnifiedHandle() {}
 
 // UnifiedRuntime returns the underlying UnifiedRuntime so consumers (e.g.
 // the TUI viewport stream wiring — QUM-439) can subscribe to its EventBus.

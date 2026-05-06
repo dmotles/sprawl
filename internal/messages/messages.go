@@ -50,8 +50,7 @@ func MessagesDir(sprawlRoot string) string { //nolint:revive // stuttering name 
 type NotifyFunc func(to, from, subject, msgID string)
 
 type sendOptions struct {
-	notify       NotifyFunc
-	skipWakeFile bool
+	notify NotifyFunc
 }
 
 // SendOption configures optional behavior for Send.
@@ -62,15 +61,6 @@ type SendOption func(*sendOptions)
 func WithNotify(fn NotifyFunc) SendOption {
 	return func(o *sendOptions) {
 		o.notify = fn
-	}
-}
-
-// WithoutWakeFile suppresses the best-effort `.wake` sentinel side effect while
-// preserving normal maildir delivery and notifier behavior. Same-process
-// runtimes use this when the live wake/interrupt path is handled in-memory.
-func WithoutWakeFile() SendOption {
-	return func(o *sendOptions) {
-		o.skipWakeFile = true
 	}
 }
 
@@ -101,44 +91,6 @@ func DefaultNotifier() NotifyFunc {
 	defaultNotifierMu.RLock()
 	defer defaultNotifierMu.RUnlock()
 	return defaultNotifier
-}
-
-// RecipientKind classifies a recipient's runtime family for wake-file routing.
-type RecipientKind int
-
-// RecipientKind values used by RecipientResolver.
-const (
-	RecipientUnknown RecipientKind = iota
-	RecipientLegacy
-	RecipientUnified
-)
-
-// RecipientResolver maps a recipient agent name to its current RecipientKind.
-// It is consulted by Send to decide whether to write the legacy `.wake`
-// sentinel file. Out-of-process callers (CLI) leave it nil and fall through
-// to the legacy file-write path. See QUM-438.
-type RecipientResolver func(name string) RecipientKind
-
-var (
-	recipientResolverMu sync.RWMutex
-	recipientResolver   RecipientResolver
-)
-
-// SetRecipientResolver installs (or clears, if fn is nil) the process-level
-// recipient-kind resolver consulted by Send. Safe for concurrent use; the
-// expected pattern is one call at process startup.
-func SetRecipientResolver(fn RecipientResolver) {
-	recipientResolverMu.Lock()
-	recipientResolver = fn
-	recipientResolverMu.Unlock()
-}
-
-// CurrentRecipientResolver returns the currently registered resolver, or nil.
-// Primarily intended for tests.
-func CurrentRecipientResolver() RecipientResolver {
-	recipientResolverMu.RLock()
-	defer recipientResolverMu.RUnlock()
-	return recipientResolver
 }
 
 // Send delivers a message from one agent to another using Maildir-style
@@ -219,31 +171,6 @@ func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) (strin
 
 	// Best-effort recipient notification. Per-call WithNotify takes precedence
 	// over the process-level default notifier registered via SetDefaultNotifier.
-	skipWake := sopts.skipWakeFile
-	if !skipWake {
-		if r := CurrentRecipientResolver(); r != nil {
-			kind := func() (k RecipientKind) {
-				defer func() {
-					if rec := recover(); rec != nil {
-						k = RecipientUnknown
-					}
-				}()
-				return r(to)
-			}()
-			if kind == RecipientUnified {
-				skipWake = true
-			}
-		}
-	}
-	if !skipWake {
-		// The wake file serves dual purposes: (1) between turns, step 3 of the
-		// agent loop picks it up as a notification; (2) during a turn,
-		// SendPromptWithInterrupt detects it and interrupts the running Claude
-		// session so messages are received immediately.
-		wakePath := filepath.Join(sprawlRoot, ".sprawl", "agents", to+".wake")
-		wakeMsg := fmt.Sprintf("New message from %s: %s", from, subject)
-		_ = os.WriteFile(wakePath, []byte(wakeMsg), 0o644) //nolint:gosec // G306: world-readable wake file is intentional
-	}
 	notify := sopts.notify
 	if notify == nil {
 		notify = DefaultNotifier()
