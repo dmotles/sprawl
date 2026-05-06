@@ -144,6 +144,13 @@ func (m AppModel) cachedPanel(useCache bool, slot panelSlot, content string, w, 
 // renderPanel applies the active/inactive border style at the given size.
 // The activity panel always renders with the inactive border (it isn't part
 // of the Tab cycle); other panels pick based on the active flag.
+//
+// QUM-501: w and h are the *outer* (post-border) panel dimensions. In
+// lipgloss v2, Width/Height already include the border frame, and the
+// content area inside the border is derived automatically. Callers pass
+// layout slot dimensions directly without any frame math. MaxWidth/
+// MaxHeight clamp the outer render so overflowing content is truncated
+// rather than allowed to grow the panel past its declared size (QUM-483).
 func (m AppModel) renderPanel(content string, w, h int, active bool) string {
 	var style lipgloss.Style
 	if active {
@@ -151,18 +158,10 @@ func (m AppModel) renderPanel(content string, w, h int, active bool) string {
 	} else {
 		style = m.theme.InactiveBorder
 	}
-	// QUM-483: lipgloss treats Width/Height as minimums for the *content*
-	// area — a too-tall or too-wide content string grows the bordered panel
-	// past its declared size, breaking the composed JoinVertical layout and
-	// pushing the input bar off the bottom of the terminal. MaxWidth and
-	// MaxHeight clamp the *outer* (post-border) render, so we add the
-	// border's frame size to keep the visible panel at exactly (w+frame,
-	// h+frame) — matching the un-clamped behavior on well-sized content
-	// while truncating overflow.
 	return style.
 		Width(w).Height(h).
-		MaxWidth(w + style.GetHorizontalFrameSize()).
-		MaxHeight(h + style.GetVerticalFrameSize()).
+		MaxWidth(w).
+		MaxHeight(h).
 		Render(content)
 }
 
