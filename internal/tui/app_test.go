@@ -17,37 +17,31 @@ import (
 
 func newTestAppModel(t *testing.T) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
+	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 }
 
 func newTestAppModelWithBridge(t *testing.T, bridge SessionBackend) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", nil)
+	return NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", nil)
 }
 
-// TestAppModel_StatusBarShowsLiveVersionNotBannerVersion guards QUM-464:
-// NewAppModel takes a banner version and a separate live build version. The
-// TUI status bar must always render the live build version (main.version
-// ldflag) so the user can tell at a glance which sprawl binary they're
-// actually running, regardless of what was passed as the banner version.
-func TestAppModel_StatusBarShowsLiveVersionNotBannerVersion(t *testing.T) {
-	const bannerVersion = "v0.1.10-40-gOLDOLD"
-	const liveVersion = "v0.1.10-165-gNEWNEW"
+// TestAppModel_StatusBarAndBannerShowVersion verifies that the version arg
+// passed to NewAppModel is reflected in both the status bar (live binary
+// version indicator) and the session banner. Originally a QUM-464 guard test
+// asserting a split between persisted and live versions; collapsed in QUM-486
+// after the persisted-version split was retired in QUM-466.
+func TestAppModel_StatusBarAndBannerShowVersion(t *testing.T) {
+	const version = "v0.1.10-165-gABCDEF"
 
-	m := NewAppModel("colour212", "testrepo", bannerVersion, liveVersion, nil, nil, "", nil)
+	m := NewAppModel("colour212", "testrepo", version, nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
 
 	statusView := app.statusBar.View()
-	if !strings.Contains(statusView, "NEWNEW") {
-		t.Errorf("status bar should contain live build version %q, got:\n%s", liveVersion, statusView)
-	}
-	if strings.Contains(statusView, "OLDOLD") {
-		t.Errorf("status bar should NOT contain persisted banner version %q (QUM-464); got:\n%s", bannerVersion, statusView)
+	if !strings.Contains(statusView, "ABCDEF") {
+		t.Errorf("status bar should contain version %q, got:\n%s", version, statusView)
 	}
 
-	// The banner (rendered into the weave/root agent buffer at construction)
-	// should still carry the persisted/historical version.
 	var bannerEntry *MessageEntry
 	for _, e := range app.viewportFor("weave").GetMessages() {
 		if e.Type == MessageBanner {
@@ -59,8 +53,8 @@ func TestAppModel_StatusBarShowsLiveVersionNotBannerVersion(t *testing.T) {
 	if bannerEntry == nil {
 		t.Fatalf("expected a MessageBanner entry in the weave viewport")
 	}
-	if !strings.Contains(bannerEntry.Content, "OLDOLD") {
-		t.Errorf("banner should contain persisted version %q, got: %q", bannerVersion, bannerEntry.Content)
+	if !strings.Contains(bannerEntry.Content, "ABCDEF") {
+		t.Errorf("banner should contain version %q, got: %q", version, bannerEntry.Content)
 	}
 }
 
@@ -613,7 +607,7 @@ func TestAppModel_RestartSessionMsg_ClearsError(t *testing.T) {
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalled = true
 		newMock := newMockSession()
 		return NewBridge(context.Background(), newMock), nil
@@ -643,7 +637,7 @@ func TestAppModel_RestartSessionMsg_ClearsError(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_RestartFails(t *testing.T) {
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", func() (SessionBackend, error) {
 		return nil, fmt.Errorf("failed to restart")
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -678,7 +672,7 @@ func TestAppModel_ErrorDialog_RendersOverlay(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_NoRestartFunc_Quits(t *testing.T) {
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
@@ -750,7 +744,7 @@ func TestAppModel_RestartSessionMsg_RestoresIdleState(t *testing.T) {
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -775,7 +769,7 @@ func TestAppModel_RestartSessionMsg_ClosesOldBridge(t *testing.T) {
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -958,7 +952,7 @@ func (m *mockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandl
 
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
-	return NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)
+	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)
 }
 
 func TestAppModel_NewAppModelWithSupervisor(t *testing.T) {
@@ -1566,7 +1560,7 @@ func TestAppModel_RestartSessionMsg_DoesNotBlockOnRestartFunc(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalls++
 		close(restartStarted)
 		<-release
@@ -1621,7 +1615,7 @@ func TestAppModel_RestartSessionMsg_SetsRestartingAndSchedulesTick(t *testing.T)
 
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		<-release
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
@@ -1764,7 +1758,7 @@ func TestAppModel_RestartSessionMsg_CoalescesWhileRestarting(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 	restartCalls := 0
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalls++
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
@@ -1787,7 +1781,7 @@ func TestAppModel_RestartSessionMsg_AfterQuitConfirmed_ReturnsTeaQuit(t *testing
 	ctx := context.Background()
 	bridge := NewBridge(ctx, mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalled = true
 		return NewBridge(context.Background(), newMockSession()), nil
 	})
@@ -1891,7 +1885,7 @@ func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		nb := NewBridge(context.Background(), newMockSession())
 		nb.SetSessionID("newsession0000000000000000000000ffff")
 		return nb, nil
@@ -1920,7 +1914,7 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		nb := NewBridge(context.Background(), newMockSession())
 		nb.SetSessionID("abcdef12-3456-7890-abcd-ef1234567890")
 		return nb, nil
@@ -1952,7 +1946,7 @@ func TestAppModel_RestartSessionMsg_UpdatesStatusBarSessionID(t *testing.T) {
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		nb := NewBridge(context.Background(), newMockSession())
 		nb.SetSessionID("deadbeef-0000-0000-0000-000000000000")
 		return nb, nil
@@ -2819,7 +2813,7 @@ func TestAppModel_PendingSubmit_PersistsAcrossAgentCycle(t *testing.T) {
 	sup := &mockSupervisor{}
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, sup, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
 	updated, _ := app.Update(AgentTreeMsg{Nodes: []TreeNode{{Name: "tower", Type: "manager"}}})
@@ -2879,7 +2873,7 @@ func TestAppModel_InputAlwaysEditable_MidTurn(t *testing.T) {
 	sup := &mockSupervisor{}
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, sup, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
 	updated, _ := app.Update(AgentTreeMsg{Nodes: []TreeNode{{Name: "tower", Type: "manager"}}})
@@ -3179,7 +3173,7 @@ func TestAppModel_InterruptCompletedMsg_NotificationDuringInterruptPending(t *te
 	mock := newMockSession()
 	bridge := NewBridge(context.Background(), mock)
 	sup := &mockSupervisor{}
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", bridge, sup, sprawlRoot, nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, sprawlRoot, nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
 	app.turnState = TurnStreaming
