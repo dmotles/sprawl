@@ -63,7 +63,7 @@ type AppModel struct {
 	palette     PaletteModel
 	showPalette bool
 
-	bridge    *Bridge
+	bridge    SessionBackend
 	turnState TurnState
 
 	// pendingDrainIDs is populated by the InboxDrainMsg handler and consumed
@@ -91,7 +91,7 @@ type AppModel struct {
 
 	showError   bool
 	errorDialog ErrorDialogModel
-	restartFunc func() (*Bridge, error)
+	restartFunc func() (SessionBackend, error)
 
 	// quitting is set when the user confirms shutdown (Ctrl-C confirm
 	// dialog). It guards against a late RestartSessionMsg triggered from an
@@ -131,11 +131,6 @@ type AppModel struct {
 	// loaded and the viewport falls back to the legacy "Observing X..."
 	// banner.
 	homeDir string
-
-	// childTranscriptTick is the cadence between transcript re-reads while a
-	// non-root agent is observed. Tests shorten it; zero means use
-	// defaultChildTranscriptTick.
-	childTranscriptTick time.Duration
 
 	// childAdapter, childAdapterAgent, childAdapterEpoch back the unified
 	// child-viewport streaming path (QUM-439). When the observed child has a
@@ -221,16 +216,13 @@ type AppModel struct {
 	cache *viewCache
 }
 
-const (
-	defaultRestartTick         = time.Second
-	defaultChildTranscriptTick = 2 * time.Second
-)
+const defaultRestartTick = time.Second
 
 // NewAppModel constructs the root model with all sub-models.
 // bridge may be nil for static placeholder mode.
 // sup and sprawlRoot are optional; when provided, the tree polls agent status.
 // restartFunc is called when the user requests a session restart after a crash.
-func NewAppModel(accentColor, repoName, version, liveVersion string, bridge *Bridge, sup supervisor.Supervisor, sprawlRoot string, restartFunc func() (*Bridge, error)) AppModel {
+func NewAppModel(accentColor, repoName, version, liveVersion string, bridge SessionBackend, sup supervisor.Supervisor, sprawlRoot string, restartFunc func() (SessionBackend, error)) AppModel {
 	theme := NewTheme(accentColor)
 	startPanel := PanelTree
 	if bridge != nil {
@@ -1423,19 +1415,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// QUM-439: unified streaming path replaces JSONL polling; do not
-		// schedule a follow-up tick when the adapter is live for this agent.
-		if isUnified {
-			if len(drainCmds) > 0 {
-				return m, tea.Batch(drainCmds...)
-			}
-			return m, nil
-		}
-		tickCmd := scheduleChildTranscriptTick(m.sprawlRoot, m.homeDir, msg.Agent, m.childTranscriptTickInterval())
+		// QUM-400: unified streaming is the only path; no JSONL polling
+		// reschedule. Backfill is one-shot via loadChildTranscriptCmd on
+		// child observation; subsequent events arrive via TUIAdapter.
+		_ = isUnified
 		if len(drainCmds) > 0 {
-			return m, tea.Batch(append(drainCmds, tickCmd)...)
+			return m, tea.Batch(drainCmds...)
 		}
-		return m, tickCmd
+		return m, nil
 	}
 
 	return m, nil
@@ -2100,19 +2087,6 @@ func (m *AppModel) SetHomeDir(homeDir string) {
 	m.homeDir = homeDir
 }
 
-// SetChildTranscriptTick overrides the polling cadence for child-agent
-// transcript re-reads. Used by tests to avoid sleeping a real interval.
-func (m *AppModel) SetChildTranscriptTick(d time.Duration) {
-	m.childTranscriptTick = d
-}
-
-func (m *AppModel) childTranscriptTickInterval() time.Duration {
-	if m.childTranscriptTick > 0 {
-		return m.childTranscriptTick
-	}
-	return defaultChildTranscriptTick
-}
-
 // ActivityAdapter returns the activity-panel streaming adapter, or nil when
 // no unified runtime is bound. (QUM-440)
 func (m AppModel) ActivityAdapter() *ActivityStreamAdapter { return m.activityAdapter }
@@ -2310,16 +2284,6 @@ func readChildTranscript(sprawlRoot, homeDir, name string) ChildTranscriptMsg {
 		return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Err: err}
 	}
 	return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Entries: entries}
-}
-
-// scheduleChildTranscriptTick fires a follow-up ChildTranscriptMsg after the
-// configured interval. Mirrors scheduleActivityTick — staleness is handled at
-// receive time rather than via cancellation.
-func scheduleChildTranscriptTick(sprawlRoot, homeDir, name string, interval time.Duration) tea.Cmd {
-	return func() tea.Msg {
-		time.Sleep(interval)
-		return readChildTranscript(sprawlRoot, homeDir, name)
-	}
 }
 
 // persistCostCmd writes the session cost to the agent's state file. Fire-and-

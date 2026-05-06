@@ -317,7 +317,7 @@ func TestRealDelegate_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	}
 }
 
-func TestRealSendAsync_SignalsInterruptAfterFullPersistenceAndSkipsWakeFile(t *testing.T) {
+func TestRealSendAsync_SignalsInterruptAfterFullPersistence(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -345,11 +345,6 @@ func TestRealSendAsync_SignalsInterruptAfterFullPersistenceAndSkipsWakeFile(t *t
 	}
 	if snap.WakeCount != 0 {
 		t.Fatalf("WakeCount = %d, want 0 when async delivery uses interrupt-capable signal", snap.WakeCount)
-	}
-
-	wakePath := filepath.Join(tmpDir, ".sprawl", "agents", "alice.wake")
-	if _, err := os.Stat(wakePath); !os.IsNotExist(err) {
-		t.Fatalf("wake file should not exist for runtime-backed async delivery, stat err = %v", err)
 	}
 }
 
@@ -419,7 +414,7 @@ func TestRealSendAsync_MaildirFailureDoesNotSignalRuntime(t *testing.T) {
 	}
 }
 
-func TestRealSendInterrupt_SignalsInterruptAfterFullPersistenceAndSkipsWakeFile(t *testing.T) {
+func TestRealSendInterrupt_SignalsInterruptAfterFullPersistence(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -447,11 +442,6 @@ func TestRealSendInterrupt_SignalsInterruptAfterFullPersistenceAndSkipsWakeFile(
 	}
 	if snap.WakeCount != 0 {
 		t.Fatalf("WakeCount = %d, want 0 when interrupt delivery uses the interrupt-capable signal only", snap.WakeCount)
-	}
-
-	wakePath := filepath.Join(tmpDir, ".sprawl", "agents", "alice.wake")
-	if _, err := os.Stat(wakePath); !os.IsNotExist(err) {
-		t.Fatalf("wake file should not exist for runtime-backed interrupt delivery, stat err = %v", err)
 	}
 }
 
@@ -521,7 +511,7 @@ func TestRealSendInterrupt_MaildirFailureDoesNotSignalRuntime(t *testing.T) {
 	}
 }
 
-func TestRealReportStatus_SignalsParentRuntimeAfterFullPersistenceAndSkipsWakeFile(t *testing.T) {
+func TestRealReportStatus_SignalsParentRuntimeAfterFullPersistence(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	parent := testAgentState("alice")
 	child := testAgentState("bob")
@@ -552,11 +542,6 @@ func TestRealReportStatus_SignalsParentRuntimeAfterFullPersistenceAndSkipsWakeFi
 	}
 	if snap.WakeCount != 0 {
 		t.Fatalf("WakeCount = %d, want 0 for report delivery interrupt path", snap.WakeCount)
-	}
-
-	wakePath := filepath.Join(tmpDir, ".sprawl", "agents", "alice.wake")
-	if _, err := os.Stat(wakePath); !os.IsNotExist(err) {
-		t.Fatalf("wake file should not exist for runtime-backed report delivery, stat err = %v", err)
 	}
 }
 
@@ -936,31 +921,6 @@ func TestRealRetire_RuntimeBackedAgentRequiresCascadeWhenChildrenExist(t *testin
 	}
 	if _, ok := r.runtimeRegistry.Get("alice"); !ok {
 		t.Fatal("runtime should remain registered when retire is rejected")
-	}
-}
-
-func TestBuildRunnerDeps_InjectsChildTreePathAndNamespace(t *testing.T) {
-	sprawlRoot := t.TempDir()
-	state.WriteNamespace(sprawlRoot, "test-ns")
-	deps := buildRunnerDeps(RuntimeStartSpec{
-		Name:       "alice",
-		Worktree:   filepath.Join(sprawlRoot, ".sprawl", "worktrees", "alice"),
-		SprawlRoot: sprawlRoot,
-		SessionID:  "sess-alice",
-		TreePath:   "weave/alice",
-	})
-
-	if got := deps.Getenv("SPRAWL_AGENT_IDENTITY"); got != "alice" {
-		t.Fatalf("SPRAWL_AGENT_IDENTITY = %q, want alice", got)
-	}
-	if got := deps.Getenv("SPRAWL_ROOT"); got != sprawlRoot {
-		t.Fatalf("SPRAWL_ROOT = %q, want %q", got, sprawlRoot)
-	}
-	if got := deps.Getenv("SPRAWL_TREE_PATH"); got != "weave/alice" {
-		t.Fatalf("SPRAWL_TREE_PATH = %q, want weave/alice", got)
-	}
-	if got := deps.Getenv("SPRAWL_NAMESPACE"); got != "test-ns" {
-		t.Fatalf("SPRAWL_NAMESPACE = %q, want test-ns", got)
 	}
 }
 

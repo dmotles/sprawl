@@ -1,6 +1,6 @@
 # Design: Unify TUI-Mode Weave Init with Tmux-Mode
 
-## Status: Draft (QUM-252)
+## Status: Historical (QUM-252). Superseded by the unified runtime work (QUM-392 / -396 / -398 / -399 / -400). The TUI-mode path described below — `tui.Bridge`, `enterBridgeSession`, the channel-based session adapter — has been retired. Weave now runs on the same `runtime.UnifiedRuntime` as children; see `docs/designs/unified-runtime.md`. Kept for context on the original gap analysis.
 
 ## Context
 

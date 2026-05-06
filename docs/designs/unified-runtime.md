@@ -1,9 +1,11 @@
 # Unified Agent Runtime
 
-**Status**: Proposed  
+**Status**: Implemented (Phases 1–4 shipped). Sections 1–5 describe the
+original problem and target design; section 6 records migration history
+including the Phase 4 cleanup that retired the legacy paths.  
 **Author**: ghost (researcher)  
 **Date**: 2026-04-30  
-**Tracking**: QUM-392
+**Tracking**: QUM-392 (design), QUM-396/-398/-399 (rollout), QUM-400 (cleanup)
 
 ## 1. Problem Statement
 
@@ -24,7 +26,11 @@ This split means:
 2. **Children can't stream output to the TUI.** Child output goes to `activity.ndjson` files read periodically; there's no real-time streaming path.
 3. **No unified interrupt model.** The root uses TUI ESC → `Bridge.Interrupt()`, while children use `ControlSignal` channels. These are incompatible abstractions.
 
-## 2. Current Architecture Deep Dive
+## 2. Pre-Unification Architecture (historical)
+
+> The two paths described in this section were retired in Phase 4
+> (QUM-400). They are preserved here as the design rationale for the
+> unified runtime that replaced them.
 
 ### 2.1 Bridge Path (Root / Weave)
 
@@ -573,26 +579,30 @@ Steps:
 
 **Why root second**: The root has more complexity (TUI integration, restartFunc, resume-failure handling, handoff). Doing it second means we've already proven the runtime works on children.
 
-**Status: shipped behind `SPRAWL_UNIFIED_RUNTIME=1` env gate** (same flag children use). Phase 4 (QUM-400) drops the gate after soak.
+Initial rollout shipped behind a `SPRAWL_UNIFIED_RUNTIME=1` env gate (same flag children used). The gate was removed in Phase 4.
 
 What landed:
-1. `cmd/enter.go` adds `newSessionImplUnified` (gated path); `defaultNewSession` routes here when env is set, else legacy `newSessionImpl`.
+1. `cmd/enter.go` added a unified session factory; `defaultNewSession` routed there when env was set, else the legacy `newSessionImpl`.
 2. User input flows through `tui.Bridge` → `BridgeDelegate` (TUIAdapter) → `runtime.Queue().Enqueue` (`ClassUser`).
-3. Out-of-process inbox drain: AgentTreeMsg's 2s tick calls `triggerRootInterruptDeliveryCmd` (which routes to `WeaveRuntimeHandle.InterruptDelivery` via the registry) when `m.bridge.IsContinuous()`. In-process arrivals reach weave via `Real.ReportStatus` → `parentRuntime.InterruptDelivery()`.
+3. Out-of-process inbox drain: AgentTreeMsg's 2s tick calls `triggerRootInterruptDeliveryCmd` (which routes to `WeaveRuntimeHandle.InterruptDelivery` via the registry). In-process arrivals reach weave via `Real.ReportStatus` → `parentRuntime.InterruptDelivery()`.
 4. New `Supervisor.RegisterRootRuntime(name, handle, agentState)` registers weave's UnifiedRuntime in the same `RuntimeRegistry` used for child runtimes — enabling the existing report_status / send_async InterruptDelivery path.
-5. `tui.Bridge` refactored to a thin wrapper around `BridgeDelegate`; legacy session-backed path preserved as `legacyBridgeDelegate`. `IsContinuous() bool` distinguishes the two; AppModel keeps `WaitForEvent` running across turn boundaries when continuous.
-6. `restartFunc` re-enters `newSessionImplUnified`, which self-cleans by stopping + removing any prior weave registry entry before building a new runtime.
+5. `tui.Bridge` refactored to a thin wrapper around `BridgeDelegate`; legacy session-backed path preserved as `legacyBridgeDelegate`. `IsContinuous() bool` distinguished the two; AppModel kept `WaitForEvent` running across turn boundaries when continuous. (Both went away in Phase 4.)
+6. `restartFunc` re-enters the unified session factory, which self-cleans by stopping + removing any prior weave registry entry before building a new runtime.
 
-**Testing the unified root path**: `SPRAWL_UNIFIED_RUNTIME=1 sprawl enter`. Both `make test-handoff-e2e` and `make test-notify-tui-e2e` should be run with the env var set to validate the unified path; they continue to pass without the env var (legacy path).
+### 6.4 Phase 4: Cleanup (DONE — QUM-400)
 
-**Rollback**: drop `SPRAWL_UNIFIED_RUNTIME` (default unset) — runEnter uses the legacy `tui.Bridge` path.
+Phase 4 retired every legacy path. After Phase 4 there is exactly one runtime
+(`UnifiedRuntime`) for both root and children, one session abstraction
+(`tui.SessionBackend` directly satisfied by `tuiruntime.TUIAdapter`), and one
+in-process wake/interrupt mechanism (`ControlSignal` via the queue).
 
-### 6.4 Phase 4: Cleanup (1 day)
+What landed (across four atomic commits):
+1. **Step 1** — removed the `.wake` file poke/wake plumbing in `internal/messages` plus the supervisor `RecipientResolver` machinery that gated it. Same-process unified runtimes drive wake/interrupt in memory; the file sentinel was dead.
+2. **Step 2** — *skipped* (folded into step 3). `tui.Bridge` was load-bearing in both the legacy and unified paths via `tui.NewBridgeFromDelegate(TUIAdapter)`, so it could not die independently of the unified-path session-factory refactor.
+3. **Step 3** — the "death of legacy runtime" mass collapse. Refactored `AppModel` to consume a new `tui.SessionBackend` interface (`*TUIAdapter` satisfies it directly); collapsed `cmd/enter.go` to a single session factory; deleted `agentloop.Runner`, `runner_backend.go`, `internal/supervisor/runtime_launcher.go` (legacy), the `SPRAWL_UNIFIED_RUNTIME` env gate, the `unifiedRuntimeHandle` marker, and the JSONL polling re-tick (one-shot backfill preserved). Renamed `runtime_launcher_unified.go` → `runtime_launcher.go`. `tui.Bridge` / `BridgeSession` / `BridgeDelegate` no longer exist in the production binary; they remain as a channel-based test fake (`internal/tui/bridge_legacy_fake_test.go`) that drives the existing TUI test suite.
+4. **Step 4** — this docs sweep.
 
-1. Remove `agentloop.Runner` and `agentloop.SendPromptWithInterrupt`
-2. Remove `tui.Bridge` and `tui.BridgeSession`
-3. Remove poke/wake file polling (replaced by in-memory queue + `ControlSignal`)
-4. Update `docs/` and `CLAUDE.md`
+The four E2E gates (`make validate`, `make test-handoff-e2e`, `make test-notify-tui-e2e`, `make test-bridge-lifecycle-e2e`) gate every step.
 
 ### 6.5 Risk Assessment
 

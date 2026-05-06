@@ -1,5 +1,13 @@
 # Unified Runtime Messaging Audit (2026-05-05)
 
+> **Status: superseded by QUM-400.** This audit was written while the
+> unified path was a `SPRAWL_UNIFIED_RUNTIME=1` opt-in alongside the legacy
+> `agentloop.Runner` / `tui.Bridge` paths. QUM-400 retired the legacy
+> paths, the env-flag gate, the `.wake` sentinel, and the
+> `RecipientResolver` machinery. The unified path is now the only path.
+> Statements below comparing legacy vs unified are historical; references
+> to deleted symbols and files reflect code as it stood at the audit date.
+
 **Scope.** Audit message delivery, notification, and TUI visibility under
 `SPRAWL_UNIFIED_RUNTIME=1` (the QUM-399 path) for both weave and child
 agents. Identify what is broken, what is already filed in Linear, and what

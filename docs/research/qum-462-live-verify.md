@@ -6,6 +6,12 @@ Date: 2026-05-04
 Verifier: trace (researcher, qa family)
 Branch: `dmotles/qum-462-live-verify`
 
+> **Status: historical.** Verification was run with the
+> `SPRAWL_UNIFIED_RUNTIME=1` opt-in flag. QUM-400 has since removed that
+> gate; the unified path is now unconditional. The PASS verdict still
+> applies — this doc just describes a configuration that no longer needs
+> a flag.
+
 ## Summary
 
 Three independent `send_async` probes from a child agent (`trace`) to the

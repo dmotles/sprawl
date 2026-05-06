@@ -223,19 +223,8 @@ echo "=== Launching sprawl enter in tmux ==="
 # count_inbox_banners (QUM-465) must continue to show exactly 1 banner per
 # delivery; Option A makes unified-mode behavior match legacy.
 #
-# Mode coverage decision (test-critic feedback on commit 8d1c496):
-# This script runs unified-mode only. The legacy path was previously the sole
-# coverage target (pre-QUM-471) and the unified path is the active regression
-# focus. A dual-mode loop (`for mode in legacy unified; do …`) would require
-# tearing down and relaunching the TUI per iteration to reset state (badge
-# counts (1)→(2) are coupled across Tests A/B), roughly doubling the script
-# size and runtime. Not worth the complexity given QUM-400 retires the legacy
-# code path entirely — at which point this comment + the SPRAWL_UNIFIED_RUNTIME
-# export both become unconditional. If a legacy-mode regression must be guarded
-# in the interim, run this script with `SPRAWL_UNIFIED_RUNTIME=` (empty) before
-# QUM-400 lands.
 _stmux new-session -d -s "$SESSION" -x 200 -y 50 \
-    "SPRAWL_ROOT='$SPRAWL_ROOT' SPRAWL_UNIFIED_RUNTIME=1 '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
+    "SPRAWL_ROOT='$SPRAWL_ROOT' '$SPRAWL_BIN' enter 2>'$STDERR_LOG'"
 # Pin the tmux session to 200x50 regardless of attached clients so the
 # TUI's tree panel renders wide enough (TreeWidth = termWidth/4, capped
 # at 50) to fit the 'weave (idle) (N)' unread badge. Without this the

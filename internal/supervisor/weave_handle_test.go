@@ -34,16 +34,6 @@ func (r *resultEmittingSession) StartTurn(ctx context.Context, prompt string, sp
 	return out, nil
 }
 
-// TestWeaveRuntimeHandle_isUnifiedHandle_Marker confirms the handle satisfies
-// the unifiedRuntimeHandle marker so messages.RecipientResolver classifies
-// weave's recipient kind as Unified (skipping the legacy .wake sentinel).
-func TestWeaveRuntimeHandle_isUnifiedHandle_Marker(t *testing.T) {
-	var h interface{} = &WeaveRuntimeHandle{}
-	if _, ok := h.(unifiedRuntimeHandle); !ok {
-		t.Errorf("*WeaveRuntimeHandle does not satisfy unifiedRuntimeHandle (isUnifiedHandle marker missing)")
-	}
-}
-
 // TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain
 // pins QUM-471: under the unified runtime, weave's WeaveRuntimeHandle.InterruptDelivery
 // must NOT enqueue ClassInbox/ClassInterrupt QueueItems against the runtime's queue.

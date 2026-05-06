@@ -2,9 +2,9 @@
 
 **Date:** 2026-05-05
 **Author:** ghost
-**Status:** Research complete; fix proposal pending implementation
+**Status:** Historical. Captured while the unified runtime was a `SPRAWL_UNIFIED_RUNTIME=1` opt-in. QUM-400 retired the env gate and the legacy paths; the failure mode described here was specific to that pre-cleanup configuration.
 **Repro binary:** v0.1.10-174-gf91d87f (main @ 80100d7)
-**Gate:** `SPRAWL_UNIFIED_RUNTIME=1`, TUI mode (`sprawl enter`)
+**Gate (historical):** `SPRAWL_UNIFIED_RUNTIME=1`, TUI mode (`sprawl enter`)
 
 ---
 

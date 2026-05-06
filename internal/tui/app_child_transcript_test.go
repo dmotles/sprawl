@@ -257,29 +257,3 @@ func TestAgentSelectedMsg_BackToRoot_RestoresBufferNoTranscriptCmd(t *testing.T)
 		t.Errorf("ChildTranscriptMsg should NOT be dispatched for root agent; got msgs=%v", msgs)
 	}
 }
-
-func TestChildTranscriptMsg_ReschedulesWhileObserved(t *testing.T) {
-	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
-	app.observedAgent = "finn"
-	// Set tick interval to ~0 so we don't actually sleep.
-	app.SetChildTranscriptTick(1)
-	_, cmd := app.Update(ChildTranscriptMsg{Agent: "finn", Entries: nil})
-	if cmd == nil {
-		t.Fatal("ChildTranscriptMsg should reschedule a follow-up tick while observed")
-	}
-}
-
-func TestChildTranscriptMsg_RootAgent_NoReschedule(t *testing.T) {
-	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
-	// observedAgent default = weave.
-	_, cmd := app.Update(ChildTranscriptMsg{Agent: "weave", Entries: nil})
-	// For root, no reschedule expected.
-	if cmd != nil {
-		// It may legitimately return nil — but if non-nil, it must NOT yield
-		// another ChildTranscriptMsg.
-		msgs := collectBatchMsgs(t, cmd)
-		if _, ok := findChildTranscriptMsg(msgs); ok {
-			t.Errorf("root ChildTranscriptMsg should not reschedule; got %v", msgs)
-		}
-	}
-}
