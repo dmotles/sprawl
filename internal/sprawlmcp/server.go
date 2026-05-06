@@ -284,7 +284,11 @@ func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, e
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := s.sup.Merge(ctx, p.AgentName, p.Message, p.NoValidate); err != nil {
+	// QUM-487: pass child agent identity from the request context so the
+	// supervisor's per-call agentops deps reflect the caller (not the
+	// long-lived supervisor process's SPRAWL_AGENT_IDENTITY).
+	caller := backendpkg.CallerIdentity(ctx)
+	if err := s.sup.Merge(ctx, caller, p.AgentName, p.Message, p.NoValidate); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Merged agent %s", p.AgentName), nil
@@ -305,7 +309,9 @@ func (s *Server) toolRetire(ctx context.Context, args json.RawMessage) (string, 
 		return "", fmt.Errorf("merge and abandon are mutually exclusive")
 	}
 	noValidate := p.Validate != nil && !*p.Validate
-	if err := s.sup.Retire(ctx, p.AgentName, p.Merge, p.Abandon, p.Cascade, noValidate); err != nil {
+	// QUM-487: see toolMerge for rationale.
+	caller := backendpkg.CallerIdentity(ctx)
+	if err := s.sup.Retire(ctx, caller, p.AgentName, p.Merge, p.Abandon, p.Cascade, noValidate); err != nil {
 		return "", err
 	}
 	switch {

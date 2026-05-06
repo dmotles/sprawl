@@ -341,11 +341,24 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 	}, nil
 }
 
-func (r *Real) Merge(_ context.Context, agentName, message string, noValidate bool) error {
-	return r.mergeFn(r.mergeDeps, agentName, message, noValidate, false)
+// Merge accepts a `caller` parameter so MCP-invoked merges run with the
+// caller agent's identity (rather than the supervisor process's identity).
+// Resolution order: explicit `caller` arg, then context CallerIdentity, then
+// r.callerName fallback. The resolved identity is plumbed into a per-call
+// MergeDeps whose Getenv reports it as SPRAWL_AGENT_IDENTITY so the parent-
+// equality check inside agentops.Merge sees the correct caller. See QUM-487.
+func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noValidate bool) error {
+	effective := r.effectiveCallerOr(ctx, caller)
+	return r.mergeFn(r.mergeDepsForCaller(effective), agentName, message, noValidate, false)
 }
 
-func (r *Real) Retire(ctx context.Context, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+// Retire accepts a `caller` parameter for the same reason as Merge — see
+// QUM-487. Resolution order matches Merge; the resolved identity flows into
+// retireDeps.Getenv and is also propagated through cascade recursion so every
+// retireFn invocation in the tree runs under the caller's identity.
+func (r *Real) Retire(ctx context.Context, caller string, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+	effective := r.effectiveCallerOr(ctx, caller)
+	retireDeps := r.retireDepsForCaller(effective)
 	if err := r.reconcileStateFromRegistry(agentName); err != nil {
 		return err
 	}
@@ -365,7 +378,7 @@ func (r *Real) Retire(ctx context.Context, agentName string, mergeFirst, abandon
 		}
 		if cascade {
 			for _, child := range children {
-				if err := r.Retire(ctx, child.Name, false, false, true, noValidate); err != nil {
+				if err := r.Retire(ctx, effective, child.Name, false, false, true, noValidate); err != nil {
 					return err
 				}
 			}
@@ -375,13 +388,13 @@ func (r *Real) Retire(ctx context.Context, agentName string, mergeFirst, abandon
 		if err := runtime.Stop(stopCtx); err != nil {
 			return err
 		}
-		if err := r.retireFn(r.retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
+		if err := r.retireFn(retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 			return err
 		}
 		r.runtimeRegistry.Remove(agentName)
 		return nil
 	}
-	if err := r.retireFn(r.retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
+	if err := r.retireFn(retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)
 		}
@@ -539,6 +552,54 @@ func (r *Real) effectiveCaller(ctx context.Context) string {
 		return override
 	}
 	return r.callerName
+}
+
+// effectiveCallerOr resolves the effective caller identity for Merge/Retire,
+// preferring an explicit `caller` argument over the context override and
+// finally falling back to r.callerName. See QUM-487.
+func (r *Real) effectiveCallerOr(ctx context.Context, caller string) string {
+	if caller != "" {
+		return caller
+	}
+	if override := backendpkg.CallerIdentity(ctx); override != "" {
+		return override
+	}
+	return r.callerName
+}
+
+// mergeDepsForCaller returns a copy of r.mergeDeps with Getenv overridden so
+// SPRAWL_AGENT_IDENTITY reflects the effective caller. Mirrors the pattern
+// used by spawnDepsForCaller (QUM-384). See QUM-487.
+func (r *Real) mergeDepsForCaller(caller string) *agentops.MergeDeps {
+	deps := *r.mergeDeps // shallow copy
+	origGetenv := r.mergeDeps.Getenv
+	deps.Getenv = func(key string) string {
+		if key == "SPRAWL_AGENT_IDENTITY" {
+			return caller
+		}
+		if origGetenv != nil {
+			return origGetenv(key)
+		}
+		return os.Getenv(key)
+	}
+	return &deps
+}
+
+// retireDepsForCaller returns a copy of r.retireDeps with Getenv overridden so
+// SPRAWL_AGENT_IDENTITY reflects the effective caller. See QUM-487.
+func (r *Real) retireDepsForCaller(caller string) *agentops.RetireDeps {
+	deps := *r.retireDeps // shallow copy
+	origGetenv := r.retireDeps.Getenv
+	deps.Getenv = func(key string) string {
+		if key == "SPRAWL_AGENT_IDENTITY" {
+			return caller
+		}
+		if origGetenv != nil {
+			return origGetenv(key)
+		}
+		return os.Getenv(key)
+	}
+	return &deps
 }
 
 // spawnDepsForCaller returns a copy of r.spawnDeps with Getenv overridden so

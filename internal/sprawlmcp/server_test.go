@@ -39,9 +39,11 @@ type mockSupervisor struct {
 	messageAgent     string
 	messageSubject   string
 	messageBody      string
+	mergeCaller      string
 	mergeAgent       string
 	mergeMessage     string
 	mergeNoVal       bool
+	retireCaller     string
 	retireAgent      string
 	retireMerge      bool
 	retireAbandon    bool
@@ -196,14 +198,16 @@ func (m *mockSupervisor) Message(_ context.Context, agentName, subject, body str
 	return m.messageErr
 }
 
-func (m *mockSupervisor) Merge(_ context.Context, agentName, message string, noValidate bool) error {
+func (m *mockSupervisor) Merge(_ context.Context, caller, agentName, message string, noValidate bool) error {
+	m.mergeCaller = caller
 	m.mergeAgent = agentName
 	m.mergeMessage = message
 	m.mergeNoVal = noValidate
 	return m.mergeErr
 }
 
-func (m *mockSupervisor) Retire(_ context.Context, agentName string, merge, abandon, cascade, noValidate bool) error {
+func (m *mockSupervisor) Retire(_ context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error {
+	m.retireCaller = caller
 	m.retireAgent = agentName
 	m.retireMerge = merge
 	m.retireAbandon = abandon
@@ -615,6 +619,11 @@ func TestServer_ToolsCall_SprawlMerge(t *testing.T) {
 	if !mock.mergeNoVal {
 		t.Error("merge noValidate = false, want true")
 	}
+	// Baseline: when no caller identity is in context, the server passes
+	// an empty caller; the supervisor will fall back to its callerName.
+	if mock.mergeCaller != "" {
+		t.Errorf("mergeCaller = %q, want empty (no ctx identity)", mock.mergeCaller)
+	}
 
 	parsed := parseJSONRPCResponse(t, resp)
 	if _, ok := parsed["error"]; ok {
@@ -653,6 +662,9 @@ func TestServer_ToolsCall_SprawlRetire(t *testing.T) {
 	}
 	if mock.retireNoValidate {
 		t.Error("retire noValidate = true, want false (validate defaults to true)")
+	}
+	if mock.retireCaller != "" {
+		t.Errorf("retireCaller = %q, want empty (no ctx identity)", mock.retireCaller)
 	}
 
 	parsed := parseJSONRPCResponse(t, resp)
@@ -1670,5 +1682,65 @@ func TestServer_ToolsCall_SprawlMessagesPeek(t *testing.T) {
 	}
 	if len(body.Preview) != 1 {
 		t.Fatalf("preview len = %d", len(body.Preview))
+	}
+}
+
+// --- QUM-487: caller identity propagation for merge/retire ---
+//
+// The supervisor's Merge/Retire interface accepts a caller-identity arg so
+// child-agent MCP requests don't leak the supervisor process's identity
+// (always "weave") into agentops's parent-equality check. The MCP server's
+// merge / retire tool handlers are responsible for extracting that caller
+// from the request context (set by the backend session bridge per QUM-387)
+// and forwarding it.
+
+func TestServer_ToolsCall_SprawlMerge_PassesCallerFromContext(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+
+	// Manager "tower" invoking merge through MCP — context carries tower's identity.
+	ctx := withTestCallerIdentity(context.Background(), "tower")
+
+	msg := makeJSONRPCRequest(110, "tools/call", map[string]any{
+		"name": "merge",
+		"arguments": map[string]any{
+			"agent_name": "finn",
+			"message":    "merge finn",
+		},
+	})
+	if _, err := srv.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.mergeCaller != "tower" {
+		t.Errorf("mergeCaller = %q, want %q (server must forward caller from ctx — QUM-487)", mock.mergeCaller, "tower")
+	}
+	if mock.mergeAgent != "finn" {
+		t.Errorf("mergeAgent = %q, want finn", mock.mergeAgent)
+	}
+}
+
+func TestServer_ToolsCall_SprawlRetire_PassesCallerFromContext(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+
+	ctx := withTestCallerIdentity(context.Background(), "tower")
+
+	msg := makeJSONRPCRequest(111, "tools/call", map[string]any{
+		"name": "retire",
+		"arguments": map[string]any{
+			"agent_name": "finn",
+			"merge":      true,
+		},
+	})
+	if _, err := srv.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.retireCaller != "tower" {
+		t.Errorf("retireCaller = %q, want %q (server must forward caller from ctx — QUM-487)", mock.retireCaller, "tower")
+	}
+	if mock.retireAgent != "finn" {
+		t.Errorf("retireAgent = %q, want finn", mock.retireAgent)
 	}
 }

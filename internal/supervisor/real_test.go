@@ -136,7 +136,7 @@ func TestMerge_ForwardsArgs(t *testing.T) {
 		return nil
 	}
 
-	if err := r.Merge(context.Background(), "ratz", "custom commit", true); err != nil {
+	if err := r.Merge(context.Background(), "", "ratz", "custom commit", true); err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 	if gotName != "ratz" || gotMsg != "custom commit" || !gotNoValidate || gotDryRun {
@@ -150,7 +150,7 @@ func TestMerge_PropagatesError(t *testing.T) {
 	r.mergeFn = func(*agentops.MergeDeps, string, string, bool, bool) error {
 		return errors.New("dirty tree")
 	}
-	err := r.Merge(context.Background(), "ratz", "", false)
+	err := r.Merge(context.Background(), "", "ratz", "", false)
 	if err == nil || err.Error() != "dirty tree" {
 		t.Errorf("err = %v, want dirty tree", err)
 	}
@@ -175,7 +175,7 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 		return nil
 	}
 
-	if err := r.Retire(context.Background(), "ghost", true /* mergeFirst */, false /* abandon */, false /* cascade */, false /* noValidate */); err != nil {
+	if err := r.Retire(context.Background(), "", "ghost", true /* mergeFirst */, false /* abandon */, false /* cascade */, false /* noValidate */); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if got.name != "ghost" {
@@ -209,7 +209,7 @@ func TestRetire_AbandonMode(t *testing.T) {
 		gotAbandon, gotMergeFirst = abandon, mergeFirst
 		return nil
 	}
-	if err := r.Retire(context.Background(), "ghost", false, true, false, false); err != nil {
+	if err := r.Retire(context.Background(), "", "ghost", false, true, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !gotAbandon || gotMergeFirst {
@@ -225,7 +225,7 @@ func TestRetire_CascadeAndNoValidate(t *testing.T) {
 		gotCascade, gotNoValidate = cascade, noValidate
 		return nil
 	}
-	if err := r.Retire(context.Background(), "ghost", true /* merge */, false, true /* cascade */, true /* noValidate */); err != nil {
+	if err := r.Retire(context.Background(), "", "ghost", true /* merge */, false, true /* cascade */, true /* noValidate */); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !gotCascade {
@@ -641,7 +641,7 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 			return nil
 		}
 
-		err := r.Retire(context.Background(), "orphan",
+		err := r.Retire(context.Background(), "", "orphan",
 			false, /* mergeFirst */
 			true,  /* abandon */
 			false, /* cascade */
@@ -667,7 +667,7 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 			return nil
 		}
 
-		err := r.Retire(context.Background(), "ghost", false, true, false, false)
+		err := r.Retire(context.Background(), "", "ghost", false, true, false, false)
 		if err == nil {
 			t.Fatal("expected error when both JSON and registry are missing, got nil")
 		}
@@ -792,7 +792,7 @@ func TestE2E_StateDivergenceFullFlow(t *testing.T) {
 		LoadConfig:          func(string) (*config.Config, error) { return &config.Config{}, nil },
 		RunScript:           func(string, string, map[string]string) ([]byte, error) { return nil, nil },
 	}
-	if err := r.Retire(context.Background(), mgrName,
+	if err := r.Retire(context.Background(), "", mgrName,
 		false, /* mergeFirst */
 		true,  /* abandon */
 		false, /* cascade */
@@ -927,5 +927,192 @@ func TestSpawn_GrandchildTreePathDepth3(t *testing.T) {
 
 	if capturedTreePath != "weave/tower/byte" {
 		t.Errorf("SPRAWL_TREE_PATH = %q, want %q (depth-3 ancestry must be preserved — QUM-416)", capturedTreePath, "weave/tower/byte")
+	}
+}
+
+// --- QUM-487: caller-identity routing into agentops Merge/Retire ---
+//
+// Background: agentops.Merge / agentops.Retire read SPRAWL_AGENT_IDENTITY
+// from a long-lived MergeDeps/RetireDeps.Getenv attached to the supervisor
+// at construction time. The supervisor process is `sprawl enter` running
+// under weave, so that env always returns "weave" — and the
+// parent-equality check inside agentops then rejects MCP-invoked merges
+// from grandchildren whose actual parent is a non-weave manager.
+//
+// The fix is to plumb a per-call caller identity through Real.Merge /
+// Real.Retire so the per-call MergeDeps/RetireDeps surface the caller's
+// SPRAWL_AGENT_IDENTITY (mirroring the QUM-384 spawnDepsForCaller pattern).
+// These tests pin the new contract: the value seen by deps.Getenv inside
+// mergeFn / retireFn must be the caller (explicit arg, then context
+// override, then r.callerName fallback) — NOT always r.callerName.
+
+func TestMerge_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
+	r, _ := newFakeReal(t)
+	if r.callerName != "weave" {
+		t.Fatalf("precondition: r.callerName = %q, want weave", r.callerName)
+	}
+
+	var capturedIdentity string
+	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) error {
+		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return nil
+	}
+
+	// Manager "tower" invokes merge through the MCP server. The supervisor
+	// must forward tower's identity into agentops, so the parent-equality
+	// check inside agentops.Merge sees "tower" — not "weave".
+	if err := r.Merge(context.Background(), "tower", "finn", "msg", false); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if capturedIdentity != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY in mergeFn = %q, want %q (QUM-487: child-MCP merges must run under caller's identity, not supervisor's)", capturedIdentity, "tower")
+	}
+}
+
+func TestMerge_FallsBackToContextCallerIdentity(t *testing.T) {
+	r, _ := newFakeReal(t)
+
+	var capturedIdentity string
+	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) error {
+		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return nil
+	}
+
+	// Empty explicit caller; identity comes from the request context (the
+	// path the MCP server uses today via backendpkg.CallerIdentity(ctx)).
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "tower")
+	if err := r.Merge(ctx, "", "finn", "msg", false); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if capturedIdentity != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q (context fallback)", capturedIdentity, "tower")
+	}
+}
+
+func TestMerge_FallsBackToCallerNameWhenCallerEmptyAndNoCtxIdentity(t *testing.T) {
+	r, _ := newFakeReal(t)
+
+	var capturedIdentity string
+	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) error {
+		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return nil
+	}
+
+	// Direct (non-MCP) call with neither explicit caller nor context override.
+	// Must fall back to the supervisor's own callerName ("weave" in tests).
+	if err := r.Merge(context.Background(), "", "finn", "msg", false); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if capturedIdentity != "weave" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q (callerName fallback)", capturedIdentity, "weave")
+	}
+}
+
+func TestRetire_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "finn", Type: "engineer", Family: "engineering",
+		Parent: "tower", Status: "active",
+	})
+
+	var capturedIdentity string
+	r.retireFn = func(deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
+		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return nil
+	}
+
+	// Manager tower invokes retire on its child finn through the MCP server.
+	if err := r.Retire(context.Background(), "tower", "finn",
+		true /* mergeFirst */, false, false, false); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if capturedIdentity != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY in retireFn = %q, want %q (QUM-487)", capturedIdentity, "tower")
+	}
+}
+
+func TestRetire_FallsBackToContextCallerIdentity(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "finn", Type: "engineer", Family: "engineering",
+		Parent: "tower", Status: "active",
+	})
+
+	var capturedIdentity string
+	r.retireFn = func(deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
+		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return nil
+	}
+
+	ctx := backendpkg.WithCallerIdentity(context.Background(), "tower")
+	if err := r.Retire(ctx, "", "finn",
+		true /* mergeFirst */, false, false, false); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if capturedIdentity != "tower" {
+		t.Errorf("SPRAWL_AGENT_IDENTITY = %q, want %q (context fallback)", capturedIdentity, "tower")
+	}
+}
+
+// TestRetire_CascadePropagatesCallerToRecursiveRetire pins that when
+// Retire's cascade branch recurses to retire children, it forwards the
+// caller identity rather than dropping it. This ensures every retireFn
+// invocation in the cascade tree runs under the caller's identity, not
+// the supervisor's. See the cascade loop body at internal/supervisor/real.go.
+func TestRetire_CascadePropagatesCallerToRecursiveRetire(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	// Set up an in-registry parent (so the cascade branch is taken) with
+	// one direct child on disk to be cascaded.
+	parent := &state.AgentState{
+		Name: "tower", Type: "manager", Family: "engineering",
+		Parent: "weave", Status: "active",
+	}
+	child := &state.AgentState{
+		Name: "byte", Type: "engineer", Family: "engineering",
+		Parent: "tower", Status: "active",
+	}
+	saveTestAgent(t, tmpDir, parent)
+	saveTestAgent(t, tmpDir, child)
+
+	// Register tower in the runtime registry so startedRuntime returns it
+	// and the cascade-children check runs.
+	rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+		SprawlRoot: tmpDir,
+		Agent:      parent,
+		Starter: &runtimeTestStarter{session: &runtimeTestSession{
+			sessionID: "sess-tower",
+			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+		}},
+	})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+
+	capturedIdentitiesByAgent := map[string]string{}
+	r.retireFn = func(deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+		capturedIdentitiesByAgent[name] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
+		return nil
+	}
+
+	// Caller "operator" (NOT the supervisor's callerName "weave") cascades
+	// retirement of tower (and byte under it). Using a distinct identity
+	// distinguishes proper propagation from the r.callerName fallback —
+	// which would otherwise also produce "weave" and let a buggy
+	// non-propagating implementation pass.
+	if err := r.Retire(context.Background(), "operator", "tower",
+		false /* mergeFirst */, true /* abandon */, true /* cascade */, true /* noValidate */); err != nil {
+		t.Fatalf("Retire(cascade): %v", err)
+	}
+
+	// Both retireFn invocations (tower + byte) must have seen "operator" as
+	// the SPRAWL_AGENT_IDENTITY — i.e. the cascade recursion forwarded the
+	// caller rather than dropping it (and falling back to r.callerName).
+	if got := capturedIdentitiesByAgent["tower"]; got != "operator" {
+		t.Errorf("tower retireFn SPRAWL_AGENT_IDENTITY = %q, want %q", got, "operator")
+	}
+	if got, ok := capturedIdentitiesByAgent["byte"]; !ok {
+		t.Error("expected cascade to invoke retireFn for child byte")
+	} else if got != "operator" {
+		t.Errorf("byte retireFn SPRAWL_AGENT_IDENTITY = %q, want %q (cascade must forward caller identity to recursive Retire — QUM-487)", got, "operator")
 	}
 }
