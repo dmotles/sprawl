@@ -1470,11 +1470,11 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// Inner View() is cheap relative to lipgloss border render; the cache
 	// avoids the latter on the hot path (QUM-451).
 	treeView := m.cachedPanel(useCache, panelSlotTree, m.tree.View(),
-		layout.TreeWidth-2, layout.TreeHeight-2,
+		layout.TreeWidth, layout.TreeHeight,
 		m.activePanel == PanelTree)
 
 	vpView := m.cachedPanel(useCache, panelSlotViewport, m.observedVP().View(),
-		layout.ViewportWidth-2, layout.ViewportHeight-2,
+		layout.ViewportWidth, layout.ViewportHeight,
 		m.activePanel == PanelViewport)
 
 	// Combine tree and viewport horizontally. On wide terminals, a third
@@ -1483,7 +1483,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	var actView string
 	if hasActivity {
 		actView = m.cachedPanel(useCache, panelSlotActivity, m.activity.View(),
-			layout.ActivityWidth-2, layout.ActivityHeight-2,
+			layout.ActivityWidth, layout.ActivityHeight,
 			false) // activity is never the active panel
 	}
 	mainRow := m.cachedMainRow(useCache, treeView, vpView, actView, hasActivity)
@@ -1496,7 +1496,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	var inputView, overlay string
 	if inputVisible {
 		inputView = m.cachedPanel(useCache, panelSlotInput, m.input.View(),
-			layout.InputWidth-2, layout.InputHeight-2,
+			layout.InputWidth, layout.InputHeight,
 			m.activePanel == PanelInput)
 		overlay = m.searchOverlay()
 	}
