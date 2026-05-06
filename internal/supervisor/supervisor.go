@@ -135,8 +135,16 @@ type Supervisor interface {
 	Status(ctx context.Context) ([]AgentInfo, error)
 	Delegate(ctx context.Context, agentName, task string) error
 	Message(ctx context.Context, agentName, subject, body string) error
-	Merge(ctx context.Context, agentName, message string, noValidate bool) error
-	Retire(ctx context.Context, agentName string, merge, abandon, cascade, noValidate bool) error
+	// Merge merges agentName's branch up to its parent. `caller` is the
+	// agent identity invoking this operation — used to override
+	// SPRAWL_AGENT_IDENTITY in the per-call agentops deps so child-agent MCP
+	// calls don't leak the supervisor process's identity (always "weave")
+	// into the parent-equality check inside agentops.Merge. See QUM-487.
+	// An empty caller falls back to backendpkg.CallerIdentity(ctx) and then
+	// to the supervisor's own callerName.
+	Merge(ctx context.Context, caller, agentName, message string, noValidate bool) error
+	// Retire retires agentName. `caller` semantics match Merge — see QUM-487.
+	Retire(ctx context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error
 	Kill(ctx context.Context, agentName string) error
 	Shutdown(ctx context.Context) error
 

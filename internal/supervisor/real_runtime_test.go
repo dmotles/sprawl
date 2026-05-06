@@ -794,7 +794,7 @@ func TestRealRetire_CascadeRemovesDescendantRuntimesAfterSuccess(t *testing.T) {
 	}
 	r.retireFn = func(_ *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error { return nil }
 
-	if err := r.Retire(context.Background(), "alice", false, false, true, false); err != nil {
+	if err := r.Retire(context.Background(), "", "alice", false, false, true, false); err != nil {
 		t.Fatalf("Retire() error: %v", err)
 	}
 
@@ -818,7 +818,7 @@ func TestRealRetire_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	}
 
 	before := rt.Snapshot()
-	err := r.Retire(context.Background(), "alice", false, false, false, false)
+	err := r.Retire(context.Background(), "", "alice", false, false, false, false)
 	if err == nil {
 		t.Fatal("Retire() error = nil, want boom")
 	}
@@ -850,7 +850,7 @@ func TestRealRetire_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 		return errors.New("boom")
 	}
 
-	err := r.Retire(context.Background(), "alice", false, false, false, false)
+	err := r.Retire(context.Background(), "", "alice", false, false, false, false)
 	if err == nil {
 		t.Fatal("Retire() error = nil, want boom")
 	}
@@ -892,7 +892,7 @@ func TestRealRetire_RuntimeBackedAgentStopsRuntimeBeforeLegacyRetireFn(t *testin
 		return state.DeleteAgent(tmpDir, name)
 	}
 
-	if err := r.Retire(context.Background(), "alice", false, false, false, false); err != nil {
+	if err := r.Retire(context.Background(), "", "alice", false, false, false, false); err != nil {
 		t.Fatalf("Retire() error: %v", err)
 	}
 
@@ -927,7 +927,7 @@ func TestRealRetire_RuntimeBackedAgentRequiresCascadeWhenChildrenExist(t *testin
 		return nil
 	}
 
-	err := r.Retire(context.Background(), "alice", false, false, false, false)
+	err := r.Retire(context.Background(), "", "alice", false, false, false, false)
 	if err == nil {
 		t.Fatal("Retire() error = nil, want active-children guard")
 	}
@@ -1013,7 +1013,7 @@ func TestRealRetire_OfflineCleanupWhenNoRuntimeIsLive(t *testing.T) {
 		return state.DeleteAgent(tmpDir, "alice")
 	}
 
-	if err := r.Retire(context.Background(), "alice", false, false, false, false); err != nil {
+	if err := r.Retire(context.Background(), "", "alice", false, false, false, false); err != nil {
 		t.Fatalf("Retire() error: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(state.AgentsDir(tmpDir), "alice.json")); !os.IsNotExist(err) {
@@ -1075,7 +1075,7 @@ func TestRealRetire_CascadeFailureRemovesDescendantsAlreadyRetiredOnDisk(t *test
 		return errors.New("parent teardown failed")
 	}
 
-	err := r.Retire(context.Background(), "alice", false, false, true, false)
+	err := r.Retire(context.Background(), "", "alice", false, false, true, false)
 	if err == nil {
 		t.Fatal("Retire() error = nil, want cascade failure")
 	}
