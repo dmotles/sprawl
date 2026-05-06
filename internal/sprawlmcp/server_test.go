@@ -1,14 +1,18 @@
 package sprawlmcp
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
@@ -1742,5 +1746,145 @@ func TestServer_ToolsCall_SprawlRetire_PassesCallerFromContext(t *testing.T) {
 	}
 	if mock.retireAgent != "finn" {
 		t.Errorf("retireAgent = %q, want finn", mock.retireAgent)
+	}
+}
+
+// --- QUM-494: per-call observability — JSONL call log ---
+
+// readCallLogLines reads the mcp-calls.jsonl under root and returns
+// each line decoded as a map. Used by per-call observability tests.
+func readCallLogLines(t *testing.T, root string) []map[string]any {
+	t.Helper()
+	path := filepath.Join(root, ".sprawl", "logs", "mcp-calls.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open call log %s: %v", path, err)
+	}
+	defer f.Close()
+
+	var out []map[string]any
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(line, &obj); err != nil {
+			t.Fatalf("malformed JSONL line %q: %v", string(line), err)
+		}
+		out = append(out, obj)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	return out
+}
+
+func TestHandleToolsCall_EmitsBeginEnd(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := calllog.Open(dir)
+	if err != nil {
+		t.Fatalf("calllog.Open: %v", err)
+	}
+	defer logger.Close()
+
+	mock := &mockSupervisor{
+		peekResult: &supervisor.PeekResult{Status: "active"},
+	}
+	srv := New(mock).WithCallLog(logger)
+
+	msg := makeJSONRPCRequest(200, "tools/call", map[string]any{
+		"name":      "peek",
+		"arguments": map[string]any{"agent": "ghost"},
+	})
+	if _, err := srv.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	// Force flush to disk before reading.
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger.Close: %v", err)
+	}
+
+	lines := readCallLogLines(t, dir)
+	if len(lines) < 2 {
+		t.Fatalf("got %d log lines, want >= 2", len(lines))
+	}
+
+	var start, end map[string]any
+	for _, ln := range lines {
+		switch ln["phase"] {
+		case "start":
+			start = ln
+		case "end":
+			end = ln
+		}
+	}
+	if start == nil {
+		t.Fatal("missing start line")
+	}
+	if end == nil {
+		t.Fatal("missing end line")
+	}
+	if start["call_id"] != end["call_id"] {
+		t.Errorf("call_id mismatch: start=%v end=%v", start["call_id"], end["call_id"])
+	}
+	if start["tool"] != "peek" {
+		t.Errorf("tool = %v, want peek", start["tool"])
+	}
+	if end["status"] != "ok" {
+		t.Errorf("end.status = %v, want ok", end["status"])
+	}
+}
+
+func TestHandleToolsCall_EndOnError(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := calllog.Open(dir)
+	if err != nil {
+		t.Fatalf("calllog.Open: %v", err)
+	}
+	defer logger.Close()
+
+	mock := &mockSupervisor{
+		delegateErr: fmt.Errorf("agent not found"),
+	}
+	srv := New(mock).WithCallLog(logger)
+
+	msg := makeJSONRPCRequest(201, "tools/call", map[string]any{
+		"name": "delegate",
+		"arguments": map[string]any{
+			"agent_name": "nonexistent",
+			"task":       "do something",
+		},
+	})
+	if _, err := srv.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger.Close: %v", err)
+	}
+
+	lines := readCallLogLines(t, dir)
+	var end map[string]any
+	for _, ln := range lines {
+		if ln["phase"] == "end" {
+			end = ln
+		}
+	}
+	if end == nil {
+		t.Fatal("missing end line")
+	}
+	if end["status"] != "error" {
+		t.Errorf("end.status = %v, want error", end["status"])
+	}
+	errMsg, _ := end["error"].(string)
+	if errMsg == "" {
+		t.Error("end.error should be non-empty for tool error")
+	}
+	if !strings.Contains(errMsg, "agent not found") {
+		t.Errorf("end.error = %q, want to contain 'agent not found'", errMsg)
 	}
 }

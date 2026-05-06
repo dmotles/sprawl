@@ -38,6 +38,11 @@ type Deps struct {
 	RunTests        func(dir, command string) (string, error)
 	WritePoke       func(sprawlRoot, agentName, content string) error
 	Stderr          io.Writer
+
+	// Checkpoint, if non-nil, is invoked at notable points during the
+	// merge for per-call observability (QUM-494). It is safe to leave
+	// nil; callers that don't care can ignore it.
+	Checkpoint func(step string, kv ...any)
 }
 
 // Result holds the outcome of a merge operation.
@@ -63,6 +68,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 		return nil, fmt.Errorf("acquiring lock for %s: %w", cfg.AgentName, err)
 	}
 	defer unlock()
+	cpMerge(deps, "merge.lock-acquired", "agent", cfg.AgentName)
 
 	// Step 2: Check for zero-commit case.
 	mergeBase, err := deps.GitMergeBase(cfg.SprawlRoot, cfg.ParentBranch, cfg.AgentBranch)
@@ -92,20 +98,24 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("squash commit: %w", err)
 	}
+	cpMerge(deps, "merge.squash-committed", "commit", commitHash)
 
 	// Step 5: Rebase onto parent.
 	if err := deps.GitRebase(cfg.AgentWorktree, cfg.ParentBranch); err != nil {
 		_ = deps.GitRebaseAbort(cfg.AgentWorktree)
 		return nil, fmt.Errorf("rebase failed (conflicts likely). Aborted rebase.\nTo restore original branch state: git reset --hard %s", preSquashSHA)
 	}
+	cpMerge(deps, "merge.rebased")
 
 	// Step 6: Fast-forward merge on parent.
 	if err := deps.GitFFMerge(cfg.ParentWorktree, cfg.AgentBranch); err != nil {
 		return nil, fmt.Errorf("fast-forward merge failed (this is unexpected after a clean rebase): %w", err)
 	}
+	cpMerge(deps, "merge.ff-merged")
 
 	// Step 7: Post-merge validation.
 	if !cfg.NoValidate && cfg.ValidateCmd != "" {
+		cpMerge(deps, "merge.validate-started", "cmd", cfg.ValidateCmd)
 		output, err := deps.RunTests(cfg.ParentWorktree, cfg.ValidateCmd)
 		if err != nil {
 			if resetErr := deps.GitResetHard(cfg.ParentWorktree); resetErr != nil {
@@ -114,6 +124,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 			truncated := truncateOutput(output, 50)
 			return nil, fmt.Errorf("post-merge validation failed: tests fail after merging %s into %s\nMerge rolled back. Your branch is back to its pre-merge state.\n%s\nUse --no-validate to skip validation", cfg.AgentName, cfg.ParentBranch, truncated)
 		}
+		cpMerge(deps, "merge.validate-ended")
 	} else if !cfg.NoValidate && cfg.ValidateCmd == "" {
 		fmt.Fprintf(deps.Stderr, "WARNING: no validate command configured; skipping post-merge validation.\n  Configure with: sprawl config set validate \"<command>\"\n  See: sprawl config --help\n")
 	}
@@ -125,6 +136,7 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 			"Your worktree is clean and your branch is up to date with the parent.",
 		cfg.AgentBranch, cfg.ParentBranch)
 	_ = deps.WritePoke(cfg.SprawlRoot, cfg.AgentName, pokeMsg)
+	cpMerge(deps, "merge.poke-written")
 
 	// Step 9: Release flock (handled by defer unlock()).
 	return &Result{
@@ -185,6 +197,13 @@ func buildMergeCommitMessage(agent *state.AgentState, parentBranch, messageOverr
 
 	return fmt.Sprintf("%s\n\nSquash merge of branch '%s' into '%s'.\nAgent: %s (%s, %s)\n\n%s",
 		firstLine, agent.Branch, parentBranch, agent.Name, agent.Type, agent.Family, coAuthor)
+}
+
+// cpMerge calls deps.Checkpoint if non-nil. Safe to call with nil dep.
+func cpMerge(d *Deps, step string, kv ...any) {
+	if d != nil && d.Checkpoint != nil {
+		d.Checkpoint(step, kv...)
+	}
 }
 
 func truncateOutput(output string, maxLines int) string {

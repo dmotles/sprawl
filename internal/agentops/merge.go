@@ -23,6 +23,11 @@ type MergeDeps struct {
 	DoMerge       func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
 	NewMergeDeps  func() *merge.Deps
 	Stderr        io.Writer
+
+	// Checkpoint, if non-nil, is propagated into the merge.Deps constructed
+	// by NewMergeDeps so the underlying merge operation emits per-call
+	// observability checkpoints (QUM-494). nil is allowed.
+	Checkpoint func(step string, kv ...any)
 }
 
 // Merge squash-merges agentName's branch into the caller's current branch.
@@ -133,7 +138,11 @@ func Merge(deps *MergeDeps, agentName, messageOverride string, noValidate, dryRu
 	}
 
 	// Execute merge
-	result, err := deps.DoMerge(cfg, deps.NewMergeDeps())
+	mergeDeps := deps.NewMergeDeps()
+	if mergeDeps != nil && deps.Checkpoint != nil {
+		mergeDeps.Checkpoint = deps.Checkpoint
+	}
+	result, err := deps.DoMerge(cfg, mergeDeps)
 	if err != nil {
 		return err
 	}

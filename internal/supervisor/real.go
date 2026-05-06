@@ -18,6 +18,7 @@ import (
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/worktree"
 	"github.com/gofrs/flock"
@@ -75,6 +76,20 @@ type Real struct {
 	// restart. Hoisting bridge identity onto the supervisor's lifetime fixes
 	// that.
 	mcpBridge backendpkg.ToolBridge
+
+	// logger, when non-nil, is used to populate Checkpoint funcs on the
+	// per-call agentops deps so merge/retire emit per-call observability
+	// checkpoints into the JSONL call log. See QUM-494.
+	logger *calllog.Logger
+}
+
+// SetCallLogger installs the per-MCP-call observability logger on this
+// supervisor. After installation, Merge/Retire calls dispatched with a
+// context carrying a call_id (placed there by Server.handleToolsCall) will
+// emit checkpoints to the JSONL call log. nil is allowed and disables.
+// See QUM-494.
+func (r *Real) SetCallLogger(l *calllog.Logger) {
+	r.logger = l
 }
 
 // NewReal creates a new real supervisor.
@@ -348,7 +363,7 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 // equality check inside agentops.Merge sees the correct caller. See QUM-487.
 func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noValidate bool) error {
 	effective := r.effectiveCallerOr(ctx, caller)
-	return r.mergeFn(r.mergeDepsForCaller(effective), agentName, message, noValidate, false)
+	return r.mergeFn(r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false)
 }
 
 // Retire accepts a `caller` parameter for the same reason as Merge — see
@@ -357,7 +372,7 @@ func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noV
 // retireFn invocation in the tree runs under the caller's identity.
 func (r *Real) Retire(ctx context.Context, caller string, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
 	effective := r.effectiveCallerOr(ctx, caller)
-	retireDeps := r.retireDepsForCaller(effective)
+	retireDeps := r.retireDepsForCaller(ctx, effective)
 	if err := r.reconcileStateFromRegistry(agentName); err != nil {
 		return err
 	}
@@ -569,7 +584,7 @@ func (r *Real) effectiveCallerOr(ctx context.Context, caller string) string {
 // mergeDepsForCaller returns a copy of r.mergeDeps with Getenv overridden so
 // SPRAWL_AGENT_IDENTITY reflects the effective caller. Mirrors the pattern
 // used by spawnDepsForCaller (QUM-384). See QUM-487.
-func (r *Real) mergeDepsForCaller(caller string) *agentops.MergeDeps {
+func (r *Real) mergeDepsForCaller(ctx context.Context, caller string) *agentops.MergeDeps {
 	deps := *r.mergeDeps // shallow copy
 	origGetenv := r.mergeDeps.Getenv
 	deps.Getenv = func(key string) string {
@@ -581,12 +596,17 @@ func (r *Real) mergeDepsForCaller(caller string) *agentops.MergeDeps {
 		}
 		return os.Getenv(key)
 	}
+	if r.logger != nil {
+		if id := calllog.CallID(ctx); id != "" {
+			deps.Checkpoint = r.logger.CheckpointFn(id)
+		}
+	}
 	return &deps
 }
 
 // retireDepsForCaller returns a copy of r.retireDeps with Getenv overridden so
 // SPRAWL_AGENT_IDENTITY reflects the effective caller. See QUM-487.
-func (r *Real) retireDepsForCaller(caller string) *agentops.RetireDeps {
+func (r *Real) retireDepsForCaller(ctx context.Context, caller string) *agentops.RetireDeps {
 	deps := *r.retireDeps // shallow copy
 	origGetenv := r.retireDeps.Getenv
 	deps.Getenv = func(key string) string {
@@ -597,6 +617,11 @@ func (r *Real) retireDepsForCaller(caller string) *agentops.RetireDeps {
 			return origGetenv(key)
 		}
 		return os.Getenv(key)
+	}
+	if r.logger != nil {
+		if id := calllog.CallID(ctx); id != "" {
+			deps.Checkpoint = r.logger.CheckpointFn(id)
+		}
 	}
 	return &deps
 }
