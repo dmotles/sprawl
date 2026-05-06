@@ -72,25 +72,17 @@ func runTree(deps *treeDeps, stdout io.Writer, jsonOutput bool, subtreeRoot stri
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	var (
-		agents   []*observe.AgentInfo
-		err      error
-		rootName string
-	)
-	if deps.listAgents != nil {
-		readRootName := deps.readRootName
-		if readRootName == nil {
-			readRootName = deps.observeDeps.ReadRootName
-		}
-		rootName = readRootName(sprawlRoot)
-		agents, err = observe.LoadAll(context.Background(), observe.Deps{
-			Status:       deps.listAgents,
-			ReadRootName: readRootName,
-		}, sprawlRoot)
-	} else {
-		rootName = deps.observeDeps.ReadRootName(sprawlRoot)
-		agents, err = observe.LoadAll(context.Background(), deps.observeDeps, sprawlRoot)
+	// deps.listAgents is always populated by resolveTreeDeps and by every
+	// test fixture; keep it as the single source of truth here.
+	readRootName := deps.readRootName
+	if readRootName == nil {
+		readRootName = deps.observeDeps.ReadRootName
 	}
+	rootName := readRootName(sprawlRoot)
+	agents, err := observe.LoadAll(context.Background(), observe.Deps{
+		Status:       deps.listAgents,
+		ReadRootName: readRootName,
+	}, sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("loading agents: %w", err)
 	}

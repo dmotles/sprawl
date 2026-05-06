@@ -131,13 +131,6 @@ type ObserverWriter struct {
 	Ring *ActivityRing
 }
 
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 func (t *ObserverWriter) OnMessage(msg *protocol.Message) {
 	if t.Ring != nil {
 		t.Ring.RecordMessage(msg, time.Now)
@@ -167,7 +160,10 @@ func (t *ObserverWriter) OnMessage(msg *protocol.Message) {
 				}
 			case "tool_use":
 				if block.Name != "" {
-					inputStr := truncateStr(string(block.Input), 200)
+					inputStr := string(block.Input)
+					if runes := []rune(inputStr); len(runes) > 200 {
+						inputStr = string(runes[:197]) + "..."
+					}
 					fmt.Fprintf(t.W, "[tool] %s: %s\n", block.Name, inputStr)
 				}
 			}

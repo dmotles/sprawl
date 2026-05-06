@@ -112,11 +112,7 @@ func formatInboxTable(w io.Writer, msgs []*messages.Message) {
 		default:
 			status = msg.Dir
 		}
-		ts := msg.Timestamp
-		if t, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
-			ts = t.Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", displayShortID(msg), status, ts, msg.From, msg.Subject)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n", displayShortID(msg), status, formatTimestamp(msg.Timestamp), msg.From, msg.Subject)
 	}
 	_ = tw.Flush()
 }
@@ -411,13 +407,18 @@ func runMessagesSentDisplay(deps *messagesDeps) error {
 func formatSentTable(w io.Writer, msgs []*messages.Message) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, msg := range msgs {
-		ts := msg.Timestamp
-		if t, err := time.Parse(time.RFC3339, msg.Timestamp); err == nil {
-			ts = t.Format("2006-01-02 15:04")
-		}
-		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", displayShortID(msg), ts, msg.To, msg.Subject)
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", displayShortID(msg), formatTimestamp(msg.Timestamp), msg.To, msg.Subject)
 	}
 	_ = tw.Flush()
+}
+
+// formatTimestamp reformats an RFC3339 timestamp for table display.
+// Returns the input unchanged if parsing fails.
+func formatTimestamp(ts string) string {
+	if t, err := time.Parse(time.RFC3339, ts); err == nil {
+		return t.Format("2006-01-02 15:04")
+	}
+	return ts
 }
 
 // displayShortID returns the short display ID for a message.
