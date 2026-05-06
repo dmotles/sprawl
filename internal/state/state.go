@@ -149,27 +149,6 @@ func ReadAccentColor(sprawlRoot string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// WriteVersion persists the version to .sprawl/state/version.
-func WriteVersion(sprawlRoot, version string) error {
-	dir := StateDir(sprawlRoot)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable state dir is intentional
-		return fmt.Errorf("creating state directory: %w", err)
-	}
-	path := filepath.Join(dir, "version")
-	return os.WriteFile(path, []byte(version), 0o644) //nolint:gosec // G306: world-readable state file is intentional
-}
-
-// ReadVersion reads the persisted version from .sprawl/state/version.
-// Returns empty string if the file doesn't exist.
-func ReadVersion(sprawlRoot string) string {
-	path := filepath.Join(StateDir(sprawlRoot), "version")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
-}
-
 // WriteNamespace persists the selected namespace to .sprawl/namespace.
 func WriteNamespace(sprawlRoot, namespace string) error {
 	dir := SprawlDir(sprawlRoot)

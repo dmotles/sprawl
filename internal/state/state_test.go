@@ -289,24 +289,6 @@ func TestWriteAndReadAccentColor(t *testing.T) {
 	}
 }
 
-func TestWriteAndReadVersion(t *testing.T) {
-	dir := t.TempDir()
-
-	// Before writing, should return empty
-	if v := ReadVersion(dir); v != "" {
-		t.Errorf("ReadVersion before write = %q, want empty", v)
-	}
-
-	if err := WriteVersion(dir, "0.1.3"); err != nil {
-		t.Fatalf("WriteVersion: %v", err)
-	}
-
-	v := ReadVersion(dir)
-	if v != "0.1.3" {
-		t.Errorf("ReadVersion = %q, want %q", v, "0.1.3")
-	}
-}
-
 func TestWriteSystemPrompt(t *testing.T) {
 	dir := t.TempDir()
 	content := "You are a helpful agent.\nDo good work."

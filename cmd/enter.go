@@ -608,10 +608,6 @@ func runEnter(deps *enterDeps) error {
 
 	accentColor := state.ReadAccentColor(sprawlRoot)
 	repoName := filepath.Base(sprawlRoot)
-	version := state.ReadVersion(sprawlRoot)
-	if version == "" {
-		version = buildVersion
-	}
 
 	// Track last session's start time + whether it was a resume attempt so
 	// that the TUI's restartFunc can fall back to a fresh session if a
@@ -664,7 +660,7 @@ func runEnter(deps *enterDeps) error {
 	if deps.newSession != nil {
 		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, consolidationCh, state, &bridge, os.Stderr)
 	}
-	model := tui.NewAppModel(accentColor, repoName, version, buildVersion, bridge, sup, sprawlRoot, restartFunc)
+	model := tui.NewAppModel(accentColor, repoName, buildVersion, buildVersion, bridge, sup, sprawlRoot, restartFunc)
 	if homeDir, hErr := os.UserHomeDir(); hErr == nil {
 		// QUM-332: child-agent transcript tailing resolves Claude session
 		// log paths via memory.SessionLogPath(homeDir, worktree, sessionID).

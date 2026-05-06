@@ -26,12 +26,10 @@ func newTestAppModelWithBridge(t *testing.T, bridge *Bridge) AppModel {
 }
 
 // TestAppModel_StatusBarShowsLiveVersionNotBannerVersion guards QUM-464:
-// cmd/enter.go reads a persisted version from .sprawl/state/version and uses
-// it for the session banner. The TUI status bar, however, must always show
-// the live build version (main.version ldflag) so the user can tell at a
-// glance which sprawl binary they're actually running, regardless of what
-// version was last persisted into state. The banner is allowed (and intended)
-// to keep showing the persisted/historical value.
+// NewAppModel takes a banner version and a separate live build version. The
+// TUI status bar must always render the live build version (main.version
+// ldflag) so the user can tell at a glance which sprawl binary they're
+// actually running, regardless of what was passed as the banner version.
 func TestAppModel_StatusBarShowsLiveVersionNotBannerVersion(t *testing.T) {
 	const bannerVersion = "v0.1.10-40-gOLDOLD"
 	const liveVersion = "v0.1.10-165-gNEWNEW"
