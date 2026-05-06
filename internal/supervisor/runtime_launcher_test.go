@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1436,6 +1437,74 @@ func TestUnifiedHandle_FeedTasks_OnlyQueuedTasksAreDelivered(t *testing.T) {
 	wantID := "task:" + queuedTask.ID
 	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != wantID {
 		t.Errorf("items[0].EntryIDs = %v, want [%q]", items[0].EntryIDs, wantID)
+	}
+}
+
+// captureSlogHandler is a minimal in-memory slog.Handler that records every
+// record. Mirrors the helper in internal/runtime/eventbus_test.go so tests in
+// this package can assert structured-log output without a real handler.
+type captureSlogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureSlogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *captureSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *captureSlogHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+func (h *captureSlogHandler) WithGroup(_ string) slog.Handler      { return h }
+
+// installCaptureSlog swaps slog.Default() for a capturing handler for the
+// duration of the test and returns the capture sink.
+func installCaptureSlog(t *testing.T) *captureSlogHandler {
+	t.Helper()
+	h := &captureSlogHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return h
+}
+
+// TestFeedTasks_ListErrorLogsViaSlog is the QUM-500 regression gate. When
+// feedTasks encounters a state.ListTasks error, the diagnostic must be
+// emitted via slog (not written directly to os.Stderr).
+func TestFeedTasks_ListErrorLogsViaSlog(t *testing.T) {
+	uh, _, sprawlRoot, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	// Corrupt the tasks dir so state.ListTasks fails on JSON parse.
+	tasksDir := state.TasksDir(sprawlRoot, "alice")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tasksDir, "0001-bad.json"), []byte("not json"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	logs := installCaptureSlog(t)
+	uh.feedTasks()
+
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	found := false
+	for _, r := range logs.records {
+		if r.Level >= slog.LevelWarn && strings.Contains(r.Message, "feedTasks") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		msgs := make([]string, 0, len(logs.records))
+		for _, r := range logs.records {
+			msgs = append(msgs, r.Message)
+		}
+		t.Errorf("expected a Warn-or-higher slog record mentioning feedTasks; got %d records: %v", len(logs.records), msgs)
 	}
 }
 
