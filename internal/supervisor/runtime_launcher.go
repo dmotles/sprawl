@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
@@ -108,6 +110,31 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		Capabilities:  caps,
 		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
 			for _, id := range it.EntryIDs {
+				if strings.HasPrefix(id, "task:") {
+					taskID := strings.TrimPrefix(id, "task:")
+					tasks, err := state.ListTasks(sprawlRoot, name)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "[unified-runtime] list tasks for delivery %s: %v\n", id, err)
+						continue
+					}
+					var found *state.Task
+					for _, tk := range tasks {
+						if tk.ID == taskID {
+							found = tk
+							break
+						}
+					}
+					if found == nil {
+						fmt.Fprintf(os.Stderr, "[unified-runtime] task %s not found on delivery\n", taskID)
+						continue
+					}
+					found.Status = "done"
+					found.DoneAt = time.Now().UTC().Format(time.RFC3339)
+					if err := state.UpdateTask(sprawlRoot, name, found); err != nil {
+						fmt.Fprintf(os.Stderr, "[unified-runtime] mark task done %s: %v\n", taskID, err)
+					}
+					continue
+				}
 				if err := agentloop.MarkDelivered(sprawlRoot, name, id); err != nil {
 					fmt.Fprintf(os.Stderr, "[unified-runtime] mark delivered %s: %v\n", id, err)
 				}
@@ -129,7 +156,7 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		return nil, err
 	}
 
-	return &unifiedHandle{
+	handle := &unifiedHandle{
 		rt:           rt,
 		session:      session,
 		capabilities: caps,
@@ -138,7 +165,9 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		stopActivity: stopActivity,
 		sprawlRoot:   spec.SprawlRoot,
 		name:         spec.Name,
-	}, nil
+	}
+	handle.feedTasks()
+	return handle, nil
 }
 
 // buildAgentSystemPrompt renders the system prompt for a child agent based on
@@ -200,8 +229,45 @@ type unifiedHandle struct {
 	sprawlRoot   string
 	name         string
 
+	tasksMu  sync.Mutex
 	stopOnce sync.Once
 	stopErr  error
+}
+
+// feedTasks drains queued tasks from on-disk state into the runtime queue,
+// flipping each to in-progress as it is enqueued. Idempotent across concurrent
+// callers via tasksMu and EntryID-based dedup in the runtime queue.
+func (h *unifiedHandle) feedTasks() {
+	if h.rt.State() == runtimepkg.StateStopped {
+		return
+	}
+	h.tasksMu.Lock()
+	defer h.tasksMu.Unlock()
+	tasks, err := state.ListTasks(h.sprawlRoot, h.name)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[unified-runtime] feedTasks list: %v\n", err)
+		return
+	}
+	for _, tk := range tasks {
+		if tk.Status != "queued" {
+			continue
+		}
+		tk.Status = "in-progress"
+		tk.StartedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := state.UpdateTask(h.sprawlRoot, h.name, tk); err != nil {
+			fmt.Fprintf(os.Stderr, "[unified-runtime] feedTasks update %s: %v\n", tk.ID, err)
+			continue
+		}
+		prompt := tk.Prompt
+		if tk.PromptFile != "" {
+			prompt = "You have a new task. Read it from @" + tk.PromptFile + " and begin working."
+		}
+		h.rt.Queue().Enqueue(runtimepkg.QueueItem{
+			Class:    runtimepkg.ClassTask,
+			Prompt:   prompt,
+			EntryIDs: []string{"task:" + tk.ID},
+		})
+	}
 }
 
 func (h *unifiedHandle) Interrupt(ctx context.Context) error {
@@ -212,6 +278,7 @@ func (h *unifiedHandle) Interrupt(ctx context.Context) error {
 }
 
 func (h *unifiedHandle) Wake() error {
+	h.feedTasks()
 	h.rt.Queue().Wake()
 	return nil
 }
