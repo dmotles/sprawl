@@ -16,6 +16,15 @@ type MCPServer interface {
 type MCPBridge struct {
 	mu      sync.Mutex
 	servers map[string]MCPServer
+	// pending correlates server-initiated JSON-RPC requests to response waiters.
+	// Key is "serverName:jsonrpcID". WARNING (QUM-469): JSON-RPC IDs are minted
+	// per-claude-process and are NOT globally unique. A single supervisor-owned
+	// bridge is shared by weave-claude and every child claude (post-QUM-467),
+	// and they all use the same server name ("sprawl"), so two distinct claude
+	// processes can concurrently produce the same key and mis-route responses.
+	// AddPendingMCP / OnServerMessage are currently test-only; before activating
+	// either on a production path, scope the key with a per-session prefix
+	// (e.g. the RuntimeHandle ID) so cross-session IDs cannot alias.
 	pending map[string]chan json.RawMessage
 }
 
