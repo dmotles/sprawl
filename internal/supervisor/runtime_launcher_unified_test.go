@@ -517,7 +517,7 @@ func TestActivitySubscriber_WritesToObserver(t *testing.T) {
 	bus := runtimepkg.NewEventBus()
 	obs := &recordingObserver{}
 
-	stop := runActivitySubscriber(bus, obs)
+	stop := runActivitySubscriber(bus, obs, "activity")
 
 	// EventProtocolMessage with a message should be forwarded.
 	msg := &protocol.Message{Type: "assistant"}
@@ -537,6 +537,23 @@ func TestActivitySubscriber_WritesToObserver(t *testing.T) {
 	}
 
 	stop()
+}
+
+// TestActivitySubscriber_NamePropagatesToDroppedCounts asserts that the name
+// argument passed to runActivitySubscriber is propagated to the EventBus, so
+// drop telemetry surfaces an actionable subscriber label rather than a
+// synthetic "#N" key. (QUM-482)
+func TestActivitySubscriber_NamePropagatesToDroppedCounts(t *testing.T) {
+	bus := runtimepkg.NewEventBus()
+	obs := &recordingObserver{}
+
+	stop := runActivitySubscriber(bus, obs, "activity")
+	defer stop()
+
+	counts := bus.DroppedCounts()
+	if _, ok := counts["activity"]; !ok {
+		t.Fatalf("DroppedCounts() = %v, want key %q", counts, "activity")
+	}
 }
 
 // ---------------------------------------------------------------------------

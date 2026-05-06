@@ -53,7 +53,7 @@ func NewTUIAdapter(rt *sprawlrt.UnifiedRuntime) *TUIAdapter {
 // subscribe registers a fresh subscription against rt. Caller must hold a.mu
 // or otherwise serialize access.
 func (a *TUIAdapter) subscribe(rt *sprawlrt.UnifiedRuntime) {
-	ch, unsub := rt.EventBus().Subscribe(adapterEventBufferSize)
+	ch, unsub := rt.EventBus().SubscribeNamed("tui-viewport", adapterEventBufferSize)
 	a.events = ch
 	a.unsubscribe = unsub
 	a.epoch++

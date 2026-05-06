@@ -64,7 +64,7 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 	ring := agentloop.NewActivityRing(agentloop.DefaultActivityCapacity, activityFile)
 	observer := &agentloop.ObserverWriter{W: io.Discard, Ring: ring}
 
-	stopActivity := runActivitySubscriber(rt.EventBus(), observer)
+	stopActivity := runActivitySubscriber(rt.EventBus(), observer, "weave-activity")
 
 	return &WeaveRuntimeHandle{
 		rt:           rt,

@@ -107,7 +107,7 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 
 	// Activity subscriber: forwards EventProtocolMessage to the
 	// ObserverWriter (which writes activity.ndjson).
-	stopActivity := runActivitySubscriber(rt.EventBus(), observer)
+	stopActivity := runActivitySubscriber(rt.EventBus(), observer, "activity")
 
 	if err := rt.Start(context.Background()); err != nil {
 		stopActivity()
@@ -160,9 +160,9 @@ func buildAgentSystemPrompt(a *state.AgentState) string {
 // testability.
 func runActivitySubscriber(bus *runtimepkg.EventBus, obs interface {
 	OnMessage(*protocol.Message)
-},
+}, name string,
 ) func() {
-	ch, unsub := bus.Subscribe(64)
+	ch, unsub := bus.SubscribeNamed(name, 64)
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)

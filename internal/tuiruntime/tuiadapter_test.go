@@ -116,6 +116,19 @@ func makeAssistantMsg(t *testing.T, raw string) *protocol.Message {
 	return &m
 }
 
+// TestTUIAdapter_SubscriberNamePropagates asserts the adapter registers its
+// EventBus subscription under the descriptive "tui-viewport" label, so drop
+// telemetry surfaces an actionable name. (QUM-482)
+func TestTUIAdapter_SubscriberNamePropagates(t *testing.T) {
+	mock := &adapterMockSession{}
+	rt, _ := buildAdapter(t, mock)
+
+	counts := rt.EventBus().DroppedCounts()
+	if _, ok := counts["tui-viewport"]; !ok {
+		t.Fatalf("DroppedCounts() = %v, want key %q", counts, "tui-viewport")
+	}
+}
+
 func TestTUIAdapter_Initialize_Success(t *testing.T) {
 	mock := &adapterMockSession{}
 	_, a := buildAdapter(t, mock)
