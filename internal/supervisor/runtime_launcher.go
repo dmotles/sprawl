@@ -112,20 +112,9 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 			for _, id := range it.EntryIDs {
 				if strings.HasPrefix(id, "task:") {
 					taskID := strings.TrimPrefix(id, "task:")
-					tasks, err := state.ListTasks(sprawlRoot, name)
+					found, err := state.GetTask(sprawlRoot, name, taskID)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "[unified-runtime] list tasks for delivery %s: %v\n", id, err)
-						continue
-					}
-					var found *state.Task
-					for _, tk := range tasks {
-						if tk.ID == taskID {
-							found = tk
-							break
-						}
-					}
-					if found == nil {
-						fmt.Fprintf(os.Stderr, "[unified-runtime] task %s not found on delivery\n", taskID)
+						fmt.Fprintf(os.Stderr, "[unified-runtime] get task %s on delivery: %v\n", taskID, err)
 						continue
 					}
 					found.Status = "done"

@@ -366,7 +366,7 @@ func (r *AgentRuntime) Stop(ctx context.Context) error {
 }
 
 // RecordQueuedTask updates the passive in-memory queue depth after task persistence succeeds.
-func (r *AgentRuntime) RecordQueuedTask(_ *state.Task) {
+func (r *AgentRuntime) RecordQueuedTask() {
 	r.mu.Lock()
 	r.snapshot.QueueDepth++
 	r.mu.Unlock()

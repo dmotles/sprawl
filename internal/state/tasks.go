@@ -141,6 +141,38 @@ func UpdateTask(sprawlRoot, agentName string, task *Task) error {
 	return fmt.Errorf("task %q not found", task.ID)
 }
 
+// GetTask reads a single task by ID directly from disk, avoiding the O(N) scan
+// that ListTasks performs for callers that already know the task ID.
+// Returns an error containing "not found" when the task does not exist.
+func GetTask(sprawlRoot, agentName, id string) (*Task, error) {
+	dir := TasksDir(sprawlRoot, agentName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("task %q not found", id)
+		}
+		return nil, fmt.Errorf("reading tasks directory: %w", err)
+	}
+
+	suffix := "-" + id + ".json"
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), suffix) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("reading task file %q: %w", entry.Name(), err)
+		}
+		var task Task
+		if err := json.Unmarshal(data, &task); err != nil {
+			return nil, fmt.Errorf("parsing task file %q: %w", entry.Name(), err)
+		}
+		return &task, nil
+	}
+
+	return nil, fmt.Errorf("task %q not found", id)
+}
+
 // ListTasks returns all tasks for an agent in FIFO order (sorted by filename).
 func ListTasks(sprawlRoot, agentName string) ([]*Task, error) {
 	dir := TasksDir(sprawlRoot, agentName)

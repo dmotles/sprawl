@@ -395,6 +395,81 @@ func TestEnqueueTask_PromptFilePersistsOnDisk(t *testing.T) {
 	}
 }
 
+func TestGetTask(t *testing.T) {
+	dir := t.TempDir()
+
+	task, err := EnqueueTask(dir, "frank", "fetch by id")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	got, err := GetTask(dir, "frank", task.ID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetTask returned nil task")
+	}
+	if got.ID != task.ID {
+		t.Errorf("ID = %q, want %q", got.ID, task.ID)
+	}
+	if got.Prompt != "fetch by id" {
+		t.Errorf("Prompt = %q, want %q", got.Prompt, "fetch by id")
+	}
+	if got.Status != "queued" {
+		t.Errorf("Status = %q, want %q", got.Status, "queued")
+	}
+}
+
+func TestGetTask_NotFound(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := EnqueueTask(dir, "frank", "decoy"); err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	_, err := GetTask(dir, "frank", "bogus-id-does-not-exist")
+	if err == nil {
+		t.Fatal("expected error for missing task ID")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want to contain %q", err, "not found")
+	}
+}
+
+func TestGetTask_MissingAgentDir(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := GetTask(dir, "frank", "anything")
+	if err == nil {
+		t.Fatal("expected error when tasks dir does not exist")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, want to contain %q", err, "not found")
+	}
+}
+
+func TestGetTask_MalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	tasksDir := TasksDir(dir, "frank")
+	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// File name must end with -<id>.json so the lookup matches.
+	bogus := filepath.Join(tasksDir, "20260101T000000.000000000Z-abc.json")
+	if err := os.WriteFile(bogus, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := GetTask(dir, "frank", "abc")
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+	if strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %v, should be a parse error not not-found", err)
+	}
+}
+
 func TestListTasks_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 

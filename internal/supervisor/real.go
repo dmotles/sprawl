@@ -293,12 +293,11 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 		return fmt.Errorf("task prompt must not be empty")
 	}
 
-	enqueuedTask, err := state.EnqueueTask(r.sprawlRoot, agentName, task)
-	if err != nil {
+	if _, err := state.EnqueueTask(r.sprawlRoot, agentName, task); err != nil {
 		return fmt.Errorf("enqueuing task: %w", err)
 	}
 	if runtime, ok := r.runtimeRegistry.Get(agentName); ok {
-		runtime.RecordQueuedTask(enqueuedTask)
+		runtime.RecordQueuedTask()
 		if runtime.Snapshot().Lifecycle == RuntimeLifecycleStarted {
 			_ = runtime.Wake()
 		}
