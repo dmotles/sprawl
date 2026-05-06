@@ -3,8 +3,8 @@ package supervisor
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -114,18 +114,33 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 					taskID := strings.TrimPrefix(id, "task:")
 					found, err := state.GetTask(sprawlRoot, name, taskID)
 					if err != nil {
-						fmt.Fprintf(os.Stderr, "[unified-runtime] get task %s on delivery: %v\n", taskID, err)
+						slog.Default().Warn(
+							"unified-runtime: get task on delivery failed",
+							slog.String("agent", name),
+							slog.String("task_id", taskID),
+							slog.Any("err", err),
+						)
 						continue
 					}
 					found.Status = "done"
 					found.DoneAt = time.Now().UTC().Format(time.RFC3339)
 					if err := state.UpdateTask(sprawlRoot, name, found); err != nil {
-						fmt.Fprintf(os.Stderr, "[unified-runtime] mark task done %s: %v\n", taskID, err)
+						slog.Default().Warn(
+							"unified-runtime: mark task done failed",
+							slog.String("agent", name),
+							slog.String("task_id", taskID),
+							slog.Any("err", err),
+						)
 					}
 					continue
 				}
 				if err := agentloop.MarkDelivered(sprawlRoot, name, id); err != nil {
-					fmt.Fprintf(os.Stderr, "[unified-runtime] mark delivered %s: %v\n", id, err)
+					slog.Default().Warn(
+						"unified-runtime: mark delivered failed",
+						slog.String("agent", name),
+						slog.String("entry_id", id),
+						slog.Any("err", err),
+					)
 				}
 			}
 		},
@@ -234,7 +249,11 @@ func (h *unifiedHandle) feedTasks() {
 	defer h.tasksMu.Unlock()
 	tasks, err := state.ListTasks(h.sprawlRoot, h.name)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[unified-runtime] feedTasks list: %v\n", err)
+		slog.Default().Warn(
+			"unified-runtime: feedTasks list failed",
+			slog.String("agent", h.name),
+			slog.Any("err", err),
+		)
 		return
 	}
 	for _, tk := range tasks {
@@ -244,7 +263,12 @@ func (h *unifiedHandle) feedTasks() {
 		tk.Status = "in-progress"
 		tk.StartedAt = time.Now().UTC().Format(time.RFC3339)
 		if err := state.UpdateTask(h.sprawlRoot, h.name, tk); err != nil {
-			fmt.Fprintf(os.Stderr, "[unified-runtime] feedTasks update %s: %v\n", tk.ID, err)
+			slog.Default().Warn(
+				"unified-runtime: feedTasks update failed",
+				slog.String("agent", h.name),
+				slog.String("task_id", tk.ID),
+				slog.Any("err", err),
+			)
 			continue
 		}
 		prompt := tk.Prompt
