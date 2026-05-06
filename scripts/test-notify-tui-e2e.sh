@@ -179,8 +179,26 @@ cleanup() {
         tmux -L "$SPRAWL_TMUX_SOCKET" kill-server 2>/dev/null || true
         rm -f -- "/tmp/tmux-$(id -u)/$SPRAWL_TMUX_SOCKET" 2>/dev/null || true
     fi
+    # QUM-468: tmux kill-server sends SIGKILL but does not wait for the
+    # claude/sprawl children to release their open handles under
+    # .sprawl/agents/. A bare `rm -rf` then races and exits ENOTEMPTY
+    # ("Directory not empty"), turning a green test into a red make
+    # target. Settle briefly, retry, and finally tolerate failure
+    # non-fatally — this is teardown, not an assertion. The setsid
+    # watchdog (lib/sandbox-traps.sh) is the backstop for any leftover.
     case "$SPRAWL_ROOT" in
-        /tmp/*) rm -rf -- "$SPRAWL_ROOT" ;;
+        /tmp/*)
+            local attempt
+            for attempt in 1 2 3 4 5; do
+                if rm -rf -- "$SPRAWL_ROOT" 2>/dev/null; then
+                    break
+                fi
+                sleep 1
+            done
+            if [ -d "$SPRAWL_ROOT" ]; then
+                echo "  WARN: cleanup could not fully remove $SPRAWL_ROOT (likely stragglers under .sprawl/agents/); watchdog will reap" >&2
+            fi
+            ;;
     esac
     exit "$rc"
 }
