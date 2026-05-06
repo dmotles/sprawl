@@ -62,8 +62,11 @@ func TestTransport_RecvReturnsMessages(t *testing.T) {
 }
 
 func TestTransport_RecvRespectsContextCancellation(t *testing.T) {
-	// Use an empty reader that will block - simulate by using a pipe we never write to
-	pr, _ := io.Pipe()
+	// Use an empty reader that will block - simulate by using a pipe we never write to.
+	// Close the writer at test end so the reader goroutine spawned by Recv unblocks
+	// (otherwise goleak flags it as a leak).
+	pr, pw := io.Pipe()
+	defer pw.Close()
 	tr := &PipeTransport{
 		reader: protocol.NewReader(pr),
 		writer: protocol.NewWriter(&bytes.Buffer{}),
