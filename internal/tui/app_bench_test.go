@@ -19,7 +19,7 @@ import (
 // activity, status do not — so the cache should serve four of the five
 // panels' bordered renders + the JoinHorizontal mainRow on every call.
 func BenchmarkAppModel_View_PasteBurst(b *testing.B) {
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
 	app.activePanel = PanelInput
@@ -42,7 +42,7 @@ func BenchmarkAppModel_View_PasteBurst(b *testing.B) {
 // Useful as a sanity check, but not the gating metric: textarea Update
 // dominates and is out of scope for QUM-451.
 func BenchmarkAppModel_UpdateAndView_PasteBurst(b *testing.B) {
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
 	app.activePanel = PanelInput
@@ -64,7 +64,7 @@ func BenchmarkAppModel_UpdateAndView_PasteBurst(b *testing.B) {
 // and the lipgloss vertical/horizontal join). Without the cache it's
 // the full re-render every call.
 func BenchmarkAppModel_View_SteadyState(b *testing.B) {
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
 	app.activePanel = PanelInput
@@ -88,7 +88,7 @@ func BenchmarkAppModel_View_SteadyState(b *testing.B) {
 // inflates per-iteration cost as the textarea's wrap+render scales with
 // content length).
 func BenchmarkAppModel_View_PasteBurst_BoundedInput(b *testing.B) {
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
 	app.activePanel = PanelInput

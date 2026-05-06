@@ -95,7 +95,7 @@ func newAppWithRegistry(t *testing.T, sup supervisor.Supervisor) AppModel {
 	t.Helper()
 	sprawlRoot := t.TempDir()
 	homeDir := t.TempDir()
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, sup, sprawlRoot, nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, sprawlRoot, nil)
 	m.SetHomeDir(homeDir)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return resized.(AppModel)

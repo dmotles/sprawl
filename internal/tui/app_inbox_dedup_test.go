@@ -32,7 +32,7 @@ import (
 func newTestAppModelWithSprawlRoot(t *testing.T, sprawlRoot string) AppModel {
 	t.Helper()
 	sup := &mockSupervisor{}
-	app := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, sup, sprawlRoot, nil)
+	app := NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, sprawlRoot, nil)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return resized.(AppModel)
 }

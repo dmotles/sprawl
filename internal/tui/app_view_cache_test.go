@@ -34,7 +34,7 @@ import (
 // (so ready=true and resizePanels has fired) at the given dimensions.
 func resizedApp(t *testing.T, w, h int) AppModel {
 	t.Helper()
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", "v0.1.0", nil, nil, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	return updated.(AppModel)
 }
