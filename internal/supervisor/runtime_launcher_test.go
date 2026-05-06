@@ -1066,3 +1066,409 @@ func TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody(t *testing.T) {
 		t.Errorf("prompt missing read-hint citing ShortID 'sa1'; prompt=%q", inbox.Prompt)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// QUM-488: Delegate task-queue bridge
+// ---------------------------------------------------------------------------
+//
+// Real.Delegate writes a queued task to disk via state.EnqueueTask and calls
+// runtime.Wake(). Under the unified runtime, unifiedHandle.Wake() must scan
+// the on-disk task queue, mark queued tasks in-progress, and enqueue a
+// ClassTask QueueItem so the turn loop actually picks them up. Delivery must
+// then mark the task done. The bridge must also fire on Start() so any tasks
+// queued while the runtime was stopped are picked up at launch.
+
+// buildStartedUnifiedHandleForTestWithSeed mirrors
+// buildStartedUnifiedHandleForTest but invokes seed(sprawlRoot) AFTER the
+// agent state is written but BEFORE Start runs, so callers can pre-seed the
+// on-disk task queue and exercise the Start-time bridge sweep.
+func buildStartedUnifiedHandleForTestWithSeed(t *testing.T, caps backend.Capabilities, seed func(sprawlRoot string)) (*unifiedHandle, *fakeBackendSession, string, *deliveredItemsCapture) {
+	t.Helper()
+	oldStart := unifiedAdapterStartFn
+	oldNew := unifiedRuntimeNewFn
+	t.Cleanup(func() {
+		unifiedAdapterStartFn = oldStart
+		unifiedRuntimeNewFn = oldNew
+	})
+
+	sprawlRoot := t.TempDir()
+	worktree := filepath.Join(sprawlRoot, "wt")
+	_ = os.MkdirAll(worktree, 0o755)
+	writeAgentState(t, sprawlRoot, &state.AgentState{
+		Name: "alice", Type: "researcher", Worktree: worktree, SessionID: "sess-alice",
+	})
+
+	if seed != nil {
+		seed(sprawlRoot)
+	}
+
+	fakeSession := newFakeBackendSession("sess-alice", caps)
+	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
+		return fakeSession, nil
+	}
+	captured := newDeliveredItemsCapture()
+	unifiedRuntimeNewFn = func(cfg runtimepkg.RuntimeConfig) *runtimepkg.UnifiedRuntime {
+		orig := cfg.OnQueueItemDelivered
+		cfg.OnQueueItemDelivered = func(it runtimepkg.QueueItem) {
+			captured.record(it)
+			if orig != nil {
+				orig(it)
+			}
+		}
+		return runtimepkg.New(cfg)
+	}
+
+	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
+		SessionID: "sess-alice", TreePath: "weave/alice",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	uh, ok := handle.(*unifiedHandle)
+	if !ok {
+		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
+	}
+	return uh, fakeSession, sprawlRoot, captured
+}
+
+// assertTaskPromptShape verifies a delivered task prompt references the
+// prompt file via "@<promptFile>" and mentions "task" (case-insensitive).
+// The exact wording of the surrounding sentence is the implementer's choice;
+// these substring checks lock in the load-bearing contract without pinning
+// to a specific phrase.
+func assertTaskPromptShape(t *testing.T, prompt, promptFile string) {
+	t.Helper()
+	wantRef := "@" + promptFile
+	if !strings.Contains(prompt, wantRef) {
+		t.Errorf("prompt does not reference prompt file %q\n--- prompt ---\n%s", wantRef, prompt)
+	}
+	if !strings.Contains(strings.ToLower(prompt), "task") {
+		t.Errorf("prompt does not mention \"task\" (case-insensitive)\n--- prompt ---\n%s", prompt)
+	}
+}
+
+// pollTaskStatus returns the last-known task with id, polling for up to
+// timeout for it to reach wantStatus. Returns the task seen at the end of
+// the poll (matching or not).
+func pollTaskStatus(t *testing.T, sprawlRoot, agent, id, wantStatus string, timeout time.Duration) *state.Task {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last *state.Task
+	for time.Now().Before(deadline) {
+		tasks, err := state.ListTasks(sprawlRoot, agent)
+		if err != nil {
+			t.Fatalf("ListTasks: %v", err)
+		}
+		for _, tk := range tasks {
+			if tk.ID == id {
+				last = tk
+				if tk.Status == wantStatus {
+					return tk
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return last
+}
+
+// TestUnifiedHandle_FeedTasks_PreExistingQueuedTaskBridgedAtStart asserts that
+// a queued task on disk before Start is bridged into the runtime queue at
+// launch and ends up marked done after delivery.
+func TestUnifiedHandle_FeedTasks_PreExistingQueuedTaskBridgedAtStart(t *testing.T) {
+	var seeded *state.Task
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
+		tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the pre-start task")
+		if err != nil {
+			t.Fatalf("EnqueueTask: %v", err)
+		}
+		seeded = tk
+	})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	if seeded == nil {
+		t.Fatal("seeded task is nil")
+	}
+
+	items := captured.waitFor(1, 2*time.Second)
+	if len(items) != 1 {
+		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
+	}
+	got := items[0]
+	if got.Class != runtimepkg.ClassTask {
+		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassTask)
+	}
+	assertTaskPromptShape(t, got.Prompt, seeded.PromptFile)
+	wantEntryID := "task:" + seeded.ID
+	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != wantEntryID {
+		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, wantEntryID)
+	}
+
+	final := pollTaskStatus(t, sprawlRoot, "alice", seeded.ID, "done", 2*time.Second)
+	if final == nil {
+		t.Fatalf("task %q not found after delivery", seeded.ID)
+	}
+	if final.Status != "done" {
+		t.Errorf("task status = %q, want %q", final.Status, "done")
+	}
+	if final.DoneAt == "" {
+		t.Errorf("task DoneAt is empty; want a timestamp")
+	}
+}
+
+// TestUnifiedHandle_Wake_BridgesQueuedTasks asserts that a task queued post-
+// Start, followed by a Wake, gets bridged into the runtime queue and
+// delivered, with the task marked done.
+func TestUnifiedHandle_Wake_BridgesQueuedTasks(t *testing.T) {
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the post-start task")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	if err := uh.Wake(); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+
+	items := captured.waitFor(1, 2*time.Second)
+	if len(items) != 1 {
+		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
+	}
+	got := items[0]
+	if got.Class != runtimepkg.ClassTask {
+		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassTask)
+	}
+	assertTaskPromptShape(t, got.Prompt, tk.PromptFile)
+	wantEntryID := "task:" + tk.ID
+	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != wantEntryID {
+		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, wantEntryID)
+	}
+
+	final := pollTaskStatus(t, sprawlRoot, "alice", tk.ID, "done", 2*time.Second)
+	if final == nil || final.Status != "done" {
+		t.Errorf("task status final = %+v, want status=done", final)
+	}
+}
+
+// TestUnifiedHandle_Wake_RepeatedCallsDoNotDoubleDeliver asserts that
+// repeated Wake() calls (fanned out across goroutines as a stressor) do not
+// each re-enqueue the same queued task. The bridge must be idempotent so a
+// single queued task surfaces exactly once regardless of how many wakes
+// arrive.
+func TestUnifiedHandle_Wake_RepeatedCallsDoNotDoubleDeliver(t *testing.T) {
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the concurrent task")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	const N = 10
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_ = uh.Wake()
+		}()
+	}
+	wg.Wait()
+
+	// Wait for at least one delivery, then sleep a beat to give any racing
+	// extra deliveries a chance to land.
+	if items := captured.waitFor(1, 2*time.Second); len(items) < 1 {
+		t.Fatalf("no items delivered within timeout")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	captured.mu.Lock()
+	count := len(captured.items)
+	captured.mu.Unlock()
+	if count != 1 {
+		t.Errorf("delivered items = %d, want exactly 1 (repeated Wakes must not double-deliver)", count)
+	}
+
+	final := pollTaskStatus(t, sprawlRoot, "alice", tk.ID, "done", 2*time.Second)
+	if final == nil || final.Status != "done" {
+		t.Errorf("task status final = %+v, want status=done", final)
+	}
+}
+
+// TestUnifiedHandle_FeedTasks_StoppedRuntimeNoEnqueue asserts that after
+// Stop, a subsequent EnqueueTask + Wake does not surface any item, and the
+// task remains queued on disk.
+func TestUnifiedHandle_FeedTasks_StoppedRuntimeNoEnqueue(t *testing.T) {
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	// Idempotent Stop: the test stops the runtime explicitly below; this
+	// defer guards against a leaked runtime if the test fails mid-flight.
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	if err := uh.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the post-stop task")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+
+	// Wake on a stopped handle must not panic and must not deliver.
+	_ = uh.Wake()
+
+	// Poll for ~200ms; nothing should arrive.
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		captured.mu.Lock()
+		n := len(captured.items)
+		captured.mu.Unlock()
+		if n > 0 {
+			t.Fatalf("delivered items = %d, want 0 (runtime is stopped)", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	tasks, err := state.ListTasks(sprawlRoot, "alice")
+	if err != nil {
+		t.Fatalf("ListTasks: %v", err)
+	}
+	var found *state.Task
+	for _, tt := range tasks {
+		if tt.ID == tk.ID {
+			found = tt
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("task %q not found", tk.ID)
+	}
+	if found.Status != "queued" {
+		t.Errorf("task status = %q, want %q (must remain queued)", found.Status, "queued")
+	}
+}
+
+// TestUnifiedHandle_FeedTasks_MultipleQueuedTasksFIFO asserts that two
+// queued tasks pre-Start are both bridged in FIFO order.
+func TestUnifiedHandle_FeedTasks_MultipleQueuedTasksFIFO(t *testing.T) {
+	var t1, t2 *state.Task
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
+		var err error
+		t1, err = state.EnqueueTask(sprawlRoot, "alice", "task one")
+		if err != nil {
+			t.Fatalf("EnqueueTask 1: %v", err)
+		}
+		// Brief sleep ensures distinct timestamp prefix in filename.
+		time.Sleep(5 * time.Millisecond)
+		t2, err = state.EnqueueTask(sprawlRoot, "alice", "task two")
+		if err != nil {
+			t.Fatalf("EnqueueTask 2: %v", err)
+		}
+	})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	items := captured.waitFor(2, 3*time.Second)
+	if len(items) != 2 {
+		t.Fatalf("delivered items = %d, want 2; items=%+v", len(items), items)
+	}
+	for i, it := range items {
+		if it.Class != runtimepkg.ClassTask {
+			t.Errorf("items[%d].Class = %q, want %q", i, it.Class, runtimepkg.ClassTask)
+		}
+	}
+	want1 := "task:" + t1.ID
+	want2 := "task:" + t2.ID
+	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != want1 {
+		t.Errorf("items[0].EntryIDs = %v, want [%q]", items[0].EntryIDs, want1)
+	}
+	if len(items[1].EntryIDs) != 1 || items[1].EntryIDs[0] != want2 {
+		t.Errorf("items[1].EntryIDs = %v, want [%q]", items[1].EntryIDs, want2)
+	}
+
+	for _, id := range []string{t1.ID, t2.ID} {
+		final := pollTaskStatus(t, sprawlRoot, "alice", id, "done", 2*time.Second)
+		if final == nil || final.Status != "done" {
+			t.Errorf("task %q final = %+v, want status=done", id, final)
+		}
+	}
+}
+
+// TestUnifiedHandle_FeedTasks_OnlyQueuedTasksAreDelivered asserts that the
+// bridge filters by Status=="queued" and does not re-deliver tasks already
+// marked done.
+func TestUnifiedHandle_FeedTasks_OnlyQueuedTasksAreDelivered(t *testing.T) {
+	var doneTask, queuedTask *state.Task
+	uh, _, _, captured := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
+		var err error
+		doneTask, err = state.EnqueueTask(sprawlRoot, "alice", "already done task")
+		if err != nil {
+			t.Fatalf("EnqueueTask done: %v", err)
+		}
+		doneTask.Status = "done"
+		doneTask.DoneAt = time.Now().UTC().Format(time.RFC3339)
+		if err := state.UpdateTask(sprawlRoot, "alice", doneTask); err != nil {
+			t.Fatalf("UpdateTask done: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+		queuedTask, err = state.EnqueueTask(sprawlRoot, "alice", "queued task")
+		if err != nil {
+			t.Fatalf("EnqueueTask queued: %v", err)
+		}
+	})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	// Wait for one delivery, then a small grace period.
+	if items := captured.waitFor(1, 2*time.Second); len(items) < 1 {
+		t.Fatalf("expected at least one delivery for queued task")
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	captured.mu.Lock()
+	items := append([]runtimepkg.QueueItem(nil), captured.items...)
+	captured.mu.Unlock()
+
+	if len(items) != 1 {
+		t.Fatalf("delivered items = %d, want exactly 1 (done task must not re-deliver); items=%+v", len(items), items)
+	}
+	wantID := "task:" + queuedTask.ID
+	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != wantID {
+		t.Errorf("items[0].EntryIDs = %v, want [%q]", items[0].EntryIDs, wantID)
+	}
+}
+
+// TestE2E_QUM488_DelegateThroughRealEnqueuesIntoRuntime is the QUM-488
+// regression gate: a task queued via the public state API and a Wake()
+// (mirroring what Real.Delegate does) must reach the agent's turn loop.
+func TestE2E_QUM488_DelegateThroughRealEnqueuesIntoRuntime(t *testing.T) {
+	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	defer func() { _ = uh.Stop(context.Background()) }()
+
+	tk, err := state.EnqueueTask(sprawlRoot, "alice", "delegated work")
+	if err != nil {
+		t.Fatalf("EnqueueTask: %v", err)
+	}
+	if err := uh.Wake(); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+
+	items := captured.waitFor(1, 2*time.Second)
+	if len(items) != 1 {
+		t.Fatalf("delivered items = %d, want 1 (task queued via state API must reach runtime); items=%+v", len(items), items)
+	}
+	if items[0].Class != runtimepkg.ClassTask {
+		t.Errorf("Class = %q, want %q", items[0].Class, runtimepkg.ClassTask)
+	}
+	assertTaskPromptShape(t, items[0].Prompt, tk.PromptFile)
+	wantEntryID := "task:" + tk.ID
+	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != wantEntryID {
+		t.Errorf("EntryIDs = %v, want [%q]", items[0].EntryIDs, wantEntryID)
+	}
+
+	final := pollTaskStatus(t, sprawlRoot, "alice", tk.ID, "done", 2*time.Second)
+	if final == nil || final.Status != "done" {
+		t.Errorf("task status final = %+v, want status=done", final)
+	}
+}

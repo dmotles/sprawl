@@ -112,8 +112,28 @@ func UpdateTask(sprawlRoot, agentName string, task *Task) error {
 		if err != nil {
 			return fmt.Errorf("marshaling task: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0o644); err != nil { //nolint:gosec // G306: world-readable task file is intentional
-			return fmt.Errorf("writing task file: %w", err)
+		dst := filepath.Join(dir, entry.Name())
+		tmp, err := os.CreateTemp(dir, ".task-*.tmp")
+		if err != nil {
+			return fmt.Errorf("creating temp task file: %w", err)
+		}
+		tmpName := tmp.Name()
+		if _, err := tmp.Write(data); err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("writing temp task file: %w", err)
+		}
+		if err := tmp.Close(); err != nil {
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("closing temp task file: %w", err)
+		}
+		if err := os.Chmod(tmpName, 0o644); err != nil { //nolint:gosec // G302: world-readable task file is intentional
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("chmod temp task file: %w", err)
+		}
+		if err := os.Rename(tmpName, dst); err != nil {
+			_ = os.Remove(tmpName)
+			return fmt.Errorf("renaming task file: %w", err)
 		}
 		return nil
 	}
