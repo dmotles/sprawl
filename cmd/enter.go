@@ -267,6 +267,17 @@ func resolveEnterDeps() *enterDeps {
 	}
 }
 
+// enterAllowedTools returns the root tool allowlist (root-loop tools plus the
+// sprawl MCP tool names) used by both the TUI launch path and the supervised
+// session spec. Centralized so the two callsites can't drift.
+func enterAllowedTools(prepared *rootinit.PreparedSession) []string {
+	mcpNames := sprawlmcp.MCPToolNames()
+	allowed := make([]string, 0, len(prepared.RootTools)+len(mcpNames))
+	allowed = append(allowed, prepared.RootTools...)
+	allowed = append(allowed, mcpNames...)
+	return allowed
+}
+
 // buildEnterLaunchOpts constructs claude.LaunchOpts for the TUI-mode weave
 // subprocess from a rootinit.PreparedSession. Matches the tmux root loop's
 // launch shape (--system-prompt-file, --session-id, --model prepared.Model, plus
@@ -277,9 +288,7 @@ func resolveEnterDeps() *enterDeps {
 // are intentionally omitted — BuildArgs enforces this because the resumed
 // transcript carries its own session ID and system prompt.
 func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts {
-	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlmcp.MCPToolNames()))
-	allowed = append(allowed, prepared.RootTools...)
-	allowed = append(allowed, sprawlmcp.MCPToolNames()...)
+	allowed := enterAllowedTools(prepared)
 
 	opts := claude.LaunchOpts{
 		Print:           true,
@@ -300,9 +309,7 @@ func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts 
 }
 
 func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession, logW io.Writer, onResumeFailure func()) backend.SessionSpec {
-	allowed := make([]string, 0, len(prepared.RootTools)+len(sprawlmcp.MCPToolNames()))
-	allowed = append(allowed, prepared.RootTools...)
-	allowed = append(allowed, sprawlmcp.MCPToolNames()...)
+	allowed := enterAllowedTools(prepared)
 
 	spec := backend.SessionSpec{
 		WorkDir:         sprawlRoot,

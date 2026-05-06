@@ -124,22 +124,16 @@ func runStatus(deps *statusDeps, jsonOutput bool, family, typ, parent, statusFil
 		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
-	var (
-		agents []*observe.AgentInfo
-		err    error
-	)
-	if deps.listAgents != nil {
-		readRootName := deps.readRootName
-		if readRootName == nil {
-			readRootName = deps.observeDeps.ReadRootName
-		}
-		agents, err = observe.LoadAll(context.Background(), observe.Deps{
-			Status:       deps.listAgents,
-			ReadRootName: readRootName,
-		}, sprawlRoot)
-	} else {
-		agents, err = observe.LoadAll(context.Background(), deps.observeDeps, sprawlRoot)
+	// deps.listAgents is always populated by resolveStatusDeps and by every
+	// test fixture; keep it as the single source of truth here.
+	readRootName := deps.readRootName
+	if readRootName == nil {
+		readRootName = deps.observeDeps.ReadRootName
 	}
+	agents, err := observe.LoadAll(context.Background(), observe.Deps{
+		Status:       deps.listAgents,
+		ReadRootName: readRootName,
+	}, sprawlRoot)
 	if err != nil {
 		return fmt.Errorf("loading agents: %w", err)
 	}

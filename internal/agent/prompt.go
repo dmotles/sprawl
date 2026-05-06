@@ -364,6 +364,16 @@ func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig
 
 	prompt := strings.Join(sections, "\n\n")
 
+	result := prompt + envContextBlock(branchName, env)
+	if env.TestMode {
+		result += testSandboxWarning
+	}
+	return result
+}
+
+// envContextBlock renders the trailing "# Environment" section appended to
+// engineer/manager prompts. Pure formatter — no side effects.
+func envContextBlock(branchName string, env EnvConfig) string {
 	var b strings.Builder
 	b.WriteString("\n\n# Environment\n")
 	if env.WorkDir != "" {
@@ -377,12 +387,7 @@ func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig
 	if env.Shell != "" {
 		b.WriteString(fmt.Sprintf("- Shell: %s\n", env.Shell))
 	}
-
-	result := prompt + b.String()
-	if env.TestMode {
-		result += testSandboxWarning
-	}
-	return result
+	return b.String()
 }
 
 // BuildResearcherPrompt constructs the system prompt for a researcher agent.
@@ -429,21 +434,7 @@ func BuildManagerPrompt(agentName, parentName, branchName, family string, env En
 
 	prompt := strings.Join(sections, "\n\n")
 
-	var b strings.Builder
-	b.WriteString("\n\n# Environment\n")
-	if env.WorkDir != "" {
-		b.WriteString(fmt.Sprintf("- Working directory: %s\n", env.WorkDir))
-	}
-	b.WriteString("- Git repository: yes\n")
-	b.WriteString(fmt.Sprintf("- Git branch: %s\n", branchName))
-	if env.Platform != "" {
-		b.WriteString(fmt.Sprintf("- Platform: %s\n", env.Platform))
-	}
-	if env.Shell != "" {
-		b.WriteString(fmt.Sprintf("- Shell: %s\n", env.Shell))
-	}
-
-	result := prompt + b.String()
+	result := prompt + envContextBlock(branchName, env)
 	if env.TestMode {
 		result += testSandboxWarning
 	}
