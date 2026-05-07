@@ -11,18 +11,8 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// Mode identifies which launch mode the caller runs in. It is threaded
-// through Prepare so the system-prompt template picks the right
-// mode-specific blocks.
-type Mode string
-
-const (
-	ModeTmux Mode = "tmux"
-	ModeTUI  Mode = "tui"
-)
-
 // PreparedSession is the output of Prepare. Callers use it to build the
-// mode-specific claude.LaunchOpts.
+// claude.LaunchOpts.
 //
 // When Resume is true the prior session's transcript is still live on
 // Claude's side. The caller should launch with `--resume SessionID`.
@@ -54,8 +44,8 @@ type PreparedSession struct {
 //
 // Handoff is now the explicit "start fresh next time" trigger. Ordinary
 // crash/restart cases resume the prior session instead of starting over.
-func Prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer) (*PreparedSession, error) {
-	return prepare(ctx, deps, mode, sprawlRoot, rootName, stdout, false)
+func Prepare(ctx context.Context, deps *Deps, sprawlRoot, rootName string, stdout io.Writer) (*PreparedSession, error) {
+	return prepare(ctx, deps, sprawlRoot, rootName, stdout, false)
 }
 
 // PrepareFresh is the "force fresh" entry point used as a fallback when
@@ -65,11 +55,11 @@ func Prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 // without a summary, it is auto-summarized into memory so its context is
 // preserved before the new session launches. Chosen over a `forceFresh bool`
 // parameter so call sites read clearly at the use point.
-func PrepareFresh(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer) (*PreparedSession, error) {
-	return prepare(ctx, deps, mode, sprawlRoot, rootName, stdout, true)
+func PrepareFresh(ctx context.Context, deps *Deps, sprawlRoot, rootName string, stdout io.Writer) (*PreparedSession, error) {
+	return prepare(ctx, deps, sprawlRoot, rootName, stdout, true)
 }
 
-func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName string, stdout io.Writer, forceFresh bool) (*PreparedSession, error) {
+func prepare(ctx context.Context, deps *Deps, sprawlRoot, rootName string, stdout io.Writer, forceFresh bool) (*PreparedSession, error) {
 	prefix := deps.LogPrefix
 
 	// QUM-402: a prior session's /handoff schedules consolidation in a
@@ -152,7 +142,7 @@ func prepare(ctx context.Context, deps *Deps, mode Mode, sprawlRoot, rootName st
 		AgentCLI:    "claude-code",
 		ContextBlob: contextBlob,
 		TestMode:    deps.Getenv("SPRAWL_TEST_MODE") == "1",
-		Mode:        string(mode),
+		Mode:        "tui",
 	})
 	promptPath, err := deps.WriteSystemPrompt(sprawlRoot, rootName, systemPrompt)
 	if err != nil {

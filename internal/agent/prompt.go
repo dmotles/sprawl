@@ -192,11 +192,7 @@ func rootIdentityLine(name string) string {
 
 // rootDoingTasksSection builds the "# Doing Tasks" section with mode-specific merge/retire bullets.
 func rootDoingTasksSection(mode string) string {
-	mergeRetire := rootMergeRetireTmux
-	if mode == "tui" {
-		mergeRetire = rootMergeRetireTUI
-	}
-	return rootDoingTasksIntro + "\n" + mergeRetire + "\n" + rootDoingTasksTail
+	return rootDoingTasksIntro + "\n" + rootMergeRetireBlock(mode) + "\n" + rootDoingTasksTail
 }
 
 // rootSprawlOverviewSection builds the SPRAWL OVERVIEW section with the mode-specific overview line.
@@ -210,18 +206,12 @@ func rootSprawlOverviewSection(mode string) string {
 
 // rootRemindersSection returns the REMINDERS section for the given mode.
 func rootRemindersSection(mode string) string {
-	if mode == "tui" {
-		return rootRemindersTUI
-	}
-	return rootRemindersTmux
+	return rootRemindersBlock(mode)
 }
 
 // rootAgentTypesSection returns the AGENT TYPES section for the given mode.
 func rootAgentTypesSection(mode string) string {
-	if mode == "tui" {
-		return rootAgentTypesTUI
-	}
-	return rootAgentTypesTmux
+	return rootAgentTypesBlock(mode)
 }
 
 // rootCommandsSection returns the KEY COMMANDS section for the given mode.
@@ -247,43 +237,6 @@ func rootRulesSection(mode string) string {
 	}
 	return rootRulesTmux
 }
-
-// claudeCodeSubAgentGuidance is appended to the root prompt when AgentCLI is "claude-code".
-const claudeCodeSubAgentGuidance = `
-
-# Using your tools
-- Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
-    - To read files use Read instead of cat, head, tail, or sed
-    - To search for files use Glob instead of find or ls
-    - To search the content of files, use Grep instead of grep or rg
-    - Reserve using the Bash exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the Bash tool for these if it is absolutely necessary.
-- Break down and manage your work with the TaskCreate tool. This is helpful for planning your work and helping the user track your progress. Mark each task as completed as soon as you are done with it. Do not batch up multiple tasks before marking them as completed.
-- You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.
-- Use AskUserQuestion when asking questions. Use it multiple times if you have more than the maximum number of questions, until all your questions are answered. If more questions pop into your head while interviewing the user, ask more questions until you're aligned with the user.
-- While there is compaction, when doing research or planning or investigation, use the Agent tool to fire off agents to do the heavy lifting of searching/researching/thinking. This helps keep context usage under control as well as enables you to parallelize multiple investigations concurrently.
-
-# More on Skills and Agents
-- Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.
-- For simple, directed codebase searches (e.g. for a specific file/class/function) use the Glob or Grep directly.
-- For broader codebase exploration and deep research, use the Agent tool with subagent_type=Explore. This is slower than using the Glob or Grep directly, so use this only when a simple, directed search proves to be insufficient or when your task will clearly require more than 3 queries.
-- / (e.g., /commit) is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the Skill tool to execute them. IMPORTANT: Only use Skill for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.
-
-AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS
-
-There are two ways to get work done through other agents:
-
-1. Sprawl agents (via ` + "`sprawl spawn agent`" + `): Full agents with their own git worktrees, tmux windows,
-   and agent loops. Use these for substantial work — code changes, multi-file implementations,
-   research tasks that produce artifacts. These are the primary mechanism for delegating work.
-   When someone says "fire off an agent" or "spawn an agent", this is what they mean.
-
-2. Claude Code sub-agents (via the Agent tool): Lightweight, in-process sub-agents for quick
-   investigation, planning, or analysis that doesn't need its own worktree. Use these for things
-   like asking a question about the codebase, getting a quick code review opinion, or invoking
-   built-in agents like ` + "`claude-code-guide`" + `. These run inside your own context and return results
-   immediately. When someone says "sub-agent" for investigation or planning, this is what they mean.
-
-Default to sprawl agents for real work. Use sub-agents for quick queries and planning.`
 
 // testSandboxWarning is appended to all prompts when TestMode is enabled.
 const testSandboxWarning = `
@@ -339,12 +292,9 @@ func BuildRootPrompt(cfg PromptConfig) string {
 	return base
 }
 
-// claudeCodeSubAgentGuidanceTUIMode returns the appropriate sub-agent guidance for the mode.
+// claudeCodeSubAgentGuidanceForMode returns the appropriate sub-agent guidance for the mode.
 func claudeCodeSubAgentGuidanceForMode(mode string) string {
-	if mode == "tui" {
-		return claudeCodeSubAgentGuidanceTUI
-	}
-	return claudeCodeSubAgentGuidance
+	return claudeCodeSubAgentGuidance(mode)
 }
 
 // BuildEngineerPrompt constructs the system prompt for an engineer agent.

@@ -81,7 +81,7 @@ func TestPrepare_ReturnsPreparedSession(t *testing.T) {
 		return "/tmp/SYSTEM.md", nil
 	}
 
-	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare returned error: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestPrepare_ModePropagatedToPromptConfig(t *testing.T) {
 		return "prompt"
 	}
 
-	_, err := Prepare(context.Background(), deps, ModeTUI, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestPrepare_RootNamePropagatedToPromptConfig(t *testing.T) {
 		capturedCfg = cfg
 		return "prompt"
 	}
-	_, _ = Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, _ = Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if capturedCfg.RootName != "weave" {
 		t.Errorf("cfg.RootName: got %q, want %q", capturedCfg.RootName, "weave")
 	}
@@ -145,7 +145,7 @@ func TestPrepare_TestMode_PropagatedWhenEnvSet(t *testing.T) {
 		capturedCfg = cfg
 		return "prompt"
 	}
-	_, _ = Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, _ = Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if !capturedCfg.TestMode {
 		t.Error("expected TestMode=true when SPRAWL_TEST_MODE=1")
 	}
@@ -158,7 +158,7 @@ func TestPrepare_TestMode_NotSetWhenEnvUnset(t *testing.T) {
 		capturedCfg = cfg
 		return "prompt"
 	}
-	_, _ = Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, _ = Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if capturedCfg.TestMode {
 		t.Error("expected TestMode=false when SPRAWL_TEST_MODE is unset")
 	}
@@ -174,7 +174,7 @@ func TestPrepare_ContextBlobPassedToPromptConfig(t *testing.T) {
 		capturedCfg = cfg
 		return "prompt"
 	}
-	_, _ = Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, _ = Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if capturedCfg.ContextBlob != "## Active State\n\ntest blob\n" {
 		t.Errorf("ContextBlob: got %q", capturedCfg.ContextBlob)
 	}
@@ -192,7 +192,7 @@ func TestPrepare_ContextBlobError_LogsAndContinues(t *testing.T) {
 	}
 	var buf strings.Builder
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", &buf)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", &buf)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -208,7 +208,7 @@ func TestPrepare_UUIDFailure_ReturnsError(t *testing.T) {
 	deps := newTestDeps(t)
 	deps.NewUUID = func() (string, error) { return "", errors.New("uuid failure") }
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err == nil {
 		t.Fatal("expected error when UUID generation fails")
 	}
@@ -222,7 +222,7 @@ func TestPrepare_WriteSystemPromptFailure_ReturnsError(t *testing.T) {
 	deps.WriteSystemPrompt = func(root, name, content string) (string, error) {
 		return "", errors.New("write failed")
 	}
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err == nil {
 		t.Fatal("expected error when WriteSystemPrompt fails")
 	}
@@ -236,7 +236,7 @@ func TestPrepare_SessionIDWritten(t *testing.T) {
 		idWritten = id
 		return nil
 	}
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestPrepare_ResumesWhenPrevSessionHasNoSummary(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", &buf)
+	got, err := Prepare(context.Background(), deps, "/fake/root", "weave", &buf)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestPrepare_ResumePath_SetsPromptPathWhenSystemMDExists(t *testing.T) {
 		return nil, os.ErrNotExist
 	}
 
-	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestPrepare_ResumePath_EmptyPromptPathWhenSystemMDMissing(t *testing.T) {
 
 	// ReadFile returns ErrNotExist by default in newTestDeps, so SYSTEM.md
 	// does not exist. PromptPath should remain empty.
-	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -366,7 +366,7 @@ func TestPrepare_ConsolidateThenFreshWhenSummaryExists(t *testing.T) {
 	}
 	deps.NewUUID = func() (string, error) { return "new-sess", nil }
 
-	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -403,7 +403,7 @@ func TestPrepare_FirstSession_NoLastID(t *testing.T) {
 		return nil
 	}
 
-	got, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestPrepareFresh_ForcesFreshEvenWithResumableSession(t *testing.T) {
 	deps.HasSessionSummary = func(root, id string) (bool, error) { return false, nil }
 	deps.NewUUID = func() (string, error) { return "fresh-id", nil }
 
-	got, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := PrepareFresh(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("PrepareFresh error: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestPrepareFresh_AutoSummarizesDeadSession(t *testing.T) {
 	}
 
 	var buf strings.Builder
-	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", &buf)
+	_, err := PrepareFresh(context.Background(), deps, "/fake/root", "weave", &buf)
 	if err != nil {
 		t.Fatalf("PrepareFresh error: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestPrepareFresh_AutoSummarizeNoOp_SkipsConsolidation(t *testing.T) {
 		consolidateCalled = true
 		return nil
 	}
-	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := PrepareFresh(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("PrepareFresh error: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestPrepareFresh_AutoSummarizeError_Continues(t *testing.T) {
 	deps.AutoSummarize = func(ctx context.Context, root, cwd, home, id string, inv memory.ClaudeInvoker) (bool, error) {
 		return false, errors.New("summarize failed")
 	}
-	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := PrepareFresh(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("should not return error on AutoSummarize failure, got %v", err)
 	}
@@ -526,7 +526,7 @@ func TestPrepareFresh_SummarizedDeadSession_RunsConsolidation(t *testing.T) {
 		}
 		return nil
 	}
-	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := PrepareFresh(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("PrepareFresh error: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestPrepareFresh_NoPrevSession(t *testing.T) {
 		autoCalled = true
 		return false, nil
 	}
-	got, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	got, err := PrepareFresh(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("PrepareFresh error: %v", err)
 	}
@@ -569,7 +569,7 @@ func TestPrepare_FreshPath_SavesRootAgentState(t *testing.T) {
 		return nil
 	}
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestPrepare_ResumePath_SavesRootAgentState(t *testing.T) {
 		return nil
 	}
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestPrepare_ResumePath_PreservesExistingFields(t *testing.T) {
 		return nil
 	}
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
@@ -682,7 +682,7 @@ func TestPrepare_SaveAgentError_ReturnsError(t *testing.T) {
 		return fmt.Errorf("disk full")
 	}
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err == nil {
 		t.Fatal("expected error when SaveAgent fails")
 	}
@@ -702,7 +702,7 @@ func TestPrepareFresh_SavesRootAgentState(t *testing.T) {
 		return nil
 	}
 
-	_, err := PrepareFresh(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := PrepareFresh(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("PrepareFresh error: %v", err)
 	}
@@ -755,7 +755,7 @@ func TestPrepare_WaitsForInFlightConsolidation(t *testing.T) {
 	}
 
 	start := time.Now()
-	if _, err := Prepare(context.Background(), deps, ModeTmux, root, "weave", io.Discard); err != nil {
+	if _, err := Prepare(context.Background(), deps, root, "weave", io.Discard); err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
 	elapsed := time.Since(start)
@@ -776,7 +776,7 @@ func TestPrepare_NoLockfile_NoLatency(t *testing.T) {
 	deps := newTestDeps(t)
 
 	start := time.Now()
-	if _, err := Prepare(context.Background(), deps, ModeTmux, root, "weave", io.Discard); err != nil {
+	if _, err := Prepare(context.Background(), deps, root, "weave", io.Discard); err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
@@ -796,7 +796,7 @@ func TestPrepare_CurrentBranchError_StillSaves(t *testing.T) {
 		return nil
 	}
 
-	_, err := Prepare(context.Background(), deps, ModeTmux, "/fake/root", "weave", io.Discard)
+	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
 	if err != nil {
 		t.Fatalf("Prepare error: %v", err)
 	}

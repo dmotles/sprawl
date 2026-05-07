@@ -1644,6 +1644,45 @@ func TestBuildRootPrompt_GoldenSnapshot_NoCLI(t *testing.T) {
 	}
 }
 
+// TestBuildRootPrompt_GoldenSnapshot_TuiMode locks down the exact TUI-mode root
+// prompt output (with claude-code CLI). Pairs with the tmux golden snapshot to
+// ensure refactors are byte-identical for both modes (QUM-322).
+func TestBuildRootPrompt_GoldenSnapshot_TuiMode(t *testing.T) {
+	cfg := PromptConfig{
+		RootName: "weave",
+		AgentCLI: "claude-code",
+		Mode:     "tui",
+	}
+	got := BuildRootPrompt(cfg)
+
+	golden, err := os.ReadFile("testdata/golden_tui_claude_code.txt")
+	if err != nil {
+		t.Fatalf("failed to read golden file: %v", err)
+	}
+	if got != string(golden) {
+		g := string(golden)
+		diffIdx := 0
+		for diffIdx < len(got) && diffIdx < len(g) && got[diffIdx] == g[diffIdx] {
+			diffIdx++
+		}
+		context := 80
+		start := diffIdx - context
+		if start < 0 {
+			start = 0
+		}
+		end := diffIdx + context
+		if end > len(got) {
+			end = len(got)
+		}
+		endG := diffIdx + context
+		if endG > len(g) {
+			endG = len(g)
+		}
+		t.Fatalf("tui mode output differs from golden snapshot at byte %d\ngot context:    %q\ngolden context: %q",
+			diffIdx, got[start:end], g[start:endG])
+	}
+}
+
 // TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences exhaustively checks
 // that TUI mode has absolutely zero tmux/CLI-only references.
 func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {

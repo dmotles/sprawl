@@ -388,9 +388,9 @@ func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh 
 	var prepared *rootinit.PreparedSession
 	var err error
 	if forceFresh {
-		prepared, err = rootinit.PrepareFresh(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
+		prepared, err = rootinit.PrepareFresh(context.Background(), rinitDeps, sprawlRoot, rootName, logW)
 	} else {
-		prepared, err = rootinit.Prepare(context.Background(), rinitDeps, rootinit.ModeTUI, sprawlRoot, rootName, logW)
+		prepared, err = rootinit.Prepare(context.Background(), rinitDeps, sprawlRoot, rootName, logW)
 	}
 	if err != nil {
 		return nil, false, fmt.Errorf("preparing session: %w", err)

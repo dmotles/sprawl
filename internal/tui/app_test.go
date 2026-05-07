@@ -1404,34 +1404,18 @@ func hasMsgOfType[T any](msgs []tea.Msg) bool {
 }
 
 // driveAsyncRestart runs the Cmd returned by a RestartSessionMsg update,
-// extracts the RestartCompleteMsg it emits (ignoring the progress-tick
-// branch), and feeds it back into the app to complete the restart cycle
-// (QUM-260). Tests that previously relied on the synchronous restart
-// behavior use this to observe the post-completion state.
+// extracts the RestartCompleteMsg it emits, and feeds it back into the app
+// to complete the restart cycle (QUM-260). Tests that previously relied on
+// the synchronous restart behavior use this to observe the post-completion
+// state.
 func driveAsyncRestart(t *testing.T, app AppModel, cmd tea.Cmd) AppModel {
 	t.Helper()
 	if cmd == nil {
 		t.Fatal("driveAsyncRestart: RestartSessionMsg returned nil cmd")
 	}
-	raw := cmd()
-	batch, ok := raw.(tea.BatchMsg)
+	completion, ok := cmd().(RestartCompleteMsg)
 	if !ok {
-		t.Fatalf("driveAsyncRestart: expected tea.BatchMsg, got %T", raw)
-	}
-	var completion RestartCompleteMsg
-	found := false
-	for _, sub := range batch {
-		if sub == nil {
-			continue
-		}
-		if msg, ok := sub().(RestartCompleteMsg); ok {
-			completion = msg
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("driveAsyncRestart: no RestartCompleteMsg produced by restart cmd")
+		t.Fatalf("driveAsyncRestart: expected RestartCompleteMsg, got %T", cmd())
 	}
 	updated, _ := app.Update(completion)
 	return updated.(AppModel)
@@ -1549,7 +1533,7 @@ func TestAppModel_SessionRestartingMsg_AppendsStatusAndDisablesInput(t *testing.
 	}
 }
 
-// --- QUM-260: async restart + ConsolidationProgressMsg ---
+// --- QUM-260 / QUM-321: async restart dispatch ---
 
 func TestAppModel_RestartSessionMsg_DoesNotBlockOnRestartFunc(t *testing.T) {
 	// Regression test for QUM-260: RestartSessionMsg MUST return a cmd
@@ -1591,19 +1575,8 @@ func TestAppModel_RestartSessionMsg_DoesNotBlockOnRestartFunc(t *testing.T) {
 		t.Fatal("RestartSessionMsg should return a non-nil cmd")
 	}
 
-	// Draining the cmd kicks off restartFunc in the background. The outer
-	// cmd returns a tea.BatchMsg; the real runtime iterates it and runs
-	// each sub-cmd concurrently, so we mimic that here.
-	go func() {
-		raw := cmd()
-		if batch, ok := raw.(tea.BatchMsg); ok {
-			for _, sub := range batch {
-				if sub != nil {
-					go func(c tea.Cmd) { _ = c() }(sub)
-				}
-			}
-		}
-	}()
+	// Draining the cmd kicks off restartFunc in the background.
+	go func() { _ = cmd() }()
 	select {
 	case <-restartStarted:
 	case <-time.After(2 * time.Second):
@@ -1612,7 +1585,7 @@ func TestAppModel_RestartSessionMsg_DoesNotBlockOnRestartFunc(t *testing.T) {
 	close(release)
 }
 
-func TestAppModel_RestartSessionMsg_SetsRestartingAndSchedulesTick(t *testing.T) {
+func TestAppModel_RestartSessionMsg_SetsRestartingFlag(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 
@@ -1624,8 +1597,6 @@ func TestAppModel_RestartSessionMsg_SetsRestartingAndSchedulesTick(t *testing.T)
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
-	// Tiny interval so tea.Tick fires quickly in tests.
-	app.restartTick = time.Millisecond
 
 	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
@@ -1633,78 +1604,8 @@ func TestAppModel_RestartSessionMsg_SetsRestartingAndSchedulesTick(t *testing.T)
 	if !app.restarting {
 		t.Fatal("restarting flag should be true after RestartSessionMsg")
 	}
-	if app.restartStartedAt.IsZero() {
-		t.Error("restartStartedAt should be set when restart begins")
-	}
-	// QUM-340: input is no longer disabled by turn state — restart-in-flight
-	// is signalled via the status bar elapsed counter, not the input bar.
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd batch from RestartSessionMsg")
-	}
-
-	// Run just the tick sub-cmd: it's the one that doesn't block on release.
-	batch, ok := cmd().(tea.BatchMsg)
-	if !ok {
-		t.Fatalf("expected tea.BatchMsg, got %T", cmd())
-	}
-	var tickMsg tea.Msg
-	for _, sub := range batch {
-		if sub == nil {
-			continue
-		}
-		// The tea.Tick branch yields ConsolidationProgressMsg; the restart
-		// branch blocks on <-release, so skip it.
-		done := make(chan tea.Msg, 1)
-		go func(c tea.Cmd) { done <- c() }(sub)
-		select {
-		case msg := <-done:
-			if _, ok := msg.(ConsolidationProgressMsg); ok {
-				tickMsg = msg
-			}
-		case <-time.After(200 * time.Millisecond):
-			// blocked branch (restart func) — skip it.
-		}
-		if tickMsg != nil {
-			break
-		}
-	}
-	if tickMsg == nil {
-		t.Fatal("expected a ConsolidationProgressMsg tick to be emitted")
-	}
-}
-
-func TestAppModel_ConsolidationProgressMsg_UpdatesStatusBar(t *testing.T) {
-	app := newTestAppModel(t)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app = resized.(AppModel)
-	app.restarting = true
-	app.restartStartedAt = time.Now()
-	app.restartTick = time.Millisecond
-
-	updated, cmd := app.Update(ConsolidationProgressMsg{Elapsed: 5 * time.Second})
-	app = updated.(AppModel)
-
-	if app.statusBar.restartElapsed != 5*time.Second {
-		t.Errorf("statusBar.restartElapsed = %v, want 5s", app.statusBar.restartElapsed)
-	}
-	if cmd == nil {
-		t.Error("should reschedule another tick while restart is in flight")
-	}
-}
-
-func TestAppModel_ConsolidationProgressMsg_WhenNotRestarting_NoOp(t *testing.T) {
-	app := newTestAppModel(t)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app = resized.(AppModel)
-
-	updated, cmd := app.Update(ConsolidationProgressMsg{Elapsed: 3 * time.Second})
-	app = updated.(AppModel)
-
-	if cmd != nil {
-		t.Error("should not reschedule tick when not restarting")
-	}
-	if app.statusBar.restartElapsed != 0 {
-		t.Errorf("restartElapsed should stay 0 when not restarting, got %v", app.statusBar.restartElapsed)
+		t.Fatal("expected a non-nil cmd from RestartSessionMsg")
 	}
 }
 
@@ -1715,7 +1616,7 @@ func TestAppModel_RestartCompleteMsg_Success_InstallsBridgeAndClearsRestarting(t
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app = resized.(AppModel)
 	app.restarting = true
-	app.statusBar.SetRestartElapsed(7 * time.Second)
+	app.statusBar.SetRestartLabel("Consolidating timeline...")
 
 	newBridge := NewBridge(context.Background(), newMockSession())
 	newBridge.SetSessionID("abcdef12-3456-7890-abcd-ef1234567890")
@@ -1726,8 +1627,8 @@ func TestAppModel_RestartCompleteMsg_Success_InstallsBridgeAndClearsRestarting(t
 	if app.restarting {
 		t.Error("restarting flag should be cleared after RestartCompleteMsg")
 	}
-	if app.statusBar.restartElapsed != 0 {
-		t.Error("restartElapsed indicator should be cleared on completion")
+	if app.statusBar.restartLabel != "" {
+		t.Errorf("restartLabel should be cleared on completion (consolidation not running), got %q", app.statusBar.restartLabel)
 	}
 	if app.bridge != newBridge {
 		t.Error("new bridge should be installed")

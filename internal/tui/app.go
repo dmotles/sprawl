@@ -101,29 +101,16 @@ type AppModel struct {
 	quitting bool
 
 	// restarting tracks whether an async restartFunc invocation is in
-	// flight (QUM-260). While set, ConsolidationProgressMsg ticks update
-	// the status-bar elapsed counter; RestartCompleteMsg clears it.
-	restarting       bool
-	restartStartedAt time.Time
-	// restartNow is the clock source for computing progress-tick elapsed
-	// times. Tests inject a deterministic source; production defaults to
-	// time.Now via restartClock().
-	restartNow func() time.Time
-	// restartTick is the interval between ConsolidationProgressMsg ticks
-	// while a restart is in flight. Tests shorten it; zero means use
-	// defaultRestartTick.
-	restartTick time.Duration
+	// flight (QUM-260). RestartCompleteMsg clears it. Used to coalesce
+	// duplicate RestartSessionMsg arrivals while a restart is running.
+	restarting bool
 
 	// consolidating tracks whether a background consolidation pipeline is
 	// still running after a restart (QUM-391). Set on ConsolidationPhaseMsg,
-	// cleared on ConsolidationCompleteMsg. While set, progress ticks
-	// continue even after RestartCompleteMsg so the status bar stays live.
-	consolidating        bool
-	consolidationStarted time.Time
-	// consolidationPhase is the human-readable label for the current
-	// consolidation step (e.g. "Consolidating timeline..."). Shown in the
-	// status bar as "consolidating timeline 12s".
-	consolidationPhase string
+	// cleared on ConsolidationCompleteMsg. Gates whether RestartCompleteMsg
+	// should clear the status-bar phase label so the label survives across
+	// the restart boundary when consolidation outlives it.
+	consolidating bool
 
 	// homeDir is the user's home directory, used to resolve Claude session
 	// log paths for child-agent transcript tailing (QUM-332). Set via
@@ -215,8 +202,6 @@ type AppModel struct {
 	// immediately after Update returns.
 	cache *viewCache
 }
-
-const defaultRestartTick = time.Second
 
 // NewAppModel constructs the root model with all sub-models.
 // bridge may be nil for static placeholder mode.
@@ -849,53 +834,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-260: run restartFunc off the Bubble Tea main goroutine so the
 		// UI stays responsive while FinalizeHandoff + Prepare + newSession
 		// execute (back-to-back handoffs can block up to 120s waiting on
-		// the prior background consolidation). Progress ticks drive the
-		// status bar elapsed counter; RestartCompleteMsg delivers the
-		// outcome.
+		// the prior background consolidation). RestartCompleteMsg delivers
+		// the outcome.
 		m.restarting = true
-		m.restartStartedAt = m.restartClock()()
 		fn := m.restartFunc
-		return m, tea.Batch(
-			func() tea.Msg {
-				b, err := fn()
-				return RestartCompleteMsg{Bridge: b, Err: err}
-			},
-			m.restartTickCmd(),
-		)
-
-	case ConsolidationProgressMsg:
-		// Ticks that arrive after both restart and consolidation completed
-		// are harmless no-ops — drop them without rescheduling.
-		if !m.restarting && !m.consolidating {
-			m.statusBar.SetRestartElapsed(0)
-			m.statusBar.SetRestartLabel("")
-			return m, nil
+		return m, func() tea.Msg {
+			b, err := fn()
+			return RestartCompleteMsg{Bridge: b, Err: err}
 		}
-		// QUM-391: if consolidation is active post-restart, compute elapsed
-		// from consolidation start instead of the restart start.
-		if !m.restarting && m.consolidating {
-			elapsed := m.restartClock()().Sub(m.consolidationStarted)
-			m.statusBar.SetRestartElapsed(elapsed)
-			return m, m.consolidationTickCmd()
-		}
-		m.statusBar.SetRestartElapsed(msg.Elapsed)
-		return m, m.restartTickCmd()
 
 	case ConsolidationPhaseMsg:
-		if !m.consolidating {
-			m.consolidating = true
-			m.consolidationStarted = m.restartClock()()
-		}
-		m.consolidationPhase = msg.Phase
+		m.consolidating = true
 		m.statusBar.SetRestartLabel(msg.Phase)
 		m.rootVP().AppendStatus(msg.Phase)
 		return m, nil
 
 	case ConsolidationCompleteMsg:
 		m.consolidating = false
-		m.consolidationPhase = ""
 		m.statusBar.SetRestartLabel("")
-		m.statusBar.SetRestartElapsed(0)
 		if msg.Err != nil {
 			m.rootVP().AppendStatus(fmt.Sprintf("Consolidation failed: %v", msg.Err))
 		} else {
@@ -905,11 +861,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case RestartCompleteMsg:
 		m.restarting = false
-		m.restartStartedAt = time.Time{}
-		// QUM-391: only clear the status bar if consolidation is not still
-		// running in the background.
+		// QUM-391: only clear the status bar label if consolidation is not
+		// still running in the background.
 		if !m.consolidating {
-			m.statusBar.SetRestartElapsed(0)
 			m.statusBar.SetRestartLabel("")
 		}
 		// A Ctrl-C confirm landing mid-restart also shuts us down here.
@@ -972,11 +926,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activityAdapterEpoch++
 				cmds = append(cmds, activityStreamWaitCmd(m.activityAdapter, m.rootAgent, m.activityAdapterEpoch))
 			}
-		}
-		// QUM-391: keep consolidation ticks running if consolidation outlives
-		// the restart.
-		if m.consolidating {
-			cmds = append(cmds, m.consolidationTickCmd())
 		}
 		return m, tea.Batch(cmds...)
 
@@ -1885,50 +1834,6 @@ func commitDrainCmd(sprawlRoot, rootName string, ids []string) tea.Cmd {
 		}
 		return nil
 	}
-}
-
-// restartClock returns the now-source used to compute restart elapsed
-// times. Tests override AppModel.restartNow; production defaults to
-// time.Now.
-func (m *AppModel) restartClock() func() time.Time {
-	if m.restartNow != nil {
-		return m.restartNow
-	}
-	return time.Now
-}
-
-// restartTickInterval returns the configured tick cadence for restart
-// progress updates, defaulting to one second (QUM-260).
-func (m *AppModel) restartTickInterval() time.Duration {
-	if m.restartTick > 0 {
-		return m.restartTick
-	}
-	return defaultRestartTick
-}
-
-// restartTickCmd schedules the next ConsolidationProgressMsg while the
-// TUI is waiting on async restart work. The emitted Elapsed duration is
-// measured against restartStartedAt using restartClock so tests can
-// deliver deterministic values.
-func (m *AppModel) restartTickCmd() tea.Cmd {
-	interval := m.restartTickInterval()
-	startedAt := m.restartStartedAt
-	clock := m.restartClock()
-	return tea.Tick(interval, func(_ time.Time) tea.Msg {
-		return ConsolidationProgressMsg{Elapsed: clock().Sub(startedAt)}
-	})
-}
-
-// consolidationTickCmd is like restartTickCmd but uses consolidationStarted
-// instead of restartStartedAt. Used post-restart when background consolidation
-// outlives the restart cycle. (QUM-391)
-func (m *AppModel) consolidationTickCmd() tea.Cmd {
-	interval := m.restartTickInterval()
-	startedAt := m.consolidationStarted
-	clock := m.restartClock()
-	return tea.Tick(interval, func(_ time.Time) tea.Msg {
-		return ConsolidationProgressMsg{Elapsed: clock().Sub(startedAt)}
-	})
 }
 
 // handleHistoryArrow drives Up/Down history navigation for the input panel

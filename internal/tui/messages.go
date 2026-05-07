@@ -255,16 +255,6 @@ type SessionRestartingMsg struct {
 	Reason string
 }
 
-// ConsolidationProgressMsg is a periodic tick delivered while the TUI is
-// waiting for the async restart work (FinalizeHandoff + Prepare + new
-// session) to complete (QUM-260). Elapsed is the time since the restart
-// began. The App updates the status bar's restart-elapsed indicator and
-// reschedules another tick as long as the restart is still in flight so
-// the user sees visible progress instead of a frozen UI.
-type ConsolidationProgressMsg struct {
-	Elapsed time.Duration
-}
-
 // ChildTranscriptMsg carries a freshly-loaded snapshot of a child agent's
 // Claude session transcript. Emitted when the user observes a non-root agent
 // (initial hydrate on AgentSelectedMsg, plus periodic re-reads while observed).

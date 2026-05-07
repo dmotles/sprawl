@@ -3,7 +3,6 @@ package tui
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/charmbracelet/x/ansi"
 )
@@ -17,7 +16,7 @@ func TestStatusBar_ViewFitsDeclaredWidth(t *testing.T) {
 	m := newTestStatusBarModel(t)
 	for _, w := range []int{40, 80, 120, 190, 300} {
 		m.SetWidth(w)
-		m.SetRestartElapsed(42 * 1000000000) // 42s — keeps the line longish
+		m.SetRestartLabel("consolidating timeline") // keeps the line longish
 		view := m.View()
 		for _, ln := range strings.Split(view, "\n") {
 			if ln == "" {
@@ -266,35 +265,33 @@ func TestStatusBar_TokenCounter_UpdatesOnNewValue(t *testing.T) {
 	}
 }
 
-// --- QUM-391: SetRestartLabel tests ---
+// --- QUM-391 / QUM-321: SetRestartLabel tests ---
 
-// TestStatusBar_SetRestartLabel_UsesLabelInView verifies that when a custom
-// restart label is set (e.g. "consolidating timeline"), the status bar renders
-// that label instead of the default "restart" prefix.
+// TestStatusBar_SetRestartLabel_UsesLabelInView verifies that when a
+// consolidation phase label is set, the status bar renders it.
 func TestStatusBar_SetRestartLabel_UsesLabelInView(t *testing.T) {
 	m := newTestStatusBarModel(t)
 	m.SetWidth(120)
 	m.SetRestartLabel("consolidating timeline")
-	m.SetRestartElapsed(12 * time.Second)
 	view := m.View()
 	if !strings.Contains(view, "consolidating timeline") {
-		t.Errorf("View() should contain custom label 'consolidating timeline', got:\n%s", view)
-	}
-	if strings.Contains(view, "restart 12s") {
-		t.Errorf("View() should NOT contain default 'restart' label when custom label is set, got:\n%s", view)
+		t.Errorf("View() should contain label 'consolidating timeline', got:\n%s", view)
 	}
 }
 
-// TestStatusBar_SetRestartLabel_EmptyFallsBackToRestart verifies that when
-// the restart label is empty (or never set), the status bar falls back to the
-// default "restart" prefix.
-func TestStatusBar_SetRestartLabel_EmptyFallsBackToRestart(t *testing.T) {
+// TestStatusBar_SetRestartLabel_EmptyOmitted verifies that when the label is
+// empty (no consolidation in flight), no label entry is rendered. QUM-321
+// removed the vestigial "restart Ns" elapsed counter, so an empty label means
+// no indicator at all.
+func TestStatusBar_SetRestartLabel_EmptyOmitted(t *testing.T) {
 	m := newTestStatusBarModel(t)
 	m.SetWidth(120)
 	m.SetRestartLabel("")
-	m.SetRestartElapsed(8 * time.Second)
 	view := m.View()
-	if !strings.Contains(view, "restart") {
-		t.Errorf("View() should contain default 'restart' label when label is empty, got:\n%s", view)
+	if strings.Contains(view, "restart") {
+		t.Errorf("View() should not contain any 'restart' indicator when label is empty, got:\n%s", view)
+	}
+	if strings.Contains(view, "consolidating") {
+		t.Errorf("View() should not contain a consolidation label when empty, got:\n%s", view)
 	}
 }
