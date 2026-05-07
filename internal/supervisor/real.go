@@ -53,7 +53,7 @@ type Real struct {
 	killDeps   *agentops.KillDeps
 
 	spawnFn  func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error)
-	mergeFn  func(*agentops.MergeDeps, string, string, bool, bool) error
+	mergeFn  func(*agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error)
 	retireFn func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error
 	killFn   func(*agentops.KillDeps, string, bool) error
 
@@ -361,7 +361,7 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 // r.callerName fallback. The resolved identity is plumbed into a per-call
 // MergeDeps whose Getenv reports it as SPRAWL_AGENT_IDENTITY so the parent-
 // equality check inside agentops.Merge sees the correct caller. See QUM-487.
-func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noValidate bool) error {
+func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noValidate bool) (*MergeOutcome, error) {
 	effective := r.effectiveCallerOr(ctx, caller)
 	return r.mergeFn(r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false)
 }

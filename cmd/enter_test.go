@@ -317,8 +317,8 @@ func (s *shutdownMockSupervisor) Status(_ context.Context) ([]supervisor.AgentIn
 
 func (s *shutdownMockSupervisor) Delegate(_ context.Context, _, _ string) error   { return nil }
 func (s *shutdownMockSupervisor) Message(_ context.Context, _, _, _ string) error { return nil }
-func (s *shutdownMockSupervisor) Merge(_ context.Context, _, _, _ string, _ bool) error {
-	return nil
+func (s *shutdownMockSupervisor) Merge(_ context.Context, _, _, _ string, _ bool) (*supervisor.MergeOutcome, error) {
+	return &supervisor.MergeOutcome{}, nil
 }
 
 func (s *shutdownMockSupervisor) Retire(_ context.Context, _, _ string, _, _, _, _ bool) error {

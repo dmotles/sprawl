@@ -13,7 +13,12 @@ import (
 // Aliases so existing tests continue to compile.
 type mergeDeps = agentops.MergeDeps
 
-var runMerge = agentops.Merge
+// runMerge wraps agentops.Merge so the CLI/cmd test surface keeps a single
+// error-return signature; the MergeOutcome is consumed by MCP callers.
+var runMerge = func(deps *mergeDeps, agentName, messageOverride string, noValidate, dryRun bool) error {
+	_, err := agentops.Merge(deps, agentName, messageOverride, noValidate, dryRun)
+	return err
+}
 
 var defaultMergeDeps *mergeDeps
 

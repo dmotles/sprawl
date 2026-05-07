@@ -37,16 +37,22 @@ type mockSupervisor struct {
 	shutdownErr  error
 
 	// Recorded calls
-	spawnCalled      *supervisor.SpawnRequest
-	delegateAgent    string
-	delegateTask     string
-	messageAgent     string
-	messageSubject   string
-	messageBody      string
-	mergeCaller      string
-	mergeAgent       string
-	mergeMessage     string
-	mergeNoVal       bool
+	spawnCalled    *supervisor.SpawnRequest
+	delegateAgent  string
+	delegateTask   string
+	messageAgent   string
+	messageSubject string
+	messageBody    string
+	mergeCaller    string
+	mergeAgent     string
+	mergeMessage   string
+	mergeNoVal     bool
+	// mergeNoOp — QUM-511: when true, the mock should report a no-op
+	// merge outcome (zero new commits) to toolMerge so it can surface
+	// "Nothing to merge: <agent> has no new commits". Wired through once
+	// Supervisor.Merge returns an outcome value (currently unused while
+	// the signature is still error-only — that's the bug we're fixing).
+	mergeNoOp        bool
 	retireCaller     string
 	retireAgent      string
 	retireMerge      bool
@@ -202,12 +208,15 @@ func (m *mockSupervisor) Message(_ context.Context, agentName, subject, body str
 	return m.messageErr
 }
 
-func (m *mockSupervisor) Merge(_ context.Context, caller, agentName, message string, noValidate bool) error {
+func (m *mockSupervisor) Merge(_ context.Context, caller, agentName, message string, noValidate bool) (*supervisor.MergeOutcome, error) {
 	m.mergeCaller = caller
 	m.mergeAgent = agentName
 	m.mergeMessage = message
 	m.mergeNoVal = noValidate
-	return m.mergeErr
+	if m.mergeErr != nil {
+		return nil, m.mergeErr
+	}
+	return &supervisor.MergeOutcome{NoOp: m.mergeNoOp}, nil
 }
 
 func (m *mockSupervisor) Retire(_ context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error {
@@ -632,6 +641,84 @@ func TestServer_ToolsCall_SprawlMerge(t *testing.T) {
 	parsed := parseJSONRPCResponse(t, resp)
 	if _, ok := parsed["error"]; ok {
 		t.Errorf("unexpected error: %v", parsed["error"])
+	}
+}
+
+// extractToolText pulls the text from the JSON-RPC tools/call response
+// content[0].text field. Fatals on shape mismatch.
+func extractToolText(t *testing.T, resp json.RawMessage) string {
+	t.Helper()
+	parsed := parseJSONRPCResponse(t, resp)
+	if e, ok := parsed["error"]; ok {
+		t.Fatalf("unexpected JSON-RPC error: %v", e)
+	}
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatal("missing result")
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatal("missing or empty content array")
+	}
+	first, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatal("content[0] is not an object")
+	}
+	text, ok := first["text"].(string)
+	if !ok {
+		t.Fatal("content[0].text is not a string")
+	}
+	return text
+}
+
+// TestToolMerge_SuccessReturnsMergedAgent — QUM-511 baseline: a non-no-op
+// merge should yield text "Merged agent <name>".
+func TestToolMerge_SuccessReturnsMergedAgent(t *testing.T) {
+	mock := &mockSupervisor{} // mergeNoOp defaults to false
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(700, "tools/call", map[string]any{
+		"name": "merge",
+		"arguments": map[string]any{
+			"agent_name": "engX",
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	text := extractToolText(t, resp)
+	if text != "Merged agent engX" {
+		t.Errorf("text = %q, want %q", text, "Merged agent engX")
+	}
+}
+
+// TestToolMerge_NoOpReturnsNothingToMerge — QUM-511/QUM-489: when the
+// supervisor reports the merge was a no-op (zero new commits, e.g. because
+// the agent's branch is already merged into the parent), toolMerge must
+// surface the truth to the caller rather than flattening to a generic
+// "Merged agent <name>" success text — that flattening hides the
+// QUM-511 stale-spawn-branch bug.
+func TestToolMerge_NoOpReturnsNothingToMerge(t *testing.T) {
+	mock := &mockSupervisor{mergeNoOp: true}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(701, "tools/call", map[string]any{
+		"name": "merge",
+		"arguments": map[string]any{
+			"agent_name": "engX",
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	text := extractToolText(t, resp)
+	want := "Nothing to merge: engX has no new commits"
+	if text != want {
+		t.Errorf("text = %q, want %q (no-op merges must NOT report success)", text, want)
 	}
 }
 

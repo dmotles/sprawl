@@ -4,8 +4,15 @@ import (
 	"context"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/state"
 )
+
+// MergeOutcome re-exports agentops.MergeOutcome for supervisor consumers. See
+// QUM-511 / QUM-489: callers (notably the MCP toolMerge handler) need to
+// distinguish a real merge from a no-op (zero new commits) so they can
+// surface the truth instead of flattening to a generic success message.
+type MergeOutcome = agentops.MergeOutcome
 
 // AgentInfo describes an agent's current state as seen by the supervisor.
 type AgentInfo struct {
@@ -142,7 +149,7 @@ type Supervisor interface {
 	// into the parent-equality check inside agentops.Merge. See QUM-487.
 	// An empty caller falls back to backendpkg.CallerIdentity(ctx) and then
 	// to the supervisor's own callerName.
-	Merge(ctx context.Context, caller, agentName, message string, noValidate bool) error
+	Merge(ctx context.Context, caller, agentName, message string, noValidate bool) (*MergeOutcome, error)
 	// Retire retires agentName. `caller` semantics match Merge — see QUM-487.
 	Retire(ctx context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error
 	Kill(ctx context.Context, agentName string) error

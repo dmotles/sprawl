@@ -33,8 +33,8 @@ func newFakeReal(t *testing.T) (*Real, string) {
 	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error) {
 		return nil, errors.New("spawnFn not overridden")
 	}
-	r.mergeFn = func(*agentops.MergeDeps, string, string, bool, bool) error {
-		return errors.New("mergeFn not overridden")
+	r.mergeFn = func(*agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
+		return nil, errors.New("mergeFn not overridden")
 	}
 	r.retireFn = func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
 		return errors.New("retireFn not overridden")
@@ -131,12 +131,12 @@ func TestMerge_ForwardsArgs(t *testing.T) {
 
 	var gotName, gotMsg string
 	var gotNoValidate, gotDryRun bool
-	r.mergeFn = func(_ *agentops.MergeDeps, name, msg string, noValidate, dryRun bool) error {
+	r.mergeFn = func(_ *agentops.MergeDeps, name, msg string, noValidate, dryRun bool) (*agentops.MergeOutcome, error) {
 		gotName, gotMsg, gotNoValidate, gotDryRun = name, msg, noValidate, dryRun
-		return nil
+		return &agentops.MergeOutcome{}, nil
 	}
 
-	if err := r.Merge(context.Background(), "", "ratz", "custom commit", true); err != nil {
+	if _, err := r.Merge(context.Background(), "", "ratz", "custom commit", true); err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 	if gotName != "ratz" || gotMsg != "custom commit" || !gotNoValidate || gotDryRun {
@@ -147,10 +147,10 @@ func TestMerge_ForwardsArgs(t *testing.T) {
 
 func TestMerge_PropagatesError(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.mergeFn = func(*agentops.MergeDeps, string, string, bool, bool) error {
-		return errors.New("dirty tree")
+	r.mergeFn = func(*agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
+		return nil, errors.New("dirty tree")
 	}
-	err := r.Merge(context.Background(), "", "ratz", "", false)
+	_, err := r.Merge(context.Background(), "", "ratz", "", false)
 	if err == nil || err.Error() != "dirty tree" {
 		t.Errorf("err = %v, want dirty tree", err)
 	}
@@ -953,15 +953,15 @@ func TestMerge_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
 	}
 
 	var capturedIdentity string
-	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) error {
+	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
-		return nil
+		return &agentops.MergeOutcome{}, nil
 	}
 
 	// Manager "tower" invokes merge through the MCP server. The supervisor
 	// must forward tower's identity into agentops, so the parent-equality
 	// check inside agentops.Merge sees "tower" — not "weave".
-	if err := r.Merge(context.Background(), "tower", "finn", "msg", false); err != nil {
+	if _, err := r.Merge(context.Background(), "tower", "finn", "msg", false); err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 	if capturedIdentity != "tower" {
@@ -973,15 +973,15 @@ func TestMerge_FallsBackToContextCallerIdentity(t *testing.T) {
 	r, _ := newFakeReal(t)
 
 	var capturedIdentity string
-	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) error {
+	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
-		return nil
+		return &agentops.MergeOutcome{}, nil
 	}
 
 	// Empty explicit caller; identity comes from the request context (the
 	// path the MCP server uses today via backendpkg.CallerIdentity(ctx)).
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "tower")
-	if err := r.Merge(ctx, "", "finn", "msg", false); err != nil {
+	if _, err := r.Merge(ctx, "", "finn", "msg", false); err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 	if capturedIdentity != "tower" {
@@ -993,14 +993,14 @@ func TestMerge_FallsBackToCallerNameWhenCallerEmptyAndNoCtxIdentity(t *testing.T
 	r, _ := newFakeReal(t)
 
 	var capturedIdentity string
-	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) error {
+	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
-		return nil
+		return &agentops.MergeOutcome{}, nil
 	}
 
 	// Direct (non-MCP) call with neither explicit caller nor context override.
 	// Must fall back to the supervisor's own callerName ("weave" in tests).
-	if err := r.Merge(context.Background(), "", "finn", "msg", false); err != nil {
+	if _, err := r.Merge(context.Background(), "", "finn", "msg", false); err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 	if capturedIdentity != "weave" {

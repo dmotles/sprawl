@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e test-merge-reuse-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -108,3 +108,15 @@ test-leak-resistance-e2e: build
 # across cleanup traps. Lightweight (no claude/tmux/spawl needed).
 test-exit-code-preservation:
 	bash scripts/test-exit-code-preservation.sh
+
+# QUM-511 / QUM-489: end-to-end regression guard. After a delegate-style
+# branch swap (agent's worktree HEAD moves to a new branch but state.json
+# still records the spawn-time branch), `sprawl merge` must follow the
+# worktree's actual current branch. Pre-fix it silently no-ops because it
+# reads stale agentState.Branch. Pure shell — no claude required. See
+# scripts/test-merge-reuse-e2e.sh. Mandatory before merging any change to
+# internal/agentops/merge.go, internal/sprawlmcp/server.go (toolMerge),
+# cmd/merge.go, internal/supervisor/supervisor.go (Merge), or
+# internal/supervisor/real.go (Real.Merge / mergeFn).
+test-merge-reuse-e2e: build
+	bash scripts/test-merge-reuse-e2e.sh
