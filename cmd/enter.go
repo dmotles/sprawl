@@ -33,7 +33,6 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
-	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
@@ -283,36 +282,6 @@ func enterAllowedTools(prepared *rootinit.PreparedSession) []string {
 	allowed = append(allowed, prepared.RootTools...)
 	allowed = append(allowed, mcpNames...)
 	return allowed
-}
-
-// buildEnterLaunchOpts constructs claude.LaunchOpts for the TUI-mode weave
-// subprocess from a rootinit.PreparedSession. Matches the tmux root loop's
-// launch shape (--system-prompt-file, --session-id, --model prepared.Model, plus
-// the root tool allowlist) and adds the stream-json flag block the TUI
-// transport needs.
-//
-// On resume (prepared.Resume == true), --system-prompt-file and --session-id
-// are intentionally omitted — BuildArgs enforces this because the resumed
-// transcript carries its own session ID and system prompt.
-func buildEnterLaunchOpts(prepared *rootinit.PreparedSession) claude.LaunchOpts {
-	allowed := enterAllowedTools(prepared)
-
-	opts := claude.LaunchOpts{
-		Print:           true,
-		InputFormat:     "stream-json",
-		OutputFormat:    "stream-json",
-		Verbose:         true,
-		PermissionMode:  "bypassPermissions",
-		AllowedTools:    allowed,
-		DisallowedTools: prepared.Disallowed,
-		Model:           prepared.Model,
-		SessionID:       prepared.SessionID,
-	}
-	if prepared.Resume {
-		opts.Resume = true
-	}
-	opts.SystemPromptFile = prepared.PromptPath
-	return opts
 }
 
 func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession, logW io.Writer, onResumeFailure func()) backend.SessionSpec {

@@ -5,32 +5,6 @@ import (
 	"testing"
 )
 
-func TestBuildArgs_AllOptions(t *testing.T) {
-	opts := LaunchOpts{
-		SystemPrompt:    "test prompt",
-		InitialPrompt:   "start working",
-		Tools:           []string{"Bash", "Read"},
-		AllowedTools:    []string{"Bash"},
-		DisallowedTools: []string{"Edit"},
-		Name:            "test-session",
-		Bare:            true,
-	}
-
-	args := opts.BuildArgs()
-
-	assertContains(t, args, "--system-prompt", "test prompt")
-	lastArg := args[len(args)-1]
-	if lastArg != "start working" {
-		t.Errorf("expected last arg to be initial prompt, got %q", lastArg)
-	}
-	assertContains(t, args, "--tools", "Bash")
-	assertContains(t, args, "--tools", "Read")
-	assertContains(t, args, "--allowed-tools", "Bash")
-	assertContains(t, args, "--disallowed-tools", "Edit")
-	assertContains(t, args, "--name", "test-session")
-	assertContainsFlag(t, args, "--bare")
-}
-
 func TestBuildArgs_Empty(t *testing.T) {
 	args := LaunchOpts{}.BuildArgs()
 
@@ -39,99 +13,28 @@ func TestBuildArgs_Empty(t *testing.T) {
 	}
 }
 
-func TestBuildArgs_InitialPrompt(t *testing.T) {
-	prompt := "You have been assigned a task. Read your system prompt and begin working immediately."
+func TestBuildArgs_AllowedAndDisallowedTools(t *testing.T) {
 	opts := LaunchOpts{
-		SystemPrompt:  "system",
-		InitialPrompt: prompt,
-		Name:          "test",
+		AllowedTools:    []string{"Bash"},
+		DisallowedTools: []string{"Edit"},
 	}
 
 	args := opts.BuildArgs()
 
-	lastArg := args[len(args)-1]
-	if lastArg != prompt {
-		t.Errorf("expected last arg to be initial prompt, got %q", lastArg)
-	}
-
-	for _, a := range args {
-		if a == "-p" || a == "--print" {
-			t.Errorf("InitialPrompt must not use -p/--print flag (non-interactive mode), got %v", args)
-		}
-	}
-}
-
-func TestBuildArgs_NoInitialPrompt(t *testing.T) {
-	args := LaunchOpts{Name: "test"}.BuildArgs()
-
-	for _, a := range args {
-		if a == "-p" || a == "--print" {
-			t.Error("expected no -p/--print flag when InitialPrompt is empty")
-		}
-	}
-}
-
-func TestBuildArgs_InitialPromptComesLast(t *testing.T) {
-	opts := LaunchOpts{
-		SystemPrompt:  "sys",
-		Name:          "agent",
-		Bare:          true,
-		InitialPrompt: "begin work",
-	}
-
-	args := opts.BuildArgs()
-
-	lastArg := args[len(args)-1]
-	if lastArg != "begin work" {
-		t.Errorf("InitialPrompt should be the last argument, got %q; full args: %v", lastArg, args)
-	}
-
-	assertContains(t, args, "--system-prompt", "sys")
-	assertContains(t, args, "--name", "agent")
-	assertContainsFlag(t, args, "--bare")
-}
-
-func TestBuildArgs_NoBare(t *testing.T) {
-	args := LaunchOpts{Name: "test"}.BuildArgs()
-
-	for _, a := range args {
-		if a == "--bare" {
-			t.Error("expected no --bare flag when Bare is false")
-		}
-	}
-}
-
-func TestBuildArgs_DangerouslySkipPermissions(t *testing.T) {
-	args := LaunchOpts{
-		Name:                       "test",
-		DangerouslySkipPermissions: true,
-	}.BuildArgs()
-	assertContainsFlag(t, args, "--dangerously-skip-permissions")
-}
-
-func TestBuildArgs_DangerouslySkipPermissions_False(t *testing.T) {
-	args := LaunchOpts{
-		Name:                       "test",
-		DangerouslySkipPermissions: false,
-	}.BuildArgs()
-	for _, a := range args {
-		if a == "--dangerously-skip-permissions" {
-			t.Error("expected no --dangerously-skip-permissions flag when false")
-		}
-	}
+	assertContains(t, args, "--allowed-tools", "Bash")
+	assertContains(t, args, "--disallowed-tools", "Edit")
 }
 
 func TestBuildArgs_Agents(t *testing.T) {
 	agentsJSON := `{"oracle":{"description":"Plans","prompt":"You plan"}}`
 	args := LaunchOpts{
-		Name:   "test",
 		Agents: agentsJSON,
 	}.BuildArgs()
 	assertContains(t, args, "--agents", agentsJSON)
 }
 
 func TestBuildArgs_Agents_Empty(t *testing.T) {
-	args := LaunchOpts{Name: "test"}.BuildArgs()
+	args := LaunchOpts{}.BuildArgs()
 	for _, a := range args {
 		if a == "--agents" {
 			t.Error("expected no --agents flag when Agents is empty")
@@ -142,7 +45,6 @@ func TestBuildArgs_Agents_Empty(t *testing.T) {
 func TestBuildArgs_SystemPromptFile(t *testing.T) {
 	args := LaunchOpts{
 		SystemPromptFile: "/tmp/SYSTEM.md",
-		Name:             "test",
 	}.BuildArgs()
 
 	assertContains(t, args, "--system-prompt-file", "/tmp/SYSTEM.md")
@@ -158,7 +60,6 @@ func TestBuildArgs_SystemPromptFilePrecedence(t *testing.T) {
 	args := LaunchOpts{
 		SystemPrompt:     "inline prompt",
 		SystemPromptFile: "/tmp/SYSTEM.md",
-		Name:             "test",
 	}.BuildArgs()
 
 	assertContains(t, args, "--system-prompt-file", "/tmp/SYSTEM.md")

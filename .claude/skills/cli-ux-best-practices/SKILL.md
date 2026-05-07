@@ -147,8 +147,8 @@ return fmt.Errorf("cannot merge %q: agent status is %q, expected \"done\". Wait 
 ### Pattern: Distinguish Retryable vs Permanent Failures
 
 ```go
-// Retryable — agent knows it can retry
-return fmt.Errorf("tmux session %q not responding (may be starting up) — retry in a few seconds", session)
+// Retryable — agent knows it can retry. Real symbol: internal/backend/session.go::ErrTurnInProgress.
+return fmt.Errorf("agent %q is mid-turn (backend: turn already in progress) — retry in a few seconds", name)
 
 // Permanent — agent knows to try something else
 return fmt.Errorf("branch %q has already been deleted — nothing to merge. The work may already be integrated", branch)
@@ -230,7 +230,7 @@ Write `Long` descriptions that explain **when and why** to use the command, not 
 
 ```go
 Long: "Spawn a new agent with the given family and type. " +
-      "The agent runs in its own tmux window and git worktree. " +
+      "The agent runs as a same-process child runtime on its own git worktree and branch. " +
       "It will message you when its task is complete.",
 ```
 

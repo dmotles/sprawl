@@ -107,7 +107,7 @@ Discovered in QUM-312.
 
 ### 3. Trust-prompt advancement
 
-On a fresh sandbox, `claude` prompts for trust on first invocation ("Trust this directory? Y/n"). Any e2e script that launches `sprawl init`/`sprawl enter` must advance past this prompt before `tmux send-keys` assertions will render meaningful output. Detect the trust prompt (e.g. grep `capture-pane` for "Trust") and send Enter before the main test scenario.
+On a fresh sandbox, `claude` prompts for trust on first invocation ("Trust this directory? Y/n"). Any e2e script that launches `sprawl enter` must advance past this prompt before `tmux send-keys` assertions will render meaningful output. Detect the trust prompt (e.g. grep `capture-pane` for "Trust") and send Enter before the main test scenario.
 
 Discovered in QUM-310.
 

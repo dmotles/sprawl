@@ -5,8 +5,34 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/host"
+	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 )
+
+// freshPrepared is a test fixture representing a fresh-path PreparedSession.
+func freshPrepared() *rootinit.PreparedSession {
+	return &rootinit.PreparedSession{
+		Resume:     false,
+		PromptPath: "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md",
+		SessionID:  "fake-session-uuid",
+		Model:      rootinit.DefaultRootModel,
+		RootTools:  rootinit.RootTools,
+		Disallowed: rootinit.DisallowedTools,
+	}
+}
+
+// resumePrepared is a test fixture representing a resume-path PreparedSession
+// where the SYSTEM.md file exists from a prior fresh start.
+func resumePrepared() *rootinit.PreparedSession {
+	return &rootinit.PreparedSession{
+		Resume:     true,
+		PromptPath: "/fake/sprawl/.sprawl/agents/weave/SYSTEM.md",
+		SessionID:  "prior-session-uuid",
+		Model:      rootinit.DefaultRootModel,
+		RootTools:  rootinit.RootTools,
+		Disallowed: rootinit.DisallowedTools,
+	}
+}
 
 func TestBuildEnterSessionSpec_FreshPathUsesRootSessionData(t *testing.T) {
 	called := false
