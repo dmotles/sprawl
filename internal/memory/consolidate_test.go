@@ -1,829 +1,305 @@
+// internal/memory/consolidate_test.go — red-phase tests for QUM-517 cutover.
+// The new Consolidate is append-only: it walks every session on disk, and
+// for any session id NOT already present in timeline.md it calls
+// AppendSessionWithOptions (which makes a single LLM call and merges one
+// canonical row). Per-session errors are non-fatal — they must not abort
+// the loop.
 package memory
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// consolidateTestNow returns a now func that keeps Jan 2026 entries within the "recent" window
-// so compression doesn't affect them.
-func consolidateTestNow() func() time.Time {
-	return func() time.Time { return time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC) }
+// consolidateUUIDs are syntactically-valid v4-shaped UUIDs (matching
+// TimelineRowRE). Reusing the same shape as the rest of the package's
+// test fixtures.
+const (
+	cuidA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	cuidB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	cuidC = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	cuidD = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	cuidE = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+)
+
+// keyedInvoker is a ClaudeInvoker fake that returns canned responses keyed
+// by a substring of the prompt (typically the session UUID, since
+// SummarizeSession embeds the session id directly in the prompt). It can
+// also fail per-key when an entry is registered in errs.
+type keyedInvoker struct {
+	responses map[string]string
+	errs      map[string]error
+	calls     int
 }
 
-// helper: create N sessions in a temp sprawl root using WriteSessionSummary.
-// Sessions are timestamped sequentially starting 2026-01-01 with +1 day increments.
-func createTestSessions(t *testing.T, root string, n int) ([]Session, []string) {
+func (k *keyedInvoker) Invoke(_ context.Context, prompt string, _ ...InvokeOption) (string, error) {
+	k.calls++
+	for key, err := range k.errs {
+		if strings.Contains(prompt, key) {
+			return "", err
+		}
+	}
+	for key, resp := range k.responses {
+		if strings.Contains(prompt, key) {
+			return resp, nil
+		}
+	}
+	return "", errors.New("keyedInvoker: no response registered for prompt")
+}
+
+func consolidateNow() func() time.Time {
+	return func() time.Time { return time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC) }
+}
+
+// writeUUIDSession writes a session summary file at the canonical path so
+// ListRecentSessions can find it. UUID-shaped session ids are required for
+// rows to match TimelineRowRE.
+func writeUUIDSession(t *testing.T, root, id string, ts time.Time, body string) Session {
 	t.Helper()
-	sessions := make([]Session, n)
-	bodies := make([]string, n)
-	for i := range n {
-		s := Session{
-			SessionID:    fmt.Sprintf("sess-%d", i),
-			Timestamp:    time.Date(2026, 1, 1+i, 0, 0, 0, 0, time.UTC),
-			Handoff:      false,
-			AgentsActive: []string{"agent-a"},
+	s := Session{
+		SessionID:    id,
+		Timestamp:    ts,
+		Handoff:      false,
+		AgentsActive: []string{"weave"},
+	}
+	if err := WriteSessionSummary(root, s, body); err != nil {
+		t.Fatalf("WriteSessionSummary(%s): %v", id, err)
+	}
+	return s
+}
+
+// canonicalRow returns a TimelineRowRE-valid row for s.
+func canonicalRow(s Session, summary string) string {
+	return RenderTimelineRow(s.Timestamp, s.SessionID, summary)
+}
+
+// readTimelineFile returns timeline.md contents (or empty string if absent).
+func readTimelineFile(t *testing.T, root string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, ".sprawl", "memory", "timeline.md"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
 		}
-		body := fmt.Sprintf("Summary body for session %d", i)
-		if err := WriteSessionSummary(root, s, body); err != nil {
-			t.Fatalf("WriteSessionSummary[%d]: %v", i, err)
+		t.Fatalf("read timeline.md: %v", err)
+	}
+	return string(data)
+}
+
+func nonEmptyLines(s string) []string {
+	out := []string{}
+	for _, l := range strings.Split(s, "\n") {
+		if l != "" {
+			out = append(out, l)
 		}
-		sessions[i] = s
-		bodies[i] = body
 	}
-	return sessions, bodies
+	return out
 }
 
-func TestConsolidate_NoopFewerThan3Sessions(t *testing.T) {
+// ---------------------------------------------------------------------
+// EmptyTimelinePopulatedWithAllSessions
+// ---------------------------------------------------------------------
+func TestConsolidate_EmptyTimelinePopulatedWithAllSessions(t *testing.T) {
 	root := t.TempDir()
-	createTestSessions(t, root, 2)
 
-	mock := &mockClaudeInvoker{response: "should not be called"}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
-	if mock.lastPrompt != "" {
-		t.Error("invoker should not have been called with fewer than 3 sessions")
-	}
-}
+	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	sB := writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	sC := writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
 
-func TestConsolidate_Exactly3Sessions_Noop(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 3)
+	rowA := canonicalRow(sA, "Summary of session A")
+	rowB := canonicalRow(sB, "Summary of session B")
+	rowC := canonicalRow(sC, "Summary of session C")
 
-	mock := &mockClaudeInvoker{response: "should not be called"}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
-	if mock.lastPrompt != "" {
-		t.Error("invoker should not have been called with exactly 3 sessions (0 candidates)")
-	}
-}
+	inv := &keyedInvoker{responses: map[string]string{
+		cuidA: rowA,
+		cuidB: rowB,
+		cuidC: rowC,
+	}}
 
-func TestConsolidate_FirstConsolidation(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	// Sessions 0,1 are candidates (oldest); 2,3,4 are the 3 most recent.
-	// Mock returns valid timeline output for the two candidates.
-	mockOutput := strings.Join([]string{
-		"- 2026-01-01T00:00:00Z: Distilled session 0",
-		"- 2026-01-02T00:00:00Z: Distilled session 1",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
+	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
 		t.Fatalf("Consolidate: %v", err)
 	}
 
-	// Verify invoker was called
-	if mock.lastPrompt == "" {
-		t.Fatal("invoker should have been called")
+	got := readTimelineFile(t, root)
+	if got == "" {
+		t.Fatal("timeline.md not created")
 	}
-
-	// Verify prompt contains candidate session bodies (sessions 0 and 1)
-	if !strings.Contains(mock.lastPrompt, "Summary body for session 0") {
-		t.Error("prompt should contain body of session 0 (candidate)")
+	lines := nonEmptyLines(got)
+	if len(lines) != 3 {
+		t.Fatalf("got %d rows, want 3:\n%s", len(lines), got)
 	}
-	if !strings.Contains(mock.lastPrompt, "Summary body for session 1") {
-		t.Error("prompt should contain body of session 1 (candidate)")
-	}
-
-	// Verify prompt does NOT contain the 3 most recent sessions' bodies
-	for _, i := range []int{2, 3, 4} {
-		needle := fmt.Sprintf("Summary body for session %d", i)
-		if strings.Contains(mock.lastPrompt, needle) {
-			t.Errorf("prompt should NOT contain body of session %d (recent, not candidate)", i)
+	for i, ln := range lines {
+		if err := ValidateTimelineRow(ln); err != nil {
+			t.Errorf("row %d invalid: %v (%q)", i, err, ln)
 		}
 	}
-
-	// Verify timeline was written
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("got %d timeline entries, want 2", len(entries))
-	}
-	if entries[0].Summary != "Distilled session 0" {
-		t.Errorf("entry[0].Summary = %q, want %q", entries[0].Summary, "Distilled session 0")
-	}
-	if entries[1].Summary != "Distilled session 1" {
-		t.Errorf("entry[1].Summary = %q, want %q", entries[1].Summary, "Distilled session 1")
+	// Sorted ascending by date prefix (2026-01 < 2026-02 < 2026-03).
+	if lines[0][:10] > lines[1][:10] || lines[1][:10] > lines[2][:10] {
+		t.Errorf("rows not sorted ascending by date:\n%s", got)
 	}
 }
 
-func TestConsolidate_WithExistingTimeline(t *testing.T) {
+// ---------------------------------------------------------------------
+// AllSessionsAlreadyPresent_NoOp
+// ---------------------------------------------------------------------
+func TestConsolidate_AllSessionsAlreadyPresent_NoOp(t *testing.T) {
 	root := t.TempDir()
-	createTestSessions(t, root, 5)
 
-	// Write an existing timeline
-	existingEntries := []TimelineEntry{
-		{Timestamp: time.Date(2025, 12, 15, 0, 0, 0, 0, time.UTC), Summary: "Pre-existing event"},
+	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	sB := writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	sC := writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
+
+	existing := canonicalRow(sA, "old A") + "\n" +
+		canonicalRow(sB, "old B") + "\n" +
+		canonicalRow(sC, "old C") + "\n"
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
-	if err := WriteTimeline(root, existingEntries); err != nil {
-		t.Fatalf("WriteTimeline: %v", err)
+	if err := os.WriteFile(filepath.Join(root, ".sprawl", "memory", "timeline.md"), []byte(existing), 0o644); err != nil {
+		t.Fatalf("seed timeline: %v", err)
 	}
 
-	// Mock returns merged output including the pre-existing entry
-	mockOutput := strings.Join([]string{
-		"- 2025-12-15T00:00:00Z: Pre-existing event",
-		"- 2026-01-01T00:00:00Z: Distilled session 0",
-		"- 2026-01-02T00:00:00Z: Distilled session 1",
-	}, "\n")
+	before := readTimelineFile(t, root)
+	inv := &keyedInvoker{} // no responses registered → must not be called
 
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
+	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
 		t.Fatalf("Consolidate: %v", err)
 	}
 
-	// Verify prompt includes existing timeline text
-	if !strings.Contains(mock.lastPrompt, "Pre-existing event") {
-		t.Error("prompt should include existing timeline entries")
+	if inv.calls != 0 {
+		t.Errorf("invoker called %d times, want 0 (all sessions already present)", inv.calls)
 	}
-
-	// Verify updated timeline
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-	if len(entries) != 3 {
-		t.Fatalf("got %d timeline entries, want 3", len(entries))
-	}
-	if entries[0].Summary != "Pre-existing event" {
-		t.Errorf("entry[0].Summary = %q, want %q", entries[0].Summary, "Pre-existing event")
+	after := readTimelineFile(t, root)
+	if !bytes.Equal([]byte(before), []byte(after)) {
+		t.Errorf("timeline mutated on no-op:\nbefore=%q\nafter =%q", before, after)
 	}
 }
 
-func TestConsolidate_PromptOnlyIncludesCandidates(t *testing.T) {
+// ---------------------------------------------------------------------
+// AppendsOnlyMissingSessions
+// ---------------------------------------------------------------------
+func TestConsolidate_AppendsOnlyMissingSessions(t *testing.T) {
 	root := t.TempDir()
-	_, bodies := createTestSessions(t, root, 6)
 
-	// Sessions 0,1,2 are candidates; 3,4,5 are the 3 most recent.
-	mockOutput := "- 2026-01-01T00:00:00Z: Consolidated"
+	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	sB := writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	sC := writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
+	sD := writeUUIDSession(t, root, cuidD, time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC), "body D")
+	sE := writeUUIDSession(t, root, cuidE, time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC), "body E")
 
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
+	// Seed with A,B,C only; D,E are missing.
+	rowA := canonicalRow(sA, "kept A")
+	rowB := canonicalRow(sB, "kept B")
+	rowC := canonicalRow(sC, "kept C")
+	existing := rowA + "\n" + rowB + "\n" + rowC + "\n"
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".sprawl", "memory", "timeline.md"), []byte(existing), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rowD := canonicalRow(sD, "appended D")
+	rowE := canonicalRow(sE, "appended E")
+	inv := &keyedInvoker{responses: map[string]string{
+		cuidD: rowD,
+		cuidE: rowE,
+	}}
+
+	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
 		t.Fatalf("Consolidate: %v", err)
 	}
 
-	// Candidates (sessions 0-2) should be in the prompt
-	for i := range 3 {
-		if !strings.Contains(mock.lastPrompt, bodies[i]) {
-			t.Errorf("prompt should contain body of candidate session %d", i)
+	if inv.calls != 2 {
+		t.Errorf("invoker calls = %d, want 2 (only D and E missing)", inv.calls)
+	}
+
+	got := readTimelineFile(t, root)
+	lines := nonEmptyLines(got)
+	if len(lines) != 5 {
+		t.Fatalf("got %d rows, want 5:\n%s", len(lines), got)
+	}
+
+	// Original 3 rows preserved verbatim.
+	for _, want := range []string{rowA, rowB, rowC} {
+		if !strings.Contains(got, want) {
+			t.Errorf("original row missing after consolidate: %q\nfile:\n%s", want, got)
 		}
 	}
-
-	// Recent sessions (3-5) should NOT be in the prompt
-	for i := 3; i < 6; i++ {
-		if strings.Contains(mock.lastPrompt, bodies[i]) {
-			t.Errorf("prompt should NOT contain body of recent session %d", i)
+	// The two new sessions are appended.
+	for _, want := range []string{rowD, rowE} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing appended row %q\nfile:\n%s", want, got)
 		}
 	}
 }
 
-func TestConsolidate_ClaudeError(t *testing.T) {
+// ---------------------------------------------------------------------
+// NoSessionsOnDisk_NoOp
+// ---------------------------------------------------------------------
+func TestConsolidate_NoSessionsOnDisk_NoOp(t *testing.T) {
 	root := t.TempDir()
-	createTestSessions(t, root, 5)
+	// No sessions written.
 
-	// Write an existing timeline to verify it's unchanged after error
-	existingEntries := []TimelineEntry{
-		{Timestamp: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC), Summary: "Should survive"},
-	}
-	if err := WriteTimeline(root, existingEntries); err != nil {
-		t.Fatalf("WriteTimeline: %v", err)
-	}
-
-	mock := &mockClaudeInvoker{err: fmt.Errorf("api unavailable")}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err == nil {
-		t.Fatal("expected error when invoker fails")
-	}
-	if !strings.Contains(err.Error(), "api unavailable") {
-		t.Errorf("error should contain invoker error, got: %v", err)
-	}
-
-	// Timeline should be unchanged
-	entries, readErr := ReadTimeline(root)
-	if readErr != nil {
-		t.Fatalf("ReadTimeline: %v", readErr)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("got %d timeline entries, want 1 (unchanged)", len(entries))
-	}
-	if entries[0].Summary != "Should survive" {
-		t.Errorf("timeline entry should be unchanged, got %q", entries[0].Summary)
-	}
-}
-
-func TestConsolidate_MalformedOutputSkipped(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	// Mix of valid and invalid lines
-	mockOutput := strings.Join([]string{
-		"- 2026-01-01T00:00:00Z: Valid entry one",
-		"This is garbage",
-		"- not-a-timestamp: Also garbage",
-		"- 2026-01-02T00:00:00Z: Valid entry two",
-		"",
-		"random noise",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
+	inv := &keyedInvoker{}
+	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
 		t.Fatalf("Consolidate: %v", err)
 	}
-
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
+	if inv.calls != 0 {
+		t.Errorf("invoker called %d times, want 0", inv.calls)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("got %d timeline entries, want 2 (only valid lines)", len(entries))
-	}
-	if entries[0].Summary != "Valid entry one" {
-		t.Errorf("entry[0].Summary = %q, want %q", entries[0].Summary, "Valid entry one")
-	}
-	if entries[1].Summary != "Valid entry two" {
-		t.Errorf("entry[1].Summary = %q, want %q", entries[1].Summary, "Valid entry two")
+	if got := readTimelineFile(t, root); got != "" {
+		t.Errorf("timeline created with no sessions: %q", got)
 	}
 }
 
-func TestConsolidate_AllMalformedWithExistingTimeline(t *testing.T) {
+// ---------------------------------------------------------------------
+// PerSessionInvocationFailure_OthersStillAppend
+// ---------------------------------------------------------------------
+func TestConsolidate_PerSessionInvocationFailure_OthersStillAppend(t *testing.T) {
 	root := t.TempDir()
-	createTestSessions(t, root, 5)
 
-	// Write an existing timeline
-	existingEntries := []TimelineEntry{
-		{Timestamp: time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC), Summary: "Must not be lost"},
-	}
-	if err := WriteTimeline(root, existingEntries); err != nil {
-		t.Fatalf("WriteTimeline: %v", err)
-	}
+	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	_ = writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	sC := writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
 
-	// All garbage output
-	mockOutput := strings.Join([]string{
-		"Here is some text that doesn't match",
-		"Another garbage line",
-		"No timeline entries at all",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err == nil {
-		t.Fatal("expected error when all output is malformed and existing timeline is non-empty")
-	}
-
-	// Timeline should be unchanged (safety measure)
-	entries, readErr := ReadTimeline(root)
-	if readErr != nil {
-		t.Fatalf("ReadTimeline: %v", readErr)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("got %d timeline entries, want 1 (unchanged)", len(entries))
-	}
-	if entries[0].Summary != "Must not be lost" {
-		t.Errorf("timeline should be unchanged, got %q", entries[0].Summary)
-	}
-}
-
-func TestConsolidate_RecurringAndPainPointMarkers(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	mockOutput := strings.Join([]string{
-		"- 2026-01-01T00:00:00Z: [recurring] Build failures on CI",
-		"- 2026-01-02T00:00:00Z: [pain-point] Slow test suite taking 10min+",
-		"- 2026-01-03T00:00:00Z: Normal entry without markers",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
-		t.Fatalf("Consolidate: %v", err)
-	}
-
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-	if len(entries) != 3 {
-		t.Fatalf("got %d timeline entries, want 3", len(entries))
-	}
-	if !strings.Contains(entries[0].Summary, "[recurring]") {
-		t.Errorf("entry[0] should preserve [recurring] marker, got %q", entries[0].Summary)
-	}
-	if !strings.Contains(entries[1].Summary, "[pain-point]") {
-		t.Errorf("entry[1] should preserve [pain-point] marker, got %q", entries[1].Summary)
-	}
-	if entries[2].Summary != "Normal entry without markers" {
-		t.Errorf("entry[2].Summary = %q, want %q", entries[2].Summary, "Normal entry without markers")
-	}
-}
-
-func TestConsolidate_NoSessionsDir(t *testing.T) {
-	root := t.TempDir()
-	// Do NOT create any sessions directory
-
-	mock := &mockClaudeInvoker{response: "should not be called"}
-	err := Consolidate(context.Background(), root, mock, nil, consolidateTestNow())
-	if err != nil {
-		t.Fatalf("expected nil error for missing sessions dir, got: %v", err)
-	}
-	if mock.lastPrompt != "" {
-		t.Error("invoker should not have been called when sessions dir doesn't exist")
-	}
-}
-
-func TestParseTimelineOutput(t *testing.T) {
-	tests := []struct {
-		name          string
-		raw           string
-		wantEntries   int
-		wantSkipped   int
-		wantSummaries []string
-	}{
-		{
-			name:          "all valid",
-			raw:           "- 2026-01-01T00:00:00Z: First\n- 2026-01-02T00:00:00Z: Second",
-			wantEntries:   2,
-			wantSkipped:   0,
-			wantSummaries: []string{"First", "Second"},
+	rowA := canonicalRow(sA, "Summary A")
+	rowC := canonicalRow(sC, "Summary C")
+	inv := &keyedInvoker{
+		responses: map[string]string{
+			cuidA: rowA,
+			cuidC: rowC,
 		},
-		{
-			name:          "mixed valid and invalid",
-			raw:           "- 2026-01-01T00:00:00Z: Valid\ngarbage\n- bad-ts: Also bad\n- 2026-01-03T00:00:00Z: Also valid",
-			wantEntries:   2,
-			wantSkipped:   2,
-			wantSummaries: []string{"Valid", "Also valid"},
-		},
-		{
-			name:        "all invalid",
-			raw:         "no entries here\njust text\nnothing useful",
-			wantEntries: 0,
-			wantSkipped: 3,
-		},
-		{
-			name:        "empty string",
-			raw:         "",
-			wantEntries: 0,
-			wantSkipped: 0,
-		},
-		{
-			name:          "blank lines skipped without counting",
-			raw:           "- 2026-01-01T00:00:00Z: Entry\n\n\n- 2026-01-02T00:00:00Z: Another",
-			wantEntries:   2,
-			wantSkipped:   0,
-			wantSummaries: []string{"Entry", "Another"},
-		},
-		{
-			name:          "with markers",
-			raw:           "- 2026-01-01T00:00:00Z: [recurring] Build flakes\n- 2026-01-02T00:00:00Z: [pain-point] Slow deploys",
-			wantEntries:   2,
-			wantSkipped:   0,
-			wantSummaries: []string{"[recurring] Build flakes", "[pain-point] Slow deploys"},
-		},
-		{
-			name:          "summary with colons",
-			raw:           "- 2026-01-01T00:00:00Z: Error: something went wrong: details",
-			wantEntries:   1,
-			wantSkipped:   0,
-			wantSummaries: []string{"Error: something went wrong: details"},
+		errs: map[string]error{
+			cuidB: errors.New("transient invoker failure for B"),
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			entries, skipped := parseTimelineOutput(tt.raw)
-			if len(entries) != tt.wantEntries {
-				t.Errorf("got %d entries, want %d", len(entries), tt.wantEntries)
-			}
-			if skipped != tt.wantSkipped {
-				t.Errorf("got %d skipped, want %d", skipped, tt.wantSkipped)
-			}
-			for i, want := range tt.wantSummaries {
-				if i >= len(entries) {
-					break
-				}
-				if entries[i].Summary != want {
-					t.Errorf("entry[%d].Summary = %q, want %q", i, entries[i].Summary, want)
-				}
-			}
-		})
-	}
-}
-
-func TestBuildConsolidationPrompt(t *testing.T) {
-	existingTimeline := []TimelineEntry{
-		{Timestamp: time.Date(2025, 12, 15, 0, 0, 0, 0, time.UTC), Summary: "Old event"},
+	// Best-effort: per-session errors must not abort the run; Consolidate
+	// returns nil. (If implementer chooses to surface the error instead,
+	// this assertion is the correct point of failure to revisit.)
+	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
+		t.Fatalf("Consolidate must be best-effort across session failures, got: %v", err)
 	}
 
-	sessions := []Session{
-		{
-			SessionID: "sess-0",
-			Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-			Handoff:   false,
-		},
-		{
-			SessionID: "sess-1",
-			Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
-			Handoff:   true,
-		},
+	got := readTimelineFile(t, root)
+	if !strings.Contains(got, rowA) {
+		t.Errorf("session A row missing despite B failing\n%s", got)
 	}
-	bodies := []string{
-		"Body of session zero",
-		"Body of session one",
+	if !strings.Contains(got, rowC) {
+		t.Errorf("session C row missing despite B failing\n%s", got)
 	}
-
-	prompt := buildConsolidationPrompt(existingTimeline, sessions, bodies)
-
-	// Verify the prompt contains existing timeline info
-	if !strings.Contains(prompt, "Old event") {
-		t.Error("prompt should contain existing timeline entry")
-	}
-	if !strings.Contains(prompt, "2025-12-15T00:00:00Z") {
-		t.Error("prompt should contain existing timeline timestamp")
-	}
-
-	// Verify the prompt contains candidate session bodies
-	if !strings.Contains(prompt, "Body of session zero") {
-		t.Error("prompt should contain session 0 body")
-	}
-	if !strings.Contains(prompt, "Body of session one") {
-		t.Error("prompt should contain session 1 body")
-	}
-
-	// Verify the prompt contains session IDs
-	if !strings.Contains(prompt, "sess-0") {
-		t.Error("prompt should contain session 0 ID")
-	}
-	if !strings.Contains(prompt, "sess-1") {
-		t.Error("prompt should contain session 1 ID")
-	}
-
-	// Verify the prompt mentions the expected output format
-	if !strings.Contains(prompt, "RFC3339") || !strings.Contains(prompt, "- ") {
-		t.Error("prompt should describe expected output format with RFC3339 timestamps and '- ' prefix")
-	}
-}
-
-func TestBuildConsolidationPrompt_NoExistingTimeline(t *testing.T) {
-	sessions := []Session{
-		{
-			SessionID: "sess-0",
-			Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-		},
-	}
-	bodies := []string{"Session zero body"}
-
-	prompt := buildConsolidationPrompt(nil, sessions, bodies)
-
-	// Should still work without existing timeline
-	if !strings.Contains(prompt, "Session zero body") {
-		t.Error("prompt should contain session body even without existing timeline")
-	}
-
-	// Should not crash or contain "nil" for empty timeline
-	if strings.Contains(prompt, "<nil>") {
-		t.Error("prompt should not contain <nil> for empty timeline")
-	}
-}
-
-// --- Compression/Pruning Integration Tests (QUM-100) ---
-
-func TestConsolidate_CompressAndPrune_Integration(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	// now is April 1, 2026
-	now := func() time.Time { return time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC) }
-
-	// Config: entries older than 14 days compressed weekly, older than 60 days monthly
-	cfg := &TimelineCompressionConfig{
-		WeeklySummaryAge:  14 * 24 * time.Hour,
-		MonthlySummaryAge: 60 * 24 * time.Hour,
-		MaxEntries:        200,
-		MaxSizeChars:      50000,
-	}
-
-	// Write existing timeline with an old entry (6 months ago)
-	existingEntries := []TimelineEntry{
-		{Timestamp: time.Date(2025, 10, 15, 0, 0, 0, 0, time.UTC), Summary: "Ancient event from October"},
-	}
-	if err := WriteTimeline(root, existingEntries); err != nil {
-		t.Fatalf("WriteTimeline: %v", err)
-	}
-
-	// Mock Claude output with entries spanning different time ranges:
-	// - Recent (within 14 days): kept individually
-	// - Medium age (14-60 days): compressed weekly
-	// - Old (60+ days): compressed monthly (merged with existing)
-	mockOutput := strings.Join([]string{
-		"- 2025-10-15T00:00:00Z: Ancient event from October", // existing, 6mo old -> monthly
-		"- 2026-02-10T00:00:00Z: February event A",           // ~49 days old -> weekly
-		"- 2026-02-12T00:00:00Z: February event B",           // ~47 days old -> same week
-		"- 2026-03-25T00:00:00Z: Recent event A",             // 7 days old -> kept
-		"- 2026-03-28T00:00:00Z: Recent event B",             // 4 days old -> kept
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, cfg, now)
-	if err != nil {
-		t.Fatalf("Consolidate: %v", err)
-	}
-
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-
-	// Recent entries should be preserved individually
-	var recentCount int
-	for _, e := range entries {
-		if strings.Contains(e.Summary, "Recent event") {
-			recentCount++
-		}
-	}
-	if recentCount != 2 {
-		t.Errorf("expected 2 recent entries preserved individually, got %d", recentCount)
-	}
-
-	// The old October entry should be compressed into a monthly summary
-	var hasMonthly bool
-	for _, e := range entries {
-		if strings.Contains(e.Summary, "[October 2025]") || strings.Contains(e.Summary, "Ancient event") {
-			hasMonthly = true
-			break
-		}
-	}
-	if !hasMonthly {
-		t.Error("expected old October entry to be compressed into monthly summary or preserved")
-	}
-
-	// The February entries should be compressed into a weekly summary
-	var hasWeekly bool
-	for _, e := range entries {
-		if strings.Contains(e.Summary, "[Week of") && strings.Contains(e.Summary, "February") {
-			hasWeekly = true
-			break
-		}
-	}
-	if !hasWeekly {
-		t.Error("expected February entries to be compressed into weekly summary")
-	}
-}
-
-func TestConsolidate_CustomConfig_AggressivePruning(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	now := func() time.Time { return time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC) }
-
-	// Very tight config: only 3 max entries
-	cfg := &TimelineCompressionConfig{
-		WeeklySummaryAge:  30 * 24 * time.Hour,
-		MonthlySummaryAge: 90 * 24 * time.Hour,
-		MaxEntries:        3,
-		MaxSizeChars:      50000,
-	}
-
-	// Mock Claude output with 6 entries — all recent so compression is no-op,
-	// but pruning should enforce MaxEntries=3.
-	mockOutput := strings.Join([]string{
-		"- 2026-01-01T00:00:00Z: Entry A",
-		"- 2026-01-02T00:00:00Z: Entry B",
-		"- 2026-01-03T00:00:00Z: [recurring] Tagged entry C",
-		"- 2026-01-04T00:00:00Z: Entry D",
-		"- 2026-01-05T00:00:00Z: Entry E",
-		"- 2026-01-06T00:00:00Z: Entry F",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, cfg, now)
-	if err != nil {
-		t.Fatalf("Consolidate: %v", err)
-	}
-
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-
-	// MaxEntries=3, so we should get at most 3 real entries + possible omission note
-	realEntries := 0
-	hasOmission := false
-	for _, e := range entries {
-		if strings.HasPrefix(e.Summary, "[...") && strings.HasSuffix(e.Summary, "entries omitted]") {
-			hasOmission = true
-		} else {
-			realEntries++
-		}
-	}
-
-	if realEntries > 3 {
-		t.Errorf("expected at most 3 real entries after pruning, got %d", realEntries)
-	}
-	if !hasOmission {
-		t.Error("expected omission note since entries were dropped")
-	}
-
-	// Tagged entry should be preserved preferentially
-	var taggedPreserved bool
-	for _, e := range entries {
-		if strings.Contains(e.Summary, "[recurring]") {
-			taggedPreserved = true
-			break
-		}
-	}
-	if !taggedPreserved {
-		t.Error("expected tagged [recurring] entry to be preserved preferentially")
-	}
-}
-
-func TestConsolidate_NoUnnecessaryWrite(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	now := func() time.Time { return time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC) }
-
-	// Write existing timeline
-	existingEntries := []TimelineEntry{
-		{Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Summary: "Entry A"},
-		{Timestamp: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC), Summary: "Entry B"},
-	}
-	if err := WriteTimeline(root, existingEntries); err != nil {
-		t.Fatalf("WriteTimeline: %v", err)
-	}
-
-	// Get the file's mod time before consolidation
-	tlPath := timelinePath(root)
-	infoBefore, err := os.Stat(tlPath)
-	if err != nil {
-		t.Fatalf("stat before: %v", err)
-	}
-
-	// Mock Claude returns exactly the same entries
-	mockOutput := strings.Join([]string{
-		"- 2026-01-01T00:00:00Z: Entry A",
-		"- 2026-01-02T00:00:00Z: Entry B",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err = Consolidate(context.Background(), root, mock, nil, now)
-	if err != nil {
-		t.Fatalf("Consolidate: %v", err)
-	}
-
-	// Verify timeline content is unchanged
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(entries))
-	}
-
-	// Check file wasn't rewritten (mod time check — may be flaky on fast systems)
-	infoAfter, err := os.Stat(tlPath)
-	if err != nil {
-		t.Fatalf("stat after: %v", err)
-	}
-	if !infoBefore.ModTime().Equal(infoAfter.ModTime()) {
-		t.Error("timeline file was rewritten even though content didn't change")
-	}
-}
-
-func TestConsolidate_MissingTimeline_CompressionStillRuns(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	// now = April 2026, entries from Jan 2026 are ~90 days old
-	now := func() time.Time { return time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC) }
-
-	cfg := &TimelineCompressionConfig{
-		WeeklySummaryAge:  14 * 24 * time.Hour,
-		MonthlySummaryAge: 60 * 24 * time.Hour,
-		MaxEntries:        200,
-		MaxSizeChars:      50000,
-	}
-
-	// No existing timeline.md — it doesn't exist
-	// Mock Claude output with old entries that should be compressed
-	mockOutput := strings.Join([]string{
-		"- 2026-01-01T00:00:00Z: Old event A",
-		"- 2026-01-03T00:00:00Z: Old event B",
-		"- 2026-01-04T00:00:00Z: Old event C",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, cfg, now)
-	if err != nil {
-		t.Fatalf("Consolidate: %v", err)
-	}
-
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-
-	// All entries are >60 days old, so they should be compressed into monthly summaries
-	// 3 individual entries should become 1 monthly summary for January 2026
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 compressed entry (monthly summary), got %d entries: %v", len(entries), entries)
-	}
-	if !strings.Contains(entries[0].Summary, "[January 2026]") {
-		t.Errorf("expected monthly summary prefix, got %q", entries[0].Summary)
-	}
-}
-
-func TestConsolidate_MergeDeduplicatesOverlap(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	now := consolidateTestNow()
-
-	// Write existing timeline with one entry
-	existingEntries := []TimelineEntry{
-		{Timestamp: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Summary: "Shared entry"},
-	}
-	if err := WriteTimeline(root, existingEntries); err != nil {
-		t.Fatalf("WriteTimeline: %v", err)
-	}
-
-	// Mock Claude returns the same entry (overlap) plus a new one
-	mockOutput := strings.Join([]string{
-		"- 2026-01-01T00:00:00Z: Shared entry",
-		"- 2026-01-05T00:00:00Z: New entry from Claude",
-	}, "\n")
-
-	mock := &mockClaudeInvoker{response: mockOutput}
-	err := Consolidate(context.Background(), root, mock, nil, now)
-	if err != nil {
-		t.Fatalf("Consolidate: %v", err)
-	}
-
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-
-	// Should have 2 entries (deduplicated), not 3
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries (deduplicated), got %d: %v", len(entries), entries)
-	}
-	if entries[0].Summary != "Shared entry" {
-		t.Errorf("entry[0] = %q, want %q", entries[0].Summary, "Shared entry")
-	}
-	if entries[1].Summary != "New entry from Claude" {
-		t.Errorf("entry[1] = %q, want %q", entries[1].Summary, "New entry from Claude")
-	}
-}
-
-func TestConsolidate_NilConfig_UsesDefaults(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	now := consolidateTestNow()
-
-	mockOutput := "- 2026-01-01T00:00:00Z: Test entry"
-	mock := &mockClaudeInvoker{response: mockOutput}
-
-	// cfg=nil should use DefaultTimelineCompressionConfig and not panic
-	err := Consolidate(context.Background(), root, mock, nil, now)
-	if err != nil {
-		t.Fatalf("Consolidate with nil config: %v", err)
-	}
-
-	entries, err := ReadTimeline(root)
-	if err != nil {
-		t.Fatalf("ReadTimeline: %v", err)
-	}
-	if len(entries) == 0 {
-		t.Error("expected at least one entry in timeline")
-	}
-}
-
-func TestConsolidate_NilNow_UsesTimeNow(t *testing.T) {
-	root := t.TempDir()
-	createTestSessions(t, root, 5)
-
-	mockOutput := "- 2026-01-01T00:00:00Z: Test entry"
-	mock := &mockClaudeInvoker{response: mockOutput}
-
-	// now=nil should use time.Now and not panic
-	err := Consolidate(context.Background(), root, mock, nil, nil)
-	if err != nil {
-		t.Fatalf("Consolidate with nil now: %v", err)
+	// B should NOT be present (its summarization failed).
+	if strings.Contains(got, cuidB) {
+		// AppendSessionWithOptions falls back to PlaceholderRow only on
+		// validation failure — a transient invoker error is propagated, so
+		// B should be absent from the timeline entirely.
+		t.Errorf("session B should be absent after invoker error; got:\n%s", got)
 	}
 }
