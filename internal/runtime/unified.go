@@ -362,25 +362,71 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 // pure wake signal triggered by inbox arrivals — arming pendingInterrupt
 // here causes the wrapper's next StartTurn to immediately interrupt the
 // very turn that would deliver the inbox prompt to Claude, so the user sees
-// a banner but no turn ever completes. We forward to rt.Interrupt only when
-// a turn is actually in flight (so a higher-priority queue item can preempt
-// it cleanly); otherwise queue.Wake is sufficient to unblock the loop.
+// a banner but no turn ever completes.
+//
+// QUM-510: The fix must also be atomic. An earlier version of this method
+// snapshot turnRunning under RLock, dropped the lock, then forwarded to
+// rt.Interrupt — leaving a TOCTOU window in which the turn could end
+// between the snapshot and rt.Interrupt's own Lock. rt.Interrupt would
+// then observe turnRunning=false and fall into its `else if !turnRunning`
+// branch, arming pendingInterrupt against an idle runtime. The very next
+// turn (which would deliver the inbox prompt) was then immediately
+// interrupted. We close that race by routing through interruptForDelivery,
+// which makes its decision atomically under Lock and never arms
+// pendingInterrupt. The public rt.Interrupt retains its idle-arm semantics
+// for user-initiated Ctrl+B.
 func (rt *UnifiedRuntime) InterruptDelivery(ctx context.Context) error {
 	rt.mu.RLock()
-	started := rt.started
 	stopped := rt.stopped
-	turnRunning := rt.turnRunning
 	rt.mu.RUnlock()
-
 	if stopped {
 		return nil
 	}
-	if started && turnRunning {
-		_ = rt.Interrupt(ctx)
+
+	if hook := interruptDeliveryAfterSnapshotHook; hook != nil {
+		hook()
 	}
+
+	rt.interruptForDelivery(ctx)
 	rt.queue.Wake()
 	return nil
 }
+
+// interruptForDelivery is the inbound-delivery interrupt path. Unlike the
+// public Interrupt, it makes its decision atomically under rt.mu.Lock and
+// NEVER arms rt.pendingInterrupt. This closes the QUM-510 race where
+// InterruptDelivery's stale RLock snapshot of turnRunning could cause the
+// public Interrupt to spuriously arm pendingInterrupt against a runtime
+// that had just returned to idle, causing the very next turn (which would
+// deliver the inbox prompt) to be immediately interrupted. The public
+// rt.Interrupt retains its idle-arm semantics for user-initiated Ctrl+B
+// against an idle-but-loaded runtime.
+func (rt *UnifiedRuntime) interruptForDelivery(ctx context.Context) {
+	rt.mu.Lock()
+	if rt.stopped || !rt.turnRunning {
+		rt.mu.Unlock()
+		return
+	}
+	sess := rt.cfg.Session
+	loop := rt.turnLoop
+	if rt.state == StateTurnActive {
+		rt.state = StateInterrupting
+	}
+	rt.mu.Unlock()
+
+	if sess != nil {
+		_ = sess.Interrupt(ctx)
+	}
+	if loop != nil {
+		_ = loop.Interrupt(ctx)
+	}
+}
+
+// interruptDeliveryAfterSnapshotHook, if non-nil, is invoked by
+// InterruptDelivery between its initial state read and the interrupt
+// decision. Test-only; production code leaves it nil. Used to
+// deterministically reproduce QUM-510's turn-end-boundary race.
+var interruptDeliveryAfterSnapshotHook func()
 
 // Queue returns the runtime's MessageQueue. Stable for the lifetime of the
 // UnifiedRuntime.
