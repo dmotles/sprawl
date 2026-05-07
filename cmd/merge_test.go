@@ -27,11 +27,29 @@ func newTestMergeDeps(t *testing.T) (*mergeDeps, string) {
 			}
 			return ""
 		},
-		LoadAgent:     state.LoadAgent,
-		ListAgents:    state.ListAgents,
-		GitStatus:     func(worktree string) (string, error) { return "", nil },
-		BranchExists:  func(repoRoot, branchName string) bool { return true },
-		CurrentBranch: func(repoRoot string) (string, error) { return "main", nil },
+		LoadAgent:    state.LoadAgent,
+		ListAgents:   state.ListAgents,
+		GitStatus:    func(worktree string) (string, error) { return "", nil },
+		BranchExists: func(repoRoot, branchName string) bool { return true },
+		// Default path-aware mock: resolve any worktree path back to its
+		// agent's spawn-time Branch (so existing tests that fixture
+		// agentState.Branch see that value flow into AgentBranch). The
+		// SPRAWL_ROOT itself maps to "main". Tests that need to simulate
+		// delegate-style branch swaps override this directly.
+		CurrentBranch: func(repoRoot string) (string, error) {
+			if repoRoot == tmpDir {
+				return "main", nil
+			}
+			agents, err := state.ListAgents(tmpDir)
+			if err == nil {
+				for _, a := range agents {
+					if a.Worktree == repoRoot {
+						return a.Branch, nil
+					}
+				}
+			}
+			return "main", nil
+		},
 		LoadConfig: func(sprawlRoot string) (*config.Config, error) {
 			return &config.Config{Validate: "make validate"}, nil
 		},
@@ -653,6 +671,144 @@ func TestMerge_NoConfig_SkipsValidation(t *testing.T) {
 	}
 	if capturedCfg.ValidateCmd != "" {
 		t.Errorf("ValidateCmd = %q, want empty string", capturedCfg.ValidateCmd)
+	}
+}
+
+// TestMerge_UsesAgentWorktreeCurrentBranch — QUM-511: merge must resolve the
+// agent's branch from its worktree's HEAD (so post-delegate branch swaps are
+// honored), NOT from the spawn-time agentState.Branch field which goes stale
+// after delegate reuses the agent on a follow-up branch.
+//
+// Red phase: today merge.go:129 sets cfg.AgentBranch = agentState.Branch
+// unconditionally, so the captured AgentBranch will be "spawn-branch", not the
+// resolved "follow-up-branch".
+func TestMerge_UsesAgentWorktreeCurrentBranch(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "spawn-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+	})
+
+	// Path-aware CurrentBranch: parent worktree on "main", agent worktree
+	// on "follow-up-branch" (simulating delegate reuse).
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
+		switch repoRoot {
+		case "/worktree/target":
+			return "follow-up-branch", nil
+		case "/worktree/parent":
+			return "main", nil
+		default:
+			return "main", nil
+		}
+	}
+
+	var capturedCfg *merge.Config
+	deps.DoMerge = func(cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		capturedCfg = cfg
+		return &merge.Result{CommitHash: "abc1234"}, nil
+	}
+
+	var stderr bytes.Buffer
+	deps.Stderr = &stderr
+
+	err := runMerge(deps, "target-agent", "", true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if capturedCfg == nil {
+		t.Fatal("doMerge was not called")
+	}
+	if capturedCfg.AgentBranch != "follow-up-branch" {
+		t.Errorf("AgentBranch = %q, want %q (resolved from agent worktree HEAD, not stale agentState.Branch)",
+			capturedCfg.AgentBranch, "follow-up-branch")
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, "follow-up-branch") {
+		t.Errorf("stderr summary should mention resolved branch %q, got: %q", "follow-up-branch", output)
+	}
+}
+
+// TestMerge_DetachedHEADErrors — QUM-511: if the agent worktree is in detached
+// HEAD state (CurrentBranch returns "HEAD"), merge must refuse rather than
+// attempt to merge a phantom branch.
+func TestMerge_DetachedHEADErrors(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "spawn-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+	})
+
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
+		if repoRoot == "/worktree/target" {
+			return "HEAD", nil
+		}
+		return "main", nil
+	}
+
+	err := runMerge(deps, "target-agent", "", true, false)
+	if err == nil {
+		t.Fatal("expected error for detached HEAD on agent worktree")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "detached head") {
+		t.Errorf("error should mention detached HEAD, got: %v", err)
+	}
+}
+
+// TestMerge_StaleSpawnBranchAbsentDoesNotFail — QUM-511: when the agent's
+// spawn-time branch no longer exists (e.g. because delegate moved them onto
+// a fresh branch and the original was cleaned up), merge must NOT fail the
+// "branch not found" precondition. The decisive existence check is on the
+// resolved current branch. A warning about the stale spawn-time branch is
+// expected on stderr.
+func TestMerge_StaleSpawnBranchAbsentDoesNotFail(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "done", Branch: "spawn-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+	})
+
+	// spawn-branch absent, follow-up-branch present.
+	deps.BranchExists = func(repoRoot, branchName string) bool {
+		return branchName == "follow-up-branch"
+	}
+	deps.CurrentBranch = func(repoRoot string) (string, error) {
+		if repoRoot == "/worktree/target" {
+			return "follow-up-branch", nil
+		}
+		return "main", nil
+	}
+
+	var stderr bytes.Buffer
+	deps.Stderr = &stderr
+
+	err := runMerge(deps, "target-agent", "", true, false)
+	if err != nil {
+		t.Fatalf("merge should proceed when stale spawn branch is absent but resolved branch exists; got: %v", err)
+	}
+
+	output := stderr.String()
+	if !strings.Contains(output, "spawn-branch") {
+		t.Errorf("stderr should warn about stale spawn-time branch %q, got: %q", "spawn-branch", output)
 	}
 }
 

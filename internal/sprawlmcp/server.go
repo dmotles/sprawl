@@ -329,8 +329,12 @@ func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, e
 	// supervisor's per-call agentops deps reflect the caller (not the
 	// long-lived supervisor process's SPRAWL_AGENT_IDENTITY).
 	caller := backendpkg.CallerIdentity(ctx)
-	if err := s.sup.Merge(ctx, caller, p.AgentName, p.Message, p.NoValidate); err != nil {
+	outcome, err := s.sup.Merge(ctx, caller, p.AgentName, p.Message, p.NoValidate)
+	if err != nil {
 		return "", err
+	}
+	if outcome != nil && outcome.NoOp {
+		return fmt.Sprintf("Nothing to merge: %s has no new commits", p.AgentName), nil
 	}
 	return fmt.Sprintf("Merged agent %s", p.AgentName), nil
 }

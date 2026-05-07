@@ -892,9 +892,12 @@ func (m *mockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*s
 func (m *mockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
 	return m.agents, m.statusErr
 }
-func (m *mockSupervisor) Delegate(_ context.Context, _, _ string) error         { return nil }
-func (m *mockSupervisor) Message(_ context.Context, _, _, _ string) error       { return nil }
-func (m *mockSupervisor) Merge(_ context.Context, _, _, _ string, _ bool) error { return nil }
+func (m *mockSupervisor) Delegate(_ context.Context, _, _ string) error   { return nil }
+func (m *mockSupervisor) Message(_ context.Context, _, _, _ string) error { return nil }
+func (m *mockSupervisor) Merge(_ context.Context, _, _, _ string, _ bool) (*supervisor.MergeOutcome, error) {
+	return &supervisor.MergeOutcome{}, nil
+}
+
 func (m *mockSupervisor) Retire(_ context.Context, _, _ string, _, _, _, _ bool) error {
 	return nil
 }
