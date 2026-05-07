@@ -14,6 +14,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/messages"
 )
@@ -186,5 +187,217 @@ func TestBuildContextBlob_PersistentKnowledgeStillRendered(t *testing.T) {
 	}
 	if !strings.Contains(blob, "Always run make validate before commit.") {
 		t.Error("expected second persistent knowledge line to be rendered")
+	}
+}
+
+// ---------------------------------------------------------------------
+// QUM-521: Last Session block — verbatim render of most recent SEALED session.
+// ---------------------------------------------------------------------
+
+// stubSessionLister returns a BuildOption injecting a sessionLister that
+// returns the given sessions/bodies regardless of n. Sessions are oldest-first
+// to mirror ListRecentSessions semantics.
+func stubSessionLister(sessions []Session, bodies []string) BuildOption {
+	return WithSessionLister(func(_ string, _ int) ([]Session, []string, error) {
+		return sessions, bodies, nil
+	})
+}
+
+func stubLastSessionID(id string) BuildOption {
+	return WithLastSessionIDReader(func(_ string) (string, error) { return id, nil })
+}
+
+// baseOpts builds an option set with empty inbox, no PK, stub arc,
+// plus the supplied extra options applied last (so they override).
+func baseOpts(extra ...BuildOption) []BuildOption {
+	o := []BuildOption{
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) { return nil, nil }),
+		WithPersistentKnowledgeReader(func(string) (string, error) { return "", nil }),
+		stubArc("arc\n"),
+	}
+	return append(o, extra...)
+}
+
+func TestBuildContextBlob_LastSession_OmittedWhenNoSealedSessions(t *testing.T) {
+	opts := baseOpts(
+		stubSessionLister(nil, nil),
+		stubLastSessionID(""),
+	)
+	blob, err := BuildContextBlob("fake-root", "weave", opts...)
+	if err != nil {
+		t.Fatalf("BuildContextBlob: %v", err)
+	}
+	if strings.Contains(blob, "## Last Session") {
+		t.Errorf("blob must NOT contain '## Last Session' when no sealed sessions exist; got:\n%s", blob)
+	}
+}
+
+func TestBuildContextBlob_LastSession_RendersSingleSealed(t *testing.T) {
+	ts := time.Date(2026, 5, 7, 12, 30, 0, 0, time.UTC)
+	sessions := []Session{{SessionID: "abc", Timestamp: ts}}
+	bodies := []string{"hello body\n"}
+	opts := baseOpts(
+		stubSessionLister(sessions, bodies),
+		stubLastSessionID(""),
+	)
+	blob, err := BuildContextBlob("fake-root", "weave", opts...)
+	if err != nil {
+		t.Fatalf("BuildContextBlob: %v", err)
+	}
+	if !strings.Contains(blob, "## Last Session") {
+		t.Errorf("expected '## Last Session' header in blob:\n%s", blob)
+	}
+	wantHeader := "### Session: abc (" + ts.Format(time.RFC3339) + ")"
+	if !strings.Contains(blob, wantHeader) {
+		t.Errorf("expected session header %q in blob:\n%s", wantHeader, blob)
+	}
+	if !strings.Contains(blob, "hello body") {
+		t.Errorf("expected verbatim session body in blob:\n%s", blob)
+	}
+	if got := strings.Count(blob, "### Session:"); got != 1 {
+		t.Errorf("expected exactly 1 '### Session:' occurrence, got %d:\n%s", got, blob)
+	}
+}
+
+func TestBuildContextBlob_LastSession_OnlyNewestOfMultiple(t *testing.T) {
+	t1 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	sessions := []Session{
+		{SessionID: "s1", Timestamp: t1},
+		{SessionID: "s2", Timestamp: t2},
+		{SessionID: "s3", Timestamp: t3},
+	}
+	bodies := []string{"b1", "b2", "b3"}
+	opts := baseOpts(
+		stubSessionLister(sessions, bodies),
+		stubLastSessionID(""),
+	)
+	blob, err := BuildContextBlob("fake-root", "weave", opts...)
+	if err != nil {
+		t.Fatalf("BuildContextBlob: %v", err)
+	}
+	if !strings.Contains(blob, "### Session: s3") {
+		t.Errorf("expected newest session s3 to be rendered:\n%s", blob)
+	}
+	if !strings.Contains(blob, "b3") {
+		t.Errorf("expected newest body 'b3' to be rendered:\n%s", blob)
+	}
+	for _, banned := range []string{"### Session: s1", "### Session: s2", "b1", "b2"} {
+		if strings.Contains(blob, banned) {
+			t.Errorf("blob contains older session content %q; only newest sealed should render:\n%s", banned, blob)
+		}
+	}
+}
+
+func TestBuildContextBlob_LastSession_LiveEqualsNewest_NoSealedRendered(t *testing.T) {
+	ts := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	sessions := []Session{{SessionID: "X", Timestamp: ts}}
+	bodies := []string{"live body"}
+	opts := baseOpts(
+		stubSessionLister(sessions, bodies),
+		stubLastSessionID("X"),
+	)
+	blob, err := BuildContextBlob("fake-root", "weave", opts...)
+	if err != nil {
+		t.Fatalf("BuildContextBlob: %v", err)
+	}
+	if strings.Contains(blob, "## Last Session") {
+		t.Errorf("blob must NOT include '## Last Session' when only session is live:\n%s", blob)
+	}
+	if strings.Contains(blob, "live body") {
+		t.Errorf("blob must NOT include live session body:\n%s", blob)
+	}
+}
+
+func TestBuildContextBlob_LastSession_LiveEqualsNewest_FallsBackToPrevious(t *testing.T) {
+	tA := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	tB := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	sessions := []Session{
+		{SessionID: "A", Timestamp: tA},
+		{SessionID: "B", Timestamp: tB},
+	}
+	bodies := []string{"body-A", "body-B"}
+	opts := baseOpts(
+		stubSessionLister(sessions, bodies),
+		stubLastSessionID("B"),
+	)
+	blob, err := BuildContextBlob("fake-root", "weave", opts...)
+	if err != nil {
+		t.Fatalf("BuildContextBlob: %v", err)
+	}
+	if !strings.Contains(blob, "## Last Session") {
+		t.Errorf("expected '## Last Session' to render previous sealed session A:\n%s", blob)
+	}
+	if !strings.Contains(blob, "### Session: A") {
+		t.Errorf("expected '### Session: A' header (B is live):\n%s", blob)
+	}
+	if !strings.Contains(blob, "body-A") {
+		t.Errorf("expected body-A in blob:\n%s", blob)
+	}
+	if strings.Contains(blob, "### Session: B") {
+		t.Errorf("blob must NOT include live session B header:\n%s", blob)
+	}
+	if strings.Contains(blob, "body-B") {
+		t.Errorf("blob must NOT include live session B body:\n%s", blob)
+	}
+}
+
+func TestBuildContextBlob_LastSession_PlacementBeforeInbox(t *testing.T) {
+	ts := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	sessions := []Session{{SessionID: "abc", Timestamp: ts}}
+	bodies := []string{"sealed-body"}
+	msgs := []*messages.Message{
+		{From: "alice", Subject: "build failed", Timestamp: "2026-05-07T11:00:00Z"},
+	}
+	opts := []BuildOption{
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) { return msgs, nil }),
+		WithPersistentKnowledgeReader(func(string) (string, error) { return "", nil }),
+		stubArc("arc\n"),
+		stubSessionLister(sessions, bodies),
+		stubLastSessionID(""),
+	}
+	blob, err := BuildContextBlob("fake-root", "weave", opts...)
+	if err != nil {
+		t.Fatalf("BuildContextBlob: %v", err)
+	}
+	idxFooter := strings.Index(blob, canonicalContextFooter)
+	idxLast := strings.Index(blob, "## Last Session")
+	idxInbox := strings.Index(blob, "messages in inbox")
+	if idxFooter < 0 || idxLast < 0 || idxInbox < 0 {
+		t.Fatalf("missing required section: footer=%d last=%d inbox=%d\n%s", idxFooter, idxLast, idxInbox, blob)
+	}
+	if idxFooter >= idxLast || idxLast >= idxInbox {
+		t.Errorf("expected footer < ## Last Session < inbox sentence; got footer=%d last=%d inbox=%d\n%s",
+			idxFooter, idxLast, idxInbox, blob)
+	}
+}
+
+func TestBuildContextBlob_LastSession_PlacementBetweenFooterAndPersistent(t *testing.T) {
+	ts := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	sessions := []Session{{SessionID: "abc", Timestamp: ts}}
+	bodies := []string{"sealed-body"}
+	opts := []BuildOption{
+		WithMessageLister(func(string, string, string) ([]*messages.Message, error) { return nil, nil }),
+		WithPersistentKnowledgeReader(func(string) (string, error) {
+			return "PK content here.", nil
+		}),
+		stubArc("arc\n"),
+		stubSessionLister(sessions, bodies),
+		stubLastSessionID(""),
+	}
+	blob, err := BuildContextBlob("fake-root", "weave", opts...)
+	if err != nil {
+		t.Fatalf("BuildContextBlob: %v", err)
+	}
+	idxFooter := strings.Index(blob, canonicalContextFooter)
+	idxLast := strings.Index(blob, "## Last Session")
+	idxPK := strings.Index(blob, "## Persistent Knowledge")
+	if idxFooter < 0 || idxLast < 0 || idxPK < 0 {
+		t.Fatalf("missing required section: footer=%d last=%d pk=%d\n%s", idxFooter, idxLast, idxPK, blob)
+	}
+	if idxFooter >= idxLast || idxLast >= idxPK {
+		t.Errorf("expected footer < ## Last Session < ## Persistent Knowledge; got footer=%d last=%d pk=%d\n%s",
+			idxFooter, idxLast, idxPK, blob)
 	}
 }

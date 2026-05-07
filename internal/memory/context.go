@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/messages"
 )
@@ -22,6 +23,8 @@ type buildConfig struct {
 	messageLister             func(string, string, string) ([]*messages.Message, error)
 	persistentKnowledgeReader func(string) (string, error)
 	arcSummarizer             func(ctx context.Context, sprawlRoot string) (string, error)
+	sessionLister             func(string, int) ([]Session, []string, error)
+	lastSessionIDReader       func(string) (string, error)
 }
 
 // WithMessageLister injects a custom message listing function.
@@ -32,6 +35,21 @@ func WithMessageLister(fn func(string, string, string) ([]*messages.Message, err
 // WithPersistentKnowledgeReader injects a custom persistent knowledge reader.
 func WithPersistentKnowledgeReader(fn func(string) (string, error)) BuildOption {
 	return func(c *buildConfig) { c.persistentKnowledgeReader = fn }
+}
+
+// WithSessionLister injects a custom session listing function. Default is
+// ListRecentSessions. Used by BuildContextBlob to render the verbatim "##
+// Last Session" block (QUM-521).
+func WithSessionLister(fn func(string, int) ([]Session, []string, error)) BuildOption {
+	return func(c *buildConfig) { c.sessionLister = fn }
+}
+
+// WithLastSessionIDReader injects a custom last-session-id reader. Default
+// is ReadLastSessionID. Used to identify the currently-live session so the
+// "## Last Session" block always renders the most recent SEALED session
+// (QUM-521).
+func WithLastSessionIDReader(fn func(string) (string, error)) BuildOption {
+	return func(c *buildConfig) { c.lastSessionIDReader = fn }
 }
 
 // WithArcSummarizer injects a custom project-arc summarizer. The default
@@ -64,6 +82,8 @@ func BuildContextBlob(sprawlRoot string, rootName string, opts ...BuildOption) (
 			// usable in contexts without an LLM seam.
 			return "", nil
 		},
+		sessionLister:       ListRecentSessions,
+		lastSessionIDReader: ReadLastSessionID,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -89,6 +109,43 @@ func BuildContextBlob(sprawlRoot string, rootName string, opts ...BuildOption) (
 	b.WriteString("\n")
 	b.WriteString(canonicalContextFooter)
 	b.WriteString("\n")
+
+	// 2b. Last Session (verbatim, most recent SEALED — QUM-521).
+	if cfg.sessionLister != nil {
+		liveID := ""
+		if cfg.lastSessionIDReader != nil {
+			id, err := cfg.lastSessionIDReader(sprawlRoot)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("reading last-session-id: %w", err))
+			} else {
+				liveID = id
+			}
+		}
+		// N=2: newest sealed, plus one fallback in case the newest file is
+		// the currently-live session (id == liveID). N=1 only ships verbatim.
+		sessions, bodies, err := cfg.sessionLister(sprawlRoot, 2)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("listing recent sessions: %w", err))
+		} else {
+			// ListRecentSessions returns oldest-first; iterate newest-first.
+			for i := len(sessions) - 1; i >= 0; i-- {
+				if sessions[i].SessionID == liveID {
+					continue
+				}
+				body := ""
+				if i < len(bodies) {
+					body = bodies[i]
+				}
+				b.WriteString("\n## Last Session\n\n")
+				fmt.Fprintf(&b, "### Session: %s (%s)\n", sessions[i].SessionID, sessions[i].Timestamp.UTC().Format(time.RFC3339))
+				b.WriteString(body)
+				if !strings.HasSuffix(body, "\n") {
+					b.WriteString("\n")
+				}
+				break
+			}
+		}
+	}
 
 	// 3. Pending inbox (compact).
 	if cfg.messageLister != nil {

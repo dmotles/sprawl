@@ -303,3 +303,77 @@ func TestConsolidate_PerSessionInvocationFailure_OthersStillAppend(t *testing.T)
 		t.Errorf("session B should be absent after invoker error; got:\n%s", got)
 	}
 }
+
+// ---------------------------------------------------------------------
+// QUM-521: ConsolidateExcluding skips held-back sessions.
+// ---------------------------------------------------------------------
+
+// TestConsolidateExcluding_SkipsExcludedSessions verifies that any session
+// id present in excludeIDs is NOT consumed by the append loop. The keyed
+// invoker registers responses only for the sessions we expect to be
+// processed; if the implementation calls Invoke with the excluded id the
+// keyedInvoker will fail loudly (no response registered).
+func TestConsolidateExcluding_SkipsExcludedSessions(t *testing.T) {
+	root := t.TempDir()
+
+	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	sB := writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	_ = writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
+
+	rowA := canonicalRow(sA, "Summary A")
+	rowB := canonicalRow(sB, "Summary B")
+	// No response registered for cuidC — keyedInvoker errors if asked.
+	inv := &keyedInvoker{responses: map[string]string{
+		cuidA: rowA,
+		cuidB: rowB,
+	}}
+
+	excludeIDs := map[string]bool{cuidC: true}
+	if err := ConsolidateExcluding(context.Background(), root, inv, nil, consolidateNow(), excludeIDs); err != nil {
+		t.Fatalf("ConsolidateExcluding: %v", err)
+	}
+
+	if inv.calls != 2 {
+		t.Errorf("invoker calls = %d, want 2 (cuidC must be skipped)", inv.calls)
+	}
+
+	got := readTimelineFile(t, root)
+	if !strings.Contains(got, rowA) {
+		t.Errorf("expected session A row in timeline:\n%s", got)
+	}
+	if !strings.Contains(got, rowB) {
+		t.Errorf("expected session B row in timeline:\n%s", got)
+	}
+	if strings.Contains(got, cuidC) {
+		t.Errorf("excluded session C must not appear in timeline:\n%s", got)
+	}
+}
+
+// TestConsolidate_NilExcludeAppendsAll documents that the legacy Consolidate
+// entrypoint (which delegates with nil exclude) still appends every session.
+func TestConsolidate_NilExcludeAppendsAll(t *testing.T) {
+	root := t.TempDir()
+
+	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	sB := writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	sC := writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
+
+	inv := &keyedInvoker{responses: map[string]string{
+		cuidA: canonicalRow(sA, "Summary A"),
+		cuidB: canonicalRow(sB, "Summary B"),
+		cuidC: canonicalRow(sC, "Summary C"),
+	}}
+
+	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
+		t.Fatalf("Consolidate: %v", err)
+	}
+	if inv.calls != 3 {
+		t.Errorf("invoker calls = %d, want 3 (legacy Consolidate appends all)", inv.calls)
+	}
+	got := readTimelineFile(t, root)
+	for _, id := range []string{cuidA, cuidB, cuidC} {
+		if !strings.Contains(got, id) {
+			t.Errorf("expected session %s in timeline:\n%s", id, got)
+		}
+	}
+}

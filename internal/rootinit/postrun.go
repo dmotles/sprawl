@@ -74,10 +74,22 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 	// PK receives these as inputs rather than waiting on Consolidate to
 	// rewrite the timeline — see function docstring.
 	var sessionSummary string
-	if sessions, bodies, err := deps.ListRecentSessions(sprawlRoot, 1); err != nil {
+	excludeIDs := map[string]bool{}
+	if sessions, bodies, err := deps.ListRecentSessions(sprawlRoot, 2); err != nil {
 		fmt.Fprintf(stdout, "%s warning: reading latest session for persistent knowledge: %v\n", prefix, err)
-	} else if len(sessions) > 0 && len(bodies) > 0 {
-		sessionSummary = bodies[0]
+	} else {
+		if len(sessions) > 0 {
+			// Newest session is held back so the next system prompt can
+			// render it verbatim under "## Last Session" (QUM-521). We
+			// don't consult last-session-id here: at this code path the
+			// just-sealed session file is always the timestamp-newest
+			// entry under sessions/, so picking by mtime is sufficient.
+			excludeIDs[sessions[len(sessions)-1].SessionID] = true
+		}
+		// PK ingests the second-newest body (the newest is held back).
+		if len(sessions) >= 2 && len(bodies) >= 2 {
+			sessionSummary = bodies[len(bodies)-2]
+		}
 	}
 
 	var timelineBullets string
@@ -109,7 +121,7 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		sendConsolidationEvent(events, ConsolidationEvent{Phase: "Consolidating timeline..."})
 		sp := startSpinner(stdout, prefix, "consolidating timeline...")
 		defer sp.stop()
-		if err := deps.Consolidate(ctx, sprawlRoot, deps.NewCLIInvoker(), &tlCfg, nil); err != nil {
+		if err := deps.ConsolidateExcluding(ctx, sprawlRoot, deps.NewCLIInvoker(), &tlCfg, nil, excludeIDs); err != nil {
 			fmt.Fprintf(stdout, "%s warning: consolidation failed: %v\n", prefix, err)
 		}
 		return nil

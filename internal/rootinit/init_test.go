@@ -59,6 +59,9 @@ func newTestDeps(t *testing.T) *Deps {
 		Consolidate: func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
 			return nil
 		},
+		ConsolidateExcluding: func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+			return nil
+		},
 		UpdatePersistentKnowledge: func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
 			return nil
 		},
@@ -257,7 +260,7 @@ func TestPrepare_ResumesWhenPrevSessionHasNoSummary(t *testing.T) {
 		writeIDCalled = true
 		return nil
 	}
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		consolidateCalled = true
 		return nil
 	}
@@ -360,7 +363,7 @@ func TestPrepare_ConsolidateThenFreshWhenSummaryExists(t *testing.T) {
 		}
 		return nil
 	}
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		callOrder = append(callOrder, "consolidate")
 		return nil
 	}
@@ -398,7 +401,7 @@ func TestPrepare_FirstSession_NoLastID(t *testing.T) {
 		autoCalled = true
 		return false, nil
 	}
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		consolidateCalled = true
 		return nil
 	}
@@ -452,7 +455,7 @@ func TestPrepareFresh_AutoSummarizesDeadSession(t *testing.T) {
 		return true, nil
 	}
 	var consolidateCalled bool
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		consolidateCalled = true
 		return nil
 	}
@@ -484,7 +487,7 @@ func TestPrepareFresh_AutoSummarizeNoOp_SkipsConsolidation(t *testing.T) {
 		return false, nil
 	}
 	var consolidateCalled bool
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		consolidateCalled = true
 		return nil
 	}
@@ -516,7 +519,7 @@ func TestPrepareFresh_SummarizedDeadSession_RunsConsolidation(t *testing.T) {
 	deps.HasSessionSummary = func(root, id string) (bool, error) { return true, nil }
 
 	var consolidateCalled, clearCalled bool
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		consolidateCalled = true
 		return nil
 	}

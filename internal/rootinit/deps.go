@@ -40,6 +40,7 @@ type Deps struct {
 	HasSessionSummary         func(sprawlRoot, sessionID string) (bool, error)
 	AutoSummarize             func(ctx context.Context, sprawlRoot, cwd, homeDir, sessionID string, invoker memory.ClaudeInvoker) (bool, error)
 	Consolidate               func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error
+	ConsolidateExcluding      func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error
 	UpdatePersistentKnowledge func(ctx context.Context, sprawlRoot string, invoker memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, sessionSummary string, timelineBullets string) error
 	ListRecentSessions        func(sprawlRoot string, n int) ([]memory.Session, []string, error)
 	ReadTimeline              func(sprawlRoot string) ([]memory.TimelineEntry, error)
@@ -101,6 +102,7 @@ func DefaultDeps() *Deps {
 		HasSessionSummary:         memory.HasSessionSummary,
 		AutoSummarize:             memory.AutoSummarize,
 		Consolidate:               memory.Consolidate,
+		ConsolidateExcluding:      memory.ConsolidateExcluding,
 		UpdatePersistentKnowledge: memory.UpdatePersistentKnowledge,
 		ListRecentSessions:        memory.ListRecentSessions,
 		ReadTimeline:              memory.ReadTimeline,
