@@ -47,7 +47,7 @@ func TestFinalizeHandoff_Signal_CallsConsolidateAndClears(t *testing.T) {
 		}
 		return nil
 	}
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		callOrder = append(callOrder, "consolidate")
 		return nil
 	}
@@ -91,7 +91,7 @@ func TestFinalizeHandoff_Signal_ConsolidateError_DoesNotFail(t *testing.T) {
 		}
 		return nil, os.ErrNotExist
 	}
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		return fmt.Errorf("consolidation failed")
 	}
 	var buf strings.Builder
@@ -134,7 +134,11 @@ func TestFinalizeHandoff_Signal_PassesSummaryAndTimelineToPK(t *testing.T) {
 		return nil, os.ErrNotExist
 	}
 	deps.ListRecentSessions = func(root string, n int) ([]memory.Session, []string, error) {
-		return []memory.Session{{SessionID: "s1", Timestamp: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)}}, []string{"test summary"}, nil
+		// QUM-521: newest is held back; PK ingests second-newest body.
+		return []memory.Session{
+			{SessionID: "s0", Timestamp: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)},
+			{SessionID: "s1", Timestamp: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC)},
+		}, []string{"test summary", "newest body"}, nil
 	}
 	deps.ReadTimeline = func(root string) ([]memory.TimelineEntry, error) {
 		return []memory.TimelineEntry{
@@ -202,10 +206,163 @@ func TestFinalizeHandoff_LogPrefix_NoSignalPathRespectsPrefix(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------
+// QUM-521: runConsolidationPipeline holds back the most recent sealed
+// session and prevents it from leaking into PK input.
+// ---------------------------------------------------------------------
+
+// fireConsolidationViaHandoff wires up a deps that triggers the
+// consolidation pipeline through FinalizeHandoff (the synchronous test path
+// runs runConsolidationPipeline inline via syncBackgroundConsolidate).
+func fireConsolidationViaHandoff(t *testing.T, deps *Deps) {
+	t.Helper()
+	deps.ReadFile = func(path string) ([]byte, error) {
+		if strings.Contains(path, "handoff-signal") {
+			return []byte("signal"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+	if err := FinalizeHandoff(context.Background(), deps, "/fake/root", io.Discard, nil); err != nil {
+		t.Fatalf("FinalizeHandoff error: %v", err)
+	}
+}
+
+func TestRunConsolidationPipeline_ExcludesNewestSealedSession(t *testing.T) {
+	deps := newTestDeps(t)
+
+	t1 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	deps.ListRecentSessions = func(root string, n int) ([]memory.Session, []string, error) {
+		return []memory.Session{
+			{SessionID: "s1", Timestamp: t1},
+			{SessionID: "s2", Timestamp: t2},
+			{SessionID: "s3", Timestamp: t3},
+		}, []string{"b1", "b2", "b3"}, nil
+	}
+
+	var capturedExclude map[string]bool
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		capturedExclude = excludeIDs
+		return nil
+	}
+	// Re-bind background consolidate so it picks up the updated deps.
+	deps.BackgroundConsolidate = syncBackgroundConsolidate(deps)
+
+	fireConsolidationViaHandoff(t, deps)
+
+	if capturedExclude == nil {
+		t.Fatal("expected ConsolidateExcluding to be called with non-nil excludeIDs")
+	}
+	if !capturedExclude["s3"] {
+		t.Errorf("expected excludeIDs[s3]=true, got: %#v", capturedExclude)
+	}
+	for _, banned := range []string{"s1", "s2"} {
+		if capturedExclude[banned] {
+			t.Errorf("excludeIDs[%s] must be false; only newest sealed should be held back. got: %#v",
+				banned, capturedExclude)
+		}
+	}
+}
+
+func TestRunConsolidationPipeline_PKSummaryUsesSecondNewest(t *testing.T) {
+	deps := newTestDeps(t)
+
+	// Use 3 sessions so bodies[0] (oldest) and bodies[len-2] (second-newest)
+	// are distinct values, ensuring the test discriminates a buggy impl
+	// that picks the oldest from a "drop-newest" slice.
+	t1 := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+	t3 := time.Date(2026, 5, 3, 12, 0, 0, 0, time.UTC)
+	deps.ListRecentSessions = func(root string, n int) ([]memory.Session, []string, error) {
+		return []memory.Session{
+			{SessionID: "s1", Timestamp: t1},
+			{SessionID: "s2", Timestamp: t2},
+			{SessionID: "s3", Timestamp: t3},
+		}, []string{"b1", "b2", "b3"}, nil
+	}
+	// Live session id is empty so all three are sealed; the newest sealed
+	// (s3/b3) is held back from PK input, leaving s2/b2 as the second-newest
+	// summary the pipeline should pass to UpdatePersistentKnowledge.
+
+	var capturedSummary string
+	deps.UpdatePersistentKnowledge = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
+		capturedSummary = summary
+		return nil
+	}
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		return nil
+	}
+	deps.BackgroundConsolidate = syncBackgroundConsolidate(deps)
+
+	fireConsolidationViaHandoff(t, deps)
+
+	if capturedSummary != "b2" {
+		t.Errorf("expected PK sessionSummary to be the second-newest body 'b2'; got %q", capturedSummary)
+	}
+}
+
+func TestRunConsolidationPipeline_PKSummaryEmptyWhenOnlySealedIsHeldBack(t *testing.T) {
+	deps := newTestDeps(t)
+
+	ts := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
+	deps.ListRecentSessions = func(root string, n int) ([]memory.Session, []string, error) {
+		return []memory.Session{{SessionID: "only-id", Timestamp: ts}}, []string{"only"}, nil
+	}
+
+	var capturedSummary string
+	var capturedExclude map[string]bool
+	deps.UpdatePersistentKnowledge = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
+		capturedSummary = summary
+		return nil
+	}
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		capturedExclude = excludeIDs
+		return nil
+	}
+	deps.BackgroundConsolidate = syncBackgroundConsolidate(deps)
+
+	fireConsolidationViaHandoff(t, deps)
+
+	if capturedSummary != "" {
+		t.Errorf("expected empty PK sessionSummary when only sealed session is held back; got %q", capturedSummary)
+	}
+	if !capturedExclude["only-id"] {
+		t.Errorf("expected excludeIDs[only-id]=true; got %#v", capturedExclude)
+	}
+}
+
+func TestRunConsolidationPipeline_NoSessions_NoCrash(t *testing.T) {
+	deps := newTestDeps(t)
+
+	deps.ListRecentSessions = func(root string, n int) ([]memory.Session, []string, error) {
+		return nil, nil, nil
+	}
+
+	var capturedExclude map[string]bool
+	calledExcluding := false
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		calledExcluding = true
+		capturedExclude = excludeIDs
+		return nil
+	}
+	deps.BackgroundConsolidate = syncBackgroundConsolidate(deps)
+
+	// Must not panic.
+	fireConsolidationViaHandoff(t, deps)
+
+	if !calledExcluding {
+		t.Error("expected ConsolidateExcluding to be called even with no sessions")
+	}
+	if len(capturedExclude) != 0 {
+		t.Errorf("expected empty excludeIDs when no sessions exist; got %#v", capturedExclude)
+	}
+}
+
 func TestFinalizeHandoff_NoSignal_DoesNotConsolidate(t *testing.T) {
 	deps := newTestDeps(t)
 	var consolidateCalled bool
-	deps.Consolidate = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		consolidateCalled = true
 		return nil
 	}

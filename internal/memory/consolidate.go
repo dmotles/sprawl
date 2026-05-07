@@ -28,7 +28,15 @@ import (
 // The cfg / now parameters are kept on the public signature for backwards
 // compatibility with rootinit's Deps wiring; only cfg.Model and
 // cfg.InvokeTimeout are honored in the new pipeline.
-func Consolidate(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, _ func() time.Time) error {
+func Consolidate(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, now func() time.Time) error {
+	return ConsolidateExcluding(ctx, sprawlRoot, invoker, cfg, now, nil)
+}
+
+// ConsolidateExcluding behaves like Consolidate but skips any sessions whose
+// id is present in excludeIDs. Used by the rootinit pipeline to "hold back"
+// the most recent sealed session so it can be rendered verbatim under the
+// "## Last Session" block in the next system prompt (QUM-521).
+func ConsolidateExcluding(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, cfg *TimelineCompressionConfig, _ func() time.Time, excludeIDs map[string]bool) error {
 	if invoker == nil {
 		return errors.New("Consolidate: invoker is required")
 	}
@@ -60,6 +68,9 @@ func Consolidate(ctx context.Context, sprawlRoot string, invoker ClaudeInvoker, 
 
 	for _, s := range sessions {
 		if seen[s.SessionID] {
+			continue
+		}
+		if excludeIDs[s.SessionID] {
 			continue
 		}
 		appendCfg := RegenerateConfig{

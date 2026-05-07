@@ -25,7 +25,7 @@ func TestStartBackgroundConsolidation_RunsPipelineAndReleasesLock(t *testing.T) 
 
 	deps := newTestDeps(t)
 	var consolidateCalled atomic.Bool
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		consolidateCalled.Store(true)
 		return nil
 	}
@@ -75,7 +75,7 @@ func TestStartBackgroundConsolidation_SkipsIfAlreadyLocked(t *testing.T) {
 	// Block the first consolidation until we signal it to finish.
 	block := make(chan struct{})
 	deps := newTestDeps(t)
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		<-block
 		return nil
 	}
@@ -120,7 +120,7 @@ func TestFinalizeHandoff_ReturnsQuicklyWhilePipelineRuns(t *testing.T) {
 	// Block the pipeline so we know FinalizeHandoff didn't wait for it.
 	block := make(chan struct{})
 	finished := make(chan struct{})
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		<-block
 		return nil
 	}
@@ -160,7 +160,7 @@ func TestWaitForBackgroundConsolidation_BlocksUntilGoroutineReleasesFlock(t *tes
 
 	block := make(chan struct{})
 	deps := newTestDeps(t)
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		<-block
 		return nil
 	}
@@ -200,7 +200,7 @@ func TestStartBackgroundConsolidation_RemovesLockfileOnError(t *testing.T) {
 	}
 
 	deps := newTestDeps(t)
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		return errors.New("simulated pipeline failure")
 	}
 
@@ -228,7 +228,7 @@ func TestWaitForBackgroundConsolidation_TimesOutAndProceeds(t *testing.T) {
 	defer close(block)
 
 	deps := newTestDeps(t)
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		<-block
 		return nil
 	}
@@ -262,7 +262,7 @@ func TestStartBackgroundConsolidation_EmitsEvents(t *testing.T) {
 	}
 
 	deps := newTestDeps(t)
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		return nil
 	}
 
@@ -304,7 +304,7 @@ func TestStartBackgroundConsolidation_NilEventsChannel_NoPanic(t *testing.T) {
 	}
 
 	deps := newTestDeps(t)
-	deps.Consolidate = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time) error {
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
 		return nil
 	}
 
