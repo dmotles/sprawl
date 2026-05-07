@@ -8,66 +8,41 @@ func resolveMode(mode string) string {
 	return "tui"
 }
 
-// engineerRulesTmux returns the engineer RULES section as it appears after fmt.Sprintf
-// (with parentName already interpolated).
-func engineerRulesTmux(parentName string) string {
-	return `RULES:
-- Stay focused on your assigned task. Do not go beyond your scope.
-- Stay on your branch in your worktree. Don't explore.
-- When done, run: sprawl report done "<summary of what you did>"
-- If you discover work beyond your scope, run: sprawl report problem "<description>"
-- If you need clarification, run: sprawl messages send ` + parentName + ` "Question" "<your question>"
-- Commit your work frequently with clear commit messages.
-- Do not merge your branch. Your manager handles integration.
-- Do not push your branch unless instructed to do so.`
-}
-
-// childRulesBlock returns the RULES section for engineer agents in TUI mode.
-// parentName is interpolated into the message/report commands.
-func childRulesBlock(mode, parentName string) string {
+// childReportBullets returns the four mode-specific status/messaging bullets
+// used in every child agent's RULES section. doneSummary fills the "<…>"
+// placeholder for the "When done" line (e.g. "summary of what you did").
+func childReportBullets(mode, parentName, doneSummary string) string {
 	if mode == "tui" {
-		return `RULES:
-- Stay focused on your assigned task. Do not go beyond your scope.
-- Stay on your branch in your worktree. Don't explore.
-- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
-- When done, use: report_status({state: "complete", summary: "<summary of what you did>"})
+		return `- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
+- When done, use: report_status({state: "complete", summary: "<` + doneSummary + `>"})
 - If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or send_async({to: "` + parentName + `", subject: "problem", body: "<description>"}).
-- If you need clarification, use: send_async({to: "` + parentName + `", subject: "Question", body: "<your question>"})
-- Commit your work frequently with clear commit messages.
-- Do not merge your branch. Your manager handles integration.
-- Do not push your branch unless instructed to do so.`
+- If you need clarification, use: send_async({to: "` + parentName + `", subject: "Question", body: "<your question>"})`
 	}
-	return engineerRulesTmux(parentName)
+	return `- When done, run: sprawl report done "<` + doneSummary + `>"
+- If you discover work beyond your scope, run: sprawl report problem "<description>"
+- If you need clarification, run: sprawl messages send ` + parentName + ` "Question" "<your question>"`
 }
 
-// researcherRulesTmuxRendered returns the researcher RULES section as it appears after fmt.Sprintf.
-func researcherRulesTmuxRendered(parentName string) string {
+// childRulesBlock returns the RULES section for engineer agents.
+func childRulesBlock(mode, parentName string) string {
 	return `RULES:
-- Stay focused on your assigned research task. Do not go beyond your scope.
-- Do NOT modify production code. You are a researcher, not an engineer.
-- When done, run: sprawl report done "<summary of what you found>"
-- If you discover work beyond your scope, run: sprawl report problem "<description>"
-- If you need clarification, run: sprawl messages send ` + parentName + ` "Question" "<your question>"
-- Commit your documentation and findings with clear commit messages.
+- Stay focused on your assigned task. Do not go beyond your scope.
+- Stay on your branch in your worktree. Don't explore.
+` + childReportBullets(mode, parentName, "summary of what you did") + `
+- Commit your work frequently with clear commit messages.
 - Do not merge your branch. Your manager handles integration.
 - Do not push your branch unless instructed to do so.`
 }
 
 // researcherRulesBlock returns the RULES section for researcher agents.
 func researcherRulesBlock(mode, parentName string) string {
-	if mode == "tui" {
-		return `RULES:
+	return `RULES:
 - Stay focused on your assigned research task. Do not go beyond your scope.
 - Do NOT modify production code. You are a researcher, not an engineer.
-- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
-- When done, use: report_status({state: "complete", summary: "<summary of what you found>"})
-- If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or send_async({to: "` + parentName + `", subject: "problem", body: "<description>"}).
-- If you need clarification, use: send_async({to: "` + parentName + `", subject: "Question", body: "<your question>"})
+` + childReportBullets(mode, parentName, "summary of what you found") + `
 - Commit your documentation and findings with clear commit messages.
 - Do not merge your branch. Your manager handles integration.
 - Do not push your branch unless instructed to do so.`
-	}
-	return researcherRulesTmuxRendered(parentName)
 }
 
 // engineerReportDoneLine returns the TDD step 8 "Report done" line.
@@ -79,80 +54,70 @@ func engineerReportDoneLine(mode, parentName string) string {
 	return `8. Report done via: sprawl report done "<summary>"`
 }
 
-// managerRulesTmuxRendered returns the manager RULES section as it appears after fmt.Sprintf.
-func managerRulesTmuxRendered(parentName string) string {
+// managerRulesBlock returns the RULES section for manager prompts.
+func managerRulesBlock(mode, parentName string) string {
+	peekBullet := ""
+	if mode == "tui" {
+		peekBullet = "\n" + `- Before asking a child "are you done?", use peek({agent: "<child>"}) first; only send_async if peek is inconclusive.`
+	}
 	return `RULES:
 - Stay focused on your assigned task. Do not go beyond your scope.
 - Stay on your branch in your worktree. Don't explore.
-- When done, run: sprawl report done "<summary of what you did>"
-- If you discover work beyond your scope, run: sprawl report problem "<description>"
-- If you need clarification, run: sprawl messages send ` + parentName + ` "Question" "<your question>"
+` + childReportBullets(mode, parentName, "summary of what you did") + peekBullet + `
 - Commit integration merges with clear commit messages.
 - Do not merge your branch. Your parent handles integration.
 - Do not push your branch unless instructed to do so.`
 }
 
-// managerRulesBlock returns the RULES section for manager prompts.
-func managerRulesBlock(mode, parentName string) string {
+// --- Root prompt section builders ---
+
+// agentFamiliesBlock is the shared, mode-independent listing of agent families.
+const agentFamiliesBlock = `- product: Concerned with the why and the what. Product definition, user experience, specifications.
+- engineering: Concerned with the how. Architecture, implementation, code.
+- qa: Concerned with correctness. Testing, verification, quality assurance.`
+
+// rootRemindersBlock returns the REMINDERS section. The only mode delta is
+// CLI vs MCP-tools wording.
+func rootRemindersBlock(mode string) string {
+	iface := "sprawl CLI"
 	if mode == "tui" {
-		return `RULES:
-- Stay focused on your assigned task. Do not go beyond your scope.
-- Stay on your branch in your worktree. Don't explore.
-- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
-- When done, use: report_status({state: "complete", summary: "<summary of what you did>"})
-- If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or send_async({to: "` + parentName + `", subject: "problem", body: "<description>"}).
-- If you need clarification, use: send_async({to: "` + parentName + `", subject: "Question", body: "<your question>"})
-- Before asking a child "are you done?", use peek({agent: "<child>"}) first; only send_async if peek is inconclusive.
-- Commit integration merges with clear commit messages.
-- Do not merge your branch. Your parent handles integration.
-- Do not push your branch unless instructed to do so.`
+		iface = "sprawl MCP tools"
 	}
-	return managerRulesTmuxRendered(parentName)
+	return `## REMINDERS
+- Use the ` + iface + ` to spawn agents, send messages, and check status.
+- You can read code and run commands to understand the codebase.
+- You cannot edit code. That is what engineers are for.`
 }
 
-// --- Root prompt section constants ---
-
-const rootRemindersTmux = `## REMINDERS
-- Use the sprawl CLI to spawn agents, send messages, and check status.
-- You can read code and run commands to understand the codebase.
-- You cannot edit code. That is what engineers are for.`
-
-const rootRemindersTUI = `## REMINDERS
-- Use the sprawl MCP tools to spawn agents, send messages, and check status.
-- You can read code and run commands to understand the codebase.
-- You cannot edit code. That is what engineers are for.`
-
-const rootAgentTypesTmux = `AGENT TYPES YOU CAN SPAWN (via sprawl spawn agent):
-- Engineer (--type engineer): Makes code changes in its own git worktree. Use for atomic, well-defined implementation tasks.
-- Researcher (--type researcher): Reads code, runs commands, searches the web. No code edits. Use for investigation and analysis.
-- Manager (--type manager): Orchestrates sub-agents for complex multi-part tasks. Use when a
+// rootAgentTypesBlock returns the AGENT TYPES + AGENT FAMILIES section. Prose
+// is shared; only the spawn-syntax tokens change between modes.
+func rootAgentTypesBlock(mode string) string {
+	spawnVia := "sprawl spawn agent"
+	familyVia := "--family"
+	typeTok := func(t string) string { return "--type " + t }
+	if mode == "tui" {
+		spawnVia = "spawn tool"
+		familyVia = "family parameter"
+		typeTok = func(t string) string { return `type: "` + t + `"` }
+	}
+	return `AGENT TYPES YOU CAN SPAWN (via ` + spawnVia + `):
+- Engineer (` + typeTok("engineer") + `): Makes code changes in its own git worktree. Use for atomic, well-defined implementation tasks.
+- Researcher (` + typeTok("researcher") + `): Reads code, runs commands, searches the web. No code edits. Use for investigation and analysis.
+- Manager (` + typeTok("manager") + `): Orchestrates sub-agents for complex multi-part tasks. Use when a
   task involves 3+ subtasks across different modules, or would benefit from autonomous
   decomposition, verification, and integration. The manager spawns its own children, verifies
   their work, merges branches into its integration branch, and reports back when complete.
   For atomic, well-scoped single-module tasks, prefer spawning an engineer directly.
 
-AGENT FAMILIES (via --family):
-- product: Concerned with the why and the what. Product definition, user experience, specifications.
-- engineering: Concerned with the how. Architecture, implementation, code.
-- qa: Concerned with correctness. Testing, verification, quality assurance.`
+AGENT FAMILIES (via ` + familyVia + `):
+` + agentFamiliesBlock
+}
 
-const rootAgentTypesTUI = `AGENT TYPES YOU CAN SPAWN (via spawn tool):
-- Engineer (type: "engineer"): Makes code changes in its own git worktree. Use for atomic, well-defined implementation tasks.
-- Researcher (type: "researcher"): Reads code, runs commands, searches the web. No code edits. Use for investigation and analysis.
-- Manager (type: "manager"): Orchestrates sub-agents for complex multi-part tasks. Use when a
-  task involves 3+ subtasks across different modules, or would benefit from autonomous
-  decomposition, verification, and integration. The manager spawns its own children, verifies
-  their work, merges branches into its integration branch, and reports back when complete.
-  For atomic, well-scoped single-module tasks, prefer spawning an engineer directly.
-
-AGENT FAMILIES (via family parameter):
-- product: Concerned with the why and the what. Product definition, user experience, specifications.
-- engineering: Concerned with the how. Architecture, implementation, code.
-- qa: Concerned with correctness. Testing, verification, quality assurance.`
-
-// claudeCodeSubAgentGuidanceTUI is the TUI-mode version of the sub-agent guidance.
-// It replaces "sprawl spawn agent" references with spawn tool references.
-const claudeCodeSubAgentGuidanceTUI = `
+// claudeCodeSubAgentGuidanceCommon is the bulk of the # Using your tools / # More
+// on Skills and Agents / AGENT TYPES sub-agent guidance — verbatim shared between
+// tmux and tui modes. Mode-specific deltas (the "Sprawl agents (via …)" line and
+// its second-line continuation) are spliced in by claudeCodeSubAgentGuidance.
+const claudeCodeSubAgentGuidanceCommon = `
 
 # Using your tools
 - Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
@@ -175,10 +140,11 @@ AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS
 
 There are two ways to get work done through other agents:
 
-1. Sprawl agents (via the spawn tool): Full agents with their own git worktrees
-   and shared backend sessions. Use these for substantial work — code changes, multi-file implementations,
-   research tasks that produce artifacts. These are the primary mechanism for delegating work.
-   When someone says "fire off an agent" or "spawn an agent", this is what they mean.
+`
+
+// claudeCodeSubAgentGuidanceTail is the closing of the AGENT TYPES section,
+// shared between tmux and tui modes.
+const claudeCodeSubAgentGuidanceTail = `
 
 2. Claude Code sub-agents (via the Agent tool): Lightweight, in-process sub-agents for quick
    investigation, planning, or analysis that doesn't need its own worktree. Use these for things
@@ -188,13 +154,52 @@ There are two ways to get work done through other agents:
 
 Default to sprawl agents for real work. Use sub-agents for quick queries and planning.`
 
-// --- Tmux mode constants (CLI commands) ---
+// claudeCodeSubAgentGuidance returns the full sub-agent guidance for the given
+// mode. Prose is shared; only the "1. Sprawl agents (via …)" bullet differs.
+func claudeCodeSubAgentGuidance(mode string) string {
+	var sprawlAgentsBullet string
+	if mode == "tui" {
+		sprawlAgentsBullet = `1. Sprawl agents (via the spawn tool): Full agents with their own git worktrees
+   and shared backend sessions. Use these for substantial work — code changes, multi-file implementations,
+   research tasks that produce artifacts. These are the primary mechanism for delegating work.
+   When someone says "fire off an agent" or "spawn an agent", this is what they mean.`
+	} else {
+		sprawlAgentsBullet = "1. Sprawl agents (via `sprawl spawn agent`): Full agents with their own git worktrees, tmux windows,\n" +
+			`   and agent loops. Use these for substantial work — code changes, multi-file implementations,
+   research tasks that produce artifacts. These are the primary mechanism for delegating work.
+   When someone says "fire off an agent" or "spawn an agent", this is what they mean.`
+	}
+	return claudeCodeSubAgentGuidanceCommon + sprawlAgentsBullet + claudeCodeSubAgentGuidanceTail
+}
 
-const rootMergeRetireTmux = `- When pulling in agent work, use ` + "`sprawl merge <agent>`" + ` which squash-merges into your branch with linear history. The agent stays alive and its branch is preserved — merge acquires a lock so the agent pauses automatically during the rebase. Use --dry-run to preview, --no-validate if you've already validated manually, and --message/-m to override the commit message. If a merge fails due to a rebase conflict, the error will include a pre-squash SHA you can use to recover and resolve the conflict manually, then retry.
-- When you're done with an agent entirely, use ` + "`sprawl retire --merge <agent>`" + ` to merge and retire in one shot. Use ` + "`sprawl retire <agent>`" + ` to shut down without merging (refuses if unmerged commits exist). Use ` + "`sprawl retire --abandon <agent>`" + ` to discard work and retire. If ` + "`--abandon`" + ` warns about unmerged commits or a live process and requires ` + "`--yes`" + `, STOP and confirm with the user — do not automatically add ` + "`--yes`" + `.`
-
-const rootMergeRetireTUI = `- When pulling in agent work, use merge({agent: "<agent>"}) which squash-merges into your branch with linear history. The agent stays alive and its branch is preserved — merge acquires a lock so the agent pauses automatically during the rebase. Use dry_run: true to preview, no_validate: true if you've already validated manually, and message: "<msg>" to override the commit message. If a merge fails due to a rebase conflict, the error will include a pre-squash SHA you can use to recover and resolve the conflict manually, then retry.
-- When you're done with an agent entirely, use retire({agent: "<agent>", merge: true}) to merge and retire in one shot. Use retire({agent: "<agent>"}) to shut down without merging (refuses if unmerged commits exist). Use retire({agent: "<agent>", abandon: true}) to discard work and retire. If abandon warns about unmerged commits or a live process and requires confirmation, STOP and confirm with the user — do not automatically force it.`
+// rootMergeRetireBlock returns the merge/retire bullets for the # Doing Tasks
+// section. Prose is shared; the only deltas are command syntax tokens.
+func rootMergeRetireBlock(mode string) string {
+	merge := "`sprawl merge <agent>`"
+	retire := "`sprawl retire <agent>`"
+	retireMerge := "`sprawl retire --merge <agent>`"
+	retireAbandon := "`sprawl retire --abandon <agent>`"
+	dryRun := "--dry-run"
+	noValidate := "--no-validate"
+	msgFlag := "--message/-m"
+	abandonRef := "`--abandon`"
+	yesRef := "`--yes`"
+	autoYesTail := "do not automatically add `--yes`."
+	if mode == "tui" {
+		merge = `merge({agent: "<agent>"})`
+		retire = `retire({agent: "<agent>"})`
+		retireMerge = `retire({agent: "<agent>", merge: true})`
+		retireAbandon = `retire({agent: "<agent>", abandon: true})`
+		dryRun = "dry_run: true"
+		noValidate = "no_validate: true"
+		msgFlag = `message: "<msg>"`
+		abandonRef = "abandon"
+		yesRef = "confirmation"
+		autoYesTail = "do not automatically force it."
+	}
+	return "- When pulling in agent work, use " + merge + " which squash-merges into your branch with linear history. The agent stays alive and its branch is preserved — merge acquires a lock so the agent pauses automatically during the rebase. Use " + dryRun + " to preview, " + noValidate + " if you've already validated manually, and " + msgFlag + " to override the commit message. If a merge fails due to a rebase conflict, the error will include a pre-squash SHA you can use to recover and resolve the conflict manually, then retry.\n" +
+		"- When you're done with an agent entirely, use " + retireMerge + " to merge and retire in one shot. Use " + retire + " to shut down without merging (refuses if unmerged commits exist). Use " + retireAbandon + " to discard work and retire. If " + abandonRef + " warns about unmerged commits or a live process and requires " + yesRef + ", STOP and confirm with the user — " + autoYesTail
+}
 
 const rootCommandsTmux = `KEY COMMANDS:
 
@@ -298,19 +303,24 @@ const (
 	tuiSystemLine        = "the text output is visible through the sprawl harness, but the user will not be able to directly respond or interact."
 )
 
-const managerPostDispatchTmux = `When spawning an agent to work on a tracked issue, keep the prompt short. Point
+// managerPostDispatchHeader is shared verbatim between modes; the trailing
+// "after spawning" paragraph diverges and is supplied per-mode.
+const managerPostDispatchHeader = `When spawning an agent to work on a tracked issue, keep the prompt short. Point
 the agent at the issue — don't repeat the issue contents in the prompt.
 
-After spawning an agent, wait for it to message you. Do NOT repeatedly run
+`
+
+func managerPostDispatchBlock(mode string) string {
+	tail := `After spawning an agent, wait for it to message you. Do NOT repeatedly run
 'sprawl messages inbox' to poll. You will be notified when messages arrive.`
-
-const managerPostDispatchTUI = `When spawning an agent to work on a tracked issue, keep the prompt short. Point
-the agent at the issue — don't repeat the issue contents in the prompt.
-
-After spawning an agent, wait for it to notify you. You will be notified when
+	if mode == "tui" {
+		tail = `After spawning an agent, wait for it to notify you. You will be notified when
 messages arrive. If you need to check on a child before it reports back, use
 peek({agent: "<child>"}) to inspect its recent activity and last report
 — do not repeatedly send messages to poll it.`
+	}
+	return managerPostDispatchHeader + tail
+}
 
 // rootOverviewTmuxLine is the tmux-specific text in the SPRAWL OVERVIEW section.
 const (
@@ -392,46 +402,45 @@ const managerDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES — WHEN TO USE WHIC
 - peek({agent: "<agent>"}) — Before nagging a child, peek its activity/last_report first. Only send_async if peek is inconclusive.
 - Rule of thumb: if you're telling an agent to *do* something, use delegate. If you're telling an agent *about* something, use send_async.`
 
-const managerIntegrationTmux = `# INTEGRATION:
-Use ` + "`sprawl merge <agent>`" + ` to land work on your integration branch. The merge command
-produces a clean squash-merge with linear history. The agent stays alive and
-the branch is preserved. A lock is acquired so the agent pauses automatically
-during the rebase.
-
-Flow: agent reports done → verify their work → ` + "`sprawl merge <agent>`" + ` → (optionally) ` + "`sprawl retire <agent>`" + `
-
-Use ` + "`sprawl retire --merge <agent>`" + ` to merge and retire in one shot.
-
-Flags for merge:
+// managerIntegrationBlock returns the # INTEGRATION section for the manager
+// prompt. Shared prose is parameterized over command syntax tokens; the merge
+// flag/option subsection is mode-specific (tmux exposes more flags).
+func managerIntegrationBlock(mode string) string {
+	merge := "`sprawl merge <agent>`"
+	retire := "`sprawl retire <agent>`"
+	retireMerge := "`sprawl retire --merge <agent>`"
+	mergeWord := "merge command"
+	flagsHeader := `Flags for merge:
   --dry-run              — Preview what would happen without making any changes.
   --no-validate          — Skip pre-merge and post-merge test validation. Use when you've already validated manually.
-  --message/-m "<msg>"   — Override the default squash commit message.
-
-If a merge fails due to a rebase conflict, the error will include a pre-squash
-SHA you can use to recover and resolve the conflict manually, then retry.
-
-After each merge, run the test suite on your integration branch to catch
-integration issues early.`
-
-const managerIntegrationTUI = `# INTEGRATION:
-Use merge({agent: "<agent>"}) to land work on your integration branch. The merge
+  --message/-m "<msg>"   — Override the default squash commit message.`
+	if mode == "tui" {
+		merge = `merge({agent: "<agent>"})`
+		retire = `retire({agent: "<agent>"})`
+		retireMerge = `retire({agent: "<agent>", merge: true})`
+		mergeWord = "merge"
+		flagsHeader = `Options for merge:
+  message: "<msg>"       — Override the default squash commit message.
+  no_validate: true      — Skip pre-merge and post-merge test validation. Use when you've already validated manually.`
+	}
+	return `# INTEGRATION:
+Use ` + merge + ` to land work on your integration branch. The ` + mergeWord + `
 produces a clean squash-merge with linear history. The agent stays alive and
 the branch is preserved. A lock is acquired so the agent pauses automatically
 during the rebase.
 
-Flow: agent reports done → verify their work → merge({agent: "<agent>"}) → (optionally) retire({agent: "<agent>"})
+Flow: agent reports done → verify their work → ` + merge + ` → (optionally) ` + retire + `
 
-Use retire({agent: "<agent>", merge: true}) to merge and retire in one shot.
+Use ` + retireMerge + ` to merge and retire in one shot.
 
-Options for merge:
-  message: "<msg>"       — Override the default squash commit message.
-  no_validate: true      — Skip pre-merge and post-merge test validation. Use when you've already validated manually.
+` + flagsHeader + `
 
 If a merge fails due to a rebase conflict, the error will include a pre-squash
 SHA you can use to recover and resolve the conflict manually, then retry.
 
 After each merge, run the test suite on your integration branch to catch
 integration issues early.`
+}
 
 const managerLifecycleTmux = `# AGENT LIFECYCLE:
 - ` + "`sprawl delegate <agent> \"<task>\"`" + ` — Reuse an existing agent for follow-up work. Prefer this when the agent's context is valuable for the next task.

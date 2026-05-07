@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // StatusBarModel renders a single-line status bar.
@@ -19,13 +18,10 @@ type StatusBarModel struct {
 	selectMode     bool
 	contextTokens  int // latest input_tokens from assistant message
 	contextLimit   int // context window size derived from model name
-	// restartElapsed is non-zero while the TUI is waiting on async restart
-	// work (FinalizeHandoff + Prepare). Rendered as "restart Ns" so the
-	// user sees a live elapsed counter instead of a frozen UI (QUM-260).
-	restartElapsed time.Duration
-	// restartLabel overrides the "restart" prefix in the elapsed indicator.
-	// When set (e.g. "consolidating timeline"), the status bar renders
-	// "consolidating timeline 12s" instead of "restart 12s". (QUM-391)
+	// restartLabel is the consolidation phase label (e.g. "Consolidating
+	// timeline...") rendered in the right-side parts list while a background
+	// consolidation pipeline is active after a handoff (QUM-391). Empty when
+	// no consolidation is running.
 	restartLabel string
 }
 
@@ -59,12 +55,8 @@ func (m StatusBarModel) View() string {
 	}
 
 	var parts []string
-	if m.restartElapsed > 0 {
-		label := m.restartLabel
-		if label == "" {
-			label = "restart"
-		}
-		parts = append(parts, fmt.Sprintf("%s %ds", label, int(m.restartElapsed.Seconds())))
+	if m.restartLabel != "" {
+		parts = append(parts, m.restartLabel)
 	}
 	if m.sessionCostUsd > 0 {
 		parts = append(parts, fmt.Sprintf("$%.4f", m.sessionCostUsd))
@@ -140,16 +132,10 @@ func (m *StatusBarModel) SetContextLimit(limit int) {
 	m.contextLimit = limit
 }
 
-// SetRestartLabel overrides the "restart" prefix in the elapsed indicator.
-// Pass empty string to restore the default "restart" label. (QUM-391)
+// SetRestartLabel sets the consolidation phase label rendered in the status
+// bar (QUM-391). Pass empty string to clear.
 func (m *StatusBarModel) SetRestartLabel(label string) {
 	m.restartLabel = label
-}
-
-// SetRestartElapsed updates the restart-in-flight indicator (QUM-260).
-// Pass 0 to clear.
-func (m *StatusBarModel) SetRestartElapsed(d time.Duration) {
-	m.restartElapsed = d
 }
 
 // formatTokenCount renders a token count in compact form: "500", "42.3k", "1M".

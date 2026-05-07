@@ -223,9 +223,9 @@ decomposition before spawning sprawl agents for the real work.`
 // managerDispatchingSection returns the "Dispatching" through "Post-dispatch" sections.
 func managerDispatchingSection(mode string) string {
 	if mode == "tui" {
-		return managerCommandsTUI + "\n\n" + managerDelegateVsMessagesTUI + "\n\n" + managerPostDispatchTUI
+		return managerCommandsTUI + "\n\n" + managerDelegateVsMessagesTUI + "\n\n" + managerPostDispatchBlock(mode)
 	}
-	return managerCommandsTmux + "\n\n" + managerDelegateVsMessagesTmux + "\n\n" + managerPostDispatchTmux
+	return managerCommandsTmux + "\n\n" + managerDelegateVsMessagesTmux + "\n\n" + managerPostDispatchBlock(mode)
 }
 
 // managerParallelismSection returns the "Parallelism vs serialization" section.
@@ -248,11 +248,7 @@ When an agent reports done, you MUST verify its output before merging:
 
 // managerIntegrationSection returns the "Integration" and "Integration branch" sections.
 func managerIntegrationSection(mode string) string {
-	integration := managerIntegrationTmux
-	if mode == "tui" {
-		integration = managerIntegrationTUI
-	}
-	return integration + "\n\n" + managerIntegrationBranchSection
+	return managerIntegrationBlock(mode) + "\n\n" + managerIntegrationBranchSection
 }
 
 // managerIntegrationBranchSection is the "Integration branch" section.
