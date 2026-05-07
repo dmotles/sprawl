@@ -82,7 +82,13 @@ func DefaultDeps() *Deps {
 		Getenv:      os.Getenv,
 		BuildPrompt: agent.BuildRootPrompt,
 		BuildContextBlob: func(sprawlRoot, rootName string) (string, error) {
-			return memory.BuildContextBlob(sprawlRoot, rootName)
+			arc := func(ctx context.Context, root string) (string, error) {
+				return memory.SummarizeProjectArc(ctx, memory.ArcOptions{
+					SprawlRoot: root,
+					Invoker:    memory.NewCLIInvoker(),
+				})
+			}
+			return memory.BuildContextBlob(sprawlRoot, rootName, memory.WithArcSummarizer(arc))
 		},
 		WriteSystemPrompt:         state.WriteSystemPrompt,
 		WriteLastSessionID:        memory.WriteLastSessionID,
