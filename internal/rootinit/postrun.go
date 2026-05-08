@@ -2,6 +2,7 @@ package rootinit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -116,22 +117,49 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		pkCfg.Model = model
 	}
 
+	// QUM-522: phase labels are also written into the consolidation
+	// lockfile body so an external observer (e.g. the next-handoff
+	// janitor) can see what the in-flight pipeline is doing. The
+	// lockfile may not exist when this function is called from the
+	// synchronous Prepare path — updateHeartbeat will return an error in
+	// that case, which we deliberately ignore.
+	lockPath := consolidatingLockPath(sprawlRoot)
+	setPhase := func(phase string) {
+		_ = updateHeartbeat(lockPath, phase, time.Now())
+	}
+
 	var eg errgroup.Group
 	eg.Go(func() error {
-		sendConsolidationEvent(events, ConsolidationEvent{Phase: "Consolidating timeline..."})
+		const phase = "Consolidating timeline..."
+		sendConsolidationEvent(events, ConsolidationEvent{Phase: phase})
+		setPhase(phase)
 		sp := startSpinner(stdout, prefix, "consolidating timeline...")
 		defer sp.stop()
-		if err := deps.ConsolidateExcluding(ctx, sprawlRoot, deps.NewCLIInvoker(), &tlCfg, nil, excludeIDs); err != nil {
-			fmt.Fprintf(stdout, "%s warning: consolidation failed: %v\n", prefix, err)
+		phaseCtx, cancel := context.WithTimeout(ctx, perPhaseTimeout)
+		defer cancel()
+		if err := deps.ConsolidateExcluding(phaseCtx, sprawlRoot, deps.NewCLIInvoker(), &tlCfg, nil, excludeIDs); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				fmt.Fprintf(stdout, "%s warning: timeline consolidation timed out after %s (deadline exceeded)\n", prefix, perPhaseTimeout)
+			} else {
+				fmt.Fprintf(stdout, "%s warning: consolidation failed: %v\n", prefix, err)
+			}
 		}
 		return nil
 	})
 	eg.Go(func() error {
-		sendConsolidationEvent(events, ConsolidationEvent{Phase: "Updating persistent knowledge..."})
+		const phase = "Updating persistent knowledge..."
+		sendConsolidationEvent(events, ConsolidationEvent{Phase: phase})
+		setPhase(phase)
 		sp := startSpinner(stdout, prefix, "updating persistent knowledge...")
 		defer sp.stop()
-		if err := deps.UpdatePersistentKnowledge(ctx, sprawlRoot, deps.NewCLIInvoker(), &pkCfg, sessionSummary, timelineBullets); err != nil {
-			fmt.Fprintf(stdout, "%s warning: persistent knowledge update failed: %v\n", prefix, err)
+		phaseCtx, cancel := context.WithTimeout(ctx, perPhaseTimeout)
+		defer cancel()
+		if err := deps.UpdatePersistentKnowledge(phaseCtx, sprawlRoot, deps.NewCLIInvoker(), &pkCfg, sessionSummary, timelineBullets); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				fmt.Fprintf(stdout, "%s warning: persistent knowledge update timed out after %s (deadline exceeded)\n", prefix, perPhaseTimeout)
+			} else {
+				fmt.Fprintf(stdout, "%s warning: persistent knowledge update failed: %v\n", prefix, err)
+			}
 		}
 		return nil
 	})
