@@ -9,6 +9,18 @@ const HandoffPromptTemplate = `The user invoked /handoff from the sprawl enter c
 
 > **Safe with active children.** Handoff replaces ONLY weave's own Claude subprocess; the supervisor, runtime registry, running child agents, and inbox notifier all survive untouched. You do NOT need to wait for in-flight agents to finish — just call out what they are working on in the summary so the next weave knows what's running. This is an architectural invariant; if handoff ever kills or corrupts a child, that is a bug — file it.
 
+## How this gets used
+
+Your summary does **not** become the next weave's whole system prompt by itself. The runtime (` + "`internal/memory/context.go`" + `, ` + "`BuildContextBlob`" + `) assembles a structured blob and embeds your text inside it. The next weave will see, in this order:
+
+1. ` + "`## Project Arc`" + ` — auto-generated multi-session arc summary.
+2. A footer pointing at ` + "`.sprawl/memory/timeline.md`" + ` and ` + "`.sprawl/memory/sessions/<id>.md`" + `.
+3. ` + "`## Last Session`" + ` — auto wrapper. The verbatim body of the summary you write goes here, under a ` + "`### Session: <id> (<timestamp>)`" + ` subheading.
+4. ` + "`## Pending Inbox`" + ` — auto, only when there are unread messages; live count.
+5. ` + "`## Persistent Knowledge`" + ` — auto; verbatim contents of ` + "`.sprawl/memory/persistent.md`" + `.
+
+You write **only** the body that goes under ` + "`## Last Session`" + `. Do **not** write your own ` + "`## Project Arc`" + `, ` + "`## Pending Inbox`" + `, or ` + "`## Persistent Knowledge`" + ` sections — the runtime appends those, and any copy you author will appear twice in the next weave's prompt. Stick to the five canonical body sections in Step 1 (What was accomplished, Key design decisions, Process observations, Outstanding issues and backlog, User context).
+
 ## Step 1: Write the session summary
 
 Cover these categories. Be specific, not vague — the summary is the primary ` +
