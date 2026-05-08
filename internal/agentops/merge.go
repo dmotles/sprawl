@@ -160,6 +160,7 @@ func Merge(deps *MergeDeps, agentName, messageOverride string, noValidate, dryRu
 		MessageOverride: messageOverride,
 		NoValidate:      noValidate,
 		ValidateCmd:     sprawlCfg.Validate,
+		ValidateTimeout: sprawlCfg.ValidateTimeoutDuration(),
 		DryRun:          dryRun,
 		AgentState:      agentState,
 	}

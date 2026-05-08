@@ -6,15 +6,31 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 // Config represents .sprawl/config.yaml project-level settings.
 type Config struct {
-	Validate   string `yaml:"validate"`
-	sprawlRoot string
-	values     map[string]string
+	Validate        string `yaml:"validate"`
+	ValidateTimeout string `yaml:"validate_timeout"`
+	sprawlRoot      string
+	values          map[string]string
+}
+
+// ValidateTimeoutDuration returns the parsed validate_timeout, or 0 if unset
+// or unparseable. Callers should layer their own default on top. QUM-496.
+func (c *Config) ValidateTimeoutDuration() time.Duration {
+	v := strings.TrimSpace(c.ValidateTimeout)
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0
+	}
+	return d
 }
 
 // Load reads .sprawl/config.yaml from the given sprawl root directory.
@@ -53,6 +69,13 @@ func Load(sprawlRoot string) (*Config, error) {
 		delete(cfg.values, "validate")
 	}
 
+	cfg.ValidateTimeout = strings.TrimSpace(cfg.ValidateTimeout)
+	if cfg.ValidateTimeout != "" {
+		cfg.values["validate_timeout"] = cfg.ValidateTimeout
+	} else {
+		delete(cfg.values, "validate_timeout")
+	}
+
 	return cfg, nil
 }
 
@@ -68,8 +91,11 @@ func (c *Config) Set(key, value string) {
 		c.values = make(map[string]string)
 	}
 	c.values[key] = value
-	if key == "validate" {
+	switch key {
+	case "validate":
 		c.Validate = value
+	case "validate_timeout":
+		c.ValidateTimeout = value
 	}
 }
 

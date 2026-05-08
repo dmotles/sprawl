@@ -129,14 +129,6 @@ func RealGitResetHard(worktree string) error {
 	return nil
 }
 
-// RealRunTests runs the given validation command in the given directory.
-func RealRunTests(dir, command string) (string, error) {
-	cmd := exec.Command("bash", "-c", command) //nolint:gosec // G204: command from project-level .sprawl/config.yaml, trusted like committed config
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
 // RealWritePoke writes a poke file for the given agent.
 func RealWritePoke(sprawlRoot, agentName, content string) error {
 	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentName+".poke")

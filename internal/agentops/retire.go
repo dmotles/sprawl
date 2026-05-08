@@ -83,15 +83,16 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 			return fmt.Errorf("loading config: %w", err)
 		}
 		cfg := &merge.Config{
-			SprawlRoot:     sprawlRoot,
-			AgentName:      agentName,
-			AgentBranch:    agentState.Branch,
-			AgentWorktree:  agentState.Worktree,
-			ParentBranch:   targetBranch,
-			ParentWorktree: callerWorktree,
-			NoValidate:     noValidate,
-			ValidateCmd:    sprawlCfg.Validate,
-			AgentState:     agentState,
+			SprawlRoot:      sprawlRoot,
+			AgentName:       agentName,
+			AgentBranch:     agentState.Branch,
+			AgentWorktree:   agentState.Worktree,
+			ParentBranch:    targetBranch,
+			ParentWorktree:  callerWorktree,
+			NoValidate:      noValidate,
+			ValidateCmd:     sprawlCfg.Validate,
+			ValidateTimeout: sprawlCfg.ValidateTimeoutDuration(),
+			AgentState:      agentState,
 		}
 		mergeDeps := deps.NewMergeDeps()
 		if mergeDeps != nil && deps.Checkpoint != nil {

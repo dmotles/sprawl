@@ -2,6 +2,7 @@ package merge
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -21,9 +22,11 @@ func newTestDeps() *Deps {
 		GitRebaseAbort:  func(worktree string) error { return nil },
 		GitFFMerge:      func(worktree, branch string) error { return nil },
 		GitResetHard:    func(worktree string) error { return nil },
-		RunTests:        func(dir, command string) (string, error) { return "ok", nil },
-		WritePoke:       func(sprawlRoot, agentName, content string) error { return nil },
-		Stderr:          io.Discard,
+		RunTestsStreaming: func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
+			return "ok", nil
+		},
+		WritePoke: func(sprawlRoot, agentName, content string) error { return nil },
+		Stderr:    io.Discard,
 	}
 }
 
@@ -334,7 +337,7 @@ func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
 
-	deps.RunTests = func(dir, command string) (string, error) {
+	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 		return "FAIL: TestSomething\nexit status 1", fmt.Errorf("tests failed")
 	}
 
@@ -380,7 +383,7 @@ func TestMerge_NoValidate_SkipsTests(t *testing.T) {
 	cfg.NoValidate = true
 
 	var testsCalled bool
-	deps.RunTests = func(dir, command string) (string, error) {
+	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 		testsCalled = true
 		return "ok", nil
 	}
@@ -476,7 +479,7 @@ func TestMerge_StepOrdering(t *testing.T) {
 		order = append(order, "ff-merge")
 		return nil
 	}
-	deps.RunTests = func(dir, command string) (string, error) {
+	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 		order = append(order, "validate")
 		return "ok", nil
 	}
@@ -561,7 +564,7 @@ func TestMerge_EmptyValidateCmd_SkipsWithWarning(t *testing.T) {
 	cfg.NoValidate = false
 
 	var testsCalled bool
-	deps.RunTests = func(dir, command string) (string, error) {
+	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 		testsCalled = true
 		return "ok", nil
 	}
@@ -602,7 +605,7 @@ func TestMerge_ValidateCmd_PassedToRunTests(t *testing.T) {
 	cfg.ValidateCmd = "npm test"
 
 	var capturedCommand string
-	deps.RunTests = func(dir, command string) (string, error) {
+	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 		capturedCommand = command
 		return "ok", nil
 	}
@@ -686,7 +689,7 @@ func TestMerge_CheckpointStopsOnValidateError(t *testing.T) {
 	deps := newTestDeps()
 	cfg := newTestConfig()
 
-	deps.RunTests = func(dir, command string) (string, error) {
+	deps.RunTestsStreaming = func(ctx context.Context, dir, command string, sink func(string)) (string, error) {
 		return "FAIL", fmt.Errorf("tests failed")
 	}
 

@@ -107,13 +107,13 @@ esac
 
 echo ""
 
-# --- Test 2: detect_arch returns x86_64 or arm64 ---
+# --- Test 2: detect_arch returns amd64 or arm64 ---
 
 echo "=== Test 2: detect_arch ==="
 
 DETECTED_ARCH=$(detect_arch)
 case "$DETECTED_ARCH" in
-    x86_64|arm64)
+    amd64|arm64)
         pass "detect_arch returned '$DETECTED_ARCH'"
         ;;
     *)
@@ -123,13 +123,13 @@ esac
 
 echo ""
 
-# --- Test 3: Archive name construction (linux/x86_64) ---
+# --- Test 3: Archive name construction (linux/amd64) ---
 
-echo "=== Test 3: Archive name — linux x86_64 ==="
+echo "=== Test 3: Archive name — linux amd64 ==="
 
-ARCHIVE_NAME=$(build_archive_name "linux" "x86_64" "v0.1.0")
-assert_eq "sprawl_0.1.0_linux_x86_64.tar.gz" "$ARCHIVE_NAME" \
-    "build_archive_name linux x86_64 v0.1.0"
+ARCHIVE_NAME=$(build_archive_name "linux" "amd64" "v0.1.0")
+assert_eq "sprawl_0.1.0_linux_amd64.tar.gz" "$ARCHIVE_NAME" \
+    "build_archive_name linux amd64 v0.1.0"
 
 echo ""
 

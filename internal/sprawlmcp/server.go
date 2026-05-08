@@ -5,21 +5,50 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
+	"time"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/tui"
 )
+
+// MsgSender accepts an opaque tea.Msg-typed value and dispatches it into
+// the host TUI program. The sprawlmcp package keeps the type as `any` to
+// avoid importing bubbletea (cmd/enter.go performs the type-erasure dance
+// with the real tea.Program.Send). (QUM-497)
+type MsgSender func(msg any)
 
 // Server implements host.MCPServer for the sprawl MCP server.
 type Server struct {
-	sup     supervisor.Supervisor
-	callLog *calllog.Logger
+	sup       supervisor.Supervisor
+	callLog   *calllog.Logger
+	msgSender atomic.Pointer[MsgSender] // QUM-497: TUI in-flight indicator hook
 }
 
 // New creates a new MCP server backed by the given supervisor.
 func New(sup supervisor.Supervisor) *Server {
 	return &Server{sup: sup, callLog: calllog.NewNoop()}
+}
+
+// SetMsgSender installs (or clears) the TUI message sender used to surface
+// MCPCallStartedMsg / MCPCallEndedMsg events for in-flight tool calls
+// (QUM-497). Pass nil to clear (e.g. on TUI shutdown). Safe to call
+// concurrently — the field is backed by an atomic pointer.
+func (s *Server) SetMsgSender(send MsgSender) {
+	if send == nil {
+		s.msgSender.Store(nil)
+		return
+	}
+	fn := send
+	s.msgSender.Store(&fn)
+}
+
+func (s *Server) emitMsg(msg any) {
+	if p := s.msgSender.Load(); p != nil && *p != nil {
+		(*p)(msg)
+	}
 }
 
 // WithCallLog attaches a per-call observability logger to the server
@@ -88,7 +117,29 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 	if len(call.Arguments) > 0 {
 		_ = json.Unmarshal(call.Arguments, &argsAny)
 	}
+	startedAt := time.Now()
 	ctx, callID := s.callLog.Begin(ctx, call.Name, caller, argsAny)
+	// QUM-497: surface the call to the host TUI's status bar so a hung tool
+	// is visible long before the user reaches for Ctrl-C. callID may be empty
+	// when the calllog is in noop mode — in that case we synthesize a stable
+	// id from the tool+caller+time so the TUI can still pair Started/Ended.
+	mcpID := callID
+	if mcpID == "" {
+		mcpID = fmt.Sprintf("noop-%s-%s-%d", call.Name, caller, startedAt.UnixNano())
+	}
+	s.emitMsg(tui.MCPCallStartedMsg{
+		CallID:  mcpID,
+		Tool:    call.Name,
+		Caller:  caller,
+		Started: startedAt,
+	})
+	endMCP := func(status, _ string) {
+		s.emitMsg(tui.MCPCallEndedMsg{
+			CallID:   mcpID,
+			Status:   status,
+			Duration: time.Since(startedAt),
+		})
+	}
 
 	var (
 		text     string
@@ -108,11 +159,13 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 
 	if panicked {
 		s.callLog.End(callID, "panic", fmt.Sprintf("%v", panicErr))
+		endMCP("panic", fmt.Sprintf("%v", panicErr))
 		panic(panicErr)
 	}
 
 	if err != nil {
 		s.callLog.End(callID, "error", err.Error())
+		endMCP("error", err.Error())
 		var ute *unknownToolError
 		if ok := isUnknownToolError(err, &ute); ok {
 			return jsonRPCError(id, -32602, ute.Error())
@@ -120,6 +173,7 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 		return toolErrorResult(id, err.Error())
 	}
 	s.callLog.End(callID, "ok", "")
+	endMCP("ok", "")
 	return toolSuccessResult(id, text)
 }
 

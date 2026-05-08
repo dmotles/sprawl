@@ -195,6 +195,17 @@ type AppModel struct {
 	searchMatchIdx   int
 	searchPriorInput string
 
+	// activeMCPOps tracks in-flight MCP tool calls keyed by call_id (QUM-497).
+	// Mirrored into the status bar via SetActiveOps on every mutation. The map
+	// owns a stable insertion order via mcpOpOrder so the first-shown op is
+	// always the oldest one — useful when the bar truncates to two visible
+	// segments. mcpOpThresholdShown gates the 60s viewport banner so it fires
+	// at most once per call_id.
+	activeMCPOps        map[string]OpDescriptor
+	mcpOpOrder          []string
+	mcpOpThresholdShown map[string]bool
+	mcpOpTickPending    bool
+
 	// cache memoizes bordered panel renders across View() calls so a paste
 	// burst (one View() per pasted rune) doesn't re-render unchanged panels
 	// (QUM-451). Held behind a pointer so the value-receiver View() can
@@ -229,29 +240,31 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 	agentBuffers[rootAgent].vp.AppendBanner(SessionBanner(initialSessionID, version))
 
 	app := AppModel{
-		tree:             NewTreeModel(&theme),
-		activity:         NewActivityPanelModel(&theme),
-		input:            NewInputModel(&theme),
-		statusBar:        NewStatusBarModel(&theme, repoName, version, 0),
-		help:             NewHelpModel(&theme),
-		confirm:          NewConfirmModel(&theme),
-		palette:          NewPaletteModel(&theme),
-		bridge:           bridge,
-		turnState:        TurnIdle,
-		supervisor:       sup,
-		sprawlRoot:       sprawlRoot,
-		observedAgent:    rootAgent,
-		rootAgent:        rootAgent,
-		agentBuffers:     agentBuffers,
-		activePanel:      startPanel,
-		theme:            theme,
-		restartFunc:      restartFunc,
-		spinner:          sp,
-		version:          version,
-		history:          NewHistory(sprawlRoot),
-		activityEntries:  make(map[string][]agentloop.ActivityEntry),
-		activitySeenKeys: make(map[string]map[string]struct{}),
-		cache:            newViewCache(),
+		tree:                NewTreeModel(&theme),
+		activity:            NewActivityPanelModel(&theme),
+		input:               NewInputModel(&theme),
+		statusBar:           NewStatusBarModel(&theme, repoName, version, 0),
+		help:                NewHelpModel(&theme),
+		confirm:             NewConfirmModel(&theme),
+		palette:             NewPaletteModel(&theme),
+		bridge:              bridge,
+		turnState:           TurnIdle,
+		supervisor:          sup,
+		sprawlRoot:          sprawlRoot,
+		observedAgent:       rootAgent,
+		rootAgent:           rootAgent,
+		agentBuffers:        agentBuffers,
+		activePanel:         startPanel,
+		theme:               theme,
+		restartFunc:         restartFunc,
+		spinner:             sp,
+		version:             version,
+		history:             NewHistory(sprawlRoot),
+		activityEntries:     make(map[string][]agentloop.ActivityEntry),
+		activitySeenKeys:    make(map[string]map[string]struct{}),
+		activeMCPOps:        make(map[string]OpDescriptor),
+		mcpOpThresholdShown: make(map[string]bool),
+		cache:               newViewCache(),
 	}
 	_ = app.history.Load()
 	app.updateFocus()
@@ -903,6 +916,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// New session starts with no in-flight tool calls; reset the
 		// counter so any stale tick is dropped on next arrival (QUM-336).
 		m.pendingToolCalls = 0
+		// QUM-497: drop any in-flight MCP op state from the prior session
+		// so a stale call_id can't keep ticking on the new bar.
+		m.activeMCPOps = make(map[string]OpDescriptor)
+		m.mcpOpOrder = nil
+		m.mcpOpThresholdShown = make(map[string]bool)
+		m.statusBar.SetActiveOps(nil)
 		// QUM-385: reset token usage; contextLimit is preserved across
 		// restarts since the model usually doesn't change.
 		m.statusBar.SetTokenUsage(0)
@@ -1109,6 +1128,103 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rootUnread = diskUnread
 			m.rebuildTree()
 		}
+		return m, nil
+
+	case MCPCallStartedMsg:
+		// QUM-497: MCP server is reporting a tool call has begun. Insert into
+		// the active-ops map (keyed by call_id), arm the 1Hz tick if this is
+		// the zero→one edge, and schedule a 60s threshold tick that raises a
+		// viewport banner with SIGUSR1 guidance if the call is still running.
+		if msg.CallID == "" {
+			return m, nil
+		}
+		if _, exists := m.activeMCPOps[msg.CallID]; !exists {
+			m.mcpOpOrder = append(m.mcpOpOrder, msg.CallID)
+		}
+		started := msg.Started
+		if started.IsZero() {
+			started = time.Now()
+		}
+		m.activeMCPOps[msg.CallID] = OpDescriptor{
+			CallID:  msg.CallID,
+			Tool:    msg.Tool,
+			Caller:  msg.Caller,
+			Step:    msg.Step,
+			Started: started,
+		}
+		m.statusBar.SetActiveOps(m.orderedMCPOps())
+		var cmds []tea.Cmd
+		if !m.mcpOpTickPending {
+			m.mcpOpTickPending = true
+			cmds = append(cmds, mcpOpTickCmd())
+		}
+		cmds = append(cmds, mcpOpThresholdCmd(msg.CallID, mcpOpBannerThreshold))
+		return m, tea.Batch(cmds...)
+
+	case MCPCallProgressMsg:
+		// QUM-497: update the per-op step (and elapsed time on next tick).
+		// Tail is intentionally not rendered into the status bar to keep the
+		// segment narrow; the call log already records the line tail.
+		if msg.CallID == "" {
+			return m, nil
+		}
+		if op, ok := m.activeMCPOps[msg.CallID]; ok {
+			if msg.Step != "" {
+				op.Step = msg.Step
+			}
+			m.activeMCPOps[msg.CallID] = op
+			m.statusBar.SetActiveOps(m.orderedMCPOps())
+		}
+		return m, nil
+
+	case MCPCallEndedMsg:
+		// QUM-497: tool call finished. Drop the op from the live set; the
+		// status bar segment vanishes once the next render fires.
+		if msg.CallID == "" {
+			return m, nil
+		}
+		if _, ok := m.activeMCPOps[msg.CallID]; ok {
+			delete(m.activeMCPOps, msg.CallID)
+			delete(m.mcpOpThresholdShown, msg.CallID)
+			m.mcpOpOrder = removeStr(m.mcpOpOrder, msg.CallID)
+			m.statusBar.SetActiveOps(m.orderedMCPOps())
+		}
+		return m, nil
+
+	case mcpOpTickMsg:
+		// QUM-497: 1Hz re-render driver. Self-perpetuates only while ops are
+		// active; falls silent once the map drains so idle frames cost nothing.
+		if len(m.activeMCPOps) == 0 {
+			m.mcpOpTickPending = false
+			return m, nil
+		}
+		// SetActiveOps re-installs the slice; the View() call this cmd
+		// triggers will reformat elapsed time against the current clock.
+		m.statusBar.SetActiveOps(m.orderedMCPOps())
+		return m, mcpOpTickCmd()
+
+	case mcpOpThresholdMsg:
+		// QUM-497: 60s threshold elapsed. If the op is still active and we
+		// haven't already raised a banner for it, append the SIGUSR1 hint to
+		// the root viewport. Idempotent across duplicate threshold deliveries
+		// (defensive: only one is scheduled per Started).
+		op, ok := m.activeMCPOps[msg.CallID]
+		if !ok {
+			return m, nil
+		}
+		if m.mcpOpThresholdShown[msg.CallID] {
+			return m, nil
+		}
+		m.mcpOpThresholdShown[msg.CallID] = true
+		caller := op.Caller
+		if caller == "" {
+			caller = "?"
+		}
+		elapsed := formatElapsed(time.Since(op.Started))
+		m.rootVP().AppendStatus(fmt.Sprintf(
+			"⏳ %s(%s) is taking longer than usual (T+%s). Send SIGUSR1 to capture state.",
+			op.Tool, caller, elapsed,
+		))
 		return m, nil
 
 	case ConfirmResultMsg:
@@ -2193,6 +2309,59 @@ func readChildTranscript(sprawlRoot, homeDir, name string) ChildTranscriptMsg {
 		return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Err: err}
 	}
 	return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Entries: entries}
+}
+
+// mcpOpBannerThreshold is the elapsed time after which a long-running MCP
+// tool call earns a viewport banner with SIGUSR1 guidance. Package-level var
+// so reducer tests can compress it. (QUM-497)
+var mcpOpBannerThreshold = 60 * time.Second
+
+// mcpOpTickInterval is the refresh cadence for the live elapsed-time render
+// in the status bar. Package-level var so tests can override. (QUM-497)
+var mcpOpTickInterval = 1 * time.Second
+
+// mcpOpTickCmd returns a tea.Cmd that fires an mcpOpTickMsg after one tick
+// interval. The reducer self-perpetuates while ops remain active. (QUM-497)
+func mcpOpTickCmd() tea.Cmd {
+	return tea.Tick(mcpOpTickInterval, func(time.Time) tea.Msg {
+		return mcpOpTickMsg{}
+	})
+}
+
+// mcpOpThresholdCmd returns a one-shot tea.Cmd that fires after delay,
+// scoping the resulting mcpOpThresholdMsg to a single call_id so the
+// reducer can ignore stale deliveries from a finished call. (QUM-497)
+func mcpOpThresholdCmd(callID string, delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return mcpOpThresholdMsg{CallID: callID}
+	})
+}
+
+// orderedMCPOps returns the active ops in insertion order (oldest first) so
+// SetActiveOps can render the longest-running call in the leftmost slot of
+// the status bar. (QUM-497)
+func (m *AppModel) orderedMCPOps() []OpDescriptor {
+	if len(m.activeMCPOps) == 0 {
+		return nil
+	}
+	out := make([]OpDescriptor, 0, len(m.mcpOpOrder))
+	for _, id := range m.mcpOpOrder {
+		if op, ok := m.activeMCPOps[id]; ok {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
+// removeStr returns ss with the first occurrence of v removed. Returns the
+// original slice when v is absent. (QUM-497)
+func removeStr(ss []string, v string) []string {
+	for i, s := range ss {
+		if s == v {
+			return append(ss[:i], ss[i+1:]...)
+		}
+	}
+	return ss
 }
 
 // persistCostCmd writes the session cost to the agent's state file. Fire-and-

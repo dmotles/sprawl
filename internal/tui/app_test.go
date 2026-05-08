@@ -414,9 +414,8 @@ func TestAppModel_ViewShowsConfirmOverlay(t *testing.T) {
 // --- Bridge integration tests ---
 
 func TestAppModel_InitWithBridge(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 
 	cmd := m.Init()
@@ -426,9 +425,8 @@ func TestAppModel_InitWithBridge(t *testing.T) {
 }
 
 func TestAppModel_SubmitMsg_SendsViabridge(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -446,9 +444,8 @@ func TestAppModel_SubmitMsg_SendsViabridge(t *testing.T) {
 }
 
 func TestAppModel_SubmitMsg_EmptyTextIgnored(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -531,9 +528,8 @@ func TestAppModel_SessionErrorMsg_SetsTurnStateIdle(t *testing.T) {
 }
 
 func TestAppModel_SessionErrorMsg_ShowsDialog_WhenStreaming(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -564,9 +560,8 @@ func TestAppModel_SessionErrorMsg_NoDialog_WhenIdle(t *testing.T) {
 }
 
 func TestAppModel_SessionErrorMsg_ShowsDialog_WhenThinking(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -603,14 +598,13 @@ func TestAppModel_ErrorDialog_BlocksKeys(t *testing.T) {
 
 func TestAppModel_RestartSessionMsg_ClearsError(t *testing.T) {
 	restartCalled := false
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalled = true
-		newMock := newMockSession()
-		return NewBridge(context.Background(), newMock), nil
+		newMock := newFakeSessionBackend()
+		return newMock, nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -716,9 +710,8 @@ func TestAppModel_SessionErrorMsg_WhenStreaming_ShowsErrorDialog(t *testing.T) {
 	// is its own modal — when it's up, the App routes all keys to it, so the
 	// "input is unreachable" guarantee is provided by showError, not the
 	// disabled flag.
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -740,12 +733,11 @@ func TestAppModel_RestartSessionMsg_RestoresIdleState(t *testing.T) {
 	// QUM-340: input is no longer disabled by turn-state, so this test now
 	// verifies that a successful restart leaves the App in TurnIdle and
 	// dismisses the error dialog. The bar is always editable when visible.
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
-		return NewBridge(context.Background(), newMockSession()), nil
+		return newFakeSessionBackend(), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -765,12 +757,11 @@ func TestAppModel_RestartSessionMsg_RestoresIdleState(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_ClosesOldBridge(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
-		return NewBridge(context.Background(), newMockSession()), nil
+		return newFakeSessionBackend(), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -799,9 +790,8 @@ func TestAppModel_CtrlC_ShowsConfirmDuringErrorDialog(t *testing.T) {
 }
 
 func TestAppModel_UserMessageSentMsg_ProducesWaitCmd(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1422,9 +1412,8 @@ func driveAsyncRestart(t *testing.T, app AppModel, cmd tea.Cmd) AppModel {
 }
 
 func TestAppModel_SessionErrorMsg_EOF_AutoRestarts(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1447,9 +1436,8 @@ func TestAppModel_SessionErrorMsg_EOF_AutoRestarts(t *testing.T) {
 }
 
 func TestAppModel_SessionErrorMsg_EOF_AutoRestartsEvenFromIdle(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1468,9 +1456,8 @@ func TestAppModel_SessionErrorMsg_EOF_AutoRestartsEvenFromIdle(t *testing.T) {
 }
 
 func TestAppModel_SessionErrorMsg_WrappedEOF_AutoRestarts(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1491,9 +1478,8 @@ func TestAppModel_SessionErrorMsg_WrappedEOF_AutoRestarts(t *testing.T) {
 }
 
 func TestAppModel_SessionErrorMsg_NonEOFStreamingStillShowsDialog(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1544,14 +1530,14 @@ func TestAppModel_RestartSessionMsg_DoesNotBlockOnRestartFunc(t *testing.T) {
 	restartStarted := make(chan struct{})
 	restartCalls := 0
 
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalls++
 		close(restartStarted)
 		<-release
-		return NewBridge(context.Background(), newMockSession()), nil
+		return newFakeSessionBackend(), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1589,11 +1575,11 @@ func TestAppModel_RestartSessionMsg_SetsRestartingFlag(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		<-release
-		return NewBridge(context.Background(), newMockSession()), nil
+		return newFakeSessionBackend(), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1610,15 +1596,15 @@ func TestAppModel_RestartSessionMsg_SetsRestartingFlag(t *testing.T) {
 }
 
 func TestAppModel_RestartCompleteMsg_Success_InstallsBridgeAndClearsRestarting(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app = resized.(AppModel)
 	app.restarting = true
 	app.statusBar.SetRestartLabel("Consolidating timeline...")
 
-	newBridge := NewBridge(context.Background(), newMockSession())
+	newBridge := newFakeSessionBackend()
 	newBridge.SetSessionID("abcdef12-3456-7890-abcd-ef1234567890")
 
 	updated, cmd := app.Update(RestartCompleteMsg{Bridge: newBridge, Err: nil})
@@ -1659,12 +1645,12 @@ func TestAppModel_RestartCompleteMsg_Error_ShowsDialog(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_CoalescesWhileRestarting(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	restartCalls := 0
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalls++
-		return NewBridge(context.Background(), newMockSession()), nil
+		return newFakeSessionBackend(), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1681,13 +1667,12 @@ func TestAppModel_RestartSessionMsg_CoalescesWhileRestarting(t *testing.T) {
 
 func TestAppModel_RestartSessionMsg_AfterQuitConfirmed_ReturnsTeaQuit(t *testing.T) {
 	restartCalled := false
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
 		restartCalled = true
-		return NewBridge(context.Background(), newMockSession()), nil
+		return newFakeSessionBackend(), nil
 	})
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1765,9 +1750,8 @@ func TestAppModel_PreloadTranscript_SetsViewportMessages(t *testing.T) {
 }
 
 func TestAppModel_HandoffRequestedMsg_TriggersRestart(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -1786,11 +1770,11 @@ func TestAppModel_HandoffRequestedMsg_TriggersRestart(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
-		nb := NewBridge(context.Background(), newMockSession())
+		nb := newFakeSessionBackend()
 		nb.SetSessionID("newsession0000000000000000000000ffff")
 		return nb, nil
 	})
@@ -1815,11 +1799,11 @@ func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
-		nb := NewBridge(context.Background(), newMockSession())
+		nb := newFakeSessionBackend()
 		nb.SetSessionID("abcdef12-3456-7890-abcd-ef1234567890")
 		return nb, nil
 	})
@@ -1847,11 +1831,11 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 }
 
 func TestAppModel_RestartSessionMsg_UpdatesStatusBarSessionID(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, nil, "", func() (SessionBackend, error) {
-		nb := NewBridge(context.Background(), newMockSession())
+		nb := newFakeSessionBackend()
 		nb.SetSessionID("deadbeef-0000-0000-0000-000000000000")
 		return nb, nil
 	})
@@ -1868,8 +1852,8 @@ func TestAppModel_RestartSessionMsg_UpdatesStatusBarSessionID(t *testing.T) {
 }
 
 func TestAppModel_SessionInitializedMsg_UpdatesStatusBarSessionID(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	bridge.SetSessionID("cafebabe-1111-2222-3333-444455556666")
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -1884,8 +1868,8 @@ func TestAppModel_SessionInitializedMsg_UpdatesStatusBarSessionID(t *testing.T) 
 }
 
 func TestAppModel_SessionInitializedMsg_DoesNotClearPreloadedTranscript(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	bridge.SetSessionID("aaaaaaaa-1111-2222-3333-444455556666")
 	m := newTestAppModelWithBridge(t, bridge)
 
@@ -2311,8 +2295,8 @@ func TestAppModel_InboxDrainMsg_NoBridge_NoOp(t *testing.T) {
 }
 
 func TestAppModel_InboxDrainMsg_EmptyPrompt_NoOp(t *testing.T) {
-	ms := newMockSession()
-	bridge := NewBridge(context.Background(), ms)
+	ms := newFakeSessionBackend()
+	bridge := ms
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = resized.(AppModel)
@@ -2328,8 +2312,8 @@ func TestAppModel_InboxDrainMsg_EmptyPrompt_NoOp(t *testing.T) {
 }
 
 func TestAppModel_InboxDrainMsg_DroppedWhenMidTurn(t *testing.T) {
-	ms := newMockSession()
-	bridge := NewBridge(context.Background(), ms)
+	ms := newFakeSessionBackend()
+	bridge := ms
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = resized.(AppModel)
@@ -2348,8 +2332,8 @@ func TestAppModel_InboxDrainMsg_DroppedWhenMidTurn(t *testing.T) {
 }
 
 func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
-	ms := newMockSession()
-	bridge := NewBridge(context.Background(), ms)
+	ms := newFakeSessionBackend()
+	bridge := ms
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = resized.(AppModel)
@@ -2399,8 +2383,8 @@ func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
 }
 
 func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {
-	ms := newMockSession()
-	bridge := NewBridge(context.Background(), ms)
+	ms := newFakeSessionBackend()
+	bridge := ms
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = resized.(AppModel)
@@ -2418,8 +2402,8 @@ func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {
 func TestAppModel_UserMessageSentMsg_ClearsPendingDrainIDs(t *testing.T) {
 	// After a drained prompt is on the wire, UserMessageSentMsg must clear
 	// pendingDrainIDs so subsequent turns don't re-commit the same entries.
-	ms := newMockSession()
-	bridge := NewBridge(context.Background(), ms)
+	ms := newFakeSessionBackend()
+	bridge := ms
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app = resized.(AppModel)
@@ -2607,8 +2591,8 @@ func TestAppModel_ToolCallMsg_PreservesFullInput(t *testing.T) {
 // suitable for exercising the pendingSubmit state machine.
 func busyAppWithBridge(t *testing.T) AppModel {
 	t.Helper()
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
@@ -2715,8 +2699,8 @@ func TestAppModel_Esc_ClearsPendingSubmit(t *testing.T) {
 
 func TestAppModel_PendingSubmit_PersistsAcrossAgentCycle(t *testing.T) {
 	sup := &mockSupervisor{}
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
@@ -2775,8 +2759,8 @@ func TestAppModel_InputAlwaysEditable_MidTurn(t *testing.T) {
 	// Regression for issue B: cycling root → child → root mid-turn must not
 	// leave the input bar in a state where SubmitMsg silently drops the input.
 	sup := &mockSupervisor{}
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
@@ -2801,8 +2785,8 @@ func TestAppModel_InputAlwaysEditable_MidTurn(t *testing.T) {
 // --- QUM-380: ESC interrupt during streaming/thinking ---
 
 func TestAppModel_Esc_InterruptsDuringStreaming(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 	app.statusBar.SetTurnState(TurnStreaming)
@@ -2825,8 +2809,8 @@ func TestAppModel_Esc_InterruptsDuringStreaming(t *testing.T) {
 }
 
 func TestAppModel_Esc_InterruptsDuringThinking(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnThinking
 	app.statusBar.SetTurnState(TurnThinking)
@@ -2847,8 +2831,8 @@ func TestAppModel_Esc_InterruptsDuringThinking(t *testing.T) {
 }
 
 func TestAppModel_Esc_NoInterruptDuringIdle(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnIdle
 
@@ -2862,8 +2846,8 @@ func TestAppModel_Esc_NoInterruptDuringIdle(t *testing.T) {
 }
 
 func TestAppModel_Esc_PendingSubmitTakesPriority(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 	app.pendingSubmit = "queued"
@@ -2882,8 +2866,8 @@ func TestAppModel_Esc_PendingSubmitTakesPriority(t *testing.T) {
 }
 
 func TestAppModel_Esc_HelpDismissTakesPriority(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 	app.showHelp = true
@@ -2900,8 +2884,8 @@ func TestAppModel_Esc_HelpDismissTakesPriority(t *testing.T) {
 }
 
 func TestAppModel_Esc_SelectModeTakesPriority(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	// Seed viewport with messages so select mode can activate.
 	app.viewportFor("weave").AppendAssistantChunk("some text")
@@ -2928,8 +2912,8 @@ func TestAppModel_Esc_SelectModeTakesPriority(t *testing.T) {
 }
 
 func TestAppModel_InterruptResultMsg_ShowsStatus(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 
@@ -2954,8 +2938,8 @@ func TestAppModel_InterruptResultMsg_ShowsStatus(t *testing.T) {
 }
 
 func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 
@@ -2984,8 +2968,8 @@ func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
 // move turnState back to TurnIdle, finalize any pending assistant chunk, and
 // fire pendingSubmit / drain side effects.
 func TestAppModel_InterruptCompletedMsg_ReturnsToIdle(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 	// Plant a pending assistant chunk so we can assert it's finalized.
@@ -3074,8 +3058,8 @@ func TestAppModel_InterruptCompletedMsg_NotificationDuringInterruptPending(t *te
 	sprawlRoot := t.TempDir()
 	seedUnreadForWeave(t, sprawlRoot, 1)
 
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	sup := &mockSupervisor{}
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, sprawlRoot, nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -3104,7 +3088,7 @@ func TestAppModel_InterruptCompletedMsg_NotificationDuringInterruptPending(t *te
 // paths share. If the helper is missing, the test fails to compile.
 func TestAppModel_finalizeTurn_RearmsContinuousBridge(t *testing.T) {
 	delegate := &continuousFakeDelegate{}
-	bridge := NewBridgeFromDelegate(delegate)
+	bridge := delegate
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 
@@ -3124,7 +3108,7 @@ func TestAppModel_finalizeTurn_RearmsContinuousBridge(t *testing.T) {
 // session restart, not idle, and is covered by the EOF_AutoRestarts tests.
 func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
 	delegate := &continuousFakeDelegate{}
-	bridge := NewBridgeFromDelegate(delegate)
+	bridge := delegate
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 	app.pendingSubmit = "queued"
@@ -3177,7 +3161,7 @@ func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
 // gets the error, finalizeTurn still re-arms the continuous bridge.
 func TestAppModel_SessionErrorMsg_FromIdle_FinalizesTurn(t *testing.T) {
 	delegate := &continuousFakeDelegate{}
-	bridge := NewBridgeFromDelegate(delegate)
+	bridge := delegate
 	app := readyAppWithBridge(t, bridge)
 	// turnState is TurnIdle by default.
 
@@ -3254,8 +3238,8 @@ func TestAppModel_Esc_NoBridgeNoInterrupt(t *testing.T) {
 // --- QUM-385: Token counter wiring tests ---
 
 func TestAppModel_SessionUsageMsg_UpdatesStatusBar(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app = resized.(AppModel)
@@ -3279,8 +3263,8 @@ func TestAppModel_SessionUsageMsg_UpdatesStatusBar(t *testing.T) {
 }
 
 func TestAppModel_SessionModelMsg_SetsContextLimit(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app = resized.(AppModel)
@@ -3310,8 +3294,8 @@ func TestAppModel_SessionModelMsg_NoBridge(t *testing.T) {
 }
 
 func TestAppModel_RestartComplete_ResetsTokenUsage(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app = resized.(AppModel)
@@ -3322,7 +3306,7 @@ func TestAppModel_RestartComplete_ResetsTokenUsage(t *testing.T) {
 	app.restarting = true
 
 	// Deliver restart complete.
-	newBridge := NewBridge(context.Background(), newMockSession())
+	newBridge := newFakeSessionBackend()
 	newBridge.SetSessionID("abcdef12-new")
 	updated, _ := app.Update(RestartCompleteMsg{Bridge: newBridge, Err: nil})
 	app = updated.(AppModel)
@@ -3337,8 +3321,8 @@ func TestAppModel_RestartComplete_ResetsTokenUsage(t *testing.T) {
 }
 
 func TestAppModel_UsageAlongsideText_BothProcessed(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app = resized.(AppModel)
@@ -3454,8 +3438,8 @@ func TestAppModel_ConsolidationCompleteMsg_Error_AppendsFailureBanner(t *testing
 // status messages (e.g. consolidation phase banners) survive through
 // a RestartCompleteMsg and are not lost when the restart completes.
 func TestAppModel_RestartCompleteMsg_PreservesStatusMessages(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app = resized.(AppModel)
@@ -3464,7 +3448,7 @@ func TestAppModel_RestartCompleteMsg_PreservesStatusMessages(t *testing.T) {
 	app.rootVP().AppendStatus("Consolidating timeline...")
 
 	// Set up restart with a new bridge.
-	newBridge := NewBridge(context.Background(), newMockSession())
+	newBridge := newFakeSessionBackend()
 	app.restartFunc = func() (SessionBackend, error) { return newBridge, nil }
 
 	updated, cmd := app.Update(RestartSessionMsg{})
@@ -3561,7 +3545,7 @@ func scanMsgForSentinel(msg tea.Msg) bool {
 // WaitForEvent so the autonomous event stream begins draining immediately.
 func TestAppModel_SessionInitializedMsg_KicksOffWaitForEvent_WhenContinuous(t *testing.T) {
 	d := &continuousFakeDelegate{sessID: "sess-continuous"}
-	bridge := NewBridgeFromDelegate(d)
+	bridge := d
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -3579,7 +3563,7 @@ func TestAppModel_SessionInitializedMsg_KicksOffWaitForEvent_WhenContinuous(t *t
 // pump running across turn boundaries.
 func TestAppModel_SessionResultMsg_KicksOffWaitForEvent_WhenContinuous(t *testing.T) {
 	d := &continuousFakeDelegate{sessID: "sess-continuous"}
-	bridge := NewBridgeFromDelegate(d)
+	bridge := d
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -3595,8 +3579,8 @@ func TestAppModel_SessionResultMsg_KicksOffWaitForEvent_WhenContinuous(t *testin
 // SessionResultMsg — that path only runs the cost computation cmd. This
 // guards the IsContinuous() gate on the SessionResultMsg handler.
 func TestAppModel_SessionResultMsg_DoesNotKickWaitForEvent_OnLegacyBridge(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock) // legacy: IsContinuous() == false
+	mock := newFakeSessionBackend()
+	bridge := mock // legacy: IsContinuous() == false
 	// We can't directly count WaitForEvent on a legacy bridge, so assert via
 	// IsContinuous being false (the precondition for the gate).
 	if bridge.IsContinuous() {

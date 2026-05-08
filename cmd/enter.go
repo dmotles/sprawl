@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -36,6 +37,7 @@ import (
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/observe/sigdump"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
@@ -68,7 +70,7 @@ type enterDeps struct {
 	// MCP tool and the TUI HandoffRequested() listener observe the same
 	// channel. QUM-329.
 	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error)
-	newSupervisor   func(sprawlRoot string, logger *calllog.Logger) supervisor.Supervisor
+	newSupervisor   func(sprawlRoot string, logger *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server)
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error
 }
 
@@ -229,7 +231,7 @@ func resolveEnterDeps() *enterDeps {
 			deps.LogPrefix = "[enter]"
 			return rootinit.FinalizeHandoff(ctx, deps, sprawlRoot, stdout, events)
 		},
-		newSupervisor: func(sprawlRoot string, logger *calllog.Logger) supervisor.Supervisor {
+		newSupervisor: func(sprawlRoot string, logger *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) {
 			// CallerName is what gets stamped into Parent when this
 			// supervisor's Spawn() creates a child (cmd/enter.go's supervisor
 			// now serves the MCP spawn tool since QUM-329 unified it).
@@ -248,7 +250,7 @@ func resolveEnterDeps() *enterDeps {
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[enter] supervisor unavailable: %v\n", err)
-				return nil
+				return nil, nil
 			}
 			// QUM-494: install the per-MCP-call observability logger on the
 			// supervisor and wire it into the MCP server so checkpoints emit
@@ -268,7 +270,7 @@ func resolveEnterDeps() *enterDeps {
 				},
 				sprawlmcp.MCPToolNames(),
 			)
-			return sup
+			return sup, mcpServer
 		},
 	}
 }
@@ -476,6 +478,12 @@ func runEnter(deps *enterDeps) error {
 	// flock is held so we know no other weave is launching this pipeline.
 	_, _ = rootinit.JanitorStaleLock(sprawlRoot, os.Stderr, time.Now)
 
+	// QUM-495: install SIGUSR1 handler that dumps goroutine stacks + open
+	// file descriptors to $SPRAWL_ROOT/.sprawl/runtime/. Process-wide and
+	// active for the lifetime of `sprawl enter` regardless of TUI mode.
+	stopSigDump := sigdump.Install(context.Background(), sprawlRoot, log.New(os.Stderr, "[sigdump] ", log.LstdFlags))
+	defer stopSigDump()
+
 	accentColor := state.ReadAccentColor(sprawlRoot)
 	repoName := filepath.Base(sprawlRoot)
 
@@ -515,8 +523,9 @@ func runEnter(deps *enterDeps) error {
 	// below), and (c) the HandoffRequested() listener goroutine in
 	// onStart. A second supervisor would orphan the handoff signal.
 	var sup supervisor.Supervisor
+	var mcpServer *sprawlmcp.Server
 	if deps.newSupervisor != nil {
-		sup = deps.newSupervisor(sprawlRoot, callLogger)
+		sup, mcpServer = deps.newSupervisor(sprawlRoot, callLogger)
 	}
 
 	var bridge tui.SessionBackend
@@ -574,6 +583,20 @@ func runEnter(deps *enterDeps) error {
 		// messages.Send, so a single SetDefaultNotifier call covers all
 		// origins of the notification.
 		messages.SetDefaultNotifier(buildTUIRootNotifier("weave", send))
+
+		// QUM-497: install the TUI message sender on the in-process MCP
+		// server and the supervisor so MCPCallStartedMsg / *ProgressMsg /
+		// *EndedMsg events surface in the host status bar / viewport. The
+		// sender is cleared on TUI shutdown below (sibling of the notifier
+		// teardown).
+		if mcpServer != nil {
+			mcpServer.SetMsgSender(func(msg any) { send(msg.(tea.Msg)) })
+		}
+		if r, ok := sup.(*supervisor.Real); ok {
+			r.SetProgressEmitter(func(callID, step, tail string) {
+				send(tui.MCPCallProgressMsg{CallID: callID, Step: step, Tail: tail})
+			})
+		}
 
 		// QUM-261: when the initial `--resume` subprocess trips the "No
 		// conversation found" stderr marker, prod the TUI to tear down and
@@ -676,6 +699,15 @@ func runEnter(deps *enterDeps) error {
 	// the TUI notifier so any lingering in-process messages.Send calls during
 	// shutdown don't try to dispatch into a dead program.
 	messages.SetDefaultNotifier(nil)
+	// QUM-497: tear down the TUI msg sender on shutdown so any in-flight MCP
+	// dispatch goroutines that emit Started/Ended events on their way out
+	// don't try to push into a dead bubbletea program.
+	if mcpServer != nil {
+		mcpServer.SetMsgSender(nil)
+	}
+	if r, ok := sup.(*supervisor.Real); ok {
+		r.SetProgressEmitter(nil)
+	}
 
 	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff. It
 	// does stop runtime-backed children because this weave process owns them.
