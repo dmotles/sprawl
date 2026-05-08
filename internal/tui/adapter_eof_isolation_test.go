@@ -340,8 +340,8 @@ func TestAppModel_ChildStreamClosedMsg_StaleEpochIgnored(t *testing.T) {
 //   - A follow-up ActivityStreamMsg-arming wait cmd is scheduled in the batch.
 
 func TestAppModel_RestartComplete_RebindsActivityAdapterForRoot(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app = resized.(AppModel)
@@ -364,7 +364,7 @@ func TestAppModel_RestartComplete_RebindsActivityAdapterForRoot(t *testing.T) {
 	priorAdapter := app.activityAdapter
 
 	// Drive a successful RestartCompleteMsg with a fresh bridge.
-	newBridge := NewBridge(context.Background(), newMockSession())
+	newBridge := newFakeSessionBackend()
 	updated, cmd := app.Update(RestartCompleteMsg{Bridge: newBridge, Err: nil})
 	app = updated.(AppModel)
 
@@ -405,8 +405,8 @@ func TestAppModel_RestartComplete_RebindsActivityAdapterForRoot(t *testing.T) {
 //        observing a non-root child agent -----------------------------------
 
 func TestAppModel_RestartComplete_DoesNotRebindWhenObservingChild(t *testing.T) {
-	mock := newMockSession()
-	bridge := NewBridge(context.Background(), mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	app := newTestAppModelWithBridge(t, bridge)
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app = resized.(AppModel)
@@ -426,7 +426,7 @@ func TestAppModel_RestartComplete_DoesNotRebindWhenObservingChild(t *testing.T) 
 
 	priorEpoch := app.activityAdapterEpoch
 
-	newBridge := NewBridge(context.Background(), newMockSession())
+	newBridge := newFakeSessionBackend()
 	updated, _ := app.Update(RestartCompleteMsg{Bridge: newBridge, Err: nil})
 	app = updated.(AppModel)
 

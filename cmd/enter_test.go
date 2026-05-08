@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/rootinit"
+	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
@@ -416,7 +417,7 @@ func TestEnter_CleanShutdown_StopsRuntimeBackedAgentsViaShutdown(t *testing.T) {
 			return nil
 		},
 		newSession:    nil,
-		newSupervisor: func(_ string, _ *calllog.Logger) supervisor.Supervisor { return mockSup },
+		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
 	}
 
 	err := runEnter(deps)
@@ -825,7 +826,7 @@ func TestEnter_SharedSupervisor_ThreadedEndToEnd(t *testing.T) {
 			return nil
 		},
 		newSession:    factory.newSession,
-		newSupervisor: func(_ string, _ *calllog.Logger) supervisor.Supervisor { return sentinelSup },
+		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return sentinelSup, nil },
 	}
 
 	if err := runEnter(deps); err != nil {
@@ -908,7 +909,7 @@ func TestDefaultEnterDeps_SupervisorCallerIsWeave(t *testing.T) {
 		t.Fatal("newSupervisor is nil")
 	}
 	tmpDir := t.TempDir()
-	sup := deps.newSupervisor(tmpDir, nil)
+	sup, _ := deps.newSupervisor(tmpDir, nil)
 	if sup == nil {
 		t.Fatal("newSupervisor returned nil")
 	}
@@ -1027,7 +1028,7 @@ func TestEnter_RegistersWeaveInRuntimeRegistry(t *testing.T) {
 		getwd:         func() (string, error) { return tmpDir, nil },
 		runProgram:    func(tea.Model, func(func(tea.Msg))) error { return nil },
 		newSession:    registeringNewSession,
-		newSupervisor: func(_ string, _ *calllog.Logger) supervisor.Supervisor { return mockSup },
+		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
 	}
 
 	if err := runEnter(deps); err != nil {

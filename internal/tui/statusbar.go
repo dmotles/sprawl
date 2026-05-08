@@ -3,7 +3,19 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 )
+
+// OpDescriptor describes one in-flight MCP tool call surfaced in the status
+// bar (QUM-497). The status bar renders elapsed time live (≥1Hz) so a hung
+// tool call is visible long before the user reaches for Ctrl-C.
+type OpDescriptor struct {
+	CallID  string
+	Tool    string
+	Caller  string
+	Step    string
+	Started time.Time
+}
 
 // StatusBarModel renders a single-line status bar.
 type StatusBarModel struct {
@@ -23,6 +35,16 @@ type StatusBarModel struct {
 	// consolidation pipeline is active after a handoff (QUM-391). Empty when
 	// no consolidation is running.
 	restartLabel string
+
+	// activeOps lists in-flight MCP tool calls (QUM-497). When non-empty, a
+	// "⏳ tool(caller) M:SS" segment is rendered as the first right-side part
+	// so a hung tool call is visible long before the user Ctrl-Cs. The slice
+	// is owned by the model — callers pass a fresh slice to SetActiveOps.
+	activeOps []OpDescriptor
+
+	// nowFn returns the wall-clock time used for elapsed-time rendering.
+	// Defaults to time.Now; tests override it for deterministic output.
+	nowFn func() time.Time
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -55,6 +77,9 @@ func (m StatusBarModel) View() string {
 	}
 
 	var parts []string
+	if seg := m.activeOpsSegment(); seg != "" {
+		parts = append(parts, seg)
+	}
 	if m.restartLabel != "" {
 		parts = append(parts, m.restartLabel)
 	}
@@ -136,6 +161,87 @@ func (m *StatusBarModel) SetContextLimit(limit int) {
 // bar (QUM-391). Pass empty string to clear.
 func (m *StatusBarModel) SetRestartLabel(label string) {
 	m.restartLabel = label
+}
+
+// SetActiveOps replaces the in-flight MCP ops list rendered in the status
+// bar (QUM-497). Pass nil/empty to clear. Callers should re-call this on
+// every reduce that mutates the op set.
+func (m *StatusBarModel) SetActiveOps(ops []OpDescriptor) {
+	if len(ops) == 0 {
+		m.activeOps = nil
+		return
+	}
+	m.activeOps = append(m.activeOps[:0], ops...)
+}
+
+// SetNowFn overrides the wall-clock used to compute elapsed time on active
+// ops. Tests use this for deterministic output. Passing nil restores the
+// default time.Now.
+func (m *StatusBarModel) SetNowFn(fn func() time.Time) {
+	m.nowFn = fn
+}
+
+func (m *StatusBarModel) clock() time.Time {
+	if m.nowFn != nil {
+		return m.nowFn()
+	}
+	return time.Now()
+}
+
+// activeOpsSegment renders the "⏳ tool(caller) M:SS [+N more]" indicator.
+// Empty string when no ops are active.
+func (m StatusBarModel) activeOpsSegment() string {
+	if len(m.activeOps) == 0 {
+		return ""
+	}
+	now := m.clock()
+	const showAtMost = 2
+	visible := m.activeOps
+	if len(visible) > showAtMost {
+		visible = visible[:showAtMost]
+	}
+	pieces := make([]string, 0, len(visible)+1)
+	for _, op := range visible {
+		pieces = append(pieces, formatOpDescriptor(op, now))
+	}
+	if extra := len(m.activeOps) - len(visible); extra > 0 {
+		pieces = append(pieces, fmt.Sprintf("+%d more", extra))
+	}
+	return "⏳ " + strings.Join(pieces, " · ")
+}
+
+// formatOpDescriptor renders one op as "tool(caller) M:SS" or
+// "tool(caller): step M:SS" when a step is set.
+func formatOpDescriptor(op OpDescriptor, now time.Time) string {
+	elapsed := now.Sub(op.Started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	caller := op.Caller
+	if caller == "" {
+		caller = "?"
+	}
+	left := fmt.Sprintf("%s(%s)", op.Tool, caller)
+	if op.Step != "" {
+		left += ": " + op.Step
+	}
+	return fmt.Sprintf("%s T+%s", left, formatElapsed(elapsed))
+}
+
+// formatElapsed renders a duration as M:SS (or H:MM:SS for ≥1h). Always
+// minimum two-digit seconds so the bar doesn't shimmy.
+func formatElapsed(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	total := int(d / time.Second)
+	hours := total / 3600
+	mins := (total % 3600) / 60
+	secs := total % 60
+	if hours > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", hours, mins, secs)
+	}
+	return fmt.Sprintf("%d:%02ds", mins, secs)
 }
 
 // formatTokenCount renders a token count in compact form: "500", "42.3k", "1M".

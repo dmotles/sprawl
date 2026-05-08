@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
@@ -85,7 +86,7 @@ func TestEnter_HandoffChannelDispatch_EndToEnd(t *testing.T) {
 			return nil
 		},
 		newSession:    nil, // skip subprocess; we're testing channel wiring.
-		newSupervisor: func(_ string, _ *calllog.Logger) supervisor.Supervisor { return sup },
+		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return sup, nil },
 	}
 
 	runErr := make(chan error, 1)

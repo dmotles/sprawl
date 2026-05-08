@@ -491,9 +491,8 @@ func TestActivityStreamWaitCmd_DoesNotLeakSessionErrorMsg(t *testing.T) {
 }
 
 func TestAppModel_ActivityStreamWaitCmd_AdapterClose_DoesNotRestart(t *testing.T) {
-	mock := newMockSession()
-	ctx := context.Background()
-	bridge := NewBridge(ctx, mock)
+	mock := newFakeSessionBackend()
+	bridge := mock
 	m := newTestAppModelWithBridge(t, bridge)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)

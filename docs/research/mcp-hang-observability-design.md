@@ -113,13 +113,22 @@ A periodic goroutine (1s tick) updates `last_heartbeat` for the top of every act
 
 Implementation cost: ~200 LOC + tests.
 
-**A3. SIGUSR1 → goroutine + FD dump.** Wire a signal handler in `cmd/enter.go` (or wherever the supervisor lives) that, on SIGUSR1, writes:
+**A3. SIGUSR1 → goroutine + FD dump.** *(Shipped — QUM-495.)* Wire a signal handler in `cmd/enter.go` (or wherever the supervisor lives) that, on SIGUSR1, writes:
 - `runtime.Stack(buf, true)` → `.sprawl/runtime/goroutines-<ts>.txt`
 - contents of `/proc/self/fd` (symlink targets) → `.sprawl/runtime/fds-<ts>.txt`
 
 This lets a user, *before* Ctrl-C-ing the host, send `pkill -USR1 sprawl` and capture the live state.
 
 Implementation cost: ~80 LOC + a manual test. Trivially testable in a sandbox.
+
+## Operator runbook: capturing a hang snapshot
+
+1. Find the host PID: `pgrep -f "sprawl enter"`
+2. `kill -USR1 <pid>` (or `pkill -USR1 -f "sprawl enter"`)
+3. Snapshots appear under `$SPRAWL_ROOT/.sprawl/runtime/`:
+   - `goroutines-<ts>.txt` — full goroutine stack dump
+   - `fds-<ts>.txt` — open file descriptors
+4. Repeat as needed; each invocation produces fresh files.
 
 **A4. pprof on a unix socket (off-by-default).** Bind `pprof.Index` to `.sprawl/runtime/pprof.sock` when `SPRAWL_PPROF=1`. Same evidence as A3 plus heap, mutex, block profiles. More expensive to wire and test; use only if A3 proves insufficient.
 
@@ -172,14 +181,93 @@ The MCP spec (basic/utilities/progress) lets a client opt into progress for a to
 2. We run our own MCP client. Out of scope; we use Claude Code.
 3. We emulate progress by *writing into the agent's mailbox* via `send_async` from inside the long-running tool. This is hack-y (it interleaves with real messages) but it does work today. **This is the closest "shippable B."**
 
-### Proposed minimal experiment
+### Empirical verification (QUM-498, 2026-05-08)
 
-If we want to *verify* the verdict, one engineer-hour: add a single test MCP tool `_test_progress` that emits 5 `notifications/progress` over 5s and observe whether the calling agent sees anything. If yes, viability changes; if no, file the issue link in our roadmap and move on. This is low-cost insurance.
+Spike completed. **Verdict confirmed: NEGATIVE.** Claude Code 2.1.126 still
+silently drops `notifications/progress` events from MCP servers, exactly as
+[#4157](https://github.com/anthropics/claude-code/issues/4157) (closed, not
+planned) reported in mid-2025. There has been no shift since.
+
+**Method.** A standalone stdio MCP server (`.sprawl/agents/ghost/findings/qum-498/test_progress_server.py`)
+exposing one tool `_test_progress` was attached to a headless `claude -p`
+session via `--mcp-config /tmp/qum498-mcp.json --strict-mcp-config`. The tool
+emits 5 well-formed `notifications/progress` JSON-RPC messages spaced 1s
+apart, echoing the caller's `_meta.progressToken`, then returns a single text
+result. The Claude session was instructed to call the tool and report any
+intermediate progress events it observed before the final result.
+
+We did **not** add the probe tool to `internal/sprawlmcp/server.go` itself
+(as the spike sketch suggested) because sprawl's `MCPServer.HandleMessage`
+contract is purely request/response — there is no current path for a tool
+handler to push a server-initiated JSON-RPC frame back to the calling Claude
+process via `MCPBridge` (and the existing `OnServerMessage`/`AddPendingMCP`
+plumbing is test-only and explicitly unsafe across sessions per the QUM-469
+caveat in `internal/host/mcp_bridge.go`). A standalone server is sufficient
+because the verdict is about the **client**: if Claude Code's MCP client
+drops notifications from any server, it drops them from sprawl's too.
+
+**Timestamped evidence (UTC, server log).**
+
+```
+2026-05-08T22:47:16.817Z  IN   initialize (clientInfo: claude-code 2.1.126, protocolVersion 2025-11-25)
+2026-05-08T22:47:16.875Z  IN   notifications/initialized
+2026-05-08T22:47:16.875Z  IN   tools/list
+2026-05-08T22:47:21.382Z  IN   tools/call _test_progress  _meta.progressToken=2  (client supplied a token)
+2026-05-08T22:47:21.382Z  OUT  notifications/progress {progressToken:2, progress:1, total:5, message:"step 1/5"}
+2026-05-08T22:47:22.383Z  OUT  notifications/progress {progressToken:2, progress:2, total:5, message:"step 2/5"}
+2026-05-08T22:47:23.384Z  OUT  notifications/progress {progressToken:2, progress:3, total:5, message:"step 3/5"}
+2026-05-08T22:47:24.385Z  OUT  notifications/progress {progressToken:2, progress:4, total:5, message:"step 4/5"}
+2026-05-08T22:47:25.387Z  OUT  notifications/progress {progressToken:2, progress:5, total:5, message:"step 5/5"}
+2026-05-08T22:47:26.388Z  OUT  tools/call result: "_test_progress complete: emitted 5 notifications/progress (token=2)"
+```
+
+**What the agent saw, verbatim** (`type:assistant` text block, end of session):
+
+> *"Progress updates / intermediate notifications observed during the call: **none**. I did not see any streaming progress events or intermediate notifications surfaced by the MCP client — only the single final tool result was visible to me."*
+
+**What Claude Code's debug log shows.** With `--debug-file` enabled, the only
+MCP-related entries between tool dispatch start (T+0s) and end (T+5s) are:
+
+```
+22:47:21.380  MCP server "test_progress": Calling MCP tool: _test_progress
+22:47:26.389  MCP server "test_progress": Tool '_test_progress' completed successfully in 5s
+```
+
+No `notifications/progress` entries are logged at any verbosity. They appear
+to be dropped at the MCP transport/dispatcher layer before any handler — not
+even logged-and-discarded. (Searched for `progress`, `notification` in
+`claude-debug.log`; only LSP/policy notification handler init lines match.)
+
+**Notable nuances.**
+
+- Claude Code's MCP client *does* attach `_meta.progressToken` (an integer,
+  `2`, in this run) to outbound `tools/call` requests. The protocol intent is
+  wired; the surfacing is not. This rules out "the client doesn't even ask
+  for progress" as a workaround angle.
+- Server-advertised protocolVersion (`2024-11-05`) is older than what the
+  client offered (`2025-11-25`), but the client still negotiated and sent the
+  progress token regardless. So this is not a protocol-version mismatch
+  issue.
+- Adjacent issues [#41733](https://github.com/anthropics/claude-code/issues/41733)
+  (closed dup) and [#44283](https://github.com/anthropics/claude-code/issues/44283)
+  (closed dup) report the same drop pattern for `notifications/claude/channel`
+  — i.e., the dispatcher problem is general to all server-initiated
+  notifications, not specific to progress.
+
+**Artifacts:** `.sprawl/agents/ghost/findings/qum-498/`
+{`test_progress_server.py`, `mcp-config.json`, `server.log`,
+`claude-stream.jsonl`, `claude-debug.log`, `report.md`}.
 
 ### Recommendation
 
-- **Do not invest** in protocol-level progress notifications.
-- **Do** ship the "send_async heartbeat" pattern as a reusable helper — see C below — but route it through the TUI primarily, with the `send_async` route as an opt-in fallback for when the calling agent is not weave (e.g., a child agent calling `merge` on its descendant).
+- **Do not invest** in protocol-level progress notifications. Verdict
+  re-confirmed against Claude Code 2.1.126 (May 2026). Track #4157 for a
+  future flip but do not block on it; QUM-497 should proceed assuming
+  Angle C is the only viable surfacing path.
+- **Do** ship the "send_async heartbeat" pattern as a reusable helper — see
+  C below — but route it through the TUI primarily, with the `send_async`
+  route as an opt-in fallback for when the calling agent is not weave (e.g.,
+  a child agent calling `merge` on its descendant).
 
 ---
 

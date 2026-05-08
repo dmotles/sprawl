@@ -81,6 +81,22 @@ type Real struct {
 	// per-call agentops deps so merge/retire emit per-call observability
 	// checkpoints into the JSONL call log. See QUM-494.
 	logger *calllog.Logger
+
+	// progressEmitter, when non-nil, is invoked for every per-call
+	// agentops checkpoint with the active call_id, step name, and an
+	// optional tail line (kv["line"] for merge.validate-line). The TUI
+	// uses this to update the in-flight indicator with the current step
+	// without re-rendering the whole call log. (QUM-497)
+	progressEmitter func(callID, step, tail string)
+}
+
+// SetProgressEmitter installs a fan-out hook invoked for every merge/retire
+// agentops checkpoint with the active call_id (extracted from ctx), step
+// name, and optional kv["line"] tail. The host TUI uses this to update its
+// in-flight status-bar indicator with the latest step (QUM-497). nil is
+// allowed and disables the fan-out.
+func (r *Real) SetProgressEmitter(fn func(callID, step, tail string)) {
+	r.progressEmitter = fn
 }
 
 // SetCallLogger installs the per-MCP-call observability logger on this
@@ -110,18 +126,18 @@ func NewReal(cfg Config) (*Real, error) {
 
 	newMergeDeps := func() *merge.Deps {
 		return &merge.Deps{
-			LockAcquire:     merge.RealLockAcquire,
-			GitMergeBase:    merge.RealGitMergeBase,
-			GitRevParseHead: merge.RealGitRevParseHead,
-			GitResetSoft:    merge.RealGitResetSoft,
-			GitCommit:       merge.RealGitCommit,
-			GitRebase:       merge.RealGitRebase,
-			GitRebaseAbort:  merge.RealGitRebaseAbort,
-			GitFFMerge:      merge.RealGitFFMerge,
-			GitResetHard:    merge.RealGitResetHard,
-			RunTests:        merge.RealRunTests,
-			WritePoke:       merge.RealWritePoke,
-			Stderr:          os.Stderr,
+			LockAcquire:       merge.RealLockAcquire,
+			GitMergeBase:      merge.RealGitMergeBase,
+			GitRevParseHead:   merge.RealGitRevParseHead,
+			GitResetSoft:      merge.RealGitResetSoft,
+			GitCommit:         merge.RealGitCommit,
+			GitRebase:         merge.RealGitRebase,
+			GitRebaseAbort:    merge.RealGitRebaseAbort,
+			GitFFMerge:        merge.RealGitFFMerge,
+			GitResetHard:      merge.RealGitResetHard,
+			RunTestsStreaming: merge.RealRunTestsStreaming,
+			WritePoke:         merge.RealWritePoke,
+			Stderr:            os.Stderr,
 		}
 	}
 
@@ -557,6 +573,47 @@ func (r *Real) CallerName() string {
 	return r.callerName
 }
 
+// composeCheckpoint builds the Checkpoint hook installed on per-call merge
+// and retire deps. It fans out into BOTH the JSONL call log (when a callLog
+// logger and a non-empty call_id are present) AND the host TUI progress
+// emitter (QUM-497). The combined closure is safe with id=="" — it just
+// drops the call-log half. Returns nil only when there's nothing to do, so
+// callers can install the result unconditionally.
+func (r *Real) composeCheckpoint(id string) func(step string, kv ...any) {
+	var logFn func(step string, kv ...any)
+	if r.logger != nil && id != "" {
+		logFn = r.logger.CheckpointFn(id)
+	}
+	emit := r.progressEmitter
+	if logFn == nil && emit == nil {
+		return nil
+	}
+	return func(step string, kv ...any) {
+		if logFn != nil {
+			logFn(step, kv...)
+		}
+		if emit != nil && id != "" {
+			emit(id, step, extractKVLine(kv))
+		}
+	}
+}
+
+// extractKVLine returns the value of the "line" key from a flat kv slice,
+// or empty string if absent / malformed. Used to pull the per-line tail
+// out of merge's "merge.validate-line" checkpoint payload. (QUM-497)
+func extractKVLine(kv []any) string {
+	for i := 0; i+1 < len(kv); i += 2 {
+		k, ok := kv[i].(string)
+		if !ok || k != "line" {
+			continue
+		}
+		if v, ok := kv[i+1].(string); ok {
+			return v
+		}
+	}
+	return ""
+}
+
 // effectiveCaller returns the caller identity from context if set (child agent
 // MCP calls), otherwise falls back to the static r.callerName. This enables
 // the shared supervisor to act on behalf of the correct child agent when
@@ -596,11 +653,8 @@ func (r *Real) mergeDepsForCaller(ctx context.Context, caller string) *agentops.
 		}
 		return os.Getenv(key)
 	}
-	if r.logger != nil {
-		if id := calllog.CallID(ctx); id != "" {
-			deps.Checkpoint = r.logger.CheckpointFn(id)
-		}
-	}
+	id := calllog.CallID(ctx)
+	deps.Checkpoint = r.composeCheckpoint(id)
 	return &deps
 }
 
@@ -618,11 +672,8 @@ func (r *Real) retireDepsForCaller(ctx context.Context, caller string) *agentops
 		}
 		return os.Getenv(key)
 	}
-	if r.logger != nil {
-		if id := calllog.CallID(ctx); id != "" {
-			deps.Checkpoint = r.logger.CheckpointFn(id)
-		}
-	}
+	id := calllog.CallID(ctx)
+	deps.Checkpoint = r.composeCheckpoint(id)
 	return &deps
 }
 

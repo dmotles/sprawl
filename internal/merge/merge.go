@@ -1,13 +1,20 @@
 package merge
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/state"
 )
+
+// DefaultValidateTimeout is the default timeout for post-merge validation
+// when neither Config.ValidateTimeout nor a project-level override is set.
+// QUM-496.
+const DefaultValidateTimeout = 10 * time.Minute
 
 // Config holds the parameters for a merge operation.
 type Config struct {
@@ -22,6 +29,15 @@ type Config struct {
 	ValidateCmd     string
 	DryRun          bool
 	AgentState      *state.AgentState
+
+	// Ctx is the context used to drive post-merge validation. If nil,
+	// context.Background() is used. ValidateTimeout (or DefaultValidateTimeout)
+	// is layered on top to bound runaway validate commands. QUM-496.
+	Ctx context.Context //nolint:containedctx // Threading ctx through the public surface here is deliberate so callers can cancel validate.
+
+	// ValidateTimeout caps the duration of post-merge validation. Zero means
+	// use DefaultValidateTimeout. QUM-496.
+	ValidateTimeout time.Duration
 }
 
 // Deps holds injectable dependencies for the merge operation.
@@ -35,9 +51,14 @@ type Deps struct {
 	GitRebaseAbort  func(worktree string) error
 	GitFFMerge      func(worktree, branch string) error
 	GitResetHard    func(worktree string) error
-	RunTests        func(dir, command string) (string, error)
-	WritePoke       func(sprawlRoot, agentName, content string) error
-	Stderr          io.Writer
+
+	// RunTestsStreaming runs the validate command, streaming each output
+	// line into sink as it is produced and honoring ctx for cancellation.
+	// Returns the full combined output and the wait error. QUM-496.
+	RunTestsStreaming func(ctx context.Context, dir, command string, sink func(line string)) (string, error)
+
+	WritePoke func(sprawlRoot, agentName, content string) error
+	Stderr    io.Writer
 
 	// Checkpoint, if non-nil, is invoked at notable points during the
 	// merge for per-call observability (QUM-494). It is safe to leave
@@ -116,7 +137,20 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	// Step 7: Post-merge validation.
 	if !cfg.NoValidate && cfg.ValidateCmd != "" {
 		cpMerge(deps, "merge.validate-started", "cmd", cfg.ValidateCmd)
-		output, err := deps.RunTests(cfg.ParentWorktree, cfg.ValidateCmd)
+		ctx := cfg.Ctx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		timeout := cfg.ValidateTimeout
+		if timeout <= 0 {
+			timeout = DefaultValidateTimeout
+		}
+		validateCtx, cancel := context.WithTimeout(ctx, timeout)
+		sink := func(line string) {
+			cpMerge(deps, "merge.validate-line", "line", line)
+		}
+		output, err := deps.RunTestsStreaming(validateCtx, cfg.ParentWorktree, cfg.ValidateCmd, sink)
+		cancel()
 		if err != nil {
 			if resetErr := deps.GitResetHard(cfg.ParentWorktree); resetErr != nil {
 				fmt.Fprintf(deps.Stderr, "WARNING: rollback (git reset --hard HEAD~1) failed: %v\n", resetErr)

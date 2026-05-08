@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"context"
 	"strings"
 	"testing"
 
@@ -15,7 +14,7 @@ func readyApp(t *testing.T) AppModel {
 	return updated.(AppModel)
 }
 
-func readyAppWithBridge(t *testing.T, b *Bridge) AppModel {
+func readyAppWithBridge(t *testing.T, b SessionBackend) AppModel {
 	t.Helper()
 	m := newTestAppModelWithBridge(t, b)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -117,9 +116,8 @@ func TestAppModel_ToggleHelpMsg_TogglesShowHelp(t *testing.T) {
 }
 
 func TestAppModel_InjectPromptMsg_SendsToBridgeWithoutAppendingUserMessage(t *testing.T) {
-	ms := newMockSession()
-	ctx := context.Background()
-	b := NewBridge(ctx, ms)
+	ms := newFakeSessionBackend()
+	b := ms
 	app := readyAppWithBridge(t, b)
 
 	template := "INJECTED PROMPT"
@@ -176,9 +174,8 @@ func TestAppModel_InjectPromptMsg_NoopWhenBridgeNil(t *testing.T) {
 }
 
 func TestAppModel_InjectPromptMsg_NoopWhenTurnBusy(t *testing.T) {
-	ms := newMockSession()
-	ctx := context.Background()
-	b := NewBridge(ctx, ms)
+	ms := newFakeSessionBackend()
+	b := ms
 	app := readyAppWithBridge(t, b)
 	app.setTurnState(TurnThinking)
 

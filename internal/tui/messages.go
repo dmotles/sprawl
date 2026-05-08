@@ -334,6 +334,48 @@ type ActivityStreamMsg struct {
 	Entries []agentloop.ActivityEntry
 }
 
+// MCPCallStartedMsg is dispatched by the in-process MCP server when a tool
+// call begins. It mirrors the calllog.Begin() event so the TUI can surface a
+// live "operation in flight" indicator in the status bar (QUM-497).
+type MCPCallStartedMsg struct {
+	CallID  string
+	Tool    string
+	Caller  string
+	Started time.Time
+	Step    string // optional initial step label
+}
+
+// MCPCallProgressMsg is dispatched whenever the in-process MCP server's
+// per-call checkpoint fires (calllog.Checkpoint). Carries the latest step
+// name and an optional Tail line (e.g. last validate output line). The TUI
+// uses this to update the status-bar segment without spamming the viewport.
+// (QUM-497)
+type MCPCallProgressMsg struct {
+	CallID string
+	Step   string
+	Tail   string
+}
+
+// MCPCallEndedMsg is dispatched when a tool call returns (success, error,
+// or panic). The TUI removes the op from the status bar and stops tracking
+// elapsed time. (QUM-497)
+type MCPCallEndedMsg struct {
+	CallID   string
+	Status   string // "ok" | "error" | "panic"
+	Duration time.Duration
+}
+
+// mcpOpTickMsg is the 1Hz self-perpetuating tick that re-renders elapsed
+// time on active MCP ops. Self-stops when no ops remain. (QUM-497)
+type mcpOpTickMsg struct{}
+
+// mcpOpThresholdMsg fires once per Started msg, 60s after start. If the op
+// is still active, AppModel raises a viewport banner with SIGUSR1 guidance.
+// (QUM-497)
+type mcpOpThresholdMsg struct {
+	CallID string
+}
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new
