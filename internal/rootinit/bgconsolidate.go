@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -73,6 +72,11 @@ func WaitForBackgroundConsolidation(sprawlRoot string, timeout time.Duration, st
 // The goroutine uses context.Background() so it outlives the caller's
 // context. Per-invocation timeouts inside the pipeline (see
 // memory.TimelineCompressionConfig.InvokeTimeout) keep it bounded.
+//
+// QUM-522: the lockfile body is a structured JSON lockState containing PID,
+// phase label, and start/heartbeat timestamps. A background ticker bumps
+// LastHeartbeat at heartbeatInterval so a stale-lock janitor on weave
+// startup can distinguish a live consolidation from a crashed one.
 func StartBackgroundConsolidation(deps *Deps, sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) <-chan struct{} {
 	done := make(chan struct{})
 	memDir := filepath.Join(sprawlRoot, ".sprawl", "memory")
@@ -94,16 +98,48 @@ func StartBackgroundConsolidation(deps *Deps, sprawlRoot string, stdout io.Write
 		close(done)
 		return done
 	}
-	_ = os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644) //nolint:gosec // G306: world-readable, matches adjacent memory files
+
+	now := time.Now()
+	initial := &lockState{
+		PID:           os.Getpid(),
+		Phase:         "starting",
+		StartedAt:     now,
+		LastHeartbeat: now,
+	}
+	if werr := writeLockState(path, initial); werr != nil {
+		fmt.Fprintf(stdout, "%s warning: writing consolidation lockfile body: %v\n", deps.LogPrefix, werr)
+	}
 
 	go func() {
 		defer close(done)
 		defer func() { _ = os.Remove(path) }()
 		defer func() { _ = fl.Unlock() }()
+
+		// Heartbeat ticker bumps LastHeartbeat so the stale-lock janitor
+		// can tell live consolidations from crashed ones.
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		stopHB := make(chan struct{})
+		hbDone := make(chan struct{})
+		go func() {
+			defer close(hbDone)
+			for {
+				select {
+				case <-stopHB:
+					return
+				case <-ticker.C:
+					_ = updateHeartbeat(path, "", time.Now())
+				}
+			}
+		}()
+
 		sendConsolidationEvent(events, ConsolidationEvent{Phase: "consolidation started"})
 		start := time.Now()
 		runConsolidationPipeline(context.Background(), deps, sprawlRoot, stdout, events)
 		sendConsolidationEvent(events, ConsolidationEvent{Done: true, Duration: time.Since(start)})
+
+		close(stopHB)
+		<-hbDone
 	}()
 	return done
 }

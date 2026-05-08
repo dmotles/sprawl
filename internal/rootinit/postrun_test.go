@@ -359,6 +359,76 @@ func TestRunConsolidationPipeline_NoSessions_NoCrash(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------
+// QUM-522: per-phase timeout. runConsolidationPipeline must not let a
+// hung LLM call block forever; each phase runs under context.WithTimeout.
+// ---------------------------------------------------------------------
+
+func TestRunConsolidationPipeline_TimeoutAbortsPhase(t *testing.T) {
+	// Override the per-phase timeout so the test completes quickly.
+	prev := perPhaseTimeout
+	perPhaseTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { perPhaseTimeout = prev })
+
+	deps := newTestDeps(t)
+
+	// Timeline phase blocks until ctx is cancelled — simulates a hung
+	// LLM call. It MUST observe ctx.Done() before the test deadline.
+	timelineDone := make(chan struct{})
+	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		defer close(timelineDone)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil
+		}
+	}
+	// PK phase returns promptly so we can verify it isn't blocked by the
+	// timeline phase's timeout.
+	pkDone := make(chan struct{})
+	deps.UpdatePersistentKnowledge = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
+		defer close(pkDone)
+		return nil
+	}
+
+	var buf strings.Builder
+	start := time.Now()
+	doneCh := make(chan struct{})
+	go func() {
+		runConsolidationPipeline(context.Background(), deps, "/fake/root", &buf, nil)
+		close(doneCh)
+	}()
+
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runConsolidationPipeline did not return within 2s — per-phase timeout did not fire")
+	}
+
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("pipeline took %s; expected ~50ms+slack", elapsed)
+	}
+
+	select {
+	case <-timelineDone:
+	case <-time.After(time.Second):
+		t.Fatal("timeline phase never observed ctx cancellation")
+	}
+	select {
+	case <-pkDone:
+	case <-time.After(time.Second):
+		t.Fatal("PK phase did not run / complete")
+	}
+
+	// Output should mention the timeout / deadline-exceeded so the user
+	// sees an explanation rather than silent failure.
+	out := strings.ToLower(buf.String())
+	if !strings.Contains(out, "timeout") && !strings.Contains(out, "deadline") {
+		t.Errorf("expected timeout/deadline warning in output; got %q", buf.String())
+	}
+}
+
 func TestFinalizeHandoff_NoSignal_DoesNotConsolidate(t *testing.T) {
 	deps := newTestDeps(t)
 	var consolidateCalled bool

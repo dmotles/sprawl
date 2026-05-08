@@ -294,6 +294,215 @@ func TestStartBackgroundConsolidation_EmitsEvents(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------
+// QUM-522: JSON-bodied lockfile + heartbeat + phase-label tests.
+// ---------------------------------------------------------------------
+
+// TestStartBackgroundConsolidation_WritesJSONLockBody verifies that while
+// the consolidation goroutine is in-flight, the lockfile body is JSON
+// containing this process's PID and a non-empty phase label.
+//
+// Test contract (QUM-522): StartBackgroundConsolidation must return a
+// `<-chan struct{}` that closes when the goroutine fully exits, so tests
+// can synchronize cleanup and avoid leaking the bg goroutine across tests.
+func TestStartBackgroundConsolidation_WritesJSONLockBody(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	deps := newTestDeps(t)
+	block := make(chan struct{})
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		<-block
+		return nil
+	}
+	deps.UpdatePersistentKnowledge = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
+		<-block
+		return nil
+	}
+
+	done := StartBackgroundConsolidation(deps, root, io.Discard, nil)
+
+	// Wait briefly for the goroutine to write the lockfile body.
+	path := consolidatingLockPath(root)
+	deadline := time.Now().Add(2 * time.Second)
+	var got *lockState
+	for time.Now().Before(deadline) {
+		s, err := readLockState(path)
+		if err == nil && s != nil && s.PID != 0 {
+			got = s
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got == nil {
+		close(block)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("lockfile never appeared with a parseable JSON body")
+	}
+	if got.PID != os.Getpid() {
+		t.Errorf("lockfile PID: got %d, want %d", got.PID, os.Getpid())
+	}
+	if got.Phase == "" {
+		t.Error("lockfile phase must be non-empty while consolidation runs")
+	}
+	if got.StartedAt.IsZero() {
+		t.Error("lockfile started_at must be set")
+	}
+
+	// Unblock the pipeline and wait for the goroutine to exit so it does
+	// not leak past this test.
+	close(block)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit within 2s after unblocking")
+	}
+}
+
+// TestStartBackgroundConsolidation_HeartbeatUpdates verifies the heartbeat
+// field advances over time while the pipeline runs.
+func TestStartBackgroundConsolidation_HeartbeatUpdates(t *testing.T) {
+	// Override the heartbeat interval so this test runs in <500ms.
+	prev := heartbeatInterval
+	heartbeatInterval = 20 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = prev })
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	deps := newTestDeps(t)
+	block := make(chan struct{})
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		<-block
+		return nil
+	}
+	deps.UpdatePersistentKnowledge = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
+		<-block
+		return nil
+	}
+
+	// Test contract (QUM-522): StartBackgroundConsolidation returns a
+	// <-chan struct{} that closes once the goroutine exits — required
+	// so tests can avoid leaking the bg goroutine.
+	done := StartBackgroundConsolidation(deps, root, io.Discard, nil)
+	path := consolidatingLockPath(root)
+
+	// Wait for first heartbeat.
+	var first *lockState
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s, err := readLockState(path)
+		if err == nil && s != nil && !s.LastHeartbeat.IsZero() {
+			first = s
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if first == nil {
+		close(block)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("never observed an initial heartbeat in the lockfile")
+	}
+
+	// Poll until the heartbeat advances past `first` rather than sleeping
+	// for a fixed interval — this avoids races on slow CI hosts and
+	// returns as soon as the next tick lands.
+	advancedDeadline := time.Now().Add(2 * time.Second)
+	var advanced bool
+	for time.Now().Before(advancedDeadline) {
+		s2, err := readLockState(path)
+		if err == nil && s2 != nil && s2.LastHeartbeat.After(first.LastHeartbeat) {
+			advanced = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !advanced {
+		close(block)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatalf("heartbeat did not advance within 2s; last=%v", first.LastHeartbeat)
+	}
+
+	// Drain the goroutine before the test returns.
+	close(block)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit within 2s after unblocking")
+	}
+}
+
+// TestStartBackgroundConsolidation_PhaseLabelUpdates verifies the lockfile
+// phase field tracks pipeline phase transitions: it should start at
+// "starting" (or similar) and be updated to a phase-specific label once
+// the timeline / persistent-knowledge phases begin.
+func TestStartBackgroundConsolidation_PhaseLabelUpdates(t *testing.T) {
+	prev := heartbeatInterval
+	heartbeatInterval = 10 * time.Millisecond
+	t.Cleanup(func() { heartbeatInterval = prev })
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	deps := newTestDeps(t)
+	gate := make(chan struct{})
+	deps.ConsolidateExcluding = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
+		<-gate
+		return nil
+	}
+	deps.UpdatePersistentKnowledge = func(ctx context.Context, r string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
+		<-gate
+		return nil
+	}
+
+	// Test contract (QUM-522): capture the done channel so we can drain
+	// the goroutine before the test returns instead of leaking it.
+	done := StartBackgroundConsolidation(deps, root, io.Discard, nil)
+	path := consolidatingLockPath(root)
+
+	// Collect distinct phase values observed over a short window.
+	observed := map[string]bool{}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s, err := readLockState(path)
+		if err == nil && s != nil && s.Phase != "" {
+			observed[s.Phase] = true
+		}
+		// Stop once we've seen at least one of the active phase labels.
+		if observed["Consolidating timeline..."] || observed["Updating persistent knowledge..."] {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !observed["Consolidating timeline..."] && !observed["Updating persistent knowledge..."] {
+		t.Errorf("expected to observe an active-phase label in the lockfile; got: %v", observed)
+	}
+
+	// Drain the goroutine before the test returns.
+	close(gate)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("goroutine did not exit within 2s after unblocking")
+	}
+}
+
 // TestStartBackgroundConsolidation_NilEventsChannel_NoPanic verifies that
 // passing a nil events channel does not cause a panic — existing callers
 // that don't care about events should continue to work unchanged.

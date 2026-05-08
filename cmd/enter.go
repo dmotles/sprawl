@@ -471,6 +471,11 @@ func runEnter(deps *enterDeps) error {
 	}
 	defer func() { _ = lock.Release() }()
 
+	// QUM-522: best-effort cleanup of a stale .consolidating lockfile
+	// orphaned by a crashed/SIGKILLed prior weave. Runs after the weave
+	// flock is held so we know no other weave is launching this pipeline.
+	_, _ = rootinit.JanitorStaleLock(sprawlRoot, os.Stderr, time.Now)
+
 	accentColor := state.ReadAccentColor(sprawlRoot)
 	repoName := filepath.Base(sprawlRoot)
 
