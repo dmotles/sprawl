@@ -22,6 +22,40 @@ scripts/sprawl-test-env.sh     # set up isolated test environment
 
 > **Warning:** Do not run `make install` unless your agent identity is `weave` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./sprawl` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.
 
+## Running `claude` from agent bash subshells (QUM-518)
+
+When an agent invokes `claude -p ...` from a Bash tool subshell, Claude Code
+sanitizes the subprocess env and strips `CLAUDE_CODE_OAUTH_TOKEN`. The inner
+`claude` then fails with `Not logged in`. The fix is a thin shell shim that
+re-hydrates auth env vars before exec'ing the real binary.
+
+**Setup (one-time, host side):**
+
+1. Create `.env` at the repo root containing your auth token(s):
+
+   ```
+   CLAUDE_CODE_OAUTH_TOKEN=...
+   ANTHROPIC_API_KEY=...     # optional
+   ```
+
+   Then `chmod 0600 .env`. **`.env` is gitignored — never commit it.**
+
+2. Launch sprawl with the shim as `$SPRAWL_CLAUDE`:
+
+   ```bash
+   SPRAWL_CLAUDE=$(pwd)/scripts/run-claude sprawl enter
+   ```
+
+`scripts/run-claude` sources `$SPRAWL_ROOT/.env` (falling back to the script's
+parent dir if `$SPRAWL_ROOT` is unset) and then `exec`s `claude`. The
+`worktree.setup` hook in `.sprawl/config.yaml` copies `.env` into each new
+agent worktree (preserving `0600` mode via `cp -p`) so the shim works from
+inside worktrees too.
+
+`internal/agent/claude.go` honors `$SPRAWL_CLAUDE`: if set, it is used
+verbatim as the `claude` binary path; otherwise it falls back to a `PATH`
+lookup.
+
 ## tmux safety (QUM-325)
 
 > **Never run bare `tmux kill-server`.** Sandbox scripts now use a dedicated tmux socket via `SPRAWL_TMUX_SOCKET` (QUM-325), so sandbox operations are isolated from the user's default tmux server. Production sessions still share the default socket.

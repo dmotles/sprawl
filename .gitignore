@@ -20,3 +20,6 @@ hosttest
 .claude/settings.local.json
 .codex
 CLAUDE.local.md
+
+# Local secrets (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, etc.) — see CLAUDE.md
+.env
