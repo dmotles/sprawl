@@ -3260,14 +3260,21 @@ func TestAppModel_SessionUsageMsg_UpdatesStatusBar(t *testing.T) {
 	resized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app = resized.(AppModel)
 
-	// Deliver usage via AssistantContentMsg (as bridge does).
+	// Deliver usage via AssistantContentMsg (as bridge does). The displayed
+	// counter must reflect TRUE context window usage, which is the sum of
+	// input_tokens + cache_read + cache_creation (QUM-385).
 	updated, _ := app.Update(AssistantContentMsg{
-		Msgs: []tea.Msg{SessionUsageMsg{InputTokens: 15000, OutputTokens: 300}},
+		Msgs: []tea.Msg{SessionUsageMsg{
+			InputTokens:              15000,
+			OutputTokens:             300,
+			CacheReadInputTokens:     50,
+			CacheCreationInputTokens: 100,
+		}},
 	})
 	app = updated.(AppModel)
 
-	if app.statusBar.contextTokens != 15000 {
-		t.Errorf("contextTokens = %d, want 15000", app.statusBar.contextTokens)
+	if app.statusBar.contextTokens != 15150 {
+		t.Errorf("contextTokens = %d, want 15150 (input+cache_read+cache_creation)", app.statusBar.contextTokens)
 	}
 }
 
@@ -3339,7 +3346,12 @@ func TestAppModel_UsageAlongsideText_BothProcessed(t *testing.T) {
 	updated, _ := app.Update(AssistantContentMsg{
 		Msgs: []tea.Msg{
 			AssistantTextMsg{Text: "hello"},
-			SessionUsageMsg{InputTokens: 5000, OutputTokens: 200},
+			SessionUsageMsg{
+				InputTokens:              5000,
+				OutputTokens:             200,
+				CacheReadInputTokens:     2000,
+				CacheCreationInputTokens: 500,
+			},
 		},
 	})
 	app = updated.(AppModel)
@@ -3348,9 +3360,10 @@ func TestAppModel_UsageAlongsideText_BothProcessed(t *testing.T) {
 	if app.turnState != TurnStreaming {
 		t.Errorf("turnState = %v, want TurnStreaming after receiving text", app.turnState)
 	}
-	// Verify usage was processed.
-	if app.statusBar.contextTokens != 5000 {
-		t.Errorf("contextTokens = %d, want 5000", app.statusBar.contextTokens)
+	// Verify usage was processed: warm-cache turn must sum all three
+	// input-side fields (QUM-385).
+	if app.statusBar.contextTokens != 7500 {
+		t.Errorf("contextTokens = %d, want 7500 (5000+2000+500)", app.statusBar.contextTokens)
 	}
 }
 

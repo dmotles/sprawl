@@ -620,7 +620,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setTurnState(TurnStreaming)
 				m.rootVP().AppendAssistantChunk(im.Text)
 			case SessionUsageMsg:
-				m.statusBar.SetTokenUsage(im.InputTokens)
+				// QUM-385: true context window usage = input + cache_read +
+				// cache_creation. input_tokens alone is the non-cached subset
+				// and understates the prefix by a large factor when prompt
+				// caching is on.
+				m.statusBar.SetTokenUsage(im.InputTokens + im.CacheReadInputTokens + im.CacheCreationInputTokens)
 			case ToolCallMsg:
 				m.rootVP().AppendToolCall(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput)
 				wasZero := m.pendingToolCalls == 0
