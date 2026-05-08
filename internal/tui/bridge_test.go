@@ -911,10 +911,72 @@ func TestMapAssistantMessage_ExtractsUsage(t *testing.T) {
 			if u.OutputTokens != 500 {
 				t.Errorf("OutputTokens = %d, want 500", u.OutputTokens)
 			}
+			// QUM-385: true context window usage requires summing in cache
+			// fields. The plumbing must surface them on SessionUsageMsg so
+			// the status bar can compute input + cache_read + cache_creation.
+			if u.CacheReadInputTokens != 50 {
+				t.Errorf("CacheReadInputTokens = %d, want 50", u.CacheReadInputTokens)
+			}
+			if u.CacheCreationInputTokens != 100 {
+				t.Errorf("CacheCreationInputTokens = %d, want 100", u.CacheCreationInputTokens)
+			}
 		}
 	}
 	if !foundUsage {
 		t.Error("AssistantContentMsg should contain a SessionUsageMsg when usage is present")
+	}
+}
+
+// TestMapAssistantMessage_ColdCacheUsage verifies the formula on a cold turn
+// (no cache reads, no cache creation): SessionUsageMsg propagates zeros for
+// the cache fields, leaving the input-token snapshot as the sole context
+// window contributor. (QUM-385)
+func TestMapAssistantMessage_ColdCacheUsage(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":4000,"output_tokens":50,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	acm, ok := MapProtocolMessage(&msg).(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("expected AssistantContentMsg")
+	}
+	var u SessionUsageMsg
+	for _, inner := range acm.Msgs {
+		if su, ok := inner.(SessionUsageMsg); ok {
+			u = su
+		}
+	}
+	if u.InputTokens != 4000 || u.CacheReadInputTokens != 0 || u.CacheCreationInputTokens != 0 {
+		t.Errorf("cold-cache usage = %+v, want {Input:4000, CacheRead:0, CacheCreation:0}", u)
+	}
+}
+
+// TestMapAssistantMessage_CacheCreationUsage verifies the cache-write turn:
+// cache_creation_input_tokens is non-zero. The status bar formula must add
+// it into the displayed total. (QUM-385)
+func TestMapAssistantMessage_CacheCreationUsage(t *testing.T) {
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":2000,"output_tokens":50,"cache_creation_input_tokens":8000,"cache_read_input_tokens":0}}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	acm, ok := MapProtocolMessage(&msg).(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("expected AssistantContentMsg")
+	}
+	var u SessionUsageMsg
+	for _, inner := range acm.Msgs {
+		if su, ok := inner.(SessionUsageMsg); ok {
+			u = su
+		}
+	}
+	if u.InputTokens != 2000 || u.CacheCreationInputTokens != 8000 || u.CacheReadInputTokens != 0 {
+		t.Errorf("cache-creation usage = %+v, want {Input:2000, CacheRead:0, CacheCreation:8000}", u)
 	}
 }
 

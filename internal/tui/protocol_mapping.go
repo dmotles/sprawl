@@ -88,8 +88,10 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 	// can track context window consumption.
 	if content.Usage != nil {
 		msgs = append(msgs, SessionUsageMsg{
-			InputTokens:  content.Usage.InputTokens,
-			OutputTokens: content.Usage.OutputTokens,
+			InputTokens:              content.Usage.InputTokens,
+			OutputTokens:             content.Usage.OutputTokens,
+			CacheReadInputTokens:     content.Usage.CacheReadInputTokens,
+			CacheCreationInputTokens: content.Usage.CacheCreationInputTokens,
 		})
 	}
 

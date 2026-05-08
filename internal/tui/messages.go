@@ -131,11 +131,16 @@ type SessionResultMsg struct {
 }
 
 // SessionUsageMsg carries token usage data extracted from an assistant message.
-// InputTokens reflects the current context window consumption (not cumulative
-// across turns — each assistant message reports the latest snapshot).
+// Each assistant message reports the latest snapshot — values are NOT
+// cumulative across turns. True context window consumption is the sum of
+// InputTokens + CacheReadInputTokens + CacheCreationInputTokens (QUM-385);
+// the Anthropic API splits the prefix across these three fields when prompt
+// caching is enabled.
 type SessionUsageMsg struct {
-	InputTokens  int
-	OutputTokens int
+	InputTokens              int
+	OutputTokens             int
+	CacheReadInputTokens     int
+	CacheCreationInputTokens int
 }
 
 // SessionModelMsg carries the model name from the system/init message,
