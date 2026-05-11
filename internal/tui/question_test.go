@@ -82,6 +82,55 @@ func TestQuestionModel_InstallShowsAndHasPending(t *testing.T) {
 	}
 }
 
+// TestQuestionModel_CursorNavigation_DownDownUpUp drives the documented
+// QUM-536 acceptance sequence (Down, Down, Up, Up) through the modal and
+// asserts the cursor index after every step, plus equivalence with the
+// j/k vim aliases and the clamp behaviour at both boundaries. The bug is
+// at the AppModel routing layer (TestAppModel_KeyUp_RoutesToQuestion below),
+// so this test is expected to pass on main — it stands as a regression
+// guard against any future change to the modal-level handler.
+func TestQuestionModel_CursorNavigation_DownDownUpUp(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave", supervisor.Question{
+		ID: "q1", Prompt: "?",
+		Options: []supervisor.QOption{{Label: "A"}, {Label: "B"}, {Label: "C"}, {Label: "D"}},
+	})
+	m = m.Install(pq).Show()
+
+	if m.cursor != 0 {
+		t.Fatalf("cursor at start = %d, want 0", m.cursor)
+	}
+
+	steps := []struct {
+		key  tea.KeyPressMsg
+		want int
+	}{
+		{tea.KeyPressMsg{Code: tea.KeyDown}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyDown}, 2},
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 0},
+		// Clamp at top.
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 0},
+		// vim aliases march the cursor symmetrically.
+		{tea.KeyPressMsg{Code: 'j'}, 1},
+		{tea.KeyPressMsg{Code: 'j'}, 2},
+		{tea.KeyPressMsg{Code: 'j'}, 3},
+		// Clamp at bottom.
+		{tea.KeyPressMsg{Code: 'j'}, 3},
+		{tea.KeyPressMsg{Code: 'k'}, 2},
+	}
+	for i, step := range steps {
+		var cmd tea.Cmd
+		m, cmd = m.Update(step.key)
+		if cmd != nil {
+			t.Errorf("step %d (%v): expected nil cmd, got %v", i, step.key, cmd)
+		}
+		if m.cursor != step.want {
+			t.Errorf("step %d (%v): cursor = %d, want %d", i, step.key, m.cursor, step.want)
+		}
+	}
+}
+
 func TestQuestionModel_SingleSelect_EnterAdvances(t *testing.T) {
 	m := newTestQuestionModel(t)
 	pq := mkPending("r1", "weave",
