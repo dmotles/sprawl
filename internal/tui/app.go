@@ -382,8 +382,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// QUM-410: input-panel history navigation. Up/Down walk history
 		// only when the textarea cursor is at the first / last line so
-		// multi-line editing isn't hijacked.
-		if m.activePanel == PanelInput && m.history != nil && (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
+		// multi-line editing isn't hijacked. QUM-536: gate on the modal
+		// flags too — any visible modal owns arrow keys, and prior to
+		// this gate KeyUp was being asymmetrically swallowed by
+		// `history.Prev` (which always succeeds when history is non-empty)
+		// while KeyDown fell through to the modal because `history.Next`
+		// returns ok=false on a fresh model.
+		if m.activePanel == PanelInput && m.history != nil &&
+			!m.showHelp && !m.showConfirm && !m.showError && !m.showPalette && !m.showQuestion &&
+			(msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
 			if m.handleHistoryArrow(msg) {
 				return m, nil
 			}

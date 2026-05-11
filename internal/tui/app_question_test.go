@@ -268,6 +268,83 @@ func TestAppModel_SessionRestarting_PreservesQuestion(t *testing.T) {
 	}
 }
 
+// TestAppModel_QuestionModal_ArrowKeysRouteToQuestion is the QUM-536
+// regression guard. With showQuestion=true the modal must own ALL keypresses,
+// including KeyUp and KeyDown. Before the fix, the input-panel history-arrow
+// handler ran *before* the showQuestion gate and swallowed KeyUp whenever
+// history had any entries (because `history.Prev` succeeded and returned
+// handled=true). KeyDown was unaffected because `history.Next` returned
+// ok=false on a fresh model, which the history handler treated as "not
+// consumed" and fell through to the modal. That asymmetry produced the
+// reported "down works, up drops" UX.
+//
+// The test seeds non-empty history (so Prev() would succeed if it were
+// allowed to run), parks the user on PanelInput (the only place the
+// history-arrow handler ever fires), installs a pending question, then drives
+// KeyDown / KeyUp / 'j' / 'k' through `AppModel.Update`. The modal's cursor
+// index must advance and retreat one option per press, in lockstep with the
+// pure-model behaviour exercised in question_test.go.
+func TestAppModel_QuestionModal_ArrowKeysRouteToQuestion(t *testing.T) {
+	sup := &mockSupervisor{}
+	app := readyAppWithSup(t, sup)
+	// Park focus on the input panel — the only branch where the
+	// history-arrow handler ever activates. Without this, the test
+	// passes trivially even with the bug present.
+	app.activePanel = PanelInput
+	app.updateFocus()
+	// Seed history so that `history.Prev` succeeds and would swallow KeyUp
+	// if the routing bug were still present.
+	seedAppHistory(t, &app, []string{"older", "newer"})
+
+	pq := &supervisor.PendingQuestion{
+		Req: supervisor.QuestionRequest{
+			RequestID: "r1",
+			From:      "weave",
+			Questions: []supervisor.Question{{
+				ID: "q1", Prompt: "?",
+				Options: []supervisor.QOption{
+					{Label: "A"}, {Label: "B"}, {Label: "C"}, {Label: "D"},
+				},
+			}},
+		},
+		Seq: 1,
+	}
+	updated, _ := app.Update(QuestionsAvailableMsg{Depth: 1, Head: pq})
+	app = updated.(AppModel)
+	if !app.showQuestion {
+		t.Fatal("setup: showQuestion must be true after QuestionsAvailableMsg")
+	}
+	if app.questionModel.cursor != 0 {
+		t.Fatalf("setup: cursor at start = %d, want 0", app.questionModel.cursor)
+	}
+
+	steps := []struct {
+		key  tea.KeyPressMsg
+		want int
+	}{
+		{tea.KeyPressMsg{Code: tea.KeyDown}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyDown}, 2},
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 0},
+		{tea.KeyPressMsg{Code: 'j'}, 1},
+		{tea.KeyPressMsg{Code: 'k'}, 0},
+	}
+	for i, step := range steps {
+		u, _ := app.Update(step.key)
+		app = u.(AppModel)
+		if got := app.questionModel.cursor; got != step.want {
+			t.Errorf("step %d (%v): cursor = %d, want %d", i, step.key, got, step.want)
+		}
+		// Defense-in-depth: the history-arrow handler used to corrupt
+		// the input buffer (invisibly behind the modal). Make sure it's
+		// no longer firing while the modal is up.
+		if got := app.input.Value(); got != "" {
+			t.Errorf("step %d (%v): input value = %q, want empty (modal must not leak keys into history)",
+				i, step.key, got)
+		}
+	}
+}
+
 func TestAppModel_OpenPalette_GatedByShowQuestion(t *testing.T) {
 	sup := &mockSupervisor{}
 	app := readyAppWithSup(t, sup)
