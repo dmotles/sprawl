@@ -150,7 +150,7 @@ type RetireDeps struct {
     GitBranchDelete     func(repoRoot, branchName string) error
     GitBranchIsMerged   func(repoRoot, branchName string) (bool, error)
     GitBranchSafeDelete func(repoRoot, branchName string) error
-    DoMerge             func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
+    DoMerge             func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
     NewMergeDeps        func() *merge.Deps
     LoadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
     CurrentBranch       func(repoRoot string) (string, error)
@@ -222,7 +222,7 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, string) {
         RemoveAll:         os.RemoveAll,
         GitBranchDelete:   func(repoRoot, branchName string) error { return nil },
         GitBranchIsMerged: func(repoRoot, branchName string) (bool, error) { return false, nil },
-        DoMerge:           func(*merge.Config, *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
+        DoMerge:           func(context.Context, *merge.Config, *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
         NewMergeDeps:      func() *merge.Deps { return &merge.Deps{} },
         LoadAgent:         state.LoadAgent,
         CurrentBranch:     func(string) (string, error) { return "main", nil },

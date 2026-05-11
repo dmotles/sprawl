@@ -61,8 +61,12 @@ const (
 
 // ModelForAgentType returns the model string for the given agent type.
 func ModelForAgentType(agentType string) string {
-	if agentType == "manager" {
+	switch agentType {
+	case "root":
+		return DefaultRootModel
+	case "manager":
 		return DefaultManagerModel
+	default:
+		return DefaultAgentModel
 	}
-	return DefaultAgentModel
 }

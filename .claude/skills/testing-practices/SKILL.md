@@ -51,7 +51,7 @@ The richest end-to-end example today is the offline `retire` command — `intern
        GitBranchDelete     func(repoRoot, branchName string) error
        GitBranchIsMerged   func(repoRoot, branchName string) (bool, error)
        GitBranchSafeDelete func(repoRoot, branchName string) error
-       DoMerge             func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
+       DoMerge             func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
        NewMergeDeps        func() *merge.Deps
        LoadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
        CurrentBranch       func(repoRoot string) (string, error)
@@ -94,7 +94,7 @@ The richest end-to-end example today is the offline `retire` command — `intern
            GitBranchDelete:     func(repoRoot, branchName string) error { return nil },
            GitBranchIsMerged:   func(repoRoot, branchName string) (bool, error) { return false, nil },
            GitBranchSafeDelete: func(repoRoot, branchName string) error { return nil },
-           DoMerge:             func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
+           DoMerge:             func(_ context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) { return &merge.Result{}, nil },
            NewMergeDeps:        func() *merge.Deps { return &merge.Deps{} },
            LoadAgent:           state.LoadAgent,
            CurrentBranch:       func(repoRoot string) (string, error) { return "main", nil },

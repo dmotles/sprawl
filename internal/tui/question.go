@@ -24,6 +24,11 @@ const (
 // It is a Bubble Tea sub-model owned by AppModel; AppModel routes key events
 // to it while showQuestion is true and listens for QuestionAnsweredMsg /
 // DismissQuestionMsg to drive the supervisor question queue.
+//
+// Per-question editing state (cursor, multi-pick set, mode, custom-text
+// buffer) is held in parallel slices indexed by qIdx so that drafts survive
+// inter-question navigation (QUM-538). The scalar `cursor` field mirrors
+// `cursors[qIdx]` for the benefit of legacy tests that read it directly.
 type QuestionModel struct {
 	theme         *Theme
 	width, height int
@@ -31,21 +36,18 @@ type QuestionModel struct {
 	req           *supervisor.PendingQuestion
 	qIdx          int
 	answers       []supervisor.QuestionAnswer
-	cursor        int
-	multiPicked   map[int]struct{}
-	mode          questionInputMode
-	customInput   textinput.Model
+	cursors       []int
+	multiPicked   []map[int]struct{}
+	modes         []questionInputMode
+	customInputs  []textinput.Model
+	// cursor mirrors cursors[qIdx]; kept for legacy test access.
+	cursor int
 }
 
 // NewQuestionModel constructs an empty, non-visible QuestionModel bound to the
 // supplied theme.
 func NewQuestionModel(theme *Theme) QuestionModel {
-	ti := textinput.New()
-	ti.Placeholder = "type a custom answer..."
-	return QuestionModel{
-		theme:       theme,
-		customInput: ti,
-	}
+	return QuestionModel{theme: theme}
 }
 
 // SetSize updates the centering dimensions.
@@ -74,6 +76,13 @@ func (m QuestionModel) activeRequestID() string {
 	return m.req.Req.RequestID
 }
 
+// newCustomInput constructs a fresh textinput with the standard placeholder.
+func newCustomInput() textinput.Model {
+	ti := textinput.New()
+	ti.Placeholder = "type a custom answer..."
+	return ti
+}
+
 // Install replaces the modal's active request with pq, seeding a fresh answer
 // slice (one entry per question, with QuestionID pre-populated) and resetting
 // all per-question editing state. Visibility is unchanged — call Show() to
@@ -81,20 +90,27 @@ func (m QuestionModel) activeRequestID() string {
 func (m QuestionModel) Install(pq *supervisor.PendingQuestion) QuestionModel {
 	m.req = pq
 	if pq != nil {
-		m.answers = make([]supervisor.QuestionAnswer, len(pq.Req.Questions))
+		n := len(pq.Req.Questions)
+		m.answers = make([]supervisor.QuestionAnswer, n)
+		m.cursors = make([]int, n)
+		m.multiPicked = make([]map[int]struct{}, n)
+		m.modes = make([]questionInputMode, n)
+		m.customInputs = make([]textinput.Model, n)
 		for i := range pq.Req.Questions {
 			m.answers[i].QuestionID = pq.Req.Questions[i].ID
+			m.multiPicked[i] = make(map[int]struct{})
+			m.modes[i] = qModeSelect
+			m.customInputs[i] = newCustomInput()
 		}
 	} else {
 		m.answers = nil
+		m.cursors = nil
+		m.multiPicked = nil
+		m.modes = nil
+		m.customInputs = nil
 	}
 	m.qIdx = 0
 	m.cursor = 0
-	m.multiPicked = make(map[int]struct{})
-	m.mode = qModeSelect
-	ti := textinput.New()
-	ti.Placeholder = "type a custom answer..."
-	m.customInput = ti
 	return m
 }
 
@@ -117,15 +133,33 @@ func (m QuestionModel) Hide() QuestionModel {
 func (m QuestionModel) Reset() QuestionModel {
 	m.req = nil
 	m.answers = nil
+	m.cursors = nil
+	m.multiPicked = nil
+	m.modes = nil
+	m.customInputs = nil
 	m.visible = false
 	m.qIdx = 0
 	m.cursor = 0
-	m.multiPicked = make(map[int]struct{})
-	m.mode = qModeSelect
-	ti := textinput.New()
-	ti.Placeholder = "type a custom answer..."
-	m.customInput = ti
 	return m
+}
+
+// syncCursor copies cursors[qIdx] into the mirror field.
+func (m *QuestionModel) syncCursor() {
+	if m.qIdx >= 0 && m.qIdx < len(m.cursors) {
+		m.cursor = m.cursors[m.qIdx]
+	} else {
+		m.cursor = 0
+	}
+}
+
+// isAnswered reports whether question i has been answered, declined, or has
+// custom text set.
+func (m QuestionModel) isAnswered(i int) bool {
+	if i < 0 || i >= len(m.answers) {
+		return false
+	}
+	a := m.answers[i]
+	return a.Declined || len(a.Selected) > 0 || a.CustomText != ""
 }
 
 // Update handles key events while the modal is active. Returns the updated
@@ -140,59 +174,76 @@ func (m QuestionModel) Update(msg tea.Msg) (QuestionModel, tea.Cmd) {
 	}
 
 	cur := m.req.Req.Questions[m.qIdx]
+	mode := m.modes[m.qIdx]
 
 	// Text mode: handle Enter (commit text), Esc (cancel back to select), and
-	// route everything else into the textinput.
-	if m.mode == qModeText {
+	// route everything else (including Left/Right) into the textinput so the
+	// caret moves rather than the qIdx.
+	if mode == qModeText {
 		switch key.Code {
 		case tea.KeyEnter:
-			m.answers[m.qIdx].CustomText = m.customInput.Value()
+			m.answers[m.qIdx].CustomText = m.customInputs[m.qIdx].Value()
 			m.answers[m.qIdx].Selected = nil
 			m.answers[m.qIdx].Declined = false
 			return m.advance()
 		case tea.KeyEscape:
-			m.mode = qModeSelect
-			ti := textinput.New()
-			ti.Placeholder = "type a custom answer..."
-			m.customInput = ti
+			m.modes[m.qIdx] = qModeSelect
+			m.customInputs[m.qIdx] = newCustomInput()
 			return m, nil
 		}
 		var cmd tea.Cmd
-		m.customInput, cmd = m.customInput.Update(msg)
+		m.customInputs[m.qIdx], cmd = m.customInputs[m.qIdx].Update(msg)
 		return m, cmd
 	}
 
 	// Select mode.
 	switch key.Code {
-	case tea.KeyUp:
-		if m.cursor > 0 {
-			m.cursor--
+	case tea.KeyLeft:
+		if m.qIdx > 0 {
+			m.qIdx--
+			m.syncCursor()
 		}
+		return m, nil
+	case tea.KeyRight:
+		if m.qIdx < len(m.req.Req.Questions)-1 {
+			m.qIdx++
+			m.syncCursor()
+		}
+		return m, nil
+	case tea.KeyUp:
+		if m.cursors[m.qIdx] > 0 {
+			m.cursors[m.qIdx]--
+		}
+		m.syncCursor()
 		return m, nil
 	case tea.KeyDown:
-		if m.cursor < len(cur.Options)-1 {
-			m.cursor++
+		if m.cursors[m.qIdx] < len(cur.Options)-1 {
+			m.cursors[m.qIdx]++
 		}
+		m.syncCursor()
 		return m, nil
 	case 'j':
-		if m.cursor < len(cur.Options)-1 {
-			m.cursor++
+		if m.cursors[m.qIdx] < len(cur.Options)-1 {
+			m.cursors[m.qIdx]++
 		}
+		m.syncCursor()
 		return m, nil
 	case 'k':
-		if m.cursor > 0 {
-			m.cursor--
+		if m.cursors[m.qIdx] > 0 {
+			m.cursors[m.qIdx]--
 		}
+		m.syncCursor()
 		return m, nil
 	case tea.KeySpace:
 		if cur.MultiSelect {
-			if m.multiPicked == nil {
-				m.multiPicked = make(map[int]struct{})
+			if m.multiPicked[m.qIdx] == nil {
+				m.multiPicked[m.qIdx] = make(map[int]struct{})
 			}
-			if _, ok := m.multiPicked[m.cursor]; ok {
-				delete(m.multiPicked, m.cursor)
+			c := m.cursors[m.qIdx]
+			if _, ok := m.multiPicked[m.qIdx][c]; ok {
+				delete(m.multiPicked[m.qIdx], c)
 			} else {
-				m.multiPicked[m.cursor] = struct{}{}
+				m.multiPicked[m.qIdx][c] = struct{}{}
 			}
 		}
 		return m, nil
@@ -200,23 +251,22 @@ func (m QuestionModel) Update(msg tea.Msg) (QuestionModel, tea.Cmd) {
 		if cur.MultiSelect {
 			var sel []string
 			for i := range cur.Options {
-				if _, ok := m.multiPicked[i]; ok {
+				if _, ok := m.multiPicked[m.qIdx][i]; ok {
 					sel = append(sel, cur.Options[i].Label)
 				}
 			}
 			m.answers[m.qIdx].Selected = sel
 		} else if len(cur.Options) > 0 {
-			m.answers[m.qIdx].Selected = []string{cur.Options[m.cursor].Label}
+			m.answers[m.qIdx].Selected = []string{cur.Options[m.cursors[m.qIdx]].Label}
 		}
 		m.answers[m.qIdx].CustomText = ""
 		m.answers[m.qIdx].Declined = false
 		return m.advance()
 	case 'o':
-		m.mode = qModeText
-		ti := textinput.New()
-		ti.Placeholder = "type a custom answer..."
+		m.modes[m.qIdx] = qModeText
+		ti := newCustomInput()
 		_ = ti.Focus()
-		m.customInput = ti
+		m.customInputs[m.qIdx] = ti
 		return m, nil
 	case 'd':
 		m.answers[m.qIdx].Declined = true
@@ -241,20 +291,25 @@ func (m QuestionModel) Update(msg tea.Msg) (QuestionModel, tea.Cmd) {
 	return m, nil
 }
 
-// advance moves the cursor to the next question, or submits if at the last.
-// Per-question editing state is reset on the way.
+// advance commits the current question (already updated by the caller) and
+// hunts for the next unanswered question. Search starts at qIdx+1 and wraps
+// to 0, skipping the current qIdx. If no unanswered question is found, it
+// submits. Per-question editing state is persisted in the slices so any
+// existing draft on the target question is preserved (QUM-538).
 func (m QuestionModel) advance() (QuestionModel, tea.Cmd) {
-	if m.qIdx >= len(m.req.Req.Questions)-1 {
+	n := len(m.req.Req.Questions)
+	if n == 0 {
 		return m.submit()
 	}
-	m.qIdx++
-	m.cursor = 0
-	m.multiPicked = make(map[int]struct{})
-	m.mode = qModeSelect
-	ti := textinput.New()
-	ti.Placeholder = "type a custom answer..."
-	m.customInput = ti
-	return m, nil
+	for step := 1; step < n; step++ {
+		next := (m.qIdx + step) % n
+		if !m.isAnswered(next) {
+			m.qIdx = next
+			m.syncCursor()
+			return m, nil
+		}
+	}
+	return m.submit()
 }
 
 // submit emits a QuestionAnsweredMsg cmd. Outcome is OutcomeDeclined iff every
@@ -282,12 +337,45 @@ func (m QuestionModel) submit() (QuestionModel, tea.Cmd) {
 	}
 }
 
+// renderTabStrip returns the per-question tab strip rendered above the modal
+// body. Each tab shows the 1-based question number and an answered marker
+// (`[*]` for answered, `[ ]` for unanswered). The current tab is bolded with
+// the theme accent foreground; other tabs use the muted style.
+func (m QuestionModel) renderTabStrip() string {
+	if m.req == nil || len(m.req.Req.Questions) == 0 {
+		return ""
+	}
+	accent := "212"
+	if m.theme != nil {
+		accent = m.theme.AccentColor
+	}
+	cur := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(accent))
+	other := lipgloss.NewStyle().Faint(true)
+	segs := make([]string, 0, len(m.req.Req.Questions))
+	for i := range m.req.Req.Questions {
+		marker := "[ ]"
+		if m.isAnswered(i) {
+			marker = "[*]"
+		}
+		seg := fmt.Sprintf(" %d%s ", i+1, marker)
+		if i == m.qIdx {
+			seg = cur.Render(seg)
+		} else {
+			seg = other.Render(seg)
+		}
+		segs = append(segs, seg)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, segs...)
+}
+
 // View renders the modal centered in the available area.
 func (m QuestionModel) View() string {
 	if m.req == nil {
 		return ""
 	}
 	q := m.req.Req.Questions[m.qIdx]
+	mode := m.modes[m.qIdx]
+	curIdx := m.cursors[m.qIdx]
 
 	dialogWidth := 64
 	if m.width > 0 && m.width < dialogWidth+4 {
@@ -303,7 +391,8 @@ func (m QuestionModel) View() string {
 		from = "an agent"
 	}
 	fmt.Fprintf(&b, "%s is asking\n", from)
-	fmt.Fprintf(&b, "Question %d of %d\n\n", m.qIdx+1, len(m.req.Req.Questions))
+	b.WriteString(m.renderTabStrip())
+	b.WriteString("\n\n")
 	if q.Header != "" {
 		fmt.Fprintf(&b, "%s\n", q.Header)
 	}
@@ -315,12 +404,12 @@ func (m QuestionModel) View() string {
 
 	for i, opt := range q.Options {
 		marker := "  "
-		if i == m.cursor && m.mode == qModeSelect {
+		if i == curIdx && mode == qModeSelect {
 			marker = "> "
 		}
 		check := "  "
 		if q.MultiSelect {
-			if _, ok := m.multiPicked[i]; ok {
+			if _, ok := m.multiPicked[m.qIdx][i]; ok {
 				check = "[x] "
 			} else {
 				check = "[ ] "
@@ -329,12 +418,12 @@ func (m QuestionModel) View() string {
 		fmt.Fprintf(&b, "%s%s%s\n", marker, check, opt.Label)
 	}
 
-	if m.mode == qModeText {
+	if mode == qModeText {
 		b.WriteString("\nCustom answer: ")
-		b.WriteString(m.customInput.View())
+		b.WriteString(m.customInputs[m.qIdx].View())
 		b.WriteString("\n[Enter] submit  [Esc] back to options\n")
 	} else {
-		b.WriteString("\n[Enter] confirm  [Space] toggle  [o] custom  [d] decline  [D] decline all  [Esc] dismiss\n")
+		b.WriteString("\n[←/→] navigate  [Enter] confirm  [Space] toggle  [o] custom  [d] decline  [D] decline all  [Esc] dismiss\n")
 	}
 
 	accent := "212"

@@ -319,7 +319,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and otherwise forward to the viewport (the only scrollable area).
 		// Non-wheel clicks/motion are accepted but currently ignored; they
 		// fall through viewport.Update harmlessly.
-		if m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion {
+		if m.anyModalUp() {
 			return m, nil
 		}
 		vp := m.observedVP()
@@ -331,7 +331,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Bracketed-paste from the terminal. Forward to the input panel so embedded
 		// newlines are inserted literally instead of being treated as Enter-submit.
 		// Only when the input bar is the active panel (root-agent view, no modal).
-		if m.observedAgent != m.rootAgent || m.activePanel != PanelInput || m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion {
+		if m.observedAgent != m.rootAgent || m.activePanel != PanelInput || m.anyModalUp() {
 			return m, nil
 		}
 		// QUM-448: track input-box height across the Update so we can
@@ -388,8 +388,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// `history.Prev` (which always succeeds when history is non-empty)
 		// while KeyDown fell through to the modal because `history.Next`
 		// returns ok=false on a fresh model.
-		if m.activePanel == PanelInput && m.history != nil &&
-			!m.showHelp && !m.showConfirm && !m.showError && !m.showPalette && !m.showQuestion &&
+		if m.activePanel == PanelInput && m.history != nil && !m.anyModalUp() &&
 			(msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
 			if m.handleHistoryArrow(msg) {
 				return m, nil
@@ -561,7 +560,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Gate on modals AND observed-agent-is-root: when observing a child
 		// the input bar is hidden (QUM-340), so opening the palette would
 		// dispatch commands the user can't see typed into.
-		if m.input.disabled || m.showConfirm || m.showError || m.showHelp || m.showPalette || m.showQuestion || m.observedAgent != m.rootAgent {
+		if m.input.disabled || m.anyModalUp() || m.observedAgent != m.rootAgent {
 			return m, nil
 		}
 		m.palette.SetSize(m.width, m.height)
@@ -1914,6 +1913,17 @@ func (m *AppModel) resizePanels() {
 // active. Used to gate auto-show / Ctrl-Q reopen.
 func anyOtherModalUp(m *AppModel) bool {
 	return m.showError || m.showConfirm || m.showHelp || m.showPalette
+}
+
+// anyModalUp reports whether ANY modal is currently visible. The four input-
+// gating sites in Update() (mouse handler, paste handler, input-panel
+// history-arrow handler, OpenPaletteMsg handler) call !m.anyModalUp() so a
+// modal always owns input. Convention: when adding a new modal flag, extend
+// this helper — that's it — and all gates Just Work. Distinct from
+// anyOtherModalUp, which deliberately excludes showQuestion for the
+// question-auto-show / Ctrl-Q-reopen gates.
+func (m *AppModel) anyModalUp() bool {
+	return m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion
 }
 
 // agentFromHead returns pq.Req.From if pq is non-nil, else "".

@@ -239,6 +239,84 @@ func TestCtrlR_StateMachine(t *testing.T) {
 	})
 }
 
+// TestInput_HistoryArrow_BlockedByEachModal is the QUM-537 regression guard:
+// for each modal-flag in {showHelp, showConfirm, showError, showPalette,
+// showQuestion}, when only that flag is set the input-panel history-arrow
+// handler MUST NOT swallow Up/Down — the modal owns those keys. QUM-536 was
+// the case where this handler missed showQuestion specifically and Up was
+// asymmetrically swallowed by history.Prev. After QUM-537 the conjunction
+// collapses to !m.anyModalUp(), so adding a future modal to that helper
+// automatically extends this guard.
+func TestInput_HistoryArrow_BlockedByEachModal(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(*AppModel)
+	}{
+		{"showHelp", func(a *AppModel) { a.showHelp = true }},
+		{"showConfirm", func(a *AppModel) { a.showConfirm = true }},
+		{"showError", func(a *AppModel) { a.showError = true }},
+		{"showPalette", func(a *AppModel) { a.showPalette = true }},
+		{"showQuestion", func(a *AppModel) { a.showQuestion = true }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := readyAppOnPanelInput(t)
+			seedAppHistory(t, &app, []string{"first", "second"})
+			app.input.SetValue("draft")
+			tc.set(&app)
+
+			// Up must not be swallowed by the history-arrow handler. Note that
+			// when showConfirm / showError / showPalette / showQuestion are
+			// set, downstream modal routing in Update() will consume the key
+			// (or no-op); none of those paths mutate input.Value(). showHelp
+			// likewise swallows non-Esc keys. So the live "draft" value must
+			// survive untouched — proof the history handler did not run.
+			updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+			app = updated.(AppModel)
+			if got := app.input.Value(); got != "draft" {
+				t.Errorf("[%s] Up was swallowed by history handler: input = %q, want %q",
+					tc.name, got, "draft")
+			}
+
+			updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+			app = updated.(AppModel)
+			if got := app.input.Value(); got != "draft" {
+				t.Errorf("[%s] Down was swallowed by history handler: input = %q, want %q",
+					tc.name, got, "draft")
+			}
+		})
+	}
+}
+
+// TestAppModel_anyModalUp pins the contract of the QUM-537 helper: it
+// returns true when any of the five modal flags is set, false otherwise.
+// Adding a new modal flag should extend this test alongside anyModalUp().
+func TestAppModel_anyModalUp(t *testing.T) {
+	app := readyAppOnPanelInput(t)
+	if app.anyModalUp() {
+		t.Fatalf("anyModalUp() with no flags set = true, want false")
+	}
+	cases := []struct {
+		name string
+		set  func(*AppModel)
+	}{
+		{"showHelp", func(a *AppModel) { a.showHelp = true }},
+		{"showConfirm", func(a *AppModel) { a.showConfirm = true }},
+		{"showError", func(a *AppModel) { a.showError = true }},
+		{"showPalette", func(a *AppModel) { a.showPalette = true }},
+		{"showQuestion", func(a *AppModel) { a.showQuestion = true }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := readyAppOnPanelInput(t)
+			tc.set(&a)
+			if !a.anyModalUp() {
+				t.Errorf("anyModalUp() with only %s set = false, want true", tc.name)
+			}
+		})
+	}
+}
+
 // TestMultilineUpDown_DoesNotHijackHistory: when the textarea contains
 // multiple lines and the cursor isn't on the first line, Up should move the
 // cursor within the textarea instead of loading history. Implementation must

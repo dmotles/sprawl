@@ -2,12 +2,25 @@ package tui
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// containsAnyMarker reports whether s contains any of the supplied candidate
+// substrings. Used by tab-strip tests where the implementer is free to choose
+// the answered-marker glyph.
+func containsAnyMarker(s string, candidates ...string) bool {
+	for _, c := range candidates {
+		if strings.Contains(s, c) {
+			return true
+		}
+	}
+	return false
+}
 
 // newTestQuestionModel constructs a fresh QuestionModel with a default theme
 // for unit testing.
@@ -366,6 +379,340 @@ func TestQuestionModel_Hide_PreservesDrafts(t *testing.T) {
 	answered := expectAnsweredMsg(t, cmd)
 	if got := answered.Response.Answers[0].Selected; len(got) != 1 || got[0] != "A" {
 		t.Errorf("Selected after Hide/Show round-trip = %v, want [A]", got)
+	}
+}
+
+// TestQuestionModel_RightLeft_NavigatesQIdx — QUM-538: KeyRight advances qIdx
+// forward, KeyLeft moves it back. Asserts navigation by substring-matching the
+// distinct Prompt rendered in View() at each step.
+func TestQuestionModel_RightLeft_NavigatesQIdx(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "first?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q2", Prompt: "second?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q3", Prompt: "third?", Options: []supervisor.QOption{{Label: "A"}}},
+	)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	if !strings.Contains(m.View(), "first?") {
+		t.Fatalf("initial View() should render q1 prompt; got:\n%s", m.View())
+	}
+
+	var cmd tea.Cmd
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if cmd != nil {
+		t.Errorf("KeyRight step 1: expected nil cmd, got %v", cmd)
+	}
+	if !strings.Contains(m.View(), "second?") {
+		t.Errorf("after 1x KeyRight: View() missing q2 prompt; got:\n%s", m.View())
+	}
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if cmd != nil {
+		t.Errorf("KeyRight step 2: expected nil cmd, got %v", cmd)
+	}
+	if !strings.Contains(m.View(), "third?") {
+		t.Errorf("after 2x KeyRight: View() missing q3 prompt; got:\n%s", m.View())
+	}
+
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if cmd != nil {
+		t.Errorf("KeyLeft step 1: expected nil cmd, got %v", cmd)
+	}
+	if !strings.Contains(m.View(), "second?") {
+		t.Errorf("after 1x KeyLeft: View() missing q2 prompt; got:\n%s", m.View())
+	}
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if cmd != nil {
+		t.Errorf("KeyLeft step 2: expected nil cmd, got %v", cmd)
+	}
+	if !strings.Contains(m.View(), "first?") {
+		t.Errorf("after 2x KeyLeft: View() missing q1 prompt; got:\n%s", m.View())
+	}
+}
+
+// TestQuestionModel_RightLeft_ClampsAtBoundaries — QUM-538: KeyLeft at qIdx=0
+// is a no-op; KeyRight past the last question clamps. Verified by View().
+func TestQuestionModel_RightLeft_ClampsAtBoundaries(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "first?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q2", Prompt: "second?", Options: []supervisor.QOption{{Label: "A"}}},
+	)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if !strings.Contains(m.View(), "first?") {
+		t.Errorf("KeyLeft at qIdx=0 should stay on q1; View():\n%s", m.View())
+	}
+
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if !strings.Contains(m.View(), "second?") {
+		t.Errorf("KeyRight past last should clamp at q2; View():\n%s", m.View())
+	}
+	if strings.Contains(m.View(), "first?") {
+		t.Errorf("after clamping at q2, q1 prompt should not be in main body; View():\n%s", m.View())
+	}
+}
+
+// TestQuestionModel_Navigation_PreservesOptionCursorDraft — QUM-538: the
+// per-question option-cursor must survive a navigate-away + navigate-back
+// round-trip. q1's cursor is parked at index 2 (C), we navigate away to q2 and
+// back, then Enter — committed answer must be [C].
+func TestQuestionModel_Navigation_PreservesOptionCursorDraft(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "q1?", Options: []supervisor.QOption{{Label: "A"}, {Label: "B"}, {Label: "C"}, {Label: "D"}}},
+		supervisor.Question{ID: "q2", Prompt: "q2?", Options: []supervisor.QOption{{Label: "A"}, {Label: "B"}, {Label: "C"}, {Label: "D"}}},
+		supervisor.Question{ID: "q3", Prompt: "q3?", Options: []supervisor.QOption{{Label: "A"}, {Label: "B"}, {Label: "C"}, {Label: "D"}}},
+	)
+	m = m.Install(pq).Show()
+
+	// Park q1 cursor on C.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	// Navigate q1 → q2 → q1.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	// Commit q1 — cursor draft survived → answer = [C].
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// We should now be on q2 (advance by enter). q2 cursor at 0 → press down
+	// once to land on B, Enter.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// q3: cursor at 0 → A; Enter submits.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answered := expectAnsweredMsg(t, cmd)
+	if got := len(answered.Response.Answers); got != 3 {
+		t.Fatalf("len(Answers) = %d, want 3", got)
+	}
+	if got := answered.Response.Answers[0].Selected; len(got) != 1 || got[0] != "C" {
+		t.Errorf("Answers[0].Selected = %v, want [C] (cursor draft must survive nav)", got)
+	}
+	if got := answered.Response.Answers[1].Selected; len(got) != 1 || got[0] != "B" {
+		t.Errorf("Answers[1].Selected = %v, want [B]", got)
+	}
+	if got := answered.Response.Answers[2].Selected; len(got) != 1 || got[0] != "A" {
+		t.Errorf("Answers[2].Selected = %v, want [A]", got)
+	}
+}
+
+// TestQuestionModel_Navigation_PreservesMultiSelectDraft — QUM-538: a
+// MultiSelect draft (set of picks) must survive a navigate-away + back.
+func TestQuestionModel_Navigation_PreservesMultiSelectDraft(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{
+			ID: "q1", Prompt: "q1?", MultiSelect: true,
+			Options: []supervisor.QOption{{Label: "A"}, {Label: "B"}, {Label: "C"}},
+		},
+		supervisor.Question{
+			ID: "q2", Prompt: "q2?", MultiSelect: true,
+			Options: []supervisor.QOption{{Label: "A"}, {Label: "B"}, {Label: "C"}},
+		},
+	)
+	m = m.Install(pq).Show()
+
+	// q1: Space (pick A), Down, Space (pick B).
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
+
+	// Round-trip nav.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	// Commit q1.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// q2: commit empty pick set.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	answered := expectAnsweredMsg(t, cmd)
+	got := append([]string(nil), answered.Response.Answers[0].Selected...)
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != "A" || got[1] != "B" {
+		t.Errorf("Answers[0].Selected = %v, want set {A,B} (multi draft must survive nav)", answered.Response.Answers[0].Selected)
+	}
+	if got := len(answered.Response.Answers[1].Selected); got != 0 {
+		t.Errorf("Answers[1].Selected len = %d, want 0", got)
+	}
+}
+
+// TestQuestionModel_Navigation_PreservesTextDraft — QUM-538: a partially-typed
+// custom-text buffer and the text mode itself must survive a nav round-trip.
+func TestQuestionModel_Navigation_PreservesTextDraft(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "q1?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q2", Prompt: "q2?", Options: []supervisor.QOption{{Label: "A"}}},
+	)
+	m = m.Install(pq).Show()
+
+	// q1: enter text mode, type "abc".
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'o'})
+	for _, r := range "abc" {
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+
+	// Nav round-trip — note KeyRight in text mode might be ambiguous, but the
+	// spec says Right/Left navigate questions outside text mode. Going via
+	// Esc would discard draft; instead we test that nav from text mode works
+	// (implementer may need to special-case). To keep this test focused on
+	// draft preservation, we accept either: (a) text mode survives nav, or
+	// (b) nav is ignored in text mode entirely. We assert (a) here — the
+	// strongest interpretation of the spec.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	// Commit q1 — if text-mode + buffer survived, CustomText == "abc".
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// q2: commit default (cursor over A).
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answered := expectAnsweredMsg(t, cmd)
+	if got := answered.Response.Answers[0].CustomText; got != "abc" {
+		t.Errorf("Answers[0].CustomText = %q, want %q (text draft must survive nav)", got, "abc")
+	}
+}
+
+// TestQuestionModel_EnterJumpsToNextUnanswered — QUM-538: Enter commits the
+// current question and advances to the next *unanswered* question (not
+// strictly qIdx+1). When all are answered, submits.
+func TestQuestionModel_EnterJumpsToNextUnanswered(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "first?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q2", Prompt: "second?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q3", Prompt: "third?", Options: []supervisor.QOption{{Label: "A"}}},
+	)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	// Navigate to q3 without committing.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+
+	// Enter on q3 → commits q3=A; next-unanswered hunt jumps to q1 (qIdx=0).
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !strings.Contains(m.View(), "first?") {
+		t.Errorf("after Enter on q3 (q1+q2 unanswered): View should show q1 prompt; got:\n%s", m.View())
+	}
+
+	// 'd' declines q1 → counts as answered → jump to next unanswered (q2).
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'd'})
+	if !strings.Contains(m.View(), "second?") {
+		t.Errorf("after 'd' on q1 (only q2 unanswered): View should show q2 prompt; got:\n%s", m.View())
+	}
+
+	// Enter on q2 → all answered → submit.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answered := expectAnsweredMsg(t, cmd)
+	if answered.Response.Outcome != supervisor.OutcomeAnswered {
+		t.Errorf("Outcome = %q, want %q", answered.Response.Outcome, supervisor.OutcomeAnswered)
+	}
+	if got := len(answered.Response.Answers); got != 3 {
+		t.Fatalf("len(Answers) = %d, want 3", got)
+	}
+	if !answered.Response.Answers[0].Declined {
+		t.Error("Answers[0].Declined = false, want true (q1 was declined)")
+	}
+	if got := answered.Response.Answers[1].Selected; len(got) != 1 || got[0] != "A" {
+		t.Errorf("Answers[1].Selected = %v, want [A]", got)
+	}
+	if got := answered.Response.Answers[2].Selected; len(got) != 1 || got[0] != "A" {
+		t.Errorf("Answers[2].Selected = %v, want [A]", got)
+	}
+}
+
+// TestQuestionModel_TabStrip_RendersAnsweredMarkers — QUM-538: View() must
+// render a tab strip indicating answered vs. unanswered questions. We accept
+// any one of several candidate marker glyphs (`[*]`, `●`, `✓`) — the
+// implementer picks. The strip must also contain the question numbers.
+func TestQuestionModel_TabStrip_RendersAnsweredMarkers(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "q1?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q2", Prompt: "q2?", Options: []supervisor.QOption{{Label: "A"}}},
+	)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	out := m.View()
+	if !strings.Contains(out, "1") || !strings.Contains(out, "2") {
+		t.Errorf("View() must mention question numbers 1 and 2; got:\n%s", out)
+	}
+	// Before any commit, no answered-marker should be present.
+	if containsAnyMarker(out, "[*]", "●", "✓", "[x]") {
+		t.Errorf("pre-commit View() must NOT contain an answered marker; got:\n%s", out)
+	}
+
+	// Commit q1 — advance hunts to q2 (the only remaining unanswered).
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	out = m.View()
+	// Look for any answered-marker sentinel.
+	if !containsAnyMarker(out, "[*]", "●", "✓", "[x]") {
+		t.Errorf("after committing q1, View() must contain an 'answered' marker glyph (one of [*], ●, ✓, [x]); got:\n%s", out)
+	}
+}
+
+// TestQuestionModel_View_HelpLine_DocumentsArrowNav — QUM-538: the help line
+// must document ←/→ as navigate-question keys.
+func TestQuestionModel_View_HelpLine_DocumentsArrowNav(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "q1?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q2", Prompt: "q2?", Options: []supervisor.QOption{{Label: "A"}}},
+	)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	out := m.View()
+	if !strings.Contains(out, "←") || !strings.Contains(out, "→") {
+		t.Errorf("View() help line must contain ← and → glyphs; got:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "navigate") {
+		t.Errorf("View() help line must contain 'navigate' (case-insensitive); got:\n%s", out)
+	}
+}
+
+// TestQuestionModel_LeftRight_IgnoredInTextMode — QUM-538: while in custom-text
+// mode, KeyLeft/KeyRight must be consumed by the textinput (cursor movement)
+// and must NOT bounce qIdx between questions mid-typing.
+func TestQuestionModel_LeftRight_IgnoredInTextMode(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave",
+		supervisor.Question{ID: "q1", Prompt: "first?", Options: []supervisor.QOption{{Label: "A"}}},
+		supervisor.Question{ID: "q2", Prompt: "second?", Options: []supervisor.QOption{{Label: "A"}}},
+	)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	// q1: enter text mode, type 'x'.
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'o'})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+
+	// Left/Right while in text mode must not change qIdx — View still on q1.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if !strings.Contains(m.View(), "first?") {
+		t.Errorf("Left/Right in text mode must not change qIdx; expected q1 prompt; got:\n%s", m.View())
+	}
+	if strings.Contains(m.View(), "second?") {
+		t.Errorf("Left/Right in text mode must not navigate to q2; View:\n%s", m.View())
+	}
+
+	// Enter → commits q1 with CustomText containing "x".
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// Enter on q2 → submits.
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	answered := expectAnsweredMsg(t, cmd)
+	if got := answered.Response.Answers[0].CustomText; !strings.Contains(got, "x") {
+		t.Errorf("Answers[0].CustomText = %q, want to contain %q", got, "x")
 	}
 }
 
