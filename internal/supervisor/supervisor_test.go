@@ -1137,6 +1137,80 @@ func TestRegisterRootRuntime_PreservesNonEmptyTypeOnDisk(t *testing.T) {
 	}
 }
 
+// QUM-535: RegisterRootRuntime must persist Type="root" to disk when the
+// loaded record has an empty Type. The MCP eligibility gate consults
+// Supervisor.Status, which reads from disk via state.ListAgents — so a
+// purely in-memory mutation is invisible to the gate and weave-as-caller
+// gets rejected.
+func TestRegisterRootRuntime_PersistsTypeRootToDisk_WhenLoadedTypeEmpty(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "weave",
+		Type:   "",
+		Status: "active",
+		Branch: "main",
+	})
+	h := &fakeRootHandle{}
+	if _, err := sup.RegisterRootRuntime("weave", h, nil); err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	got, err := state.LoadAgent(tmpDir, "weave")
+	if err != nil {
+		t.Fatalf("LoadAgent(weave): %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadAgent(weave) returned nil")
+	}
+	if got.Type != "root" {
+		t.Errorf("on-disk Type = %q, want %q (must be persisted so disk-backed Status() sees it)", got.Type, "root")
+	}
+}
+
+// QUM-535: when no AgentState exists on disk for the root, the synthesized
+// fallback must also be persisted with Type="root" so disk-backed
+// eligibility lookups succeed.
+func TestRegisterRootRuntime_PersistsSynthesizedRecordToDisk_WhenStateMissing(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	h := &fakeRootHandle{}
+	if _, err := sup.RegisterRootRuntime("weave", h, nil); err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	got, err := state.LoadAgent(tmpDir, "weave")
+	if err != nil {
+		t.Fatalf("LoadAgent(weave): %v", err)
+	}
+	if got == nil {
+		t.Fatal("LoadAgent(weave) returned nil — synthesized record not persisted")
+	}
+	if got.Type != "root" {
+		t.Errorf("on-disk Type = %q, want %q (synthesized record must be persisted)", got.Type, "root")
+	}
+}
+
+// QUM-535: if the on-disk record already has a non-empty Type (e.g. a
+// legacy "weave" type), RegisterRootRuntime must NOT rewrite it — only
+// fill in empty Types. This guards against unintended downgrades.
+func TestRegisterRootRuntime_DoesNotOverwriteDiskTypeWhenAlreadySet(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "weave",
+		Type:   "weave",
+		Status: "active",
+		Branch: "main",
+	})
+	h := &fakeRootHandle{}
+	if _, err := sup.RegisterRootRuntime("weave", h, nil); err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	got, err := state.LoadAgent(tmpDir, "weave")
+	if err != nil {
+		t.Fatalf("LoadAgent(weave): %v", err)
+	}
+	if got.Type != "weave" {
+		t.Errorf("on-disk Type = %q, want %q (non-empty Type must be preserved on disk)", got.Type, "weave")
+	}
+}
+
 // QUM-399: when weave is registered as a root runtime and a child agent
 // reports status, the child→parent InterruptDelivery path must hit the
 // registered handle. This guarantees child reports drive weave's
