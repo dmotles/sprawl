@@ -232,6 +232,14 @@ func (r *Real) RegisterRootRuntime(name string, handle RuntimeHandle, agentState
 	}
 	if agentState.Type == "" {
 		agentState.Type = "root"
+		// QUM-535: persist the type back to disk so the MCP eligibility
+		// gate — which consults Supervisor.Status() / state.ListAgents —
+		// observes the canonical "root" type. In-memory mutation alone
+		// is invisible to disk-backed lookups, causing weave-as-caller
+		// of ask_user_question to be rejected.
+		if err := state.SaveAgent(r.sprawlRoot, agentState); err != nil {
+			return nil, fmt.Errorf("persisting root runtime state for %q: %w", name, err)
+		}
 	}
 	rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
 		SprawlRoot: r.sprawlRoot,

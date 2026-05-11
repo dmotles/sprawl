@@ -34,14 +34,15 @@
 #      segment depth drops to 0).
 #  11. Cleanup: kill the tmux session, remove the sandbox.
 #
-# Eligibility note: this exercises the **manager** allow-path of the
-# eligibility gate (slice 2b). The root-weave allow-path is currently
-# broken — `cmd/enter.go` sets `Identity: "weave"` so `CallerIdentity`
-# is never empty, and weave's persisted record has empty Type so the
-# manager-only check rejects. Fix tracked separately; manager spawn is
-# the canonical e2e path per the task description regardless.
-# Unit tests in `internal/sprawlmcp/server_askquestion_test.go` cover
-# the engineer/researcher reject paths.
+# Eligibility note: this exercises BOTH allow-paths of the eligibility
+# gate — the root-weave allow-path (phase 0, QUM-535) and the manager
+# allow-path (slice 2b, QUM-527). Phase 0 drives weave directly to call
+# ask_user_question and proves the persisted `type=root` on weave's
+# state record survives the disk-backed Status() lookup. Phase 1 (the
+# original test) drives weave to spawn a manager child and has the
+# manager call the tool. Unit tests in
+# `internal/sprawlmcp/server_askquestion_test.go` cover the
+# engineer/researcher reject paths.
 #
 # Gate: if `claude` is missing and SPRAWL_E2E_SKIP_NO_CLAUDE=1, skip.
 # Otherwise fail fast — the TUI cannot initialize without claude.
@@ -152,6 +153,14 @@ PROBE_ALPHA="${PROBE}-alpha"
 PROBE_BETA="${PROBE}-beta"
 PROBE_GAMMA="${PROBE}-gamma"
 
+# Phase 0 sentinels — weave-as-caller (QUM-535). Disjoint from the
+# manager probes so a partial pass can't be confused for the other phase.
+WEAVE_PROBE="AUQ-WEAVE-PROBE-$$-$(date +%s)"
+WEAVE_PROBE_A="${WEAVE_PROBE}-aye"
+WEAVE_PROBE_B="${WEAVE_PROBE}-bee"
+WEAVE_PROBE_C="${WEAVE_PROBE}-cee"
+WEAVE_STATE="$SPRAWL_ROOT/.sprawl/agents/weave.json"
+
 # The manager's name is auto-allocated by agent.AllocateName from the
 # manager pool ("tower", "forge", "bastion", …); we discover it at
 # runtime by polling .sprawl/agents/ for the first new *.json that
@@ -201,14 +210,14 @@ wait_for_pattern_re() {
     return 1
 }
 
-# wait_for_state_field <field> <substring> <timeout>
-# Polls $MANAGER_STATE until jq -r ".$field" contains $substring.
-wait_for_state_field() {
-    local field="$1" needle="$2" timeout="$3"
+# wait_for_state_field_path <state_file> <field> <substring> <timeout>
+# Polls an arbitrary state file until jq -r ".$field" contains $substring.
+wait_for_state_field_path() {
+    local state_path="$1" field="$2" needle="$3" timeout="$4"
     local elapsed=0 value
     while [ "$elapsed" -lt "$timeout" ]; do
-        if [ -f "$MANAGER_STATE" ]; then
-            value=$(jq -r ".${field} // empty" "$MANAGER_STATE" 2>/dev/null || true)
+        if [ -f "$state_path" ]; then
+            value=$(jq -r ".${field} // empty" "$state_path" 2>/dev/null || true)
             if [ -n "$value" ] && [[ "$value" == *"$needle"* ]]; then
                 return 0
             fi
@@ -217,6 +226,12 @@ wait_for_state_field() {
         elapsed=$((elapsed + 1))
     done
     return 1
+}
+
+# wait_for_state_field <field> <substring> <timeout>
+# Polls $MANAGER_STATE until jq -r ".$field" contains $substring.
+wait_for_state_field() {
+    wait_for_state_field_path "$MANAGER_STATE" "$1" "$2" "$3"
 }
 
 PHANTOM_PID=""
@@ -288,7 +303,71 @@ script -q -c "tmux ${SPRAWL_TMUX_SOCKET:+-L $SPRAWL_TMUX_SOCKET} attach -t '$SES
 PHANTOM_PID=$!
 sleep 1
 
-# --- Drive root weave to spawn a manager-type child ---
+# --- Phase 0: drive weave directly to call ask_user_question (QUM-535) ---
+#
+# Proves weave-as-caller passes the eligibility gate: weave's persisted
+# state file must have type="root" so the disk-backed Supervisor.Status()
+# lookup at internal/sprawlmcp/server.go:askUserQuestionEligibility
+# accepts it. End-to-end path: weave-tui claude → ask_user_question MCP
+# tool → eligibility gate (reads weave.json from disk) → supervisor
+# enqueue → TUI modal → user keypress → ResolveQuestion → weave claude
+# unblocks → weave calls report_status with the selected label → weave's
+# state.json last_report_message becomes the assertion surface.
+
+echo ""
+echo "=== Phase 0: driving weave directly to call ask_user_question (QUM-535 regression guard) ==="
+
+WEAVE_PROMPT="Call mcp__sprawl__ask_user_question with questions=[{question:\"Weave-as-caller probe (${WEAVE_PROBE})\",multi_select:false,options:[{label:\"${WEAVE_PROBE_A}\"},{label:\"${WEAVE_PROBE_B}\"},{label:\"${WEAVE_PROBE_C}\"}]}]. Parse the QuestionResponse JSON, extract answers[0].selected[0], then call mcp__sprawl__report_status with state=working and summary set to that exact extracted label. Do nothing else."
+
+_stmux send-keys -t "$SESSION" "$WEAVE_PROMPT"
+sleep 0.5
+_stmux send-keys -t "$SESSION" Enter
+
+echo ""
+echo "=== Waiting for weave's ask_user_question modal to appear ==="
+if wait_for_pattern "$SESSION" "is asking" 240; then
+    pass "TUI shows 'is asking' indicator for weave-as-caller (eligibility gate accepted root)"
+else
+    fail "modal indicator never appeared within 240s — weave-as-caller was rejected by eligibility gate (QUM-535 regression)"
+    echo "  weave state on disk:" >&2
+    cat "$WEAVE_STATE" 2>/dev/null | sed 's/^/    /' >&2 || echo "    <missing>" >&2
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
+    echo "==============================="
+    echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
+    exit 1
+fi
+
+sleep 2
+
+echo ""
+echo "=== Sending keys: Down, Enter (select option 2: $WEAVE_PROBE_B) ==="
+_stmux send-keys -t "$SESSION" Down
+sleep 0.3
+_stmux send-keys -t "$SESSION" Enter
+
+echo ""
+echo "=== Waiting for weave to report the selected label ==="
+if wait_for_state_field_path "$WEAVE_STATE" "last_report_message" "$WEAVE_PROBE_B" 240; then
+    pass "weave state.last_report_message contains '$WEAVE_PROBE_B' (round-trip via weave succeeded)"
+else
+    fail "weave state.last_report_message did not surface '$WEAVE_PROBE_B' within 240s"
+    echo "  current last_report_message:" >&2
+    jq -r '.last_report_message // "<unset>"' "$WEAVE_STATE" 2>/dev/null >&2 || true
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
+fi
+
+echo ""
+echo "=== Verifying modal indicator cleared after Resolve (phase 0) ==="
+sleep 3
+if capture_pane "$SESSION" | grep -qE "is asking"; then
+    fail "statusbar still shows 'is asking' after Resolve in phase 0"
+else
+    pass "statusbar 'is asking' segment cleared after Resolve (phase 0)"
+fi
+
+# --- Phase 1: drive root weave to spawn a manager-type child ---
 #
 # The manager-type caller passes the slice-2b eligibility gate. End-
 # to-end path: weave-tui claude → spawn MCP tool → supervisor.Spawn →
