@@ -24,6 +24,7 @@ func TestChildDisallowedTools_PinnedList(t *testing.T) {
 		"EnterWorktree",
 		"ExitWorktree",
 		"TaskStop",
+		"AskUserQuestion",
 	}
 	got := append([]string(nil), ChildDisallowedTools...)
 
@@ -38,6 +39,35 @@ func TestChildDisallowedTools_PinnedList(t *testing.T) {
 			t.Errorf("ChildDisallowedTools[%d] = %q, want %q\nfull got:  %v\nfull want: %v", i, got[i], want[i], got, want)
 		}
 	}
+}
+
+// TestAskUserQuestion_DeprecatedFromRootTools pins QUM-528: the harness-tied
+// AskUserQuestion tool is broken under `--print --output-format stream-json`
+// (the only mode sprawl uses) and has been superseded by the
+// `mcp__sprawl__ask_user_question` MCP tool (QUM-527). It must be absent from
+// RootTools and present in BOTH disallow lists for belt-and-suspenders
+// enforcement via `--disallowedTools`.
+func TestAskUserQuestion_DeprecatedFromRootTools(t *testing.T) {
+	for _, tool := range RootTools {
+		if tool == "AskUserQuestion" {
+			t.Errorf("RootTools must not include AskUserQuestion (deprecated by QUM-528); use mcp__sprawl__ask_user_question instead")
+		}
+	}
+	if !contains(DisallowedTools, "AskUserQuestion") {
+		t.Errorf("DisallowedTools must include AskUserQuestion (QUM-528): got %v", DisallowedTools)
+	}
+	if !contains(ChildDisallowedTools, "AskUserQuestion") {
+		t.Errorf("ChildDisallowedTools must include AskUserQuestion (QUM-528): got %v", ChildDisallowedTools)
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func TestModelForAgentType(t *testing.T) {

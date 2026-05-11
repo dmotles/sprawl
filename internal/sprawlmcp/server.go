@@ -10,9 +10,16 @@ import (
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 )
+
+// askUserQuestionRestrictedError is the canonical structured error text the
+// tool returns when an ineligible caller (engineer or researcher) invokes
+// ask_user_question. It is intentionally a JSON document so callers can
+// programmatically detect this case. See QUM-527.
+const askUserQuestionRestrictedError = `{"error":"ask_user_question is restricted to weave and managers; escalate to your parent instead"}`
 
 // MsgSender accepts an opaque tea.Msg-typed value and dispatches it into
 // the host TUI program. The sprawlmcp package keeps the type as `any` to
@@ -211,6 +218,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolMessagesArchive(ctx, args)
 	case "messages_peek":
 		return s.toolMessagesPeek(ctx)
+	case "ask_user_question":
+		return s.toolAskUserQuestion(ctx, args)
 	default:
 		// Unknown tools get a JSON-RPC error, not a tool content error
 		return "", &unknownToolError{name: name}
@@ -540,6 +549,82 @@ func (s *Server) toolMessagesPeek(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("marshaling result: %w", err)
 	}
 	return string(data), nil
+}
+
+// toolAskUserQuestion dispatches the ask_user_question MCP tool. It performs
+// the server-side eligibility gate (only root weave and manager-type agents
+// may call), strict snake_case argument parsing, and blocks on
+// supervisor.AskUserQuestion until the user responds, declines, or the queue
+// is cancelled. The QuestionResponse is marshaled as JSON in the tool result
+// text. See QUM-527 §"Eligibility (server-side gate)" / §"Wire-level schema".
+func (s *Server) toolAskUserQuestion(ctx context.Context, args json.RawMessage) (string, error) {
+	caller := backendpkg.CallerIdentity(ctx)
+	if err := s.askUserQuestionEligibility(ctx, caller); err != nil {
+		return "", err
+	}
+
+	var p struct {
+		Questions []supervisor.Question `json:"questions"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if len(p.Questions) == 0 {
+		return "", fmt.Errorf("ask_user_question: questions[] must not be empty")
+	}
+	for i, q := range p.Questions {
+		if q.Prompt == "" {
+			return "", fmt.Errorf("ask_user_question: questions[%d].question is required", i)
+		}
+		if len(q.Options) == 0 {
+			return "", fmt.Errorf("ask_user_question: questions[%d].options must not be empty", i)
+		}
+	}
+
+	requestID, err := state.GenerateUUID()
+	if err != nil {
+		return "", fmt.Errorf("ask_user_question: generating request id: %w", err)
+	}
+	req := supervisor.QuestionRequest{
+		RequestID: requestID,
+		From:      caller,
+		Questions: p.Questions,
+	}
+	resp, err := s.sup.AskUserQuestion(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling QuestionResponse: %w", err)
+	}
+	return string(data), nil
+}
+
+// askUserQuestionEligibility enforces the server-side eligibility gate.
+// Empty caller identity (root weave) is allowed. Otherwise the caller's
+// agent record is looked up via Supervisor.Status and only Type=="manager"
+// or Type=="root" passes. Engineer and researcher callers (and any other
+// type) get the canonical structured restriction error.
+func (s *Server) askUserQuestionEligibility(ctx context.Context, caller string) error {
+	if caller == "" {
+		// Root weave session — no per-agent record, always allowed.
+		return nil
+	}
+	agents, err := s.sup.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("ask_user_question: looking up caller %q: %w", caller, err)
+	}
+	for _, a := range agents {
+		if a.Name == caller {
+			if a.Type == "manager" || a.Type == "root" {
+				return nil
+			}
+			return errors.New(askUserQuestionRestrictedError)
+		}
+	}
+	// Unknown caller — be conservative and reject.
+	return errors.New(askUserQuestionRestrictedError)
 }
 
 // unknownToolError is used to distinguish unknown tool errors from supervisor errors.

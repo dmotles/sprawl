@@ -114,6 +114,12 @@ type mockSupervisor struct {
 	messagesPeekCalled       bool
 	messagesPeekResult       *supervisor.MessagesPeekResult
 	messagesPeekErr          error
+
+	// AskUserQuestion recording + seams (QUM-527 slice 2b)
+	askQuestionCalls  int
+	askQuestionLast   supervisor.QuestionRequest
+	askQuestionResult supervisor.QuestionResponse
+	askQuestionErr    error
 }
 
 func (m *mockSupervisor) MessagesList(_ context.Context, filter string, limit int) (*supervisor.MessagesListResult, error) {
@@ -245,6 +251,22 @@ func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
 func (m *mockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
 	return nil, nil
 }
+
+func (m *mockSupervisor) AskUserQuestion(_ context.Context, req supervisor.QuestionRequest) (supervisor.QuestionResponse, error) {
+	m.askQuestionCalls++
+	m.askQuestionLast = req
+	if m.askQuestionErr != nil {
+		return supervisor.QuestionResponse{}, m.askQuestionErr
+	}
+	return m.askQuestionResult, nil
+}
+func (m *mockSupervisor) RegisterQuestionConsumer(_ supervisor.QuestionConsumer) error { return nil }
+func (m *mockSupervisor) UnregisterQuestionConsumer(_ string)                          {}
+func (m *mockSupervisor) ResolveQuestion(_ string, _ supervisor.QuestionResponse) bool { return false }
+func (m *mockSupervisor) CancelQuestion(_, _ string) bool                              { return false }
+func (m *mockSupervisor) CancelByAgent(_, _ string)                                    {}
+func (m *mockSupervisor) QuestionsChanged() <-chan struct{}                            { return nil }
+func (m *mockSupervisor) PeekQuestions() (int, *supervisor.PendingQuestion)            { return 0, nil }
 
 func (m *mockSupervisor) Handoff(_ context.Context, summary string) error {
 	m.handoffSummary = summary
@@ -400,6 +422,7 @@ func TestServer_ToolsList(t *testing.T) {
 		"messages_read",
 		"messages_archive",
 		"messages_peek",
+		"ask_user_question",
 	}
 
 	if len(toolsRaw) != len(expectedTools) {

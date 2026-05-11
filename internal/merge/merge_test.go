@@ -114,7 +114,7 @@ func TestMerge_HappyPath(t *testing.T) {
 		return nil
 	}
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestMerge_ZeroCommit_NoOp(t *testing.T) {
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestMerge_DryRun(t *testing.T) {
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestMerge_LockAcquireFailure(t *testing.T) {
 	var resetSoftCalled bool
 	deps.GitResetSoft = func(worktree, ref string) error { resetSoftCalled = true; return nil }
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err == nil {
 		t.Fatal("expected error from lock acquire failure")
 	}
@@ -285,7 +285,7 @@ func TestMerge_RebaseConflict_AbortsAndErrors(t *testing.T) {
 	deps.GitFFMerge = func(worktree, branch string) error { ffMergeCalled = true; return nil }
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err == nil {
 		t.Fatal("expected error from rebase conflict")
 	}
@@ -321,7 +321,7 @@ func TestMerge_FFMergeFailure(t *testing.T) {
 	var pokeCalled bool
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err == nil {
 		t.Fatal("expected error from ff-merge failure")
 	}
@@ -353,7 +353,7 @@ func TestMerge_PostMergeValidation_Fail_RollsBack(t *testing.T) {
 	}
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err == nil {
 		t.Fatal("expected error from post-merge validation failure")
 	}
@@ -391,7 +391,7 @@ func TestMerge_NoValidate_SkipsTests(t *testing.T) {
 	var pokeCalled bool
 	deps.WritePoke = func(sprawlRoot, agentName, content string) error { pokeCalled = true; return nil }
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestMerge_PokeWrittenBeforeLockRelease(t *testing.T) {
 		return func() { order = append(order, "unlock") }, nil
 	}
 
-	_, err := Merge(cfg, deps)
+	_, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestMerge_StepOrdering(t *testing.T) {
 		return nil
 	}
 
-	_, err := Merge(cfg, deps)
+	_, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -518,7 +518,7 @@ func TestMerge_CommitMessage_WithOverride(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	_, err := Merge(cfg, deps)
+	_, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestMerge_CommitMessage_Default(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	_, err := Merge(cfg, deps)
+	_, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -578,7 +578,7 @@ func TestMerge_EmptyValidateCmd_SkipsWithWarning(t *testing.T) {
 		return nil
 	}
 
-	result, err := Merge(cfg, deps)
+	result, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -610,7 +610,7 @@ func TestMerge_ValidateCmd_PassedToRunTests(t *testing.T) {
 		return "ok", nil
 	}
 
-	_, err := Merge(cfg, deps)
+	_, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestMerge_CommitMessage_NoReport(t *testing.T) {
 		return "abc1234", nil
 	}
 
-	_, err := Merge(cfg, deps)
+	_, err := Merge(context.Background(), cfg, deps)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestMerge_EmitsCheckpointSequence(t *testing.T) {
 	cp, steps := recordingCheckpoint()
 	deps.Checkpoint = cp
 
-	if _, err := Merge(cfg, deps); err != nil {
+	if _, err := Merge(context.Background(), cfg, deps); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 
@@ -696,7 +696,7 @@ func TestMerge_CheckpointStopsOnValidateError(t *testing.T) {
 	cp, steps := recordingCheckpoint()
 	deps.Checkpoint = cp
 
-	if _, err := Merge(cfg, deps); err == nil {
+	if _, err := Merge(context.Background(), cfg, deps); err == nil {
 		t.Fatal("expected merge to fail when validate fails")
 	}
 
@@ -727,7 +727,7 @@ func TestMerge_NilCheckpointSafe(t *testing.T) {
 			t.Errorf("merge with nil Checkpoint panicked: %v", r)
 		}
 	}()
-	if _, err := Merge(cfg, deps); err != nil {
+	if _, err := Merge(context.Background(), cfg, deps); err != nil {
 		t.Errorf("merge: %v", err)
 	}
 }

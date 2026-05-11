@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e test-merge-reuse-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -120,3 +120,21 @@ test-exit-code-preservation:
 # internal/supervisor/real.go (Real.Merge / mergeFn).
 test-merge-reuse-e2e: build
 	bash scripts/test-merge-reuse-e2e.sh
+
+# QUM-527: end-to-end gate for the mcp__sprawl__ask_user_question
+# round-trip. Spins up an isolated /tmp sandbox, launches `sprawl enter`
+# in a detached tmux pane, drives root weave to call the MCP tool with
+# a single-select payload, asserts the modal indicator appears in the
+# status bar, sends Down+Enter to select option 2, and asserts the
+# viewport surfaces AUQ-ANSWER=<beta-sentinel> (proving the
+# QuestionResponse reached claude). Not part of `make validate` — runs
+# a real claude subprocess. See scripts/test-ask-user-question-e2e.sh.
+# Mandatory before merging any change to the ask-user-question path:
+# internal/supervisor/question.go, internal/supervisor/question_real.go,
+# internal/sprawlmcp/server.go (toolAskUserQuestion + eligibility gate),
+# internal/sprawlmcp/tools.go (ask_user_question schema),
+# internal/tui/question.go, internal/tui/app.go (modal+keys+View),
+# internal/tui/statusbar.go (SetPendingQuestions), or cmd/enter.go
+# (consumer registration + forwarder).
+test-ask-user-question-e2e: build
+	bash scripts/test-ask-user-question-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc

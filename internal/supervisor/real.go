@@ -53,8 +53,8 @@ type Real struct {
 	killDeps   *agentops.KillDeps
 
 	spawnFn  func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error)
-	mergeFn  func(*agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error)
-	retireFn func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error
+	mergeFn  func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error)
+	retireFn func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error
 	killFn   func(*agentops.KillDeps, string, bool) error
 
 	// Handoff seams + signal channel. The channel is buffered (size 1) and
@@ -88,6 +88,10 @@ type Real struct {
 	// uses this to update the in-flight indicator with the current step
 	// without re-rendering the whole call log. (QUM-497)
 	progressEmitter func(callID, step, tail string)
+
+	// questions is the in-process question queue for ask_user_question
+	// flows (QUM-527 slice 1). See question.go.
+	questions *questionQueue
 }
 
 // SetProgressEmitter installs a fan-out hook invoked for every merge/retire
@@ -202,6 +206,8 @@ func NewReal(cfg Config) (*Real, error) {
 		handoffWriteSessionSummary: memory.WriteSessionSummary,
 		handoffWriteSignalFile:     memory.WriteHandoffSignal,
 		handoffNow:                 time.Now,
+
+		questions: newQuestionQueue(),
 	}
 	r.runtimeStarter = newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
 	return r, nil
@@ -223,6 +229,9 @@ func (r *Real) RegisterRootRuntime(name string, handle RuntimeHandle, agentState
 		} else {
 			agentState = &state.AgentState{Name: name, Status: "running"}
 		}
+	}
+	if agentState.Type == "" {
+		agentState.Type = "root"
 	}
 	rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
 		SprawlRoot: r.sprawlRoot,
@@ -379,7 +388,7 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 // equality check inside agentops.Merge sees the correct caller. See QUM-487.
 func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noValidate bool) (*MergeOutcome, error) {
 	effective := r.effectiveCallerOr(ctx, caller)
-	return r.mergeFn(r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false)
+	return r.mergeFn(ctx, r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false)
 }
 
 // Retire accepts a `caller` parameter for the same reason as Merge — see
@@ -387,6 +396,10 @@ func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noV
 // retireDeps.Getenv and is also propagated through cascade recursion so every
 // retireFn invocation in the tree runs under the caller's identity.
 func (r *Real) Retire(ctx context.Context, caller string, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+	// Release any AskUserQuestion calls originating from this agent BEFORE
+	// state mutation. Cascade recursion will naturally fire this for each
+	// descendant as well. (QUM-527 slice 1.)
+	r.questions.cancelByAgent(agentName, "agent retired")
 	effective := r.effectiveCallerOr(ctx, caller)
 	retireDeps := r.retireDepsForCaller(ctx, effective)
 	if err := r.reconcileStateFromRegistry(agentName); err != nil {
@@ -418,13 +431,13 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 		if err := runtime.Stop(stopCtx); err != nil {
 			return err
 		}
-		if err := r.retireFn(retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
+		if err := r.retireFn(ctx, retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 			return err
 		}
 		r.runtimeRegistry.Remove(agentName)
 		return nil
 	}
-	if err := r.retireFn(retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
+	if err := r.retireFn(ctx, retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)
 		}
@@ -459,6 +472,10 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 		return nil
 	}
 
+	// Release any AskUserQuestion calls originating from this agent.
+	// (QUM-527 slice 1.)
+	r.questions.cancelByAgent(agentName, "agent killed")
+
 	if runtime, ok := r.startedRuntime(agentName); ok {
 		stopCtx, cancel := withRuntimeStopTimeout(ctx)
 		defer cancel()
@@ -484,6 +501,9 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 }
 
 func (r *Real) Shutdown(ctx context.Context) error {
+	// Release any in-flight AskUserQuestion callers with OutcomeSessionEnded
+	// BEFORE tearing down runtimes. (QUM-527 slice 1.)
+	r.questions.closeAll(OutcomeSessionEnded, "supervisor shutdown")
 	for _, runtime := range r.runtimeRegistry.List() {
 		snap := runtime.Snapshot()
 		if snap.Lifecycle != RuntimeLifecycleStarted {

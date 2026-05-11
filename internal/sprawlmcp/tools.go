@@ -301,6 +301,60 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "ask_user_question",
+			"description": "Use this when you feel a question must be directly escalated to the human user. Engineers and researchers: escalate to your parent manager instead.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"questions": map[string]any{
+						"type":        "array",
+						"description": "One or more multiple-choice questions to surface to the user. The tool blocks until the user answers, declines, or the session ends.",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"id": map[string]any{
+									"type":        "string",
+									"description": "Optional stable identifier for the question (echoed back in the response).",
+								},
+								"header": map[string]any{
+									"type":        "string",
+									"description": "Short chip-style label rendered above the question in the modal.",
+								},
+								"question": map[string]any{
+									"type":        "string",
+									"description": "The full question text shown to the user.",
+								},
+								"multi_select": map[string]any{
+									"type":        "boolean",
+									"description": "When true, the user may pick zero or more options. Default false (pick exactly one).",
+								},
+								"options": map[string]any{
+									"type":        "array",
+									"description": "Pre-baked options the user can pick from. Always rendered alongside an \"Other\" free-text field and a per-question decline.",
+									"items": map[string]any{
+										"type": "object",
+										"properties": map[string]any{
+											"label": map[string]any{
+												"type":        "string",
+												"description": "Option label shown to the user.",
+											},
+											"description": map[string]any{
+												"type":        "string",
+												"description": "Optional extended description rendered under the label.",
+											},
+										},
+										"required": []string{"label"},
+									},
+								},
+							},
+							"required": []string{"question", "options"},
+						},
+					},
+				},
+				"required": []string{"questions"},
+			},
+		},
+		{
 			"name":        "kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +35,7 @@ func newTestRetireDeps(t *testing.T) (*retireDeps, string) {
 			return false, nil
 		},
 		GitBranchSafeDelete: func(repoRoot, branchName string) error { return nil },
-		DoMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
+		DoMerge: func(_ context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
 			return &merge.Result{}, nil
 		},
 		NewMergeDeps: func() *merge.Deps { return &merge.Deps{} },
@@ -62,7 +63,7 @@ func saveRetireCmdAgent(t *testing.T, sprawlRoot string, agent *state.AgentState
 
 func TestRetire_InvalidAgentNameReturnsError(t *testing.T) {
 	deps, _ := newTestRetireDeps(t)
-	err := runRetire(deps, "../evil", false, false, false, false, false)
+	err := runRetire(context.Background(), deps, "../evil", false, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected invalid agent name error")
 	}
@@ -81,7 +82,7 @@ func TestRetire_FailsClosedWhenLiveWeaveSessionOwnsRuntimes(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = lock.Release() })
 
-	err = runRetire(deps, "alice", false, false, false, false, false)
+	err = runRetire(context.Background(), deps, "alice", false, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected standalone retire rejection")
 	}
@@ -104,7 +105,7 @@ func TestRetire_HappyPathDeletesState(t *testing.T) {
 		Parent:   "weave",
 	})
 
-	if err := runRetire(deps, "alice", false, false, false, false, false); err != nil {
+	if err := runRetire(context.Background(), deps, "alice", false, false, false, false, false); err != nil {
 		t.Fatalf("runRetire() error: %v", err)
 	}
 	if _, err := state.LoadAgent(tmpDir, "alice"); err == nil {
@@ -123,7 +124,7 @@ func TestRetire_DirtyWorktree_Refuses(t *testing.T) {
 		Parent:   "weave",
 	})
 
-	err := runRetire(deps, "alice", false, false, false, false, false)
+	err := runRetire(context.Background(), deps, "alice", false, false, false, false, false)
 	if err == nil {
 		t.Fatal("expected dirty worktree error")
 	}
@@ -156,7 +157,7 @@ func TestRetire_DirtyWorktree_ForceOverrides(t *testing.T) {
 		Parent:   "weave",
 	})
 
-	if err := runRetire(deps, "alice", false, true, false, false, false); err != nil {
+	if err := runRetire(context.Background(), deps, "alice", false, true, false, false, false); err != nil {
 		t.Fatalf("runRetire() error: %v", err)
 	}
 	if !gotForce {
@@ -177,7 +178,7 @@ func TestRetire_AbandonWithUnmergedCommitsRequiresYes(t *testing.T) {
 		Parent:   "weave",
 	})
 
-	err := runRetire(deps, "alice", false, false, true, false, false)
+	err := runRetire(context.Background(), deps, "alice", false, false, true, false, false)
 	if err == nil {
 		t.Fatal("expected abandon confirmation error")
 	}
@@ -190,7 +191,7 @@ func TestRetire_MergeAndAbandonAreMutuallyExclusive(t *testing.T) {
 	deps, tmpDir := newTestRetireDeps(t)
 	saveRetireCmdAgent(t, tmpDir, &state.AgentState{Name: "alice", Status: "active", Branch: "sprawl/alice"})
 
-	err := runRetire(deps, "alice", false, false, true, true, false)
+	err := runRetire(context.Background(), deps, "alice", false, false, true, true, false)
 	if err == nil {
 		t.Fatal("expected mutually exclusive flag error")
 	}

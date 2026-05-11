@@ -11,12 +11,15 @@ var RootTools = []string{
 	"Bash", "Read", "Glob", "Grep", "WebSearch", "WebFetch",
 	"Agent", "Task", "TaskOutput", "TaskStop", "ToolSearch",
 	"Skill", "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet",
-	"AskUserQuestion", "EnterPlanMode", "ExitPlanMode",
+	"EnterPlanMode", "ExitPlanMode",
 }
 
 // DisallowedTools is the set of tools the root agent is explicitly denied.
 // The root agent does not edit files directly — it delegates to child agents.
-var DisallowedTools = []string{"Edit", "Write", "NotebookEdit"}
+// AskUserQuestion is denied because the harness implementation silently
+// no-ops in `--print` (stream-json) mode (QUM-528); use the
+// `mcp__sprawl__ask_user_question` MCP tool (QUM-527) instead.
+var DisallowedTools = []string{"Edit", "Write", "NotebookEdit", "AskUserQuestion"}
 
 // ChildDisallowedTools is the set of harness-tied tools that silently no-op
 // when claude runs in `--print` (stream-json) mode, which is how all sprawl
@@ -24,6 +27,12 @@ var DisallowedTools = []string{"Edit", "Write", "NotebookEdit"}
 // these names and issue tool calls that "succeed" without doing anything —
 // e.g. ScheduleWakeup queues a wake that never fires because no idle session
 // loop exists in --print mode. See QUM-470 for the wake-loss footgun.
+//
+// AskUserQuestion belongs here too (QUM-528): the harness version returns
+// inputs to the model but never renders a prompt to the user under
+// `--print --output-format stream-json`. Weave and managers should call
+// `mcp__sprawl__ask_user_question` (QUM-527) instead; other agents must
+// escalate to their parent.
 //
 // Children should use `Bash run_in_background: true` plus synchronous
 // `mcp__sprawl__*` waits instead.
@@ -38,6 +47,7 @@ var ChildDisallowedTools = []string{
 	"EnterWorktree",
 	"ExitWorktree",
 	"TaskStop",
+	"AskUserQuestion",
 }
 
 // Per-role model constants. The root weave session and manager agents use

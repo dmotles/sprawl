@@ -16,6 +16,33 @@ func testEnvConfig() EnvConfig {
 	}
 }
 
+// TestBuildRootPrompt_NoAskUserQuestion pins QUM-528: the harness AskUserQuestion
+// tool is deprecated; the root prompt must not instruct the agent to call it.
+// The TUI-mode prompt should reference the replacement MCP tool name
+// (`mcp__sprawl__ask_user_question`, QUM-527) instead.
+func TestBuildRootPrompt_NoAskUserQuestion(t *testing.T) {
+	for _, mode := range []string{"tmux", "tui"} {
+		cfg := PromptConfig{
+			RootName: "weave",
+			AgentCLI: "claude-code",
+			Mode:     mode,
+		}
+		prompt := BuildRootPrompt(cfg)
+		if strings.Contains(prompt, "AskUserQuestion") {
+			t.Errorf("root prompt (%s mode) must not mention deprecated harness tool AskUserQuestion (QUM-528)", mode)
+		}
+	}
+	cfg := PromptConfig{
+		RootName: "weave",
+		AgentCLI: "claude-code",
+		Mode:     "tui",
+	}
+	prompt := BuildRootPrompt(cfg)
+	if !strings.Contains(prompt, "mcp__sprawl__ask_user_question") {
+		t.Errorf("root prompt (tui mode) must reference replacement tool mcp__sprawl__ask_user_question (QUM-527)")
+	}
+}
+
 func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 

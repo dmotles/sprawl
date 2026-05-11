@@ -573,6 +573,10 @@ func runEnter(deps *enterDeps) error {
 	// Shutdown signal for the forwarder goroutines; closed when the Bubble Tea
 	// program returns so the goroutines can exit.
 	handoffDone := make(chan struct{})
+	// qConsumer holds the registered TUI question consumer (QUM-527 slice 2c)
+	// so the shutdown path can unregister it. Written once in onStart, read
+	// once after runProgram returns — single-threaded by construction.
+	var qConsumer *tui.QuestionConsumer
 	onStart := func(send func(tea.Msg)) {
 		// QUM-311: replace the process-level notifier (which in TUI mode is a
 		// legacy-gated no-op — see cmd/messages_notify.go) with one that
@@ -596,6 +600,36 @@ func runEnter(deps *enterDeps) error {
 			r.SetProgressEmitter(func(callID, step, tail string) {
 				send(tui.MCPCallProgressMsg{CallID: callID, Step: step, Tail: tail})
 			})
+		}
+
+		// QUM-527 slice 2c: register the TUI question consumer so the
+		// supervisor's question queue dispatches OnEnqueue / OnCancel into
+		// the bubbletea program. The forwarder goroutine below additionally
+		// subscribes to QuestionsChanged() so depth updates (e.g. resolves
+		// from other consumers) refresh the status bar.
+		if sup != nil {
+			c := tui.NewQuestionConsumer(send)
+			if err := sup.RegisterQuestionConsumer(c); err != nil {
+				fmt.Fprintf(os.Stderr, "[enter] register question consumer: %v\n", err)
+			} else {
+				qConsumer = c
+			}
+			if qch := sup.QuestionsChanged(); qch != nil {
+				go func() {
+					for {
+						select {
+						case <-handoffDone:
+							return
+						case _, ok := <-qch:
+							if !ok {
+								return
+							}
+							depth, head := sup.PeekQuestions()
+							send(tui.QuestionsAvailableMsg{Depth: depth, Head: head})
+						}
+					}
+				}()
+			}
 		}
 
 		// QUM-261: when the initial `--resume` subprocess trips the "No
@@ -707,6 +741,12 @@ func runEnter(deps *enterDeps) error {
 	}
 	if r, ok := sup.(*supervisor.Real); ok {
 		r.SetProgressEmitter(nil)
+	}
+	// QUM-527 slice 2c: unregister the TUI question consumer so the
+	// supervisor's queue stops fanning out OnEnqueue / OnCancel to a dead
+	// program. Idempotent on the supervisor side.
+	if sup != nil && qConsumer != nil {
+		sup.UnregisterQuestionConsumer(qConsumer.Name())
 	}
 
 	// Ctrl+C / clean shutdown of the TUI does NOT run FinalizeHandoff. It

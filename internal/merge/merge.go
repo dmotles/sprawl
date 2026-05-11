@@ -30,11 +30,6 @@ type Config struct {
 	DryRun          bool
 	AgentState      *state.AgentState
 
-	// Ctx is the context used to drive post-merge validation. If nil,
-	// context.Background() is used. ValidateTimeout (or DefaultValidateTimeout)
-	// is layered on top to bound runaway validate commands. QUM-496.
-	Ctx context.Context //nolint:containedctx // Threading ctx through the public surface here is deliberate so callers can cancel validate.
-
 	// ValidateTimeout caps the duration of post-merge validation. Zero means
 	// use DefaultValidateTimeout. QUM-496.
 	ValidateTimeout time.Duration
@@ -76,7 +71,10 @@ type Result struct {
 // Merge performs the squash+rebase+fast-forward merge sequence.
 // Steps: acquire lock, check for zero commits, squash, rebase, ff-merge,
 // validate, write poke, release lock.
-func Merge(cfg *Config, deps *Deps) (*Result, error) {
+//
+// ctx drives post-merge validation; ValidateTimeout (or DefaultValidateTimeout)
+// is layered on top to bound runaway validate commands (QUM-496/QUM-524).
+func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 	// Dry-run: show plan without making changes or acquiring lock.
 	if cfg.DryRun {
 		return dryRun(cfg, deps)
@@ -137,10 +135,6 @@ func Merge(cfg *Config, deps *Deps) (*Result, error) {
 	// Step 7: Post-merge validation.
 	if !cfg.NoValidate && cfg.ValidateCmd != "" {
 		cpMerge(deps, "merge.validate-started", "cmd", cfg.ValidateCmd)
-		ctx := cfg.Ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
 		timeout := cfg.ValidateTimeout
 		if timeout <= 0 {
 			timeout = DefaultValidateTimeout

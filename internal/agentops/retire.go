@@ -1,6 +1,7 @@
 package agentops
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ type RetireDeps struct {
 	GitBranchDelete     func(repoRoot, branchName string) error
 	GitBranchIsMerged   func(repoRoot, branchName string) (bool, error)
 	GitBranchSafeDelete func(repoRoot, branchName string) error
-	DoMerge             func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
+	DoMerge             func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
 	NewMergeDeps        func() *merge.Deps
 	LoadAgent           func(sprawlRoot, name string) (*state.AgentState, error)
 	CurrentBranch       func(repoRoot string) (string, error)
@@ -38,7 +39,7 @@ type RetireDeps struct {
 // Retire fully tears down an agent after its owning runtime has already been
 // stopped by the live weave session, or during offline cleanup with no live
 // weave session present.
-func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
+func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
 	if err := agent.ValidateName(agentName); err != nil {
 		return err
 	}
@@ -98,7 +99,7 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 		if mergeDeps != nil && deps.Checkpoint != nil {
 			mergeDeps.Checkpoint = deps.Checkpoint
 		}
-		result, err := deps.DoMerge(cfg, mergeDeps)
+		result, err := deps.DoMerge(ctx, cfg, mergeDeps)
 		if err != nil {
 			return fmt.Errorf("merge before retire failed: %w", err)
 		}
@@ -169,7 +170,7 @@ func Retire(deps *RetireDeps, agentName string, cascade, force, abandon, mergeFi
 			return fmt.Errorf("checking children: %w", err)
 		}
 		for _, child := range children {
-			if err := Retire(deps, child.Name, true, force, abandon, false, yes, noValidate); err != nil {
+			if err := Retire(ctx, deps, child.Name, true, force, abandon, false, yes, noValidate); err != nil {
 				return fmt.Errorf("retiring child %s: %w", child.Name, err)
 			}
 		}

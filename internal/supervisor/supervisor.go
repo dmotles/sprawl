@@ -242,4 +242,44 @@ type Supervisor interface {
 	// and fall back to a synthesized minimal state. Returns the registered
 	// AgentRuntime.
 	RegisterRootRuntime(name string, handle RuntimeHandle, agentState *state.AgentState) (*AgentRuntime, error)
+
+	// --- Question queue (QUM-527 slice 1) ---
+	// See docs/research/ask-user-question-mcp-design.md for the full design.
+
+	// AskUserQuestion enqueues a question for human consumption and blocks
+	// until a registered QuestionConsumer (e.g. the TUI) resolves it, the
+	// caller's context is cancelled, the originating agent retires, or the
+	// supervisor shuts down. req.RequestID must be non-empty; the caller
+	// (typically the MCP tool dispatcher) generates a stable ID.
+	AskUserQuestion(ctx context.Context, req QuestionRequest) (QuestionResponse, error)
+
+	// RegisterQuestionConsumer attaches a consumer that is notified of every
+	// enqueue and cancel. Returns an error on empty name or duplicate.
+	RegisterQuestionConsumer(c QuestionConsumer) error
+
+	// UnregisterQuestionConsumer removes a consumer by name. Idempotent.
+	UnregisterQuestionConsumer(name string)
+
+	// ResolveQuestion delivers resp to the question with the given ID. Returns
+	// true on first successful resolution; false on duplicate / unknown ID.
+	// Safe for concurrent callers — only one wins.
+	ResolveQuestion(id string, resp QuestionResponse) bool
+
+	// CancelQuestion cancels a pending question with OutcomeSessionEnded and
+	// the supplied reason. Idempotent.
+	CancelQuestion(id, reason string) bool
+
+	// CancelByAgent cancels every pending question whose originating agent
+	// matches agentName, using OutcomeAgentRetired and the supplied reason.
+	// Called by Retire/Kill to release blocked AskUserQuestion callers.
+	CancelByAgent(agentName, reason string)
+
+	// QuestionsChanged returns a coalesced notification channel that emits on
+	// every enqueue / resolve / cancel. Consumers use it to refresh their view
+	// of the queue without polling.
+	QuestionsChanged() <-chan struct{}
+
+	// PeekQuestions returns (depth, shallow-copy-of-head). Head is nil when
+	// the queue is empty.
+	PeekQuestions() (int, *PendingQuestion)
 }

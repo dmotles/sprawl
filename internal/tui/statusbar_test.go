@@ -295,3 +295,52 @@ func TestStatusBar_SetRestartLabel_EmptyOmitted(t *testing.T) {
 		t.Errorf("View() should not contain a consolidation label when empty, got:\n%s", view)
 	}
 }
+
+// TestStatusBar_PendingQuestions_DepthZero_NoSegment verifies that depth==0
+// hides the pending-questions indicator entirely. (QUM-527)
+func TestStatusBar_PendingQuestions_DepthZero_NoSegment(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(160)
+	m.SetPendingQuestions(0, "")
+	view := m.View()
+	if strings.Contains(view, "asking") {
+		t.Errorf("View() should not contain 'asking' at depth 0, got:\n%s", view)
+	}
+}
+
+// TestStatusBar_PendingQuestions_DepthOne_RendersAsking checks the single-
+// pending-question segment carries the agent name, the 'asking' verb, and
+// the Ctrl-Q reopen hint. (QUM-527)
+func TestStatusBar_PendingQuestions_DepthOne_RendersAsking(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	m.SetPendingQuestions(1, "weave")
+	view := m.View()
+	if !strings.Contains(view, "weave") {
+		t.Errorf("View() should contain agent name 'weave', got:\n%s", view)
+	}
+	if !strings.Contains(view, "asking") {
+		t.Errorf("View() should contain 'asking', got:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctrl-Q") {
+		t.Errorf("View() should contain 'Ctrl-Q' hint, got:\n%s", view)
+	}
+}
+
+// TestStatusBar_PendingQuestions_DepthThree_RendersPlusMore checks depth>=2
+// renders the agent name and "+N more" where N = depth-1. (QUM-527)
+func TestStatusBar_PendingQuestions_DepthThree_RendersPlusMore(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	m.SetPendingQuestions(3, "tower")
+	view := m.View()
+	if !strings.Contains(view, "tower") {
+		t.Errorf("View() should contain agent name 'tower', got:\n%s", view)
+	}
+	if !strings.Contains(view, "+2 more") {
+		t.Errorf("View() should contain '+2 more' at depth 3, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctrl-Q") {
+		t.Errorf("View() should contain 'Ctrl-Q' hint, got:\n%s", view)
+	}
+}

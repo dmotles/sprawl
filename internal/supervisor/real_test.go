@@ -33,10 +33,10 @@ func newFakeReal(t *testing.T) (*Real, string) {
 	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error) {
 		return nil, errors.New("spawnFn not overridden")
 	}
-	r.mergeFn = func(*agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
 		return nil, errors.New("mergeFn not overridden")
 	}
-	r.retireFn = func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
 		return errors.New("retireFn not overridden")
 	}
 	r.killFn = func(*agentops.KillDeps, string, bool) error {
@@ -131,7 +131,7 @@ func TestMerge_ForwardsArgs(t *testing.T) {
 
 	var gotName, gotMsg string
 	var gotNoValidate, gotDryRun bool
-	r.mergeFn = func(_ *agentops.MergeDeps, name, msg string, noValidate, dryRun bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, _ *agentops.MergeDeps, name, msg string, noValidate, dryRun bool) (*agentops.MergeOutcome, error) {
 		gotName, gotMsg, gotNoValidate, gotDryRun = name, msg, noValidate, dryRun
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -147,7 +147,7 @@ func TestMerge_ForwardsArgs(t *testing.T) {
 
 func TestMerge_PropagatesError(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.mergeFn = func(*agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
 		return nil, errors.New("dirty tree")
 	}
 	_, err := r.Merge(context.Background(), "", "ratz", "", false)
@@ -164,7 +164,7 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 		name                                                 string
 		cascade, force, abandon, mergeFirst, yes, noValidate bool
 	}
-	r.retireFn = func(_ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
 		got.name = name
 		got.cascade = cascade
 		got.force = force
@@ -205,7 +205,7 @@ func TestRetire_AbandonMode(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	var gotAbandon, gotMergeFirst bool
-	r.retireFn = func(_ *agentops.RetireDeps, _ string, _, _, abandon, mergeFirst, _, _ bool) error {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, abandon, mergeFirst, _, _ bool) error {
 		gotAbandon, gotMergeFirst = abandon, mergeFirst
 		return nil
 	}
@@ -221,7 +221,7 @@ func TestRetire_CascadeAndNoValidate(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	var gotCascade, gotNoValidate bool
-	r.retireFn = func(_ *agentops.RetireDeps, _ string, cascade, _, _, _, _, noValidate bool) error {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, cascade, _, _, _, _, noValidate bool) error {
 		gotCascade, gotNoValidate = cascade, noValidate
 		return nil
 	}
@@ -619,7 +619,7 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 		}
 
 		var retireCalls []string
-		r.retireFn = func(_ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+		r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
 			// Load-bearing contract: by the time retireFn runs, the JSON
 			// must exist on disk so agentops.Retire's state.LoadAgent
 			// succeeds. Real.Retire must reconcile from the runtime
@@ -663,7 +663,7 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 
 		// retireFn returns nil if invoked; with no registry entry and no JSON,
 		// Retire has nothing to fall back to and should surface an error.
-		r.retireFn = func(*agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
+		r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
 			return nil
 		}
 
@@ -953,7 +953,7 @@ func TestMerge_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
 	}
 
 	var capturedIdentity string
-	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -973,7 +973,7 @@ func TestMerge_FallsBackToContextCallerIdentity(t *testing.T) {
 	r, _ := newFakeReal(t)
 
 	var capturedIdentity string
-	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -993,7 +993,7 @@ func TestMerge_FallsBackToCallerNameWhenCallerEmptyAndNoCtxIdentity(t *testing.T
 	r, _ := newFakeReal(t)
 
 	var capturedIdentity string
-	r.mergeFn = func(deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
+	r.mergeFn = func(_ context.Context, deps *agentops.MergeDeps, _, _ string, _, _ bool) (*agentops.MergeOutcome, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &agentops.MergeOutcome{}, nil
 	}
@@ -1016,7 +1016,7 @@ func TestRetire_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
 	})
 
 	var capturedIdentity string
-	r.retireFn = func(deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return nil
 	}
@@ -1039,7 +1039,7 @@ func TestRetire_FallsBackToContextCallerIdentity(t *testing.T) {
 	})
 
 	var capturedIdentity string
-	r.retireFn = func(deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return nil
 	}
@@ -1089,7 +1089,7 @@ func TestRetire_CascadePropagatesCallerToRecursiveRetire(t *testing.T) {
 	}
 
 	capturedIdentitiesByAgent := map[string]string{}
-	r.retireFn = func(deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
 		capturedIdentitiesByAgent[name] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return nil
 	}

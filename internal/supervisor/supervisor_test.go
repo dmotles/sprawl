@@ -1083,8 +1083,57 @@ func TestRegisterRootRuntime_SynthesizesAgentState_WhenStateMissing(t *testing.T
 	if err != nil {
 		t.Fatalf("RegisterRootRuntime: %v", err)
 	}
-	if rt.Snapshot().Name != "weave" {
-		t.Errorf("Name = %q, want weave (synthesized)", rt.Snapshot().Name)
+	snap := rt.Snapshot()
+	if snap.Name != "weave" {
+		t.Errorf("Name = %q, want weave (synthesized)", snap.Name)
+	}
+	// QUM-527: synthesized fallback must tag the runtime Type as "root" so
+	// the MCP eligibility gate accepts weave's caller identity.
+	if snap.Type != "root" {
+		t.Errorf("Type = %q, want %q (synthesized root runtime)", snap.Type, "root")
+	}
+}
+
+// QUM-527: when RegisterRootRuntime loads an existing AgentState from disk
+// that has an empty Type (e.g. a legacy weave record), the in-memory runtime
+// must report Type=="root" so MCP eligibility passes.
+func TestRegisterRootRuntime_TagsLoadedAgentStateAsRoot_WhenTypeEmpty(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "weave",
+		Type:   "",
+		Status: "active",
+		Branch: "main",
+	})
+	h := &fakeRootHandle{}
+	rt, err := sup.RegisterRootRuntime("weave", h, nil)
+	if err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	snap := rt.Snapshot()
+	if snap.Type != "root" {
+		t.Errorf("Type = %q, want %q (empty Type on disk should be promoted to root)", snap.Type, "root")
+	}
+}
+
+// QUM-527: RegisterRootRuntime must NOT overwrite a non-empty Type that was
+// loaded from disk — only fill in an empty one.
+func TestRegisterRootRuntime_PreservesNonEmptyTypeOnDisk(t *testing.T) {
+	sup, tmpDir := newTestSupervisor(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:   "weave",
+		Type:   "weave",
+		Status: "active",
+		Branch: "main",
+	})
+	h := &fakeRootHandle{}
+	rt, err := sup.RegisterRootRuntime("weave", h, nil)
+	if err != nil {
+		t.Fatalf("RegisterRootRuntime: %v", err)
+	}
+	snap := rt.Snapshot()
+	if snap.Type != "weave" {
+		t.Errorf("Type = %q, want %q (non-empty Type on disk must be preserved)", snap.Type, "weave")
 	}
 }
 

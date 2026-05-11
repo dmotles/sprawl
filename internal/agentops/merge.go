@@ -1,6 +1,7 @@
 package agentops
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -20,7 +21,7 @@ type MergeDeps struct {
 	BranchExists  func(repoRoot, branchName string) bool
 	CurrentBranch func(repoRoot string) (string, error)
 	LoadConfig    func(sprawlRoot string) (*config.Config, error)
-	DoMerge       func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
+	DoMerge       func(ctx context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error)
 	NewMergeDeps  func() *merge.Deps
 	Stderr        io.Writer
 
@@ -39,7 +40,7 @@ type MergeOutcome struct {
 }
 
 // Merge squash-merges agentName's branch into the caller's current branch.
-func Merge(deps *MergeDeps, agentName, messageOverride string, noValidate, dryRun bool) (*MergeOutcome, error) {
+func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride string, noValidate, dryRun bool) (*MergeOutcome, error) {
 	if err := agent.ValidateName(agentName); err != nil {
 		return nil, err
 	}
@@ -170,7 +171,7 @@ func Merge(deps *MergeDeps, agentName, messageOverride string, noValidate, dryRu
 	if mergeDeps != nil && deps.Checkpoint != nil {
 		mergeDeps.Checkpoint = deps.Checkpoint
 	}
-	result, err := deps.DoMerge(cfg, mergeDeps)
+	result, err := deps.DoMerge(ctx, cfg, mergeDeps)
 	if err != nil {
 		return nil, err
 	}
