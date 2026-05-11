@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
@@ -54,7 +55,7 @@ func TestDeprecation_Spawn_QuietSuppresses(t *testing.T) {
 func TestDeprecation_Retire_Wired(t *testing.T) {
 	buf := withDeprecationCapture(t, "")
 	defer func() { _ = recover() }()
-	_ = runRetire(nil, "alice", false, false, false, false, false)
+	_ = runRetire(context.Background(), nil, "alice", false, false, false, false, false)
 	assertDeprecation(t, buf, "retire", "retire")
 }
 

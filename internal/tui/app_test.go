@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -870,9 +871,34 @@ func TestAppModel_TurnStateMsg_UpdatesTurnState(t *testing.T) {
 // --- Tests for QUM-200 5c: App Model Agent Tree + Observation ---
 
 // mockSupervisor implements supervisor.Supervisor for testing.
+//
+// The question-queue fields (QUM-527) are zero-valued by default so existing
+// callers keep compiling. Tests that exercise the question path set
+// peekDepth/peekHead to drive PeekQuestions return values, and read
+// resolveCalls/cancelCalls to assert the AppModel forwarded msgs correctly.
 type mockSupervisor struct {
 	agents    []supervisor.AgentInfo
 	statusErr error
+
+	// Question-queue recording / programmable returns. Guarded by qmu so
+	// concurrent accesses from a goroutine-fired forwarder don't race.
+	qmu          sync.Mutex
+	peekDepth    int
+	peekHead     *supervisor.PendingQuestion
+	resolveCalls []resolveCall
+	cancelCalls  []cancelCall
+	registered   []supervisor.QuestionConsumer
+	unregistered []string
+}
+
+type resolveCall struct {
+	ID   string
+	Resp supervisor.QuestionResponse
+}
+
+type cancelCall struct {
+	ID     string
+	Reason string
 }
 
 func (m *mockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
@@ -941,6 +967,46 @@ func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
 
 func (m *mockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
 	return nil, nil
+}
+
+func (m *mockSupervisor) AskUserQuestion(_ context.Context, _ supervisor.QuestionRequest) (supervisor.QuestionResponse, error) {
+	return supervisor.QuestionResponse{}, nil
+}
+
+func (m *mockSupervisor) RegisterQuestionConsumer(c supervisor.QuestionConsumer) error {
+	m.qmu.Lock()
+	defer m.qmu.Unlock()
+	m.registered = append(m.registered, c)
+	return nil
+}
+
+func (m *mockSupervisor) UnregisterQuestionConsumer(name string) {
+	m.qmu.Lock()
+	defer m.qmu.Unlock()
+	m.unregistered = append(m.unregistered, name)
+}
+
+func (m *mockSupervisor) ResolveQuestion(id string, resp supervisor.QuestionResponse) bool {
+	m.qmu.Lock()
+	defer m.qmu.Unlock()
+	m.resolveCalls = append(m.resolveCalls, resolveCall{ID: id, Resp: resp})
+	return true
+}
+
+func (m *mockSupervisor) CancelQuestion(id, reason string) bool {
+	m.qmu.Lock()
+	defer m.qmu.Unlock()
+	m.cancelCalls = append(m.cancelCalls, cancelCall{ID: id, Reason: reason})
+	return true
+}
+
+func (m *mockSupervisor) CancelByAgent(_, _ string)         {}
+func (m *mockSupervisor) QuestionsChanged() <-chan struct{} { return nil }
+
+func (m *mockSupervisor) PeekQuestions() (int, *supervisor.PendingQuestion) {
+	m.qmu.Lock()
+	defer m.qmu.Unlock()
+	return m.peekDepth, m.peekHead
 }
 
 func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppModel {

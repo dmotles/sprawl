@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -306,6 +307,21 @@ type shutdownMockSupervisor struct {
 	killCalled        []string
 	shutdownDone      bool
 	registerRootCalls int
+
+	// QUM-527: question-queue knobs. qmu guards concurrent access from
+	// goroutine-driven forwarder logic in cmd/enter.go.
+	qmu                  sync.Mutex
+	questionsChangedCh   chan struct{}
+	questionRegistered   []supervisor.QuestionConsumer
+	questionUnregistered []string
+	peekDepth            int
+	peekHead             *supervisor.PendingQuestion
+
+	// subscribedOnce + subscribed: close `subscribed` the first time
+	// QuestionsChanged() is called, so tests can deterministically wait
+	// for the forwarder goroutine to have subscribed before signaling.
+	subscribedOnce sync.Once
+	subscribed     chan struct{}
 }
 
 func (s *shutdownMockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
@@ -384,6 +400,46 @@ func (s *shutdownMockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
 func (s *shutdownMockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
 	s.registerRootCalls++
 	return nil, nil
+}
+
+func (s *shutdownMockSupervisor) AskUserQuestion(_ context.Context, _ supervisor.QuestionRequest) (supervisor.QuestionResponse, error) {
+	return supervisor.QuestionResponse{}, nil
+}
+
+func (s *shutdownMockSupervisor) RegisterQuestionConsumer(c supervisor.QuestionConsumer) error {
+	s.qmu.Lock()
+	defer s.qmu.Unlock()
+	s.questionRegistered = append(s.questionRegistered, c)
+	return nil
+}
+
+func (s *shutdownMockSupervisor) UnregisterQuestionConsumer(name string) {
+	s.qmu.Lock()
+	defer s.qmu.Unlock()
+	s.questionUnregistered = append(s.questionUnregistered, name)
+}
+
+func (s *shutdownMockSupervisor) ResolveQuestion(_ string, _ supervisor.QuestionResponse) bool {
+	return false
+}
+func (s *shutdownMockSupervisor) CancelQuestion(_, _ string) bool { return false }
+func (s *shutdownMockSupervisor) CancelByAgent(_, _ string)       {}
+
+func (s *shutdownMockSupervisor) QuestionsChanged() <-chan struct{} {
+	s.qmu.Lock()
+	ch := s.questionsChangedCh
+	sub := s.subscribed
+	s.qmu.Unlock()
+	if sub != nil {
+		s.subscribedOnce.Do(func() { close(sub) })
+	}
+	return ch
+}
+
+func (s *shutdownMockSupervisor) PeekQuestions() (int, *supervisor.PendingQuestion) {
+	s.qmu.Lock()
+	defer s.qmu.Unlock()
+	return s.peekDepth, s.peekHead
 }
 
 // Clean `sprawl enter` shutdown must stop supervisor-owned child runtimes via

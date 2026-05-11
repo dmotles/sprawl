@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 
 	"github.com/dmotles/sprawl/internal/agentops"
@@ -15,8 +16,8 @@ type mergeDeps = agentops.MergeDeps
 
 // runMerge wraps agentops.Merge so the CLI/cmd test surface keeps a single
 // error-return signature; the MergeOutcome is consumed by MCP callers.
-var runMerge = func(deps *mergeDeps, agentName, messageOverride string, noValidate, dryRun bool) error {
-	_, err := agentops.Merge(deps, agentName, messageOverride, noValidate, dryRun)
+var runMerge = func(ctx context.Context, deps *mergeDeps, agentName, messageOverride string, noValidate, dryRun bool) error {
+	_, err := agentops.Merge(ctx, deps, agentName, messageOverride, noValidate, dryRun)
 	return err
 }
 
@@ -47,9 +48,9 @@ to receive work.
 The merge acquires a file lock on the agent to prevent concurrent Claude
 invocations during the branch rebase.`,
 	Args: cobra.ExactArgs(1),
-	RunE: func(_ *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		deps := resolveMergeDeps()
-		return runMerge(deps, args[0], mergeMessage, mergeNoValidate, mergeDryRun)
+		return runMerge(cmd.Context(), deps, args[0], mergeMessage, mergeNoValidate, mergeDryRun)
 	},
 }
 

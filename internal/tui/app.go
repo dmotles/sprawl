@@ -93,6 +93,14 @@ type AppModel struct {
 	errorDialog ErrorDialogModel
 	restartFunc func() (SessionBackend, error)
 
+	// showQuestion + questionModel drive the "ask the user a question" modal
+	// (QUM-527 slice 2c). showQuestion gates rendering and key routing;
+	// questionModel.HasPending() can be true while showQuestion is false (the
+	// user dismissed the modal but the request is still queued, so Ctrl-Q
+	// re-opens it).
+	showQuestion  bool
+	questionModel QuestionModel
+
 	// quitting is set when the user confirms shutdown (Ctrl-C confirm
 	// dialog). It guards against a late RestartSessionMsg triggered from an
 	// EOF that arrived just before the user confirmed quit; without the
@@ -265,6 +273,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		activeMCPOps:        make(map[string]OpDescriptor),
 		mcpOpThresholdShown: make(map[string]bool),
 		cache:               newViewCache(),
+		questionModel:       NewQuestionModel(&theme),
 	}
 	_ = app.history.Load()
 	app.updateFocus()
@@ -310,7 +319,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and otherwise forward to the viewport (the only scrollable area).
 		// Non-wheel clicks/motion are accepted but currently ignored; they
 		// fall through viewport.Update harmlessly.
-		if m.showHelp || m.showConfirm || m.showError || m.showPalette {
+		if m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion {
 			return m, nil
 		}
 		vp := m.observedVP()
@@ -322,7 +331,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Bracketed-paste from the terminal. Forward to the input panel so embedded
 		// newlines are inserted literally instead of being treated as Enter-submit.
 		// Only when the input bar is the active panel (root-agent view, no modal).
-		if m.observedAgent != m.rootAgent || m.activePanel != PanelInput || m.showHelp || m.showConfirm || m.showError || m.showPalette {
+		if m.observedAgent != m.rootAgent || m.activePanel != PanelInput || m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion {
 			return m, nil
 		}
 		// QUM-448: track input-box height across the Update so we can
@@ -434,6 +443,25 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// QUM-527 slice 2c: when the question modal is visible, route ALL
+		// keys to it. The model emits QuestionAnsweredMsg / DismissQuestionMsg
+		// as cmds to drive AppModel state.
+		if m.showQuestion {
+			var cmd tea.Cmd
+			m.questionModel, cmd = m.questionModel.Update(msg)
+			return m, cmd
+		}
+
+		// QUM-527 slice 2c: Ctrl-Q reopens the question modal when a request
+		// is pending and no higher-priority modal is up. No-op otherwise.
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'q' || msg.Code == 'Q') {
+			if m.questionModel.HasPending() && !anyOtherModalUp(&m) {
+				m.showQuestion = true
+				m.questionModel = m.questionModel.Show()
+			}
+			return m, nil
+		}
+
 		// Ctrl+O: toggle the global expand-tool-inputs flag (QUM-335).
 		// Affects every per-agent viewport so the user can scan the full
 		// command / JSON for any tool call without leaving the TUI. Gated
@@ -526,7 +554,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Gate on modals AND observed-agent-is-root: when observing a child
 		// the input bar is hidden (QUM-340), so opening the palette would
 		// dispatch commands the user can't see typed into.
-		if m.input.disabled || m.showConfirm || m.showError || m.showHelp || m.showPalette || m.observedAgent != m.rootAgent {
+		if m.input.disabled || m.showConfirm || m.showError || m.showHelp || m.showPalette || m.showQuestion || m.observedAgent != m.rootAgent {
 			return m, nil
 		}
 		m.palette.SetSize(m.width, m.height)
@@ -878,6 +906,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case RestartCompleteMsg:
 		m.restarting = false
+		// QUM-527 slice 2c: re-poll the question queue across the restart
+		// boundary so a question that became pending while the bridge was
+		// down (or stayed pending across the restart) is surfaced again. Done
+		// at the top so the install survives the bridge-nil error fallthrough
+		// below; the status bar always reflects current depth.
+		if m.supervisor != nil {
+			depth, head := m.supervisor.PeekQuestions()
+			m.statusBar.SetPendingQuestions(depth, agentFromHead(head))
+			if !m.questionModel.HasPending() && head != nil {
+				m.questionModel = m.questionModel.Install(head)
+				if !anyOtherModalUp(&m) {
+					m.questionModel = m.questionModel.Show()
+					m.showQuestion = true
+				}
+			}
+		}
 		// QUM-391: only clear the status bar label if consolidation is not
 		// still running in the background.
 		if !m.consolidating {
@@ -1407,6 +1451,85 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(innerCmd, waitCmd)
 
+	case QuestionsAvailableMsg:
+		// QUM-527 slice 2c: a question was enqueued or the queue depth
+		// changed. If the consumer dispatched this msg (Depth=0), enrich
+		// depth via PeekQuestions so the status bar reflects the true queue.
+		depth := msg.Depth
+		head := msg.Head
+		if depth == 0 && m.supervisor != nil {
+			d, h := m.supervisor.PeekQuestions()
+			if d > 0 {
+				depth = d
+			}
+			if head == nil {
+				head = h
+			}
+		}
+		// Default depth=1 if the dispatcher omitted a depth but we have a head.
+		if depth == 0 && head != nil {
+			depth = 1
+		}
+		m.statusBar.SetPendingQuestions(depth, agentFromHead(head))
+		// Auto-install if nothing is currently installed AND no other modal
+		// is up. If another modal is up, defer auto-show until it closes;
+		// Ctrl-Q (or another QuestionsAvailableMsg later) will reopen.
+		if !m.questionModel.HasPending() && head != nil {
+			m.questionModel = m.questionModel.Install(head)
+			if !anyOtherModalUp(&m) {
+				m.questionModel = m.questionModel.Show()
+				m.showQuestion = true
+			}
+		}
+		return m, nil
+
+	case ShowQuestionMsg:
+		if m.questionModel.HasPending() && !anyOtherModalUp(&m) {
+			m.questionModel = m.questionModel.Show()
+			m.showQuestion = true
+		}
+		return m, nil
+
+	case DismissQuestionMsg:
+		m.showQuestion = false
+		m.questionModel = m.questionModel.Hide()
+		return m, nil
+
+	case QuestionAnsweredMsg:
+		if m.supervisor != nil {
+			m.supervisor.ResolveQuestion(msg.RequestID, msg.Response)
+		}
+		m.questionModel = m.questionModel.Reset()
+		m.showQuestion = false
+		// Auto-advance to next head if there is one queued.
+		if m.supervisor != nil {
+			depth, head := m.supervisor.PeekQuestions()
+			m.statusBar.SetPendingQuestions(depth, agentFromHead(head))
+			if head != nil {
+				m.questionModel = m.questionModel.Install(head)
+				if !anyOtherModalUp(&m) {
+					m.questionModel = m.questionModel.Show()
+					m.showQuestion = true
+				}
+			}
+		} else {
+			m.statusBar.SetPendingQuestions(0, "")
+		}
+		return m, nil
+
+	case CancelQuestionMsg:
+		if m.questionModel.HasPending() && m.questionModel.activeRequestID() == msg.RequestID {
+			m.questionModel = m.questionModel.Reset()
+			m.showQuestion = false
+		}
+		if m.supervisor != nil {
+			depth, head := m.supervisor.PeekQuestions()
+			m.statusBar.SetPendingQuestions(depth, agentFromHead(head))
+		} else {
+			m.statusBar.SetPendingQuestions(0, "")
+		}
+		return m, nil
+
 	case ChildTranscriptMsg:
 		// QUM-334: route directly to the named agent's vp. Per-agent
 		// ownership means writes to non-observed buffers are correct, not
@@ -1577,6 +1700,10 @@ func (m AppModel) renderView(useCache bool) tea.View {
 
 	if m.showHelp {
 		content = m.help.View()
+	}
+
+	if m.showQuestion {
+		content = m.questionModel.View()
 	}
 
 	if m.showConfirm {
@@ -1773,6 +1900,21 @@ func (m *AppModel) resizePanels() {
 	m.confirm.SetSize(m.width, m.height)
 	m.errorDialog.SetSize(m.width, m.height)
 	m.palette.SetSize(m.width, m.height)
+	m.questionModel.SetSize(m.width, m.height)
+}
+
+// anyOtherModalUp reports whether any modal OTHER than the question modal is
+// active. Used to gate auto-show / Ctrl-Q reopen.
+func anyOtherModalUp(m *AppModel) bool {
+	return m.showError || m.showConfirm || m.showHelp || m.showPalette
+}
+
+// agentFromHead returns pq.Req.From if pq is non-nil, else "".
+func agentFromHead(pq *supervisor.PendingQuestion) string {
+	if pq == nil {
+		return ""
+	}
+	return pq.Req.From
 }
 
 // inputBoxHeight returns the total height the input box occupies including

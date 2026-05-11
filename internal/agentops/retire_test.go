@@ -1,6 +1,7 @@
 package agentops
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,7 +59,7 @@ func TestRetire_EmitsCheckpoints(t *testing.T) {
 		GitBranchDelete:     func(string, string) error { return nil },
 		GitBranchIsMerged:   func(string, string) (bool, error) { return false, nil },
 		GitBranchSafeDelete: func(string, string) error { return nil },
-		DoMerge: func(cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
+		DoMerge: func(_ context.Context, cfg *merge.Config, deps *merge.Deps) (*merge.Result, error) {
 			return &merge.Result{WasNoOp: true}, nil
 		},
 		NewMergeDeps:       func() *merge.Deps { return &merge.Deps{} },
@@ -76,7 +77,7 @@ func TestRetire_EmitsCheckpoints(t *testing.T) {
 		},
 	}
 
-	if err := Retire(deps, agentName, false, false, false, false, false, false); err != nil {
+	if err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 
@@ -145,7 +146,7 @@ func TestRetire_NilCheckpointSafe(t *testing.T) {
 			t.Errorf("nil Checkpoint panicked: %v", r)
 		}
 	}()
-	if err := Retire(deps, agentName, false, false, false, false, false, false); err != nil {
+	if err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 }

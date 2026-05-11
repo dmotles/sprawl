@@ -36,6 +36,12 @@ type StatusBarModel struct {
 	// no consolidation is running.
 	restartLabel string
 
+	// pendingQuestionsDepth / pendingQuestionsAgent drive the
+	// "🔔 <agent> is asking (Ctrl-Q)" segment (QUM-527 slice 2c). Depth==0
+	// hides the segment entirely.
+	pendingQuestionsDepth int
+	pendingQuestionsAgent string
+
 	// activeOps lists in-flight MCP tool calls (QUM-497). When non-empty, a
 	// "⏳ tool(caller) M:SS" segment is rendered as the first right-side part
 	// so a hung tool call is visible long before the user Ctrl-Cs. The slice
@@ -77,6 +83,9 @@ func (m StatusBarModel) View() string {
 	}
 
 	var parts []string
+	if seg := m.pendingQuestionsSegment(); seg != "" {
+		parts = append(parts, seg)
+	}
 	if seg := m.activeOpsSegment(); seg != "" {
 		parts = append(parts, seg)
 	}
@@ -161,6 +170,29 @@ func (m *StatusBarModel) SetContextLimit(limit int) {
 // bar (QUM-391). Pass empty string to clear.
 func (m *StatusBarModel) SetRestartLabel(label string) {
 	m.restartLabel = label
+}
+
+// SetPendingQuestions updates the pending-questions indicator (QUM-527 slice
+// 2c). Depth==0 hides the indicator entirely.
+func (m *StatusBarModel) SetPendingQuestions(depth int, agent string) {
+	m.pendingQuestionsDepth = depth
+	m.pendingQuestionsAgent = agent
+}
+
+// pendingQuestionsSegment renders the "🔔 <agent> is asking (Ctrl-Q)" or
+// "🔔 <agent> +N more (Ctrl-Q)" segment. Empty when depth==0.
+func (m StatusBarModel) pendingQuestionsSegment() string {
+	if m.pendingQuestionsDepth <= 0 {
+		return ""
+	}
+	agent := m.pendingQuestionsAgent
+	if agent == "" {
+		agent = "?"
+	}
+	if m.pendingQuestionsDepth == 1 {
+		return fmt.Sprintf("🔔 %s is asking (Ctrl-Q)", agent)
+	}
+	return fmt.Sprintf("🔔 %s +%d more (Ctrl-Q)", agent, m.pendingQuestionsDepth-1)
 }
 
 // SetActiveOps replaces the in-flight MCP ops list rendered in the status

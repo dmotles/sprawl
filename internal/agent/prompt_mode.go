@@ -1,5 +1,7 @@
 package agent
 
+import "strings"
+
 // resolveMode normalizes the mode string. Empty string defaults to "tui".
 func resolveMode(mode string) string {
 	if mode == "tmux" {
@@ -126,8 +128,7 @@ const claudeCodeSubAgentGuidanceCommon = `
     - To search the content of files, use Grep instead of grep or rg
     - Reserve using the Bash exclusively for system commands and terminal operations that require shell execution. If you are unsure and there is a relevant dedicated tool, default to using the dedicated tool and only fallback on using the Bash tool for these if it is absolutely necessary.
 - Break down and manage your work with the TaskCreate tool. This is helpful for planning your work and helping the user track your progress. Mark each task as completed as soon as you are done with it. Do not batch up multiple tasks before marking them as completed.
-- You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.
-- Use AskUserQuestion when asking questions. Use it multiple times if you have more than the maximum number of questions, until all your questions are answered. If more questions pop into your head while interviewing the user, ask more questions until you're aligned with the user.
+- You can call multiple tools in a single response. If you intend to call multiple tools and there are no dependencies between them, make all independent tool calls in parallel. Maximize use of parallel tool calls where possible to increase efficiency. However, if some tool calls depend on previous calls to inform dependent values, do NOT call these tools in parallel and instead call them sequentially. For instance, if one operation must complete before another starts, run these operations sequentially instead.{{ASK_USER_QUESTION_BULLET}}
 - While there is compaction, when doing research or planning or investigation, use the Agent tool to fire off agents to do the heavy lifting of searching/researching/thinking. This helps keep context usage under control as well as enables you to parallelize multiple investigations concurrently.
 
 # More on Skills and Agents
@@ -155,7 +156,8 @@ const claudeCodeSubAgentGuidanceTail = `
 Default to sprawl agents for real work. Use sub-agents for quick queries and planning.`
 
 // claudeCodeSubAgentGuidance returns the full sub-agent guidance for the given
-// mode. Prose is shared; only the "1. Sprawl agents (via …)" bullet differs.
+// mode. Prose is shared; only the "1. Sprawl agents (via …)" bullet and the
+// user-question bullet differ.
 func claudeCodeSubAgentGuidance(mode string) string {
 	var sprawlAgentsBullet string
 	if mode == "tui" {
@@ -169,7 +171,17 @@ func claudeCodeSubAgentGuidance(mode string) string {
    research tasks that produce artifacts. These are the primary mechanism for delegating work.
    When someone says "fire off an agent" or "spawn an agent", this is what they mean.`
 	}
-	return claudeCodeSubAgentGuidanceCommon + sprawlAgentsBullet + claudeCodeSubAgentGuidanceTail
+	// User-question bullet: only TUI mode has a working user-prompt mechanism
+	// (mcp__sprawl__ask_user_question, QUM-527). The harness AskUserQuestion
+	// tool was deprecated in QUM-528 because it silently no-ops under
+	// `--print --output-format stream-json`. In tmux mode there is no
+	// interactive question path, so the bullet is omitted entirely.
+	var askUserBullet string
+	if mode == "tui" {
+		askUserBullet = "\n- Use the `mcp__sprawl__ask_user_question` MCP tool when you need a structured answer from the user. It renders a TUI modal with one or more labeled options (single- or multi-select), an \"Other\" free-text field, and a per-question decline option, then blocks until the user answers. Use it multiple times if you have more than the maximum number of questions, until all your questions are answered. If more questions pop into your head while interviewing the user, ask more questions until you're aligned with the user."
+	}
+	common := strings.Replace(claudeCodeSubAgentGuidanceCommon, "{{ASK_USER_QUESTION_BULLET}}", askUserBullet, 1)
+	return common + sprawlAgentsBullet + claudeCodeSubAgentGuidanceTail
 }
 
 // rootMergeRetireBlock returns the merge/retire bullets for the # Doing Tasks

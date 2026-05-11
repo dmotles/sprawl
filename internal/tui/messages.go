@@ -6,7 +6,42 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// --- QUM-527 slice 2c: question-queue messages ---
+
+// QuestionsAvailableMsg signals that the question queue has been updated. The
+// forwarder goroutine in cmd/enter.go fills Depth via PeekQuestions; the
+// in-process QuestionConsumer.OnEnqueue path leaves Depth=0 and only carries
+// Head — the AppModel handler is tolerant of either source.
+type QuestionsAvailableMsg struct {
+	Depth int
+	Head  *supervisor.PendingQuestion
+}
+
+// QuestionAnsweredMsg is emitted by the QuestionModel when the user finalizes
+// answers. The AppModel forwards Response to Supervisor.ResolveQuestion.
+type QuestionAnsweredMsg struct {
+	RequestID string
+	Response  supervisor.QuestionResponse
+}
+
+// ShowQuestionMsg requests that the question modal be re-shown if a request is
+// installed and no higher-priority modal is up.
+type ShowQuestionMsg struct{}
+
+// DismissQuestionMsg requests that the question modal be hidden. Drafts are
+// preserved so Ctrl-Q (or ShowQuestionMsg) can re-open with state intact.
+type DismissQuestionMsg struct{}
+
+// CancelQuestionMsg signals that the named request was cancelled upstream
+// (e.g. by the supervisor's CancelByAgent path). The AppModel resets the
+// active modal only when the RequestID matches.
+type CancelQuestionMsg struct {
+	RequestID string
+	Reason    string
+}
 
 // AssistantContentMsg batches all content blocks from a single assistant
 // message so parallel Agent tool_use blocks are all delivered to the App.
