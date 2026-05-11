@@ -43,10 +43,18 @@ type TurnLoopConfig struct {
 	EventBus      *EventBus
 	InitialPrompt string
 	// OnQueueItemDelivered, if non-nil, is invoked from the turn-loop goroutine
-	// once per QueueItem successfully sent to the backend (StartTurn returned
-	// nil error), and only for items where len(EntryIDs) > 0. Used by the
-	// supervisor to call agentloop.MarkDelivered after a turn consumes the
-	// item. Must not block.
+	// once per QueueItem successfully sent to the backend, and only for items
+	// where len(EntryIDs) > 0. Used by the supervisor to call
+	// agentloop.MarkDelivered so the on-disk pending→delivered rename
+	// happens promptly. Must not block.
+	//
+	// Timing (QUM-544): the callback fires immediately after StartTurn
+	// returns nil, BEFORE the event-drain loop begins. This guarantees that
+	// on-disk bookkeeping (pending/ → delivered/) reflects delivery state
+	// even if the turn subsequently wedges (e.g. stdout-blocked on a hung
+	// MCP tool). Prior behavior — firing after the events channel closed —
+	// left queue files stuck in pending/ for the duration of any in-flight
+	// turn, which caused operator confusion during incident response.
 	OnQueueItemDelivered func(item QueueItem)
 }
 
@@ -70,7 +78,9 @@ func NewTurnLoop(cfg TurnLoopConfig) *TurnLoop {
 // EventStopped.
 func (l *TurnLoop) Run(ctx context.Context) error {
 	if l.cfg.InitialPrompt != "" {
-		_ = l.executeTurn(ctx, l.cfg.InitialPrompt)
+		// InitialPrompt has no associated queue items (it's the spawn
+		// prompt), so there's nothing for OnQueueItemDelivered to fire on.
+		l.executeTurn(ctx, l.cfg.InitialPrompt, nil)
 	}
 
 	for {
@@ -86,14 +96,7 @@ func (l *TurnLoop) Run(ctx context.Context) error {
 		items := l.cfg.Queue.DrainAll()
 		if len(items) > 0 {
 			prompt := buildCompositePrompt(items)
-			started := l.executeTurn(ctx, prompt)
-			if started && l.cfg.OnQueueItemDelivered != nil {
-				for _, it := range items {
-					if len(it.EntryIDs) > 0 {
-						l.cfg.OnQueueItemDelivered(it)
-					}
-				}
-			}
+			l.executeTurn(ctx, prompt, items)
 			// Published regardless of turn outcome (success, failure, or
 			// interrupt): the items were consumed from the queue and won't be
 			// re-delivered, so subscribers tracking queue state need the
@@ -132,11 +135,19 @@ func (l *TurnLoop) Interrupt(_ context.Context) error {
 }
 
 // executeTurn runs one turn end-to-end: install per-turn interrupt channel,
-// publish TurnStarted, call StartTurn, drain events into the bus, and
-// finalize with TurnCompleted/TurnFailed/Interrupted as appropriate. Returns
-// true if StartTurn succeeded (the turn was actually delivered to the
-// backend), false if StartTurn returned an error.
-func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) bool {
+// publish TurnStarted, call StartTurn, fire OnQueueItemDelivered for each
+// delivered item, drain events into the bus, and finalize with
+// TurnCompleted/TurnFailed/Interrupted as appropriate.
+//
+// QUM-544: OnQueueItemDelivered fires synchronously immediately after
+// StartTurn returns nil, BEFORE the event-drain loop starts. This ensures
+// on-disk bookkeeping (pending → delivered) tracks delivery to the backend
+// rather than completion of the turn, so a stdout-wedged turn does not
+// leave queue files stuck in pending/.
+//
+// items may be nil for prompts that have no associated queue entries (e.g.
+// the InitialPrompt).
+func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []QueueItem) {
 	thisTurn := make(chan struct{}, 1)
 
 	l.mu.Lock()
@@ -154,7 +165,19 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) bool {
 	events, err := l.cfg.Session.StartTurn(ctx, prompt)
 	if err != nil {
 		l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
-		return false
+		return
+	}
+
+	// QUM-544: fire the delivery callback as soon as the backend has
+	// accepted the prompt, not after the turn completes. This keeps
+	// on-disk queue bookkeeping in sync with delivery even when the turn
+	// later wedges.
+	if l.cfg.OnQueueItemDelivered != nil {
+		for _, it := range items {
+			if len(it.EntryIDs) > 0 {
+				l.cfg.OnQueueItemDelivered(it)
+			}
+		}
 	}
 
 	interrupted := false
@@ -163,7 +186,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) bool {
 		case <-ctx.Done():
 			// The backend's readTurn is also wired to ctx and will close
 			// `events`; let the goroutine exit here without further bookkeeping.
-			return true
+			return
 		case <-thisTurn:
 			// Best-effort: errors from the backend's interrupt control
 			// request are observable via the backend's own logging/observer.
@@ -174,7 +197,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string) bool {
 			// terminal result message.
 		case msg, ok := <-events:
 			if !ok {
-				return true
+				return
 			}
 			l.cfg.EventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
 			if msg.Type == "result" {

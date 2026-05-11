@@ -277,6 +277,19 @@ queue** managed by the target agent's `agentloop`:
   delivered/   # moved here atomically after injection
 ```
 
+**Semantics of `pending/` vs `delivered/` (QUM-544).** An entry lives in
+`pending/` from the moment a writer fsyncs it until the moment the harness
+has successfully handed the prompt that includes it to the backend
+(`Session.StartTurn` returned nil). At that point the entry is renamed
+into `delivered/`. "Delivered" therefore means *delivered to the backend*,
+NOT *the turn that consumed it has completed*. A long-running or wedged
+turn does not block the rename — once the prompt has been accepted, the
+file moves to `delivered/` immediately, even if the turn later hangs on
+stdout or an MCP tool call. (Previously the rename was deferred until the
+backend's events channel closed, which caused operator confusion during
+incident response when a wedged turn left clearly-consumed messages
+stranded in `pending/`.)
+
 Each queue entry:
 
 ```json

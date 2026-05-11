@@ -326,6 +326,75 @@ func TestTurnLoop_OnQueueItemDelivered_SkipsItemsWithNoEntryIDs(t *testing.T) {
 	}
 }
 
+// TestTurnLoop_OnQueueItemDelivered_FiresWhileTurnInFlight verifies the
+// QUM-544 fix: the callback must fire as soon as StartTurn returns success,
+// not after the events channel closes. This guards against the bug where a
+// stdout-blocked or otherwise wedged turn leaves on-disk queue files stuck
+// in pending/ even though the prompt has already been handed to the
+// backend (and read+acted on by the model). The test simulates a wedged
+// turn by returning an events channel that never closes; the callback must
+// still fire promptly.
+func TestTurnLoop_OnQueueItemDelivered_FiresWhileTurnInFlight(t *testing.T) {
+	// Hold a reference to the events channel so we control when (if ever)
+	// it closes. We never close it in this test; cleanup happens via ctx
+	// cancellation.
+	events := make(chan *protocol.Message)
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			return events, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "wedge-me", EntryIDs: []string{"wedge-id"}})
+
+	fired := make(chan QueueItem, 1)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			select {
+			case fired <- item:
+			default:
+			}
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("Run did not return after cancel")
+		}
+	})
+
+	// Wait until the turn has actually started — proves StartTurn was
+	// called — before asserting on the callback. We don't wait for
+	// EventQueueDrained, since with a wedged turn that event never fires.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+
+	select {
+	case item := <-fired:
+		if len(item.EntryIDs) != 1 || item.EntryIDs[0] != "wedge-id" {
+			t.Errorf("OnQueueItemDelivered fired with EntryIDs=%v, want [wedge-id]", item.EntryIDs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnQueueItemDelivered did not fire while turn was in flight; " +
+			"a stdout-blocked / wedged turn would leave queue files stuck in pending/ (QUM-544)")
+	}
+}
+
 func TestTurnLoop(t *testing.T) {
 	t.Run("SingleTurnLifecycle", func(t *testing.T) {
 		assistant := makeAssistant("hello")

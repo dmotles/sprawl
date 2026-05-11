@@ -326,6 +326,16 @@ func (h *unifiedHandle) InterruptDelivery() error {
 	return h.rt.InterruptDelivery(context.Background())
 }
 
+// unifiedHandleStopWaitTimeout bounds the post-Kill session.Wait() inside
+// unifiedHandle.Stop. QUM-542: a stuck Claude Code Task subshell can hold the
+// child claude process's stdout pipe FD open even after SIGKILL of the parent,
+// which makes exec.Cmd.Wait() block on pipe-drain for many minutes. Retire
+// (Real.Retire → runtime.Stop → handle.Stop) was waiting synchronously on
+// that drain and never reached its `retire.preflight` checkpoint, producing
+// a multi-minute hang. Bounding the wait keeps retire snappy; the OS reaps
+// the SIGKILL'd process eventually.
+const unifiedHandleStopWaitTimeout = 5 * time.Second
+
 func (h *unifiedHandle) Stop(ctx context.Context) error {
 	h.stopOnce.Do(func() {
 		err := h.rt.Stop(ctx)
@@ -333,8 +343,34 @@ func (h *unifiedHandle) Stop(ctx context.Context) error {
 			h.stopActivity()
 		}
 		if h.session != nil {
+			// QUM-543: must SIGKILL the backend subprocess, not just close
+			// stdin and Wait. claude mid-turn ignores stdin EOF, so without
+			// Kill the process survives while handle.Stop returns success —
+			// making mcp__sprawl__kill lie to its caller. Order: Close (EOF
+			// stdin) → Kill (SIGKILL) → bounded Wait (reap). Mirrors the
+			// long-standing pattern in WeaveRuntimeHandle.Stop (weave_handle.go).
+			//
+			// QUM-542: Wait is bounded. A stuck Claude Code Task subshell
+			// holding the parent's stdout pipe FD open after SIGKILL can make
+			// exec.Cmd.Wait block on pipe-drain for many minutes, which wedges
+			// retire (Real.Retire → runtime.Stop → handle.Stop → session.Wait)
+			// and prevents the `retire.preflight` checkpoint from emitting.
+			// We run Wait in a goroutine and abandon it on timeout. SIGKILL
+			// already landed; the OS will eventually reap the zombie.
 			_ = h.session.Close()
-			_ = h.session.Wait()
+			_ = h.session.Kill()
+			waitDone := make(chan struct{})
+			go func() {
+				_ = h.session.Wait()
+				close(waitDone)
+			}()
+			select {
+			case <-waitDone:
+			case <-time.After(unifiedHandleStopWaitTimeout):
+				slog.Warn("unified-handle: session.Wait abandoned after SIGKILL — likely stuck child pipe FD (QUM-542)",
+					"session_id", h.sessionID,
+					"timeout", unifiedHandleStopWaitTimeout)
+			}
 		}
 		if h.activityFile != nil {
 			_ = h.activityFile.Close()

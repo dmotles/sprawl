@@ -34,8 +34,16 @@ type fakeBackendSession struct {
 	initSpec    backend.InitSpec
 	closeCalls  int
 	waitCalls   int
+	killCalls   int
 	startCalls  int
+	teardown    []string // ordered record of "close"/"kill"/"wait" calls (QUM-543)
 	interrupted int32
+
+	// waitBlock, when non-nil, makes Wait() block until the channel is closed
+	// (or until the test cleanup closes it). Used by the QUM-542 bounded-wait
+	// regression test to simulate a child whose stdout pipe never drains after
+	// SIGKILL (stuck Task subshell holding the FD open).
+	waitBlock chan struct{}
 }
 
 func newFakeBackendSession(id string, caps backend.Capabilities) *fakeBackendSession {
@@ -68,17 +76,30 @@ func (f *fakeBackendSession) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.closeCalls++
+	f.teardown = append(f.teardown, "close")
 	return nil
 }
 
 func (f *fakeBackendSession) Wait() error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.waitCalls++
+	f.teardown = append(f.teardown, "wait")
+	block := f.waitBlock
+	f.mu.Unlock()
+	if block != nil {
+		<-block
+	}
 	return nil
 }
 
-func (f *fakeBackendSession) Kill() error                        { return nil }
+func (f *fakeBackendSession) Kill() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killCalls++
+	f.teardown = append(f.teardown, "kill")
+	return nil
+}
+
 func (f *fakeBackendSession) LastTurnError() error               { return nil }
 func (f *fakeBackendSession) SessionID() string                  { return f.id }
 func (f *fakeBackendSession) Capabilities() backend.Capabilities { return f.caps }
@@ -447,6 +468,49 @@ func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 	// this test no longer asserts that behavior.
 }
 
+// TestUnifiedHandle_StopKillsSession is a QUM-543 regression guard: the
+// emergency-stop path (Supervisor.Kill → handle.Stop) must SIGKILL the
+// backend subprocess, not just Close its stdin pipe and Wait. Without
+// session.Kill(), claude mid-turn ignores stdin EOF and the process
+// survives — yet handle.Stop returns success, so mcp__sprawl__kill lies
+// to the caller. See WeaveRuntimeHandle.Stop (weave_handle.go) for the
+// already-correct pattern this mirrors.
+func TestUnifiedHandle_StopKillsSession(t *testing.T) {
+	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+
+	if err := uh.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	fakeSession.mu.Lock()
+	killCalls := fakeSession.killCalls
+	closeCalls := fakeSession.closeCalls
+	waitCalls := fakeSession.waitCalls
+	order := append([]string(nil), fakeSession.teardown...)
+	fakeSession.mu.Unlock()
+
+	if killCalls != 1 {
+		t.Errorf("session.Kill call count = %d, want 1 (Stop did not SIGKILL the backend subprocess)", killCalls)
+	}
+	if closeCalls != 1 {
+		t.Errorf("session.Close call count = %d, want 1", closeCalls)
+	}
+	if waitCalls != 1 {
+		t.Errorf("session.Wait call count = %d, want 1", waitCalls)
+	}
+	// Order must be Close → Kill → Wait so that Wait reaps the SIGKILLed
+	// process and never blocks on a claude that ignores stdin EOF.
+	want := []string{"close", "kill", "wait"}
+	if len(order) != len(want) {
+		t.Fatalf("teardown order = %v, want %v", order, want)
+	}
+	for i, op := range want {
+		if order[i] != op {
+			t.Errorf("teardown[%d] = %q, want %q (full order: %v)", i, order[i], op, order)
+		}
+	}
+}
+
 func TestUnifiedHandle_StopClosesDone(t *testing.T) {
 	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
@@ -482,6 +546,63 @@ func TestUnifiedHandle_StopUnsubscribesEventBus(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Errorf("goroutine count = %d, want close to baseline %d (likely leaked subscriber)", runtime.NumGoroutine(), before)
+}
+
+// TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges is the QUM-542 regression
+// guard. Before the fix, unifiedHandle.Stop called session.Wait() synchronously
+// after SIGKILL, which can block indefinitely when a child Claude Code Task
+// subshell holds the stdout pipe FD open. That made retire (Real.Retire →
+// runtime.Stop → handle.Stop → session.Wait) hang for 30+ minutes, never
+// emitting `retire.preflight` for the JSONL call log.
+//
+// After the fix, Stop bounds the post-Kill Wait via select+timeout so a stuck
+// pipe-drain cannot wedge retire. SIGKILL still fires (QUM-543), the OS reaps
+// the zombie eventually, and Stop returns within seconds.
+func TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges(t *testing.T) {
+	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+
+	// Arm Wait() to block forever. Ensure cleanup unblocks it so the goroutine
+	// the handle leaves behind isn't a permanent test leak.
+	block := make(chan struct{})
+	fakeSession.mu.Lock()
+	fakeSession.waitBlock = block
+	fakeSession.mu.Unlock()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- uh.Stop(context.Background())
+	}()
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop returned error: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("unifiedHandle.Stop wedged on session.Wait — bounded timeout did not fire (QUM-542 regression)")
+	}
+
+	// QUM-543: SIGKILL must have fired even though Wait is wedged.
+	fakeSession.mu.Lock()
+	gotKills := fakeSession.killCalls
+	fakeSession.mu.Unlock()
+	if gotKills < 1 {
+		t.Errorf("session.Kill calls = %d, want >= 1 (SIGKILL escalation must precede the bounded Wait)", gotKills)
+	}
+
+	// Done() must close so callers observing runtime lifecycle don't wedge.
+	select {
+	case <-uh.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("uh.Done() did not close after Stop returned")
+	}
 }
 
 // ---------------------------------------------------------------------------
