@@ -75,6 +75,7 @@ func TestModelForAgentType(t *testing.T) {
 		agentType string
 		want      string
 	}{
+		{"root", DefaultRootModel},
 		{"manager", DefaultManagerModel},
 		{"engineer", DefaultAgentModel},
 		{"researcher", DefaultAgentModel},

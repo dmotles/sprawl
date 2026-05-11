@@ -12,8 +12,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
-	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/supervisor/supervisortest"
 )
 
 func newTestAppModel(t *testing.T) AppModel {
@@ -877,6 +877,8 @@ func TestAppModel_TurnStateMsg_UpdatesTurnState(t *testing.T) {
 // peekDepth/peekHead to drive PeekQuestions return values, and read
 // resolveCalls/cancelCalls to assert the AppModel forwarded msgs correctly.
 type mockSupervisor struct {
+	supervisortest.NoopSupervisor
+
 	agents    []supervisor.AgentInfo
 	statusErr error
 
@@ -901,76 +903,8 @@ type cancelCall struct {
 	Reason string
 }
 
-func (m *mockSupervisor) Spawn(_ context.Context, _ supervisor.SpawnRequest) (*supervisor.AgentInfo, error) {
-	return nil, nil
-}
-
 func (m *mockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
 	return m.agents, m.statusErr
-}
-func (m *mockSupervisor) Delegate(_ context.Context, _, _ string) error   { return nil }
-func (m *mockSupervisor) Message(_ context.Context, _, _, _ string) error { return nil }
-func (m *mockSupervisor) Merge(_ context.Context, _, _, _ string, _ bool) (*supervisor.MergeOutcome, error) {
-	return &supervisor.MergeOutcome{}, nil
-}
-
-func (m *mockSupervisor) Retire(_ context.Context, _, _ string, _, _, _, _ bool) error {
-	return nil
-}
-func (m *mockSupervisor) Kill(_ context.Context, _ string) error    { return nil }
-func (m *mockSupervisor) Shutdown(_ context.Context) error          { return nil }
-func (m *mockSupervisor) Handoff(_ context.Context, _ string) error { return nil }
-func (m *mockSupervisor) HandoffRequested() <-chan struct{}         { return nil }
-func (m *mockSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]agentloop.ActivityEntry, error) {
-	return nil, nil
-}
-
-func (m *mockSupervisor) SendAsync(_ context.Context, _, _, _, _ string, _ []string) (*supervisor.SendAsyncResult, error) {
-	return &supervisor.SendAsyncResult{}, nil
-}
-
-func (m *mockSupervisor) Peek(_ context.Context, _ string, _ int) (*supervisor.PeekResult, error) {
-	return &supervisor.PeekResult{}, nil
-}
-
-func (m *mockSupervisor) ReportStatus(_ context.Context, _, _, _, _ string) (*supervisor.ReportStatusResult, error) {
-	return &supervisor.ReportStatusResult{}, nil
-}
-
-func (m *mockSupervisor) SendInterrupt(_ context.Context, _, _, _, _ string) (*supervisor.SendInterruptResult, error) {
-	return &supervisor.SendInterruptResult{}, nil
-}
-
-func (m *mockSupervisor) MessagesList(_ context.Context, _ string, _ int) (*supervisor.MessagesListResult, error) {
-	return &supervisor.MessagesListResult{}, nil
-}
-
-func (m *mockSupervisor) MessagesRead(_ context.Context, _ string) (*supervisor.MessagesReadResult, error) {
-	return &supervisor.MessagesReadResult{}, nil
-}
-
-func (m *mockSupervisor) MessagesArchive(_ context.Context, _ string) (*supervisor.MessagesArchiveResult, error) {
-	return &supervisor.MessagesArchiveResult{}, nil
-}
-
-func (m *mockSupervisor) MessagesArchiveAll(_ context.Context, _ string) (*supervisor.MessagesArchiveAllResult, error) {
-	return &supervisor.MessagesArchiveAllResult{}, nil
-}
-
-func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPeekResult, error) {
-	return &supervisor.MessagesPeekResult{}, nil
-}
-
-func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
-	return nil
-}
-
-func (m *mockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
-	return nil, nil
-}
-
-func (m *mockSupervisor) AskUserQuestion(_ context.Context, _ supervisor.QuestionRequest) (supervisor.QuestionResponse, error) {
-	return supervisor.QuestionResponse{}, nil
 }
 
 func (m *mockSupervisor) RegisterQuestionConsumer(c supervisor.QuestionConsumer) error {
@@ -999,9 +933,6 @@ func (m *mockSupervisor) CancelQuestion(id, reason string) bool {
 	m.cancelCalls = append(m.cancelCalls, cancelCall{ID: id, Reason: reason})
 	return true
 }
-
-func (m *mockSupervisor) CancelByAgent(_, _ string)         {}
-func (m *mockSupervisor) QuestionsChanged() <-chan struct{} { return nil }
 
 func (m *mockSupervisor) PeekQuestions() (int, *supervisor.PendingQuestion) {
 	m.qmu.Lock()

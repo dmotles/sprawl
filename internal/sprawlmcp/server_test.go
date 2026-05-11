@@ -13,8 +13,8 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
-	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/supervisor/supervisortest"
 )
 
 // withTestCallerIdentity injects a caller identity into context, matching what
@@ -23,8 +23,12 @@ func withTestCallerIdentity(ctx context.Context, identity string) context.Contex
 	return backendpkg.WithCallerIdentity(ctx, identity)
 }
 
-// mockSupervisor implements supervisor.Supervisor for testing.
+// mockSupervisor implements supervisor.Supervisor for testing. It embeds
+// supervisortest.NoopSupervisor so new interface methods (QUM-531) don't
+// require updating this mock when they're not exercised by these tests.
 type mockSupervisor struct {
+	supervisortest.NoopSupervisor
+
 	statusResult []supervisor.AgentInfo
 	statusErr    error
 	spawnResult  *supervisor.AgentInfo
@@ -244,14 +248,6 @@ func (m *mockSupervisor) Shutdown(_ context.Context) error {
 	return m.shutdownErr
 }
 
-func (m *mockSupervisor) RuntimeRegistry() *supervisor.RuntimeRegistry {
-	return nil
-}
-
-func (m *mockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
-	return nil, nil
-}
-
 func (m *mockSupervisor) AskUserQuestion(_ context.Context, req supervisor.QuestionRequest) (supervisor.QuestionResponse, error) {
 	m.askQuestionCalls++
 	m.askQuestionLast = req
@@ -260,13 +256,6 @@ func (m *mockSupervisor) AskUserQuestion(_ context.Context, req supervisor.Quest
 	}
 	return m.askQuestionResult, nil
 }
-func (m *mockSupervisor) RegisterQuestionConsumer(_ supervisor.QuestionConsumer) error { return nil }
-func (m *mockSupervisor) UnregisterQuestionConsumer(_ string)                          {}
-func (m *mockSupervisor) ResolveQuestion(_ string, _ supervisor.QuestionResponse) bool { return false }
-func (m *mockSupervisor) CancelQuestion(_, _ string) bool                              { return false }
-func (m *mockSupervisor) CancelByAgent(_, _ string)                                    {}
-func (m *mockSupervisor) QuestionsChanged() <-chan struct{}                            { return nil }
-func (m *mockSupervisor) PeekQuestions() (int, *supervisor.PendingQuestion)            { return 0, nil }
 
 func (m *mockSupervisor) Handoff(_ context.Context, summary string) error {
 	m.handoffSummary = summary
