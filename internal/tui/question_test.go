@@ -1,14 +1,56 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// containsEllipsis reports whether s contains the unicode ellipsis glyph or
+// the three-dot ASCII fallback. Either is acceptable as a truncation marker.
+func containsEllipsis(s string) bool {
+	return strings.Contains(s, "…") || strings.Contains(s, "...")
+}
+
+// tabStripLine returns the rendered tab strip for the model. The spec
+// originally described this as "line index 1 of View()", but View() centers
+// the box via lipgloss.Place so the strip is not at a fixed line index in
+// the full output. Instead we call renderTabStrip() directly (same package),
+// which is what View() embeds verbatim into the box body. The `out` arg is
+// retained as a contextual hint when the lookup fails.
+func tabStripLine(t *testing.T, m QuestionModel, out string) string {
+	t.Helper()
+	strip := m.renderTabStrip()
+	if strip == "" {
+		t.Fatalf("renderTabStrip() returned empty; modal output was:\n%s", out)
+	}
+	// The strip must be a single line — overflow handling truncates rather
+	// than wrapping. If a newline sneaks in, the contract is broken.
+	if strings.Contains(strip, "\n") {
+		t.Fatalf("renderTabStrip() must be a single line (no \\n); got:\n%q", strip)
+	}
+	return strip
+}
+
+// makeNQuestions builds n single-option questions with IDs q1..qN and
+// prompts p1?..pN? for tab-strip overflow tests.
+func makeNQuestions(n int) []supervisor.Question {
+	qs := make([]supervisor.Question, n)
+	for i := 0; i < n; i++ {
+		qs[i] = supervisor.Question{
+			ID:      fmt.Sprintf("q%d", i+1),
+			Prompt:  fmt.Sprintf("p%d?", i+1),
+			Options: []supervisor.QOption{{Label: "A"}},
+		}
+	}
+	return qs
+}
 
 // containsAnyMarker reports whether s contains any of the supplied candidate
 // substrings. Used by tab-strip tests where the implementer is free to choose
@@ -110,8 +152,8 @@ func TestQuestionModel_CursorNavigation_DownDownUpUp(t *testing.T) {
 	})
 	m = m.Install(pq).Show()
 
-	if m.cursor != 0 {
-		t.Fatalf("cursor at start = %d, want 0", m.cursor)
+	if m.cursors[m.qIdx] != 0 {
+		t.Fatalf("cursor at start = %d, want 0", m.cursors[m.qIdx])
 	}
 
 	steps := []struct {
@@ -138,8 +180,8 @@ func TestQuestionModel_CursorNavigation_DownDownUpUp(t *testing.T) {
 		if cmd != nil {
 			t.Errorf("step %d (%v): expected nil cmd, got %v", i, step.key, cmd)
 		}
-		if m.cursor != step.want {
-			t.Errorf("step %d (%v): cursor = %d, want %d", i, step.key, m.cursor, step.want)
+		if got := m.cursors[m.qIdx]; got != step.want {
+			t.Errorf("step %d (%v): cursor = %d, want %d", i, step.key, got, step.want)
 		}
 	}
 }
@@ -713,6 +755,128 @@ func TestQuestionModel_LeftRight_IgnoredInTextMode(t *testing.T) {
 	answered := expectAnsweredMsg(t, cmd)
 	if got := answered.Response.Answers[0].CustomText; !strings.Contains(got, "x") {
 		t.Errorf("Answers[0].CustomText = %q, want to contain %q", got, "x")
+	}
+}
+
+// TestQuestionModel_TabStrip_OverflowKeepsCurrentVisible — QUM-541: with 25
+// questions and qIdx=12, the rendered tab strip must fit within the inner
+// modal width budget (60 cols), keep the active tab "13" visible, show an
+// ellipsis marker, and trim at least one end (the "25" tab when truncated
+// on the right, or "1[" near the start when truncated on the left).
+func TestQuestionModel_TabStrip_OverflowKeepsCurrentVisible(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave", makeNQuestions(25)...)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	for i := 0; i < 12; i++ {
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	}
+
+	out := m.View()
+	strip := tabStripLine(t, m, out)
+
+	if w := lipgloss.Width(strip); w > 60 {
+		t.Errorf("tab strip width = %d, want <= 60; strip:\n%s", w, strip)
+	}
+	if !strings.Contains(strip, "13") {
+		t.Errorf("tab strip must contain active tab label %q; strip:\n%s", "13", strip)
+	}
+	if !containsEllipsis(strip) {
+		t.Errorf("tab strip must contain ellipsis marker when truncated; strip:\n%s", strip)
+	}
+	// Windowing must trim at least one end. With qIdx=12 in a 25-question
+	// strip, both edges should be trimmed; assert at least one is gone.
+	hasRightEdge := strings.Contains(strip, "25")
+	hasLeftEdge := strings.Contains(strip, " 1[") || strings.HasPrefix(strings.TrimLeft(strip, " "), "1[")
+	if hasRightEdge && hasLeftEdge {
+		t.Errorf("tab strip with qIdx=12 should trim at least one end (both 25 and leading 1[ present); strip:\n%s", strip)
+	}
+}
+
+// TestQuestionModel_TabStrip_OverflowAtLeftBoundary — QUM-541: with qIdx=0 and
+// 25 questions, the strip fits, contains "1", contains an ellipsis on the
+// truncated right side, and does NOT contain "25". Strip must not start with
+// an ellipsis (no leading truncation when active tab is at the left edge).
+func TestQuestionModel_TabStrip_OverflowAtLeftBoundary(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave", makeNQuestions(25)...)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	out := m.View()
+	strip := tabStripLine(t, m, out)
+
+	if w := lipgloss.Width(strip); w > 60 {
+		t.Errorf("tab strip width = %d, want <= 60; strip:\n%s", w, strip)
+	}
+	if !strings.Contains(strip, "1") {
+		t.Errorf("tab strip must contain tab label %q at left edge; strip:\n%s", "1", strip)
+	}
+	if !containsEllipsis(strip) {
+		t.Errorf("tab strip must contain ellipsis marker on right when truncated; strip:\n%s", strip)
+	}
+	if strings.Contains(strip, "25") {
+		t.Errorf("tab strip with qIdx=0 should not show right-edge tab %q; strip:\n%s", "25", strip)
+	}
+	trimmed := strings.TrimLeft(strip, " ")
+	if strings.HasPrefix(trimmed, "…") || strings.HasPrefix(trimmed, "...") {
+		t.Errorf("tab strip at left boundary must not begin with ellipsis; strip:\n%s", strip)
+	}
+}
+
+// TestQuestionModel_TabStrip_OverflowAtRightBoundary — QUM-541: with qIdx=24
+// (last) the strip fits, contains "25", contains ellipsis on the truncated
+// left side, does NOT contain a leading "1[" segment, and does not end with
+// a trailing ellipsis after the "25" segment.
+func TestQuestionModel_TabStrip_OverflowAtRightBoundary(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave", makeNQuestions(25)...)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	for i := 0; i < 24; i++ {
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	}
+
+	out := m.View()
+	strip := tabStripLine(t, m, out)
+
+	if w := lipgloss.Width(strip); w > 60 {
+		t.Errorf("tab strip width = %d, want <= 60; strip:\n%s", w, strip)
+	}
+	if !strings.Contains(strip, "25") {
+		t.Errorf("tab strip must contain active tab label %q; strip:\n%s", "25", strip)
+	}
+	if !containsEllipsis(strip) {
+		t.Errorf("tab strip must contain ellipsis marker when left-truncated; strip:\n%s", strip)
+	}
+	// At the right boundary, the leading "1[" segment must have been trimmed.
+	head := strings.TrimLeft(strip, " ")
+	if strings.HasPrefix(head, "1[") {
+		t.Errorf("tab strip at right boundary must not start with %q; strip:\n%s", "1[", strip)
+	}
+	// And the strip must not end with an ellipsis after the active tab.
+	tail := strings.TrimRight(strip, " ")
+	if strings.HasSuffix(tail, "…") || strings.HasSuffix(tail, "...") {
+		t.Errorf("tab strip at right boundary must not end with ellipsis after %q; strip:\n%s", "25", strip)
+	}
+}
+
+// TestQuestionModel_TabStrip_NoOverflowWhenFits — QUM-541: with only 3
+// questions the strip fits trivially; no ellipsis truncation marker should
+// appear. Regression guard so the common case isn't decorated.
+func TestQuestionModel_TabStrip_NoOverflowWhenFits(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave", makeNQuestions(3)...)
+	m = m.Install(pq).Show()
+	m.SetSize(80, 24)
+
+	out := m.View()
+	strip := tabStripLine(t, m, out)
+
+	if containsEllipsis(strip) {
+		t.Errorf("tab strip with 3 questions must not contain an ellipsis marker; strip:\n%s", strip)
 	}
 }
 

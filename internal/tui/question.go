@@ -11,6 +11,8 @@ import (
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
+const questionTabStripMaxWidth = 60 // dialogWidth (64) - 2*hPadding (2)
+
 // questionInputMode selects between the option-cursor mode and the free-form
 // custom-text input mode.
 type questionInputMode int
@@ -27,8 +29,7 @@ const (
 //
 // Per-question editing state (cursor, multi-pick set, mode, custom-text
 // buffer) is held in parallel slices indexed by qIdx so that drafts survive
-// inter-question navigation (QUM-538). The scalar `cursor` field mirrors
-// `cursors[qIdx]` for the benefit of legacy tests that read it directly.
+// inter-question navigation (QUM-538).
 type QuestionModel struct {
 	theme         *Theme
 	width, height int
@@ -40,8 +41,6 @@ type QuestionModel struct {
 	multiPicked   []map[int]struct{}
 	modes         []questionInputMode
 	customInputs  []textinput.Model
-	// cursor mirrors cursors[qIdx]; kept for legacy test access.
-	cursor int
 }
 
 // NewQuestionModel constructs an empty, non-visible QuestionModel bound to the
@@ -110,7 +109,6 @@ func (m QuestionModel) Install(pq *supervisor.PendingQuestion) QuestionModel {
 		m.customInputs = nil
 	}
 	m.qIdx = 0
-	m.cursor = 0
 	return m
 }
 
@@ -139,17 +137,7 @@ func (m QuestionModel) Reset() QuestionModel {
 	m.customInputs = nil
 	m.visible = false
 	m.qIdx = 0
-	m.cursor = 0
 	return m
-}
-
-// syncCursor copies cursors[qIdx] into the mirror field.
-func (m *QuestionModel) syncCursor() {
-	if m.qIdx >= 0 && m.qIdx < len(m.cursors) {
-		m.cursor = m.cursors[m.qIdx]
-	} else {
-		m.cursor = 0
-	}
 }
 
 // isAnswered reports whether question i has been answered, declined, or has
@@ -201,38 +189,32 @@ func (m QuestionModel) Update(msg tea.Msg) (QuestionModel, tea.Cmd) {
 	case tea.KeyLeft:
 		if m.qIdx > 0 {
 			m.qIdx--
-			m.syncCursor()
 		}
 		return m, nil
 	case tea.KeyRight:
 		if m.qIdx < len(m.req.Req.Questions)-1 {
 			m.qIdx++
-			m.syncCursor()
 		}
 		return m, nil
 	case tea.KeyUp:
 		if m.cursors[m.qIdx] > 0 {
 			m.cursors[m.qIdx]--
 		}
-		m.syncCursor()
 		return m, nil
 	case tea.KeyDown:
 		if m.cursors[m.qIdx] < len(cur.Options)-1 {
 			m.cursors[m.qIdx]++
 		}
-		m.syncCursor()
 		return m, nil
 	case 'j':
 		if m.cursors[m.qIdx] < len(cur.Options)-1 {
 			m.cursors[m.qIdx]++
 		}
-		m.syncCursor()
 		return m, nil
 	case 'k':
 		if m.cursors[m.qIdx] > 0 {
 			m.cursors[m.qIdx]--
 		}
-		m.syncCursor()
 		return m, nil
 	case tea.KeySpace:
 		if cur.MultiSelect {
@@ -305,7 +287,6 @@ func (m QuestionModel) advance() (QuestionModel, tea.Cmd) {
 		next := (m.qIdx + step) % n
 		if !m.isAnswered(next) {
 			m.qIdx = next
-			m.syncCursor()
 			return m, nil
 		}
 	}
@@ -345,13 +326,12 @@ func (m QuestionModel) renderTabStrip() string {
 	if m.req == nil || len(m.req.Req.Questions) == 0 {
 		return ""
 	}
-	accent := "212"
-	if m.theme != nil {
-		accent = m.theme.AccentColor
-	}
+	accent := m.accentColor()
 	cur := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color(accent))
 	other := lipgloss.NewStyle().Faint(true)
-	segs := make([]string, 0, len(m.req.Req.Questions))
+	n := len(m.req.Req.Questions)
+	segs := make([]string, n)
+	widths := make([]int, n)
 	for i := range m.req.Req.Questions {
 		marker := "[ ]"
 		if m.isAnswered(i) {
@@ -363,9 +343,78 @@ func (m QuestionModel) renderTabStrip() string {
 		} else {
 			seg = other.Render(seg)
 		}
-		segs = append(segs, seg)
+		segs[i] = seg
+		widths[i] = lipgloss.Width(seg)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, segs...)
+
+	total := 0
+	for _, w := range widths {
+		total += w
+	}
+	maxWidth := questionTabStripMaxWidth
+	if total <= maxWidth {
+		return lipgloss.JoinHorizontal(lipgloss.Top, segs...)
+	}
+
+	ellipsis := other.Render(" … ")
+	ellipsisWidth := lipgloss.Width(ellipsis)
+
+	// Greedy alternating window expansion around qIdx. We start with just
+	// qIdx (which may already exceed the budget — that's fine; we still emit
+	// it). `fits(l, h)` checks whether the window [l, h] plus the conditional
+	// ellipsis markers stays within the budget.
+	lo, hi := m.qIdx, m.qIdx
+	fits := func(l, h int) bool {
+		sum := 0
+		for i := l; i <= h; i++ {
+			sum += widths[i]
+		}
+		if l > 0 {
+			sum += ellipsisWidth
+		}
+		if h < n-1 {
+			sum += ellipsisWidth
+		}
+		return sum <= maxWidth
+	}
+	tryRight := true
+	for lo > 0 || hi < n-1 {
+		grew := false
+		switch {
+		case tryRight && hi < n-1 && fits(lo, hi+1):
+			hi++
+			grew = true
+		case lo > 0 && fits(lo-1, hi):
+			lo--
+			grew = true
+		case hi < n-1 && fits(lo, hi+1):
+			hi++
+			grew = true
+		}
+		if !grew {
+			break
+		}
+		tryRight = !tryRight
+	}
+
+	parts := make([]string, 0, (hi-lo+1)+2)
+	if lo > 0 {
+		parts = append(parts, ellipsis)
+	}
+	parts = append(parts, segs[lo:hi+1]...)
+	if hi < n-1 {
+		parts = append(parts, ellipsis)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+}
+
+// accentColor returns the modal accent color, falling back to the hard-coded
+// 212 magenta when no theme is bound.
+func (m QuestionModel) accentColor() string {
+	if m.theme != nil {
+		return m.theme.AccentColor
+	}
+	return "212"
 }
 
 // View renders the modal centered in the available area.
@@ -426,10 +475,7 @@ func (m QuestionModel) View() string {
 		b.WriteString("\n[←/→] navigate  [Enter] confirm  [Space] toggle  [o] custom  [d] decline  [D] decline all  [Esc] dismiss\n")
 	}
 
-	accent := "212"
-	if m.theme != nil {
-		accent = m.theme.AccentColor
-	}
+	accent := m.accentColor()
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(accent)).
