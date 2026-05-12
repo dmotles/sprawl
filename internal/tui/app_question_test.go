@@ -314,8 +314,8 @@ func TestAppModel_QuestionModal_ArrowKeysRouteToQuestion(t *testing.T) {
 	if !app.showQuestion {
 		t.Fatal("setup: showQuestion must be true after QuestionsAvailableMsg")
 	}
-	if app.questionModel.cursor != 0 {
-		t.Fatalf("setup: cursor at start = %d, want 0", app.questionModel.cursor)
+	if got := app.questionModel.cursors[app.questionModel.qIdx]; got != 0 {
+		t.Fatalf("setup: cursor at start = %d, want 0", got)
 	}
 
 	steps := []struct {
@@ -332,7 +332,7 @@ func TestAppModel_QuestionModal_ArrowKeysRouteToQuestion(t *testing.T) {
 	for i, step := range steps {
 		u, _ := app.Update(step.key)
 		app = u.(AppModel)
-		if got := app.questionModel.cursor; got != step.want {
+		if got := app.questionModel.cursors[app.questionModel.qIdx]; got != step.want {
 			t.Errorf("step %d (%v): cursor = %d, want %d", i, step.key, got, step.want)
 		}
 		// Defense-in-depth: the history-arrow handler used to corrupt

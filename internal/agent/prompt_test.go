@@ -1914,3 +1914,77 @@ func firstDiffIndex(a, b string) int {
 	}
 	return -1
 }
+
+// TestPromptRenderers_NoResidualPlaceholderTokens (QUM-539) guards the
+// `{{PLACEHOLDER}}` + strings.ReplaceAll templating idiom in prompt_mode.go
+// against typoed placeholder tokens (e.g. `{{AGNETNAME}}` vs `{{AGENTNAME}}`).
+// A typoed placeholder would silently leak through to the rendered prompt and
+// ship to the agent without any signal. This test enumerates every prompt
+// renderer across the full agent-type × mode matrix and asserts the rendered
+// output contains no residual `{{` substring.
+func TestPromptRenderers_NoResidualPlaceholderTokens(t *testing.T) {
+	const (
+		agentName  = "zone"
+		parentName = "weave"
+		branchName = "dmotles/zone-test"
+	)
+
+	envFor := func(mode string) EnvConfig {
+		return EnvConfig{
+			WorkDir:  "/tmp/worktrees/zone",
+			Platform: "linux",
+			Shell:    "/bin/zsh",
+			Mode:     mode,
+		}
+	}
+
+	cases := []struct {
+		name   string
+		render func(mode string) string
+	}{
+		{"root", func(mode string) string {
+			return BuildRootPrompt(PromptConfig{
+				RootName:    "weave",
+				AgentCLI:    "claude-code",
+				ContextBlob: "context blob",
+				Mode:        mode,
+			})
+		}},
+		{"root-no-cli", func(mode string) string {
+			return BuildRootPrompt(PromptConfig{
+				RootName: "weave",
+				AgentCLI: "",
+				Mode:     mode,
+			})
+		}},
+		{"engineer", func(mode string) string {
+			return BuildEngineerPrompt(agentName, parentName, branchName, envFor(mode))
+		}},
+		{"researcher", func(mode string) string {
+			return BuildResearcherPrompt(agentName, parentName, branchName, envFor(mode))
+		}},
+		{"manager", func(mode string) string {
+			return BuildManagerPrompt(agentName, parentName, branchName, "engineering", envFor(mode))
+		}},
+	}
+
+	for _, tc := range cases {
+		for _, mode := range []string{"tmux", "tui"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				prompt := tc.render(mode)
+				if idx := strings.Index(prompt, "{{"); idx >= 0 {
+					start := idx - 40
+					if start < 0 {
+						start = 0
+					}
+					end := idx + 80
+					if end > len(prompt) {
+						end = len(prompt)
+					}
+					t.Errorf("rendered %s prompt (mode=%s) contains residual `{{` placeholder token at offset %d — typoed placeholder? context: %q",
+						tc.name, mode, idx, prompt[start:end])
+				}
+			})
+		}
+	}
+}
