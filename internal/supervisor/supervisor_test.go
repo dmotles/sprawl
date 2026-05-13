@@ -256,119 +256,6 @@ func TestDelegate_KilledAgent(t *testing.T) {
 	}
 }
 
-func TestMessage_SendsMessage(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ghost",
-		Type:   "researcher",
-		Family: "engineering",
-		Parent: "weave",
-		Status: "active",
-	})
-
-	err := sup.Message(context.Background(), "ghost", "status update", "all done")
-	if err != nil {
-		t.Fatalf("Message() error: %v", err)
-	}
-
-	// Verify message was delivered
-	msgs, err := messages.Inbox(tmpDir, "ghost")
-	if err != nil {
-		t.Fatalf("Inbox() error: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("got %d messages, want 1", len(msgs))
-	}
-	if msgs[0].Subject != "status update" {
-		t.Errorf("message subject = %q, want 'status update'", msgs[0].Subject)
-	}
-	if msgs[0].Body != "all done" {
-		t.Errorf("message body = %q, want 'all done'", msgs[0].Body)
-	}
-	if msgs[0].From != "weave" {
-		t.Errorf("message from = %q, want weave", msgs[0].From)
-	}
-}
-
-func TestMessage_AgentNotFound(t *testing.T) {
-	sup, _ := newTestSupervisor(t)
-
-	err := sup.Message(context.Background(), "nonexistent", "hello", "world")
-	if err == nil {
-		t.Fatal("expected error for nonexistent agent")
-	}
-}
-
-func TestSendAsync_WritesMaildirAndQueue(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ghost",
-		Status: "active",
-	})
-
-	result, err := sup.SendAsync(context.Background(), "ghost", "hello", "world", "", []string{"fyi"})
-	if err != nil {
-		t.Fatalf("SendAsync: %v", err)
-	}
-	if result.MessageID == "" {
-		t.Error("message_id empty")
-	}
-	if result.QueuedAt == "" {
-		t.Error("queued_at empty")
-	}
-
-	// Maildir side
-	msgs, err := messages.Inbox(tmpDir, "ghost")
-	if err != nil {
-		t.Fatalf("Inbox: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("Maildir got %d, want 1", len(msgs))
-	}
-	if msgs[0].Subject != "hello" || msgs[0].Body != "world" || msgs[0].From != "weave" {
-		t.Errorf("maildir msg = %+v", msgs[0])
-	}
-
-	// Queue side
-	entries, err := agentloop.ListPending(tmpDir, "ghost")
-	if err != nil {
-		t.Fatalf("ListPending: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("queue got %d, want 1", len(entries))
-	}
-	e := entries[0]
-	if e.Class != agentloop.ClassAsync {
-		t.Errorf("class = %q, want async", e.Class)
-	}
-	if e.From != "weave" || e.Subject != "hello" || e.Body != "world" {
-		t.Errorf("entry = %+v", e)
-	}
-	if len(e.Tags) != 1 || e.Tags[0] != "fyi" {
-		t.Errorf("tags = %v", e.Tags)
-	}
-	if e.ID != result.MessageID {
-		t.Errorf("message_id mismatch: result=%q entry=%q", result.MessageID, e.ID)
-	}
-}
-
-func TestSendAsync_AgentNotFound(t *testing.T) {
-	sup, _ := newTestSupervisor(t)
-	_, err := sup.SendAsync(context.Background(), "nobody", "s", "b", "", nil)
-	if err == nil {
-		t.Fatal("expected error for missing agent")
-	}
-}
-
-func TestSendAsync_ValidatesName(t *testing.T) {
-	sup, _ := newTestSupervisor(t)
-	_, err := sup.SendAsync(context.Background(), "../evil", "s", "b", "", nil)
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-}
-
 func TestPeek_ReturnsStateAndActivity(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -419,7 +306,7 @@ func TestReportStatus_PersistsAndNotifiesParent(t *testing.T) {
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Parent: "root", Status: "active"})
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "root", Status: "active"})
 
-	res, err := sup.ReportStatus(context.Background(), "", "working", "halfway", "extra detail")
+	res, err := sup.ReportStatus(context.Background(), "", "working", "halfway")
 	if err != nil {
 		t.Fatalf("ReportStatus: %v", err)
 	}
@@ -434,8 +321,10 @@ func TestReportStatus_PersistsAndNotifiesParent(t *testing.T) {
 	if got.LastReportMessage != "halfway" {
 		t.Errorf("LastReportMessage = %q", got.LastReportMessage)
 	}
-	if got.LastReportDetail != "extra detail" {
-		t.Errorf("LastReportDetail = %q", got.LastReportDetail)
+	// QUM-550 slice 2: detail dropped from the report_status surface; the
+	// supervisor passes "" to agentops.Report, so LastReportDetail stays empty.
+	if got.LastReportDetail != "" {
+		t.Errorf("LastReportDetail = %q, want empty (detail dropped from report_status)", got.LastReportDetail)
 	}
 
 	// Parent "root" gets both Maildir and queue entries.
@@ -456,7 +345,7 @@ func TestReportStatus_ExplicitAgentName(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ratz", Parent: "weave", Status: "active"})
 
-	_, err := sup.ReportStatus(context.Background(), "ratz", "complete", "done", "")
+	_, err := sup.ReportStatus(context.Background(), "ratz", "complete", "done")
 	if err != nil {
 		t.Fatalf("ReportStatus: %v", err)
 	}
@@ -469,145 +358,9 @@ func TestReportStatus_ExplicitAgentName(t *testing.T) {
 func TestReportStatus_InvalidState(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Status: "active"})
-	_, err := sup.ReportStatus(context.Background(), "", "bogus", "x", "")
+	_, err := sup.ReportStatus(context.Background(), "", "bogus", "x")
 	if err == nil {
 		t.Fatal("expected error for invalid state")
-	}
-}
-
-func TestSendInterrupt_WritesMaildirAndQueueWithInterruptClass(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-	// weave → ghost direct child.
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ghost",
-		Parent: "weave",
-		Status: "active",
-	})
-
-	result, err := sup.SendInterrupt(context.Background(), "ghost", "urgent", "stop what you're doing", "you were refactoring foo")
-	if err != nil {
-		t.Fatalf("SendInterrupt: %v", err)
-	}
-	if result.MessageID == "" {
-		t.Error("message_id empty")
-	}
-	if result.DeliveredAt == "" {
-		t.Error("delivered_at empty")
-	}
-	if !result.Interrupted {
-		t.Error("interrupted = false, want true (advisory)")
-	}
-
-	// Maildir side
-	msgs, err := messages.Inbox(tmpDir, "ghost")
-	if err != nil {
-		t.Fatalf("Inbox: %v", err)
-	}
-	if len(msgs) != 1 || msgs[0].Subject != "urgent" || msgs[0].Body != "stop what you're doing" {
-		t.Errorf("maildir msg = %+v", msgs)
-	}
-
-	// Queue side
-	entries, err := agentloop.ListPending(tmpDir, "ghost")
-	if err != nil {
-		t.Fatalf("ListPending: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("queue got %d entries, want 1", len(entries))
-	}
-	e := entries[0]
-	if e.Class != agentloop.ClassInterrupt {
-		t.Errorf("class = %q, want interrupt", e.Class)
-	}
-	if e.From != "weave" || e.Subject != "urgent" || e.Body != "stop what you're doing" {
-		t.Errorf("entry = %+v", e)
-	}
-	// resume_hint travels as a tag so the harness can render §4.5.2 frames
-	// without re-parsing the body.
-	var gotHint string
-	for _, tag := range e.Tags {
-		if len(tag) > len("resume_hint:") && tag[:len("resume_hint:")] == "resume_hint:" {
-			gotHint = tag[len("resume_hint:"):]
-		}
-	}
-	if gotHint != "you were refactoring foo" {
-		t.Errorf("resume_hint tag = %q, want 'you were refactoring foo' (tags=%v)", gotHint, e.Tags)
-	}
-	if e.ID != result.MessageID {
-		t.Errorf("message_id mismatch: result=%q entry=%q", result.MessageID, e.ID)
-	}
-}
-
-func TestSendInterrupt_BlocksNonAncestorCaller(t *testing.T) {
-	// peer (non-ancestor) attempts to interrupt ghost. caller = "weave" in
-	// test fixture, so set up a tree where weave is NOT ghost's ancestor.
-	sup, tmpDir := newTestSupervisor(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "other-root", // different root
-		Parent: "",
-		Status: "active",
-	})
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ghost",
-		Parent: "other-root", // ghost's ancestor is other-root, not weave
-		Status: "active",
-	})
-
-	_, err := sup.SendInterrupt(context.Background(), "ghost", "s", "b", "")
-	if err == nil {
-		t.Fatal("expected error for non-ancestor caller")
-	}
-	// Ensure nothing was enqueued.
-	entries, _ := agentloop.ListPending(tmpDir, "ghost")
-	if len(entries) != 0 {
-		t.Errorf("queue got %d, want 0 (gate should block)", len(entries))
-	}
-}
-
-func TestSendInterrupt_AllowsAncestorChain(t *testing.T) {
-	// weave → midmgr → ghost. weave should be allowed to interrupt ghost
-	// via the grandparent path.
-	sup, tmpDir := newTestSupervisor(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "midmgr",
-		Parent: "weave",
-		Status: "active",
-	})
-	saveTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "ghost",
-		Parent: "midmgr",
-		Status: "active",
-	})
-
-	_, err := sup.SendInterrupt(context.Background(), "ghost", "s", "b", "")
-	if err != nil {
-		t.Fatalf("SendInterrupt grandparent: %v", err)
-	}
-}
-
-func TestSendInterrupt_RejectsSelfInterrupt(t *testing.T) {
-	sup, tmpDir := newTestSupervisor(t)
-	saveTestAgent(t, tmpDir, &state.AgentState{Name: "weave", Status: "active"})
-
-	_, err := sup.SendInterrupt(context.Background(), "weave", "s", "b", "")
-	if err == nil {
-		t.Fatal("expected error for self-interrupt")
-	}
-}
-
-func TestSendInterrupt_AgentNotFound(t *testing.T) {
-	sup, _ := newTestSupervisor(t)
-	_, err := sup.SendInterrupt(context.Background(), "nobody", "s", "b", "")
-	if err == nil {
-		t.Fatal("expected error for missing agent")
-	}
-}
-
-func TestSendInterrupt_ValidatesName(t *testing.T) {
-	sup, _ := newTestSupervisor(t)
-	_, err := sup.SendInterrupt(context.Background(), "../evil", "s", "b", "")
-	if err == nil {
-		t.Fatal("expected validation error")
 	}
 }
 
@@ -1008,21 +761,28 @@ func TestMessagesList_RequiresCallerIdentity(t *testing.T) {
 
 // --- QUM-399 RegisterRootRuntime tests ---
 
-// fakeRootHandle is a minimal RuntimeHandle that records InterruptDelivery
+// fakeRootHandle is a minimal RuntimeHandle that records delivery wake/preempt
 // calls. Used by RegisterRootRuntime tests to confirm child reports route to
 // the registered weave runtime.
 type fakeRootHandle struct {
-	caps                backendpkg.Capabilities
-	sessionID           string
-	interruptDeliveries int32
-	stopCalls           int32
-	doneCh              chan struct{}
+	caps                        backendpkg.Capabilities
+	sessionID                   string
+	wakeForDeliveryCalls        int32
+	forceInterruptDeliveryCalls int32
+	stopCalls                   int32
+	doneCh                      chan struct{}
 }
 
 func (h *fakeRootHandle) Interrupt(context.Context) error { return nil }
 func (h *fakeRootHandle) Wake() error                     { return nil }
-func (h *fakeRootHandle) InterruptDelivery() error {
-	h.interruptDeliveries++
+
+func (h *fakeRootHandle) WakeForDelivery() error {
+	h.wakeForDeliveryCalls++
+	return nil
+}
+
+func (h *fakeRootHandle) ForceInterruptDelivery() error {
+	h.forceInterruptDeliveryCalls++
 	return nil
 }
 
@@ -1211,11 +971,12 @@ func TestRegisterRootRuntime_DoesNotOverwriteDiskTypeWhenAlreadySet(t *testing.T
 	}
 }
 
-// QUM-399: when weave is registered as a root runtime and a child agent
-// reports status, the child→parent InterruptDelivery path must hit the
-// registered handle. This guarantees child reports drive weave's
-// UnifiedRuntime queue without going through the legacy `.wake` sentinel.
-func TestReportStatus_FromChildOfWeave_FiresInterruptDeliveryOnRegisteredRoot(t *testing.T) {
+// QUM-399 / QUM-550 slice 2: when weave is registered as a root runtime and a
+// child agent reports status, the child→parent notification path must hit the
+// registered handle via the cooperative WakeForDelivery — NOT InterruptDelivery
+// and NOT ForceInterruptDelivery. This guarantees child reports drive weave's
+// UnifiedRuntime queue without preempting an in-flight turn.
+func TestReportStatus_FromChildOfWeave_WakesRootWithoutPreempting(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "weave",
@@ -1234,11 +995,14 @@ func TestReportStatus_FromChildOfWeave_FiresInterruptDeliveryOnRegisteredRoot(t 
 		t.Fatalf("RegisterRootRuntime: %v", err)
 	}
 
-	if _, err := sup.ReportStatus(context.Background(), "ratz", "working", "summary", ""); err != nil {
+	if _, err := sup.ReportStatus(context.Background(), "ratz", "working", "summary"); err != nil {
 		t.Fatalf("ReportStatus: %v", err)
 	}
 
-	if h.interruptDeliveries == 0 {
-		t.Errorf("registered weave handle's InterruptDelivery not called; want >=1")
+	if h.wakeForDeliveryCalls < 1 {
+		t.Errorf("registered weave handle's WakeForDelivery calls = %d, want >= 1", h.wakeForDeliveryCalls)
+	}
+	if h.forceInterruptDeliveryCalls != 0 {
+		t.Errorf("registered weave handle's ForceInterruptDelivery calls = %d, want 0", h.forceInterruptDeliveryCalls)
 	}
 }

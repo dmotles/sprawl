@@ -353,16 +353,6 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 	return nil
 }
 
-func (r *Real) Message(ctx context.Context, agentName, subject, body string) error {
-	_, err := state.LoadAgent(r.sprawlRoot, agentName)
-	if err != nil {
-		return fmt.Errorf("agent %q not found: %w", agentName, err)
-	}
-
-	_, err = messages.Send(r.sprawlRoot, r.effectiveCaller(ctx), agentName, subject, body)
-	return err
-}
-
 func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) {
 	deps := r.spawnDepsForCaller(r.effectiveCaller(ctx))
 	st, err := r.spawnFn(deps, req.Family, req.Type, req.Prompt, req.Branch)
@@ -792,10 +782,11 @@ func agentCreatedAt(sprawlRoot, agentName string) (time.Time, bool) {
 	return t, true
 }
 
-// SendAsync persists the message to Maildir and appends a harness queue
-// entry (class=async) for the recipient. See
-// docs/designs/messaging-overhaul.md §4.2.1.
-func (r *Real) SendAsync(ctx context.Context, to, subject, body, replyTo string, tags []string) (*SendAsyncResult, error) {
+// SendMessage is the canonical messaging tool (QUM-550) that replaces
+// send_async + send_interrupt. interrupt=false: cooperative wake, ClassAsync,
+// no Session.Interrupt. interrupt=true: force preempt, ClassInterrupt, gated
+// to ancestor-only per §8.5.
+func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error) {
 	if err := agent.ValidateName(to); err != nil {
 		return nil, err
 	}
@@ -803,33 +794,56 @@ func (r *Real) SendAsync(ctx context.Context, to, subject, body, replyTo string,
 		return nil, fmt.Errorf("agent %q not found: %w", to, err)
 	}
 
+	caller := r.effectiveCaller(ctx)
+	if interrupt {
+		if caller == "" {
+			return nil, fmt.Errorf("send_message: caller identity unknown; refusing to send")
+		}
+		if caller == to {
+			return nil, fmt.Errorf("send_message: cannot interrupt self")
+		}
+		ok, err := isAncestor(r.sprawlRoot, caller, to)
+		if err != nil {
+			return nil, fmt.Errorf("checking ancestry: %w", err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("send_message: %q is not an ancestor of %q (parent→descendants only per §8.5)", caller, to)
+		}
+	}
+
 	runtime, runtimeBacked := r.startedRuntime(to)
 
-	caller := r.effectiveCaller(ctx)
-	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body)
+	shortID, err := messages.Send(r.sprawlRoot, caller, to, "", body)
 	if err != nil {
 		return nil, err
 	}
 
+	class := agentloop.ClassAsync
+	if interrupt {
+		class = agentloop.ClassInterrupt
+	}
 	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
 		ShortID: shortID,
-		Class:   agentloop.ClassAsync,
+		Class:   class,
 		From:    caller,
-		Subject: subject,
+		Subject: "",
 		Body:    body,
-		ReplyTo: replyTo,
-		Tags:    tags,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("enqueuing async message: %w", err)
+		return nil, fmt.Errorf("enqueuing message: %w", err)
 	}
 	if runtimeBacked {
-		_ = runtime.InterruptDelivery()
+		if interrupt {
+			_ = runtime.ForceInterruptDelivery()
+		} else {
+			_ = runtime.WakeForDelivery()
+		}
 	}
 
-	return &SendAsyncResult{
-		MessageID: entry.ID,
-		QueuedAt:  entry.EnqueuedAt,
+	return &SendMessageResult{
+		MessageID:   entry.ID,
+		QueuedAt:    entry.EnqueuedAt,
+		Interrupted: interrupt,
 	}, nil
 }
 
@@ -857,77 +871,6 @@ func isAncestor(sprawlRoot, maybeAncestor, agentName string) (bool, error) {
 		current = st.Parent
 	}
 	return false, fmt.Errorf("parent chain exceeds 16 levels starting from %q", agentName)
-}
-
-// SendInterrupt persists the message to Maildir and appends an
-// interrupt-class queue entry for the recipient. Gated to parent→descendants
-// per §8.5: the caller must be an ancestor of `to`. See
-// docs/designs/messaging-overhaul.md §4.2.2 and §4.5.2.
-func (r *Real) SendInterrupt(ctx context.Context, to, subject, body, resumeHint string) (*SendInterruptResult, error) {
-	if err := agent.ValidateName(to); err != nil {
-		return nil, err
-	}
-	if _, err := state.LoadAgent(r.sprawlRoot, to); err != nil {
-		return nil, fmt.Errorf("agent %q not found: %w", to, err)
-	}
-
-	// Parent→descendants gate: the caller must be an ancestor of `to`.
-	// An empty callerName (e.g. when invoked from unidentified contexts)
-	// is rejected to avoid accidental self-or-upward interrupts.
-	caller := r.effectiveCaller(ctx)
-	if caller == "" {
-		return nil, fmt.Errorf("send_interrupt: caller identity unknown; refusing to send")
-	}
-	if caller == to {
-		return nil, fmt.Errorf("send_interrupt: cannot interrupt self")
-	}
-	ok, err := isAncestor(r.sprawlRoot, caller, to)
-	if err != nil {
-		return nil, fmt.Errorf("checking ancestry: %w", err)
-	}
-	if !ok {
-		return nil, fmt.Errorf("send_interrupt: %q is not an ancestor of %q (parent→descendants only per §8.5)", caller, to)
-	}
-
-	// Assemble the enqueue body. We preserve the resume_hint separately in
-	// Tags so the child runtime can render the §4.5.2 frame without
-	// re-parsing the body. Tag key pattern: "resume_hint:<value>".
-	var tags []string
-	if resumeHint != "" {
-		tags = append(tags, "resume_hint:"+resumeHint)
-	}
-
-	runtime, runtimeBacked := r.startedRuntime(to)
-
-	shortID, err := messages.Send(r.sprawlRoot, caller, to, subject, body)
-	if err != nil {
-		return nil, err
-	}
-
-	entry, err := agentloop.Enqueue(r.sprawlRoot, to, agentloop.Entry{
-		ShortID: shortID,
-		Class:   agentloop.ClassInterrupt,
-		From:    caller,
-		Subject: subject,
-		Body:    body,
-		Tags:    tags,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("enqueuing interrupt message: %w", err)
-	}
-	if runtimeBacked {
-		_ = runtime.InterruptDelivery()
-	}
-
-	return &SendInterruptResult{
-		MessageID:   entry.ID,
-		DeliveredAt: entry.EnqueuedAt,
-		// Best-effort advisory: we report interrupted=true whenever the
-		// target exists and the entry was enqueued. The harness decides
-		// mid-turn preemption asynchronously; callers shouldn't rely on
-		// this for strict invariants. See §4.2.2.
-		Interrupted: true,
-	}, nil
 }
 
 // Peek loads the agent's state plus the tail of its activity ring.
@@ -970,7 +913,7 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 // An empty agentName defaults to r.callerName — the MCP tool invokes this
 // method with an empty name so child agents can report without passing their
 // own identity as a parameter.
-func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, detail string) (*ReportStatusResult, error) {
+func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary string) (*ReportStatusResult, error) {
 	if agentName == "" {
 		agentName = r.callerName
 	}
@@ -986,13 +929,14 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary, 
 	reportDeps := &agentops.ReportDeps{
 		SendMessage: messages.Send,
 	}
-	res, err := agentops.Report(reportDeps, r.sprawlRoot, agentName, reportState, summary, detail)
+	res, err := agentops.Report(reportDeps, r.sprawlRoot, agentName, reportState, summary)
 	if err != nil {
 		return nil, err
 	}
 	r.syncRuntimeFromState(agentName)
 	if parentRuntime != nil && res.MessageID != "" {
-		_ = parentRuntime.InterruptDelivery()
+		// QUM-550 slice 2: cooperative wake — never preempt parent's session.
+		_ = parentRuntime.WakeForDelivery()
 	}
 	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
 }

@@ -67,7 +67,13 @@ type RuntimeStartSpec struct {
 type RuntimeHandle interface {
 	Interrupt(ctx context.Context) error
 	Wake() error
-	InterruptDelivery() error
+	// WakeForDelivery is the cooperative wake path used by send_message(
+	// interrupt=false). Must NEVER call Session.Interrupt. See QUM-549/QUM-550.
+	WakeForDelivery() error
+	// ForceInterruptDelivery is the unconditional preempt path used by
+	// send_message(interrupt=true). Calls Session.Interrupt even when the
+	// recipient is idle. See QUM-549/QUM-550.
+	ForceInterruptDelivery() error
 	Stop(ctx context.Context) error
 	SessionID() string
 	Capabilities() backendpkg.Capabilities
@@ -317,9 +323,9 @@ func (r *AgentRuntime) Wake() error {
 	return nil
 }
 
-// InterruptDelivery notifies a runtime that newly-persisted work should
-// preempt any in-flight turn and be delivered promptly on the next loop.
-func (r *AgentRuntime) InterruptDelivery() error {
+// WakeForDelivery notifies a runtime cooperatively that newly-persisted work
+// is available. Updates the WakeCount snapshot counter. See QUM-549/QUM-550.
+func (r *AgentRuntime) WakeForDelivery() error {
 	r.mu.RLock()
 	handle := r.handle
 	r.mu.RUnlock()
@@ -327,7 +333,29 @@ func (r *AgentRuntime) InterruptDelivery() error {
 	if handle == nil {
 		return fmt.Errorf("runtime session not started")
 	}
-	if err := handle.InterruptDelivery(); err != nil {
+	if err := handle.WakeForDelivery(); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	r.snapshot.WakeCount++
+	r.mu.Unlock()
+	return nil
+}
+
+// ForceInterruptDelivery notifies a runtime that newly-persisted work must
+// preempt any in-flight turn — unconditionally, even when idle. Updates the
+// InterruptCount snapshot counter and emits RuntimeEventInterrupted.
+// See QUM-549/QUM-550.
+func (r *AgentRuntime) ForceInterruptDelivery() error {
+	r.mu.RLock()
+	handle := r.handle
+	r.mu.RUnlock()
+
+	if handle == nil {
+		return fmt.Errorf("runtime session not started")
+	}
+	if err := handle.ForceInterruptDelivery(); err != nil {
 		return err
 	}
 

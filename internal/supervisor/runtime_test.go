@@ -13,13 +13,14 @@ import (
 )
 
 type runtimeTestSession struct {
-	sessionID           string
-	caps                backendpkg.Capabilities
-	interrupts          int
-	wakes               int
-	interruptDeliveries int
-	stopCalls           int
-	doneCh              chan struct{}
+	sessionID                   string
+	caps                        backendpkg.Capabilities
+	interrupts                  int
+	wakes                       int
+	wakeForDeliveryCalls        int
+	forceInterruptDeliveryCalls int
+	stopCalls                   int
+	doneCh                      chan struct{}
 }
 
 func (s *runtimeTestSession) Initialize(context.Context, backendpkg.InitSpec) error { return nil }
@@ -39,8 +40,13 @@ func (s *runtimeTestSession) Wake() error {
 	return nil
 }
 
-func (s *runtimeTestSession) InterruptDelivery() error {
-	s.interruptDeliveries++
+func (s *runtimeTestSession) WakeForDelivery() error {
+	s.wakeForDeliveryCalls++
+	return nil
+}
+
+func (s *runtimeTestSession) ForceInterruptDelivery() error {
+	s.forceInterruptDeliveryCalls++
 	return nil
 }
 
@@ -293,7 +299,8 @@ type fakeAttachHandle struct {
 
 func (h *fakeAttachHandle) Interrupt(context.Context) error       { return nil }
 func (h *fakeAttachHandle) Wake() error                           { return nil }
-func (h *fakeAttachHandle) InterruptDelivery() error              { return nil }
+func (h *fakeAttachHandle) WakeForDelivery() error                { return nil }
+func (h *fakeAttachHandle) ForceInterruptDelivery() error         { return nil }
 func (h *fakeAttachHandle) Stop(context.Context) error            { return nil }
 func (h *fakeAttachHandle) SessionID() string                     { return h.sessionID }
 func (h *fakeAttachHandle) Capabilities() backendpkg.Capabilities { return h.caps }

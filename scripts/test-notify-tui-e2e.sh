@@ -214,7 +214,7 @@ sandbox_install_watchdog "$$" "$SPRAWL_TMUX_SOCKET" "$SPRAWL_ROOT"
 
 echo "=== Launching sprawl enter in tmux ==="
 # QUM-471: enable unified runtime so this script also guards the
-# WeaveRuntimeHandle.InterruptDelivery path. Without this export, the TUI runs
+# WeaveRuntimeHandle.WakeForDelivery / ForceInterruptDelivery path. Without this export, the TUI runs
 # the legacy notifier — DRAIN_TOKEN_A / DRAIN_TOKEN_B (lines below) only catch
 # the legacy regression. Under unified mode, peekAndDrainCmd is the sole drain
 # pipeline (Option A): if the handle re-enqueues into the runtime queue,

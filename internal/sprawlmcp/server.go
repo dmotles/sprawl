@@ -192,16 +192,12 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolStatus(ctx)
 	case "delegate":
 		return s.toolDelegate(ctx, args)
-	case "send_async":
-		return s.toolSendAsync(ctx, args)
-	case "send_interrupt":
-		return s.toolSendInterrupt(ctx, args)
+	case "send_message":
+		return s.toolSendMessage(ctx, args)
 	case "peek":
 		return s.toolPeek(ctx, args)
 	case "report_status":
 		return s.toolReportStatus(ctx, args)
-	case "message":
-		return s.toolMessage(ctx, args)
 	case "merge":
 		return s.toolMerge(ctx, args)
 	case "retire":
@@ -265,56 +261,18 @@ func (s *Server) toolDelegate(ctx context.Context, args json.RawMessage) (string
 	return fmt.Sprintf("Delegated task to %s", p.AgentName), nil
 }
 
-func (s *Server) toolMessage(ctx context.Context, args json.RawMessage) (string, error) {
+// toolSendMessage dispatches the canonical send_message MCP tool (QUM-550).
+// interrupt=false maps to a cooperative wake; interrupt=true forces a preempt.
+func (s *Server) toolSendMessage(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		AgentName string `json:"agent_name"`
-		Subject   string `json:"subject"`
+		To        string `json:"to"`
 		Body      string `json:"body"`
+		Interrupt bool   `json:"interrupt"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	// Deprecated alias: behaves as send_async. Writes Maildir + enqueues
-	// harness queue entry. Return a short ack for backwards compatibility.
-	if _, err := s.sup.SendAsync(ctx, p.AgentName, p.Subject, p.Body, "", nil); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Message sent to %s: %s", p.AgentName, p.Subject), nil
-}
-
-func (s *Server) toolSendAsync(ctx context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		To      string   `json:"to"`
-		Subject string   `json:"subject"`
-		Body    string   `json:"body"`
-		ReplyTo string   `json:"reply_to"`
-		Tags    []string `json:"tags"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-	result, err := s.sup.SendAsync(ctx, p.To, p.Subject, p.Body, p.ReplyTo, p.Tags)
-	if err != nil {
-		return "", err
-	}
-	data, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("marshaling result: %w", err)
-	}
-	return string(data), nil
-}
-
-func (s *Server) toolSendInterrupt(ctx context.Context, args json.RawMessage) (string, error) {
-	var p struct {
-		To         string `json:"to"`
-		Subject    string `json:"subject"`
-		Body       string `json:"body"`
-		ResumeHint string `json:"resume_hint"`
-	}
-	if err := json.Unmarshal(args, &p); err != nil {
-		return "", fmt.Errorf("invalid arguments: %w", err)
-	}
-	result, err := s.sup.SendInterrupt(ctx, p.To, p.Subject, p.Body, p.ResumeHint)
+	result, err := s.sup.SendMessage(ctx, p.To, p.Body, p.Interrupt)
 	if err != nil {
 		return "", err
 	}
@@ -360,7 +318,6 @@ func (s *Server) toolReportStatus(ctx context.Context, args json.RawMessage) (st
 	var p struct {
 		State   string `json:"state"`
 		Summary string `json:"summary"`
-		Detail  string `json:"detail"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -368,7 +325,7 @@ func (s *Server) toolReportStatus(ctx context.Context, args json.RawMessage) (st
 	// Pass caller identity from context so child agents report under their
 	// own name instead of the shared supervisor's callerName (QUM-387).
 	agentName := backendpkg.CallerIdentity(ctx)
-	result, err := s.sup.ReportStatus(ctx, agentName, p.State, p.Summary, p.Detail)
+	result, err := s.sup.ReportStatus(ctx, agentName, p.State, p.Summary)
 	if err != nil {
 		return "", err
 	}

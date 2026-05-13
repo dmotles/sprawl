@@ -26,7 +26,8 @@ type testExportUnifiedHandle struct {
 
 func (h *testExportUnifiedHandle) Interrupt(_ context.Context) error { return nil }
 func (h *testExportUnifiedHandle) Wake() error                       { return nil }
-func (h *testExportUnifiedHandle) InterruptDelivery() error          { return nil }
+func (h *testExportUnifiedHandle) WakeForDelivery() error            { return nil }
+func (h *testExportUnifiedHandle) ForceInterruptDelivery() error     { return nil }
 func (h *testExportUnifiedHandle) Stop(_ context.Context) error      { return nil }
 func (h *testExportUnifiedHandle) SessionID() string                 { return "" }
 func (h *testExportUnifiedHandle) Capabilities() backendpkg.Capabilities {

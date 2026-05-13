@@ -390,7 +390,7 @@ func TestReportStatus_UsesExplicitAgentName(t *testing.T) {
 
 	// When agentName is passed explicitly, it should be used even without
 	// context override (this is the MCP path after QUM-387 fix).
-	result, err := r.ReportStatus(context.Background(), "finn", "complete", "done", "")
+	result, err := r.ReportStatus(context.Background(), "finn", "complete", "done")
 	if err != nil {
 		t.Fatalf("ReportStatus: %v", err)
 	}
@@ -408,7 +408,7 @@ func TestReportStatus_UsesExplicitAgentName(t *testing.T) {
 	}
 }
 
-func TestSendAsync_ContextIdentitySetsSender(t *testing.T) {
+func TestSendMessage_ContextIdentitySetsSender(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	// Create both agents.
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -420,11 +420,11 @@ func TestSendAsync_ContextIdentitySetsSender(t *testing.T) {
 		Status: "active",
 	})
 
-	// Child "finn" sends async to "weave" via MCP — context carries finn's identity.
+	// Child "finn" sends to "weave" via MCP — context carries finn's identity.
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "finn")
-	result, err := r.SendAsync(ctx, "weave", "status update", "I'm done", "", nil)
+	result, err := r.SendMessage(ctx, "weave", "I'm done", false)
 	if err != nil {
-		t.Fatalf("SendAsync: %v", err)
+		t.Fatalf("SendMessage: %v", err)
 	}
 	if result == nil || result.MessageID == "" {
 		t.Fatal("expected non-nil result with MessageID")

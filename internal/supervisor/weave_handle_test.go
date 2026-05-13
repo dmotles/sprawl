@@ -34,7 +34,7 @@ func (r *resultEmittingSession) StartTurn(ctx context.Context, prompt string, sp
 	return out, nil
 }
 
-// TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain
+// TestWeaveRuntimeHandle_WakeForDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain
 // pins QUM-471: under the unified runtime, weave's WeaveRuntimeHandle.InterruptDelivery
 // must NOT enqueue ClassInbox/ClassInterrupt QueueItems against the runtime's queue.
 // The TUI's peekAndDrainCmd (a 2s disk-poll backstop fired on AgentTreeMsg while
@@ -50,7 +50,7 @@ func (r *resultEmittingSession) StartTurn(ctx context.Context, prompt string, sp
 //
 // Contract: pending entries on disk MUST remain in pending/ after
 // InterruptDelivery returns; the runtime queue MUST be empty.
-func TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain(t *testing.T) {
+func TestWeaveRuntimeHandle_WakeForDelivery_DoesNotEnqueue_LeavesPendingForPeekAndDrain(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	const name = "weave"
 
@@ -88,8 +88,8 @@ func TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPee
 		t.Fatalf("NewWeaveRuntimeHandle: %v", err)
 	}
 
-	if err := h.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := h.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// Note on wake-signal preservation (test-critic feedback on commit 8d1c496):
@@ -140,7 +140,7 @@ func TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPee
 	}
 }
 
-// TestWeaveRuntimeHandle_InterruptDelivery_TerminalEventIsCompleted_NotInterrupted
+// TestWeaveRuntimeHandle_WakeForDelivery_TerminalEventIsCompleted_NotInterrupted
 // pins QUM-462 (preserved post-QUM-471): when WeaveRuntimeHandle.InterruptDelivery
 // is invoked against an idle runtime (the canonical inbox-arrival wake), it must
 // not arm UnifiedRuntime.pendingInterrupt — so a subsequent turn (driven by a
@@ -153,7 +153,7 @@ func TestWeaveRuntimeHandle_InterruptDelivery_DoesNotEnqueue_LeavesPendingForPee
 // invariant being pinned is: rt.InterruptDelivery(ctx) is the exclusive wake
 // call from the handle, and it must NOT arm pendingInterrupt against an idle
 // runtime — even when a user item is then dispatched.
-func TestWeaveRuntimeHandle_InterruptDelivery_TerminalEventIsCompleted_NotInterrupted(t *testing.T) {
+func TestWeaveRuntimeHandle_WakeForDelivery_TerminalEventIsCompleted_NotInterrupted(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	const name = "weave"
 
@@ -203,8 +203,8 @@ func TestWeaveRuntimeHandle_InterruptDelivery_TerminalEventIsCompleted_NotInterr
 		Prompt: "simulated peekAndDrain user prompt",
 	})
 
-	if err := h.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := h.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// Observe the terminal event for the resulting turn. Must be

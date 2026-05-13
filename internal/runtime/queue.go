@@ -75,7 +75,7 @@ func NewMessageQueue() *MessageQueue {
 //
 // If item has any EntryIDs and *all* of them are already present in the
 // queue, the item is dropped to prevent double-delivery when concurrent
-// InterruptDelivery callers each ListPending the same disk state and try
+// WakeForDelivery callers each ListPending the same disk state and try
 // to enqueue overlapping entries (QUM-460). When dropped, the signal is
 // not poked since no new work was added.
 func (q *MessageQueue) Enqueue(item QueueItem) {
@@ -136,7 +136,7 @@ func (q *MessageQueue) DrainAll() []QueueItem {
 }
 
 // Wake fires the signal channel without enqueuing an item. Used by
-// InterruptDelivery to wake a blocked TurnLoop so it can re-check state
+// WakeForDelivery to wake a blocked TurnLoop so it can re-check state
 // even when no new work has been added. Non-blocking (coalescing).
 func (q *MessageQueue) Wake() {
 	select {

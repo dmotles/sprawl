@@ -311,25 +311,25 @@ func TestInterrupt_WhenActive(t *testing.T) {
 	}
 }
 
-func TestInterruptDelivery_FiresQueueSignal(t *testing.T) {
+func TestWakeForDelivery_FiresQueueSignal(t *testing.T) {
 	// Direct test against a NON-running runtime so we can read Signal() without
 	// competing with the Run goroutine.
 	mock := &mockUnifiedSession{}
 	rt := New(RuntimeConfig{Name: "x", Session: mock})
 
-	if err := rt.InterruptDelivery(context.Background()); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := rt.WakeForDelivery(context.Background()); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	select {
 	case <-rt.Queue().Signal():
 		// good
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Queue.Signal did not fire after InterruptDelivery")
+		t.Fatal("Queue.Signal did not fire after WakeForDelivery")
 	}
 }
 
-func TestInterruptDelivery_RepeatedSafe(t *testing.T) {
+func TestWakeForDelivery_RepeatedSafe(t *testing.T) {
 	mock := &mockUnifiedSession{}
 	rt := New(RuntimeConfig{Name: "x", Session: mock})
 
@@ -341,7 +341,7 @@ func TestInterruptDelivery_RepeatedSafe(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		for i := 0; i < 10; i++ {
-			_ = rt.InterruptDelivery(context.Background())
+			_ = rt.WakeForDelivery(context.Background())
 		}
 		close(done)
 	}()
@@ -349,11 +349,11 @@ func TestInterruptDelivery_RepeatedSafe(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("repeated InterruptDelivery blocked")
+		t.Fatal("repeated WakeForDelivery blocked")
 	}
 
 	if got := rt.Queue().Len(); got != 0 {
-		t.Errorf("Queue.Len after InterruptDelivery loop = %d, want 0", got)
+		t.Errorf("Queue.Len after WakeForDelivery loop = %d, want 0", got)
 	}
 }
 
@@ -890,19 +890,23 @@ func TestDone_ClosesAfterLoopExit(t *testing.T) {
 	}
 }
 
-// TestInterruptDelivery_DoesNotArmPendingInterrupt_WhenIdle pins QUM-462:
-// InterruptDelivery is the wake path used by the supervisor when a peer
-// agent has enqueued an inbox item (e.g. WeaveRuntimeHandle.InterruptDelivery
-// after sibling/child send_async). It must wake the loop so the queued item
+// TestWakeForDelivery_DoesNotArmPendingInterrupt_WhenIdle pins QUM-462:
+// WakeForDelivery is the cooperative wake path used by the supervisor when a
+// peer agent has enqueued an inbox item (e.g. WeaveRuntimeHandle.WakeForDelivery
+// after sibling/child send_message). It must wake the loop so the queued item
 // gets drained, but it must NOT arm `pendingInterrupt` against an idle
 // runtime — doing so causes the wrapper to immediately interrupt the very
 // turn that would deliver the inbox, so the user sees a banner but Claude
 // never actually processes the message.
 //
-// Expected behaviour: enqueue a ClassInbox item, call InterruptDelivery
+// Expected behaviour: enqueue a ClassInbox item, call WakeForDelivery
 // while the runtime is idle, and observe a normal EventTurnCompleted (not
 // EventInterrupted) on the EventBus.
-func TestInterruptDelivery_DoesNotArmPendingInterrupt_WhenIdle(t *testing.T) {
+//
+// Post-QUM-550 slice 4 the underlying invariant is structurally trivial —
+// WakeForDelivery never calls Session.Interrupt — but the assertion is kept
+// as a sanity check.
+func TestWakeForDelivery_DoesNotArmPendingInterrupt_WhenIdle(t *testing.T) {
 	mock := &mockUnifiedSession{
 		onStart: func(_ int) (<-chan *protocol.Message, error) {
 			ch := make(chan *protocol.Message, 1)
@@ -924,15 +928,15 @@ func TestInterruptDelivery_DoesNotArmPendingInterrupt_WhenIdle(t *testing.T) {
 
 	// Wait until the runtime is observably idle (loop blocked on Queue.Signal).
 	if !waitForState(t, rt, StateIdle, 1*time.Second) {
-		t.Fatalf("runtime did not reach StateIdle before InterruptDelivery; state=%v", rt.State())
+		t.Fatalf("runtime did not reach StateIdle before WakeForDelivery; state=%v", rt.State())
 	}
 
-	// Mirror WeaveRuntimeHandle.InterruptDelivery: enqueue a ClassInbox item
-	// (as if a sibling agent had send_async'd weave) then wake the loop via
-	// InterruptDelivery.
+	// Mirror WeaveRuntimeHandle.WakeForDelivery: enqueue a ClassInbox item
+	// (as if a sibling agent had send_message'd weave) then wake the loop via
+	// WakeForDelivery.
 	rt.Queue().Enqueue(QueueItem{Class: ClassInbox, Prompt: "[inbox] hello from sibling"})
-	if err := rt.InterruptDelivery(context.Background()); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := rt.WakeForDelivery(context.Background()); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// The terminal event for this turn must be EventTurnCompleted. If the
@@ -943,151 +947,17 @@ func TestInterruptDelivery_DoesNotArmPendingInterrupt_WhenIdle(t *testing.T) {
 		return ev.Type == EventTurnCompleted || ev.Type == EventInterrupted
 	})
 	if ev.Type != EventTurnCompleted {
-		t.Fatalf("terminal event = %v, want EventTurnCompleted (QUM-462: InterruptDelivery must not arm pendingInterrupt against an idle runtime); seen=%v", ev.Type, seen)
+		t.Fatalf("terminal event = %v, want EventTurnCompleted (QUM-462: WakeForDelivery must not arm pendingInterrupt against an idle runtime); seen=%v", ev.Type, seen)
 	}
 }
 
-// TestInterruptDelivery_DoesNotArmPendingInterrupt_OnTurnEndBoundary pins
-// QUM-510: InterruptDelivery snapshots `turnRunning` under RLock, releases
-// the lock, then conditionally calls rt.Interrupt. If a turn ends BETWEEN
-// those two reads, rt.Interrupt's `else if !turnRunning` branch spuriously
-// arms `pendingInterrupt`. The wrapper's next StartTurn (the one supposed
-// to deliver the inbox prompt) consumes the flag and routes through
-// loop.Interrupt, classifying the inbox turn's terminal event as
-// EventInterrupted instead of EventTurnCompleted. The supervisor then
-// MarkDelivered's the message even though Claude never saw it.
-//
-// Determinism: a package-private test hook fires inside InterruptDelivery
-// between the snapshot and the decision. The hook closes the in-flight
-// turn's events channel (turn1) and waits for the wrapper's post-loop Lock
-// to flip turnRunning=false (StateIdle). After the hook returns,
-// InterruptDelivery proceeds to its `if started && turnRunning { rt.Interrupt }`
-// branch — using the *stale* snapshot (turnRunning=true), so rt.Interrupt
-// IS called, and inside rt.Interrupt the live turnRunning is now false, so
-// the buggy `else if !turnRunning { rt.pendingInterrupt = true }` branch
-// fires.
-//
-// Note: the inbox item is enqueued AFTER InterruptDelivery returns (rather
-// than before, as a naive reading of the bug ticket would suggest). This
-// is required for determinism: if the inbox item were already enqueued
-// when turn1 ends inside the hook, the loop goroutine would race
-// InterruptDelivery's call to rt.Interrupt to grab rt.mu and start turn2
-// before pendingInterrupt is armed. Enqueuing post-InterruptDelivery
-// guarantees the loop is parked on Queue.Signal() during the race window.
-// The bug semantics are preserved: pendingInterrupt is armed against an
-// idle, queue-empty runtime, then the next inbox arrival drives the
-// misclassified turn.
-func TestInterruptDelivery_DoesNotArmPendingInterrupt_OnTurnEndBoundary(t *testing.T) {
-	turn1Ch := make(chan *protocol.Message)
-	turn2Ch := make(chan *protocol.Message, 1)
-
-	var mock *mockUnifiedSession
-	mock = &mockUnifiedSession{
-		onStart: func(call int) (<-chan *protocol.Message, error) {
-			switch call {
-			case 0:
-				return turn1Ch, nil
-			case 1:
-				// Defer the result message into a goroutine so the
-				// wrapper's pending-interrupt path (if armed by the
-				// QUM-510 bug) has time to deliver loop.Interrupt to
-				// executeTurn's select BEFORE the terminal result is
-				// observed. We synchronize on mock.interruptCount():
-				// when bug-armed pendingInterrupt fires, wrapper calls
-				// loop.Interrupt → executeTurn picks thisTurn → calls
-				// Session.Interrupt → mock.interruptCount goes to 1.
-				// With the bug fixed, no Interrupt is ever called and
-				// the deadline elapses; we proceed to send the result
-				// and publish EventTurnCompleted.
-				go func() {
-					deadline := time.Now().Add(500 * time.Millisecond)
-					for time.Now().Before(deadline) {
-						if mock.interruptCount() >= 1 {
-							break
-						}
-						time.Sleep(2 * time.Millisecond)
-					}
-					turn2Ch <- makeResultMsg()
-					close(turn2Ch)
-				}()
-				return turn2Ch, nil
-			default:
-				ch := make(chan *protocol.Message)
-				close(ch)
-				return ch, nil
-			}
-		},
-	}
-	rt := New(RuntimeConfig{Name: "weave", Session: mock})
-
-	bus := rt.EventBus()
-	sub, unsub := bus.Subscribe(64)
-	t.Cleanup(unsub)
-
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = rt.Stop(stopCtx)
-	})
-
-	// Drive the runtime into StateTurnActive with turn1 in flight.
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "first"})
-	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
-		t.Fatalf("runtime did not reach StateTurnActive; state=%v", rt.State())
-	}
-
-	// Install the hook BEFORE calling InterruptDelivery. The hook fires
-	// after InterruptDelivery's RLock snapshot (which observes
-	// turnRunning=true) but before its rt.Interrupt decision. The hook
-	// ends turn1 and waits for the wrapper goroutine to flip
-	// turnRunning=false (StateIdle), so by the time rt.Interrupt runs,
-	// the buggy `else if !turnRunning` branch fires and arms
-	// pendingInterrupt.
-	t.Cleanup(func() { interruptDeliveryAfterSnapshotHook = nil })
-	interruptDeliveryAfterSnapshotHook = func() {
-		close(turn1Ch)
-		deadline := time.Now().Add(2 * time.Second)
-		for time.Now().Before(deadline) {
-			if rt.State() == StateIdle {
-				return
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
-	}
-
-	if err := rt.InterruptDelivery(context.Background()); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
-	}
-
-	// At this point, the buggy code has armed pendingInterrupt against an
-	// idle (queue-empty, loop parked on Signal) runtime. The fixed code
-	// has NOT armed it. Enqueue the inbox item to drive turn2; the loop
-	// will wake, drain the inbox, and the wrapper will or will not consume
-	// pendingInterrupt depending on which code path is in effect.
-	rt.Queue().Enqueue(QueueItem{Class: ClassInbox, Prompt: "[inbox] from ratz"})
-
-	// Wait for the inbox turn's EventTurnStarted to confirm turn2 dispatched.
-	_, _ = waitFor(t, sub, 3*time.Second, func(ev RuntimeEvent) bool {
-		return ev.Type == EventTurnStarted && ev.Prompt == "[inbox] from ratz"
-	})
-
-	// Now wait for turn2's terminal event. With the QUM-510 bug present,
-	// pendingInterrupt was armed; wrapper.StartTurn for turn2 consumed it
-	// and called loop.Interrupt → terminal event is EventInterrupted. With
-	// the bug fixed, turn2 completes normally → EventTurnCompleted.
-	ev, seen := waitFor(t, sub, 3*time.Second, func(ev RuntimeEvent) bool {
-		return ev.Type == EventTurnCompleted ||
-			ev.Type == EventInterrupted ||
-			ev.Type == EventTurnFailed
-	})
-	if ev.Type != EventTurnCompleted {
-		t.Fatalf("turn2 terminal event = %v, want EventTurnCompleted "+
-			"(QUM-510: InterruptDelivery's TOCTOU race between RLock snapshot "+
-			"and rt.Interrupt arms pendingInterrupt across the turn-end "+
-			"boundary, causing the inbox-delivery turn to be classified as "+
-			"EventInterrupted); seen=%v", ev.Type, seen)
-	}
-}
+// CHANGELOG (QUM-550 slice 4): the QUM-510 regression test
+// `TestInterruptDelivery_DoesNotArmPendingInterrupt_OnTurnEndBoundary` was
+// removed alongside the legacy `InterruptDelivery` / `interruptForDelivery`
+// runtime methods it exercised. That race lived inside the conditional
+// `if turnRunning` gate of `interruptForDelivery`. With the helper gone,
+// the race can't exist: `WakeForDelivery` never calls Session.Interrupt,
+// and `ForceInterruptForDelivery` always does — neither makes a
+// turn-running decision. The `TestWakeForDelivery_*` and
+// `TestForceInterruptForDelivery_*` tests (slice 1) pin the modern
+// behaviours.

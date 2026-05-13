@@ -464,7 +464,7 @@ func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 	}
 
 	// InterruptDelivery enqueue/no-enqueue contract is exercised by the
-	// dedicated TestUnifiedHandle_InterruptDelivery_* tests below (QUM-437);
+	// dedicated TestUnifiedHandle_WakeForDelivery_* tests below (QUM-437);
 	// this test no longer asserts that behavior.
 }
 
@@ -667,7 +667,7 @@ func TestActivitySubscriber_NamePropagatesToDroppedCounts(t *testing.T) {
 // single ClassInbox QueueItem; interrupt entries become a single
 // ClassInterrupt QueueItem; an empty pending dir enqueues nothing.
 
-func TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
+func TestUnifiedHandle_WakeForDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
 	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
@@ -680,8 +680,8 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
 		t.Fatalf("Enqueue async: %v", err)
 	}
 
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
@@ -709,7 +709,7 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
 	}
 }
 
-func TestUnifiedHandle_InterruptDelivery_EnqueuesRealInterruptPrompt(t *testing.T) {
+func TestUnifiedHandle_WakeForDelivery_EnqueuesRealInterruptPrompt(t *testing.T) {
 	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
@@ -722,8 +722,8 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealInterruptPrompt(t *testing.
 		t.Fatalf("Enqueue interrupt: %v", err)
 	}
 
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
@@ -751,12 +751,12 @@ func TestUnifiedHandle_InterruptDelivery_EnqueuesRealInterruptPrompt(t *testing.
 	}
 }
 
-func TestUnifiedHandle_InterruptDelivery_EmptyPendingNoEnqueue(t *testing.T) {
+func TestUnifiedHandle_WakeForDelivery_EmptyPendingNoEnqueue(t *testing.T) {
 	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	items := uh.rt.Queue().DrainAll()
@@ -765,7 +765,7 @@ func TestUnifiedHandle_InterruptDelivery_EmptyPendingNoEnqueue(t *testing.T) {
 	}
 }
 
-func TestUnifiedHandle_InterruptDelivery_SeparatesInterruptAndAsync(t *testing.T) {
+func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) {
 	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
@@ -784,8 +784,8 @@ func TestUnifiedHandle_InterruptDelivery_SeparatesInterruptAndAsync(t *testing.T
 		t.Fatalf("Enqueue interrupt: %v", err)
 	}
 
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
@@ -897,11 +897,11 @@ func buildStartedUnifiedHandleWithStartErrForTest(t *testing.T, caps backend.Cap
 	return uh, inner, sprawlRoot
 }
 
-// TestUnifiedHandle_InterruptDelivery_MarksPendingDelivered verifies that
+// TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered verifies that
 // after the runtime drains the queue items synthesized by InterruptDelivery,
 // the underlying pending/ entries are moved to delivered/ on disk. See
 // QUM-441 (closes the gap left by QUM-437).
-func TestUnifiedHandle_InterruptDelivery_MarksPendingDelivered(t *testing.T) {
+func TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered(t *testing.T) {
 	uh, _, sprawlRoot, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
@@ -924,8 +924,8 @@ func TestUnifiedHandle_InterruptDelivery_MarksPendingDelivered(t *testing.T) {
 	sub, unsub := uh.rt.EventBus().Subscribe(64)
 	defer unsub()
 
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// Wait for the queue to drain. The runtime kicks off a synthetic turn
@@ -963,11 +963,11 @@ func TestUnifiedHandle_InterruptDelivery_MarksPendingDelivered(t *testing.T) {
 	t.Errorf("after drain: pending=%d (want 0), delivered=%d (want 2)", len(pending), len(delivered))
 }
 
-// TestUnifiedHandle_InterruptDelivery_KeepsPendingOnStartTurnError verifies
+// TestUnifiedHandle_WakeForDelivery_KeepsPendingOnStartTurnError verifies
 // that if StartTurn fails, pending entries remain in pending/ — the
 // post-turn MarkDelivered callback must NOT fire on a failed turn. See
 // QUM-441.
-func TestUnifiedHandle_InterruptDelivery_KeepsPendingOnStartTurnError(t *testing.T) {
+func TestUnifiedHandle_WakeForDelivery_KeepsPendingOnStartTurnError(t *testing.T) {
 	startErr := errStartTurnFakeFailure
 	uh, _, sprawlRoot := buildStartedUnifiedHandleWithStartErrForTest(t, backend.Capabilities{}, startErr)
 	defer func() { _ = uh.Stop(context.Background()) }()
@@ -982,8 +982,8 @@ func TestUnifiedHandle_InterruptDelivery_KeepsPendingOnStartTurnError(t *testing
 	sub, unsub := uh.rt.EventBus().Subscribe(64)
 	defer unsub()
 
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// Wait for QueueDrained (the loop publishes it even after a failed turn,
@@ -1087,8 +1087,8 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Enqueue 1: %v", err)
 	}
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery 1: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery 1: %v", err)
 	}
 	prompt1 := waitTurnPrompt()
 	if !strings.Contains(prompt1, "unique-token-AAA") {
@@ -1119,8 +1119,8 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Enqueue 2: %v", err)
 	}
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery 2: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery 2: %v", err)
 	}
 	prompt2 := waitTurnPrompt()
 
@@ -1147,12 +1147,12 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	t.Errorf("after turn 2: pending=%d (want 0), delivered=%d (want 2)", len(p), len(d))
 }
 
-// TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody pins the
+// TestUnifiedHandle_WakeForDelivery_TruncatesOversizedBody pins the
 // supervisor-level truncation path: an async entry whose body exceeds the
 // per-message cap must surface in the synthesized inbox prompt as a
 // truncated payload citing the entry's ShortID for the read-hint. Guards
 // against the supervisor path bypassing inboxprompt's size guards.
-func TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody(t *testing.T) {
+func TestUnifiedHandle_WakeForDelivery_TruncatesOversizedBody(t *testing.T) {
 	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
@@ -1164,8 +1164,8 @@ func TestUnifiedHandle_InterruptDelivery_TruncatesOversizedBody(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	if err := uh.InterruptDelivery(); err != nil {
-		t.Fatalf("InterruptDelivery: %v", err)
+	if err := uh.WakeForDelivery(); err != nil {
+		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
 	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of

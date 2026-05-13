@@ -34,8 +34,6 @@ func (*NoopSupervisor) Status(context.Context) ([]supervisor.AgentInfo, error) {
 
 func (*NoopSupervisor) Delegate(context.Context, string, string) error { return nil }
 
-func (*NoopSupervisor) Message(context.Context, string, string, string) error { return nil }
-
 func (*NoopSupervisor) Merge(context.Context, string, string, string, bool) (*supervisor.MergeOutcome, error) {
 	return nil, nil
 }
@@ -56,7 +54,7 @@ func (*NoopSupervisor) PeekActivity(context.Context, string, int) ([]agentloop.A
 	return nil, nil
 }
 
-func (*NoopSupervisor) SendAsync(context.Context, string, string, string, string, []string) (*supervisor.SendAsyncResult, error) {
+func (*NoopSupervisor) SendMessage(context.Context, string, string, bool) (*supervisor.SendMessageResult, error) {
 	return nil, nil
 }
 
@@ -64,7 +62,7 @@ func (*NoopSupervisor) Peek(context.Context, string, int) (*supervisor.PeekResul
 	return nil, nil
 }
 
-func (*NoopSupervisor) ReportStatus(context.Context, string, string, string, string) (*supervisor.ReportStatusResult, error) {
+func (*NoopSupervisor) ReportStatus(context.Context, string, string, string) (*supervisor.ReportStatusResult, error) {
 	return nil, nil
 }
 
@@ -85,10 +83,6 @@ func (*NoopSupervisor) MessagesArchiveAll(context.Context, string) (*supervisor.
 }
 
 func (*NoopSupervisor) MessagesPeek(context.Context) (*supervisor.MessagesPeekResult, error) {
-	return nil, nil
-}
-
-func (*NoopSupervisor) SendInterrupt(context.Context, string, string, string, string) (*supervisor.SendInterruptResult, error) {
 	return nil, nil
 }
 

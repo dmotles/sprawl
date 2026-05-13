@@ -113,7 +113,7 @@ func runReport(deps *reportDeps, reportType, message string) error {
 		Enqueue:     deps.enqueue,
 		Now:         deps.nowFunc,
 	}
-	_, err := agentops.Report(opDeps, sprawlRoot, agentName, cliTypeToState(reportType), message, "")
+	_, err := agentops.Report(opDeps, sprawlRoot, agentName, cliTypeToState(reportType), message)
 	if err != nil {
 		// Messaging failure is surfaced by agentops.Report but state is
 		// already persisted in that case — match the old non-fatal behavior

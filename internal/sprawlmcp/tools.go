@@ -5,7 +5,7 @@ func toolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "spawn",
-			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via delegate or messages via send_async.",
+			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via delegate or messages via send_message.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -58,60 +58,19 @@ func toolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "send_async",
-			"description": "Queue an asynchronous message for a peer or child agent. The recipient reads it on its next yield (between turns). Does not interrupt. Persisted; survives crashes. Returns the queue message_id and queued_at.",
+			"name":        "send_message",
+			"description": "Canonical messaging tool (QUM-550). Sends `body` to agent `to`. interrupt=false (default): strictly cooperative — the message is enqueued at the recipient's queue and delivered at the next turn boundary; preserves the recipient's prompt cache. interrupt=true: jumps to the front of the recipient's queue AND requests preemption. Honored immediately when the recipient is streaming or thinking. If the recipient is currently awaiting a sprawl-side MCP tool response, the interrupt JSON is written to claude's stdin but its effect is not observable until that MCP call returns (QUM-549). For hard recovery from a wedged MCP call, use kill. Use interrupt=true sparingly for truly urgent context. The first line of `body` serves as the subject-equivalent in the recipient's inbox.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"to": map[string]any{
-						"type":        "string",
-						"description": "Target agent name",
-					},
-					"subject": map[string]any{
-						"type":        "string",
-						"description": "≤80 char human-readable label",
-					},
-					"body": map[string]any{
-						"type":        "string",
-						"description": "Markdown body (no length cap)",
-					},
-					"reply_to": map[string]any{
-						"type":        "string",
-						"description": "Optional message ID this replies to (threading)",
-					},
-					"tags": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "Optional labels, e.g. [\"status\", \"question\", \"fyi\"]",
+					"to":   map[string]any{"type": "string", "description": "Target agent name"},
+					"body": map[string]any{"type": "string", "description": "Markdown body. The first line is rendered as the subject-equivalent in inbox/banner displays."},
+					"interrupt": map[string]any{
+						"type":        "boolean",
+						"description": "Default false. true = jump the recipient's queue and request preemption. Best-effort during MCP-tool-waits: honored for streaming/thinking but observable only after the wait returns. Use `kill` to hard-recover a wedged MCP call. See QUM-549.",
 					},
 				},
-				"required": []string{"to", "subject", "body"},
-			},
-		},
-		{
-			"name":        "send_interrupt",
-			"description": "Interrupt a descendant agent mid-turn and inject this message as a user turn. Gated to parent→descendants only (§8.5). Use sparingly — this is the \"I forgot to tell you something important\" channel. Target resumes its previous work unless the body directs it to stop.",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"to": map[string]any{
-						"type":        "string",
-						"description": "Target descendant agent name",
-					},
-					"subject": map[string]any{
-						"type":        "string",
-						"description": "≤80 char human-readable label",
-					},
-					"body": map[string]any{
-						"type":        "string",
-						"description": "Markdown body of the interrupt message",
-					},
-					"resume_hint": map[string]any{
-						"type":        "string",
-						"description": "Optional free-form hint the target can quote back to itself after reading (e.g. \"you were implementing X\")",
-					},
-				},
-				"required": []string{"to", "subject", "body"},
+				"required": []string{"to", "body"},
 			},
 		},
 		{
@@ -134,7 +93,7 @@ func toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "report_status",
-			"description": "Report this agent's status to its parent. Canonical status channel (replaces ad-hoc `sprawl report`). Persists to agent state and delivers an async notification to the parent. Use at every meaningful step — not just at task end.",
+			"description": "Report this agent's status to its parent. Canonical status channel (replaces ad-hoc `sprawl report`). Persists state+summary to agent state on disk; the parent receives a strictly cooperative inbox notification (never preempts the parent). Use at every meaningful step — not just at task end.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -147,34 +106,8 @@ func toolDefinitions() []map[string]any {
 						"type":        "string",
 						"description": "≤160 char one-line summary (coder_report_task-compatible)",
 					},
-					"detail": map[string]any{
-						"type":        "string",
-						"description": "Optional markdown detail (no length cap)",
-					},
 				},
 				"required": []string{"state", "summary"},
-			},
-		},
-		{
-			"name":        "message",
-			"description": "DEPRECATED: use send_async. Kept as an alias that writes to the recipient's Maildir and harness queue, then returns a short acknowledgement.",
-			"inputSchema": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"agent_name": map[string]any{
-						"type":        "string",
-						"description": "Name of the target agent",
-					},
-					"subject": map[string]any{
-						"type":        "string",
-						"description": "Message subject",
-					},
-					"body": map[string]any{
-						"type":        "string",
-						"description": "Message body",
-					},
-				},
-				"required": []string{"agent_name", "subject", "body"},
 			},
 		},
 		{

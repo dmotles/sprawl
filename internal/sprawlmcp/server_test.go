@@ -34,23 +34,19 @@ type mockSupervisor struct {
 	spawnResult  *supervisor.AgentInfo
 	spawnErr     error
 	delegateErr  error
-	messageErr   error
 	mergeErr     error
 	retireErr    error
 	killErr      error
 	shutdownErr  error
 
 	// Recorded calls
-	spawnCalled    *supervisor.SpawnRequest
-	delegateAgent  string
-	delegateTask   string
-	messageAgent   string
-	messageSubject string
-	messageBody    string
-	mergeCaller    string
-	mergeAgent     string
-	mergeMessage   string
-	mergeNoVal     bool
+	spawnCalled   *supervisor.SpawnRequest
+	delegateAgent string
+	delegateTask  string
+	mergeCaller   string
+	mergeAgent    string
+	mergeMessage  string
+	mergeNoVal    bool
 	// mergeNoOp — QUM-511: when true, the mock should report a no-op
 	// merge outcome (zero new commits) to toolMerge so it can surface
 	// "Nothing to merge: <agent> has no new commits". Wired through once
@@ -68,14 +64,7 @@ type mockSupervisor struct {
 	handoffErr       error
 	handoffCh        chan struct{}
 
-	// SendAsync / Peek recording + seams
-	sendAsyncTo       string
-	sendAsyncSubject  string
-	sendAsyncBody     string
-	sendAsyncReplyTo  string
-	sendAsyncTags     []string
-	sendAsyncResult   *supervisor.SendAsyncResult
-	sendAsyncErr      error
+	// Peek recording + seams
 	peekAgent         string
 	peekTail          int
 	peekResult        *supervisor.PeekResult
@@ -89,17 +78,16 @@ type mockSupervisor struct {
 	reportStatusAgent   string
 	reportStatusState   string
 	reportStatusSummary string
-	reportStatusDetail  string
 	reportStatusResult  *supervisor.ReportStatusResult
 	reportStatusErr     error
 
-	// SendInterrupt recording + seams
-	sendInterruptTo         string
-	sendInterruptSubject    string
-	sendInterruptBody       string
-	sendInterruptResumeHint string
-	sendInterruptResult     *supervisor.SendInterruptResult
-	sendInterruptErr        error
+	// SendMessage recording + seams (QUM-550)
+	sendMessageCalls     int
+	sendMessageTo        string
+	sendMessageBody      string
+	sendMessageInterrupt bool
+	sendMessageResult    *supervisor.SendMessageResult
+	sendMessageErr       error
 
 	// Messages* recording + seams (QUM-316)
 	messagesListFilter       string
@@ -182,11 +170,10 @@ func (m *mockSupervisor) MessagesPeek(_ context.Context) (*supervisor.MessagesPe
 	return &supervisor.MessagesPeekResult{Agent: "weave"}, nil
 }
 
-func (m *mockSupervisor) ReportStatus(_ context.Context, agentName, reportState, summary, detail string) (*supervisor.ReportStatusResult, error) {
+func (m *mockSupervisor) ReportStatus(_ context.Context, agentName, reportState, summary string) (*supervisor.ReportStatusResult, error) {
 	m.reportStatusAgent = agentName
 	m.reportStatusState = reportState
 	m.reportStatusSummary = summary
-	m.reportStatusDetail = detail
 	if m.reportStatusErr != nil {
 		return nil, m.reportStatusErr
 	}
@@ -209,13 +196,6 @@ func (m *mockSupervisor) Delegate(_ context.Context, agentName, task string) err
 	m.delegateAgent = agentName
 	m.delegateTask = task
 	return m.delegateErr
-}
-
-func (m *mockSupervisor) Message(_ context.Context, agentName, subject, body string) error {
-	m.messageAgent = agentName
-	m.messageSubject = subject
-	m.messageBody = body
-	return m.messageErr
 }
 
 func (m *mockSupervisor) Merge(_ context.Context, caller, agentName, message string, noValidate bool) (*supervisor.MergeOutcome, error) {
@@ -275,21 +255,6 @@ func (m *mockSupervisor) PeekActivity(_ context.Context, agentName string, tail 
 	return m.peekActivityRes, m.peekActivityErr
 }
 
-func (m *mockSupervisor) SendAsync(_ context.Context, to, subject, body, replyTo string, tags []string) (*supervisor.SendAsyncResult, error) {
-	m.sendAsyncTo = to
-	m.sendAsyncSubject = subject
-	m.sendAsyncBody = body
-	m.sendAsyncReplyTo = replyTo
-	m.sendAsyncTags = tags
-	if m.sendAsyncErr != nil {
-		return nil, m.sendAsyncErr
-	}
-	if m.sendAsyncResult != nil {
-		return m.sendAsyncResult, nil
-	}
-	return &supervisor.SendAsyncResult{MessageID: "msg_stub", QueuedAt: "2026-04-21T00:00:00Z"}, nil
-}
-
 func (m *mockSupervisor) Peek(_ context.Context, agentName string, tail int) (*supervisor.PeekResult, error) {
 	m.peekAgent = agentName
 	m.peekTail = tail
@@ -302,18 +267,18 @@ func (m *mockSupervisor) Peek(_ context.Context, agentName string, tail int) (*s
 	return &supervisor.PeekResult{Status: "active"}, nil
 }
 
-func (m *mockSupervisor) SendInterrupt(_ context.Context, to, subject, body, resumeHint string) (*supervisor.SendInterruptResult, error) {
-	m.sendInterruptTo = to
-	m.sendInterruptSubject = subject
-	m.sendInterruptBody = body
-	m.sendInterruptResumeHint = resumeHint
-	if m.sendInterruptErr != nil {
-		return nil, m.sendInterruptErr
+func (m *mockSupervisor) SendMessage(_ context.Context, to, body string, interrupt bool) (*supervisor.SendMessageResult, error) {
+	m.sendMessageCalls++
+	m.sendMessageTo = to
+	m.sendMessageBody = body
+	m.sendMessageInterrupt = interrupt
+	if m.sendMessageErr != nil {
+		return nil, m.sendMessageErr
 	}
-	if m.sendInterruptResult != nil {
-		return m.sendInterruptResult, nil
+	if m.sendMessageResult != nil {
+		return m.sendMessageResult, nil
 	}
-	return &supervisor.SendInterruptResult{MessageID: "msg_int", DeliveredAt: "2026-04-21T00:00:00Z", Interrupted: true}, nil
+	return &supervisor.SendMessageResult{MessageID: "msg_sm_stub", QueuedAt: "2026-05-12T00:00:00Z", Interrupted: interrupt}, nil
 }
 
 // makeJSONRPCRequest builds a raw JSON-RPC request for testing.
@@ -398,11 +363,9 @@ func TestServer_ToolsList(t *testing.T) {
 		"spawn",
 		"status",
 		"delegate",
-		"send_async",
-		"send_interrupt",
+		"send_message",
 		"peek",
 		"report_status",
-		"message",
 		"merge",
 		"retire",
 		"kill",
@@ -571,44 +534,6 @@ func TestServer_ToolsCall_SprawlDelegate(t *testing.T) {
 	}
 	if mock.delegateTask != "implement feature Y" {
 		t.Errorf("delegate task = %q, want 'implement feature Y'", mock.delegateTask)
-	}
-
-	parsed := parseJSONRPCResponse(t, resp)
-	if _, ok := parsed["error"]; ok {
-		t.Errorf("unexpected error: %v", parsed["error"])
-	}
-}
-
-func TestServer_ToolsCall_SprawlMessage(t *testing.T) {
-	mock := &mockSupervisor{}
-	srv := New(mock)
-	ctx := context.Background()
-
-	msg := makeJSONRPCRequest(6, "tools/call", map[string]any{
-		"name": "message",
-		"arguments": map[string]any{
-			"agent_name": "ghost",
-			"subject":    "status update",
-			"body":       "work is done",
-		},
-	})
-	resp, err := srv.HandleMessage(ctx, msg)
-	if err != nil {
-		t.Fatalf("HandleMessage() error: %v", err)
-	}
-
-	// Deprecated alias now routes through SendAsync, so Message() should not be called.
-	if mock.messageAgent != "" {
-		t.Errorf("legacy Message() was called but alias must route through SendAsync; got agent %q", mock.messageAgent)
-	}
-	if mock.sendAsyncTo != "ghost" {
-		t.Errorf("sendAsync to = %q, want ghost", mock.sendAsyncTo)
-	}
-	if mock.sendAsyncSubject != "status update" {
-		t.Errorf("sendAsync subject = %q, want 'status update'", mock.sendAsyncSubject)
-	}
-	if mock.sendAsyncBody != "work is done" {
-		t.Errorf("sendAsync body = %q, want 'work is done'", mock.sendAsyncBody)
 	}
 
 	parsed := parseJSONRPCResponse(t, resp)
@@ -1062,190 +987,6 @@ func TestServer_UnknownMethod(t *testing.T) {
 	}
 }
 
-func TestServer_ToolsCall_SprawlSendAsync(t *testing.T) {
-	mock := &mockSupervisor{
-		sendAsyncResult: &supervisor.SendAsyncResult{
-			MessageID: "abc-123",
-			QueuedAt:  "2026-04-21T10:00:00Z",
-		},
-	}
-	srv := New(mock)
-	ctx := context.Background()
-
-	msg := makeJSONRPCRequest(30, "tools/call", map[string]any{
-		"name": "send_async",
-		"arguments": map[string]any{
-			"to":       "ghost",
-			"subject":  "status",
-			"body":     "all done",
-			"reply_to": "prev-msg",
-			"tags":     []string{"status", "fyi"},
-		},
-	})
-	resp, err := srv.HandleMessage(ctx, msg)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-
-	if mock.sendAsyncTo != "ghost" {
-		t.Errorf("to = %q, want ghost", mock.sendAsyncTo)
-	}
-	if mock.sendAsyncSubject != "status" {
-		t.Errorf("subject = %q", mock.sendAsyncSubject)
-	}
-	if mock.sendAsyncReplyTo != "prev-msg" {
-		t.Errorf("reply_to = %q", mock.sendAsyncReplyTo)
-	}
-	if len(mock.sendAsyncTags) != 2 || mock.sendAsyncTags[0] != "status" {
-		t.Errorf("tags = %v", mock.sendAsyncTags)
-	}
-
-	parsed := parseJSONRPCResponse(t, resp)
-	if _, ok := parsed["error"]; ok {
-		t.Fatalf("unexpected error: %v", parsed["error"])
-	}
-	result := parsed["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); isErr {
-		t.Fatalf("unexpected isError=true: %v", result)
-	}
-	content := result["content"].([]any)
-	text := content[0].(map[string]any)["text"].(string)
-
-	// Response body should contain the returned message_id and queued_at.
-	var body struct {
-		MessageID string `json:"message_id"`
-		QueuedAt  string `json:"queued_at"`
-	}
-	if err := json.Unmarshal([]byte(text), &body); err != nil {
-		t.Fatalf("unmarshal response text as JSON: %v (text=%q)", err, text)
-	}
-	if body.MessageID != "abc-123" {
-		t.Errorf("message_id = %q, want abc-123", body.MessageID)
-	}
-	if body.QueuedAt != "2026-04-21T10:00:00Z" {
-		t.Errorf("queued_at = %q", body.QueuedAt)
-	}
-}
-
-func TestServer_ToolsCall_SprawlSendAsync_SupervisorError(t *testing.T) {
-	mock := &mockSupervisor{sendAsyncErr: fmt.Errorf("agent not found")}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(31, "tools/call", map[string]any{
-		"name":      "send_async",
-		"arguments": map[string]any{"to": "x", "subject": "s", "body": "b"},
-	})
-	resp, _ := srv.HandleMessage(context.Background(), msg)
-
-	parsed := parseJSONRPCResponse(t, resp)
-	result, ok := parsed["result"].(map[string]any)
-	if !ok {
-		t.Fatal("expected MCP content result")
-	}
-	if isErr, _ := result["isError"].(bool); !isErr {
-		t.Error("expected isError=true")
-	}
-}
-
-func TestServer_ToolsCall_SprawlSendInterrupt(t *testing.T) {
-	mock := &mockSupervisor{
-		sendInterruptResult: &supervisor.SendInterruptResult{
-			MessageID:   "int-42",
-			DeliveredAt: "2026-04-21T11:00:00Z",
-			Interrupted: true,
-		},
-	}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(40, "tools/call", map[string]any{
-		"name": "send_interrupt",
-		"arguments": map[string]any{
-			"to":          "ghost",
-			"subject":     "urgent",
-			"body":        "stop what you are doing",
-			"resume_hint": "you were implementing X",
-		},
-	})
-	resp, err := srv.HandleMessage(context.Background(), msg)
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-
-	if mock.sendInterruptTo != "ghost" {
-		t.Errorf("to = %q, want ghost", mock.sendInterruptTo)
-	}
-	if mock.sendInterruptSubject != "urgent" {
-		t.Errorf("subject = %q", mock.sendInterruptSubject)
-	}
-	if mock.sendInterruptBody != "stop what you are doing" {
-		t.Errorf("body = %q", mock.sendInterruptBody)
-	}
-	if mock.sendInterruptResumeHint != "you were implementing X" {
-		t.Errorf("resume_hint = %q", mock.sendInterruptResumeHint)
-	}
-
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); isErr {
-		t.Fatalf("unexpected isError: %v", result)
-	}
-	content := result["content"].([]any)
-	text := content[0].(map[string]any)["text"].(string)
-
-	var body supervisor.SendInterruptResult
-	if err := json.Unmarshal([]byte(text), &body); err != nil {
-		t.Fatalf("unmarshal: %v (text=%q)", err, text)
-	}
-	if body.MessageID != "int-42" {
-		t.Errorf("message_id = %q, want int-42", body.MessageID)
-	}
-	if !body.Interrupted {
-		t.Error("interrupted = false, want true")
-	}
-}
-
-func TestServer_ToolsCall_SprawlSendInterrupt_SupervisorError(t *testing.T) {
-	mock := &mockSupervisor{sendInterruptErr: fmt.Errorf("not an ancestor")}
-	srv := New(mock)
-
-	msg := makeJSONRPCRequest(41, "tools/call", map[string]any{
-		"name": "send_interrupt",
-		"arguments": map[string]any{
-			"to":      "ghost",
-			"subject": "s",
-			"body":    "b",
-		},
-	})
-	resp, _ := srv.HandleMessage(context.Background(), msg)
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	if isErr, _ := result["isError"].(bool); !isErr {
-		t.Error("expected isError=true for ancestor-gate rejection")
-	}
-}
-
-func TestServer_ToolsList_IncludesSendInterrupt(t *testing.T) {
-	srv := New(&mockSupervisor{})
-	resp, err := srv.HandleMessage(context.Background(), makeJSONRPCRequest(42, "tools/list", nil))
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-	parsed := parseJSONRPCResponse(t, resp)
-	result := parsed["result"].(map[string]any)
-	tools := result["tools"].([]any)
-	found := false
-	for _, tAny := range tools {
-		tm := tAny.(map[string]any)
-		if tm["name"] == "send_interrupt" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("send_interrupt missing from tools/list")
-	}
-}
-
 func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 	mock := &mockSupervisor{
 		peekResult: &supervisor.PeekResult{
@@ -1321,7 +1062,6 @@ func TestServer_ToolsCall_SprawlReportStatus(t *testing.T) {
 		"arguments": map[string]any{
 			"state":   "working",
 			"summary": "halfway done",
-			"detail":  "wrote 3 tests",
 		},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
@@ -1334,9 +1074,6 @@ func TestServer_ToolsCall_SprawlReportStatus(t *testing.T) {
 	}
 	if mock.reportStatusSummary != "halfway done" {
 		t.Errorf("summary = %q", mock.reportStatusSummary)
-	}
-	if mock.reportStatusDetail != "wrote 3 tests" {
-		t.Errorf("detail = %q", mock.reportStatusDetail)
 	}
 	// MCP tool passes empty agentName — supervisor uses its own callerName.
 	if mock.reportStatusAgent != "" {
@@ -1398,6 +1135,70 @@ func TestServer_ToolsList_IncludesReportStatus(t *testing.T) {
 	}
 	if !found {
 		t.Error("report_status not in tools/list")
+	}
+}
+
+// QUM-550 slice 2: report_status tool input schema must NOT advertise a
+// `detail` property. The field is removed from the surface, and only
+// `state` + `summary` are required (and accepted).
+func TestServer_ToolsList_ReportStatus_NoDetailField(t *testing.T) {
+	srv := New(&mockSupervisor{})
+	resp, err := srv.HandleMessage(context.Background(), makeJSONRPCRequest(137, "tools/list", nil))
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	tools := result["tools"].([]any)
+
+	var entry map[string]any
+	for _, tool := range tools {
+		m := tool.(map[string]any)
+		if m["name"] == "report_status" {
+			entry = m
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatal("report_status not in tools/list")
+	}
+	schema, ok := entry["inputSchema"].(map[string]any)
+	if !ok {
+		t.Fatalf("inputSchema missing or wrong type: %T", entry["inputSchema"])
+	}
+	props, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties missing or wrong type: %T", schema["properties"])
+	}
+	if _, exists := props["detail"]; exists {
+		t.Errorf("report_status inputSchema.properties.detail must be absent (QUM-550 slice 2)")
+	}
+	if _, exists := props["state"]; !exists {
+		t.Errorf("report_status inputSchema.properties.state missing")
+	}
+	if _, exists := props["summary"]; !exists {
+		t.Errorf("report_status inputSchema.properties.summary missing")
+	}
+
+	required, ok := schema["required"].([]any)
+	if !ok {
+		// Some encoders preserve []string — accept either.
+		if reqS, okS := schema["required"].([]string); okS {
+			required = make([]any, 0, len(reqS))
+			for _, s := range reqS {
+				required = append(required, s)
+			}
+		} else {
+			t.Fatalf("required missing or wrong type: %T", schema["required"])
+		}
+	}
+	if len(required) != 2 {
+		t.Errorf("required len = %d, want 2 (state, summary)", len(required))
+	}
+	for _, r := range required {
+		if r == "detail" {
+			t.Errorf("report_status inputSchema.required must not contain \"detail\"")
+		}
 	}
 }
 
