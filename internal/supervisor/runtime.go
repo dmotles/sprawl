@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
@@ -134,6 +135,15 @@ type AgentRuntime struct {
 
 	nextSubscriberID int
 	subscribers      map[int]chan RuntimeEvent
+
+	stopWaitTimedOut atomic.Bool
+}
+
+// StopWaitTimedOut reports whether the most recent Stop on this runtime's
+// handle saw a bounded session.Wait() timeout. Returns false if the handle
+// does not surface this signal or Stop has not been called. (QUM-546)
+func (r *AgentRuntime) StopWaitTimedOut() bool {
+	return r.stopWaitTimedOut.Load()
 }
 
 // NewAgentRuntime constructs a runtime snapshot from persisted agent metadata.
@@ -375,8 +385,15 @@ func (r *AgentRuntime) Stop(ctx context.Context) error {
 	if handle == nil {
 		return nil
 	}
-	if err := handle.Stop(ctx); err != nil {
-		return err
+	stopErr := handle.Stop(ctx)
+	// Capture the bounded-Wait timeout flag (QUM-542/QUM-546) even when Stop
+	// returns an error, so the retire.runtime-stop-done / kill.runtime-stop-done
+	// checkpoints reflect the actual handle state.
+	if probe, ok := handle.(interface{ StopWaitTimedOut() bool }); ok {
+		r.stopWaitTimedOut.Store(probe.StopWaitTimedOut())
+	}
+	if stopErr != nil {
+		return stopErr
 	}
 
 	emitStopped := false

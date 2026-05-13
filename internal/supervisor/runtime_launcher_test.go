@@ -511,6 +511,82 @@ func TestUnifiedHandle_StopKillsSession(t *testing.T) {
 	}
 }
 
+// TestUnifiedHandle_Stop_BoundsWedgedStopActivity is a QUM-547 regression
+// guard: if the activity subscriber goroutine wedges (e.g. parked inside
+// obs.OnMessage writing to a stuck NFS-backed activityFile), unifiedHandle.Stop
+// must NOT hang on `<-doneCh` inside stopActivity. The bounded join logs and
+// abandons after stopActivityTimeout.
+func TestUnifiedHandle_Stop_BoundsWedgedStopActivity(t *testing.T) {
+	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+
+	block := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	uh.stopActivity = func() {
+		<-block
+	}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- uh.Stop(context.Background()) }()
+
+	bound := 3 * stopActivityTimeout
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Stop returned err = %v, want nil", err)
+		}
+		if elapsed := time.Since(start); elapsed > bound {
+			t.Errorf("Stop returned in %v, want <= %v (stopActivity wedge must be bounded)", elapsed, bound)
+		}
+	case <-time.After(bound):
+		t.Fatalf("Stop wedged > %v on wedged stopActivity (QUM-547: join is unbounded)", bound)
+	}
+}
+
+// TestUnifiedHandle_Stop_BoundsWedgedActivityClose is the activityFile.Close()
+// counterpart: if the underlying close() syscall hangs (stuck FD / NFS),
+// unifiedHandle.Stop must NOT hang. The activityClose seam lets the test
+// inject a wedged closer.
+func TestUnifiedHandle_Stop_BoundsWedgedActivityClose(t *testing.T) {
+	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+
+	block := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	uh.activityClose = func() error {
+		<-block
+		return nil
+	}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- uh.Stop(context.Background()) }()
+
+	bound := 3 * activityCloseTimeout
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Stop returned err = %v, want nil", err)
+		}
+		if elapsed := time.Since(start); elapsed > bound {
+			t.Errorf("Stop returned in %v, want <= %v (activityClose wedge must be bounded)", elapsed, bound)
+		}
+	case <-time.After(bound):
+		t.Fatalf("Stop wedged > %v on wedged activityClose (QUM-547: close is unbounded)", bound)
+	}
+}
+
 func TestUnifiedHandle_StopClosesDone(t *testing.T) {
 	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
@@ -602,6 +678,65 @@ func TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges(t *testing.T) {
 	case <-uh.Done():
 	case <-time.After(2 * time.Second):
 		t.Fatal("uh.Done() did not close after Stop returned")
+	}
+}
+
+// TestUnifiedHandle_StopWaitTimedOut_FalseOnCleanStop is the QUM-546 happy-path
+// guard: when session.Wait returns promptly, the bounded-wait timeout did NOT
+// fire and unifiedHandle.StopWaitTimedOut must report false. This flag flows
+// up through AgentRuntime.StopWaitTimedOut into Real.Retire/Real.Kill's
+// `runtime-stop-done` checkpoint emission as the `wait_timeout` kv field, so
+// false-on-clean is the load-bearing default that lets call-log readers
+// distinguish "stop completed" from "stop abandoned".
+func TestUnifiedHandle_StopWaitTimedOut_FalseOnCleanStop(t *testing.T) {
+	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+
+	if err := uh.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := uh.StopWaitTimedOut(); got {
+		t.Errorf("StopWaitTimedOut() = true, want false after clean Stop")
+	}
+}
+
+// TestUnifiedHandle_StopWaitTimedOut_TrueOnTimeout is the QUM-546 sad-path
+// guard: when the post-SIGKILL session.Wait wedges beyond
+// unifiedHandleStopWaitTimeout, the bounded-wait timer fires and the handle
+// must record that fact so the `wait_timeout` kv field on the
+// `retire.runtime-stop-done` / `kill.runtime-stop-done` checkpoint is true.
+// Mirrors TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges (QUM-542) for
+// the timeout-detection seam.
+func TestUnifiedHandle_StopWaitTimedOut_TrueOnTimeout(t *testing.T) {
+	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+
+	block := make(chan struct{})
+	fakeSession.mu.Lock()
+	fakeSession.waitBlock = block
+	fakeSession.mu.Unlock()
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- uh.Stop(context.Background())
+	}()
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop returned error: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("unifiedHandle.Stop wedged on session.Wait (QUM-542 bounded-wait failure)")
+	}
+
+	if got := uh.StopWaitTimedOut(); !got {
+		t.Errorf("StopWaitTimedOut() = false, want true after wedged session.Wait")
 	}
 }
 

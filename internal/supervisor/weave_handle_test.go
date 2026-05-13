@@ -227,3 +227,81 @@ func TestWeaveRuntimeHandle_WakeForDelivery_TerminalEventIsCompleted_NotInterrup
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// QUM-547: bounded-teardown regression guards for WeaveRuntimeHandle.Stop
+// ---------------------------------------------------------------------------
+//
+// stopActivity (the join on the activity-subscriber goroutine) and
+// activityFile.Close() are both potentially-unbounded blocking calls on Stop.
+// If either wedges (e.g. observer parked in OnMessage writing to a stuck NFS
+// activityFile, or close() hanging on a stuck FD), Stop must bound the wait,
+// log, and proceed — not hang forever (which would deadlock weave.lock during
+// the QUM-329 handoff cycle).
+
+func TestWeaveRuntimeHandle_Stop_BoundsWedgedStopActivity(t *testing.T) {
+	h, _ := buildStartedWeaveRuntimeHandleForTest(t)
+
+	block := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	h.stopActivity = func() {
+		<-block
+	}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- h.Stop(context.Background()) }()
+
+	bound := 3 * stopActivityTimeout
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Stop returned err = %v, want nil", err)
+		}
+		if elapsed := time.Since(start); elapsed > bound {
+			t.Errorf("Stop returned in %v, want <= %v (stopActivity wedge must be bounded)", elapsed, bound)
+		}
+	case <-time.After(bound):
+		t.Fatalf("Stop wedged > %v on wedged stopActivity (QUM-547: join is unbounded)", bound)
+	}
+}
+
+func TestWeaveRuntimeHandle_Stop_BoundsWedgedActivityClose(t *testing.T) {
+	h, _ := buildStartedWeaveRuntimeHandleForTest(t)
+
+	block := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	})
+	h.activityClose = func() error {
+		<-block
+		return nil
+	}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- h.Stop(context.Background()) }()
+
+	bound := 3 * activityCloseTimeout
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Stop returned err = %v, want nil", err)
+		}
+		if elapsed := time.Since(start); elapsed > bound {
+			t.Errorf("Stop returned in %v, want <= %v (activityClose wedge must be bounded)", elapsed, bound)
+		}
+	case <-time.After(bound):
+		t.Fatalf("Stop wedged > %v on wedged activityClose (QUM-547: close is unbounded)", bound)
+	}
+}

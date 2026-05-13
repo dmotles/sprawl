@@ -29,14 +29,15 @@ import (
 // UnifiedRuntime. Mirrors *unifiedHandle (children) but is constructed from
 // an externally-owned runtime + session.
 type WeaveRuntimeHandle struct {
-	rt           *runtimepkg.UnifiedRuntime
-	session      backendpkg.Session
-	capabilities backendpkg.Capabilities
-	sessionID    string
-	activityFile *os.File
-	stopActivity func()
-	sprawlRoot   string
-	name         string
+	rt            *runtimepkg.UnifiedRuntime
+	session       backendpkg.Session
+	capabilities  backendpkg.Capabilities
+	sessionID     string
+	activityFile  *os.File
+	activityClose func() error
+	stopActivity  func()
+	sprawlRoot    string
+	name          string
 
 	stopOnce sync.Once
 	stopErr  error
@@ -128,21 +129,25 @@ func (h *WeaveRuntimeHandle) Stop(ctx context.Context) error {
 	h.stopOnce.Do(func() {
 		err := h.rt.Stop(ctx)
 		if h.stopActivity != nil {
-			h.stopActivity()
+			joinWithTimeout(h.stopActivity, stopActivityTimeout,
+				"stopActivity abandoned — likely wedged activity subscriber goroutine (QUM-547)",
+				"handle", "WeaveRuntimeHandle", "agent", h.name)
 		}
-		if h.session != nil {
-			_ = h.session.Close()
-			_ = h.session.Kill()
-			// Do NOT call session.Wait here. Legacy bridge.Close (which this
-			// path replaces) only invokes Close+Kill — it relies on the OS
-			// or a later Wait elsewhere to reap. Calling Wait synchronously
-			// here makes /proc/<old-pid>/stat disappear immediately, which
-			// breaks scripts/test-handoff-e2e.sh's parent-PID fallback path
-			// for assertion #4. Matching the legacy semantics keeps the
-			// subprocess as a zombie briefly (reaped when sprawl exits).
-		}
-		if h.activityFile != nil {
-			_ = h.activityFile.Close()
+		// QUM-545: shared Close → Kill teardown helper. waitTimeout=0 means
+		// "skip Wait" — see teardown_session.go: legacy bridge.Close (which
+		// this path replaces) only invokes Close+Kill, relying on the OS to
+		// reap later. Calling Wait synchronously here makes /proc/<old-pid>/stat
+		// disappear immediately, breaking scripts/test-handoff-e2e.sh's
+		// parent-PID fallback path (assertion #4).
+		teardownSession(h.session, 0)
+		if h.activityFile != nil || h.activityClose != nil {
+			closer := h.activityClose
+			if closer == nil {
+				closer = h.activityFile.Close
+			}
+			joinWithTimeout(func() { _ = closer() }, activityCloseTimeout,
+				"activityFile.Close abandoned — likely stuck FD on activity.ndjson (QUM-547)",
+				"handle", "WeaveRuntimeHandle", "agent", h.name)
 		}
 		if err != nil && !isExitError(err) {
 			h.stopErr = err
