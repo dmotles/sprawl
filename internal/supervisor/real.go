@@ -426,8 +426,20 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 		}
 		stopCtx, cancel := withRuntimeStopTimeout(ctx)
 		defer cancel()
-		if err := runtime.Stop(stopCtx); err != nil {
-			return err
+		cp := retireDeps.Checkpoint
+		if cp != nil {
+			cp("retire.runtime-stop-start", "agent_name", agentName)
+		}
+		stopStart := time.Now()
+		stopErr := runtime.Stop(stopCtx)
+		if cp != nil {
+			cp("retire.runtime-stop-done",
+				"agent_name", agentName,
+				"duration_ms", time.Since(stopStart).Milliseconds(),
+				"wait_timeout", runtime.StopWaitTimedOut())
+		}
+		if stopErr != nil {
+			return stopErr
 		}
 		if err := r.retireFn(ctx, retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 			return err
@@ -477,8 +489,20 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 	if runtime, ok := r.startedRuntime(agentName); ok {
 		stopCtx, cancel := withRuntimeStopTimeout(ctx)
 		defer cancel()
-		if err := runtime.Stop(stopCtx); err != nil {
-			return err
+		cp := r.composeCheckpoint(calllog.CallID(ctx))
+		if cp != nil {
+			cp("kill.runtime-stop-start", "agent_name", agentName)
+		}
+		stopStart := time.Now()
+		stopErr := runtime.Stop(stopCtx)
+		if cp != nil {
+			cp("kill.runtime-stop-done",
+				"agent_name", agentName,
+				"duration_ms", time.Since(stopStart).Milliseconds(),
+				"wait_timeout", runtime.StopWaitTimedOut())
+		}
+		if stopErr != nil {
+			return stopErr
 		}
 		updatedState, err := state.LoadAgent(r.sprawlRoot, agentName)
 		if err != nil {

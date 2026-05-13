@@ -21,6 +21,11 @@ type runtimeTestSession struct {
 	forceInterruptDeliveryCalls int
 	stopCalls                   int
 	doneCh                      chan struct{}
+	// stopWaitTimedOut, when set, is what this handle reports from its
+	// StopWaitTimedOut() method (QUM-546). AgentRuntime captures the value
+	// during Stop and exposes it via AgentRuntime.StopWaitTimedOut so
+	// Real.Retire/Real.Kill can stamp it on the runtime-stop-done checkpoint.
+	stopWaitTimedOut bool
 }
 
 func (s *runtimeTestSession) Initialize(context.Context, backendpkg.InitSpec) error { return nil }
@@ -61,6 +66,12 @@ func (s *runtimeTestSession) LastTurnError() error                  { return io.
 func (s *runtimeTestSession) SessionID() string                     { return s.sessionID }
 func (s *runtimeTestSession) Capabilities() backendpkg.Capabilities { return s.caps }
 func (s *runtimeTestSession) Done() <-chan struct{}                 { return s.doneCh }
+
+// StopWaitTimedOut reports whether the bounded post-Kill session.Wait timed
+// out during the most recent Stop. AgentRuntime probes this via an interface
+// assertion (QUM-546) so older handle implementations that lack the method
+// safely report false.
+func (s *runtimeTestSession) StopWaitTimedOut() bool { return s.stopWaitTimedOut }
 
 type runtimeTestStarter struct {
 	mu      sync.Mutex
@@ -382,6 +393,54 @@ func TestAgentRuntime_AttachHandle_WatchesHandleDone_TransitionsToStopped(t *tes
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+}
+
+// TestAgentRuntime_StopWaitTimedOut_PropagatesFromHandle is the QUM-546 guard
+// that Real.Retire's `retire.runtime-stop-done` checkpoint can correctly
+// stamp `wait_timeout=true` when the underlying handle's bounded-wait fired.
+// Because AgentRuntime.Stop clears the handle reference on success, the
+// runtime must capture StopWaitTimedOut() during Stop so it remains
+// observable to the caller post-Stop.
+func TestAgentRuntime_StopWaitTimedOut_PropagatesFromHandle(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID:        "sess-alice",
+		caps:             backendpkg.Capabilities{SupportsInterrupt: true},
+		stopWaitTimedOut: true,
+	}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+	})
+	rt.AttachHandle(session)
+
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := rt.StopWaitTimedOut(); !got {
+		t.Errorf("StopWaitTimedOut() = false, want true (handle reported timeout)")
+	}
+}
+
+// TestAgentRuntime_StopWaitTimedOut_DefaultFalse asserts the happy-path
+// default: a handle that did not time out yields false. This is what the
+// checkpoint emitter stamps as `wait_timeout=false` in the common case.
+func TestAgentRuntime_StopWaitTimedOut_DefaultFalse(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
+	}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+	})
+	rt.AttachHandle(session)
+
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := rt.StopWaitTimedOut(); got {
+		t.Errorf("StopWaitTimedOut() = true, want false (handle reported clean stop)")
 	}
 }
 

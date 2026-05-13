@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
@@ -224,18 +225,29 @@ func runActivitySubscriber(bus *runtimepkg.EventBus, obs interface {
 }
 
 type unifiedHandle struct {
-	rt           *runtimepkg.UnifiedRuntime
-	session      backendpkg.Session
-	capabilities backendpkg.Capabilities
-	sessionID    string
-	activityFile *os.File
-	stopActivity func()
-	sprawlRoot   string
-	name         string
+	rt            *runtimepkg.UnifiedRuntime
+	session       backendpkg.Session
+	capabilities  backendpkg.Capabilities
+	sessionID     string
+	activityFile  *os.File
+	activityClose func() error
+	stopActivity  func()
+	sprawlRoot    string
+	name          string
 
 	tasksMu  sync.Mutex
 	stopOnce sync.Once
 	stopErr  error
+
+	stopWaitTimedOut atomic.Bool
+}
+
+// StopWaitTimedOut reports whether the bounded session.Wait() inside Stop hit
+// its timeout (QUM-542). Used by Real.Retire/Kill to surface the fact via the
+// retire.runtime-stop-done / kill.runtime-stop-done MCP-call checkpoints
+// (QUM-546). Safe to call concurrently and after Stop returns.
+func (h *unifiedHandle) StopWaitTimedOut() bool {
+	return h.stopWaitTimedOut.Load()
 }
 
 // feedTasks drains queued tasks from on-disk state into the runtime queue,
@@ -357,40 +369,27 @@ func (h *unifiedHandle) Stop(ctx context.Context) error {
 	h.stopOnce.Do(func() {
 		err := h.rt.Stop(ctx)
 		if h.stopActivity != nil {
-			h.stopActivity()
+			joinWithTimeout(h.stopActivity, stopActivityTimeout,
+				"stopActivity abandoned — likely wedged activity subscriber goroutine (QUM-547)",
+				"handle", "unifiedHandle", "agent", h.name)
 		}
-		if h.session != nil {
-			// QUM-543: must SIGKILL the backend subprocess, not just close
-			// stdin and Wait. claude mid-turn ignores stdin EOF, so without
-			// Kill the process survives while handle.Stop returns success —
-			// making mcp__sprawl__kill lie to its caller. Order: Close (EOF
-			// stdin) → Kill (SIGKILL) → bounded Wait (reap). Mirrors the
-			// long-standing pattern in WeaveRuntimeHandle.Stop (weave_handle.go).
-			//
-			// QUM-542: Wait is bounded. A stuck Claude Code Task subshell
-			// holding the parent's stdout pipe FD open after SIGKILL can make
-			// exec.Cmd.Wait block on pipe-drain for many minutes, which wedges
-			// retire (Real.Retire → runtime.Stop → handle.Stop → session.Wait)
-			// and prevents the `retire.preflight` checkpoint from emitting.
-			// We run Wait in a goroutine and abandon it on timeout. SIGKILL
-			// already landed; the OS will eventually reap the zombie.
-			_ = h.session.Close()
-			_ = h.session.Kill()
-			waitDone := make(chan struct{})
-			go func() {
-				_ = h.session.Wait()
-				close(waitDone)
-			}()
-			select {
-			case <-waitDone:
-			case <-time.After(unifiedHandleStopWaitTimeout):
-				slog.Warn("unified-handle: session.Wait abandoned after SIGKILL — likely stuck child pipe FD (QUM-542)",
-					"session_id", h.sessionID,
-					"timeout", unifiedHandleStopWaitTimeout)
+		// QUM-545: shared Close → Kill → bounded Wait helper. See
+		// teardown_session.go for the canonical pattern + QUM-542/QUM-543
+		// rationale (also mirrored in WeaveRuntimeHandle.Stop).
+		// QUM-546: capture the bounded-Wait timeout signal so Real.Retire/Kill
+		// can surface it via the retire.runtime-stop-done / kill.runtime-stop-done
+		// MCP-call checkpoints.
+		if teardownSession(h.session, unifiedHandleStopWaitTimeout, "handle", "unifiedHandle", "session_id", h.sessionID) {
+			h.stopWaitTimedOut.Store(true)
+		}
+		if h.activityFile != nil || h.activityClose != nil {
+			closer := h.activityClose
+			if closer == nil {
+				closer = h.activityFile.Close
 			}
-		}
-		if h.activityFile != nil {
-			_ = h.activityFile.Close()
+			joinWithTimeout(func() { _ = closer() }, activityCloseTimeout,
+				"activityFile.Close abandoned — likely stuck FD on activity.ndjson (QUM-547)",
+				"handle", "unifiedHandle", "agent", h.name)
 		}
 		if err != nil && !isExitError(err) {
 			h.stopErr = err

@@ -1,7 +1,9 @@
 package supervisor
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +15,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -941,5 +944,267 @@ func TestRealRetire_CascadeFailureRemovesDescendantsAlreadyRetiredOnDisk(t *test
 		if _, ok := r.runtimeRegistry.Get(name); ok {
 			t.Fatalf("runtime %q should be removed after it retires on disk during cascade failure", name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QUM-546: retire/kill runtime-stop checkpoints
+// ---------------------------------------------------------------------------
+//
+// Real.Retire and Real.Kill bracket the runtime.Stop call with
+// `<op>.runtime-stop-{start,done}` checkpoints so operators reading the
+// JSONL call log can see exactly how long Stop took, whether the bounded
+// session.Wait fired (`wait_timeout`), and where the call sat between Stop
+// and the existing `retire.preflight` emission inside agentops.Retire.
+
+// checkpointRecord captures the fields the QUM-546 assertions care about
+// from one row of mcp-calls.jsonl.
+type checkpointRecord struct {
+	Phase  string         `json:"phase"`
+	Step   string         `json:"step"`
+	CallID string         `json:"call_id"`
+	KV     map[string]any `json:"kv"`
+}
+
+// readCheckpointSteps returns, in JSONL order, the `step` of every checkpoint
+// record in mcp-calls.jsonl whose call_id matches wantCallID. Tests use this
+// to assert ordering of the new runtime-stop checkpoints relative to the
+// pre-existing retire.preflight / retire.checkpoint-saved /
+// retire.worktree-removed emissions inside agentops.Retire.
+func readCheckpointSteps(t *testing.T, sprawlRoot, wantCallID string) []checkpointRecord {
+	t.Helper()
+	path := filepath.Join(sprawlRoot, ".sprawl", "logs", "mcp-calls.jsonl")
+	f, err := os.Open(path) //nolint:gosec // test-controlled path under t.TempDir()
+	if err != nil {
+		t.Fatalf("open mcp-calls.jsonl: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	var out []checkpointRecord
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		var rec checkpointRecord
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			t.Fatalf("unmarshal jsonl line %q: %v", scanner.Text(), err)
+		}
+		if rec.Phase != "checkpoint" {
+			continue
+		}
+		if wantCallID != "" && rec.CallID != wantCallID {
+			continue
+		}
+		out = append(out, rec)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan jsonl: %v", err)
+	}
+	return out
+}
+
+// findStep returns the first checkpointRecord whose Step equals step, or nil.
+func findStep(recs []checkpointRecord, step string) *checkpointRecord {
+	for i := range recs {
+		if recs[i].Step == step {
+			return &recs[i]
+		}
+	}
+	return nil
+}
+
+func TestRealRetire_EmitsRuntimeStopCheckpoints(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	agentState := testAgentState("alice")
+	agentState.Worktree = ""
+	agentState.Branch = ""
+	saveTestAgent(t, tmpDir, agentState)
+
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+	}
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+
+	logger, err := calllog.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("calllog.Open: %v", err)
+	}
+	r.SetCallLogger(logger)
+
+	// Make retireFn emit the three existing checkpoints via deps.Checkpoint
+	// so we can assert ordering relative to the new runtime-stop pair.
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+		if deps.Checkpoint != nil {
+			deps.Checkpoint("retire.preflight", "agent_name", name)
+			deps.Checkpoint("retire.checkpoint-saved", "agent_name", name)
+			deps.Checkpoint("retire.worktree-removed", "agent_name", name)
+		}
+		return state.DeleteAgent(tmpDir, name)
+	}
+
+	ctx := calllog.WithCallID(context.Background(), "test-retire-1")
+	if err := r.Retire(ctx, "", "alice", false, false, false, false); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger.Close: %v", err)
+	}
+
+	recs := readCheckpointSteps(t, tmpDir, "test-retire-1")
+	wantOrder := []string{
+		"retire.runtime-stop-start",
+		"retire.runtime-stop-done",
+		"retire.preflight",
+		"retire.checkpoint-saved",
+		"retire.worktree-removed",
+	}
+	gotSteps := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		gotSteps = append(gotSteps, rec.Step)
+	}
+	for _, want := range wantOrder {
+		if findStep(recs, want) == nil {
+			t.Fatalf("missing checkpoint step %q; got steps in order: %v", want, gotSteps)
+		}
+	}
+	// Strict ordering.
+	idx := func(step string) int {
+		for i, s := range gotSteps {
+			if s == step {
+				return i
+			}
+		}
+		return -1
+	}
+	for i := 0; i < len(wantOrder)-1; i++ {
+		if idx(wantOrder[i]) >= idx(wantOrder[i+1]) {
+			t.Fatalf("order violation: %q (idx=%d) must precede %q (idx=%d); got steps %v",
+				wantOrder[i], idx(wantOrder[i]), wantOrder[i+1], idx(wantOrder[i+1]), gotSteps)
+		}
+	}
+
+	done := findStep(recs, "retire.runtime-stop-done")
+	if done == nil {
+		t.Fatalf("retire.runtime-stop-done not present")
+	}
+	if done.KV == nil {
+		t.Fatalf("retire.runtime-stop-done kv is nil; want duration_ms + wait_timeout")
+	}
+	dur, ok := done.KV["duration_ms"]
+	if !ok {
+		t.Errorf("kv missing duration_ms; got kv=%v", done.KV)
+	}
+	// JSON unmarshals numbers as float64.
+	if durF, isF := dur.(float64); !isF || durF < 0 {
+		t.Errorf("duration_ms = %v (type %T), want non-negative number", dur, dur)
+	}
+	wt, ok := done.KV["wait_timeout"]
+	if !ok {
+		t.Errorf("kv missing wait_timeout; got kv=%v", done.KV)
+	}
+	if got, ok := wt.(bool); !ok || got {
+		t.Errorf("wait_timeout = %v (type %T), want false on clean stop", wt, wt)
+	}
+}
+
+func TestRealRetire_RuntimeStopDoneIncludesWaitTimeoutTrue(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	agentState := testAgentState("alice")
+	agentState.Worktree = ""
+	agentState.Branch = ""
+	saveTestAgent(t, tmpDir, agentState)
+
+	session := &runtimeTestSession{
+		sessionID:        "sess-alice",
+		caps:             backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+		stopWaitTimedOut: true,
+	}
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+
+	logger, err := calllog.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("calllog.Open: %v", err)
+	}
+	r.SetCallLogger(logger)
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+		return state.DeleteAgent(tmpDir, name)
+	}
+
+	ctx := calllog.WithCallID(context.Background(), "test-retire-2")
+	if err := r.Retire(ctx, "", "alice", false, false, false, false); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger.Close: %v", err)
+	}
+
+	recs := readCheckpointSteps(t, tmpDir, "test-retire-2")
+	done := findStep(recs, "retire.runtime-stop-done")
+	if done == nil {
+		t.Fatalf("retire.runtime-stop-done missing; got %d records", len(recs))
+	}
+	wt, _ := done.KV["wait_timeout"].(bool)
+	if !wt {
+		t.Errorf("wait_timeout = %v, want true when handle.StopWaitTimedOut() reports true", done.KV["wait_timeout"])
+	}
+}
+
+func TestRealKill_EmitsRuntimeStopCheckpoints(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	agentState := testAgentState("alice")
+	saveTestAgent(t, tmpDir, agentState)
+
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+	}
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+
+	logger, err := calllog.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("calllog.Open: %v", err)
+	}
+	r.SetCallLogger(logger)
+
+	ctx := calllog.WithCallID(context.Background(), "test-kill-1")
+	if err := r.Kill(ctx, "alice"); err != nil {
+		t.Fatalf("Kill: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger.Close: %v", err)
+	}
+
+	recs := readCheckpointSteps(t, tmpDir, "test-kill-1")
+	start := findStep(recs, "kill.runtime-stop-start")
+	done := findStep(recs, "kill.runtime-stop-done")
+	if start == nil || done == nil {
+		gotSteps := make([]string, 0, len(recs))
+		for _, rec := range recs {
+			gotSteps = append(gotSteps, rec.Step)
+		}
+		t.Fatalf("missing kill.runtime-stop-{start,done}; got steps: %v", gotSteps)
+	}
+
+	if done.KV == nil {
+		t.Fatalf("kill.runtime-stop-done kv is nil")
+	}
+	if _, ok := done.KV["duration_ms"]; !ok {
+		t.Errorf("kv missing duration_ms; got %v", done.KV)
+	}
+	wt, ok := done.KV["wait_timeout"]
+	if !ok {
+		t.Errorf("kv missing wait_timeout; got %v", done.KV)
+	}
+	if got, ok := wt.(bool); !ok || got {
+		t.Errorf("wait_timeout = %v, want false on clean kill", wt)
 	}
 }
