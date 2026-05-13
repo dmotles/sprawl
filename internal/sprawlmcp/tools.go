@@ -1,7 +1,56 @@
 package sprawlmcp
 
+import "os"
+
+// testToolsEnv is the environment variable that gates internal test-only MCP
+// tools (today: `_test_sleep` for the QUM-552 sandbox repro). It is checked
+// once per toolDefinitions / dispatchTool call to keep the tool surface
+// dynamic in the same process. NEVER set this in production.
+const testToolsEnv = "SPRAWL_ENABLE_TEST_TOOLS"
+
+// testToolsEnabled reports whether SPRAWL_ENABLE_TEST_TOOLS=1 is set in the
+// current process environment.
+func testToolsEnabled() bool {
+	return os.Getenv(testToolsEnv) == "1"
+}
+
 // toolDefinitions returns the MCP tool definitions for the sprawl MCP server.
+// When testToolsEnabled() is true, internal `_test_*` tools are appended.
 func toolDefinitions() []map[string]any {
+	defs := baseToolDefinitions()
+	if testToolsEnabled() {
+		defs = append(defs, testToolDefinitions()...)
+	}
+	return defs
+}
+
+// testToolDefinitions returns the internal `_test_*` MCP tools that are only
+// exposed when SPRAWL_ENABLE_TEST_TOOLS=1. These exist for sandbox repros
+// (today: QUM-552 interrupt-during-MCP-tool-wait) and MUST NOT be enabled
+// outside of sandbox / e2e environments.
+func testToolDefinitions() []map[string]any {
+	return []map[string]any{
+		{
+			"name":        "_test_sleep",
+			"description": "Internal test-only tool (gated by SPRAWL_ENABLE_TEST_TOOLS=1). Sleeps for `seconds` seconds, respecting context cancellation. Exists for the QUM-552 sandbox repro of interrupt-during-MCP-tool-wait. DO NOT use in production agent prompts.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"seconds": map[string]any{
+						"type":        "integer",
+						"description": "Seconds to sleep. Clamped to [0, 60].",
+					},
+				},
+				"required": []string{"seconds"},
+			},
+		},
+	}
+}
+
+// baseToolDefinitions returns the canonical MCP tool definitions always
+// exposed to claude. testToolDefinitions are appended dynamically when
+// SPRAWL_ENABLE_TEST_TOOLS=1.
+func baseToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "spawn",

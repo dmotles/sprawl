@@ -302,3 +302,38 @@ walked through the host-side MCP dispatch path.
 - Audit every `ToolBridge`-routed handler for "can this block readTurn
   longer than acceptable" — particularly `ask_user_question` which is
   designed to block on a human.
+
+## Status update: fixed in QUM-552 (2026-05-13)
+
+Fix A from the recommended-fixes section above landed across three
+slices on branch `dmotles/qum-552-s1-test-harness`:
+
+- **S1 (995d284)** — four failing unit tests in
+  `internal/backend/session_async_dispatch_test.go` that pin the
+  contract (readTurn-not-parked / interrupt-observable / response-
+  ordering / interrupt-cancels-inflight).
+- **S2 (b3012a6)** — `session.handleInlineControlRequest` dispatches
+  `mcp_message` subtypes to a goroutine via the new `dispatchMCPAsync`.
+  `readTurn` keeps consuming claude stdout while handlers run.
+  `can_use_tool` stays synchronous. In-flight handlers are tracked in
+  `session.inflight[request_id] = cancelFunc` and bounded-drained
+  (5s) on session shutdown.
+- **S3 (c0f53f5)** — `Session.Interrupt` now iterates `s.inflight`
+  and cancels every stored ctx after writing the interrupt frame.
+  Ctx-respecting handlers (`retire`, `delegate`, `merge`,
+  `ask_user_question` — verified) unwind immediately; the resulting
+  control_response carries the cancellation error.
+
+Hypothesis 1 (Claude CLI honor-interrupt-mid-tool-wait) is now
+observable via the dispatcher-layer tests; an empirical claude-driven
+repro is no longer required to land the fix, because the tests verify
+each contract assertion deterministically.
+
+`ask_user_question` interruptibility: confirmed by code-walk —
+`internal/supervisor/question.go:175-189` already has a `<-ctx.Done()`
+branch returning `Outcome=session-ended`. The QUM-552 fix cascades
+through cleanly; any remaining work (modal auto-dismiss UX) belongs
+to QUM-553.
+
+Sandbox transcript with the full evidence bundle:
+`docs/research/qum-552-sandbox-transcript.md`.
