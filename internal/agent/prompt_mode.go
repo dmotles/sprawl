@@ -27,8 +27,8 @@ func resolveMode(mode string) string {
 
 const childReportBulletsTUITemplate = `- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
 - When done, use: report_status({state: "complete", summary: "<{{DONE_SUMMARY}}>"})
-- If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or send_async({to: "{{PARENT_NAME}}", subject: "problem", body: "<description>"}).
-- If you need clarification, use: send_async({to: "{{PARENT_NAME}}", subject: "Question", body: "<your question>"})`
+- If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>"}) or send_message({to: "{{PARENT_NAME}}", body: "<description>", interrupt: false}).
+- If you need clarification, use: send_message({to: "{{PARENT_NAME}}", body: "<your question>", interrupt: false})`
 
 const childReportBulletsTmuxTemplate = `- When done, run: sprawl report done "<{{DONE_SUMMARY}}>"
 - If you discover work beyond your scope, run: sprawl report problem "<description>"
@@ -95,7 +95,7 @@ const managerRulesTemplate = `RULES:
 - Do not merge your branch. Your parent handles integration.
 - Do not push your branch unless instructed to do so.`
 
-const managerPeekBullet = "\n" + `- Before asking a child "are you done?", use peek({agent: "<child>"}) first; only send_async if peek is inconclusive.`
+const managerPeekBullet = "\n" + `- Before asking a child "are you done?", use peek({agent: "<child>"}) first; only send_message if peek is inconclusive.`
 
 // managerRulesBlock returns the RULES section for manager prompts.
 func managerRulesBlock(mode, parentName string) string {
@@ -324,11 +324,9 @@ const rootCommandsTUI = `KEY TOOLS (MCP):
   merge({agent: "<agent>", no_validate: true})     — Skip pre-merge and post-merge test validation.
 
   Messaging (prefer MCP over the CLI when available):
-  send_async({to: "<agent>", subject: "<subject>", body: "<message>"})    — queue an async message; recipient reads it on its next yield. Does NOT interrupt. Use this as your default.
-  send_interrupt({to: "<descendant>", subject: "<subject>", body: "<message>"})  — RARE. Parent→descendant only. Interrupts mid-turn. Reserve for genuinely urgent corrections ("I forgot to tell you something important").
+  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Canonical messaging tool (QUM-550). interrupt=false (default) is strictly cooperative — message lands at the recipient's next turn boundary. interrupt=true jumps the queue AND requests preemption (best-effort during MCP-tool-waits; honored for streaming/thinking only — see QUM-549; use kill for hard recovery from a wedged MCP call). The first line of body serves as the subject-equivalent in the inbox.
   peek({agent: "<agent>", tail: 20})               — inspect an agent's recent activity + last report. Use before asking "are you done?" or nagging a child.
-  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>", detail: "<optional>"})  — report YOUR status to your parent. Canonical status channel. Use at every meaningful step, not just at task end.
-  message(...)                                     — DEPRECATED alias for send_async. Do not use in new code.
+  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Strictly cooperative (never preempts parent). Use at every meaningful step.
 
   Observability:
   status({})                                       — show status of all agents with state, type, family, mail count
@@ -343,10 +341,10 @@ const rootDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 
 const rootDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- send_async({to: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. Queued; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
-- send_interrupt({to: "<descendant>", ...}) — RARE. Interrupts the target mid-turn. Only for urgent parent-side corrections; prefer send_async by default.
-- peek({agent: "<agent>"}) — Before nagging a child ("are you done?"), peek its activity/last_report first. Only send_async if peek is inconclusive.
-- Rule of thumb: if you're telling an agent to *do* something, use delegate. If you're telling an agent *about* something, use send_async.`
+- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Use for coordination and information sharing. Queued cooperatively; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- send_message({to: "<descendant>", body: "<body>", interrupt: true}) — RARE. Jumps the queue and requests preemption. Only for urgent parent-side corrections; prefer interrupt=false by default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
+- peek({agent: "<agent>"}) — Before nagging a child ("are you done?"), peek its activity/last_report first. Only send_message if peek is inconclusive.
+- Rule of thumb: if you're telling an agent to *do* something, use delegate. If you're telling an agent *about* something, use send_message.`
 
 const rootRulesTmux = `RULES:
 - Keep your agent tree manageable. Do not have more than 3-10 active agents at a time.
@@ -458,11 +456,9 @@ Use sprawl MCP tools to create and manage agents:
   - qa: Concerned with correctness. Testing, verification, quality assurance.
 
   Messaging (prefer MCP over the CLI when available):
-  send_async({to: "<agent>", subject: "<subject>", body: "<message>"})    — queue an async message; default tool for coordination. Does NOT interrupt.
-  send_interrupt({to: "<descendant>", subject: "<subject>", body: "<message>"})  — RARE. Parent→descendant only. Use sparingly, for genuinely urgent corrections.
+  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Canonical messaging tool. interrupt=false (default) cooperative; interrupt=true jumps queue + requests preemption (best-effort during MCP-tool-waits; see QUM-549).
   peek({agent: "<agent>", tail: 20})   — inspect a child/peer's recent activity + last report before nagging them.
-  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>", detail: "<optional>"})  — report YOUR status to your parent at each meaningful step.
-  message(...)          — DEPRECATED alias for send_async. Do not use in new code.
+  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Strictly cooperative (never preempts parent).
 
   Observability:
   status({})            — show status of all agents`
@@ -474,10 +470,10 @@ const managerDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHI
 
 const managerDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- send_async({to: "<agent>", subject: "<subject>", body: "<body>"}) — Use for coordination and information sharing. Queued; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
-- send_interrupt({to: "<descendant>", ...}) — RARE. Interrupts the target mid-turn. Only for urgent parent-side corrections; prefer send_async by default.
-- peek({agent: "<agent>"}) — Before nagging a child, peek its activity/last_report first. Only send_async if peek is inconclusive.
-- Rule of thumb: if you're telling an agent to *do* something, use delegate. If you're telling an agent *about* something, use send_async.`
+- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Use for coordination and information sharing. Queued cooperatively; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- send_message({to: "<descendant>", body: "<body>", interrupt: true}) — RARE. Jumps the queue and requests preemption. Only for urgent parent-side corrections; prefer interrupt=false by default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
+- peek({agent: "<agent>"}) — Before nagging a child, peek its activity/last_report first. Only send_message if peek is inconclusive.
+- Rule of thumb: if you're telling an agent to *do* something, use delegate. If you're telling an agent *about* something, use send_message.`
 
 const managerIntegrationTemplate = `# INTEGRATION:
 Use {{MERGE}} to land work on your integration branch. The {{MERGE_WORD}}

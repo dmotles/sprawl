@@ -1,11 +1,36 @@
 # Sprawl Messaging & Delivery Architecture — Ground Truth (2026-05-12)
 
+> **Resolved by QUM-550** (2026-05-12): the design questions opened in Q1–Q5
+> below have been answered. `send_async` and `send_interrupt` are collapsed
+> into a single `send_message(to, body, interrupt)` tool. `interrupt: false`
+> is strictly cooperative — never calls `Session.Interrupt`. `interrupt:
+> true` unconditionally calls `Session.Interrupt` (with the QUM-549
+> best-effort caveat below). `report_status` is now strictly cooperative
+> and ships state+summary only. See the slice-1/slice-2 commits and
+> `/internal/sprawlmcp/tools.go` for the canonical surface.
+>
+> **Slice 5 update (2026-05-12)**: the deprecated `send_async` /
+> `send_interrupt` / `message` MCP tools and their supervisor wrappers
+> have been **deleted entirely**. `send_message` is the sole messaging
+> tool — there is no back-compat alias.
+>
+> **QUM-549 caveat**: `Session.Interrupt`'s observable preemption is
+> reliable for streaming/thinking states only. While the recipient is
+> awaiting a sprawl-side MCP tool response, the interrupt JSON reaches
+> claude's stdin but the effect is not observable until that MCP call
+> returns — sprawl's `readTurn` is parked inside `ToolBridge.HandleIncoming`.
+> See `docs/research/qum-549-send-interrupt-during-mcp-tool-wait.md` for
+> the full trace. The architectural fix is tracked in QUM-552. For hard
+> recovery from a wedged MCP call, use `kill`.
+
 Captures findings from a live diagnostic session that surfaced gaps between
 documented behavior and actual implementation.
 
-Cross-references: QUM-339 (inbox/maildir rethink), QUM-473 (InterruptDelivery
-overload umbrella, Med — but see "Severity" below), QUM-542/543/544 (retire-hang
-incident that started the dig).
+Cross-references: QUM-339 (inbox/maildir rethink), QUM-473 (legacy
+InterruptDelivery overload umbrella, Med — §1 closed by QUM-550 slice 4: the
+legacy `InterruptDelivery` is removed; only `WakeForDelivery` /
+`ForceInterruptForDelivery` remain. See "Severity" below), QUM-542/543/544
+(retire-hang incident that started the dig).
 
 ## TL;DR for the next operator
 
@@ -23,17 +48,9 @@ incident that started the dig).
      aborts whatever it's doing and emits a turn-end result. The TurnLoop
      publishes `EventInterrupted` rather than `EventTurnCompleted`.
 
-2. **The MCP tool descriptions LIE.** `send_async` describes itself as "Does
-   NOT interrupt" but the code path triggers `Session.Interrupt` on the
-   recipient when the recipient has a turn in flight at the moment of send.
-   `send_interrupt`'s description warns "RARE — use sparingly" — but it's
-   functionally near-identical to `send_async`. Both call the same
-   `interruptForDelivery` path. The only differences:
-   - sort priority at drain time (`interrupt=0, async=3` — interrupts render
-     first in composite prompts when multiple are queued)
-   - subject prefix and prompt banner wording (`internal/tui/app.go:601-602`)
+2. **(Pre-QUM-550) The MCP tool descriptions used to lie** — slice 1 fixed this; `send_async` now routes cooperatively, `send_interrupt` routes through the force path, and both are deprecated in favor of `send_message`.
 
-3. **`InterruptDelivery` is conditionally interrupting.** The wrapper at
+3. **`interruptForDelivery` is conditionally interrupting — pre-QUM-550 behavior.** Slice 1 split this into `WakeForDelivery` (cooperative-only) and `ForceInterruptForDelivery` (unconditional preempt). The legacy `interruptForDelivery` is retained for callers not yet migrated. The wrapper at
    `internal/runtime/unified.go:404-423` `interruptForDelivery()` calls
    `Session.Interrupt` only if `turnRunning == true`. Always calls
    `Queue.Wake()`. So:
@@ -103,6 +120,15 @@ context.
 The code uses Esc. Persistent knowledge should be updated.)
 
 ## Per-MCP-tool trace table
+
+> **Update (QUM-550 slice 4):** the `InterruptDelivery` /
+> `interruptForDelivery` path referenced in the rows below has been removed.
+> `send_async` no longer exists as a separate tool (use `send_message` with
+> `interrupt: false`); `send_message(interrupt: false)` routes through
+> `WakeForDelivery` (no Session.Interrupt); `send_message(interrupt: true)`
+> routes through `ForceInterruptForDelivery` (unconditional). `report_status`
+> routes through `WakeForDelivery` only. The table below is preserved as a
+> pre-QUM-550 trace; treat it as historical.
 
 | Tool | Path | Mid-turn interrupt? | Queue.Wake? | Notes |
 |---|---|---|---|---|

@@ -19,9 +19,11 @@ const (
 	MaxQueueFlushTotalBytes = 10 * 1024
 )
 
-// resumeHintPrefix is the tag prefix used by supervisor.SendInterrupt to
-// smuggle a free-form resume_hint through the queue entry's Tags without
-// needing a dedicated field. See internal/supervisor/real.go:SendInterrupt.
+// resumeHintPrefix is the tag prefix used by historical interrupt callers
+// to smuggle a free-form resume_hint through the queue entry's Tags without
+// needing a dedicated field. Retained for back-compat parsing of in-flight
+// queue entries; supervisor.SendMessage (with interrupt=true) no longer
+// emits this tag.
 const resumeHintPrefix = "resume_hint:"
 
 // Class is the delivery class of a queued message.
@@ -45,6 +47,27 @@ type Entry struct {
 	ReplyTo    string   `json:"reply_to,omitempty"`
 	Tags       []string `json:"tags,omitempty"`
 	EnqueuedAt string   `json:"enqueued_at"`
+}
+
+// DisplaySubject returns the human-facing subject for an inbox entry. When
+// Subject is non-empty, returns it as-is. Otherwise falls back to the first
+// non-empty line of Body, hard-truncated at 80 bytes (QUM-550). The fallback
+// supports send_message entries which carry no explicit subject.
+func DisplaySubject(e Entry) string {
+	if e.Subject != "" {
+		return e.Subject
+	}
+	for _, line := range strings.Split(e.Body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > 80 {
+			return trimmed[:80]
+		}
+		return trimmed
+	}
+	return ""
 }
 
 // displayMessageID returns the short maildir ID when available, falling back
@@ -99,7 +122,7 @@ func BuildQueueFlushPrompt(entries []Entry) string {
 		if len(e.Tags) > 0 {
 			tagStr = " [" + strings.Join(e.Tags, ",") + "]"
 		}
-		fmt.Fprintf(&b, "%d. from %s%s  subject: %s\n", i+1, e.From, tagStr, e.Subject)
+		fmt.Fprintf(&b, "%d. from %s%s  subject: %s\n", i+1, e.From, tagStr, DisplaySubject(e))
 		body := e.Body
 		truncated := false
 		if len(body) > MaxQueueFlushBodyBytes {
@@ -154,7 +177,7 @@ func BuildInterruptFlushPrompt(entries []Entry) string {
 		if len(entries) > 1 {
 			fmt.Fprintf(&b, "--- %d of %d (from %s) ---\n", i+1, len(entries), e.From)
 		}
-		fmt.Fprintf(&b, "Subject: %s\n\n", e.Subject)
+		fmt.Fprintf(&b, "Subject: %s\n\n", DisplaySubject(e))
 		body := e.Body
 		truncated := false
 		if len(body) > MaxQueueFlushBodyBytes {

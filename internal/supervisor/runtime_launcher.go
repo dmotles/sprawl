@@ -296,34 +296,51 @@ func (h *unifiedHandle) Wake() error {
 	return nil
 }
 
-func (h *unifiedHandle) InterruptDelivery() error {
+// WakeForDelivery is the cooperative-wake variant. It drains pending entries
+// into the runtime queue (so the next turn boundary observes them) and then
+// calls the runtime's cooperative wake path — which never calls
+// Session.Interrupt. See QUM-549/QUM-550.
+func (h *unifiedHandle) WakeForDelivery() error {
+	h.drainPendingToQueue()
+	return h.rt.WakeForDelivery(context.Background())
+}
+
+// ForceInterruptDelivery is the unconditional-preempt variant. Drains
+// pending entries and then forces an interrupt (even when idle). See
+// QUM-549/QUM-550.
+func (h *unifiedHandle) ForceInterruptDelivery() error {
+	h.drainPendingToQueue()
+	return h.rt.ForceInterruptForDelivery(context.Background())
+}
+
+func (h *unifiedHandle) drainPendingToQueue() {
 	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
-	if err == nil && len(pending) > 0 {
-		interrupts, asyncs := inboxprompt.SplitByClass(pending)
-		if len(interrupts) > 0 {
-			ids := make([]string, 0, len(interrupts))
-			for _, e := range interrupts {
-				ids = append(ids, e.ID)
-			}
-			h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-				Class:    runtimepkg.ClassInterrupt,
-				Prompt:   inboxprompt.BuildInterruptFlushPrompt(interrupts),
-				EntryIDs: ids,
-			})
-		}
-		if len(asyncs) > 0 {
-			ids := make([]string, 0, len(asyncs))
-			for _, e := range asyncs {
-				ids = append(ids, e.ID)
-			}
-			h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-				Class:    runtimepkg.ClassInbox,
-				Prompt:   inboxprompt.BuildQueueFlushPrompt(asyncs),
-				EntryIDs: ids,
-			})
-		}
+	if err != nil || len(pending) == 0 {
+		return
 	}
-	return h.rt.InterruptDelivery(context.Background())
+	interrupts, asyncs := inboxprompt.SplitByClass(pending)
+	if len(interrupts) > 0 {
+		ids := make([]string, 0, len(interrupts))
+		for _, e := range interrupts {
+			ids = append(ids, e.ID)
+		}
+		h.rt.Queue().Enqueue(runtimepkg.QueueItem{
+			Class:    runtimepkg.ClassInterrupt,
+			Prompt:   inboxprompt.BuildInterruptFlushPrompt(interrupts),
+			EntryIDs: ids,
+		})
+	}
+	if len(asyncs) > 0 {
+		ids := make([]string, 0, len(asyncs))
+		for _, e := range asyncs {
+			ids = append(ids, e.ID)
+		}
+		h.rt.Queue().Enqueue(runtimepkg.QueueItem{
+			Class:    runtimepkg.ClassInbox,
+			Prompt:   inboxprompt.BuildQueueFlushPrompt(asyncs),
+			EntryIDs: ids,
+		})
+	}
 }
 
 // unifiedHandleStopWaitTimeout bounds the post-Kill session.Wait() inside

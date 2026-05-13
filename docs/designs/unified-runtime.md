@@ -701,3 +701,27 @@ The wiring was originally added in `f4546ab` and dropped during the in-process
 agent-loop refactor (`ce30c36`). It was restored in QUM-408. dmotles confirmed
 engineer outcomes were stronger when these sub-agents were available; do not
 re-regress.
+
+## 10. Messaging Tools (QUM-550)
+
+After QUM-550, the canonical messaging surface is:
+
+- `send_message(to, body, interrupt)` — replaces `send_async` and `send_interrupt`.
+  - `interrupt: false` (default): cooperative; enqueue + `WakeForDelivery()` only.
+  - `interrupt: true`: preemptive; enqueue ClassInterrupt + `ForceInterruptForDelivery()`. Best-effort during MCP-tool-waits per QUM-549.
+- `report_status(state, summary)` — strictly cooperative status channel; never preempts the parent. `detail` was dropped in slice 2.
+The legacy `interruptForDelivery` runtime method survives for not-yet-migrated callers; new code uses `WakeForDelivery` or `ForceInterruptForDelivery` depending on intent.
+
+**Update (QUM-550 slice 4):** the legacy `InterruptDelivery` /
+`interruptForDelivery` runtime methods have been removed. Only
+`WakeForDelivery` (cooperative; never calls Session.Interrupt) and
+`ForceInterruptForDelivery` (unconditional preempt) remain. Earlier sections
+of this document still reference `InterruptDelivery` as part of the original
+QUM-399 design narrative — treat those mentions as historical.
+
+**Update (QUM-550 slice 5):** the deprecated `send_async` / `send_interrupt`
+/ `message` MCP tools, their `Supervisor.SendAsync` / `Supervisor.SendInterrupt`
+/ `Supervisor.Message` wrappers, and the `SendAsyncResult` /
+`SendInterruptResult` types have been **deleted**. The final canonical
+messaging surface is just `send_message(to, body, interrupt)` and
+`report_status(state, summary)`.

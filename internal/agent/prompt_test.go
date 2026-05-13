@@ -1255,7 +1255,7 @@ func TestBuildRootPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 
 	mcpTools := []string{
 		"spawn",
-		"send_async",
+		"send_message",
 		"merge",
 		"retire",
 		"delegate",
@@ -1275,8 +1275,7 @@ func TestBuildRootPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 
 	mcpTools := []string{
 		"spawn",
-		"send_async",
-		"send_interrupt",
+		"send_message",
 		"peek",
 		"report_status",
 		"merge",
@@ -1347,7 +1346,7 @@ func TestBuildEngineerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
 	required := []string{
-		"send_async",
+		"send_message",
 		"report_status",
 	}
 	for _, tool := range required {
@@ -1362,7 +1361,7 @@ func TestBuildEngineerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	env.Mode = "tui"
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
 
-	required := []string{"send_async", "report_status"}
+	required := []string{"send_message", "report_status"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("engineer prompt with tui mode should contain MCP tool %q", tool)
@@ -1388,7 +1387,7 @@ func TestBuildResearcherPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	env.Mode = "tui"
 	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
 
-	required := []string{"send_async", "report_status"}
+	required := []string{"send_message", "report_status"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
 			t.Errorf("researcher prompt with tui mode should contain MCP tool %q", tool)
@@ -1419,8 +1418,7 @@ func TestBuildManagerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 		"merge",
 		"retire",
 		"delegate",
-		"send_async",
-		"send_interrupt",
+		"send_message",
 		"peek",
 		"report_status",
 		"status",
@@ -1442,8 +1440,7 @@ func TestBuildManagerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 		"merge",
 		"retire",
 		"delegate",
-		"send_async",
-		"send_interrupt",
+		"send_message",
 		"peek",
 		"report_status",
 		"status",
@@ -1760,8 +1757,7 @@ func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {
 	// Must contain MCP tool references
 	required := []string{
 		"spawn",
-		"send_async",
-		"send_interrupt",
+		"send_message",
 		"peek",
 		"report_status",
 		"merge",
@@ -1837,6 +1833,8 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	write("engineer_tui.golden", BuildEngineerPrompt("zone", "root", "sprawl/zone", env))
 	write("researcher_tui.golden", BuildResearcherPrompt("birch", "root", "sprawl/birch", env))
 	write("manager_tui.golden", BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env))
+	// Root-prompt goldens.
+	write("golden_tui_claude_code.txt", BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code", Mode: "tui"}))
 }
 
 func TestBuildEngineerPrompt_TmuxGolden(t *testing.T) {

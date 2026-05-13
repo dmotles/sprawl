@@ -115,7 +115,7 @@ func ValidReportState(state string) bool {
 // queue (async class) so the notification survives without tmux send-keys.
 //
 // See docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
-func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary, detail string) (ReportResult, error) {
+func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (ReportResult, error) {
 	if deps == nil {
 		deps = &ReportDeps{}
 	}
@@ -138,7 +138,6 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary, detail s
 	agentState.LastReportState = stateVal
 	agentState.LastReportType = legacyType(stateVal)
 	agentState.LastReportMessage = summary
-	agentState.LastReportDetail = detail
 	agentState.LastReportAt = reportedAt
 
 	switch stateVal {
@@ -160,9 +159,6 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary, detail s
 	token := subjectToken(stateVal)
 	subject := fmt.Sprintf("[%s] %s → %s", token, agentState.Name, summary)
 	body := summary
-	if strings.TrimSpace(detail) != "" {
-		body = summary + "\n\n" + detail
-	}
 
 	shortID, err := deps.sendMessage(sprawlRoot, agentState.Name, agentState.Parent, subject, body)
 	if err != nil {

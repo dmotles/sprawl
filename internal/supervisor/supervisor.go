@@ -31,23 +31,16 @@ type AgentInfo struct {
 	ProcessAlive      *bool   `json:"process_alive"`
 }
 
-// SendAsyncResult is returned by Supervisor.SendAsync. See
-// docs/designs/messaging-overhaul.md §4.2.1.
-type SendAsyncResult struct {
-	MessageID string `json:"message_id"`
-	QueuedAt  string `json:"queued_at"` // RFC3339
-}
-
-// SendInterruptResult is returned by Supervisor.SendInterrupt. See
-// docs/designs/messaging-overhaul.md §4.2.2. `DeliveredAt` is set when the
-// message lands in the target's queue; the harness then interrupts mid-turn
-// and injects the frame. `Interrupted` is best-effort — true iff the caller's
-// enqueue was observed to preempt an active turn. Because interrupt delivery
-// is asynchronous (harness polls), this field is reported as true whenever
-// the recipient has an active process; callers should treat it as advisory.
-type SendInterruptResult struct {
+// SendMessageResult is returned by Supervisor.SendMessage. The canonical
+// QUM-550 send_message tool replaces send_async + send_interrupt; this
+// result struct collapses their two distinct return shapes into one.
+//
+// Interrupted is best-effort: true iff interrupt=true was honored at the
+// supervisor layer. The recipient runtime may still observe the interrupt
+// asynchronously (see QUM-549 for the MCP-tool-wait blind spot).
+type SendMessageResult struct {
 	MessageID   string `json:"message_id"`
-	DeliveredAt string `json:"delivered_at"` // RFC3339
+	QueuedAt    string `json:"queued_at"` // RFC3339
 	Interrupted bool   `json:"interrupted"`
 }
 
@@ -141,7 +134,6 @@ type Supervisor interface {
 	Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error)
 	Status(ctx context.Context) ([]AgentInfo, error)
 	Delegate(ctx context.Context, agentName, task string) error
-	Message(ctx context.Context, agentName, subject, body string) error
 	// Merge merges agentName's branch up to its parent. `caller` is the
 	// agent identity invoking this operation — used to override
 	// SPRAWL_AGENT_IDENTITY in the per-call agentops deps so child-agent MCP
@@ -173,10 +165,11 @@ type Supervisor interface {
 	// activity file yet) yields an empty slice and nil error.
 	PeekActivity(ctx context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error)
 
-	// SendAsync queues a message for `to` via Maildir persist + harness
-	// queue append-only log. Non-blocking: returns as soon as both writes
-	// succeed. See docs/designs/messaging-overhaul.md §4.2.1.
-	SendAsync(ctx context.Context, to, subject, body, replyTo string, tags []string) (*SendAsyncResult, error)
+	// SendMessage is the canonical messaging tool (QUM-550). When interrupt is
+	// false, delivery is strictly cooperative (no Session.Interrupt). When true,
+	// the recipient is preempted unconditionally and the message is enqueued at
+	// the front of the queue (ClassInterrupt priority).
+	SendMessage(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error)
 
 	// Peek returns an agent's status, last report, and the tail of its
 	// activity ring in one call. See §4.2.4.
@@ -187,7 +180,7 @@ type Supervisor interface {
 	// structured async notification to the reporter's parent. See
 	// docs/designs/messaging-overhaul.md §4.2.3. The reporter identity is
 	// the supervisor's caller (r.callerName) when agentName is empty.
-	ReportStatus(ctx context.Context, agentName, state, summary, detail string) (*ReportStatusResult, error)
+	ReportStatus(ctx context.Context, agentName, state, summary string) (*ReportStatusResult, error)
 	// MessagesList returns a listing of messages in the caller's mailbox.
 	// Identity is the supervisor's callerName; agents cannot read other
 	// agents' mailboxes via this API. `filter` ∈ {"", "all", "unread",
@@ -216,15 +209,6 @@ type Supervisor interface {
 	// mail?" probe.
 	MessagesPeek(ctx context.Context) (*MessagesPeekResult, error)
 
-	// SendInterrupt queues an interrupt-class message for `to` via Maildir
-	// persist + harness queue. The recipient's child runtime polls the
-	// pending queue; on observing an interrupt entry it calls
-	// Session.Interrupt to preempt any in-flight turn, then injects the
-	// interrupt frame as a user turn. Gated to parent→descendants by
-	// default per §8.5 — callers that are not an ancestor of `to` get an
-	// error. See docs/designs/messaging-overhaul.md §4.2.2 and §4.5.2.
-	SendInterrupt(ctx context.Context, to, subject, body, resumeHint string) (*SendInterruptResult, error)
-
 	// RuntimeRegistry returns the in-process registry of started child
 	// runtimes. Callers use it to classify recipients (e.g. unified vs.
 	// legacy) when routing messages. Out-of-process Supervisor
@@ -235,8 +219,9 @@ type Supervisor interface {
 	// RegisterRootRuntime attaches a pre-built RuntimeHandle to the in-memory
 	// runtime registry under the given name, marking it Started. Used by
 	// cmd/enter.go (QUM-399) to register weave's UnifiedRuntime so children's
-	// report_status / send_async InterruptDelivery calls reach the root via
-	// the same registry mechanism that child runtimes use.
+	// report_status / send_message WakeForDelivery / ForceInterruptDelivery
+	// calls reach the root via the same registry mechanism that child runtimes
+	// use.
 	//
 	// agentState is best-effort: when nil, implementations may load from disk
 	// and fall back to a synthesized minimal state. Returns the registered

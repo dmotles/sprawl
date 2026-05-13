@@ -19,9 +19,9 @@
 #      weave's bridge — the failure mode under test is precisely this
 #      session being severed by the weave-claude restart.
 #   4. The child's prompt instructs it to:
-#        a. Call mcp__sprawl__send_async to weave with marker A token.
+#        a. Call mcp__sprawl__send_message to weave with marker A token.
 #        b. Wait for a signal file at $SPRAWL_ROOT/.sprawl/child-go on disk.
-#        c. Call mcp__sprawl__send_async to weave with marker B token.
+#        c. Call mcp__sprawl__send_message to weave with marker B token.
 #        d. Call mcp__sprawl__report_status with status=complete.
 #      Crucially the child holds a long-lived MCP session across (a)→(c).
 #   5. Driver waits for marker A in weave's maildir, then drives weave to
@@ -270,7 +270,7 @@ echo "  old weave claude pid=$OLD_WEAVE_PID"
 
 echo ""
 echo "=== Drive weave to spawn child via mcp__sprawl__spawn ==="
-SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-467-child-probe', and prompt set to exactly: 'You are a QUM-467 bridge-lifecycle probe. STEP 1: call mcp__sprawl__send_async with to=weave subject=marker-a body=${TOKEN_A}. STEP 2: poll the path ${CHILD_GO_FILE} once per 5 seconds for up to 5 minutes using the Bash tool (test -f ${CHILD_GO_FILE}); when it exists, proceed. STEP 3: call mcp__sprawl__send_async with to=weave subject=marker-b body=${TOKEN_B}. STEP 4: call mcp__sprawl__report_status with status=complete summary=done. Do not do anything else. If any send_async call fails, return its full error message verbatim before proceeding.'"
+SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-467-child-probe', and prompt set to exactly: 'You are a QUM-467 bridge-lifecycle probe. STEP 1: call mcp__sprawl__send_message with to=weave body=${TOKEN_A}. STEP 2: poll the path ${CHILD_GO_FILE} once per 5 seconds for up to 5 minutes using the Bash tool (test -f ${CHILD_GO_FILE}); when it exists, proceed. STEP 3: call mcp__sprawl__send_message with to=weave body=${TOKEN_B}. STEP 4: call mcp__sprawl__report_status with status=complete summary=done. Do not do anything else. If any send_message call fails, return its full error message verbatim before proceeding.'"
 
 _stmux send-keys -t "$SESSION" "$SPAWN_PROMPT"
 sleep 0.5

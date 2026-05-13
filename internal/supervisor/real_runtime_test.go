@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
@@ -317,201 +319,7 @@ func TestRealDelegate_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	}
 }
 
-func TestRealSendAsync_SignalsInterruptAfterFullPersistence(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	res, err := r.SendAsync(context.Background(), "alice", "hello", "world", "", nil)
-	if err != nil {
-		t.Fatalf("SendAsync() error: %v", err)
-	}
-	if res == nil || res.MessageID == "" {
-		t.Fatalf("SendAsync() result = %+v, want non-empty message id", res)
-	}
-
-	snap := rt.Snapshot()
-	if snap.InterruptCount != 1 {
-		t.Fatalf("InterruptCount = %d, want 1 after async delivery", snap.InterruptCount)
-	}
-	if snap.WakeCount != 0 {
-		t.Fatalf("WakeCount = %d, want 0 when async delivery uses interrupt-capable signal", snap.WakeCount)
-	}
-}
-
-func TestRealSendAsync_QueueFailureDoesNotSignalRuntime(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	queuePath := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "queue")
-	if err := os.MkdirAll(filepath.Dir(queuePath), 0o755); err != nil {
-		t.Fatalf("mkdir queue parent: %v", err)
-	}
-	if err := os.WriteFile(queuePath, []byte("block queue dir"), 0o644); err != nil {
-		t.Fatalf("write queue blocker: %v", err)
-	}
-
-	_, err := r.SendAsync(context.Background(), "alice", "hello", "world", "", nil)
-	if err == nil {
-		t.Fatal("SendAsync() error = nil, want queue failure")
-	}
-
-	snap := rt.Snapshot()
-	if snap.WakeCount != 0 || snap.InterruptCount != 0 {
-		t.Fatalf("snapshot changed on failed SendAsync: %+v", snap)
-	}
-}
-
-func TestRealSendAsync_MaildirFailureDoesNotSignalRuntime(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	maildirPath := filepath.Join(tmpDir, ".sprawl", "messages", "alice")
-	if err := os.MkdirAll(filepath.Dir(maildirPath), 0o755); err != nil {
-		t.Fatalf("mkdir maildir parent: %v", err)
-	}
-	if err := os.WriteFile(maildirPath, []byte("block maildir"), 0o644); err != nil {
-		t.Fatalf("write maildir blocker: %v", err)
-	}
-
-	_, err := r.SendAsync(context.Background(), "alice", "hello", "world", "", nil)
-	if err == nil {
-		t.Fatal("SendAsync() error = nil, want maildir failure")
-	}
-
-	snap := rt.Snapshot()
-	if snap.WakeCount != 0 || snap.InterruptCount != 0 {
-		t.Fatalf("snapshot changed on maildir-failed SendAsync: %+v", snap)
-	}
-}
-
-func TestRealSendInterrupt_SignalsInterruptAfterFullPersistence(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	res, err := r.SendInterrupt(context.Background(), "alice", "urgent", "stop", "resume later")
-	if err != nil {
-		t.Fatalf("SendInterrupt() error: %v", err)
-	}
-	if res == nil || !res.Interrupted {
-		t.Fatalf("SendInterrupt() result = %+v, want interrupted result", res)
-	}
-
-	snap := rt.Snapshot()
-	if snap.InterruptCount != 1 {
-		t.Fatalf("InterruptCount = %d, want 1 after interrupt delivery", snap.InterruptCount)
-	}
-	if snap.WakeCount != 0 {
-		t.Fatalf("WakeCount = %d, want 0 when interrupt delivery uses the interrupt-capable signal only", snap.WakeCount)
-	}
-}
-
-func TestRealSendInterrupt_QueueFailureDoesNotSignalRuntime(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	queuePath := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "queue")
-	if err := os.MkdirAll(filepath.Dir(queuePath), 0o755); err != nil {
-		t.Fatalf("mkdir queue parent: %v", err)
-	}
-	if err := os.WriteFile(queuePath, []byte("block queue dir"), 0o644); err != nil {
-		t.Fatalf("write queue blocker: %v", err)
-	}
-
-	_, err := r.SendInterrupt(context.Background(), "alice", "urgent", "stop", "resume later")
-	if err == nil {
-		t.Fatal("SendInterrupt() error = nil, want queue failure")
-	}
-
-	snap := rt.Snapshot()
-	if snap.WakeCount != 0 || snap.InterruptCount != 0 {
-		t.Fatalf("snapshot changed on failed SendInterrupt: %+v", snap)
-	}
-}
-
-func TestRealSendInterrupt_MaildirFailureDoesNotSignalRuntime(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	agentState := testAgentState("alice")
-	saveTestAgent(t, tmpDir, agentState)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	maildirPath := filepath.Join(tmpDir, ".sprawl", "messages", "alice")
-	if err := os.MkdirAll(filepath.Dir(maildirPath), 0o755); err != nil {
-		t.Fatalf("mkdir maildir parent: %v", err)
-	}
-	if err := os.WriteFile(maildirPath, []byte("block maildir"), 0o644); err != nil {
-		t.Fatalf("write maildir blocker: %v", err)
-	}
-
-	_, err := r.SendInterrupt(context.Background(), "alice", "urgent", "stop", "resume later")
-	if err == nil {
-		t.Fatal("SendInterrupt() error = nil, want maildir failure")
-	}
-
-	snap := rt.Snapshot()
-	if snap.WakeCount != 0 || snap.InterruptCount != 0 {
-		t.Fatalf("snapshot changed on maildir-failed SendInterrupt: %+v", snap)
-	}
-}
-
-func TestRealReportStatus_SignalsParentRuntimeAfterFullPersistence(t *testing.T) {
+func TestRealReportStatus_SignalsParentRuntimeWakeAfterFullPersistence(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	parent := testAgentState("alice")
 	child := testAgentState("bob")
@@ -528,7 +336,7 @@ func TestRealReportStatus_SignalsParentRuntimeAfterFullPersistence(t *testing.T)
 		t.Fatalf("runtime start: %v", err)
 	}
 
-	res, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests", "red phase")
+	res, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests")
 	if err != nil {
 		t.Fatalf("ReportStatus() error: %v", err)
 	}
@@ -537,11 +345,11 @@ func TestRealReportStatus_SignalsParentRuntimeAfterFullPersistence(t *testing.T)
 	}
 
 	snap := rt.Snapshot()
-	if snap.InterruptCount != 1 {
-		t.Fatalf("InterruptCount = %d, want 1 after report delivery", snap.InterruptCount)
+	if snap.WakeCount != 1 {
+		t.Fatalf("WakeCount = %d, want 1 after report delivery (QUM-550 slice 2 cooperative wake)", snap.WakeCount)
 	}
-	if snap.WakeCount != 0 {
-		t.Fatalf("WakeCount = %d, want 0 for report delivery interrupt path", snap.WakeCount)
+	if snap.InterruptCount != 0 {
+		t.Fatalf("InterruptCount = %d, want 0 for report delivery cooperative wake path", snap.InterruptCount)
 	}
 }
 
@@ -570,7 +378,7 @@ func TestRealReportStatus_QueueFailureDoesNotSignalParentRuntime(t *testing.T) {
 		t.Fatalf("write queue blocker: %v", err)
 	}
 
-	_, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests", "red phase")
+	_, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests")
 	if err == nil {
 		t.Fatal("ReportStatus() error = nil, want queue failure")
 	}
@@ -606,7 +414,7 @@ func TestRealReportStatus_MaildirFailureDoesNotSignalParentRuntime(t *testing.T)
 		t.Fatalf("write maildir blocker: %v", err)
 	}
 
-	_, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests", "red phase")
+	_, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests")
 	if err == nil {
 		t.Fatal("ReportStatus() error = nil, want maildir failure")
 	}
@@ -623,7 +431,7 @@ func TestRealReportStatus_UpdatesRuntimeAfterPersistedSuccess(t *testing.T) {
 	saveTestAgent(t, tmpDir, agentState)
 	rt := ensureRuntime(t, r, tmpDir, agentState)
 
-	_, err := r.ReportStatus(context.Background(), "alice", "working", "writing tests", "red phase")
+	_, err := r.ReportStatus(context.Background(), "alice", "working", "writing tests")
 	if err != nil {
 		t.Fatalf("ReportStatus() error: %v", err)
 	}
@@ -643,7 +451,7 @@ func TestRealReportStatus_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	rt := ensureRuntime(t, r, tmpDir, agentState)
 
 	before := rt.Snapshot()
-	_, err := r.ReportStatus(context.Background(), "alice", "working", "writing tests", "red phase")
+	_, err := r.ReportStatus(context.Background(), "alice", "working", "writing tests")
 	if err == nil {
 		t.Fatal("ReportStatus() error = nil, want failure when state file is missing")
 	}
@@ -651,6 +459,92 @@ func TestRealReportStatus_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	after := rt.Snapshot()
 	if after != before {
 		t.Fatalf("snapshot changed on failed ReportStatus: before=%+v after=%+v", before, after)
+	}
+}
+
+// TestRealReportStatus_DoesNotInterruptParentSession pins QUM-550 slice 2:
+// report_status must route the parent-runtime notification through the
+// cooperative WakeForDelivery path — never Session.Interrupt and never
+// ForceInterruptDelivery. This mirrors the SendAsync rewire in slice 1.
+func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	parent := testAgentState("alice")
+	child := testAgentState("bob")
+	child.Parent = "alice"
+	saveTestAgent(t, tmpDir, parent)
+	saveTestAgent(t, tmpDir, child)
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+	}
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{session: session})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+
+	// NEW 4-arg ReportStatus signature: no detail.
+	if _, err := r.ReportStatus(context.Background(), "bob", "working", "summary text"); err != nil {
+		t.Fatalf("ReportStatus: %v", err)
+	}
+
+	if session.interrupts != 0 {
+		t.Errorf("session.Interrupt called %d times by ReportStatus; want 0 (QUM-550 slice 2 cooperative lock-in)", session.interrupts)
+	}
+	if session.forceInterruptDeliveryCalls != 0 {
+		t.Errorf("session.ForceInterruptDelivery calls = %d; want 0 (report_status must use cooperative wake)", session.forceInterruptDeliveryCalls)
+	}
+	if session.wakeForDeliveryCalls < 1 {
+		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 after ReportStatus rewire", session.wakeForDeliveryCalls)
+	}
+
+	snap := rt.Snapshot()
+	if snap.InterruptCount != 0 {
+		t.Errorf("parent runtime InterruptCount = %d, want 0 — cooperative wake must not bump it", snap.InterruptCount)
+	}
+	if snap.WakeCount < 1 {
+		t.Errorf("parent runtime WakeCount = %d, want >= 1 after cooperative wake", snap.WakeCount)
+	}
+}
+
+// TestRealReportStatus_ParentInboxBodyContainsSummaryOnly locks in the
+// QUM-550 slice 2 contract that the parent's inbox entry body equals the
+// summary verbatim — no detail concatenation, no `\n\n` separator — because
+// the new ReportStatus signature drops detail entirely.
+func TestRealReportStatus_ParentInboxBodyContainsSummaryOnly(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	parent := testAgentState("alice")
+	child := testAgentState("bob")
+	child.Parent = "alice"
+	saveTestAgent(t, tmpDir, parent)
+	saveTestAgent(t, tmpDir, child)
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{
+		session: &runtimeTestSession{
+			sessionID: "sess-alice",
+			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+		},
+	})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("runtime start: %v", err)
+	}
+
+	const summary = "MY-SLICE2-SUMMARY"
+	if _, err := r.ReportStatus(context.Background(), "bob", "working", summary); err != nil {
+		t.Fatalf("ReportStatus: %v", err)
+	}
+
+	entries, err := agentloop.ListPending(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("ListPending(alice): %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("parent pending entries = %d, want 1", len(entries))
+	}
+	got := entries[0]
+	if got.Body != summary {
+		t.Errorf("parent inbox body = %q, want exactly %q (no detail concat)", got.Body, summary)
+	}
+	if strings.Contains(got.Body, "\n\n") {
+		t.Errorf("parent inbox body contains \\n\\n separator (detail concat leaked): %q", got.Body)
 	}
 }
 

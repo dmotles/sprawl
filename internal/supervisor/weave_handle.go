@@ -6,8 +6,9 @@
 // The cmd/enter.go path constructs the UnifiedRuntime + backend session and
 // calls NewWeaveRuntimeHandle to wire activity-ndjson capture, then
 // registers the resulting handle with Supervisor.RegisterRootRuntime so
-// child-agent ReportStatus / SendAsync calls trigger weave's
-// InterruptDelivery via the same registry path used by child runtimes.
+// child-agent ReportStatus / SendMessage calls trigger weave's
+// WakeForDelivery / ForceInterruptDelivery via the same registry path used by
+// child runtimes.
 
 package supervisor
 
@@ -89,18 +90,28 @@ func (h *WeaveRuntimeHandle) Wake() error {
 	return nil
 }
 
-// InterruptDelivery is wake-only — pending entries are intentionally left on
-// disk for the TUI's peekAndDrainCmd to drain so the inbox banner and body
-// render in the viewport. See QUM-471.
+// WakeForDelivery is the cooperative-wake path. Pending entries are
+// intentionally left on disk for the TUI's peekAndDrainCmd to drain so the
+// inbox banner and body render in the viewport. See QUM-471.
 //
-// This diverges from unifiedHandle.InterruptDelivery (children), which still
+// This diverges from unifiedHandle.WakeForDelivery (children), which still
 // flushes pending entries into the runtime queue from the handle: child
 // agents have no TUI poller, so the handle-side enqueue is their only drain
 // path. For weave, the TUI's peekAndDrainCmd (every 2s on AgentTreeMsg while
 // turnState == TurnIdle) handles AppendSystemMessage(prompt) → bridge.SendMessage
 // which enqueues a ClassUser item via TUIAdapter.SendMessage.
-func (h *WeaveRuntimeHandle) InterruptDelivery() error {
-	return h.rt.InterruptDelivery(context.Background())
+//
+// See QUM-549/QUM-550.
+func (h *WeaveRuntimeHandle) WakeForDelivery() error {
+	return h.rt.WakeForDelivery(context.Background())
+}
+
+// ForceInterruptDelivery is the unconditional-preempt variant for weave.
+// Leaves pending entries on disk (mirrors WakeForDelivery's TUI-driven
+// drain contract — QUM-471) and calls the runtime's force-interrupt path.
+// See QUM-549/QUM-550.
+func (h *WeaveRuntimeHandle) ForceInterruptDelivery() error {
+	return h.rt.ForceInterruptForDelivery(context.Background())
 }
 
 // Stop tears down the runtime, activity subscriber, session, and activity

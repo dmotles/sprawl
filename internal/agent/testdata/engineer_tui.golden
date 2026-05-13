@@ -123,8 +123,8 @@ RULES:
 - Stay on your branch in your worktree. Don't explore.
 - Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
 - When done, use: report_status({state: "complete", summary: "<summary of what you did>"})
-- If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>", detail: "<description>"}) or send_async({to: "root", subject: "problem", body: "<description>"}).
-- If you need clarification, use: send_async({to: "root", subject: "Question", body: "<your question>"})
+- If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>"}) or send_message({to: "root", body: "<description>", interrupt: false}).
+- If you need clarification, use: send_message({to: "root", body: "<your question>", interrupt: false})
 - Commit your work frequently with clear commit messages.
 - Do not merge your branch. Your manager handles integration.
 - Do not push your branch unless instructed to do so.

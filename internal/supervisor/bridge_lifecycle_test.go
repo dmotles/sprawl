@@ -69,7 +69,7 @@ func TestSupervisor_MCPBridge_StableAcrossInstall(t *testing.T) {
 	sup.SetChildMCPConfig(backendpkg.InitSpec{
 		MCPServerNames: []string{"sprawl"},
 		ToolBridge:     bridge1,
-	}, []string{"mcp__sprawl__send_async"})
+	}, []string{"mcp__sprawl__send_message"})
 
 	first := acc.MCPBridge()
 	if first == nil {
@@ -85,7 +85,7 @@ func TestSupervisor_MCPBridge_StableAcrossInstall(t *testing.T) {
 	sup.SetChildMCPConfig(backendpkg.InitSpec{
 		MCPServerNames: []string{"sprawl"},
 		ToolBridge:     bridge2,
-	}, []string{"mcp__sprawl__send_async"})
+	}, []string{"mcp__sprawl__send_message"})
 
 	second := acc.MCPBridge()
 	if second == nil {

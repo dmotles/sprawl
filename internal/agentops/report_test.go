@@ -32,7 +32,7 @@ func TestReport_WorkingUpdatesStateAndNotifiesParent(t *testing.T) {
 		Name: "alice", Parent: "bob", Status: "active",
 	})
 
-	res, err := Report(deps, root, "alice", "working", "halfway done", "")
+	res, err := Report(deps, root, "alice", "working", "halfway done")
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 		Name: "alice", Parent: "bob", Status: "active",
 	})
 
-	_, err := Report(deps, root, "alice", "complete", "done", "all tests green")
+	_, err := Report(deps, root, "alice", "complete", "done")
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -97,9 +97,6 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	if st.LastReportType != "done" {
 		t.Errorf("LastReportType = %q, want done (back-compat)", st.LastReportType)
 	}
-	if st.LastReportDetail != "all tests green" {
-		t.Errorf("LastReportDetail = %q", st.LastReportDetail)
-	}
 
 	inbox, _ := messages.Inbox(root, "bob")
 	if len(inbox) != 1 {
@@ -108,8 +105,9 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	if !strings.Contains(inbox[0].Subject, "[COMPLETE]") {
 		t.Errorf("subject = %q, want [COMPLETE]", inbox[0].Subject)
 	}
-	if !strings.Contains(inbox[0].Body, "all tests green") {
-		t.Errorf("body should include detail, got %q", inbox[0].Body)
+	// QUM-550 slice 5: body equals summary verbatim; detail param removed.
+	if inbox[0].Body != "done" {
+		t.Errorf("body = %q, want summary verbatim", inbox[0].Body)
 	}
 }
 
@@ -118,7 +116,7 @@ func TestReport_FailureSetsStatusProblem(t *testing.T) {
 		Name: "alice", Parent: "bob", Status: "active",
 	})
 
-	_, err := Report(deps, root, "alice", "failure", "blocked on API", "")
+	_, err := Report(deps, root, "alice", "failure", "blocked on API")
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -142,7 +140,7 @@ func TestReport_BlockedDoesNotChangeStatus(t *testing.T) {
 		Name: "alice", Parent: "bob", Status: "active",
 	})
 
-	_, err := Report(deps, root, "alice", "blocked", "need review", "")
+	_, err := Report(deps, root, "alice", "blocked", "need review")
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -164,7 +162,7 @@ func TestReport_NoParentSkipsNotification(t *testing.T) {
 		Name: "solo", Parent: "", Status: "active",
 	})
 
-	res, err := Report(deps, root, "solo", "complete", "done", "")
+	res, err := Report(deps, root, "solo", "complete", "done")
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -180,7 +178,7 @@ func TestReport_NoParentSkipsNotification(t *testing.T) {
 
 func TestReport_InvalidState(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{Name: "alice", Status: "active"})
-	_, err := Report(deps, root, "alice", "bogus", "x", "")
+	_, err := Report(deps, root, "alice", "bogus", "x")
 	if err == nil || !strings.Contains(err.Error(), "invalid report state") {
 		t.Errorf("err = %v, want invalid report state", err)
 	}
@@ -188,7 +186,7 @@ func TestReport_InvalidState(t *testing.T) {
 
 func TestReport_EmptySummary(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{Name: "alice", Status: "active"})
-	_, err := Report(deps, root, "alice", "working", "   ", "")
+	_, err := Report(deps, root, "alice", "working", "   ")
 	if err == nil || !strings.Contains(err.Error(), "summary") {
 		t.Errorf("err = %v, want summary error", err)
 	}
@@ -205,7 +203,7 @@ func TestReport_PropagatesShortIDToQueueEntry(t *testing.T) {
 		return "sh-abc123", nil
 	}
 
-	res, err := Report(deps, root, "alice", "working", "halfway done", "")
+	res, err := Report(deps, root, "alice", "working", "halfway done")
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -236,7 +234,7 @@ func TestReport_EmptyShortIDTolerated(t *testing.T) {
 		return "", nil
 	}
 
-	_, err := Report(deps, root, "alice", "working", "halfway done", "")
+	_, err := Report(deps, root, "alice", "working", "halfway done")
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -267,7 +265,7 @@ func TestReport_SendMessageErrorSkipsEnqueue(t *testing.T) {
 		return "", fmt.Errorf("maildir full")
 	}
 
-	_, err := Report(deps, root, "alice", "working", "halfway done", "")
+	_, err := Report(deps, root, "alice", "working", "halfway done")
 	if err == nil {
 		t.Fatal("Report should have returned an error when SendMessage fails")
 	}
@@ -286,7 +284,7 @@ func TestReport_SendMessageErrorSkipsEnqueue(t *testing.T) {
 
 func TestReport_AgentNotFound(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{Name: "alice", Status: "active"})
-	_, err := Report(deps, root, "nobody", "working", "x", "")
+	_, err := Report(deps, root, "nobody", "working", "x")
 	if err == nil || !strings.Contains(err.Error(), "loading agent state") {
 		t.Errorf("err = %v", err)
 	}
