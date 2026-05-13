@@ -14,14 +14,23 @@
 > have been **deleted entirely**. `send_message` is the sole messaging
 > tool — there is no back-compat alias.
 >
-> **QUM-549 caveat**: `Session.Interrupt`'s observable preemption is
-> reliable for streaming/thinking states only. While the recipient is
-> awaiting a sprawl-side MCP tool response, the interrupt JSON reaches
-> claude's stdin but the effect is not observable until that MCP call
-> returns — sprawl's `readTurn` is parked inside `ToolBridge.HandleIncoming`.
-> See `docs/research/qum-549-send-interrupt-during-mcp-tool-wait.md` for
-> the full trace. The architectural fix is tracked in QUM-552. For hard
-> recovery from a wedged MCP call, use `kill`.
+> **QUM-549 caveat — FIXED IN QUM-552 (2026-05-13)**: `Session.Interrupt`'s
+> observable preemption now applies during MCP-tool-waits as well, not
+> just streaming/thinking. `session.handleInlineControlRequest` dispatches
+> `mcp_message` handlers in a goroutine (`dispatchMCPAsync`), so
+> `readTurn` keeps consuming claude's stdout while a handler runs. On
+> `Session.Interrupt`, every in-flight handler's ctx is cancelled
+> synchronously with the wire-level interrupt — ctx-respecting handlers
+> (`retire`, `delegate`, `merge`, `ask_user_question`) unwind immediately
+> and emit their `error`-subtype control_response. `can_use_tool` remains
+> synchronous. See commits 995d284 (RED tests) / b3012a6 (async dispatch)
+> / c0f53f5 (interrupt cancellation) on branch
+> `dmotles/qum-552-s1-test-harness`, and the evidence bundle in
+> `docs/research/qum-552-sandbox-transcript.md`.
+>
+> `kill` remains the right escalation for a wedged handler that does NOT
+> respect ctx (the bounded 5s drain in `readTurn`'s defer covers session
+> shutdown but cannot rescue a stuck handler mid-turn).
 
 Captures findings from a live diagnostic session that surfaced gaps between
 documented behavior and actual implementation.

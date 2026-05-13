@@ -8,6 +8,7 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/protocol"
 )
@@ -112,13 +113,26 @@ type session struct {
 	turnInProgress bool
 	initSpec       InitSpec
 	lastTurnErr    error
+
+	// inflight tracks the cancellation funcs of in-flight async MCP
+	// handlers, keyed by control_request request_id. inflightWG waits
+	// for those goroutines on session shutdown. See
+	// handleInlineControlRequest for the rationale.
+	inflight   map[string]context.CancelFunc
+	inflightWG sync.WaitGroup
 }
+
+// inflightDrainTimeout bounds how long readTurn waits for in-flight async
+// MCP handlers to finish on shutdown. A wedged handler must not be able to
+// permanently leak the session goroutine.
+const inflightDrainTimeout = 5 * time.Second
 
 // NewSession creates a backend session on top of the provided transport.
 func NewSession(t ManagedTransport, cfg SessionConfig) Session {
 	return &session{
 		transport: t,
 		config:    cfg,
+		inflight:  make(map[string]context.CancelFunc),
 	}
 }
 
@@ -216,6 +230,10 @@ func (s *session) readTurn(ctx context.Context, events chan<- *protocol.Message,
 		s.turnInProgress = false
 		s.mu.Unlock()
 	}()
+	// Bounded-drain in-flight async MCP handlers before returning so a
+	// wedged handler can't permanently leak this session goroutine. See
+	// handleInlineControlRequest for the async-dispatch rationale.
+	defer s.drainInflight()
 
 	for {
 		select {
@@ -257,6 +275,33 @@ func (s *session) readTurn(ctx context.Context, events chan<- *protocol.Message,
 	}
 }
 
+// handleInlineControlRequest routes an incoming control_request frame.
+//
+// Async dispatch (QUM-552, follow-up to QUM-549):
+//
+// `mcp_message` subtypes are dispatched in a goroutine so that
+// readTurn's outer Recv loop keeps consuming claude's stdout while a
+// long-running MCP tool handler runs. Without this, `Session.Interrupt`
+// is unobservable mid-tool-wait and the EventBus goes silent for the
+// entire wedge window (see
+// docs/research/qum-549-send-interrupt-during-mcp-tool-wait.md).
+//
+// Only `mcp_message` is asynchronous. `can_use_tool` (and any future
+// subtype that resolves synchronously off a static decision) stays in
+// the readTurn loop — those handlers are fast, do not call out through
+// ToolBridge, and dispatching them async would only add scheduling
+// overhead and reorder responses on the wire.
+//
+// Lifecycle invariant: each async handler registers its cancelFunc in
+// s.inflight under cr.RequestID and increments s.inflightWG. On
+// completion the entry is removed. On session shutdown (readTurn
+// return), drainInflight cancels every remaining ctx and bounded-waits
+// inflightDrainTimeout for the goroutines to finish so a wedged
+// handler cannot permanently leak the session.
+//
+// Wire-level safety: protocol.Writer.mu (see internal/protocol/writer.go)
+// serializes stdin writes, so concurrent transport.Send calls from
+// multiple in-flight handlers are safe.
 func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.Message, initSpec InitSpec) error {
 	var cr struct {
 		RequestID string          `json:"request_id"`
@@ -273,6 +318,11 @@ func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 		return err
 	}
 
+	if req.Subtype == "mcp_message" {
+		s.dispatchMCPAsync(ctx, cr.RequestID, cr.Request, initSpec)
+		return nil
+	}
+
 	resp := protocol.ControlResponse{
 		Type: "control_response",
 		Response: protocol.ControlResponseInner{
@@ -281,32 +331,11 @@ func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 		},
 	}
 
-	switch req.Subtype {
-	case "can_use_tool":
+	if req.Subtype == "can_use_tool" {
 		resp.Response.Response = map[string]any{
 			"behavior":  "allow",
 			"toolUseID": "",
 			"message":   "Allowed by host",
-		}
-	case "mcp_message":
-		if initSpec.ToolBridge != nil {
-			var mcpReq struct {
-				ServerName string          `json:"server_name"`
-				Message    json.RawMessage `json:"message"`
-			}
-			if err := json.Unmarshal(cr.Request, &mcpReq); err == nil {
-				bridgeCtx := ctx
-				if s.config.Identity != "" {
-					bridgeCtx = WithCallerIdentity(ctx, s.config.Identity)
-				}
-				mcpResp, mcpErr := initSpec.ToolBridge.HandleIncoming(bridgeCtx, mcpReq.ServerName, mcpReq.Message)
-				if mcpErr != nil {
-					resp.Response.Subtype = "error"
-					resp.Response.Response = map[string]any{"error": mcpErr.Error()}
-				} else {
-					resp.Response.Response = map[string]any{"mcp_response": mcpResp}
-				}
-			}
 		}
 	}
 
@@ -316,6 +345,98 @@ func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 	return nil
 }
 
+// dispatchMCPAsync launches ToolBridge.HandleIncoming in a goroutine,
+// tracks its cancelFunc in s.inflight, and writes the eventual
+// control_response when the handler returns. See
+// handleInlineControlRequest for the architectural rationale.
+func (s *session) dispatchMCPAsync(parentCtx context.Context, requestID string, rawRequest json.RawMessage, initSpec InitSpec) {
+	resp := protocol.ControlResponse{
+		Type: "control_response",
+		Response: protocol.ControlResponseInner{
+			Subtype:   "success",
+			RequestID: requestID,
+		},
+	}
+
+	if initSpec.ToolBridge == nil {
+		// No bridge wired: send an empty success response synchronously
+		// to preserve the prior best-effort behavior.
+		if err := s.transport.Send(parentCtx, resp); err != nil {
+			s.setTurnError(fmt.Errorf("sending control response: %w", err))
+		}
+		return
+	}
+
+	var mcpReq struct {
+		ServerName string          `json:"server_name"`
+		Message    json.RawMessage `json:"message"`
+	}
+	if err := json.Unmarshal(rawRequest, &mcpReq); err != nil {
+		// Malformed payload: respond with empty success, matching the
+		// previous code path (which silently dropped the unmarshal error).
+		if sendErr := s.transport.Send(parentCtx, resp); sendErr != nil {
+			s.setTurnError(fmt.Errorf("sending control response: %w", sendErr))
+		}
+		return
+	}
+
+	bridgeCtx, cancel := context.WithCancel(parentCtx)
+	if s.config.Identity != "" {
+		bridgeCtx = WithCallerIdentity(bridgeCtx, s.config.Identity)
+	}
+
+	s.mu.Lock()
+	s.inflight[requestID] = cancel
+	s.mu.Unlock()
+	s.inflightWG.Add(1)
+
+	go func() {
+		defer s.inflightWG.Done()
+		defer func() {
+			s.mu.Lock()
+			delete(s.inflight, requestID)
+			s.mu.Unlock()
+			cancel()
+		}()
+
+		mcpResp, mcpErr := initSpec.ToolBridge.HandleIncoming(bridgeCtx, mcpReq.ServerName, mcpReq.Message)
+		if mcpErr != nil {
+			resp.Response.Subtype = "error"
+			resp.Response.Response = map[string]any{"error": mcpErr.Error()}
+		} else {
+			resp.Response.Response = map[string]any{"mcp_response": mcpResp}
+		}
+
+		// Use parentCtx for the send: bridgeCtx may have been cancelled
+		// at shutdown, but we still want to flush the response if the
+		// underlying transport is still alive.
+		if err := s.transport.Send(parentCtx, resp); err != nil {
+			s.setTurnError(fmt.Errorf("sending control response: %w", err))
+		}
+	}()
+}
+
+// drainInflight cancels every in-flight async handler and waits up to
+// inflightDrainTimeout for them to finish. Called from readTurn's defer.
+func (s *session) drainInflight() {
+	s.mu.Lock()
+	for _, cancel := range s.inflight {
+		cancel()
+	}
+	s.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.inflightWG.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(inflightDrainTimeout):
+	}
+}
+
 func (s *session) Interrupt(ctx context.Context) error {
 	requestID := s.nextRequestID()
 	msg := protocol.InterruptRequest{
@@ -323,7 +444,28 @@ func (s *session) Interrupt(ctx context.Context) error {
 		RequestID: requestID,
 		Request:   protocol.InterruptRequestInner{Subtype: "interrupt"},
 	}
-	return s.transport.Send(ctx, msg)
+	err := s.transport.Send(ctx, msg)
+
+	// Cancel every in-flight async MCP handler ctx (QUM-552 S3). We
+	// cancel on the outgoing Interrupt — not on a later observed
+	// EventInterrupted from claude's stdout — because:
+	//   - we control this call site, so cancellation is synchronous
+	//     and atomic with the wire-level interrupt write;
+	//   - observing EventInterrupted would arrive later and race with
+	//     normal handler completion;
+	//   - ctx-respecting handlers (retire/delegate/merge) will unwind
+	//     immediately; non-respecting handlers (ask_user_question
+	//     today — see QUM-553) are unaffected, which is no worse than
+	//     the pre-S3 behavior.
+	// Entries are NOT removed here; the dispatch goroutines own
+	// their inflight-map cleanup on completion.
+	s.mu.Lock()
+	for _, cancel := range s.inflight {
+		cancel()
+	}
+	s.mu.Unlock()
+
+	return err
 }
 
 func (s *session) Close() error {

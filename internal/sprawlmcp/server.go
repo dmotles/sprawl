@@ -216,10 +216,45 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolMessagesPeek(ctx)
 	case "ask_user_question":
 		return s.toolAskUserQuestion(ctx, args)
+	case "_test_sleep":
+		if !testToolsEnabled() {
+			return "", &unknownToolError{name: name}
+		}
+		return s.toolTestSleep(ctx, args)
 	default:
 		// Unknown tools get a JSON-RPC error, not a tool content error
 		return "", &unknownToolError{name: name}
 	}
+}
+
+// toolTestSleep is an internal test-only MCP tool exposed when
+// SPRAWL_ENABLE_TEST_TOOLS=1. It exists for the QUM-552 sandbox repro of
+// interrupt-during-MCP-tool-wait: it parks the MCP dispatch path for a
+// caller-specified duration while remaining ctx-respecting, so the
+// async-dispatch + interrupt-cancellation behavior added in QUM-552 can
+// be exercised end-to-end against a real claude subprocess. NEVER enable
+// this tool in production.
+func (s *Server) toolTestSleep(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Seconds int `json:"seconds"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if p.Seconds < 0 {
+		p.Seconds = 0
+	}
+	if p.Seconds > 60 {
+		p.Seconds = 60
+	}
+	d := time.Duration(p.Seconds) * time.Second
+	start := time.Now()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-time.After(d):
+	}
+	return fmt.Sprintf("slept %s", time.Since(start).Round(time.Millisecond)), nil
 }
 
 func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, error) {
