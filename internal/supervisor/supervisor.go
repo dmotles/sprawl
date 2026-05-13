@@ -181,6 +181,13 @@ type Supervisor interface {
 	// docs/designs/messaging-overhaul.md §4.2.3. The reporter identity is
 	// the supervisor's caller (r.callerName) when agentName is empty.
 	ReportStatus(ctx context.Context, agentName, state, summary string) (*ReportStatusResult, error)
+
+	// DrainStatusNotifications returns and clears the per-recipient
+	// ephemeral status-notification ring. Called by the drain pipeline
+	// (TUI peekAndDrainCmd and child unifiedHandle.drainPendingToQueue)
+	// so report_status lines reach the recipient's next-turn prompt
+	// without touching maildir. See QUM-559.
+	DrainStatusNotifications(recipient string) []string
 	// MessagesList returns a listing of messages in the caller's mailbox.
 	// Identity is the supervisor's callerName; agents cannot read other
 	// agents' mailboxes via this API. `filter` ∈ {"", "all", "unread",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -327,17 +328,22 @@ func TestReportStatus_PersistsAndNotifiesParent(t *testing.T) {
 		t.Errorf("LastReportDetail = %q, want empty (detail dropped from report_status)", got.LastReportDetail)
 	}
 
-	// Parent "root" gets both Maildir and queue entries.
+	// QUM-559: parent "root" maildir + harness queue stay empty; the
+	// notification flows through the in-process ephemeral ring.
 	msgs, _ := messages.Inbox(tmpDir, "root")
-	if len(msgs) != 1 {
-		t.Fatalf("inbox len = %d", len(msgs))
+	if len(msgs) != 0 {
+		t.Errorf("inbox len = %d, want 0 (QUM-559)", len(msgs))
 	}
 	entries, _ := agentloop.ListPending(tmpDir, "root")
-	if len(entries) != 1 {
-		t.Fatalf("queue len = %d", len(entries))
+	if len(entries) != 0 {
+		t.Errorf("queue len = %d, want 0 (QUM-559)", len(entries))
 	}
-	if entries[0].From != "weave" {
-		t.Errorf("from = %q", entries[0].From)
+	drained := sup.DrainStatusNotifications("root")
+	if len(drained) != 1 {
+		t.Fatalf("DrainStatusNotifications(root) len = %d, want 1; got %#v", len(drained), drained)
+	}
+	if !strings.Contains(drained[0], "weave changed status to working: halfway") {
+		t.Errorf("drained line = %q; want it to mention weave's status update", drained[0])
 	}
 }
 

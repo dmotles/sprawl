@@ -5,8 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dmotles/sprawl/internal/agentloop"
-	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -21,17 +19,20 @@ const (
 // ReportResult is returned by Report.
 type ReportResult struct {
 	ReportedAt string // RFC3339
-	MessageID  string // harness queue entry id (empty if no parent)
+	// MessageID is retained as a deprecated, always-empty field. QUM-559:
+	// Report no longer writes to the maildir or harness queue — the
+	// supervisor owns parent notification via the in-process ephemeral
+	// ring.
+	MessageID string
 }
 
 // ReportDeps holds injectable dependencies for Report. Nil fields default to
-// the production implementation.
+// the production implementation. QUM-559: SendMessage and Enqueue were
+// removed; Report is state-only.
 type ReportDeps struct {
-	LoadAgent   func(sprawlRoot, name string) (*state.AgentState, error)
-	SaveAgent   func(sprawlRoot string, agent *state.AgentState) error
-	SendMessage func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error)
-	Enqueue     func(sprawlRoot, to string, e agentloop.Entry) (agentloop.Entry, error)
-	Now         func() time.Time
+	LoadAgent func(sprawlRoot, name string) (*state.AgentState, error)
+	SaveAgent func(sprawlRoot string, agent *state.AgentState) error
+	Now       func() time.Time
 }
 
 func (d *ReportDeps) loadAgent(sprawlRoot, name string) (*state.AgentState, error) {
@@ -48,40 +49,11 @@ func (d *ReportDeps) saveAgent(sprawlRoot string, a *state.AgentState) error {
 	return state.SaveAgent(sprawlRoot, a)
 }
 
-func (d *ReportDeps) sendMessage(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
-	if d.SendMessage != nil {
-		return d.SendMessage(sprawlRoot, from, to, subject, body, opts...)
-	}
-	return messages.Send(sprawlRoot, from, to, subject, body, opts...)
-}
-
-func (d *ReportDeps) enqueue(sprawlRoot, to string, e agentloop.Entry) (agentloop.Entry, error) {
-	if d.Enqueue != nil {
-		return d.Enqueue(sprawlRoot, to, e)
-	}
-	return agentloop.Enqueue(sprawlRoot, to, e)
-}
-
 func (d *ReportDeps) now() time.Time {
 	if d.Now != nil {
 		return d.Now()
 	}
 	return time.Now()
-}
-
-// subjectToken returns the canonical subject prefix for a report state.
-func subjectToken(state string) string {
-	switch state {
-	case ReportStateWorking:
-		return "STATUS"
-	case ReportStateBlocked:
-		return "BLOCKED"
-	case ReportStateComplete:
-		return "COMPLETE"
-	case ReportStateFailure:
-		return "FAILURE"
-	}
-	return strings.ToUpper(state)
 }
 
 // legacyType maps a report state to the back-compat LastReportType token
@@ -109,10 +81,11 @@ func ValidReportState(state string) bool {
 // Report is the canonical persistence path for agent status reports (both
 // `sprawl report` CLI and the `report_status` MCP tool delegate here).
 //
-// It loads the reporter's agent state, updates the LastReport* fields and
-// (for complete/failure) the Status field, persists, and — if the reporter
-// has a parent — delivers the report to the parent via Maildir + harness
-// queue (async class) so the notification survives without tmux send-keys.
+// QUM-559: Report is state-only — it loads the reporter's agent state,
+// updates the LastReport* fields and (for complete/failure) the Status
+// field, and persists. The supervisor owns parent notification via the
+// in-process ephemeral status-notification ring; no maildir or harness
+// queue write happens here.
 //
 // See docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
 func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (ReportResult, error) {
@@ -151,32 +124,5 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (
 		return ReportResult{}, fmt.Errorf("saving agent state: %w", err)
 	}
 
-	result := ReportResult{ReportedAt: reportedAt}
-	if agentState.Parent == "" {
-		return result, nil
-	}
-
-	token := subjectToken(stateVal)
-	subject := fmt.Sprintf("[%s] %s → %s", token, agentState.Name, summary)
-	body := summary
-
-	shortID, err := deps.sendMessage(sprawlRoot, agentState.Name, agentState.Parent, subject, body)
-	if err != nil {
-		// Delivery failure is non-fatal — state is persisted.
-		return result, fmt.Errorf("sending message to parent: %w", err)
-	}
-
-	entry, err := deps.enqueue(sprawlRoot, agentState.Parent, agentloop.Entry{
-		Class:   agentloop.ClassAsync,
-		From:    agentState.Name,
-		Subject: subject,
-		Body:    body,
-		ShortID: shortID,
-		Tags:    []string{"status", stateVal},
-	})
-	if err != nil {
-		return result, fmt.Errorf("enqueuing async report: %w", err)
-	}
-	result.MessageID = entry.ID
-	return result, nil
+	return ReportResult{ReportedAt: reportedAt}, nil
 }

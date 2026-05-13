@@ -6,9 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
-	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/spf13/cobra"
 )
@@ -16,13 +14,13 @@ import (
 // reportDeps holds the dependencies for the report command, enabling testability.
 // Both `sprawl report` CLI and the `report_status` MCP tool delegate to
 // the same agentops.Report helper — there is one persistence path.
+//
+// QUM-559: Report is now state-only; sendMessage/enqueue deps are gone.
 type reportDeps struct {
-	getenv      func(string) string
-	nowFunc     func() time.Time
-	loadAgent   func(sprawlRoot, name string) (*state.AgentState, error)
-	saveAgent   func(sprawlRoot string, agent *state.AgentState) error
-	sendMessage func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error)
-	enqueue     func(sprawlRoot, to string, e agentloop.Entry) (agentloop.Entry, error)
+	getenv    func(string) string
+	nowFunc   func() time.Time
+	loadAgent func(sprawlRoot, name string) (*state.AgentState, error)
+	saveAgent func(sprawlRoot string, agent *state.AgentState) error
 }
 
 var defaultReportDeps *reportDeps
@@ -37,7 +35,7 @@ func init() {
 var reportCmd = &cobra.Command{
 	Use:   "report",
 	Short: "Report status, completion, or problems to your parent",
-	Long:  "Report your current status, mark yourself as done, or report a problem. Updates are persisted to your agent state file and delivered to the parent via the harness queue.",
+	Long:  "Report your current status, mark yourself as done, or report a problem. Updates are persisted to your agent state file.",
 }
 
 var reportStatusCmd = &cobra.Command{
@@ -72,12 +70,10 @@ func resolveReportDeps() *reportDeps {
 		return defaultReportDeps
 	}
 	return &reportDeps{
-		getenv:      os.Getenv,
-		nowFunc:     time.Now,
-		loadAgent:   state.LoadAgent,
-		saveAgent:   state.SaveAgent,
-		sendMessage: messages.Send,
-		enqueue:     agentloop.Enqueue,
+		getenv:    os.Getenv,
+		nowFunc:   time.Now,
+		loadAgent: state.LoadAgent,
+		saveAgent: state.SaveAgent,
 	}
 }
 
@@ -107,22 +103,11 @@ func runReport(deps *reportDeps, reportType, message string) error {
 	}
 
 	opDeps := &agentops.ReportDeps{
-		LoadAgent:   deps.loadAgent,
-		SaveAgent:   deps.saveAgent,
-		SendMessage: deps.sendMessage,
-		Enqueue:     deps.enqueue,
-		Now:         deps.nowFunc,
+		LoadAgent: deps.loadAgent,
+		SaveAgent: deps.saveAgent,
+		Now:       deps.nowFunc,
 	}
-	_, err := agentops.Report(opDeps, sprawlRoot, agentName, cliTypeToState(reportType), message)
-	if err != nil {
-		// Messaging failure is surfaced by agentops.Report but state is
-		// already persisted in that case — match the old non-fatal behavior
-		// for parent-notification errors.
-		if strings.Contains(err.Error(), "sending message to parent") || strings.Contains(err.Error(), "enqueuing async report") {
-			fmt.Fprintf(os.Stderr, "Warning: failed to notify parent: %v\n", err)
-			fmt.Fprintf(os.Stderr, "Reported %s: %s\n", reportType, message)
-			return nil
-		}
+	if _, err := agentops.Report(opDeps, sprawlRoot, agentName, cliTypeToState(reportType), message); err != nil {
 		return err
 	}
 

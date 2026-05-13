@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
@@ -15,6 +16,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
@@ -92,6 +94,20 @@ type Real struct {
 	// questions is the in-process question queue for ask_user_question
 	// flows (QUM-527 slice 1). See question.go.
 	questions *questionQueue
+
+	// statusNotifier is the in-process per-recipient ring populated by
+	// ReportStatus and drained by the parent's drain pipeline
+	// (peekAndDrainCmd / unifiedHandle.drainPendingToQueue). QUM-559:
+	// status updates flow exclusively through this ring; no maildir
+	// write, no harness-queue enqueue.
+	statusNotifier *statusNotifier
+
+	// reportMu serializes ReportStatus calls. state.SaveAgent is not
+	// atomic on disk (read-modify-write), so concurrent reporters racing
+	// to update the same agent's state would corrupt or lose updates.
+	// Status reports are low-frequency in practice; serialization is a
+	// reasonable cost. See QUM-559 concurrency test.
+	reportMu sync.Mutex
 }
 
 // SetProgressEmitter installs a fan-out hook invoked for every merge/retire
@@ -207,9 +223,14 @@ func NewReal(cfg Config) (*Real, error) {
 		handoffWriteSignalFile:     memory.WriteHandoffSignal,
 		handoffNow:                 time.Now,
 
-		questions: newQuestionQueue(),
+		questions:      newQuestionQueue(),
+		statusNotifier: newStatusNotifier(),
 	}
-	r.runtimeStarter = newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
+	starter := newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
+	if s, ok := starter.(*inProcessUnifiedStarter); ok {
+		s.statusDrainer = r.statusNotifier.Drain
+	}
+	r.runtimeStarter = starter
 	return r, nil
 }
 
@@ -275,7 +296,11 @@ func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []st
 	if r.mcpBridge != nil {
 		initSpec.ToolBridge = r.mcpBridge
 	}
-	r.runtimeStarter = newInProcessUnifiedStarter(initSpec, allowedTools)
+	starter := newInProcessUnifiedStarter(initSpec, allowedTools)
+	if s, ok := starter.(*inProcessUnifiedStarter); ok && r.statusNotifier != nil {
+		s.statusDrainer = r.statusNotifier.Drain
+	}
+	r.runtimeStarter = starter
 }
 
 // MCPBridge returns the host-scoped MCP tool bridge installed on this
@@ -945,24 +970,43 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary s
 		return nil, fmt.Errorf("reporter identity not set (callerName is empty)")
 	}
 
-	var parentRuntime *AgentRuntime
-	if agentState, err := state.LoadAgent(r.sprawlRoot, agentName); err == nil && agentState.Parent != "" {
-		parentRuntime, _ = r.startedRuntime(agentState.Parent)
+	// Serialize concurrent reporters — state.SaveAgent is read-modify-write.
+	r.reportMu.Lock()
+	defer r.reportMu.Unlock()
+
+	// Load reporter state to resolve parent. A load failure (e.g. orphan
+	// reporter) is non-fatal — agentops.Report below will surface a clear
+	// error if the agent truly doesn't exist.
+	parent := ""
+	if agentState, err := state.LoadAgent(r.sprawlRoot, agentName); err == nil && agentState != nil {
+		parent = agentState.Parent
 	}
 
-	reportDeps := &agentops.ReportDeps{
-		SendMessage: messages.Send,
-	}
-	res, err := agentops.Report(reportDeps, r.sprawlRoot, agentName, reportState, summary)
+	// State-only persistence (QUM-559): no maildir, no harness-queue enqueue.
+	res, err := agentops.Report(&agentops.ReportDeps{}, r.sprawlRoot, agentName, reportState, summary)
 	if err != nil {
 		return nil, err
 	}
 	r.syncRuntimeFromState(agentName)
-	if parentRuntime != nil && res.MessageID != "" {
-		// QUM-550 slice 2: cooperative wake — never preempt parent's session.
-		_ = parentRuntime.WakeForDelivery()
+
+	// QUM-559: push the ephemeral notification onto the parent's ring and
+	// cooperatively wake the parent runtime. Status updates are never
+	// interrupt-class — children that genuinely need to preempt should use
+	// send_message(interrupt=true).
+	if parent != "" {
+		line := inboxprompt.BuildStatusNotification(agentName, reportState, summary)
+		r.statusNotifier.Enqueue(parent, line)
+		if parentRuntime, ok := r.startedRuntime(parent); ok {
+			_ = parentRuntime.WakeForDelivery()
+		}
 	}
 	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
+}
+
+// DrainStatusNotifications returns and clears the per-recipient ephemeral
+// status-notification ring. See QUM-559.
+func (r *Real) DrainStatusNotifications(recipient string) []string {
+	return r.statusNotifier.Drain(recipient)
 }
 
 func (r *Real) syncRuntimeFromState(agentName string) {

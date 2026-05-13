@@ -208,6 +208,24 @@ wait_for_pattern_fast() {
     return 1
 }
 
+# wait_for_no_badge_rise <session> <timeout_secs>
+# QUM-559: poll the pane for the duration of timeout_secs and fail (return 1)
+# if a weave unread-badge ever appears. Returns 0 iff no `weave[^│]*\([1-9]`
+# badge ever shows during the sample window. Use after a `sprawl report
+# done` to assert the QUM-559 contract: report_status writes nothing to
+# maildir, so the badge must NOT rise.
+wait_for_no_badge_rise() {
+    local session="$1" timeout="$2"
+    local end=$((SECONDS + timeout))
+    while [ "$SECONDS" -lt "$end" ]; do
+        if capture_pane "$session" | grep -qE "weave[^│]*\([1-9]"; then
+            return 1
+        fi
+        sleep 0.2
+    done
+    return 0
+}
+
 cleanup() {
     local rc=$?
     if [ -n "${SPRAWL_TMUX_SOCKET:-}" ]; then
@@ -324,15 +342,15 @@ cat > "$CHILD_STATE_DIR/${CHILD_NAME}.json" <<JSON
 JSON
 
 # --- Test A: `sprawl report done` from a simulated child ---
+#
+# QUM-559: report_status no longer writes to maildir. The badge must NOT rise,
+# no `inbox: N new message` banner must appear, and no drain notification with
+# `mcp__sprawl__messages_read` from $CHILD_NAME must surface. The CLI must
+# still exit 0 and persist `state.last_report_message` on the child agent.
 
 echo ""
-echo "=== Test A: child 'sprawl report done' → TUI banner + (1) badge ==="
-# QUM-465: snapshot banner count before the send so we can assert the
-# delta is exactly 1 (not 2) after the send lands.
+echo "=== Test A: child 'sprawl report done' → state.last_report_message only (no maildir) ==="
 BANNERS_BEFORE_A=$(count_inbox_banners "$SESSION")
-# QUM-555: snapshot <system-notification> drain count before the send so we
-# can assert it rose by exactly 1 after the drain tick fires (replaces the
-# pre-QUM-555 inlined body-token assertion).
 DRAINS_BEFORE_A=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
 REPORT_LOG="$(mktemp /tmp/notify-tui-e2e-report.XXXXXX)"
 set +e
@@ -352,61 +370,56 @@ else
     sed 's/^/    /' "$REPORT_LOG" >&2
 fi
 
-# QUM-555: badge first (race-sensitive — weave calls messages_read fast on
-# the slim notification, clearing `new/` and dropping the badge). Use the
-# 0.2s fast poller to reliably catch the rising edge. The pattern accepts
-# weave in either idle or running state because the slim notification can
-# drive weave into a turn before the (idle)+(1) snapshot is observable.
-if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(1\\)" 10; then
-    pass "weave row shows '(1)' unread badge"
+# QUM-559: child's state.last_report_message must be set (state-only persistence).
+CHILD_STATE_FILE="$CHILD_STATE_DIR/${CHILD_NAME}.json"
+if command -v jq >/dev/null 2>&1; then
+    LAST_MSG=$(jq -r '.last_report_message // empty' "$CHILD_STATE_FILE" 2>/dev/null || echo "")
+    if [ "$LAST_MSG" = "e2e tui notify test A" ]; then
+        pass "QUM-559: child state.last_report_message persisted"
+    else
+        fail "QUM-559: child state.last_report_message NOT persisted after sprawl report done (got: $LAST_MSG)"
+        echo "  child state file:" >&2
+        cat "$CHILD_STATE_FILE" >&2 || true
+    fi
 else
-    fail "weave row does NOT show '(1)' unread badge"
-    echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
+    if grep -qE '"last_report_message"[^,}]*e2e tui notify test A' "$CHILD_STATE_FILE"; then
+        pass "QUM-559: child state.last_report_message persisted"
+    else
+        fail "QUM-559: child state.last_report_message NOT persisted after sprawl report done"
+        echo "  child state file:" >&2
+        cat "$CHILD_STATE_FILE" >&2 || true
+    fi
 fi
 
-# Banner and badge should appear within 1-2 AgentTree ticks (~2-4s).
-# Allow generous headroom for slow sandbox boxes.
-if wait_for_pattern "$SESSION" "inbox: [0-9]+ new message" 10; then
-    pass "banner 'inbox: N new message[s]' appeared in viewport"
+# QUM-559: badge must NOT rise — report_status doesn't touch the maildir.
+if wait_for_no_badge_rise "$SESSION" 5; then
+    pass "QUM-559: weave row stayed at no unread badge after sprawl report done"
 else
-    fail "banner never appeared in TUI viewport after sprawl report done"
+    fail "QUM-559: weave row showed an unread badge after sprawl report done (maildir leak)"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -30 >&2
-fi
-
-# QUM-323 / QUM-555 / QUM-556 / QUM-557: assert the drain reached weave's
-# viewport as a rendered notification row citing $CHILD_NAME. Post-QUM-555 the
-# prompt no longer inlines the message body — only sender + short id.
-# Post-QUM-556 the body cites the canonical MCP tool call
-# `mcp__sprawl__messages_read(id=<id>)`. Post-QUM-557 the raw
-# `<system-notification>` tags are stripped before rendering and the line
-# appears with a left-bar accent + `✉`/`⚡` glyph. The 2s AgentTreeMsg tick
-# fires peekAndDrainCmd which renders the flush prompt and sends it via the
-# bridge into claude; the TUI also renders the notification row directly in
-# the viewport, so the pane capture sees the rendered shape. Generous timeout
-# for slow sandbox + claude stream startup.
-if wait_for_pattern "$SESSION" "(✉|⚡) (\\[interrupt\\] )?From $CHILD_NAME — mcp__sprawl__messages_read\\(id=" 20; then
-    pass "QUM-555 drain notification from '$CHILD_NAME' reached weave's prompt (QUM-323 drain fired in TUI)"
-else
-    fail "QUM-555 drain notification from '$CHILD_NAME' did NOT reach weave's prompt within 20s — QUM-323 TUI regression"
-    echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
 fi
 
 rm -f "$REPORT_LOG"
 
-# QUM-465: assert exactly ONE inbox banner was added by Test A's single
-# delivery. With the double-fire bug the delta is 2 (one from
-# InboxArrivalMsg, one from AgentTreeMsg's rise-detector).
-# Give the 2s tick a couple cycles to land before sampling.
+# QUM-559: banner delta must be 0 (no `inbox: N new message` for report_status).
 sleep 5
 BANNERS_AFTER_A=$(count_inbox_banners "$SESSION")
 DELTA_A=$((BANNERS_AFTER_A - BANNERS_BEFORE_A))
-if [ "$DELTA_A" -eq 1 ]; then
-    pass "QUM-465: exactly 1 banner added by Test A delivery (delta=$DELTA_A)"
+if [ "$DELTA_A" -eq 0 ]; then
+    pass "QUM-559: zero banner-count delta after report_status (was QUM-465 delta=1, flipped to delta=0)"
 else
-    fail "QUM-465: Test A produced $DELTA_A banners (before=$BANNERS_BEFORE_A, after=$BANNERS_AFTER_A); expected exactly 1"
+    fail "QUM-559: banner-count delta = $DELTA_A (before=$BANNERS_BEFORE_A, after=$BANNERS_AFTER_A); expected 0"
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
+fi
+
+# QUM-559: no maildir-style drain notification from $CHILD_NAME must appear.
+DRAINS_AFTER_A=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
+if [ "$DRAINS_AFTER_A" -eq "$DRAINS_BEFORE_A" ]; then
+    pass "QUM-559: no maildir-drain notification from '$CHILD_NAME' (delta=0)"
+else
+    fail "QUM-559: maildir-drain notification from '$CHILD_NAME' appeared after report_status (delta=$((DRAINS_AFTER_A - DRAINS_BEFORE_A)))"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -40 >&2
 fi
@@ -414,7 +427,7 @@ fi
 # --- Test B: `sprawl messages send weave` from the same child ---
 
 echo ""
-echo "=== Test B: child 'sprawl messages send weave' → badge rises to (2) ==="
+echo "=== Test B: child 'sprawl messages send weave' → badge rises to (1) ==="
 # QUM-465: snapshot banner count before second send.
 BANNERS_BEFORE_B=$(count_inbox_banners "$SESSION")
 # QUM-555: snapshot drain count before second send to assert delta>=1.
@@ -437,10 +450,10 @@ else
     sed 's/^/    /' "$SEND_LOG" >&2
 fi
 
-if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(2\\)" 10; then
-    pass "weave row shows '(2)' unread badge after second message"
+if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(1\\)" 10; then
+    pass "QUM-559: weave row shows '(1)' unread badge after first real maildir delivery (Test A no longer leaves residue)"
 else
-    fail "weave row did NOT rise to '(2)' after sprawl messages send"
+    fail "weave row did NOT rise to '(1)' after sprawl messages send"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -30 >&2
 fi
