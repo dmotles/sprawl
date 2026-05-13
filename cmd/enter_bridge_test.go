@@ -99,6 +99,54 @@ func TestNewSession_ReusesSupervisorMCPBridge(t *testing.T) {
 	}
 }
 
+// TestSupervisorMCPBridge_ProductionUsesAccessor (QUM-473 §7) pins the
+// contract that the production weave-launch path NEVER takes the fallback
+// branch in supervisorMCPBridge. The fallback (host.NewMCPBridge() +
+// bridge.Register("sprawl", ...)) is the same pattern QUM-467 flagged as
+// the bug: any future refactor that drops the *supervisor.Real type
+// assertion and silently regresses to building a fresh per-call bridge
+// would sever children that hold the original. This test fails closed in
+// that scenario.
+//
+// We don't reach into supervisorMCPBridge's internals; we just assert
+// the returned bridge is pointer-equal to the one *supervisor.Real
+// exposes via MCPBridge(). The fallback path stays in place for test
+// doubles and is exercised by other tests in this file via its
+// pointer-equality invariants over MCPBridge() itself.
+func TestSupervisorMCPBridge_ProductionUsesAccessor(t *testing.T) {
+	deps := defaultEnterDeps
+	if deps == nil {
+		deps = resolveEnterDeps()
+	}
+	if deps.newSupervisor == nil {
+		t.Fatal("defaultEnterDeps.newSupervisor is nil; cannot exercise QUM-473 §7 contract")
+	}
+
+	tmpDir := t.TempDir()
+	sup, _ := deps.newSupervisor(tmpDir, nil)
+	if sup == nil {
+		t.Fatal("newSupervisor returned nil")
+	}
+	if _, ok := sup.(*supervisor.Real); !ok {
+		t.Skipf("supervisor type %T is not *supervisor.Real; the accessor-path assertion only applies to production", sup)
+	}
+	acc, ok := sup.(supervisorMCPBridgeAccessor)
+	if !ok {
+		t.Fatalf("*supervisor.Real does not implement MCPBridge() backend.ToolBridge — accessor missing")
+	}
+
+	want := acc.MCPBridge()
+	if want == nil {
+		t.Fatal("sup.MCPBridge() returned nil after newSupervisor; expected a host-scoped bridge installed during construction")
+	}
+
+	got := supervisorMCPBridge(sup)
+	if got != want {
+		t.Errorf("supervisorMCPBridge(*supervisor.Real) took the fallback path: got %p, want %p (sup.MCPBridge()). Production must never construct a fresh bridge here — see QUM-467 / QUM-473 §7.",
+			got, want)
+	}
+}
+
 // TestNewSupervisor_BridgeUsedByChildSpawns — ensures the bridge
 // exposed via MCPBridge() is the same one captured into the runtime
 // starter's InitSpec used to launch children. We can't peek directly

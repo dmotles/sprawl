@@ -12,6 +12,14 @@ type TestOptions struct {
 	SyncCounter *int
 }
 
+// SetMaxLogBytesForTest overrides the rotation size threshold and returns a
+// restore func. Used by rotation tests so they don't have to write 64 MiB.
+func SetMaxLogBytesForTest(n int64) func() {
+	prev := maxLogBytes
+	maxLogBytes = n
+	return func() { maxLogBytes = prev }
+}
+
 // OpenForTest returns the logger plus a triggerTick function that drives a
 // single heartbeat iteration synchronously and blocks until the in-flight
 // registry has been flushed to disk.

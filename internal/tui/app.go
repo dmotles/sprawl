@@ -1118,7 +1118,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// gets the same UX whether the sender was in-process (InboxArrivalMsg
 		// via the TUI notifier) or out-of-process (caught on the 2s tick).
 		if msg.RootUnread > m.rootUnread {
-			m.rootVP().AppendStatus(fmt.Sprintf("inbox: %d new message(s) for weave", msg.RootUnread-m.rootUnread))
+			m.rootVP().AppendStatus(formatInboxBanner(msg.RootUnread-m.rootUnread, ""))
 		}
 		m.rootUnread = msg.RootUnread
 		m.rebuildTree()
@@ -1174,7 +1174,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if diskUnread > m.rootUnread {
-			m.rootVP().AppendStatus(fmt.Sprintf("inbox: new message from %s", from))
+			m.rootVP().AppendStatus(formatInboxBanner(diskUnread-m.rootUnread, from))
 			m.rootUnread = diskUnread
 			m.rebuildTree()
 		}
@@ -2536,4 +2536,28 @@ func persistCostCmd(sprawlRoot, agentName string, totalCostUsd float64) tea.Cmd 
 		_ = state.SaveAgent(sprawlRoot, agent)
 		return nil
 	}
+}
+
+// formatInboxBanner renders the unified "inbox: ..." viewport banner used by
+// both the AgentTreeMsg rise-detector and the InboxArrivalMsg notifier
+// (QUM-473 §3). Pre-unification the two sites produced two different
+// formats ("inbox: N new message(s) for weave" vs "inbox: new message from
+// X") so the user saw inconsistent phrasings for the same logical event.
+//
+// Format:
+//   - count == 1, from == "":     "inbox: 1 new message"
+//   - count >  1, from == "":     "inbox: N new messages"
+//   - count == 1, from != "":     "inbox: 1 new message from <from>"
+//   - count >  1, from != "":     "inbox: N new messages from <from>"
+//
+// Caller is responsible for only invoking when count > 0.
+func formatInboxBanner(count int, from string) string {
+	noun := "messages"
+	if count == 1 {
+		noun = "message"
+	}
+	if from != "" {
+		return fmt.Sprintf("inbox: %d new %s from %s", count, noun, from)
+	}
+	return fmt.Sprintf("inbox: %d new %s", count, noun)
 }

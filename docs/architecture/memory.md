@@ -73,6 +73,47 @@ Properties:
 - **Best-effort.** Per-session LLM errors are logged and skipped; the loop
   proceeds with remaining sessions.
 
+## Persistent knowledge retraction (QUM-551)
+
+`.sprawl/memory/persistent.md` is the curated bullet list rendered into every
+session's system prompt under `## Persistent Knowledge`. It is regenerated
+after each handoff by `memory.UpdatePersistentKnowledge`
+(`internal/memory/persistent.go`), which builds a single curator prompt
+containing:
+
+1. The current persistent bullets (verbatim).
+2. The latest session summary (the held-back newest session — see
+   `runConsolidationPipeline` in `internal/rootinit/postrun.go`).
+3. Recent timeline rows for context.
+
+The curator (a one-shot Claude call) returns a fresh bullet list that is
+written back as the new persistent.md. The pipeline is intentionally
+overwrite-by-output: whatever bullets the curator omits are gone. That means
+retraction is a pure prompt-design problem, not a data-model problem — no
+provenance tags, no per-bullet metadata.
+
+The curator prompt (see `buildPersistentPrompt`) encodes two rules:
+
+- **Retraction.** When the new session summary or recent timeline directly
+  contradicts, supersedes, or fixes a claim made by an existing bullet, the
+  curator MUST remove or rewrite that bullet. Newer evidence wins; the stale
+  and corrected versions must not coexist. This is what closes the
+  observed failure mode where e.g. "kill MCP tool is a no-op" persists across
+  sessions after the bug is fixed.
+- **False-positive guardrail.** Bullets are removed only when contradicted —
+  not merely because the latest session didn't reference them. Stable
+  long-lived facts (user preferences, branch prefixes, project conventions)
+  should survive many quiet sessions. False-positive removals are worse than
+  stale bullets.
+
+Both rules live in the prompt body and are pinned by
+`TestBuildPersistentPrompt_RetractionInstructionPresent` and
+`TestUpdatePersistentKnowledge_RetractsContradictedBullet` in
+`internal/memory/persistent_test.go`. The end-to-end retraction test seeds a
+known-stale bullet, drives the pipeline with a mock invoker that returns the
+retracted list, and asserts the stale bullet is gone while unrelated bullets
+survive.
+
 ## Operations
 
 | Command | Purpose | Hidden? |

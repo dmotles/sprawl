@@ -21,7 +21,7 @@
 #      reflection).
 #   5. Runs `sprawl report done` as the child; asserts the TUI pane
 #      picks up the maildir rise on its 2s tick and renders both
-#      (a) the banner 'inbox: N new message(s) for weave', and
+#      (a) the banner 'inbox: N new message[s]' (QUM-473 §3 unified format), and
 #      (b) the '(1)' unread badge on the weave row.
 #   6. Runs `sprawl messages send weave` as the child; asserts the
 #      unread badge rises to '(2)'.
@@ -147,15 +147,15 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL: $1" >&2; }
 capture_pane() { _stmux capture-pane -t "$1" -p 2>/dev/null || true; }
 
 # Count occurrences of an inbox-banner pattern in the current pane capture.
-# Two distinct banner phrasings exist:
-#   - "inbox: N new message(s) for weave"  (from AgentTreeMsg rise-detector)
-#   - "inbox: new message from <sender>"   (from InboxArrivalMsg notifier)
+# QUM-473 §3 unified the banner format across both emit sites:
+#   - "inbox: N new message[s]"             (from AgentTreeMsg rise-detector, no source)
+#   - "inbox: N new message[s] from <sender>" (from InboxArrivalMsg notifier, source known)
 # QUM-465: a single send_async to weave must produce exactly one of these,
 # not both. Either flavor counts as a banner; total must be 1 per send.
 count_inbox_banners() {
     local session="$1"
     capture_pane "$session" \
-        | grep -cE "inbox: [0-9]+ new message\\(s\\) for weave|inbox: new message from " \
+        | grep -cE "inbox: [0-9]+ new message" \
         || true
 }
 
@@ -318,8 +318,8 @@ fi
 
 # Banner and badge should appear within 1-2 AgentTree ticks (~2-4s).
 # Allow generous headroom for slow sandbox boxes.
-if wait_for_pattern "$SESSION" "inbox: [0-9]+ new message\\(s\\) for weave" 10; then
-    pass "banner 'inbox: N new message(s) for weave' appeared in viewport"
+if wait_for_pattern "$SESSION" "inbox: [0-9]+ new message" 10; then
+    pass "banner 'inbox: N new message[s]' appeared in viewport"
 else
     fail "banner never appeared in TUI viewport after sprawl report done"
     echo "  pane tail:" >&2
