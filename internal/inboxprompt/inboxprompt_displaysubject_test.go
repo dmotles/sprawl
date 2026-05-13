@@ -1,11 +1,9 @@
-// Tests for QUM-550 slice 1: displaySubject helper and its use in the
-// flush-prompt builders. After the send_message overhaul drops the
-// per-message subject from the API, queue entries persist with Subject="" —
-// the flush-prompt formatters must fall back to the body's first non-empty
-// line so the inbox notification still renders a meaningful label.
-//
-// RED phase: DisplaySubject does not exist yet; the file is intentional
-// compile-fail.
+// Tests for the DisplaySubject helper. After QUM-555 slimmed the queue/
+// interrupt flush prompts to a single `<system-notification>` line per entry,
+// DisplaySubject is no longer wired into the rendered output — but it remains
+// exported for callers that want a human-facing label for an inbox entry
+// (e.g. TUI surfaces, future tooling). These tests pin the helper's own
+// behavior.
 package inboxprompt_test
 
 import (
@@ -60,51 +58,5 @@ func TestDisplaySubject_SkipsEmptyLeadingLines(t *testing.T) {
 	got := inboxprompt.DisplaySubject(e)
 	if !strings.Contains(got, "actual content") {
 		t.Errorf("DisplaySubject = %q, want to contain 'actual content' (skip blank leading lines)", got)
-	}
-}
-
-// TestBuildQueueFlushPrompt_FallsBackToBodyFirstLine_WhenSubjectEmpty pins
-// the integration of DisplaySubject into the async queue flush prompt. When
-// an entry has no Subject, the prompt's per-message header must surface the
-// first body line where the subject would have gone.
-func TestBuildQueueFlushPrompt_FallsBackToBodyFirstLine_WhenSubjectEmpty(t *testing.T) {
-	entries := []inboxprompt.Entry{{
-		ID:      "id-1",
-		ShortID: "abc",
-		Class:   inboxprompt.ClassAsync,
-		From:    "weave",
-		Subject: "",
-		Body:    "decision needed on X\nmore detail here",
-	}}
-	got := inboxprompt.BuildQueueFlushPrompt(entries)
-
-	if !strings.Contains(got, "decision needed on X") {
-		t.Errorf("BuildQueueFlushPrompt with empty Subject should fall back to body's first line; got:\n%s", got)
-	}
-	// The literal placeholder "subject: " followed by an empty value must not
-	// appear — the fallback should land in that slot.
-	if strings.Contains(got, "subject: \n") || strings.Contains(got, "subject:  ") {
-		t.Errorf("BuildQueueFlushPrompt rendered empty subject literally; got:\n%s", got)
-	}
-}
-
-// TestBuildInterruptFlushPrompt_FallsBackToBodyFirstLine_WhenSubjectEmpty
-// pins the same fallback for the interrupt flush prompt.
-func TestBuildInterruptFlushPrompt_FallsBackToBodyFirstLine_WhenSubjectEmpty(t *testing.T) {
-	entries := []inboxprompt.Entry{{
-		ID:      "id-2",
-		ShortID: "def",
-		Class:   inboxprompt.ClassInterrupt,
-		From:    "weave",
-		Subject: "",
-		Body:    "stop and switch tasks\nresume hint goes here",
-	}}
-	got := inboxprompt.BuildInterruptFlushPrompt(entries)
-
-	if !strings.Contains(got, "stop and switch tasks") {
-		t.Errorf("BuildInterruptFlushPrompt with empty Subject should fall back to body's first line; got:\n%s", got)
-	}
-	if strings.Contains(got, "Subject: \n") {
-		t.Errorf("BuildInterruptFlushPrompt rendered empty 'Subject:' literally; got:\n%s", got)
 	}
 }

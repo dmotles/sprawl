@@ -2437,8 +2437,10 @@ func TestPeekAndDrainCmd_AsyncEntries_ReturnsDrainMsg(t *testing.T) {
 	if drain.Class != "async" {
 		t.Errorf("expected async class, got %q", drain.Class)
 	}
-	if !strings.Contains(drain.Prompt, "RED-FLAG-BODY") {
-		t.Errorf("expected body in prompt, got:\n%s", drain.Prompt)
+	// Post-QUM-555: the flush prompt is a single `<system-notification>` line
+	// per entry — no body inlining. Assert on the sender citation instead.
+	if !strings.Contains(drain.Prompt, "New message from ghost") {
+		t.Errorf("expected sender citation in prompt, got:\n%s", drain.Prompt)
 	}
 	if len(drain.EntryIDs) != 1 {
 		t.Errorf("expected 1 entry ID, got %d", len(drain.EntryIDs))
@@ -2465,8 +2467,10 @@ func TestPeekAndDrainCmd_InterruptPriority(t *testing.T) {
 	if drain.Class != "interrupt" {
 		t.Errorf("expected interrupt to take priority, got class=%q", drain.Class)
 	}
-	if !strings.Contains(drain.Prompt, "interrupt-body") {
-		t.Errorf("expected interrupt body in prompt, got:\n%s", drain.Prompt)
+	// Post-QUM-555: assert on the interrupt-tagged notification shape rather
+	// than the inlined body (which is no longer emitted).
+	if !strings.Contains(drain.Prompt, "[interrupt] New message from b") {
+		t.Errorf("expected interrupt notification in prompt, got:\n%s", drain.Prompt)
 	}
 }
 

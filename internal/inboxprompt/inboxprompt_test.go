@@ -1,10 +1,8 @@
 // Package inboxprompt holds the inbox/interrupt prompt-formatter that both
 // the legacy agentloop child harness and the unified-runtime supervisor path
-// use to render pending queue entries into a turn prompt. Extracted from
-// internal/agentloop in QUM-437 so the unified path no longer ships a stub
-// "You have new messages" placeholder. The output must remain byte-identical
-// to the prior agentloop implementation (the bottom test in this file pins
-// that contract during the transition window).
+// use to render pending queue entries into a turn prompt. QUM-555 slimmed the
+// frames to one `<system-notification>` line per entry — no inlined body,
+// no footer prose.
 package inboxprompt_test
 
 import (
@@ -25,114 +23,69 @@ func TestBuildQueueFlushPrompt_Empty(t *testing.T) {
 	}
 }
 
-func TestBuildQueueFlushPrompt_Contract(t *testing.T) {
-	entries := []inboxprompt.Entry{
-		{
-			ID: "abc", Class: inboxprompt.ClassAsync, From: "child-alpha",
-			Subject: "status", Body: "all green",
-			Tags: []string{"fyi", "status"},
-		},
-	}
-	p := inboxprompt.BuildQueueFlushPrompt(entries)
-	for _, needle := range []string{
-		"[inbox] You received 1 message(s) since the last turn",
-		"from child-alpha",
-		"[fyi,status]",
-		"subject: status",
-		"all green",
-		"Continue your current work unless a message tells you otherwise.",
-	} {
-		if !strings.Contains(p, needle) {
-			t.Errorf("prompt missing %q. full:\n%s", needle, p)
-		}
+// TestBuildQueueFlushPrompt_SingleEntry pins the exact one-line shape per
+// QUM-555: `<system-notification>New message from $FROM. Read $SHORT_ID.</system-notification>\n`.
+// No subject, no body, no footer prose.
+func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "uuid-1", ShortID: "abc", Class: inboxprompt.ClassAsync,
+		From: "child-alpha", Subject: "status", Body: "all green",
+		Tags: []string{"fyi"},
+	}}
+	got := inboxprompt.BuildQueueFlushPrompt(entries)
+	want := "<system-notification>New message from child-alpha. Read abc.</system-notification>\n"
+	if got != want {
+		t.Errorf("BuildQueueFlushPrompt mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
 
+// TestBuildQueueFlushPrompt_SingleEntry_FallsBackToID covers entries whose
+// ShortID is empty (legacy enqueues): the line must cite Entry.ID instead.
+func TestBuildQueueFlushPrompt_SingleEntry_FallsBackToID(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "uuid-foo", ShortID: "", Class: inboxprompt.ClassAsync,
+		From: "weave", Body: "hello",
+	}}
+	got := inboxprompt.BuildQueueFlushPrompt(entries)
+	want := "<system-notification>New message from weave. Read uuid-foo.</system-notification>\n"
+	if got != want {
+		t.Errorf("BuildQueueFlushPrompt fallback mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestBuildQueueFlushPrompt_Multiple pins N entries → N lines, one per entry.
 func TestBuildQueueFlushPrompt_Multiple(t *testing.T) {
 	entries := []inboxprompt.Entry{
-		{From: "a", Subject: "s1", Body: "b1"},
-		{From: "b", Subject: "s2", Body: "b2"},
+		{ID: "u1", ShortID: "s1", From: "a", Body: "b1"},
+		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
+		{ID: "u3", ShortID: "s3", From: "c", Body: "b3"},
 	}
-	p := inboxprompt.BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "2 message(s)") {
-		t.Errorf("expected '2 message(s)' in header, got:\n%s", p)
-	}
-	if !strings.Contains(p, "1. from a") || !strings.Contains(p, "2. from b") {
-		t.Errorf("expected numbered entries, got:\n%s", p)
-	}
-}
-
-func TestBuildQueueFlushPrompt_TruncatesLargeBody(t *testing.T) {
-	big := strings.Repeat("x", inboxprompt.MaxQueueFlushBodyBytes+500)
-	entries := []inboxprompt.Entry{{ID: "id1", ShortID: "sh1", From: "f", Subject: "s", Body: big}}
-	p := inboxprompt.BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "truncated") {
-		t.Errorf("expected truncation marker, got:\n%s", p[:200])
-	}
-	if !strings.Contains(p, "sprawl messages read sh1") {
-		t.Errorf("expected truncation hint with ShortID, got:\n%s", p[:200])
+	got := inboxprompt.BuildQueueFlushPrompt(entries)
+	want := "<system-notification>New message from a. Read s1.</system-notification>\n" +
+		"<system-notification>New message from b. Read s2.</system-notification>\n" +
+		"<system-notification>New message from c. Read s3.</system-notification>\n"
+	if got != want {
+		t.Errorf("BuildQueueFlushPrompt multi mismatch\n got: %q\nwant: %q", got, want)
 	}
 }
 
-func TestBuildQueueFlushPrompt_TruncatedHintUsesShortID(t *testing.T) {
-	big := strings.Repeat("y", inboxprompt.MaxQueueFlushBodyBytes+10)
-	entries := []inboxprompt.Entry{{ID: "uuid-deadbeef", ShortID: "abc", From: "f", Subject: "s", Body: big}}
-	p := inboxprompt.BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "sprawl messages read abc") {
-		t.Errorf("expected hint to cite ShortID 'abc', got:\n%s", p)
-	}
-	if strings.Contains(p, "uuid-deadbeef") {
-		t.Errorf("hint must not embed queue UUID, got:\n%s", p)
-	}
-}
-
-func TestBuildQueueFlushPrompt_TruncatedHintFallsBackToID(t *testing.T) {
-	big := strings.Repeat("z", inboxprompt.MaxQueueFlushBodyBytes+10)
-	entries := []inboxprompt.Entry{{ID: "uuid-foo", ShortID: "", From: "f", Subject: "s", Body: big}}
-	p := inboxprompt.BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "sprawl messages read uuid-foo") {
-		t.Errorf("expected fallback to Entry.ID, got:\n%s", p)
-	}
-}
-
-func TestBuildInterruptFlushPrompt_TruncatedHintUsesShortID(t *testing.T) {
-	big := strings.Repeat("q", inboxprompt.MaxQueueFlushBodyBytes+10)
-	entries := []inboxprompt.Entry{{ID: "uuid-cafef00d", ShortID: "xyz", From: "weave", Subject: "stop", Body: big}}
-	p := inboxprompt.BuildInterruptFlushPrompt(entries)
-	if !strings.Contains(p, "truncated") {
-		t.Errorf("expected truncation marker, got:\n%s", p)
-	}
-	if !strings.Contains(p, "sprawl messages read xyz") {
-		t.Errorf("expected hint to cite ShortID 'xyz', got:\n%s", p)
-	}
-	if strings.Contains(p, "uuid-cafef00d") {
-		t.Errorf("hint must not embed queue UUID, got:\n%s", p)
-	}
-}
-
-func TestBuildQueueFlushPrompt_AggregateCap(t *testing.T) {
-	// Use a sentinel rune ('z') that appears nowhere in the prompt's
-	// header, per-entry preamble, truncation marker, or footer — so
-	// strings.Count(p, "z") returns *exactly* the surviving body bytes
-	// after the aggregate cap is enforced, with no header-byte slack
-	// needed. Six 2KB bodies of 'z' (12KB input) against a 10KB cap
-	// must produce exactly 10KB of 'z' in the rendered prompt.
-	const sentinel = "z"
-	var entries []inboxprompt.Entry
-	for i := 0; i < 6; i++ {
-		entries = append(entries, inboxprompt.Entry{
-			From:    "f",
-			Subject: "s",
-			Body:    strings.Repeat(sentinel, inboxprompt.MaxQueueFlushBodyBytes),
-		})
-	}
-	p := inboxprompt.BuildQueueFlushPrompt(entries)
-	bodyBytes := strings.Count(p, sentinel)
-	if bodyBytes != inboxprompt.MaxQueueFlushTotalBytes {
-		t.Errorf("aggregate body bytes after cap = %d, want exactly %d (cap = %d, input = %d)",
-			bodyBytes, inboxprompt.MaxQueueFlushTotalBytes,
-			inboxprompt.MaxQueueFlushTotalBytes,
-			6*inboxprompt.MaxQueueFlushBodyBytes)
+// TestBuildQueueFlushPrompt_NoBodyInlined guards against any reintroduction
+// of the verbose pre-QUM-555 frame. Body text, subject, tags, and the legacy
+// footer must NOT appear in the output.
+func TestBuildQueueFlushPrompt_NoBodyInlined(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "u1", ShortID: "s1", From: "a",
+		Subject: "secret-subject", Body: "secret-body-content",
+		Tags: []string{"secret-tag"},
+	}}
+	got := inboxprompt.BuildQueueFlushPrompt(entries)
+	for _, banned := range []string{
+		"secret-subject", "secret-body-content", "secret-tag",
+		"Continue your current work", "[inbox]", "subject:",
+	} {
+		if strings.Contains(got, banned) {
+			t.Errorf("BuildQueueFlushPrompt leaked %q in output: %q", banned, got)
+		}
 	}
 }
 
@@ -142,47 +95,66 @@ func TestBuildInterruptFlushPrompt_Empty(t *testing.T) {
 	}
 }
 
-func TestBuildInterruptFlushPrompt_SingleWithResumeHint(t *testing.T) {
-	entries := []inboxprompt.Entry{
-		{
-			From: "weave", Subject: "stop", Body: "reprioritize",
-			Tags: []string{"resume_hint:writing tests"},
-		},
+// TestBuildInterruptFlushPrompt_SingleEntry pins the interrupt-line shape:
+// same tag, prefixed inside with `[interrupt] `.
+func TestBuildInterruptFlushPrompt_SingleEntry(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "uuid-int-1", ShortID: "xyz", Class: inboxprompt.ClassInterrupt,
+		From: "weave", Subject: "stop", Body: "reprioritize",
+		Tags: []string{"resume_hint:writing tests"},
+	}}
+	got := inboxprompt.BuildInterruptFlushPrompt(entries)
+	want := "<system-notification>[interrupt] New message from weave. Read xyz.</system-notification>\n"
+	if got != want {
+		t.Errorf("BuildInterruptFlushPrompt mismatch\n got: %q\nwant: %q", got, want)
 	}
-	p := inboxprompt.BuildInterruptFlushPrompt(entries)
-	for _, needle := range []string{
-		"[interrupt]",
-		"weave has injected",
-		"writing tests",
-		"Subject: stop",
-		"reprioritize",
-		"resume the interrupted work",
+}
+
+// TestBuildInterruptFlushPrompt_SingleEntry_FallsBackToID covers entries
+// without a ShortID; the interrupt line falls back to Entry.ID.
+func TestBuildInterruptFlushPrompt_SingleEntry_FallsBackToID(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "uuid-bar", ShortID: "", Class: inboxprompt.ClassInterrupt,
+		From: "weave", Body: "stop",
+	}}
+	got := inboxprompt.BuildInterruptFlushPrompt(entries)
+	want := "<system-notification>[interrupt] New message from weave. Read uuid-bar.</system-notification>\n"
+	if got != want {
+		t.Errorf("BuildInterruptFlushPrompt fallback mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestBuildInterruptFlushPrompt_Multiple pins N interrupt entries → N lines.
+func TestBuildInterruptFlushPrompt_Multiple(t *testing.T) {
+	entries := []inboxprompt.Entry{
+		{ID: "u1", ShortID: "s1", From: "a", Body: "b1"},
+		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
+	}
+	got := inboxprompt.BuildInterruptFlushPrompt(entries)
+	want := "<system-notification>[interrupt] New message from a. Read s1.</system-notification>\n" +
+		"<system-notification>[interrupt] New message from b. Read s2.</system-notification>\n"
+	if got != want {
+		t.Errorf("BuildInterruptFlushPrompt multi mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestBuildInterruptFlushPrompt_NoBodyInlined guards against any reintroduction
+// of the verbose pre-QUM-555 interrupt frame.
+func TestBuildInterruptFlushPrompt_NoBodyInlined(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "u1", ShortID: "s1", From: "weave",
+		Subject: "secret-subject", Body: "secret-body-content",
+		Tags: []string{"resume_hint:secret-hint"},
+	}}
+	got := inboxprompt.BuildInterruptFlushPrompt(entries)
+	for _, banned := range []string{
+		"secret-subject", "secret-body-content", "secret-hint",
+		"After reading, decide", "has injected", "your previous task",
+		"Subject:", "resume the interrupted",
 	} {
-		if !strings.Contains(p, needle) {
-			t.Errorf("prompt missing %q. full:\n%s", needle, p)
+		if strings.Contains(got, banned) {
+			t.Errorf("BuildInterruptFlushPrompt leaked %q in output: %q", banned, got)
 		}
-	}
-}
-
-func TestBuildInterruptFlushPrompt_FallbackHint(t *testing.T) {
-	entries := []inboxprompt.Entry{{From: "weave", Subject: "s", Body: "b"}}
-	p := inboxprompt.BuildInterruptFlushPrompt(entries)
-	if !strings.Contains(p, "your previous task") {
-		t.Errorf("expected fallback 'your previous task', got:\n%s", p)
-	}
-}
-
-func TestBuildInterruptFlushPrompt_MultipleSenders(t *testing.T) {
-	entries := []inboxprompt.Entry{
-		{From: "a", Subject: "s1", Body: "b1"},
-		{From: "b", Subject: "s2", Body: "b2"},
-	}
-	p := inboxprompt.BuildInterruptFlushPrompt(entries)
-	if !strings.Contains(p, "2 senders") {
-		t.Errorf("expected '2 senders', got:\n%s", p)
-	}
-	if !strings.Contains(p, "--- 1 of 2") || !strings.Contains(p, "--- 2 of 2") {
-		t.Errorf("expected per-message separators, got:\n%s", p)
 	}
 }
 
@@ -209,18 +181,11 @@ func TestSplitByClass_Empty(t *testing.T) {
 	}
 }
 
-// TestBuildPromptsMatchGolden pins the byte-exact wire format of the queue-
-// flush and interrupt-flush prompts against committed golden files. The
-// goldens were captured from the (pre-extraction) agentloop implementation
-// so the inboxprompt output must remain byte-identical during and after the
-// QUM-437 extraction. If a formatter change is intentional, regenerate the
-// goldens via a one-shot scratch program — never via a self-updating test.
-//
-// Fixture covers: 2 async entries (1 short body w/ tags+ShortID, 1 oversized
-// to exercise per-entry truncation) and 2 interrupt entries (resume_hint
-// tag on the first, mixed senders, second oversized).
+// TestBuildPromptsMatchGolden pins the byte-exact wire format of the
+// slim QUM-555 frames against committed golden files. Fixture covers two
+// async entries (one with ShortID, one with empty ShortID to exercise the
+// fallback path) and two interrupt entries (likewise).
 func TestBuildPromptsMatchGolden(t *testing.T) {
-	bigAsync := strings.Repeat("a", inboxprompt.MaxQueueFlushBodyBytes+50)
 	asyncs := []inboxprompt.Entry{
 		{
 			ID:      "uuid-async-1",
@@ -233,14 +198,13 @@ func TestBuildPromptsMatchGolden(t *testing.T) {
 		},
 		{
 			ID:      "uuid-async-2",
-			ShortID: "sh2",
+			ShortID: "",
 			Class:   inboxprompt.ClassAsync,
 			From:    "child-beta",
-			Subject: "huge",
-			Body:    bigAsync,
+			Subject: "ping",
+			Body:    "hi",
 		},
 	}
-	bigInt := strings.Repeat("b", inboxprompt.MaxQueueFlushBodyBytes+50)
 	interrupts := []inboxprompt.Entry{
 		{
 			ID:      "uuid-int-1",
@@ -253,11 +217,11 @@ func TestBuildPromptsMatchGolden(t *testing.T) {
 		},
 		{
 			ID:      "uuid-int-2",
-			ShortID: "si2",
+			ShortID: "",
 			Class:   inboxprompt.ClassInterrupt,
 			From:    "ratz",
-			Subject: "huge",
-			Body:    bigInt,
+			Subject: "urgent",
+			Body:    "halt",
 		},
 	}
 

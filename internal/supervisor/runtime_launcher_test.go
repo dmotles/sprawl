@@ -1216,6 +1216,9 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	}
 
 	// --- Round 1: send first message, drive turn, verify transition. ---
+	// Post-QUM-555 the flush prompt no longer inlines the body — assert on
+	// the entry's ShortID (which the `<system-notification>` line cites for
+	// `sprawl messages read`) as the per-message identity token.
 	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
 		ID: "msg-1", ShortID: "m1", Class: agentloop.ClassAsync,
 		From: "weave", Subject: "first", Body: "unique-token-AAA",
@@ -1226,8 +1229,8 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 		t.Fatalf("WakeForDelivery 1: %v", err)
 	}
 	prompt1 := waitTurnPrompt()
-	if !strings.Contains(prompt1, "unique-token-AAA") {
-		t.Fatalf("turn 1 prompt missing AAA token: %q", prompt1)
+	if !strings.Contains(prompt1, "Read m1.") {
+		t.Fatalf("turn 1 prompt missing 'Read m1.' citation: %q", prompt1)
 	}
 
 	// Wait for the on-disk transition.
@@ -1259,12 +1262,12 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	}
 	prompt2 := waitTurnPrompt()
 
-	// Critical assertion: second turn's prompt must contain BBB but NOT AAA.
-	if !strings.Contains(prompt2, "unique-token-BBB") {
-		t.Errorf("turn 2 prompt missing BBB token: %q", prompt2)
+	// Critical assertion: second turn's prompt must cite m2 but NOT m1.
+	if !strings.Contains(prompt2, "Read m2.") {
+		t.Errorf("turn 2 prompt missing 'Read m2.' citation: %q", prompt2)
 	}
-	if strings.Contains(prompt2, "unique-token-AAA") {
-		t.Errorf("turn 2 prompt RE-INJECTED first message (AAA found): %q", prompt2)
+	if strings.Contains(prompt2, "Read m1.") {
+		t.Errorf("turn 2 prompt RE-INJECTED first message (Read m1. found): %q", prompt2)
 	}
 
 	// Wait for second on-disk transition.
@@ -1280,48 +1283,6 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	p, _ := agentloop.ListPending(sprawlRoot, "alice")
 	d, _ := agentloop.ListDelivered(sprawlRoot, "alice")
 	t.Errorf("after turn 2: pending=%d (want 0), delivered=%d (want 2)", len(p), len(d))
-}
-
-// TestUnifiedHandle_WakeForDelivery_TruncatesOversizedBody pins the
-// supervisor-level truncation path: an async entry whose body exceeds the
-// per-message cap must surface in the synthesized inbox prompt as a
-// truncated payload citing the entry's ShortID for the read-hint. Guards
-// against the supervisor path bypassing inboxprompt's size guards.
-func TestUnifiedHandle_WakeForDelivery_TruncatesOversizedBody(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
-	defer func() { _ = uh.Stop(context.Background()) }()
-
-	body := strings.Repeat("z", inboxprompt.MaxQueueFlushBodyBytes+200)
-	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
-		ID: "id-async-big", ShortID: "sa1", Class: agentloop.ClassAsync,
-		From: "peer", Subject: "big", Body: body,
-	}); err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
-
-	if err := uh.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery: %v", err)
-	}
-
-	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
-	// polling rt.Queue().DrainAll(), which races with the runtime loop.
-	items := captured.waitFor(1, 2*time.Second)
-	var inbox *runtimepkg.QueueItem
-	for i := range items {
-		if items[i].Class == runtimepkg.ClassInbox {
-			inbox = &items[i]
-			break
-		}
-	}
-	if inbox == nil {
-		t.Fatalf("no ClassInbox item found; items=%+v", items)
-	}
-	if !strings.Contains(inbox.Prompt, "truncated") {
-		t.Errorf("prompt missing 'truncated' marker; prompt=%q", inbox.Prompt)
-	}
-	if !strings.Contains(inbox.Prompt, "sprawl messages read sa1") {
-		t.Errorf("prompt missing read-hint citing ShortID 'sa1'; prompt=%q", inbox.Prompt)
-	}
 }
 
 // ---------------------------------------------------------------------------

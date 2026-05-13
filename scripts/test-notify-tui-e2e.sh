@@ -159,6 +159,18 @@ count_inbox_banners() {
         || true
 }
 
+# QUM-555: count <system-notification> drain lines surfaced in weave's prompt.
+# Post-QUM-555 the queue-flush prompt is a one-line `<system-notification>`
+# per entry naming the sender and the short message id — no body inlining.
+# This is the canonical "did the drain reach weave's prompt?" signal.
+count_drain_notifications() {
+    local session="$1"
+    local sender="$2"
+    capture_pane "$session" \
+        | grep -cE "<system-notification>(\\[interrupt\\] )?New message from $sender\\. Read [^[:space:]]+\\.</system-notification>" \
+        || true
+}
+
 # wait_for_pattern <session> <pattern> <timeout_secs>
 wait_for_pattern() {
     local session="$1" pattern="$2" timeout="$3"
@@ -169,6 +181,23 @@ wait_for_pattern() {
         fi
         sleep 1
         elapsed=$((elapsed + 1))
+    done
+    return 1
+}
+
+# wait_for_pattern_fast <session> <pattern> <timeout_secs>
+# QUM-555: same as wait_for_pattern but polls every 0.2s. The unread-badge
+# rise→fall window is short under QUM-555 (weave reads the slim notification
+# almost immediately, clearing `new/`) so 1s polling can miss the rising
+# edge. 0.2s polling reliably catches the badge while it's visible.
+wait_for_pattern_fast() {
+    local session="$1" pattern="$2" timeout="$3"
+    local end=$((SECONDS + timeout))
+    while [ "$SECONDS" -lt "$end" ]; do
+        if capture_pane "$session" | grep -qE "$pattern"; then
+            return 0
+        fi
+        sleep 0.2
     done
     return 1
 }
@@ -291,20 +320,21 @@ JSON
 # --- Test A: `sprawl report done` from a simulated child ---
 
 echo ""
-# QUM-323: distinctive body token that must appear in weave's prompt after
-# the 2s drain tick runs peekAndDrainCmd and the bridge forwards to claude.
-DRAIN_TOKEN_A="DRAIN-BODY-TOKEN-A-$$-$(date +%s)"
 echo "=== Test A: child 'sprawl report done' → TUI banner + (1) badge ==="
 # QUM-465: snapshot banner count before the send so we can assert the
 # delta is exactly 1 (not 2) after the send lands.
 BANNERS_BEFORE_A=$(count_inbox_banners "$SESSION")
+# QUM-555: snapshot <system-notification> drain count before the send so we
+# can assert it rose by exactly 1 after the drain tick fires (replaces the
+# pre-QUM-555 inlined body-token assertion).
+DRAINS_BEFORE_A=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
 REPORT_LOG="$(mktemp /tmp/notify-tui-e2e-report.XXXXXX)"
 set +e
 env \
     SPRAWL_AGENT_IDENTITY="$CHILD_NAME" \
     SPRAWL_ROOT="$SPRAWL_ROOT" \
     SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" report done "e2e tui notify test A $DRAIN_TOKEN_A" \
+    "$SPRAWL_BIN" report done "e2e tui notify test A" \
     > "$REPORT_LOG" 2>&1
 REPORT_RC=$?
 set -e
@@ -314,6 +344,19 @@ else
     fail "sprawl report done exited non-zero ($REPORT_RC)"
     echo "  report stdout/stderr:" >&2
     sed 's/^/    /' "$REPORT_LOG" >&2
+fi
+
+# QUM-555: badge first (race-sensitive — weave calls messages_read fast on
+# the slim notification, clearing `new/` and dropping the badge). Use the
+# 0.2s fast poller to reliably catch the rising edge. The pattern accepts
+# weave in either idle or running state because the slim notification can
+# drive weave into a turn before the (idle)+(1) snapshot is observable.
+if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(1\\)" 10; then
+    pass "weave row shows '(1)' unread badge"
+else
+    fail "weave row does NOT show '(1)' unread badge"
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -30 >&2
 fi
 
 # Banner and badge should appear within 1-2 AgentTree ticks (~2-4s).
@@ -326,23 +369,17 @@ else
     capture_pane "$SESSION" | tail -30 >&2
 fi
 
-if wait_for_pattern "$SESSION" "weave.*\\(idle\\).*\\(1\\)" 10; then
-    pass "weave row shows '(1)' unread badge"
+# QUM-323 / QUM-555: assert the drain reached weave's prompt as a slim
+# `<system-notification>` line citing $CHILD_NAME. Post-QUM-555 the prompt no
+# longer inlines the message body — only sender + short id. The 2s
+# AgentTreeMsg tick fires peekAndDrainCmd which renders the flush prompt and
+# sends it via the bridge into claude; claude echoes the user-turn in the
+# viewport, so the notification appears in the pane capture. Generous
+# timeout for slow sandbox + claude stream startup.
+if wait_for_pattern "$SESSION" "<system-notification>(\\[interrupt\\] )?New message from $CHILD_NAME\\. Read " 20; then
+    pass "QUM-555 drain notification from '$CHILD_NAME' reached weave's prompt (QUM-323 drain fired in TUI)"
 else
-    fail "weave row does NOT show '(1)' unread badge"
-    echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -30 >&2
-fi
-
-# QUM-323: assert drained body reaches weave's prompt, not just the banner.
-# The 2s AgentTreeMsg tick fires peekAndDrainCmd which renders the flush
-# prompt (containing DRAIN_TOKEN_A) and sends it via the bridge into claude.
-# Claude echoes the user-turn in the viewport, so the token appears in the
-# pane capture. Generous timeout for slow sandbox + claude stream startup.
-if wait_for_pattern "$SESSION" "$DRAIN_TOKEN_A" 20; then
-    pass "DRAIN_TOKEN_A '$DRAIN_TOKEN_A' reached weave's prompt (QUM-323 drain fired in TUI)"
-else
-    fail "DRAIN_TOKEN_A '$DRAIN_TOKEN_A' did NOT reach weave's prompt within 20s — QUM-323 TUI regression"
+    fail "QUM-555 drain notification from '$CHILD_NAME' did NOT reach weave's prompt within 20s — QUM-323 TUI regression"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -40 >&2
 fi
@@ -367,18 +404,18 @@ fi
 # --- Test B: `sprawl messages send weave` from the same child ---
 
 echo ""
-# QUM-323: second body token for the messages.Send path.
-DRAIN_TOKEN_B="DRAIN-BODY-TOKEN-B-$$-$(date +%s)"
 echo "=== Test B: child 'sprawl messages send weave' → badge rises to (2) ==="
 # QUM-465: snapshot banner count before second send.
 BANNERS_BEFORE_B=$(count_inbox_banners "$SESSION")
+# QUM-555: snapshot drain count before second send to assert delta>=1.
+DRAINS_BEFORE_B=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
 SEND_LOG="$(mktemp /tmp/notify-tui-e2e-send.XXXXXX)"
 set +e
 env \
     SPRAWL_AGENT_IDENTITY="$CHILD_NAME" \
     SPRAWL_ROOT="$SPRAWL_ROOT" \
     SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" messages send weave "tui e2e subject" "tui e2e body $DRAIN_TOKEN_B" \
+    "$SPRAWL_BIN" messages send weave "tui e2e subject" "tui e2e body B" \
     > "$SEND_LOG" 2>&1
 SEND_RC=$?
 set -e
@@ -390,7 +427,7 @@ else
     sed 's/^/    /' "$SEND_LOG" >&2
 fi
 
-if wait_for_pattern "$SESSION" "weave.*\\(idle\\).*\\(2\\)" 10; then
+if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(2\\)" 10; then
     pass "weave row shows '(2)' unread badge after second message"
 else
     fail "weave row did NOT rise to '(2)' after sprawl messages send"
@@ -398,29 +435,51 @@ else
     capture_pane "$SESSION" | tail -30 >&2
 fi
 
-# QUM-323: assert drained body B reaches weave's prompt.
-# Note: if Test A's drain is still mid-turn when B arrives, B stays pending
-# until claude finishes A; the tick backstop then drains it. Timeout tuned
-# accordingly (claude turn latency + 2s tick + send).
-if wait_for_pattern "$SESSION" "$DRAIN_TOKEN_B" 45; then
-    pass "DRAIN_TOKEN_B '$DRAIN_TOKEN_B' reached weave's prompt (QUM-323 drain fired in TUI)"
+# QUM-323 / QUM-555: assert the second drain reached weave's prompt by
+# observing the `<system-notification>` count from $CHILD_NAME rise after
+# Test B fires. Note: if Test A's drain is still mid-turn when B arrives, B
+# stays pending until claude finishes A; the tick backstop then drains it.
+# Timeout tuned accordingly (claude turn latency + 2s tick + send).
+DRAIN_B_DEADLINE=$((SECONDS + 45))
+DRAIN_B_OK=0
+while [ "$SECONDS" -lt "$DRAIN_B_DEADLINE" ]; do
+    DRAINS_NOW_B=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
+    if [ "$DRAINS_NOW_B" -gt "$DRAINS_BEFORE_B" ]; then
+        DRAIN_B_OK=1
+        break
+    fi
+    sleep 1
+done
+if [ "$DRAIN_B_OK" -eq 1 ]; then
+    pass "QUM-555 second drain notification from '$CHILD_NAME' reached weave's prompt (QUM-323 drain fired in TUI)"
 else
-    fail "DRAIN_TOKEN_B '$DRAIN_TOKEN_B' did NOT reach weave's prompt within 45s — QUM-323 TUI regression"
+    fail "QUM-555 second drain notification from '$CHILD_NAME' did NOT reach weave's prompt within 45s — QUM-323 TUI regression"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -40 >&2
 fi
 
 rm -f "$SEND_LOG"
 
-# QUM-465: assert exactly ONE inbox banner was added by Test B's single
-# delivery (delta from before-Test-B baseline).
-sleep 5
-BANNERS_AFTER_B=$(count_inbox_banners "$SESSION")
-DELTA_B=$((BANNERS_AFTER_B - BANNERS_BEFORE_B))
+# QUM-465 / QUM-555: assert exactly ONE inbox banner was added by Test B's
+# single delivery. Sample the banner count repeatedly and take the MAX
+# observed value — under QUM-555 weave's response after Test B can scroll
+# Test A's banner out of the viewport before a single post-settle sample
+# would capture it, masking the delta. The max-over-window approach catches
+# the rising edge regardless of subsequent scroll.
+BANNERS_MAX_B=$BANNERS_BEFORE_B
+BANNER_SAMPLE_END=$((SECONDS + 10))
+while [ "$SECONDS" -lt "$BANNER_SAMPLE_END" ]; do
+    BANNERS_NOW=$(count_inbox_banners "$SESSION")
+    if [ "$BANNERS_NOW" -gt "$BANNERS_MAX_B" ]; then
+        BANNERS_MAX_B=$BANNERS_NOW
+    fi
+    sleep 0.2
+done
+DELTA_B=$((BANNERS_MAX_B - BANNERS_BEFORE_B))
 if [ "$DELTA_B" -eq 1 ]; then
     pass "QUM-465: exactly 1 banner added by Test B delivery (delta=$DELTA_B)"
 else
-    fail "QUM-465: Test B produced $DELTA_B banners (before=$BANNERS_BEFORE_B, after=$BANNERS_AFTER_B); expected exactly 1"
+    fail "QUM-465: Test B produced $DELTA_B banners (before=$BANNERS_BEFORE_B, max=$BANNERS_MAX_B); expected exactly 1"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -40 >&2
 fi

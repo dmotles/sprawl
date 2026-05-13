@@ -17,112 +17,71 @@ func TestBuildQueueFlushPrompt_Empty(t *testing.T) {
 	}
 }
 
-func TestBuildQueueFlushPrompt_Contract(t *testing.T) {
-	entries := []Entry{
-		{
-			ID: "abc", Class: ClassAsync, From: "child-alpha",
-			Subject: "status", Body: "all green",
-			Tags: []string{"fyi", "status"},
-		},
+// TestBuildQueueFlushPrompt_SingleEntry verifies the agentloop re-export still
+// emits the QUM-555 one-line `<system-notification>` shape via inboxprompt.
+func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
+	entries := []Entry{{
+		ID: "u1", ShortID: "abc", Class: ClassAsync,
+		From: "child-alpha", Subject: "ignored", Body: "ignored",
+		Tags: []string{"fyi"},
+	}}
+	got := BuildQueueFlushPrompt(entries)
+	want := "<system-notification>New message from child-alpha. Read abc.</system-notification>\n"
+	if got != want {
+		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
-	p := BuildQueueFlushPrompt(entries)
-	for _, needle := range []string{
-		"[inbox] You received 1 message(s) since the last turn",
-		"from child-alpha",
-		"[fyi,status]",
-		"subject: status",
-		"all green",
-		"Continue your current work unless a message tells you otherwise.",
+}
+
+// TestBuildQueueFlushPrompt_FallsBackToID covers entries without a ShortID.
+func TestBuildQueueFlushPrompt_FallsBackToID(t *testing.T) {
+	entries := []Entry{{ID: "uuid-foo", ShortID: "", From: "f", Body: "b"}}
+	got := BuildQueueFlushPrompt(entries)
+	want := "<system-notification>New message from f. Read uuid-foo.</system-notification>\n"
+	if got != want {
+		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestBuildQueueFlushPrompt_Multiple verifies N entries → N lines.
+func TestBuildQueueFlushPrompt_Multiple(t *testing.T) {
+	entries := []Entry{
+		{ID: "u1", ShortID: "s1", From: "a", Body: "b1"},
+		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
+	}
+	got := BuildQueueFlushPrompt(entries)
+	want := "<system-notification>New message from a. Read s1.</system-notification>\n" +
+		"<system-notification>New message from b. Read s2.</system-notification>\n"
+	if got != want {
+		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestBuildQueueFlushPrompt_NoBodyInlined guards against the verbose pre-
+// QUM-555 frame leaking back into the agentloop re-export.
+func TestBuildQueueFlushPrompt_NoBodyInlined(t *testing.T) {
+	entries := []Entry{{
+		ID: "u1", ShortID: "s1", From: "a",
+		Subject: "secret-subject", Body: "secret-body-content",
+		Tags: []string{"secret-tag"},
+	}}
+	got := BuildQueueFlushPrompt(entries)
+	for _, banned := range []string{
+		"secret-subject", "secret-body-content", "secret-tag",
+		"Continue your current work", "[inbox]", "subject:",
 	} {
-		if !strings.Contains(p, needle) {
-			t.Errorf("prompt missing %q. full:\n%s", needle, p)
+		if strings.Contains(got, banned) {
+			t.Errorf("BuildQueueFlushPrompt leaked %q in output: %q", banned, got)
 		}
 	}
 }
 
-func TestBuildQueueFlushPrompt_Multiple(t *testing.T) {
-	entries := []Entry{
-		{From: "a", Subject: "s1", Body: "b1"},
-		{From: "b", Subject: "s2", Body: "b2"},
-	}
-	p := BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "2 message(s)") {
-		t.Errorf("expected '2 message(s)' in header, got:\n%s", p)
-	}
-	if !strings.Contains(p, "1. from a") || !strings.Contains(p, "2. from b") {
-		t.Errorf("expected numbered entries, got:\n%s", p)
-	}
-}
-
-func TestBuildQueueFlushPrompt_TruncatesLargeBody(t *testing.T) {
-	big := strings.Repeat("x", MaxQueueFlushBodyBytes+500)
-	entries := []Entry{{ID: "id1", ShortID: "sh1", From: "f", Subject: "s", Body: big}}
-	p := BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "truncated") {
-		t.Errorf("expected truncation marker, got:\n%s", p[:200])
-	}
-	if !strings.Contains(p, "sprawl messages read sh1") {
-		t.Errorf("expected truncation hint with ShortID, got:\n%s", p[:200])
-	}
-}
-
-// TestBuildQueueFlushPrompt_TruncatedHintUsesShortID asserts that the
-// truncation hint cites Entry.ShortID (a maildir base36 short id) when
-// available, since that is what `messages.ResolvePrefix` accepts. The
-// queue-internal Entry.ID (UUID) must NOT appear in the hint. See QUM-412.
-func TestBuildQueueFlushPrompt_TruncatedHintUsesShortID(t *testing.T) {
-	big := strings.Repeat("y", MaxQueueFlushBodyBytes+10)
-	entries := []Entry{{ID: "uuid-deadbeef", ShortID: "abc", From: "f", Subject: "s", Body: big}}
-	p := BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "sprawl messages read abc") {
-		t.Errorf("expected hint to cite ShortID 'abc', got:\n%s", p)
-	}
-	if strings.Contains(p, "uuid-deadbeef") {
-		t.Errorf("hint must not embed queue UUID, got:\n%s", p)
-	}
-}
-
-// TestBuildQueueFlushPrompt_TruncatedHintFallsBackToID covers entries that
-// were enqueued before the ShortID field was added: the hint should still
-// fall back to Entry.ID rather than printing an empty token.
-func TestBuildQueueFlushPrompt_TruncatedHintFallsBackToID(t *testing.T) {
-	big := strings.Repeat("z", MaxQueueFlushBodyBytes+10)
-	entries := []Entry{{ID: "uuid-foo", ShortID: "", From: "f", Subject: "s", Body: big}}
-	p := BuildQueueFlushPrompt(entries)
-	if !strings.Contains(p, "sprawl messages read uuid-foo") {
-		t.Errorf("expected fallback to Entry.ID, got:\n%s", p)
-	}
-}
-
-// TestBuildInterruptFlushPrompt_TruncatedHintUsesShortID is the interrupt-frame
-// counterpart of TestBuildQueueFlushPrompt_TruncatedHintUsesShortID.
-func TestBuildInterruptFlushPrompt_TruncatedHintUsesShortID(t *testing.T) {
-	big := strings.Repeat("q", MaxQueueFlushBodyBytes+10)
-	entries := []Entry{{ID: "uuid-cafef00d", ShortID: "xyz", From: "weave", Subject: "stop", Body: big}}
-	p := BuildInterruptFlushPrompt(entries)
-	if !strings.Contains(p, "truncated") {
-		t.Errorf("expected truncation marker, got:\n%s", p)
-	}
-	if !strings.Contains(p, "sprawl messages read xyz") {
-		t.Errorf("expected hint to cite ShortID 'xyz', got:\n%s", p)
-	}
-	if strings.Contains(p, "uuid-cafef00d") {
-		t.Errorf("hint must not embed queue UUID, got:\n%s", p)
-	}
-}
-
-// TestBuildQueueFlushPrompt_TruncatedHintIDResolvesViaMessages is an
-// integration test: deliver a real maildir message via messages.Send,
-// surface the resulting ShortID through an agentloop.Entry, build the
-// truncation hint, parse the ID out of it, and confirm
-// messages.ResolvePrefix can resolve it. This guards the contract that the
-// hint cites an ID format the documented `sprawl messages read` flow
-// actually accepts.
-//
-// NOTE: messages.Send currently returns only error; QUM-412 adds a
-// (shortID, error) signature. This test is written against the post-fix
-// signature on purpose, so it fails to compile until the fix lands (RED).
-func TestBuildQueueFlushPrompt_TruncatedHintIDResolvesViaMessages(t *testing.T) {
+// TestBuildQueueFlushPrompt_HintIDResolvesViaMessages is an integration test:
+// deliver a real maildir message via messages.Send, surface the resulting
+// ShortID through an agentloop.Entry, build the flush prompt, parse the ID
+// out of the `Read $ID.` clause, and confirm messages.ResolvePrefix can
+// resolve it. This guards the contract that the notification cites an ID
+// format the documented `sprawl messages read` flow actually accepts.
+func TestBuildQueueFlushPrompt_HintIDResolvesViaMessages(t *testing.T) {
 	root := t.TempDir()
 	const recipient = "child-alpha"
 
@@ -134,14 +93,13 @@ func TestBuildQueueFlushPrompt_TruncatedHintIDResolvesViaMessages(t *testing.T) 
 		t.Fatalf("messages.Send returned empty shortID")
 	}
 
-	big := strings.Repeat("p", MaxQueueFlushBodyBytes+10)
-	entries := []Entry{{ID: "uuid-irrelevant", ShortID: shortID, From: "weave", Subject: "subj", Body: big}}
+	entries := []Entry{{ID: "uuid-irrelevant", ShortID: shortID, From: "weave", Subject: "subj", Body: "body"}}
 	p := BuildQueueFlushPrompt(entries)
 
-	re := regexp.MustCompile("sprawl messages read ([^`\\s]+)")
+	re := regexp.MustCompile(`Read ([^.\s]+)\.`)
 	m := re.FindStringSubmatch(p)
 	if m == nil {
-		t.Fatalf("could not find truncation hint in prompt:\n%s", p)
+		t.Fatalf("could not find Read $ID. clause in prompt:\n%s", p)
 	}
 	cited := m[1]
 
@@ -154,76 +112,57 @@ func TestBuildQueueFlushPrompt_TruncatedHintIDResolvesViaMessages(t *testing.T) 
 	}
 }
 
-func TestBuildQueueFlushPrompt_AggregateCap(t *testing.T) {
-	// 6 entries of MaxQueueFlushBodyBytes each = 12KiB of body, exceeds the 10KiB total cap.
-	var entries []Entry
-	for i := 0; i < 6; i++ {
-		entries = append(entries, Entry{
-			From:    "f",
-			Subject: "s",
-			Body:    strings.Repeat(string(rune('a'+i)), MaxQueueFlushBodyBytes),
-		})
-	}
-	p := BuildQueueFlushPrompt(entries)
-	// Rough sanity: total body bytes in the prompt must be within cap + margin.
-	bodyBytes := 0
-	for _, r := range p {
-		if r >= 'a' && r <= 'f' {
-			bodyBytes++
-		}
-	}
-	if bodyBytes > MaxQueueFlushTotalBytes+512 {
-		t.Errorf("aggregate body bytes %d exceeds cap %d+margin", bodyBytes, MaxQueueFlushTotalBytes)
-	}
-}
-
 func TestBuildInterruptFlushPrompt_Empty(t *testing.T) {
 	if got := BuildInterruptFlushPrompt(nil); got != "" {
 		t.Errorf("expected empty prompt for nil entries, got %q", got)
 	}
 }
 
-func TestBuildInterruptFlushPrompt_SingleWithResumeHint(t *testing.T) {
-	entries := []Entry{
-		{
-			From: "weave", Subject: "stop", Body: "reprioritize",
-			Tags: []string{"resume_hint:writing tests"},
-		},
+// TestBuildInterruptFlushPrompt_SingleEntry verifies the agentloop re-export
+// emits the QUM-555 interrupt-tagged one-line shape.
+func TestBuildInterruptFlushPrompt_SingleEntry(t *testing.T) {
+	entries := []Entry{{
+		ID: "u1", ShortID: "xyz", Class: ClassInterrupt,
+		From: "weave", Body: "stop", Tags: []string{"resume_hint:writing"},
+	}}
+	got := BuildInterruptFlushPrompt(entries)
+	want := "<system-notification>[interrupt] New message from weave. Read xyz.</system-notification>\n"
+	if got != want {
+		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
-	p := BuildInterruptFlushPrompt(entries)
-	for _, needle := range []string{
-		"[interrupt]",
-		"weave has injected",
-		"writing tests",
-		"Subject: stop",
-		"reprioritize",
-		"resume the interrupted work",
+}
+
+// TestBuildInterruptFlushPrompt_Multiple verifies N interrupt entries → N lines.
+func TestBuildInterruptFlushPrompt_Multiple(t *testing.T) {
+	entries := []Entry{
+		{ID: "u1", ShortID: "s1", From: "a", Body: "b1"},
+		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
+	}
+	got := BuildInterruptFlushPrompt(entries)
+	want := "<system-notification>[interrupt] New message from a. Read s1.</system-notification>\n" +
+		"<system-notification>[interrupt] New message from b. Read s2.</system-notification>\n"
+	if got != want {
+		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestBuildInterruptFlushPrompt_NoBodyInlined guards against the verbose
+// pre-QUM-555 interrupt frame leaking back.
+func TestBuildInterruptFlushPrompt_NoBodyInlined(t *testing.T) {
+	entries := []Entry{{
+		ID: "u1", ShortID: "s1", From: "weave",
+		Subject: "secret-subject", Body: "secret-body-content",
+		Tags: []string{"resume_hint:secret-hint"},
+	}}
+	got := BuildInterruptFlushPrompt(entries)
+	for _, banned := range []string{
+		"secret-subject", "secret-body-content", "secret-hint",
+		"After reading, decide", "has injected", "your previous task",
+		"Subject:", "resume the interrupted",
 	} {
-		if !strings.Contains(p, needle) {
-			t.Errorf("prompt missing %q. full:\n%s", needle, p)
+		if strings.Contains(got, banned) {
+			t.Errorf("BuildInterruptFlushPrompt leaked %q in output: %q", banned, got)
 		}
-	}
-}
-
-func TestBuildInterruptFlushPrompt_FallbackHint(t *testing.T) {
-	entries := []Entry{{From: "weave", Subject: "s", Body: "b"}}
-	p := BuildInterruptFlushPrompt(entries)
-	if !strings.Contains(p, "your previous task") {
-		t.Errorf("expected fallback 'your previous task', got:\n%s", p)
-	}
-}
-
-func TestBuildInterruptFlushPrompt_MultipleSenders(t *testing.T) {
-	entries := []Entry{
-		{From: "a", Subject: "s1", Body: "b1"},
-		{From: "b", Subject: "s2", Body: "b2"},
-	}
-	p := BuildInterruptFlushPrompt(entries)
-	if !strings.Contains(p, "2 senders") {
-		t.Errorf("expected '2 senders', got:\n%s", p)
-	}
-	if !strings.Contains(p, "--- 1 of 2") || !strings.Contains(p, "--- 2 of 2") {
-		t.Errorf("expected per-message separators, got:\n%s", p)
 	}
 }
 
