@@ -26,7 +26,7 @@ func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
 		Tags: []string{"fyi"},
 	}}
 	got := BuildQueueFlushPrompt(entries)
-	want := "<system-notification>New message from child-alpha. Read abc.</system-notification>\n"
+	want := "<system-notification>From child-alpha — mcp__sprawl__messages_read(id=abc)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -36,7 +36,7 @@ func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
 func TestBuildQueueFlushPrompt_FallsBackToID(t *testing.T) {
 	entries := []Entry{{ID: "uuid-foo", ShortID: "", From: "f", Body: "b"}}
 	got := BuildQueueFlushPrompt(entries)
-	want := "<system-notification>New message from f. Read uuid-foo.</system-notification>\n"
+	want := "<system-notification>From f — mcp__sprawl__messages_read(id=uuid-foo)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -49,8 +49,8 @@ func TestBuildQueueFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
 	}
 	got := BuildQueueFlushPrompt(entries)
-	want := "<system-notification>New message from a. Read s1.</system-notification>\n" +
-		"<system-notification>New message from b. Read s2.</system-notification>\n"
+	want := "<system-notification>From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification>From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -78,9 +78,10 @@ func TestBuildQueueFlushPrompt_NoBodyInlined(t *testing.T) {
 // TestBuildQueueFlushPrompt_HintIDResolvesViaMessages is an integration test:
 // deliver a real maildir message via messages.Send, surface the resulting
 // ShortID through an agentloop.Entry, build the flush prompt, parse the ID
-// out of the `Read $ID.` clause, and confirm messages.ResolvePrefix can
-// resolve it. This guards the contract that the notification cites an ID
-// format the documented `sprawl messages read` flow actually accepts.
+// out of the `mcp__sprawl__messages_read(id=$ID)` clause, and confirm
+// messages.ResolvePrefix can resolve it. This guards the contract that the
+// notification cites an ID format the MCP `messages_read` tool actually
+// accepts.
 func TestBuildQueueFlushPrompt_HintIDResolvesViaMessages(t *testing.T) {
 	root := t.TempDir()
 	const recipient = "child-alpha"
@@ -96,10 +97,10 @@ func TestBuildQueueFlushPrompt_HintIDResolvesViaMessages(t *testing.T) {
 	entries := []Entry{{ID: "uuid-irrelevant", ShortID: shortID, From: "weave", Subject: "subj", Body: "body"}}
 	p := BuildQueueFlushPrompt(entries)
 
-	re := regexp.MustCompile(`Read ([^.\s]+)\.`)
+	re := regexp.MustCompile(`mcp__sprawl__messages_read\(id=([^)]+)\)`)
 	m := re.FindStringSubmatch(p)
 	if m == nil {
-		t.Fatalf("could not find Read $ID. clause in prompt:\n%s", p)
+		t.Fatalf("could not find mcp__sprawl__messages_read(id=...) clause in prompt:\n%s", p)
 	}
 	cited := m[1]
 
@@ -126,7 +127,7 @@ func TestBuildInterruptFlushPrompt_SingleEntry(t *testing.T) {
 		From: "weave", Body: "stop", Tags: []string{"resume_hint:writing"},
 	}}
 	got := BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] New message from weave. Read xyz.</system-notification>\n"
+	want := "<system-notification>[interrupt] From weave — mcp__sprawl__messages_read(id=xyz)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -139,8 +140,8 @@ func TestBuildInterruptFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
 	}
 	got := BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] New message from a. Read s1.</system-notification>\n" +
-		"<system-notification>[interrupt] New message from b. Read s2.</system-notification>\n"
+	want := "<system-notification>[interrupt] From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification>[interrupt] From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}

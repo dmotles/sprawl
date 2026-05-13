@@ -160,6 +160,18 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 				if c == "" {
 					continue
 				}
+				// QUM-557: detect supervisor-injected `<system-notification>`
+				// wrappers so resumed/replayed transcripts render identically
+				// to the live-drain path (same color, same glyph, no tags).
+				if stripped, isInterrupt, ok := stripSystemNotificationTag(c); ok {
+					entries = append(entries, MessageEntry{
+						Type:      MessageSystemNotification,
+						Content:   stripped,
+						Complete:  true,
+						Interrupt: isInterrupt,
+					})
+					continue
+				}
 				entries = append(entries, MessageEntry{
 					Type:     MessageUser,
 					Content:  c,
@@ -201,11 +213,23 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 				}
 				joined := strings.Join(parts, "\n")
 				if joined != "" {
-					entries = append(entries, MessageEntry{
-						Type:     MessageUser,
-						Content:  joined,
-						Complete: true,
-					})
+					// QUM-557: detect `<system-notification>` wrappers on the
+					// joined text-block body so array-form replay matches the
+					// live-drain rendering on restart.
+					if stripped, isInterrupt, ok := stripSystemNotificationTag(joined); ok {
+						entries = append(entries, MessageEntry{
+							Type:      MessageSystemNotification,
+							Content:   stripped,
+							Complete:  true,
+							Interrupt: isInterrupt,
+						})
+					} else {
+						entries = append(entries, MessageEntry{
+							Type:     MessageUser,
+							Content:  joined,
+							Complete: true,
+						})
+					}
 				}
 			}
 		case "assistant":

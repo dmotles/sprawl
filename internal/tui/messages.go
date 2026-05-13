@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -8,6 +9,36 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// systemNotificationOpenTag / systemNotificationCloseTag are the literal
+// wrapping tokens used by the supervisor's notification-injection path
+// (QUM-555). The TUI strips these wrappers at both live-append and replay
+// entry points so the rendered viewport never shows the raw markup. (QUM-557)
+const (
+	systemNotificationOpenTag         = "<system-notification>"
+	systemNotificationCloseTag        = "</system-notification>"
+	systemNotificationInterruptMarker = "[interrupt]"
+)
+
+// stripSystemNotificationTag detects the supervisor's
+// `<system-notification>...</system-notification>` wrapping on a user-role
+// message body. The outer whitespace surrounding the tag boundaries is
+// trimmed; the inner body is returned verbatim (newlines preserved). When
+// the body starts with the literal `[interrupt]` marker, isInterrupt is set
+// to true and the marker itself is preserved in the returned body so the
+// renderer can both color-code and display it. ok=false means the tag was
+// absent or malformed — the original string is returned unchanged.
+func stripSystemNotificationTag(s string) (stripped string, isInterrupt bool, ok bool) {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, systemNotificationOpenTag) {
+		return s, false, false
+	}
+	if !strings.HasSuffix(trimmed, systemNotificationCloseTag) {
+		return s, false, false
+	}
+	body := trimmed[len(systemNotificationOpenTag) : len(trimmed)-len(systemNotificationCloseTag)]
+	return body, strings.HasPrefix(body, systemNotificationInterruptMarker), true
+}
 
 // --- QUM-527 slice 2c: question-queue messages ---
 

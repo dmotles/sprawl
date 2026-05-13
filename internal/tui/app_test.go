@@ -2379,6 +2379,81 @@ func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
 	}
 }
 
+// QUM-557: when the drained prompt is wrapped in <system-notification> tags,
+// the AppModel must emit a MessageSystemNotification entry (not MessageSystem),
+// so the live path matches the replay path on restart.
+func TestAppModel_InboxDrainMsg_SystemNotificationEmitsNotificationEntry(t *testing.T) {
+	ms := newFakeSessionBackend()
+	bridge := ms
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = resized.(AppModel)
+
+	const wrapped = "<system-notification>From finn — msg id=9v6</system-notification>"
+	updated, _ := app.Update(InboxDrainMsg{
+		Prompt:   wrapped,
+		EntryIDs: []string{"a1"},
+		Class:    "async",
+	})
+	app = updated.(AppModel)
+
+	weaveVP := app.viewportFor("weave")
+	entries := weaveVP.GetMessages()
+	var found *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageSystemNotification {
+			found = &entries[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a MessageSystemNotification entry, got entries: %+v", entries)
+	}
+	if found.Interrupt {
+		t.Errorf("entry.Interrupt = true, want false (async)")
+	}
+	if found.Content != "From finn — msg id=9v6" {
+		t.Errorf("entry.Content = %q, want stripped body %q", found.Content, "From finn — msg id=9v6")
+	}
+	// Negative: must not have produced a MessageSystem entry carrying the raw tag.
+	for _, e := range entries {
+		if e.Type == MessageSystem && e.Content == wrapped {
+			t.Errorf("unexpected MessageSystem entry with raw tagged prompt: %+v", e)
+		}
+	}
+}
+
+func TestAppModel_InboxDrainMsg_SystemNotificationInterruptFlag(t *testing.T) {
+	ms := newFakeSessionBackend()
+	bridge := ms
+	app := newTestAppModelWithBridge(t, bridge)
+	resized, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app = resized.(AppModel)
+
+	const wrapped = "<system-notification>[interrupt] From finn — msg id=9v6</system-notification>"
+	updated, _ := app.Update(InboxDrainMsg{
+		Prompt:   wrapped,
+		EntryIDs: []string{"i1"},
+		Class:    "interrupt",
+	})
+	app = updated.(AppModel)
+
+	entries := app.viewportFor("weave").GetMessages()
+	var found *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageSystemNotification {
+			found = &entries[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a MessageSystemNotification entry, got entries: %+v", entries)
+	}
+	if !found.Interrupt {
+		t.Errorf("entry.Interrupt = false, want true ([interrupt] body)")
+	}
+}
+
 func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {
 	ms := newFakeSessionBackend()
 	bridge := ms
@@ -2437,9 +2512,10 @@ func TestPeekAndDrainCmd_AsyncEntries_ReturnsDrainMsg(t *testing.T) {
 	if drain.Class != "async" {
 		t.Errorf("expected async class, got %q", drain.Class)
 	}
-	// Post-QUM-555: the flush prompt is a single `<system-notification>` line
-	// per entry — no body inlining. Assert on the sender citation instead.
-	if !strings.Contains(drain.Prompt, "New message from ghost") {
+	// Post-QUM-555/QUM-556: the flush prompt is a single
+	// `<system-notification>` line per entry citing the MCP tool name.
+	// Assert on the sender citation in the new function-call shape.
+	if !strings.Contains(drain.Prompt, "From ghost — mcp__sprawl__messages_read(id=") {
 		t.Errorf("expected sender citation in prompt, got:\n%s", drain.Prompt)
 	}
 	if len(drain.EntryIDs) != 1 {
@@ -2467,9 +2543,10 @@ func TestPeekAndDrainCmd_InterruptPriority(t *testing.T) {
 	if drain.Class != "interrupt" {
 		t.Errorf("expected interrupt to take priority, got class=%q", drain.Class)
 	}
-	// Post-QUM-555: assert on the interrupt-tagged notification shape rather
-	// than the inlined body (which is no longer emitted).
-	if !strings.Contains(drain.Prompt, "[interrupt] New message from b") {
+	// Post-QUM-555/QUM-556: assert on the interrupt-tagged notification
+	// shape (with MCP tool citation) rather than the inlined body (which is
+	// no longer emitted).
+	if !strings.Contains(drain.Prompt, "[interrupt] From b — mcp__sprawl__messages_read(id=") {
 		t.Errorf("expected interrupt notification in prompt, got:\n%s", drain.Prompt)
 	}
 }

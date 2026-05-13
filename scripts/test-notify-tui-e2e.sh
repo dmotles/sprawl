@@ -159,15 +159,21 @@ count_inbox_banners() {
         || true
 }
 
-# QUM-555: count <system-notification> drain lines surfaced in weave's prompt.
-# Post-QUM-555 the queue-flush prompt is a one-line `<system-notification>`
-# per entry naming the sender and the short message id — no body inlining.
-# This is the canonical "did the drain reach weave's prompt?" signal.
+# QUM-555/QUM-556/QUM-557: count drain notification rows surfaced in weave's
+# viewport. Post-QUM-555 the queue-flush prompt is a one-line
+# `<system-notification>` per entry. Post-QUM-556 the body cites the canonical
+# MCP tool name `mcp__sprawl__messages_read(id=<id>)` rather than the ambiguous
+# bare verb "Read <id>". Post-QUM-557 the TUI strips the literal
+# `<system-notification>` tags before rendering and surfaces the line with a
+# left-bar accent + glyph (`✉` async, `⚡` interrupt). The pane capture sees the
+# stripped/rendered form, not the raw tag string. Match the rendered shape;
+# we anchor on the glyph + sender + tool-call segment (no closing tag exists
+# in the rendered output).
 count_drain_notifications() {
     local session="$1"
     local sender="$2"
     capture_pane "$session" \
-        | grep -cE "<system-notification>(\\[interrupt\\] )?New message from $sender\\. Read [^[:space:]]+\\.</system-notification>" \
+        | grep -cE "(✉|⚡) (\\[interrupt\\] )?From $sender — mcp__sprawl__messages_read\\(id=[^)]+\\)" \
         || true
 }
 
@@ -369,14 +375,18 @@ else
     capture_pane "$SESSION" | tail -30 >&2
 fi
 
-# QUM-323 / QUM-555: assert the drain reached weave's prompt as a slim
-# `<system-notification>` line citing $CHILD_NAME. Post-QUM-555 the prompt no
-# longer inlines the message body — only sender + short id. The 2s
-# AgentTreeMsg tick fires peekAndDrainCmd which renders the flush prompt and
-# sends it via the bridge into claude; claude echoes the user-turn in the
-# viewport, so the notification appears in the pane capture. Generous
-# timeout for slow sandbox + claude stream startup.
-if wait_for_pattern "$SESSION" "<system-notification>(\\[interrupt\\] )?New message from $CHILD_NAME\\. Read " 20; then
+# QUM-323 / QUM-555 / QUM-556 / QUM-557: assert the drain reached weave's
+# viewport as a rendered notification row citing $CHILD_NAME. Post-QUM-555 the
+# prompt no longer inlines the message body — only sender + short id.
+# Post-QUM-556 the body cites the canonical MCP tool call
+# `mcp__sprawl__messages_read(id=<id>)`. Post-QUM-557 the raw
+# `<system-notification>` tags are stripped before rendering and the line
+# appears with a left-bar accent + `✉`/`⚡` glyph. The 2s AgentTreeMsg tick
+# fires peekAndDrainCmd which renders the flush prompt and sends it via the
+# bridge into claude; the TUI also renders the notification row directly in
+# the viewport, so the pane capture sees the rendered shape. Generous timeout
+# for slow sandbox + claude stream startup.
+if wait_for_pattern "$SESSION" "(✉|⚡) (\\[interrupt\\] )?From $CHILD_NAME — mcp__sprawl__messages_read\\(id=" 20; then
     pass "QUM-555 drain notification from '$CHILD_NAME' reached weave's prompt (QUM-323 drain fired in TUI)"
 else
     fail "QUM-555 drain notification from '$CHILD_NAME' did NOT reach weave's prompt within 20s — QUM-323 TUI regression"

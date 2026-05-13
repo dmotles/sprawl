@@ -1216,9 +1216,10 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	}
 
 	// --- Round 1: send first message, drive turn, verify transition. ---
-	// Post-QUM-555 the flush prompt no longer inlines the body — assert on
-	// the entry's ShortID (which the `<system-notification>` line cites for
-	// `sprawl messages read`) as the per-message identity token.
+	// Post-QUM-555/QUM-556 the flush prompt no longer inlines the body —
+	// assert on the entry's ShortID (which the `<system-notification>` line
+	// cites as the `id=` arg of `mcp__sprawl__messages_read(...)`) as the
+	// per-message identity token.
 	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
 		ID: "msg-1", ShortID: "m1", Class: agentloop.ClassAsync,
 		From: "weave", Subject: "first", Body: "unique-token-AAA",
@@ -1229,8 +1230,8 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 		t.Fatalf("WakeForDelivery 1: %v", err)
 	}
 	prompt1 := waitTurnPrompt()
-	if !strings.Contains(prompt1, "Read m1.") {
-		t.Fatalf("turn 1 prompt missing 'Read m1.' citation: %q", prompt1)
+	if !strings.Contains(prompt1, "mcp__sprawl__messages_read(id=m1)") {
+		t.Fatalf("turn 1 prompt missing 'mcp__sprawl__messages_read(id=m1)' citation: %q", prompt1)
 	}
 
 	// Wait for the on-disk transition.
@@ -1263,11 +1264,11 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	prompt2 := waitTurnPrompt()
 
 	// Critical assertion: second turn's prompt must cite m2 but NOT m1.
-	if !strings.Contains(prompt2, "Read m2.") {
-		t.Errorf("turn 2 prompt missing 'Read m2.' citation: %q", prompt2)
+	if !strings.Contains(prompt2, "mcp__sprawl__messages_read(id=m2)") {
+		t.Errorf("turn 2 prompt missing 'mcp__sprawl__messages_read(id=m2)' citation: %q", prompt2)
 	}
-	if strings.Contains(prompt2, "Read m1.") {
-		t.Errorf("turn 2 prompt RE-INJECTED first message (Read m1. found): %q", prompt2)
+	if strings.Contains(prompt2, "mcp__sprawl__messages_read(id=m1)") {
+		t.Errorf("turn 2 prompt RE-INJECTED first message (id=m1 found): %q", prompt2)
 	}
 
 	// Wait for second on-disk transition.
