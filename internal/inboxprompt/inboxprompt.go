@@ -1,30 +1,19 @@
 // Package inboxprompt holds the inbox/interrupt prompt-formatter that both
 // the legacy agentloop child harness and the unified-runtime supervisor path
-// use to render pending queue entries into a turn prompt. Extracted from
-// internal/agentloop in QUM-437 so the unified path no longer ships a stub
-// "You have new messages" placeholder. Output must remain byte-identical to
-// the prior agentloop implementation.
+// use to render pending queue entries into a turn prompt.
+//
+// QUM-555: the per-entry frame is now a single `<system-notification>` line
+// naming the sender and the short message ID. The recipient pulls the body
+// on demand via `sprawl messages read <short_id>` rather than receiving the
+// full body inlined into every turn. Interrupt-class entries carry an
+// `[interrupt]` marker inside the tag so the recipient can decide whether to
+// preempt current work.
 package inboxprompt
 
 import (
 	"fmt"
 	"strings"
 )
-
-// Queue flush frame size caps per docs/designs/messaging-overhaul.md §8.6.
-const (
-	// MaxQueueFlushBodyBytes is the per-message body cap before truncation.
-	MaxQueueFlushBodyBytes = 2 * 1024
-	// MaxQueueFlushTotalBytes is the aggregate body cap across a single frame.
-	MaxQueueFlushTotalBytes = 10 * 1024
-)
-
-// resumeHintPrefix is the tag prefix used by historical interrupt callers
-// to smuggle a free-form resume_hint through the queue entry's Tags without
-// needing a dedicated field. Retained for back-compat parsing of in-flight
-// queue entries; supervisor.SendMessage (with interrupt=true) no longer
-// emits this tag.
-const resumeHintPrefix = "resume_hint:"
 
 // Class is the delivery class of a queued message.
 type Class string
@@ -52,7 +41,9 @@ type Entry struct {
 // DisplaySubject returns the human-facing subject for an inbox entry. When
 // Subject is non-empty, returns it as-is. Otherwise falls back to the first
 // non-empty line of Body, hard-truncated at 80 bytes (QUM-550). The fallback
-// supports send_message entries which carry no explicit subject.
+// supports send_message entries which carry no explicit subject. Retained
+// post-QUM-555 for non-prompt surfaces (TUI labels, future tooling) even
+// though the rendered flush prompts no longer embed it.
 func DisplaySubject(e Entry) string {
 	if e.Subject != "" {
 		return e.Subject
@@ -71,26 +62,15 @@ func DisplaySubject(e Entry) string {
 }
 
 // displayMessageID returns the short maildir ID when available, falling back
-// to the queue UUID. The truncation hints in the flush prompts cite this so
-// `sprawl messages read <id>` accepts the value (ResolvePrefix matches
-// ShortID first). Entries enqueued before ShortID was added round-trip with
-// an empty ShortID and gracefully fall back to ID. See QUM-412.
+// to the queue UUID. The flush prompts cite this so `sprawl messages read
+// <id>` accepts the value (ResolvePrefix matches ShortID first). Entries
+// enqueued before ShortID was added round-trip with an empty ShortID and
+// gracefully fall back to ID. See QUM-412.
 func displayMessageID(e Entry) string {
 	if e.ShortID != "" {
 		return e.ShortID
 	}
 	return e.ID
-}
-
-// extractResumeHint returns the value after the first "resume_hint:" tag in
-// e.Tags, or "" if none.
-func extractResumeHint(e Entry) string {
-	for _, tag := range e.Tags {
-		if strings.HasPrefix(tag, resumeHintPrefix) {
-			return tag[len(resumeHintPrefix):]
-		}
-	}
-	return ""
 }
 
 // SplitByClass separates pending entries into (interrupts, asyncs) preserving
@@ -106,104 +86,35 @@ func SplitByClass(entries []Entry) (interrupts, asyncs []Entry) {
 	return interrupts, asyncs
 }
 
-// BuildQueueFlushPrompt renders the notification frame that bundles N pending
-// async queue entries into a single user turn, per §4.5.1. The frame inlines
-// the subject, sender, tags, and (size-bounded) body of each entry. Returns
-// "" if entries is empty.
+// BuildQueueFlushPrompt renders one `<system-notification>` line per pending
+// async queue entry. The line names the sender and the short message ID the
+// recipient should pass to `sprawl messages read` if it wants to engage. No
+// body is inlined; no footer prose is emitted. Returns "" if entries is empty.
 func BuildQueueFlushPrompt(entries []Entry) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "[inbox] You received %d message(s) since the last turn:\n\n", len(entries))
-	totalBody := 0
-	for i, e := range entries {
-		tagStr := ""
-		if len(e.Tags) > 0 {
-			tagStr = " [" + strings.Join(e.Tags, ",") + "]"
-		}
-		fmt.Fprintf(&b, "%d. from %s%s  subject: %s\n", i+1, e.From, tagStr, DisplaySubject(e))
-		body := e.Body
-		truncated := false
-		if len(body) > MaxQueueFlushBodyBytes {
-			body = body[:MaxQueueFlushBodyBytes]
-			truncated = true
-		}
-		remaining := MaxQueueFlushTotalBytes - totalBody
-		if remaining < 0 {
-			remaining = 0
-		}
-		if len(body) > remaining {
-			body = body[:remaining]
-			truncated = true
-		}
-		for _, line := range strings.Split(body, "\n") {
-			b.WriteString("   ")
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-		if truncated {
-			fmt.Fprintf(&b, "   ...[truncated — run `sprawl messages read %s` for full body]\n", displayMessageID(e))
-		}
-		b.WriteString("\n")
-		totalBody += len(body)
+	for _, e := range entries {
+		fmt.Fprintf(&b, "<system-notification>New message from %s. Read %s.</system-notification>\n",
+			e.From, displayMessageID(e))
 	}
-	b.WriteString("Continue your current work unless a message tells you otherwise.\n")
 	return b.String()
 }
 
-// BuildInterruptFlushPrompt renders the §4.5.2 interrupt frame for one or
-// more interrupt-class queue entries. The frame names the in-flight work
-// (via the first entry's resume_hint, falling back to a generic description)
-// and the resume/stop contract. Returns "" if entries is empty.
+// BuildInterruptFlushPrompt renders one `<system-notification>` line per
+// pending interrupt-class entry, tagged with `[interrupt]` so the recipient
+// knows to consider preempting current work. Same shape as
+// BuildQueueFlushPrompt — no inlined body, no footer prose. Returns "" if
+// entries is empty.
 func BuildInterruptFlushPrompt(entries []Entry) string {
 	if len(entries) == 0 {
 		return ""
 	}
-	hint := extractResumeHint(entries[0])
-	if hint == "" {
-		hint = "your previous task"
-	}
-
 	var b strings.Builder
-	senders := entries[0].From
-	if len(entries) > 1 {
-		senders = fmt.Sprintf("%d senders", len(entries))
+	for _, e := range entries {
+		fmt.Fprintf(&b, "<system-notification>[interrupt] New message from %s. Read %s.</system-notification>\n",
+			e.From, displayMessageID(e))
 	}
-	fmt.Fprintf(&b, "[interrupt] %s has injected an important message. You were in the middle of: %s.\n\n", senders, hint)
-
-	totalBody := 0
-	for i, e := range entries {
-		if len(entries) > 1 {
-			fmt.Fprintf(&b, "--- %d of %d (from %s) ---\n", i+1, len(entries), e.From)
-		}
-		fmt.Fprintf(&b, "Subject: %s\n\n", DisplaySubject(e))
-		body := e.Body
-		truncated := false
-		if len(body) > MaxQueueFlushBodyBytes {
-			body = body[:MaxQueueFlushBodyBytes]
-			truncated = true
-		}
-		remaining := MaxQueueFlushTotalBytes - totalBody
-		if remaining < 0 {
-			remaining = 0
-		}
-		if len(body) > remaining {
-			body = body[:remaining]
-			truncated = true
-		}
-		b.WriteString(body)
-		if !strings.HasSuffix(body, "\n") {
-			b.WriteString("\n")
-		}
-		if truncated {
-			fmt.Fprintf(&b, "...[truncated — run `sprawl messages read %s` for full body]\n", displayMessageID(e))
-		}
-		b.WriteString("\n")
-		totalBody += len(body)
-	}
-	b.WriteString("After reading, decide whether to:\n")
-	b.WriteString("- resume the interrupted work (default), OR\n")
-	b.WriteString("- stop / change direction if the message says so.\n")
 	return b.String()
 }
