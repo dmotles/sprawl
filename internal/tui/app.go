@@ -610,7 +610,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-338: render as a MessageSystem entry (mail glyph + distinct
 		// style) so the human can tell the system spoke, not them. The Claude
 		// session still receives the body as a user-role turn via SendMessage.
-		m.rootVP().AppendSystemMessage(msg.Prompt)
+		// QUM-557: AppendSystemNotification strips `<system-notification>` wrappers
+		// and emits MessageSystemNotification entries; falls back to AppendSystemMessage
+		// (legacy MessageSystem rendering) when the prompt isn't tagged — preserving
+		// behavior for pre-QUM-555 plain inbox banners.
+		m.rootVP().AppendSystemNotification(msg.Prompt)
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
 		return m, m.bridge.SendMessage(msg.Prompt)
@@ -1266,6 +1270,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.mcpOpThresholdShown[msg.CallID] = true
+		// QUM-558: some tools are blocking-on-human by design (e.g.
+		// ask_user_question waits for the user to respond). Suppress the
+		// viewport banner for them — the in-flight tracker still records
+		// the op so SIGUSR1 dumps remain accurate. If this map grows past
+		// ~3 entries, promote to tool-side metadata (Option 3 in QUM-558).
+		if mcpLongRunningBannerExempt[op.Tool] {
+			return m, nil
+		}
 		caller := op.Caller
 		if caller == "" {
 			caller = "?"
@@ -2478,6 +2490,17 @@ var mcpOpBannerThreshold = 60 * time.Second
 // mcpOpTickInterval is the refresh cadence for the live elapsed-time render
 // in the status bar. Package-level var so tests can override. (QUM-497)
 var mcpOpTickInterval = 1 * time.Second
+
+// mcpLongRunningBannerExempt names MCP tools whose long elapsed time is
+// expected by design (blocking-on-human) and therefore should NOT raise the
+// "taking longer than usual" viewport banner. The in-flight tracker still
+// records these ops so SIGUSR1 state dumps remain complete. (QUM-558)
+//
+// TODO(QUM-558): if this grows past ~3 entries, promote to tool-side
+// metadata (`BlocksOnHuman` flag on MCP tool registration) — Option 3.
+var mcpLongRunningBannerExempt = map[string]bool{
+	"ask_user_question": true,
+}
 
 // mcpOpTickCmd returns a tea.Cmd that fires an mcpOpTickMsg after one tick
 // interval. The reducer self-perpetuates while ops remain active. (QUM-497)

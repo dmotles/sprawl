@@ -133,6 +133,43 @@ func TestMCPThresholdMsg_DuplicatesIgnored(t *testing.T) {
 	}
 }
 
+// QUM-558: `ask_user_question` is inherently blocking-on-human, so the
+// long-running warning is noise. The in-flight tracker still tracks the op
+// (verified below) — only the viewport banner is suppressed.
+func TestMCPThresholdMsg_AskUserQuestion_SuppressesBanner(t *testing.T) {
+	m := newInflightTestModel(t)
+	updated, _ := m.Update(MCPCallStartedMsg{CallID: "c1", Tool: "ask_user_question", Caller: "weave", Started: time.Now().Add(-65 * time.Second)})
+	updated, _ = updated.(AppModel).Update(mcpOpThresholdMsg{CallID: "c1"})
+	app := updated.(AppModel)
+	if _, ok := findStatusEntry(app, "is taking longer than usual"); ok {
+		t.Errorf("ask_user_question should not raise the long-running banner")
+	}
+	// Observability: the op must still be tracked for SIGUSR1 dumps.
+	if _, ok := app.activeMCPOps["c1"]; !ok {
+		t.Errorf("ask_user_question should remain in activeMCPOps; suppression is viewport-only")
+	}
+	// And the threshold-shown flag should be set so duplicate deliveries stay
+	// suppressed too.
+	if !app.mcpOpThresholdShown["c1"] {
+		t.Errorf("mcpOpThresholdShown[c1] should be set even when suppressed, to make suppression idempotent")
+	}
+}
+
+// QUM-558: regression-safety — non-exempt tools still get the banner.
+func TestMCPThresholdMsg_NonExemptTool_StillBanners(t *testing.T) {
+	for _, tool := range []string{"Bash", "Edit", "spawn"} {
+		t.Run(tool, func(t *testing.T) {
+			m := newInflightTestModel(t)
+			updated, _ := m.Update(MCPCallStartedMsg{CallID: "c1", Tool: tool, Caller: "weave", Started: time.Now().Add(-65 * time.Second)})
+			updated, _ = updated.(AppModel).Update(mcpOpThresholdMsg{CallID: "c1"})
+			app := updated.(AppModel)
+			if _, ok := findStatusEntry(app, "is taking longer than usual"); !ok {
+				t.Errorf("%s should still raise the long-running banner", tool)
+			}
+		})
+	}
+}
+
 func TestMCPOpTickMsg_SelfPerpetuatesWhileActive(t *testing.T) {
 	m := newInflightTestModel(t)
 	updated, _ := m.Update(MCPCallStartedMsg{CallID: "c1", Tool: "retire", Caller: "weave", Started: time.Now()})

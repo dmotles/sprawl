@@ -27,7 +27,18 @@ type Theme struct {
 	// (the mail-glyph inbox-drain rendering — QUM-338). Distinct from accent
 	// (cyan) and error (red) so the human watching can tell at a glance the
 	// system spoke, not the user.
-	SystemText       lipgloss.Style
+	SystemText lipgloss.Style
+	// NotificationText is the foreground used for async-class
+	// `<system-notification>` viewport entries (QUM-557). Distinct from
+	// SystemText (magenta/inbox-drain) and AccentText (cyan/user input)
+	// so live and replay paths both render notifications identically.
+	// TODO(QUM-417): harmonize with semantic palette.
+	NotificationText lipgloss.Style
+	// InterruptText is the foreground used for interrupt-class
+	// `<system-notification>` entries — bodies starting with `[interrupt]`
+	// (QUM-557). Amber to signal "act soon" without screaming-red.
+	// TODO(QUM-417): harmonize with semantic palette.
+	InterruptText    lipgloss.Style
 	StatusBar        lipgloss.Style
 	SelectedItem     lipgloss.Style
 	PlaceholderStyle lipgloss.Style
@@ -95,6 +106,14 @@ func NewTheme(accentColor string) Theme {
 			Background(bg),
 		SystemText: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("141")).
+			Background(bg),
+		// TODO(QUM-417): harmonize with semantic palette.
+		NotificationText: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("39")).
+			Background(bg),
+		// TODO(QUM-417): harmonize with semantic palette.
+		InterruptText: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("208")).
 			Background(bg),
 		// No Padding — StatusBarModel.View manages its own left/right spacing
 		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes

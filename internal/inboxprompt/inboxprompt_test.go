@@ -24,8 +24,9 @@ func TestBuildQueueFlushPrompt_Empty(t *testing.T) {
 }
 
 // TestBuildQueueFlushPrompt_SingleEntry pins the exact one-line shape per
-// QUM-555: `<system-notification>New message from $FROM. Read $SHORT_ID.</system-notification>\n`.
-// No subject, no body, no footer prose.
+// QUM-556: `<system-notification>From $FROM — mcp__sprawl__messages_read(id=$SHORT_ID)</system-notification>\n`.
+// No subject, no body, no footer prose. The fully-qualified MCP tool name
+// is the primary pattern-match anchor for the recipient agent.
 func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
 	entries := []inboxprompt.Entry{{
 		ID: "uuid-1", ShortID: "abc", Class: inboxprompt.ClassAsync,
@@ -33,7 +34,7 @@ func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
 		Tags: []string{"fyi"},
 	}}
 	got := inboxprompt.BuildQueueFlushPrompt(entries)
-	want := "<system-notification>New message from child-alpha. Read abc.</system-notification>\n"
+	want := "<system-notification>From child-alpha — mcp__sprawl__messages_read(id=abc)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildQueueFlushPrompt mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -47,7 +48,7 @@ func TestBuildQueueFlushPrompt_SingleEntry_FallsBackToID(t *testing.T) {
 		From: "weave", Body: "hello",
 	}}
 	got := inboxprompt.BuildQueueFlushPrompt(entries)
-	want := "<system-notification>New message from weave. Read uuid-foo.</system-notification>\n"
+	want := "<system-notification>From weave — mcp__sprawl__messages_read(id=uuid-foo)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildQueueFlushPrompt fallback mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -61,9 +62,9 @@ func TestBuildQueueFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u3", ShortID: "s3", From: "c", Body: "b3"},
 	}
 	got := inboxprompt.BuildQueueFlushPrompt(entries)
-	want := "<system-notification>New message from a. Read s1.</system-notification>\n" +
-		"<system-notification>New message from b. Read s2.</system-notification>\n" +
-		"<system-notification>New message from c. Read s3.</system-notification>\n"
+	want := "<system-notification>From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification>From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n" +
+		"<system-notification>From c — mcp__sprawl__messages_read(id=s3)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildQueueFlushPrompt multi mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -89,6 +90,40 @@ func TestBuildQueueFlushPrompt_NoBodyInlined(t *testing.T) {
 	}
 }
 
+// TestBuildQueueFlushPrompt_NamesMCPTool is the QUM-556 regression guard:
+// the rendered line MUST contain the fully-qualified MCP tool name
+// `mcp__sprawl__messages_read` with the id in function-call shape, and MUST
+// NOT use the bare verb "Read " (which was ambiguous with the deprecated
+// `sprawl messages read <id>` CLI).
+func TestBuildQueueFlushPrompt_NamesMCPTool(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "u1", ShortID: "abc", From: "weave", Body: "hi",
+	}}
+	got := inboxprompt.BuildQueueFlushPrompt(entries)
+	if !strings.Contains(got, "mcp__sprawl__messages_read(id=abc)") {
+		t.Errorf("queue flush missing MCP tool citation: %q", got)
+	}
+	if strings.Contains(got, "Read abc") {
+		t.Errorf("queue flush still uses bare 'Read' verb (QUM-556 regression): %q", got)
+	}
+}
+
+// TestBuildInterruptFlushPrompt_NamesMCPTool — QUM-556 regression guard for
+// the interrupt path. Same anchors as the async path.
+func TestBuildInterruptFlushPrompt_NamesMCPTool(t *testing.T) {
+	entries := []inboxprompt.Entry{{
+		ID: "u1", ShortID: "xyz", Class: inboxprompt.ClassInterrupt,
+		From: "weave", Body: "stop",
+	}}
+	got := inboxprompt.BuildInterruptFlushPrompt(entries)
+	if !strings.Contains(got, "mcp__sprawl__messages_read(id=xyz)") {
+		t.Errorf("interrupt flush missing MCP tool citation: %q", got)
+	}
+	if strings.Contains(got, "Read xyz") {
+		t.Errorf("interrupt flush still uses bare 'Read' verb (QUM-556 regression): %q", got)
+	}
+}
+
 func TestBuildInterruptFlushPrompt_Empty(t *testing.T) {
 	if got := inboxprompt.BuildInterruptFlushPrompt(nil); got != "" {
 		t.Errorf("expected empty prompt for nil entries, got %q", got)
@@ -104,7 +139,7 @@ func TestBuildInterruptFlushPrompt_SingleEntry(t *testing.T) {
 		Tags: []string{"resume_hint:writing tests"},
 	}}
 	got := inboxprompt.BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] New message from weave. Read xyz.</system-notification>\n"
+	want := "<system-notification>[interrupt] From weave — mcp__sprawl__messages_read(id=xyz)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildInterruptFlushPrompt mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -118,7 +153,7 @@ func TestBuildInterruptFlushPrompt_SingleEntry_FallsBackToID(t *testing.T) {
 		From: "weave", Body: "stop",
 	}}
 	got := inboxprompt.BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] New message from weave. Read uuid-bar.</system-notification>\n"
+	want := "<system-notification>[interrupt] From weave — mcp__sprawl__messages_read(id=uuid-bar)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildInterruptFlushPrompt fallback mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -131,8 +166,8 @@ func TestBuildInterruptFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
 	}
 	got := inboxprompt.BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] New message from a. Read s1.</system-notification>\n" +
-		"<system-notification>[interrupt] New message from b. Read s2.</system-notification>\n"
+	want := "<system-notification>[interrupt] From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification>[interrupt] From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildInterruptFlushPrompt multi mismatch\n got: %q\nwant: %q", got, want)
 	}

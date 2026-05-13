@@ -46,6 +46,13 @@ const (
 	// a mail glyph and the theme's SystemText style so it's visually
 	// unmistakable that the system spoke, not the user. (QUM-338)
 	MessageSystem
+	// MessageSystemNotification is a supervisor-injected `<system-notification>`
+	// user-role message (QUM-557). Rendered with a left-bar accent + glyph
+	// (✉ async / ⚡ interrupt) using Theme.NotificationText / InterruptText.
+	// Distinct from MessageSystem so live drain and JSONL replay produce the
+	// same visual treatment on restart — see QUM-557 motivation for the
+	// live/replay color-flip bug this resolves.
+	MessageSystemNotification
 	// MessageBanner is a session banner (ASCII art + tagline) that lives in
 	// the messages slice so it survives renderAndUpdate() cycles. Rendered
 	// verbatim without markdown processing.
@@ -92,6 +99,11 @@ type MessageEntry struct {
 	// Empty when Depth == 0. Used to attribute nested tool calls to the
 	// correct parallel Agent container. (QUM-386)
 	ParentToolID string
+	// Interrupt is set on MessageSystemNotification entries whose body
+	// starts with the literal `[interrupt]` marker. Drives the renderer's
+	// color/glyph choice (⚡ + InterruptText vs ✉ + NotificationText) so
+	// live and replay both render identically. (QUM-557)
+	Interrupt bool
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -402,6 +414,28 @@ func (m *ViewportModel) AppendSystemMessage(text string) {
 	m.renderAndUpdate()
 }
 
+// AppendSystemNotification adds a supervisor-injected `<system-notification>`
+// message to the conversation buffer (QUM-557). When the prompt is wrapped
+// in the literal tag, the wrapper is stripped and the stored entry is a
+// MessageSystemNotification with the Interrupt flag set according to the
+// `[interrupt]` body marker. When the prompt does NOT carry the tag (legacy
+// inbox banners pre-QUM-555), this falls back to AppendSystemMessage so the
+// long-standing MessageSystem rendering keeps working.
+func (m *ViewportModel) AppendSystemNotification(text string) {
+	stripped, isInterrupt, ok := stripSystemNotificationTag(text)
+	if !ok {
+		m.AppendSystemMessage(text)
+		return
+	}
+	m.messages = append(m.messages, MessageEntry{
+		Type:      MessageSystemNotification,
+		Content:   stripped,
+		Complete:  true,
+		Interrupt: isInterrupt,
+	})
+	m.renderAndUpdate()
+}
+
 // AppendError adds an error message with visual distinction.
 func (m *ViewportModel) AppendError(text string) {
 	m.messages = append(m.messages, MessageEntry{
@@ -570,6 +604,19 @@ func (m *ViewportModel) renderMessages() string {
 		case MessageSystem:
 			formatted := formatSystemMessage(msg.Content, m.width)
 			block.WriteString(m.theme.SystemText.Render("✉ " + formatted))
+		case MessageSystemNotification:
+			// QUM-557: left-bar accent + glyph, tags already stripped at
+			// append/replay time so msg.Content is the raw body.
+			style := m.theme.NotificationText
+			glyph := "✉"
+			if msg.Interrupt {
+				style = m.theme.InterruptText
+				glyph = "⚡"
+			}
+			formatted := formatSystemMessage(msg.Content, m.width)
+			// Render bar + glyph + body all under the same style so the row
+			// reads as a unified accent block.
+			block.WriteString(style.Render("│ " + glyph + " " + formatted))
 		case MessageBanner:
 			block.WriteString(msg.Content)
 		}

@@ -2063,3 +2063,95 @@ func TestRenderToolCall_GitRebaseProgress_NoBleed(t *testing.T) {
 		t.Errorf("expected `+ N more lines` trailer for capped preview, got:\n%s", stripped)
 	}
 }
+
+// --- QUM-557: render shape for MessageSystemNotification entries ---
+//
+// Both live-append and replay paths produce MessageSystemNotification entries.
+// The renderer must:
+//   - draw a left bar (│) in the notification color
+//   - prepend a ✉ glyph (async) or ⚡ glyph (interrupt)
+//   - include the body text
+//   - NOT include the literal <system-notification> tags
+//   - use Theme.NotificationText (async) or Theme.InterruptText (interrupt)
+//     so live and replay both render the same color.
+func TestViewportModel_RenderSystemNotification_AsyncShape(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.SetMessages([]MessageEntry{
+		{
+			Type:      MessageSystemNotification,
+			Content:   "From finn — msg id=9v6",
+			Complete:  true,
+			Interrupt: false,
+		},
+	})
+	view := m.View()
+	stripped := stripANSI(view)
+
+	if !strings.Contains(stripped, "│") {
+		t.Errorf("expected left bar '│' in rendered output, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "✉") {
+		t.Errorf("expected async glyph '✉' in rendered output, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "⚡") {
+		t.Errorf("did not expect interrupt glyph '⚡' for async entry, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "From finn") {
+		t.Errorf("expected body text in rendered output, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "<system-notification>") || strings.Contains(stripped, "</system-notification>") {
+		t.Errorf("rendered output must not contain literal tags, got:\n%s", stripped)
+	}
+
+	// Color check: the rendered (ANSI-bearing) output should carry the
+	// NotificationText escape prefix. Extract by rendering a sentinel and
+	// pulling everything up to the sentinel content.
+	theme := NewTheme("colour212")
+	sentinel := theme.NotificationText.Render("X")
+	prefix := strings.SplitN(sentinel, "X", 2)[0]
+	if prefix == "" {
+		t.Skip("NotificationText style produced no ANSI prefix — terminal-detection skip")
+	}
+	if !strings.Contains(view, prefix) {
+		t.Errorf("expected NotificationText ANSI prefix in raw rendered output for async notification (prefix=%q)\nfull view:\n%s", prefix, view)
+	}
+}
+
+func TestViewportModel_RenderSystemNotification_InterruptShape(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.SetMessages([]MessageEntry{
+		{
+			Type:      MessageSystemNotification,
+			Content:   "[interrupt] From finn — msg id=9v6",
+			Complete:  true,
+			Interrupt: true,
+		},
+	})
+	view := m.View()
+	stripped := stripANSI(view)
+
+	if !strings.Contains(stripped, "│") {
+		t.Errorf("expected left bar '│' in rendered output, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "⚡") {
+		t.Errorf("expected interrupt glyph '⚡' in rendered output, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "[interrupt]") {
+		t.Errorf("expected '[interrupt]' marker preserved in body, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "<system-notification>") || strings.Contains(stripped, "</system-notification>") {
+		t.Errorf("rendered output must not contain literal tags, got:\n%s", stripped)
+	}
+
+	theme := NewTheme("colour212")
+	sentinel := theme.InterruptText.Render("X")
+	prefix := strings.SplitN(sentinel, "X", 2)[0]
+	if prefix == "" {
+		t.Skip("InterruptText style produced no ANSI prefix — terminal-detection skip")
+	}
+	if !strings.Contains(view, prefix) {
+		t.Errorf("expected InterruptText ANSI prefix in raw rendered output for interrupt notification (prefix=%q)\nfull view:\n%s", prefix, view)
+	}
+}

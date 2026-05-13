@@ -4,10 +4,14 @@
 //
 // QUM-555: the per-entry frame is now a single `<system-notification>` line
 // naming the sender and the short message ID. The recipient pulls the body
-// on demand via `sprawl messages read <short_id>` rather than receiving the
-// full body inlined into every turn. Interrupt-class entries carry an
-// `[interrupt]` marker inside the tag so the recipient can decide whether to
-// preempt current work.
+// on demand rather than receiving the full body inlined into every turn.
+// Interrupt-class entries carry an `[interrupt]` marker inside the tag so
+// the recipient can decide whether to preempt current work.
+//
+// QUM-556: the line names the canonical MCP tool `mcp__sprawl__messages_read`
+// in function-call shape so agents pattern-match it against their registered
+// tool list — the bare verb "Read" was ambiguous with the deprecated
+// `sprawl messages read <id>` CLI and triggered the wrong path in practice.
 package inboxprompt
 
 import (
@@ -62,10 +66,11 @@ func DisplaySubject(e Entry) string {
 }
 
 // displayMessageID returns the short maildir ID when available, falling back
-// to the queue UUID. The flush prompts cite this so `sprawl messages read
-// <id>` accepts the value (ResolvePrefix matches ShortID first). Entries
-// enqueued before ShortID was added round-trip with an empty ShortID and
-// gracefully fall back to ID. See QUM-412.
+// to the queue UUID. The flush prompts cite this as the `id=` argument of
+// `mcp__sprawl__messages_read(...)` (ResolvePrefix on the MCP tool side
+// matches ShortID first). Entries enqueued before ShortID was added
+// round-trip with an empty ShortID and gracefully fall back to ID. See
+// QUM-412.
 func displayMessageID(e Entry) string {
 	if e.ShortID != "" {
 		return e.ShortID
@@ -87,16 +92,18 @@ func SplitByClass(entries []Entry) (interrupts, asyncs []Entry) {
 }
 
 // BuildQueueFlushPrompt renders one `<system-notification>` line per pending
-// async queue entry. The line names the sender and the short message ID the
-// recipient should pass to `sprawl messages read` if it wants to engage. No
-// body is inlined; no footer prose is emitted. Returns "" if entries is empty.
+// async queue entry. The line names the sender and cites the canonical MCP
+// tool `mcp__sprawl__messages_read` in function-call form with the entry's
+// id — the fully-qualified tool name maximizes pattern-match against the
+// recipient's registered tool list (QUM-556). No body is inlined; no footer
+// prose is emitted. Returns "" if entries is empty.
 func BuildQueueFlushPrompt(entries []Entry) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	for _, e := range entries {
-		fmt.Fprintf(&b, "<system-notification>New message from %s. Read %s.</system-notification>\n",
+		fmt.Fprintf(&b, "<system-notification>From %s — mcp__sprawl__messages_read(id=%s)</system-notification>\n",
 			e.From, displayMessageID(e))
 	}
 	return b.String()
@@ -105,15 +112,15 @@ func BuildQueueFlushPrompt(entries []Entry) string {
 // BuildInterruptFlushPrompt renders one `<system-notification>` line per
 // pending interrupt-class entry, tagged with `[interrupt]` so the recipient
 // knows to consider preempting current work. Same shape as
-// BuildQueueFlushPrompt — no inlined body, no footer prose. Returns "" if
-// entries is empty.
+// BuildQueueFlushPrompt — `mcp__sprawl__messages_read(id=<id>)` citation,
+// no inlined body, no footer prose. Returns "" if entries is empty.
 func BuildInterruptFlushPrompt(entries []Entry) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	for _, e := range entries {
-		fmt.Fprintf(&b, "<system-notification>[interrupt] New message from %s. Read %s.</system-notification>\n",
+		fmt.Fprintf(&b, "<system-notification>[interrupt] From %s — mcp__sprawl__messages_read(id=%s)</system-notification>\n",
 			e.From, displayMessageID(e))
 	}
 	return b.String()

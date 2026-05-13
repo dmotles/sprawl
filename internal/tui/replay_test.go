@@ -702,6 +702,75 @@ func TestLoadTranscript_MultipleToolCallsInterleavedResults(t *testing.T) {
 	}
 }
 
+// --- QUM-557: replay path must surface <system-notification> content as
+//     MessageSystemNotification entries (not MessageUser), preserving the
+//     interrupt-class flag so the renderer can color-code on resume/restart. ---
+
+func TestScanTranscript_SystemNotification_AsyncStringContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":"<system-notification>From finn — msg id=9v6</system-notification>"}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageSystemNotification {
+		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
+	}
+	if entries[0].Interrupt {
+		t.Errorf("entries[0].Interrupt = true, want false (async)")
+	}
+	if entries[0].Content != "From finn — msg id=9v6" {
+		t.Errorf("entries[0].Content = %q, want %q (tags stripped)", entries[0].Content, "From finn — msg id=9v6")
+	}
+}
+
+func TestScanTranscript_SystemNotification_InterruptStringContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":"<system-notification>[interrupt] From finn — msg id=9v6</system-notification>"}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageSystemNotification {
+		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
+	}
+	if !entries[0].Interrupt {
+		t.Errorf("entries[0].Interrupt = false, want true ([interrupt] body)")
+	}
+	if entries[0].Content != "[interrupt] From finn — msg id=9v6" {
+		t.Errorf("entries[0].Content = %q, want marker preserved", entries[0].Content)
+	}
+}
+
+func TestScanTranscript_SystemNotification_ArrayBlockContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[` +
+		`{"type":"text","text":"<system-notification>x</system-notification>"}` +
+		`]}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageSystemNotification {
+		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
+	}
+	if entries[0].Interrupt {
+		t.Errorf("entries[0].Interrupt = true, want false")
+	}
+	if entries[0].Content != "x" {
+		t.Errorf("entries[0].Content = %q, want %q", entries[0].Content, "x")
+	}
+}
+
 func TestExtractToolResultContent(t *testing.T) {
 	tests := []struct {
 		name string
