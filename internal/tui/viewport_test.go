@@ -1799,6 +1799,66 @@ func TestViewportModel_SetMessages_RestoredAgentClearsOnResult(t *testing.T) {
 	}
 }
 
+// TestViewportModel_SetMessages_PureReplayNestsToolCallsUnderAgent verifies
+// the QUM-481 fix: when SetMessages is called with entries that came
+// purely from a fresh transcript replay (no prior live render), nested
+// tool_use entries are attributed to their parent Agent via ParentToolID
+// — the linkage the renderer's childrenOf index relies on to draw them
+// inside the Agent container instead of at the top level. Before the fix,
+// LoadTranscript set Depth but left ParentToolID empty, so any logic
+// keyed on parent linkage (including the renderer) would lose the
+// Agent → child relationship after a pure-replay reseed.
+func TestViewportModel_SetMessages_PureReplayNestsToolCallsUnderAgent(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"a1","name":"Agent","input":{"prompt":"sub-task"}},` +
+			`{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("LoadTranscript: %v", err)
+	}
+
+	m := newTestViewportModel(t)
+	m.SetSize(80, 40)
+	m.SetMessages(entries)
+
+	// Re-read the buffer to confirm SetMessages did not strip the linkage.
+	got := m.GetMessages()
+	var bash *MessageEntry
+	for i := range got {
+		if got[i].Type == MessageToolCall && got[i].Content == "Bash" {
+			bash = &got[i]
+			break
+		}
+	}
+	if bash == nil {
+		t.Fatalf("Bash entry missing from SetMessages buffer: %+v", got)
+	}
+	if bash.ParentToolID != "a1" {
+		t.Errorf("after pure-replay SetMessages, Bash ParentToolID = %q, want %q", bash.ParentToolID, "a1")
+	}
+	if bash.Depth != 1 {
+		t.Errorf("Bash Depth = %d, want 1", bash.Depth)
+	}
+
+	// The renderer's parent→children index drives container nesting: a
+	// nested entry with a valid ParentToolID must NOT appear as a
+	// standalone top-level row. Render and assert Bash is not emitted
+	// outside the Agent container glyphs.
+	rendered := stripANSI(m.renderMessages())
+	headerIdx := strings.Index(rendered, "┌")
+	footerIdx := strings.Index(rendered, "└")
+	if headerIdx < 0 || footerIdx < 0 {
+		t.Fatalf("expected Agent container glyphs ┌/└, got:\n%s", rendered)
+	}
+	if tail := rendered[footerIdx:]; strings.Contains(tail, "Bash") {
+		t.Errorf("Bash should not render as a top-level row after the Agent container; rendered:\n%s", rendered)
+	}
+}
+
 // TestViewportModel_RenderAgentContainer_Pending verifies that a pending Agent
 // renders as a container with its nested children visible.
 func TestViewportModel_RenderAgentContainer_Pending(t *testing.T) {

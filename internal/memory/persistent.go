@@ -95,8 +95,16 @@ func buildPersistentPrompt(existingKnowledge, sessionSummary, timelineBullets st
 
 	b.WriteString("## Instructions\n\n")
 	b.WriteString("Review the latest session and extract important persistent facts: user preferences, project conventions, known issues, behavioral patterns, recurring pain points.\n\n")
-	b.WriteString("Merge new facts into the existing persistent knowledge list.\n")
-	b.WriteString("Drop items that haven't come up recently or add little value — the list should stay fresh and relevant.\n")
+	b.WriteString("Merge new facts into the existing persistent knowledge list.\n\n")
+
+	// QUM-551: retraction directive. The list was previously additive in
+	// practice — stale claims accumulated until a human edited them out.
+	// The next two paragraphs make retraction part of the curator's job
+	// while guarding against false-positive deletion.
+	b.WriteString("RETRACTION (important): when the new session summary or recent timeline directly contradicts, supersedes, or fixes a claim made by an existing bullet, you MUST remove that bullet or rewrite it to reflect the new evidence. Do NOT keep the stale version alongside the corrected one — newer evidence wins. Examples of contradiction: a bug the bullet describes has been fixed; a behavior the bullet describes no longer holds; a hang/limit the bullet warns about has been bounded; a tool the bullet says is broken now works.\n\n")
+	b.WriteString("FALSE-POSITIVE GUARDRAIL: only remove a bullet when the new evidence actually contradicts it. Do NOT delete a bullet merely because the new session didn't reference it — absence of mention is not contradiction. Bullets describing stable long-lived facts (user preferences, branch prefixes, project conventions, architectural invariants) should persist across many sessions even when the latest session doesn't touch them. False-positive removals are worse than stale bullets.\n\n")
+
+	b.WriteString("Drop items that have become low-value over many sessions (verbose, narrow, or one-off) to keep the list fresh — but apply this sparingly and only when the retraction rules above don't already cover the case.\n")
 	fmt.Fprintf(&b, "Cap at %d items maximum.\n", maxItems)
 	b.WriteString("Each item should be a concise, actionable statement (1-2 sentences max).\n\n")
 	b.WriteString("Each item MUST be on its own line in this exact format:\n\n")

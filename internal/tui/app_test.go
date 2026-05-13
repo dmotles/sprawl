@@ -2146,7 +2146,7 @@ func TestAppModel_InboxArrivalMsg_AppendsStatusBanner(t *testing.T) {
 	app = updated.(AppModel)
 
 	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "inbox: new message from pretend-child") {
+	if !strings.Contains(view, "inbox: 1 new message from pretend-child") {
 		t.Errorf("viewport should show inbox banner after InboxArrivalMsg, got:\n%s", view)
 	}
 }
@@ -2190,7 +2190,7 @@ func TestAppModel_InboxArrivalMsg_EmptyFromUsesFallback(t *testing.T) {
 	app = updated.(AppModel)
 
 	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "inbox: new message from unknown") {
+	if !strings.Contains(view, "inbox: 1 new message from unknown") {
 		t.Errorf("viewport should show fallback banner when From empty, got:\n%s", view)
 	}
 }
@@ -2238,7 +2238,7 @@ func TestAppModel_AgentTreeMsg_RisingRootUnreadEmitsBanner(t *testing.T) {
 	app = updated.(AppModel)
 
 	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "inbox: 1 new message(s) for weave") {
+	if !strings.Contains(view, "inbox: 1 new message") {
 		t.Errorf("viewport should show rise banner after RootUnread 0→1, got:\n%s", view)
 	}
 }

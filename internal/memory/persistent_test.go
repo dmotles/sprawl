@@ -346,6 +346,106 @@ func TestUpdatePersistentKnowledge_EmptyResponse(t *testing.T) {
 	}
 }
 
+// TestBuildPersistentPrompt_RetractionInstructionPresent pins the QUM-551
+// retraction directive in the prompt. The prompt must:
+//   - explicitly tell the curator to REMOVE or REWRITE bullets contradicted
+//     by new session evidence (not append-alongside), AND
+//   - guard against false-positive deletion by stating that bullets must
+//     only be removed when contradicted, not merely because the new session
+//     didn't reference them again.
+//
+// We assert on substrings rather than full text so the wording can be tuned
+// without breaking the test, but the two anti-failure-modes named in the
+// QUM-551 acceptance criteria stay covered.
+func TestBuildPersistentPrompt_RetractionInstructionPresent(t *testing.T) {
+	prompt := buildPersistentPrompt("- old bullet", "session", "", 20)
+	lower := strings.ToLower(prompt)
+
+	// Retraction must be commanded, not merely suggested.
+	if !strings.Contains(lower, "contradict") {
+		t.Error("prompt should explicitly reference contradicting evidence")
+	}
+	wantRetractVerb := false
+	for _, verb := range []string{"remove", "rewrite", "retract", "supersede", "replace"} {
+		if strings.Contains(lower, verb) {
+			wantRetractVerb = true
+			break
+		}
+	}
+	if !wantRetractVerb {
+		t.Error("prompt should instruct the curator to remove/rewrite/retract/supersede contradicted bullets")
+	}
+
+	// False-positive guardrail: do NOT delete bullets merely unmentioned.
+	// Wording is flexible but the prompt must mention this constraint.
+	hasGuardrail := strings.Contains(lower, "only ") &&
+		(strings.Contains(lower, "not just because") ||
+			strings.Contains(lower, "not merely") ||
+			strings.Contains(lower, "merely") ||
+			strings.Contains(lower, "absence") ||
+			strings.Contains(lower, "false-positive") ||
+			strings.Contains(lower, "unmentioned"))
+	if !hasGuardrail {
+		t.Errorf("prompt should warn against deleting bullets merely because the new session didn't reference them. Prompt:\n%s", prompt)
+	}
+}
+
+// TestUpdatePersistentKnowledge_RetractsContradictedBullet (QUM-551) seeds
+// persistent.md with a known-stale claim, runs UpdatePersistentKnowledge with
+// a mock invoker whose response omits the stale claim (simulating the LLM
+// honoring the retraction directive), and asserts that the on-disk file no
+// longer contains the stale bullet — i.e. the pipeline supports retraction
+// end-to-end (overwrite, not append).
+func TestUpdatePersistentKnowledge_RetractsContradictedBullet(t *testing.T) {
+	root := t.TempDir()
+	staleBullet := "kill MCP tool is a no-op that returns success without terminating"
+	if err := writePersistentKnowledge(root, []string{
+		staleBullet,
+		"unrelated fact about branch prefix",
+	}); err != nil {
+		t.Fatalf("seed writePersistentKnowledge: %v", err)
+	}
+
+	// The new session contradicts the stale bullet. The mock LLM honors
+	// the retraction directive by returning a list that omits the stale
+	// bullet and rewrites it as a positive statement.
+	sessionSummary := "QUM-543 landed: kill MCP tool now actually terminates the backend (verified end-to-end)."
+	mock := &mockClaudeInvoker{
+		response: "" +
+			"- unrelated fact about branch prefix\n" +
+			"- kill MCP tool actually terminates the backend (fixed in QUM-543)\n",
+	}
+
+	if err := UpdatePersistentKnowledge(context.Background(), root, mock, nil, sessionSummary, ""); err != nil {
+		t.Fatalf("UpdatePersistentKnowledge: %v", err)
+	}
+
+	// Prompt sanity: it included the stale bullet + the contradicting session.
+	if !strings.Contains(mock.lastPrompt, staleBullet) {
+		t.Error("prompt should include the existing (soon-to-be-retracted) bullet")
+	}
+	if !strings.Contains(mock.lastPrompt, "QUM-543") {
+		t.Error("prompt should include the contradicting session summary")
+	}
+
+	// AC: stale claim must be gone after consolidation.
+	content, err := ReadPersistentKnowledge(root)
+	if err != nil {
+		t.Fatalf("ReadPersistentKnowledge: %v", err)
+	}
+	if strings.Contains(content, staleBullet) {
+		t.Errorf("stale bullet survived retraction; file contents:\n%s", content)
+	}
+	// And the curator's rewrite landed.
+	if !strings.Contains(content, "actually terminates the backend") {
+		t.Errorf("expected the rewritten bullet to be present; file contents:\n%s", content)
+	}
+	// Unrelated bullets must survive (no aggressive deletion).
+	if !strings.Contains(content, "unrelated fact about branch prefix") {
+		t.Errorf("unrelated bullet should not be retracted; file contents:\n%s", content)
+	}
+}
+
 func TestUpdatePersistentKnowledge_NilConfig(t *testing.T) {
 	root := t.TempDir()
 	mock := &mockClaudeInvoker{response: "- Item one\n- Item two"}

@@ -129,42 +129,8 @@ func (a *ChildStreamAdapter) WaitForEvent() tea.Cmd {
 				return ChildStreamClosedMsg{Epoch: epochAtRead}
 			}
 
-			switch ev.Type {
-			case sprawlrt.EventProtocolMessage:
-				if ev.Message == nil {
-					continue
-				}
-				if ev.Message.Type == "result" {
-					continue
-				}
-				msg := MapProtocolMessage(ev.Message)
-				if msg == nil {
-					continue
-				}
+			if msg := TranslateRuntimeEvent(ev, InterruptedAsResult); msg != nil {
 				return msg
-			case sprawlrt.EventTurnCompleted:
-				if ev.Result == nil {
-					return SessionResultMsg{}
-				}
-				return SessionResultMsg{
-					Result:       ev.Result.Result,
-					IsError:      ev.Result.IsError,
-					DurationMs:   ev.Result.DurationMs,
-					NumTurns:     ev.Result.NumTurns,
-					TotalCostUsd: ev.Result.TotalCostUsd,
-				}
-			case sprawlrt.EventTurnFailed:
-				var errStr string
-				if ev.Error != nil {
-					errStr = ev.Error.Error()
-				}
-				return SessionResultMsg{IsError: true, Result: errStr}
-			case sprawlrt.EventInterrupted:
-				return InterruptResultMsg{Err: nil}
-			case sprawlrt.EventTurnStarted, sprawlrt.EventQueueDrained, sprawlrt.EventStopped:
-				continue
-			default:
-				continue
 			}
 		}
 	}

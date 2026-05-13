@@ -114,59 +114,8 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 				return tui.SessionErrorMsg{Err: io.EOF}
 			}
 
-			switch ev.Type {
-			case sprawlrt.EventProtocolMessage:
-				if ev.Message == nil {
-					continue
-				}
-				// QUM-436 Item 1: drop protocol "result" messages here. The
-				// terminal SessionResultMsg is emitted from
-				// EventTurnCompleted/EventTurnFailed/EventInterrupted; surfacing
-				// the protocol-result mapping as well would yield a duplicate
-				// SessionResultMsg per turn.
-				if ev.Message.Type == "result" {
-					continue
-				}
-				msg := tui.MapProtocolMessage(ev.Message)
-				if msg == nil {
-					continue
-				}
+			if msg := tui.TranslateRuntimeEvent(ev, tui.InterruptedAsCompleted); msg != nil {
 				return msg
-			case sprawlrt.EventTurnCompleted:
-				if ev.Result == nil {
-					return tui.SessionResultMsg{}
-				}
-				return tui.SessionResultMsg{
-					Result:       ev.Result.Result,
-					IsError:      ev.Result.IsError,
-					DurationMs:   ev.Result.DurationMs,
-					NumTurns:     ev.Result.NumTurns,
-					TotalCostUsd: ev.Result.TotalCostUsd,
-				}
-			case sprawlrt.EventTurnFailed:
-				var errStr string
-				if ev.Error != nil {
-					errStr = ev.Error.Error()
-				}
-				return tui.SessionResultMsg{
-					IsError: true,
-					Result:  errStr,
-				}
-			case sprawlrt.EventInterrupted:
-				if ev.Result == nil {
-					return tui.InterruptCompletedMsg{}
-				}
-				return tui.InterruptCompletedMsg{
-					Result:       ev.Result.Result,
-					DurationMs:   ev.Result.DurationMs,
-					NumTurns:     ev.Result.NumTurns,
-					TotalCostUsd: ev.Result.TotalCostUsd,
-				}
-			case sprawlrt.EventTurnStarted, sprawlrt.EventQueueDrained, sprawlrt.EventStopped:
-				// Skip lifecycle-only events — read the next one.
-				continue
-			default:
-				continue
 			}
 		}
 	}

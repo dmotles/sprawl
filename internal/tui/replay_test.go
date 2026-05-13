@@ -420,6 +420,100 @@ func TestLoadTranscript_AgentNestingSetsDepth(t *testing.T) {
 	}
 }
 
+// TestLoadTranscript_AgentNestingSetsParentToolID verifies that nested
+// tool_use entries synthesized purely from a replayed transcript carry
+// ParentToolID pointing at the enclosing Agent tool_use's ID — not just
+// Depth. Without this linkage, viewport reseeding from a fresh JSONL
+// replay would render nested calls at the top level instead of under
+// their parent Agent container. (QUM-481)
+func TestLoadTranscript_AgentNestingSetsParentToolID(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"a1","name":"Agent","input":{"prompt":"do stuff"}},` +
+			`{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}` +
+			`]}}`,
+		`{"type":"user","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"a1","content":"agent done"}` +
+			`]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"r1","name":"Read","input":{"path":"/tmp/x"}}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var bashEntry, readEntry, agentEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type != MessageToolCall {
+			continue
+		}
+		switch entries[i].Content {
+		case "Agent":
+			agentEntry = &entries[i]
+		case "Bash":
+			bashEntry = &entries[i]
+		case "Read":
+			readEntry = &entries[i]
+		}
+	}
+	if agentEntry == nil || bashEntry == nil || readEntry == nil {
+		t.Fatalf("missing entries; agent=%v bash=%v read=%v", agentEntry, bashEntry, readEntry)
+	}
+	if agentEntry.ParentToolID != "" {
+		t.Errorf("Agent ParentToolID = %q, want empty (top-level)", agentEntry.ParentToolID)
+	}
+	if bashEntry.ParentToolID != "a1" {
+		t.Errorf("Bash ParentToolID = %q, want %q (nested under Agent a1)", bashEntry.ParentToolID, "a1")
+	}
+	if readEntry.ParentToolID != "" {
+		t.Errorf("Read ParentToolID = %q, want empty (Agent already closed)", readEntry.ParentToolID)
+	}
+	// Cross-check: every Depth>0 entry must have a ParentToolID.
+	for i, e := range entries {
+		if e.Depth > 0 && e.ParentToolID == "" {
+			t.Errorf("entries[%d] has Depth=%d but empty ParentToolID: %+v", i, e.Depth, e)
+		}
+	}
+}
+
+// TestLoadTranscript_NestedAgentDepth2ParentToolID verifies that with two
+// levels of Agent nesting, the innermost tool_use's ParentToolID points at
+// the most recent (innermost) Agent — matching the live-path behavior
+// where lastActiveAgent is the most recently pushed Agent ID. (QUM-481)
+func TestLoadTranscript_NestedAgentDepth2ParentToolID(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"a1","name":"Agent","input":{"prompt":"outer"}},` +
+			`{"type":"tool_use","id":"a2","name":"Agent","input":{"prompt":"inner"}},` +
+			`{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var bashEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall && entries[i].Content == "Bash" {
+			bashEntry = &entries[i]
+			break
+		}
+	}
+	if bashEntry == nil {
+		t.Fatal("Bash entry not found")
+	}
+	if bashEntry.Depth != 2 {
+		t.Errorf("Bash Depth = %d, want 2", bashEntry.Depth)
+	}
+	if bashEntry.ParentToolID != "a2" {
+		t.Errorf("Bash ParentToolID = %q, want %q (innermost Agent)", bashEntry.ParentToolID, "a2")
+	}
+}
+
 // TestLoadTranscript_NestedAgentDepth2 verifies that two levels of Agent
 // nesting in the transcript produce Depth 2 for the innermost tool calls.
 func TestLoadTranscript_NestedAgentDepth2(t *testing.T) {

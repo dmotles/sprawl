@@ -448,6 +448,167 @@ func TestLogger_BeginContextCarriesCallID(t *testing.T) {
 	l.End(id, "ok", "")
 }
 
+// TestLogger_RotatesOversizedLogOnOpen seeds an oversized current log plus
+// an existing .1 and .2, then opens the logger and asserts the ring shifted:
+// current is fresh, old current is now .1, old .1 is .2, old .2 is .3.
+// QUM-502.
+func TestLogger_RotatesOversizedLogOnOpen(t *testing.T) {
+	restore := SetMaxLogBytesForTest(128) // tiny threshold so we don't write 64MiB
+	defer restore()
+
+	dir := t.TempDir()
+	logsDir := filepath.Join(dir, ".sprawl", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	logPath := callLogPath(dir)
+
+	curContent := []byte("CURRENT-OVERSIZED-" + string(make([]byte, 256)))
+	gen1Content := []byte("GEN-1")
+	gen2Content := []byte("GEN-2")
+
+	if err := os.WriteFile(logPath, curContent, 0o644); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+	if err := os.WriteFile(logPath+".1", gen1Content, 0o644); err != nil {
+		t.Fatalf("write .1: %v", err)
+	}
+	if err := os.WriteFile(logPath+".2", gen2Content, 0o644); err != nil {
+		t.Fatalf("write .2: %v", err)
+	}
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer l.Close()
+
+	// Current file must be fresh (zero bytes — Open hasn't written yet).
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("stat current: %v", err)
+	}
+	if info.Size() != 0 {
+		t.Errorf("current log size = %d, want 0 (fresh after rotation)", info.Size())
+	}
+
+	// .1 should be the previous current.
+	got, err := os.ReadFile(logPath + ".1")
+	if err != nil {
+		t.Fatalf("read .1: %v", err)
+	}
+	if string(got) != string(curContent) {
+		t.Errorf(".1 content mismatch: got %q, want previous current", string(got))
+	}
+
+	// .2 should be the previous .1.
+	got, err = os.ReadFile(logPath + ".2")
+	if err != nil {
+		t.Fatalf("read .2: %v", err)
+	}
+	if string(got) != string(gen1Content) {
+		t.Errorf(".2 content = %q, want %q", string(got), string(gen1Content))
+	}
+
+	// .3 should be the previous .2.
+	got, err = os.ReadFile(logPath + ".3")
+	if err != nil {
+		t.Fatalf("read .3: %v", err)
+	}
+	if string(got) != string(gen2Content) {
+		t.Errorf(".3 content = %q, want %q", string(got), string(gen2Content))
+	}
+}
+
+// TestLogger_DropsOldestGenerationOnRotate ensures a full ring drops the
+// oldest file rather than growing unbounded. QUM-502.
+func TestLogger_DropsOldestGenerationOnRotate(t *testing.T) {
+	restore := SetMaxLogBytesForTest(64)
+	defer restore()
+
+	dir := t.TempDir()
+	logsDir := filepath.Join(dir, ".sprawl", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	logPath := callLogPath(dir)
+
+	// Seed current + a full ring of .1/.2/.3.
+	if err := os.WriteFile(logPath, make([]byte, 256), 0o644); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+	for i := 1; i <= 3; i++ {
+		path := logPath + "." + string(rune('0'+i))
+		if err := os.WriteFile(path, []byte("gen-"+string(rune('0'+i))), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	// Record what .3 contained — after rotation that data should be gone.
+	oldGen3, err := os.ReadFile(logPath + ".3")
+	if err != nil {
+		t.Fatalf("read old .3: %v", err)
+	}
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer l.Close()
+
+	// .4 must not exist — ring depth is fixed at 3.
+	if _, err := os.Stat(logPath + ".4"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf(".4 should not exist (ring depth=3); stat err=%v", err)
+	}
+
+	// New .3 should be the previous .2 (gen-2), not the previous .3.
+	got, err := os.ReadFile(logPath + ".3")
+	if err != nil {
+		t.Fatalf("read new .3: %v", err)
+	}
+	if string(got) == string(oldGen3) {
+		t.Errorf(".3 still holds the dropped generation: %q", string(got))
+	}
+	if string(got) != "gen-2" {
+		t.Errorf(".3 content = %q, want gen-2 (shifted from old .2)", string(got))
+	}
+}
+
+// TestLogger_DoesNotRotateUndersizedLog confirms Open is a no-op on small
+// files: content is preserved and no .1 is created. QUM-502.
+func TestLogger_DoesNotRotateUndersizedLog(t *testing.T) {
+	restore := SetMaxLogBytesForTest(1024)
+	defer restore()
+
+	dir := t.TempDir()
+	logsDir := filepath.Join(dir, ".sprawl", "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	logPath := callLogPath(dir)
+
+	original := []byte(`{"phase":"end"}` + "\n")
+	if err := os.WriteFile(logPath, original, 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer l.Close()
+
+	got, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Errorf("content mutated: got %q, want %q", string(got), string(original))
+	}
+	if _, err := os.Stat(logPath + ".1"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf(".1 should not exist when current is undersized; stat err=%v", err)
+	}
+}
+
 // TestLogger_FsyncEveryLine verifies the JSONL file is fsync'd after each
 // writeline (Begin / Checkpoint / End — three writes per call).
 func TestLogger_FsyncEveryLine(t *testing.T) {

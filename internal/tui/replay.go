@@ -236,6 +236,14 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						inputRaw = raw
 					}
 					depth := len(agentStack)
+					// QUM-481: nested entries also carry ParentToolID so
+					// pure-replay viewport reseeds (no prior live render)
+					// preserve the parent→child linkage needed by the
+					// Agent-container renderer.
+					var parentID string
+					if depth > 0 {
+						parentID = agentStack[len(agentStack)-1]
+					}
 					entries = append(entries, MessageEntry{
 						Type:          MessageToolCall,
 						Content:       name,
@@ -245,6 +253,7 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						ToolInputFull: expandToolInput(name, inputRaw),
 						ToolID:        id,
 						Depth:         depth,
+						ParentToolID:  parentID,
 						// Replay-synthesized tool calls are not in flight —
 						// the spinner ticker only animates Pending entries.
 					})

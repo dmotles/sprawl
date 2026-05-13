@@ -7,11 +7,22 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+)
+
+// Rotation policy for mcp-calls.jsonl. Applied only at Open (boot time) so
+// a single MCP call's start/checkpoint/end lines never split across files —
+// see QUM-502. Tuneable here (no config plumbing — YAGNI).
+//
+//nolint:gochecknoglobals // package-level tunables; overridden in tests via export_test.go.
+var (
+	maxLogBytes  int64 = 64 * 1024 * 1024 // rotate when current file exceeds 64 MiB
+	maxRotations       = 3                // keep .1, .2, .3; drop older
 )
 
 // CallState captures the live state of an in-flight MCP call.
@@ -95,6 +106,9 @@ func openInternal(sprawlRoot string, opts internalOptions) (*Logger, error) {
 	}
 
 	logPath := filepath.Join(logsDir, "mcp-calls.jsonl")
+	if err := rotateIfNeeded(logPath); err != nil {
+		return nil, fmt.Errorf("rotate log: %w", err)
+	}
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // G302: world-readable log file is intentional
 	if err != nil {
 		return nil, fmt.Errorf("open log: %w", err)
@@ -125,6 +139,44 @@ func openInternal(sprawlRoot string, opts internalOptions) (*Logger, error) {
 		stopped: make(chan struct{}),
 	}
 	return l, nil
+}
+
+// rotateIfNeeded renames logPath to logPath.1 when it exceeds maxLogBytes,
+// shifting existing .1→.2…→.N within a maxRotations-deep ring and dropping
+// anything older. Called only from openInternal so rotation never bisects an
+// in-flight MCP call (QUM-502).
+func rotateIfNeeded(logPath string) error {
+	info, err := os.Stat(logPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Size() <= maxLogBytes {
+		return nil
+	}
+	// Drop oldest generation, then shift each remaining .i → .i+1.
+	oldest := fmt.Sprintf("%s.%d", logPath, maxRotations)
+	if err := os.Remove(oldest); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove oldest: %w", err)
+	}
+	for i := maxRotations - 1; i >= 1; i-- {
+		src := fmt.Sprintf("%s.%d", logPath, i)
+		dst := fmt.Sprintf("%s.%d", logPath, i+1)
+		if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("rotate %s: %w", src, err)
+		}
+	}
+	if err := os.Rename(logPath, logPath+".1"); err != nil {
+		return fmt.Errorf("rotate current: %w", err)
+	}
+	return nil
 }
 
 func defaultNewID() string {
