@@ -1099,6 +1099,57 @@ func TestServer_ToolsCall_SprawlReportStatus(t *testing.T) {
 	}
 }
 
+// TestToolReportStatus_NoMaildirSideEffect — QUM-559 guard: when the MCP
+// report_status tool is dispatched, it must call Supervisor.ReportStatus
+// and MUST NOT call Supervisor.SendMessage. The new contract is
+// state-only mutation + ephemeral ring push; no maildir write of any
+// kind happens at the MCP layer (or below). A buggy implementation that
+// fell back to SendMessage to "still notify the parent" would surface
+// here as a non-zero sendMessageCalls count.
+func TestToolReportStatus_NoMaildirSideEffect(t *testing.T) {
+	mock := &mockSupervisor{
+		reportStatusResult: &supervisor.ReportStatusResult{ReportedAt: "2026-05-13T10:00:00Z"},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(539, "tools/call", map[string]any{
+		"name": "report_status",
+		"arguments": map[string]any{
+			"state":   "working",
+			"summary": "halfway",
+		},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	if mock.reportStatusState != "working" || mock.reportStatusSummary != "halfway" {
+		t.Errorf("ReportStatus called with state=%q summary=%q; want (working, halfway)",
+			mock.reportStatusState, mock.reportStatusSummary)
+	}
+	if mock.sendMessageCalls != 0 {
+		t.Errorf("toolReportStatus must not invoke Supervisor.SendMessage (QUM-559); calls=%d to=%q body=%q",
+			mock.sendMessageCalls, mock.sendMessageTo, mock.sendMessageBody)
+	}
+
+	// Response shape: must be a successful tool response (isError != true)
+	// with a non-empty content array. Guards against a buggy impl that
+	// silently returns an error envelope after dropping the maildir write.
+	parsed := parseJSONRPCResponse(t, resp)
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("response missing result: %v", parsed)
+	}
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Errorf("report_status returned isError=true; want successful response. result=%v", result)
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Errorf("report_status returned empty content; want non-empty. result=%v", result)
+	}
+}
+
 func TestServer_ToolsCall_SprawlReportStatus_SupervisorError(t *testing.T) {
 	mock := &mockSupervisor{reportStatusErr: fmt.Errorf("invalid state")}
 	srv := New(mock)

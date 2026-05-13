@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
@@ -356,77 +355,11 @@ func TestRealReportStatus_SignalsParentRuntimeWakeAfterFullPersistence(t *testin
 	}
 }
 
-func TestRealReportStatus_QueueFailureDoesNotSignalParentRuntime(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	parent := testAgentState("alice")
-	child := testAgentState("bob")
-	child.Parent = "alice"
-	saveTestAgent(t, tmpDir, parent)
-	saveTestAgent(t, tmpDir, child)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	queuePath := filepath.Join(tmpDir, ".sprawl", "agents", "alice", "queue")
-	if err := os.MkdirAll(filepath.Dir(queuePath), 0o755); err != nil {
-		t.Fatalf("mkdir queue parent: %v", err)
-	}
-	if err := os.WriteFile(queuePath, []byte("block queue dir"), 0o644); err != nil {
-		t.Fatalf("write queue blocker: %v", err)
-	}
-
-	_, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests")
-	if err == nil {
-		t.Fatal("ReportStatus() error = nil, want queue failure")
-	}
-
-	snap := rt.Snapshot()
-	if snap.WakeCount != 0 || snap.InterruptCount != 0 {
-		t.Fatalf("snapshot changed on failed ReportStatus: %+v", snap)
-	}
-}
-
-func TestRealReportStatus_MaildirFailureDoesNotSignalParentRuntime(t *testing.T) {
-	r, tmpDir := newFakeReal(t)
-	parent := testAgentState("alice")
-	child := testAgentState("bob")
-	child.Parent = "alice"
-	saveTestAgent(t, tmpDir, parent)
-	saveTestAgent(t, tmpDir, child)
-	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{
-		session: &runtimeTestSession{
-			sessionID: "sess-alice",
-			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
-		},
-	})
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("runtime start: %v", err)
-	}
-
-	maildirPath := filepath.Join(tmpDir, ".sprawl", "messages", "alice")
-	if err := os.MkdirAll(filepath.Dir(maildirPath), 0o755); err != nil {
-		t.Fatalf("mkdir maildir parent: %v", err)
-	}
-	if err := os.WriteFile(maildirPath, []byte("block maildir"), 0o644); err != nil {
-		t.Fatalf("write maildir blocker: %v", err)
-	}
-
-	_, err := r.ReportStatus(context.Background(), "bob", "working", "writing tests")
-	if err == nil {
-		t.Fatal("ReportStatus() error = nil, want maildir failure")
-	}
-
-	snap := rt.Snapshot()
-	if snap.WakeCount != 0 || snap.InterruptCount != 0 {
-		t.Fatalf("snapshot changed on maildir-failed ReportStatus: %+v", snap)
-	}
-}
+// QUM-559: removed TestRealReportStatus_QueueFailureDoesNotSignalParentRuntime
+// and TestRealReportStatus_MaildirFailureDoesNotSignalParentRuntime — those
+// pinned the OLD maildir/queue delivery contract for report_status. The new
+// contract is state-only persistence + an in-process ephemeral ring; there is
+// no maildir or harness-queue write to fail.
 
 func TestRealReportStatus_UpdatesRuntimeAfterPersistedSuccess(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
@@ -509,11 +442,11 @@ func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 	}
 }
 
-// TestRealReportStatus_ParentInboxBodyContainsSummaryOnly locks in the
-// QUM-550 slice 2 contract that the parent's inbox entry body equals the
-// summary verbatim — no detail concatenation, no `\n\n` separator — because
-// the new ReportStatus signature drops detail entirely.
-func TestRealReportStatus_ParentInboxBodyContainsSummaryOnly(t *testing.T) {
+// TestRealReportStatus_DrainedRingLineContainsSummaryVerbatim is the
+// QUM-559 successor to the legacy ParentInboxBodyContainsSummaryOnly test.
+// The status-notification line drained from the in-process ring must contain
+// the summary verbatim, with no \n\n separator (detail-concat regression).
+func TestRealReportStatus_DrainedRingLineContainsSummaryVerbatim(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	parent := testAgentState("alice")
 	child := testAgentState("bob")
@@ -535,19 +468,15 @@ func TestRealReportStatus_ParentInboxBodyContainsSummaryOnly(t *testing.T) {
 		t.Fatalf("ReportStatus: %v", err)
 	}
 
-	entries, err := agentloop.ListPending(tmpDir, "alice")
-	if err != nil {
-		t.Fatalf("ListPending(alice): %v", err)
+	drained := r.DrainStatusNotifications("alice")
+	if len(drained) != 1 {
+		t.Fatalf("DrainStatusNotifications(alice) len = %d, want 1; got %#v", len(drained), drained)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("parent pending entries = %d, want 1", len(entries))
+	if !strings.Contains(drained[0], summary) {
+		t.Errorf("drained line missing summary: %q", drained[0])
 	}
-	got := entries[0]
-	if got.Body != summary {
-		t.Errorf("parent inbox body = %q, want exactly %q (no detail concat)", got.Body, summary)
-	}
-	if strings.Contains(got.Body, "\n\n") {
-		t.Errorf("parent inbox body contains \\n\\n separator (detail concat leaked): %q", got.Body)
+	if strings.Contains(drained[0], "\n\n") {
+		t.Errorf("drained line contains \\n\\n separator (detail concat leaked): %q", drained[0])
 	}
 }
 

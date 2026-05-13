@@ -1153,7 +1153,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// modes.
 		var drainCmd tea.Cmd
 		if m.turnState == TurnIdle && m.sprawlRoot != "" && m.bridge != nil {
-			drainCmd = peekAndDrainCmd(m.sprawlRoot, m.rootAgent)
+			drainCmd = peekAndDrainCmd(m.sprawlRoot, m.rootAgent, m.supervisor)
 		}
 		if m.supervisor != nil {
 			return m, tea.Batch(scheduleAgentTick(m.supervisor, m.sprawlRoot), drainCmd)
@@ -2082,13 +2082,32 @@ func sendMsgCmd(msg tea.Msg) tea.Cmd {
 // (MarkDelivered) happens later, in UserMessageSentMsg, strictly after the
 // bridge.SendMessage returns success. Returns nil msg if queue is empty or
 // unreadable. QUM-323.
-func peekAndDrainCmd(sprawlRoot, rootName string) tea.Cmd {
+//
+// QUM-559: in addition to the on-disk queue, drain the supervisor's
+// in-process ephemeral status-notification ring. Drained status lines are
+// PREPENDED to the rendered prompt so report_status notifications surface
+// before any queued maildir messages on the next turn. If only status
+// lines exist, emit a standalone async-class InboxDrainMsg with no entry
+// IDs (nothing to MarkDelivered).
+func peekAndDrainCmd(sprawlRoot, rootName string, sup supervisor.Supervisor) tea.Cmd {
 	return func() tea.Msg {
-		pending, err := agentloop.ListPending(sprawlRoot, rootName)
-		if err != nil || len(pending) == 0 {
+		pending, _ := agentloop.ListPending(sprawlRoot, rootName)
+		var statusLines []string
+		if sup != nil {
+			statusLines = sup.DrainStatusNotifications(rootName)
+		}
+		if len(pending) == 0 && len(statusLines) == 0 {
 			return nil
 		}
 		interrupts, asyncs := agentloop.SplitByClass(pending)
+		// QUM-559: status lines are pre-rendered <system-notification>
+		// strings independent of delivery class — prepend them to whichever
+		// flush prompt we're about to emit so they never get dropped on the
+		// floor when interrupts pre-empt asyncs in the same tick window.
+		var statusPrefix strings.Builder
+		for _, line := range statusLines {
+			statusPrefix.WriteString(line)
+		}
 		// Interrupts take priority; delivery of asyncs happens on the next
 		// tick after the interrupt turn settles.
 		if len(interrupts) > 0 {
@@ -2097,7 +2116,7 @@ func peekAndDrainCmd(sprawlRoot, rootName string) tea.Cmd {
 				ids = append(ids, e.ID)
 			}
 			return InboxDrainMsg{
-				Prompt:   agentloop.BuildInterruptFlushPrompt(interrupts),
+				Prompt:   statusPrefix.String() + agentloop.BuildInterruptFlushPrompt(interrupts),
 				EntryIDs: ids,
 				Class:    "interrupt",
 			}
@@ -2107,7 +2126,7 @@ func peekAndDrainCmd(sprawlRoot, rootName string) tea.Cmd {
 			ids = append(ids, e.ID)
 		}
 		return InboxDrainMsg{
-			Prompt:   agentloop.BuildQueueFlushPrompt(asyncs),
+			Prompt:   statusPrefix.String() + agentloop.BuildQueueFlushPrompt(asyncs),
 			EntryIDs: ids,
 			Class:    "async",
 		}

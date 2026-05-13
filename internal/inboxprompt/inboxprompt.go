@@ -109,6 +109,25 @@ func BuildQueueFlushPrompt(entries []Entry) string {
 	return b.String()
 }
 
+// BuildStatusNotification renders one ephemeral `<system-notification>`
+// line for a child's report_status emission. QUM-559: status updates do
+// not flow through the maildir/queue — they're emitted once into the
+// parent's next-turn prompt via the in-process per-recipient ring and
+// discarded.
+//
+// The line has the shape:
+//
+//	<system-notification>$AGENT changed status to $STATE: $SUMMARY</system-notification>\n
+//
+// No body inlining, no `mcp__sprawl__messages_read` citation (this is a
+// status channel, not a mail channel). The QUM-557 TUI color-coder
+// triggers on the literal substrings " to failure: " and " to blocked: "
+// in the rendered line.
+func BuildStatusNotification(agent, state, summary string) string {
+	return fmt.Sprintf("<system-notification>%s changed status to %s: %s</system-notification>\n",
+		agent, state, summary)
+}
+
 // BuildInterruptFlushPrompt renders one `<system-notification>` line per
 // pending interrupt-class entry, tagged with `[interrupt]` so the recipient
 // knows to consider preempting current work. Same shape as

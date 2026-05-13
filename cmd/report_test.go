@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -29,14 +28,34 @@ func newTestReportDeps(t *testing.T) (*reportDeps, string) {
 		nowFunc: func() time.Time {
 			return time.Date(2026, 3, 31, 12, 0, 0, 0, time.UTC)
 		},
-		loadAgent:   state.LoadAgent,
-		saveAgent:   state.SaveAgent,
-		sendMessage: messages.Send,
-		enqueue:     agentloop.Enqueue,
+		loadAgent: state.LoadAgent,
+		saveAgent: state.SaveAgent,
 	}
 
 	os.MkdirAll(state.AgentsDir(tmpDir), 0o755)
 	return deps, tmpDir
+}
+
+// assertNoParentMaildir asserts QUM-559: the CLI runReport path never
+// writes to the parent's maildir or harness queue.
+func assertNoParentMaildir(t *testing.T, tmpDir, parent string) {
+	t.Helper()
+	for _, filter := range []string{"all", "unread", "read", "archived"} {
+		msgs, err := messages.List(tmpDir, parent, filter)
+		if err != nil {
+			t.Fatalf("messages.List(%s, %q): %v", parent, filter, err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("messages.List(%s, %q) = %d, want 0 (QUM-559: CLI report must not write maildir)", parent, filter, len(msgs))
+		}
+	}
+	pending, err := agentloop.ListPending(tmpDir, parent)
+	if err != nil {
+		t.Fatalf("ListPending(%s): %v", parent, err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("pending(%s) len = %d, want 0", parent, len(pending))
+	}
 }
 
 func TestReportStatus_HappyPath(t *testing.T) {
@@ -72,20 +91,8 @@ func TestReportStatus_HappyPath(t *testing.T) {
 		t.Errorf("Status = %q, want %q (should not change for status report)", agentState.Status, "active")
 	}
 
-	// Status reports should now also send a message to parent
-	inbox, err := messages.Inbox(tmpDir, "root")
-	if err != nil {
-		t.Fatalf("reading root inbox: %v", err)
-	}
-	if len(inbox) != 1 {
-		t.Fatalf("expected 1 message in root inbox, got %d", len(inbox))
-	}
-	if !strings.Contains(inbox[0].Subject, "[STATUS]") {
-		t.Errorf("subject should contain [STATUS], got: %q", inbox[0].Subject)
-	}
-	if inbox[0].Body != "working on tests" {
-		t.Errorf("body = %q, want %q", inbox[0].Body, "working on tests")
-	}
+	// QUM-559: report_status / sprawl report status must not write parent maildir.
+	assertNoParentMaildir(t, tmpDir, "root")
 }
 
 func TestReportDone_HappyPath(t *testing.T) {
@@ -102,7 +109,6 @@ func TestReportDone_HappyPath(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify state updated
 	agentState, err := state.LoadAgent(tmpDir, "alice")
 	if err != nil {
 		t.Fatalf("loading agent state: %v", err)
@@ -117,27 +123,7 @@ func TestReportDone_HappyPath(t *testing.T) {
 		t.Errorf("Status = %q, want %q", agentState.Status, "done")
 	}
 
-	// Should send message to parent via messaging system
-	inbox, err := messages.Inbox(tmpDir, "root")
-	if err != nil {
-		t.Fatalf("reading root inbox: %v", err)
-	}
-	if len(inbox) != 1 {
-		t.Fatalf("expected 1 message in root inbox, got %d", len(inbox))
-	}
-	msg := inbox[0]
-	if msg.From != "alice" {
-		t.Errorf("From = %q, want %q", msg.From, "alice")
-	}
-	if !strings.Contains(msg.Subject, "[COMPLETE]") {
-		t.Errorf("subject should contain [COMPLETE], got: %q", msg.Subject)
-	}
-	if !strings.Contains(msg.Subject, "alice") {
-		t.Errorf("subject should contain agent name, got: %q", msg.Subject)
-	}
-	if msg.Body != "finished implementing feature" {
-		t.Errorf("body = %q, want %q", msg.Body, "finished implementing feature")
-	}
+	assertNoParentMaildir(t, tmpDir, "root")
 }
 
 func TestReportProblem_HappyPath(t *testing.T) {
@@ -165,28 +151,15 @@ func TestReportProblem_HappyPath(t *testing.T) {
 		t.Errorf("Status = %q, want %q", agentState.Status, "problem")
 	}
 
-	// Should send message to parent via messaging system
-	inbox, err := messages.Inbox(tmpDir, "root")
-	if err != nil {
-		t.Fatalf("reading root inbox: %v", err)
-	}
-	if len(inbox) != 1 {
-		t.Fatalf("expected 1 message in root inbox, got %d", len(inbox))
-	}
-	if !strings.Contains(inbox[0].Subject, "[FAILURE]") {
-		t.Errorf("subject should contain [FAILURE], got: %q", inbox[0].Subject)
-	}
-	if inbox[0].Body != "blocked on API access" {
-		t.Errorf("body = %q, want %q", inbox[0].Body, "blocked on API access")
-	}
+	assertNoParentMaildir(t, tmpDir, "root")
 }
 
-func TestReportDone_NonRootParent_SendsMessage(t *testing.T) {
+func TestReportDone_NonRootParent_NoMaildir(t *testing.T) {
 	deps, tmpDir := newTestReportDeps(t)
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "alice",
-		Parent: "bob", // non-root parent
+		Parent: "bob",
 		Status: "active",
 	})
 
@@ -195,7 +168,6 @@ func TestReportDone_NonRootParent_SendsMessage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// State should still be updated
 	agentState, err := state.LoadAgent(tmpDir, "alice")
 	if err != nil {
 		t.Fatalf("loading agent state: %v", err)
@@ -204,24 +176,8 @@ func TestReportDone_NonRootParent_SendsMessage(t *testing.T) {
 		t.Errorf("Status = %q, want %q", agentState.Status, "done")
 	}
 
-	// Message should be delivered to bob's inbox
-	inbox, err := messages.Inbox(tmpDir, "bob")
-	if err != nil {
-		t.Fatalf("reading bob inbox: %v", err)
-	}
-	if len(inbox) != 1 {
-		t.Fatalf("expected 1 message in bob's inbox, got %d", len(inbox))
-	}
-	msg := inbox[0]
-	if msg.From != "alice" {
-		t.Errorf("From = %q, want %q", msg.From, "alice")
-	}
-	if !strings.Contains(msg.Subject, "[COMPLETE]") {
-		t.Errorf("subject should contain [COMPLETE], got: %q", msg.Subject)
-	}
-	if msg.Body != "task complete" {
-		t.Errorf("body = %q, want %q", msg.Body, "task complete")
-	}
+	// QUM-559: non-root parent maildir must also stay empty.
+	assertNoParentMaildir(t, tmpDir, "bob")
 }
 
 func TestReport_MissingAgentIdentity(t *testing.T) {
@@ -272,36 +228,6 @@ func TestReport_AgentNotFound(t *testing.T) {
 	}
 }
 
-func TestReportDone_MessageFailure_NonFatal(t *testing.T) {
-	deps, tmpDir := newTestReportDeps(t)
-
-	createTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "alice",
-		Parent: "root",
-		Status: "active",
-	})
-
-	// Inject a failing sendMessage to simulate messaging failure
-	deps.sendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
-		return "", fmt.Errorf("simulated send failure")
-	}
-
-	// Should NOT return error even if messaging fails
-	err := runReport(deps, "done", "finished")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// State should still be updated
-	agentState, err := state.LoadAgent(tmpDir, "alice")
-	if err != nil {
-		t.Fatalf("loading agent state: %v", err)
-	}
-	if agentState.Status != "done" {
-		t.Errorf("Status = %q, want %q", agentState.Status, "done")
-	}
-}
-
 func TestReportStatus_PreservesExistingFields(t *testing.T) {
 	deps, tmpDir := newTestReportDeps(t)
 
@@ -327,7 +253,6 @@ func TestReportStatus_PreservesExistingFields(t *testing.T) {
 		t.Fatalf("loading agent state: %v", err)
 	}
 
-	// All existing fields should be preserved
 	if agentState.Type != "engineer" {
 		t.Errorf("Type = %q, want %q", agentState.Type, "engineer")
 	}
@@ -350,7 +275,7 @@ func TestReport_NoParent_NoMessage(t *testing.T) {
 
 	createTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "alice",
-		Parent: "", // no parent
+		Parent: "",
 		Status: "active",
 	})
 
@@ -359,7 +284,6 @@ func TestReport_NoParent_NoMessage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// State should still be updated
 	agentState, err := state.LoadAgent(tmpDir, "alice")
 	if err != nil {
 		t.Fatalf("loading agent state: %v", err)
@@ -368,7 +292,7 @@ func TestReport_NoParent_NoMessage(t *testing.T) {
 		t.Errorf("Status = %q, want %q", agentState.Status, "done")
 	}
 
-	// No messages directory should exist at all since no messages were sent
+	// No messages directory should exist at all since no messages were sent.
 	msgDir := messages.MessagesDir(tmpDir)
 	entries, err := os.ReadDir(msgDir)
 	if err != nil && !os.IsNotExist(err) {
@@ -376,39 +300,5 @@ func TestReport_NoParent_NoMessage(t *testing.T) {
 	}
 	if len(entries) > 0 {
 		t.Errorf("expected no message directories, got %d entries", len(entries))
-	}
-}
-
-func TestReportStatus_SendsMessageToParent(t *testing.T) {
-	deps, tmpDir := newTestReportDeps(t)
-
-	createTestAgent(t, tmpDir, &state.AgentState{
-		Name:   "alice",
-		Parent: "bob",
-		Status: "active",
-	})
-
-	err := runReport(deps, "status", "making progress")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify that status reports now also send messages (unlike old tmux behavior)
-	inbox, err := messages.Inbox(tmpDir, "bob")
-	if err != nil {
-		t.Fatalf("reading bob inbox: %v", err)
-	}
-	if len(inbox) != 1 {
-		t.Fatalf("expected 1 message in bob's inbox, got %d", len(inbox))
-	}
-	msg := inbox[0]
-	if msg.From != "alice" {
-		t.Errorf("From = %q, want %q", msg.From, "alice")
-	}
-	if !strings.Contains(msg.Subject, "[STATUS]") {
-		t.Errorf("subject should contain [STATUS], got: %q", msg.Subject)
-	}
-	if msg.Body != "making progress" {
-		t.Errorf("body = %q, want %q", msg.Body, "making progress")
 	}
 }

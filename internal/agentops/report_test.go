@@ -1,7 +1,6 @@
 package agentops
 
 import (
-	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -27,7 +26,7 @@ func setupReportTest(t *testing.T, agent *state.AgentState) (string, *ReportDeps
 	return root, deps
 }
 
-func TestReport_WorkingUpdatesStateAndNotifiesParent(t *testing.T) {
+func TestReport_WorkingUpdatesState(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "alice", Parent: "bob", Status: "active",
 	})
@@ -39,8 +38,9 @@ func TestReport_WorkingUpdatesStateAndNotifiesParent(t *testing.T) {
 	if res.ReportedAt != "2026-04-21T10:00:00Z" {
 		t.Errorf("ReportedAt = %q", res.ReportedAt)
 	}
-	if res.MessageID == "" {
-		t.Error("MessageID should be populated when parent is set")
+	// QUM-559: MessageID is always empty in the state-only contract.
+	if res.MessageID != "" {
+		t.Errorf("MessageID = %q, want empty (QUM-559)", res.MessageID)
 	}
 
 	st, _ := state.LoadAgent(root, "alice")
@@ -55,28 +55,6 @@ func TestReport_WorkingUpdatesStateAndNotifiesParent(t *testing.T) {
 	}
 	if st.Status != "active" {
 		t.Errorf("Status should not change for working, got %q", st.Status)
-	}
-
-	inbox, _ := messages.Inbox(root, "bob")
-	if len(inbox) != 1 {
-		t.Fatalf("inbox len = %d, want 1", len(inbox))
-	}
-	if !strings.Contains(inbox[0].Subject, "[STATUS]") {
-		t.Errorf("subject = %q, want [STATUS]", inbox[0].Subject)
-	}
-	if !strings.Contains(inbox[0].Subject, "alice →") {
-		t.Errorf("subject should contain 'alice →', got %q", inbox[0].Subject)
-	}
-
-	pending, _ := agentloop.ListPending(root, "bob")
-	if len(pending) != 1 {
-		t.Fatalf("pending len = %d, want 1", len(pending))
-	}
-	if pending[0].Class != agentloop.ClassAsync {
-		t.Errorf("class = %q, want async", pending[0].Class)
-	}
-	if pending[0].From != "alice" {
-		t.Errorf("from = %q", pending[0].From)
 	}
 }
 
@@ -97,18 +75,6 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	if st.LastReportType != "done" {
 		t.Errorf("LastReportType = %q, want done (back-compat)", st.LastReportType)
 	}
-
-	inbox, _ := messages.Inbox(root, "bob")
-	if len(inbox) != 1 {
-		t.Fatalf("inbox len = %d", len(inbox))
-	}
-	if !strings.Contains(inbox[0].Subject, "[COMPLETE]") {
-		t.Errorf("subject = %q, want [COMPLETE]", inbox[0].Subject)
-	}
-	// QUM-550 slice 5: body equals summary verbatim; detail param removed.
-	if inbox[0].Body != "done" {
-		t.Errorf("body = %q, want summary verbatim", inbox[0].Body)
-	}
 }
 
 func TestReport_FailureSetsStatusProblem(t *testing.T) {
@@ -128,11 +94,6 @@ func TestReport_FailureSetsStatusProblem(t *testing.T) {
 	if st.LastReportType != "problem" {
 		t.Errorf("LastReportType = %q, want problem", st.LastReportType)
 	}
-
-	inbox, _ := messages.Inbox(root, "bob")
-	if len(inbox) != 1 || !strings.Contains(inbox[0].Subject, "[FAILURE]") {
-		t.Errorf("subject = %v", inbox)
-	}
 }
 
 func TestReport_BlockedDoesNotChangeStatus(t *testing.T) {
@@ -151,13 +112,9 @@ func TestReport_BlockedDoesNotChangeStatus(t *testing.T) {
 	if st.LastReportState != "blocked" {
 		t.Errorf("LastReportState = %q", st.LastReportState)
 	}
-	inbox, _ := messages.Inbox(root, "bob")
-	if len(inbox) != 1 || !strings.Contains(inbox[0].Subject, "[BLOCKED]") {
-		t.Errorf("subject = %v", inbox)
-	}
 }
 
-func TestReport_NoParentSkipsNotification(t *testing.T) {
+func TestReport_NoParentStillUpdatesState(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "solo", Parent: "", Status: "active",
 	})
@@ -167,7 +124,7 @@ func TestReport_NoParentSkipsNotification(t *testing.T) {
 		t.Fatalf("Report: %v", err)
 	}
 	if res.MessageID != "" {
-		t.Errorf("MessageID = %q, want empty when no parent", res.MessageID)
+		t.Errorf("MessageID = %q, want empty", res.MessageID)
 	}
 
 	st, _ := state.LoadAgent(root, "solo")
@@ -192,85 +149,33 @@ func TestReport_EmptySummary(t *testing.T) {
 	}
 }
 
-// TestReport_PropagatesShortIDToQueueEntry verifies QUM-442: when SendMessage
-// returns a short maildir ID, Report stuffs it into the enqueued
-// agentloop.Entry.ShortID so flush prompts can cite the friendly identifier.
-func TestReport_PropagatesShortIDToQueueEntry(t *testing.T) {
+// TestReport_DoesNotSendMessage — QUM-559: pins the new state-only contract.
+// After Report finishes, the reporter's state.LastReport* is persisted, but
+// the parent's maildir + harness queue are completely untouched. The
+// supervisor owns parent-notification via the in-process ephemeral ring.
+func TestReport_DoesNotSendMessage(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "alice", Parent: "bob", Status: "active",
 	})
-	deps.SendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
-		return "sh-abc123", nil
-	}
 
-	res, err := Report(deps, root, "alice", "working", "halfway done")
-	if err != nil {
-		t.Fatalf("Report: %v", err)
-	}
-	if res.MessageID == "" {
-		t.Fatal("MessageID should be populated when parent is set")
-	}
-
-	pending, err := agentloop.ListPending(root, "bob")
-	if err != nil {
-		t.Fatalf("ListPending: %v", err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("pending len = %d, want 1", len(pending))
-	}
-	if pending[0].ShortID != "sh-abc123" {
-		t.Errorf("ShortID = %q, want %q", pending[0].ShortID, "sh-abc123")
-	}
-}
-
-// TestReport_EmptyShortIDTolerated covers the back-compat case where
-// SendMessage returns an empty shortID (e.g. legacy callers): the entry
-// must still be enqueued with a real UUID and ShortID="".
-func TestReport_EmptyShortIDTolerated(t *testing.T) {
-	root, deps := setupReportTest(t, &state.AgentState{
-		Name: "alice", Parent: "bob", Status: "active",
-	})
-	deps.SendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
-		return "", nil
-	}
-
-	_, err := Report(deps, root, "alice", "working", "halfway done")
-	if err != nil {
+	if _, err := Report(deps, root, "alice", "working", "halfway done"); err != nil {
 		t.Fatalf("Report: %v", err)
 	}
 
-	pending, err := agentloop.ListPending(root, "bob")
-	if err != nil {
-		t.Fatalf("ListPending: %v", err)
-	}
-	if len(pending) != 1 {
-		t.Fatalf("pending len = %d, want 1", len(pending))
-	}
-	if pending[0].ShortID != "" {
-		t.Errorf("ShortID = %q, want empty", pending[0].ShortID)
-	}
-	if pending[0].ID == "" {
-		t.Error("Entry.ID should still be a non-empty UUID")
-	}
-}
-
-// TestReport_SendMessageErrorSkipsEnqueue: when SendMessage fails, Report
-// returns an error wrapping "sending message to parent" and does NOT enqueue
-// a queue entry (the parent should not see a phantom report).
-func TestReport_SendMessageErrorSkipsEnqueue(t *testing.T) {
-	root, deps := setupReportTest(t, &state.AgentState{
-		Name: "alice", Parent: "bob", Status: "active",
-	})
-	deps.SendMessage = func(sprawlRoot, from, to, subject, body string, opts ...messages.SendOption) (string, error) {
-		return "", fmt.Errorf("maildir full")
+	st, _ := state.LoadAgent(root, "alice")
+	if st.LastReportState != "working" || st.LastReportMessage != "halfway done" {
+		t.Errorf("state-only path must still persist LastReport*; got state=%q msg=%q",
+			st.LastReportState, st.LastReportMessage)
 	}
 
-	_, err := Report(deps, root, "alice", "working", "halfway done")
-	if err == nil {
-		t.Fatal("Report should have returned an error when SendMessage fails")
-	}
-	if !strings.Contains(err.Error(), "sending message to parent") {
-		t.Errorf("err = %v, want wrap of 'sending message to parent'", err)
+	for _, filter := range []string{"all", "unread", "read", "archived"} {
+		msgs, err := messages.List(root, "bob", filter)
+		if err != nil {
+			t.Fatalf("messages.List(bob, %q): %v", filter, err)
+		}
+		if len(msgs) != 0 {
+			t.Errorf("messages.List(bob, %q) = %d entries, want 0 (QUM-559)", filter, len(msgs))
+		}
 	}
 
 	pending, err := agentloop.ListPending(root, "bob")
@@ -278,7 +183,7 @@ func TestReport_SendMessageErrorSkipsEnqueue(t *testing.T) {
 		t.Fatalf("ListPending: %v", err)
 	}
 	if len(pending) != 0 {
-		t.Errorf("pending len = %d, want 0 when SendMessage failed", len(pending))
+		t.Errorf("pending len = %d, want 0 (QUM-559)", len(pending))
 	}
 }
 

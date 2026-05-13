@@ -2490,7 +2490,7 @@ func TestAppModel_UserMessageSentMsg_ClearsPendingDrainIDs(t *testing.T) {
 
 func TestPeekAndDrainCmd_EmptyQueue_ReturnsNil(t *testing.T) {
 	tmpDir := t.TempDir()
-	msg := peekAndDrainCmd(tmpDir, "weave")()
+	msg := peekAndDrainCmd(tmpDir, "weave", nil)()
 	if msg != nil {
 		t.Errorf("expected nil msg for empty queue, got %v", msg)
 	}
@@ -2504,7 +2504,7 @@ func TestPeekAndDrainCmd_AsyncEntries_ReturnsDrainMsg(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	msg := peekAndDrainCmd(tmpDir, "weave")()
+	msg := peekAndDrainCmd(tmpDir, "weave", nil)()
 	drain, ok := msg.(InboxDrainMsg)
 	if !ok {
 		t.Fatalf("expected InboxDrainMsg, got %T: %v", msg, msg)
@@ -2535,7 +2535,7 @@ func TestPeekAndDrainCmd_InterruptPriority(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("enqueue interrupt: %v", err)
 	}
-	msg := peekAndDrainCmd(tmpDir, "weave")()
+	msg := peekAndDrainCmd(tmpDir, "weave", nil)()
 	drain, ok := msg.(InboxDrainMsg)
 	if !ok {
 		t.Fatalf("expected InboxDrainMsg, got %T", msg)

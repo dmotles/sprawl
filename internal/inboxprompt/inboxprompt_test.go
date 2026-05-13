@@ -193,6 +193,79 @@ func TestBuildInterruptFlushPrompt_NoBodyInlined(t *testing.T) {
 	}
 }
 
+// --- QUM-559: BuildStatusNotification tests ---
+//
+// The new formatter renders a single `<system-notification>` line per status
+// report, distinct from the message-queue formatters above. The line has the
+// shape:
+//   <system-notification>$AGENT changed status to $STATE: $SUMMARY</system-notification>\n
+// No body inlining, no `mcp__sprawl__messages_read` citation (this is a status
+// channel, not a mail channel).
+
+// TestBuildStatusNotification_Shape pins the exact wire format for each of
+// the four canonical report states.
+func TestBuildStatusNotification_Shape(t *testing.T) {
+	cases := []struct {
+		state string
+		want  string
+	}{
+		{
+			state: "working",
+			want:  "<system-notification>finn changed status to working: doing X</system-notification>\n",
+		},
+		{
+			state: "blocked",
+			want:  "<system-notification>finn changed status to blocked: doing X</system-notification>\n",
+		},
+		{
+			state: "complete",
+			want:  "<system-notification>finn changed status to complete: doing X</system-notification>\n",
+		},
+		{
+			state: "failure",
+			want:  "<system-notification>finn changed status to failure: doing X</system-notification>\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.state, func(t *testing.T) {
+			got := inboxprompt.BuildStatusNotification("finn", tc.state, "doing X")
+			if got != tc.want {
+				t.Errorf("BuildStatusNotification(%q) mismatch\n got: %q\nwant: %q", tc.state, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildStatusNotification_NoToolCitation guards against copy-paste from
+// the queue-flush formatter: the status notification is its own channel and
+// must NOT cite `mcp__sprawl__messages_read` (no maildir entry exists for
+// reports after QUM-559).
+func TestBuildStatusNotification_NoToolCitation(t *testing.T) {
+	got := inboxprompt.BuildStatusNotification("finn", "working", "doing X")
+	if strings.Contains(got, "mcp__sprawl__messages_read") {
+		t.Errorf("status notification must not cite mcp__sprawl__messages_read: %q", got)
+	}
+	// And no maildir id= shape either.
+	if strings.Contains(got, "id=") {
+		t.Errorf("status notification must not include id= citation: %q", got)
+	}
+}
+
+// TestBuildStatusNotification_FailureBlockedSubstrings — the QUM-557
+// TUI color-coder triggers on the literal substrings " to failure: " and
+// " to blocked: " in the rendered line. Pin those substrings so any future
+// rewording of the formatter must update the color-coder in lockstep.
+func TestBuildStatusNotification_FailureBlockedSubstrings(t *testing.T) {
+	failureLine := inboxprompt.BuildStatusNotification("finn", "failure", "oops")
+	if !strings.Contains(failureLine, " to failure: ") {
+		t.Errorf("failure status missing ' to failure: ' substring: %q", failureLine)
+	}
+	blockedLine := inboxprompt.BuildStatusNotification("finn", "blocked", "waiting")
+	if !strings.Contains(blockedLine, " to blocked: ") {
+		t.Errorf("blocked status missing ' to blocked: ' substring: %q", blockedLine)
+	}
+}
+
 func TestSplitByClass(t *testing.T) {
 	entries := []inboxprompt.Entry{
 		{ID: "1", Class: inboxprompt.ClassAsync},

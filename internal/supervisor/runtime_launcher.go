@@ -44,6 +44,12 @@ var unifiedRuntimeNewFn = runtimepkg.New
 type inProcessUnifiedStarter struct {
 	initSpec     backendpkg.InitSpec
 	allowedTools []string
+	// statusDrainer, when non-nil, returns and clears the ephemeral
+	// status-notification ring for the recipient agent (QUM-559). The
+	// unified-runtime drain pipeline calls this for each agent so
+	// report_status lines reach the recipient's next-turn prompt
+	// without traversing the maildir.
+	statusDrainer func(name string) []string
 }
 
 func newInProcessUnifiedStarter(initSpec backendpkg.InitSpec, allowedTools []string) RuntimeStarter {
@@ -162,14 +168,15 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 	}
 
 	handle := &unifiedHandle{
-		rt:           rt,
-		session:      session,
-		capabilities: caps,
-		sessionID:    session.SessionID(),
-		activityFile: activityFile,
-		stopActivity: stopActivity,
-		sprawlRoot:   spec.SprawlRoot,
-		name:         spec.Name,
+		rt:            rt,
+		session:       session,
+		capabilities:  caps,
+		sessionID:     session.SessionID(),
+		activityFile:  activityFile,
+		stopActivity:  stopActivity,
+		sprawlRoot:    spec.SprawlRoot,
+		name:          spec.Name,
+		statusDrainer: s.statusDrainer,
 	}
 	handle.feedTasks()
 	return handle, nil
@@ -234,6 +241,11 @@ type unifiedHandle struct {
 	stopActivity  func()
 	sprawlRoot    string
 	name          string
+	// statusDrainer, when non-nil, returns and clears the ephemeral
+	// status-notification ring for this agent (QUM-559). Lines are
+	// prepended to the next async-class queue item so child managers
+	// see their descendants' status reports in the next-turn prompt.
+	statusDrainer func(name string) []string
 
 	tasksMu  sync.Mutex
 	stopOnce sync.Once
@@ -326,8 +338,12 @@ func (h *unifiedHandle) ForceInterruptDelivery() error {
 }
 
 func (h *unifiedHandle) drainPendingToQueue() {
-	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
-	if err != nil || len(pending) == 0 {
+	pending, _ := agentloop.ListPending(h.sprawlRoot, h.name)
+	var statusLines []string
+	if h.statusDrainer != nil {
+		statusLines = h.statusDrainer(h.name)
+	}
+	if len(pending) == 0 && len(statusLines) == 0 {
 		return
 	}
 	interrupts, asyncs := inboxprompt.SplitByClass(pending)
@@ -342,14 +358,23 @@ func (h *unifiedHandle) drainPendingToQueue() {
 			EntryIDs: ids,
 		})
 	}
-	if len(asyncs) > 0 {
+	// QUM-559: status lines ride along with the async batch, prepended
+	// so they surface before any queued maildir messages. When only
+	// status lines exist (no asyncs), emit them as their own ClassInbox
+	// item with no entry IDs (nothing to MarkDelivered).
+	if len(asyncs) > 0 || len(statusLines) > 0 {
 		ids := make([]string, 0, len(asyncs))
 		for _, e := range asyncs {
 			ids = append(ids, e.ID)
 		}
+		var prompt strings.Builder
+		for _, line := range statusLines {
+			prompt.WriteString(line)
+		}
+		prompt.WriteString(inboxprompt.BuildQueueFlushPrompt(asyncs))
 		h.rt.Queue().Enqueue(runtimepkg.QueueItem{
 			Class:    runtimepkg.ClassInbox,
-			Prompt:   inboxprompt.BuildQueueFlushPrompt(asyncs),
+			Prompt:   prompt.String(),
 			EntryIDs: ids,
 		})
 	}
