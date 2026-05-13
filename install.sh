@@ -178,7 +178,7 @@ execute() {
       ;;
   esac
 
-  echo "Run '${BINARY_NAME} init' to get started."
+  echo "Run '${BINARY_NAME} enter' to get started."
 }
 
 if [ "${SPRAWL_INSTALL_TESTING:-}" != "1" ]; then
