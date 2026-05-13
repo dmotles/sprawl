@@ -1,2 +1,2 @@
-<system-notification>From child-alpha — mcp__sprawl__messages_read(id=sh1)</system-notification>
-<system-notification>From child-beta — mcp__sprawl__messages_read(id=uuid-async-2)</system-notification>
+<system-notification type="message">From child-alpha — mcp__sprawl__messages_read(id=sh1)</system-notification>
+<system-notification type="message">From child-beta — mcp__sprawl__messages_read(id=uuid-async-2)</system-notification>

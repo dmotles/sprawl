@@ -38,7 +38,14 @@ type Theme struct {
 	// `<system-notification>` entries — bodies starting with `[interrupt]`
 	// (QUM-557). Amber to signal "act soon" without screaming-red.
 	// TODO(QUM-417): harmonize with semantic palette.
-	InterruptText    lipgloss.Style
+	InterruptText lipgloss.Style
+	// StatusChangeText is the foreground used for `type="status_change"`
+	// `<system-notification>` entries (QUM-562). Dim grey (ANSI 245) to
+	// read as a muted state-change pin, visually distinct from
+	// NotificationText cyan (message-async) and InterruptText amber
+	// (message-interrupt). Legible on both light and dark terminals.
+	// TODO(QUM-417): harmonize with semantic palette.
+	StatusChangeText lipgloss.Style
 	StatusBar        lipgloss.Style
 	SelectedItem     lipgloss.Style
 	PlaceholderStyle lipgloss.Style
@@ -114,6 +121,10 @@ func NewTheme(accentColor string) Theme {
 		// TODO(QUM-417): harmonize with semantic palette.
 		InterruptText: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("208")).
+			Background(bg),
+		// TODO(QUM-417): harmonize with semantic palette.
+		StatusChangeText: lipgloss.NewStyle().
+			Foreground(lipgloss.Color("245")).
 			Background(bg),
 		// No Padding — StatusBarModel.View manages its own left/right spacing
 		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes

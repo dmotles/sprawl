@@ -90,7 +90,7 @@ func TestReal_ReportStatus_PersistsLastReport_NoMaildirNoUnread(t *testing.T) {
 
 	// (4) DrainStatusNotifications("weave") returns the pre-rendered line.
 	drained := r.DrainStatusNotifications("weave")
-	want := "<system-notification>child changed status to working: doing X</system-notification>\n"
+	want := "<system-notification type=\"status_change\">child changed status to working: doing X</system-notification>\n"
 	if len(drained) != 1 || drained[0] != want {
 		t.Errorf("DrainStatusNotifications(weave) = %#v, want exactly [%q]", drained, want)
 	}
@@ -117,7 +117,7 @@ func TestReal_ReportStatus_DrainIsFIFO_AndClears(t *testing.T) {
 		t.Fatalf("first drain len = %d, want 3 (got %#v)", len(drained), drained)
 	}
 	for i, summary := range []string{"A", "B", "C"} {
-		want := "<system-notification>child changed status to working: " + summary + "</system-notification>\n"
+		want := "<system-notification type=\"status_change\">child changed status to working: " + summary + "</system-notification>\n"
 		if drained[i] != want {
 			t.Errorf("drained[%d] = %q, want %q", i, drained[i], want)
 		}
@@ -268,8 +268,8 @@ func TestReal_ReportStatus_CrossRecipientFIFOIsolation(t *testing.T) {
 
 	drainedA := r.DrainStatusNotifications("parentA")
 	wantA := []string{
-		"<system-notification>childA changed status to working: a1</system-notification>\n",
-		"<system-notification>childA changed status to working: a2</system-notification>\n",
+		"<system-notification type=\"status_change\">childA changed status to working: a1</system-notification>\n",
+		"<system-notification type=\"status_change\">childA changed status to working: a2</system-notification>\n",
 	}
 	if len(drainedA) != len(wantA) {
 		t.Fatalf("parentA drain len = %d, want %d (got %#v)", len(drainedA), len(wantA), drainedA)
@@ -282,7 +282,7 @@ func TestReal_ReportStatus_CrossRecipientFIFOIsolation(t *testing.T) {
 
 	drainedB := r.DrainStatusNotifications("parentB")
 	wantB := []string{
-		"<system-notification>childB changed status to working: b1</system-notification>\n",
+		"<system-notification type=\"status_change\">childB changed status to working: b1</system-notification>\n",
 	}
 	if len(drainedB) != len(wantB) {
 		t.Fatalf("parentB drain len = %d, want %d (got %#v)", len(drainedB), len(wantB), drainedB)

@@ -702,11 +702,16 @@ func TestLoadTranscript_MultipleToolCallsInterleavedResults(t *testing.T) {
 	}
 }
 
-// --- QUM-557: replay path must surface <system-notification> content as
-//     MessageSystemNotification entries (not MessageUser), preserving the
-//     interrupt-class flag so the renderer can color-code on resume/restart. ---
+// --- QUM-557 / QUM-562: replay path must surface <system-notification>
+//     content as MessageSystemNotification entries (not MessageUser),
+//     preserving both the parsed `type` attribute (defaults to "message" for
+//     untyped legacy tags) and the interrupt flag so the renderer can
+//     color-code on resume/restart. Both branches (string-content and
+//     array-block-content) MUST behave symmetrically — that's the QUM-557
+//     lesson (silent replay divergence). ---
 
-func TestScanTranscript_SystemNotification_AsyncStringContent(t *testing.T) {
+func TestScanTranscript_SystemNotification_LegacyUntypedAsyncStringContent(t *testing.T) {
+	// Back-compat: pre-QUM-562 transcripts persisted without the type attribute.
 	line := `{"type":"user","message":{"role":"user","content":"<system-notification>From finn — msg id=9v6</system-notification>"}}`
 	path := writeJSONL(t, []string{line})
 	entries, err := scanTranscript(path, time.Time{})
@@ -719,6 +724,9 @@ func TestScanTranscript_SystemNotification_AsyncStringContent(t *testing.T) {
 	if entries[0].Type != MessageSystemNotification {
 		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
 	}
+	if entries[0].NotificationType != NotificationKindMessage {
+		t.Errorf("entries[0].NotificationType = %q, want %q (legacy defaults to message)", entries[0].NotificationType, NotificationKindMessage)
+	}
 	if entries[0].Interrupt {
 		t.Errorf("entries[0].Interrupt = true, want false (async)")
 	}
@@ -727,7 +735,7 @@ func TestScanTranscript_SystemNotification_AsyncStringContent(t *testing.T) {
 	}
 }
 
-func TestScanTranscript_SystemNotification_InterruptStringContent(t *testing.T) {
+func TestScanTranscript_SystemNotification_LegacyUntypedInterruptStringContent(t *testing.T) {
 	line := `{"type":"user","message":{"role":"user","content":"<system-notification>[interrupt] From finn — msg id=9v6</system-notification>"}}`
 	path := writeJSONL(t, []string{line})
 	entries, err := scanTranscript(path, time.Time{})
@@ -740,6 +748,9 @@ func TestScanTranscript_SystemNotification_InterruptStringContent(t *testing.T) 
 	if entries[0].Type != MessageSystemNotification {
 		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
 	}
+	if entries[0].NotificationType != NotificationKindMessage {
+		t.Errorf("entries[0].NotificationType = %q, want %q", entries[0].NotificationType, NotificationKindMessage)
+	}
 	if !entries[0].Interrupt {
 		t.Errorf("entries[0].Interrupt = false, want true ([interrupt] body)")
 	}
@@ -748,7 +759,67 @@ func TestScanTranscript_SystemNotification_InterruptStringContent(t *testing.T) 
 	}
 }
 
-func TestScanTranscript_SystemNotification_ArrayBlockContent(t *testing.T) {
+func TestScanTranscript_SystemNotification_TypedMessageStringContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":"<system-notification type=\"message\">From finn — msg id=9v6</system-notification>"}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].NotificationType != NotificationKindMessage {
+		t.Errorf("entries[0].NotificationType = %q, want %q", entries[0].NotificationType, NotificationKindMessage)
+	}
+	if entries[0].Interrupt {
+		t.Errorf("entries[0].Interrupt = true, want false")
+	}
+}
+
+func TestScanTranscript_SystemNotification_TypedMessageInterruptStringContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":"<system-notification type=\"message\" interrupt=\"true\">[interrupt] From finn — msg id=9v6</system-notification>"}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].NotificationType != NotificationKindMessage {
+		t.Errorf("entries[0].NotificationType = %q, want %q", entries[0].NotificationType, NotificationKindMessage)
+	}
+	if !entries[0].Interrupt {
+		t.Errorf("entries[0].Interrupt = false, want true (interrupt=\"true\" attr)")
+	}
+}
+
+func TestScanTranscript_SystemNotification_TypedStatusChangeStringContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":"<system-notification type=\"status_change\">finn changed status to working: doing X</system-notification>"}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].Type != MessageSystemNotification {
+		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
+	}
+	if entries[0].NotificationType != NotificationKindStatusChange {
+		t.Errorf("entries[0].NotificationType = %q, want %q", entries[0].NotificationType, NotificationKindStatusChange)
+	}
+	if entries[0].Interrupt {
+		t.Errorf("entries[0].Interrupt = true, want false")
+	}
+	if entries[0].Content != "finn changed status to working: doing X" {
+		t.Errorf("entries[0].Content = %q", entries[0].Content)
+	}
+}
+
+func TestScanTranscript_SystemNotification_LegacyUntypedArrayBlockContent(t *testing.T) {
 	line := `{"type":"user","message":{"role":"user","content":[` +
 		`{"type":"text","text":"<system-notification>x</system-notification>"}` +
 		`]}}`
@@ -763,11 +834,60 @@ func TestScanTranscript_SystemNotification_ArrayBlockContent(t *testing.T) {
 	if entries[0].Type != MessageSystemNotification {
 		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
 	}
+	if entries[0].NotificationType != NotificationKindMessage {
+		t.Errorf("entries[0].NotificationType = %q, want %q (legacy defaults)", entries[0].NotificationType, NotificationKindMessage)
+	}
 	if entries[0].Interrupt {
 		t.Errorf("entries[0].Interrupt = true, want false")
 	}
 	if entries[0].Content != "x" {
 		t.Errorf("entries[0].Content = %q, want %q", entries[0].Content, "x")
+	}
+}
+
+// TestScanTranscript_SystemNotification_TypedStatusChangeArrayBlockContent —
+// symmetry guard: the array-block branch (~replay.go:216) MUST match the
+// string-content branch (~replay.go:163) when parsing the new typed form.
+// QUM-557 lesson: replay divergence is real and silent.
+func TestScanTranscript_SystemNotification_TypedStatusChangeArrayBlockContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[` +
+		`{"type":"text","text":"<system-notification type=\"status_change\">finn changed status to working: doing X</system-notification>"}` +
+		`]}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageSystemNotification {
+		t.Errorf("entries[0].Type = %v, want MessageSystemNotification", entries[0].Type)
+	}
+	if entries[0].NotificationType != NotificationKindStatusChange {
+		t.Errorf("entries[0].NotificationType = %q, want %q", entries[0].NotificationType, NotificationKindStatusChange)
+	}
+}
+
+// TestScanTranscript_SystemNotification_TypedMessageInterruptArrayBlockContent
+// — symmetric coverage for interrupt-attr handling in the array-block branch.
+func TestScanTranscript_SystemNotification_TypedMessageInterruptArrayBlockContent(t *testing.T) {
+	line := `{"type":"user","message":{"role":"user","content":[` +
+		`{"type":"text","text":"<system-notification type=\"message\" interrupt=\"true\">[interrupt] body</system-notification>"}` +
+		`]}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+	if entries[0].NotificationType != NotificationKindMessage {
+		t.Errorf("entries[0].NotificationType = %q, want %q", entries[0].NotificationType, NotificationKindMessage)
+	}
+	if !entries[0].Interrupt {
+		t.Errorf("entries[0].Interrupt = false, want true")
 	}
 }
 
