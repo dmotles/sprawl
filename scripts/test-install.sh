@@ -113,7 +113,7 @@ echo "=== Test 2: detect_arch ==="
 
 DETECTED_ARCH=$(detect_arch)
 case "$DETECTED_ARCH" in
-    amd64|arm64)
+    x86_64|arm64)
         pass "detect_arch returned '$DETECTED_ARCH'"
         ;;
     *)
