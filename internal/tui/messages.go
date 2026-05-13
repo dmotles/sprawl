@@ -10,34 +10,139 @@ import (
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
-// systemNotificationOpenTag / systemNotificationCloseTag are the literal
-// wrapping tokens used by the supervisor's notification-injection path
-// (QUM-555). The TUI strips these wrappers at both live-append and replay
-// entry points so the rendered viewport never shows the raw markup. (QUM-557)
+// systemNotification* constants are the literal wrapping tokens used by the
+// supervisor's notification-injection path (QUM-555 / QUM-562). The TUI
+// strips these wrappers at both live-append and replay entry points so the
+// rendered viewport never shows the raw markup.
+//
+// QUM-562: the open tag is now a prefix-only match (`<system-notification`,
+// no trailing `>`) because emitters append a `type="..."` attribute and
+// optionally `interrupt="true"`. The parser scans attributes between the
+// prefix and the first `>`.
 const (
-	systemNotificationOpenTag         = "<system-notification>"
+	systemNotificationOpenPrefix      = "<system-notification"
 	systemNotificationCloseTag        = "</system-notification>"
 	systemNotificationInterruptMarker = "[interrupt]"
 )
 
+// NotificationKind is the value of the `type` attribute on a
+// `<system-notification>` wrapper. QUM-562: drives glyph + color selection
+// in the viewport render switch. Untyped legacy tags default to
+// NotificationKindMessage so pre-QUM-562 transcripts replay identically.
+const (
+	NotificationKindMessage      = "message"
+	NotificationKindStatusChange = "status_change"
+)
+
 // stripSystemNotificationTag detects the supervisor's
-// `<system-notification>...</system-notification>` wrapping on a user-role
-// message body. The outer whitespace surrounding the tag boundaries is
-// trimmed; the inner body is returned verbatim (newlines preserved). When
-// the body starts with the literal `[interrupt]` marker, isInterrupt is set
-// to true and the marker itself is preserved in the returned body so the
-// renderer can both color-code and display it. ok=false means the tag was
-// absent or malformed — the original string is returned unchanged.
-func stripSystemNotificationTag(s string) (stripped string, isInterrupt bool, ok bool) {
+// `<system-notification [attrs]>...</system-notification>` wrapping on a
+// user-role message body. The outer whitespace surrounding the tag
+// boundaries is trimmed; the inner body is returned verbatim (newlines
+// preserved).
+//
+// Returns:
+//   - body:        the inner content with wrapping tags removed
+//   - notifType:   the parsed `type` attribute (defaults to
+//     NotificationKindMessage when absent or unrecognized —
+//     YAGNI per QUM-562 design decision #5)
+//   - isInterrupt: true iff `interrupt="true"` is set OR (back-compat) the
+//     body starts with the literal `[interrupt]` marker
+//   - ok:          false when the tag is absent or malformed; in that case
+//     body is the original string and notifType is empty.
+//
+// Attribute parsing is permissive: double or single quotes accepted,
+// whitespace between attributes tolerated. The canonical emitters always
+// produce double-quoted attributes.
+func stripSystemNotificationTag(s string) (body, notifType string, isInterrupt, ok bool) {
 	trimmed := strings.TrimSpace(s)
-	if !strings.HasPrefix(trimmed, systemNotificationOpenTag) {
-		return s, false, false
+	if !strings.HasPrefix(trimmed, systemNotificationOpenPrefix) {
+		return s, "", false, false
 	}
-	if !strings.HasSuffix(trimmed, systemNotificationCloseTag) {
-		return s, false, false
+	rest := trimmed[len(systemNotificationOpenPrefix):]
+	// Next char must be `>` (no attrs) or whitespace (attrs follow).
+	if len(rest) == 0 {
+		return s, "", false, false
 	}
-	body := trimmed[len(systemNotificationOpenTag) : len(trimmed)-len(systemNotificationCloseTag)]
-	return body, strings.HasPrefix(body, systemNotificationInterruptMarker), true
+	if rest[0] != '>' && rest[0] != ' ' && rest[0] != '\t' {
+		// e.g. `<system-notificationXXX>` — not our tag.
+		return s, "", false, false
+	}
+	closeIdx := strings.IndexByte(rest, '>')
+	if closeIdx < 0 {
+		return s, "", false, false
+	}
+	attrSegment := rest[:closeIdx]
+	afterOpen := rest[closeIdx+1:]
+	if !strings.HasSuffix(afterOpen, systemNotificationCloseTag) {
+		return s, "", false, false
+	}
+	innerBody := afterOpen[:len(afterOpen)-len(systemNotificationCloseTag)]
+
+	attrs := parseTagAttributes(attrSegment)
+	notifType = attrs["type"]
+	if notifType != NotificationKindMessage && notifType != NotificationKindStatusChange {
+		// Unknown or missing type → fall back to message per the QUM-562
+		// back-compat contract.
+		notifType = NotificationKindMessage
+	}
+	isInterrupt = attrs["interrupt"] == "true" || strings.HasPrefix(innerBody, systemNotificationInterruptMarker)
+	return innerBody, notifType, isInterrupt, true
+}
+
+// parseTagAttributes is a permissive `key="value"` / `key='value'` scanner
+// for the attribute segment inside a `<system-notification ...>` open tag.
+// Unrecognized syntax is silently dropped — callers fall back to default
+// behavior rather than rejecting the whole tag. Attribute names are
+// case-sensitive (the emitters always use lowercase).
+func parseTagAttributes(seg string) map[string]string {
+	out := make(map[string]string)
+	i := 0
+	for i < len(seg) {
+		// Skip leading whitespace.
+		for i < len(seg) && (seg[i] == ' ' || seg[i] == '\t') {
+			i++
+		}
+		if i >= len(seg) {
+			break
+		}
+		// Read key up to `=`.
+		keyStart := i
+		for i < len(seg) && seg[i] != '=' && seg[i] != ' ' && seg[i] != '\t' {
+			i++
+		}
+		key := seg[keyStart:i]
+		if key == "" || i >= len(seg) || seg[i] != '=' {
+			// Malformed attribute (no `=` or empty key) — skip past
+			// whitespace to look for the next one.
+			for i < len(seg) && seg[i] != ' ' && seg[i] != '\t' {
+				i++
+			}
+			continue
+		}
+		i++ // past `=`
+		if i >= len(seg) {
+			break
+		}
+		quote := seg[i]
+		if quote != '"' && quote != '\'' {
+			// Unquoted value — skip silently.
+			for i < len(seg) && seg[i] != ' ' && seg[i] != '\t' {
+				i++
+			}
+			continue
+		}
+		i++ // past opening quote
+		valStart := i
+		for i < len(seg) && seg[i] != quote {
+			i++
+		}
+		if i >= len(seg) {
+			break
+		}
+		out[key] = seg[valStart:i]
+		i++ // past closing quote
+	}
+	return out
 }
 
 // --- QUM-527 slice 2c: question-queue messages ---

@@ -159,16 +159,17 @@ count_inbox_banners() {
         || true
 }
 
-# QUM-555/QUM-556/QUM-557: count drain notification rows surfaced in weave's
-# viewport. Post-QUM-555 the queue-flush prompt is a one-line
-# `<system-notification>` per entry. Post-QUM-556 the body cites the canonical
-# MCP tool name `mcp__sprawl__messages_read(id=<id>)` rather than the ambiguous
-# bare verb "Read <id>". Post-QUM-557 the TUI strips the literal
-# `<system-notification>` tags before rendering and surfaces the line with a
-# left-bar accent + glyph (`✉` async, `⚡` interrupt). The pane capture sees the
-# stripped/rendered form, not the raw tag string. Match the rendered shape;
-# we anchor on the glyph + sender + tool-call segment (no closing tag exists
-# in the rendered output).
+# QUM-555/QUM-556/QUM-557/QUM-562: count drain notification rows surfaced in
+# weave's viewport. The typed-attribute wire format (QUM-562) carries three
+# `<system-notification>` shapes:
+#   - type="message"                       → ✉ glyph, NotificationText (cyan)
+#   - type="message" interrupt="true"      → ⚡ glyph, InterruptText (amber)
+#   - type="status_change"                 → ◉ glyph, StatusChangeText (grey)
+# This counter targets only the message-class drain rows (async + interrupt),
+# anchored on the `mcp__sprawl__messages_read(id=<id>)` citation that is
+# present only in message-class lines (status_change lines do not cite the
+# read tool). The TUI strips the literal tags before rendering, so the pane
+# capture sees the glyph + body, not the raw markup.
 count_drain_notifications() {
     local session="$1"
     local sender="$2"

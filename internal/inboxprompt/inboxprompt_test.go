@@ -34,7 +34,7 @@ func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
 		Tags: []string{"fyi"},
 	}}
 	got := inboxprompt.BuildQueueFlushPrompt(entries)
-	want := "<system-notification>From child-alpha — mcp__sprawl__messages_read(id=abc)</system-notification>\n"
+	want := "<system-notification type=\"message\">From child-alpha — mcp__sprawl__messages_read(id=abc)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildQueueFlushPrompt mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -48,7 +48,7 @@ func TestBuildQueueFlushPrompt_SingleEntry_FallsBackToID(t *testing.T) {
 		From: "weave", Body: "hello",
 	}}
 	got := inboxprompt.BuildQueueFlushPrompt(entries)
-	want := "<system-notification>From weave — mcp__sprawl__messages_read(id=uuid-foo)</system-notification>\n"
+	want := "<system-notification type=\"message\">From weave — mcp__sprawl__messages_read(id=uuid-foo)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildQueueFlushPrompt fallback mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -62,9 +62,9 @@ func TestBuildQueueFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u3", ShortID: "s3", From: "c", Body: "b3"},
 	}
 	got := inboxprompt.BuildQueueFlushPrompt(entries)
-	want := "<system-notification>From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
-		"<system-notification>From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n" +
-		"<system-notification>From c — mcp__sprawl__messages_read(id=s3)</system-notification>\n"
+	want := "<system-notification type=\"message\">From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification type=\"message\">From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n" +
+		"<system-notification type=\"message\">From c — mcp__sprawl__messages_read(id=s3)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildQueueFlushPrompt multi mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -139,7 +139,7 @@ func TestBuildInterruptFlushPrompt_SingleEntry(t *testing.T) {
 		Tags: []string{"resume_hint:writing tests"},
 	}}
 	got := inboxprompt.BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] From weave — mcp__sprawl__messages_read(id=xyz)</system-notification>\n"
+	want := "<system-notification type=\"message\" interrupt=\"true\">[interrupt] From weave — mcp__sprawl__messages_read(id=xyz)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildInterruptFlushPrompt mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -153,7 +153,7 @@ func TestBuildInterruptFlushPrompt_SingleEntry_FallsBackToID(t *testing.T) {
 		From: "weave", Body: "stop",
 	}}
 	got := inboxprompt.BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] From weave — mcp__sprawl__messages_read(id=uuid-bar)</system-notification>\n"
+	want := "<system-notification type=\"message\" interrupt=\"true\">[interrupt] From weave — mcp__sprawl__messages_read(id=uuid-bar)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildInterruptFlushPrompt fallback mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -166,8 +166,8 @@ func TestBuildInterruptFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
 	}
 	got := inboxprompt.BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
-		"<system-notification>[interrupt] From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
+	want := "<system-notification type=\"message\" interrupt=\"true\">[interrupt] From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification type=\"message\" interrupt=\"true\">[interrupt] From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
 	if got != want {
 		t.Errorf("BuildInterruptFlushPrompt multi mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -211,19 +211,19 @@ func TestBuildStatusNotification_Shape(t *testing.T) {
 	}{
 		{
 			state: "working",
-			want:  "<system-notification>finn changed status to working: doing X</system-notification>\n",
+			want:  "<system-notification type=\"status_change\">finn changed status to working: doing X</system-notification>\n",
 		},
 		{
 			state: "blocked",
-			want:  "<system-notification>finn changed status to blocked: doing X</system-notification>\n",
+			want:  "<system-notification type=\"status_change\">finn changed status to blocked: doing X</system-notification>\n",
 		},
 		{
 			state: "complete",
-			want:  "<system-notification>finn changed status to complete: doing X</system-notification>\n",
+			want:  "<system-notification type=\"status_change\">finn changed status to complete: doing X</system-notification>\n",
 		},
 		{
 			state: "failure",
-			want:  "<system-notification>finn changed status to failure: doing X</system-notification>\n",
+			want:  "<system-notification type=\"status_change\">finn changed status to failure: doing X</system-notification>\n",
 		},
 	}
 	for _, tc := range cases {

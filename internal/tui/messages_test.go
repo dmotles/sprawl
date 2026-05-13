@@ -83,126 +83,248 @@ func TestTurnStateMsg_FieldAccess(t *testing.T) {
 	}
 }
 
-// --- QUM-557: stripSystemNotificationTag helper ---
+// --- QUM-557 / QUM-562: stripSystemNotificationTag helper ---
 //
-// Contract:
+// Contract (QUM-562):
 //
-//	stripSystemNotificationTag(s) -> (stripped, isInterrupt, ok)
+//	stripSystemNotificationTag(s) -> (body, notifType, isInterrupt, ok)
 //
 // When the entire (whitespace-trimmed) string is wrapped in
-// `<system-notification>...</system-notification>`, returns the inner body
-// with the wrapping tags removed, isInterrupt=true iff the body starts with
-// the literal `[interrupt]` marker (marker is preserved in stripped output),
-// and ok=true. Otherwise returns (original, false, false).
-func TestStripSystemNotificationTag_AsyncTag(t *testing.T) {
-	stripped, isInterrupt, ok := stripSystemNotificationTag("<system-notification>foo</system-notification>")
+// `<system-notification [attrs]>...</system-notification>`, returns the inner
+// body with the wrapping tags removed, the parsed `type` attribute (defaults
+// to "message" when absent or unrecognized), isInterrupt=true iff either the
+// `interrupt="true"` attribute is set OR (back-compat) the body starts with
+// the literal `[interrupt]` marker, and ok=true. Otherwise returns
+// (original, "", false, false). The body is returned verbatim — any inner
+// `[interrupt]` marker is preserved so the renderer can both color-code and
+// display it.
+func TestStripSystemNotificationTag_TypedMessage(t *testing.T) {
+	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification type="message">foo</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindMessage {
+		t.Errorf("notifType = %q, want %q", notifType, NotificationKindMessage)
 	}
 	if isInterrupt {
 		t.Errorf("isInterrupt = true, want false")
 	}
-	if stripped != "foo" {
-		t.Errorf("stripped = %q, want %q", stripped, "foo")
+	if body != "foo" {
+		t.Errorf("body = %q, want %q", body, "foo")
 	}
 }
 
-func TestStripSystemNotificationTag_InterruptTag(t *testing.T) {
-	stripped, isInterrupt, ok := stripSystemNotificationTag("<system-notification>[interrupt] foo</system-notification>")
+func TestStripSystemNotificationTag_TypedMessageInterrupt(t *testing.T) {
+	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification type="message" interrupt="true">[interrupt] foo</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
-	if !isInterrupt {
-		t.Errorf("isInterrupt = false, want true")
+	if notifType != NotificationKindMessage {
+		t.Errorf("notifType = %q, want %q", notifType, NotificationKindMessage)
 	}
-	if stripped != "[interrupt] foo" {
-		t.Errorf("stripped = %q, want %q (marker preserved)", stripped, "[interrupt] foo")
+	if !isInterrupt {
+		t.Errorf("isInterrupt = false, want true (interrupt=\"true\" attr)")
+	}
+	if body != "[interrupt] foo" {
+		t.Errorf("body = %q, want %q (marker preserved)", body, "[interrupt] foo")
+	}
+}
+
+func TestStripSystemNotificationTag_TypedStatusChange(t *testing.T) {
+	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification type="status_change">finn changed status to working: doing X</system-notification>`)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindStatusChange {
+		t.Errorf("notifType = %q, want %q", notifType, NotificationKindStatusChange)
+	}
+	if isInterrupt {
+		t.Errorf("isInterrupt = true, want false")
+	}
+	if body != "finn changed status to working: doing X" {
+		t.Errorf("body = %q", body)
+	}
+}
+
+// TestStripSystemNotificationTag_UntaggedLegacyAsync — back-compat: untyped
+// `<system-notification>` wrappers (persisted before QUM-562 shipped) must
+// parse as type="message" with isInterrupt=false.
+func TestStripSystemNotificationTag_UntaggedLegacyAsync(t *testing.T) {
+	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification>foo</system-notification>`)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindMessage {
+		t.Errorf("notifType = %q, want %q (legacy untyped defaults to message)", notifType, NotificationKindMessage)
+	}
+	if isInterrupt {
+		t.Errorf("isInterrupt = true, want false")
+	}
+	if body != "foo" {
+		t.Errorf("body = %q", body)
+	}
+}
+
+// TestStripSystemNotificationTag_UntaggedLegacyInterrupt — back-compat: untyped
+// wrapper with inner `[interrupt]` marker must yield isInterrupt=true.
+func TestStripSystemNotificationTag_UntaggedLegacyInterrupt(t *testing.T) {
+	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification>[interrupt] foo</system-notification>`)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindMessage {
+		t.Errorf("notifType = %q, want %q", notifType, NotificationKindMessage)
+	}
+	if !isInterrupt {
+		t.Errorf("isInterrupt = false, want true (inner [interrupt] marker)")
+	}
+	if body != "[interrupt] foo" {
+		t.Errorf("body = %q (marker preserved)", body)
 	}
 }
 
 func TestStripSystemNotificationTag_Multiline(t *testing.T) {
-	in := "<system-notification>line1\nline2</system-notification>"
-	stripped, isInterrupt, ok := stripSystemNotificationTag(in)
+	in := `<system-notification type="message">line1` + "\n" + `line2</system-notification>`
+	body, notifType, isInterrupt, ok := stripSystemNotificationTag(in)
 	if !ok {
 		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindMessage {
+		t.Errorf("notifType = %q", notifType)
 	}
 	if isInterrupt {
 		t.Errorf("isInterrupt = true, want false")
 	}
-	if stripped != "line1\nline2" {
-		t.Errorf("stripped = %q, want %q (internal newline preserved)", stripped, "line1\nline2")
+	if body != "line1\nline2" {
+		t.Errorf("body = %q", body)
 	}
 }
 
 func TestStripSystemNotificationTag_NoTag(t *testing.T) {
 	in := "hello world"
-	stripped, isInterrupt, ok := stripSystemNotificationTag(in)
+	body, notifType, isInterrupt, ok := stripSystemNotificationTag(in)
 	if ok {
 		t.Errorf("ok = true, want false (no tag present)")
+	}
+	if notifType != "" {
+		t.Errorf("notifType = %q, want empty", notifType)
 	}
 	if isInterrupt {
 		t.Errorf("isInterrupt = true, want false")
 	}
-	if stripped != in {
-		t.Errorf("stripped = %q, want original %q", stripped, in)
+	if body != in {
+		t.Errorf("body = %q, want original", body)
 	}
 }
 
 func TestStripSystemNotificationTag_MalformedMissingClose(t *testing.T) {
 	in := "<system-notification>oops"
-	stripped, isInterrupt, ok := stripSystemNotificationTag(in)
+	body, _, _, ok := stripSystemNotificationTag(in)
 	if ok {
 		t.Errorf("ok = true, want false (no closing tag)")
 	}
-	if isInterrupt {
-		t.Errorf("isInterrupt = true, want false")
-	}
-	if stripped != in {
-		t.Errorf("stripped = %q, want original %q", stripped, in)
+	if body != in {
+		t.Errorf("body = %q, want original", body)
 	}
 }
 
 func TestStripSystemNotificationTag_TagNotAtStart(t *testing.T) {
 	in := "prefix<system-notification>x</system-notification>"
-	stripped, isInterrupt, ok := stripSystemNotificationTag(in)
+	body, _, _, ok := stripSystemNotificationTag(in)
 	if ok {
 		t.Errorf("ok = true, want false (tag must wrap the whole string)")
 	}
-	if isInterrupt {
-		t.Errorf("isInterrupt = true, want false")
-	}
-	if stripped != in {
-		t.Errorf("stripped = %q, want original %q", stripped, in)
+	if body != in {
+		t.Errorf("body = %q, want original", body)
 	}
 }
 
-func TestStripSystemNotificationTag_TableDriven(t *testing.T) {
+// TestStripSystemNotificationTag_UnknownTypeFallsBackToMessage — YAGNI guard
+// (per QUM-562 design decision #5): unrecognized `type` values must not crash
+// the parser; they fall back to type="message" so an updated emitter can ship
+// without breaking older TUI binaries mid-rollout.
+func TestStripSystemNotificationTag_UnknownTypeFallsBackToMessage(t *testing.T) {
+	body, notifType, _, ok := stripSystemNotificationTag(`<system-notification type="something_new">hello</system-notification>`)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindMessage {
+		t.Errorf("notifType = %q, want %q (unknown type falls back)", notifType, NotificationKindMessage)
+	}
+	if body != "hello" {
+		t.Errorf("body = %q", body)
+	}
+}
+
+// TestStripSystemNotificationTag_AttributeRobustness — the parser should be
+// permissive about attribute formatting (single quotes, surrounding
+// whitespace) even though the canonical emitter always produces double-quoted
+// canonical form. Malformed attribute syntax falls back to defaults but does
+// not break the parse.
+func TestStripSystemNotificationTag_AttributeRobustness(t *testing.T) {
 	tests := []struct {
-		name    string
-		in      string
-		wantStr string
-		wantInt bool
-		wantOk  bool
+		name     string
+		in       string
+		wantType string
+		wantBody string
+		wantInt  bool
+		wantOk   bool
 	}{
-		{"async simple", "<system-notification>foo</system-notification>", "foo", false, true},
-		{"interrupt simple", "<system-notification>[interrupt] foo</system-notification>", "[interrupt] foo", true, true},
-		{"multiline body", "<system-notification>a\nb</system-notification>", "a\nb", false, true},
-		{"no tag", "hello", "hello", false, false},
-		{"missing close", "<system-notification>oops", "<system-notification>oops", false, false},
-		{"tag not at start", "x<system-notification>y</system-notification>", "x<system-notification>y</system-notification>", false, false},
-		{"surrounding whitespace trimmed", "  <system-notification>body</system-notification>  ", "body", false, true},
+		{
+			name:     "single-quoted type",
+			in:       `<system-notification type='status_change'>x</system-notification>`,
+			wantType: NotificationKindStatusChange,
+			wantBody: "x",
+			wantInt:  false,
+			wantOk:   true,
+		},
+		{
+			name:     "extra whitespace in attrs",
+			in:       `<system-notification   type="message"   interrupt="true"  >[interrupt] x</system-notification>`,
+			wantType: NotificationKindMessage,
+			wantBody: "[interrupt] x",
+			wantInt:  true,
+			wantOk:   true,
+		},
+		{
+			name:     "interrupt attr without explicit type",
+			in:       `<system-notification interrupt="true">[interrupt] x</system-notification>`,
+			wantType: NotificationKindMessage,
+			wantBody: "[interrupt] x",
+			wantInt:  true,
+			wantOk:   true,
+		},
+		{
+			name:     "surrounding whitespace trimmed",
+			in:       `  <system-notification type="message">body</system-notification>  `,
+			wantType: NotificationKindMessage,
+			wantBody: "body",
+			wantInt:  false,
+			wantOk:   true,
+		},
+		{
+			name:     "empty body",
+			in:       `<system-notification type="message"></system-notification>`,
+			wantType: NotificationKindMessage,
+			wantBody: "",
+			wantInt:  false,
+			wantOk:   true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotStr, gotInt, gotOk := stripSystemNotificationTag(tt.in)
-			if gotOk != tt.wantOk {
-				t.Errorf("ok = %v, want %v", gotOk, tt.wantOk)
+			body, notifType, isInterrupt, ok := stripSystemNotificationTag(tt.in)
+			if ok != tt.wantOk {
+				t.Errorf("ok = %v, want %v", ok, tt.wantOk)
 			}
-			if gotInt != tt.wantInt {
-				t.Errorf("isInterrupt = %v, want %v", gotInt, tt.wantInt)
+			if notifType != tt.wantType {
+				t.Errorf("notifType = %q, want %q", notifType, tt.wantType)
 			}
-			if gotStr != tt.wantStr {
-				t.Errorf("stripped = %q, want %q", gotStr, tt.wantStr)
+			if isInterrupt != tt.wantInt {
+				t.Errorf("isInterrupt = %v, want %v", isInterrupt, tt.wantInt)
+			}
+			if body != tt.wantBody {
+				t.Errorf("body = %q, want %q", body, tt.wantBody)
 			}
 		})
 	}

@@ -26,7 +26,7 @@ func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
 		Tags: []string{"fyi"},
 	}}
 	got := BuildQueueFlushPrompt(entries)
-	want := "<system-notification>From child-alpha — mcp__sprawl__messages_read(id=abc)</system-notification>\n"
+	want := "<system-notification type=\"message\">From child-alpha — mcp__sprawl__messages_read(id=abc)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -36,7 +36,7 @@ func TestBuildQueueFlushPrompt_SingleEntry(t *testing.T) {
 func TestBuildQueueFlushPrompt_FallsBackToID(t *testing.T) {
 	entries := []Entry{{ID: "uuid-foo", ShortID: "", From: "f", Body: "b"}}
 	got := BuildQueueFlushPrompt(entries)
-	want := "<system-notification>From f — mcp__sprawl__messages_read(id=uuid-foo)</system-notification>\n"
+	want := "<system-notification type=\"message\">From f — mcp__sprawl__messages_read(id=uuid-foo)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -49,8 +49,8 @@ func TestBuildQueueFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
 	}
 	got := BuildQueueFlushPrompt(entries)
-	want := "<system-notification>From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
-		"<system-notification>From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
+	want := "<system-notification type=\"message\">From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification type=\"message\">From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -127,7 +127,7 @@ func TestBuildInterruptFlushPrompt_SingleEntry(t *testing.T) {
 		From: "weave", Body: "stop", Tags: []string{"resume_hint:writing"},
 	}}
 	got := BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] From weave — mcp__sprawl__messages_read(id=xyz)</system-notification>\n"
+	want := "<system-notification type=\"message\" interrupt=\"true\">[interrupt] From weave — mcp__sprawl__messages_read(id=xyz)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -140,8 +140,8 @@ func TestBuildInterruptFlushPrompt_Multiple(t *testing.T) {
 		{ID: "u2", ShortID: "s2", From: "b", Body: "b2"},
 	}
 	got := BuildInterruptFlushPrompt(entries)
-	want := "<system-notification>[interrupt] From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
-		"<system-notification>[interrupt] From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
+	want := "<system-notification type=\"message\" interrupt=\"true\">[interrupt] From a — mcp__sprawl__messages_read(id=s1)</system-notification>\n" +
+		"<system-notification type=\"message\" interrupt=\"true\">[interrupt] From b — mcp__sprawl__messages_read(id=s2)</system-notification>\n"
 	if got != want {
 		t.Errorf("mismatch\n got: %q\nwant: %q", got, want)
 	}

@@ -6,6 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -99,11 +100,20 @@ type MessageEntry struct {
 	// Empty when Depth == 0. Used to attribute nested tool calls to the
 	// correct parallel Agent container. (QUM-386)
 	ParentToolID string
-	// Interrupt is set on MessageSystemNotification entries whose body
-	// starts with the literal `[interrupt]` marker. Drives the renderer's
-	// color/glyph choice (⚡ + InterruptText vs ✉ + NotificationText) so
-	// live and replay both render identically. (QUM-557)
+	// Interrupt is set on MessageSystemNotification entries whose wrapper
+	// carries `interrupt="true"` OR whose body starts with the literal
+	// `[interrupt]` marker (back-compat). Drives the renderer's
+	// color/glyph choice within the message-class branch (⚡ + InterruptText
+	// vs ✉ + NotificationText) so live and replay both render identically.
+	// (QUM-557 / QUM-562)
 	Interrupt bool
+	// NotificationType is the parsed `type` attribute on
+	// MessageSystemNotification entries (QUM-562). One of
+	// NotificationKindMessage or NotificationKindStatusChange. Drives the
+	// renderer's top-level branch selection (message-class vs status_change
+	// glyph + color). Defaults to NotificationKindMessage for untyped legacy
+	// wrappers so pre-QUM-562 transcripts replay identically.
+	NotificationType string
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -422,16 +432,17 @@ func (m *ViewportModel) AppendSystemMessage(text string) {
 // inbox banners pre-QUM-555), this falls back to AppendSystemMessage so the
 // long-standing MessageSystem rendering keeps working.
 func (m *ViewportModel) AppendSystemNotification(text string) {
-	stripped, isInterrupt, ok := stripSystemNotificationTag(text)
+	stripped, notifType, isInterrupt, ok := stripSystemNotificationTag(text)
 	if !ok {
 		m.AppendSystemMessage(text)
 		return
 	}
 	m.messages = append(m.messages, MessageEntry{
-		Type:      MessageSystemNotification,
-		Content:   stripped,
-		Complete:  true,
-		Interrupt: isInterrupt,
+		Type:             MessageSystemNotification,
+		Content:          stripped,
+		Complete:         true,
+		Interrupt:        isInterrupt,
+		NotificationType: notifType,
 	})
 	m.renderAndUpdate()
 }
@@ -605,17 +616,13 @@ func (m *ViewportModel) renderMessages() string {
 			formatted := formatSystemMessage(msg.Content, m.width)
 			block.WriteString(m.theme.SystemText.Render("✉ " + formatted))
 		case MessageSystemNotification:
-			// QUM-557: left-bar accent + glyph, tags already stripped at
-			// append/replay time so msg.Content is the raw body.
-			style := m.theme.NotificationText
-			glyph := "✉"
-			if msg.Interrupt {
-				style = m.theme.InterruptText
-				glyph = "⚡"
-			}
+			// QUM-557 / QUM-562: left-bar accent + glyph + body, all under
+			// the same style so the row reads as a unified accent block.
+			// Tags are stripped at append/replay time; msg.Content is the
+			// raw body. Branch on NotificationType first, then on Interrupt
+			// within the message class.
+			glyph, style := notificationGlyphAndStyle(m.theme, msg)
 			formatted := formatSystemMessage(msg.Content, m.width)
-			// Render bar + glyph + body all under the same style so the row
-			// reads as a unified accent block.
 			block.WriteString(style.Render("│ " + glyph + " " + formatted))
 		case MessageBanner:
 			block.WriteString(msg.Content)
@@ -919,6 +926,25 @@ func previewResultLines(result string, maxLines, width int) ([]string, int) {
 // (which background-fills shorter lines to the longest line's width) leaves
 // every line at most `width-2` cells wide. This matches the QUM-401
 // soft-wrap budget asserted in TestViewportModel_RenderSystemMessage_*.
+// notificationGlyphAndStyle selects the (glyph, style) pair for a
+// MessageSystemNotification entry, branching first on NotificationType
+// (QUM-562 status_change vs message-class) and then on Interrupt within the
+// message class. Defaults to message-class async for empty/unknown types so
+// pre-QUM-562 legacy entries render identically. Lookup-table shape kept
+// small and explicit — additional notification kinds (none planned per
+// QUM-562 YAGNI guard) would extend the switch.
+func notificationGlyphAndStyle(theme *Theme, msg MessageEntry) (glyph string, style lipgloss.Style) {
+	switch msg.NotificationType {
+	case NotificationKindStatusChange:
+		return "◉", theme.StatusChangeText
+	default: // NotificationKindMessage and any unknown/legacy value
+		if msg.Interrupt {
+			return "⚡", theme.InterruptText
+		}
+		return "✉", theme.NotificationText
+	}
+}
+
 func formatSystemMessage(content string, width int) string {
 	// Normalize line endings: CRLF -> LF, then any remaining CR -> LF.
 	content = strings.ReplaceAll(content, "\r\n", "\n")

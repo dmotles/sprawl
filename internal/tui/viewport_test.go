@@ -2079,10 +2079,11 @@ func TestViewportModel_RenderSystemNotification_AsyncShape(t *testing.T) {
 	m.SetSize(80, 20)
 	m.SetMessages([]MessageEntry{
 		{
-			Type:      MessageSystemNotification,
-			Content:   "From finn — msg id=9v6",
-			Complete:  true,
-			Interrupt: false,
+			Type:             MessageSystemNotification,
+			Content:          "From finn — msg id=9v6",
+			Complete:         true,
+			NotificationType: NotificationKindMessage,
+			Interrupt:        false,
 		},
 	})
 	view := m.View()
@@ -2123,10 +2124,11 @@ func TestViewportModel_RenderSystemNotification_InterruptShape(t *testing.T) {
 	m.SetSize(80, 20)
 	m.SetMessages([]MessageEntry{
 		{
-			Type:      MessageSystemNotification,
-			Content:   "[interrupt] From finn — msg id=9v6",
-			Complete:  true,
-			Interrupt: true,
+			Type:             MessageSystemNotification,
+			Content:          "[interrupt] From finn — msg id=9v6",
+			Complete:         true,
+			NotificationType: NotificationKindMessage,
+			Interrupt:        true,
 		},
 	})
 	view := m.View()
@@ -2153,5 +2155,143 @@ func TestViewportModel_RenderSystemNotification_InterruptShape(t *testing.T) {
 	}
 	if !strings.Contains(view, prefix) {
 		t.Errorf("expected InterruptText ANSI prefix in raw rendered output for interrupt notification (prefix=%q)\nfull view:\n%s", prefix, view)
+	}
+}
+
+// --- QUM-562: render shape for type="status_change" notifications ---
+//
+// The renderer must:
+//   - draw a left bar (│) in the StatusChangeText color
+//   - prepend the `◉` glyph (NOT ✉ or ⚡)
+//   - include the body text verbatim
+//   - NOT include the literal <system-notification> tags
+//   - use Theme.StatusChangeText (distinct from NotificationText cyan and
+//     InterruptText amber) so it reads as a state-change signal, not a
+//     message delivery.
+func TestViewportModel_RenderSystemNotification_StatusChangeShape(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.SetMessages([]MessageEntry{
+		{
+			Type:             MessageSystemNotification,
+			Content:          "finn changed status to working: doing X",
+			Complete:         true,
+			NotificationType: NotificationKindStatusChange,
+			Interrupt:        false,
+		},
+	})
+	view := m.View()
+	stripped := stripANSI(view)
+
+	if !strings.Contains(stripped, "│") {
+		t.Errorf("expected left bar '│' in rendered output, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "◉") {
+		t.Errorf("expected status_change glyph '◉' in rendered output, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "✉") {
+		t.Errorf("status_change must NOT use mail glyph '✉', got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "⚡") {
+		t.Errorf("status_change must NOT use interrupt glyph '⚡', got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "changed status to working") {
+		t.Errorf("expected body text in rendered output, got:\n%s", stripped)
+	}
+	if strings.Contains(stripped, "<system-notification") {
+		t.Errorf("rendered output must not contain literal tags, got:\n%s", stripped)
+	}
+
+	theme := NewTheme("colour212")
+	sentinel := theme.StatusChangeText.Render("X")
+	prefix := strings.SplitN(sentinel, "X", 2)[0]
+	if prefix == "" {
+		t.Skip("StatusChangeText style produced no ANSI prefix — terminal-detection skip")
+	}
+	if !strings.Contains(view, prefix) {
+		t.Errorf("expected StatusChangeText ANSI prefix in raw rendered output (prefix=%q)\nfull view:\n%s", prefix, view)
+	}
+
+	// Visual-distinctness guard: the status_change ANSI prefix must differ
+	// from both NotificationText (cyan) and InterruptText (amber).
+	notifPrefix := strings.SplitN(theme.NotificationText.Render("X"), "X", 2)[0]
+	intPrefix := strings.SplitN(theme.InterruptText.Render("X"), "X", 2)[0]
+	if prefix == notifPrefix {
+		t.Errorf("StatusChangeText ANSI prefix must differ from NotificationText (both=%q)", prefix)
+	}
+	if prefix == intPrefix {
+		t.Errorf("StatusChangeText ANSI prefix must differ from InterruptText (both=%q)", prefix)
+	}
+}
+
+// TestAppendSystemNotification_PopulatesNotificationType — round-trip the
+// typed wrapper through the live-append path and confirm the stored
+// MessageEntry carries the parsed type so the renderer can branch correctly.
+func TestAppendSystemNotification_PopulatesNotificationType(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		wantType string
+		wantInt  bool
+		wantBody string
+	}{
+		{
+			name:     "typed message async",
+			input:    `<system-notification type="message">From finn — body</system-notification>`,
+			wantType: NotificationKindMessage,
+			wantInt:  false,
+			wantBody: "From finn — body",
+		},
+		{
+			name:     "typed message interrupt",
+			input:    `<system-notification type="message" interrupt="true">[interrupt] body</system-notification>`,
+			wantType: NotificationKindMessage,
+			wantInt:  true,
+			wantBody: "[interrupt] body",
+		},
+		{
+			name:     "typed status_change",
+			input:    `<system-notification type="status_change">finn changed status to working: x</system-notification>`,
+			wantType: NotificationKindStatusChange,
+			wantInt:  false,
+			wantBody: "finn changed status to working: x",
+		},
+		{
+			name:     "legacy untyped",
+			input:    `<system-notification>legacy body</system-notification>`,
+			wantType: NotificationKindMessage,
+			wantInt:  false,
+			wantBody: "legacy body",
+		},
+		{
+			name:     "legacy untyped with [interrupt] marker",
+			input:    `<system-notification>[interrupt] legacy body</system-notification>`,
+			wantType: NotificationKindMessage,
+			wantInt:  true,
+			wantBody: "[interrupt] legacy body",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestViewportModel(t)
+			m.AppendSystemNotification(tc.input)
+			msgs := m.GetMessages()
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 message, got %d", len(msgs))
+			}
+			got := msgs[0]
+			if got.Type != MessageSystemNotification {
+				t.Errorf("Type = %v, want MessageSystemNotification", got.Type)
+			}
+			if got.NotificationType != tc.wantType {
+				t.Errorf("NotificationType = %q, want %q", got.NotificationType, tc.wantType)
+			}
+			if got.Interrupt != tc.wantInt {
+				t.Errorf("Interrupt = %v, want %v", got.Interrupt, tc.wantInt)
+			}
+			if got.Content != tc.wantBody {
+				t.Errorf("Content = %q, want %q", got.Content, tc.wantBody)
+			}
+		})
 	}
 }

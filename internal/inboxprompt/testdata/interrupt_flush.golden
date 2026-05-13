@@ -1,2 +1,2 @@
-<system-notification>[interrupt] From weave — mcp__sprawl__messages_read(id=si1)</system-notification>
-<system-notification>[interrupt] From ratz — mcp__sprawl__messages_read(id=uuid-int-2)</system-notification>
+<system-notification type="message" interrupt="true">[interrupt] From weave — mcp__sprawl__messages_read(id=si1)</system-notification>
+<system-notification type="message" interrupt="true">[interrupt] From ratz — mcp__sprawl__messages_read(id=uuid-int-2)</system-notification>

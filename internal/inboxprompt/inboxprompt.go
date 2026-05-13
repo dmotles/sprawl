@@ -2,16 +2,27 @@
 // the legacy agentloop child harness and the unified-runtime supervisor path
 // use to render pending queue entries into a turn prompt.
 //
-// QUM-555: the per-entry frame is now a single `<system-notification>` line
+// QUM-555: the per-entry frame is a single `<system-notification>` line
 // naming the sender and the short message ID. The recipient pulls the body
 // on demand rather than receiving the full body inlined into every turn.
-// Interrupt-class entries carry an `[interrupt]` marker inside the tag so
-// the recipient can decide whether to preempt current work.
 //
 // QUM-556: the line names the canonical MCP tool `mcp__sprawl__messages_read`
 // in function-call shape so agents pattern-match it against their registered
 // tool list — the bare verb "Read" was ambiguous with the deprecated
 // `sprawl messages read <id>` CLI and triggered the wrong path in practice.
+//
+// QUM-562: each `<system-notification>` now carries a `type` attribute so the
+// TUI parser (internal/tui/messages.go) can branch on signal kind without
+// string-sniffing the body. Three wire shapes:
+//
+//	<system-notification type="message">From $AGENT — mcp__sprawl__messages_read(id=$ID)</system-notification>
+//	<system-notification type="message" interrupt="true">[interrupt] From $AGENT — mcp__sprawl__messages_read(id=$ID)</system-notification>
+//	<system-notification type="status_change">$AGENT changed status to $STATE: $SUMMARY</system-notification>
+//
+// The inner `[interrupt]` body marker is retained on interrupt-class entries
+// for human-readability when the wrapper is stripped from rendered output;
+// the `interrupt="true"` attribute is the machine-parseable channel.
+// Untyped legacy tags (pre-QUM-562 transcripts) replay as type="message".
 package inboxprompt
 
 import (
@@ -103,7 +114,7 @@ func BuildQueueFlushPrompt(entries []Entry) string {
 	}
 	var b strings.Builder
 	for _, e := range entries {
-		fmt.Fprintf(&b, "<system-notification>From %s — mcp__sprawl__messages_read(id=%s)</system-notification>\n",
+		fmt.Fprintf(&b, "<system-notification type=\"message\">From %s — mcp__sprawl__messages_read(id=%s)</system-notification>\n",
 			e.From, displayMessageID(e))
 	}
 	return b.String()
@@ -115,22 +126,25 @@ func BuildQueueFlushPrompt(entries []Entry) string {
 // parent's next-turn prompt via the in-process per-recipient ring and
 // discarded.
 //
-// The line has the shape:
+// The line has the shape (QUM-562 typed-attribute form):
 //
-//	<system-notification>$AGENT changed status to $STATE: $SUMMARY</system-notification>\n
+//	<system-notification type="status_change">$AGENT changed status to $STATE: $SUMMARY</system-notification>\n
 //
 // No body inlining, no `mcp__sprawl__messages_read` citation (this is a
-// status channel, not a mail channel). The QUM-557 TUI color-coder
-// triggers on the literal substrings " to failure: " and " to blocked: "
-// in the rendered line.
+// status channel, not a mail channel). The `type="status_change"`
+// attribute lets the TUI renderer branch onto a distinct glyph + color
+// (◉ + StatusChangeText) instead of the mail/interrupt glyphs used for
+// message-class notifications.
 func BuildStatusNotification(agent, state, summary string) string {
-	return fmt.Sprintf("<system-notification>%s changed status to %s: %s</system-notification>\n",
+	return fmt.Sprintf("<system-notification type=\"status_change\">%s changed status to %s: %s</system-notification>\n",
 		agent, state, summary)
 }
 
 // BuildInterruptFlushPrompt renders one `<system-notification>` line per
-// pending interrupt-class entry, tagged with `[interrupt]` so the recipient
-// knows to consider preempting current work. Same shape as
+// pending interrupt-class entry. QUM-562: the line carries `type="message"
+// interrupt="true"` attributes for the TUI parser, AND keeps the inner
+// `[interrupt]` body marker so the body remains self-describing once the
+// wrapper is stripped from rendered output. Same shape otherwise as
 // BuildQueueFlushPrompt — `mcp__sprawl__messages_read(id=<id>)` citation,
 // no inlined body, no footer prose. Returns "" if entries is empty.
 func BuildInterruptFlushPrompt(entries []Entry) string {
@@ -139,7 +153,7 @@ func BuildInterruptFlushPrompt(entries []Entry) string {
 	}
 	var b strings.Builder
 	for _, e := range entries {
-		fmt.Fprintf(&b, "<system-notification>[interrupt] From %s — mcp__sprawl__messages_read(id=%s)</system-notification>\n",
+		fmt.Fprintf(&b, "<system-notification type=\"message\" interrupt=\"true\">[interrupt] From %s — mcp__sprawl__messages_read(id=%s)</system-notification>\n",
 			e.From, displayMessageID(e))
 	}
 	return b.String()
