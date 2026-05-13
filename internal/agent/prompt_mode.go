@@ -25,10 +25,11 @@ func resolveMode(mode string) string {
 // --- Child report bullets (the four mode-specific status/messaging bullets
 // used in every child agent's RULES section). ---
 
-const childReportBulletsTUITemplate = `- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
+const childReportBulletsTUITemplate = `- Decision rule: use report_status for state pings (working / blocked / complete / failure) — they update your global state and notify the parent asynchronously, but are NOT inbox messages and cannot be read back. Use send_message for substantive content (questions, findings, context) — it's durable and retrievable via messages_read.
+- Report progress at each meaningful step with report_status({state: "working", summary: "<≤160 char update>"}) — not just at the end.
 - When done, use: report_status({state: "complete", summary: "<{{DONE_SUMMARY}}>"})
 - If you discover work beyond your scope, use: report_status({state: "blocked", summary: "<one-line>"}) or send_message({to: "{{PARENT_NAME}}", body: "<description>", interrupt: false}).
-- If you need clarification, use: send_message({to: "{{PARENT_NAME}}", body: "<your question>", interrupt: false})`
+- If you need clarification, use: send_message({to: "{{PARENT_NAME}}", body: "<your question>", interrupt: false}) — interrupt=true is reserved for rare urgent parent→descendant corrections.`
 
 const childReportBulletsTmuxTemplate = `- When done, run: sprawl report done "<{{DONE_SUMMARY}}>"
 - If you discover work beyond your scope, run: sprawl report problem "<description>"
@@ -324,9 +325,9 @@ const rootCommandsTUI = `KEY TOOLS (MCP):
   merge({agent: "<agent>", no_validate: true})     — Skip pre-merge and post-merge test validation.
 
   Messaging (prefer MCP over the CLI when available):
-  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Canonical messaging tool (QUM-550). interrupt=false (default) is strictly cooperative — message lands at the recipient's next turn boundary. interrupt=true jumps the queue AND requests preemption (best-effort during MCP-tool-waits; honored for streaming/thinking only — see QUM-549; use kill for hard recovery from a wedged MCP call). The first line of body serves as the subject-equivalent in the inbox.
+  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Durable correspondence channel. Lands in the recipient's inbox, increments unread, retrievable via messages_read. interrupt=false (default) is strictly cooperative — message lands at the recipient's next turn boundary. interrupt=true is RARE (parent→descendant urgent only): jumps the queue AND requests preemption (best-effort during MCP-tool-waits; honored for streaming/thinking only — see QUM-549; use kill for hard recovery from a wedged MCP call). The first line of body serves as the subject-equivalent in the inbox. For routine status pings, prefer report_status.
   peek({agent: "<agent>", tail: 20})               — inspect an agent's recent activity + last report. Use before asking "are you done?" or nagging a child.
-  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Strictly cooperative (never preempts parent). Use at every meaningful step.
+  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: does not bump unread, not retrievable via messages_read. Use at every meaningful step. For anything substantive or retrievable, use send_message instead.
 
   Observability:
   status({})                                       — show status of all agents with state, type, family, mail count
@@ -339,12 +340,13 @@ const rootDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
 - ` + "`sprawl messages send <agent> \"<subject>\" \"<body>\"`" + ` — Use for coordination and information sharing. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
 - Rule of thumb: if you're telling an agent to *do* something, use ` + "`delegate`" + `. If you're telling an agent *about* something, use ` + "`messages send`" + `.`
 
-const rootDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
+const rootDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES VS. STATUS — WHEN TO USE WHICH:
 - delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Use for coordination and information sharing. Queued cooperatively; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Durable correspondence. Lands in the recipient's inbox, retrievable via messages_read. Use for substantive coordination and information sharing: context, questions, findings, hand-offs. Queued cooperatively; recipient reads on next yield. No execution semantics.
 - send_message({to: "<descendant>", body: "<body>", interrupt: true}) — RARE. Jumps the queue and requests preemption. Only for urgent parent-side corrections; prefer interrupt=false by default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
+- report_status({state: "<state>", summary: "<≤160 char>"}) — YOUR own state ping. Updates your global state and asynchronously notifies your parent. NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. Children also use this to ping you; their pings show up in status/peek, not your inbox.
 - peek({agent: "<agent>"}) — Before nagging a child ("are you done?"), peek its activity/last_report first. Only send_message if peek is inconclusive.
-- Rule of thumb: if you're telling an agent to *do* something, use delegate. If you're telling an agent *about* something, use send_message.`
+- Rules of thumb: (1) if you're telling an agent to *do* something, use delegate; (2) if you're telling an agent *about* something (and want it retrievable), use send_message; (3) if you're announcing your own state, use report_status.`
 
 const rootRulesTmux = `RULES:
 - Keep your agent tree manageable. Do not have more than 3-10 active agents at a time.
@@ -456,9 +458,9 @@ Use sprawl MCP tools to create and manage agents:
   - qa: Concerned with correctness. Testing, verification, quality assurance.
 
   Messaging (prefer MCP over the CLI when available):
-  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Canonical messaging tool. interrupt=false (default) cooperative; interrupt=true jumps queue + requests preemption (best-effort during MCP-tool-waits; see QUM-549).
+  send_message({to: "<agent>", body: "<markdown>", interrupt: false})  — Durable correspondence channel. Lands in the recipient's inbox, retrievable via messages_read. interrupt=false (default) cooperative; interrupt=true is RARE (urgent parent→descendant corrections) — jumps queue + requests preemption (best-effort during MCP-tool-waits; see QUM-549).
   peek({agent: "<agent>", tail: 20})   — inspect a child/peer's recent activity + last report before nagging them.
-  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Strictly cooperative (never preempts parent).
+  report_status({state: "<working|blocked|complete|failure>", summary: "<≤160 char>"})  — report YOUR status to your parent. Updates your global state and pings parent asynchronously (never preempts). NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. For substantive content, use send_message.
 
   Observability:
   status({})            — show status of all agents`
@@ -468,12 +470,13 @@ const managerDelegateVsMessagesTmux = `DELEGATE VS. MESSAGES — WHEN TO USE WHI
 - ` + "`sprawl messages send <agent> \"<subject>\" \"<body>\"`" + ` — Use for coordination and information sharing. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
 - Rule of thumb: if you're telling an agent to *do* something, use ` + "`delegate`" + `. If you're telling an agent *about* something, use ` + "`messages send`" + `.`
 
-const managerDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES — WHEN TO USE WHICH:
+const managerDelegateVsMessagesTUI = `DELEGATE VS. MESSAGES VS. STATUS — WHEN TO USE WHICH:
 - delegate({agent: "<agent>", task: "<task>"}) — Use for work assignments. Creates a tracked task in the agent's queue with status (queued → started → done). Use when you want the agent to execute something and track completion. Preferred for: assigning implementation work, requesting specific deliverables, any "go do this" instruction.
-- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Use for coordination and information sharing. Queued cooperatively; recipient reads on next yield. No execution semantics. Use for: sharing context, asking questions, notifying peers, broadcasting status updates.
+- send_message({to: "<agent>", body: "<body>", interrupt: false}) — Durable correspondence. Lands in the recipient's inbox, retrievable via messages_read. Use for substantive coordination and information sharing: context, questions, findings, hand-offs. Queued cooperatively; recipient reads on next yield. No execution semantics.
 - send_message({to: "<descendant>", body: "<body>", interrupt: true}) — RARE. Jumps the queue and requests preemption. Only for urgent parent-side corrections; prefer interrupt=false by default. Honored for streaming/thinking; best-effort during MCP-tool-waits (QUM-549) — use kill for hard recovery.
+- report_status({state: "<state>", summary: "<≤160 char>"}) — YOUR own state ping to your parent. Updates global state and notifies parent asynchronously. NOT an inbox message: ephemeral, does not bump unread, not retrievable via messages_read. Children's status pings show up in status/peek, not your inbox.
 - peek({agent: "<agent>"}) — Before nagging a child, peek its activity/last_report first. Only send_message if peek is inconclusive.
-- Rule of thumb: if you're telling an agent to *do* something, use delegate. If you're telling an agent *about* something, use send_message.`
+- Rules of thumb: (1) if you're telling an agent to *do* something, use delegate; (2) if you're telling an agent *about* something (and want it retrievable), use send_message; (3) if you're announcing your own state, use report_status.`
 
 const managerIntegrationTemplate = `# INTEGRATION:
 Use {{MERGE}} to land work on your integration branch. The {{MERGE_WORD}}

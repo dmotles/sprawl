@@ -108,7 +108,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "send_message",
-			"description": "Canonical messaging tool (QUM-550). Sends `body` to agent `to`. interrupt=false (default): strictly cooperative — the message is enqueued at the recipient's queue and delivered at the next turn boundary; preserves the recipient's prompt cache. interrupt=true: jumps to the front of the recipient's queue AND requests preemption. Honored immediately when the recipient is streaming or thinking. If the recipient is currently awaiting a sprawl-side MCP tool response, the interrupt JSON is written to claude's stdin but its effect is not observable until that MCP call returns (QUM-549). For hard recovery from a wedged MCP call, use kill. Use interrupt=true sparingly for truly urgent context. The first line of `body` serves as the subject-equivalent in the recipient's inbox.",
+			"description": "The preferred channel for substantive communication with another agent (parent, peer, or descendant). Use this for questions, context-sharing, findings, hand-offs, and anything you want to be retrievable later via `messages_read`. Durable: the message lands in the recipient's inbox, increments their unread count, and can be listed/read/archived. Default is async (interrupt=false) — strictly cooperative: the message is enqueued at the recipient's queue and delivered at the next turn boundary; preserves the recipient's prompt cache. Set interrupt=true ONLY for genuinely urgent corrections that must preempt the recipient mid-turn (parent→descendant only, rare). interrupt=true jumps to the front of the recipient's queue AND requests preemption — honored immediately when the recipient is streaming or thinking; if the recipient is currently awaiting a sprawl-side MCP tool response, the interrupt JSON is written to claude's stdin but its effect is not observable until that MCP call returns (QUM-549). For hard recovery from a wedged MCP call, use kill. For routine status updates (\"started X\", \"finished X\", \"blocked on Y\"), use `report_status` instead — it's lighter weight and doesn't clutter the recipient's inbox. The first line of `body` serves as the subject-equivalent in the recipient's inbox.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -142,7 +142,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "report_status",
-			"description": "Report this agent's status to its parent. Canonical status channel (replaces ad-hoc `sprawl report`). Persists state+summary to agent state on disk; the parent receives a strictly cooperative inbox notification (never preempts the parent). Use at every meaningful step — not just at task end.",
+			"description": "Updates this agent's global state (what you're working on, blocked status, completion, failures). Visible to the parent and surfaced in `sprawl status` / `peek`. REQUIRED: call when you start a task, when you complete it, and when you hit blockers or failures — use at every meaningful step, not just at task end. The parent is notified asynchronously; this never preempts them. This is NOT a message: it does NOT appear in the parent's inbox, does NOT increment unread counts, and CANNOT be read back later via `messages_read` / `messages_list`. The notification is ephemeral — only the latest state+summary is persisted to the agent's state on disk. Use `send_message` for anything you need to convey in detail or for anything you want the parent to be able to retrieve later.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -227,7 +227,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "messages_list",
-			"description": "List messages in the caller's mailbox. Scoped to the caller's agent identity — cannot read other agents' mailboxes. Returns newest-first summaries (id, from, subject, timestamp, read-state). Example: {\"filter\":\"unread\",\"limit\":20}.",
+			"description": "List durable messages in the caller's mailbox (messages sent via `send_message`). Scoped to the caller's agent identity — cannot read other agents' mailboxes. Returns newest-first summaries (id, from, subject, timestamp, read-state). `report_status` updates from children do NOT appear here — they are ephemeral state notifications, not messages; use `status` or `peek` to inspect them. Example: {\"filter\":\"unread\",\"limit\":20}.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -245,7 +245,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "messages_read",
-			"description": "Fetch the full body of a message by ID (short or long prefix). Auto-marks the message read if it was unread (mirrors `sprawl messages read`). Scoped to the caller's mailbox. Example: {\"id\":\"abc\"}.",
+			"description": "Fetch the full body of a durable message by ID (short or long prefix). Auto-marks the message read if it was unread (mirrors `sprawl messages read`). Scoped to the caller's mailbox. Only messages sent via `send_message` are retrievable here — `report_status` updates are not messages and cannot be read back; use `status` or `peek` to see a child's latest reported state. Example: {\"id\":\"abc\"}.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -276,7 +276,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "messages_peek",
-			"description": "Cheap \"do I have mail?\" probe — returns the caller's unread count and up to 5 newest-first preview summaries. Scoped to the caller's mailbox. Takes no arguments.",
+			"description": "Cheap \"do I have mail?\" probe — returns the caller's unread count and up to 5 newest-first preview summaries. Counts only durable messages (sent via `send_message`); `report_status` updates do not contribute to unread. Scoped to the caller's mailbox. Takes no arguments.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
