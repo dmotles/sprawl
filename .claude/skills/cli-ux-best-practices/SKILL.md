@@ -138,7 +138,7 @@ return fmt.Errorf("invalid agent type")
 
 ```go
 // GOOD — agent can copy-paste the fix
-return fmt.Errorf("agent %q has no worktree; create one first with: sprawl spawn --family engineering --type engineer --prompt '...'")
+return fmt.Errorf("agent %q has no worktree; create one first via the spawn MCP tool: spawn({family: \"engineering\", type: \"engineer\", branch: \"...\", prompt: \"...\"})")
 
 // GOOD — explains the precondition
 return fmt.Errorf("cannot merge %q: agent status is %q, expected \"done\". Wait for it to finish, or use: sprawl merge --force %s", name, status, name)

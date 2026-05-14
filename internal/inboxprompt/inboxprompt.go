@@ -8,8 +8,8 @@
 //
 // QUM-556: the line names the canonical MCP tool `mcp__sprawl__messages_read`
 // in function-call shape so agents pattern-match it against their registered
-// tool list — the bare verb "Read" was ambiguous with the deprecated
-// `sprawl messages read <id>` CLI and triggered the wrong path in practice.
+// tool list — the bare verb "Read" was ambiguous with the legacy CLI form
+// and triggered the wrong path in practice.
 //
 // QUM-562: each `<system-notification>` now carries a `type` attribute so the
 // TUI parser (internal/tui/messages.go) can branch on signal kind without

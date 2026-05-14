@@ -64,12 +64,15 @@ All packages should report `ok`. No failures expected.
 
 ### Step 3: Spawn a manager agent
 
-From the root agent session (or via CLI):
+From the root agent session, call the `spawn` MCP tool:
 
-```bash
-sprawl spawn agent --family engineering --type manager \
-  --branch "test/manager-smoke" \
-  --prompt "Coordinate a simple task: create a hello.txt file."
+```
+spawn({
+  family: "engineering",
+  type: "manager",
+  branch: "test/manager-smoke",
+  prompt: "Coordinate a simple task: create a hello.txt file."
+})
 ```
 
 **Verify state file** at `.sprawl/agents/<manager-name>.json`:
@@ -144,7 +147,7 @@ You should see JSON files for both the manager and any children it spawned. Each
 Watch child agent tmux windows. Each should:
 1. Receive its task prompt
 2. Work in its own worktree on its own branch
-3. Report done via `sprawl report done "<summary>"`
+3. Report done via `report_status({state: "complete", summary: "<summary>"})`
 
 **Verify child reports:**
 
@@ -180,10 +183,10 @@ You should see a squash merge commit with format:
 
 ### Step 9: Observe manager reporting done
 
-After all children are merged and final validation passes, the manager should:
+After all children are merged and final validation passes, the manager should call:
 
-```bash
-sprawl report done "All subtasks completed and merged."
+```
+report_status({state: "complete", summary: "All subtasks completed and merged."})
 ```
 
 **Verify manager state:**
@@ -234,15 +237,15 @@ root
       |
       |  [Children work independently in their worktrees]
       |
-      |  child-1: sprawl report done "..."
-      |  child-2: sprawl report done "..."
+      |  child-1: report_status({state: "complete", summary: "..."})
+      |  child-2: report_status({state: "complete", summary: "..."})
       |
       |  [Manager verifies each child's work]
-      |  [Manager merges each child: sprawl merge child-1, sprawl merge child-2]
+      |  [Manager merges each child: merge({agent_name: "child-1"}), merge({agent_name: "child-2"})]
       |
       |  [Manager runs final validation on integration branch]
       |
-      |  manager: sprawl report done "All work integrated and validated."
+      |  manager: report_status({state: "complete", summary: "All work integrated and validated."})
       |
  root: sprawl merge manager
 ```

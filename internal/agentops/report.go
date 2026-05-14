@@ -78,8 +78,8 @@ func ValidReportState(state string) bool {
 	return false
 }
 
-// Report is the canonical persistence path for agent status reports (both
-// `sprawl report` CLI and the `report_status` MCP tool delegate here).
+// Report is the canonical persistence path for agent status reports (the
+// `report_status` MCP tool delegates here).
 //
 // QUM-559: Report is state-only — it loads the reporter's agent state,
 // updates the LastReport* fields and (for complete/failure) the Status

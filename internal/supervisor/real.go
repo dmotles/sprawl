@@ -37,7 +37,8 @@ type Config struct {
 // Real is the production implementation of Supervisor.
 //
 // Spawn/Merge/Retire/Kill delegate to internal/agentops, which contains the
-// same logic used by the CLI `sprawl spawn|merge|retire|kill` commands.
+// shared logic used by the spawn/merge/retire/kill MCP tools (and the
+// `sprawl merge` CLI command, which is still surfaced standalone).
 //
 // The *Fn fields are test seams: tests can swap them to exercise Real's
 // wiring without touching the underlying agentops machinery (which is
@@ -956,7 +957,7 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 }
 
 // ReportStatus delegates to agentops.Report, which is the single persistence
-// path shared by the `sprawl report` CLI. See
+// path used by the `report_status` MCP tool. See
 // docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
 //
 // An empty agentName defaults to r.callerName — the MCP tool invokes this

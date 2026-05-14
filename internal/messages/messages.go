@@ -43,7 +43,7 @@ func MessagesDir(sprawlRoot string) string { //nolint:revive // stuttering name 
 // WithNotify option is provided or a process-level default notifier has been
 // registered via SetDefaultNotifier. It receives the recipient, sender,
 // subject, and the generated (short) message ID so callers can construct
-// actionable instructions (e.g. "sprawl messages read <id>") and gate on the
+// actionable instructions (e.g. "messages_read({id})") and gate on the
 // recipient.
 //
 // It is best-effort — errors and panics are swallowed by Send.
@@ -96,7 +96,7 @@ func DefaultNotifier() NotifyFunc {
 // Send delivers a message from one agent to another using Maildir-style
 // atomic writes. It returns the generated short ID (a 3- or 4-character
 // base36 token) on success — callers persist this so the truncation hints
-// in queue-flush prompts can cite an ID that `sprawl messages read` accepts.
+// in queue-flush prompts can cite an ID that the `messages_read` MCP tool accepts.
 // See QUM-412.
 func Send(sprawlRoot, from, to, subject, body string, opts ...SendOption) (string, error) {
 	if from == "" {

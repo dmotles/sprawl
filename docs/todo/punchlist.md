@@ -52,9 +52,9 @@ Takes forever. Whatever it's doing will almost certainly bite TUI mode too once 
 
 Same deal — slow and opaque. Need visibility into what this step actually does and why it takes the time it does.
 
-## 8. `sprawl spawn subagent` is removed
+## 8. `spawn subagent` is removed
 
-Resolved by the same-process cutover. Child agents now run as worktree-backed runtimes owned by `sprawl enter`; the legacy branchless `spawn subagent` CLI path is no longer supported.
+Resolved by the same-process cutover. Child agents now run as worktree-backed runtimes owned by `sprawl enter`; the legacy branchless `spawn-subagent` path is no longer supported.
 
 ---
 

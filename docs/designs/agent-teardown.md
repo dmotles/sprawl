@@ -1,13 +1,21 @@
 # Design: Agent Teardown & Cleanup
 
-## Status: Draft
+## Status: Implemented (superseded by MCP tools)
+
+> **Implementation note (2026-05, M13 Phase 2.3):** The CLI synopses below are
+> the original CLI-first proposal. The teardown surface ultimately shipped as
+> MCP tools (`kill({agent_name})`, `retire({agent_name, merge?, abandon?, cascade?})`)
+> driven from inside `sprawl enter`. The standalone CLI versions of these
+> commands (`kill` / `retire` as cobra subcommands) were deleted in QUM-566;
+> this document is kept
+> as the canonical design record for the teardown semantics.
 
 ## Context
 
-DESCRIPTION.md defines two teardown-adjacent commands:
+DESCRIPTION.md historically defined two teardown-adjacent commands:
 
-- `sprawl kill <agent-name>` — Kill an unresponsive agent
-- `sprawl respawn <agent-name>` — Kill + restart with same session ID
+- `kill` — kill an unresponsive agent (now the `kill` MCP tool)
+- `respawn` — kill + restart with same session ID (never shipped; subsumed by reuse semantics)
 
 But the system also needs full teardown: stop the process, close the tmux window, remove the worktree, delete state, and return the name to the pool. This doc designs the complete teardown surface.
 
@@ -126,13 +134,13 @@ For `kill`, children are **not** affected. Killing a manager doesn't kill its en
 
 ## Command Reference
 
-### `sprawl kill <agent-name>`
+### `kill` MCP tool
 
 Stop an agent's process but preserve all state for respawn or inspection.
 
 ```
-sprawl kill <agent-name>            # Graceful kill (SIGTERM → SIGKILL)
-sprawl kill <agent-name> --force    # Immediate SIGKILL, handle wedged state
+kill({agent_name: "<name>"})                  # Graceful kill (SIGTERM → SIGKILL)
+kill({agent_name: "<name>", force: true})     # Immediate SIGKILL, handle wedged state
 ```
 
 **Exit codes:**
@@ -140,14 +148,14 @@ sprawl kill <agent-name> --force    # Immediate SIGKILL, handle wedged state
 - 1: Agent not found (no state file)
 - 1: Agent already killed (not an error? — see open question)
 
-### `sprawl retire <agent-name>`
+### `retire` MCP tool
 
 Full teardown. Stop process, close tmux, remove worktree, delete state, free name.
 
 ```
-sprawl retire <agent-name>              # Retire agent (fails if has children or dirty worktree)
-sprawl retire <agent-name> --cascade    # Retire agent + all descendants
-sprawl retire <agent-name> --force      # Override safety checks (orphan children, discard uncommitted work)
+retire({agent_name: "<name>"})                              # Retire agent (fails if has children or dirty worktree)
+retire({agent_name: "<name>", cascade: true})               # Retire agent + all descendants
+retire({agent_name: "<name>", abandon: true, cascade: true}) # Override safety checks (orphan children, discard uncommitted work)
 ```
 
 **Exit codes:**
@@ -243,7 +251,7 @@ If the entire `sprawl-<parent>-children` session is gone (e.g., tmux crashed), w
 Retiring agents frees names. This is the only way to reclaim names from the pool (short of manually deleting state files). Managers should retire completed engineers to free names for new work.
 
 **Retiring the root:**
-`sprawl retire root` should require `--cascade` if any agents exist, and should be treated as "shut down the entire system." This is a special case worth calling out in help text.
+Retiring the root agent should require `cascade: true` if any agents exist, and should be treated as "shut down the entire system." This is a special case worth calling out in help text.
 
 **Code Merger agents:**
 Code Mergers are ephemeral by design — they should self-retire when their merge is complete. If a Code Merger gets stuck, it can be killed/retired like any other agent. Since they operate in the parent's worktree, retire skips the worktree removal step (they don't have their own).
@@ -253,13 +261,14 @@ Code Mergers are ephemeral by design — they should self-retire when their merg
 The current DESCRIPTION.md mentions `kill` and `respawn`. This design adds `retire`. The CLI section should be updated:
 
 ```
-sprawl kill <agent-name>                Kill an agent (preserves state for respawn)
-sprawl kill <agent-name> --force        Force-kill a wedged agent
-sprawl retire <agent-name>              Full teardown (fails if children or dirty worktree)
-sprawl retire <agent-name> --cascade    Retire agent and all descendants
-sprawl retire <agent-name> --force      Override safety checks (orphans children, discards uncommitted work)
-sprawl respawn <agent-name>             Kill + restart with same session ID
+kill({agent_name})                                  Kill an agent (preserves state for respawn)
+kill({agent_name, force: true})                     Force-kill a wedged agent
+retire({agent_name})                                Full teardown (fails if children or dirty worktree)
+retire({agent_name, cascade: true})                 Retire agent and all descendants
+retire({agent_name, abandon: true, cascade: true})  Override safety checks (orphans children, discards uncommitted work)
 ```
+
+(Note: the originally-proposed `respawn` CLI was never built — agent reuse is now handled by `delegate` against an existing agent.)
 
 ## Impact on README.md
 

@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-mcp-identity-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -41,9 +41,10 @@ hooks:
 	@echo "Pre-commit hook installed."
 
 # Opt-in end-to-end smoke test for the TUI-mode parent-notification path
-# (QUM-312). Asserts that a child agent running `sprawl report done` or
-# `sprawl messages send weave` causes the `sprawl enter` TUI to surface
-# an 'inbox: N new message(s) for weave' viewport banner and a '(N)'
+# (QUM-312). Simulates a child agent by writing a state.json (state=complete,
+# last_report_message set) and a maildir envelope addressed to weave directly
+# into the sandbox state tree, then asserts that the `sprawl enter` TUI
+# surfaces an 'inbox: N new message(s) for weave' viewport banner and a '(N)'
 # unread badge on the synthesized weave row. Not part of `make validate`
 # — runs real subprocesses, launches a real claude, and interacts with
 # tmux. See scripts/test-notify-tui-e2e.sh. Mandatory before merging
@@ -93,13 +94,10 @@ test-parallel-agent-viewport-e2e: build
 	bash scripts/test-parallel-agent-viewport-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 # QUM-458: end-to-end gate for the broader TUI smoke harness, plus the
-# MCP-identity smoke harness, plus the leak-resistance harness that
-# SIGKILLs the e2e drivers and asserts no orphan claude/tmux/dir residue.
+# leak-resistance harness that SIGKILLs the e2e drivers and asserts no
+# orphan claude/tmux/dir residue.
 test-tui-e2e: build
 	bash scripts/test-tui-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
-
-test-mcp-identity-e2e: build
-	bash scripts/test-mcp-identity-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
 test-leak-resistance-e2e: build
 	./sprawl sandbox-gc --max-age=10m || true; bash scripts/test-leak-resistance-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc

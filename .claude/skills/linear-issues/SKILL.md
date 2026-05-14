@@ -59,7 +59,7 @@ Not every issue will have all of these, but include everything that's relevant. 
 #### Acceptance Criteria
 A clear checklist that defines "done." Each criterion should be:
 - **Verifiable** — someone unfamiliar with the issue could check whether it's met
-- **Specific** — not "it works" but "running `sprawl spawn --timeout 30s` kills the agent process after 30 seconds"
+- **Specific** — not "it works" but "calling `spawn({timeout_seconds: 30, ...})` kills the agent process after 30 seconds"
 
 **Critically, include how to validate the work.** If there's a way the implementer can exercise the feature to prove correctness — a CLI command to run, a specific scenario to test, a UI flow to verify via browser automation — describe it. The implementer should know not just what to build but how to confirm it works.
 
@@ -181,8 +181,7 @@ save_issue:
 
 When an agent is working an issue, it should report status to its parent at each
 meaningful step — not just at task end. The canonical status channel is the
-`report_status` MCP tool (preferred over the older `sprawl report` CLI
-and the deprecated `message` tool):
+`report_status` MCP tool:
 
 ```
 report_status({
@@ -198,7 +197,7 @@ in the TUI and in the parent's notification stream.
 
 ## Messaging Tools (when you need to talk to another agent)
 
-Prefer the MCP tools over the `sprawl messages send` CLI when MCP is available:
+The agent-facing messaging surface is MCP-only:
 
 - `send_async({to, subject, body})` — default messaging channel. Queues
   an async message the recipient reads on its next yield. Does NOT interrupt.

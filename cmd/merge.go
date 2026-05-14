@@ -62,9 +62,9 @@ func resolveMergeDeps() *mergeDeps {
 		Getenv:        os.Getenv,
 		LoadAgent:     state.LoadAgent,
 		ListAgents:    state.ListAgents,
-		GitStatus:     realGitStatus,
-		BranchExists:  realBranchExists,
-		CurrentBranch: gitCurrentBranch,
+		GitStatus:     agentops.RealGitStatus,
+		BranchExists:  agentops.RealBranchExists,
+		CurrentBranch: agentops.GitCurrentBranch,
 		LoadConfig:    config.Load,
 		DoMerge:       merge.Merge,
 		NewMergeDeps: func() *merge.Deps {

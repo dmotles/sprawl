@@ -34,7 +34,7 @@ Exit code 0 means all tests passed. Non-zero means at least one test failed.
 |------|-------------|
 | Init state files | Verifies `.sprawl/namespace` and `.sprawl/root-name` are created |
 | Session persistence | Writes session files in the expected YAML frontmatter format, reads back |
-| Handoff command | Runs `sprawl handoff` via stdin, verifies session file and signal file created |
+| Handoff session-file contract | Hand-writes session files in the canonical YAML-frontmatter format and verifies reads round-trip. (The live MCP `handoff` path is covered end-to-end by `make test-handoff-e2e`; the CLI happy-path / error-path subtests were retired in QUM-565.) |
 | Handoff error cases | Verifies handoff fails without required env vars or with wrong identity |
 | Multiple sessions | Creates 5 session files, verifies ordering and file format contract |
 | Handoff with existing sessions | Verifies new handoff appends alongside existing session files |

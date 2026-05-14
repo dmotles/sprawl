@@ -3,11 +3,13 @@ package cmd
 import (
 	"os"
 	"testing"
+
+	"github.com/dmotles/sprawl/internal/agentops"
 )
 
 func TestFindSprawlBin_EnvVarSet(t *testing.T) {
 	t.Setenv("SPRAWL_BIN", "/custom/path/sprawl")
-	path, err := FindSprawlBin()
+	path, err := agentops.FindSprawlBin()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -19,7 +21,7 @@ func TestFindSprawlBin_EnvVarSet(t *testing.T) {
 func TestFindSprawlBin_EnvVarUnset_FallsBackToExecutable(t *testing.T) {
 	t.Setenv("SPRAWL_BIN", "")
 	os.Unsetenv("SPRAWL_BIN")
-	path, err := FindSprawlBin()
+	path, err := agentops.FindSprawlBin()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +33,7 @@ func TestFindSprawlBin_EnvVarUnset_FallsBackToExecutable(t *testing.T) {
 
 func TestFindSprawlBin_EnvVarEmpty_FallsBackToExecutable(t *testing.T) {
 	t.Setenv("SPRAWL_BIN", "")
-	path, err := FindSprawlBin()
+	path, err := agentops.FindSprawlBin()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

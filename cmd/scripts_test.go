@@ -3,10 +3,12 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/dmotles/sprawl/internal/agentops"
 )
 
 func TestRunBashScript_Success(t *testing.T) {
-	out, err := runBashScript("echo hello", "", nil)
+	out, err := agentops.RunBashScript("echo hello", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -16,7 +18,7 @@ func TestRunBashScript_Success(t *testing.T) {
 }
 
 func TestRunBashScript_Failure_ReturnsOutput(t *testing.T) {
-	out, err := runBashScript("echo fail-output && exit 1", "", nil)
+	out, err := agentops.RunBashScript("echo fail-output && exit 1", "", nil)
 	if err == nil {
 		t.Fatal("expected error for failing script")
 	}
@@ -27,7 +29,7 @@ func TestRunBashScript_Failure_ReturnsOutput(t *testing.T) {
 
 func TestRunBashScript_SetsWorkDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	out, err := runBashScript("pwd", tmpDir, nil)
+	out, err := agentops.RunBashScript("pwd", tmpDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +40,7 @@ func TestRunBashScript_SetsWorkDir(t *testing.T) {
 
 func TestRunBashScript_SetsEnvVars(t *testing.T) {
 	env := map[string]string{"MY_VAR": "test-value"}
-	out, err := runBashScript("echo $MY_VAR", "", env)
+	out, err := agentops.RunBashScript("echo $MY_VAR", "", env)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -49,7 +51,7 @@ func TestRunBashScript_SetsEnvVars(t *testing.T) {
 
 func TestRunBashScript_BashE_StopsOnError(t *testing.T) {
 	script := "false\necho should-not-reach"
-	out, err := runBashScript(script, "", nil)
+	out, err := agentops.RunBashScript(script, "", nil)
 	if err == nil {
 		t.Fatal("expected error for script with failing command")
 	}

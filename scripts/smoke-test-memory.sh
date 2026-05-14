@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # smoke-test-memory.sh - Integration smoke test for the weave memory system.
 #
-# Exercises session persistence, handoff, context blob file contracts,
-# timeline read/write, and budget enforcement using the locally-built binary.
+# Exercises session persistence and context-blob file contracts, timeline
+# read/write, and the cleanup/safety wrappers using the locally-built
+# binary.
+#
+# QUM-565: this script previously also drove the deprecated handoff-CLI
+# error-path tests. The live MCP handoff path is now covered by
+# `make test-handoff-e2e` end-to-end; the CLI-flag error cases verified
+# argument-validation behavior that goes away in Phase 2.3b of M13. Both
+# blocks have been removed.
 #
 # Does NOT require a real Claude API key.
 #
@@ -231,72 +238,18 @@ assert_file_contains "$SESSIONS_DIR/test-session-001.md" "persistence validation
 
 echo ""
 
-# --- Test 3: Handoff command ---
+# --- Test 3: Multiple sessions (context blob file contract) ---
+#
+# QUM-565: former Tests 3 (handoff-CLI happy-path) and 4 (handoff-CLI
+# error cases) were removed — that deprecated CLI is being deleted in
+# Phase 2.3b of M13. `make test-handoff-e2e` covers the live MCP
+# handoff path end-to-end.
 
-echo "=== Test 3: Handoff command ==="
-
-# Clean up any previous session files for clean handoff test
-rm -rf "$SESSIONS_DIR"/*
-
-# Write last-session-id (required by handoff)
+# Pre-seed MEMORY_DIR so subsequent tests don't need to mkdir it.
 MEMORY_DIR="$TEST_ROOT/.sprawl/memory"
 mkdir -p "$MEMORY_DIR"
-echo "smoke-handoff-001" > "$MEMORY_DIR/last-session-id"
 
-# Run handoff
-HANDOFF_OUTPUT=$(echo "Handoff test summary: everything is working." | \
-    SPRAWL_AGENT_IDENTITY=weave \
-    SPRAWL_ROOT="$TEST_ROOT" \
-    "$SPRAWL_BIN" handoff 2>&1) || {
-    fail "handoff command exited non-zero"
-    echo "  Output: $HANDOFF_OUTPUT" >&2
-}
-
-# Verify session file was created
-HANDOFF_FILE="$SESSIONS_DIR/smoke-handoff-001.md"
-if [ -f "$HANDOFF_FILE" ]; then
-    pass "handoff created session file"
-    assert_file_contains "$HANDOFF_FILE" "session_id: smoke-handoff-001" "handoff file has correct session_id"
-    assert_file_contains "$HANDOFF_FILE" "handoff: true" "handoff file has handoff: true"
-    assert_file_contains "$HANDOFF_FILE" "everything is working" "handoff file has body from stdin"
-else
-    fail "handoff did not create session file in $SESSIONS_DIR"
-fi
-
-# Verify handoff signal file
-assert_file_exists "$MEMORY_DIR/handoff-signal" "handoff created signal file"
-
-# Verify last-session-id was read correctly
-assert_file_contains "$MEMORY_DIR/last-session-id" "smoke-handoff-001" "last-session-id unchanged after handoff"
-
-echo ""
-
-# --- Test 4: Handoff error cases ---
-
-echo "=== Test 4: Handoff error cases ==="
-
-# Handoff without SPRAWL_AGENT_IDENTITY should fail
-assert_exit_nonzero "handoff fails without SPRAWL_AGENT_IDENTITY" \
-    env -u SPRAWL_AGENT_IDENTITY SPRAWL_ROOT="$TEST_ROOT" "$SPRAWL_BIN" handoff
-
-# Handoff with wrong identity (not root) should fail
-assert_exit_nonzero "handoff fails with non-root identity" \
-    env SPRAWL_AGENT_IDENTITY=not-weave SPRAWL_ROOT="$TEST_ROOT" "$SPRAWL_BIN" handoff
-
-# Handoff without SPRAWL_ROOT should fail
-assert_exit_nonzero "handoff fails without SPRAWL_ROOT" \
-    env SPRAWL_AGENT_IDENTITY=weave -u SPRAWL_ROOT "$SPRAWL_BIN" handoff
-
-# Handoff without last-session-id should fail
-rm -f "$MEMORY_DIR/last-session-id"
-assert_exit_nonzero "handoff fails without last-session-id" \
-    bash -c 'echo "test" | SPRAWL_AGENT_IDENTITY=weave SPRAWL_ROOT="'"$TEST_ROOT"'" "'"$SPRAWL_BIN"'" handoff'
-
-echo ""
-
-# --- Test 5: Multiple sessions (context blob file contract) ---
-
-echo "=== Test 5: Multiple sessions for context blob ==="
+echo "=== Test 3: Multiple sessions for context blob ==="
 
 # Clean up and create 5 session files
 rm -rf "$SESSIONS_DIR"/*
@@ -332,37 +285,11 @@ done
 
 echo ""
 
-# --- Test 6: Handoff creates correct session after multiple exist ---
+# --- Test 4: Timeline read/write round-trip ---
+#
+# QUM-565: former Test 6 (handoff-after-many) removed alongside Tests 3/4.
 
-echo "=== Test 6: Handoff with existing sessions ==="
-
-echo "handoff-after-many" > "$MEMORY_DIR/last-session-id"
-rm -f "$MEMORY_DIR/handoff-signal"
-
-echo "New handoff after existing sessions." | \
-    SPRAWL_AGENT_IDENTITY=weave \
-    SPRAWL_ROOT="$TEST_ROOT" \
-    "$SPRAWL_BIN" handoff >/dev/null 2>&1
-
-if [ -f "$SESSIONS_DIR/handoff-after-many.md" ]; then
-    pass "handoff created new session file alongside existing ones"
-else
-    fail "handoff did not create new session file"
-fi
-
-# Total should now be 6 (5 pre-existing + 1 new)
-TOTAL_FILES=$(ls "$SESSIONS_DIR"/*.md 2>/dev/null | wc -l)
-if [ "$TOTAL_FILES" -eq 6 ]; then
-    pass "total session files is 6 after handoff"
-else
-    fail "expected 6 total session files, found $TOTAL_FILES"
-fi
-
-echo ""
-
-# --- Test 7: Timeline read/write round-trip ---
-
-echo "=== Test 7: Timeline read/write round-trip ==="
+echo "=== Test 4: Timeline read/write round-trip ==="
 
 TIMELINE_PATH="$MEMORY_DIR/timeline.md"
 
@@ -391,62 +318,37 @@ fi
 
 echo ""
 
-# --- Test 8: Budget enforcement (large content via handoff) ---
+# --- Test 5: Verify forbidden tmux commands are absent ---
+#
+# QUM-565: former Test 8 (handoff budget enforcement) removed alongside
+# Tests 3/4/6.
 
-echo "=== Test 8: Budget enforcement (large content) ==="
-
-# Write a fresh last-session-id
-echo "budget-test-session" > "$MEMORY_DIR/last-session-id"
-rm -f "$MEMORY_DIR/handoff-signal"
-
-# Generate a large body (50,000 chars)
-LARGE_BODY=$(python3 -c "print('x' * 50000)" 2>/dev/null || dd if=/dev/zero bs=50000 count=1 2>/dev/null | tr '\0' 'x')
-
-echo "$LARGE_BODY" | \
-    SPRAWL_AGENT_IDENTITY=weave \
-    SPRAWL_ROOT="$TEST_ROOT" \
-    "$SPRAWL_BIN" handoff >/dev/null 2>&1
-
-BUDGET_FILE="$SESSIONS_DIR/budget-test-session.md"
-if [ -f "$BUDGET_FILE" ]; then
-    pass "handoff succeeded with large content"
-    BUDGET_SIZE=$(wc -c < "$BUDGET_FILE")
-    if [ "$BUDGET_SIZE" -gt 50000 ]; then
-        pass "large session file written (${BUDGET_SIZE} bytes)"
-    else
-        fail "session file unexpectedly small: ${BUDGET_SIZE} bytes"
-    fi
-else
-    fail "handoff failed with large content"
-fi
-
-echo ""
-
-# --- Test 9: Verify forbidden tmux commands are absent ---
-
-echo "=== Test 9: Safety check ==="
+echo "=== Test 5: Safety check ==="
 
 SCRIPTS_DIR="$REPO_ROOT/scripts"
-# Check that no script contains an actual invocation of the forbidden command.
-# We strip comments and string literals, then look for the pattern.
-FORBIDDEN_CMD="kill-server"
+# Check that no script contains the bare/forbidden form of kill-server.
+# Per QUM-325 the sanctioned form is `tmux -L "$SPRAWL_TMUX_SOCKET" kill-server`
+# (operates on the dedicated sandbox socket only). The bare form
+# `tmux kill-server` would wipe the user's default tmux server and is
+# forbidden. Match only `tmux` immediately followed by whitespace+
+# kill-server with no -L flag between them.
 KILL_SERVER_HITS=0
 for script in "$SCRIPTS_DIR"/*.sh; do
-    # Remove comment lines and blank lines, then check for "tmux" + "kill-server" on same line
-    hits=$(sed 's/#.*$//' "$script" | grep -c "tmux.*$FORBIDDEN_CMD" || true)
+    # Strip comments, then look for bare-form invocations only.
+    hits=$(sed 's/#.*$//' "$script" | grep -cE '(^|[^A-Za-z0-9_-])tmux +kill-server' || true)
     KILL_SERVER_HITS=$((KILL_SERVER_HITS + hits))
 done
 if [ "$KILL_SERVER_HITS" -gt 0 ]; then
-    fail "found 'tmux $FORBIDDEN_CMD' in scripts/ (non-comment) - this is forbidden"
+    fail "found bare tmux-kill-server invocation in scripts/ (non-comment) - this is forbidden"
 else
-    pass "no 'tmux $FORBIDDEN_CMD' commands found in scripts/"
+    pass "no bare tmux-kill-server invocations found in scripts/"
 fi
 
 echo ""
 
-# --- Test 10: Cleanup flag functionality ---
+# --- Test 6: Cleanup flag functionality ---
 
-echo "=== Test 10: Cleanup flags ==="
+echo "=== Test 6: Cleanup flags ==="
 
 # Create a temporary test session to verify cleanup works
 TEST_CLEANUP_NS="test-cleanup-$$"

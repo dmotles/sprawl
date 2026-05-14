@@ -5,11 +5,35 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/spf13/cobra"
 )
+
+// colorBannerStderr, colorBannerGetenv, and colorBannerOnce gate a one-shot
+// stderr warning that `sprawl color` is deprecated. After QUM-566 (M13 Phase
+// 2.3b) deleted the rest of the deprecated CLI surface, color is the only
+// remaining caller, so the small banner helper that used to live in
+// cmd/deprecation.go is inlined here. Tests override the globals to capture
+// the banner without writing to the real os.Stderr.
+var (
+	colorBannerStderr io.Writer = os.Stderr
+	colorBannerGetenv           = os.Getenv
+	colorBannerOnce   sync.Once
+)
+
+func colorDeprecationBanner() {
+	if colorBannerGetenv("SPRAWL_QUIET_DEPRECATIONS") != "" {
+		return
+	}
+	colorBannerOnce.Do(func() {
+		fmt.Fprint(colorBannerStderr,
+			"warning: `sprawl color` is deprecated. This CLI form will be removed in a future release.\n"+
+				"  Set SPRAWL_QUIET_DEPRECATIONS=1 to suppress.\n")
+	})
+}
 
 type colorDeps struct {
 	getenv func(string) string
@@ -95,7 +119,7 @@ func resolveColorRoot(deps *colorDeps) (string, error) {
 }
 
 func runColorShow(deps *colorDeps) error {
-	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
+	colorDeprecationBanner()
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err
@@ -116,7 +140,7 @@ func runColorShow(deps *colorDeps) error {
 }
 
 func runColorList(deps *colorDeps) error {
-	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
+	colorDeprecationBanner()
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err
@@ -135,7 +159,7 @@ func runColorList(deps *colorDeps) error {
 }
 
 func runColorRotate(deps *colorDeps) error {
-	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
+	colorDeprecationBanner()
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err
@@ -153,7 +177,7 @@ func runColorRotate(deps *colorDeps) error {
 }
 
 func runColorSet(deps *colorDeps, nameOrAlias string) error {
-	deprecationWarningCustom("color", "this CLI form will be removed in a future release.")
+	colorDeprecationBanner()
 	root, err := resolveColorRoot(deps)
 	if err != nil {
 		return err

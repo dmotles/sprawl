@@ -198,8 +198,7 @@ type Supervisor interface {
 
 	// MessagesRead returns the full body of a message by its ID (short or
 	// long prefix accepted). If the message was in new/, it is auto-marked
-	// read (moved to cur/) — mirrors `sprawl messages read` CLI behavior.
-	// Scoped to the caller's mailbox.
+	// read (moved to cur/). Scoped to the caller's mailbox.
 	MessagesRead(ctx context.Context, msgID string) (*MessagesReadResult, error)
 
 	// MessagesArchive moves a single message (by ID prefix) from new/ or
