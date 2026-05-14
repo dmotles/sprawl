@@ -12,7 +12,6 @@ func testEnvConfig() EnvConfig {
 		Platform: "linux",
 		Shell:    "/bin/zsh",
 		TestMode: false,
-		Mode:     "tmux",
 	}
 }
 
@@ -21,25 +20,16 @@ func testEnvConfig() EnvConfig {
 // The TUI-mode prompt should reference the replacement MCP tool name
 // (`mcp__sprawl__ask_user_question`, QUM-527) instead.
 func TestBuildRootPrompt_NoAskUserQuestion(t *testing.T) {
-	for _, mode := range []string{"tmux", "tui"} {
-		cfg := PromptConfig{
-			RootName: "weave",
-			AgentCLI: "claude-code",
-			Mode:     mode,
-		}
-		prompt := BuildRootPrompt(cfg)
-		if strings.Contains(prompt, "AskUserQuestion") {
-			t.Errorf("root prompt (%s mode) must not mention deprecated harness tool AskUserQuestion (QUM-528)", mode)
-		}
-	}
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "claude-code",
-		Mode:     "tui",
 	}
 	prompt := BuildRootPrompt(cfg)
+	if strings.Contains(prompt, "AskUserQuestion") {
+		t.Errorf("root prompt must not mention deprecated harness tool AskUserQuestion (QUM-528)")
+	}
 	if !strings.Contains(prompt, "mcp__sprawl__ask_user_question") {
-		t.Errorf("root prompt (tui mode) must reference replacement tool mcp__sprawl__ask_user_question (QUM-527)")
+		t.Errorf("root prompt must reference replacement tool mcp__sprawl__ask_user_question (QUM-527)")
 	}
 }
 
@@ -51,9 +41,8 @@ func TestBuildEngineerPrompt_ContainsKeyPhrases(t *testing.T) {
 		"zone",
 		"root",
 		"sprawl/zone",
-		"sprawl report done",
-		"sprawl report problem",
-		"sprawl messages send root",
+		"report_status",
+		"send_message",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -92,9 +81,8 @@ func TestBuildResearcherPrompt_ContainsKeyPhrases(t *testing.T) {
 		"birch",
 		"root",
 		"sprawl/birch",
-		"sprawl report done",
-		"sprawl report problem",
-		"sprawl messages send root",
+		"report_status",
+		"send_message",
 		"SPRAWL_AGENT_IDENTITY",
 		"do NOT modify production code",
 		"deep investigator",
@@ -229,7 +217,7 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 
 	qaIdx := strings.Index(prompt, "qa-validator")
 	reflectIdx := strings.Index(prompt, "Reflect")
-	doneIdx := strings.Index(prompt, "Report done")
+	doneIdx := strings.Index(prompt, "Report done via:")
 
 	if qaIdx == -1 {
 		t.Fatal("engineer prompt missing 'qa-validator'")
@@ -238,7 +226,7 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 		t.Fatal("engineer prompt missing 'Reflect'")
 	}
 	if doneIdx == -1 {
-		t.Fatal("engineer prompt missing 'Report done'")
+		t.Fatal("engineer prompt missing 'Report done via:'")
 	}
 
 	if reflectIdx <= qaIdx {
@@ -299,7 +287,6 @@ func defaultRootConfig(name string) PromptConfig {
 	return PromptConfig{
 		RootName: name,
 		AgentCLI: "claude-code",
-		Mode:     "tmux",
 	}
 }
 
@@ -314,7 +301,7 @@ func TestBuildRootPrompt_ManagerTypeInAgentTypes(t *testing.T) {
 
 	keyPhrases := []string{
 		"Manager",
-		"--type manager",
+		`type: "manager"`,
 		"3+ subtasks",
 		"spawning an engineer directly",
 	}
@@ -325,13 +312,13 @@ func TestBuildRootPrompt_ManagerTypeInAgentTypes(t *testing.T) {
 	}
 
 	// Manager entry should appear after Engineer and Researcher but before AGENT FAMILIES
-	managerIdx := strings.Index(prompt, "--type manager")
-	engineerIdx := strings.Index(prompt, "--type engineer")
-	researcherIdx := strings.Index(prompt, "--type researcher")
+	managerIdx := strings.Index(prompt, `type: "manager"`)
+	engineerIdx := strings.Index(prompt, `type: "engineer"`)
+	researcherIdx := strings.Index(prompt, `type: "researcher"`)
 	familiesIdx := strings.Index(prompt, "AGENT FAMILIES")
 
 	if managerIdx == -1 {
-		t.Fatal("root prompt missing '--type manager'")
+		t.Fatal(`root prompt missing 'type: "manager"'`)
 	}
 	if managerIdx <= engineerIdx {
 		t.Errorf("manager (idx %d) should appear after engineer (idx %d)", managerIdx, engineerIdx)
@@ -489,50 +476,45 @@ func TestBuildResearcherPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	reflectIdx := strings.Index(prompt, "REFLECTION")
-	doneIdx := strings.Index(prompt, "sprawl report done")
+	doneIdx := strings.Index(prompt, `report_status({state: "complete"`)
 
 	if reflectIdx == -1 {
 		t.Fatal("researcher prompt missing 'REFLECTION'")
 	}
 	if doneIdx == -1 {
-		t.Fatal("researcher prompt missing 'sprawl report done'")
+		t.Fatal("researcher prompt missing 'report_status({state: \"complete\"'")
 	}
 
 	if reflectIdx >= doneIdx {
-		t.Errorf("'REFLECTION' (idx %d) should appear before 'sprawl report done' (idx %d)", reflectIdx, doneIdx)
+		t.Errorf("'REFLECTION' (idx %d) should appear before report_status done line (idx %d)", reflectIdx, doneIdx)
 	}
 }
 
 func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
-	// Spawning & Lifecycle commands
+	// Spawning & Lifecycle tools
 	spawnLifecycleCommands := []string{
-		"sprawl spawn agent --family",
-		"sprawl spawn subagent --family",
-		"sprawl delegate",
-		"sprawl kill",
-		"sprawl retire",
-		"sprawl logs",
+		"spawn({",
+		"delegate({",
+		"kill({",
+		"retire({",
 	}
 	for _, cmd := range spawnLifecycleCommands {
 		if !strings.Contains(prompt, cmd) {
-			t.Errorf("root prompt KEY COMMANDS missing spawn/lifecycle command: %q", cmd)
+			t.Errorf("root prompt KEY TOOLS missing spawn/lifecycle tool: %q", cmd)
 		}
 	}
 
-	// Messaging commands
+	// Messaging tools
 	messagingCommands := []string{
-		"sprawl messages inbox",
-		"sprawl messages send",
-		"sprawl messages read",
-		"sprawl messages list",
-		"sprawl messages broadcast",
-		"sprawl messages archive",
+		"send_message({",
+		"peek({",
+		"report_status({",
 	}
 	for _, cmd := range messagingCommands {
 		if !strings.Contains(prompt, cmd) {
-			t.Errorf("root prompt KEY COMMANDS missing messaging command: %q", cmd)
+			t.Errorf("root prompt KEY TOOLS missing messaging tool: %q", cmd)
 		}
 	}
 }
@@ -540,19 +522,17 @@ func TestBuildRootPrompt_KeyCommands_AllCommandsPresent(t *testing.T) {
 func TestBuildRootPrompt_KeyCommands_RetireDistinguishedFromKill(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
-	if !strings.Contains(prompt, "sprawl retire") {
-		t.Error("root prompt should mention 'sprawl retire'")
+	if !strings.Contains(prompt, "retire({") {
+		t.Error("root prompt should mention 'retire({'")
 	}
-	if !strings.Contains(prompt, "sprawl kill") {
-		t.Error("root prompt should mention 'sprawl kill'")
+	if !strings.Contains(prompt, "kill({") {
+		t.Error("root prompt should mention 'kill({'")
 	}
-	// retire should be described as full teardown / preferred cleanup
-	retireIdx := strings.Index(prompt, "sprawl retire")
-	killIdx := strings.Index(prompt, "sprawl kill")
+	retireIdx := strings.Index(prompt, "retire({")
+	killIdx := strings.Index(prompt, "kill({")
 	if retireIdx == -1 || killIdx == -1 {
 		t.Fatal("both retire and kill must be present")
 	}
-	// They should be distinct entries (different lines)
 	if retireIdx == killIdx {
 		t.Error("retire and kill should be separate entries")
 	}
@@ -561,23 +541,23 @@ func TestBuildRootPrompt_KeyCommands_RetireDistinguishedFromKill(t *testing.T) {
 func TestBuildRootPrompt_KeyCommands_GroupedLogically(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
-	// Verify KEY COMMANDS section exists
-	if !strings.Contains(prompt, "KEY COMMANDS:") {
-		t.Fatal("root prompt missing 'KEY COMMANDS:' section")
+	// Verify KEY TOOLS section exists
+	if !strings.Contains(prompt, "KEY TOOLS (MCP):") {
+		t.Fatal("root prompt missing 'KEY TOOLS (MCP):' section")
 	}
 
-	// The spawn commands should appear before messaging commands
-	spawnIdx := strings.Index(prompt, "sprawl spawn agent --family")
-	inboxIdx := strings.Index(prompt, "sprawl messages inbox")
+	// The spawn tool should appear before send_message
+	spawnIdx := strings.Index(prompt, "spawn({")
+	msgIdx := strings.Index(prompt, "send_message({")
 
 	if spawnIdx == -1 {
-		t.Fatal("root prompt missing 'sprawl spawn agent --family'")
+		t.Fatal("root prompt missing 'spawn({'")
 	}
-	if inboxIdx == -1 {
-		t.Fatal("root prompt missing 'sprawl messages inbox'")
+	if msgIdx == -1 {
+		t.Fatal("root prompt missing 'send_message({'")
 	}
-	if spawnIdx >= inboxIdx {
-		t.Errorf("spawn commands (idx %d) should appear before messaging commands (idx %d)", spawnIdx, inboxIdx)
+	if spawnIdx >= msgIdx {
+		t.Errorf("spawn tool (idx %d) should appear before messaging tool (idx %d)", spawnIdx, msgIdx)
 	}
 }
 
@@ -606,9 +586,8 @@ func TestBuildManagerPrompt_ContainsKeyPhrases(t *testing.T) {
 		"cedar",
 		"weave",
 		"dmotles/feature-x",
-		"sprawl report done",
-		"sprawl report problem",
-		"sprawl messages send weave",
+		"report_status",
+		`send_message({to: "weave"`,
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -646,10 +625,9 @@ func TestBuildManagerPrompt_ContainsMergeUsage(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	mergePhrases := []string{
-		"sprawl merge",
-		"--dry-run",
-		"--no-validate",
-		"--message",
+		"merge({agent:",
+		"no_validate: true",
+		`message: "<msg>"`,
 	}
 	for _, phrase := range mergePhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -667,8 +645,8 @@ func TestBuildManagerPrompt_ContainsRetireWorkflows(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	retirePhrases := []string{
-		"retire --merge",
-		"retire --abandon",
+		"merge: true",
+		"abandon: true",
 	}
 	for _, phrase := range retirePhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -780,7 +758,7 @@ func TestBuildManagerPrompt_DoesNotContainInteractiveLanguage(t *testing.T) {
 
 	forbidden := []string{
 		"ask the user",
-		"the user will",
+		"the user will primarily request",
 		"align with the user",
 	}
 	for _, phrase := range forbidden {
@@ -871,13 +849,13 @@ func TestBuildRootPrompt_DelegateVsMessagesGuidance(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	keyPhrases := []string{
-		"sprawl delegate",
+		"delegate({",
 		"work assignments",
 		"tracked task",
-		"sprawl messages send",
+		"send_message({",
 		"coordination",
 		"information sharing",
-		"rule of thumb",
+		"rules of thumb",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
@@ -890,7 +868,7 @@ func TestBuildRootPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	guidanceIdx := strings.Index(prompt, "DELEGATE VS. MESSAGES")
-	rulesIdx := strings.Index(prompt, "RULES:")
+	rulesIdx := strings.LastIndex(prompt, "RULES:")
 
 	if guidanceIdx == -1 {
 		t.Fatal("root prompt missing 'DELEGATE VS. MESSAGES' section")
@@ -898,13 +876,13 @@ func TestBuildRootPrompt_DelegateVsMessagesGuidance_Ordering(t *testing.T) {
 	if rulesIdx == -1 {
 		t.Fatal("root prompt missing 'RULES:'")
 	}
-	// Guidance should appear after KEY COMMANDS and before RULES
-	keyCommandsIdx := strings.Index(prompt, "KEY COMMANDS:")
+	// Guidance should appear after KEY TOOLS and before RULES
+	keyCommandsIdx := strings.Index(prompt, "KEY TOOLS (MCP):")
 	if keyCommandsIdx == -1 {
-		t.Fatal("root prompt missing 'KEY COMMANDS:'")
+		t.Fatal("root prompt missing 'KEY TOOLS (MCP):'")
 	}
 	if guidanceIdx <= keyCommandsIdx {
-		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear after KEY COMMANDS (idx %d)", guidanceIdx, keyCommandsIdx)
+		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear after KEY TOOLS (idx %d)", guidanceIdx, keyCommandsIdx)
 	}
 	if guidanceIdx >= rulesIdx {
 		t.Errorf("DELEGATE VS. MESSAGES (idx %d) should appear before RULES (idx %d)", guidanceIdx, rulesIdx)
@@ -915,13 +893,13 @@ func TestBuildManagerPrompt_DelegateVsMessagesGuidance(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	keyPhrases := []string{
-		"sprawl delegate",
+		"delegate({",
 		"work assignments",
 		"tracked task",
-		"sprawl messages send",
+		"send_message({",
 		"coordination",
 		"information sharing",
-		"rule of thumb",
+		"rules of thumb",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(strings.ToLower(prompt), strings.ToLower(phrase)) {
@@ -1137,12 +1115,12 @@ func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
 	}
 
 	// Should not reference --force flag on merge
-	mergeIdx := strings.Index(prompt, "Merging & Branch Maintenance")
+	mergeIdx := strings.Index(prompt, "Merging:")
 	if mergeIdx < 0 {
-		t.Fatal("expected 'Merging & Branch Maintenance' section in prompt")
+		t.Fatal("expected 'Merging:' section in prompt")
 	}
 	mergeSection := prompt[mergeIdx:]
-	mergeEnd := strings.Index(mergeSection, "Messaging:")
+	mergeEnd := strings.Index(mergeSection, "Messaging")
 	if mergeEnd > 0 {
 		mergeSection = mergeSection[:mergeEnd]
 	}
@@ -1157,8 +1135,8 @@ func TestBuildRootPrompt_MergeRetireWorkflow(t *testing.T) {
 
 	// Should have retire workflows
 	retirePhrases := []string{
-		"retire --merge",
-		"retire --abandon",
+		"merge: true",
+		"abandon: true",
 	}
 	for _, phrase := range retirePhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -1197,7 +1175,7 @@ func TestBuildRootPrompt_SafeRetireGuidance(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	// Should guide toward safe retirement by default
-	if !strings.Contains(prompt, "sprawl retire") || !strings.Contains(prompt, "Default to safe retirement") {
+	if !strings.Contains(prompt, "retire({") || !strings.Contains(prompt, "Default to safe retirement") {
 		t.Error("root prompt should include guidance to default to safe retirement")
 	}
 
@@ -1229,49 +1207,10 @@ func TestBuildEngineerPrompt_BranchRebaseNotification(t *testing.T) {
 	}
 }
 
-// --- Dual-mode prompt tests (tmux vs tui) ---
+// --- TUI-mode prompt tests ---
 
-func TestResolveMode_DefaultsToTUI(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"", "tui"},
-		{"tmux", "tmux"},
-		{"tui", "tui"},
-	}
-	for _, tt := range tests {
-		got := resolveMode(tt.input)
-		if got != tt.want {
-			t.Errorf("resolveMode(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestBuildRootPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
-	cfg := defaultRootConfig("weave")
-	cfg.Mode = ""
-	prompt := BuildRootPrompt(cfg)
-
-	mcpTools := []string{
-		"spawn",
-		"send_message",
-		"merge",
-		"retire",
-		"delegate",
-		"kill",
-	}
-	for _, tool := range mcpTools {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("root prompt with default mode should contain MCP tool %q", tool)
-		}
-	}
-}
-
-func TestBuildRootPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
-	cfg := defaultRootConfig("weave")
-	cfg.Mode = "tui"
-	prompt := BuildRootPrompt(cfg)
+func TestBuildRootPrompt_ContainsMCPTools(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	mcpTools := []string{
 		"spawn",
@@ -1287,32 +1226,20 @@ func TestBuildRootPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
 	}
 	for _, tool := range mcpTools {
 		if !strings.Contains(prompt, tool) {
-			t.Errorf("root prompt with tui mode should contain MCP tool %q", tool)
+			t.Errorf("root prompt should contain MCP tool %q", tool)
 		}
 	}
 }
 
-func TestBuildRootPrompt_TuiMode_NoCLISpawnCommand(t *testing.T) {
-	cfg := defaultRootConfig("weave")
-	cfg.Mode = "tui"
-	prompt := BuildRootPrompt(cfg)
+func TestBuildRootPrompt_NoCLISpawnCommand(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	if strings.Contains(prompt, "sprawl spawn agent") {
-		t.Error("root prompt with tui mode should NOT contain CLI command 'sprawl spawn agent'")
+		t.Error("root prompt should NOT contain CLI command 'sprawl spawn agent'")
 	}
 }
 
-func TestBuildRootPrompt_TmuxMode_NoMCPToolNames(t *testing.T) {
-	cfg := defaultRootConfig("weave")
-	cfg.Mode = "tmux"
-	prompt := BuildRootPrompt(cfg)
-
-	if strings.Contains(prompt, "spawn(") {
-		t.Error("root prompt with tmux mode should NOT contain MCP tool call 'spawn('")
-	}
-}
-
-func TestBuildRootPrompt_SharedContent_BothModes(t *testing.T) {
+func TestBuildRootPrompt_SharedContent(t *testing.T) {
 	sharedPhrases := []string{
 		"YOUR ROLE:",
 		"orchestrator",
@@ -1323,95 +1250,60 @@ func TestBuildRootPrompt_SharedContent_BothModes(t *testing.T) {
 		"FOLLOW THROUGH",
 	}
 
-	for _, mode := range []string{"", "tmux", "tui"} {
-		cfg := defaultRootConfig("weave")
-		cfg.Mode = mode
-		prompt := BuildRootPrompt(cfg)
-		label := mode
-		if label == "" {
-			label = "(empty/default)"
-		}
-
-		for _, phrase := range sharedPhrases {
-			if !strings.Contains(prompt, phrase) {
-				t.Errorf("root prompt with mode %s should contain shared content %q", label, phrase)
-			}
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
+	for _, phrase := range sharedPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("root prompt should contain shared content %q", phrase)
 		}
 	}
 }
 
-func TestBuildEngineerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = ""
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
-
-	required := []string{
-		"send_message",
-		"report_status",
-	}
-	for _, tool := range required {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("engineer prompt with default mode should contain MCP tool %q", tool)
-		}
-	}
-}
-
-func TestBuildEngineerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
+func TestBuildEngineerPrompt_ContainsMCPTools(t *testing.T) {
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	required := []string{"send_message", "report_status"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
-			t.Errorf("engineer prompt with tui mode should contain MCP tool %q", tool)
+			t.Errorf("engineer prompt should contain MCP tool %q", tool)
 		}
 	}
 }
 
-func TestBuildEngineerPrompt_TuiMode_NoCLIReportCommand(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
+func TestBuildEngineerPrompt_NoCLIReportCommand(t *testing.T) {
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	if strings.Contains(prompt, "sprawl report done") {
-		t.Error("engineer prompt with tui mode should NOT contain 'sprawl report done'")
+		t.Error("engineer prompt should NOT contain 'sprawl report done'")
 	}
 	if strings.Contains(prompt, "sprawl messages send") {
-		t.Error("engineer prompt with tui mode should NOT contain 'sprawl messages send'")
+		t.Error("engineer prompt should NOT contain 'sprawl messages send'")
 	}
 }
 
-func TestBuildResearcherPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
+func TestBuildResearcherPrompt_ContainsMCPTools(t *testing.T) {
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	required := []string{"send_message", "report_status"}
 	for _, tool := range required {
 		if !strings.Contains(prompt, tool) {
-			t.Errorf("researcher prompt with tui mode should contain MCP tool %q", tool)
+			t.Errorf("researcher prompt should contain MCP tool %q", tool)
 		}
 	}
 }
 
-func TestBuildResearcherPrompt_TuiMode_NoCLICommands(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
+func TestBuildResearcherPrompt_NoCLICommands(t *testing.T) {
+	prompt := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 
 	if strings.Contains(prompt, "sprawl report done") {
-		t.Error("researcher prompt with tui mode should NOT contain CLI command 'sprawl report done'")
+		t.Error("researcher prompt should NOT contain CLI command 'sprawl report done'")
 	}
 	if strings.Contains(prompt, "sprawl messages send") {
-		t.Error("researcher prompt with tui mode should NOT contain CLI command 'sprawl messages send'")
+		t.Error("researcher prompt should NOT contain CLI command 'sprawl messages send'")
 	}
 }
 
-func TestBuildManagerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = ""
-	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+func TestBuildManagerPrompt_ContainsMCPTools(t *testing.T) {
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", testEnvConfig())
 
 	mcpTools := []string{
 		"spawn",
@@ -1425,62 +1317,34 @@ func TestBuildManagerPrompt_DefaultMode_ContainsMCPTools(t *testing.T) {
 	}
 	for _, tool := range mcpTools {
 		if !strings.Contains(prompt, tool) {
-			t.Errorf("manager prompt with default mode should contain MCP tool %q", tool)
+			t.Errorf("manager prompt should contain MCP tool %q", tool)
 		}
 	}
 }
 
-func TestBuildManagerPrompt_TuiMode_ContainsMCPTools(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
-
-	mcpTools := []string{
-		"spawn",
-		"merge",
-		"retire",
-		"delegate",
-		"send_message",
-		"peek",
-		"report_status",
-		"status",
-	}
-	for _, tool := range mcpTools {
-		if !strings.Contains(prompt, tool) {
-			t.Errorf("manager prompt with tui mode should contain MCP tool %q", tool)
-		}
-	}
-}
-
-func TestBuildManagerPrompt_TuiMode_NoCLICommands(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+func TestBuildManagerPrompt_NoCLICommands(t *testing.T) {
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", testEnvConfig())
 
 	if strings.Contains(prompt, "sprawl spawn agent") {
-		t.Error("manager prompt with tui mode should NOT contain 'sprawl spawn agent'")
+		t.Error("manager prompt should NOT contain 'sprawl spawn agent'")
 	}
 	if strings.Contains(prompt, "sprawl messages send") {
-		t.Error("manager prompt with tui mode should NOT contain 'sprawl messages send'")
+		t.Error("manager prompt should NOT contain 'sprawl messages send'")
 	}
 }
 
 // --- TUI mode regression: no tmux or CLI-only references ---
 
-func TestBuildRootPrompt_TuiMode_NoTmuxReferences(t *testing.T) {
-	cfg := defaultRootConfig("weave")
-	cfg.Mode = "tui"
-	prompt := BuildRootPrompt(cfg)
+func TestBuildRootPrompt_NoTmuxReferences(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	if strings.Contains(prompt, "tmux") {
-		t.Error("root prompt with tui mode should NOT contain any 'tmux' references")
+		t.Error("root prompt should NOT contain any 'tmux' references")
 	}
 }
 
-func TestBuildRootPrompt_TuiMode_NoCLIOnlyCommandPatterns(t *testing.T) {
-	cfg := defaultRootConfig("weave")
-	cfg.Mode = "tui"
-	prompt := BuildRootPrompt(cfg)
+func TestBuildRootPrompt_NoCLIOnlyCommandPatterns(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	cliOnlyPatterns := []string{
 		"sprawl spawn agent",
@@ -1505,15 +1369,13 @@ func TestBuildRootPrompt_TuiMode_NoCLIOnlyCommandPatterns(t *testing.T) {
 	}
 	for _, pat := range cliOnlyPatterns {
 		if strings.Contains(prompt, pat) {
-			t.Errorf("root prompt with tui mode should NOT contain CLI-only pattern %q", pat)
+			t.Errorf("root prompt should NOT contain CLI-only pattern %q", pat)
 		}
 	}
 }
 
-func TestBuildRootPrompt_DefaultMode_DoesNotAdvertiseLegacySubagentSpawn(t *testing.T) {
-	cfg := defaultRootConfig("weave")
-	cfg.Mode = ""
-	prompt := BuildRootPrompt(cfg)
+func TestBuildRootPrompt_DoesNotAdvertiseLegacySubagentSpawn(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
 	for _, pat := range []string{
 		"sprawl spawn subagent",
@@ -1521,161 +1383,30 @@ func TestBuildRootPrompt_DefaultMode_DoesNotAdvertiseLegacySubagentSpawn(t *test
 		"omit branch for subagent",
 	} {
 		if strings.Contains(prompt, pat) {
-			t.Errorf("root prompt default mode should not advertise legacy subagent path %q", pat)
+			t.Errorf("root prompt should not advertise legacy subagent path %q", pat)
 		}
 	}
 }
 
-func TestBuildManagerPrompt_DefaultMode_DoesNotAdvertiseLegacySubagentSpawn(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = ""
-	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
+func TestBuildManagerPrompt_DoesNotAdvertiseLegacySubagentSpawn(t *testing.T) {
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", testEnvConfig())
 
 	for _, pat := range []string{
 		"sprawl spawn subagent",
 		`spawn({type: "<type>", family: "<family>", prompt: "<task>"})`,
 	} {
 		if strings.Contains(prompt, pat) {
-			t.Errorf("manager prompt default mode should not advertise legacy subagent path %q", pat)
-		}
-	}
-}
-
-// TestBuildRootPrompt_GoldenSnapshot_TmuxMode captures the exact current tmux-mode
-// output and asserts character-for-character identity. This is the regression safety net
-// for the root prompt refactor (QUM-243 Wave A).
-func TestBuildRootPrompt_GoldenSnapshot_TmuxMode(t *testing.T) {
-	cfg := PromptConfig{
-		RootName: "weave",
-		AgentCLI: "claude-code",
-		Mode:     "tmux",
-	}
-	got := BuildRootPrompt(cfg)
-
-	// Golden snapshot: the exact output must not change.
-	// If this test fails after the refactor, the refactor broke tmux mode output.
-	if len(got) == 0 {
-		t.Fatal("BuildRootPrompt returned empty string")
-	}
-
-	// Character-for-character comparison against golden file.
-	golden, err := os.ReadFile("testdata/golden_tmux_claude_code.txt")
-	if err != nil {
-		t.Fatalf("failed to read golden file: %v", err)
-	}
-	if got != string(golden) {
-		// Find first difference for debugging
-		g := string(golden)
-		diffIdx := 0
-		for diffIdx < len(got) && diffIdx < len(g) && got[diffIdx] == g[diffIdx] {
-			diffIdx++
-		}
-		context := 80
-		start := diffIdx - context
-		if start < 0 {
-			start = 0
-		}
-		end := diffIdx + context
-		if end > len(got) {
-			end = len(got)
-		}
-		endG := diffIdx + context
-		if endG > len(g) {
-			endG = len(g)
-		}
-		t.Fatalf("tmux mode output differs from golden snapshot at byte %d\ngot context:    %q\ngolden context: %q",
-			diffIdx, got[start:end], g[start:endG])
-	}
-
-	// Verify key structural markers are present in exact expected order.
-	markers := []string{
-		`Your name is "weave".`,
-		"# YOUR ROLE:",
-		"# System",
-		"# Doing Tasks",
-		"# Executing actions with care",
-		"# Tone and style",
-		"# SPRAWL OVERVIEW",
-		"## REMINDERS",
-		"AGENT TYPES YOU CAN SPAWN",
-		"KEY COMMANDS:",
-		"DELEGATE VS. MESSAGES",
-		"RULES:",
-		"PARALLELISM VS. SERIALIZATION:",
-		"FOLLOW THROUGH:",
-		"TASK TRACKING FOR MULTI-WAVE ORCHESTRATION:",
-		"# Using your tools",
-		"AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS",
-		"VERIFYING AGENT WORK:",
-	}
-	lastIdx := -1
-	for _, m := range markers {
-		idx := strings.Index(got, m)
-		if idx == -1 {
-			t.Fatalf("golden snapshot missing marker: %q", m)
-		}
-		if idx <= lastIdx {
-			t.Errorf("marker %q (idx %d) appears out of order (previous was at %d)", m, idx, lastIdx)
-		}
-		lastIdx = idx
-	}
-}
-
-// TestBuildRootPrompt_GoldenSnapshot_NoCLI verifies the output without AgentCLI set.
-func TestBuildRootPrompt_GoldenSnapshot_NoCLI(t *testing.T) {
-	cfg := PromptConfig{
-		RootName: "weave",
-		AgentCLI: "",
-		Mode:     "tmux",
-	}
-	got := BuildRootPrompt(cfg)
-
-	// Character-for-character comparison against golden file.
-	golden, err := os.ReadFile("testdata/golden_tmux_no_cli.txt")
-	if err != nil {
-		t.Fatalf("failed to read golden file: %v", err)
-	}
-	if got != string(golden) {
-		g := string(golden)
-		diffIdx := 0
-		for diffIdx < len(got) && diffIdx < len(g) && got[diffIdx] == g[diffIdx] {
-			diffIdx++
-		}
-		t.Fatalf("no-CLI tmux mode output differs from golden snapshot at byte %d", diffIdx)
-	}
-
-	// Should NOT contain sub-agent guidance
-	if strings.Contains(got, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS") {
-		t.Error("no-CLI prompt should not contain sub-agent guidance")
-	}
-	if strings.Contains(got, "# Using your tools") {
-		t.Error("no-CLI prompt should not contain '# Using your tools'")
-	}
-
-	// Should still contain all the standard sections
-	standardMarkers := []string{
-		`Your name is "weave".`,
-		"# YOUR ROLE:",
-		"# Doing Tasks",
-		"KEY COMMANDS:",
-		"RULES:",
-		"VERIFYING AGENT WORK:",
-	}
-	for _, m := range standardMarkers {
-		if !strings.Contains(got, m) {
-			t.Errorf("no-CLI prompt missing standard marker: %q", m)
+			t.Errorf("manager prompt should not advertise legacy subagent path %q", pat)
 		}
 	}
 }
 
 // TestBuildRootPrompt_GoldenSnapshot_TuiMode locks down the exact TUI-mode root
-// prompt output (with claude-code CLI). Pairs with the tmux golden snapshot to
-// ensure refactors are byte-identical for both modes (QUM-322).
+// prompt output (with claude-code CLI).
 func TestBuildRootPrompt_GoldenSnapshot_TuiMode(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "claude-code",
-		Mode:     "tui",
 	}
 	got := BuildRootPrompt(cfg)
 
@@ -1707,13 +1438,12 @@ func TestBuildRootPrompt_GoldenSnapshot_TuiMode(t *testing.T) {
 	}
 }
 
-// TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences exhaustively checks
-// that TUI mode has absolutely zero tmux/CLI-only references.
-func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {
+// TestBuildRootPrompt_ComprehensiveNoCLIReferences exhaustively checks
+// that the root prompt has absolutely zero tmux/CLI-only references.
+func TestBuildRootPrompt_ComprehensiveNoCLIReferences(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "claude-code",
-		Mode:     "tui",
 	}
 	got := BuildRootPrompt(cfg)
 
@@ -1774,7 +1504,7 @@ func TestBuildRootPrompt_TuiMode_ComprehensiveNoCLIReferences(t *testing.T) {
 	}
 }
 
-func TestBuildManagerPrompt_SharedContent_BothModes(t *testing.T) {
+func TestBuildManagerPrompt_SharedContent(t *testing.T) {
 	sharedPhrases := []string{
 		"DECOMPOSITION:",
 		"VERIFICATION:",
@@ -1783,19 +1513,10 @@ func TestBuildManagerPrompt_SharedContent_BothModes(t *testing.T) {
 		"PARALLELISM VS. SERIALIZATION",
 	}
 
-	for _, mode := range []string{"", "tui"} {
-		env := testEnvConfig()
-		env.Mode = mode
-		prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", env)
-		label := mode
-		if label == "" {
-			label = "(empty/default)"
-		}
-
-		for _, phrase := range sharedPhrases {
-			if !strings.Contains(prompt, phrase) {
-				t.Errorf("manager prompt with mode %s should contain shared content %q", label, phrase)
-			}
+	prompt := BuildManagerPrompt("mgr1", "weave", "feature/mgr1", "engineering", testEnvConfig())
+	for _, phrase := range sharedPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("manager prompt should contain shared content %q", phrase)
 		}
 	}
 }
@@ -1826,48 +1547,15 @@ func TestGenerateGoldenFiles(t *testing.T) {
 		}
 		t.Logf("wrote testdata/%s (%d bytes)", name, len(content))
 	}
-	write("engineer_tmux.golden", BuildEngineerPrompt("zone", "root", "sprawl/zone", env))
-	write("researcher_tmux.golden", BuildResearcherPrompt("birch", "root", "sprawl/birch", env))
-	write("manager_tmux.golden", BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env))
-	env.Mode = "tui"
 	write("engineer_tui.golden", BuildEngineerPrompt("zone", "root", "sprawl/zone", env))
 	write("researcher_tui.golden", BuildResearcherPrompt("birch", "root", "sprawl/birch", env))
 	write("manager_tui.golden", BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env))
 	// Root-prompt goldens.
-	write("golden_tui_claude_code.txt", BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code", Mode: "tui"}))
-}
-
-func TestBuildEngineerPrompt_TmuxGolden(t *testing.T) {
-	got := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
-	want := readGolden(t, "engineer_tmux.golden")
-	if got != want {
-		t.Fatalf("engineer tmux prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
-			len(got), len(want), firstDiffIndex(got, want))
-	}
-}
-
-func TestBuildResearcherPrompt_TmuxGolden(t *testing.T) {
-	got := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
-	want := readGolden(t, "researcher_tmux.golden")
-	if got != want {
-		t.Fatalf("researcher tmux prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
-			len(got), len(want), firstDiffIndex(got, want))
-	}
-}
-
-func TestBuildManagerPrompt_TmuxGolden(t *testing.T) {
-	got := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
-	want := readGolden(t, "manager_tmux.golden")
-	if got != want {
-		t.Fatalf("manager tmux prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
-			len(got), len(want), firstDiffIndex(got, want))
-	}
+	write("golden_tui_claude_code.txt", BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code"}))
 }
 
 func TestBuildEngineerPrompt_TuiGolden(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	got := BuildEngineerPrompt("zone", "root", "sprawl/zone", env)
+	got := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 	want := readGolden(t, "engineer_tui.golden")
 	if got != want {
 		t.Fatalf("engineer tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
@@ -1876,9 +1564,7 @@ func TestBuildEngineerPrompt_TuiGolden(t *testing.T) {
 }
 
 func TestBuildResearcherPrompt_TuiGolden(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	got := BuildResearcherPrompt("birch", "root", "sprawl/birch", env)
+	got := BuildResearcherPrompt("birch", "root", "sprawl/birch", testEnvConfig())
 	want := readGolden(t, "researcher_tui.golden")
 	if got != want {
 		t.Fatalf("researcher tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
@@ -1887,9 +1573,7 @@ func TestBuildResearcherPrompt_TuiGolden(t *testing.T) {
 }
 
 func TestBuildManagerPrompt_TuiGolden(t *testing.T) {
-	env := testEnvConfig()
-	env.Mode = "tui"
-	got := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env)
+	got := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 	want := readGolden(t, "manager_tui.golden")
 	if got != want {
 		t.Fatalf("manager tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
@@ -1927,62 +1611,55 @@ func TestPromptRenderers_NoResidualPlaceholderTokens(t *testing.T) {
 		branchName = "dmotles/zone-test"
 	)
 
-	envFor := func(mode string) EnvConfig {
-		return EnvConfig{
-			WorkDir:  "/tmp/worktrees/zone",
-			Platform: "linux",
-			Shell:    "/bin/zsh",
-			Mode:     mode,
-		}
+	env := EnvConfig{
+		WorkDir:  "/tmp/worktrees/zone",
+		Platform: "linux",
+		Shell:    "/bin/zsh",
 	}
 
 	cases := []struct {
 		name   string
-		render func(mode string) string
+		render func() string
 	}{
-		{"root", func(mode string) string {
+		{"root", func() string {
 			return BuildRootPrompt(PromptConfig{
 				RootName:    "weave",
 				AgentCLI:    "claude-code",
 				ContextBlob: "context blob",
-				Mode:        mode,
 			})
 		}},
-		{"root-no-cli", func(mode string) string {
+		{"root-no-cli", func() string {
 			return BuildRootPrompt(PromptConfig{
 				RootName: "weave",
 				AgentCLI: "",
-				Mode:     mode,
 			})
 		}},
-		{"engineer", func(mode string) string {
-			return BuildEngineerPrompt(agentName, parentName, branchName, envFor(mode))
+		{"engineer", func() string {
+			return BuildEngineerPrompt(agentName, parentName, branchName, env)
 		}},
-		{"researcher", func(mode string) string {
-			return BuildResearcherPrompt(agentName, parentName, branchName, envFor(mode))
+		{"researcher", func() string {
+			return BuildResearcherPrompt(agentName, parentName, branchName, env)
 		}},
-		{"manager", func(mode string) string {
-			return BuildManagerPrompt(agentName, parentName, branchName, "engineering", envFor(mode))
+		{"manager", func() string {
+			return BuildManagerPrompt(agentName, parentName, branchName, "engineering", env)
 		}},
 	}
 
 	for _, tc := range cases {
-		for _, mode := range []string{"tmux", "tui"} {
-			t.Run(tc.name+"/"+mode, func(t *testing.T) {
-				prompt := tc.render(mode)
-				if idx := strings.Index(prompt, "{{"); idx >= 0 {
-					start := idx - 40
-					if start < 0 {
-						start = 0
-					}
-					end := idx + 80
-					if end > len(prompt) {
-						end = len(prompt)
-					}
-					t.Errorf("rendered %s prompt (mode=%s) contains residual `{{` placeholder token at offset %d — typoed placeholder? context: %q",
-						tc.name, mode, idx, prompt[start:end])
+		t.Run(tc.name, func(t *testing.T) {
+			prompt := tc.render()
+			if idx := strings.Index(prompt, "{{"); idx >= 0 {
+				start := idx - 40
+				if start < 0 {
+					start = 0
 				}
-			})
-		}
+				end := idx + 80
+				if end > len(prompt) {
+					end = len(prompt)
+				}
+				t.Errorf("rendered %s prompt contains residual `{{` placeholder token at offset %d — typoed placeholder? context: %q",
+					tc.name, idx, prompt[start:end])
+			}
+		})
 	}
 }

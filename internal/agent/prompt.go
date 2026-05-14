@@ -13,7 +13,6 @@ type EnvConfig struct {
 	Platform string // OS platform (e.g. "linux", "darwin").
 	Shell    string // The user's shell (e.g. "/bin/zsh").
 	TestMode bool   // When true, inject sandbox warning into prompt.
-	Mode     string // Runtime mode: "tmux" (default) or "tui" (MCP tools).
 }
 
 // DefaultEnvConfig returns an EnvConfig populated from the current runtime.
@@ -30,7 +29,6 @@ type PromptConfig struct {
 	AgentCLI    string // The underlying agent CLI: "claude-code", future: "codex", etc.
 	ContextBlob string // Markdown blob from memory.BuildContextBlob; appended if non-empty.
 	TestMode    bool   // When true, inject sandbox warning into prompt.
-	Mode        string // Runtime mode: "tmux" (default) or "tui" (MCP tools).
 }
 
 // --- Root prompt section constants (shared / mode-independent) ---
@@ -190,52 +188,9 @@ func rootIdentityLine(name string) string {
 	return fmt.Sprintf("Your name is %q.", name)
 }
 
-// rootDoingTasksSection builds the "# Doing Tasks" section with mode-specific merge/retire bullets.
-func rootDoingTasksSection(mode string) string {
-	return rootDoingTasksIntro + "\n" + rootMergeRetireBlock(mode) + "\n" + rootDoingTasksTail
-}
-
-// rootSprawlOverviewSection builds the SPRAWL OVERVIEW section with the mode-specific overview line.
-func rootSprawlOverviewSection(mode string) string {
-	overviewLine := rootOverviewTmuxLine
-	if mode == "tui" {
-		overviewLine = rootOverviewTUILine
-	}
-	return rootSprawlOverviewIntro + overviewLine + rootSprawlOverviewTail
-}
-
-// rootRemindersSection returns the REMINDERS section for the given mode.
-func rootRemindersSection(mode string) string {
-	return rootRemindersBlock(mode)
-}
-
-// rootAgentTypesSection returns the AGENT TYPES section for the given mode.
-func rootAgentTypesSection(mode string) string {
-	return rootAgentTypesBlock(mode)
-}
-
-// rootCommandsSection returns the KEY COMMANDS section for the given mode.
-func rootCommandsSection(mode string) string {
-	if mode == "tui" {
-		return rootCommandsTUI
-	}
-	return rootCommandsTmux
-}
-
-// rootDelegateVsMessagesSection returns the DELEGATE VS. MESSAGES section for the given mode.
-func rootDelegateVsMessagesSection(mode string) string {
-	if mode == "tui" {
-		return rootDelegateVsMessagesTUI
-	}
-	return rootDelegateVsMessagesTmux
-}
-
-// rootRulesSection returns the RULES section for the given mode.
-func rootRulesSection(mode string) string {
-	if mode == "tui" {
-		return rootRulesTUI
-	}
-	return rootRulesTmux
+// rootDoingTasksSection builds the "# Doing Tasks" section with merge/retire bullets.
+func rootDoingTasksSection() string {
+	return rootDoingTasksIntro + "\n" + rootMergeRetireBlock + "\n" + rootDoingTasksTail
 }
 
 // testSandboxWarning is appended to all prompts when TestMode is enabled.
@@ -252,21 +207,19 @@ You are operating in a testing sandbox for sprawl. Take care to:
 // BuildRootPrompt constructs the system prompt for the root agent by
 // assembling composable section builders.
 func BuildRootPrompt(cfg PromptConfig) string {
-	mode := resolveMode(cfg.Mode)
-
 	sections := []string{
 		rootIdentityLine(cfg.RootName),
 		rootPreamble,
-		rootDoingTasksSection(mode),
+		rootDoingTasksSection(),
 		rootKISS,
 		rootExecutingActions,
 		rootToneAndStyle,
-		rootSprawlOverviewSection(mode),
-		rootRemindersSection(mode),
-		rootAgentTypesSection(mode),
-		rootCommandsSection(mode),
-		rootDelegateVsMessagesSection(mode),
-		rootRulesSection(mode),
+		rootSprawlOverviewIntro + rootOverviewLine + rootSprawlOverviewTail,
+		rootRemindersBlock,
+		rootAgentTypesBlock(),
+		rootCommands,
+		rootDelegateVsMessages,
+		rootRules,
 		rootParallelism,
 		rootFollowThrough,
 		rootTaskTracking,
@@ -275,7 +228,7 @@ func BuildRootPrompt(cfg PromptConfig) string {
 	base := strings.Join(sections, "\n\n")
 
 	if cfg.AgentCLI == "claude-code" {
-		base += "\n" + claudeCodeSubAgentGuidanceForMode(mode)
+		base += "\n" + claudeCodeSubAgentGuidance()
 		base += "\n" + rootVerifyingWork
 	} else {
 		base += "\n\n" + rootVerifyingWork
@@ -292,24 +245,17 @@ func BuildRootPrompt(cfg PromptConfig) string {
 	return base
 }
 
-// claudeCodeSubAgentGuidanceForMode returns the appropriate sub-agent guidance for the mode.
-func claudeCodeSubAgentGuidanceForMode(mode string) string {
-	return claudeCodeSubAgentGuidance(mode)
-}
-
 // BuildEngineerPrompt constructs the system prompt for an engineer agent.
 func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig) string {
-	mode := resolveMode(env.Mode)
-
 	sections := []string{
 		engineerIdentitySection(agentName, parentName, branchName),
-		engineerTDDSection(mode, parentName),
-		engineerSystemSection(mode),
+		engineerTDDSection(parentName),
+		engineerSystemSection(),
 		engineerDoingTasksSection,
 		engineerExecutingActionsSection,
 		engineerToneSection,
 		engineerBranchRebasingSection,
-		childRulesBlock(mode, parentName),
+		childRulesBlock(parentName),
 	}
 
 	prompt := strings.Join(sections, "\n\n")
@@ -342,13 +288,11 @@ func envContextBlock(branchName string, env EnvConfig) string {
 
 // BuildResearcherPrompt constructs the system prompt for a researcher agent.
 func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConfig) string {
-	mode := resolveMode(env.Mode)
-
 	sections := []string{
 		researcherIdentitySection(agentName, parentName, branchName),
 		researcherDocumentingSection(agentName),
 		researcherReflectionSection,
-		researcherRulesBlock(mode, parentName),
+		researcherRulesBlock(parentName),
 	}
 
 	prompt := strings.Join(sections, "\n\n")
@@ -361,25 +305,23 @@ func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConf
 
 // BuildManagerPrompt constructs the system prompt for a manager agent.
 func BuildManagerPrompt(agentName, parentName, branchName, family string, env EnvConfig) string {
-	mode := resolveMode(env.Mode)
-
 	sections := []string{
 		managerIdentitySection(agentName, parentName, branchName, family),
 		managerDecompositionSection,
-		managerDispatchingSection(mode),
+		managerDispatchingSection(),
 		managerParallelismSection,
 		managerVerificationSection,
-		managerIntegrationSection(mode),
-		managerLifecycleSection(mode),
+		managerIntegrationSection(),
+		managerLifecycleSection(),
 		managerFailureSection,
-		managerScopeSection(mode),
+		managerScopeSection(),
 		managerFollowThroughSection,
 		managerTaskTrackingSection,
 		managerSubAgentGuidanceSection,
-		managerSystemSection(mode),
+		managerSystemSection(),
 		managerExecutingActionsSection,
 		managerToneSection,
-		managerRulesBlock(mode, parentName),
+		managerRulesBlock(parentName),
 	}
 
 	prompt := strings.Join(sections, "\n\n")
