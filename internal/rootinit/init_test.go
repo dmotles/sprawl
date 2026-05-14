@@ -105,23 +105,6 @@ func TestPrepare_ReturnsPreparedSession(t *testing.T) {
 	}
 }
 
-func TestPrepare_ModePropagatedToPromptConfig(t *testing.T) {
-	deps := newTestDeps(t)
-	var capturedCfg agent.PromptConfig
-	deps.BuildPrompt = func(cfg agent.PromptConfig) string {
-		capturedCfg = cfg
-		return "prompt"
-	}
-
-	_, err := Prepare(context.Background(), deps, "/fake/root", "weave", io.Discard)
-	if err != nil {
-		t.Fatalf("Prepare error: %v", err)
-	}
-	if capturedCfg.Mode != "tui" {
-		t.Errorf("cfg.Mode: got %q, want %q", capturedCfg.Mode, "tui")
-	}
-}
-
 func TestPrepare_RootNamePropagatedToPromptConfig(t *testing.T) {
 	deps := newTestDeps(t)
 	var capturedCfg agent.PromptConfig

@@ -142,7 +142,6 @@ func prepare(ctx context.Context, deps *Deps, sprawlRoot, rootName string, stdou
 		AgentCLI:    "claude-code",
 		ContextBlob: contextBlob,
 		TestMode:    deps.Getenv("SPRAWL_TEST_MODE") == "1",
-		Mode:        "tui",
 	})
 	promptPath, err := deps.WriteSystemPrompt(sprawlRoot, rootName, systemPrompt)
 	if err != nil {

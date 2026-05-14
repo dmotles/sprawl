@@ -57,22 +57,20 @@ func TestRealLauncher_FindBinary_EmptySprawlClaudeFallsBackToLookPath(t *testing
 
 func TestBuildRootPrompt_ContainsKeyPhrases(t *testing.T) {
 	phrases := []string{
-		"sprawl spawn",
+		"spawn",
 		"weave",
 		"DO NOT edit code",
-		"--type engineer",
-		"--type researcher",
-		"--family",
-		"sprawl messages",
-		"sprawl merge",
-		"sprawl cleanup branches",
-		"--no-validate",
-		"--dry-run",
+		`type: "engineer"`,
+		`type: "researcher"`,
+		"family",
+		"send_message",
+		"merge",
+		"no_validate: true",
 		"TaskCreate",
 	}
 
 	for _, phrase := range phrases {
-		if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code", Mode: "tmux"}), phrase) {
+		if !strings.Contains(BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code"}), phrase) {
 			t.Errorf("root system prompt missing key phrase: %q", phrase)
 		}
 	}
@@ -84,9 +82,8 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 		"frank",
 		"root",
 		"sprawl/frank",
-		"sprawl report done",
-		"sprawl report problem",
-		"sprawl messages send",
+		"report_status",
+		"send_message",
 		"TDD WORKFLOW",
 		"oracle",
 		"test-writer",
@@ -104,8 +101,8 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 }
 
 func TestBuildRootPrompt_DoesNotContainRemovedTypes(t *testing.T) {
-	prompt := BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code", Mode: "tmux"})
-	for _, removed := range []string{"--type tester"} {
+	prompt := BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code"})
+	for _, removed := range []string{`type: "tester"`, "--type tester"} {
 		if strings.Contains(prompt, removed) {
 			t.Errorf("root system prompt should not contain removed type: %q", removed)
 		}
