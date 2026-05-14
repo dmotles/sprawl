@@ -160,13 +160,16 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 				if c == "" {
 					continue
 				}
-				// QUM-557 / QUM-562: detect supervisor-injected
-				// `<system-notification>` wrappers so resumed/replayed
+				// QUM-557 / QUM-562 / QUM-574: detect supervisor-injected
+				// `<system-notification>` wrapper(s) so resumed/replayed
 				// transcripts render identically to the live-drain path
-				// (same color, same glyph, no tags). The parser returns the
-				// typed `type` attribute so status_change vs message-class
-				// branches correctly at render time.
-				if stripped, notifType, isInterrupt, ok := stripSystemNotificationTag(c); ok {
+				// (same color, same glyph, no tags). The parser peels one
+				// envelope per call and returns the typed `type` attribute
+				// so status_change vs message-class branches correctly at
+				// render time. The peel-loop handles back-to-back envelopes
+				// (status_change + message in the same user-message body)
+				// so each renders as a distinct entry.
+				if stripped, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(c); ok {
 					entries = append(entries, MessageEntry{
 						Type:             MessageSystemNotification,
 						Content:          stripped,
@@ -174,6 +177,27 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						Interrupt:        isInterrupt,
 						NotificationType: notifType,
 					})
+					for {
+						s2, t2, i2, rem2, ok2 := stripSystemNotificationTag(remaining)
+						if !ok2 {
+							break
+						}
+						entries = append(entries, MessageEntry{
+							Type:             MessageSystemNotification,
+							Content:          s2,
+							Complete:         true,
+							Interrupt:        i2,
+							NotificationType: t2,
+						})
+						remaining = rem2
+					}
+					if strings.TrimSpace(remaining) != "" {
+						entries = append(entries, MessageEntry{
+							Type:     MessageUser,
+							Content:  remaining,
+							Complete: true,
+						})
+					}
 					continue
 				}
 				entries = append(entries, MessageEntry{
@@ -217,12 +241,14 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 				}
 				joined := strings.Join(parts, "\n")
 				if joined != "" {
-					// QUM-557 / QUM-562: detect `<system-notification>`
-					// wrappers on the joined text-block body so array-form
-					// replay matches the live-drain rendering on restart.
-					// MUST stay symmetric with the string-content branch
-					// above (QUM-557 lesson: silent replay divergence).
-					if stripped, notifType, isInterrupt, ok := stripSystemNotificationTag(joined); ok {
+					// QUM-557 / QUM-562 / QUM-574: detect
+					// `<system-notification>` wrapper(s) on the joined
+					// text-block body so array-form replay matches the
+					// live-drain rendering on restart. MUST stay symmetric
+					// with the string-content branch above (QUM-557
+					// lesson: silent replay divergence). The peel-loop
+					// handles back-to-back envelopes.
+					if stripped, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(joined); ok {
 						entries = append(entries, MessageEntry{
 							Type:             MessageSystemNotification,
 							Content:          stripped,
@@ -230,6 +256,27 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 							Interrupt:        isInterrupt,
 							NotificationType: notifType,
 						})
+						for {
+							s2, t2, i2, rem2, ok2 := stripSystemNotificationTag(remaining)
+							if !ok2 {
+								break
+							}
+							entries = append(entries, MessageEntry{
+								Type:             MessageSystemNotification,
+								Content:          s2,
+								Complete:         true,
+								Interrupt:        i2,
+								NotificationType: t2,
+							})
+							remaining = rem2
+						}
+						if strings.TrimSpace(remaining) != "" {
+							entries = append(entries, MessageEntry{
+								Type:     MessageUser,
+								Content:  remaining,
+								Complete: true,
+							})
+						}
 					} else {
 						entries = append(entries, MessageEntry{
 							Type:     MessageUser,

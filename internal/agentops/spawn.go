@@ -36,6 +36,11 @@ type SpawnDeps struct {
 	RunScript       func(script, workDir string, env map[string]string) ([]byte, error)
 	WorktreeRemove  func(repoRoot, worktreePath string, force bool) error
 	GitBranchDelete func(repoRoot, branchName string) error
+	// ResolveBase, if non-nil, is consulted before CurrentBranch to determine
+	// the base ref for the new agent's worktree. Returning a non-empty string
+	// with nil error overrides CurrentBranch; returning ("", nil) falls
+	// through to CurrentBranch (root-weave case). See QUM-572.
+	ResolveBase func(caller, sprawlRoot string) (baseRef string, err error)
 }
 
 type preparedSpawn struct {
@@ -112,10 +117,28 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*p
 		return nil, err
 	}
 
-	// Get current branch for worktree base
-	baseBranch, err := deps.CurrentBranch(sprawlRoot)
-	if err != nil {
-		return nil, fmt.Errorf("determining current branch: %w", err)
+	// Resolve base ref. Prefer the caller's worktree HEAD (so manager-spawned
+	// children inherit the manager's integration-branch commits). Falls back to
+	// the main repo's current branch when ResolveBase is nil or returns empty —
+	// covers the root-weave case where the caller has no per-agent worktree
+	// state. See QUM-572.
+	//
+	// NOTE: ResolveBase pins to the caller's COMMITTED HEAD. Uncommitted changes
+	// in the caller's worktree do NOT propagate to the child.
+	var baseBranch string
+	if deps.ResolveBase != nil {
+		resolved, err := deps.ResolveBase(parentName, sprawlRoot)
+		if err != nil {
+			return nil, fmt.Errorf("resolving caller's worktree HEAD: %w", err)
+		}
+		baseBranch = resolved
+	}
+	if baseBranch == "" {
+		var err error
+		baseBranch, err = deps.CurrentBranch(sprawlRoot)
+		if err != nil {
+			return nil, fmt.Errorf("determining current branch: %w", err)
+		}
 	}
 
 	// Create worktree

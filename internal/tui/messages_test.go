@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -85,21 +86,23 @@ func TestTurnStateMsg_FieldAccess(t *testing.T) {
 
 // --- QUM-557 / QUM-562: stripSystemNotificationTag helper ---
 //
-// Contract (QUM-562):
+// Contract (QUM-562 / QUM-574):
 //
-//	stripSystemNotificationTag(s) -> (body, notifType, isInterrupt, ok)
+//	stripSystemNotificationTag(s) -> (body, notifType, isInterrupt, remaining, ok)
 //
-// When the entire (whitespace-trimmed) string is wrapped in
-// `<system-notification [attrs]>...</system-notification>`, returns the inner
-// body with the wrapping tags removed, the parsed `type` attribute (defaults
-// to "message" when absent or unrecognized), isInterrupt=true iff either the
-// `interrupt="true"` attribute is set OR (back-compat) the body starts with
-// the literal `[interrupt]` marker, and ok=true. Otherwise returns
-// (original, "", false, false). The body is returned verbatim — any inner
-// `[interrupt]` marker is preserved so the renderer can both color-code and
-// display it.
+// Peels ONE envelope from the START of `s`. When the (whitespace-trimmed)
+// input begins with `<system-notification [attrs]>...</system-notification>`,
+// returns the inner body of the first envelope with wrapping tags removed,
+// the parsed `type` attribute (defaults to "message" when absent or
+// unrecognized), isInterrupt=true iff either the `interrupt="true"` attribute
+// is set OR (back-compat) the body starts with the literal `[interrupt]`
+// marker, the unconsumed remainder of `s` after the first close tag
+// (untrimmed; empty when the envelope is the only content), and ok=true.
+// Otherwise returns (original, "", false, "", false). The body is returned
+// verbatim — any inner `[interrupt]` marker is preserved so the renderer can
+// both color-code and display it.
 func TestStripSystemNotificationTag_TypedMessage(t *testing.T) {
-	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification type="message">foo</system-notification>`)
+	body, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(`<system-notification type="message">foo</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
@@ -112,10 +115,13 @@ func TestStripSystemNotificationTag_TypedMessage(t *testing.T) {
 	if body != "foo" {
 		t.Errorf("body = %q, want %q", body, "foo")
 	}
+	if remaining != "" {
+		t.Errorf("remaining = %q, want empty", remaining)
+	}
 }
 
 func TestStripSystemNotificationTag_TypedMessageInterrupt(t *testing.T) {
-	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification type="message" interrupt="true">[interrupt] foo</system-notification>`)
+	body, notifType, isInterrupt, _, ok := stripSystemNotificationTag(`<system-notification type="message" interrupt="true">[interrupt] foo</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
@@ -131,7 +137,7 @@ func TestStripSystemNotificationTag_TypedMessageInterrupt(t *testing.T) {
 }
 
 func TestStripSystemNotificationTag_TypedStatusChange(t *testing.T) {
-	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification type="status_change">finn changed status to working: doing X</system-notification>`)
+	body, notifType, isInterrupt, _, ok := stripSystemNotificationTag(`<system-notification type="status_change">finn changed status to working: doing X</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
@@ -150,7 +156,7 @@ func TestStripSystemNotificationTag_TypedStatusChange(t *testing.T) {
 // `<system-notification>` wrappers (persisted before QUM-562 shipped) must
 // parse as type="message" with isInterrupt=false.
 func TestStripSystemNotificationTag_UntaggedLegacyAsync(t *testing.T) {
-	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification>foo</system-notification>`)
+	body, notifType, isInterrupt, _, ok := stripSystemNotificationTag(`<system-notification>foo</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
@@ -168,7 +174,7 @@ func TestStripSystemNotificationTag_UntaggedLegacyAsync(t *testing.T) {
 // TestStripSystemNotificationTag_UntaggedLegacyInterrupt — back-compat: untyped
 // wrapper with inner `[interrupt]` marker must yield isInterrupt=true.
 func TestStripSystemNotificationTag_UntaggedLegacyInterrupt(t *testing.T) {
-	body, notifType, isInterrupt, ok := stripSystemNotificationTag(`<system-notification>[interrupt] foo</system-notification>`)
+	body, notifType, isInterrupt, _, ok := stripSystemNotificationTag(`<system-notification>[interrupt] foo</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
@@ -185,7 +191,7 @@ func TestStripSystemNotificationTag_UntaggedLegacyInterrupt(t *testing.T) {
 
 func TestStripSystemNotificationTag_Multiline(t *testing.T) {
 	in := `<system-notification type="message">line1` + "\n" + `line2</system-notification>`
-	body, notifType, isInterrupt, ok := stripSystemNotificationTag(in)
+	body, notifType, isInterrupt, _, ok := stripSystemNotificationTag(in)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
@@ -202,7 +208,10 @@ func TestStripSystemNotificationTag_Multiline(t *testing.T) {
 
 func TestStripSystemNotificationTag_NoTag(t *testing.T) {
 	in := "hello world"
-	body, notifType, isInterrupt, ok := stripSystemNotificationTag(in)
+	body, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(in)
+	if remaining != "" {
+		t.Errorf("remaining = %q, want empty when no tag matched", remaining)
+	}
 	if ok {
 		t.Errorf("ok = true, want false (no tag present)")
 	}
@@ -219,7 +228,7 @@ func TestStripSystemNotificationTag_NoTag(t *testing.T) {
 
 func TestStripSystemNotificationTag_MalformedMissingClose(t *testing.T) {
 	in := "<system-notification>oops"
-	body, _, _, ok := stripSystemNotificationTag(in)
+	body, _, _, _, ok := stripSystemNotificationTag(in)
 	if ok {
 		t.Errorf("ok = true, want false (no closing tag)")
 	}
@@ -230,7 +239,7 @@ func TestStripSystemNotificationTag_MalformedMissingClose(t *testing.T) {
 
 func TestStripSystemNotificationTag_TagNotAtStart(t *testing.T) {
 	in := "prefix<system-notification>x</system-notification>"
-	body, _, _, ok := stripSystemNotificationTag(in)
+	body, _, _, _, ok := stripSystemNotificationTag(in)
 	if ok {
 		t.Errorf("ok = true, want false (tag must wrap the whole string)")
 	}
@@ -244,7 +253,7 @@ func TestStripSystemNotificationTag_TagNotAtStart(t *testing.T) {
 // the parser; they fall back to type="message" so an updated emitter can ship
 // without breaking older TUI binaries mid-rollout.
 func TestStripSystemNotificationTag_UnknownTypeFallsBackToMessage(t *testing.T) {
-	body, notifType, _, ok := stripSystemNotificationTag(`<system-notification type="something_new">hello</system-notification>`)
+	body, notifType, _, _, ok := stripSystemNotificationTag(`<system-notification type="something_new">hello</system-notification>`)
 	if !ok {
 		t.Fatalf("ok = false, want true")
 	}
@@ -313,7 +322,7 @@ func TestStripSystemNotificationTag_AttributeRobustness(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body, notifType, isInterrupt, ok := stripSystemNotificationTag(tt.in)
+			body, notifType, isInterrupt, _, ok := stripSystemNotificationTag(tt.in)
 			if ok != tt.wantOk {
 				t.Errorf("ok = %v, want %v", ok, tt.wantOk)
 			}
@@ -328,4 +337,131 @@ func TestStripSystemNotificationTag_AttributeRobustness(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- QUM-574: peel-loop semantics for back-to-back envelopes ---
+//
+// Two consecutive `<system-notification>` tag-pairs in the same input string
+// (e.g. a status_change immediately followed by a message in the same flush
+// window) MUST peel one-at-a-time. The previous implementation anchored on
+// the LAST `</system-notification>` (HasSuffix), greedily swallowing the
+// inner close+open tag pair as part of the first envelope's body — leaking
+// raw `</system-notification><system-notification type="...">` markup into
+// the viewport.
+
+func TestStripSystemNotificationTag_BackToBackTwoEnvelopes(t *testing.T) {
+	in := `<system-notification type="status_change">tower changed status to complete: phase 2 done</system-notification>` +
+		`<system-notification type="message">From tower — hello</system-notification>`
+
+	body1, type1, int1, rem1, ok1 := stripSystemNotificationTag(in)
+	if !ok1 {
+		t.Fatalf("first peel ok=false, want true")
+	}
+	if type1 != NotificationKindStatusChange {
+		t.Errorf("first notifType = %q, want %q", type1, NotificationKindStatusChange)
+	}
+	if int1 {
+		t.Errorf("first isInterrupt = true, want false")
+	}
+	if body1 != "tower changed status to complete: phase 2 done" {
+		t.Errorf("first body = %q (should NOT contain inner close tag or second open)", body1)
+	}
+	if rem1 != `<system-notification type="message">From tower — hello</system-notification>` {
+		t.Errorf("first remaining = %q, want second envelope verbatim", rem1)
+	}
+
+	body2, type2, int2, rem2, ok2 := stripSystemNotificationTag(rem1)
+	if !ok2 {
+		t.Fatalf("second peel ok=false, want true")
+	}
+	if type2 != NotificationKindMessage {
+		t.Errorf("second notifType = %q, want %q", type2, NotificationKindMessage)
+	}
+	if int2 {
+		t.Errorf("second isInterrupt = true, want false")
+	}
+	if body2 != "From tower — hello" {
+		t.Errorf("second body = %q", body2)
+	}
+	if rem2 != "" {
+		t.Errorf("second remaining = %q, want empty", rem2)
+	}
+}
+
+func TestStripSystemNotificationTag_BackToBackWithWhitespaceBetween(t *testing.T) {
+	// Real-world emitters separate envelopes with a newline.
+	in := `<system-notification type="status_change">a</system-notification>` + "\n" +
+		`<system-notification type="message">b</system-notification>`
+
+	body1, _, _, rem1, ok1 := stripSystemNotificationTag(in)
+	if !ok1 || body1 != "a" {
+		t.Fatalf("first peel: ok=%v body=%q", ok1, body1)
+	}
+	// Remaining is untrimmed — caller must re-feed it; the second peel
+	// trims whitespace internally and succeeds.
+	body2, _, _, rem2, ok2 := stripSystemNotificationTag(rem1)
+	if !ok2 {
+		t.Fatalf("second peel ok=false (rem1=%q)", rem1)
+	}
+	if body2 != "b" {
+		t.Errorf("second body = %q, want %q", body2, "b")
+	}
+	if strings.TrimSpace(rem2) != "" {
+		t.Errorf("second remaining trim = %q, want empty", rem2)
+	}
+}
+
+func TestStripSystemNotificationTag_ThreeEnvelopesDefensive(t *testing.T) {
+	in := `<system-notification type="status_change">A</system-notification>` +
+		`<system-notification type="message">B</system-notification>` +
+		`<system-notification type="status_change">C</system-notification>`
+
+	var bodies []string
+	var types []string
+	s := in
+	for {
+		body, ty, _, rem, ok := stripSystemNotificationTag(s)
+		if !ok {
+			if strings.TrimSpace(s) != "" {
+				t.Fatalf("residue after peel-loop: %q", s)
+			}
+			break
+		}
+		bodies = append(bodies, body)
+		types = append(types, ty)
+		s = rem
+	}
+	if want := []string{"A", "B", "C"}; !equalStrSlice(bodies, want) {
+		t.Errorf("bodies = %v, want %v", bodies, want)
+	}
+	wantTypes := []string{NotificationKindStatusChange, NotificationKindMessage, NotificationKindStatusChange}
+	if !equalStrSlice(types, wantTypes) {
+		t.Errorf("types = %v, want %v", types, wantTypes)
+	}
+}
+
+// TestStripSystemNotificationTag_SingleEnvelopeRemainingEmpty — guard that
+// the canonical single-envelope case (the dominant production input) still
+// returns an empty remainder so the peel-loop terminates after one
+// iteration without surfacing phantom trailing text.
+func TestStripSystemNotificationTag_SingleEnvelopeRemainingEmpty(t *testing.T) {
+	_, _, _, remaining, ok := stripSystemNotificationTag(`<system-notification type="message">just one</system-notification>`)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if remaining != "" {
+		t.Errorf("remaining = %q, want empty for single-envelope input", remaining)
+	}
+}
+
+func equalStrSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

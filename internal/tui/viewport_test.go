@@ -2295,3 +2295,53 @@ func TestAppendSystemNotification_PopulatesNotificationType(t *testing.T) {
 		})
 	}
 }
+
+// TestAppendSystemNotification_BackToBackPeelsBothEnvelopes — QUM-574
+// regression guard. A single AppendSystemNotification call with TWO
+// consecutive `<system-notification>` envelopes (e.g. a status_change
+// immediately followed by a message in the same flush window) MUST produce
+// TWO distinct MessageSystemNotification entries — first with status_change
+// treatment, second with message treatment — and no raw tag text in any
+// Content field. The pre-QUM-574 implementation rendered both as a single
+// status_change block with raw `</system-notification><system-notification
+// type="message">` leaking into the viewport.
+func TestAppendSystemNotification_BackToBackPeelsBothEnvelopes(t *testing.T) {
+	m := newTestViewportModel(t)
+	in := `<system-notification type="status_change">tower changed status to complete: phase 2 done</system-notification>` +
+		`<system-notification type="message">From tower — hello there</system-notification>`
+	m.AppendSystemNotification(in)
+
+	msgs := m.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("len(messages) = %d, want 2; entries=%+v", len(msgs), msgs)
+	}
+	if msgs[0].Type != MessageSystemNotification {
+		t.Errorf("msgs[0].Type = %v, want MessageSystemNotification", msgs[0].Type)
+	}
+	if msgs[0].NotificationType != NotificationKindStatusChange {
+		t.Errorf("msgs[0].NotificationType = %q, want %q", msgs[0].NotificationType, NotificationKindStatusChange)
+	}
+	if msgs[0].Content != "tower changed status to complete: phase 2 done" {
+		t.Errorf("msgs[0].Content = %q (should NOT contain raw tags)", msgs[0].Content)
+	}
+	if msgs[1].Type != MessageSystemNotification {
+		t.Errorf("msgs[1].Type = %v, want MessageSystemNotification", msgs[1].Type)
+	}
+	if msgs[1].NotificationType != NotificationKindMessage {
+		t.Errorf("msgs[1].NotificationType = %q, want %q", msgs[1].NotificationType, NotificationKindMessage)
+	}
+	if msgs[1].Content != "From tower — hello there" {
+		t.Errorf("msgs[1].Content = %q", msgs[1].Content)
+	}
+	for i, msg := range msgs {
+		if strings.Contains(msg.Content, "<system-notification") || strings.Contains(msg.Content, "</system-notification>") {
+			t.Errorf("msgs[%d].Content leaks raw tag: %q", i, msg.Content)
+		}
+	}
+	// Cross-check the actual rendered viewport text — the user-visible
+	// failure mode in QUM-574 was raw markup appearing on screen.
+	rendered := m.renderMessages()
+	if strings.Contains(rendered, "<system-notification") || strings.Contains(rendered, "</system-notification>") {
+		t.Errorf("rendered viewport leaks raw tag:\n%s", rendered)
+	}
+}

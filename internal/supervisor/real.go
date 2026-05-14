@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -109,6 +111,25 @@ type Real struct {
 	// Status reports are low-frequency in practice; serialization is a
 	// reasonable cost. See QUM-559 concurrency test.
 	reportMu sync.Mutex
+
+	// gitRevParseHEAD is an injectable seam for resolving a worktree's
+	// HEAD SHA. Unit tests inject a fake; production callers leave this
+	// nil and the package-level realGitRevParseHEAD is used. See QUM-572.
+	gitRevParseHEAD func(dir string) (string, error)
+}
+
+// realGitRevParseHEAD shells out to `git -C <dir> rev-parse HEAD`. stdio is
+// redirected to io.Discard (mirroring internal/worktree/worktree.go:branchExists)
+// so a missing ref / not-a-repo error cannot inherit the parent's FD 2 in TUI
+// mode. See QUM-330/QUM-304/QUM-342.
+func realGitRevParseHEAD(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD") //nolint:gosec // arguments are not user-controlled
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // SetProgressEmitter installs a fan-out hook invoked for every merge/retire
@@ -754,9 +775,21 @@ func (r *Real) retireDepsForCaller(ctx context.Context, caller string) *agentops
 // (QUM-416).
 func (r *Real) spawnDepsForCaller(caller string) *agentops.SpawnDeps {
 	deps := *r.spawnDeps // shallow copy
+	gitFn := r.gitRevParseHEAD
+	if gitFn == nil {
+		gitFn = realGitRevParseHEAD
+	}
 	var callerTreePath string
+	var callerWorktree string
 	if st, err := state.LoadAgent(r.sprawlRoot, caller); err == nil && st != nil {
 		callerTreePath = st.TreePath
+		callerWorktree = st.Worktree
+	}
+	deps.ResolveBase = func(_, _ string) (string, error) {
+		if callerWorktree == "" {
+			return "", nil
+		}
+		return gitFn(callerWorktree)
 	}
 	deps.Getenv = func(key string) string {
 		switch key {

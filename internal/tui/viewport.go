@@ -424,26 +424,47 @@ func (m *ViewportModel) AppendSystemMessage(text string) {
 	m.renderAndUpdate()
 }
 
-// AppendSystemNotification adds a supervisor-injected `<system-notification>`
-// message to the conversation buffer (QUM-557). When the prompt is wrapped
-// in the literal tag, the wrapper is stripped and the stored entry is a
-// MessageSystemNotification with the Interrupt flag set according to the
-// `[interrupt]` body marker. When the prompt does NOT carry the tag (legacy
-// inbox banners pre-QUM-555), this falls back to AppendSystemMessage so the
-// long-standing MessageSystem rendering keeps working.
+// AppendSystemNotification adds supervisor-injected `<system-notification>`
+// message(s) to the conversation buffer (QUM-557 / QUM-562 / QUM-574). The
+// input may contain ONE OR MORE back-to-back envelopes (e.g. a status_change
+// immediately followed by a message in the same flush window) — each peels
+// to a distinct MessageSystemNotification entry so the viewport renders them
+// with their respective glyphs/colors and no raw tags leak through.
+//
+// When the input does NOT begin with the tag (legacy inbox banners
+// pre-QUM-555), this falls back to AppendSystemMessage so the long-standing
+// MessageSystem rendering keeps working. Any trailing non-tag residue after
+// a successful peel-loop is surfaced via AppendSystemMessage rather than
+// dropped, so unexpected content stays visible to the user.
 func (m *ViewportModel) AppendSystemNotification(text string) {
-	stripped, notifType, isInterrupt, ok := stripSystemNotificationTag(text)
-	if !ok {
+	rest := text
+	appended := false
+	for {
+		stripped, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(rest)
+		if !ok {
+			break
+		}
+		m.messages = append(m.messages, MessageEntry{
+			Type:             MessageSystemNotification,
+			Content:          stripped,
+			Complete:         true,
+			Interrupt:        isInterrupt,
+			NotificationType: notifType,
+		})
+		appended = true
+		rest = remaining
+	}
+	if !appended {
+		// No envelope at all — preserve the legacy fallback path.
 		m.AppendSystemMessage(text)
 		return
 	}
-	m.messages = append(m.messages, MessageEntry{
-		Type:             MessageSystemNotification,
-		Content:          stripped,
-		Complete:         true,
-		Interrupt:        isInterrupt,
-		NotificationType: notifType,
-	})
+	// Tail residue (e.g. trailing whitespace, or unexpected non-tag text
+	// after the final envelope) — surface it so nothing is silently dropped.
+	if strings.TrimSpace(rest) != "" {
+		m.AppendSystemMessage(rest)
+		return
+	}
 	m.renderAndUpdate()
 }
 
