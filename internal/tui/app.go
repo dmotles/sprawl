@@ -514,8 +514,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// active panel does with it. The textinput buffer is left intact so
 		// the user keeps composing without losing partial typing.
 		if msg.Code == tea.KeyEscape && m.pendingSubmit != "" {
+			// QUM-576: option-a "refuse to clobber" rule. If the textarea is
+			// empty, reload the queued draft into the input so the user can
+			// edit it. If the user is mid-compose (textarea non-empty), we
+			// only clear the queue and leave the buffer alone — never
+			// overwrite in-flight typing.
+			queued := m.pendingSubmit
 			m.pendingSubmit = ""
 			m.input.SetPendingPreview("")
+			if strings.TrimSpace(m.input.Value()) == "" {
+				m.input.SetValue(queued)
+				m.input.CursorEnd()
+			}
 			return m, nil
 		}
 

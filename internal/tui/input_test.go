@@ -677,6 +677,101 @@ func TestInputModel_DoubleBackslash_StripsOnlyOne(t *testing.T) {
 	}
 }
 
+// --- QUM-571/QUM-576: Alt+Enter and Ctrl+J insert newlines without submit ---
+
+// TestInputModel_AltEnter_InsertsNewline_NoSubmit: Alt+Enter (modifier =
+// tea.ModAlt) inserts a literal newline into the textarea and must NOT
+// schedule a lookahead tick, set pendingEnter, or produce a SubmitMsg.
+func TestInputModel_AltEnter_InsertsNewline_NoSubmit(t *testing.T) {
+	m := newTestInputModel(t)
+	_ = m.Focus()
+	m.ta.SetValue("hello")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
+	m = updated
+
+	if got, want := m.ta.Value(), "hello\n"; got != want {
+		t.Errorf("textarea value after Alt+Enter = %q, want %q", got, want)
+	}
+	if m.pendingEnter {
+		t.Error("Alt+Enter must not set pendingEnter")
+	}
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(SubmitMsg); ok {
+			t.Error("Alt+Enter must not produce SubmitMsg")
+		}
+		if _, ok := msg.(pasteLookaheadMsg); ok {
+			t.Error("Alt+Enter must not schedule pasteLookaheadMsg")
+		}
+	}
+}
+
+// TestInputModel_CtrlJ_InsertsNewline_NoSubmit: Ctrl+J inserts a literal
+// newline into the textarea, without lookahead tick or SubmitMsg.
+func TestInputModel_CtrlJ_InsertsNewline_NoSubmit(t *testing.T) {
+	m := newTestInputModel(t)
+	_ = m.Focus()
+	m.ta.SetValue("hello")
+
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
+	m = updated
+
+	if got, want := m.ta.Value(), "hello\n"; got != want {
+		t.Errorf("textarea value after Ctrl+J = %q, want %q", got, want)
+	}
+	if m.pendingEnter {
+		t.Error("Ctrl+J must not set pendingEnter")
+	}
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(SubmitMsg); ok {
+			t.Error("Ctrl+J must not produce SubmitMsg")
+		}
+		if _, ok := msg.(pasteLookaheadMsg); ok {
+			t.Error("Ctrl+J must not schedule pasteLookaheadMsg")
+		}
+	}
+}
+
+// TestInputModel_AltEnter_AfterPendingEnter_ResolvesEnterAsEmbedded: plain
+// Enter sets pendingEnter; following Alt+Enter resolves the pending Enter as
+// an embedded newline and itself inserts another newline. No SubmitMsg.
+func TestInputModel_AltEnter_AfterPendingEnter_ResolvesEnterAsEmbedded(t *testing.T) {
+	m := newTestInputModel(t)
+	_ = m.Focus()
+	m.ta.SetValue("hello")
+
+	// Plain Enter: pending.
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = updated
+	if !m.pendingEnter {
+		t.Fatal("plain Enter should set pendingEnter")
+	}
+	if cmd != nil {
+		if _, ok := cmd().(SubmitMsg); ok {
+			t.Fatal("plain Enter must not produce SubmitMsg directly")
+		}
+	}
+
+	// Alt+Enter: resolves the pending Enter as embedded, then inserts its own
+	// newline.
+	updated, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModAlt})
+	m = updated
+
+	if got, want := m.ta.Value(), "hello\n\n"; got != want {
+		t.Errorf("textarea value after Enter then Alt+Enter = %q, want %q", got, want)
+	}
+	if m.pendingEnter {
+		t.Error("pendingEnter must be cleared after Alt+Enter resolution")
+	}
+	if cmd != nil {
+		if _, ok := cmd().(SubmitMsg); ok {
+			t.Error("Alt+Enter following pending Enter must not produce SubmitMsg")
+		}
+	}
+}
+
 // TestInputModel_EnterStillSubmitsMultiLine: pre-seeded multi-line value +
 // Enter still submits via the lookahead tick path with full content.
 func TestInputModel_EnterStillSubmitsMultiLine(t *testing.T) {
