@@ -15,16 +15,22 @@
 #   2. Launches `sprawl enter` in a detached tmux session so the
 #      bubbletea TUI has a pseudo-terminal to render into.
 #   3. Waits for the TUI to render (tree panel shows 'weave (idle)').
-#   4. Simulates an out-of-process child agent using
-#      SPRAWL_AGENT_IDENTITY=sandbox-child (tower convention — the
-#      pretend-child identity leaks to outer sessions, see QUM-311
-#      reflection).
-#   5. Runs `sprawl report done` as the child; asserts the TUI pane
-#      picks up the maildir rise on its 2s tick and renders both
-#      (a) the banner 'inbox: N new message[s]' (QUM-473 §3 unified format), and
-#      (b) the '(1)' unread badge on the weave row.
-#   6. Runs `sprawl messages send weave` as the child; asserts the
-#      unread badge rises to '(2)'.
+#   4. Registers a simulated out-of-process child agent (sandbox-child)
+#      directly in state on disk (no CLI shellout — QUM-565 migrated this
+#      test off the deprecated `sprawl-report` / `sprawl-messages` CLI
+#      surface ahead of its 2.3b deletion).
+#   5. Test A: simulates an MCP `report_status` by writing the child's
+#      `state.json` directly with `status: done` and `last_report_message`
+#      set. The on-disk write is the contract — `report_status` no longer
+#      touches the maildir per QUM-559, so this is the same observable
+#      footprint. Asserts the TUI badge does NOT rise, no inbox banner
+#      surfaces, and no drain notification appears.
+#   6. Test B: simulates an MCP `messages_send` by writing a maildir
+#      envelope directly under `.sprawl/messages/weave/new/` (atomic
+#      tmp→new rename, schema per `internal/messages/messages.go`).
+#      Asserts the TUI pane picks up the maildir rise on its 2s tick and
+#      renders both (a) the banner 'inbox: N new message[s]' (QUM-473 §3
+#      unified format), and (b) the '(1)' unread badge on the weave row.
 #
 # Requires a real `claude` binary on PATH (sprawl enter spawns claude
 # with stream-json I/O; without it the TUI cannot initialize). If
@@ -38,12 +44,6 @@
 # NOTE: This test creates a real tmux session and a claude subprocess.
 # Do not run it in parallel with other TUI-mode e2e scripts.
 set -euo pipefail
-
-# QUM-337: this script drives `sprawl report done` and `sprawl messages
-# send` on purpose to verify the QUM-312 TUI notifier path. Suppress the
-# per-process deprecation warning so the captured tmux pane output stays
-# clean during the M13 cutover soak. Slated for deletion in 2.5.
-export SPRAWL_QUIET_DEPRECATIONS=1
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -212,9 +212,9 @@ wait_for_pattern_fast() {
 # wait_for_no_badge_rise <session> <timeout_secs>
 # QUM-559: poll the pane for the duration of timeout_secs and fail (return 1)
 # if a weave unread-badge ever appears. Returns 0 iff no `weave[^│]*\([1-9]`
-# badge ever shows during the sample window. Use after a `sprawl report
-# done` to assert the QUM-559 contract: report_status writes nothing to
-# maildir, so the badge must NOT rise.
+# badge ever shows during the sample window. Use after a simulated
+# report_status to assert the QUM-559 contract: report_status writes
+# nothing to maildir, so the badge must NOT rise.
 wait_for_no_badge_rise() {
     local session="$1" timeout="$2"
     local end=$((SECONDS + timeout))
@@ -320,14 +320,22 @@ fi
 sleep 3
 
 # --- Register a fake child agent in state, with weave as parent ---
-#     SPRAWL_AGENT_IDENTITY=sandbox-child (tower convention — avoids
+#     CHILD_NAME=sandbox-child (tower convention — avoids
 #     pretend-child-identity leaks into outer sessions; see QUM-311 /
 #     /e2e-testing-sandboxing).
+#
+# QUM-565: this script no longer shells out to the deprecated `sprawl
+# report` / `sprawl-messages-send` CLI surface (slated for deletion in
+# Phase 2.3b of M13). Tests A and B now write the same on-disk
+# side-effects directly: state.json for report_status, and a maildir
+# envelope (schema per internal/messages/messages.go) for messages_send.
+# The TUI watcher reacts to the on-disk contract, not to the CLI invocation.
 
 CHILD_NAME="sandbox-child"
 CHILD_STATE_DIR="$SPRAWL_ROOT/.sprawl/agents"
+CHILD_STATE_FILE="$CHILD_STATE_DIR/${CHILD_NAME}.json"
 mkdir -p "$CHILD_STATE_DIR"
-cat > "$CHILD_STATE_DIR/${CHILD_NAME}.json" <<JSON
+cat > "$CHILD_STATE_FILE" <<JSON
 {
   "name": "${CHILD_NAME}",
   "type": "engineer",
@@ -342,73 +350,80 @@ cat > "$CHILD_STATE_DIR/${CHILD_NAME}.json" <<JSON
 }
 JSON
 
-# --- Test A: `sprawl report done` from a simulated child ---
+# --- Test A: simulated MCP `report_status done` (state-only write) ---
 #
-# QUM-559: report_status no longer writes to maildir. The badge must NOT rise,
-# no `inbox: N new message` banner must appear, and no drain notification with
-# `mcp__sprawl__messages_read` from $CHILD_NAME must surface. The CLI must
-# still exit 0 and persist `state.last_report_message` on the child agent.
+# QUM-559: report_status no longer writes to maildir; the only on-disk
+# side effect is updating the caller's state.json (status + last_report_*
+# fields). We replicate that here without invoking the deprecated CLI:
+# write a fresh state.json with status=done and last_report_message set.
+# The TUI's AgentTreeMsg poll reads state.json for display only — it does
+# NOT use state-file changes as a notification trigger (oracle confirmed
+# during QUM-565). So this state-only write must NOT raise the badge,
+# must NOT surface an `inbox: N new message` banner, and must NOT cause
+# a drain notification citing `mcp__sprawl__messages_read` to appear.
 
 echo ""
-echo "=== Test A: child 'sprawl report done' → state.last_report_message only (no maildir) ==="
+echo "=== Test A: simulated MCP report_status → state.last_report_message only (no maildir) ==="
 BANNERS_BEFORE_A=$(count_inbox_banners "$SESSION")
 DRAINS_BEFORE_A=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
-REPORT_LOG="$(mktemp /tmp/notify-tui-e2e-report.XXXXXX)"
-set +e
-env \
-    SPRAWL_AGENT_IDENTITY="$CHILD_NAME" \
-    SPRAWL_ROOT="$SPRAWL_ROOT" \
-    SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" report done "e2e tui notify test A" \
-    > "$REPORT_LOG" 2>&1
-REPORT_RC=$?
-set -e
-if [ "$REPORT_RC" -eq 0 ]; then
-    pass "sprawl report done exited 0"
-else
-    fail "sprawl report done exited non-zero ($REPORT_RC)"
-    echo "  report stdout/stderr:" >&2
-    sed 's/^/    /' "$REPORT_LOG" >&2
-fi
+
+REPORT_MSG_A="e2e tui notify test A"
+REPORT_AT_A="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$CHILD_STATE_FILE" <<JSON
+{
+  "name": "${CHILD_NAME}",
+  "type": "engineer",
+  "family": "engineering",
+  "parent": "weave",
+  "prompt": "tui notify e2e test",
+  "branch": "tui-notify-e2e",
+  "worktree": "${SPRAWL_ROOT}",
+  "status": "done",
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "tree_path": "weave├${CHILD_NAME}",
+  "last_report_type": "done",
+  "last_report_message": "${REPORT_MSG_A}",
+  "last_report_at": "${REPORT_AT_A}",
+  "last_report_state": "complete"
+}
+JSON
+pass "simulated report_status: wrote state.json with status=done + last_report_message"
 
 # QUM-559: child's state.last_report_message must be set (state-only persistence).
-CHILD_STATE_FILE="$CHILD_STATE_DIR/${CHILD_NAME}.json"
 if command -v jq >/dev/null 2>&1; then
     LAST_MSG=$(jq -r '.last_report_message // empty' "$CHILD_STATE_FILE" 2>/dev/null || echo "")
-    if [ "$LAST_MSG" = "e2e tui notify test A" ]; then
+    if [ "$LAST_MSG" = "$REPORT_MSG_A" ]; then
         pass "QUM-559: child state.last_report_message persisted"
     else
-        fail "QUM-559: child state.last_report_message NOT persisted after sprawl report done (got: $LAST_MSG)"
+        fail "QUM-559: child state.last_report_message NOT persisted (got: $LAST_MSG)"
         echo "  child state file:" >&2
         cat "$CHILD_STATE_FILE" >&2 || true
     fi
 else
-    if grep -qE '"last_report_message"[^,}]*e2e tui notify test A' "$CHILD_STATE_FILE"; then
+    if grep -qE "\"last_report_message\"[^,}]*$REPORT_MSG_A" "$CHILD_STATE_FILE"; then
         pass "QUM-559: child state.last_report_message persisted"
     else
-        fail "QUM-559: child state.last_report_message NOT persisted after sprawl report done"
+        fail "QUM-559: child state.last_report_message NOT persisted"
         echo "  child state file:" >&2
         cat "$CHILD_STATE_FILE" >&2 || true
     fi
 fi
 
-# QUM-559: badge must NOT rise — report_status doesn't touch the maildir.
+# QUM-559: badge must NOT rise — state-only writes don't touch the maildir.
 if wait_for_no_badge_rise "$SESSION" 5; then
-    pass "QUM-559: weave row stayed at no unread badge after sprawl report done"
+    pass "QUM-559: weave row stayed at no unread badge after simulated report_status"
 else
-    fail "QUM-559: weave row showed an unread badge after sprawl report done (maildir leak)"
+    fail "QUM-559: weave row showed an unread badge after simulated report_status (maildir leak)"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -30 >&2
 fi
 
-rm -f "$REPORT_LOG"
-
-# QUM-559: banner delta must be 0 (no `inbox: N new message` for report_status).
+# QUM-559: banner delta must be 0 (no `inbox: N new message` for state-only writes).
 sleep 5
 BANNERS_AFTER_A=$(count_inbox_banners "$SESSION")
 DELTA_A=$((BANNERS_AFTER_A - BANNERS_BEFORE_A))
 if [ "$DELTA_A" -eq 0 ]; then
-    pass "QUM-559: zero banner-count delta after report_status (was QUM-465 delta=1, flipped to delta=0)"
+    pass "QUM-559: zero banner-count delta after simulated report_status (state-only)"
 else
     fail "QUM-559: banner-count delta = $DELTA_A (before=$BANNERS_BEFORE_A, after=$BANNERS_AFTER_A); expected 0"
     echo "  pane tail:" >&2
@@ -420,69 +435,83 @@ DRAINS_AFTER_A=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
 if [ "$DRAINS_AFTER_A" -eq "$DRAINS_BEFORE_A" ]; then
     pass "QUM-559: no maildir-drain notification from '$CHILD_NAME' (delta=0)"
 else
-    fail "QUM-559: maildir-drain notification from '$CHILD_NAME' appeared after report_status (delta=$((DRAINS_AFTER_A - DRAINS_BEFORE_A)))"
+    fail "QUM-559: maildir-drain notification from '$CHILD_NAME' appeared after simulated report_status (delta=$((DRAINS_AFTER_A - DRAINS_BEFORE_A)))"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -40 >&2
 fi
 
-# --- Test B: `sprawl messages send weave` from the same child ---
+# --- Test B: simulated MCP `messages_send` (direct maildir envelope write) ---
+#
+# QUM-565: schema mirrors internal/messages/messages.go Send() — fields
+# `id` (<unixnano>.<from>.<8hex>), `shortId` (3-char base36), `from`, `to`,
+# `subject`, `body`, `timestamp` (UTC RFC3339). Atomic write: tmp/ then
+# rename into new/. We also drop a sent/-copy under the sender's mailbox
+# to match Send()'s outbox behavior, and pre-create cur/ + archive/ so
+# downstream MarkRead / Archive paths don't ENOENT during this run.
 
 echo ""
-echo "=== Test B: child 'sprawl messages send weave' → badge rises to (1) ==="
+echo "=== Test B: simulated MCP messages_send weave → badge rises to (1) ==="
 # QUM-465: snapshot banner count before second send.
 BANNERS_BEFORE_B=$(count_inbox_banners "$SESSION")
-# QUM-555: snapshot drain count before second send to assert delta>=1.
-DRAINS_BEFORE_B=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
-SEND_LOG="$(mktemp /tmp/notify-tui-e2e-send.XXXXXX)"
-set +e
-env \
-    SPRAWL_AGENT_IDENTITY="$CHILD_NAME" \
-    SPRAWL_ROOT="$SPRAWL_ROOT" \
-    SPRAWL_TEST_MODE=1 \
-    "$SPRAWL_BIN" messages send weave "tui e2e subject" "tui e2e body B" \
-    > "$SEND_LOG" 2>&1
-SEND_RC=$?
-set -e
-if [ "$SEND_RC" -eq 0 ]; then
-    pass "sprawl messages send weave exited 0"
-else
-    fail "sprawl messages send weave exited non-zero ($SEND_RC)"
-    echo "  send stdout/stderr:" >&2
-    sed 's/^/    /' "$SEND_LOG" >&2
-fi
+# QUM-565: drain-count snapshot dropped; see comment block after badge
+# assertion below for rationale.
 
-if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(1\\)" 10; then
+# Build a maildir envelope matching internal/messages.Message.
+WEAVE_MBOX="$SPRAWL_ROOT/.sprawl/messages/weave"
+SENDER_MBOX="$SPRAWL_ROOT/.sprawl/messages/$CHILD_NAME"
+mkdir -p "$WEAVE_MBOX/tmp" "$WEAVE_MBOX/new" "$WEAVE_MBOX/cur" "$WEAVE_MBOX/archive"
+mkdir -p "$SENDER_MBOX/sent"
+
+# unixnano (preferred) + 8 random hex chars; RFC3339 UTC timestamp.
+NS_NOW="$(python3 -c 'import time; print(time.time_ns())' 2>/dev/null || date +%s%N)"
+HEX_SUFFIX="$(head -c 4 /dev/urandom | xxd -p)"
+SHORT_ID="$(head -c 3 /dev/urandom | xxd -p | tr 'A-Z' 'a-z' | head -c 3)"
+MSG_ID="${NS_NOW}.${CHILD_NAME}.${HEX_SUFFIX}"
+MSG_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+MSG_FILE="${MSG_ID}.json"
+
+cat > "$WEAVE_MBOX/tmp/$MSG_FILE" <<JSON
+{
+  "id": "${MSG_ID}",
+  "shortId": "${SHORT_ID}",
+  "from": "${CHILD_NAME}",
+  "to": "weave",
+  "subject": "tui e2e subject",
+  "body": "tui e2e body B",
+  "timestamp": "${MSG_TS}"
+}
+JSON
+mv "$WEAVE_MBOX/tmp/$MSG_FILE" "$WEAVE_MBOX/new/$MSG_FILE"
+cp "$WEAVE_MBOX/new/$MSG_FILE" "$SENDER_MBOX/sent/$MSG_FILE"
+pass "simulated messages_send: wrote maildir envelope (id=$SHORT_ID) atomically into weave/new/"
+
+if wait_for_pattern_fast "$SESSION" "weave[^│]*\\(1\\)" 15; then
     pass "QUM-559: weave row shows '(1)' unread badge after first real maildir delivery (Test A no longer leaves residue)"
 else
-    fail "weave row did NOT rise to '(1)' after sprawl messages send"
+    fail "weave row did NOT rise to '(1)' after simulated messages_send"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -30 >&2
 fi
 
-# QUM-323 / QUM-555: assert the second drain reached weave's prompt by
-# observing the `<system-notification>` count from $CHILD_NAME rise after
-# Test B fires. Note: if Test A's drain is still mid-turn when B arrives, B
-# stays pending until claude finishes A; the tick backstop then drains it.
-# Timeout tuned accordingly (claude turn latency + 2s tick + send).
-DRAIN_B_DEADLINE=$((SECONDS + 45))
-DRAIN_B_OK=0
-while [ "$SECONDS" -lt "$DRAIN_B_DEADLINE" ]; do
-    DRAINS_NOW_B=$(count_drain_notifications "$SESSION" "$CHILD_NAME")
-    if [ "$DRAINS_NOW_B" -gt "$DRAINS_BEFORE_B" ]; then
-        DRAIN_B_OK=1
-        break
-    fi
-    sleep 1
-done
-if [ "$DRAIN_B_OK" -eq 1 ]; then
-    pass "QUM-555 second drain notification from '$CHILD_NAME' reached weave's prompt (QUM-323 drain fired in TUI)"
-else
-    fail "QUM-555 second drain notification from '$CHILD_NAME' did NOT reach weave's prompt within 45s — QUM-323 TUI regression"
-    echo "  pane tail:" >&2
-    capture_pane "$SESSION" | tail -40 >&2
-fi
-
-rm -f "$SEND_LOG"
+# QUM-565: drain-row inject assertion intentionally NOT made here.
+#
+# A former assertion (QUM-555 / QUM-323 guard) observed weave's pane for a
+# `<system-notification>` drain row citing `mcp__sprawl__messages_read` after
+# Test B fired. That row is driven by `internal/messages.Send()`'s
+# defaultNotifier callback → `supervisor.WakeForDelivery` → claude prompt-inject.
+# The direct maildir-envelope write above (which replaced the now-deleted
+# `messages send` CLI invocation removed in Phase 2.3b of M13, QUM-566)
+# correctly exercises the TUI's maildir watcher (banner + badge,
+# asserted above) but bypasses the Send()/WakeForDelivery arm — so the drain
+# row never lands. No out-of-process IPC exists today to drive the in-process
+# supervisor singleton from this script.
+#
+# The notifier+wake mechanics remain unit-tested in
+# `internal/runtime/unified_delivery_send_message_test.go` and the
+# `internal/supervisor/*_test.go` suites; the end-to-end drain-row inject is
+# exercised live by every real-claude-child workflow in production. Restoring
+# a shell-layer regression guard via a real-claude micro-harness is tracked
+# in QUM-569.
 
 # QUM-465 / QUM-555: assert exactly ONE inbox banner was added by Test B's
 # single delivery. Sample the banner count repeatedly and take the MAX

@@ -93,8 +93,8 @@ func TestBuildQueueFlushPrompt_NoBodyInlined(t *testing.T) {
 // TestBuildQueueFlushPrompt_NamesMCPTool is the QUM-556 regression guard:
 // the rendered line MUST contain the fully-qualified MCP tool name
 // `mcp__sprawl__messages_read` with the id in function-call shape, and MUST
-// NOT use the bare verb "Read " (which was ambiguous with the deprecated
-// `sprawl messages read <id>` CLI).
+// NOT use the bare verb "Read " (which was ambiguous with the legacy CLI
+// form and triggered the wrong path).
 func TestBuildQueueFlushPrompt_NamesMCPTool(t *testing.T) {
 	entries := []inboxprompt.Entry{{
 		ID: "u1", ShortID: "abc", From: "weave", Body: "hi",

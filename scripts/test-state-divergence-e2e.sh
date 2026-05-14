@@ -11,12 +11,14 @@
 #
 # Implementation: drives the supervisor end-to-end via a focused Go test
 # (TestE2E_StateDivergenceFullFlow) using a no-op runtime starter, so no
-# real Claude API/binary is needed. Also exercises the offline retire CLI
-# cleanup path against a hand-populated sandbox to assert the binary's
-# behavior on disk.
+# real Claude API/binary is needed.
 #
-# Run from anywhere; no SPRAWL_ROOT setup required (the script creates
-# its own /tmp sandbox).
+# QUM-565: a former "Part 2" exercised the offline retire-CLI
+# (`--abandon`) against a hand-populated sandbox. That CLI is being
+# deleted in Phase 2.3b of M13 and Part 1 already drives the same retire
+# code path via the supervisor end-to-end, so Part 2 was redundant.
+#
+# Run from anywhere; no SPRAWL_ROOT setup required.
 
 set -euo pipefail
 
@@ -39,11 +41,11 @@ assert_pass() { PASS=$((PASS + 1)); green "  PASS: $1"; }
 assert_fail() { FAIL=$((FAIL + 1)); red   "  FAIL: $1"; }
 
 # ============================================================
-# Part 1 — Drive the supervisor end-to-end via the focused Go test.
+# Drive the supervisor end-to-end via the focused Go test.
 # This exercises: spawn researcher → spawn manager → simulate divergence →
 # retire → assert clean cleanup → assert name reuse.
 # ============================================================
-blue "[1/2] Running TestE2E_StateDivergenceFullFlow (supervisor end-to-end)"
+blue "Running TestE2E_StateDivergenceFullFlow (supervisor end-to-end)"
 if (cd "$REPO_ROOT" && go test ./internal/supervisor -run TestE2E_StateDivergenceFullFlow -v); then
     assert_pass "supervisor end-to-end divergence flow"
 else
@@ -51,99 +53,11 @@ else
 fi
 
 # ============================================================
-# Part 2 — Sandbox CLI: exercise offline retire cleanup against a
-# hand-populated sandbox to assert binary on-disk behavior.
+# AllocateName: verify stale agent dirs don't block name reuse.
+# Lightweight unit-level invocation; no sandbox needed.
 # ============================================================
-blue "[2/2] Sandbox: exercising offline retire CLI cleanup on disk"
-
-SPRAWL_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sprawl-qum404-XXXXXX")
-SPRAWL_ROOT="$(cd "$SPRAWL_ROOT" && pwd -P)"
-case "$SPRAWL_ROOT" in
-    /tmp/*) ;;
-    *) red "FATAL: sandbox path $SPRAWL_ROOT not under /tmp/" >&2; exit 1 ;;
-esac
-cleanup() {
-    [[ "$SPRAWL_ROOT" == /tmp/* ]] && rm -rf "$SPRAWL_ROOT"
-}
-trap cleanup EXIT INT TERM HUP
-
-# QUM-458 layer 1: setsid'd watchdog reaps the sandbox if the driver dies via
-# SIGKILL (which bypasses bash's EXIT trap). No tmux socket here — pass empty.
-# shellcheck source=lib/sandbox-traps.sh
-. "$(dirname "$0")/lib/sandbox-traps.sh"
-sandbox_install_watchdog "$$" "" "$SPRAWL_ROOT"
-
-git -C "$SPRAWL_ROOT" init -b main --quiet
-git -C "$SPRAWL_ROOT" -c user.email=t@t -c user.name=t commit --allow-empty -m init --quiet
-
-# Create a fake manager agent: state JSON, agent dir with SYSTEM.md, worktree.
-MGR=tower
-MGR_BRANCH="dmotles/qum-404-mgr"
-git -C "$SPRAWL_ROOT" branch "$MGR_BRANCH"
-WORKTREE="$SPRAWL_ROOT/.sprawl/worktrees/$MGR"
-git -C "$SPRAWL_ROOT" worktree add --quiet "$WORKTREE" "$MGR_BRANCH"
-
-mkdir -p "$SPRAWL_ROOT/.sprawl/agents/$MGR"
-echo "you are tower" > "$SPRAWL_ROOT/.sprawl/agents/$MGR/SYSTEM.md"
-mkdir -p "$SPRAWL_ROOT/.sprawl/agents/$MGR/prompts"
-echo "do work" > "$SPRAWL_ROOT/.sprawl/agents/$MGR/prompts/initial.md"
-
-cat >"$SPRAWL_ROOT/.sprawl/agents/$MGR.json" <<EOF
-{
-  "name": "$MGR",
-  "type": "manager",
-  "family": "engineering",
-  "parent": "weave",
-  "branch": "$MGR_BRANCH",
-  "worktree": "$WORKTREE",
-  "status": "active",
-  "created_at": "2026-04-30T00:00:00Z"
-}
-EOF
-
-# Sanity: pre-state.
-[ -f "$SPRAWL_ROOT/.sprawl/agents/$MGR.json" ] || { assert_fail "pre: agent JSON should exist"; exit 1; }
-[ -d "$SPRAWL_ROOT/.sprawl/agents/$MGR" ]      || { assert_fail "pre: agent dir should exist"; exit 1; }
-[ -d "$WORKTREE" ]                              || { assert_fail "pre: worktree should exist"; exit 1; }
-
-# Run offline retire --abandon (which is the path that ENOENT'd in the
-# original repro before the fix; here we test that cleanup completes
-# fully and removes the per-agent dir + worktree).
-SPRAWL_ROOT="$SPRAWL_ROOT" SPRAWL_AGENT_IDENTITY=weave \
-    "$SPRAWL_BIN" retire "$MGR" --abandon --yes 2>&1 || {
-        assert_fail "offline retire --abandon exited non-zero"
-        exit 1
-    }
-
-# Assert post-retire state.
-if [ ! -f "$SPRAWL_ROOT/.sprawl/agents/$MGR.json" ]; then
-    assert_pass "agent JSON removed after retire"
-else
-    assert_fail "agent JSON still present after retire: $SPRAWL_ROOT/.sprawl/agents/$MGR.json"
-fi
-
-if [ ! -d "$SPRAWL_ROOT/.sprawl/agents/$MGR" ]; then
-    assert_pass "agent dir removed after retire (QUM-404 fix)"
-else
-    assert_fail "agent dir still present after retire: $SPRAWL_ROOT/.sprawl/agents/$MGR"
-fi
-
-if [ ! -d "$WORKTREE" ]; then
-    assert_pass "worktree removed after retire"
-else
-    assert_fail "worktree still present after retire: $WORKTREE"
-fi
-
-# Stale-dir + name-allocation: pre-create a stale dir for the next manager
-# name and verify a subsequent fake spawn would skip it.
-NEXT=forge   # second name in ManagerNames after "tower"
-mkdir -p "$SPRAWL_ROOT/.sprawl/agents/$NEXT"
-echo "stale" > "$SPRAWL_ROOT/.sprawl/agents/$NEXT/SYSTEM.md"
-
-# Use a small inline Go runner to call agent.AllocateName directly.
-ALLOC=$(cd "$REPO_ROOT" && go run ./internal/agent/cmd/allocname 2>/dev/null || true)
-# Fallback: if no helper main exists, use a one-shot test invocation.
-ALLOC_OUT=$(cd "$REPO_ROOT" && SPRAWL_ROOT_FIXTURE="$SPRAWL_ROOT/.sprawl/agents" \
+blue "Running AllocateName unit test (stale-dir name allocation)"
+ALLOC_OUT=$(cd "$REPO_ROOT" && \
     go test ./internal/agent -run '^TestAllocateName_SkipsExistingDirectories$' -v 2>&1 | tail -20)
 
 if echo "$ALLOC_OUT" | grep -q -- '--- PASS'; then

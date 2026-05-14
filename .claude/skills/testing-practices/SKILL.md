@@ -151,25 +151,27 @@ Build the binary:
 make build
 ```
 
-This produces a `./sprawl` binary. The interactive entrypoint is `sprawl enter` — there is no `sprawl init` (it was removed in QUM-346; see `cmd/init_removed_test.go` for the regression guard). Common offline commands you can test against a sandbox:
+This produces a `./sprawl` binary. The interactive entrypoint is `sprawl enter` — there is no `sprawl init` (it was removed in QUM-346; see `cmd/init_removed_test.go` for the regression guard). The CLI surface is intentionally small: the agent-facing operations (spawn, delegate, retire, kill, send_message, report_status, status, peek, merge, handoff, messages_*) are all MCP tools driven from inside a `sprawl enter` weave session. The standalone CLI exposes only:
 
 ```bash
 # Open the TUI / weave session (loads the same-process supervisor)
 ./sprawl enter
 
-# Send a message between agents (offline-safe)
-./sprawl messages send weave "subject" "body"
+# Tail an agent's session log
+./sprawl logs alice
 
-# Inspect the agent tree
-./sprawl status
-./sprawl tree
+# Squash-merge an agent's branch (also available as the `merge` MCP tool)
+./sprawl merge alice
 
-# Offline retire (only when no weave session is running)
-./sprawl retire alice
-./sprawl retire --cascade alice
+# Branch hygiene — delete merged branches not owned by any active agent
+./sprawl cleanup branches
+
+# Config + memory utilities
+./sprawl config show
+./sprawl memory show
 ```
 
-For anything that touches the live runtime (`spawn`, `kill`, `report`, `handoff`), drive it from inside `sprawl enter` via the MCP tools — the standalone subcommands are deprecated stubs that fail closed (see `cmd/spawn.go`, `cmd/kill.go`).
+For anything else — inspecting agent state, sending messages, reporting status, spawning, killing, retiring — drive it from inside `sprawl enter` via the MCP tools.
 
 ## Validating Agent Behavior
 
@@ -194,8 +196,9 @@ cat .sprawl/agents/alice.json
 ls .sprawl/messages/
 ls .sprawl/messages/weave/new/
 
-# Inbox via the CLI
-./sprawl messages inbox
+# Inbox via MCP (from inside a weave session)
+# messages_peek({})            — unread count + previews
+# messages_list({filter: "unread"})
 ```
 
 ### Git worktrees
@@ -217,7 +220,6 @@ The `make validate` pipeline does NOT cover the live supervisor / TUI integratio
 make test-handoff-e2e          # supervisor + MCP handoff round-trip (QUM-329)
 make test-notify-tui-e2e       # TUI inbox-notifier delivery (QUM-311/312)
 make test-tui-e2e              # general TUI rendering smoke
-make test-mcp-identity-e2e     # MCP-side agent identity propagation
 ```
 
 Each target requires a real `claude` binary on `PATH`; set `SPRAWL_E2E_SKIP_NO_CLAUDE=1` to skip in environments without one. They are **mandatory** before merging changes that touch the file lists called out in `CLAUDE.md` ("TUI-notifier changes are mandatory-tested" / "Handoff-path changes are mandatory-tested").

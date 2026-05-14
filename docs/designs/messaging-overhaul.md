@@ -1,10 +1,19 @@
 # Design: Messaging + Notification Overhaul (MCP-based, async + interrupt)
 
-**Status:** Draft
+**Status:** Implemented (post-MCP migration)
 **Author:** ghost (researcher agent)
 **Tracking issue:** [QUM-277](https://linear.app/qumulo-dmotles/issue/QUM-277/design-messaging-notification-overhaul-mcp-based-async-interrupt)
 **Date:** 2026-04-21
 **Related punchlist items:** `docs/todo/punchlist.md` #1 (messaging overhaul) and #2 (sub-agent visibility)
+
+> **Implementation note (2026-05, M13 Phase 2.3):** The legacy CLI commands
+> referenced below (under the `messages`, `report`, and `status` subcommand
+> trees) were deleted in QUM-566 in favor of the MCP-tool surface that this
+> design proposed: `send_message`, `messages_read`, `messages_list`,
+> `messages_peek`, `messages_archive`, `report_status`, `status`. The
+> proposed-surface sections describe the live design; sections referring to
+> the prior CLI shape have been rephrased to drop the `sprawl ` prefix
+> (so e.g. "messages send" now reads as the legacy subcommand name).
 
 ---
 
@@ -15,7 +24,7 @@ delivery path that can cleanly inject messages into a Claude subprocess without
 fighting the user's keyboard or modal overlays. Introduce two explicit message
 classes — **async** (deliver on next yield) and **interrupt** (pause, inject,
 resume) — and give the harness first-class visibility into sub-agent activity
-so the TUI and `sprawl status` can surface what a child is actually doing.
+so the TUI and `status` can surface what a child is actually doing.
 
 This is a design-only doc. Implementation is decomposed into child issues at
 the end.
@@ -38,7 +47,7 @@ line appears mid-sentence) to destructive (an `Enter` terminates a half-typed
 command, or a notification is injected into an `AskUserQuestion` text field).
 
 A second, orthogonal problem: when `weave` spawns a sub-agent, it cannot see
-what the child is doing until the child reports back. `sprawl report status`
+what the child is doing until the child reports back. `report status`
 exists but is underused and opaque; the TUI has no panel for child activity.
 Sub-agent silence makes the manager agent pattern hard to reason about.
 
@@ -50,7 +59,7 @@ Sub-agent silence makes the manager agent pattern hard to reason about.
 - **G2.** Two clearly-named message classes with well-specified semantics:
   `async` and `interrupt`.
 - **G3.** Sub-agent visibility: the harness exposes a structured "what is this
-  child doing right now?" surface consumable by the TUI and `sprawl status`.
+  child doing right now?" surface consumable by the TUI and `status`.
 - **G4.** `coder_report_task`-style status reporting from child → parent, via
   MCP, persisted on disk.
 - **G5.** Migration is phased. `tmux send-keys` stays as a fallback for
@@ -108,7 +117,7 @@ injection and interrupt; we don't need to invent new transport mechanics.
 Registered as `sprawl` via `host.MCPBridge`. Exposes `spawn`,
 `status`, `delegate`, `message`, `merge`,
 `retire`, `kill`, `handoff`. `message` today is
-functionally identical to `sprawl messages send` — it writes to Maildir and
+functionally identical to `messages send` — it writes to Maildir and
 fires the same `.wake` notification as the CLI path.
 
 ### 3.5 CLI / tmux notification path
@@ -140,14 +149,14 @@ tests), not a live protocol-event tail.
 
 - **tmux send-keys races user keyboard.** Unavoidable at the protocol layer;
   tmux has no mutex for concurrent input sources.
-- **`.wake` polling latency.** Worst case ~3.5 s between a `sprawl messages
+- **`.wake` polling latency.** Worst case ~3.5 s between a `messages
   send` and inbox delivery, because the agent loop's idle sleep is 3 s and
   the poke/wake poll is 500 ms.
 - **`.poke` content is delivery-at-most-once across restarts.** If the
   subprocess dies between reading and acking, the poke file is gone.
 - **No shared child-activity surface.** `tmuxObserver.OnMessage` sees protocol
   events but discards them; nothing exposes them to parent or TUI.
-- **`sprawl report` writes state + sends a Maildir message + (optionally)
+- **`report` writes state + sends a Maildir message + (optionally)
   tmux-notifies the root.** Three paths, easy to miss one.
 
 ---
@@ -228,7 +237,7 @@ Semantics:
 ```
 name:        report_status
 description: Report status to this agent's parent. Structured, first-class.
-             Replaces ad-hoc `sprawl report` for MCP-aware agents.
+             Replaces ad-hoc `report` for MCP-aware agents.
 params:
   state:   enum { "working", "blocked", "complete", "failure" }  (required)
   summary: string  (required, ≤160 chars, coder_report_task-compatible)
@@ -244,7 +253,7 @@ Semantics:
 3. If the reporter has a parent, enqueue an `async` message to the parent
    with subject `[STATUS/COMPLETE/FAILURE] {reporter} → {summary}`.
 4. Emit a **status-tick event** on the harness event bus (§4.4) so the TUI
-   and `sprawl status` can surface it live without polling.
+   and `status` can surface it live without polling.
 
 #### 4.2.4 `peek`
 
@@ -307,7 +316,7 @@ Each queue entry:
 ```
 
 - **Writers** (`send_async`, `send_interrupt`, and a shim for
-  CLI `sprawl messages send`) append under `pending/` and fsync. An atomic
+  CLI `messages send`) append under `pending/` and fsync. An atomic
   rename via `pending/.tmp-{id}` → `pending/{seq}-{class}-{id}.json` gives
   crash-safe delivery.
 - **Signal:** a lightweight `queue.notify` unix socket (or fallback: an
@@ -354,7 +363,7 @@ falls back to a per-agent append-only `activity.ndjson` file (tailed) when
 the query crosses process boundaries (e.g. TUI in one process, agent
 subprocess in another).
 
-Emit an event on each update for subscribers (TUI panel, `sprawl status
+Emit an event on each update for subscribers (TUI panel, `status
 --watch`).
 
 ### 4.5 Injection mechanics
@@ -372,7 +381,7 @@ After `proc.SendPrompt` returns a `result`:
    [inbox] You received N messages since the last turn:
 
    1. from weave  [status]  subject here
-      <body, possibly truncated with "run `sprawl messages read <id>` for full body">
+      <body, possibly truncated with "run `messages read <id>` for full body">
 
    2. ...
 
@@ -432,7 +441,7 @@ Three surfaces built on §4.4 and §4.2.4:
 1. **TUI "Activity" panel.** When an agent is selected in the tree, a new
    right-hand pane renders the last N `ActivityEntry`s (coloring tool calls
    vs. text, truncating tool args). Updates on `activity-tick` events.
-2. **`sprawl status --watch`** and **`sprawl status <agent>`** — the CLI
+2. **`status --watch`** and **`status <agent>`** — the CLI
    grows a `--watch` flag that tails the activity ring, and a positional
    argument that dumps the last 50 entries + `last_report` for one agent.
 3. **`peek` MCP tool** — parent agents can query children
@@ -453,7 +462,7 @@ yellow blocked, red failure, grey idle) + the ≤160-char `summary` from
 
 Agent system prompts need a short section teaching the model to prefer:
 
-- `send_async` over `sprawl messages send` when MCP is available;
+- `send_async` over `messages send` when MCP is available;
 - `send_interrupt` — **rare** — only for genuinely urgent parent-side
   corrections;
 - `report_status` at each meaningful step (sub-agents reporting to
@@ -536,7 +545,7 @@ Each is a reasonable standalone PR. Ordering reflects dependencies.
    `internal/tui`.
 7. **TUI activity panel.** New pane on the right; subscribes to activity
    events; renders with color/truncation rules.
-8. **CLI: `sprawl status --watch` and `sprawl status <agent>`.** Consume
+8. **CLI: `status --watch` and `status <agent>`.** Consume
    `PeekActivity` via supervisor.
 9. **Deprecate tmux send-keys notification paths.** Remove the send-keys
    calls in `cmd/messages.go:199` and `cmd/report.go:157`. Leave the
@@ -559,7 +568,7 @@ infrastructure. All existing code paths still work.
 **both** the new queue and, for compatibility, the old `.wake` sentinel. The
 agent loop's `flushQueue` supersedes the old inbox step, but the loop still
 honors `.wake` as a wake source. `message` is kept as an alias. No
-behavior regression: agents that still use `sprawl messages send` or
+behavior regression: agents that still use `messages send` or
 `message` continue to work.
 
 **Phase 2 (interrupt + reporting).** Land items 5–6. The interrupt tool is
@@ -657,7 +666,7 @@ usage.
 
 If a child generates 100 async messages before the parent's next yield,
 the parent gets one giant notification frame. Mitigation: the frame
-summarizes ("3 status updates, 1 question — run `sprawl messages read`
+summarizes ("3 status updates, 1 question — run `messages read`
 for details") and links to IDs. Avoid inlining every body above a size
 threshold (say 2 KB each, 10 KB total).
 

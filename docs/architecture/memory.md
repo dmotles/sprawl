@@ -19,7 +19,7 @@ Tracked under umbrella issue [QUM-513]; cutover landed in [QUM-517].
 ### Session files
 
 Written by the handoff path (`internal/memory/sessionlog.go`) when an agent
-calls `sprawl handoff`. They contain the full structured handoff body and are
+calls the `handoff` MCP tool. They contain the full structured handoff body and are
 treated as immutable historical artifacts.
 
 ### Timeline format

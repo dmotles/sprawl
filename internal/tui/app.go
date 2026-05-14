@@ -1115,10 +1115,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AgentTreeMsg:
 		m.childNodes = msg.Nodes
-		// QUM-311: detect out-of-process inbox arrivals (child agents calling
-		// `sprawl report done` / `sprawl messages send` from their own
-		// processes) by comparing the disk-polled unread count to the
-		// locally-tracked value. Any increase yields a banner so the user
+		// QUM-311: detect out-of-process inbox arrivals (e.g. an external
+		// child process writing a maildir envelope directly, or any future
+		// out-of-process sender) by comparing the disk-polled unread count
+		// to the locally-tracked value. Any increase yields a banner so the user
 		// gets the same UX whether the sender was in-process (InboxArrivalMsg
 		// via the TUI notifier) or out-of-process (caught on the 2s tick).
 		if msg.RootUnread > m.rootUnread {
@@ -1141,8 +1141,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-323: backstop drain. Every 2s the tree polls weave's unread
 		// counts; piggyback on that cadence to peek the harness queue and
 		// (when idle + non-empty) schedule an InboxDrainMsg. This covers both
-		// out-of-process senders (child agent `sprawl report done`) and
-		// in-process senders (MCP send_async) with a single codepath.
+		// out-of-process senders (external processes writing maildir directly)
+		// and in-process senders (MCP send_message) with a single codepath.
 		//
 		// QUM-399: this path is shared with the unified-runtime bridge. The
 		// resulting InboxDrainMsg → bridge.SendMessage either streams the

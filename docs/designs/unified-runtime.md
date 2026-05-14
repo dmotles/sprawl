@@ -71,7 +71,7 @@ Runner.Run() loop:
      d. Check task queue → send task prompt
      e. Check interrupt queue → BuildInterruptFlushPrompt()
      f. Check async queue → BuildQueueFlushPrompt()
-     g. Check inbox messages → build "read with sprawl messages read" prompt
+     g. Check inbox messages → build "read with the `messages_read` MCP tool" prompt
      h. Check wake file → send wake prompt
      i. Release lock, sleep 3s, repeat
 ```

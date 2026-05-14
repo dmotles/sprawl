@@ -36,8 +36,8 @@
 #        * child agent log/transcript contains no "stream closed" or
 #          "broken pipe" error from the second send_async call.
 #
-# WHY A REAL CLAUDE CHILD: A synthetic CLI proxy (sprawl messages send)
-# writes directly to the maildir and bypasses weave's MCP bridge entirely.
+# WHY A REAL CLAUDE CHILD: A synthetic CLI proxy (e.g. a direct maildir
+# writer) bypasses weave's MCP bridge entirely.
 # That cannot detect bridge severance. Only a real long-lived MCP session
 # from the child to weave exercises the failure mode.
 #

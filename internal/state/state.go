@@ -27,8 +27,8 @@ type AgentState struct {
 	TotalCostUsd     float64 `json:"total_cost_usd,omitempty"`
 	LastCostUpdateAt string  `json:"last_cost_update_at,omitempty"` // RFC3339
 
-	// Report fields — populated by "sprawl report" subcommands and the
-	// report_status MCP tool. See docs/designs/messaging-overhaul.md §4.2.3.
+	// Report fields — populated by the report_status MCP tool. See
+	// docs/designs/messaging-overhaul.md §4.2.3.
 	LastReportType    string `json:"last_report_type,omitempty"` // back-compat: status, done, problem
 	LastReportMessage string `json:"last_report_message,omitempty"`
 	LastReportAt      string `json:"last_report_at,omitempty"`    // RFC3339

@@ -24,7 +24,7 @@ The root is the top-level agent and the only one the user interacts with directl
 
 ### Agent Identity
 
-Every agent in the system has a unique name drawn from a pre-set pool of ~50 names. When an agent is spawned, it is assigned the next available name. The name is set as the `SPRAWL_AGENT_IDENTITY` environment variable in the agent's environment, so every agent always knows who it is. This means commands like `sprawl spawn` don't need a `--parent` flag — the system knows who's spawning based on the caller's identity.
+Every agent in the system has a unique name drawn from a pre-set pool of ~50 names. When an agent is spawned, it is assigned the next available name. The name is set as the `SPRAWL_AGENT_IDENTITY` environment variable in the agent's environment, so every agent always knows who it is. This means the `spawn` tool doesn't need a `parent` argument — the system knows who's spawning based on the caller's identity.
 
 If the name pool is exhausted, the system errors: "no more agents can be spawned." This acts as a natural ceiling on system complexity. Future versions may generate additional names dynamically.
 
@@ -68,7 +68,7 @@ A manager receives a task from its parent and decides how to execute it. Its cor
 4. **Integrate** — When an engineer reports done, the manager evaluates the work. If it's good (possibly after having a researcher or QA agent review it), it uses `sprawl merge` to squash-merge the engineer's branch into the manager's integration branch. If the work is bad, the manager has two choices:
    - **Abandon and respawn**: scrap the work and spawn a new engineer with corrected instructions based on what went wrong.
    - **Spawn forward**: if it's close but needs tweaks, send follow-up work to the same agent (who has context) or spawn a new one to fix the issues from where the previous one left off.
-5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context) or kill unresponsive agents (`sprawl kill <agent>`).
+5. **Manage agents** — Managers can reuse idle agents for follow-up work (the agent retains its session context) or kill unresponsive agents via the `kill` MCP tool.
 6. **Report up** — When all subtasks are complete and merged into the manager's integration branch, report to the parent that the branch is ready to be merged up.
 
 The key design principle: **the manager decides how to handle every situation.** Your objective is X; figure out how to make it happen. These are the tools you have. This keeps the rules simple and lets emergent behavior handle the complexity.
@@ -118,55 +118,57 @@ The system doesn't spiral into infinity because of a natural forcing function: *
 
 This is what distinguishes Sprawl from Conway's Game of Life. Conway's system is aimless — patterns emerge and evolve but go nowhere in particular. Sprawl is goal-directed. The expansion is in service of convergence. The network grows outward so it can collapse back inward with a completed result.
 
-## CLI
+## Interface
 
-The `sprawl` CLI is how agents interact with the system. Rather than providing tools via MCP servers, the system's capabilities are exposed as CLI commands. This keeps agents loosely coupled to Claude Code specifically — the CLI is the interface, not the model.
+The user-facing surface is the `sprawl` CLI (`sprawl enter` launches the root agent into the TUI). The agent-facing surface — how agents spawn each other, message each other, report status, and merge work — is an in-process MCP server that exposes a set of tools to every running Claude Code instance. Agents call these tools by name (`spawn`, `delegate`, `send_message`, `peek`, `merge`, `retire`, `report_status`, `messages_list`, `messages_read`, `messages_peek`, `messages_archive`, `ask_user_question`, `kill`, `handoff`); the tool calls run in the same process as the sprawl host that launched them.
 
-### Core Commands
+### User CLI
 
 ```
 sprawl enter                         Launch the root agent (TUI)
+sprawl logs <agent-name>             Tail an agent's session log
+sprawl merge <agent-name>            Squash-merge an agent's branch (also available as the `merge` MCP tool)
+sprawl cleanup branches              Delete merged branches not owned by any active agent
 ```
 
-### Spawning & Agent Management
+### Agent MCP Tools
+
+Spawning & lifecycle:
 
 ```
-sprawl spawn \
-  --family <product|engineering|qa> \
-  --type <manager|engineer|researcher> \
-  --branch <branch-name> \
-  --prompt "<task description>"
-
-sprawl kill <agent-name>             Kill an unresponsive agent
+spawn({family, type, branch, prompt})    Create a new worktree-backed child agent
+delegate({agent_name, task})             Queue a tracked task on an existing agent
+retire({agent_name, merge?, abandon?})   Shut down (and optionally merge or discard work)
+kill({agent_name})                       Emergency stop; preserves state and worktree
 ```
 
-The calling agent's identity is inferred from `SPRAWL_AGENT_IDENTITY` — no `--parent` flag needed.
+The calling agent's identity is inferred from `SPRAWL_AGENT_IDENTITY` — no parent argument is needed.
 
 ### Messaging
 
-Agents communicate via a mailbox-style messaging system.
+Agents communicate via a mailbox-style messaging system surfaced through MCP tools:
 
 ```
-sprawl messages send <agent-id> "<subject>" "<message>"
-sprawl messages broadcast "<subject>" "<message>"
-sprawl messages inbox
-sprawl messages list [all|sent|read|unread|archived]
-sprawl messages read <msg-id>
-sprawl messages unread <msg-id>
-sprawl messages archive <msg-id>
+send_message({to, body, interrupt?})     Durable message; lands in recipient's inbox
+messages_peek({})                        Cheap "do I have mail?" probe
+messages_list({filter?, limit?})         List inbox (all, unread, read, archived)
+messages_read({id})                      Fetch a message body; auto-marks read
+messages_archive({id} | {all: true})     Archive one or all messages
 ```
 
-Broadcast sends a message to all agents. Intended primarily for the root.
+`interrupt: true` is reserved for rare urgent parent→descendant corrections; the default cooperative path enqueues the message at the recipient's next turn boundary.
 
 ### Reporting
 
-Agents report status to their parent (superior) in the network.
+Agents report status to their parent (superior) in the network:
 
 ```
-sprawl report status "<status>"      Report current status
-sprawl report done "<result>"        Report successful completion
-sprawl report problem "<problem>"    Escalate an issue
+report_status({state, summary})          state ∈ {working, blocked, complete, failure}
+peek({agent, tail?})                     Inspect another agent's recent activity + last report
+status({})                               List all agents with state, type, family, branch
 ```
+
+`report_status` is ephemeral state — it updates the agent's global state and pings the parent asynchronously, but is NOT a message and is not retrievable via `messages_read`. For anything substantive or retrievable, use `send_message` instead.
 
 ### Signaling
 

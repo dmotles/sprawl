@@ -75,7 +75,7 @@ The wrapper loop should be a **bash script** (`scripts/sprawl-agent-loop.sh`), n
 - No compilation step means no circular dependency (the build system doesn't need to produce a binary for the wrapper before agents can run).
 - The heavy logic (message checking, state management) already lives in the `sprawl` CLI. The wrapper just calls `sprawl` commands.
 
-**The script is NOT a user-facing command.** It's an internal implementation detail invoked by `sprawl spawn`. Users never run it directly.
+**The script is NOT a user-facing command.** It's an internal implementation detail invoked by `spawn`. Users never run it directly.
 
 ### Decision 2: File-based polling with signal-assisted wake
 
@@ -94,7 +94,7 @@ while true; do
         continue
     fi
 
-    # Check for wake signal (from sprawl messages send, sprawl report, etc.)
+    # Check for wake signal (from messages send, report, etc.)
     if [ -f "$WAKE_FILE" ]; then
         reason=$(cat "$WAKE_FILE")
         rm -f "$WAKE_FILE"
@@ -107,7 +107,7 @@ done
 ```
 
 **Wake file protocol:**
-- When `sprawl messages send <agent>` delivers a message, it also writes a `.wake` file for the target agent: `.sprawl/agents/<name>.wake`
+- When `messages send <agent>` delivers a message, it also writes a `.wake` file for the target agent: `.sprawl/agents/<name>.wake`
 - The wake file contains a human-readable reason string (e.g., "You have new messages. Check your inbox." or "Your child bob reported done.")
 - The wrapper checks for this file each poll cycle and deletes it after reading
 - If multiple signals arrive between polls, only the last one is kept (which is fine -- the prompt just tells Claude to check its inbox)
@@ -216,11 +216,11 @@ Claude Code can exit with different codes. The wrapper should handle them:
 | 1 | Error | Log error, enter poll loop (agent can be woken to retry) |
 | Other | Unknown | Log, enter poll loop |
 
-The wrapper **never exits on its own** (except on SIGTERM/SIGKILL from `sprawl kill`). Even if Claude errors, the wrapper stays alive so the agent can be woken again. This is important: a transient error shouldn't permanently kill an agent.
+The wrapper **never exits on its own** (except on SIGTERM/SIGKILL from `kill`). Even if Claude errors, the wrapper stays alive so the agent can be woken again. This is important: a transient error shouldn't permanently kill an agent.
 
 ### Decision 7: Impact on kill and retire
 
-**kill:** No changes needed. `sprawl kill` already:
+**kill:** No changes needed. `kill` already:
 1. Finds PIDs in the tmux window (`ListWindowPIDs`)
 2. Sends SIGTERM/SIGKILL
 3. Kills the tmux window
@@ -335,7 +335,7 @@ while true; do
     # Check for new messages in inbox
     if has_new_messages; then
         log "New messages detected in inbox"
-        run_claude "You have new messages. Check your inbox with: sprawl messages inbox"
+        run_claude "You have new messages. Check your inbox with: messages inbox"
         continue
     fi
 
@@ -363,7 +363,7 @@ done
 
 ### Messaging system integration
 
-When `sprawl messages send` delivers a message, it should also write a wake file:
+When `messages send` delivers a message, it should also write a wake file:
 
 ```go
 // After writing message to inbox:
@@ -371,7 +371,7 @@ wakeFile := filepath.Join(sprawlRoot, ".sprawl", "agents", targetAgent+".wake")
 os.WriteFile(wakeFile, []byte("You have new messages. Check your inbox."), 0644)
 ```
 
-Similarly, `sprawl report` (child reporting to parent) should write a wake file for the parent:
+Similarly, `report` (child reporting to parent) should write a wake file for the parent:
 
 ```go
 wakeFile := filepath.Join(sprawlRoot, ".sprawl", "agents", parentName+".wake")
@@ -417,14 +417,14 @@ Note: The `starting`, `sleeping`, and `working` states are conceptual -- the wra
 
 1. **Phase 1:** Implement the wrapper script and update `spawn` to use it. All new agents get the wrapper. Existing interactive sessions are unaffected (there are none in a fresh system).
 
-2. **Phase 2:** Implement the wake file protocol in `sprawl messages send` and `sprawl report`. Until this is done, agents rely on polling (3s latency, which is fine).
+2. **Phase 2:** Implement the wake file protocol in `messages send` and `report`. Until this is done, agents rely on polling (3s latency, which is fine).
 
 3. **Phase 3:** (Optional) Add fine-grained state tracking (`sleeping`/`working`) to the state file for observability.
 
 ## Edge Cases
 
 **Claude hangs and never exits:**
-The wrapper can't proceed to the poll phase until Claude exits. The `sprawl kill` command handles this -- it sends SIGTERM/SIGKILL to all processes in the tmux window, which includes both the wrapper and Claude. After respawn, the wrapper starts fresh.
+The wrapper can't proceed to the poll phase until Claude exits. The `kill` command handles this -- it sends SIGTERM/SIGKILL to all processes in the tmux window, which includes both the wrapper and Claude. After respawn, the wrapper starts fresh.
 
 Future improvement: add a configurable timeout to the wrapper (e.g., `SPRAWL_RUN_TIMEOUT=600`) that kills the Claude process if it runs longer than N seconds. Not needed for v1.
 
@@ -442,7 +442,7 @@ The wrapper should handle SIGTERM gracefully -- kill the child Claude process (i
 
 ## Open Questions
 
-1. **Should the wrapper write its PID to a file?** This would let `sprawl kill` target the wrapper specifically, rather than relying on tmux's `list-panes` PID discovery. Not critical since the current approach works, but could be cleaner.
+1. **Should the wrapper write its PID to a file?** This would let `kill` target the wrapper specifically, rather than relying on tmux's `list-panes` PID discovery. Not critical since the current approach works, but could be cleaner.
 
 2. **Should there be a max wake cycles limit?** If an agent gets into a loop (keeps waking, doing nothing useful, sleeping), a circuit breaker could prevent runaway API usage. Probably a v2 concern -- managers should notice unproductive agents.
 

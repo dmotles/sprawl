@@ -24,7 +24,7 @@
 #      capturing its pid and --session-id argv.
 #   5. Fires a handoff by driving weave to call `handoff` via MCP.
 #      This MUST go through the in-process MCP path (not the out-of-proc
-#      `sprawl handoff` CLI) because the CLI spawns its own supervisor
+#      legacy `sprawl-handoff` CLI) because that CLI spawned its own supervisor
 #      and cannot exercise the QUM-329 split-supervisor bug — only the
 #      in-process MCP tool shares a supervisor instance with the TUI
 #      listener. We attach a phantom tmux client (QUM-327 workaround) so

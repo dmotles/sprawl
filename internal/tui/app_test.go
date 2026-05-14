@@ -2216,8 +2216,8 @@ func TestAppModel_AgentTreeMsg_ThreadsRootUnread(t *testing.T) {
 }
 
 func TestAppModel_AgentTreeMsg_RisingRootUnreadEmitsBanner(t *testing.T) {
-	// QUM-311: out-of-process inbox arrivals (child `sprawl messages send`)
-	// land on disk and are picked up on the next 2s tickAgentsCmd. The
+	// QUM-311: out-of-process inbox arrivals (external maildir writes) land
+	// on disk and are picked up on the next 2s tickAgentsCmd. The
 	// AgentTreeMsg handler must notice the rise and surface a banner so the
 	// user gets the same UX as in-process deliveries.
 	sup := &mockSupervisor{}

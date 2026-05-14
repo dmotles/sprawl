@@ -61,8 +61,6 @@ mcp__sprawl__handoff({ summary: "<your full summary here>" })
 
 The host will persist the summary to `.sprawl/memory/sessions/<session-id>.md`, write `.sprawl/memory/handoff-signal`, tear down this subprocess, and start a fresh weave session with consolidated memory. The new weave starts automatically — the user does **not** need to exit and re-enter `sprawl enter`.
 
-> **Deprecated:** the legacy `sprawl handoff` CLI (tmux-mode fallback) still works but emits a deprecation warning and will be removed in a future release. Use the MCP tool instead.
-
 ## Reminders
 
 - **Be specific, not vague.** "Made progress on auth" is useless. "Implemented JWT validation in `internal/auth/`, added tests, blocked on refresh token rotation (see QUM-45)" is useful.

@@ -142,7 +142,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "report_status",
-			"description": "Updates this agent's global state (what you're working on, blocked status, completion, failures). Visible to the parent and surfaced in `sprawl status` / `peek`. REQUIRED: call when you start a task, when you complete it, and when you hit blockers or failures — use at every meaningful step, not just at task end. The parent is notified asynchronously; this never preempts them. This is NOT a message: it does NOT appear in the parent's inbox, does NOT increment unread counts, and CANNOT be read back later via `messages_read` / `messages_list`. The notification is ephemeral — only the latest state+summary is persisted to the agent's state on disk. Use `send_message` for anything you need to convey in detail or for anything you want the parent to be able to retrieve later.",
+			"description": "Updates this agent's global state (what you're working on, blocked status, completion, failures). Visible to the parent and surfaced in the `status` / `peek` tools. REQUIRED: call when you start a task, when you complete it, and when you hit blockers or failures — use at every meaningful step, not just at task end. The parent is notified asynchronously; this never preempts them. This is NOT a message: it does NOT appear in the parent's inbox, does NOT increment unread counts, and CANNOT be read back later via `messages_read` / `messages_list`. The notification is ephemeral — only the latest state+summary is persisted to the agent's state on disk. Use `send_message` for anything you need to convey in detail or for anything you want the parent to be able to retrieve later.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -213,7 +213,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "handoff",
-			"description": "Weave-only: persist a structured session summary and hand off to a fresh weave session. The host tears down the current subprocess and starts a new one with consolidated memory. Call this at the end of a session instead of `sprawl handoff` via bash.",
+			"description": "Weave-only: persist a structured session summary and hand off to a fresh weave session. The host tears down the current subprocess and starts a new one with consolidated memory. Call this at the end of a session. See the /handoff skill for the summary template.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -245,7 +245,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "messages_read",
-			"description": "Fetch the full body of a durable message by ID (short or long prefix). Auto-marks the message read if it was unread (mirrors `sprawl messages read`). Scoped to the caller's mailbox. Only messages sent via `send_message` are retrievable here — `report_status` updates are not messages and cannot be read back; use `status` or `peek` to see a child's latest reported state. Example: {\"id\":\"abc\"}.",
+			"description": "Fetch the full body of a durable message by ID (short or long prefix). Auto-marks the message read if it was unread. Scoped to the caller's mailbox. Only messages sent via `send_message` are retrievable here — `report_status` updates are not messages and cannot be read back; use `status` or `peek` to see a child's latest reported state. Example: {\"id\":\"abc\"}.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

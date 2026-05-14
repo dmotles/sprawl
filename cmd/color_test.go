@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/runtimecfg"
@@ -105,6 +106,76 @@ func TestColorSet_ByAlias(t *testing.T) {
 	}
 	if got := state.ReadAccentColor(tmpDir); got != "colour39" {
 		t.Fatalf("accent color = %q, want colour39", got)
+	}
+}
+
+func TestColorDeprecationBanner_EmitsOnce(t *testing.T) {
+	// Capture the banner via deps.stderr by routing colorBannerStderr to it.
+	deps, tmpDir, _, _ := newTestColorDeps(t)
+	if err := state.WriteAccentColor(tmpDir, "colour39"); err != nil {
+		t.Fatalf("WriteAccentColor: %v", err)
+	}
+
+	var bannerBuf bytes.Buffer
+	prevW, prevG := colorBannerStderr, colorBannerGetenv
+	colorBannerStderr = &bannerBuf
+	colorBannerGetenv = func(string) string { return "" }
+	colorBannerOnce = sync.Once{}
+	t.Cleanup(func() {
+		colorBannerStderr = prevW
+		colorBannerGetenv = prevG
+		colorBannerOnce = sync.Once{}
+	})
+
+	if err := runColorShow(deps); err != nil {
+		t.Fatalf("runColorShow: %v", err)
+	}
+	if err := runColorList(deps); err != nil {
+		t.Fatalf("runColorList: %v", err)
+	}
+
+	out := bannerBuf.String()
+	if !strings.Contains(out, "`sprawl color`") {
+		t.Errorf("expected banner to mention `sprawl color`, got: %q", out)
+	}
+	if !strings.Contains(out, "deprecated") {
+		t.Errorf("expected banner to mention deprecation, got: %q", out)
+	}
+	if !strings.Contains(out, "SPRAWL_QUIET_DEPRECATIONS=1") {
+		t.Errorf("expected banner to mention quiet env var, got: %q", out)
+	}
+	if got := strings.Count(out, "warning:"); got != 1 {
+		t.Errorf("expected exactly one banner across calls, got %d:\n%s", got, out)
+	}
+}
+
+func TestColorDeprecationBanner_QuietEnvSuppresses(t *testing.T) {
+	deps, tmpDir, _, _ := newTestColorDeps(t)
+	if err := state.WriteAccentColor(tmpDir, "colour39"); err != nil {
+		t.Fatalf("WriteAccentColor: %v", err)
+	}
+
+	var bannerBuf bytes.Buffer
+	prevW, prevG := colorBannerStderr, colorBannerGetenv
+	colorBannerStderr = &bannerBuf
+	colorBannerGetenv = func(k string) string {
+		if k == "SPRAWL_QUIET_DEPRECATIONS" {
+			return "1"
+		}
+		return ""
+	}
+	colorBannerOnce = sync.Once{}
+	t.Cleanup(func() {
+		colorBannerStderr = prevW
+		colorBannerGetenv = prevG
+		colorBannerOnce = sync.Once{}
+	})
+
+	if err := runColorShow(deps); err != nil {
+		t.Fatalf("runColorShow: %v", err)
+	}
+	if bannerBuf.Len() != 0 {
+		t.Errorf("expected no banner under SPRAWL_QUIET_DEPRECATIONS=1, got: %q", bannerBuf.String())
 	}
 }
 
