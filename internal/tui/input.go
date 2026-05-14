@@ -103,7 +103,22 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 			return m, func() tea.Msg { return OpenPaletteMsg{} }
 		}
 
-		isPlainEnter := keyMsg.Code == tea.KeyEnter && keyMsg.Mod&tea.ModShift == 0
+		isPlainEnter := keyMsg.Code == tea.KeyEnter && keyMsg.Mod == 0
+		// QUM-571: Alt+Enter and Ctrl+J are explicit newline-insert keys —
+		// they never submit and never schedule the lookahead tick. If a plain
+		// Enter is pending, it resolves as embedded ("\n") before the
+		// requested newline is inserted.
+		isNewlineKey := (keyMsg.Code == tea.KeyEnter && keyMsg.Mod&tea.ModAlt != 0) ||
+			(keyMsg.Code == 'j' && keyMsg.Mod == tea.ModCtrl)
+		if isNewlineKey {
+			if m.pendingEnter {
+				m.ta.InsertString("\n")
+				m.pendingEnter = false
+				m.pendingEnterSeq++
+			}
+			m.ta.InsertString("\n")
+			return m, nil
+		}
 
 		if m.pendingEnter {
 			if isPlainEnter {
@@ -219,6 +234,13 @@ func (m *InputModel) Value() string {
 // SetValue replaces the textarea contents.
 func (m *InputModel) SetValue(s string) {
 	m.ta.SetValue(s)
+}
+
+// CursorEnd moves the textarea cursor to the end of the buffer. Used by the
+// Esc-reload path (QUM-576) so a reloaded draft lands with the cursor where
+// the user expects to continue typing.
+func (m *InputModel) CursorEnd() {
+	m.ta.CursorEnd()
 }
 
 // AtFirstLine reports whether the textarea cursor sits on the first logical
