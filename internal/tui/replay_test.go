@@ -891,6 +891,68 @@ func TestScanTranscript_SystemNotification_TypedMessageInterruptArrayBlockConten
 	}
 }
 
+// TestScanTranscript_SystemNotification_BackToBackTwoEnvelopesStringContent —
+// QUM-574 regression guard for the replay string-content branch. A single
+// user message whose `content` is two consecutive `<system-notification>`
+// envelopes (status_change + message) MUST replay as TWO distinct
+// MessageSystemNotification entries with their respective types, not one
+// blob with raw tags leaking into Content.
+func TestScanTranscript_SystemNotification_BackToBackTwoEnvelopesStringContent(t *testing.T) {
+	inner := `<system-notification type=\"status_change\">tower changed status to complete: phase 2 done</system-notification>` +
+		`<system-notification type=\"message\">From tower — hello</system-notification>`
+	line := `{"type":"user","message":{"role":"user","content":"` + inner + `"}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2; entries=%+v", len(entries), entries)
+	}
+	if entries[0].NotificationType != NotificationKindStatusChange {
+		t.Errorf("entries[0].NotificationType = %q, want %q", entries[0].NotificationType, NotificationKindStatusChange)
+	}
+	if entries[0].Content != "tower changed status to complete: phase 2 done" {
+		t.Errorf("entries[0].Content = %q (should NOT contain raw tags)", entries[0].Content)
+	}
+	if entries[1].NotificationType != NotificationKindMessage {
+		t.Errorf("entries[1].NotificationType = %q, want %q", entries[1].NotificationType, NotificationKindMessage)
+	}
+	if entries[1].Content != "From tower — hello" {
+		t.Errorf("entries[1].Content = %q", entries[1].Content)
+	}
+	for i, e := range entries {
+		if strings.Contains(e.Content, "<system-notification") || strings.Contains(e.Content, "</system-notification>") {
+			t.Errorf("entries[%d].Content leaks raw tag: %q", i, e.Content)
+		}
+	}
+}
+
+// TestScanTranscript_SystemNotification_BackToBackTwoEnvelopesArrayBlockContent
+// — symmetry guard for the array-block branch (QUM-574). MUST match the
+// string-content behavior above.
+func TestScanTranscript_SystemNotification_BackToBackTwoEnvelopesArrayBlockContent(t *testing.T) {
+	innerText := `<system-notification type=\"status_change\">A</system-notification>` +
+		`<system-notification type=\"message\">B</system-notification>`
+	line := `{"type":"user","message":{"role":"user","content":[` +
+		`{"type":"text","text":"` + innerText + `"}` +
+		`]}}`
+	path := writeJSONL(t, []string{line})
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2; entries=%+v", len(entries), entries)
+	}
+	if entries[0].NotificationType != NotificationKindStatusChange || entries[0].Content != "A" {
+		t.Errorf("entries[0] = (%q, %q), want (status_change, A)", entries[0].NotificationType, entries[0].Content)
+	}
+	if entries[1].NotificationType != NotificationKindMessage || entries[1].Content != "B" {
+		t.Errorf("entries[1] = (%q, %q), want (message, B)", entries[1].NotificationType, entries[1].Content)
+	}
+}
+
 func TestExtractToolResultContent(t *testing.T) {
 	tests := []struct {
 		name string

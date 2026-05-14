@@ -54,7 +54,7 @@ func baseToolDefinitions() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "spawn",
-			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via delegate or messages via send_message.",
+			"description": "Create a new worktree-backed child agent under the current sprawl enter session. The child starts immediately and can receive tasks via delegate or messages via send_message. The new worktree is based on the caller's current worktree HEAD (committed only — uncommitted changes do NOT propagate). Commit before spawning if you want the child to see in-flight work.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

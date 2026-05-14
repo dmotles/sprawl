@@ -1,8 +1,10 @@
 package agentops_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/agentops"
@@ -13,15 +15,135 @@ import (
 // fakeWorktreeCreator records the requested worktree and creates the directory
 // without invoking real git.
 type fakeWorktreeCreator struct {
-	root string
+	root         string
+	capturedBase string
 }
 
-func (c *fakeWorktreeCreator) Create(_, agentName, branchName, _ string) (string, string, error) {
+func (c *fakeWorktreeCreator) Create(_, agentName, branchName, baseBranch string) (string, string, error) {
+	c.capturedBase = baseBranch
 	path := filepath.Join(c.root, ".sprawl", "worktrees", agentName)
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return "", "", err
 	}
 	return path, branchName, nil
+}
+
+// newBaseRefSpawnDeps builds a minimal valid SpawnDeps for the baseBranch
+// resolution tests. Callers should set CurrentBranch and (optionally)
+// ResolveBase on the returned struct.
+func newBaseRefSpawnDeps(t *testing.T, tmpDir string) (*agentops.SpawnDeps, *fakeWorktreeCreator) {
+	t.Helper()
+	creator := &fakeWorktreeCreator{root: tmpDir}
+	deps := &agentops.SpawnDeps{
+		WorktreeCreator: creator,
+		Getenv: func(key string) string {
+			switch key {
+			case "SPRAWL_AGENT_IDENTITY":
+				return "manager-x"
+			case "SPRAWL_ROOT":
+				return tmpDir
+			}
+			return ""
+		},
+		CurrentBranch: func(string) (string, error) { return "main", nil },
+		NewSpawnLock: func(string) (func() error, func() error) {
+			return func() error { return nil }, func() error { return nil }
+		},
+		LoadConfig: func(string) (*config.Config, error) {
+			return &config.Config{}, nil
+		},
+		RunScript:       agentops.RunBashScript,
+		WorktreeRemove:  agentops.RealWorktreeRemove,
+		GitBranchDelete: func(string, string) error { return nil },
+	}
+	return deps, creator
+}
+
+// TestPrepareSpawn_UsesResolveBaseWhenProvided pins QUM-572: when the
+// optional ResolveBase dep returns a non-empty ref, the worktree must be
+// created from THAT ref (the caller manager's worktree HEAD), not the
+// main repo's current branch. Without this fix, a manager's spawned
+// engineers silently lose the manager's integration commits.
+func TestPrepareSpawn_UsesResolveBaseWhenProvided(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, creator := newBaseRefSpawnDeps(t, tmpDir)
+	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
+	deps.ResolveBase = func(caller, root string) (string, error) {
+		if caller != "manager-x" {
+			t.Errorf("ResolveBase caller = %q, want %q", caller, "manager-x")
+		}
+		if root != tmpDir {
+			t.Errorf("ResolveBase root = %q, want %q", root, tmpDir)
+		}
+		return "deadbeefcafebabe1234567890abcdef12345678", nil
+	}
+
+	if _, err := agentops.PrepareSpawn(deps, "engineering", "engineer", "task body", "dmotles/test-branch"); err != nil {
+		t.Fatalf("PrepareSpawn: %v", err)
+	}
+
+	if creator.capturedBase != "deadbeefcafebabe1234567890abcdef12345678" {
+		t.Errorf("worktree baseBranch = %q, want %q (must use ResolveBase output — QUM-572)", creator.capturedBase, "deadbeefcafebabe1234567890abcdef12345678")
+	}
+}
+
+// TestPrepareSpawn_FallsBackToCurrentBranchWhenResolveBaseReturnsEmpty
+// models the root-weave case: weave has no agent state, so ResolveBase
+// returns ("", nil) → fall through to CurrentBranch.
+func TestPrepareSpawn_FallsBackToCurrentBranchWhenResolveBaseReturnsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, creator := newBaseRefSpawnDeps(t, tmpDir)
+	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
+	deps.ResolveBase = func(string, string) (string, error) { return "", nil }
+
+	if _, err := agentops.PrepareSpawn(deps, "engineering", "engineer", "task body", "dmotles/test-branch"); err != nil {
+		t.Fatalf("PrepareSpawn: %v", err)
+	}
+
+	if creator.capturedBase != "main" {
+		t.Errorf("worktree baseBranch = %q, want %q (empty ResolveBase must fall back to CurrentBranch)", creator.capturedBase, "main")
+	}
+}
+
+// TestPrepareSpawn_FallsBackToCurrentBranchWhenResolveBaseIsNil pins
+// backwards-compat: callers that haven't been updated to provide
+// ResolveBase still get the old behavior (CurrentBranch of main repo).
+func TestPrepareSpawn_FallsBackToCurrentBranchWhenResolveBaseIsNil(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, creator := newBaseRefSpawnDeps(t, tmpDir)
+	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
+	// ResolveBase intentionally omitted.
+
+	if _, err := agentops.PrepareSpawn(deps, "engineering", "engineer", "task body", "dmotles/test-branch"); err != nil {
+		t.Fatalf("PrepareSpawn: %v", err)
+	}
+
+	if creator.capturedBase != "main" {
+		t.Errorf("worktree baseBranch = %q, want %q (nil ResolveBase must fall back to CurrentBranch)", creator.capturedBase, "main")
+	}
+}
+
+// TestPrepareSpawn_PropagatesResolveBaseError pins the documented contract:
+// when ResolveBase returns a non-nil error, PrepareSpawn must propagate it
+// (wrap is fine) rather than swallowing it and falling back to
+// CurrentBranch. A silent fallback would hide a real fault (e.g. the caller's
+// worktree is corrupt / non-existent / not a git repo) and silently strip
+// integration commits from the spawned child — the exact regression class
+// QUM-572 is guarding against.
+func TestPrepareSpawn_PropagatesResolveBaseError(t *testing.T) {
+	tmpDir := t.TempDir()
+	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
+	deps.CurrentBranch = func(string) (string, error) { return "main", nil }
+	resolveErr := errors.New("boom")
+	deps.ResolveBase = func(string, string) (string, error) { return "", resolveErr }
+
+	_, err := agentops.PrepareSpawn(deps, "engineering", "engineer", "task body", "dmotles/test-branch")
+	if err == nil {
+		t.Fatal("PrepareSpawn returned nil error; expected ResolveBase error to propagate")
+	}
+	if !errors.Is(err, resolveErr) && !strings.Contains(err.Error(), "boom") {
+		t.Errorf("PrepareSpawn err = %v, expected to wrap/contain ResolveBase error %q", err, resolveErr)
+	}
 }
 
 // TestSpawn_WritesStateFile_GrandchildCase pins the regression-guard claim

@@ -690,6 +690,11 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 // gone and the name is free for reuse.
 func TestE2E_StateDivergenceFullFlow(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
+	// Fake the git rev-parse seam — researcher's Worktree is a synthetic path
+	// without a real git repo. QUM-572 wires spawnDepsForCaller.ResolveBase to
+	// shell out via gitRevParseHEAD; we stub it here to avoid the exec failure
+	// (and to let CurrentBranch fall through, preserving original behavior).
+	r.gitRevParseHEAD = func(string) (string, error) { return "", nil }
 
 	researcher := &state.AgentState{
 		Name:     "ghost",
@@ -1114,5 +1119,130 @@ func TestRetire_CascadePropagatesCallerToRecursiveRetire(t *testing.T) {
 		t.Error("expected cascade to invoke retireFn for child byte")
 	} else if got != "operator" {
 		t.Errorf("byte retireFn SPRAWL_AGENT_IDENTITY = %q, want %q (cascade must forward caller identity to recursive Retire — QUM-487)", got, "operator")
+	}
+}
+
+// --- QUM-572: spawnDepsForCaller must set ResolveBase so a worktree-backed
+// caller's spawned children inherit the caller's worktree HEAD as their
+// base ref (preserving the caller's integration commits) rather than the
+// main repo's current branch (which silently strips them).
+
+// TestSpawnDepsForCaller_ResolveBaseReturnsCallerWorktreeHead pins QUM-572:
+// when the caller has a persisted worktree, ResolveBase returns that
+// worktree's HEAD SHA — and queries git against the caller's worktree path,
+// not the main repo. The implementer wires this into prepareSpawn so the new
+// child's worktree is based off the caller's integration branch.
+//
+// Uses an injected fake gitRevParseHEAD seam to avoid shelling out to real git.
+func TestSpawnDepsForCaller_ResolveBaseReturnsCallerWorktreeHead(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+
+	const wtPath = "/fake/worktrees/manager-x"
+	const fakeSHA = "deadbeefcafebabe1234567890abcdef12345678"
+	var capturedDir string
+	callCount := 0
+	r.gitRevParseHEAD = func(dir string) (string, error) {
+		callCount++
+		capturedDir = dir
+		return fakeSHA, nil
+	}
+
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:     "manager-x",
+		Type:     "manager",
+		Family:   "engineering",
+		Parent:   "weave",
+		Status:   "active",
+		Branch:   "dmotles/manager-x",
+		Worktree: wtPath,
+		TreePath: "weave/manager-x",
+	})
+
+	deps := r.spawnDepsForCaller("manager-x")
+	if deps.ResolveBase == nil {
+		t.Fatal("spawnDepsForCaller did not set ResolveBase (QUM-572) — must be non-nil for worktree-backed callers")
+	}
+
+	got, err := deps.ResolveBase("manager-x", tmpDir)
+	if err != nil {
+		t.Fatalf("ResolveBase: unexpected error: %v", err)
+	}
+	if got != fakeSHA {
+		t.Errorf("ResolveBase = %q, want %q (caller worktree HEAD — QUM-572)", got, fakeSHA)
+	}
+	if callCount != 1 {
+		t.Errorf("gitRevParseHEAD call count = %d, want 1", callCount)
+	}
+	if capturedDir != wtPath {
+		t.Errorf("gitRevParseHEAD dir = %q, want %q (must query the caller's worktree path)", capturedDir, wtPath)
+	}
+}
+
+// TestSpawnDepsForCaller_ResolveBaseReturnsEmptyForUnknownCaller pins the
+// fallback path: when the caller has no persisted state (e.g. root weave),
+// ResolveBase must return ("", nil) so prepareSpawn falls back to
+// CurrentBranch of the main repo. Returning an error here would break
+// root-weave spawns. The git seam must NOT be invoked in this case.
+func TestSpawnDepsForCaller_ResolveBaseReturnsEmptyForUnknownCaller(t *testing.T) {
+	r, _ := newFakeReal(t)
+	callCount := 0
+	r.gitRevParseHEAD = func(string) (string, error) {
+		callCount++
+		return "should-not-be-called", nil
+	}
+
+	deps := r.spawnDepsForCaller("nobody")
+	if deps.ResolveBase == nil {
+		t.Fatal("spawnDepsForCaller did not set ResolveBase (QUM-572)")
+	}
+
+	got, err := deps.ResolveBase("nobody", "/does/not/matter")
+	if err != nil {
+		t.Errorf("ResolveBase err = %v, want nil (must fall through silently for unknown caller)", err)
+	}
+	if got != "" {
+		t.Errorf("ResolveBase = %q, want empty string for unknown caller (root-weave fallback)", got)
+	}
+	if callCount != 0 {
+		t.Errorf("gitRevParseHEAD was called %d times for unknown caller, want 0 (no worktree → no git invocation)", callCount)
+	}
+}
+
+// TestSpawnDepsForCaller_ResolveBaseReturnsEmptyWhenCallerHasNoWorktree pins
+// the empty-Worktree edge case: caller state exists but Worktree field is
+// blank (e.g. a partially-initialized record). ResolveBase must return
+// ("", nil) and must NOT invoke the git seam — there's no worktree path to
+// hand it.
+func TestSpawnDepsForCaller_ResolveBaseReturnsEmptyWhenCallerHasNoWorktree(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	callCount := 0
+	r.gitRevParseHEAD = func(string) (string, error) {
+		callCount++
+		return "should-not-be-called", nil
+	}
+
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:     "manager-noworktree",
+		Type:     "manager",
+		Family:   "engineering",
+		Parent:   "weave",
+		Status:   "active",
+		Worktree: "",
+	})
+
+	deps := r.spawnDepsForCaller("manager-noworktree")
+	if deps.ResolveBase == nil {
+		t.Fatal("spawnDepsForCaller did not set ResolveBase (QUM-572)")
+	}
+
+	got, err := deps.ResolveBase("manager-noworktree", tmpDir)
+	if err != nil {
+		t.Errorf("ResolveBase err = %v, want nil", err)
+	}
+	if got != "" {
+		t.Errorf("ResolveBase = %q, want empty string (caller has empty Worktree)", got)
+	}
+	if callCount != 0 {
+		t.Errorf("gitRevParseHEAD was called %d times when caller has no worktree, want 0", callCount)
 	}
 }

@@ -34,49 +34,64 @@ const (
 	NotificationKindStatusChange = "status_change"
 )
 
-// stripSystemNotificationTag detects the supervisor's
-// `<system-notification [attrs]>...</system-notification>` wrapping on a
-// user-role message body. The outer whitespace surrounding the tag
-// boundaries is trimmed; the inner body is returned verbatim (newlines
-// preserved).
+// stripSystemNotificationTag peels ONE `<system-notification [attrs]>...
+// </system-notification>` envelope from the START of the input. Surrounding
+// whitespace is trimmed before matching; the inner body is returned verbatim
+// (newlines preserved). The portion of the input AFTER the first closing tag
+// is returned in `remaining` so callers can loop and peel additional
+// envelopes — back-to-back notifications must render as distinct viewport
+// entries, not a single block with raw tags leaking (QUM-574).
 //
 // Returns:
-//   - body:        the inner content with wrapping tags removed
+//   - body:        the inner content of the first envelope with wrapping tags
+//     removed
 //   - notifType:   the parsed `type` attribute (defaults to
 //     NotificationKindMessage when absent or unrecognized —
 //     YAGNI per QUM-562 design decision #5)
 //   - isInterrupt: true iff `interrupt="true"` is set OR (back-compat) the
 //     body starts with the literal `[interrupt]` marker
-//   - ok:          false when the tag is absent or malformed; in that case
-//     body is the original string and notifType is empty.
+//   - remaining:   the input string after the first `</system-notification>`
+//     close tag. Empty when the envelope is the only content. Untrimmed —
+//     callers should re-feed it to peel additional envelopes; when ok=false
+//     on a subsequent call, any non-whitespace residue can be surfaced as
+//     plain system text.
+//   - ok:          false when no leading tag is present or the open tag has
+//     no matching close; in that case body is the original string,
+//     remaining is empty, and notifType is empty.
 //
 // Attribute parsing is permissive: double or single quotes accepted,
 // whitespace between attributes tolerated. The canonical emitters always
 // produce double-quoted attributes.
-func stripSystemNotificationTag(s string) (body, notifType string, isInterrupt, ok bool) {
+func stripSystemNotificationTag(s string) (body, notifType string, isInterrupt bool, remaining string, ok bool) {
 	trimmed := strings.TrimSpace(s)
 	if !strings.HasPrefix(trimmed, systemNotificationOpenPrefix) {
-		return s, "", false, false
+		return s, "", false, "", false
 	}
 	rest := trimmed[len(systemNotificationOpenPrefix):]
 	// Next char must be `>` (no attrs) or whitespace (attrs follow).
 	if len(rest) == 0 {
-		return s, "", false, false
+		return s, "", false, "", false
 	}
 	if rest[0] != '>' && rest[0] != ' ' && rest[0] != '\t' {
 		// e.g. `<system-notificationXXX>` — not our tag.
-		return s, "", false, false
+		return s, "", false, "", false
 	}
 	closeIdx := strings.IndexByte(rest, '>')
 	if closeIdx < 0 {
-		return s, "", false, false
+		return s, "", false, "", false
 	}
 	attrSegment := rest[:closeIdx]
 	afterOpen := rest[closeIdx+1:]
-	if !strings.HasSuffix(afterOpen, systemNotificationCloseTag) {
-		return s, "", false, false
+	// QUM-574: anchor on the FIRST `</system-notification>` so back-to-back
+	// envelopes peel one-at-a-time. The previous `HasSuffix` anchor was
+	// greedy and swallowed inner close+open tag pairs as part of a single
+	// envelope's body, leaking raw markup to the viewport.
+	endIdx := strings.Index(afterOpen, systemNotificationCloseTag)
+	if endIdx < 0 {
+		return s, "", false, "", false
 	}
-	innerBody := afterOpen[:len(afterOpen)-len(systemNotificationCloseTag)]
+	innerBody := afterOpen[:endIdx]
+	remaining = afterOpen[endIdx+len(systemNotificationCloseTag):]
 
 	attrs := parseTagAttributes(attrSegment)
 	notifType = attrs["type"]
@@ -86,7 +101,7 @@ func stripSystemNotificationTag(s string) (body, notifType string, isInterrupt, 
 		notifType = NotificationKindMessage
 	}
 	isInterrupt = attrs["interrupt"] == "true" || strings.HasPrefix(innerBody, systemNotificationInterruptMarker)
-	return innerBody, notifType, isInterrupt, true
+	return innerBody, notifType, isInterrupt, remaining, true
 }
 
 // parseTagAttributes is a permissive `key="value"` / `key='value'` scanner
