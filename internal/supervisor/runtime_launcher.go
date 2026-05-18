@@ -144,7 +144,7 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
 			if len(it.EntryIDs) > 0 {
 				handle.sweepMu.Lock()
-				handle.sweepDeliveredCount++
+				handle.sweepDeliveredItems++
 				handle.sweepMu.Unlock()
 			}
 			for _, id := range it.EntryIDs {
@@ -290,15 +290,16 @@ type unifiedHandle struct {
 	stopWaitTimedOut atomic.Bool
 
 	// QUM-580: defense-in-depth post-turn pending-envelope sweep state.
-	// sweepDeliveredCount counts QueueItems-with-EntryIDs delivered during
-	// the current turn (incremented under sweepMu from
-	// OnQueueItemDelivered). sweepSawMessagesRead is set true by the
+	// sweepDeliveredItems counts QueueItems-with-EntryIDs delivered during
+	// the current turn (incremented once per QueueItem under sweepMu from
+	// OnQueueItemDelivered, regardless of how many envelope EntryIDs the
+	// item carried). sweepSawMessagesRead is set true by the
 	// delivery-confirmation subscriber when it observes the agent invoking
 	// the mcp__sprawl__messages_read tool, indicating the model actually
 	// drained its inbox. postTurnSweep reads both, decides whether a wake
 	// is needed, and resets both back to zero.
 	sweepMu              sync.Mutex
-	sweepDeliveredCount  int
+	sweepDeliveredItems  int
 	sweepSawMessagesRead bool
 	// wakeForDeliveryFn is the seam invoked by postTurnSweep when it
 	// decides a wake is needed. Production wires this to
@@ -398,7 +399,14 @@ func (h *unifiedHandle) ForceInterruptDelivery() error {
 }
 
 func (h *unifiedHandle) drainPendingToQueue() {
-	pending, _ := agentloop.ListPending(h.sprawlRoot, h.name)
+	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
+	if err != nil {
+		slog.Default().Debug(
+			"unified-runtime: drainPendingToQueue ListPending failed",
+			slog.String("agent", h.name),
+			slog.Any("err", err),
+		)
+	}
 	var statusLines []string
 	if h.statusDrainer != nil {
 		statusLines = h.statusDrainer(h.name)
@@ -524,15 +532,22 @@ func (h *unifiedHandle) UnifiedRuntime() *runtimepkg.UnifiedRuntime { return h.r
 // turn starts clean. wakeForDeliveryFn is invoked without sweepMu held.
 func (h *unifiedHandle) postTurnSweep() {
 	h.sweepMu.Lock()
-	delivered := h.sweepDeliveredCount
+	delivered := h.sweepDeliveredItems
 	sawRead := h.sweepSawMessagesRead
-	h.sweepDeliveredCount = 0
+	h.sweepDeliveredItems = 0
 	h.sweepSawMessagesRead = false
 	h.sweepMu.Unlock()
 
 	needWake := delivered > 0 && !sawRead
 	if !needWake {
-		pending, _ := agentloop.ListPending(h.sprawlRoot, h.name)
+		pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
+		if err != nil {
+			slog.Default().Debug(
+				"unified-runtime: postTurnSweep ListPending failed",
+				slog.String("agent", h.name),
+				slog.Any("err", err),
+			)
+		}
 		if len(pending) > 0 {
 			needWake = true
 		}
@@ -556,7 +571,12 @@ func (h *unifiedHandle) postTurnSweep() {
 //
 // The returned function unsubscribes and waits for the goroutine to drain.
 // Parsing follows the same assistant tool_use shape used by
-// internal/agentloop/activity.go.
+// internal/agentloop/activity.go. QUM-583 considered factoring this into a
+// shared pre-decoded ParsedEvent fanned out by the EventBus, but rejected it:
+// the two consumers extract different fields (activity needs text + tool
+// input; this subscriber needs only the tool name) and sharing would require
+// plumbing a new event type through the EventBus and both subscribers for a
+// per-event saving of one small JSON unmarshal — not worth the coupling.
 func runDeliveryConfirmationSubscriber(bus *runtimepkg.EventBus, h *unifiedHandle, name string) func() {
 	ch, unsub := bus.SubscribeNamed(name, 64)
 	doneCh := make(chan struct{})
@@ -566,7 +586,7 @@ func runDeliveryConfirmationSubscriber(bus *runtimepkg.EventBus, h *unifiedHandl
 			switch ev.Type {
 			case runtimepkg.EventTurnStarted:
 				h.sweepMu.Lock()
-				h.sweepDeliveredCount = 0
+				h.sweepDeliveredItems = 0
 				h.sweepSawMessagesRead = false
 				h.sweepMu.Unlock()
 			case runtimepkg.EventProtocolMessage:
