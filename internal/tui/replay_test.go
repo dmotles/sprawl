@@ -985,3 +985,241 @@ func TestExtractToolResultContent(t *testing.T) {
 		})
 	}
 }
+
+// --- QUM-577: sidechain (sub-agent) records must be replayed for child viewport ---
+//
+// Claude Code emits inner Agent-tool activity (the Read/Bash/etc calls a
+// sub-agent makes) as JSONL records with isSidechain=true and
+// parent_tool_use_id pointing at the outer Agent tool_use. The current
+// scanTranscript filter at internal/tui/replay.go:136-138 strips all such
+// records, so Ctrl+N hydration of a child viewport shows the outer Agent
+// entry but no inner activity. These tests assert the new behavior: sidechain
+// records nested under an outer Agent are surfaced as MessageToolCall entries
+// with Depth=1 and the correct ParentToolID, ordering is preserved, and the
+// existing QUM-331 timestamp filter still discards stale records.
+
+// TestLoadChildTranscript_IncludesSidechainSubAgentActivity verifies that
+// inner sub-agent tool_use + tool_result records (isSidechain=true) are
+// included in the replayed entries, nested under the outer Agent call.
+func TestLoadChildTranscript_IncludesSidechainSubAgentActivity(t *testing.T) {
+	lines := []string{
+		// Outer Agent tool_use (top-level, not sidechain).
+		`{"type":"assistant","timestamp":"2026-04-25T10:00:00Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"A1","name":"Agent","input":{"subagent_type":"Explore"}}` +
+			`]}}`,
+		// Inner sub-agent Read tool_use — emitted as sidechain by Claude Code.
+		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T10:00:01Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"R1","name":"Read","input":{"file_path":"/tmp/foo"}}` +
+			`]}}`,
+		// Inner sub-agent tool_result for Read — also sidechain.
+		`{"type":"user","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T10:00:02Z","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"R1","content":"contents","is_error":false}` +
+			`]}}`,
+		// Outer Agent tool_result — closes the agentStack frame.
+		`{"type":"user","timestamp":"2026-04-25T10:00:03Z","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"A1","content":"agent done","is_error":false}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadChildTranscript(path, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var agentEntry, readEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type != MessageToolCall {
+			continue
+		}
+		switch entries[i].ToolID {
+		case "A1":
+			agentEntry = &entries[i]
+		case "R1":
+			readEntry = &entries[i]
+		}
+	}
+	if agentEntry == nil {
+		t.Fatalf("Agent (A1) tool_use entry not found in entries=%+v", entries)
+	}
+	if readEntry == nil {
+		t.Fatalf("Read (R1) sub-agent tool_use entry not found — sidechain filter is dropping inner activity; entries=%+v", entries)
+	}
+	if readEntry.Content != "Read" {
+		t.Errorf("readEntry.Content = %q, want %q", readEntry.Content, "Read")
+	}
+	if readEntry.Depth != 1 {
+		t.Errorf("readEntry.Depth = %d, want 1 (nested under outer Agent A1)", readEntry.Depth)
+	}
+	if readEntry.ParentToolID != "A1" {
+		t.Errorf("readEntry.ParentToolID = %q, want %q (outer Agent)", readEntry.ParentToolID, "A1")
+	}
+	if readEntry.Result != "contents" {
+		t.Errorf("readEntry.Result = %q, want %q (tool_result content should patch onto the tool call entry, QUM-388)", readEntry.Result, "contents")
+	}
+}
+
+// TestLoadChildTranscript_SidechainNestedUnderAgent_PreservesOrdering
+// verifies that when sidechain inner activity is included, it appears AFTER
+// the outer Agent entry in the returned slice (JSONL order preserved).
+func TestLoadChildTranscript_SidechainNestedUnderAgent_PreservesOrdering(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","timestamp":"2026-04-25T10:00:00Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"A1","name":"Agent","input":{"subagent_type":"Explore"}}` +
+			`]}}`,
+		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T10:00:01Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"R1","name":"Read","input":{"file_path":"/tmp/foo"}}` +
+			`]}}`,
+		`{"type":"user","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T10:00:02Z","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"R1","content":"contents","is_error":false}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadChildTranscript(path, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	agentIdx, readIdx := -1, -1
+	for i := range entries {
+		if entries[i].Type != MessageToolCall {
+			continue
+		}
+		switch entries[i].ToolID {
+		case "A1":
+			agentIdx = i
+		case "R1":
+			readIdx = i
+		}
+	}
+	if agentIdx == -1 {
+		t.Fatalf("Agent (A1) entry not found in entries=%+v", entries)
+	}
+	if readIdx == -1 {
+		t.Fatalf("Read (R1) sidechain entry not found in entries=%+v", entries)
+	}
+	if agentIdx >= readIdx {
+		t.Errorf("ordering wrong: agentIdx=%d readIdx=%d, want agent before read", agentIdx, readIdx)
+	}
+}
+
+// TestLoadChildTranscript_SidechainSinceFilterStillApplies verifies that the
+// QUM-331 timestamp guard still filters out sidechain records whose
+// timestamp predates `since` — the new sidechain inclusion must not regress
+// the prior-incarnation pollution guard.
+func TestLoadChildTranscript_SidechainSinceFilterStillApplies(t *testing.T) {
+	lines := []string{
+		// Outer Agent before cutoff — should be filtered too.
+		`{"type":"assistant","timestamp":"2026-04-25T09:00:00Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"A0","name":"Agent","input":{"subagent_type":"Explore"}}` +
+			`]}}`,
+		// Stale sidechain record predates the cutoff — must be dropped.
+		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A0","timestamp":"2026-04-25T09:00:01Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"R0","name":"Read","input":{"file_path":"/tmp/stale"}}` +
+			`]}}`,
+		// Fresh outer Agent after cutoff.
+		`{"type":"assistant","timestamp":"2026-04-25T11:00:00Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"A1","name":"Agent","input":{"subagent_type":"Explore"}}` +
+			`]}}`,
+		// Fresh sidechain Read after cutoff — must be included.
+		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T11:00:01Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"R1","name":"Read","input":{"file_path":"/tmp/fresh"}}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	cutoff, _ := time.Parse(time.RFC3339, "2026-04-25T10:00:00Z")
+	entries, err := LoadChildTranscript(path, cutoff, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, e := range entries {
+		if e.Type != MessageToolCall {
+			continue
+		}
+		if e.ToolID == "R0" || e.ToolID == "A0" {
+			t.Errorf("stale pre-cutoff entry %q leaked through since-filter: %+v", e.ToolID, e)
+		}
+	}
+
+	// Sanity: fresh sidechain Read entry must be present and depth-nested
+	// under its outer Agent (the fresh A1 frame).
+	var freshRead *MessageEntry
+	for i := range entries {
+		if entries[i].Type == MessageToolCall && entries[i].ToolID == "R1" {
+			freshRead = &entries[i]
+			break
+		}
+	}
+	if freshRead == nil {
+		t.Errorf("fresh sidechain Read (R1) not found in entries=%+v; sidechain inclusion may not be working", entries)
+		return
+	}
+	if freshRead.Depth != 1 {
+		t.Errorf("freshRead.Depth = %d, want 1 (nested under outer Agent A1)", freshRead.Depth)
+	}
+}
+
+// TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire
+// verifies that when two outer Agent tool_use calls are emitted before
+// either's sidechain children arrive (parallel sub-agents), the inner
+// records are attributed to the correct outer Agent via the wire-level
+// `parent_tool_use_id` field — NOT a "last active agent" heuristic. A
+// stack-based heuristic would attribute both inner records to A2 (the most
+// recent agent pushed); this test forces the implementation to read
+// parent_tool_use_id from the JSONL record itself.
+func TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire(t *testing.T) {
+	lines := []string{
+		// Two outer Agent tool_uses queued before either child arrives.
+		`{"type":"assistant","timestamp":"2026-04-25T10:00:00Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"A1","name":"Agent","input":{"subagent_type":"Explore"}}` +
+			`]}}`,
+		`{"type":"assistant","timestamp":"2026-04-25T10:00:01Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"A2","name":"Agent","input":{"subagent_type":"Explore"}}` +
+			`]}}`,
+		// Inner Read belongs to A1, but A2 is the most-recently-pushed agent.
+		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T10:00:02Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"R1","name":"Read","input":{"file_path":"/tmp/foo"}}` +
+			`]}}`,
+		// Inner Bash belongs to A2.
+		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A2","timestamp":"2026-04-25T10:00:03Z","message":{"role":"assistant","content":[` +
+			`{"type":"tool_use","id":"B2","name":"Bash","input":{"command":"ls"}}` +
+			`]}}`,
+		// tool_results for each.
+		`{"type":"user","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T10:00:04Z","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"R1","content":"r1","is_error":false}` +
+			`]}}`,
+		`{"type":"user","isSidechain":true,"parent_tool_use_id":"A2","timestamp":"2026-04-25T10:00:05Z","message":{"role":"user","content":[` +
+			`{"type":"tool_result","tool_use_id":"B2","content":"b2","is_error":false}` +
+			`]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadChildTranscript(path, time.Time{}, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var readEntry, bashEntry *MessageEntry
+	for i := range entries {
+		if entries[i].Type != MessageToolCall {
+			continue
+		}
+		switch entries[i].ToolID {
+		case "R1":
+			readEntry = &entries[i]
+		case "B2":
+			bashEntry = &entries[i]
+		}
+	}
+	if readEntry == nil {
+		t.Fatalf("Read (R1) sidechain entry not found in entries=%+v", entries)
+	}
+	if bashEntry == nil {
+		t.Fatalf("Bash (B2) sidechain entry not found in entries=%+v", entries)
+	}
+	if readEntry.ParentToolID != "A1" {
+		t.Errorf("readEntry.ParentToolID = %q, want %q (must read parent_tool_use_id from wire, not infer from lastActiveAgent stack)", readEntry.ParentToolID, "A1")
+	}
+	if bashEntry.ParentToolID != "A2" {
+		t.Errorf("bashEntry.ParentToolID = %q, want %q (must read parent_tool_use_id from wire, not infer from lastActiveAgent stack)", bashEntry.ParentToolID, "A2")
+	}
+}
