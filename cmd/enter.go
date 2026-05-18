@@ -121,8 +121,7 @@ func makeRestartFunc(
 		// file (QUM-300), causing FinalizeHandoff to hang.
 		//
 		// Stop the registered weave runtime here, BEFORE finalize, so its
-		// session is closed and waited and the lock is released. No-op in
-		// legacy mode (registry never holds weave there).
+		// session is closed and waited and the lock is released.
 		if sup != nil {
 			if reg := sup.RuntimeRegistry(); reg != nil {
 				if existing, ok := reg.Get("weave"); ok {
@@ -477,7 +476,7 @@ func runEnter(deps *enterDeps) error {
 	// across TUI-driven session restarts). Released on return.
 	lock, err := rootinit.AcquireWeaveLock(sprawlRoot)
 	if err != nil {
-		printWeaveLockError(os.Stderr, err, deps.getenv("SPRAWL_NAMESPACE"), sprawlRoot)
+		printWeaveLockError(os.Stderr, err, sprawlRoot)
 		return err
 	}
 	defer func() { _ = lock.Release() }()

@@ -79,51 +79,6 @@ func TestSaveAndLoadAgent(t *testing.T) {
 	}
 }
 
-func TestWriteAndReadNamespace(t *testing.T) {
-	dir := t.TempDir()
-
-	// Before writing, should return empty
-	if ns := ReadNamespace(dir); ns != "" {
-		t.Errorf("ReadNamespace before write = %q, want empty", ns)
-	}
-
-	if err := WriteNamespace(dir, "🌳"); err != nil {
-		t.Fatalf("WriteNamespace: %v", err)
-	}
-
-	ns := ReadNamespace(dir)
-	if ns != "🌳" {
-		t.Errorf("ReadNamespace = %q, want %q", ns, "🌳")
-	}
-
-	// Overwrite
-	if err := WriteNamespace(dir, "🌲"); err != nil {
-		t.Fatalf("WriteNamespace overwrite: %v", err)
-	}
-	ns = ReadNamespace(dir)
-	if ns != "🌲" {
-		t.Errorf("ReadNamespace after overwrite = %q, want %q", ns, "🌲")
-	}
-}
-
-func TestWriteAndReadRootName(t *testing.T) {
-	dir := t.TempDir()
-
-	// Before writing, should return empty
-	if rn := ReadRootName(dir); rn != "" {
-		t.Errorf("ReadRootName before write = %q, want empty", rn)
-	}
-
-	if err := WriteRootName(dir, "weave"); err != nil {
-		t.Fatalf("WriteRootName: %v", err)
-	}
-
-	rn := ReadRootName(dir)
-	if rn != "weave" {
-		t.Errorf("ReadRootName = %q, want %q", rn, "weave")
-	}
-}
-
 func TestSaveAndLoadAgent_OmitemptyDefaults(t *testing.T) {
 	dir := t.TempDir()
 	agent := &AgentState{
@@ -184,30 +139,6 @@ func TestListAgents_Multiple(t *testing.T) {
 	}
 	if len(agents) != 3 {
 		t.Fatalf("expected 3 agents, got %d", len(agents))
-	}
-}
-
-func TestUsedNames(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"alice", "bob"} {
-		agent := &AgentState{Name: name, Type: "engineer", Status: "active"}
-		if err := SaveAgent(dir, agent); err != nil {
-			t.Fatalf("SaveAgent(%q): %v", name, err)
-		}
-	}
-
-	used, err := UsedNames(dir)
-	if err != nil {
-		t.Fatalf("UsedNames: %v", err)
-	}
-	if !used["alice"] {
-		t.Error("expected alice to be used")
-	}
-	if !used["bob"] {
-		t.Error("expected bob to be used")
-	}
-	if used["carol"] {
-		t.Error("expected carol to not be used")
 	}
 }
 

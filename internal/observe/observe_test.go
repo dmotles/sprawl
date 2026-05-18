@@ -45,8 +45,11 @@ func TestLoadAll_StateFallbackIgnoresLegacyTmuxFields(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state.AgentsDir(sprawlRoot), "agent1.json"), []byte(raw), 0o644); err != nil {
 		t.Fatalf("write agent state: %v", err)
 	}
-	if err := state.WriteRootName(sprawlRoot, "weave"); err != nil {
-		t.Fatalf("WriteRootName: %v", err)
+	if err := os.MkdirAll(filepath.Join(sprawlRoot, ".sprawl"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sprawlRoot, ".sprawl", "root-name"), []byte("weave"), 0o644); err != nil {
+		t.Fatalf("write root-name: %v", err)
 	}
 
 	agents, err := LoadAll(context.Background(), Deps{

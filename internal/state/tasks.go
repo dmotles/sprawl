@@ -78,20 +78,6 @@ func EnqueueTask(sprawlRoot, agentName, prompt string) (*Task, error) {
 	return task, nil
 }
 
-// NextTask returns the first task with status "queued" in FIFO order, or nil if none.
-func NextTask(sprawlRoot, agentName string) (*Task, error) {
-	tasks, err := ListTasks(sprawlRoot, agentName)
-	if err != nil {
-		return nil, err
-	}
-	for _, t := range tasks {
-		if t.Status == "queued" {
-			return t, nil
-		}
-	}
-	return nil, nil
-}
-
 // UpdateTask updates an existing task file on disk. Returns an error if the task is not found.
 func UpdateTask(sprawlRoot, agentName string, task *Task) error {
 	dir := TasksDir(sprawlRoot, agentName)

@@ -251,10 +251,3 @@ func PrepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*s
 	}
 	return prepared.agentState, nil
 }
-
-// Spawn creates the persisted state for a new same-process child runtime.
-// Production code should generally go through supervisor.Real so the runtime
-// is started immediately after preparation.
-func Spawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
-	return PrepareSpawn(deps, family, agentType, prompt, branch)
-}

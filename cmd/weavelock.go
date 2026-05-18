@@ -14,14 +14,11 @@ import (
 // user at the existing weave session and at the escape hatch of removing a
 // stale lock. Other errors fall through with a generic wrapper.
 //
-// namespace is retained for compatibility with older callers but is ignored in
-// the same-process runtime. sprawlRoot is used to show the concrete path of
-// the lock file.
-func printWeaveLockError(w io.Writer, err error, namespace, sprawlRoot string) {
+// sprawlRoot is used to show the concrete path of the lock file.
+func printWeaveLockError(w io.Writer, err error, sprawlRoot string) {
 	if w == nil {
 		return
 	}
-	_ = namespace
 	lockPath := filepath.Join(sprawlRoot, ".sprawl", "memory", "weave.lock")
 
 	var already *rootinit.AlreadyRunningError
@@ -36,20 +33,4 @@ func printWeaveLockError(w io.Writer, err error, namespace, sprawlRoot string) {
 		return
 	}
 	fmt.Fprintf(w, "Failed to acquire weave lock: %v\n", err)
-}
-
-func acquireOfflineLifecycle(sprawlRoot, commandName, toolName string) (*rootinit.WeaveLock, error) {
-	if sprawlRoot == "" {
-		return nil, fmt.Errorf("SPRAWL_ROOT environment variable is not set")
-	}
-
-	lock, err := rootinit.AcquireWeaveLock(sprawlRoot)
-	switch {
-	case err == nil:
-		return lock, nil
-	case errors.Is(err, rootinit.ErrWeaveAlreadyRunning):
-		return nil, fmt.Errorf("standalone `sprawl %s` is unavailable while `sprawl enter` is running; use the `%s` MCP tool from the live weave session instead", commandName, toolName)
-	default:
-		return nil, fmt.Errorf("checking for active weave session: %w", err)
-	}
 }

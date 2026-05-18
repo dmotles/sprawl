@@ -66,7 +66,7 @@ func WithNotify(fn NotifyFunc) SendOption {
 
 // defaultNotifier is the process-level notifier used by Send when no explicit
 // WithNotify option is supplied. It is registered once at process start from
-// cmd/ (where env + state + tmux wiring live) so every caller of Send —
+// cmd/ (where env + state + TUI wiring live) so every caller of Send —
 // including callers in internal packages (agentops, supervisor, agentloop)
 // that have no access to those dependencies — uniformly triggers the same
 // notification behavior. See QUM-310.

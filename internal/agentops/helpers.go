@@ -16,16 +16,6 @@ import (
 	"github.com/dmotles/sprawl/internal/procutil"
 )
 
-// FindSprawlBin returns the sprawl binary path for spawning child processes.
-// If SPRAWL_BIN is set, it returns that value directly; otherwise it falls
-// back to os.Executable().
-func FindSprawlBin() (string, error) {
-	if v := os.Getenv("SPRAWL_BIN"); v != "" {
-		return v, nil
-	}
-	return os.Executable()
-}
-
 // buildBashScriptCmd constructs the *exec.Cmd used by RunBashScript.
 // Extracted as a seam (QUM-458) so tests can assert SysProcAttr (Pdeathsig)
 // without actually executing bash. The real implementer wires

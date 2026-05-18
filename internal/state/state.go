@@ -118,11 +118,6 @@ func DeleteAgent(sprawlRoot string, name string) error {
 	return nil
 }
 
-// SprawlDir returns the path to the .sprawl directory under the given root.
-func SprawlDir(sprawlRoot string) string {
-	return filepath.Join(sprawlRoot, ".sprawl")
-}
-
 // StateDir returns the path to the .sprawl/state directory under the given root.
 func StateDir(sprawlRoot string) string {
 	return filepath.Join(sprawlRoot, ".sprawl", "state")
@@ -149,20 +144,10 @@ func ReadAccentColor(sprawlRoot string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// WriteNamespace persists the selected namespace to .sprawl/namespace.
-func WriteNamespace(sprawlRoot, namespace string) error {
-	dir := SprawlDir(sprawlRoot)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable .sprawl dir is intentional
-		return fmt.Errorf("creating .sprawl directory: %w", err)
-	}
-	path := filepath.Join(dir, "namespace")
-	return os.WriteFile(path, []byte(namespace), 0o644) //nolint:gosec // G306: world-readable namespace file is intentional
-}
-
 // ReadNamespace reads the persisted namespace from .sprawl/namespace.
 // Returns empty string if the file doesn't exist.
 func ReadNamespace(sprawlRoot string) string {
-	path := filepath.Join(SprawlDir(sprawlRoot), "namespace")
+	path := filepath.Join(sprawlRoot, ".sprawl", "namespace")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -170,20 +155,10 @@ func ReadNamespace(sprawlRoot string) string {
 	return strings.TrimSpace(string(data))
 }
 
-// WriteRootName persists the root agent name to .sprawl/root-name.
-func WriteRootName(sprawlRoot, rootName string) error {
-	dir := SprawlDir(sprawlRoot)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable .sprawl dir is intentional
-		return fmt.Errorf("creating .sprawl directory: %w", err)
-	}
-	path := filepath.Join(dir, "root-name")
-	return os.WriteFile(path, []byte(rootName), 0o644) //nolint:gosec // G306: world-readable root-name file is intentional
-}
-
 // ReadRootName reads the persisted root name from .sprawl/root-name.
 // Returns empty string if the file doesn't exist.
 func ReadRootName(sprawlRoot string) string {
-	path := filepath.Join(SprawlDir(sprawlRoot), "root-name")
+	path := filepath.Join(sprawlRoot, ".sprawl", "root-name")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -203,18 +178,4 @@ func WriteSystemPrompt(sprawlRoot, agentName, content string) (string, error) {
 		return "", fmt.Errorf("writing system prompt: %w", err)
 	}
 	return path, nil
-}
-
-// UsedNames returns a set of agent names that have state files.
-func UsedNames(sprawlRoot string) (map[string]bool, error) {
-	agents, err := ListAgents(sprawlRoot)
-	if err != nil {
-		return nil, err
-	}
-
-	used := make(map[string]bool)
-	for _, a := range agents {
-		used[a.Name] = true
-	}
-	return used, nil
 }
