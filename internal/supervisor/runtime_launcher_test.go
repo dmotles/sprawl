@@ -1772,11 +1772,11 @@ func TestE2E_QUM488_DelegateThroughRealEnqueuesIntoRuntime(t *testing.T) {
 // ---------------------------------------------------------------------------
 // QUM-580: Defense-in-depth post-turn pending-envelope sweep.
 //
-// The unifiedHandle exposes a postTurnSweep() method that the runtime's
-// TurnLoop calls after every turn. The sweep decides whether to invoke
-// wakeForDeliveryFn (the seam tests override) based on:
-//   - sweepDeliveredItems: number of QueueItems-with-EntryIDs delivered during the turn
-//   - sweepSawMessagesRead: whether the agent invoked mcp__sprawl__messages_read
+// The sweepCoordinator (QUM-584 extraction from unifiedHandle) exposes a
+// PostTurnSweep() method that the runtime's TurnLoop calls after every turn.
+// The sweep decides whether to invoke the bound wake function based on:
+//   - deliveredItems: number of QueueItems-with-EntryIDs delivered during the turn
+//   - sawMessagesRead: whether the agent invoked mcp__sprawl__messages_read
 //   - on-disk pending/ contents under sprawlRoot/.sprawl/agents/<name>/queue/pending/
 //
 // Rule: if pending/ is non-empty OR (delivered > 0 && !sawRead), wake.
@@ -1806,22 +1806,20 @@ func makeToolUseAssistant(name string) *protocol.Message {
 	return &protocol.Message{Type: "assistant", Raw: raw}
 }
 
-// newUnifiedHandleForSweepTest constructs a minimal *unifiedHandle wired to
-// the given sprawlRoot/name with a no-op wakeForDeliveryFn that records call
-// counts via the returned counter. The handle is NOT started — it is a bare
-// struct intended only for postTurnSweep() unit tests.
-func newUnifiedHandleForSweepTest(t *testing.T, sprawlRoot, name string) (*unifiedHandle, *atomic.Int64) {
+// newSweepCoordinatorForTest constructs a *sweepCoordinator wired to the
+// given sprawlRoot/name with a no-op wake function that records call counts
+// via the returned counter. QUM-584: sweep state was extracted out of
+// unifiedHandle into sweepCoordinator, so unit tests now operate on the
+// coordinator directly.
+func newSweepCoordinatorForTest(t *testing.T, sprawlRoot, name string) (*sweepCoordinator, *atomic.Int64) {
 	t.Helper()
 	var wakeCalls atomic.Int64
-	h := &unifiedHandle{
-		sprawlRoot: sprawlRoot,
-		name:       name,
-		wakeForDeliveryFn: func() error {
-			wakeCalls.Add(1)
-			return nil
-		},
-	}
-	return h, &wakeCalls
+	c := newSweepCoordinator(sprawlRoot, name)
+	c.Bind(func() error {
+		wakeCalls.Add(1)
+		return nil
+	})
+	return c, &wakeCalls
 }
 
 // writePendingEnvelope drops one canonical pending queue file under the
@@ -1848,104 +1846,120 @@ func writePendingEnvelope(t *testing.T, sprawlRoot, name string) {
 	}
 }
 
-func TestUnifiedHandle_PostTurnSweep_NoOpWhenIdle(t *testing.T) {
+func TestSweepCoordinator_PostTurnSweep_NoOpWhenIdle(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
-	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+	c, wakeCalls := newSweepCoordinatorForTest(t, sprawlRoot, "alice")
 
 	// Default counters: delivered=0, sawRead=false; pending/ empty.
-	h.postTurnSweep()
+	c.PostTurnSweep()
 
 	if got := wakeCalls.Load(); got != 0 {
-		t.Errorf("wakeForDeliveryFn calls = %d, want 0 (idle sweep must no-op)", got)
+		t.Errorf("wake calls = %d, want 0 (idle sweep must no-op)", got)
 	}
 }
 
-func TestUnifiedHandle_PostTurnSweep_NoOpWhenDeliveredAndRead(t *testing.T) {
+func TestSweepCoordinator_PostTurnSweep_NoOpWhenDeliveredAndRead(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
-	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+	c, wakeCalls := newSweepCoordinatorForTest(t, sprawlRoot, "alice")
 
-	h.sweepMu.Lock()
-	h.sweepDeliveredItems = 2
-	h.sweepSawMessagesRead = true
-	h.sweepMu.Unlock()
+	c.mu.Lock()
+	c.deliveredItems = 2
+	c.sawMessagesRead = true
+	c.mu.Unlock()
 
-	h.postTurnSweep()
+	c.PostTurnSweep()
 
 	if got := wakeCalls.Load(); got != 0 {
-		t.Errorf("wakeForDeliveryFn calls = %d, want 0 (delivered+read confirms no missed envelopes)", got)
+		t.Errorf("wake calls = %d, want 0 (delivered+read confirms no missed envelopes)", got)
 	}
 }
 
-func TestUnifiedHandle_PostTurnSweep_WakesWhenDeliveredButNoRead(t *testing.T) {
+func TestSweepCoordinator_PostTurnSweep_WakesWhenDeliveredButNoRead(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
-	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+	c, wakeCalls := newSweepCoordinatorForTest(t, sprawlRoot, "alice")
 
-	h.sweepMu.Lock()
-	h.sweepDeliveredItems = 1
-	h.sweepSawMessagesRead = false
-	h.sweepMu.Unlock()
+	c.mu.Lock()
+	c.deliveredItems = 1
+	c.sawMessagesRead = false
+	c.mu.Unlock()
 
-	h.postTurnSweep()
+	c.PostTurnSweep()
 
 	if got := wakeCalls.Load(); got != 1 {
-		t.Errorf("wakeForDeliveryFn calls = %d, want 1 (delivered without messages_read implies missed envelope)", got)
+		t.Errorf("wake calls = %d, want 1 (delivered without messages_read implies missed envelope)", got)
 	}
 }
 
-func TestUnifiedHandle_PostTurnSweep_WakesWhenPendingNonEmpty(t *testing.T) {
+func TestSweepCoordinator_PostTurnSweep_WakesWhenPendingNonEmpty(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
 	writePendingEnvelope(t, sprawlRoot, "alice")
-	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+	c, wakeCalls := newSweepCoordinatorForTest(t, sprawlRoot, "alice")
 
 	// delivered=0, sawRead=false — only the pending file triggers a wake.
-	h.postTurnSweep()
+	c.PostTurnSweep()
 
 	if got := wakeCalls.Load(); got != 1 {
-		t.Errorf("wakeForDeliveryFn calls = %d, want 1 (non-empty pending/ must trigger wake)", got)
+		t.Errorf("wake calls = %d, want 1 (non-empty pending/ must trigger wake)", got)
 	}
 }
 
-func TestUnifiedHandle_PostTurnSweep_ResetsCountersAfterCall(t *testing.T) {
+func TestSweepCoordinator_PostTurnSweep_ResetsCountersAfterCall(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
-	h, _ := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+	c, _ := newSweepCoordinatorForTest(t, sprawlRoot, "alice")
 
-	h.sweepMu.Lock()
-	h.sweepDeliveredItems = 5
-	h.sweepSawMessagesRead = true
-	h.sweepMu.Unlock()
+	c.mu.Lock()
+	c.deliveredItems = 5
+	c.sawMessagesRead = true
+	c.mu.Unlock()
 
-	h.postTurnSweep()
+	c.PostTurnSweep()
 
-	h.sweepMu.Lock()
-	gotCount := h.sweepDeliveredItems
-	gotSaw := h.sweepSawMessagesRead
-	h.sweepMu.Unlock()
+	c.mu.Lock()
+	gotCount := c.deliveredItems
+	gotSaw := c.sawMessagesRead
+	c.mu.Unlock()
 
 	if gotCount != 0 {
-		t.Errorf("sweepDeliveredItems = %d after sweep, want 0", gotCount)
+		t.Errorf("deliveredItems = %d after sweep, want 0", gotCount)
 	}
 	if gotSaw {
-		t.Errorf("sweepSawMessagesRead = true after sweep, want false")
+		t.Errorf("sawMessagesRead = true after sweep, want false")
 	}
+}
+
+// TestSweepCoordinator_NoWakeBeforeBind asserts that PostTurnSweep is a safe
+// no-op when invoked before Bind(...) has installed the wake function. This
+// is the QUM-584 by-construction safety property: a future refactor that
+// accidentally reordered Bind after rt.Start would degrade gracefully (sweep
+// no-ops) rather than panicking on a nil pointer.
+func TestSweepCoordinator_NoWakeBeforeBind(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
+	writePendingEnvelope(t, sprawlRoot, "alice")
+	c := newSweepCoordinator(sprawlRoot, "alice")
+
+	// pending/ is non-empty so the sweep decides a wake is needed — but wake
+	// is unbound. Must not panic.
+	c.PostTurnSweep()
 }
 
 // TestRunDeliveryConfirmationSubscriber_TracksToolUseAndResetsOnTurnStart
 // verifies the EventBus subscriber that observes the agent's tool-use stream:
 // when it sees a tool_use block named "mcp__sprawl__messages_read", it must
-// set sweepSawMessagesRead=true on the handle; on every EventTurnStarted it
+// set sawMessagesRead=true on the coordinator; on every EventTurnStarted it
 // must reset the flag back to false so the next turn starts clean.
 func TestRunDeliveryConfirmationSubscriber_TracksToolUseAndResetsOnTurnStart(t *testing.T) {
 	sprawlRoot := t.TempDir()
 	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
-	h, _ := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+	c, _ := newSweepCoordinatorForTest(t, sprawlRoot, "alice")
 
 	bus := runtimepkg.NewEventBus()
-	stop := runDeliveryConfirmationSubscriber(bus, h, "delivery-confirmation")
+	stop := runDeliveryConfirmationSubscriber(bus, c, "delivery-confirmation")
 	defer stop()
 
 	// EventTurnStarted: precondition, ensures any pre-existing flag is cleared.
@@ -1958,19 +1972,19 @@ func TestRunDeliveryConfirmationSubscriber_TracksToolUseAndResetsOnTurnStart(t *
 	// Wait until the subscriber observes the flag flipping.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		h.sweepMu.Lock()
-		saw := h.sweepSawMessagesRead
-		h.sweepMu.Unlock()
+		c.mu.Lock()
+		saw := c.sawMessagesRead
+		c.mu.Unlock()
 		if saw {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	h.sweepMu.Lock()
-	saw := h.sweepSawMessagesRead
-	h.sweepMu.Unlock()
+	c.mu.Lock()
+	saw := c.sawMessagesRead
+	c.mu.Unlock()
 	if !saw {
-		t.Fatalf("sweepSawMessagesRead = false after tool_use(mcp__sprawl__messages_read); want true")
+		t.Fatalf("sawMessagesRead = false after tool_use(mcp__sprawl__messages_read); want true")
 	}
 
 	// Now publish another EventTurnStarted: must reset the flag.
@@ -1978,18 +1992,140 @@ func TestRunDeliveryConfirmationSubscriber_TracksToolUseAndResetsOnTurnStart(t *
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		h.sweepMu.Lock()
-		saw = h.sweepSawMessagesRead
-		h.sweepMu.Unlock()
+		c.mu.Lock()
+		saw = c.sawMessagesRead
+		c.mu.Unlock()
 		if !saw {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	h.sweepMu.Lock()
-	saw = h.sweepSawMessagesRead
-	h.sweepMu.Unlock()
+	c.mu.Lock()
+	saw = c.sawMessagesRead
+	c.mu.Unlock()
 	if saw {
-		t.Errorf("sweepSawMessagesRead = true after EventTurnStarted reset; want false")
+		t.Errorf("sawMessagesRead = true after EventTurnStarted reset; want false")
+	}
+}
+
+// TestInProcessUnifiedStarter_CallbacksSafeBeforeFirstEvent is the QUM-584
+// acceptance test: the runtime config callbacks (PostTurnSweep,
+// OnQueueItemDelivered) must be safely invocable even before rt.Start has
+// returned. We exercise this by overriding unifiedRuntimeNewFn with a fake
+// that fires both callbacks synchronously from inside New(cfg) — i.e. at the
+// instant the supervisor hands them to the runtime, before any subsequent
+// wiring (subscriber attach, handle.Bind, rt.Start) has completed.
+//
+// Before the QUM-584 refactor this would panic on a nil-pointer deref through
+// the partially-built unifiedHandle (handle.rt unset → WakeForDelivery →
+// h.rt.WakeForDelivery on nil rt). After the refactor the callbacks capture
+// only the sweepCoordinator, which is fully constructed before New(cfg) is
+// called, so both callbacks are no-ops at this instant: OnQueueItemDelivered
+// increments the delivered counter cleanly; PostTurnSweep finds wake==nil
+// (Bind has not happened yet) and degrades gracefully.
+func TestInProcessUnifiedStarter_CallbacksSafeBeforeFirstEvent(t *testing.T) {
+	oldStart := unifiedAdapterStartFn
+	oldNew := unifiedRuntimeNewFn
+	t.Cleanup(func() {
+		unifiedAdapterStartFn = oldStart
+		unifiedRuntimeNewFn = oldNew
+	})
+
+	sprawlRoot := t.TempDir()
+	worktree := filepath.Join(sprawlRoot, "wt")
+	_ = os.MkdirAll(worktree, 0o755)
+	writeAgentState(t, sprawlRoot, &state.AgentState{
+		Name: "alice", Type: "researcher", Worktree: worktree, SessionID: "sess-alice",
+	})
+
+	fakeSession := newFakeBackendSession("sess-alice", backend.Capabilities{})
+	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
+		return fakeSession, nil
+	}
+
+	// The fake runtime fires both callbacks from inside New(cfg) — before
+	// any later wiring step has executed. Any panic here would fail the test
+	// because the supervisor's Start returns the panic via recovery in the
+	// turn-loop... actually goroutine panics don't propagate; we fire
+	// synchronously on the caller's goroutine so a panic crashes the test
+	// process.
+	unifiedRuntimeNewFn = func(cfg runtimepkg.RuntimeConfig) *runtimepkg.UnifiedRuntime {
+		// Synchronous, in-line invocation of both callbacks. If they
+		// reach into a partially-built handle, this panics.
+		if cfg.OnQueueItemDelivered != nil {
+			cfg.OnQueueItemDelivered(runtimepkg.QueueItem{
+				Class:    runtimepkg.ClassInbox,
+				Prompt:   "probe",
+				EntryIDs: []string{"probe-id"},
+			})
+		}
+		if cfg.PostTurnSweep != nil {
+			cfg.PostTurnSweep()
+		}
+		return runtimepkg.New(cfg)
+	}
+
+	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
+		SessionID: "sess-alice", TreePath: "weave/alice",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	uh, ok := handle.(*unifiedHandle)
+	if !ok {
+		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
+	}
+	t.Cleanup(func() { _ = uh.Stop(context.Background()) })
+
+	// Sanity: the OnQueueItemDelivered probe should have incremented the
+	// coordinator's deliveredItems counter even though it fired before any
+	// subsequent wiring. Counter may have since been reset by an
+	// EventTurnStarted from the now-running turn loop, so we don't assert a
+	// specific value — only that the coordinator is reachable and the
+	// supervisor returned a valid handle.
+	if uh.coord == nil {
+		t.Fatal("unifiedHandle.coord is nil — QUM-584 wiring regressed")
+	}
+}
+
+// TestInProcessUnifiedStarter_BindInstallsWakeFn asserts the QUM-584 Bind
+// step actually wires the sweepCoordinator's wake function before Start
+// returns. The coordinator's wake is initially nil; without Bind, any
+// PostTurnSweep firing degrades to a no-op. After Start, wake must be non-nil
+// so the defense-in-depth pending sweep can actually nudge the runtime.
+func TestInProcessUnifiedStarter_BindInstallsWakeFn(t *testing.T) {
+	oldStart := unifiedAdapterStartFn
+	t.Cleanup(func() { unifiedAdapterStartFn = oldStart })
+
+	sprawlRoot := t.TempDir()
+	worktree := filepath.Join(sprawlRoot, "wt")
+	_ = os.MkdirAll(worktree, 0o755)
+	writeAgentState(t, sprawlRoot, &state.AgentState{
+		Name: "alice", Type: "researcher", Worktree: worktree, SessionID: "sess-alice",
+	})
+
+	fakeSession := newFakeBackendSession("sess-alice", backend.Capabilities{})
+	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
+		return fakeSession, nil
+	}
+
+	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
+		SessionID: "sess-alice", TreePath: "weave/alice",
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	uh := handle.(*unifiedHandle)
+	t.Cleanup(func() { _ = uh.Stop(context.Background()) })
+
+	uh.coord.mu.Lock()
+	wakeIsNil := uh.coord.wake == nil
+	uh.coord.mu.Unlock()
+	if wakeIsNil {
+		t.Fatal("sweepCoordinator.wake is nil after Start — Bind step did not run before rt.Start")
 	}
 }

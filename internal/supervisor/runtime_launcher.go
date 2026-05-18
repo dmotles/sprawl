@@ -2,7 +2,6 @@ package supervisor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -57,7 +56,124 @@ func newInProcessUnifiedStarter(initSpec backendpkg.InitSpec, allowedTools []str
 	return &inProcessUnifiedStarter{initSpec: initSpec, allowedTools: allowedTools}
 }
 
+// preparedLaunch is the immutable result of phase 1 (state load + on-disk
+// preparation) plus the prepared session spec consumed by phase 2.
+type preparedLaunch struct {
+	agentState   *state.AgentState
+	sessionSpec  backendpkg.SessionSpec
+	activityFile *os.File
+	observer     *agentloop.ObserverWriter
+}
+
+// Start orchestrates the in-process runtime launch as a sequence of discrete
+// phases with explicit ordering and rollback. The phases are:
+//
+//  1. prepareLaunch       — load state, write system prompt, open activity file
+//  2. startBackendSession — spawn the backend session; Start + optional Initialize
+//  3. newSweepCoordinator — allocate the QUM-580 sweep state owner
+//  4. unifiedRuntimeNewFn — construct the runtime; callbacks capture only the
+//     coordinator, never a partially-built handle
+//  5. attachSubscribers   — wire EventBus subscribers to the now-built runtime
+//  6. assembleHandle      — populate unifiedHandle in one linear block; no
+//     closure already created points into a half-built handle
+//  7. coord.Bind          — install the wake function captured against the
+//     fully-built handle (must happen before rt.Start so the first sweep is
+//     well-defined)
+//  8. rt.Start            — start the turn loop; first PostTurnSweep / first
+//     OnQueueItemDelivered fire only after this returns
+//  9. handle.feedTasks    — drain queued tasks into the runtime queue
+//
+// Each phase's rollback unwinds only what it constructed. The
+// closure-capture-race fragility that motivated QUM-584 is gone by
+// construction: the only closures stored in RuntimeConfig (phase 4) capture
+// the coordinator (built in phase 3, immutable thereafter). The handle
+// pointer is never referenced from any closure created before phase 6.
 func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
+	// Phase 1: prepare on-disk state and session spec.
+	prep, err := s.prepareLaunch(spec)
+	if err != nil {
+		return nil, err
+	}
+
+	// Phase 2: start the backend session. Rollback on error: close activity file.
+	session, err := s.startBackendSession(ctx, prep)
+	if err != nil {
+		_ = prep.activityFile.Close()
+		return nil, err
+	}
+
+	// Phase 3: allocate the sweep coordinator. Holds all immutable state the
+	// turn-loop callbacks (phase 4) need; constructed in full before any
+	// closure that references it exists.
+	coord := newSweepCoordinator(spec.SprawlRoot, spec.Name)
+
+	caps := session.Capabilities()
+
+	// Phase 4: construct the runtime. The closures stored in RuntimeConfig
+	// capture only `coord` — there is no `handle` reference reachable from
+	// the turn loop, so there is no way for a partially-built handle to be
+	// observed by the first PostTurnSweep / OnQueueItemDelivered firing.
+	rt := unifiedRuntimeNewFn(runtimepkg.RuntimeConfig{
+		Name:          spec.Name,
+		SprawlRoot:    spec.SprawlRoot,
+		Session:       session,
+		InitialPrompt: prep.agentState.Prompt,
+		Capabilities:  caps,
+		// Defends against wedged-SDK hangs (QUM-578/QUM-581). 30m is long
+		// enough for long autonomous turns but bounded so an SDK that opens
+		// system:init and never closes doesn't permanently freeze the agent.
+		TurnTimeout:          30 * time.Minute,
+		PostTurnSweep:        coord.PostTurnSweep,
+		OnQueueItemDelivered: coord.OnQueueItemDelivered,
+	})
+
+	// Phase 5: attach EventBus subscribers. Safe to do now — bus exists; turn
+	// loop is not yet running.
+	stopActivity := runActivitySubscriber(rt.EventBus(), prep.observer, "activity")
+	stopDelivery := runDeliveryConfirmationSubscriber(rt.EventBus(), coord, "delivery-confirmation")
+
+	// Phase 6: assemble the handle. Single linear block, no closures already
+	// in flight observe partial state.
+	handle := &unifiedHandle{
+		rt:            rt,
+		session:       session,
+		capabilities:  caps,
+		sessionID:     session.SessionID(),
+		activityFile:  prep.activityFile,
+		stopActivity:  stopActivity,
+		stopDelivery:  stopDelivery,
+		sprawlRoot:    spec.SprawlRoot,
+		name:          spec.Name,
+		statusDrainer: s.statusDrainer,
+		coord:         coord,
+	}
+
+	// Phase 7: bind the coordinator's wake function. Closure captures the
+	// fully-built handle (assembled in phase 6), so handle.rt is guaranteed
+	// non-nil. Must precede phase 8 so the first PostTurnSweep firing has a
+	// non-nil wake.
+	coord.Bind(handle.WakeForDelivery)
+
+	// Phase 8: start the runtime. Rollback on error: tear down subscribers,
+	// close + reap session, close activity file.
+	if err := rt.Start(context.Background()); err != nil {
+		stopDelivery()
+		stopActivity()
+		_ = session.Close()
+		_ = session.Wait()
+		_ = prep.activityFile.Close()
+		return nil, err
+	}
+
+	// Phase 9: drain queued tasks from on-disk state into the runtime queue.
+	handle.feedTasks()
+	return handle, nil
+}
+
+// prepareLaunch loads the agent state, writes the system prompt, builds the
+// session spec, and opens the activity-log file. On error it closes the
+// activity file if it was opened before failure.
+func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*preparedLaunch, error) {
 	agentState, err := state.LoadAgent(spec.SprawlRoot, spec.Name)
 	if err != nil {
 		return nil, err
@@ -88,134 +204,36 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 	// Per QUM-398 plan §4 risk #10: do NOT also assign sessionSpec.Observer
 	// to the activity ObserverWriter — only the EventBus subscriber writes
 	// activity, to avoid double-write.
+	return &preparedLaunch{
+		agentState:   agentState,
+		sessionSpec:  sessionSpec,
+		activityFile: activityFile,
+		observer:     observer,
+	}, nil
+}
 
-	session, err := unifiedAdapterStartFn(ctx, sessionSpec)
+// startBackendSession invokes the adapter seam, calls session.Start, and (if
+// the starter has a non-empty InitSpec) calls session.Initialize. On any
+// failure after the session is returned by the adapter, it closes + reaps the
+// session before returning so callers only need to close the activity file.
+func (s *inProcessUnifiedStarter) startBackendSession(ctx context.Context, prep *preparedLaunch) (backendpkg.Session, error) {
+	session, err := unifiedAdapterStartFn(ctx, prep.sessionSpec)
 	if err != nil {
-		if activityFile != nil {
-			_ = activityFile.Close()
-		}
 		return nil, err
 	}
-
 	if err := session.Start(context.Background()); err != nil {
 		_ = session.Close()
 		_ = session.Wait()
-		if activityFile != nil {
-			_ = activityFile.Close()
-		}
 		return nil, err
 	}
-
 	if s.initSpec.ToolBridge != nil || len(s.initSpec.MCPServerNames) > 0 {
 		if err := session.Initialize(ctx, s.initSpec); err != nil {
 			_ = session.Close()
 			_ = session.Wait()
-			if activityFile != nil {
-				_ = activityFile.Close()
-			}
 			return nil, err
 		}
 	}
-
-	caps := session.Capabilities()
-	sprawlRoot, name := spec.SprawlRoot, spec.Name
-
-	// QUM-580: allocate the handle up-front so the OnQueueItemDelivered and
-	// PostTurnSweep closures can capture it. The handle's runtime/session
-	// fields are populated after unifiedRuntimeNewFn / rt.Start succeed.
-	handle := &unifiedHandle{
-		sprawlRoot:    spec.SprawlRoot,
-		name:          spec.Name,
-		statusDrainer: s.statusDrainer,
-	}
-	handle.wakeForDeliveryFn = handle.WakeForDelivery
-
-	rt := unifiedRuntimeNewFn(runtimepkg.RuntimeConfig{
-		Name:          spec.Name,
-		SprawlRoot:    spec.SprawlRoot,
-		Session:       session,
-		InitialPrompt: agentState.Prompt,
-		Capabilities:  caps,
-		// Defends against wedged-SDK hangs (QUM-578/QUM-581). 30m is long
-		// enough for long autonomous turns but bounded so an SDK that opens
-		// system:init and never closes doesn't permanently freeze the agent.
-		TurnTimeout:   30 * time.Minute,
-		PostTurnSweep: func() { handle.postTurnSweep() },
-		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
-			if len(it.EntryIDs) > 0 {
-				handle.sweepMu.Lock()
-				handle.sweepDeliveredItems++
-				handle.sweepMu.Unlock()
-			}
-			for _, id := range it.EntryIDs {
-				if strings.HasPrefix(id, "task:") {
-					taskID := strings.TrimPrefix(id, "task:")
-					found, err := state.GetTask(sprawlRoot, name, taskID)
-					if err != nil {
-						slog.Default().Warn(
-							"unified-runtime: get task on delivery failed",
-							slog.String("agent", name),
-							slog.String("task_id", taskID),
-							slog.Any("err", err),
-						)
-						continue
-					}
-					found.Status = "done"
-					found.DoneAt = time.Now().UTC().Format(time.RFC3339)
-					if err := state.UpdateTask(sprawlRoot, name, found); err != nil {
-						slog.Default().Warn(
-							"unified-runtime: mark task done failed",
-							slog.String("agent", name),
-							slog.String("task_id", taskID),
-							slog.Any("err", err),
-						)
-					}
-					continue
-				}
-				if err := agentloop.MarkDelivered(sprawlRoot, name, id); err != nil {
-					slog.Default().Warn(
-						"unified-runtime: mark delivered failed",
-						slog.String("agent", name),
-						slog.String("entry_id", id),
-						slog.Any("err", err),
-					)
-				}
-			}
-		},
-	})
-
-	// Activity subscriber: forwards EventProtocolMessage to the
-	// ObserverWriter (which writes activity.ndjson).
-	stopActivity := runActivitySubscriber(rt.EventBus(), observer, "activity")
-
-	// QUM-580: delivery-confirmation subscriber tracks messages_read
-	// tool_use blocks and resets sweep counters on EventTurnStarted.
-	stopDelivery := runDeliveryConfirmationSubscriber(rt.EventBus(), handle, "delivery-confirmation")
-
-	// Populate handle fields before rt.Start so the PostTurnSweep closure
-	// (which calls handle.WakeForDelivery → handle.rt) observes a fully
-	// constructed handle when the turn loop fires its first sweep.
-	handle.rt = rt
-	handle.session = session
-	handle.capabilities = caps
-	handle.sessionID = session.SessionID()
-	handle.activityFile = activityFile
-	handle.stopActivity = stopActivity
-	handle.stopDelivery = stopDelivery
-
-	if err := rt.Start(context.Background()); err != nil {
-		stopDelivery()
-		stopActivity()
-		_ = session.Close()
-		_ = session.Wait()
-		if activityFile != nil {
-			_ = activityFile.Close()
-		}
-		return nil, err
-	}
-
-	handle.feedTasks()
-	return handle, nil
+	return session, nil
 }
 
 // buildAgentSystemPrompt renders the system prompt for a child agent based on
@@ -289,31 +307,14 @@ type unifiedHandle struct {
 
 	stopWaitTimedOut atomic.Bool
 
-	// QUM-580: defense-in-depth post-turn pending-envelope sweep state.
-	// sweepDeliveredItems counts QueueItems-with-EntryIDs delivered during
-	// the current turn (incremented once per QueueItem under sweepMu from
-	// OnQueueItemDelivered, regardless of how many envelope EntryIDs the
-	// item carried). sweepSawMessagesRead is set true by the
-	// delivery-confirmation subscriber when it observes the agent invoking
-	// the mcp__sprawl__messages_read tool, indicating the model actually
-	// drained its inbox. postTurnSweep reads both, decides whether a wake
-	// is needed, and resets both back to zero.
-	sweepMu              sync.Mutex
-	sweepDeliveredItems  int
-	sweepSawMessagesRead bool
-	// wakeForDeliveryFn is the seam invoked by postTurnSweep when it
-	// decides a wake is needed. Production wires this to
-	// (*unifiedHandle).WakeForDelivery; tests inject a counter.
-	wakeForDeliveryFn func() error
+	// coord owns the QUM-580 sweep state and the runtime callbacks that
+	// touch it (OnQueueItemDelivered, PostTurnSweep). Extracted from the
+	// handle in QUM-584 so the runtime callbacks no longer capture a
+	// partially-built *unifiedHandle.
+	coord *sweepCoordinator
 	// stopDelivery tears down the delivery-confirmation subscriber.
 	stopDelivery func()
 }
-
-// sweepMessagesReadToolName is the MCP tool name the
-// delivery-confirmation subscriber watches for. Observing this tool_use
-// block confirms the agent drained its inbox during the current turn,
-// which suppresses the defense-in-depth wake from postTurnSweep.
-const sweepMessagesReadToolName = "mcp__sprawl__messages_read"
 
 // StopWaitTimedOut reports whether the bounded session.Wait() inside Stop hit
 // its timeout (QUM-542). Used by Real.Retire/Kill to surface the fact via the
@@ -521,112 +522,3 @@ func (h *unifiedHandle) Done() <-chan struct{} {
 // UnifiedRuntime returns the underlying UnifiedRuntime so the TUI viewport
 // stream wiring (QUM-439) can subscribe to its EventBus.
 func (h *unifiedHandle) UnifiedRuntime() *runtimepkg.UnifiedRuntime { return h.rt }
-
-// postTurnSweep is the defense-in-depth check invoked from the turn loop
-// after every turn boundary (QUM-580). It decides whether to fire a
-// cooperative wake based on two conditions:
-//
-//  1. deliveredCount > 0 && !sawMessagesRead — items were handed to the
-//     model this turn, but the model never invoked messages_read to drain
-//     them. The model may have ignored the inbox; nudge it on the next
-//     boundary so a follow-up turn happens.
-//  2. len(pending/) > 0 — the on-disk pending queue is non-empty,
-//     regardless of in-memory counters. A pending file may have been
-//     written by a peer mid-turn and never drained into the runtime
-//     queue; this is the canonical defense-in-depth path.
-//
-// Counters are reset under sweepMu before any blocking I/O so the next
-// turn starts clean. wakeForDeliveryFn is invoked without sweepMu held.
-func (h *unifiedHandle) postTurnSweep() {
-	h.sweepMu.Lock()
-	delivered := h.sweepDeliveredItems
-	sawRead := h.sweepSawMessagesRead
-	h.sweepDeliveredItems = 0
-	h.sweepSawMessagesRead = false
-	h.sweepMu.Unlock()
-
-	needWake := delivered > 0 && !sawRead
-	if !needWake {
-		pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
-		if err != nil {
-			slog.Default().Debug(
-				"unified-runtime: postTurnSweep ListPending failed",
-				slog.String("agent", h.name),
-				slog.Any("err", err),
-			)
-		}
-		if len(pending) > 0 {
-			needWake = true
-		}
-	}
-	if !needWake {
-		return
-	}
-	if h.wakeForDeliveryFn != nil {
-		_ = h.wakeForDeliveryFn()
-	}
-}
-
-// runDeliveryConfirmationSubscriber subscribes to bus and watches the
-// agent's protocol-message stream for two signals:
-//
-//   - EventTurnStarted: resets both sweep counters on the handle so each
-//     turn starts with a clean slate.
-//   - EventProtocolMessage carrying an assistant tool_use block with
-//     name == sweepMessagesReadToolName: sets sweepSawMessagesRead=true,
-//     confirming the model drained its inbox this turn.
-//
-// The returned function unsubscribes and waits for the goroutine to drain.
-// Parsing follows the same assistant tool_use shape used by
-// internal/agentloop/activity.go. QUM-583 considered factoring this into a
-// shared pre-decoded ParsedEvent fanned out by the EventBus, but rejected it:
-// the two consumers extract different fields (activity needs text + tool
-// input; this subscriber needs only the tool name) and sharing would require
-// plumbing a new event type through the EventBus and both subscribers for a
-// per-event saving of one small JSON unmarshal — not worth the coupling.
-func runDeliveryConfirmationSubscriber(bus *runtimepkg.EventBus, h *unifiedHandle, name string) func() {
-	ch, unsub := bus.SubscribeNamed(name, 64)
-	doneCh := make(chan struct{})
-	go func() {
-		defer close(doneCh)
-		for ev := range ch {
-			switch ev.Type {
-			case runtimepkg.EventTurnStarted:
-				h.sweepMu.Lock()
-				h.sweepDeliveredItems = 0
-				h.sweepSawMessagesRead = false
-				h.sweepMu.Unlock()
-			case runtimepkg.EventProtocolMessage:
-				if ev.Message == nil || ev.Message.Type != "assistant" {
-					continue
-				}
-				var outer struct {
-					Message struct {
-						Content []struct {
-							Type string `json:"type"`
-							Name string `json:"name,omitempty"`
-						} `json:"content"`
-					} `json:"message"`
-				}
-				if err := json.Unmarshal(ev.Message.Raw, &outer); err != nil {
-					continue
-				}
-				for _, block := range outer.Message.Content {
-					if block.Type == "tool_use" && block.Name == sweepMessagesReadToolName {
-						h.sweepMu.Lock()
-						h.sweepSawMessagesRead = true
-						h.sweepMu.Unlock()
-						break
-					}
-				}
-			}
-		}
-	}()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			unsub()
-			<-doneCh
-		})
-	}
-}
