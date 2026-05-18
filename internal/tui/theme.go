@@ -109,10 +109,8 @@ func NewTheme(accentColor string) Theme {
 		ErrorText: lipgloss.NewStyle().
 			Foreground(pal.Error).
 			Background(bg),
-		// SystemText keeps its magenta hue (no Palette role yet — distinct
-		// from Primary/Accent by design per QUM-338).
 		SystemText: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("141")).
+			Foreground(pal.System).
 			Background(bg),
 		NotificationText: lipgloss.NewStyle().
 			Foreground(pal.Accent).

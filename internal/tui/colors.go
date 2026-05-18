@@ -18,6 +18,9 @@ import (
 //   - Busy: amber/yellow used for "working but pinned" indicators.
 //   - FgBase / FgSubtle / FgMostSubtle: foreground intensities.
 //   - BgBase / BgLessVisible: panel and status-bar backgrounds.
+//   - System: magenta used for system-injected viewport entries (inbox-drain
+//     citations, system notices — QUM-338/QUM-590). Distinct from Primary/Accent
+//     by design so the human watching can tell at a glance the system spoke.
 type Palette struct {
 	Primary       color.Color
 	Accent        color.Color
@@ -26,6 +29,7 @@ type Palette struct {
 	Error         color.Color
 	Info          color.Color
 	Busy          color.Color
+	System        color.Color
 	FgBase        color.Color
 	FgSubtle      color.Color
 	FgMostSubtle  color.Color
@@ -45,6 +49,7 @@ func defaultDarkPalette(accent color.Color) Palette {
 		Error:         lipgloss.Color("196"), // red
 		Info:          lipgloss.Color("51"),  // cyan
 		Busy:          lipgloss.Color("220"), // yellow
+		System:        lipgloss.Color("141"), // magenta (system/inbox-drain)
 		FgBase:        lipgloss.Color("252"),
 		FgSubtle:      lipgloss.Color("245"),
 		FgMostSubtle:  lipgloss.Color("240"),

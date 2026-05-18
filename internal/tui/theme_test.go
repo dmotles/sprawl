@@ -104,6 +104,7 @@ func TestNewTheme_PaletteRolesPopulated(t *testing.T) {
 		{"FgMostSubtle", func() color.Color { return theme.Palette.FgMostSubtle }},
 		{"BgBase", func() color.Color { return theme.Palette.BgBase }},
 		{"BgLessVisible", func() color.Color { return theme.Palette.BgLessVisible }},
+		{"System", func() color.Color { return theme.Palette.System }},
 	}
 	for _, r := range roles {
 		t.Run(r.name, func(t *testing.T) {
@@ -255,7 +256,7 @@ func TestTUI_NoStrayAnsiColorLiterals(t *testing.T) {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if name == "theme.go" || name == "colors.go" {
+		if name == "colors.go" {
 			continue
 		}
 		f, err := parser.ParseFile(fset, name, nil, parser.AllErrors)
