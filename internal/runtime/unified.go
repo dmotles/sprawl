@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -60,6 +61,9 @@ type RuntimeConfig struct {
 	OnQueueItemDelivered func(item QueueItem)
 	// PostTurnSweep is forwarded to TurnLoopConfig. See TurnLoopConfig.
 	PostTurnSweep func()
+	// TurnTimeout is forwarded to TurnLoopConfig.TurnTimeout (0 = no deadline).
+	// See QUM-581.
+	TurnTimeout time.Duration
 }
 
 // sessionIDProvider is an optional interface a Session may satisfy to expose a
@@ -230,6 +234,7 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 		InitialPrompt:        rt.cfg.InitialPrompt,
 		OnQueueItemDelivered: rt.cfg.OnQueueItemDelivered,
 		PostTurnSweep:        rt.cfg.PostTurnSweep,
+		TurnTimeout:          rt.cfg.TurnTimeout,
 	})
 
 	rt.mu.Unlock()

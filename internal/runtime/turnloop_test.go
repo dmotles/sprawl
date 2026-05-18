@@ -1409,3 +1409,228 @@ func TestTurnLoop_PostTurnSweep_NilSafe(t *testing.T) {
 		t.Fatal("Run did not return after cancel")
 	}
 }
+
+// QUM-581: per-turn deadline on StartTurn to bound wedged autonomous-frame
+// stalls.
+//
+// The backend's stream wedge mode is: SDK opens an autonomous frame
+// (system:init), then the stream stalls — no further frames, no EOF, no
+// terminal `result`. On EOF, backend.Session.runReader's deferred teardown
+// sets currentTurn=nil and surfaces fatalErr, so StartTurn does NOT hang on
+// EOF. Only a stalled-open stream wedges the turn loop indefinitely.
+//
+// Fix: TurnLoopConfig.TurnTimeout (time.Duration, zero = disabled). When
+// non-zero, executeTurn wraps ctx with context.WithTimeout. On deadline
+// expiry, EventTurnFailed must be published with an error chain that wraps
+// context.DeadlineExceeded. Outer-ctx cancellation (parent shutdown) must
+// NOT publish EventTurnFailed — distinguished via turnCtx.Err() vs ctx.Err().
+
+// TestTurnLoop_StartTurnDeadlineFiresOnStalledAutonomousFrame simulates a
+// wedged StartTurn after the SDK opens an autonomous frame: onStart blocks
+// forever waiting on its turn ctx, never closing the events channel and
+// never emitting a frame. With TurnTimeout configured, the loop must
+// publish EventTurnFailed wrapping context.DeadlineExceeded, and must NOT
+// fire OnQueueItemDelivered (no model frame ever arrived).
+func TestTurnLoop_StartTurnDeadlineFiresOnStalledAutonomousFrame(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			// Simulate a wedged stream: return a channel that the producer
+			// never writes to and never closes. The TurnLoop must rely on
+			// its per-turn deadline to escape.
+			ch := make(chan *protocol.Message)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "wedge", EntryIDs: []string{"w1"}})
+
+	var (
+		cbMu  sync.Mutex
+		calls []QueueItem
+	)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:     mock,
+		Queue:       q,
+		EventBus:    bus,
+		TurnTimeout: 50 * time.Millisecond,
+		OnQueueItemDelivered: func(item QueueItem) {
+			cbMu.Lock()
+			calls = append(calls, item)
+			cbMu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("Run did not return after cancel")
+		}
+	})
+
+	ev, _ := waitFor(t, sub, 500*time.Millisecond, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnFailed
+	})
+	if ev.Error == nil {
+		t.Fatalf("EventTurnFailed.Error is nil; want an error wrapping context.DeadlineExceeded")
+	}
+	if !errors.Is(ev.Error, context.DeadlineExceeded) {
+		t.Errorf("EventTurnFailed.Error = %v; want errors.Is(err, context.DeadlineExceeded) == true", ev.Error)
+	}
+
+	cbMu.Lock()
+	gotCalls := len(calls)
+	cbMu.Unlock()
+	if gotCalls != 0 {
+		t.Errorf("OnQueueItemDelivered fired %d time(s) on wedged turn, want 0", gotCalls)
+	}
+}
+
+// TestTurnLoop_ZeroTurnTimeoutPreservesNoDeadline confirms that with
+// TurnTimeout=0 the loop applies no deadline and a normal turn completes
+// successfully. Sanity regression that the new field defaults to opt-out.
+func TestTurnLoop_ZeroTurnTimeoutPreservesNoDeadline(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 2)
+			ch <- makeAssistant("hi")
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "ok"})
+
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:     mock,
+		Queue:       q,
+		EventBus:    bus,
+		TurnTimeout: 0, // explicit: no deadline
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, seen := waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+	for _, ev := range seen {
+		if ev.Type == EventTurnFailed {
+			t.Fatalf("EventTurnFailed observed with TurnTimeout=0; want no failure (err=%v)", ev.Error)
+		}
+	}
+
+	// Must have observed a clean TurnCompleted, not TurnFailed.
+	sawCompleted := false
+	for _, ev := range seen {
+		if ev.Type == EventTurnCompleted {
+			sawCompleted = true
+		}
+	}
+	if !sawCompleted {
+		t.Errorf("EventTurnCompleted not observed in seen=%+v", seen)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+// TestTurnLoop_OuterCtxCancelDoesNotPublishTurnFailed asserts that parent
+// shutdown (outer ctx cancellation) while inside StartTurn does NOT publish
+// EventTurnFailed. The loop should distinguish "outer ctx done" from
+// "per-turn deadline expired" and preserve silent-shutdown semantics for
+// the former. Even with TurnTimeout set, an outer-cancel that fires before
+// the deadline must not surface as a turn failure.
+func TestTurnLoop_OuterCtxCancelDoesNotPublishTurnFailed(t *testing.T) {
+	started := make(chan struct{})
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			// Block forever — let the outer ctx cancel be the only way out.
+			ch := make(chan *protocol.Message)
+			close(started) // signal: StartTurn has been called and the loop is now draining
+			// Note: we don't close `ch` here; outer cancel will yank the loop out
+			// via its ctx.Done case in executeTurn.
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "shutdown-me", EntryIDs: []string{"s1"}})
+
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:     mock,
+		Queue:       q,
+		EventBus:    bus,
+		TurnTimeout: 10 * time.Second, // long enough that outer cancel wins
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	// Wait until StartTurn is in flight so the cancel races against the
+	// in-turn drain loop (not the pre-turn queue wait).
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartTurn was not invoked within 2s")
+	}
+
+	// Also wait for EventTurnStarted to be observed so we know executeTurn
+	// has progressed past Publish and into the drain loop.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+
+	// Now cancel the outer ctx — simulates parent shutdown.
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after outer cancel")
+	}
+
+	// Drain any remaining buffered events; assert none is EventTurnFailed.
+	for {
+		select {
+		case ev, ok := <-sub:
+			if !ok {
+				return
+			}
+			if ev.Type == EventTurnFailed {
+				t.Fatalf("EventTurnFailed was published on outer-ctx cancellation (err=%v); "+
+					"shutdown should be silent", ev.Error)
+			}
+		default:
+			return
+		}
+	}
+}

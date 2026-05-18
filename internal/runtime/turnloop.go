@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -66,6 +67,11 @@ type TurnLoopConfig struct {
 	// the final lifecycle signal for the turn. Must not block. See QUM-580
 	// (defense-in-depth post-turn pending-envelope sweep).
 	PostTurnSweep func()
+	// TurnTimeout, if > 0, bounds the wall-clock duration of a single turn
+	// (StartTurn + drain loop). On deadline expiry the loop publishes
+	// EventTurnFailed with an error wrapping context.DeadlineExceeded.
+	// Zero means no deadline (legacy behaviour). See QUM-581.
+	TurnTimeout time.Duration
 }
 
 // TurnLoop owns the single-goroutine drive loop for an agent runtime.
@@ -179,7 +185,20 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 
 	l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnStarted, Prompt: prompt})
 
-	events, err := l.cfg.Session.StartTurn(ctx, prompt)
+	// QUM-581: bound the per-turn duration when configured. The wrapped
+	// turnCtx is passed to StartTurn and to the drain loop's select so a
+	// wedged-open stream (SDK opens system:init and never closes) cannot
+	// freeze the agent. Outer-ctx cancellation (parent shutdown) is still
+	// distinguished from a per-turn deadline below so that silent-shutdown
+	// semantics are preserved for the former.
+	turnCtx := ctx
+	if l.cfg.TurnTimeout > 0 {
+		var cancel context.CancelFunc
+		turnCtx, cancel = context.WithTimeout(ctx, l.cfg.TurnTimeout)
+		defer cancel()
+	}
+
+	events, err := l.cfg.Session.StartTurn(turnCtx, prompt)
 	if err != nil {
 		l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
 		return
@@ -189,7 +208,15 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 	interrupted := false
 	for {
 		select {
-		case <-ctx.Done():
+		case <-turnCtx.Done():
+			// Distinguish per-turn deadline expiry from outer-ctx cancellation.
+			// Outer cancel = parent shutdown: stay silent (no TurnFailed).
+			// Per-turn deadline = wedged-open stream: surface as TurnFailed
+			// wrapping context.DeadlineExceeded so operators can see it and
+			// downstream callers can detect it via errors.Is. See QUM-581.
+			if ctx.Err() == nil && turnCtx.Err() == context.DeadlineExceeded {
+				l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: fmt.Errorf("turn deadline exceeded after %s: %w", l.cfg.TurnTimeout, turnCtx.Err())})
+			}
 			// The backend's readTurn is also wired to ctx and will close
 			// `events`; let the goroutine exit here without further bookkeeping.
 			return

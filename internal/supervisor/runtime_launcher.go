@@ -136,6 +136,10 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		Session:       session,
 		InitialPrompt: agentState.Prompt,
 		Capabilities:  caps,
+		// Defends against wedged-SDK hangs (QUM-578/QUM-581). 30m is long
+		// enough for long autonomous turns but bounded so an SDK that opens
+		// system:init and never closes doesn't permanently freeze the agent.
+		TurnTimeout:   30 * time.Minute,
 		PostTurnSweep: func() { handle.postTurnSweep() },
 		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
 			if len(it.EntryIDs) > 0 {
