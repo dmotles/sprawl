@@ -50,6 +50,8 @@ func newFakeBackendSession(id string, caps backend.Capabilities) *fakeBackendSes
 	return &fakeBackendSession{id: id, caps: caps}
 }
 
+func (f *fakeBackendSession) Start(context.Context) error { return nil }
+
 func (f *fakeBackendSession) Initialize(_ context.Context, spec backend.InitSpec) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

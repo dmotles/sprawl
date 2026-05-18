@@ -40,7 +40,7 @@ func (s *Session) Initialize(ctx context.Context) error {
 
 // SendUserMessage sends a user message and returns a channel of events.
 func (s *Session) SendUserMessage(ctx context.Context, prompt string) (<-chan *protocol.Message, error) {
-	return s.session.StartTurn(ctx, prompt, backend.TurnSpec{Init: s.initSpec})
+	return s.session.StartTurn(ctx, prompt)
 }
 
 // Interrupt sends an interrupt request.

@@ -112,15 +112,53 @@ type mockToolBridge struct {
 	payload    string
 	response   json.RawMessage
 	lastCtx    context.Context
+	called     chan struct{}
+}
+
+func newMockToolBridge(response json.RawMessage) *mockToolBridge {
+	return &mockToolBridge{
+		response: response,
+		called:   make(chan struct{}, 8),
+	}
 }
 
 func (b *mockToolBridge) HandleIncoming(ctx context.Context, serverName string, msg json.RawMessage) (json.RawMessage, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.serverName = serverName
 	b.payload = string(msg)
 	b.lastCtx = ctx
+	b.mu.Unlock()
+	select {
+	case b.called <- struct{}{}:
+	default:
+	}
 	return b.response, nil
+}
+
+func (b *mockToolBridge) waitCalled(t *testing.T, d time.Duration) {
+	t.Helper()
+	select {
+	case <-b.called:
+	case <-time.After(d):
+		t.Fatal("mockToolBridge.HandleIncoming was not called within timeout")
+	}
+}
+
+// feedInitResponse decodes the initialize control_request from `sent`
+// and feeds back a matching control_response so Initialize's handshake
+// wait unblocks under the persistent-reader model.
+func feedInitResponse(t *testing.T, m *mockManagedTransport, sent any) {
+	t.Helper()
+	data, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("marshal initialize request: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal initialize request: %v", err)
+	}
+	reqID, _ := parsed["request_id"].(string)
+	m.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
 }
 
 func drainMessages(ch <-chan *protocol.Message) {
@@ -129,7 +167,7 @@ func drainMessages(ch <-chan *protocol.Message) {
 	}
 }
 
-func TestSession_InitializeTreatsEOFAsSuccessAndSendsInitSpec(t *testing.T) {
+func TestSession_InitializeSendsInitSpecAndAwaitsHandshake(t *testing.T) {
 	transport := newMockManagedTransport()
 	session := NewSession(transport, SessionConfig{
 		SessionID: "sess-1",
@@ -173,7 +211,10 @@ func TestSession_InitializeTreatsEOFAsSuccessAndSendsInitSpec(t *testing.T) {
 			t.Errorf("sdkMcpServers = %v, want [sprawl]", servers)
 		}
 
-		close(transport.recvCh)
+		// Echo back a control_response with the matching request_id so
+		// Initialize's persistent-reader handshake completes.
+		reqID, _ := parsed["request_id"].(string)
+		transport.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
 	}()
 
 	if err := session.Initialize(ctx, InitSpec{MCPServerNames: []string{"sprawl"}}); err != nil {
@@ -296,9 +337,7 @@ func TestSession_StartTurnObserverSeesRawMessagesBeforeControlHandling(t *testin
 
 func TestSession_StartTurnRoutesMCPMessagesThroughToolBridge(t *testing.T) {
 	transport := newMockManagedTransport()
-	bridge := &mockToolBridge{
-		response: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`),
-	}
+	bridge := newMockToolBridge(json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
 	session := NewSession(transport, SessionConfig{
 		SessionID: "sess-1",
 	})
@@ -307,6 +346,10 @@ func TestSession_StartTurnRoutesMCPMessagesThroughToolBridge(t *testing.T) {
 	defer cancel()
 
 	go func() {
+		// Init send → echo handshake response.
+		sent := <-transport.sendCh
+		feedInitResponse(t, transport, sent)
+		// User-prompt send.
 		<-transport.sendCh
 
 		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
@@ -314,23 +357,28 @@ func TestSession_StartTurnRoutesMCPMessagesThroughToolBridge(t *testing.T) {
 		close(transport.recvCh)
 	}()
 
-	events, err := session.StartTurn(ctx, "list tools", TurnSpec{
-		Init: InitSpec{
-			MCPServerNames: []string{"sprawl"},
-			ToolBridge:     bridge,
-		},
-	})
+	if err := session.Initialize(ctx, InitSpec{
+		MCPServerNames: []string{"sprawl"},
+		ToolBridge:     bridge,
+	}); err != nil {
+		t.Fatalf("Initialize() error: %v", err)
+	}
+
+	events, err := session.StartTurn(ctx, "list tools")
 	if err != nil {
 		t.Fatalf("StartTurn() error: %v", err)
 	}
 	drainMessages(events)
+	bridge.waitCalled(t, 2*time.Second)
 
+	bridge.mu.Lock()
 	if bridge.serverName != "sprawl" {
 		t.Errorf("bridge server = %q, want sprawl", bridge.serverName)
 	}
 	if bridge.payload == "" {
 		t.Error("bridge payload should not be empty")
 	}
+	bridge.mu.Unlock()
 
 	var response any
 	select {
@@ -355,9 +403,7 @@ func TestSession_StartTurnRoutesMCPMessagesThroughToolBridge(t *testing.T) {
 
 func TestSession_MCPMessageCarriesCallerIdentity(t *testing.T) {
 	transport := newMockManagedTransport()
-	bridge := &mockToolBridge{
-		response: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`),
-	}
+	bridge := newMockToolBridge(json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
 	session := NewSession(transport, SessionConfig{
 		SessionID: "sess-child",
 		Identity:  "finn",
@@ -367,22 +413,26 @@ func TestSession_MCPMessageCarriesCallerIdentity(t *testing.T) {
 	defer cancel()
 
 	go func() {
+		sent := <-transport.sendCh
+		feedInitResponse(t, transport, sent)
 		<-transport.sendCh
 		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"report_status","arguments":{"state":"working","summary":"test"}}}}}`)
 		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
 		close(transport.recvCh)
 	}()
 
-	events, err := session.StartTurn(ctx, "do work", TurnSpec{
-		Init: InitSpec{
-			MCPServerNames: []string{"sprawl"},
-			ToolBridge:     bridge,
-		},
-	})
+	if err := session.Initialize(ctx, InitSpec{
+		MCPServerNames: []string{"sprawl"},
+		ToolBridge:     bridge,
+	}); err != nil {
+		t.Fatalf("Initialize() error: %v", err)
+	}
+	events, err := session.StartTurn(ctx, "do work")
 	if err != nil {
 		t.Fatalf("StartTurn() error: %v", err)
 	}
 	drainMessages(events)
+	bridge.waitCalled(t, 2*time.Second)
 
 	bridge.mu.Lock()
 	defer bridge.mu.Unlock()
@@ -398,9 +448,7 @@ func TestSession_MCPMessageCarriesCallerIdentity(t *testing.T) {
 
 func TestSession_MCPMessageNoIdentityWhenEmpty(t *testing.T) {
 	transport := newMockManagedTransport()
-	bridge := &mockToolBridge{
-		response: json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`),
-	}
+	bridge := newMockToolBridge(json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
 	// No Identity set — simulates root weave session
 	session := NewSession(transport, SessionConfig{
 		SessionID: "sess-root",
@@ -410,22 +458,26 @@ func TestSession_MCPMessageNoIdentityWhenEmpty(t *testing.T) {
 	defer cancel()
 
 	go func() {
+		sent := <-transport.sendCh
+		feedInitResponse(t, transport, sent)
 		<-transport.sendCh
 		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
 		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
 		close(transport.recvCh)
 	}()
 
-	events, err := session.StartTurn(ctx, "list tools", TurnSpec{
-		Init: InitSpec{
-			MCPServerNames: []string{"sprawl"},
-			ToolBridge:     bridge,
-		},
-	})
+	if err := session.Initialize(ctx, InitSpec{
+		MCPServerNames: []string{"sprawl"},
+		ToolBridge:     bridge,
+	}); err != nil {
+		t.Fatalf("Initialize() error: %v", err)
+	}
+	events, err := session.StartTurn(ctx, "list tools")
 	if err != nil {
 		t.Fatalf("StartTurn() error: %v", err)
 	}
 	drainMessages(events)
+	bridge.waitCalled(t, 2*time.Second)
 
 	bridge.mu.Lock()
 	defer bridge.mu.Unlock()
@@ -462,6 +514,145 @@ func TestSession_StartTurnRejectsConcurrentTurns(t *testing.T) {
 	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
 	close(transport.recvCh)
 	drainMessages(firstEvents)
+}
+
+// signalingToolBridge wraps mockToolBridge and signals on a channel
+// every time HandleIncoming is called. Used by the persistent-reader
+// repro to detect autonomous-turn MCP dispatch with a timeout.
+type signalingToolBridge struct {
+	mu         sync.Mutex
+	serverName string
+	payload    string
+	response   json.RawMessage
+	called     chan struct{}
+}
+
+func (b *signalingToolBridge) HandleIncoming(ctx context.Context, serverName string, msg json.RawMessage) (json.RawMessage, error) {
+	b.mu.Lock()
+	b.serverName = serverName
+	b.payload = string(msg)
+	b.mu.Unlock()
+	select {
+	case b.called <- struct{}{}:
+	default:
+	}
+	return b.response, nil
+}
+
+// TestSession_AutonomousTurnDispatchesMCPToolUse is the QUM-570 repro.
+//
+// After sprawl drives a StartTurn to completion (we see `result:success`),
+// the Claude Code SDK can autonomously start a *new* turn (system:init +
+// control_request{mcp_message} + result). On current code, readTurn exits
+// at the first `result` and no goroutine reads transport.Recv between turns,
+// so the autonomous control_request is never seen and the ToolBridge is
+// never invoked — MCP tool_use calls vanish.
+//
+// The persistent-stream refactor must service the transport continuously
+// while the session is alive, dispatching autonomous control_requests to
+// the host ToolBridge just like in-turn ones.
+func TestSession_AutonomousTurnDispatchesMCPToolUse(t *testing.T) {
+	transport := newMockManagedTransport()
+	bridge := &signalingToolBridge{
+		response: json.RawMessage(`{"jsonrpc":"2.0","id":7,"result":{"ok":true}}`),
+		called:   make(chan struct{}, 4),
+	}
+	observer := &recordingObserver{}
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Feed BOTH the sprawl-initiated turn frames AND the subsequent
+	// autonomous-turn frames up front. On the current implementation
+	// readTurn returns at the first `result`, leaving the autonomous
+	// frames parked in recvCh forever. On the refactored persistent
+	// reader, the autonomous control_request is dispatched to the
+	// ToolBridge and the response is written back to the transport.
+	go func() {
+		sent := <-transport.sendCh // initialize
+		feedInitResponse(t, transport, sent)
+		<-transport.sendCh // user prompt
+
+		// Sprawl-initiated turn.
+		transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+		transport.feedMessage(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}`)
+		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+
+		// Autonomous turn driven by the SDK (no sprawl StartTurn).
+		transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+		transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-auto-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"report_status","arguments":{"state":"working","summary":"auto"}}}}}`)
+		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+	}()
+
+	if err := session.Initialize(ctx, InitSpec{
+		MCPServerNames: []string{"sprawl"},
+		ToolBridge:     bridge,
+	}); err != nil {
+		t.Fatalf("Initialize() error: %v", err)
+	}
+	events, err := session.StartTurn(ctx, "hi")
+	if err != nil {
+		t.Fatalf("StartTurn() error: %v", err)
+	}
+	drainMessages(events)
+
+	// Load-bearing assertion: the persistent reader must dispatch the
+	// autonomous MCP control_request to the ToolBridge. On current code
+	// the goroutine exited at the first `result` and never sees it,
+	// so this times out.
+	select {
+	case <-bridge.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ToolBridge.HandleIncoming was not called for autonomous-turn MCP control_request (persistent reader missing)")
+	}
+
+	bridge.mu.Lock()
+	defer bridge.mu.Unlock()
+	if bridge.serverName != "sprawl" {
+		t.Errorf("bridge server = %q, want sprawl", bridge.serverName)
+	}
+	if bridge.payload == "" {
+		t.Error("bridge payload should not be empty")
+	}
+
+	// Drain any pending sends and assert at least one control_response
+	// corresponds to the autonomous request_id.
+	deadline := time.After(2 * time.Second)
+	var sawAutoResponse bool
+DRAIN:
+	for {
+		select {
+		case sent := <-transport.sendCh:
+			data, err := json.Marshal(sent)
+			if err != nil {
+				t.Fatalf("marshal sent: %v", err)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				continue
+			}
+			if parsed["type"] != "control_response" {
+				continue
+			}
+			resp, _ := parsed["response"].(map[string]any)
+			if resp == nil {
+				continue
+			}
+			if reqID, _ := resp["request_id"].(string); reqID == "mcp-auto-1" {
+				sawAutoResponse = true
+				break DRAIN
+			}
+		case <-deadline:
+			break DRAIN
+		}
+	}
+	if !sawAutoResponse {
+		t.Fatal("did not see control_response for autonomous mcp-auto-1 request_id on transport")
+	}
 }
 
 func TestSession_StartTurn_AllowsSecondTurnAfterFirstResult(t *testing.T) {

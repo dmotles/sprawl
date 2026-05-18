@@ -39,7 +39,8 @@ func TestSession_InitializeSendsControlRequest(t *testing.T) {
 			}
 
 			// Feed back a control_response
-			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+			reqID, _ := parsed["request_id"].(string)
+			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
 			close(mt.recvCh)
 		case <-ctx.Done():
 			return
@@ -86,7 +87,8 @@ func TestSession_InitializeOmitsSystemPromptKey(t *testing.T) {
 			if _, has := request["system_prompt"]; has {
 				t.Errorf("initialize request must omit system_prompt key; got request=%v", request)
 			}
-			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+			reqID, _ := parsed["request_id"].(string)
+			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
 			close(mt.recvCh)
 		case <-ctx.Done():
 			t.Error("context canceled before initialize send")
@@ -127,7 +129,8 @@ func TestSession_InitializeIncludesMCPServers(t *testing.T) {
 			request, ok := parsed["request"].(map[string]any)
 			if !ok {
 				t.Error("request field is not an object")
-				mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+				reqID, _ := parsed["request_id"].(string)
+				mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
 				close(mt.recvCh)
 				return
 			}
@@ -139,7 +142,8 @@ func TestSession_InitializeIncludesMCPServers(t *testing.T) {
 				t.Errorf("sdkMcpServers = %v, want [sprawl]", servers)
 			}
 
-			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+			reqID, _ := parsed["request_id"].(string)
+			mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
 			close(mt.recvCh)
 		case <-ctx.Done():
 			return
@@ -171,7 +175,15 @@ func TestSession_MCPMessageRouting(t *testing.T) {
 	defer cancel()
 
 	go func() {
-		// Consume the user message
+		// Phase 1: initialize handshake.
+		sent := <-mt.sendCh
+		data, _ := json.Marshal(sent)
+		var parsed map[string]any
+		_ = json.Unmarshal(data, &parsed)
+		reqID, _ := parsed["request_id"].(string)
+		mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
+
+		// Phase 2: consume the user message
 		<-mt.sendCh
 
 		// Feed an mcp_message control request
@@ -183,6 +195,9 @@ func TestSession_MCPMessageRouting(t *testing.T) {
 		close(mt.recvCh)
 	}()
 
+	if err := sess.Initialize(ctx); err != nil {
+		t.Fatalf("Initialize() error: %v", err)
+	}
 	events, err := sess.SendUserMessage(ctx, "test")
 	if err != nil {
 		t.Fatalf("SendUserMessage() error: %v", err)
@@ -365,22 +380,25 @@ func TestSession_FullLifecycle(t *testing.T) {
 	// Phase 1: Initialize
 	go func() {
 		// Consume the initialize request
+		var sent any
 		select {
-		case <-mt.sendCh:
+		case sent = <-mt.sendCh:
 		case <-ctx.Done():
 			return
 		}
-		// Respond with success
-		mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"init-1"}}`)
+		data, _ := json.Marshal(sent)
+		var parsed map[string]any
+		_ = json.Unmarshal(data, &parsed)
+		reqID, _ := parsed["request_id"].(string)
+		mt.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
 	}()
 
 	if err := sess.Initialize(ctx); err != nil {
 		t.Fatalf("Initialize() error: %v", err)
 	}
 
-	// Phase 2: Send user message and receive events
-	// Need a fresh recvCh since the old one may still be open
-	mt.recvCh = make(chan *protocol.Message, 100)
+	// Phase 2: Send user message and receive events. Under the persistent
+	// reader, recvCh is shared across phases — do not reassign it.
 
 	go func() {
 		// Consume the user message

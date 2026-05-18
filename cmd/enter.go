@@ -414,6 +414,11 @@ func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh 
 	if err != nil {
 		return nil, false, err
 	}
+	if err := session.Start(context.Background()); err != nil {
+		_ = session.Close()
+		_ = session.Wait()
+		return nil, false, fmt.Errorf("starting session reader: %w", err)
+	}
 	if err := session.Initialize(context.Background(), buildEnterInitSpec(mcpBridge)); err != nil {
 		_ = session.Close()
 		_ = session.Wait()

@@ -96,6 +96,15 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		return nil, err
 	}
 
+	if err := session.Start(context.Background()); err != nil {
+		_ = session.Close()
+		_ = session.Wait()
+		if activityFile != nil {
+			_ = activityFile.Close()
+		}
+		return nil, err
+	}
+
 	if s.initSpec.ToolBridge != nil || len(s.initSpec.MCPServerNames) > 0 {
 		if err := session.Initialize(ctx, s.initSpec); err != nil {
 			_ = session.Close()
