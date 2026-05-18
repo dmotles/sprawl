@@ -1775,7 +1775,7 @@ func TestE2E_QUM488_DelegateThroughRealEnqueuesIntoRuntime(t *testing.T) {
 // The unifiedHandle exposes a postTurnSweep() method that the runtime's
 // TurnLoop calls after every turn. The sweep decides whether to invoke
 // wakeForDeliveryFn (the seam tests override) based on:
-//   - sweepDeliveredCount: number of MarkDelivered calls observed during the turn
+//   - sweepDeliveredItems: number of QueueItems-with-EntryIDs delivered during the turn
 //   - sweepSawMessagesRead: whether the agent invoked mcp__sprawl__messages_read
 //   - on-disk pending/ contents under sprawlRoot/.sprawl/agents/<name>/queue/pending/
 //
@@ -1867,7 +1867,7 @@ func TestUnifiedHandle_PostTurnSweep_NoOpWhenDeliveredAndRead(t *testing.T) {
 	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
 
 	h.sweepMu.Lock()
-	h.sweepDeliveredCount = 2
+	h.sweepDeliveredItems = 2
 	h.sweepSawMessagesRead = true
 	h.sweepMu.Unlock()
 
@@ -1884,7 +1884,7 @@ func TestUnifiedHandle_PostTurnSweep_WakesWhenDeliveredButNoRead(t *testing.T) {
 	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
 
 	h.sweepMu.Lock()
-	h.sweepDeliveredCount = 1
+	h.sweepDeliveredItems = 1
 	h.sweepSawMessagesRead = false
 	h.sweepMu.Unlock()
 
@@ -1915,19 +1915,19 @@ func TestUnifiedHandle_PostTurnSweep_ResetsCountersAfterCall(t *testing.T) {
 	h, _ := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
 
 	h.sweepMu.Lock()
-	h.sweepDeliveredCount = 5
+	h.sweepDeliveredItems = 5
 	h.sweepSawMessagesRead = true
 	h.sweepMu.Unlock()
 
 	h.postTurnSweep()
 
 	h.sweepMu.Lock()
-	gotCount := h.sweepDeliveredCount
+	gotCount := h.sweepDeliveredItems
 	gotSaw := h.sweepSawMessagesRead
 	h.sweepMu.Unlock()
 
 	if gotCount != 0 {
-		t.Errorf("sweepDeliveredCount = %d after sweep, want 0", gotCount)
+		t.Errorf("sweepDeliveredItems = %d after sweep, want 0", gotCount)
 	}
 	if gotSaw {
 		t.Errorf("sweepSawMessagesRead = true after sweep, want false")
