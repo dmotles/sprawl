@@ -64,6 +64,10 @@ type PeekResult struct {
 	Status     string                    `json:"status"`
 	LastReport LastReport                `json:"last_report"`
 	Activity   []agentloop.ActivityEntry `json:"activity"`
+	// InAutonomousTurn reflects backend.Session.InAutonomousTurn() for the
+	// target agent's registered runtime (QUM-585). False when no runtime is
+	// registered or the handle doesn't surface this signal.
+	InAutonomousTurn bool `json:"in_autonomous_turn"`
 }
 
 // MessageSummary is a compact listing entry for a message in the caller's mailbox.

@@ -159,6 +159,11 @@ func (h *WeaveRuntimeHandle) Stop(ctx context.Context) error {
 // SessionID returns the underlying session ID captured at construction.
 func (h *WeaveRuntimeHandle) SessionID() string { return h.sessionID }
 
+// InAutonomousTurn reports whether the underlying backend session is
+// currently servicing an autonomous (SDK-initiated) turn frame. See
+// QUM-585 — surfaced through the peek MCP tool's JSON payload.
+func (h *WeaveRuntimeHandle) InAutonomousTurn() bool { return h.session.InAutonomousTurn() }
+
 // Capabilities returns the backend capabilities reported at construction.
 func (h *WeaveRuntimeHandle) Capabilities() backendpkg.Capabilities { return h.capabilities }
 

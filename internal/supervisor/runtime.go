@@ -201,6 +201,22 @@ func (r *AgentRuntime) currentHandle() RuntimeHandle {
 	return r.handle
 }
 
+// InAutonomousTurn reports whether the live RuntimeHandle's backend Session is
+// currently between sprawl-initiated turns (QUM-582/585). Returns false when
+// the runtime is not started, has been stopped, or the handle does not
+// implement the optional InAutonomousTurn() bool method.
+func (r *AgentRuntime) InAutonomousTurn() bool {
+	h := r.currentHandle()
+	if h == nil {
+		return false
+	}
+	probe, ok := h.(interface{ InAutonomousTurn() bool })
+	if !ok {
+		return false
+	}
+	return probe.InAutonomousTurn()
+}
+
 // Snapshot returns the current runtime snapshot.
 func (r *AgentRuntime) Snapshot() RuntimeSnapshot {
 	r.mu.RLock()

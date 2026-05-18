@@ -990,9 +990,10 @@ func TestServer_UnknownMethod(t *testing.T) {
 func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 	mock := &mockSupervisor{
 		peekResult: &supervisor.PeekResult{
-			Status:     "active",
-			LastReport: supervisor.LastReport{Type: "status", Message: "working", At: "2026-04-21T09:00:00Z"},
-			Activity:   []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "hi"}},
+			Status:           "active",
+			LastReport:       supervisor.LastReport{Type: "status", Message: "working", At: "2026-04-21T09:00:00Z"},
+			Activity:         []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "hi"}},
+			InAutonomousTurn: true,
 		},
 	}
 	srv := New(mock)
@@ -1033,6 +1034,67 @@ func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 	}
 	if len(body.Activity) != 1 || body.Activity[0].Kind != "assistant_text" {
 		t.Errorf("activity = %v", body.Activity)
+	}
+	// QUM-585: in_autonomous_turn must round-trip through the MCP JSON payload.
+	if !body.InAutonomousTurn {
+		t.Errorf("InAutonomousTurn = false, want true (supervisor PeekResult set it true)")
+	}
+	// Also assert the raw JSON key is present with the right value — guards
+	// against the field being renamed/dropped/omitempty'd in the wire format.
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatalf("raw unmarshal: %v", err)
+	}
+	got, ok := raw["in_autonomous_turn"]
+	if !ok {
+		t.Errorf("peek JSON missing in_autonomous_turn key: %s", text)
+	} else if b, _ := got.(bool); !b {
+		t.Errorf("in_autonomous_turn = %v, want true", got)
+	}
+}
+
+// QUM-585: false should also surface — the field must not be omitted when
+// false (boolean presence matters for consumers that distinguish
+// missing-vs-false).
+func TestServer_ToolsCall_SprawlPeek_InAutonomousTurnFalse(t *testing.T) {
+	mock := &mockSupervisor{
+		peekResult: &supervisor.PeekResult{
+			Status:           "active",
+			InAutonomousTurn: false,
+		},
+	}
+	srv := New(mock)
+
+	msg := makeJSONRPCRequest(132, "tools/call", map[string]any{
+		"name":      "peek",
+		"arguments": map[string]any{"agent": "ghost", "tail": 10},
+	})
+	resp, err := srv.HandleMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	content := result["content"].([]any)
+	text := content[0].(map[string]any)["text"].(string)
+
+	var body supervisor.PeekResult
+	if err := json.Unmarshal([]byte(text), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.InAutonomousTurn {
+		t.Errorf("InAutonomousTurn = true, want false")
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		t.Fatalf("raw unmarshal: %v", err)
+	}
+	got, ok := raw["in_autonomous_turn"]
+	if !ok {
+		t.Errorf("peek JSON missing in_autonomous_turn key (must be present even when false): %s", text)
+	} else if b, _ := got.(bool); b {
+		t.Errorf("in_autonomous_turn = %v, want false", got)
 	}
 }
 

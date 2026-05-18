@@ -976,6 +976,14 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 	if activity == nil {
 		activity = []agentloop.ActivityEntry{}
 	}
+	// QUM-585: query the live runtime (if any) for whether its backend
+	// Session is currently in an autonomous turn. Defaults to false when no
+	// runtime is registered.
+	inAutonomousTurn := false
+	if rt, ok := r.runtimeRegistry.Get(agentName); ok {
+		inAutonomousTurn = rt.InAutonomousTurn()
+	}
+
 	return &PeekResult{
 		Status: st.Status,
 		LastReport: LastReport{
@@ -985,7 +993,8 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 			State:   st.LastReportState,
 			Detail:  st.LastReportDetail,
 		},
-		Activity: activity,
+		Activity:         activity,
+		InAutonomousTurn: inAutonomousTurn,
 	}, nil
 }
 
