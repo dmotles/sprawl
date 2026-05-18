@@ -79,6 +79,34 @@ func awaitBridgeEntry(ctx context.Context, t *testing.T, b *blockingToolBridge) 
 	}
 }
 
+// initSessionWithBridge runs the persistent-reader Initialize handshake
+// for tests that previously wired the bridge via TurnSpec.Init. Spawns a
+// goroutine to echo the initialize control_response back.
+func initSessionWithBridge(ctx context.Context, t *testing.T, s Session, transport *mockManagedTransport, bridge ToolBridge) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sent := <-transport.sendCh
+		data, err := json.Marshal(sent)
+		if err != nil {
+			t.Errorf("marshal initialize: %v", err)
+			return
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Errorf("unmarshal initialize: %v", err)
+			return
+		}
+		reqID, _ := parsed["request_id"].(string)
+		transport.feedMessage(t, `{"type":"control_response","response":{"subtype":"success","request_id":"`+reqID+`"}}`)
+	}()
+	if err := s.Initialize(ctx, InitSpec{ToolBridge: bridge}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	<-done
+}
+
 // TestAsyncDispatch_ReadTurnNotParkedByBridge proves that readTurn must
 // continue consuming claude's stdout while ToolBridge.HandleIncoming is
 // in flight. RED today: the synchronous dispatch in session.readTurn
@@ -92,7 +120,8 @@ func TestAsyncDispatch_ReadTurnNotParkedByBridge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	events, err := session.StartTurn(ctx, "go", TurnSpec{Init: InitSpec{ToolBridge: bridge}})
+	initSessionWithBridge(ctx, t, session, transport, bridge)
+	events, err := session.StartTurn(ctx, "go")
 	if err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
@@ -140,7 +169,8 @@ func TestAsyncDispatch_InterruptObservableMidBridgeWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	events, err := session.StartTurn(ctx, "go", TurnSpec{Init: InitSpec{ToolBridge: bridge}})
+	initSessionWithBridge(ctx, t, session, transport, bridge)
+	events, err := session.StartTurn(ctx, "go")
 	if err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
@@ -203,7 +233,8 @@ func TestAsyncDispatch_ResponseOrderingOutOfOrder(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	events, err := session.StartTurn(ctx, "go", TurnSpec{Init: InitSpec{ToolBridge: bridge}})
+	initSessionWithBridge(ctx, t, session, transport, bridge)
+	events, err := session.StartTurn(ctx, "go")
 	if err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
@@ -265,7 +296,8 @@ func TestAsyncDispatch_InterruptCancelsInflightHandler(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	events, err := session.StartTurn(ctx, "go", TurnSpec{Init: InitSpec{ToolBridge: bridge}})
+	initSessionWithBridge(ctx, t, session, transport, bridge)
+	events, err := session.StartTurn(ctx, "go")
 	if err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}

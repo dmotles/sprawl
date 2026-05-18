@@ -28,6 +28,7 @@ type runtimeTestSession struct {
 	stopWaitTimedOut bool
 }
 
+func (s *runtimeTestSession) Start(context.Context) error                           { return nil }
 func (s *runtimeTestSession) Initialize(context.Context, backendpkg.InitSpec) error { return nil }
 func (s *runtimeTestSession) StartTurn(context.Context, string, ...backendpkg.TurnSpec) (<-chan *protocol.Message, error) {
 	ch := make(chan *protocol.Message)

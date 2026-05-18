@@ -72,11 +72,11 @@ type InitSpec struct {
 	ToolBridge     ToolBridge
 }
 
-// TurnSpec carries optional per-turn overrides. Today only the tool bridge
-// state is relevant so the host wrapper can thread it through sends.
-type TurnSpec struct {
-	Init InitSpec
-}
+// TurnSpec carries optional per-turn overrides. Kept as an empty struct
+// for variadic compatibility with the Session.StartTurn signature; all
+// session-scoped state lives on the session and is established via
+// Initialize. The field formerly named Init was removed in QUM-570.
+type TurnSpec struct{}
 
 // SessionConfig configures a Session instance.
 type SessionConfig struct {
@@ -89,6 +89,9 @@ type SessionConfig struct {
 // Session is the shared session contract root and child adapters compile
 // against.
 type Session interface {
+	// Start launches the persistent stream reader goroutine. Idempotent.
+	// Auto-called from Initialize / StartTurn if not yet invoked.
+	Start(ctx context.Context) error
 	Initialize(ctx context.Context, spec InitSpec) error
 	StartTurn(ctx context.Context, prompt string, spec ...TurnSpec) (<-chan *protocol.Message, error)
 	Interrupt(ctx context.Context) error
@@ -104,15 +107,38 @@ type Session interface {
 // turn on the same stream-json session.
 var ErrTurnInProgress = errors.New("backend: turn already in progress")
 
+// turnFrame tracks per-turn state for a sprawl-initiated turn in the
+// persistent stream reader. Autonomous turns (frames the SDK emits without
+// a preceding StartTurn) are observed via Observer + control_request
+// dispatch but do not get a turnFrame — see runReader for rationale.
+type turnFrame struct {
+	startedAt  time.Time
+	subscriber chan *protocol.Message
+	done       chan struct{} // closed by reader when the frame ends
+	lastErr    error
+}
+
 type session struct {
 	transport ManagedTransport
 	config    SessionConfig
 	reqSeq    atomic.Int64
 
-	mu             sync.Mutex
-	turnInProgress bool
-	initSpec       InitSpec
-	lastTurnErr    error
+	mu          sync.Mutex
+	initSpec    InitSpec
+	currentTurn *turnFrame
+	fatalErr    error
+	started     bool
+
+	// readerCtx/readerCancel control the persistent stream reader.
+	readerCtx    context.Context
+	readerCancel context.CancelFunc
+	readerDone   chan struct{}
+
+	// Init handshake bookkeeping. initRequestID is the in-flight initialize
+	// control_request id (cleared once matched); initHandshakeResp is the
+	// reader-side delivery channel.
+	initRequestID     string
+	initHandshakeResp chan *protocol.Message
 
 	// inflight tracks the cancellation funcs of in-flight async MCP
 	// handlers, keyed by control_request request_id. inflightWG waits
@@ -122,7 +148,7 @@ type session struct {
 	inflightWG sync.WaitGroup
 }
 
-// inflightDrainTimeout bounds how long readTurn waits for in-flight async
+// inflightDrainTimeout bounds how long the reader waits for in-flight async
 // MCP handlers to finish on shutdown. A wedged handler must not be able to
 // permanently leak the session goroutine.
 const inflightDrainTimeout = 5 * time.Second
@@ -130,9 +156,11 @@ const inflightDrainTimeout = 5 * time.Second
 // NewSession creates a backend session on top of the provided transport.
 func NewSession(t ManagedTransport, cfg SessionConfig) Session {
 	return &session{
-		transport: t,
-		config:    cfg,
-		inflight:  make(map[string]context.CancelFunc),
+		transport:         t,
+		config:            cfg,
+		inflight:          make(map[string]context.CancelFunc),
+		readerDone:        make(chan struct{}),
+		initHandshakeResp: make(chan *protocol.Message, 1),
 	}
 }
 
@@ -149,12 +177,37 @@ func (s *session) nextRequestID() string {
 	return fmt.Sprintf("req-%d", n)
 }
 
-func (s *session) Initialize(ctx context.Context, spec InitSpec) error {
+// Start launches the persistent stream reader. Idempotent.
+//
+// The reader ctx is detached from the caller's ctx so the reader survives
+// any caller-ctx cancellation, matching the UnifiedRuntime.Start precedent.
+func (s *session) Start(_ context.Context) error {
 	s.mu.Lock()
-	s.initSpec = spec
+	if s.started {
+		s.mu.Unlock()
+		return nil
+	}
+	s.started = true
+	readerCtx, cancel := context.WithCancel(context.Background())
+	s.readerCtx = readerCtx
+	s.readerCancel = cancel
 	s.mu.Unlock()
 
+	go s.runReader(readerCtx)
+	return nil
+}
+
+func (s *session) Initialize(ctx context.Context, spec InitSpec) error {
+	if err := s.Start(ctx); err != nil {
+		return err
+	}
+
 	requestID := s.nextRequestID()
+	s.mu.Lock()
+	s.initSpec = spec
+	s.initRequestID = requestID
+	s.mu.Unlock()
+
 	request := map[string]any{
 		"subtype": "initialize",
 	}
@@ -171,37 +224,37 @@ func (s *session) Initialize(ctx context.Context, spec InitSpec) error {
 		return err
 	}
 
-	for {
-		resp, err := s.transport.Recv(ctx)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		if resp != nil && s.config.Observer != nil {
-			s.config.Observer.OnMessage(resp)
-		}
-		if resp != nil && resp.Type == "control_response" {
-			return nil
-		}
+	select {
+	case <-s.initHandshakeResp:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.readerDone:
+		return errors.New("backend: session reader exited before initialize handshake")
 	}
 }
 
-func (s *session) StartTurn(ctx context.Context, prompt string, spec ...TurnSpec) (<-chan *protocol.Message, error) {
+func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (<-chan *protocol.Message, error) {
+	if err := s.Start(ctx); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
-	if s.turnInProgress {
+	if s.fatalErr != nil {
+		err := s.fatalErr
+		s.mu.Unlock()
+		return nil, err
+	}
+	if s.currentTurn != nil {
 		s.mu.Unlock()
 		return nil, ErrTurnInProgress
 	}
-	s.turnInProgress = true
-	s.lastTurnErr = nil
-	initSpec := s.initSpec
-	if len(spec) > 0 {
-		if len(spec[0].Init.MCPServerNames) > 0 || spec[0].Init.ToolBridge != nil {
-			initSpec = spec[0].Init
-		}
+	tf := &turnFrame{
+		startedAt:  time.Now(),
+		subscriber: make(chan *protocol.Message, 100),
+		done:       make(chan struct{}),
 	}
+	s.currentTurn = tf
 	s.mu.Unlock()
 
 	msg := protocol.UserMessage{
@@ -213,38 +266,62 @@ func (s *session) StartTurn(ctx context.Context, prompt string, spec ...TurnSpec
 	}
 	if err := s.transport.Send(ctx, msg); err != nil {
 		s.mu.Lock()
-		s.turnInProgress = false
+		tf.lastErr = err
+		s.currentTurn = nil
 		s.mu.Unlock()
+		close(tf.subscriber)
+		close(tf.done)
 		return nil, err
 	}
 
-	events := make(chan *protocol.Message, 100)
-	go s.readTurn(ctx, events, initSpec)
-	return events, nil
+	return tf.subscriber, nil
 }
 
-func (s *session) readTurn(ctx context.Context, events chan<- *protocol.Message, initSpec InitSpec) {
-	defer close(events)
+// runReader is the persistent stream-reader loop. It services transport.Recv
+// for the lifetime of the session, multiplexing frames into the current
+// turn's subscriber (sprawl-initiated turn) or into a synthesized autonomous
+// turn frame (no subscriber). On a `result` frame the current turn ends.
+//
+// Control_request frames (mcp_message / can_use_tool / ...) are handled
+// inline by handleInlineControlRequest; mcp_message specifically dispatches
+// to ToolBridge asynchronously so the reader keeps draining stdout even
+// while a long-running MCP tool is in flight (QUM-552).
+func (s *session) runReader(ctx context.Context) {
+	defer close(s.readerDone)
+	defer s.drainInflight()
 	defer func() {
+		// Tear down any orphaned currentTurn frame on reader exit so
+		// StartTurn callers blocked on tf.done unwind.
 		s.mu.Lock()
-		s.turnInProgress = false
+		if cur := s.currentTurn; cur != nil {
+			if cur.lastErr == nil {
+				if s.fatalErr != nil {
+					cur.lastErr = s.fatalErr
+				} else {
+					cur.lastErr = context.Canceled
+				}
+			}
+			if cur.subscriber != nil {
+				close(cur.subscriber)
+			}
+			close(cur.done)
+			s.currentTurn = nil
+		}
 		s.mu.Unlock()
 	}()
-	// Bounded-drain in-flight async MCP handlers before returning so a
-	// wedged handler can't permanently leak this session goroutine. See
-	// handleInlineControlRequest for the async-dispatch rationale.
-	defer s.drainInflight()
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
 		msg, err := s.transport.Recv(ctx)
 		if err != nil {
-			s.setTurnError(fmt.Errorf("reading message: %w", err))
+			s.mu.Lock()
+			if s.fatalErr == nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					s.fatalErr = ctxErr
+				} else {
+					s.fatalErr = err
+				}
+			}
+			s.mu.Unlock()
 			return
 		}
 		if msg == nil {
@@ -255,72 +332,133 @@ func (s *session) readTurn(ctx context.Context, events chan<- *protocol.Message,
 			s.config.Observer.OnMessage(msg)
 		}
 
-		if msg.Type == "control_request" {
-			if err := s.handleInlineControlRequest(ctx, msg, initSpec); err != nil {
-				s.setTurnError(err)
-				return
+		if msg.Type == "control_response" {
+			if s.matchInitHandshake(msg) {
+				continue
 			}
+			// Other control_responses are observed but not currently
+			// routed; fall through to the turn frame for visibility.
+		}
+
+		if msg.Type == "control_request" {
+			s.handleInlineControlRequest(ctx, msg)
 			continue
 		}
 
-		select {
-		case events <- msg:
-		case <-ctx.Done():
-			return
+		// Route the frame. If a sprawl turn is active, send to its
+		// subscriber. Otherwise the frame is autonomous-class: published
+		// to Observer (already done above) but not gated by a turnFrame.
+		// We deliberately do NOT allocate an autonomous turnFrame to wait
+		// on: stray between-turn frames from the SDK (telemetry, late
+		// stream events) routinely never end with a `result`, and gating
+		// the next StartTurn on their done channel deadlocks. The
+		// architectural fix (persistent reader + inline control_request
+		// dispatch + drainInflight at session shutdown) is preserved
+		// regardless of autonomous-turn frame allocation.
+		s.mu.Lock()
+		tf := s.currentTurn
+		s.mu.Unlock()
+
+		if tf != nil && tf.subscriber != nil {
+			select {
+			case tf.subscriber <- msg:
+			case <-ctx.Done():
+				return
+			}
 		}
 
-		if msg.Type == "result" {
-			return
+		if msg.Type == "result" && tf != nil {
+			s.mu.Lock()
+			cur := s.currentTurn
+			s.currentTurn = nil
+			s.mu.Unlock()
+			if cur != nil {
+				if cur.subscriber != nil {
+					close(cur.subscriber)
+				}
+				close(cur.done)
+			}
 		}
 	}
+}
+
+// matchInitHandshake non-blocking-delivers the initialize control_response
+// to Initialize's waiter if the request_id matches. Returns true if the
+// frame was consumed.
+func (s *session) matchInitHandshake(msg *protocol.Message) bool {
+	var cr struct {
+		Response struct {
+			RequestID string `json:"request_id"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(msg.Raw, &cr); err != nil {
+		return false
+	}
+	s.mu.Lock()
+	want := s.initRequestID
+	if want == "" || cr.Response.RequestID != want {
+		s.mu.Unlock()
+		return false
+	}
+	s.initRequestID = ""
+	s.mu.Unlock()
+	select {
+	case s.initHandshakeResp <- msg:
+	default:
+	}
+	return true
 }
 
 // handleInlineControlRequest routes an incoming control_request frame.
 //
 // Async dispatch (QUM-552, follow-up to QUM-549):
 //
-// `mcp_message` subtypes are dispatched in a goroutine so that
-// readTurn's outer Recv loop keeps consuming claude's stdout while a
-// long-running MCP tool handler runs. Without this, `Session.Interrupt`
-// is unobservable mid-tool-wait and the EventBus goes silent for the
-// entire wedge window (see
-// docs/research/qum-549-send-interrupt-during-mcp-tool-wait.md).
+// `mcp_message` subtypes are dispatched in a goroutine so that the
+// persistent reader keeps consuming claude's stdout while a long-running
+// MCP tool handler runs. Without this, `Session.Interrupt` is unobservable
+// mid-tool-wait and the EventBus goes silent for the entire wedge window
+// (see docs/research/qum-549-send-interrupt-during-mcp-tool-wait.md).
 //
 // Only `mcp_message` is asynchronous. `can_use_tool` (and any future
 // subtype that resolves synchronously off a static decision) stays in
-// the readTurn loop — those handlers are fast, do not call out through
+// the reader loop — those handlers are fast, do not call out through
 // ToolBridge, and dispatching them async would only add scheduling
 // overhead and reorder responses on the wire.
 //
 // Lifecycle invariant: each async handler registers its cancelFunc in
 // s.inflight under cr.RequestID and increments s.inflightWG. On
-// completion the entry is removed. On session shutdown (readTurn
-// return), drainInflight cancels every remaining ctx and bounded-waits
+// completion the entry is removed. On session shutdown (reader return),
+// drainInflight cancels every remaining ctx and bounded-waits
 // inflightDrainTimeout for the goroutines to finish so a wedged
 // handler cannot permanently leak the session.
 //
 // Wire-level safety: protocol.Writer.mu (see internal/protocol/writer.go)
 // serializes stdin writes, so concurrent transport.Send calls from
 // multiple in-flight handlers are safe.
-func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.Message, initSpec InitSpec) error {
+func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.Message) {
 	var cr struct {
 		RequestID string          `json:"request_id"`
 		Request   json.RawMessage `json:"request"`
 	}
 	if err := json.Unmarshal(msg.Raw, &cr); err != nil {
-		return err
+		s.setFatalErr(err)
+		return
 	}
 
 	var req struct {
 		Subtype string `json:"subtype"`
 	}
 	if err := json.Unmarshal(cr.Request, &req); err != nil {
-		return err
+		s.setFatalErr(err)
+		return
 	}
 
 	if req.Subtype == "mcp_message" {
+		s.mu.Lock()
+		initSpec := s.initSpec
+		s.mu.Unlock()
 		s.dispatchMCPAsync(ctx, cr.RequestID, cr.Request, initSpec)
-		return nil
+		return
 	}
 
 	resp := protocol.ControlResponse{
@@ -340,9 +478,8 @@ func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 	}
 
 	if err := s.transport.Send(ctx, resp); err != nil {
-		return fmt.Errorf("sending control response: %w", err)
+		s.setFatalErr(fmt.Errorf("sending control response: %w", err))
 	}
-	return nil
 }
 
 // dispatchMCPAsync launches ToolBridge.HandleIncoming in a goroutine,
@@ -362,7 +499,7 @@ func (s *session) dispatchMCPAsync(parentCtx context.Context, requestID string, 
 		// No bridge wired: send an empty success response synchronously
 		// to preserve the prior best-effort behavior.
 		if err := s.transport.Send(parentCtx, resp); err != nil {
-			s.setTurnError(fmt.Errorf("sending control response: %w", err))
+			s.setFatalErr(fmt.Errorf("sending control response: %w", err))
 		}
 		return
 	}
@@ -375,7 +512,7 @@ func (s *session) dispatchMCPAsync(parentCtx context.Context, requestID string, 
 		// Malformed payload: respond with empty success, matching the
 		// previous code path (which silently dropped the unmarshal error).
 		if sendErr := s.transport.Send(parentCtx, resp); sendErr != nil {
-			s.setTurnError(fmt.Errorf("sending control response: %w", sendErr))
+			s.setFatalErr(fmt.Errorf("sending control response: %w", sendErr))
 		}
 		return
 	}
@@ -411,13 +548,14 @@ func (s *session) dispatchMCPAsync(parentCtx context.Context, requestID string, 
 		// at shutdown, but we still want to flush the response if the
 		// underlying transport is still alive.
 		if err := s.transport.Send(parentCtx, resp); err != nil {
-			s.setTurnError(fmt.Errorf("sending control response: %w", err))
+			s.setFatalErr(fmt.Errorf("sending control response: %w", err))
 		}
 	}()
 }
 
 // drainInflight cancels every in-flight async handler and waits up to
-// inflightDrainTimeout for them to finish. Called from readTurn's defer.
+// inflightDrainTimeout for them to finish. Called from runReader's defer
+// once per session shutdown.
 func (s *session) drainInflight() {
 	s.mu.Lock()
 	for _, cancel := range s.inflight {
@@ -469,7 +607,30 @@ func (s *session) Interrupt(ctx context.Context) error {
 }
 
 func (s *session) Close() error {
-	return s.transport.Close()
+	// Cancel the reader ctx first so the reader's loop unwinds and async
+	// MCP handlers see their parentCtx cancellation before we tear down
+	// the transport. Otherwise late transport.Send calls from
+	// dispatchMCPAsync race against transport shutdown and stamp a
+	// spurious fatalErr.
+	s.mu.Lock()
+	cancel := s.readerCancel
+	started := s.started
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	err := s.transport.Close()
+	if started {
+		<-s.readerDone
+	}
+	// Shutdown-induced ctx.Canceled in fatalErr is expected — don't
+	// surface it via LastTurnError after Close.
+	s.mu.Lock()
+	if errors.Is(s.fatalErr, context.Canceled) {
+		s.fatalErr = nil
+	}
+	s.mu.Unlock()
+	return err
 }
 
 func (s *session) Wait() error {
@@ -483,13 +644,15 @@ func (s *session) Kill() error {
 func (s *session) LastTurnError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	err := s.lastTurnErr
-	s.lastTurnErr = nil
+	err := s.fatalErr
+	s.fatalErr = nil
 	return err
 }
 
-func (s *session) setTurnError(err error) {
+func (s *session) setFatalErr(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.lastTurnErr = err
+	if s.fatalErr == nil {
+		s.fatalErr = err
+	}
 }
