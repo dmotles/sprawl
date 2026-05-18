@@ -431,6 +431,10 @@ func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh 
 		Session:      session,
 		IsRoot:       true,
 		Capabilities: session.Capabilities(),
+		// Defends against wedged-SDK hangs (QUM-578/QUM-581). 30m is long
+		// enough for long autonomous turns but bounded so an SDK that opens
+		// system:init and never closes doesn't permanently freeze the agent.
+		TurnTimeout: 30 * time.Minute,
 		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
 			for _, id := range it.EntryIDs {
 				if err := agentloop.MarkDelivered(sprawlRoot, rootName, id); err != nil {
