@@ -124,7 +124,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "peek",
-			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, and the last N protocol events (tool calls, text, results). Use to answer \"what is this agent doing?\" before sending a message.",
+			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_autonomous_turn` (true when the target's backend session is mid-turn). Use to answer \"what is this agent doing?\" before sending a message.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

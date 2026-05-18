@@ -503,6 +503,13 @@ func (h *unifiedHandle) SessionID() string {
 	return h.sessionID
 }
 
+// InAutonomousTurn reports whether the underlying backend session is
+// currently servicing an autonomous (SDK-initiated) turn frame. See
+// QUM-585 — surfaced through the peek MCP tool's JSON payload.
+func (h *unifiedHandle) InAutonomousTurn() bool {
+	return h.session.InAutonomousTurn()
+}
+
 func (h *unifiedHandle) Capabilities() backendpkg.Capabilities {
 	return h.capabilities
 }
