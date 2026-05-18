@@ -277,8 +277,8 @@ func (m PaletteModel) View() string {
 		}
 		box := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color(m.theme.AccentColor)).
-			Background(lipgloss.Color(backgroundColor)).
+			BorderForeground(m.theme.Palette.Primary).
+			Background(m.theme.Palette.BgBase).
 			Padding(0, 1).
 			Width(boxWidth).
 			Render(sb.String())
@@ -320,8 +320,8 @@ func (m PaletteModel) View() string {
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.theme.AccentColor)).
-		Background(lipgloss.Color(backgroundColor)).
+		BorderForeground(m.theme.Palette.Primary).
+		Background(m.theme.Palette.BgBase).
 		Padding(0, 1).
 		Width(boxWidth).
 		Render(sb.String())

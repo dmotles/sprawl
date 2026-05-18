@@ -1,7 +1,18 @@
 package tui
 
 import (
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"image/color"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func TestNewTheme_WithAccentColor(t *testing.T) {
@@ -70,5 +81,219 @@ func TestNewTheme_SystemTextDistinctFromAccent(t *testing.T) {
 	if theme.SystemText.Render("x") == theme.AccentText.Render("x") {
 		t.Errorf("SystemText.Render(x) should differ from AccentText.Render(x); both produced %q",
 			theme.SystemText.Render("x"))
+	}
+}
+
+// QUM-417: Theme.Palette must expose semantic color roles instead of hardcoded
+// ANSI 256 indices scattered through theme.go.
+func TestNewTheme_PaletteRolesPopulated(t *testing.T) {
+	theme := NewTheme("39")
+	roles := []struct {
+		name string
+		get  func() color.Color
+	}{
+		{"Primary", func() color.Color { return theme.Palette.Primary }},
+		{"Accent", func() color.Color { return theme.Palette.Accent }},
+		{"Success", func() color.Color { return theme.Palette.Success }},
+		{"Warning", func() color.Color { return theme.Palette.Warning }},
+		{"Error", func() color.Color { return theme.Palette.Error }},
+		{"Info", func() color.Color { return theme.Palette.Info }},
+		{"Busy", func() color.Color { return theme.Palette.Busy }},
+		{"FgBase", func() color.Color { return theme.Palette.FgBase }},
+		{"FgSubtle", func() color.Color { return theme.Palette.FgSubtle }},
+		{"FgMostSubtle", func() color.Color { return theme.Palette.FgMostSubtle }},
+		{"BgBase", func() color.Color { return theme.Palette.BgBase }},
+		{"BgLessVisible", func() color.Color { return theme.Palette.BgLessVisible }},
+	}
+	for _, r := range roles {
+		t.Run(r.name, func(t *testing.T) {
+			c := r.get()
+			if c == nil {
+				t.Errorf("Palette.%s should be non-nil", r.name)
+				return
+			}
+			if fmt.Sprintf("%v", c) == "" {
+				t.Errorf("Palette.%s should be non-empty", r.name)
+			}
+		})
+	}
+}
+
+// renderColor renders a small swatch using the given color as foreground so we
+// can compare color.Color values for visual equality regardless of the concrete
+// type backing the Palette field (lipgloss.Color, lipgloss.ANSIColor, etc.).
+func renderColor(c color.Color) string {
+	return lipgloss.NewStyle().Foreground(c).Render("█")
+}
+
+// QUM-417: Primary should follow whatever accent the user passed to NewTheme,
+// so user-configurable accent still threads through the semantic palette.
+func TestNewTheme_PrimaryTracksAccentArg(t *testing.T) {
+	got := NewTheme("212").Palette.Primary
+	want := lipgloss.Color("212")
+	if renderColor(got) != renderColor(want) {
+		t.Errorf("Palette.Primary render = %q, want %q", renderColor(got), renderColor(want))
+	}
+}
+
+// QUM-417: NewTheme("212").AccentColor must still equal "212" — the string
+// field is the back-compat surface that downstream code (status bar, etc.)
+// still reads. Adding the Palette must not break this.
+func TestNewTheme_AccentColorStringPreserved(t *testing.T) {
+	if got := NewTheme("212").AccentColor; got != "212" {
+		t.Errorf("NewTheme(\"212\").AccentColor = %q, want %q", got, "212")
+	}
+}
+
+// QUM-417: Semantic roles must be pairwise distinct or they collapse into the
+// same visual signal (e.g. Error reading as Success).
+func TestNewTheme_RolesAreDistinct(t *testing.T) {
+	theme := NewTheme("39")
+	roles := []struct {
+		name string
+		c    color.Color
+	}{
+		{"Error", theme.Palette.Error},
+		{"Success", theme.Palette.Success},
+		{"Warning", theme.Palette.Warning},
+		{"Busy", theme.Palette.Busy},
+		{"Info", theme.Palette.Info},
+		{"FgBase", theme.Palette.FgBase},
+		{"FgMostSubtle", theme.Palette.FgMostSubtle},
+		{"BgBase", theme.Palette.BgBase},
+	}
+	for i := 0; i < len(roles); i++ {
+		for j := i + 1; j < len(roles); j++ {
+			if renderColor(roles[i].c) == renderColor(roles[j].c) {
+				t.Errorf("Palette.%s and Palette.%s render identically (%q); semantic roles must be distinct",
+					roles[i].name, roles[j].name, renderColor(roles[i].c))
+			}
+		}
+	}
+}
+
+// QUM-417: ReportDot styles must derive their colors from Palette roles so the
+// chip palette stays in lockstep with the semantic palette. The control style
+// pins both the foreground (role) and background (Palette.BgBase) — any drift
+// on either axis fails the test.
+func TestReportDots_UsePaletteRoles(t *testing.T) {
+	theme := NewTheme("39")
+	bg := theme.Palette.BgBase
+
+	cases := []struct {
+		name string
+		dot  lipgloss.Style
+		role color.Color
+	}{
+		{"Failure_uses_Error", theme.ReportDotFailure, theme.Palette.Error},
+		{"Working_uses_Success", theme.ReportDotWorking, theme.Palette.Success},
+		{"Complete_uses_Info", theme.ReportDotComplete, theme.Palette.Info},
+		{"Blocked_uses_Busy", theme.ReportDotBlocked, theme.Palette.Busy},
+		{"Idle_uses_FgMostSubtle", theme.ReportDotIdle, theme.Palette.FgMostSubtle},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			control := lipgloss.NewStyle().Foreground(tc.role).Background(bg)
+			if got, want := tc.dot.Render("●"), control.Render("●"); got != want {
+				t.Errorf("ReportDot render mismatch:\n got:  %q\n want: %q (foreground role %s)",
+					got, want, tc.name)
+			}
+		})
+	}
+}
+
+// QUM-417: Explicit assertion that every ReportDot uses Palette.BgBase as its
+// background. This is what TestReportDots_UsePaletteRoles asserts implicitly
+// (the control style sets .Background(bg)), but pulling it out makes the
+// intent obvious and gives a clearer failure mode if the background drifts.
+func TestReportDots_BackgroundIsBgBase(t *testing.T) {
+	theme := NewTheme("39")
+	bg := theme.Palette.BgBase
+
+	cases := []struct {
+		name string
+		dot  lipgloss.Style
+		role color.Color
+	}{
+		{"Failure", theme.ReportDotFailure, theme.Palette.Error},
+		{"Working", theme.ReportDotWorking, theme.Palette.Success},
+		{"Complete", theme.ReportDotComplete, theme.Palette.Info},
+		{"Blocked", theme.ReportDotBlocked, theme.Palette.Busy},
+		{"Idle", theme.ReportDotIdle, theme.Palette.FgMostSubtle},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			control := lipgloss.NewStyle().Foreground(tc.role).Background(bg).Render("●")
+			if got := tc.dot.Render("●"); got != control {
+				t.Errorf("ReportDot%s background drift:\n got:  %q\n want: %q (bg=Palette.BgBase)",
+					tc.name, got, control)
+			}
+		})
+	}
+}
+
+// QUM-417: Once the semantic palette lands, no TUI source file outside
+// theme.go and colors.go should reach for raw `lipgloss.Color("<digits>")`
+// literals — those should be migrated to palette references. This AST sweep
+// is the regression guard.
+func TestTUI_NoStrayAnsiColorLiterals(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("os.ReadDir: %v", err)
+	}
+	digits := regexp.MustCompile(`^[0-9]+$`)
+	fset := token.NewFileSet()
+	var offenders []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".go") {
+			continue
+		}
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		if name == "theme.go" || name == "colors.go" {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.AllErrors)
+		if err != nil {
+			t.Fatalf("parser.ParseFile(%s): %v", name, err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel == nil || sel.Sel.Name != "Color" {
+				return true
+			}
+			ident, ok := sel.X.(*ast.Ident)
+			if !ok || ident.Name != "lipgloss" {
+				return true
+			}
+			if len(call.Args) != 1 {
+				return true
+			}
+			lit, ok := call.Args[0].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			val, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			if digits.MatchString(val) {
+				pos := fset.Position(call.Pos())
+				offenders = append(offenders, pos.String()+`: lipgloss.Color("`+val+`")`)
+			}
+			return true
+		})
+	}
+	for _, o := range offenders {
+		t.Errorf("stray ANSI color literal: %s — migrate to Theme.Palette", o)
 	}
 }

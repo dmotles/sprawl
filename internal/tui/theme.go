@@ -8,13 +8,15 @@ import (
 
 const (
 	defaultAccentColor = "39"
-	backgroundColor    = "233"
-	dimColor           = "240"
 )
 
 // Theme holds all Lip Gloss styles for the TUI, parameterized by accent color.
 type Theme struct {
-	AccentColor    string
+	AccentColor string
+	// Palette exposes the semantic color roles (QUM-417). Call sites that
+	// need a raw color should reach for Palette.<Role> rather than a raw
+	// `lipgloss.Color("<ansi>")` literal.
+	Palette        Palette
 	Background     lipgloss.Style
 	ActiveBorder   lipgloss.Style
 	InactiveBorder lipgloss.Style
@@ -32,19 +34,15 @@ type Theme struct {
 	// `<system-notification>` viewport entries (QUM-557). Distinct from
 	// SystemText (magenta/inbox-drain) and AccentText (cyan/user input)
 	// so live and replay paths both render notifications identically.
-	// TODO(QUM-417): harmonize with semantic palette.
 	NotificationText lipgloss.Style
 	// InterruptText is the foreground used for interrupt-class
 	// `<system-notification>` entries — bodies starting with `[interrupt]`
 	// (QUM-557). Amber to signal "act soon" without screaming-red.
-	// TODO(QUM-417): harmonize with semantic palette.
 	InterruptText lipgloss.Style
 	// StatusChangeText is the foreground used for `type="status_change"`
-	// `<system-notification>` entries (QUM-562). Dim grey (ANSI 245) to
-	// read as a muted state-change pin, visually distinct from
-	// NotificationText cyan (message-async) and InterruptText amber
-	// (message-interrupt). Legible on both light and dark terminals.
-	// TODO(QUM-417): harmonize with semantic palette.
+	// `<system-notification>` entries (QUM-562). Dim grey to read as a muted
+	// state-change pin, visually distinct from NotificationText cyan
+	// (message-async) and InterruptText amber (message-interrupt).
 	StatusChangeText lipgloss.Style
 	StatusBar        lipgloss.Style
 	SelectedItem     lipgloss.Style
@@ -86,65 +84,64 @@ func NewTheme(accentColor string) Theme {
 	// Strip the prefix so we pass just the ANSI number (e.g., "141").
 	accentColor = strings.TrimPrefix(accentColor, "colour")
 
-	accent := lipgloss.Color(accentColor)
-	bg := lipgloss.Color(backgroundColor)
-	dim := lipgloss.Color(dimColor)
+	pal := defaultDarkPalette(lipgloss.Color(accentColor))
+	bg := pal.BgBase
 
 	return Theme{
 		AccentColor: accentColor,
+		Palette:     pal,
 		Background: lipgloss.NewStyle().
 			Background(bg),
 		ActiveBorder: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(accent).
+			BorderForeground(pal.Primary).
 			Background(bg),
 		InactiveBorder: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(dim).
+			BorderForeground(pal.FgMostSubtle).
 			Background(bg),
 		AccentText: lipgloss.NewStyle().
-			Foreground(accent).
+			Foreground(pal.Primary).
 			Background(bg),
 		NormalText: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
+			Foreground(pal.FgBase).
 			Background(bg),
 		ErrorText: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196")).
+			Foreground(pal.Error).
 			Background(bg),
+		// SystemText keeps its magenta hue (no Palette role yet — distinct
+		// from Primary/Accent by design per QUM-338).
 		SystemText: lipgloss.NewStyle().
 			Foreground(lipgloss.Color("141")).
 			Background(bg),
-		// TODO(QUM-417): harmonize with semantic palette.
 		NotificationText: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("39")).
+			Foreground(pal.Accent).
 			Background(bg),
-		// TODO(QUM-417): harmonize with semantic palette.
 		InterruptText: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("208")).
+			Foreground(pal.Warning).
 			Background(bg),
-		// TODO(QUM-417): harmonize with semantic palette.
 		StatusChangeText: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
+			Foreground(pal.FgSubtle).
 			Background(bg),
 		// No Padding — StatusBarModel.View manages its own left/right spacing
 		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes
 		// the rendered width m.width+2 which wraps the trailing "? Help" onto
 		// a second line at most terminal widths.
 		StatusBar: lipgloss.NewStyle().
-			Foreground(lipgloss.Color("252")).
-			Background(lipgloss.Color("236")),
+			Foreground(pal.FgBase).
+			Background(pal.BgLessVisible),
 		SelectedItem: lipgloss.NewStyle().
-			Foreground(accent).
+			Foreground(pal.Primary).
 			Bold(true).
 			Background(bg),
 		PlaceholderStyle: lipgloss.NewStyle().
-			Foreground(dim).
+			Foreground(pal.FgMostSubtle).
 			Faint(true).
 			Background(bg),
-		ReportDotWorking:  lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Background(bg),  // green
-		ReportDotBlocked:  lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Background(bg), // yellow
-		ReportDotFailure:  lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Background(bg), // red
-		ReportDotComplete: lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Background(bg),  // cyan
-		ReportDotIdle:     lipgloss.NewStyle().Foreground(dim).Background(bg),                   // grey
+		ReportDotWorking:  lipgloss.NewStyle().Foreground(pal.Success).Background(bg),
+		ReportDotBlocked:  lipgloss.NewStyle().Foreground(pal.Busy).Background(bg),
+		ReportDotFailure:  lipgloss.NewStyle().Foreground(pal.Error).Background(bg),
+		ReportDotComplete: lipgloss.NewStyle().Foreground(pal.Info).Background(bg),
+		ReportDotIdle:     lipgloss.NewStyle().Foreground(pal.FgMostSubtle).Background(bg),
 	}
 }

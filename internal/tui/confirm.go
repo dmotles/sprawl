@@ -66,9 +66,9 @@ func (m ConfirmModel) View() string {
 
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(m.theme.AccentColor)).
-		Background(lipgloss.Color(backgroundColor)).
-		Foreground(lipgloss.Color("252")).
+		BorderForeground(m.theme.Palette.Primary).
+		Background(m.theme.Palette.BgBase).
+		Foreground(m.theme.Palette.FgBase).
 		Padding(1, 2).
 		Width(dialogWidth).
 		Align(lipgloss.Center).

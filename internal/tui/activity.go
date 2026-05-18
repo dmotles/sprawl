@@ -149,7 +149,7 @@ func kindStyle(theme *Theme, kind string) (string, lipgloss.Style) {
 	case "system":
 		return "·", theme.PlaceholderStyle
 	case "rate_limit":
-		return "!", lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+		return "!", lipgloss.NewStyle().Foreground(theme.Palette.Warning)
 	default:
 		return "·", theme.NormalText
 	}
