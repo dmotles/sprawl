@@ -64,7 +64,13 @@ func (f *fakeBackendSession) StartTurn(_ context.Context, _ string, _ ...backend
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.startCalls++
-	ch := make(chan *protocol.Message)
+	// QUM-579: emit a minimal result frame before closing so the TurnLoop's
+	// OnQueueItemDelivered callback (which now fires on the first non-
+	// system:init frame, not on StartTurn return) actually runs in tests.
+	res := protocol.ResultMessage{Type: "result", Subtype: "success"}
+	raw, _ := json.Marshal(res)
+	ch := make(chan *protocol.Message, 1)
+	ch <- &protocol.Message{Type: "result", Subtype: "success", Raw: raw}
 	close(ch)
 	return ch, nil
 }
@@ -1759,5 +1765,230 @@ func TestE2E_QUM488_DelegateThroughRealEnqueuesIntoRuntime(t *testing.T) {
 	final := pollTaskStatus(t, sprawlRoot, "alice", tk.ID, "done", 2*time.Second)
 	if final == nil || final.Status != "done" {
 		t.Errorf("task status final = %+v, want status=done", final)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// QUM-580: Defense-in-depth post-turn pending-envelope sweep.
+//
+// The unifiedHandle exposes a postTurnSweep() method that the runtime's
+// TurnLoop calls after every turn. The sweep decides whether to invoke
+// wakeForDeliveryFn (the seam tests override) based on:
+//   - sweepDeliveredCount: number of MarkDelivered calls observed during the turn
+//   - sweepSawMessagesRead: whether the agent invoked mcp__sprawl__messages_read
+//   - on-disk pending/ contents under sprawlRoot/.sprawl/agents/<name>/queue/pending/
+//
+// Rule: if pending/ is non-empty OR (delivered > 0 && !sawRead), wake.
+// Otherwise no-op. Counters reset to zero after each sweep.
+//
+// runDeliveryConfirmationSubscriber tracks the messages-read tool-use over
+// the EventBus, resetting on every EventTurnStarted.
+// ---------------------------------------------------------------------------
+
+// makeToolUseAssistant builds a well-formed assistant protocol.Message whose
+// content is a single tool_use block with the given tool name. Used by the
+// QUM-580 delivery-confirmation subscriber tests.
+func makeToolUseAssistant(name string) *protocol.Message {
+	raw, _ := json.Marshal(map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"role": "assistant",
+			"content": []map[string]any{
+				{
+					"type":  "tool_use",
+					"name":  name,
+					"input": map[string]any{},
+				},
+			},
+		},
+	})
+	return &protocol.Message{Type: "assistant", Raw: raw}
+}
+
+// newUnifiedHandleForSweepTest constructs a minimal *unifiedHandle wired to
+// the given sprawlRoot/name with a no-op wakeForDeliveryFn that records call
+// counts via the returned counter. The handle is NOT started — it is a bare
+// struct intended only for postTurnSweep() unit tests.
+func newUnifiedHandleForSweepTest(t *testing.T, sprawlRoot, name string) (*unifiedHandle, *atomic.Int64) {
+	t.Helper()
+	var wakeCalls atomic.Int64
+	h := &unifiedHandle{
+		sprawlRoot: sprawlRoot,
+		name:       name,
+		wakeForDeliveryFn: func() error {
+			wakeCalls.Add(1)
+			return nil
+		},
+	}
+	return h, &wakeCalls
+}
+
+// writePendingEnvelope drops one canonical pending queue file under the
+// agent's pending/ directory. Matches the format produced by
+// agentloop.Enqueue (see internal/agentloop/queue.go:158-166).
+func writePendingEnvelope(t *testing.T, sprawlRoot, name string) {
+	t.Helper()
+	pending := filepath.Join(sprawlRoot, ".sprawl", "agents", name, "queue", "pending")
+	if err := os.MkdirAll(pending, 0o755); err != nil {
+		t.Fatalf("mkdir pending: %v", err)
+	}
+	entry := agentloop.Entry{
+		Seq: 1, ID: "id-pending-1", ShortID: "pp1",
+		Class: agentloop.ClassAsync, From: "peer", Subject: "hi", Body: "hello",
+		EnqueuedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	data, err := json.MarshalIndent(entry, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal entry: %v", err)
+	}
+	fname := "0000000001-async-id-pending-1.json"
+	if err := os.WriteFile(filepath.Join(pending, fname), data, 0o644); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+}
+
+func TestUnifiedHandle_PostTurnSweep_NoOpWhenIdle(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
+	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+
+	// Default counters: delivered=0, sawRead=false; pending/ empty.
+	h.postTurnSweep()
+
+	if got := wakeCalls.Load(); got != 0 {
+		t.Errorf("wakeForDeliveryFn calls = %d, want 0 (idle sweep must no-op)", got)
+	}
+}
+
+func TestUnifiedHandle_PostTurnSweep_NoOpWhenDeliveredAndRead(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
+	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+
+	h.sweepMu.Lock()
+	h.sweepDeliveredCount = 2
+	h.sweepSawMessagesRead = true
+	h.sweepMu.Unlock()
+
+	h.postTurnSweep()
+
+	if got := wakeCalls.Load(); got != 0 {
+		t.Errorf("wakeForDeliveryFn calls = %d, want 0 (delivered+read confirms no missed envelopes)", got)
+	}
+}
+
+func TestUnifiedHandle_PostTurnSweep_WakesWhenDeliveredButNoRead(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
+	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+
+	h.sweepMu.Lock()
+	h.sweepDeliveredCount = 1
+	h.sweepSawMessagesRead = false
+	h.sweepMu.Unlock()
+
+	h.postTurnSweep()
+
+	if got := wakeCalls.Load(); got != 1 {
+		t.Errorf("wakeForDeliveryFn calls = %d, want 1 (delivered without messages_read implies missed envelope)", got)
+	}
+}
+
+func TestUnifiedHandle_PostTurnSweep_WakesWhenPendingNonEmpty(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
+	writePendingEnvelope(t, sprawlRoot, "alice")
+	h, wakeCalls := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+
+	// delivered=0, sawRead=false — only the pending file triggers a wake.
+	h.postTurnSweep()
+
+	if got := wakeCalls.Load(); got != 1 {
+		t.Errorf("wakeForDeliveryFn calls = %d, want 1 (non-empty pending/ must trigger wake)", got)
+	}
+}
+
+func TestUnifiedHandle_PostTurnSweep_ResetsCountersAfterCall(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
+	h, _ := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+
+	h.sweepMu.Lock()
+	h.sweepDeliveredCount = 5
+	h.sweepSawMessagesRead = true
+	h.sweepMu.Unlock()
+
+	h.postTurnSweep()
+
+	h.sweepMu.Lock()
+	gotCount := h.sweepDeliveredCount
+	gotSaw := h.sweepSawMessagesRead
+	h.sweepMu.Unlock()
+
+	if gotCount != 0 {
+		t.Errorf("sweepDeliveredCount = %d after sweep, want 0", gotCount)
+	}
+	if gotSaw {
+		t.Errorf("sweepSawMessagesRead = true after sweep, want false")
+	}
+}
+
+// TestRunDeliveryConfirmationSubscriber_TracksToolUseAndResetsOnTurnStart
+// verifies the EventBus subscriber that observes the agent's tool-use stream:
+// when it sees a tool_use block named "mcp__sprawl__messages_read", it must
+// set sweepSawMessagesRead=true on the handle; on every EventTurnStarted it
+// must reset the flag back to false so the next turn starts clean.
+func TestRunDeliveryConfirmationSubscriber_TracksToolUseAndResetsOnTurnStart(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	writeAgentState(t, sprawlRoot, &state.AgentState{Name: "alice", Type: "researcher"})
+	h, _ := newUnifiedHandleForSweepTest(t, sprawlRoot, "alice")
+
+	bus := runtimepkg.NewEventBus()
+	stop := runDeliveryConfirmationSubscriber(bus, h, "delivery-confirmation")
+	defer stop()
+
+	// EventTurnStarted: precondition, ensures any pre-existing flag is cleared.
+	bus.Publish(runtimepkg.RuntimeEvent{Type: runtimepkg.EventTurnStarted})
+
+	// Assistant tool_use block invoking messages_read.
+	msg := makeToolUseAssistant("mcp__sprawl__messages_read")
+	bus.Publish(runtimepkg.RuntimeEvent{Type: runtimepkg.EventProtocolMessage, Message: msg})
+
+	// Wait until the subscriber observes the flag flipping.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.sweepMu.Lock()
+		saw := h.sweepSawMessagesRead
+		h.sweepMu.Unlock()
+		if saw {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.sweepMu.Lock()
+	saw := h.sweepSawMessagesRead
+	h.sweepMu.Unlock()
+	if !saw {
+		t.Fatalf("sweepSawMessagesRead = false after tool_use(mcp__sprawl__messages_read); want true")
+	}
+
+	// Now publish another EventTurnStarted: must reset the flag.
+	bus.Publish(runtimepkg.RuntimeEvent{Type: runtimepkg.EventTurnStarted})
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.sweepMu.Lock()
+		saw = h.sweepSawMessagesRead
+		h.sweepMu.Unlock()
+		if !saw {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.sweepMu.Lock()
+	saw = h.sweepSawMessagesRead
+	h.sweepMu.Unlock()
+	if saw {
+		t.Errorf("sweepSawMessagesRead = true after EventTurnStarted reset; want false")
 	}
 }

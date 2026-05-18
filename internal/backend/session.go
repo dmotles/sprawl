@@ -107,15 +107,18 @@ type Session interface {
 // turn on the same stream-json session.
 var ErrTurnInProgress = errors.New("backend: turn already in progress")
 
-// turnFrame tracks per-turn state for a sprawl-initiated turn in the
-// persistent stream reader. Autonomous turns (frames the SDK emits without
-// a preceding StartTurn) are observed via Observer + control_request
-// dispatch but do not get a turnFrame — see runReader for rationale.
+// turnFrame tracks per-turn state in the persistent stream reader.
+// Sprawl-initiated turns (created by StartTurn) have a subscriber channel;
+// autonomous turns (frames the SDK emits without a preceding StartTurn,
+// detected by a `system`/`init` frame while currentTurn is nil) are tracked
+// with autonomous=true and a nil subscriber so the next StartTurn can wait
+// for the in-flight autonomous turn to end before issuing its own prompt.
 type turnFrame struct {
 	startedAt  time.Time
 	subscriber chan *protocol.Message
 	done       chan struct{} // closed by reader when the frame ends
 	lastErr    error
+	autonomous bool
 }
 
 type session struct {
@@ -245,9 +248,24 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 		s.mu.Unlock()
 		return nil, err
 	}
-	if s.currentTurn != nil {
+	for s.currentTurn != nil {
+		if !s.currentTurn.autonomous {
+			s.mu.Unlock()
+			return nil, ErrTurnInProgress
+		}
+		done := s.currentTurn.done
 		s.mu.Unlock()
-		return nil, ErrTurnInProgress
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		s.mu.Lock()
+		if s.fatalErr != nil {
+			err := s.fatalErr
+			s.mu.Unlock()
+			return nil, err
+		}
 	}
 	tf := &turnFrame{
 		startedAt:  time.Now(),
@@ -345,17 +363,24 @@ func (s *session) runReader(ctx context.Context) {
 			continue
 		}
 
-		// Route the frame. If a sprawl turn is active, send to its
-		// subscriber. Otherwise the frame is autonomous-class: published
-		// to Observer (already done above) but not gated by a turnFrame.
-		// We deliberately do NOT allocate an autonomous turnFrame to wait
-		// on: stray between-turn frames from the SDK (telemetry, late
-		// stream events) routinely never end with a `result`, and gating
-		// the next StartTurn on their done channel deadlocks. The
-		// architectural fix (persistent reader + inline control_request
-		// dispatch + drainInflight at session shutdown) is preserved
-		// regardless of autonomous-turn frame allocation.
+		// Route the frame. If a sprawl turn is active, deliver to its
+		// subscriber. Otherwise, when a `system`/`init` frame arrives with
+		// no in-flight turn, allocate an autonomous turnFrame so the next
+		// StartTurn can ctx-cancellably wait for it to close on `result`
+		// (QUM-578 explicit start/end markers). Stray non-init frames are
+		// observer-only — never allocate a frame, never block StartTurn —
+		// which avoids the QUM-570 deadlock class where the coarse
+		// classifier would gate forever on between-turn telemetry that
+		// never ended in a `result`.
 		s.mu.Lock()
+		if s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "init" {
+			s.currentTurn = &turnFrame{
+				startedAt:  time.Now(),
+				subscriber: nil,
+				done:       make(chan struct{}),
+				autonomous: true,
+			}
+		}
 		tf := s.currentTurn
 		s.mu.Unlock()
 
