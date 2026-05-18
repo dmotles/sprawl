@@ -714,8 +714,10 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 		renderedIndicator = m.theme.AccentText.Render("✓")
 	}
 	// QUM-419: compact per-tool header. The display tool name uses the
-	// `FormatToolDisplayName` mapping so MCP tools collapse to their final
-	// segment (`mcp__sprawl__send_message` → `send_message`). The tool name
+	// `FormatToolDisplayName` mapping so MCP tools render as
+	// `<server>/<action>` (e.g. `mcp__linear__save_issue` → `linear/save_issue`,
+	// QUM-589) — preserves the server context users need to tell `linear`
+	// from `sprawl` at a glance. The tool name
 	// renders bold-accent; the main arg + k=v params render in NormalText so
 	// the eye can pick out the call shape at a glance. Width budgeting
 	// mirrors crush/internal/ui/chat/tools.go toolParamList: kv params are

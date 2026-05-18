@@ -231,19 +231,32 @@ func TestFormatToolHeader(t *testing.T) {
 	}
 }
 
-// QUM-419: FormatToolDisplayName collapses MCP-prefixed tool names to their
-// terminal segment so the header reads naturally.
+// QUM-589: FormatToolDisplayName preserves the MCP server segment alongside
+// the action so users see e.g. `linear/save_issue` instead of bare
+// `save_issue` (which loses the linear-vs-sprawl context). Non-MCP tools and
+// malformed names pass through verbatim. Format must not hardcode known
+// server names — any `mcp__<server>__<action>` works.
 func TestFormatToolDisplayName(t *testing.T) {
-	cases := map[string]string{
-		"Bash":                      "Bash",
-		"mcp__sprawl__send_message": "send_message",
-		"mcp__linear__get_issue":    "get_issue",
-		"mcp__weird":                "mcp__weird", // not enough segments → verbatim
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "non-MCP tool verbatim", in: "Bash", want: "Bash"},
+		{name: "mcp linear save_issue", in: "mcp__linear__save_issue", want: "linear/save_issue"},
+		{name: "mcp linear get_issue", in: "mcp__linear__get_issue", want: "linear/get_issue"},
+		{name: "mcp sprawl spawn", in: "mcp__sprawl__spawn", want: "sprawl/spawn"},
+		{name: "mcp sprawl merge", in: "mcp__sprawl__merge", want: "sprawl/merge"},
+		{name: "mcp sprawl send_message", in: "mcp__sprawl__send_message", want: "sprawl/send_message"},
+		{name: "synthetic future server", in: "mcp__github__create_pr", want: "github/create_pr"},
+		{name: "malformed: too few segments", in: "mcp__weird", want: "mcp__weird"},
 	}
-	for in, want := range cases {
-		if got := FormatToolDisplayName(in); got != want {
-			t.Errorf("FormatToolDisplayName(%q) = %q, want %q", in, got, want)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := FormatToolDisplayName(tc.in); got != tc.want {
+				t.Errorf("FormatToolDisplayName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

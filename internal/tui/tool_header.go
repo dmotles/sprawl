@@ -73,14 +73,17 @@ func FormatToolHeader(toolName string, raw json.RawMessage) (string, []KVPair) {
 }
 
 // FormatToolDisplayName returns the tool name as it should appear in the
-// header. MCP tools are collapsed to their final segment so e.g.
-// `mcp__sprawl__messages_send` reads as `messages_send`. Everything else is
-// returned verbatim.
+// header. MCP tools render as `<server>/<action>` so the server segment
+// (linear/sprawl/…) is preserved alongside the action — e.g.
+// `mcp__linear__save_issue` reads as `linear/save_issue` (QUM-589). The
+// parser is structural: any `mcp__<server>__<action>` works, including
+// future servers. Malformed names (fewer than 3 segments) and non-MCP tools
+// pass through verbatim.
 func FormatToolDisplayName(toolName string) string {
 	if strings.HasPrefix(toolName, "mcp__") {
 		parts := strings.Split(toolName, "__")
 		if len(parts) >= 3 {
-			return parts[len(parts)-1]
+			return parts[1] + "/" + parts[len(parts)-1]
 		}
 	}
 	return toolName
