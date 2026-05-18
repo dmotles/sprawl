@@ -9,6 +9,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/state"
 )
 
@@ -143,6 +144,45 @@ func TestPrepareSpawn_PropagatesResolveBaseError(t *testing.T) {
 	}
 	if !errors.Is(err, resolveErr) && !strings.Contains(err.Error(), "boom") {
 		t.Errorf("PrepareSpawn err = %v, expected to wrap/contain ResolveBase error %q", err, resolveErr)
+	}
+}
+
+// TestPrepareSpawn_IgnoresPersistedNamespaceAndRootName pins QUM-587 (Option B):
+// the spawn flow must NOT consult `.sprawl/namespace` or `.sprawl/root-name` on
+// disk. Their writers were deleted in QUM-586, so the reader fallbacks at
+// `agentops/spawn.go:171,181` are zombie code. This test seeds bogus values on
+// disk and asserts the child's TreePath uses the compiled-in DefaultRootName
+// (not the on-disk root-name) — proving the fallback branches are gone.
+func TestPrepareSpawn_IgnoresPersistedNamespaceAndRootName(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Seed zombie files that the old fallback branches would have read.
+	sprawlSubdir := filepath.Join(tmpDir, ".sprawl")
+	if err := os.MkdirAll(sprawlSubdir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sprawlSubdir, "namespace"), []byte("zombie-ns"), 0o644); err != nil {
+		t.Fatalf("seed namespace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sprawlSubdir, "root-name"), []byte("zombie-root"), 0o644); err != nil {
+		t.Fatalf("seed root-name: %v", err)
+	}
+
+	deps, _ := newBaseRefSpawnDeps(t, tmpDir)
+	// parentName "manager-x" (from newBaseRefSpawnDeps) is not the default
+	// root, so the resulting TreePath should be:
+	//   DefaultRootName + sep + "manager-x" + sep + <agentName>
+	got, err := agentops.PrepareSpawn(deps, "engineering", "engineer", "task body", "dmotles/test-branch")
+	if err != nil {
+		t.Fatalf("PrepareSpawn: %v", err)
+	}
+
+	wantPrefix := runtimecfg.DefaultRootName + runtimecfg.TreePathSeparator + "manager-x" + runtimecfg.TreePathSeparator
+	if !strings.HasPrefix(got.TreePath, wantPrefix) {
+		t.Errorf("TreePath = %q, want prefix %q (must use DefaultRootName, not on-disk root-name)", got.TreePath, wantPrefix)
+	}
+	if strings.Contains(got.TreePath, "zombie-root") {
+		t.Errorf("TreePath = %q must NOT contain on-disk root-name 'zombie-root' (QUM-587 Option B)", got.TreePath)
 	}
 }
 

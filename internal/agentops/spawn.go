@@ -165,23 +165,21 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*p
 		}
 	}
 
-	// Resolve namespace: env var > persisted file > default
+	// Resolve namespace: env var > default. The persisted-file fallback was
+	// removed in QUM-587 (Option B) once its writer became dead code.
 	namespace := deps.Getenv("SPRAWL_NAMESPACE")
-	if namespace == "" {
-		namespace = state.ReadNamespace(sprawlRoot)
-	}
 	if namespace == "" {
 		namespace = runtimecfg.DefaultNamespace
 	}
 
-	// Build tree path: parent's tree path + separator + child name
+	// Build tree path: parent's tree path + separator + child name. When the
+	// caller didn't propagate SPRAWL_TREE_PATH, synthesize one from the
+	// compiled-in DefaultRootName + parent identity. The on-disk root-name
+	// fallback was removed in QUM-587 (Option B) once its writer became dead
+	// code.
 	parentTreePath := deps.Getenv("SPRAWL_TREE_PATH")
 	if parentTreePath == "" {
-		// Fallback: use root name from file + parent identity
-		rootName := state.ReadRootName(sprawlRoot)
-		if rootName == "" {
-			rootName = runtimecfg.DefaultRootName
-		}
+		rootName := runtimecfg.DefaultRootName
 		if parentName == rootName {
 			parentTreePath = rootName
 		} else {
