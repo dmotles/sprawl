@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -980,6 +981,251 @@ func TestSession_AutonomousFrame_SecondSystemInitIgnored(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("StartTurn did not return — double system:init may have double-allocated or autonomous frame leaked")
+	}
+}
+
+// --- QUM-582: race-safe InAutonomousTurn() accessor ---
+//
+// These tests assert the contract for Session.InAutonomousTurn(): it returns
+// true iff a turn is currently in flight and that turn was created
+// autonomously by the SDK (system:init while no StartTurn was pending) — not
+// for sprawl-initiated turns and not when no turn is active at all. The
+// accessor MUST take s.mu so it is race-safe against the persistent reader
+// goroutine mutating s.currentTurn concurrently.
+
+// TestSession_InAutonomousTurn_NoTurn verifies the accessor returns false on
+// a freshly-constructed session with no frames in flight.
+func TestSession_InAutonomousTurn_NoTurn(t *testing.T) {
+	transport := newMockManagedTransport()
+	sess := NewSession(transport, SessionConfig{SessionID: "sess-1"})
+	concrete, ok := sess.(*session)
+	if !ok {
+		t.Fatalf("session type = %T, want *session", sess)
+	}
+	if concrete.InAutonomousTurn() {
+		t.Errorf("InAutonomousTurn() = true on fresh session, want false")
+	}
+}
+
+// TestSession_InAutonomousTurn_DuringSprawlTurn verifies the accessor returns
+// false during an explicit sprawl-initiated turn. The autonomous flag MUST
+// only be set when the SDK opens a turn without our prompt.
+func TestSession_InAutonomousTurn_DuringSprawlTurn(t *testing.T) {
+	transport := newMockManagedTransport()
+	sess := NewSession(transport, SessionConfig{SessionID: "sess-1"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	events, err := sess.StartTurn(ctx, "hello")
+	if err != nil {
+		t.Fatalf("StartTurn() error: %v", err)
+	}
+	// Drain the user-frame send.
+	select {
+	case <-transport.sendCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartTurn did not send user frame")
+	}
+
+	// Feed an assistant frame so the turn is observably in-flight.
+	transport.feedMessage(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
+	// Consume the assistant so we know the reader has progressed.
+	select {
+	case <-events:
+	case <-time.After(2 * time.Second):
+		t.Fatal("assistant frame never delivered to subscriber")
+	}
+
+	if sess.(*session).InAutonomousTurn() {
+		t.Errorf("InAutonomousTurn() = true during sprawl turn, want false (sprawl-initiated turns are not autonomous)")
+	}
+
+	// Close out cleanly.
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+	drainMessages(events)
+}
+
+// TestSession_InAutonomousTurn_DuringAutonomousTurn verifies the accessor
+// returns true while an autonomous frame (opened by system:init with no
+// pending StartTurn) is in flight, and flips back to false after the matching
+// result frame.
+func TestSession_InAutonomousTurn_DuringAutonomousTurn(t *testing.T) {
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	sess := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Feed a system:init while no StartTurn is in flight — opens autonomous frame.
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+
+	// Wait until observer has seen the init frame so we know the reader
+	// has allocated the autonomous turnFrame.
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw autonomous system:init")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if !sess.(*session).InAutonomousTurn() {
+		t.Errorf("InAutonomousTurn() = false during autonomous frame, want true")
+	}
+
+	// Close the autonomous frame with a result.
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+
+	// Wait for the reader to consume both init AND result frames. Observer is
+	// notified AFTER the reader's per-message handler has run (so currentTurn
+	// has already been cleared by the result-handler path) — deterministic
+	// sync point, no timed polling.
+	deadline = time.After(2 * time.Second)
+	for len(observer.Types()) < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw result frame")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	if sess.(*session).InAutonomousTurn() {
+		t.Errorf("InAutonomousTurn() = true after autonomous frame's result, want false (frame should be cleared)")
+	}
+}
+
+// TestSession_InAutonomousTurn_ClearedOnReaderError verifies that when the
+// reader exits because transport.Recv returns an error (io.EOF), the
+// orphan-frame teardown defer at session.go:310-329 clears currentTurn, so
+// the accessor returns false.
+func TestSession_InAutonomousTurn_ClearedOnReaderError(t *testing.T) {
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	sess := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Open an autonomous frame.
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw autonomous system:init")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if !sess.(*session).InAutonomousTurn() {
+		t.Fatalf("InAutonomousTurn() = false before reader exit, want true (precondition)")
+	}
+
+	// Force the reader to exit by closing recvCh — transport.Recv returns io.EOF.
+	close(transport.recvCh)
+
+	// Wait for the reader to unwind; the orphan teardown defer clears currentTurn.
+	concrete, ok := sess.(*session)
+	if !ok {
+		t.Fatalf("session type = %T, want *session", sess)
+	}
+	select {
+	case <-concrete.readerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not exit after recvCh close")
+	}
+
+	if sess.(*session).InAutonomousTurn() {
+		t.Errorf("InAutonomousTurn() = true after reader exit, want false (orphan teardown should clear currentTurn)")
+	}
+}
+
+// TestSession_InAutonomousTurn_RaceSafeUnderConcurrentReader exists to be
+// run under `go test -race`. A reader goroutine spins on
+// session.InAutonomousTurn() while the test drives the transport reader
+// through init+result frames. Any unsynchronized read of
+// s.currentTurn.autonomous (i.e. an implementation that fails to take s.mu)
+// MUST be reported by the race detector. Without -race this test is just a
+// sanity loop — its real value is the race instrumentation.
+func TestSession_InAutonomousTurn_RaceSafeUnderConcurrentReader(t *testing.T) {
+	prev := runtime.GOMAXPROCS(2)
+	defer runtime.GOMAXPROCS(prev)
+
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	sess := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+	concrete, ok := sess.(*session)
+	if !ok {
+		t.Fatalf("session type = %T, want *session", sess)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = concrete.InAutonomousTurn()
+			}
+		}
+	}()
+
+	// Drive a complete autonomous turn (init then result), each waiting on
+	// observer-confirmed delivery so the reader has actually mutated
+	// s.currentTurn under s.mu while the spinner is racing for reads.
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw init")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+	deadline = time.After(2 * time.Second)
+	for len(observer.Types()) < 2 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw result")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("spinner goroutine did not exit")
 	}
 }
 

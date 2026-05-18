@@ -59,7 +59,7 @@ func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
 // Truncation behavior (leading "earlier messages truncated" status when capped)
 // matches LoadTranscript. Missing file → (nil, nil) (no error).
 func LoadChildTranscript(path string, since time.Time, maxMessages int) ([]MessageEntry, error) {
-	entries, err := scanTranscript(path, since)
+	entries, err := scanTranscriptWithSidechain(path, since, true)
 	if err != nil || len(entries) == 0 {
 		return nil, err
 	}
@@ -104,7 +104,13 @@ func extractToolResultContent(v any) string {
 // scanTranscript opens the JSONL log at path and parses it into MessageEntry
 // values, skipping records whose top-level timestamp is before `since` when
 // `since` is non-zero. Missing file returns (nil, nil).
+//
+//nolint:unparam // since parameter retained for test call sites and symmetry with scanTranscriptWithSidechain.
 func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
+	return scanTranscriptWithSidechain(path, since, false)
+}
+
+func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain bool) ([]MessageEntry, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -133,9 +139,14 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 		if recType != "user" && recType != "assistant" {
 			continue
 		}
-		if sc, ok := rec["isSidechain"].(bool); ok && sc {
+		isSidechain, _ := rec["isSidechain"].(bool)
+		if isSidechain && !includeSidechain {
 			continue
 		}
+		// QUM-577: for sidechain records, read parent_tool_use_id from the
+		// top-level JSONL record (wire-level), not from the agentStack
+		// heuristic. Parallel sub-agents would otherwise be misattributed.
+		wireParentToolID, _ := rec["parent_tool_use_id"].(string)
 		if !since.IsZero() {
 			tsStr, _ := rec["timestamp"].(string)
 			if tsStr == "" {
@@ -322,6 +333,17 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 					if depth > 0 {
 						parentID = agentStack[len(agentStack)-1]
 					}
+					// QUM-577: sidechain tool_use records carry an explicit
+					// wire-level parent_tool_use_id pointing at the outer
+					// Agent call. Use it directly — the agentStack heuristic
+					// would misattribute parallel sub-agents (see
+					// TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire).
+					if isSidechain && wireParentToolID != "" {
+						parentID = wireParentToolID
+						if depth < 1 {
+							depth = 1
+						}
+					}
 					entries = append(entries, MessageEntry{
 						Type:          MessageToolCall,
 						Content:       name,
@@ -336,7 +358,9 @@ func scanTranscript(path string, since time.Time) ([]MessageEntry, error) {
 						// the spinner ticker only animates Pending entries.
 					})
 					// QUM-379: push Agent IDs onto the nesting stack.
-					if name == "Agent" && id != "" {
+					// Sidechain records are inner sub-agent activity — do
+					// not push their tool_use IDs onto the outer agentStack.
+					if !isSidechain && name == "Agent" && id != "" {
 						agentStack = append(agentStack, id)
 					}
 					// thinking + other types: skip
