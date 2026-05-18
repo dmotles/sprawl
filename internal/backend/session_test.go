@@ -655,6 +655,334 @@ DRAIN:
 	}
 }
 
+// TestSession_AutonomousFrame_OpensOnSystemInitAndClosesOnResult (QUM-578)
+// verifies that a system:init while no sprawl turn is active opens an
+// autonomous turnFrame and that a subsequent result closes it. A
+// follow-on StartTurn must then succeed (no leaked frame).
+func TestSession_AutonomousFrame_OpensOnSystemInitAndClosesOnResult(t *testing.T) {
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Feed an autonomous turn (no StartTurn yet).
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	transport.feedMessage(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"auto"}]}}`)
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+
+	// Give the reader a moment to consume.
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("observer did not see 3 frames in time; got %v", observer.Types())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	gotObserver := observer.Types()
+	want := []string{"system:init", "assistant", "result:success"}
+	if len(gotObserver) != len(want) {
+		t.Fatalf("observer = %v, want %v", gotObserver, want)
+	}
+	for i, w := range want {
+		if gotObserver[i] != w {
+			t.Errorf("observer[%d] = %q, want %q", i, gotObserver[i], w)
+		}
+	}
+
+	// Drain initial user prompt that StartTurn will emit.
+	go func() {
+		<-transport.sendCh
+		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+	}()
+	events, err := session.StartTurn(ctx, "after-auto")
+	if err != nil {
+		t.Fatalf("StartTurn() after autonomous frame closed: %v", err)
+	}
+	drainMessages(events)
+}
+
+// TestSession_AutonomousFrame_StrayFrameDoesNotOpenFrame (QUM-578) verifies
+// that a stray assistant frame (no preceding system:init) does NOT allocate
+// an autonomous turnFrame — StartTurn must not block waiting on a phantom.
+func TestSession_AutonomousFrame_StrayFrameDoesNotOpenFrame(t *testing.T) {
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	transport.feedMessage(t, `{"type":"assistant","uuid":"stray-1","message":{"role":"assistant","content":[{"type":"text","text":"stray"}]}}`)
+
+	// Wait until observer has seen the stray.
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw stray assistant frame")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// StartTurn must not block — no autonomous frame should have opened.
+	startDone := make(chan error, 1)
+	go func() {
+		<-transport.sendCh
+		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+	}()
+	go func() {
+		events, err := session.StartTurn(ctx, "go")
+		if err != nil {
+			startDone <- err
+			return
+		}
+		drainMessages(events)
+		startDone <- nil
+	}()
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("StartTurn() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartTurn blocked despite stray assistant (autonomous frame should not have been allocated)")
+	}
+}
+
+// TestSession_StartTurn_WaitsForAutonomousFrame (QUM-578) verifies that
+// StartTurn ctx-cancellably waits on an open autonomous frame's done
+// channel before allocating a sprawl turn.
+func TestSession_StartTurn_WaitsForAutonomousFrame(t *testing.T) {
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Open an autonomous frame.
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+
+	// Wait until observer has seen it (frame is open).
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw autonomous system:init")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		events, err := session.StartTurn(ctx, "queued")
+		if err != nil {
+			startDone <- err
+			return
+		}
+		drainMessages(events)
+		startDone <- nil
+	}()
+
+	// StartTurn must NOT return within 50ms — autonomous frame still open.
+	select {
+	case err := <-startDone:
+		t.Fatalf("StartTurn returned prematurely (err=%v) — should be blocked on autonomous frame", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// Assert nothing sent on transport yet (no user-frame leaked).
+	select {
+	case sent := <-transport.sendCh:
+		t.Fatalf("StartTurn sent user frame before autonomous frame closed: %v", sent)
+	default:
+	}
+
+	// Close the autonomous frame.
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+
+	// Now StartTurn should allocate and send a user frame.
+	var sent any
+	select {
+	case sent = <-transport.sendCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartTurn never sent user frame after autonomous frame closed")
+	}
+	data, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("marshal sent: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal sent: %v", err)
+	}
+	if parsed["type"] != "user" {
+		t.Fatalf("sent type = %v, want user", parsed["type"])
+	}
+
+	// Close out the sprawl turn so StartTurn returns cleanly.
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("StartTurn final error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartTurn did not return after sprawl turn result")
+	}
+}
+
+// TestSession_StartTurn_CtxCancelDuringAutonomousWait (QUM-578) verifies
+// that StartTurn's wait on an autonomous frame respects ctx cancellation
+// and does not send a user frame on cancel.
+func TestSession_StartTurn_CtxCancelDuringAutonomousWait(t *testing.T) {
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Open autonomous frame.
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("observer never saw autonomous system:init")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	startDone := make(chan error, 1)
+	go func() {
+		_, err := session.StartTurn(ctx, "queued")
+		startDone <- err
+	}()
+
+	// Give StartTurn time to enter wait.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-startDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("StartTurn err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartTurn did not return after ctx cancel")
+	}
+
+	// No user frame should have been sent. Drain sendCh for ~100ms post-cancel
+	// and assert no frame had type=="user" — sendCh is buffered cap 100 so a
+	// synchronous Send before ctx-check could land in the buffer.
+	drainDeadline := time.After(100 * time.Millisecond)
+DRAIN:
+	for {
+		select {
+		case sent := <-transport.sendCh:
+			data, _ := json.Marshal(sent)
+			var parsed map[string]any
+			_ = json.Unmarshal(data, &parsed)
+			if parsed["type"] == "user" {
+				t.Fatalf("user frame leaked despite ctx cancel: %v", parsed)
+			}
+		case <-drainDeadline:
+			break DRAIN
+		}
+	}
+}
+
+// TestSession_AutonomousFrame_SecondSystemInitIgnored (QUM-578) verifies
+// that a second system:init while an autonomous frame is already open is
+// ignored (no double-allocation, no panic from double-close on result).
+func TestSession_AutonomousFrame_SecondSystemInitIgnored(t *testing.T) {
+	transport := newMockManagedTransport()
+	observer := &recordingObserver{}
+	session := NewSession(transport, SessionConfig{
+		SessionID: "sess-1",
+		Observer:  observer,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+
+	deadline := time.After(2 * time.Second)
+	for len(observer.Types()) < 3 {
+		select {
+		case <-deadline:
+			t.Fatalf("observer did not see 3 frames; got %v", observer.Types())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	// StartTurn must succeed — no hung double-allocation.
+	startDone := make(chan error, 1)
+	go func() {
+		<-transport.sendCh
+		transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
+	}()
+	go func() {
+		events, err := session.StartTurn(ctx, "after-double-init")
+		if err != nil {
+			startDone <- err
+			return
+		}
+		drainMessages(events)
+		startDone <- nil
+	}()
+
+	select {
+	case err := <-startDone:
+		if err != nil {
+			t.Fatalf("StartTurn err: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("StartTurn did not return — double system:init may have double-allocated or autonomous frame leaked")
+	}
+}
+
 func TestSession_StartTurn_AllowsSecondTurnAfterFirstResult(t *testing.T) {
 	transport := newMockManagedTransport()
 	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})

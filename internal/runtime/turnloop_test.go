@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -326,19 +327,37 @@ func TestTurnLoop_OnQueueItemDelivered_SkipsItemsWithNoEntryIDs(t *testing.T) {
 	}
 }
 
-// TestTurnLoop_OnQueueItemDelivered_FiresWhileTurnInFlight verifies the
-// QUM-544 fix: the callback must fire as soon as StartTurn returns success,
-// not after the events channel closes. This guards against the bug where a
-// stdout-blocked or otherwise wedged turn leaves on-disk queue files stuck
-// in pending/ even though the prompt has already been handed to the
-// backend (and read+acted on by the model). The test simulates a wedged
-// turn by returning an events channel that never closes; the callback must
-// still fire promptly.
-func TestTurnLoop_OnQueueItemDelivered_FiresWhileTurnInFlight(t *testing.T) {
-	// Hold a reference to the events channel so we control when (if ever)
-	// it closes. We never close it in this test; cleanup happens via ctx
-	// cancellation.
-	events := make(chan *protocol.Message)
+// makeSystemInit builds a system:init protocol.Message — the well-known
+// startup frame the backend emits before any real model output. QUM-579
+// requires the TurnLoop to treat this frame as "not yet delivered" and
+// skip it when deciding whether to fire OnQueueItemDelivered.
+func makeSystemInit() *protocol.Message {
+	raw, _ := json.Marshal(map[string]any{
+		"type":    "system",
+		"subtype": "init",
+	})
+	return &protocol.Message{
+		Type:    "system",
+		Subtype: "init",
+		Raw:     raw,
+	}
+}
+
+// TestTurnLoop_OnQueueItemDelivered_FiresMidFlightAfterFirstNonInit verifies
+// the QUM-579 timing: the callback must fire when the first non-system:init
+// frame is observed on the subscriber channel, NOT immediately after
+// StartTurn returns. This supersedes the earlier QUM-544 timing which fired
+// before any events arrived (and so could fire even when the model never
+// actually saw the prompt). The test feeds a system:init frame followed by
+// an assistant frame, does NOT close the channel (proving the callback can
+// fire while the turn is still in flight), and asserts the callback fires
+// promptly. Cleanup is via ctx cancellation.
+func TestTurnLoop_OnQueueItemDelivered_FiresMidFlightAfterFirstNonInit(t *testing.T) {
+	events := make(chan *protocol.Message, 4)
+	events <- makeSystemInit()
+	events <- makeAssistant("starting work")
+	// Note: NOT closed. The turn is still "in flight" from the loop's POV.
+
 	mock := &mockSession{
 		onStart: func(_ int) (<-chan *protocol.Message, error) {
 			return events, nil
@@ -377,9 +396,6 @@ func TestTurnLoop_OnQueueItemDelivered_FiresWhileTurnInFlight(t *testing.T) {
 		}
 	})
 
-	// Wait until the turn has actually started — proves StartTurn was
-	// called — before asserting on the callback. We don't wait for
-	// EventQueueDrained, since with a wedged turn that event never fires.
 	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
 		return ev.Type == EventTurnStarted
 	})
@@ -390,8 +406,252 @@ func TestTurnLoop_OnQueueItemDelivered_FiresWhileTurnInFlight(t *testing.T) {
 			t.Errorf("OnQueueItemDelivered fired with EntryIDs=%v, want [wedge-id]", item.EntryIDs)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("OnQueueItemDelivered did not fire while turn was in flight; " +
-			"a stdout-blocked / wedged turn would leave queue files stuck in pending/ (QUM-544)")
+		t.Fatal("OnQueueItemDelivered did not fire after first non-init event " +
+			"while turn was still in flight (QUM-579 supersedes QUM-544)")
+	}
+}
+
+// TestTurnLoop_OnQueueItemDelivered_FiresOnFirstNonInitEvent verifies the
+// QUM-579 core property: when the subscriber channel emits
+// system:init -> assistant -> result, the callback fires exactly once, on
+// the assistant frame (the first non-system:init event). See QUM-579.
+func TestTurnLoop_OnQueueItemDelivered_FiresOnFirstNonInitEvent(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 3)
+			ch <- makeSystemInit()
+			ch <- makeAssistant("hi")
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "do work", EntryIDs: []string{"e1", "e2"}})
+
+	var (
+		cbMu  sync.Mutex
+		calls []QueueItem
+	)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			cbMu.Lock()
+			calls = append(calls, item)
+			cbMu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	cbMu.Lock()
+	got := append([]QueueItem(nil), calls...)
+	cbMu.Unlock()
+
+	if len(got) != 1 {
+		t.Fatalf("OnQueueItemDelivered call count = %d, want 1 (got=%+v)", len(got), got)
+	}
+	if len(got[0].EntryIDs) != 2 || got[0].EntryIDs[0] != "e1" || got[0].EntryIDs[1] != "e2" {
+		t.Errorf("call[0].EntryIDs = %v, want [e1 e2]", got[0].EntryIDs)
+	}
+}
+
+// TestTurnLoop_OnQueueItemDelivered_DoesNotFireOnSystemInitAlone verifies
+// the QUM-579 property that a system:init frame on its own is NOT
+// sufficient to consider the prompt delivered. The callback must remain
+// un-fired until a non-init frame arrives. See QUM-579.
+func TestTurnLoop_OnQueueItemDelivered_DoesNotFireOnSystemInitAlone(t *testing.T) {
+	events := make(chan *protocol.Message, 4)
+	events <- makeSystemInit()
+	// Channel deliberately NOT closed and no further frames.
+
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			return events, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p", EntryIDs: []string{"only-init"}})
+
+	fired := make(chan QueueItem, 1)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			select {
+			case fired <- item:
+			default:
+			}
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("Run did not return after cancel")
+		}
+	})
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+
+	select {
+	case item := <-fired:
+		t.Fatalf("OnQueueItemDelivered fired on system:init alone (item=%+v); "+
+			"QUM-579 requires waiting for a real model frame", item)
+	case <-time.After(500 * time.Millisecond):
+		// Expected: no fire.
+	}
+}
+
+// TestTurnLoop_OnQueueItemDelivered_FiresOnResultEvenWithoutAssistant
+// verifies the edge case where the backend emits only a result frame (no
+// assistant content, no system:init). The callback fires on the result —
+// a result is itself a non-init event and proves the model engaged with
+// the prompt. See QUM-579.
+func TestTurnLoop_OnQueueItemDelivered_FiresOnResultEvenWithoutAssistant(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	_, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "p", EntryIDs: []string{"r1"}})
+
+	fired := make(chan QueueItem, 1)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			select {
+			case fired <- item:
+			default:
+			}
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	select {
+	case item := <-fired:
+		if len(item.EntryIDs) != 1 || item.EntryIDs[0] != "r1" {
+			t.Errorf("OnQueueItemDelivered fired with EntryIDs=%v, want [r1]", item.EntryIDs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnQueueItemDelivered did not fire on result-only stream (QUM-579)")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+// TestTurnLoop_OnQueueItemDelivered_DoesNotFireWhenSubscriberClosesEmpty
+// locks in the operator-visibility property from QUM-579: if the backend
+// subscriber closes without emitting any frame at all (not even
+// system:init), the callback must NOT fire. This means the on-disk
+// pending/ entry remains in pending/, so operators can see the delivery
+// never actually landed.
+func TestTurnLoop_OnQueueItemDelivered_DoesNotFireWhenSubscriberClosesEmpty(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message)
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassAsync, Prompt: "p", EntryIDs: []string{"ghost"}})
+
+	var (
+		cbMu  sync.Mutex
+		calls []QueueItem
+	)
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		OnQueueItemDelivered: func(item QueueItem) {
+			cbMu.Lock()
+			calls = append(calls, item)
+			cbMu.Unlock()
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	// Wait for the queue to drain (the loop publishes QueueDrained after the
+	// empty-events turn). This proves the turn ran end-to-end.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	cbMu.Lock()
+	defer cbMu.Unlock()
+	if len(calls) != 0 {
+		t.Errorf("OnQueueItemDelivered fired %d time(s) on empty subscriber close, want 0; "+
+			"QUM-579 requires pending entries to stay visible on disk when no model frame ever arrived; calls=%+v",
+			len(calls), calls)
 	}
 }
 
@@ -850,4 +1110,302 @@ func TestTurnLoop(t *testing.T) {
 			t.Errorf("initial prompt should be verbatim, got composite: %q", prompts[0])
 		}
 	})
+}
+
+// QUM-580: Defense-in-depth post-turn pending-envelope sweep.
+//
+// The turn loop must invoke an optional PostTurnSweep callback after every
+// turn boundary, regardless of how the turn terminated (success, StartTurn
+// error, mid-turn interrupt, or the InitialPrompt seed turn for a child).
+// The callback is the runtime's hook for the supervisor to scan its pending/
+// directory and wake the loop if any delivery was missed during the turn.
+//
+// These tests verify the contract from the runtime side. The supervisor side
+// is exercised in internal/supervisor/runtime_launcher_test.go.
+
+// TestTurnLoop_PostTurnSweep_FiresAfterSuccessfulTurn asserts the sweep
+// callback is invoked exactly once after a clean turn completes and
+// EventQueueDrained has been published.
+func TestTurnLoop_PostTurnSweep_FiresAfterSuccessfulTurn(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+
+	var sweepCount atomic.Int64
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		PostTurnSweep: func() {
+			sweepCount.Add(1)
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	// Allow sweep to fire after EventQueueDrained.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sweepCount.Load() < 1 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	if got := sweepCount.Load(); got != 1 {
+		t.Errorf("PostTurnSweep call count = %d, want 1", got)
+	}
+}
+
+// TestTurnLoop_PostTurnSweep_FiresAfterStartTurnError asserts the sweep
+// fires on the failure path: StartTurn returns an error, the turn never
+// produces any events, but the loop must still call PostTurnSweep.
+func TestTurnLoop_PostTurnSweep_FiresAfterStartTurnError(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			return nil, errors.New("boom")
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+
+	var sweepCount atomic.Int64
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		PostTurnSweep: func() {
+			sweepCount.Add(1)
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sweepCount.Load() < 1 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	if got := sweepCount.Load(); got != 1 {
+		t.Errorf("PostTurnSweep call count = %d, want 1 (must fire even on StartTurn error)", got)
+	}
+}
+
+// TestTurnLoop_PostTurnSweep_FiresAfterInterruptedTurn mirrors the existing
+// InterruptMidTurn subtest pattern: the turn is interrupted mid-flight, and
+// the sweep must still fire.
+func TestTurnLoop_PostTurnSweep_FiresAfterInterruptedTurn(t *testing.T) {
+	ch := make(chan *protocol.Message, 4)
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			return ch, nil
+		},
+	}
+	ch <- makeAssistant("working...")
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "long job"})
+
+	var sweepCount atomic.Int64
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		PostTurnSweep: func() {
+			sweepCount.Add(1)
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+
+	if err := loop.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+
+	// Backend delivers terminal result, then closes.
+	ch <- makeResult()
+	close(ch)
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventInterrupted
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sweepCount.Load() < 1 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	if got := sweepCount.Load(); got != 1 {
+		t.Errorf("PostTurnSweep call count = %d, want 1 (must fire after interrupted turn)", got)
+	}
+}
+
+// TestTurnLoop_PostTurnSweep_FiresAfterInitialPrompt asserts the sweep
+// fires once for the InitialPrompt turn (the spawn-prompt seed) before the
+// loop falls through to wait on the queue. With no queue items, the loop
+// would otherwise block forever and never sweep.
+func TestTurnLoop_PostTurnSweep_FiresAfterInitialPrompt(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+
+	var sweepCount atomic.Int64
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:       mock,
+		Queue:         q,
+		EventBus:      bus,
+		InitialPrompt: "boot",
+		PostTurnSweep: func() {
+			sweepCount.Add(1)
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+
+	// Wait until the initial-prompt turn completes (TurnCompleted) before
+	// asserting on the sweep count.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnCompleted
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sweepCount.Load() < 1 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+
+	if got := sweepCount.Load(); got != 1 {
+		t.Errorf("PostTurnSweep call count = %d, want 1 (initial-prompt turn must trigger sweep)", got)
+	}
+}
+
+// TestTurnLoop_PostTurnSweep_NilSafe asserts the loop does not panic when
+// PostTurnSweep is nil.
+func TestTurnLoop_PostTurnSweep_NilSafe(t *testing.T) {
+	mock := &mockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			ch <- makeResult()
+			close(ch)
+			return ch, nil
+		},
+	}
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(64)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
+
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  mock,
+		Queue:    q,
+		EventBus: bus,
+		// PostTurnSweep: nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- errors.New("loop panicked")
+				return
+			}
+			done <- nil
+		}()
+		_ = loop.Run(ctx)
+	}()
+
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventQueueDrained
+	})
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run panicked when PostTurnSweep was nil: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
 }

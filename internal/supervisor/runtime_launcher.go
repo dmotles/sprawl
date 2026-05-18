@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -118,13 +119,30 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 
 	caps := session.Capabilities()
 	sprawlRoot, name := spec.SprawlRoot, spec.Name
+
+	// QUM-580: allocate the handle up-front so the OnQueueItemDelivered and
+	// PostTurnSweep closures can capture it. The handle's runtime/session
+	// fields are populated after unifiedRuntimeNewFn / rt.Start succeed.
+	handle := &unifiedHandle{
+		sprawlRoot:    spec.SprawlRoot,
+		name:          spec.Name,
+		statusDrainer: s.statusDrainer,
+	}
+	handle.wakeForDeliveryFn = handle.WakeForDelivery
+
 	rt := unifiedRuntimeNewFn(runtimepkg.RuntimeConfig{
 		Name:          spec.Name,
 		SprawlRoot:    spec.SprawlRoot,
 		Session:       session,
 		InitialPrompt: agentState.Prompt,
 		Capabilities:  caps,
+		PostTurnSweep: func() { handle.postTurnSweep() },
 		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
+			if len(it.EntryIDs) > 0 {
+				handle.sweepMu.Lock()
+				handle.sweepDeliveredCount++
+				handle.sweepMu.Unlock()
+			}
 			for _, id := range it.EntryIDs {
 				if strings.HasPrefix(id, "task:") {
 					taskID := strings.TrimPrefix(id, "task:")
@@ -166,7 +184,23 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 	// ObserverWriter (which writes activity.ndjson).
 	stopActivity := runActivitySubscriber(rt.EventBus(), observer, "activity")
 
+	// QUM-580: delivery-confirmation subscriber tracks messages_read
+	// tool_use blocks and resets sweep counters on EventTurnStarted.
+	stopDelivery := runDeliveryConfirmationSubscriber(rt.EventBus(), handle, "delivery-confirmation")
+
+	// Populate handle fields before rt.Start so the PostTurnSweep closure
+	// (which calls handle.WakeForDelivery → handle.rt) observes a fully
+	// constructed handle when the turn loop fires its first sweep.
+	handle.rt = rt
+	handle.session = session
+	handle.capabilities = caps
+	handle.sessionID = session.SessionID()
+	handle.activityFile = activityFile
+	handle.stopActivity = stopActivity
+	handle.stopDelivery = stopDelivery
+
 	if err := rt.Start(context.Background()); err != nil {
+		stopDelivery()
 		stopActivity()
 		_ = session.Close()
 		_ = session.Wait()
@@ -176,17 +210,6 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		return nil, err
 	}
 
-	handle := &unifiedHandle{
-		rt:            rt,
-		session:       session,
-		capabilities:  caps,
-		sessionID:     session.SessionID(),
-		activityFile:  activityFile,
-		stopActivity:  stopActivity,
-		sprawlRoot:    spec.SprawlRoot,
-		name:          spec.Name,
-		statusDrainer: s.statusDrainer,
-	}
 	handle.feedTasks()
 	return handle, nil
 }
@@ -261,7 +284,31 @@ type unifiedHandle struct {
 	stopErr  error
 
 	stopWaitTimedOut atomic.Bool
+
+	// QUM-580: defense-in-depth post-turn pending-envelope sweep state.
+	// sweepDeliveredCount counts QueueItems-with-EntryIDs delivered during
+	// the current turn (incremented under sweepMu from
+	// OnQueueItemDelivered). sweepSawMessagesRead is set true by the
+	// delivery-confirmation subscriber when it observes the agent invoking
+	// the mcp__sprawl__messages_read tool, indicating the model actually
+	// drained its inbox. postTurnSweep reads both, decides whether a wake
+	// is needed, and resets both back to zero.
+	sweepMu              sync.Mutex
+	sweepDeliveredCount  int
+	sweepSawMessagesRead bool
+	// wakeForDeliveryFn is the seam invoked by postTurnSweep when it
+	// decides a wake is needed. Production wires this to
+	// (*unifiedHandle).WakeForDelivery; tests inject a counter.
+	wakeForDeliveryFn func() error
+	// stopDelivery tears down the delivery-confirmation subscriber.
+	stopDelivery func()
 }
+
+// sweepMessagesReadToolName is the MCP tool name the
+// delivery-confirmation subscriber watches for. Observing this tool_use
+// block confirms the agent drained its inbox during the current turn,
+// which suppresses the defense-in-depth wake from postTurnSweep.
+const sweepMessagesReadToolName = "mcp__sprawl__messages_read"
 
 // StopWaitTimedOut reports whether the bounded session.Wait() inside Stop hit
 // its timeout (QUM-542). Used by Real.Retire/Kill to surface the fact via the
@@ -402,6 +449,11 @@ const unifiedHandleStopWaitTimeout = 5 * time.Second
 func (h *unifiedHandle) Stop(ctx context.Context) error {
 	h.stopOnce.Do(func() {
 		err := h.rt.Stop(ctx)
+		if h.stopDelivery != nil {
+			joinWithTimeout(h.stopDelivery, stopActivityTimeout,
+				"stopDelivery abandoned — likely wedged delivery-confirmation subscriber goroutine (QUM-580)",
+				"handle", "unifiedHandle", "agent", h.name)
+		}
 		if h.stopActivity != nil {
 			joinWithTimeout(h.stopActivity, stopActivityTimeout,
 				"stopActivity abandoned — likely wedged activity subscriber goroutine (QUM-547)",
@@ -450,3 +502,100 @@ func (h *unifiedHandle) Done() <-chan struct{} {
 // UnifiedRuntime returns the underlying UnifiedRuntime so the TUI viewport
 // stream wiring (QUM-439) can subscribe to its EventBus.
 func (h *unifiedHandle) UnifiedRuntime() *runtimepkg.UnifiedRuntime { return h.rt }
+
+// postTurnSweep is the defense-in-depth check invoked from the turn loop
+// after every turn boundary (QUM-580). It decides whether to fire a
+// cooperative wake based on two conditions:
+//
+//  1. deliveredCount > 0 && !sawMessagesRead — items were handed to the
+//     model this turn, but the model never invoked messages_read to drain
+//     them. The model may have ignored the inbox; nudge it on the next
+//     boundary so a follow-up turn happens.
+//  2. len(pending/) > 0 — the on-disk pending queue is non-empty,
+//     regardless of in-memory counters. A pending file may have been
+//     written by a peer mid-turn and never drained into the runtime
+//     queue; this is the canonical defense-in-depth path.
+//
+// Counters are reset under sweepMu before any blocking I/O so the next
+// turn starts clean. wakeForDeliveryFn is invoked without sweepMu held.
+func (h *unifiedHandle) postTurnSweep() {
+	h.sweepMu.Lock()
+	delivered := h.sweepDeliveredCount
+	sawRead := h.sweepSawMessagesRead
+	h.sweepDeliveredCount = 0
+	h.sweepSawMessagesRead = false
+	h.sweepMu.Unlock()
+
+	needWake := delivered > 0 && !sawRead
+	if !needWake {
+		pending, _ := agentloop.ListPending(h.sprawlRoot, h.name)
+		if len(pending) > 0 {
+			needWake = true
+		}
+	}
+	if !needWake {
+		return
+	}
+	if h.wakeForDeliveryFn != nil {
+		_ = h.wakeForDeliveryFn()
+	}
+}
+
+// runDeliveryConfirmationSubscriber subscribes to bus and watches the
+// agent's protocol-message stream for two signals:
+//
+//   - EventTurnStarted: resets both sweep counters on the handle so each
+//     turn starts with a clean slate.
+//   - EventProtocolMessage carrying an assistant tool_use block with
+//     name == sweepMessagesReadToolName: sets sweepSawMessagesRead=true,
+//     confirming the model drained its inbox this turn.
+//
+// The returned function unsubscribes and waits for the goroutine to drain.
+// Parsing follows the same assistant tool_use shape used by
+// internal/agentloop/activity.go.
+func runDeliveryConfirmationSubscriber(bus *runtimepkg.EventBus, h *unifiedHandle, name string) func() {
+	ch, unsub := bus.SubscribeNamed(name, 64)
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for ev := range ch {
+			switch ev.Type {
+			case runtimepkg.EventTurnStarted:
+				h.sweepMu.Lock()
+				h.sweepDeliveredCount = 0
+				h.sweepSawMessagesRead = false
+				h.sweepMu.Unlock()
+			case runtimepkg.EventProtocolMessage:
+				if ev.Message == nil || ev.Message.Type != "assistant" {
+					continue
+				}
+				var outer struct {
+					Message struct {
+						Content []struct {
+							Type string `json:"type"`
+							Name string `json:"name,omitempty"`
+						} `json:"content"`
+					} `json:"message"`
+				}
+				if err := json.Unmarshal(ev.Message.Raw, &outer); err != nil {
+					continue
+				}
+				for _, block := range outer.Message.Content {
+					if block.Type == "tool_use" && block.Name == sweepMessagesReadToolName {
+						h.sweepMu.Lock()
+						h.sweepSawMessagesRead = true
+						h.sweepMu.Unlock()
+						break
+					}
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			unsub()
+			<-doneCh
+		})
+	}
+}

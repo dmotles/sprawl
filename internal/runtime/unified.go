@@ -58,6 +58,8 @@ type RuntimeConfig struct {
 	Capabilities backend.Capabilities
 	// OnQueueItemDelivered is forwarded to TurnLoopConfig. See TurnLoopConfig.
 	OnQueueItemDelivered func(item QueueItem)
+	// PostTurnSweep is forwarded to TurnLoopConfig. See TurnLoopConfig.
+	PostTurnSweep func()
 }
 
 // sessionIDProvider is an optional interface a Session may satisfy to expose a
@@ -227,6 +229,7 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 		EventBus:             rt.eventBus,
 		InitialPrompt:        rt.cfg.InitialPrompt,
 		OnQueueItemDelivered: rt.cfg.OnQueueItemDelivered,
+		PostTurnSweep:        rt.cfg.PostTurnSweep,
 	})
 
 	rt.mu.Unlock()

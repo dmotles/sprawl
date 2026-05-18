@@ -48,14 +48,24 @@ type TurnLoopConfig struct {
 	// agentloop.MarkDelivered so the on-disk pending→delivered rename
 	// happens promptly. Must not block.
 	//
-	// Timing (QUM-544): the callback fires immediately after StartTurn
-	// returns nil, BEFORE the event-drain loop begins. This guarantees that
-	// on-disk bookkeeping (pending/ → delivered/) reflects delivery state
-	// even if the turn subsequently wedges (e.g. stdout-blocked on a hung
-	// MCP tool). Prior behavior — firing after the events channel closed —
-	// left queue files stuck in pending/ for the duration of any in-flight
-	// turn, which caused operator confusion during incident response.
+	// Timing (QUM-579): the callback fires on the first protocol frame
+	// received from the backend whose (Type, Subtype) is NOT
+	// ("system", "init"). This proves the backend has actually begun
+	// processing the prompt (rather than merely accepting the StartTurn
+	// call). If the events channel closes without ever emitting such a
+	// frame, the callback does NOT fire — the turn never made forward
+	// progress and the queue items should remain in pending/ for the next
+	// attempt. This supersedes QUM-544's "fire immediately after StartTurn
+	// returns nil" timing, which marked items as delivered before any
+	// evidence of backend processing.
 	OnQueueItemDelivered func(item QueueItem)
+	// PostTurnSweep, if non-nil, is invoked from the loop goroutine once per
+	// turn boundary — after a successful turn, after a StartTurn error, after
+	// an interrupted turn, AND after the InitialPrompt seed turn. It is
+	// invoked AFTER EventQueueDrained is published so the bus event remains
+	// the final lifecycle signal for the turn. Must not block. See QUM-580
+	// (defense-in-depth post-turn pending-envelope sweep).
+	PostTurnSweep func()
 }
 
 // TurnLoop owns the single-goroutine drive loop for an agent runtime.
@@ -81,6 +91,9 @@ func (l *TurnLoop) Run(ctx context.Context) error {
 		// InitialPrompt has no associated queue items (it's the spawn
 		// prompt), so there's nothing for OnQueueItemDelivered to fire on.
 		l.executeTurn(ctx, l.cfg.InitialPrompt, nil)
+		if l.cfg.PostTurnSweep != nil {
+			l.cfg.PostTurnSweep()
+		}
 	}
 
 	for {
@@ -102,6 +115,9 @@ func (l *TurnLoop) Run(ctx context.Context) error {
 			// re-delivered, so subscribers tracking queue state need the
 			// signal even on failure paths.
 			l.cfg.EventBus.Publish(RuntimeEvent{Type: EventQueueDrained})
+			if l.cfg.PostTurnSweep != nil {
+				l.cfg.PostTurnSweep()
+			}
 			continue
 		}
 
@@ -135,15 +151,16 @@ func (l *TurnLoop) Interrupt(_ context.Context) error {
 }
 
 // executeTurn runs one turn end-to-end: install per-turn interrupt channel,
-// publish TurnStarted, call StartTurn, fire OnQueueItemDelivered for each
-// delivered item, drain events into the bus, and finalize with
-// TurnCompleted/TurnFailed/Interrupted as appropriate.
+// publish TurnStarted, call StartTurn, drain events into the bus, fire
+// OnQueueItemDelivered on the first non-(system,init) frame, and finalize
+// with TurnCompleted/TurnFailed/Interrupted as appropriate.
 //
-// QUM-544: OnQueueItemDelivered fires synchronously immediately after
-// StartTurn returns nil, BEFORE the event-drain loop starts. This ensures
-// on-disk bookkeeping (pending → delivered) tracks delivery to the backend
-// rather than completion of the turn, so a stdout-wedged turn does not
-// leave queue files stuck in pending/.
+// QUM-579: OnQueueItemDelivered fires on the first protocol frame whose
+// (Type, Subtype) is NOT ("system", "init"). If the events channel closes
+// without ever yielding such a frame, the callback does not fire — the
+// queue items stay in pending/ so they can be retried. This supersedes
+// QUM-544's "fire immediately after StartTurn returns nil" timing, which
+// marked items delivered before any evidence of backend processing.
 //
 // items may be nil for prompts that have no associated queue entries (e.g.
 // the InitialPrompt).
@@ -168,18 +185,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 		return
 	}
 
-	// QUM-544: fire the delivery callback as soon as the backend has
-	// accepted the prompt, not after the turn completes. This keeps
-	// on-disk queue bookkeeping in sync with delivery even when the turn
-	// later wedges.
-	if l.cfg.OnQueueItemDelivered != nil {
-		for _, it := range items {
-			if len(it.EntryIDs) > 0 {
-				l.cfg.OnQueueItemDelivered(it)
-			}
-		}
-	}
-
+	delivered := false
 	interrupted := false
 	for {
 		select {
@@ -198,6 +204,22 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 		case msg, ok := <-events:
 			if !ok {
 				return
+			}
+			// QUM-579: fire OnQueueItemDelivered on the first frame that
+			// is NOT system:init. system:init is emitted by the backend
+			// before it has actually started processing the prompt, so
+			// firing on it would regress to QUM-544 semantics. Any other
+			// frame (assistant, tool_use, result, etc.) proves the
+			// backend is processing.
+			if !delivered && (msg.Type != "system" || msg.Subtype != "init") {
+				if l.cfg.OnQueueItemDelivered != nil {
+					for _, it := range items {
+						if len(it.EntryIDs) > 0 {
+							l.cfg.OnQueueItemDelivered(it)
+						}
+					}
+				}
+				delivered = true
 			}
 			l.cfg.EventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
 			if msg.Type == "result" {
