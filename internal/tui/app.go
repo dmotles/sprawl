@@ -687,7 +687,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// caching is on.
 				m.statusBar.SetTokenUsage(im.InputTokens + im.CacheReadInputTokens + im.CacheCreationInputTokens)
 			case ToolCallMsg:
-				m.rootVP().AppendToolCall(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput)
+				m.rootVP().AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams)
 				wasZero := m.pendingToolCalls == 0
 				m.pendingToolCalls++
 				if wasZero {
@@ -712,7 +712,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ToolCallMsg:
-		m.rootVP().AppendToolCall(msg.ToolName, msg.ToolID, msg.Approved, msg.Input, msg.FullInput)
+		m.rootVP().AppendToolCallWithHeader(msg.ToolName, msg.ToolID, msg.Approved, msg.Input, msg.FullInput, msg.HeaderArg, msg.HeaderParams)
 		// Bump the pending counter and (re)start the spinner ticker if this
 		// is the first in-flight call (QUM-336). The spinner self-perpetuates
 		// via spinner.Update returning the next tick cmd, but we gate that
@@ -2451,7 +2451,7 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 			}
 			buf.seenToolIDs[im.ToolID] = struct{}{}
 		}
-		vp.AppendToolCall(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput)
+		vp.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams)
 		wasZero := m.pendingToolCalls == 0
 		m.pendingToolCalls++
 		if wasZero {

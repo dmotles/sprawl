@@ -450,6 +450,134 @@ func TestViewportModel_MoveCursorExtendsSelection(t *testing.T) {
 // mcp__sprawl__spawn) must not bleed past the viewport width.
 // Rendered via renderToolCall directly so the assertion is independent of
 // the bubbles viewport's scroll/crop behaviour.
+// QUM-419: the compact header surfaces the per-tool main argument inline
+// with the tool name and an optional `(k=v, k=v)` suffix. Exercises a
+// representative slice of dedicated formatters (Bash/Read/Edit/Grep/Write)
+// through renderToolCall so we lock in the at-a-glance contract.
+func TestViewportModel_RenderToolCall_PerToolHeader(t *testing.T) {
+	const width = 100
+	theme := NewTheme("colour212")
+	cases := []struct {
+		name     string
+		entry    MessageEntry
+		wantSubs []string
+	}{
+		{
+			name: "Bash",
+			entry: MessageEntry{
+				Content:      "Bash",
+				HeaderArg:    `"make validate"`,
+				HeaderParams: []KVPair{{Key: "description", Value: `"build+test"`}},
+			},
+			wantSubs: []string{"Bash", `"make validate"`, `description="build+test"`},
+		},
+		{
+			name: "Read",
+			entry: MessageEntry{
+				Content:      "Read",
+				HeaderArg:    "/etc/hosts",
+				HeaderParams: []KVPair{{Key: "limit", Value: "80"}},
+			},
+			wantSubs: []string{"Read", "/etc/hosts", "limit=80"},
+		},
+		{
+			name: "Edit",
+			entry: MessageEntry{
+				Content:      "Edit",
+				HeaderArg:    "/tmp/main.go",
+				HeaderParams: []KVPair{{Key: "replace_all", Value: "true"}},
+			},
+			wantSubs: []string{"Edit", "/tmp/main.go", "replace_all=true"},
+		},
+		{
+			name: "Grep",
+			entry: MessageEntry{
+				Content:      "Grep",
+				HeaderArg:    `"TODO"`,
+				HeaderParams: []KVPair{{Key: "path", Value: "internal/tui"}},
+			},
+			wantSubs: []string{"Grep", `"TODO"`, "path=internal/tui"},
+		},
+		{
+			name: "Write no params",
+			entry: MessageEntry{
+				Content:   "Write",
+				HeaderArg: "/tmp/out.txt",
+			},
+			wantSubs: []string{"Write", "/tmp/out.txt"},
+		},
+		{
+			name: "MCP collapses display name",
+			entry: MessageEntry{
+				Content:   "mcp__sprawl__send_message",
+				HeaderArg: "weave",
+			},
+			wantSubs: []string{"send_message", "weave"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewViewportModel(&theme)
+			m.SetSize(width, 20)
+			entry := tc.entry
+			entry.Type = MessageToolCall
+			entry.Complete = true
+			entry.Approved = true
+			var sb strings.Builder
+			m.renderToolCall(&sb, entry)
+			stripped := stripANSI(sb.String())
+			for _, sub := range tc.wantSubs {
+				if !strings.Contains(stripped, sub) {
+					t.Errorf("header missing %q, got:\n%s", sub, stripped)
+				}
+			}
+			// Compact mode must NOT add a body gutter (QUM-419).
+			for _, line := range strings.Split(sb.String(), "\n") {
+				plain := stripANSI(line)
+				if strings.HasPrefix(plain, "│ ") {
+					t.Errorf("compact header must not include `│ ` body lines, got:\n%s", stripped)
+				}
+			}
+			// Header must stay single-line and within width.
+			for _, line := range strings.Split(sb.String(), "\n") {
+				if w := lipgloss.Width(line); w > width {
+					t.Errorf("header line width %d exceeds viewport width %d: %q", w, width, line)
+				}
+			}
+		})
+	}
+}
+
+// QUM-419: when including the k=v suffix would shrink mainArg below
+// MinMainArgCells (30), the formatter drops the params and gives all
+// remaining cells to the main arg.
+func TestViewportModel_RenderToolCall_NarrowDropsParams(t *testing.T) {
+	const width = 50
+	theme := NewTheme("colour212")
+	m := NewViewportModel(&theme)
+	m.SetSize(width, 20)
+	var sb strings.Builder
+	m.renderToolCall(&sb, MessageEntry{
+		Type:      MessageToolCall,
+		Content:   "Bash",
+		Complete:  true,
+		Approved:  true,
+		HeaderArg: strings.Repeat("x", 60), // long enough to be truncated
+		HeaderParams: []KVPair{
+			{Key: "description", Value: `"a long descriptive label"`},
+		},
+	})
+	stripped := stripANSI(sb.String())
+	if strings.Contains(stripped, "description=") {
+		t.Errorf("expected params dropped at width %d (mainArg has priority), got:\n%s", width, stripped)
+	}
+	for _, line := range strings.Split(sb.String(), "\n") {
+		if w := lipgloss.Width(line); w > width {
+			t.Errorf("rendered line width %d exceeds viewport width %d: %q", w, width, line)
+		}
+	}
+}
+
 func TestViewportModel_RenderToolCall_LongInputClipped(t *testing.T) {
 	const width = 40
 	theme := NewTheme("colour212")
@@ -475,21 +603,27 @@ func TestViewportModel_RenderToolCall_LongInputClipped(t *testing.T) {
 // validate` output surfaced as a Bash tool_result) should wrap, not
 // truncate — every logical line must appear under the `│ ` gutter and
 // each wrapped display line must fit the viewport width.
+//
+// QUM-419: the compact header no longer carries a body block (that lives
+// under the Ctrl+O expanded view now). The wrap guarantee still applies
+// to the expanded path, so this test enables the toggle and passes the
+// multi-line payload via ToolInputFull.
 func TestViewportModel_RenderToolCall_MultilineInputWrapped(t *testing.T) {
 	const width = 40
 	theme := NewTheme("colour212")
 	m := NewViewportModel(&theme)
 	m.SetSize(width, 30)
+	m.SetToolInputsExpanded(true)
 
 	input := "make validate\nfmt OK\nlint OK\n" + strings.Repeat("a", 120)
 
 	var sb strings.Builder
 	m.renderToolCall(&sb, MessageEntry{
-		Type:      MessageToolCall,
-		Content:   "Bash",
-		Complete:  true,
-		Approved:  true,
-		ToolInput: input,
+		Type:          MessageToolCall,
+		Content:       "Bash",
+		Complete:      true,
+		Approved:      true,
+		ToolInputFull: input,
 	})
 
 	out := sb.String()
@@ -542,15 +676,16 @@ func TestViewportModel_RenderToolCall_ExpandedRendersFullInput(t *testing.T) {
 		Content:       "Bash",
 		Complete:      true,
 		Approved:      true,
-		ToolInput:     short,
+		HeaderArg:     `"` + short + `"`,
 		ToolInputFull: full,
 	})
 
 	out := sb.String()
 	stripped := stripANSI(out)
-	if strings.Contains(stripped, short) {
-		t.Errorf("expanded render should not include the truncated summary %q, got:\n%s", short, stripped)
-	}
+	// QUM-419: the compact header carries HeaderArg inlined on the same row
+	// as the tool name, so the "summary" string can legitimately appear.
+	// The expanded contract is about the BODY: full input must be visible.
+	_ = short
 	for _, frag := range []string{"find /var/log", "sort", "uniq -c"} {
 		if !strings.Contains(stripped, frag) {
 			t.Errorf("expanded render missing %q, got:\n%s", frag, stripped)
@@ -649,8 +784,16 @@ func TestViewportModel_SetToolInputsExpanded_TogglesRender(t *testing.T) {
 
 	m.SetToolInputsExpanded(false)
 	view = stripANSI(m.View())
-	if !strings.Contains(view, "│ short") {
-		t.Errorf("expected truncated summary back after toggling off, got:\n%s", view)
+	// QUM-419: compact mode no longer renders the body gutter; the summary
+	// appears inline on the header row instead.
+	if strings.Contains(view, "│ short") {
+		t.Errorf("compact mode must not render the `│ short` body gutter post-QUM-419, got:\n%s", view)
+	}
+	if !strings.Contains(view, "short") {
+		t.Errorf("expected summary 'short' on the compact header row, got:\n%s", view)
+	}
+	if strings.Contains(view, "this is the full bash command being expanded") {
+		t.Errorf("compact mode must not show the full body, got:\n%s", view)
 	}
 }
 

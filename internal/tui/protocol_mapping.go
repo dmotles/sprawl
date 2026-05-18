@@ -75,12 +75,15 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 		case "text":
 			msgs = append(msgs, AssistantTextMsg{Text: block.Text})
 		case "tool_use":
+			headerArg, headerParams := FormatToolHeader(block.Name, block.Input)
 			msgs = append(msgs, ToolCallMsg{
-				ToolName:  block.Name,
-				ToolID:    block.ID,
-				Approved:  true, // Session auto-approves tool calls
-				Input:     summarizeToolInput(block.Name, block.Input),
-				FullInput: expandToolInput(block.Name, block.Input),
+				ToolName:     block.Name,
+				ToolID:       block.ID,
+				Approved:     true, // Session auto-approves tool calls
+				Input:        summarizeToolInput(block.Name, block.Input),
+				FullInput:    expandToolInput(block.Name, block.Input),
+				HeaderArg:    headerArg,
+				HeaderParams: headerParams,
 			})
 		}
 	}

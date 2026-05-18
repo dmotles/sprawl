@@ -344,6 +344,7 @@ func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain 
 							depth = 1
 						}
 					}
+					headerArg, headerParams := FormatToolHeader(name, inputRaw)
 					entries = append(entries, MessageEntry{
 						Type:          MessageToolCall,
 						Content:       name,
@@ -354,6 +355,8 @@ func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain 
 						ToolID:        id,
 						Depth:         depth,
 						ParentToolID:  parentID,
+						HeaderArg:     headerArg,
+						HeaderParams:  headerParams,
 						// Replay-synthesized tool calls are not in flight —
 						// the spinner ticker only animates Pending entries.
 					})

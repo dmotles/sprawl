@@ -114,6 +114,14 @@ type MessageEntry struct {
 	// glyph + color). Defaults to NotificationKindMessage for untyped legacy
 	// wrappers so pre-QUM-562 transcripts replay identically.
 	NotificationType string
+	// HeaderArg is the per-tool main argument inlined on the compact header
+	// line (QUM-419). Empty falls back to the legacy "tool name only" header.
+	// MessageToolCall only.
+	HeaderArg string
+	// HeaderParams is the ordered list of secondary k=v pairs displayed
+	// after HeaderArg (QUM-419). Dropped at render time when including them
+	// would shrink the main arg below MinMainArgCells. MessageToolCall only.
+	HeaderParams []KVPair
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -280,6 +288,16 @@ func (m *ViewportModel) FinalizeAssistantMessage() {
 // pass "" if not available. The new entry starts in the Pending state
 // (QUM-336) — its indicator animates until MarkToolResult flips it.
 func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input, fullInput string) {
+	m.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, "", nil)
+}
+
+// AppendToolCallWithHeader is the QUM-419 entry point that carries the
+// pre-computed per-tool header fields (HeaderArg + HeaderParams) alongside
+// the legacy summary + full-input strings. AppendToolCall is preserved as a
+// thin wrapper so existing call sites (tests, replay paths that haven't been
+// migrated) keep compiling; new production paths should set the header
+// fields so the compact header line reads correctly.
+func (m *ViewportModel) AppendToolCallWithHeader(name, toolID string, approved bool, input, fullInput, headerArg string, headerParams []KVPair) {
 	depth := 0
 	parentID := ""
 	// Non-Agent tool calls inside any active agent get depth 1.
@@ -300,6 +318,8 @@ func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input
 		Pending:       true,
 		Depth:         depth,
 		ParentToolID:  parentID,
+		HeaderArg:     headerArg,
+		HeaderParams:  headerParams,
 	})
 
 	if name == "Agent" && toolID != "" {
@@ -693,42 +713,81 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 	default:
 		renderedIndicator = m.theme.AccentText.Render("✓")
 	}
-	// Tool name line with accent color. Truncated to the viewport width so a
-	// long tool name (or ANSI garbage in msg.Content) cannot bleed past the
-	// right border (QUM-324). The indicator is styled separately so the
-	// failure ✗ keeps its distinct color while the rest of the header is
-	// accent-styled.
-	name := msg.Content
+	// QUM-419: compact per-tool header. The display tool name uses the
+	// `FormatToolDisplayName` mapping so MCP tools collapse to their final
+	// segment (`mcp__sprawl__send_message` → `send_message`). The tool name
+	// renders bold-accent; the main arg + k=v params render in NormalText so
+	// the eye can pick out the call shape at a glance. Width budgeting
+	// mirrors crush/internal/ui/chat/tools.go toolParamList: kv params are
+	// dropped when including them would shrink mainArg below MinMainArgCells.
+	displayName := FormatToolDisplayName(msg.Content)
+	mainArg := msg.HeaderArg
+	// Legacy fallback: pre-QUM-419 entries (tests, older replay records)
+	// don't carry HeaderArg, but they often carry a usable ToolInput
+	// summary. Surfacing it here keeps backward compatibility — a test that
+	// passes input="ls -la /tmp" still sees that string on the header.
+	if mainArg == "" && msg.HeaderParams == nil {
+		mainArg = msg.ToolInput
+	}
+	params := msg.HeaderParams
+	paramsStr := RenderKVPairs(params)
 	if m.width > 0 {
-		// "┌ " (2 cells) + indicator (1 cell) + " " (1 cell) + name. Budget
-		// the trailing name to whatever is left.
-		const fixedHeaderCells = 4
-		budget := m.width - fixedHeaderCells
+		// "┌ " (2 cells) + indicator (1 cell) + " " (1 cell) + name.
+		fixed := 4
+		nameCells := ansi.StringWidth(displayName)
+		budget := m.width - fixed - nameCells
 		if budget < 1 {
 			budget = 1
 		}
-		name = ansi.Truncate(msg.Content, budget, "…")
+		if mainArg != "" {
+			// Account for the single space between name and mainArg.
+			budget--
+		}
+		if paramsStr != "" {
+			// Reserve one extra space between mainArg and the (k=v...) suffix.
+			remaining := budget - ansi.StringWidth(paramsStr) - 1
+			if remaining < MinMainArgCells {
+				paramsStr = ""
+			} else {
+				mainArg = ansi.Truncate(mainArg, remaining, "…")
+			}
+		}
+		if paramsStr == "" && mainArg != "" {
+			mainArg = ansi.Truncate(mainArg, budget, "…")
+		}
+		// If the tool name itself is over budget (extreme narrow widths),
+		// truncate it so the row never wraps.
+		if nameCells > m.width-3 {
+			displayName = ansi.Truncate(displayName, m.width-3, "…")
+		}
 	}
 	sb.WriteString(m.theme.AccentText.Render("┌ "))
 	sb.WriteString(renderedIndicator)
-	sb.WriteString(m.theme.AccentText.Render(" " + name))
-	// Input summary on following line(s) if present. Multi-line tool input
-	// is preserved but wrapped at the viewport inner width so each wrapped
-	// segment stays inside the `│ …` gutter (QUM-324). When the global
-	// expand-tool-inputs flag is on (QUM-335) and the entry carries a full
-	// representation, render that instead so the user sees the un-truncated
-	// command / pretty JSON. Falls back to the truncated summary otherwise.
-	body := msg.ToolInput
-	if m.toolInputsExpanded && msg.ToolInputFull != "" {
-		body = msg.ToolInputFull
+	sb.WriteString(m.theme.AccentText.Bold(true).Render(" " + displayName))
+	if mainArg != "" {
+		sb.WriteString(m.theme.NormalText.Render(" " + mainArg))
 	}
-	if body != "" {
-		sb.WriteString("\n")
-		for i, ln := range wrapToolInput(body, m.width-toolCallInputPrefix) {
-			if i > 0 {
-				sb.WriteString("\n")
+	if paramsStr != "" {
+		sb.WriteString(m.theme.NormalText.Render(" " + paramsStr))
+	}
+	// QUM-419: in compact mode the header line carries the full at-a-glance
+	// summary; the multi-line body block is reserved for the Ctrl+O expanded
+	// view. When expanded, prefer ToolInputFull (verbatim Bash / pretty JSON)
+	// and fall back to the truncated summary for legacy entries that never
+	// carried a full representation.
+	if m.toolInputsExpanded {
+		body := msg.ToolInputFull
+		if body == "" {
+			body = msg.ToolInput
+		}
+		if body != "" {
+			sb.WriteString("\n")
+			for i, ln := range wrapToolInput(body, m.width-toolCallInputPrefix) {
+				if i > 0 {
+					sb.WriteString("\n")
+				}
+				sb.WriteString(m.theme.NormalText.Render("│ " + ln))
 			}
-			sb.WriteString(m.theme.NormalText.Render("│ " + ln))
 		}
 	}
 	// Result preview block: shown only after the tool has completed (not

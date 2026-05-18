@@ -246,6 +246,15 @@ type ToolCallMsg struct {
 	// pretty-printed JSON. Surfaced when the user toggles the global
 	// tool-input expand state in AppModel (QUM-335).
 	FullInput string
+	// HeaderArg is the per-tool "main argument" displayed inline on the
+	// compact header line (QUM-419) — e.g. the Bash command, the file_path
+	// for Read/Edit/Write, the pattern for Grep/Glob. Pre-computed by the
+	// protocol mapping layer so the renderer stays JSON-free.
+	HeaderArg string
+	// HeaderParams is the ordered list of secondary k=v pairs rendered after
+	// HeaderArg on the compact header line (QUM-419). Dropped by the renderer
+	// when including them would shrink the main arg below MinMainArgCells.
+	HeaderParams []KVPair
 }
 
 // ToolResultMsg carries the result of a previously-emitted tool call. The
