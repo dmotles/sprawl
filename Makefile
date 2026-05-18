@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -136,3 +136,20 @@ test-merge-reuse-e2e: build
 # (consumer registration + forwarder).
 test-ask-user-question-e2e: build
 	bash scripts/test-ask-user-question-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+# Opt-in end-to-end smoke test for the drain-row prompt-inject path
+# (QUM-569). Drives a real claude child to call `mcp__sprawl__messages_send`
+# to weave, then asserts that weave's TUI pane renders the drain-row
+# citation `From <child> — mcp__sprawl__messages_read(id=...)` within a
+# bounded timeout. Restores the e2e regression guard for the
+# Send → defaultNotifier → supervisor.WakeForDelivery → claude
+# prompt-inject pipeline that QUM-565 stripped from test-notify-tui-e2e
+# when it migrated off the deprecated CLI surface. Mandatory before
+# merging any change to the drain pipeline: internal/messages/messages.go,
+# internal/runtime/unified.go, internal/runtime/queue.go,
+# internal/supervisor/weave_handle.go, internal/supervisor/runtime.go,
+# internal/supervisor/runtime_launcher.go, internal/supervisor/real.go,
+# internal/inboxprompt/inboxprompt.go, internal/tui/messages.go,
+# internal/tui/viewport.go, or cmd/enter.go.
+test-drain-row-inject-e2e: build
+	bash scripts/test-drain-row-inject-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
