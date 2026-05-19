@@ -9,6 +9,10 @@ const (
 	// maxInputHeight caps input growth so it doesn't eat the viewport.
 	maxInputHeight  = 12
 	statusBarHeight = 1
+	// shortHelpHeight reserves one row above the status bar for the
+	// context-sensitive short-help strip (QUM-420). The strip is always
+	// drawn so the main panel area is shrunk by this amount.
+	shortHelpHeight = 1
 
 	// Activity panel sizing (QUM-296). The panel is a third column to the
 	// right of the viewport. It is only shown when the terminal is wide
@@ -37,7 +41,10 @@ type Layout struct {
 	ActivityWidth, ActivityHeight int
 	InputWidth, InputHeight       int
 	StatusWidth, StatusHeight     int
-	TermWidth, TermHeight         int
+	// ShortHelpWidth / ShortHelpHeight describe the single-line short-help
+	// row sandwiched between the input bar and the status bar (QUM-420).
+	ShortHelpWidth, ShortHelpHeight int
+	TermWidth, TermHeight           int
 }
 
 // ComputeLayout calculates panel dimensions from terminal size.
@@ -94,13 +101,16 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 		l.ViewportWidth = 0
 	}
 
-	// Vertical: status bar (1) + input (dynamic) + main panels (rest).
+	// Vertical: status bar (1) + short-help (1) + input (dynamic) + main
+	// panels (rest).
 	l.StatusHeight = statusBarHeight
 	l.InputHeight = inputHeight
+	l.ShortHelpHeight = shortHelpHeight
 	l.StatusWidth = width
 	l.InputWidth = width
+	l.ShortHelpWidth = width
 
-	mainHeight := height - l.StatusHeight - l.InputHeight
+	mainHeight := height - l.StatusHeight - l.ShortHelpHeight - l.InputHeight
 	if mainHeight < 0 {
 		mainHeight = 0
 	}

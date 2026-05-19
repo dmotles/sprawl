@@ -290,3 +290,32 @@ func TestComputeLayout_InputHeightClampedToMin(t *testing.T) {
 		t.Errorf("InputHeight = %d, want %d (clamped to default)", l.InputHeight, defaultInputHeight)
 	}
 }
+
+// QUM-420: layout must reserve exactly one row for the short-help strip and
+// shrink the main panel area accordingly.
+func TestComputeLayout_ShortHelpHeightIsOne(t *testing.T) {
+	l := ComputeLayout(120, 40, defaultInputHeight)
+	if l.ShortHelpHeight != 1 {
+		t.Errorf("ShortHelpHeight = %d, want 1", l.ShortHelpHeight)
+	}
+}
+
+func TestComputeLayout_ViewportShrunkByShortHelp(t *testing.T) {
+	w, h := 120, 40
+	l := ComputeLayout(w, h, defaultInputHeight)
+	want := h - l.StatusHeight - l.ShortHelpHeight - l.InputHeight
+	if l.ViewportHeight != want {
+		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - shortHelp(%d) - input(%d))",
+			l.ViewportHeight, want, h, l.StatusHeight, l.ShortHelpHeight, l.InputHeight)
+	}
+	if l.TreeHeight != want {
+		t.Errorf("TreeHeight = %d, want %d", l.TreeHeight, want)
+	}
+}
+
+func TestComputeLayout_ShortHelpWidthMatchesTerm(t *testing.T) {
+	l := ComputeLayout(120, 40, defaultInputHeight)
+	if l.ShortHelpWidth != l.TermWidth {
+		t.Errorf("ShortHelpWidth = %d, want %d (TermWidth)", l.ShortHelpWidth, l.TermWidth)
+	}
+}

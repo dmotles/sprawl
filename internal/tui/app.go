@@ -55,6 +55,7 @@ type AppModel struct {
 	activity  ActivityPanelModel
 	input     InputModel
 	statusBar StatusBarModel
+	shortHelp ShortHelpModel
 	confirm   ConfirmModel
 
 	help     HelpModel
@@ -257,6 +258,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		activity:            NewActivityPanelModel(&theme),
 		input:               NewInputModel(&theme),
 		statusBar:           NewStatusBarModel(&theme, repoName, version, 0),
+		shortHelp:           NewShortHelpModel(&theme),
 		help:                NewHelpModel(&theme),
 		confirm:             NewConfirmModel(&theme),
 		palette:             NewPaletteModel(&theme),
@@ -1693,6 +1695,24 @@ func (m AppModel) View() tea.View {
 	return m.renderView(true)
 }
 
+// shortHelpState collects the inputs ShortHelpModel needs from the current
+// AppModel state (QUM-420). Kept tight so the call site in renderView is
+// trivial and so unit tests can reason about the projection separately.
+func (m *AppModel) shortHelpState() ShortHelpState {
+	selectMode := false
+	if vp := m.observedVP(); vp != nil {
+		selectMode = vp.IsSelecting()
+	}
+	return ShortHelpState{
+		Focus:       m.activePanel,
+		TurnState:   m.turnState,
+		InputEmpty:  strings.TrimSpace(m.input.Value()) == "",
+		HasQueued:   m.pendingSubmit != "",
+		SelectMode:  selectMode,
+		PaletteOpen: m.showPalette,
+	}
+}
+
 // viewUncached returns the same content View() would, bypassing the panel
 // render cache. Used by tests as a byte-equivalence oracle (QUM-451).
 func (m AppModel) viewUncached() tea.View {
@@ -1751,6 +1771,12 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// Status bar.
 	statusView := m.cachedStatus(useCache, m.statusBar.View(), layout.StatusWidth)
 
+	// Short-help row (QUM-420): one line of context-sensitive bindings,
+	// rendered between the input bar and status bar.
+	m.shortHelp.SetWidth(layout.ShortHelpWidth)
+	m.shortHelp.SetState(m.shortHelpState())
+	shortHelpView := m.shortHelp.View()
+
 	// Stack vertically. The input bar is omitted while observing a non-root
 	// agent (QUM-340) — the viewport above already owns those rows.
 	var inputView, overlay string
@@ -1760,7 +1786,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 			m.activePanel == PanelInput)
 		overlay = m.searchOverlay()
 	}
-	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, inputView, statusView, inputVisible)
+	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, inputView, shortHelpView, statusView, inputVisible)
 
 	if m.showPalette {
 		content = m.palette.View()

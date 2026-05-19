@@ -1,0 +1,159 @@
+package tui
+
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+)
+
+// shortBinding is one key/hint pair shown in the short-help row.
+type shortBinding struct {
+	Key  string
+	Hint string
+}
+
+// ShortHelpState is the set of inputs that determine which bindings the
+// short-help row should advertise on the next render (QUM-420).
+//
+// It is intentionally a plain value type with no behaviour — callers build
+// one from AppModel state and pass it to shortHelpBindings or
+// ShortHelpModel.SetState.
+type ShortHelpState struct {
+	Focus       Panel
+	TurnState   TurnState
+	InputEmpty  bool
+	HasQueued   bool
+	SelectMode  bool
+	PaletteOpen bool
+}
+
+// shortHelpBindings returns the bindings to render for the given state. The
+// result is ordered: state-specific bindings first, then the always-on
+// triple (?, tab, ctrl+c). Length is bounded to [3, 7] in practice — the
+// always-on bindings provide the floor and each state-specific branch caps
+// itself well below the ceiling.
+func shortHelpBindings(s ShortHelpState) []shortBinding {
+	bindings := make([]shortBinding, 0, 7)
+
+	switch {
+	case s.PaletteOpen:
+		// Palette-open is exclusive: only palette navigation bindings show.
+		bindings = append(bindings,
+			shortBinding{Key: "↑↓/tab", Hint: "navigate"},
+			shortBinding{Key: "enter", Hint: "run"},
+			shortBinding{Key: "esc", Hint: "close"},
+		)
+
+	case s.TurnState == TurnStreaming || s.TurnState == TurnThinking:
+		// Streaming/thinking precedence: esc means interrupt, even when a
+		// submit is queued.
+		bindings = append(bindings, shortBinding{Key: "esc", Hint: "interrupt"})
+
+	case s.HasQueued:
+		bindings = append(bindings, shortBinding{Key: "esc", Hint: "clear queue"})
+
+	case s.SelectMode && s.Focus == PanelViewport:
+		bindings = append(bindings,
+			shortBinding{Key: "j/k", Hint: "move"},
+			shortBinding{Key: "y", Hint: "yank"},
+			shortBinding{Key: "esc", Hint: "exit select"},
+		)
+
+	default:
+		switch s.Focus {
+		case PanelInput:
+			if s.InputEmpty {
+				bindings = append(bindings, shortBinding{Key: "/", Hint: "commands"})
+			}
+		case PanelTree:
+			bindings = append(bindings,
+				shortBinding{Key: "↑↓", Hint: "navigate"},
+				shortBinding{Key: "enter", Hint: "select"},
+				shortBinding{Key: "ctrl+n/p", Hint: "cycle agent"},
+			)
+		case PanelViewport:
+			bindings = append(bindings,
+				shortBinding{Key: "pgup/pgdn", Hint: "scroll"},
+				shortBinding{Key: "v", Hint: "select mode"},
+				shortBinding{Key: "ctrl+o", Hint: "expand tools"},
+			)
+		}
+	}
+
+	// Always-on bindings, appended last.
+	bindings = append(bindings,
+		shortBinding{Key: "?", Hint: "help"},
+		shortBinding{Key: "tab", Hint: "cycle panel"},
+		shortBinding{Key: "ctrl+c", Hint: "clear/quit"},
+	)
+
+	if len(bindings) > 7 {
+		bindings = bindings[:7]
+	}
+	return bindings
+}
+
+// ShortHelpModel renders the single-line short-help row (QUM-420).
+//
+// It is a passive view: callers set width and state on it before View() is
+// invoked. No Bubble Tea Update is needed.
+type ShortHelpModel struct {
+	theme *Theme
+	width int
+	state ShortHelpState
+}
+
+// NewShortHelpModel constructs a ShortHelpModel bound to the given theme.
+// The model starts at width=0; callers must call SetWidth before View() to
+// produce a sized line.
+func NewShortHelpModel(theme *Theme) ShortHelpModel {
+	return ShortHelpModel{theme: theme}
+}
+
+// SetWidth installs the target terminal width.
+func (m *ShortHelpModel) SetWidth(w int) {
+	if w < 0 {
+		w = 0
+	}
+	m.width = w
+}
+
+// SetState installs the next ShortHelpState.
+func (m *ShortHelpModel) SetState(s ShortHelpState) {
+	m.state = s
+}
+
+// View renders the short-help row as a single line padded (and truncated)
+// to the configured width.
+func (m ShortHelpModel) View() string {
+	if m.width <= 0 {
+		return ""
+	}
+
+	bindings := shortHelpBindings(m.state)
+
+	var style lipgloss.Style
+	if m.theme != nil {
+		style = lipgloss.NewStyle().
+			Foreground(m.theme.Palette.FgMostSubtle).
+			Background(m.theme.Palette.BgBase).
+			Faint(true)
+	} else {
+		style = lipgloss.NewStyle().Faint(true)
+	}
+
+	parts := make([]string, 0, len(bindings))
+	for _, b := range bindings {
+		parts = append(parts, b.Key+": "+b.Hint)
+	}
+	line := strings.Join(parts, " • ")
+	rendered := style.Render(line)
+
+	// Guard against widths narrower than the rendered content: truncate
+	// before padding so PlaceHorizontal never emits a newline.
+	if ansi.StringWidth(rendered) > m.width {
+		rendered = ansi.Truncate(rendered, m.width, "…")
+	}
+	return lipgloss.PlaceHorizontal(m.width, lipgloss.Left, rendered)
+}
