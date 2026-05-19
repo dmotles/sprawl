@@ -46,6 +46,7 @@ This launches **weave** (the root agent) inside the sprawl TUI. Give it a goal a
 - **Navigate agents**: Use the TUI tree panel to watch agents work; child agents still run in tmux windows you can attach to.
 - **Context handoff**: When weave's context window fills up, ask weave to call the `handoff` MCP tool. The TUI auto-restarts the session with memories of what happened.
 - **Shut down**: Ask weave to make sure no agents are running, then exit the TUI.
+- **Yank to clipboard**: In the viewport, press `y` in select mode to copy via OSC 52. If you're running inside tmux, add `set -g set-clipboard on` (or `external`) to your `~/.tmux.conf` — otherwise tmux drops the OSC 52 sequence and nothing reaches your OS clipboard.
 
 ## State
 
