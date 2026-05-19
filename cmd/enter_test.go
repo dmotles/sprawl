@@ -347,6 +347,114 @@ func TestEnter_InitialResumeFailureRetriesFresh(t *testing.T) {
 	}
 }
 
+// QUM-598 review: marker tripped but newSession returned nil error → no
+// retry. The retry guard is `err != nil && state.resumeMarkerTripped.Swap(false)`;
+// without the err-nil clause a benign first call would be re-invoked.
+func TestEnter_ResumeMarkerWithoutErrorDoesNotRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".sprawl", "state"), 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+
+	var calls int
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(_ tea.Model, _ func(func(tea.Msg))) error { return nil },
+		newSession: func(_ string, _ supervisor.Supervisor, _ bool, onResumeFailure func()) (tui.SessionBackend, bool, error) {
+			calls++
+			// Marker trips but session is actually live.
+			onResumeFailure()
+			return nil, true, nil
+		},
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("newSession calls = %d, want 1 (no retry when err==nil)", calls)
+	}
+}
+
+// QUM-598 review: marker NOT tripped but newSession errored → no retry,
+// propagate. Guards against the retry path firing on non-resume errors.
+func TestEnter_SessionErrorWithoutMarkerDoesNotRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".sprawl", "state"), 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+
+	var calls int
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(_ tea.Model, _ func(func(tea.Msg))) error { return nil },
+		newSession: func(_ string, _ supervisor.Supervisor, _ bool, _ func()) (tui.SessionBackend, bool, error) {
+			calls++
+			return nil, false, errors.New("unrelated startup error")
+		},
+	}
+
+	err := runEnter(deps)
+	if err == nil {
+		t.Fatal("expected propagated error")
+	}
+	if !strings.Contains(err.Error(), "unrelated startup error") {
+		t.Errorf("error = %q, want it to contain 'unrelated startup error'", err.Error())
+	}
+	if calls != 1 {
+		t.Fatalf("newSession calls = %d, want 1 (no retry when marker untripped)", calls)
+	}
+}
+
+// QUM-598 review: when the fresh-retry also errors, the second error must
+// propagate cleanly (wrapped as "creating session: ...").
+func TestEnter_FreshRetryFailurePropagates(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".sprawl", "state"), 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+
+	var calls int
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(_ tea.Model, _ func(func(tea.Msg))) error { return nil },
+		newSession: func(_ string, _ supervisor.Supervisor, fresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error) {
+			calls++
+			if !fresh {
+				onResumeFailure()
+				return nil, true, errors.New("resume failed")
+			}
+			return nil, false, errors.New("fresh also failed")
+		},
+	}
+
+	err := runEnter(deps)
+	if err == nil {
+		t.Fatal("expected propagated error from fresh-retry failure")
+	}
+	if !strings.Contains(err.Error(), "fresh also failed") {
+		t.Errorf("error = %q, want it to contain 'fresh also failed'", err.Error())
+	}
+	if calls != 2 {
+		t.Fatalf("newSession calls = %d, want 2", calls)
+	}
+}
+
 // --- Graceful shutdown tests ---
 
 type shutdownMockSupervisor struct {
