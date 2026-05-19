@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -480,6 +481,13 @@ type shutdownMockSupervisor struct {
 	// for the forwarder goroutine to have subscribed before signaling.
 	subscribedOnce sync.Once
 	subscribed     chan struct{}
+
+	// QUM-372: RecoverAgents knobs. recoverCalls counts invocations under
+	// qmu; recoverResumed/recoverFailed/recoverErrs configure the return.
+	recoverCalls   int
+	recoverResumed int
+	recoverFailed  int
+	recoverErrs    []error
 }
 
 func (s *shutdownMockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
@@ -494,6 +502,16 @@ func (s *shutdownMockSupervisor) Kill(_ context.Context, name string) error {
 func (s *shutdownMockSupervisor) Shutdown(_ context.Context) error {
 	s.shutdownDone = true
 	return nil
+}
+
+// QUM-372: RecoverAgents is the startup auto-resume entry point. Tests set
+// recoverResumed/recoverFailed/recoverErrs to control the return values and
+// inspect recoverCalls to assert call count.
+func (s *shutdownMockSupervisor) RecoverAgents(_ context.Context) (int, int, []error) {
+	s.qmu.Lock()
+	defer s.qmu.Unlock()
+	s.recoverCalls++
+	return s.recoverResumed, s.recoverFailed, s.recoverErrs
 }
 
 func (s *shutdownMockSupervisor) RegisterRootRuntime(_ string, _ supervisor.RuntimeHandle, _ *state.AgentState) (*supervisor.AgentRuntime, error) {
@@ -1181,5 +1199,189 @@ func TestEnter_RegistersWeaveInRuntimeRegistry(t *testing.T) {
 	}
 	if mockSup.registerRootCalls == 0 {
 		t.Errorf("RegisterRootRuntime not called; want >=1 (unified path must register weave)")
+	}
+}
+
+// --- QUM-372: child auto-resume on sprawl-enter startup ---
+
+func setupQUM372Tmp(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, ".sprawl", "state"), 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+	return tmpDir
+}
+
+// TestRunEnter_CallsRecoverAgentsWhenFlagFalse — happy path: when noResume
+// is false (the default), runEnter must invoke RecoverAgents exactly once
+// between newSupervisor and the TUI loop.
+func TestRunEnter_CallsRecoverAgentsWhenFlagFalse(t *testing.T) {
+	tmpDir := setupQUM372Tmp(t)
+	mockSup := &shutdownMockSupervisor{}
+
+	deps := &enterDeps{
+		getenv: func(k string) string {
+			if k == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram:    func(tea.Model, func(func(tea.Msg))) error { return nil },
+		newSession:    nil,
+		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		noResume:      false,
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	mockSup.qmu.Lock()
+	calls := mockSup.recoverCalls
+	mockSup.qmu.Unlock()
+	if calls != 1 {
+		t.Errorf("RecoverAgents called %d times, want 1", calls)
+	}
+}
+
+// TestRunEnter_NoResumeFlagSkipsRecoverAgents — when --no-resume is set,
+// RecoverAgents must NOT be called. The operator's intent is explicit:
+// disposable session, do not touch persisted children.
+func TestRunEnter_NoResumeFlagSkipsRecoverAgents(t *testing.T) {
+	tmpDir := setupQUM372Tmp(t)
+	mockSup := &shutdownMockSupervisor{}
+
+	deps := &enterDeps{
+		getenv: func(k string) string {
+			if k == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram:    func(tea.Model, func(func(tea.Msg))) error { return nil },
+		newSession:    nil,
+		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		noResume:      true,
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	mockSup.qmu.Lock()
+	calls := mockSup.recoverCalls
+	mockSup.qmu.Unlock()
+	if calls != 0 {
+		t.Errorf("RecoverAgents called %d times with --no-resume, want 0", calls)
+	}
+}
+
+// captureMsgsViaOnStart returns the tea.Msgs sent via the `send` callback
+// supplied to onStart. Synchronization is deterministic: runProgram returns
+// only after `gotExpected` closes (signaled from inside the capture closure
+// once a message of `expectedType` is observed), or after runEnter signals
+// it will not emit one (the test passes `expectedType=nil` for that case).
+//
+// When expectedType is nil, the helper assumes onStart's dispatch is
+// synchronous within the onStart call itself and returns immediately after
+// onStart returns — any async goroutine emission would be a bug under test
+// (caller wants to assert "no message was emitted").
+func captureMsgsViaOnStart(t *testing.T, tmpDir string, mockSup supervisor.Supervisor, noResume bool, expectedType reflect.Type) []tea.Msg {
+	t.Helper()
+	var captured []tea.Msg
+	var mu sync.Mutex
+	gotExpected := make(chan struct{})
+	var closeOnce sync.Once
+	deps := &enterDeps{
+		getenv: func(k string) string {
+			if k == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(_ tea.Model, onStart func(func(tea.Msg))) error {
+			if onStart != nil {
+				onStart(func(msg tea.Msg) {
+					mu.Lock()
+					captured = append(captured, msg)
+					mu.Unlock()
+					if expectedType != nil && reflect.TypeOf(msg) == expectedType {
+						closeOnce.Do(func() { close(gotExpected) })
+					}
+				})
+			}
+			if expectedType != nil {
+				// Block deterministically until the expected msg arrives.
+				// A 2s budget guards against bugs that prevent emission —
+				// it is not a "give async time" sleep.
+				select {
+				case <-gotExpected:
+				case <-time.After(2 * time.Second):
+					t.Fatalf("timed out waiting for tea.Msg of type %v via onStart", expectedType)
+				}
+			}
+			// expectedType==nil: onStart's contract for the silent path is
+			// synchronous-no-dispatch; return immediately.
+			return nil
+		},
+		newSession:    nil,
+		newSupervisor: func(_ string, _ *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server) { return mockSup, nil },
+		noResume:      noResume,
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	out := make([]tea.Msg, len(captured))
+	copy(out, captured)
+	return out
+}
+
+// TestRunEnter_BannerEmittedOnNonZeroCount — when RecoverAgents reports
+// resumed > 0 or failed > 0, runEnter must dispatch exactly one
+// tui.AgentsResumedMsg{Resumed, Failed} via the onStart send callback so the
+// TUI can render a "N resumed, M failed" viewport banner.
+func TestRunEnter_BannerEmittedOnNonZeroCount(t *testing.T) {
+	tmpDir := setupQUM372Tmp(t)
+	mockSup := &shutdownMockSupervisor{
+		recoverResumed: 2,
+		recoverFailed:  1,
+	}
+
+	msgs := captureMsgsViaOnStart(t, tmpDir, mockSup, false, reflect.TypeOf(tui.AgentsResumedMsg{}))
+
+	var found *tui.AgentsResumedMsg
+	count := 0
+	for _, m := range msgs {
+		if rm, ok := m.(tui.AgentsResumedMsg); ok {
+			found = &rm
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("AgentsResumedMsg emitted %d times, want 1", count)
+	}
+	if found == nil {
+		t.Fatal("AgentsResumedMsg not emitted")
+	}
+	if found.Resumed != 2 || found.Failed != 1 {
+		t.Errorf("AgentsResumedMsg = %+v, want {Resumed:2, Failed:1}", *found)
+	}
+}
+
+// TestRunEnter_BannerSilentOnZero — when RecoverAgents reports (0, 0, nil),
+// runEnter must NOT emit AgentsResumedMsg. A fresh session with no persisted
+// children should display nothing about recovery.
+func TestRunEnter_BannerSilentOnZero(t *testing.T) {
+	tmpDir := setupQUM372Tmp(t)
+	mockSup := &shutdownMockSupervisor{}
+
+	msgs := captureMsgsViaOnStart(t, tmpDir, mockSup, false, nil)
+
+	for _, m := range msgs {
+		if _, ok := m.(tui.AgentsResumedMsg); ok {
+			t.Errorf("unexpected AgentsResumedMsg with zero counts: %+v", m)
+		}
 	}
 }

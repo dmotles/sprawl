@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -487,6 +488,97 @@ func TestAgentRuntime_StopAbandon_CallsHandleStopAbandon(t *testing.T) {
 	}
 	if session.stopCalls != 0 {
 		t.Errorf("session.stopCalls = %d, want 0 (StopAbandon must not call Stop)", session.stopCalls)
+	}
+}
+
+// QUM-372: StartResume must invoke the starter exactly once with Resume=true
+// in the spec. This is the smallest behavioral guarantee — without it,
+// RecoverAgents would silently launch fresh sessions instead of resuming the
+// prior conversation.
+func TestAgentRuntime_StartResume_PropagatesResumeTrue(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+	}
+	starter := &runtimeTestStarter{session: session}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+		Starter:    starter,
+	})
+
+	if err := rt.StartResume(context.Background()); err != nil {
+		t.Fatalf("StartResume: %v", err)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("starter.specs len = %d, want 1", len(starter.specs))
+	}
+	if !starter.specs[0].Resume {
+		t.Errorf("StartResume must pass Resume=true to starter; got spec.Resume = false")
+	}
+	if starter.specs[0].Name != "alice" {
+		t.Errorf("spec.Name = %q, want alice", starter.specs[0].Name)
+	}
+	if starter.specs[0].SessionID != "sess-alice" {
+		t.Errorf("spec.SessionID = %q, want sess-alice", starter.specs[0].SessionID)
+	}
+}
+
+// QUM-372: StartResume is a *fresh start* with the resume flag — not a
+// handle swap. The first event emitted must be RuntimeEventStarted, NOT
+// RuntimeEventRecovered (which is reserved for in-place recovery on a faulted
+// live handle, QUM-601). Confuses TUI fault-sticker clearing if reversed.
+func TestAgentRuntime_StartResume_EmitsStartedEvent(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
+	}
+	starter := &runtimeTestStarter{session: session}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+		Starter:    starter,
+	})
+
+	events, cancel := rt.Subscribe(4)
+	defer cancel()
+
+	if err := rt.StartResume(context.Background()); err != nil {
+		t.Fatalf("StartResume: %v", err)
+	}
+	kinds := nextRuntimeEventKinds(t, events, 1)
+	if kinds[0] != RuntimeEventStarted {
+		t.Errorf("first event = %q, want %q (StartResume must NOT emit Recovered — that is reserved for in-place handle swap)", kinds[0], RuntimeEventStarted)
+	}
+}
+
+// QUM-372: the unit-level OnResumeFailure propagation test was removed —
+// `TestRealRecoverAgents_OnResumeFailureFlipsStatusToResumeFailed` already
+// covers the callback end-to-end through the public Real.RecoverAgents API,
+// which is the consumer of the seam. A unit test here would just couple to
+// whichever signature the implementer picks (StartResume(ctx, opts) vs
+// SetOnResumeFailure) — premature. The integration-level test already
+// locks the contract that matters.
+
+// QUM-372: when the starter returns an error from StartResume, lifecycle
+// must stay in its prior state (Registered) so RecoverAgents can mark the
+// agent as resume_failed without leaving a half-Started runtime in the
+// registry.
+func TestAgentRuntime_StartResume_StarterError_LeavesLifecycleRegistered(t *testing.T) {
+	starter := &runtimeTestStarter{err: errors.New("starter exploded")}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+		Starter:    starter,
+	})
+
+	err := rt.StartResume(context.Background())
+	if err == nil {
+		t.Fatal("StartResume must return the starter error")
+	}
+	if rt.Snapshot().Lifecycle != RuntimeLifecycleRegistered {
+		t.Errorf("Lifecycle after failed StartResume = %q, want %q",
+			rt.Snapshot().Lifecycle, RuntimeLifecycleRegistered)
 	}
 }
 

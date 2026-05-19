@@ -72,6 +72,11 @@ type enterDeps struct {
 	newSession      func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error)
 	newSupervisor   func(sprawlRoot string, logger *calllog.Logger) (supervisor.Supervisor, *sprawlmcp.Server)
 	finalizeHandoff func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error
+	// noResume, when true, skips the QUM-372 child-agent auto-resume scan.
+	// Set via the `--no-resume` flag on the enter cobra command. Useful when
+	// the operator suspects a poison-pill persisted child whose resume would
+	// re-crash the supervisor, or when running disposable test sessions.
+	noResume bool
 }
 
 // restartState holds the rolling state tracked across restarts: when the last
@@ -165,6 +170,8 @@ var defaultEnterDeps *enterDeps
 
 func init() {
 	rootCmd.AddCommand(enterCmd)
+	// QUM-372: --no-resume disables the startup child-agent auto-resume scan.
+	enterCmd.Flags().Bool("no-resume", false, "skip auto-resuming suspended child agents (QUM-372)")
 }
 
 var enterCmd = &cobra.Command{
@@ -172,8 +179,13 @@ var enterCmd = &cobra.Command{
 	Short: "Launch the TUI dashboard",
 	Long:  "Launch a fullscreen terminal UI for monitoring and interacting with agents. Works in any terminal — no tmux required.",
 	Args:  cobra.NoArgs,
-	RunE: func(_ *cobra.Command, _ []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		deps := resolveEnterDeps()
+		// QUM-372: thread --no-resume into the resolved deps (the default
+		// deps share a singleton, so we update it on each invocation).
+		if v, err := cmd.Flags().GetBool("no-resume"); err == nil {
+			deps.noResume = v
+		}
 		return runEnter(deps)
 	},
 }
@@ -545,6 +557,20 @@ func runEnter(deps *enterDeps) error {
 		sup, mcpServer = deps.newSupervisor(sprawlRoot, callLogger)
 	}
 
+	// QUM-372: walk persisted child agents and resume any that were in a
+	// non-terminal state when the prior `sprawl enter` exited. Counts feed
+	// the AgentsResumedMsg banner emitted from onStart below. Skipped when
+	// --no-resume is set (operator wants a disposable session).
+	var pendingResume struct{ resumed, failed int }
+	if sup != nil && !deps.noResume {
+		r, f, errs := sup.RecoverAgents(context.Background())
+		pendingResume.resumed = r
+		pendingResume.failed = f
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "[enter] resume error: %v\n", e)
+		}
+	}
+
 	var bridge tui.SessionBackend
 	if deps.newSession != nil {
 		var err error
@@ -717,6 +743,12 @@ func runEnter(deps *enterDeps) error {
 				}
 			}
 		}()
+
+		// QUM-372: surface the resume-scan outcome as a viewport banner.
+		// Silent when both counts are zero (fresh session / nothing to resume).
+		if pendingResume.resumed > 0 || pendingResume.failed > 0 {
+			send(tui.AgentsResumedMsg{Resumed: pendingResume.resumed, Failed: pendingResume.failed})
+		}
 
 		if sup == nil {
 			return

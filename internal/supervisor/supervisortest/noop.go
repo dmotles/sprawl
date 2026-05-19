@@ -46,6 +46,8 @@ func (*NoopSupervisor) Kill(context.Context, string) error { return nil }
 
 func (*NoopSupervisor) Recover(context.Context, string) error { return nil }
 
+func (*NoopSupervisor) RecoverAgents(context.Context) (int, int, []error) { return 0, 0, nil }
+
 func (*NoopSupervisor) Shutdown(context.Context) error { return nil }
 
 func (*NoopSupervisor) Handoff(context.Context, string) error { return nil }

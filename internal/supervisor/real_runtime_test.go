@@ -571,10 +571,16 @@ func TestRealKill_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	agentPath := filepath.Join(state.AgentsDir(tmpDir), "alice.json")
-	if err := os.Chmod(agentPath, 0o400); err != nil {
+	// QUM-372: SaveAgent now uses atomic rename via os.CreateTemp; the
+	// previous "chmod 0o400 on alice.json" trick no longer forces a write
+	// error because rename overwrites mode bits. Make the *agents dir*
+	// read-only so CreateTemp fails up-front, which is the equivalent
+	// persistence-failure trigger.
+	agentsDir := state.AgentsDir(tmpDir)
+	if err := os.Chmod(agentsDir, 0o500); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
+	t.Cleanup(func() { _ = os.Chmod(agentsDir, 0o755) })
 
 	err := r.Kill(context.Background(), "alice")
 	if err == nil {
@@ -832,11 +838,63 @@ func TestRealShutdown_StopsRuntimeBackedChildren(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	if updated.Status != "killed" {
-		t.Fatalf("Status = %q, want killed", updated.Status)
+	// QUM-372: graceful Shutdown of a running runtime-backed child must
+	// now mark it suspended (so the next sprawl-enter can auto-resume it),
+	// NOT killed. Explicit Kill is the only path that still sets killed.
+	if updated.Status != state.StatusSuspended {
+		t.Fatalf("Status = %q, want %q (QUM-372: Shutdown suspends rather than kills)", updated.Status, state.StatusSuspended)
 	}
 	if session.stopCalls != 1 {
 		t.Fatalf("runtime stop calls = %d, want 1", session.stopCalls)
+	}
+}
+
+// TestRealShutdown_TransitionMatrix pins the QUM-372 Shutdown status mapping:
+// any runtime-backed agent in a non-terminal state flips to "suspended"; agents
+// already in terminal states ({killed, retired, retiring, done}) are left as-is
+// so the next launch's RecoverAgents scan skips them.
+func TestRealShutdown_TransitionMatrix(t *testing.T) {
+	cases := []struct {
+		name       string
+		preStatus  string
+		wantStatus string
+	}{
+		{"running becomes suspended", state.StatusRunning, state.StatusSuspended},
+		{"active becomes suspended", state.StatusActive, state.StatusSuspended},
+		{"suspended stays suspended", state.StatusSuspended, state.StatusSuspended},
+		{"killed stays killed", state.StatusKilled, state.StatusKilled},
+		{"retired stays retired", state.StatusRetired, state.StatusRetired},
+		{"retiring stays retiring", state.StatusRetiring, state.StatusRetiring},
+		{"done stays done", state.StatusDone, state.StatusDone},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			r, tmpDir := newFakeReal(t)
+			ag := testAgentState("alice")
+			ag.Status = tc.preStatus
+			saveTestAgent(t, tmpDir, ag)
+			session := &runtimeTestSession{
+				sessionID: "sess-alice",
+				caps:      backendpkg.Capabilities{SupportsInterrupt: true},
+			}
+			rt := ensureRuntimeWithStarter(t, r, tmpDir, ag, &runtimeTestStarter{session: session})
+			if err := rt.Start(context.Background()); err != nil {
+				t.Fatalf("runtime.Start: %v", err)
+			}
+
+			if err := r.Shutdown(context.Background()); err != nil {
+				t.Fatalf("Shutdown: %v", err)
+			}
+
+			updated, err := state.LoadAgent(tmpDir, "alice")
+			if err != nil {
+				t.Fatalf("LoadAgent: %v", err)
+			}
+			if updated.Status != tc.wantStatus {
+				t.Errorf("pre=%q post=%q, want %q", tc.preStatus, updated.Status, tc.wantStatus)
+			}
+		})
 	}
 }
 

@@ -8,6 +8,22 @@ import (
 	"strings"
 )
 
+// Agent status string constants (QUM-372). These enumerate the universe of
+// values that may appear in AgentState.Status. They are intentionally not
+// enforced by the persistence layer — the field remains a free-form string for
+// back-compat with older state files — but every new write-site in the
+// codebase should reference one of these constants so the set stays closed.
+const (
+	StatusActive       = "active"
+	StatusRunning      = "running"
+	StatusSuspended    = "suspended"
+	StatusKilled       = "killed"
+	StatusRetired      = "retired"
+	StatusRetiring     = "retiring"
+	StatusDone         = "done"
+	StatusResumeFailed = "resume_failed"
+)
+
 // AgentState holds the persistent metadata for a spawned agent.
 type AgentState struct {
 	Name      string `json:"name"`
@@ -42,20 +58,45 @@ func AgentsDir(sprawlRoot string) string {
 }
 
 // SaveAgent writes the agent state to a JSON file in the agents directory.
+// The write is atomic: data is marshaled and written to a sibling .tmp file
+// first, then renamed into place. On marshal failure no disk write occurs.
 func SaveAgent(sprawlRoot string, agent *AgentState) error {
-	dir := AgentsDir(sprawlRoot)
-	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable agents dir is intentional
-		return fmt.Errorf("creating agents directory: %w", err)
-	}
-
 	data, err := json.MarshalIndent(agent, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling agent state: %w", err)
 	}
 
+	dir := AgentsDir(sprawlRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // G301: world-readable agents dir is intentional
+		return fmt.Errorf("creating agents directory: %w", err)
+	}
+
 	path := filepath.Join(dir, agent.Name+".json")
-	if err := os.WriteFile(path, data, 0o644); err != nil { //nolint:gosec // G306: world-readable state file is intentional
+	// Best-effort clean any stale literal `<name>.json.tmp` file so it does
+	// not leak into the agents directory (QUM-372).
+	staleTmp := path + ".tmp"
+	_ = os.Remove(staleTmp)
+	tmp, err := os.CreateTemp(dir, agent.Name+".json.tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp agent state: %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("writing agent state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("closing agent state: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil { //nolint:gosec // G302: world-readable state file is intentional
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("chmod agent state: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("renaming agent state: %w", err)
 	}
 	return nil
 }

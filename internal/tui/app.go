@@ -1264,6 +1264,21 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case AgentsResumedMsg:
+		// QUM-372: render a startup banner summarizing how many suspended
+		// child agents the runEnter scan resumed (and how many failed). The
+		// cmd/enter.go side already gates dispatch on resumed+failed > 0,
+		// but guard here too so a stray zero-count msg is a silent no-op.
+		if msg.Resumed == 0 && msg.Failed == 0 {
+			return m, nil
+		}
+		if msg.Failed == 0 {
+			m.rootVP().AppendStatus(fmt.Sprintf("[startup] resumed %d agents", msg.Resumed))
+		} else {
+			m.rootVP().AppendStatus(fmt.Sprintf("[startup] resumed %d agents (%d failed)", msg.Resumed, msg.Failed))
+		}
+		return m, nil
+
 	case MCPCallStartedMsg:
 		// QUM-497: MCP server is reporting a tool call has begun. Insert into
 		// the active-ops map (keyed by call_id), arm the 1Hz tick if this is

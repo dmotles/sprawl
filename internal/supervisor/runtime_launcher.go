@@ -206,6 +206,7 @@ func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*prepare
 	// backend SessionSpec so AgentRuntime.Recover's restart actually instructs
 	// claude to resume the prior conversation transcript.
 	sessionSpec.Resume = spec.Resume
+	sessionSpec.OnResumeFailure = spec.OnResumeFailure
 
 	activityDir := filepath.Join(spec.SprawlRoot, ".sprawl", "agents", spec.Name)
 	if err := os.MkdirAll(activityDir, 0o750); err != nil {

@@ -78,6 +78,12 @@ type RuntimeStartSpec struct {
 	// instructed to resume the prior conversation transcript (QUM-601 in-
 	// place recovery). Initial-start paths leave it false (fresh session).
 	Resume bool
+	// OnResumeFailure, when non-nil and Resume==true, is invoked by the
+	// backend session's stderr scanner if the resume cookie is invalid (the
+	// "No conversation found" marker fires). Plumbed through to
+	// SessionSpec.OnResumeFailure in prepareLaunch so children get the same
+	// fast-fail signal weave does. QUM-372.
+	OnResumeFailure func()
 }
 
 // RuntimeHandle is the live controller for a started in-process child runtime.
@@ -276,7 +282,6 @@ func (r *AgentRuntime) Subscribe(buffer int) (<-chan RuntimeEvent, func()) {
 // runtimes can be exercised in tests without tmux or a child sprawl process.
 func (r *AgentRuntime) Start(ctx context.Context) error {
 	r.mu.RLock()
-	starter := r.starter
 	spec := RuntimeStartSpec{
 		Name:       r.snapshot.Name,
 		Worktree:   r.snapshot.Worktree,
@@ -284,6 +289,14 @@ func (r *AgentRuntime) Start(ctx context.Context) error {
 		SessionID:  r.snapshot.SessionID,
 		TreePath:   r.snapshot.TreePath,
 	}
+	r.mu.RUnlock()
+	return r.startWithSpec(ctx, spec)
+}
+
+// startWithSpec is the shared body for Start and StartResume.
+func (r *AgentRuntime) startWithSpec(ctx context.Context, spec RuntimeStartSpec) error {
+	r.mu.RLock()
+	starter := r.starter
 	r.mu.RUnlock()
 
 	if starter == nil {
@@ -307,6 +320,42 @@ func (r *AgentRuntime) Start(ctx context.Context) error {
 		r.watchHandleExit(handle, doneAware.Done())
 	}
 	return nil
+}
+
+// StartResume launches the agent's backend session with the Resume flag set,
+// so the spawned claude subprocess is instructed to resume the prior
+// conversation transcript identified by the snapshot SessionID. Mirrors Start
+// in every other respect; emits RuntimeEventStarted (NOT RuntimeEventRecovered
+// — there is no live handle to swap, this is a fresh start of the same
+// session). QUM-372.
+//
+// Production wiring: called by Real.RecoverAgents during sprawl-enter startup
+// for every persisted child agent whose status is in {suspended, active,
+// running} and whose worktree still exists. An OnResumeFailure closure can be
+// installed via the matching field on RuntimeStartSpec — currently this method
+// reads it from the runtime starter's bound state, but tests inject through
+// AgentRuntimeConfig / RuntimeStartSpec seams as documented in
+// runtime_test.go.
+func (r *AgentRuntime) StartResume(ctx context.Context, onResumeFailure ...func()) error {
+	var cb func()
+	for _, c := range onResumeFailure {
+		if c != nil {
+			cb = c
+			break
+		}
+	}
+	r.mu.RLock()
+	spec := RuntimeStartSpec{
+		Name:            r.snapshot.Name,
+		Worktree:        r.snapshot.Worktree,
+		SprawlRoot:      r.sprawlRoot,
+		SessionID:       r.snapshot.SessionID,
+		TreePath:        r.snapshot.TreePath,
+		Resume:          true,
+		OnResumeFailure: cb,
+	}
+	r.mu.RUnlock()
+	return r.startWithSpec(ctx, spec)
 }
 
 // AttachHandle attaches a pre-built RuntimeHandle to this AgentRuntime

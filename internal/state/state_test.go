@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -299,6 +300,132 @@ func TestDeleteAgent_RemovesDirectory(t *testing.T) {
 			t.Errorf("expected orphan directory to be removed, stat err = %v", err)
 		}
 	})
+}
+
+// TestStatusConstants_Values pins the string values of the Status* constants
+// introduced for QUM-372. Other packages reference these by name, but the
+// values must remain stable: agent state JSON files on disk record the raw
+// string, and existing tools (and existing on-disk files) use the lowercase
+// form.
+func TestStatusConstants_Values(t *testing.T) {
+	cases := map[string]string{
+		"StatusActive":       StatusActive,
+		"StatusRunning":      StatusRunning,
+		"StatusSuspended":    StatusSuspended,
+		"StatusKilled":       StatusKilled,
+		"StatusRetired":      StatusRetired,
+		"StatusRetiring":     StatusRetiring,
+		"StatusDone":         StatusDone,
+		"StatusResumeFailed": StatusResumeFailed,
+	}
+	wants := map[string]string{
+		"StatusActive":       "active",
+		"StatusRunning":      "running",
+		"StatusSuspended":    "suspended",
+		"StatusKilled":       "killed",
+		"StatusRetired":      "retired",
+		"StatusRetiring":     "retiring",
+		"StatusDone":         "done",
+		"StatusResumeFailed": "resume_failed",
+	}
+	for name, got := range cases {
+		if got != wants[name] {
+			t.Errorf("%s = %q, want %q", name, got, wants[name])
+		}
+	}
+}
+
+// TestSaveAgent_AtomicRename_NoPartialFile guards QUM-372 step 1: SaveAgent
+// must write via a `<name>.json.tmp` then `os.Rename` to the final path. A
+// pre-existing junk tmp file must not leak into the final state, and the
+// final file must contain valid JSON. If SaveAgent uses a direct
+// os.WriteFile, an interrupted (or partially-written) prior call could leave
+// truncated bytes at the final path.
+func TestSaveAgent_AtomicRename_NoPartialFile(t *testing.T) {
+	dir := t.TempDir()
+
+	agentsDir := AgentsDir(dir)
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	tmpPath := filepath.Join(agentsDir, "frank.json.tmp")
+	if err := os.WriteFile(tmpPath, []byte("garbage{{not json"), 0o644); err != nil {
+		t.Fatalf("seed junk tmp file: %v", err)
+	}
+
+	agent := &AgentState{
+		Name:   "frank",
+		Type:   "engineer",
+		Status: StatusActive,
+	}
+	if err := SaveAgent(dir, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	finalPath := filepath.Join(agentsDir, "frank.json")
+	data, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(data)), "{") {
+		t.Errorf("final state file does not look like JSON:\n%s", data)
+	}
+	loaded, err := LoadAgent(dir, "frank")
+	if err != nil {
+		t.Fatalf("LoadAgent after atomic save: %v", err)
+	}
+	if loaded.Name != "frank" || loaded.Status != StatusActive {
+		t.Errorf("loaded = %+v, want frank/active", loaded)
+	}
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Errorf("tmp file should be removed after rename, stat err = %v", err)
+	}
+}
+
+// TestSaveAgent_ConcurrentWriters_NoCorruption hammers SaveAgent from many
+// goroutines updating the same agent name with distinct status strings. The
+// atomic-rename contract guarantees the final file always parses cleanly to
+// one of the written status values — never a truncated read or a parse error.
+func TestSaveAgent_ConcurrentWriters_NoCorruption(t *testing.T) {
+	dir := t.TempDir()
+
+	const writers = 16
+	statuses := []string{
+		StatusActive, StatusRunning, StatusSuspended,
+		StatusKilled, StatusRetired, StatusRetiring,
+		StatusDone, StatusResumeFailed,
+	}
+	allowed := make(map[string]bool, len(statuses))
+	for _, s := range statuses {
+		allowed[s] = true
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			st := statuses[i%len(statuses)]
+			agent := &AgentState{
+				Name:   "racer",
+				Type:   "engineer",
+				Status: st,
+			}
+			if err := SaveAgent(dir, agent); err != nil {
+				t.Errorf("SaveAgent (writer %d): %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	loaded, err := LoadAgent(dir, "racer")
+	if err != nil {
+		t.Fatalf("LoadAgent after concurrent SaveAgent: %v (truncated or partial write?)", err)
+	}
+	if !allowed[loaded.Status] {
+		t.Errorf("loaded.Status = %q, want one of %v", loaded.Status, statuses)
+	}
 }
 
 func TestWriteSystemPrompt_CreatesDirectory(t *testing.T) {

@@ -394,6 +394,18 @@ type BackendFaultClearedMsg struct {
 	Agent string
 }
 
+// AgentsResumedMsg signals that the runEnter startup scan finished its
+// best-effort restart of suspended child agents (QUM-372). The App renders a
+// short viewport banner summarizing the counts. Resumed counts the number of
+// agents whose StartResume call succeeded; Failed counts the per-agent
+// failures isolated by Real.RecoverAgents (StartResume returned an error AND
+// the on-disk status was flipped to resume_failed by the callback). The
+// banner is suppressed when both counts are zero.
+type AgentsResumedMsg struct {
+	Resumed int
+	Failed  int
+}
+
 // InboxArrivalMsg signals that a message has been delivered to the root
 // agent's (weave's) maildir. Dispatched by the TUI-aware notifier installed
 // in `cmd/enter.go` before the bubbletea program starts (QUM-311). The App

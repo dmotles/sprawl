@@ -153,6 +153,15 @@ type Supervisor interface {
 	// session (QUM-601). Returns ErrRecoverNotNeeded if the session is still
 	// healthy. Errors out for unknown agents or agents not in Started state.
 	Recover(ctx context.Context, agentName string) error
+	// RecoverAgents iterates all persisted agents under this caller and
+	// attempts to resume those in {suspended, active, running} via
+	// AgentRuntime.StartResume. Skips the caller itself, missing worktrees,
+	// and agents in terminal lifecycle states ({killed, retired, done}).
+	// Walks the tree BFS-from-caller so parents are started before their
+	// children. Per-agent failures are isolated: an error launching one
+	// agent does not abort the loop. Returns (resumed, failed, errs) where
+	// len(errs) == failed. QUM-372.
+	RecoverAgents(ctx context.Context) (resumed, failed int, errs []error)
 	Shutdown(ctx context.Context) error
 
 	// Handoff persists a session summary (marked Handoff=true) for the

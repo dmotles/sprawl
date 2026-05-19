@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -743,6 +744,123 @@ func (r *Real) Recover(ctx context.Context, agentName string) error {
 	return nil
 }
 
+// RecoverAgents iterates persisted agent state and resumes every non-terminal
+// child whose worktree still exists. Skips the root caller. Walks the tree
+// BFS-from-root so parents are resumed before children (defense in depth;
+// maildir absorbs ordering gaps). Returns counts and per-agent errors. Does
+// not abort the loop on per-agent failure. QUM-372.
+func (r *Real) RecoverAgents(ctx context.Context) (resumed int, failed int, errs []error) {
+	if r.runtimeRegistry == nil || r.runtimeStarter == nil {
+		return 0, 0, nil
+	}
+	agents, err := state.ListAgents(r.sprawlRoot)
+	if err != nil {
+		return 0, 0, []error{fmt.Errorf("list agents: %w", err)}
+	}
+	var eligible []*state.AgentState
+	for _, a := range agents {
+		if a == nil || a.Name == r.callerName {
+			continue
+		}
+		switch a.Status {
+		case state.StatusSuspended, state.StatusActive, state.StatusRunning:
+		default:
+			continue
+		}
+		if a.Worktree == "" {
+			continue
+		}
+		if _, statErr := os.Stat(a.Worktree); statErr != nil {
+			continue
+		}
+		eligible = append(eligible, a)
+	}
+	ordered := bfsByParent(eligible, r.callerName)
+	for _, a := range ordered {
+		agent := a
+		rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+			SprawlRoot: r.sprawlRoot,
+			Agent:      agent,
+			Starter:    r.runtimeStarter,
+		})
+		onResumeFailure := func() {
+			cur, lErr := state.LoadAgent(r.sprawlRoot, agent.Name)
+			if lErr != nil {
+				slog.Warn("supervisor: RecoverAgents OnResumeFailure load", "agent", agent.Name, "err", lErr)
+				return
+			}
+			cur.Status = state.StatusResumeFailed
+			if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
+				slog.Warn("supervisor: RecoverAgents OnResumeFailure save", "agent", agent.Name, "err", sErr)
+				return
+			}
+			rt.SyncAgentState(cur)
+		}
+		if err := rt.StartResume(ctx, onResumeFailure); err != nil {
+			failed++
+			errs = append(errs, fmt.Errorf("resume %q: %w", agent.Name, err))
+			continue
+		}
+		// success — flip to active and persist (idempotent SessionID write).
+		cur, lErr := state.LoadAgent(r.sprawlRoot, agent.Name)
+		if lErr != nil {
+			slog.Warn("supervisor: RecoverAgents post-start load", "agent", agent.Name, "err", lErr)
+			resumed++
+			continue
+		}
+		cur.Status = state.StatusActive
+		if sid := rt.Snapshot().SessionID; sid != "" {
+			cur.SessionID = sid
+		}
+		if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
+			slog.Warn("supervisor: RecoverAgents post-start save", "agent", agent.Name, "err", sErr)
+		}
+		rt.SyncAgentState(cur)
+		// QUM-605: drain any maildir entries that landed while the agent was
+		// suspended so the resumed session's first turn picks them up. Without
+		// this, async send_message deliveries sit forever until something else
+		// wakes the agent.
+		if wErr := rt.WakeForDelivery(); wErr != nil {
+			slog.Warn("supervisor: RecoverAgents WakeForDelivery", "agent", agent.Name, "err", wErr)
+		}
+		resumed++
+	}
+	return resumed, failed, errs
+}
+
+// bfsByParent orders agents BFS-from-root, parents before children. Any
+// agent whose parent isn't in the eligible set (orphaned or grandchild whose
+// parent already terminal) lands at the tail in input order.
+func bfsByParent(eligible []*state.AgentState, root string) []*state.AgentState {
+	byParent := make(map[string][]*state.AgentState, len(eligible))
+	for _, a := range eligible {
+		byParent[a.Parent] = append(byParent[a.Parent], a)
+	}
+	visited := make(map[string]bool, len(eligible))
+	var out []*state.AgentState
+	queue := []string{root}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		children := byParent[cur]
+		sort.Slice(children, func(i, j int) bool { return children[i].Name < children[j].Name })
+		for _, child := range children {
+			if visited[child.Name] {
+				continue
+			}
+			visited[child.Name] = true
+			out = append(out, child)
+			queue = append(queue, child.Name)
+		}
+	}
+	for _, a := range eligible {
+		if !visited[a.Name] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func (r *Real) Shutdown(ctx context.Context) error {
 	// Release any in-flight AskUserQuestion callers with OutcomeSessionEnded
 	// BEFORE tearing down runtimes. (QUM-527 slice 1.)
@@ -762,7 +880,12 @@ func (r *Real) Shutdown(ctx context.Context) error {
 		if err != nil {
 			continue
 		}
-		agentState.Status = "killed"
+		switch agentState.Status {
+		case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusDone:
+			// leave terminal-ish states as-is
+		default:
+			agentState.Status = state.StatusSuspended
+		}
 		if err := state.SaveAgent(r.sprawlRoot, agentState); err != nil {
 			return fmt.Errorf("updating agent state: %w", err)
 		}
