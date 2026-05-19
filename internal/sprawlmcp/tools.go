@@ -350,5 +350,19 @@ func baseToolDefinitions() []map[string]any {
 				"required": []string{"agent_name"},
 			},
 		},
+		{
+			"name":        "recover",
+			"description": "Recover a faulted backend session in-place. Tears down the dead claude subprocess and spawns a fresh one with --resume to preserve conversation history. No-op success if the session is healthy. Use after a backend fault banner.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"agent_name": map[string]any{
+						"type":        "string",
+						"description": "Name of the agent whose backend session should be recovered",
+					},
+				},
+				"required": []string{"agent_name"},
+			},
+		},
 	}
 }

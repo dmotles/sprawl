@@ -633,6 +633,24 @@ func runEnter(deps *enterDeps) error {
 			r.SetValidateEmitter(func(callID, step string, kv map[string]string) {
 				send(tui.ValidateEventMsg{CallID: callID, Step: step, KV: kv})
 			})
+			// QUM-602: backend-fault fan-out. The TUI renders a viewport
+			// banner + tree-row indicator when a child runtime's backend
+			// session faults terminally (ErrHangTimeout /
+			// ErrSubscriberWedged).
+			r.SetBackendFaultEmitter(func(agent, class, reason, nextAction string) {
+				send(tui.BackendFaultMsg{
+					Agent:      agent,
+					Class:      class,
+					Reason:     reason,
+					NextAction: nextAction,
+				})
+			})
+			// QUM-601: backend-recovered fan-out. The TUI clears the
+			// per-agent fault sticker, rebuilds the tree to drop the FAULT
+			// badge, and surfaces a "backend recovered on X" banner.
+			r.SetBackendRecoveredEmitter(func(agent string) {
+				send(tui.BackendFaultClearedMsg{Agent: agent})
+			})
 		}
 
 		// QUM-527 slice 2c: register the TUI question consumer so the
@@ -774,6 +792,9 @@ func runEnter(deps *enterDeps) error {
 	}
 	if r, ok := sup.(*supervisor.Real); ok {
 		r.SetProgressEmitter(nil)
+		r.SetValidateEmitter(nil)
+		r.SetBackendFaultEmitter(nil)
+		r.SetBackendRecoveredEmitter(nil)
 	}
 	// QUM-527 slice 2c: unregister the TUI question consumer so the
 	// supervisor's queue stops fanning out OnEnqueue / OnCancel to a dead

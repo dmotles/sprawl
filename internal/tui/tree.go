@@ -41,6 +41,11 @@ type TreeNode struct {
 	LastReportState   string // working, blocked, complete, failure, ""
 	LastReportMessage string
 	TotalCostUsd      float64
+	// FaultClass is the UX class of the most-recent backend fault on this
+	// agent's runtime (e.g. "HangTimeout"). Empty = no fault. Populated by
+	// the AppModel's BackendFaultMsg handler + re-applied on every
+	// rebuildTree from a side map (faults). QUM-602.
+	FaultClass string
 }
 
 // TreeModel is the agent tree panel displaying live agent hierarchy.
@@ -176,6 +181,9 @@ func (m TreeModel) View() string {
 		}
 		if node.Unread > 0 {
 			line += fmt.Sprintf(" (%d)", node.Unread)
+		}
+		if node.FaultClass != "" {
+			line += " [FAULT:" + node.FaultClass + "]"
 		}
 
 		// QUM-324: clip the row to the tree's inner width so a long or

@@ -20,12 +20,17 @@ type runtimeTestSession struct {
 	wakeForDeliveryCalls        int
 	forceInterruptDeliveryCalls int
 	stopCalls                   int
+	stopAbandonCalls            int
 	doneCh                      chan struct{}
 	// stopWaitTimedOut, when set, is what this handle reports from its
 	// StopWaitTimedOut() method (QUM-546). AgentRuntime captures the value
 	// during Stop and exposes it via AgentRuntime.StopWaitTimedOut so
 	// Real.Retire/Real.Kill can stamp it on the runtime-stop-done checkpoint.
 	stopWaitTimedOut bool
+	// terminallyFaulted, when true, is what this handle reports from its
+	// IsTerminallyFaulted() method (QUM-601). AgentRuntime.Recover probes
+	// the handle to decide whether in-place recovery is needed.
+	terminallyFaulted bool
 }
 
 func (s *runtimeTestSession) Start(context.Context) error                           { return nil }
@@ -60,6 +65,14 @@ func (s *runtimeTestSession) Stop(context.Context) error {
 	s.stopCalls++
 	return nil
 }
+
+// StopAbandon is the QUM-600 teardown-only stop path. Implementers of
+// RuntimeHandle must provide it; the test fake records call counts so
+// abandon-vs-polite assertions can distinguish the two routes.
+func (s *runtimeTestSession) StopAbandon(context.Context) error {
+	s.stopAbandonCalls++
+	return nil
+}
 func (s *runtimeTestSession) Close() error                          { return nil }
 func (s *runtimeTestSession) Wait() error                           { return nil }
 func (s *runtimeTestSession) Kill() error                           { return nil }
@@ -73,6 +86,11 @@ func (s *runtimeTestSession) Done() <-chan struct{}                 { return s.d
 // assertion (QUM-546) so older handle implementations that lack the method
 // safely report false.
 func (s *runtimeTestSession) StopWaitTimedOut() bool { return s.stopWaitTimedOut }
+
+// IsTerminallyFaulted reports whether the underlying session has been poisoned
+// with a sticky terminal error (QUM-601). AgentRuntime.Recover uses the probe
+// to short-circuit when the session is still healthy.
+func (s *runtimeTestSession) IsTerminallyFaulted() bool { return s.terminallyFaulted }
 
 type runtimeTestStarter struct {
 	mu      sync.Mutex
@@ -314,6 +332,7 @@ func (h *fakeAttachHandle) Wake() error                           { return nil }
 func (h *fakeAttachHandle) WakeForDelivery() error                { return nil }
 func (h *fakeAttachHandle) ForceInterruptDelivery() error         { return nil }
 func (h *fakeAttachHandle) Stop(context.Context) error            { return nil }
+func (h *fakeAttachHandle) StopAbandon(context.Context) error     { return nil }
 func (h *fakeAttachHandle) SessionID() string                     { return h.sessionID }
 func (h *fakeAttachHandle) Capabilities() backendpkg.Capabilities { return h.caps }
 func (h *fakeAttachHandle) Done() <-chan struct{}                 { return h.doneCh }
@@ -442,6 +461,32 @@ func TestAgentRuntime_StopWaitTimedOut_DefaultFalse(t *testing.T) {
 	}
 	if got := rt.StopWaitTimedOut(); got {
 		t.Errorf("StopWaitTimedOut() = true, want false (handle reported clean stop)")
+	}
+}
+
+// TestAgentRuntime_StopAbandon_CallsHandleStopAbandon pins the QUM-600
+// contract: AgentRuntime.StopAbandon must delegate to the handle's
+// StopAbandon (teardown-only, no polite Session.Interrupt) — NOT to Stop.
+// This is the path Real.Retire(abandon=true) takes.
+func TestAgentRuntime_StopAbandon_CallsHandleStopAbandon(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
+	}
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      testAgentState("alice"),
+	})
+	rt.AttachHandle(session)
+
+	if err := rt.StopAbandon(context.Background()); err != nil {
+		t.Fatalf("StopAbandon: %v", err)
+	}
+	if session.stopAbandonCalls != 1 {
+		t.Errorf("session.stopAbandonCalls = %d, want 1", session.stopAbandonCalls)
+	}
+	if session.stopCalls != 0 {
+		t.Errorf("session.stopCalls = %d, want 0 (StopAbandon must not call Stop)", session.stopCalls)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	claudecli "github.com/dmotles/sprawl/internal/claude"
@@ -320,4 +321,107 @@ func envContains(env []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// blockingWriter is an io.Writer whose Write blocks until release is closed.
+// Mirrors the kernel-pipe-full wedge that transport.Send hit prior to QUM-603.
+type blockingWriter struct {
+	release  chan struct{}
+	released atomic.Bool
+}
+
+func newBlockingWriter() *blockingWriter {
+	return &blockingWriter{release: make(chan struct{})}
+}
+
+func (b *blockingWriter) Write(p []byte) (int, error) {
+	<-b.release
+	return len(p), nil
+}
+
+func (b *blockingWriter) Close() error {
+	if b.released.CompareAndSwap(false, true) {
+		close(b.release)
+	}
+	return nil
+}
+
+// TestTransport_Send_HonorsCtxOnWedgedWrite proves QUM-603: when the underlying
+// writer is wedged (kernel pipe full / consumer not draining), Send must
+// return ctx.Err() promptly on ctx cancellation rather than blocking forever
+// in WriteJSON's syscall.
+func TestTransport_Send_HonorsCtxOnWedgedWrite(t *testing.T) {
+	bw := newBlockingWriter()
+	defer bw.Close()
+
+	tr := &transport{
+		writer: protocol.NewWriter(bw),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- tr.Send(ctx, map[string]string{"type": "ping"})
+	}()
+
+	// Give Send a moment to enter WriteJSON and block in the wedged Write.
+	// We don't need a precise sync — the select inside Send is what we're
+	// testing, and it will exit on ctx.Done() regardless of where the
+	// goroutine is when cancel() fires.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Send returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Send did not return within 2s of ctx cancellation — ctx not honored")
+	}
+}
+
+// TestTransport_Send_NormalWriteSucceeds proves the goroutine+select wrapping
+// doesn't break the happy path: a normal Send against a healthy writer
+// returns nil and the bytes land on the wire.
+func TestTransport_Send_NormalWriteSucceeds(t *testing.T) {
+	var buf bytes.Buffer
+	tr := &transport{
+		writer: protocol.NewWriter(&buf),
+	}
+
+	if err := tr.Send(context.Background(), map[string]string{"type": "ping"}); err != nil {
+		t.Fatalf("Send error: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"type":"ping"`) {
+		t.Errorf("buf = %q, want it to contain the marshaled message", buf.String())
+	}
+}
+
+// TestTransport_Send_PrecancelledCtxReturnsImmediately ensures a caller that
+// passes an already-cancelled ctx doesn't have to wait for the (possibly
+// wedged) write to complete before getting ctx.Err() back. With a 1-buffer
+// errCh on Send the goroutine doesn't leak on the happy path here either.
+func TestTransport_Send_PrecancelledCtxReturnsImmediately(t *testing.T) {
+	bw := newBlockingWriter()
+	defer bw.Close()
+	tr := &transport{writer: protocol.NewWriter(bw)}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- tr.Send(ctx, map[string]string{"type": "ping"})
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Send returned %v, want context.Canceled", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Send did not return promptly when ctx was already cancelled")
+	}
 }

@@ -201,6 +201,15 @@ func (m ViewportModel) Update(msg tea.Msg) (ViewportModel, tea.Cmd) {
 // View renders the viewport content.
 func (m ViewportModel) View() string {
 	view := m.vp.View()
+	// QUM-602: when the inner bubble viewport has zero dimensions
+	// (size not yet applied — common in unit tests that don't dispatch
+	// WindowSizeMsg), bubbles renders an empty string. Fall back to the
+	// already-rendered messages buffer so observers can still inspect
+	// appended status/banners independent of layout.
+	if view == "" && len(m.messages) > 0 {
+		mm := m
+		view = mm.renderMessages()
+	}
 	if m.hasNewContent && !m.autoScroll {
 		indicator := m.theme.AccentText.Render("  " + NewContentIndicator + "  ")
 		lines := strings.Split(view, "\n")

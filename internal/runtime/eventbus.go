@@ -45,6 +45,11 @@ const (
 	EventQueueDrained
 	// EventStopped is published when the runtime has fully stopped.
 	EventStopped
+	// EventBackendFaulted is published when the underlying backend session
+	// fires a sticky terminal error (e.g. ErrHangTimeout / ErrSubscriberWedged).
+	// FaultClass and FaultNextAction are populated; Error carries the sentinel.
+	// QUM-602.
+	EventBackendFaulted
 )
 
 // RuntimeEvent is the unit of fan-out on the EventBus. The set of populated
@@ -55,6 +60,12 @@ type RuntimeEvent struct {
 	Prompt  string
 	Result  *protocol.ResultMessage
 	Error   error
+	// FaultClass and FaultNextAction are populated only for
+	// EventBackendFaulted. FaultClass is a UX-visible classification of
+	// the underlying terminal error (e.g. "HangTimeout"); FaultNextAction
+	// is an operator-facing next-step hint. QUM-602.
+	FaultClass      string
+	FaultNextAction string
 }
 
 // subscriber tracks a single fan-out target. Each subscriber has its own

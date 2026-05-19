@@ -149,6 +149,10 @@ type Supervisor interface {
 	// Retire retires agentName. `caller` semantics match Merge — see QUM-487.
 	Retire(ctx context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error
 	Kill(ctx context.Context, agentName string) error
+	// Recover performs in-place recovery for the named agent's backend
+	// session (QUM-601). Returns ErrRecoverNotNeeded if the session is still
+	// healthy. Errors out for unknown agents or agents not in Started state.
+	Recover(ctx context.Context, agentName string) error
 	Shutdown(ctx context.Context) error
 
 	// Handoff persists a session summary (marked Handoff=true) for the

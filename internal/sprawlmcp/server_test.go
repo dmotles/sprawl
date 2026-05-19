@@ -369,6 +369,7 @@ func TestServer_ToolsList(t *testing.T) {
 		"merge",
 		"retire",
 		"kill",
+		"recover",
 		"handoff",
 		"messages_list",
 		"messages_read",

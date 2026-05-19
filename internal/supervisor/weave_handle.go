@@ -126,8 +126,23 @@ func (h *WeaveRuntimeHandle) ForceInterruptDelivery() error {
 // runtime → consolidation → new runtime) doesn't deadlock on weave.lock
 // when consolidation runs.
 func (h *WeaveRuntimeHandle) Stop(ctx context.Context) error {
+	return h.stopOnceWith(ctx, func(ctx context.Context) error { return h.rt.Stop(ctx) })
+}
+
+// StopAbandon is the QUM-600 teardown-only variant of Stop. It tells the
+// UnifiedRuntime to skip its polite Session.Interrupt and otherwise
+// mirrors Stop's activity-teardown / session-teardown sequence.
+func (h *WeaveRuntimeHandle) StopAbandon(ctx context.Context) error {
+	return h.stopOnceWith(ctx, func(ctx context.Context) error {
+		return h.rt.StopWithOptions(ctx, runtimepkg.StopOptions{SkipPoliteInterrupt: true})
+	})
+}
+
+// stopOnceWith is the shared body for Stop / StopAbandon. The caller picks
+// how the UnifiedRuntime is stopped; everything else is identical.
+func (h *WeaveRuntimeHandle) stopOnceWith(ctx context.Context, stopRuntime func(context.Context) error) error {
 	h.stopOnce.Do(func() {
-		err := h.rt.Stop(ctx)
+		err := stopRuntime(ctx)
 		if h.stopActivity != nil {
 			joinWithTimeout(h.stopActivity, stopActivityTimeout,
 				"stopActivity abandoned — likely wedged activity subscriber goroutine (QUM-547)",
@@ -163,6 +178,10 @@ func (h *WeaveRuntimeHandle) SessionID() string { return h.sessionID }
 // currently servicing an autonomous (SDK-initiated) turn frame. See
 // QUM-585 — surfaced through the peek MCP tool's JSON payload.
 func (h *WeaveRuntimeHandle) InAutonomousTurn() bool { return h.session.InAutonomousTurn() }
+
+// IsTerminallyFaulted reports whether the underlying backend session has been
+// poisoned with a sticky terminal error (QUM-601). Mirrors unifiedHandle.
+func (h *WeaveRuntimeHandle) IsTerminallyFaulted() bool { return h.session.IsTerminallyFaulted() }
 
 // Capabilities returns the backend capabilities reported at construction.
 func (h *WeaveRuntimeHandle) Capabilities() backendpkg.Capabilities { return h.capabilities }

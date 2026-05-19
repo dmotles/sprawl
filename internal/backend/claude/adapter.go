@@ -182,8 +182,21 @@ type transport struct {
 	kill   func() error
 }
 
-func (t *transport) Send(_ context.Context, msg any) error {
-	return t.writer.WriteJSON(msg)
+// Send honors ctx natively (QUM-603). WriteJSON is a blocking syscall write
+// to claude's stdin pipe; when claude is wedged and not draining stdin, the
+// kernel buffer fills and the write blocks forever. We run WriteJSON in a
+// goroutine and race against ctx.Done() so callers can unwind cleanly on
+// cancellation. On the wedged-pipe edge the goroutine leaks until the OS
+// reaps the subprocess (typically via SIGKILL during teardown — see QUM-600).
+func (t *transport) Send(ctx context.Context, msg any) error {
+	errCh := make(chan error, 1)
+	go func() { errCh <- t.writer.WriteJSON(msg) }()
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (t *transport) Recv(_ context.Context) (*protocol.Message, error) {

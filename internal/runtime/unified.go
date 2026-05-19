@@ -111,12 +111,48 @@ type UnifiedRuntime struct {
 // New constructs a UnifiedRuntime in StateIdle with a fresh queue and event
 // bus. No goroutines are started until Start is called.
 func New(cfg RuntimeConfig) *UnifiedRuntime {
-	return &UnifiedRuntime{
+	rt := &UnifiedRuntime{
 		cfg:      cfg,
 		queue:    NewMessageQueue(),
 		eventBus: NewEventBus(),
 		state:    StateIdle,
 		done:     make(chan struct{}),
+	}
+	// QUM-602: install the backend-fault handler on the session. We use a
+	// type assertion (rather than extending SessionHandle) so the public
+	// interface stays minimal — the concrete backend.*session implements
+	// SetTerminalErrorHandler; tests' fake sessions implement it ad-hoc.
+	if cfg.Session != nil {
+		if setter, ok := cfg.Session.(interface {
+			SetTerminalErrorHandler(func(error))
+		}); ok {
+			setter.SetTerminalErrorHandler(func(err error) {
+				class, hint := ClassifyBackendFault(err)
+				rt.eventBus.Publish(RuntimeEvent{
+					Type:            EventBackendFaulted,
+					Error:           err,
+					FaultClass:      class,
+					FaultNextAction: hint,
+				})
+			})
+		}
+	}
+	return rt
+}
+
+// ClassifyBackendFault maps a backend session terminal error to a
+// UX-visible class label and an operator-facing next-action hint. Known
+// sentinels (ErrHangTimeout / ErrSubscriberWedged) get tailored hints;
+// unknown errors fall through to a generic "Unknown" + respawn hint.
+// QUM-602.
+func ClassifyBackendFault(err error) (class, nextAction string) {
+	switch {
+	case errors.Is(err, backend.ErrHangTimeout):
+		return "HangTimeout", "backend reader stalled; retire and respawn agent"
+	case errors.Is(err, backend.ErrSubscriberWedged):
+		return "SubscriberWedged", "backend subscriber send wedged; retire and respawn agent"
+	default:
+		return "Unknown", "retire and respawn agent"
 	}
 }
 
@@ -253,6 +289,18 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 	return nil
 }
 
+// StopOptions tunes UnifiedRuntime.StopWithOptions. The zero value matches
+// the legacy Stop semantics (polite Session.Interrupt issued before the
+// turn loop ctx is cancelled). See QUM-600.
+type StopOptions struct {
+	// SkipPoliteInterrupt suppresses the polite Session.Interrupt that
+	// Stop normally issues before cancelling the loop. The abandon-retire
+	// path (Real.Retire(abandon=true) → StopAbandon) sets this to true so
+	// a wedged backend Interrupt cannot stall teardown; the caller is
+	// committed to Close+Kill regardless. (QUM-600)
+	SkipPoliteInterrupt bool
+}
+
 // Stop cancels the turn loop and waits for it to drain. Idempotent and a
 // no-op if Start was never called. Bounded by ctx.
 //
@@ -266,7 +314,19 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 //     EventInterrupted is reserved for user-initiated Interrupt drains.
 //   - Mid-turn protocol messages are not guaranteed to be delivered to
 //     EventBus subscribers: the wrapper forwarder returns on ctx.Done.
+//
+// Stop delegates to StopWithOptions with the zero-value StopOptions, so the
+// legacy contract is preserved.
 func (rt *UnifiedRuntime) Stop(ctx context.Context) error {
+	return rt.StopWithOptions(ctx, StopOptions{})
+}
+
+// StopWithOptions is the configurable variant of Stop. When
+// opts.SkipPoliteInterrupt is true, the polite Session.Interrupt that Stop
+// normally issues before cancelling the loop is skipped — used by the
+// abandon-retire path (QUM-600) so a wedged backend Interrupt cannot stall
+// teardown. All other semantics match Stop.
+func (rt *UnifiedRuntime) StopWithOptions(ctx context.Context, opts StopOptions) error {
 	rt.mu.Lock()
 	if !rt.started {
 		rt.stopped = true
@@ -287,8 +347,9 @@ func (rt *UnifiedRuntime) Stop(ctx context.Context) error {
 	// Best-effort: signal the backend to wind down its in-flight turn cleanly.
 	// Called before cancel() so ctx is still alive for the interrupt control
 	// request itself. Per SessionHandle contract, Interrupt is a no-op when
-	// no turn is in flight.
-	if sess != nil {
+	// no turn is in flight. Skipped when opts.SkipPoliteInterrupt is true
+	// (QUM-600 abandon path).
+	if sess != nil && !opts.SkipPoliteInterrupt {
 		_ = sess.Interrupt(ctx)
 	}
 

@@ -44,6 +44,8 @@ func (*NoopSupervisor) Retire(context.Context, string, string, bool, bool, bool,
 
 func (*NoopSupervisor) Kill(context.Context, string) error { return nil }
 
+func (*NoopSupervisor) Recover(context.Context, string) error { return nil }
+
 func (*NoopSupervisor) Shutdown(context.Context) error { return nil }
 
 func (*NoopSupervisor) Handoff(context.Context, string) error { return nil }

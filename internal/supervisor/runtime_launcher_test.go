@@ -113,6 +113,7 @@ func (f *fakeBackendSession) SessionID() string                  { return f.id }
 func (f *fakeBackendSession) Capabilities() backend.Capabilities { return f.caps }
 func (f *fakeBackendSession) InAutonomousTurn() bool             { return false }
 func (f *fakeBackendSession) BackendStats() backend.Stats        { return backend.Stats{} }
+func (f *fakeBackendSession) IsTerminallyFaulted() bool          { return false }
 
 // recordingObserver collects OnMessage calls for the activity subscriber tests.
 type recordingObserver struct {

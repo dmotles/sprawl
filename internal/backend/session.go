@@ -26,6 +26,14 @@ import (
 var (
 	subscriberSendDeadline = 5 * time.Second
 	hangCheckInterval      = 1 * time.Minute
+	// interruptSendTimeout bounds how long Session.Interrupt will wait on
+	// transport.Send before declaring the wire send wedged and returning
+	// ErrInterruptTimeout (QUM-600). The real-world wedge is a stuck
+	// claude stdin pipe whose write blocks below the ctx-checking layer
+	// of the adapter, so a plain ctx.Done() select on Send is not enough.
+	// Exposed as a package var (not const) so tests can override;
+	// production code must not mutate.
+	interruptSendTimeout = 2 * time.Second
 )
 
 const (
@@ -45,6 +53,13 @@ var ErrSubscriberWedged = errors.New("backend: subscriber send exceeded deadline
 // ErrHangTimeout is the sentinel fatal error set by the D1 watchdog when no
 // frames arrive within SessionConfig.HangTimeout.
 var ErrHangTimeout = errors.New("backend: reader hang timeout (no frames within HangTimeout)")
+
+// ErrInterruptTimeout is returned by Session.Interrupt when the bounded
+// transport.Send wrapper expires (QUM-600). The wedge mode it guards is a
+// stuck claude stdin pipe whose OS-level write does not honor ctx; the
+// in-flight async-MCP-handler cancellation still fires before the wrapper
+// waits on the wire, so callers can safely fall through to teardown.
+var ErrInterruptTimeout = errors.New("backend: interrupt send exceeded deadline (stdin writer wedged)")
 
 // Stats reports per-session drop counters surfaced for observability /
 // forensics. All fields are atomic-backed snapshots.
@@ -156,6 +171,10 @@ type Session interface {
 	// BackendStats returns an atomic snapshot of per-session drop counters
 	// (QUM-595). See Stats.
 	BackendStats() Stats
+	// IsTerminallyFaulted reports whether the session's sticky terminalErr
+	// has been set (QUM-601). Used by the runtime-level Recover path to
+	// decide whether in-place recovery is needed.
+	IsTerminallyFaulted() bool
 }
 
 // ErrTurnInProgress is returned when callers try to start a second concurrent
@@ -225,6 +244,12 @@ type session struct {
 	// handleInlineControlRequest for the rationale.
 	inflight   map[string]context.CancelFunc
 	inflightWG sync.WaitGroup
+
+	// terminalErrHandler is a one-shot callback installed by the runtime
+	// (QUM-602). It fires the FIRST time setTerminalErr is called on this
+	// session, OUTSIDE s.mu so the handler can call back into session-safe
+	// read methods (e.g. BackendStats) without deadlock. nil clears.
+	terminalErrHandler atomic.Pointer[func(error)]
 }
 
 // inflightDrainTimeout bounds how long the reader waits for in-flight async
@@ -835,19 +860,17 @@ func (s *session) drainInflight() {
 }
 
 func (s *session) Interrupt(ctx context.Context) error {
-	requestID := s.nextRequestID()
-	msg := protocol.InterruptRequest{
-		Type:      "control_request",
-		RequestID: requestID,
-		Request:   protocol.InterruptRequestInner{Subtype: "interrupt"},
-	}
-	err := s.transport.Send(ctx, msg)
-
-	// Cancel every in-flight async MCP handler ctx (QUM-552 S3). We
-	// cancel on the outgoing Interrupt — not on a later observed
-	// EventInterrupted from claude's stdout — because:
+	// Cancel every in-flight async MCP handler ctx FIRST (QUM-552 S3 +
+	// QUM-600). This MUST run before the bounded wire-send wrapper waits
+	// on transport.Send so that, even when the stdin writer is wedged and
+	// the Send goroutine leaks, ctx-respecting tool handlers unwind
+	// immediately. The cancellation invariant is decoupled from the wire
+	// send succeeding.
+	//
+	// Why cancel on the outgoing Interrupt (not on observed
+	// EventInterrupted from claude's stdout):
 	//   - we control this call site, so cancellation is synchronous
-	//     and atomic with the wire-level interrupt write;
+	//     and atomic with the wire-level interrupt request;
 	//   - observing EventInterrupted would arrive later and race with
 	//     normal handler completion;
 	//   - ctx-respecting handlers (retire/delegate/merge) will unwind
@@ -862,7 +885,32 @@ func (s *session) Interrupt(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
-	return err
+	requestID := s.nextRequestID()
+	msg := protocol.InterruptRequest{
+		Type:      "control_request",
+		RequestID: requestID,
+		Request:   protocol.InterruptRequestInner{Subtype: "interrupt"},
+	}
+
+	// Bound transport.Send by interruptSendTimeout (QUM-600). The wedge
+	// mode is a stuck claude stdin pipe whose OS-level write blocks below
+	// the ctx-checking layer of the adapter, so a plain ctx-respecting
+	// Send is not enough. The Send goroutine intentionally leaks on
+	// timeout — acceptable per the QUM-542 teardown precedent; the parent
+	// session is on its way to Close+Kill which will unblock the
+	// underlying FD eventually.
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.transport.Send(ctx, msg)
+	}()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(interruptSendTimeout):
+		return ErrInterruptTimeout
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *session) Close() error {
@@ -939,15 +987,50 @@ func (s *session) setFatalErr(err error) {
 // (consumable via LastTurnError), terminalErr is sticky and gates subsequent
 // StartTurn calls. We also mirror into fatalErr so a one-shot
 // LastTurnError() read after the fault still surfaces the sentinel.
+//
+// QUM-602: on the FIRST fire (terminalErr was nil before assignment), the
+// registered terminalErrHandler (if any) is invoked OUTSIDE s.mu so the
+// handler can call back into session read-side methods without deadlock.
+// Subsequent terminal errors do not re-invoke the handler — sticky-once.
 func (s *session) setTerminalErr(err error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.terminalErr == nil {
+	firstFire := s.terminalErr == nil
+	if firstFire {
 		s.terminalErr = err
 	}
 	if s.fatalErr == nil {
 		s.fatalErr = err
 	}
+	s.mu.Unlock()
+	if firstFire {
+		if hp := s.terminalErrHandler.Load(); hp != nil {
+			(*hp)(err)
+		}
+	}
+}
+
+// SetTerminalErrorHandler installs a one-shot callback invoked the first
+// time setTerminalErr fires on this session. Subsequent terminal errors do
+// not re-invoke the handler — the sticky terminalErr semantics are
+// preserved. The handler is invoked OUTSIDE s.mu so it can call session
+// read-side methods (e.g. BackendStats) without deadlock. nil clears the
+// handler.
+func (s *session) SetTerminalErrorHandler(h func(err error)) {
+	if h == nil {
+		s.terminalErrHandler.Store(nil)
+		return
+	}
+	s.terminalErrHandler.Store(&h)
+}
+
+// IsTerminallyFaulted reports whether the sticky terminalErr has been set
+// on this session (QUM-601). Mirrors the LastTurnError / reject-next-StartTurn
+// semantics: once true, the session will never service another sprawl-initiated
+// turn and the runtime-layer Recover path must rebuild the handle.
+func (s *session) IsTerminallyFaulted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.terminalErr != nil
 }
 
 // BackendStats returns an atomic snapshot of the session's drop counters.

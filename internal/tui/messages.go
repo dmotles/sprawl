@@ -371,6 +371,29 @@ type AgentTreeMsg struct {
 	RootUnread int
 }
 
+// BackendFaultMsg signals that a child runtime's backend session has fired
+// a sticky terminal error (QUM-602). The App responds by appending a
+// viewport banner and tagging the agent's tree row with a [FAULT:class]
+// indicator. Dispatched by cmd/enter.go's BackendFaultEmitter wrapper
+// around the supervisor's per-runtime fault subscriber.
+type BackendFaultMsg struct {
+	Agent      string
+	Class      string
+	Reason     string
+	NextAction string
+}
+
+// BackendFaultClearedMsg signals that a previously-faulted backend session
+// has been successfully recovered in-place (QUM-601). The App responds by
+// removing the per-agent fault sticker, appending a "backend recovered on X"
+// banner to the root viewport, and rebuilding the tree so the FAULT badge
+// disappears from the row. Viewport history is intentionally retained — the
+// operator forensic trail through the fault and recovery sequence stays
+// visible.
+type BackendFaultClearedMsg struct {
+	Agent string
+}
+
 // InboxArrivalMsg signals that a message has been delivered to the root
 // agent's (weave's) maildir. Dispatched by the TUI-aware notifier installed
 // in `cmd/enter.go` before the bubbletea program starts (QUM-311). The App

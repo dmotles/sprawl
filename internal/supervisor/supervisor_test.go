@@ -776,6 +776,7 @@ type fakeRootHandle struct {
 	wakeForDeliveryCalls        int32
 	forceInterruptDeliveryCalls int32
 	stopCalls                   int32
+	stopAbandonCalls            int32
 	doneCh                      chan struct{}
 }
 
@@ -792,7 +793,11 @@ func (h *fakeRootHandle) ForceInterruptDelivery() error {
 	return nil
 }
 
-func (h *fakeRootHandle) Stop(context.Context) error            { h.stopCalls++; return nil }
+func (h *fakeRootHandle) Stop(context.Context) error { h.stopCalls++; return nil }
+func (h *fakeRootHandle) StopAbandon(context.Context) error {
+	h.stopAbandonCalls++
+	return nil
+}
 func (h *fakeRootHandle) SessionID() string                     { return h.sessionID }
 func (h *fakeRootHandle) Capabilities() backendpkg.Capabilities { return h.caps }
 func (h *fakeRootHandle) Done() <-chan struct{}                 { return h.doneCh }

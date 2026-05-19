@@ -204,6 +204,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolRetire(ctx, args)
 	case "kill":
 		return s.toolKill(ctx, args)
+	case "recover":
+		return s.toolRecover(ctx, args)
 	case "handoff":
 		return s.toolHandoff(ctx, args)
 	case "messages_list":
@@ -445,6 +447,26 @@ func (s *Server) toolKill(ctx context.Context, args json.RawMessage) (string, er
 		return "", err
 	}
 	return fmt.Sprintf("Killed agent %s", p.AgentName), nil
+}
+
+// toolRecover dispatches the recover MCP tool (QUM-601). On success returns a
+// short ack string. ErrRecoverNotNeeded is treated as a success ("Session
+// healthy; no recovery needed"). Other supervisor errors propagate as
+// tool-error content (IsError=true).
+func (s *Server) toolRecover(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		AgentName string `json:"agent_name"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	if err := s.sup.Recover(ctx, p.AgentName); err != nil {
+		if errors.Is(err, supervisor.ErrRecoverNotNeeded) {
+			return fmt.Sprintf("Session healthy; no recovery needed for %s", p.AgentName), nil
+		}
+		return "", err
+	}
+	return fmt.Sprintf("Recovered backend session for %s", p.AgentName), nil
 }
 
 func (s *Server) toolHandoff(ctx context.Context, args json.RawMessage) (string, error) {

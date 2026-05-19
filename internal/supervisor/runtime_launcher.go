@@ -50,6 +50,11 @@ type inProcessUnifiedStarter struct {
 	// report_status lines reach the recipient's next-turn prompt
 	// without traversing the maildir.
 	statusDrainer func(name string) []string
+	// faultEmitter, when non-nil, is invoked by the per-runtime fault
+	// subscriber whenever EventBackendFaulted fires on the runtime's
+	// EventBus. The host TUI uses this to surface a fault banner +
+	// tree-row indicator. QUM-602.
+	faultEmitter func(agent, class, reason, nextAction string)
 }
 
 func newInProcessUnifiedStarter(initSpec backendpkg.InitSpec, allowedTools []string) RuntimeStarter {
@@ -131,6 +136,12 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 	// loop is not yet running.
 	stopActivity := runActivitySubscriber(rt.EventBus(), prep.observer, "activity")
 	stopDelivery := runDeliveryConfirmationSubscriber(rt.EventBus(), coord, "delivery-confirmation")
+	// QUM-602: per-runtime backend-fault subscriber. Forwards
+	// EventBackendFaulted out to the supervisor-level fault emitter (the
+	// TUI installs this via Real.SetBackendFaultEmitter). When no emitter
+	// is registered the subscriber still drains the bus so the channel
+	// doesn't back up.
+	stopFault := runFaultSubscriber(rt.EventBus(), spec.Name, s.faultEmitter, "backend-fault")
 
 	// Phase 6: assemble the handle. Single linear block, no closures already
 	// in flight observe partial state.
@@ -142,6 +153,7 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 		activityFile:  prep.activityFile,
 		stopActivity:  stopActivity,
 		stopDelivery:  stopDelivery,
+		stopFault:     stopFault,
 		sprawlRoot:    spec.SprawlRoot,
 		name:          spec.Name,
 		statusDrainer: s.statusDrainer,
@@ -157,6 +169,7 @@ func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSp
 	// Phase 8: start the runtime. Rollback on error: tear down subscribers,
 	// close + reap session, close activity file.
 	if err := rt.Start(context.Background()); err != nil {
+		stopFault()
 		stopDelivery()
 		stopActivity()
 		_ = session.Close()
@@ -189,6 +202,10 @@ func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*prepare
 	if len(s.allowedTools) > 0 {
 		sessionSpec.AllowedTools = s.allowedTools
 	}
+	// QUM-601: propagate the Resume flag from the RuntimeStartSpec into the
+	// backend SessionSpec so AgentRuntime.Recover's restart actually instructs
+	// claude to resume the prior conversation transcript.
+	sessionSpec.Resume = spec.Resume
 
 	activityDir := filepath.Join(spec.SprawlRoot, ".sprawl", "agents", spec.Name)
 	if err := os.MkdirAll(activityDir, 0o750); err != nil {
@@ -285,6 +302,39 @@ func runActivitySubscriber(bus *runtimepkg.EventBus, obs interface {
 	}
 }
 
+// runFaultSubscriber subscribes to bus and forwards EventBackendFaulted
+// events to emitter. The returned stop function unsubscribes (closing the
+// channel) and waits for the goroutine to drain. A nil emitter is
+// tolerated — the subscriber still drains the bus so the channel doesn't
+// back up. QUM-602.
+func runFaultSubscriber(bus *runtimepkg.EventBus, agentName string, emitter func(agent, class, reason, nextAction string), name string) func() {
+	ch, unsub := bus.SubscribeNamed(name, 4)
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for ev := range ch {
+			if ev.Type != runtimepkg.EventBackendFaulted {
+				continue
+			}
+			if emitter == nil {
+				continue
+			}
+			reason := ""
+			if ev.Error != nil {
+				reason = ev.Error.Error()
+			}
+			emitter(agentName, ev.FaultClass, reason, ev.FaultNextAction)
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			unsub()
+			<-doneCh
+		})
+	}
+}
+
 type unifiedHandle struct {
 	rt            *runtimepkg.UnifiedRuntime
 	session       backendpkg.Session
@@ -293,6 +343,7 @@ type unifiedHandle struct {
 	activityFile  *os.File
 	activityClose func() error
 	stopActivity  func()
+	stopFault     func()
 	sprawlRoot    string
 	name          string
 	// statusDrainer, when non-nil, returns and clears the ephemeral
@@ -460,8 +511,30 @@ func (h *unifiedHandle) drainPendingToQueue() {
 const unifiedHandleStopWaitTimeout = 5 * time.Second
 
 func (h *unifiedHandle) Stop(ctx context.Context) error {
+	return h.stopOnceWith(ctx, func(ctx context.Context) error { return h.rt.Stop(ctx) })
+}
+
+// StopAbandon is the QUM-600 teardown-only variant of Stop. It tells the
+// UnifiedRuntime to skip its polite Session.Interrupt (so a wedged stdin
+// pipe cannot stall retire) and otherwise mirrors Stop's
+// subscriber-teardown / session-teardown / activity-close sequence.
+func (h *unifiedHandle) StopAbandon(ctx context.Context) error {
+	return h.stopOnceWith(ctx, func(ctx context.Context) error {
+		return h.rt.StopWithOptions(ctx, runtimepkg.StopOptions{SkipPoliteInterrupt: true})
+	})
+}
+
+// stopOnceWith is the shared body for Stop / StopAbandon. The caller picks
+// how the UnifiedRuntime is stopped; everything else (subscriber teardown,
+// session teardown, activity close) is identical.
+func (h *unifiedHandle) stopOnceWith(ctx context.Context, stopRuntime func(context.Context) error) error {
 	h.stopOnce.Do(func() {
-		err := h.rt.Stop(ctx)
+		err := stopRuntime(ctx)
+		if h.stopFault != nil {
+			joinWithTimeout(h.stopFault, stopActivityTimeout,
+				"stopFault abandoned — likely wedged backend-fault subscriber goroutine (QUM-602)",
+				"handle", "unifiedHandle", "agent", h.name)
+		}
 		if h.stopDelivery != nil {
 			joinWithTimeout(h.stopDelivery, stopActivityTimeout,
 				"stopDelivery abandoned — likely wedged delivery-confirmation subscriber goroutine (QUM-580)",
@@ -509,6 +582,13 @@ func (h *unifiedHandle) SessionID() string {
 // QUM-585 — surfaced through the peek MCP tool's JSON payload.
 func (h *unifiedHandle) InAutonomousTurn() bool {
 	return h.session.InAutonomousTurn()
+}
+
+// IsTerminallyFaulted reports whether the underlying backend session has been
+// poisoned with a sticky terminal error (QUM-601). AgentRuntime.Recover probes
+// the handle via this method to decide whether in-place recovery is needed.
+func (h *unifiedHandle) IsTerminallyFaulted() bool {
+	return h.session.IsTerminallyFaulted()
 }
 
 func (h *unifiedHandle) Capabilities() backendpkg.Capabilities {

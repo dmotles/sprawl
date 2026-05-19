@@ -24,6 +24,7 @@ func (h *fakeInAutonomousTurnHandle) Wake() error                           { re
 func (h *fakeInAutonomousTurnHandle) WakeForDelivery() error                { return nil }
 func (h *fakeInAutonomousTurnHandle) ForceInterruptDelivery() error         { return nil }
 func (h *fakeInAutonomousTurnHandle) Stop(context.Context) error            { return nil }
+func (h *fakeInAutonomousTurnHandle) StopAbandon(context.Context) error     { return nil }
 func (h *fakeInAutonomousTurnHandle) SessionID() string                     { return h.sessionID }
 func (h *fakeInAutonomousTurnHandle) Capabilities() backendpkg.Capabilities { return h.caps }
 func (h *fakeInAutonomousTurnHandle) Done() <-chan struct{}                 { return h.doneCh }

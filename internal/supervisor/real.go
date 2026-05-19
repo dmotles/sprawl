@@ -108,6 +108,19 @@ type Real struct {
 	// live validate-output popup (QUM-588). nil is allowed and disables.
 	validateEmitter func(callID, step string, kv map[string]string)
 
+	// faultEmitter, when non-nil, is invoked when a child runtime's
+	// backend session fires a sticky terminal error (QUM-602). The TUI
+	// installs this to surface a fault banner + tree-row indicator. The
+	// emitter is propagated into newly-constructed runtime starters via
+	// dispatchFault so the indirection survives SetChildMCPConfig
+	// rebuilds.
+	faultEmitter func(agent, class, reason, nextAction string)
+
+	// recoveredEmitter, when non-nil, is invoked after a successful
+	// Real.Recover so the TUI can clear its per-agent fault sticker (QUM-601).
+	// Mirrors faultEmitter contracts: nil-safe, idempotent install/clear.
+	recoveredEmitter func(agent string)
+
 	// questions is the in-process question queue for ask_user_question
 	// flows (QUM-527 slice 1). See question.go.
 	questions *questionQueue
@@ -170,6 +183,33 @@ func (r *Real) SetProgressEmitter(fn func(callID, step, tail string)) {
 // allowed and disables the fan-out.
 func (r *Real) SetValidateEmitter(fn func(callID, step string, kv map[string]string)) {
 	r.validateEmitter = fn
+}
+
+// SetBackendFaultEmitter installs a fan-out hook invoked whenever a child
+// runtime's backend session fires a sticky terminal error (QUM-602). The
+// host TUI uses this to render a fault banner and tag the agent's tree row.
+// nil is allowed and clears the emitter; install + clear must both be
+// idempotent and panic-free (mirrors SetProgressEmitter).
+func (r *Real) SetBackendFaultEmitter(fn func(agent, class, reason, nextAction string)) {
+	r.faultEmitter = fn
+}
+
+// dispatchFault reads the currently-installed faultEmitter and forwards
+// the call. Indirection lets us survive SetChildMCPConfig rebuilds — the
+// per-starter closure always reaches the live emitter, not a stale capture.
+func (r *Real) dispatchFault(agent, class, reason, nextAction string) {
+	if fn := r.faultEmitter; fn != nil {
+		fn(agent, class, reason, nextAction)
+	}
+}
+
+// SetBackendRecoveredEmitter installs a fan-out hook invoked whenever
+// Real.Recover successfully completes in-place recovery for an agent
+// (QUM-601). The TUI uses this to clear the per-agent fault sticker and
+// surface a "backend recovered on X" banner. nil is allowed and clears the
+// emitter; install + clear must both be idempotent and panic-free.
+func (r *Real) SetBackendRecoveredEmitter(fn func(agent string)) {
+	r.recoveredEmitter = fn
 }
 
 // SetCallLogger installs the per-MCP-call observability logger on this
@@ -284,6 +324,7 @@ func NewReal(cfg Config) (*Real, error) {
 	starter := newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
 	if s, ok := starter.(*inProcessUnifiedStarter); ok {
 		s.statusDrainer = r.statusNotifier.Drain
+		s.faultEmitter = r.dispatchFault
 	}
 	r.runtimeStarter = starter
 	return r, nil
@@ -352,8 +393,11 @@ func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []st
 		initSpec.ToolBridge = r.mcpBridge
 	}
 	starter := newInProcessUnifiedStarter(initSpec, allowedTools)
-	if s, ok := starter.(*inProcessUnifiedStarter); ok && r.statusNotifier != nil {
-		s.statusDrainer = r.statusNotifier.Drain
+	if s, ok := starter.(*inProcessUnifiedStarter); ok {
+		if r.statusNotifier != nil {
+			s.statusDrainer = r.statusNotifier.Drain
+		}
+		s.faultEmitter = r.dispatchFault
 	}
 	r.runtimeStarter = starter
 }
@@ -553,13 +597,26 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 		stopCtx, cancel := withRuntimeStopTimeout(ctx)
 		defer cancel()
 		cp := retireDeps.Checkpoint
+		startLabel := "retire.runtime-stop-start"
+		doneLabel := "retire.runtime-stop-done"
+		if abandon {
+			startLabel = "retire.runtime-stop-abandon-start"
+			doneLabel = "retire.runtime-stop-abandon-done"
+		}
 		if cp != nil {
-			cp("retire.runtime-stop-start", "agent_name", agentName)
+			cp(startLabel, "agent_name", agentName)
 		}
 		stopStart := time.Now()
-		stopErr := runtime.Stop(stopCtx)
+		var stopErr error
+		if abandon {
+			// QUM-600: abandon path skips the polite Session.Interrupt
+			// issued by Stop so a wedged stdin writer cannot stall retire.
+			stopErr = runtime.StopAbandon(stopCtx)
+		} else {
+			stopErr = runtime.Stop(stopCtx)
+		}
 		if cp != nil {
-			cp("retire.runtime-stop-done",
+			cp(doneLabel,
 				"agent_name", agentName,
 				"duration_ms", time.Since(stopStart).Milliseconds(),
 				"wait_timeout", runtime.StopWaitTimedOut())
@@ -645,6 +702,44 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 		return err
 	}
 	r.syncRuntimeFromState(agentName)
+	return nil
+}
+
+// Recover dispatches in-place recovery on the named agent's runtime (QUM-601).
+// On success, fires the BackendRecoveredEmitter (if installed) so the TUI can
+// clear its per-agent fault sticker. ErrRecoverNotNeeded (session healthy) is
+// propagated to the caller verbatim — callers (notably the MCP recover tool)
+// treat it as a success-with-no-op.
+func (r *Real) Recover(ctx context.Context, agentName string) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+	if r.runtimeRegistry == nil {
+		return fmt.Errorf("agent %q not found", agentName)
+	}
+	runtime, ok := r.runtimeRegistry.Get(agentName)
+	if !ok {
+		return fmt.Errorf("agent %q not found", agentName)
+	}
+	id := calllog.CallID(ctx)
+	cp := r.composeCheckpoint(id)
+	if cp != nil {
+		cp("recover.start", "agent_name", agentName)
+	}
+	err := runtime.Recover(ctx)
+	if cp != nil {
+		var msg string
+		if err != nil {
+			msg = err.Error()
+		}
+		cp("recover.done", "agent_name", agentName, "err", msg)
+	}
+	if err != nil {
+		return err
+	}
+	if emit := r.recoveredEmitter; emit != nil {
+		emit(agentName)
+	}
 	return nil
 }
 

@@ -82,6 +82,12 @@ type AppModel struct {
 	rootUnread    int
 	agentBuffers  map[string]*AgentBuffer
 
+	// faults is the per-agent backend-fault sticker map keyed by agent
+	// name. Populated by BackendFaultMsg and re-applied on every
+	// rebuildTree so the tree row's FAULT badge survives AgentTreeMsg
+	// rebuilds. QUM-602.
+	faults map[string]backendFault
+
 	activePanel Panel
 	showConfirm bool
 	theme       Theme
@@ -269,6 +275,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		observedAgent:       rootAgent,
 		rootAgent:           rootAgent,
 		agentBuffers:        agentBuffers,
+		faults:              make(map[string]backendFault),
 		activePanel:         startPanel,
 		theme:               theme,
 		restartFunc:         restartFunc,
@@ -1212,6 +1219,51 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case BackendFaultMsg:
+		// QUM-602: stamp the per-agent fault sticker (re-applied on every
+		// rebuildTree) and surface an operator-facing banner in the root
+		// viewport.
+		if m.faults == nil {
+			m.faults = make(map[string]backendFault)
+		}
+		m.faults[msg.Agent] = backendFault{
+			Class:      msg.Class,
+			Reason:     msg.Reason,
+			NextAction: msg.NextAction,
+		}
+		m.rootVP().AppendStatus(fmt.Sprintf("backend fault on %s: %s — %s", msg.Agent, msg.Class, msg.NextAction))
+		m.rebuildTree()
+		return m, nil
+
+	case BackendFaultClearedMsg:
+		// QUM-601: in-place recovery succeeded. Drop the per-agent fault
+		// sticker, surface a recovery banner in the root viewport, and
+		// rebuild the tree so the FAULT badge disappears from the row.
+		// Viewport history is intentionally retained — operators keep the
+		// fault/recovery sequence visible for forensics.
+		if m.faults != nil {
+			delete(m.faults, msg.Agent)
+		}
+		m.rootVP().AppendStatus(fmt.Sprintf("backend recovered on %s", msg.Agent))
+		m.rebuildTree()
+		// If the recovered agent is the one currently streaming into the
+		// child viewport, re-point the child adapter at the new unified
+		// runtime. When no new runtime is reachable (e.g. recovery is still
+		// in flight), tear down the adapter and let the next AgentSelectedMsg
+		// re-attach.
+		if m.childAdapterAgent == msg.Agent && m.childAdapter != nil {
+			if urt := m.lookupUnifiedRuntime(msg.Agent); urt != nil {
+				m.childAdapter.Observe(urt)
+				m.childAdapterEpoch++
+			} else {
+				m.childAdapter.Cancel()
+				m.childAdapter = nil
+				m.childAdapterAgent = ""
+				m.childAdapterEpoch++
+			}
+		}
+		return m, nil
+
 	case MCPCallStartedMsg:
 		// QUM-497: MCP server is reporting a tool call has begun. Insert into
 		// the active-ops map (keyed by call_id), arm the 1Hz tick if this is
@@ -1878,8 +1930,25 @@ func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
 	m.rootVP().SetMessages(entries)
 }
 
+// backendFault stores the per-agent backend-fault sticker (QUM-602). Mirrors
+// BackendFaultMsg's payload minus the agent key (which is the map key).
+type backendFault struct {
+	Class      string
+	Reason     string
+	NextAction string
+}
+
 func (m *AppModel) rebuildTree() {
 	nodes := PrependWeaveRoot(m.childNodes, m.turnState.String(), m.rootUnread)
+	// QUM-602: re-apply per-agent fault stickers so the FAULT badge
+	// survives AgentTreeMsg-driven node rebuilds.
+	if len(m.faults) > 0 {
+		for i := range nodes {
+			if f, ok := m.faults[nodes[i].Name]; ok {
+				nodes[i].FaultClass = f.Class
+			}
+		}
+	}
 	m.tree.SetNodes(nodes)
 }
 

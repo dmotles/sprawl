@@ -2,7 +2,9 @@ package supervisor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -11,6 +13,12 @@ import (
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 )
+
+// ErrRecoverNotNeeded is returned by AgentRuntime.Recover when the live
+// handle's backend session is still healthy (IsTerminallyFaulted() == false),
+// signaling to callers (Real.Recover / the MCP recover tool) that the request
+// is a no-op success. QUM-601.
+var ErrRecoverNotNeeded = errors.New("supervisor: session healthy, no recovery needed")
 
 // unifiedRuntimeProvider is implemented by RuntimeHandles backed by a
 // UnifiedRuntime, so consumers (e.g. the TUI viewport stream wiring) can
@@ -52,6 +60,9 @@ const (
 	RuntimeEventInterrupted RuntimeEventKind = "interrupted"
 	RuntimeEventTaskQueued  RuntimeEventKind = "task_queued"
 	RuntimeEventStateSynced RuntimeEventKind = "state_synced"
+	// RuntimeEventRecovered fires after AgentRuntime.Recover swaps in a
+	// fresh handle for a faulted session. QUM-601.
+	RuntimeEventRecovered RuntimeEventKind = "recovered"
 )
 
 // RuntimeStartSpec is the internal-only launch seam for same-process child runtimes.
@@ -62,6 +73,11 @@ type RuntimeStartSpec struct {
 	SprawlRoot string
 	SessionID  string
 	TreePath   string
+	// Resume, when true, causes the backend session spec built during
+	// prepareLaunch to set Resume=true so the spawned claude subprocess is
+	// instructed to resume the prior conversation transcript (QUM-601 in-
+	// place recovery). Initial-start paths leave it false (fresh session).
+	Resume bool
 }
 
 // RuntimeHandle is the live controller for a started in-process child runtime.
@@ -76,6 +92,11 @@ type RuntimeHandle interface {
 	// recipient is idle. See QUM-549/QUM-550.
 	ForceInterruptDelivery() error
 	Stop(ctx context.Context) error
+	// StopAbandon is the abandon-mode teardown variant: skips the polite
+	// Session.Interrupt issued by Stop and goes straight to Close + Kill
+	// + bounded Wait. Used by Real.Retire when abandon=true so a wedged
+	// backend Interrupt cannot stall retire. (QUM-600)
+	StopAbandon(ctx context.Context) error
 	SessionID() string
 	Capabilities() backendpkg.Capabilities
 }
@@ -137,6 +158,11 @@ type AgentRuntime struct {
 	subscribers      map[int]chan RuntimeEvent
 
 	stopWaitTimedOut atomic.Bool
+
+	// recoverMu serializes Recover. TryLock-based fail-fast so concurrent
+	// callers get a "recovery already in progress" error rather than queuing.
+	// QUM-601.
+	recoverMu sync.Mutex
 }
 
 // StopWaitTimedOut reports whether the most recent Stop on this runtime's
@@ -394,6 +420,123 @@ func (r *AgentRuntime) ForceInterruptDelivery() error {
 
 // Stop stops the tracked runtime handle, if any.
 func (r *AgentRuntime) Stop(ctx context.Context) error {
+	return r.stopWithFunc(ctx, func(h RuntimeHandle) error { return h.Stop(ctx) })
+}
+
+// StopAbandon stops the tracked runtime handle using the teardown-only
+// path that skips the polite Session.Interrupt issued by Stop. Used by
+// Real.Retire(abandon=true). See QUM-600.
+func (r *AgentRuntime) StopAbandon(ctx context.Context) error {
+	return r.stopWithFunc(ctx, func(h RuntimeHandle) error { return h.StopAbandon(ctx) })
+}
+
+// Recover performs in-place recovery on a faulted backend session (QUM-601).
+//
+// Behavior:
+//   - If another Recover is already in progress, returns a "recovery already
+//     in progress" error immediately (TryLock fail-fast).
+//   - If the runtime is not in lifecycle Started, returns a "cannot recover"
+//     error (no handle to swap).
+//   - If the live handle's session reports !IsTerminallyFaulted(), returns
+//     ErrRecoverNotNeeded so callers can surface a "session healthy" ack.
+//   - Otherwise: builds a RuntimeStartSpec from the current snapshot, calls
+//     StopAbandon on the dead handle (errors logged but not fatal), invokes
+//     starter.Start to build a fresh handle, swaps it in atomically, and
+//     emits RuntimeEventRecovered.
+//
+// Handles that do not expose IsTerminallyFaulted() bool are treated as faulted
+// (always recover) — defensive default; production handles all expose it via
+// the embedded backend.Session.
+func (r *AgentRuntime) Recover(ctx context.Context) error {
+	if !r.recoverMu.TryLock() {
+		return fmt.Errorf("supervisor: recovery already in progress")
+	}
+	defer r.recoverMu.Unlock()
+
+	r.mu.RLock()
+	starter := r.starter
+	handle := r.handle
+	lifecycle := r.snapshot.Lifecycle
+	spec := RuntimeStartSpec{
+		Name:       r.snapshot.Name,
+		Worktree:   r.snapshot.Worktree,
+		SprawlRoot: r.sprawlRoot,
+		SessionID:  r.snapshot.SessionID,
+		TreePath:   r.snapshot.TreePath,
+		// Recover instructs the new backend session to resume the prior
+		// conversation transcript so history is preserved (QUM-601).
+		Resume: true,
+	}
+	r.mu.RUnlock()
+
+	if lifecycle != RuntimeLifecycleStarted {
+		return fmt.Errorf("supervisor: agent %q is in lifecycle %q, cannot recover", spec.Name, lifecycle)
+	}
+	if handle == nil {
+		return fmt.Errorf("supervisor: agent %q has no live handle, cannot recover", spec.Name)
+	}
+	if starter == nil {
+		return fmt.Errorf("supervisor: agent %q has no runtime starter, cannot recover", spec.Name)
+	}
+
+	// Probe handle for terminal-fault state. Handles that don't expose the
+	// probe are treated as faulted (always recover).
+	if probe, ok := handle.(interface{ IsTerminallyFaulted() bool }); ok {
+		if !probe.IsTerminallyFaulted() {
+			return ErrRecoverNotNeeded
+		}
+	}
+
+	// Detach the watcher BEFORE StopAbandon so the watchHandleExit
+	// goroutine's `if r.handle == handle` guard sees a stale match and
+	// no-ops when the abandoned handle's Done() closes. This suppresses
+	// the spurious RuntimeEventStopped that would otherwise race against
+	// the post-restart RuntimeEventRecovered emission.
+	r.mu.Lock()
+	r.handle = nil
+	r.mu.Unlock()
+
+	if err := handle.StopAbandon(ctx); err != nil {
+		slog.Warn(
+			"supervisor: Recover StopAbandon of faulted handle returned error; continuing with restart",
+			slog.String("agent", spec.Name),
+			slog.Any("err", err),
+		)
+	}
+
+	newHandle, err := starter.Start(ctx, spec)
+	if err != nil {
+		// Recovery failed — the agent has no live handle. Flip lifecycle
+		// to Stopped and emit so subscribers reflect the broken state.
+		r.mu.Lock()
+		r.snapshot.Lifecycle = RuntimeLifecycleStopped
+		r.mu.Unlock()
+		r.emit(RuntimeEventStopped)
+		return fmt.Errorf("supervisor: recover Start for %q: %w", spec.Name, err)
+	}
+
+	r.mu.Lock()
+	r.handle = newHandle
+	r.snapshot.Lifecycle = RuntimeLifecycleStarted
+	r.snapshot.Capabilities = newHandle.Capabilities()
+	if sid := newHandle.SessionID(); sid != "" {
+		r.snapshot.SessionID = sid
+	}
+	r.mu.Unlock()
+
+	r.emit(RuntimeEventRecovered)
+
+	if doneAware, ok := newHandle.(runtimeHandleDone); ok && doneAware.Done() != nil {
+		r.watchHandleExit(newHandle, doneAware.Done())
+	}
+	return nil
+}
+
+// stopWithFunc is the shared body for Stop / StopAbandon. The caller picks
+// which handle method to invoke; bookkeeping (StopWaitTimedOut capture,
+// lifecycle transition, RuntimeEventStopped emission) is identical for
+// both paths.
+func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) error) error {
 	r.mu.RLock()
 	handle := r.handle
 	r.mu.RUnlock()
@@ -401,7 +544,7 @@ func (r *AgentRuntime) Stop(ctx context.Context) error {
 	if handle == nil {
 		return nil
 	}
-	stopErr := handle.Stop(ctx)
+	stopErr := stop(handle)
 	// Capture the bounded-Wait timeout flag (QUM-542/QUM-546) even when Stop
 	// returns an error, so the retire.runtime-stop-done / kill.runtime-stop-done
 	// checkpoints reflect the actual handle state.
