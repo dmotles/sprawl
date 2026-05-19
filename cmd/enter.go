@@ -34,6 +34,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/host"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
@@ -558,6 +559,11 @@ func runEnter(deps *enterDeps) error {
 		restartFunc = makeRestartFunc(deps.newSession, sup, deps.finalizeHandoff, sprawlRoot, consolidationCh, state, &bridge, os.Stderr)
 	}
 	model := tui.NewAppModel(accentColor, repoName, buildVersion, bridge, sup, sprawlRoot, restartFunc)
+	// QUM-588: read .sprawl/config.yaml's validate_popup_after_seconds and
+	// install on the AppModel. Failure to load is non-fatal — defaults apply.
+	if cfg, cErr := config.Load(sprawlRoot); cErr == nil && cfg != nil {
+		model.SetValidatePopupAfter(cfg.ValidatePopupAfter())
+	}
 	if homeDir, hErr := os.UserHomeDir(); hErr == nil {
 		// QUM-332: child-agent transcript tailing resolves Claude session
 		// log paths via memory.SessionLogPath(homeDir, worktree, sessionID).
@@ -607,6 +613,12 @@ func runEnter(deps *enterDeps) error {
 		if r, ok := sup.(*supervisor.Real); ok {
 			r.SetProgressEmitter(func(callID, step, tail string) {
 				send(tui.MCPCallProgressMsg{CallID: callID, Step: step, Tail: tail})
+			})
+			// QUM-588: richer kv-preserving fan-out for the validate popup.
+			// Separate from progressEmitter so the QUM-497 status-bar surface
+			// is unaffected.
+			r.SetValidateEmitter(func(callID, step string, kv map[string]string) {
+				send(tui.ValidateEventMsg{CallID: callID, Step: step, KV: kv})
 			})
 		}
 

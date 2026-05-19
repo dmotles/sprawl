@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/config"
@@ -37,6 +38,14 @@ type MergeDeps struct {
 type MergeOutcome struct {
 	NoOp           bool
 	ResolvedBranch string
+
+	// QueuedBehind is set by the supervisor layer (not agentops.Merge) when
+	// the merge was queued behind another in-flight merge on the same
+	// sprawl root. Empty when the merge ran uncontended. See QUM-588.
+	QueuedBehind string
+	// QueueWait is the time spent blocked on the per-sprawl-root merge
+	// lock before this merge began executing. Zero when uncontended.
+	QueueWait time.Duration
 }
 
 // Merge squash-merges agentName's branch into the caller's current branch.

@@ -388,10 +388,14 @@ func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, e
 	if err != nil {
 		return "", err
 	}
-	if outcome != nil && outcome.NoOp {
-		return fmt.Sprintf("Nothing to merge: %s has no new commits", p.AgentName), nil
+	prefix := ""
+	if outcome != nil && outcome.QueuedBehind != "" {
+		prefix = fmt.Sprintf("Queued behind merge of %s (waited %s). ", outcome.QueuedBehind, outcome.QueueWait.Round(time.Millisecond))
 	}
-	return fmt.Sprintf("Merged agent %s", p.AgentName), nil
+	if outcome != nil && outcome.NoOp {
+		return prefix + fmt.Sprintf("Nothing to merge: %s has no new commits", p.AgentName), nil
+	}
+	return prefix + fmt.Sprintf("Merged agent %s", p.AgentName), nil
 }
 
 func (s *Server) toolRetire(ctx context.Context, args json.RawMessage) (string, error) {

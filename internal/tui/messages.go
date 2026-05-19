@@ -551,6 +551,17 @@ type MCPCallProgressMsg struct {
 	Tail   string
 }
 
+// ValidateEventMsg is dispatched by cmd/enter.go's wrapper around the
+// supervisor's validateEmitter. It carries every merge.* checkpoint (queued,
+// starting, validate-started, validate-line, validate-ended) with the full
+// kv payload preserved as a string map so the ValidatePopupModel can read
+// `cmd`, `log_path`, `line`, `behind`, `exit`, `error`, etc. by name (QUM-588).
+type ValidateEventMsg struct {
+	CallID string
+	Step   string
+	KV     map[string]string
+}
+
 // MCPCallEndedMsg is dispatched when a tool call returns (success, error,
 // or panic). The TUI removes the op from the status bar and stops tracking
 // elapsed time. (QUM-497)

@@ -34,6 +34,7 @@ func (m HelpModel) View() string {
 		{"Enter", "Select agent"},
 		{"Ctrl+N / Ctrl+P", "Cycle observed agent"},
 		{"Ctrl+O", "Toggle expand tool-call inputs and outputs"},
+		{"Ctrl+V", "Toggle validate-output popup (while merge validate running)"},
 		{"/switch <name>", "Switch agent (fuzzy match)"},
 		{"PgUp / PgDn", "Scroll output"},
 		{"v (viewport)", "Enter select mode"},

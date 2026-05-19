@@ -13,10 +13,24 @@ import (
 
 // Config represents .sprawl/config.yaml project-level settings.
 type Config struct {
-	Validate        string `yaml:"validate"`
-	ValidateTimeout string `yaml:"validate_timeout"`
-	sprawlRoot      string
-	values          map[string]string
+	Validate                  string `yaml:"validate"`
+	ValidateTimeout           string `yaml:"validate_timeout"`
+	ValidatePopupAfterSeconds int    `yaml:"validate_popup_after_seconds"`
+	sprawlRoot                string
+	values                    map[string]string
+}
+
+// DefaultValidatePopupAfterSeconds is the default threshold after which the
+// TUI validate-output popup auto-opens for a running merge validate (QUM-588).
+const DefaultValidatePopupAfterSeconds = 10
+
+// ValidatePopupAfter returns the configured popup-open threshold or the
+// default when unset (zero or negative).
+func (c *Config) ValidatePopupAfter() time.Duration {
+	if c.ValidatePopupAfterSeconds <= 0 {
+		return time.Duration(DefaultValidatePopupAfterSeconds) * time.Second
+	}
+	return time.Duration(c.ValidatePopupAfterSeconds) * time.Second
 }
 
 // ValidateTimeoutDuration returns the parsed validate_timeout, or 0 if unset

@@ -685,7 +685,11 @@ func TestMerge_EmitsCheckpointSequence(t *testing.T) {
 	}
 }
 
-func TestMerge_CheckpointStopsOnValidateError(t *testing.T) {
+func TestMerge_CheckpointEmitsValidateEndedOnFailure(t *testing.T) {
+	// QUM-588: validate-ended is emitted on BOTH success and failure with
+	// an `exit` kv so the TUI popup can detect end-of-validate regardless
+	// of outcome and auto-restore on failure. poke-written remains
+	// success-only because the merge is rolled back on failure.
 	deps := newTestDeps()
 	cfg := newTestConfig()
 
@@ -704,13 +708,10 @@ func TestMerge_CheckpointStopsOnValidateError(t *testing.T) {
 		t.Fatal("expected at least one checkpoint")
 	}
 	last := (*steps)[len(*steps)-1]
-	if last != "merge.validate-started" {
-		t.Errorf("last step = %q, want merge.validate-started (steps=%v)", last, *steps)
+	if last != "merge.validate-ended" {
+		t.Errorf("last step = %q, want merge.validate-ended (steps=%v)", last, *steps)
 	}
 	for _, s := range *steps {
-		if s == "merge.validate-ended" {
-			t.Error("validate-ended should not be emitted on validate failure")
-		}
 		if s == "merge.poke-written" {
 			t.Error("poke-written should not be emitted on validate failure")
 		}

@@ -48,9 +48,19 @@ type StatusBarModel struct {
 	// is owned by the model — callers pass a fresh slice to SetActiveOps.
 	activeOps []OpDescriptor
 
+	// validatePill renders a "validate: 12s, running" segment while the
+	// validate popup is minimized (QUM-588). Empty hides the segment.
+	validatePill string
+
 	// nowFn returns the wall-clock time used for elapsed-time rendering.
 	// Defaults to time.Now; tests override it for deterministic output.
 	nowFn func() time.Time
+}
+
+// SetValidatePill installs the segment text shown while the validate popup
+// is minimized. Empty hides the segment. QUM-588.
+func (m *StatusBarModel) SetValidatePill(pill string) {
+	m.validatePill = pill
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -88,6 +98,9 @@ func (m StatusBarModel) View() string {
 	}
 	if seg := m.activeOpsSegment(); seg != "" {
 		parts = append(parts, seg)
+	}
+	if m.validatePill != "" {
+		parts = append(parts, m.validatePill)
 	}
 	if m.restartLabel != "" {
 		parts = append(parts, m.restartLabel)

@@ -28,6 +28,14 @@ import (
 	"github.com/gofrs/flock"
 )
 
+// mergeInflightInfo records the agent name and start time of an in-flight
+// merge so concurrent Merge callers can capture contention metadata. See
+// QUM-588.
+type mergeInflightInfo struct {
+	agentName string
+	startedAt time.Time
+}
+
 // Config holds configuration for the real supervisor.
 type Config struct {
 	SprawlRoot        string
@@ -94,6 +102,12 @@ type Real struct {
 	// without re-rendering the whole call log. (QUM-497)
 	progressEmitter func(callID, step, tail string)
 
+	// validateEmitter is a richer, kv-preserving fan-out for the merge
+	// validate sub-path. It receives every merge.* checkpoint with the
+	// full kv slice decoded into a map. The TUI uses this to drive the
+	// live validate-output popup (QUM-588). nil is allowed and disables.
+	validateEmitter func(callID, step string, kv map[string]string)
+
 	// questions is the in-process question queue for ask_user_question
 	// flows (QUM-527 slice 1). See question.go.
 	questions *questionQueue
@@ -111,6 +125,14 @@ type Real struct {
 	// Status reports are low-frequency in practice; serialization is a
 	// reasonable cost. See QUM-559 concurrency test.
 	reportMu sync.Mutex
+
+	// mergeSem serializes Real.Merge per-sprawl-root. Capacity 1: only one
+	// merge runs at a time. mergeInflight records who currently holds the
+	// sem so a queued caller can report "queued behind <name>" in its
+	// outcome. See QUM-588.
+	mergeSem        chan struct{}
+	mergeInflightMu sync.Mutex
+	mergeInflight   *mergeInflightInfo
 
 	// gitRevParseHEAD is an injectable seam for resolving a worktree's
 	// HEAD SHA. Unit tests inject a fake; production callers leave this
@@ -139,6 +161,15 @@ func realGitRevParseHEAD(dir string) (string, error) {
 // allowed and disables the fan-out.
 func (r *Real) SetProgressEmitter(fn func(callID, step, tail string)) {
 	r.progressEmitter = fn
+}
+
+// SetValidateEmitter installs a richer, kv-preserving fan-out hook invoked
+// for every merge.* checkpoint (queued/starting/validate-started/-line/-ended)
+// with the active call_id, step name, and a string-keyed kv map. The host
+// TUI uses this to drive the live validate-output popup (QUM-588). nil is
+// allowed and disables the fan-out.
+func (r *Real) SetValidateEmitter(fn func(callID, step string, kv map[string]string)) {
+	r.validateEmitter = fn
 }
 
 // SetCallLogger installs the per-MCP-call observability logger on this
@@ -247,6 +278,8 @@ func NewReal(cfg Config) (*Real, error) {
 
 		questions:      newQuestionQueue(),
 		statusNotifier: newStatusNotifier(),
+
+		mergeSem: make(chan struct{}, 1),
 	}
 	starter := newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
 	if s, ok := starter.(*inProcessUnifiedStarter); ok {
@@ -433,7 +466,53 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 // equality check inside agentops.Merge sees the correct caller. See QUM-487.
 func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noValidate bool) (*MergeOutcome, error) {
 	effective := r.effectiveCallerOr(ctx, caller)
-	return r.mergeFn(ctx, r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false)
+
+	// Detect contention BEFORE acquiring the sem so we capture who we'd
+	// queue behind. See QUM-588.
+	r.mergeInflightMu.Lock()
+	var behind string
+	if r.mergeInflight != nil {
+		behind = r.mergeInflight.agentName
+	}
+	r.mergeInflightMu.Unlock()
+
+	cp := r.composeCheckpoint(calllog.CallID(ctx))
+	queueStart := time.Now()
+	if behind != "" && cp != nil {
+		cp("merge.queued", "line", fmt.Sprintf("behind=%s", behind))
+	}
+
+	select {
+	case r.mergeSem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-r.mergeSem }()
+
+	queueWait := time.Since(queueStart)
+
+	r.mergeInflightMu.Lock()
+	r.mergeInflight = &mergeInflightInfo{agentName: agentName, startedAt: time.Now()}
+	r.mergeInflightMu.Unlock()
+	defer func() {
+		r.mergeInflightMu.Lock()
+		r.mergeInflight = nil
+		r.mergeInflightMu.Unlock()
+	}()
+
+	if behind != "" && cp != nil {
+		cp("merge.starting", "line", fmt.Sprintf("waited=%s behind=%s", queueWait.Round(time.Millisecond), behind))
+	}
+
+	outcome, err := r.mergeFn(ctx, r.mergeDepsForCaller(ctx, effective), agentName, message, noValidate, false)
+	if err != nil {
+		return nil, err
+	}
+	if outcome != nil && behind != "" {
+		outcome.QueuedBehind = behind
+		outcome.QueueWait = queueWait
+	}
+	return outcome, nil
 }
 
 // Retire accepts a `caller` parameter for the same reason as Merge — see
@@ -674,7 +753,8 @@ func (r *Real) composeCheckpoint(id string) func(step string, kv ...any) {
 		logFn = r.logger.CheckpointFn(id)
 	}
 	emit := r.progressEmitter
-	if logFn == nil && emit == nil {
+	vemit := r.validateEmitter
+	if logFn == nil && emit == nil && vemit == nil {
 		return nil
 	}
 	return func(step string, kv ...any) {
@@ -684,7 +764,32 @@ func (r *Real) composeCheckpoint(id string) func(step string, kv ...any) {
 		if emit != nil && id != "" {
 			emit(id, step, extractKVLine(kv))
 		}
+		if vemit != nil && id != "" && strings.HasPrefix(step, "merge.") {
+			vemit(id, step, kvToMap(kv))
+		}
 	}
+}
+
+// kvToMap decodes the flat ...any kv slice (k1, v1, k2, v2, ...) into a
+// string-keyed map. Non-string keys and values are skipped. Used by the
+// validateEmitter fan-out path (QUM-588).
+func kvToMap(kv []any) map[string]string {
+	if len(kv) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		k, ok := kv[i].(string)
+		if !ok {
+			continue
+		}
+		v, ok := kv[i+1].(string)
+		if !ok {
+			continue
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // extractKVLine returns the value of the "line" key from a flat kv slice,

@@ -134,25 +134,47 @@ func Merge(ctx context.Context, cfg *Config, deps *Deps) (*Result, error) {
 
 	// Step 7: Post-merge validation.
 	if !cfg.NoValidate && cfg.ValidateCmd != "" {
-		cpMerge(deps, "merge.validate-started", "cmd", cfg.ValidateCmd)
+		// QUM-588: open a persistent validate log under .sprawl/logs/ so
+		// every validate run is post-hoc inspectable via less/tail. The
+		// log is tee'd alongside the checkpoint sink and retained on both
+		// success and failure.
+		vlog, vlogErr := OpenValidateLog(cfg.SprawlRoot, nil, time.Now)
+		var logPath string
+		if vlogErr != nil {
+			fmt.Fprintf(deps.Stderr, "WARNING: could not open validate log: %v\n", vlogErr)
+		} else {
+			logPath = vlog.Path()
+		}
+		cpMerge(deps, "merge.validate-started", "cmd", cfg.ValidateCmd, "log_path", logPath)
 		timeout := cfg.ValidateTimeout
 		if timeout <= 0 {
 			timeout = DefaultValidateTimeout
 		}
 		validateCtx, cancel := context.WithTimeout(ctx, timeout)
 		sink := func(line string) {
+			if vlog != nil {
+				vlog.Write(line)
+			}
 			cpMerge(deps, "merge.validate-line", "line", line)
 		}
 		output, err := deps.RunTestsStreaming(validateCtx, cfg.ParentWorktree, cfg.ValidateCmd, sink)
 		cancel()
+		if vlog != nil {
+			vlog.Finish(err)
+		}
 		if err != nil {
+			cpMerge(deps, "merge.validate-ended", "exit", "nonzero", "log_path", logPath, "error", err.Error())
 			if resetErr := deps.GitResetHard(cfg.ParentWorktree); resetErr != nil {
 				fmt.Fprintf(deps.Stderr, "WARNING: rollback (git reset --hard HEAD~1) failed: %v\n", resetErr)
 			}
 			truncated := truncateOutput(output, 50)
-			return nil, fmt.Errorf("post-merge validation failed: tests fail after merging %s into %s\nMerge rolled back. Your branch is back to its pre-merge state.\n%s\nUse --no-validate to skip validation", cfg.AgentName, cfg.ParentBranch, truncated)
+			suffix := ""
+			if logPath != "" {
+				suffix = fmt.Sprintf("\nFull validate log: %s", logPath)
+			}
+			return nil, fmt.Errorf("post-merge validation failed: tests fail after merging %s into %s\nMerge rolled back. Your branch is back to its pre-merge state.\n%s%s\nUse --no-validate to skip validation", cfg.AgentName, cfg.ParentBranch, truncated, suffix)
 		}
-		cpMerge(deps, "merge.validate-ended")
+		cpMerge(deps, "merge.validate-ended", "exit", "0", "log_path", logPath)
 	} else if !cfg.NoValidate && cfg.ValidateCmd == "" {
 		fmt.Fprintf(deps.Stderr, "WARNING: no validate command configured; skipping post-merge validation.\n  Configure with: sprawl config set validate \"<command>\"\n  See: sprawl config --help\n")
 	}

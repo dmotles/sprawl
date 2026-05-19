@@ -101,6 +101,11 @@ type AppModel struct {
 	showQuestion  bool
 	questionModel QuestionModel
 
+	// validatePopup renders the live validate-output popup (QUM-588).
+	// State transitions are driven by ValidateEventMsg dispatched from
+	// cmd/enter.go (which wraps the supervisor's validateEmitter).
+	validatePopup ValidatePopupModel
+
 	// quitting is set when the user confirms shutdown (Ctrl-C confirm
 	// dialog). It guards against a late RestartSessionMsg triggered from an
 	// EOF that arrived just before the user confirmed quit; without the
@@ -274,6 +279,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		mcpOpThresholdShown: make(map[string]bool),
 		cache:               newViewCache(),
 		questionModel:       NewQuestionModel(&theme),
+		validatePopup:       NewValidatePopupModel(&theme, 0),
 	}
 	_ = app.history.Load()
 	app.updateFocus()
@@ -466,6 +472,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.questionModel = m.questionModel.Show()
 			}
 			return m, nil
+		}
+
+		// Ctrl+V: toggle the validate-output popup between visible and
+		// minimized states (QUM-588). No-op when no validate is running or
+		// when the popup is in queued/failed sticky state.
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'v' || msg.Code == 'V') {
+			if m.validatePopup.ToggleMinimize() {
+				return m, nil
+			}
+			// Fall through if not consumed.
 		}
 
 		// Ctrl+O: toggle the global expand-tool-inputs flag (QUM-335).
@@ -1241,6 +1257,30 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case ValidateEventMsg:
+		// QUM-588: route validate checkpoints to the popup state machine.
+		// Batched cmds include the auto-open timer (one-shot tea.Tick) and
+		// the 1Hz elapsed-clock tick.
+		cmds := m.validatePopup.Handle(msg)
+		m.statusBar.SetValidatePill(m.validatePopup.Pill())
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
+
+	case validatePopupTimerMsg:
+		m.validatePopup.HandleTimer(msg)
+		m.statusBar.SetValidatePill(m.validatePopup.Pill())
+		return m, nil
+
+	case validatePopupTickMsg:
+		next := m.validatePopup.HandleTick(msg)
+		m.statusBar.SetValidatePill(m.validatePopup.Pill())
+		if next == nil {
+			return m, nil
+		}
+		return m, next
+
 	case MCPCallEndedMsg:
 		// QUM-497: tool call finished. Drop the op from the live set; the
 		// status bar segment vanishes once the next render fires.
@@ -1734,6 +1774,14 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		content = m.questionModel.View()
 	}
 
+	// QUM-588: the validate popup overlays content when Visible (queued,
+	// running-visible, or failed-restored). Drawn after question/help so
+	// it sits above ambient content but below confirm/error which are
+	// always higher priority.
+	if m.validatePopup.Visible() {
+		content = m.validatePopup.View()
+	}
+
 	if m.showConfirm {
 		content = m.confirm.View()
 	}
@@ -1929,6 +1977,7 @@ func (m *AppModel) resizePanels() {
 	m.errorDialog.SetSize(m.width, m.height)
 	m.palette.SetSize(m.width, m.height)
 	m.questionModel.SetSize(m.width, m.height)
+	m.validatePopup.SetSize(m.width, m.height)
 }
 
 // anyOtherModalUp reports whether any modal OTHER than the question modal is
@@ -2310,6 +2359,15 @@ func scheduleActivityTick(sup supervisor.Supervisor, agent string) tea.Cmd {
 // after model construction.
 func (m *AppModel) SetHomeDir(homeDir string) {
 	m.homeDir = homeDir
+}
+
+// SetValidatePopupAfter configures the auto-open threshold for the validate
+// popup. Pass 0 to use the default (10s). Wired by cmd/enter.go after model
+// construction from .sprawl/config.yaml's validate_popup_after_seconds.
+// QUM-588.
+func (m *AppModel) SetValidatePopupAfter(d time.Duration) {
+	m.validatePopup = NewValidatePopupModel(&m.theme, d)
+	m.validatePopup.SetSize(m.width, m.height)
 }
 
 // ActivityAdapter returns the activity-panel streaming adapter, or nil when

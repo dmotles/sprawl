@@ -161,7 +161,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "merge",
-			"description": "Squash-merge an agent's branch into the current branch. The agent is NOT retired — it stays alive and can continue working.",
+			"description": "Squash-merge an agent's branch into the current branch. The agent is NOT retired — it stays alive and can continue working. Acquires a per-sprawl-root lock; concurrent merges queue and run sequentially.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
