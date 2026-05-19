@@ -25,7 +25,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -152,6 +151,13 @@ func makeRestartFunc(
 			state.lastWasResume = wasResume
 		}
 		return newBridge, err
+	}
+}
+
+func drainResumeFailureSignal(ch <-chan struct{}) {
+	select {
+	case <-ch:
+	default:
 	}
 }
 
@@ -501,7 +507,7 @@ func runEnter(deps *enterDeps) error {
 	// resume attempt died within resumeFailureWindow.
 	state := &restartState{}
 
-	// resumeFailureCh is closed by the Claude subprocess's stderr marker
+	// resumeFailureCh is signaled by the Claude subprocess's stderr marker
 	// scanner when "No conversation found" fires. The onStart hook drains it
 	// and posts RestartSessionMsg — the TUI cannot detect the dead subprocess
 	// on its own because Bridge.WaitForEvent is only called after the user
@@ -510,10 +516,12 @@ func runEnter(deps *enterDeps) error {
 	// until the user typed something. Buffered to size 1 so a second marker
 	// trip in the same session is absorbed without blocking.
 	resumeFailureCh := make(chan struct{}, 1)
-	var resumeFailureOnce sync.Once
 	onResumeFailure := func() {
 		state.resumeMarkerTripped.Store(true)
-		resumeFailureOnce.Do(func() { close(resumeFailureCh) })
+		select {
+		case resumeFailureCh <- struct{}{}:
+		default:
+		}
 	}
 
 	// QUM-494: open the per-MCP-call observability logger. A failure to
@@ -542,6 +550,11 @@ func runEnter(deps *enterDeps) error {
 		var err error
 		var wasResume bool
 		bridge, wasResume, err = deps.newSession(sprawlRoot, sup, false, onResumeFailure)
+		if err != nil && state.resumeMarkerTripped.Swap(false) {
+			drainResumeFailureSignal(resumeFailureCh)
+			fmt.Fprintf(os.Stderr, "[enter] initial resume failed (no conversation found) — falling back to fresh session\n")
+			bridge, wasResume, err = deps.newSession(sprawlRoot, sup, true, onResumeFailure)
+		}
 		if err != nil {
 			return fmt.Errorf("creating session: %w", err)
 		}

@@ -299,6 +299,54 @@ func TestEnter_SessionError(t *testing.T) {
 	}
 }
 
+func TestEnter_InitialResumeFailureRetriesFresh(t *testing.T) {
+	tmpDir := t.TempDir()
+	stateDir := filepath.Join(tmpDir, ".sprawl", "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("setup mkdir: %v", err)
+	}
+
+	var calls int
+	var forceFresh []bool
+	msgCh := make(chan tea.Msg, 2)
+	deps := &enterDeps{
+		getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return tmpDir
+			}
+			return ""
+		},
+		runProgram: func(_ tea.Model, onStart func(func(tea.Msg))) error {
+			onStart(func(msg tea.Msg) { msgCh <- msg })
+			select {
+			case msg := <-msgCh:
+				t.Fatalf("initial resume fallback should drain pre-TUI restart signal; got %T", msg)
+			case <-time.After(50 * time.Millisecond):
+			}
+			return nil
+		},
+		newSession: func(_ string, _ supervisor.Supervisor, fresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error) {
+			calls++
+			forceFresh = append(forceFresh, fresh)
+			if calls == 1 {
+				onResumeFailure()
+				return nil, true, errors.New("resume failed")
+			}
+			return nil, false, nil
+		},
+	}
+
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter returned unexpected error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("newSession calls = %d, want 2", calls)
+	}
+	if len(forceFresh) != 2 || forceFresh[0] || !forceFresh[1] {
+		t.Errorf("forceFresh history = %v, want [false true]", forceFresh)
+	}
+}
+
 // --- Graceful shutdown tests ---
 
 type shutdownMockSupervisor struct {
