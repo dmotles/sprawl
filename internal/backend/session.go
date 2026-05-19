@@ -13,6 +13,50 @@ import (
 	"github.com/dmotles/sprawl/internal/protocol"
 )
 
+// QUM-595: host stdout-reader wedge fix knobs and sentinels. Forensic doc:
+// docs/research/permission-hang-forensic-2026-05-19.md.
+//
+// subscriberSendDeadline bounds how long runReader will block on a
+// per-turn subscriber send before declaring the consumer wedged and
+// faulting the session (F1). Exposed as a package var (not const) so
+// tests can override; production code must not mutate.
+//
+// hangCheckInterval is the watchdog tick cadence (D1). Same override
+// pattern.
+var (
+	subscriberSendDeadline = 5 * time.Second
+	hangCheckInterval      = 1 * time.Minute
+)
+
+const (
+	// observerQueueDepth bounds the per-session async Observer queue (F2).
+	// Frames beyond this depth are dropped and counted in
+	// Stats.ObserverDrops; the reader never blocks on a slow Observer.
+	observerQueueDepth = 256
+	// defaultHangTimeout applies when SessionConfig.HangTimeout is zero.
+	defaultHangTimeout = 10 * time.Minute
+)
+
+// ErrSubscriberWedged is the sentinel fatal error set on the session when
+// runReader's per-turn subscriber send exceeds subscriberSendDeadline (F1).
+// Callers see it via LastTurnError; subsequent StartTurn returns it directly.
+var ErrSubscriberWedged = errors.New("backend: subscriber send exceeded deadline (host reader wedged)")
+
+// ErrHangTimeout is the sentinel fatal error set by the D1 watchdog when no
+// frames arrive within SessionConfig.HangTimeout.
+var ErrHangTimeout = errors.New("backend: reader hang timeout (no frames within HangTimeout)")
+
+// Stats reports per-session drop counters surfaced for observability /
+// forensics. All fields are atomic-backed snapshots.
+type Stats struct {
+	// SubscriberDrops increments each time the per-turn subscriber send
+	// path hits subscriberSendDeadline (F1).
+	SubscriberDrops int64
+	// ObserverDrops increments each time a frame is dropped because the
+	// async Observer queue is full (F2).
+	ObserverDrops int64
+}
+
 // ManagedTransport is the shared subprocess transport contract for backend
 // sessions. It extends the stream-json send/recv path with lifecycle hooks so
 // callers can choose graceful close+wait or forceful kill semantics.
@@ -84,6 +128,9 @@ type SessionConfig struct {
 	Identity     string
 	Capabilities Capabilities
 	Observer     Observer
+	// HangTimeout configures the D1 reader-loop hang watchdog. Zero means
+	// defaultHangTimeout. Negative disables the watchdog entirely.
+	HangTimeout time.Duration
 }
 
 // Session is the shared session contract root and child adapters compile
@@ -106,6 +153,9 @@ type Session interface {
 	// while no StartTurn was pending. Returns false when no turn is in
 	// flight and false during sprawl-initiated turns.
 	InAutonomousTurn() bool
+	// BackendStats returns an atomic snapshot of per-session drop counters
+	// (QUM-595). See Stats.
+	BackendStats() Stats
 }
 
 // ErrTurnInProgress is returned when callers try to start a second concurrent
@@ -135,12 +185,33 @@ type session struct {
 	initSpec    InitSpec
 	currentTurn *turnFrame
 	fatalErr    error
+	// terminalErr is sticky once set. Unlike fatalErr (which LastTurnError
+	// consumes), terminalErr remains observable so subsequent StartTurn
+	// calls reject quickly after the session has been faulted by a
+	// non-recoverable reader-side fault (F1 wedge / D1 hang).
+	terminalErr error
 	started     bool
 
 	// readerCtx/readerCancel control the persistent stream reader.
 	readerCtx    context.Context
 	readerCancel context.CancelFunc
 	readerDone   chan struct{}
+
+	// QUM-595 wedge-fix surfaces.
+	// observerCh carries Observer dispatch out of the reader hot path (F2).
+	// Buffered observerQueueDepth; reader uses non-blocking select-default
+	// send, increments observerDrops on overflow. The drain goroutine
+	// reads serially to preserve arrival order.
+	observerCh      chan *protocol.Message
+	observerDone    chan struct{}
+	observerDrops   atomic.Int64
+	subscriberDrops atomic.Int64
+	// lastFrameAt is the monotonic unix-nano timestamp of the most recent
+	// frame observed by runReader. Read by the D1 watchdog. Initialized to
+	// the session-start instant so the watchdog has a baseline before the
+	// first frame.
+	lastFrameAt  atomic.Int64
+	watchdogDone chan struct{}
 
 	// Init handshake bookkeeping. initRequestID is the in-flight initialize
 	// control_request id (cleared once matched); initHandshakeResp is the
@@ -169,6 +240,9 @@ func NewSession(t ManagedTransport, cfg SessionConfig) Session {
 		inflight:          make(map[string]context.CancelFunc),
 		readerDone:        make(chan struct{}),
 		initHandshakeResp: make(chan *protocol.Message, 1),
+		observerCh:        make(chan *protocol.Message, observerQueueDepth),
+		observerDone:      make(chan struct{}),
+		watchdogDone:      make(chan struct{}),
 	}
 }
 
@@ -210,8 +284,34 @@ func (s *session) Start(_ context.Context) error {
 	s.readerCancel = cancel
 	s.mu.Unlock()
 
+	// Seed the watchdog baseline so the first tick doesn't immediately
+	// fault on an empty stream (D1).
+	s.lastFrameAt.Store(time.Now().UnixNano())
+
 	go s.runReader(readerCtx)
+	go s.runObserverDrain()
+	if hangTimeout := s.effectiveHangTimeout(); hangTimeout > 0 {
+		go s.runHangWatchdog(readerCtx, hangTimeout)
+	} else {
+		// Negative HangTimeout disables the watchdog; close its done
+		// channel so Close()'s join is a no-op.
+		close(s.watchdogDone)
+	}
 	return nil
+}
+
+// effectiveHangTimeout resolves SessionConfig.HangTimeout into the actual
+// duration the D1 watchdog uses. Zero → defaultHangTimeout. Negative → 0
+// (disabled, caller checks > 0).
+func (s *session) effectiveHangTimeout() time.Duration {
+	switch {
+	case s.config.HangTimeout < 0:
+		return 0
+	case s.config.HangTimeout == 0:
+		return defaultHangTimeout
+	default:
+		return s.config.HangTimeout
+	}
 }
 
 func (s *session) Initialize(ctx context.Context, spec InitSpec) error {
@@ -257,6 +357,11 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 	}
 
 	s.mu.Lock()
+	if s.terminalErr != nil {
+		err := s.terminalErr
+		s.mu.Unlock()
+		return nil, err
+	}
 	if s.fatalErr != nil {
 		err := s.fatalErr
 		s.mu.Unlock()
@@ -275,6 +380,11 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 			return nil, ctx.Err()
 		}
 		s.mu.Lock()
+		if s.terminalErr != nil {
+			err := s.terminalErr
+			s.mu.Unlock()
+			return nil, err
+		}
 		if s.fatalErr != nil {
 			err := s.fatalErr
 			s.mu.Unlock()
@@ -319,11 +429,18 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 // to ToolBridge asynchronously so the reader keeps draining stdout even
 // while a long-running MCP tool is in flight (QUM-552).
 func (s *session) runReader(ctx context.Context) {
+	// Snapshot the F1 deadline at goroutine entry so tests overriding
+	// the package var for a different session can't race with us. The
+	// production knob is constant for the process lifetime.
+	sendDeadline := subscriberSendDeadline
+
 	defer close(s.readerDone)
-	defer s.drainInflight()
 	defer func() {
-		// Tear down any orphaned currentTurn frame on reader exit so
-		// StartTurn callers blocked on tf.done unwind.
+		// Orphan teardown: drop a faulted/cancelled current turn so
+		// StartTurn callers blocked on tf.done unwind. This must run
+		// AFTER the observer drain (defer below) has flushed so any
+		// test reading observer state on events-chan close sees the
+		// frames the reader produced.
 		s.mu.Lock()
 		if cur := s.currentTurn; cur != nil {
 			if cur.lastErr == nil {
@@ -340,6 +457,21 @@ func (s *session) runReader(ctx context.Context) {
 			s.currentTurn = nil
 		}
 		s.mu.Unlock()
+	}()
+	defer s.drainInflight()
+	// F2: close observerCh so the drain goroutine exits, then wait
+	// (bounded) for it to flush. This runs FIRST (LIFO order — declared
+	// last after the orphan teardown defer) so that callers consuming the
+	// events chan see end-of-stream only after the observer has been
+	// drained, preserving the pre-QUM-595 ordering guarantee that
+	// `for range events` exit implies the observer has seen the same
+	// frames.
+	defer func() {
+		close(s.observerCh)
+		select {
+		case <-s.observerDone:
+		case <-time.After(inflightDrainTimeout):
+		}
 	}()
 
 	for {
@@ -360,8 +492,17 @@ func (s *session) runReader(ctx context.Context) {
 			continue
 		}
 
+		// D1: update the watchdog baseline on every frame we observe.
+		s.lastFrameAt.Store(time.Now().UnixNano())
+
+		// F2: dispatch Observer asynchronously. The reader never blocks
+		// on a slow Observer; overflow surfaces in ObserverDrops.
 		if s.config.Observer != nil {
-			s.config.Observer.OnMessage(msg)
+			select {
+			case s.observerCh <- msg:
+			default:
+				s.observerDrops.Add(1)
+			}
 		}
 
 		if msg.Type == "control_response" {
@@ -399,9 +540,22 @@ func (s *session) runReader(ctx context.Context) {
 		s.mu.Unlock()
 
 		if tf != nil && tf.subscriber != nil {
+			// F1: bound the subscriber send. A wedged consumer must not
+			// stall the reader — once subscriberSendDeadline elapses we
+			// fault the session with ErrSubscriberWedged so StartTurn
+			// waiters unwind cleanly. See
+			// docs/research/permission-hang-forensic-2026-05-19.md.
+			timer := time.NewTimer(sendDeadline)
 			select {
 			case tf.subscriber <- msg:
+				timer.Stop()
 			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+				s.subscriberDrops.Add(1)
+				s.setTerminalErr(ErrSubscriberWedged)
+				s.readerCancel()
 				return
 			}
 		}
@@ -416,6 +570,54 @@ func (s *session) runReader(ctx context.Context) {
 					close(cur.subscriber)
 				}
 				close(cur.done)
+			}
+		}
+	}
+}
+
+// runObserverDrain consumes observerCh serially and invokes
+// Observer.OnMessage in arrival order. The reader's send is non-blocking,
+// so an Observer that wedges OnMessage only stalls this goroutine — never
+// the reader. Exits when observerCh is closed (by runReader's defer).
+func (s *session) runObserverDrain() {
+	defer close(s.observerDone)
+	for msg := range s.observerCh {
+		if s.config.Observer != nil {
+			s.config.Observer.OnMessage(msg)
+		}
+	}
+}
+
+// runHangWatchdog is the D1 reader-loop hang detector. Every
+// hangCheckInterval it compares time.Since(lastFrameAt) against
+// hangTimeout. On hang it sets ErrHangTimeout as terminal, cancels the
+// reader (so transport.Recv unwinds), and exits. Exits cleanly on
+// readerCtx cancellation.
+func (s *session) runHangWatchdog(ctx context.Context, hangTimeout time.Duration) {
+	defer close(s.watchdogDone)
+	// Snapshot the package var at goroutine entry so tests that override
+	// the interval after this session was created can't race with us. The
+	// production knob is constant for the process lifetime.
+	interval := hangCheckInterval
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.readerDone:
+			// Reader exited (e.g., transport EOF) without our help —
+			// piggyback the exit so we don't leak.
+			return
+		case <-ticker.C:
+			last := s.lastFrameAt.Load()
+			if last == 0 {
+				continue
+			}
+			if time.Since(time.Unix(0, last)) >= hangTimeout {
+				s.setTerminalErr(ErrHangTimeout)
+				s.readerCancel()
+				return
 			}
 		}
 	}
@@ -661,6 +863,19 @@ func (s *session) Close() error {
 	err := s.transport.Close()
 	if started {
 		<-s.readerDone
+		// Bounded wait for the F2 observer drain to flush queued frames.
+		// On a wedged Observer.OnMessage we don't want Close to hang
+		// forever — surface that as a drop and proceed.
+		select {
+		case <-s.observerDone:
+		case <-time.After(inflightDrainTimeout):
+		}
+		// Watchdog exits promptly on readerCtx cancel; join with a small
+		// safety bound.
+		select {
+		case <-s.watchdogDone:
+		case <-time.After(inflightDrainTimeout):
+		}
 	}
 	// Shutdown-induced ctx.Canceled in fatalErr is expected — don't
 	// surface it via LastTurnError after Close.
@@ -685,6 +900,12 @@ func (s *session) LastTurnError() error {
 	defer s.mu.Unlock()
 	err := s.fatalErr
 	s.fatalErr = nil
+	// Sticky terminal errors (F1 wedge / D1 hang) remain observable on
+	// subsequent reads. Recoverable per-turn fatalErr (transport hiccups,
+	// send errors) stays one-shot.
+	if err == nil && s.terminalErr != nil {
+		return s.terminalErr
+	}
 	return err
 }
 
@@ -693,5 +914,28 @@ func (s *session) setFatalErr(err error) {
 	defer s.mu.Unlock()
 	if s.fatalErr == nil {
 		s.fatalErr = err
+	}
+}
+
+// setTerminalErr marks the session as permanently faulted. Unlike fatalErr
+// (consumable via LastTurnError), terminalErr is sticky and gates subsequent
+// StartTurn calls. We also mirror into fatalErr so a one-shot
+// LastTurnError() read after the fault still surfaces the sentinel.
+func (s *session) setTerminalErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.terminalErr == nil {
+		s.terminalErr = err
+	}
+	if s.fatalErr == nil {
+		s.fatalErr = err
+	}
+}
+
+// BackendStats returns an atomic snapshot of the session's drop counters.
+func (s *session) BackendStats() Stats {
+	return Stats{
+		SubscriberDrops: s.subscriberDrops.Load(),
+		ObserverDrops:   s.observerDrops.Load(),
 	}
 }

@@ -294,6 +294,12 @@ func TestSession_StartTurnObserverSeesRawMessagesBeforeControlHandling(t *testin
 		eventTypes = append(eventTypes, label)
 	}
 
+	// Observer dispatch is async (QUM-595 F2). Close blocks on the
+	// observer drain so post-Close reads see the fully-flushed queue.
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
 	wantObserver := []string{"system:init", "control_request", "assistant", "result:success"}
 	gotObserver := observer.Types()
 	if len(gotObserver) != len(wantObserver) {
