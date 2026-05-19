@@ -123,8 +123,8 @@ func NewTheme(accentColor string) Theme {
 			Background(bg),
 		// No Padding — StatusBarModel.View manages its own left/right spacing
 		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes
-		// the rendered width m.width+2 which wraps the trailing "? Help" onto
-		// a second line at most terminal widths.
+		// the rendered width m.width+2 which wraps the trailing right-side
+		// segments onto a second line at most terminal widths.
 		StatusBar: lipgloss.NewStyle().
 			Foreground(pal.FgBase).
 			Background(pal.BgLessVisible),

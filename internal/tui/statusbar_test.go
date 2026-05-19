@@ -9,9 +9,9 @@ import (
 
 // TestStatusBar_ViewFitsDeclaredWidth guards against the bug where
 // StatusBar style's Padding(0,1) plus View()'s Width(m.width).Render(line)
-// rendered m.width+2 cells and wrapped the trailing "? Help" onto a second
-// line at most terminal widths. Fix: drop Padding; View() manages its own
-// left/right spacing inside line.
+// rendered m.width+2 cells and wrapped the trailing right-side segments onto
+// a second line at most terminal widths. Fix: drop Padding; View() manages
+// its own left/right spacing inside line.
 func TestStatusBar_ViewFitsDeclaredWidth(t *testing.T) {
 	m := newTestStatusBarModel(t)
 	for _, w := range []int{40, 80, 120, 190, 300} {
@@ -66,6 +66,19 @@ func TestStatusBar_SetWidth(t *testing.T) {
 	m := newTestStatusBarModel(t)
 	// Should not panic.
 	m.SetWidth(120)
+}
+
+// TestStatusBar_NoStaticHelpHint guards QUM-596: the static "? Help" hint was
+// removed from the status bar because pressing `?` in the (default-focused)
+// input textarea just types `?`, making the hint misleading. The QUM-420
+// dynamic short-help row carries the help discoverability now.
+func TestStatusBar_NoStaticHelpHint(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	view := m.View()
+	if strings.Contains(view, "? Help") {
+		t.Errorf("View() should not contain static '? Help' hint (QUM-596), got:\n%s", view)
+	}
 }
 
 // --- New tests for turn state display ---
