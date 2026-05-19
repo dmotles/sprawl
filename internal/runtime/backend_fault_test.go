@@ -101,19 +101,19 @@ func TestClassifyBackendFault_MapsKnownSentinels(t *testing.T) {
 			name:           "HangTimeout sentinel",
 			err:            backend.ErrHangTimeout,
 			wantClass:      "HangTimeout",
-			wantHintSubstr: "retire",
+			wantHintSubstr: "recover",
 		},
 		{
 			name:           "SubscriberWedged sentinel",
 			err:            backend.ErrSubscriberWedged,
 			wantClass:      "SubscriberWedged",
-			wantHintSubstr: "retire",
+			wantHintSubstr: "recover",
 		},
 		{
 			name:           "Unknown error",
 			err:            errors.New("some other backend fault"),
 			wantClass:      "Unknown",
-			wantHintSubstr: "retire",
+			wantHintSubstr: "recover",
 		},
 	}
 	for _, tc := range cases {

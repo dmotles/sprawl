@@ -148,11 +148,11 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 func ClassifyBackendFault(err error) (class, nextAction string) {
 	switch {
 	case errors.Is(err, backend.ErrHangTimeout):
-		return "HangTimeout", "backend reader stalled; retire and respawn agent"
+		return "HangTimeout", "backend reader stalled; run mcp__sprawl__recover to restart in place"
 	case errors.Is(err, backend.ErrSubscriberWedged):
-		return "SubscriberWedged", "backend subscriber send wedged; retire and respawn agent"
+		return "SubscriberWedged", "backend subscriber send wedged; run mcp__sprawl__recover to restart in place"
 	default:
-		return "Unknown", "retire and respawn agent"
+		return "Unknown", "run mcp__sprawl__recover to restart in place"
 	}
 }
 
