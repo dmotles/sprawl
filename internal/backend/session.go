@@ -397,6 +397,10 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 		done:       make(chan struct{}),
 	}
 	s.currentTurn = tf
+	// QUM-599: re-seed the watchdog baseline so the first tick of this
+	// turn doesn't immediately fault on a stale lastFrameAt left over
+	// from a long between-turn idle gap.
+	s.lastFrameAt.Store(time.Now().UnixNano())
 	s.mu.Unlock()
 
 	msg := protocol.UserMessage{
@@ -593,6 +597,12 @@ func (s *session) runObserverDrain() {
 // hangTimeout. On hang it sets ErrHangTimeout as terminal, cancels the
 // reader (so transport.Recv unwinds), and exits. Exits cleanly on
 // readerCtx cancellation.
+//
+// QUM-599: the watchdog is gated on turn-active state. Between turns
+// (s.currentTurn == nil) claude legitimately goes silent — no keepalive,
+// no telemetry — so measuring lastFrameAt against hangTimeout would
+// terminally brick the session on idle. We only check for staleness while
+// a turn (sprawl-initiated or autonomous) is in flight.
 func (s *session) runHangWatchdog(ctx context.Context, hangTimeout time.Duration) {
 	defer close(s.watchdogDone)
 	// Snapshot the package var at goroutine entry so tests that override
@@ -610,6 +620,14 @@ func (s *session) runHangWatchdog(ctx context.Context, hangTimeout time.Duration
 			// piggyback the exit so we don't leak.
 			return
 		case <-ticker.C:
+			// QUM-599: skip the staleness check when no turn is in
+			// flight — between-turn idle is not a hang.
+			s.mu.Lock()
+			turnActive := s.currentTurn != nil
+			s.mu.Unlock()
+			if !turnActive {
+				continue
+			}
 			last := s.lastFrameAt.Load()
 			if last == 0 {
 				continue

@@ -500,6 +500,97 @@ func TestSession_D1_HangWatchdog_DoesNotFireWhenFramesArrive(t *testing.T) {
 	}
 }
 
+// TestSession_D1_HangWatchdog_IdleDoesNotFault is the QUM-599 regression
+// guard. After Start (no StartTurn), the watchdog MUST NOT fault the
+// session even after 2 × HangTimeout of idle time. The next StartTurn must
+// succeed normally — i.e. the session is not bricked by between-turn idle.
+func TestSession_D1_HangWatchdog_IdleDoesNotFault(t *testing.T) {
+	overrideHangCheckInterval(t, 20*time.Millisecond)
+
+	transport := newMockManagedTransport()
+	sess := NewSession(transport, SessionConfig{
+		SessionID:   "sess-d1-idle",
+		HangTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = sess.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Idle for 2 × HangTimeout. No StartTurn — pure between-turn idle.
+	time.Sleep(250 * time.Millisecond)
+
+	if err := sess.LastTurnError(); err != nil {
+		t.Fatalf("LastTurnError after %s of idle = %v, want nil (QUM-599: watchdog must not fault on between-turn idle)", 250*time.Millisecond, err)
+	}
+
+	// Next StartTurn must succeed normally and produce a working subscriber.
+	events, err := sess.StartTurn(ctx, "hello")
+	if err != nil {
+		t.Fatalf("StartTurn after idle: %v, want nil (QUM-599: session must remain usable after idle)", err)
+	}
+	drainStartTurnPrompt(t, transport)
+
+	// Sanity: feed a result frame and confirm the turn closes cleanly.
+	transport.feedMessage(t, resultFrame)
+	deadline := time.After(2 * time.Second)
+	closed := false
+	for !closed {
+		select {
+		case _, ok := <-events:
+			if !ok {
+				closed = true
+			}
+		case <-deadline:
+			t.Fatal("events chan did not close after result frame on post-idle turn")
+		}
+	}
+	if err := sess.LastTurnError(); err != nil {
+		t.Fatalf("LastTurnError after clean post-idle turn = %v, want nil", err)
+	}
+}
+
+// TestSession_D1_HangWatchdog_IdleThenMidTurnSilenceStillFaults is the
+// QUM-599 companion guard: gating the watchdog on turn-active state must
+// NOT regress the QUM-595 mid-turn-silence detection. After a long idle
+// gap, opening a StartTurn and then feeding nothing must still surface
+// ErrHangTimeout within HangTimeout + slack.
+func TestSession_D1_HangWatchdog_IdleThenMidTurnSilenceStillFaults(t *testing.T) {
+	overrideHangCheckInterval(t, 20*time.Millisecond)
+
+	transport := newMockManagedTransport()
+	sess := NewSession(transport, SessionConfig{
+		SessionID:   "sess-d1-idle-then-stall",
+		HangTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = sess.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Idle far longer than HangTimeout — the gate must keep the session alive.
+	time.Sleep(300 * time.Millisecond)
+
+	if _, err := sess.StartTurn(ctx, "go"); err != nil {
+		t.Fatalf("StartTurn after idle: %v", err)
+	}
+	drainStartTurnPrompt(t, transport)
+
+	// Now claude goes silent mid-turn — watchdog MUST fire.
+	waitFor(t, 1500*time.Millisecond, "LastTurnError ErrHangTimeout (mid-turn silence)", func() bool {
+		e := sess.LastTurnError()
+		return e != nil && errors.Is(e, ErrHangTimeout)
+	})
+}
+
 // TestSession_D1_HangWatchdog_DisabledWhenNegative ensures a negative
 // HangTimeout disables the watchdog entirely.
 func TestSession_D1_HangWatchdog_DisabledWhenNegative(t *testing.T) {
