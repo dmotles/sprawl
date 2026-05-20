@@ -10,17 +10,25 @@
 // coder→tmux stack where claude code pastes instantly but sprawl animates.
 //
 // Flags:
-//   --out PATH   destination JSONL log file (default ./input-debug.log)
-//   --fps N      pass tea.WithFPS(N) to coalesce renders; 0 (default) leaves
-//                the program uncapped (current behavior). The chosen cap is
-//                recorded in the first log record's notes field so runs can
-//                be told apart post-mortem.
+//   --out PATH        destination JSONL log file (default ./input-debug.log)
+//   --fps N           pass tea.WithFPS(N) to coalesce renders; 0 (default)
+//                     leaves the program uncapped (current behavior). The
+//                     chosen cap is recorded in the first log record's notes
+//                     field so runs can be told apart post-mortem.
+//   --reemit-paste    Path 1c experiment: after Bubble Tea finishes its init
+//                     salvo (detected via first tea.WindowSizeMsg), write
+//                     ESC[?2004h directly to stdout to re-enable bracketed-
+//                     paste mode AFTER alt-screen entry. Tests whether tmux
+//                     3.2a accepts the toggle post-alt-screen. A "reemit-
+//                     paste" log record marks when the write fired so paste
+//                     events can be correlated.
 
 package cmd
 
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -108,12 +116,19 @@ type inputDebugModel struct {
 	// QUM-455 reclassification (Enter -> embedded "\n") without poking at
 	// the InputModel's unexported fields.
 	prevPendingEnter bool
+
+	// reemitPaste, when true, causes the model to write ESC[?2004h to
+	// reemitWriter once, on the first tea.WindowSizeMsg received (Path 1c
+	// experiment per QUM-608).
+	reemitPaste  bool
+	reemitWriter io.Writer
+	reemitDone   bool
 }
 
 func newInputDebugModel(lg *debugLogger) *inputDebugModel {
 	theme := tui.NewTheme("")
 	im := tui.NewInputModel(&theme)
-	return &inputDebugModel{input: im, log: lg}
+	return &inputDebugModel{input: im, log: lg, reemitWriter: os.Stdout}
 }
 
 func (m *inputDebugModel) Init() tea.Cmd {
@@ -128,6 +143,19 @@ func (m *inputDebugModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if w, ok := msg.(tea.WindowSizeMsg); ok {
 		m.width = w.Width
 		m.input.SetWidth(w.Width)
+		// Path 1c experiment: on first WindowSizeMsg (which arrives after
+		// Bubble Tea's init salvo of alt-screen + bracketed-paste enable),
+		// re-emit ESC[?2004h to coax tmux 3.2a into tracking paste mode on
+		// the alt-screen buffer.
+		if m.reemitPaste && !m.reemitDone {
+			m.reemitDone = true
+			n, err := m.reemitWriter.Write([]byte("\x1b[?2004h"))
+			notes := fmt.Sprintf("bytes=%d", n)
+			if err != nil {
+				notes += " err=" + err.Error()
+			}
+			m.log.write(debugRecord{Kind: "reemit-paste", Notes: notes})
+		}
 	}
 
 	// Ctrl+C quits.
@@ -262,8 +290,9 @@ func computePendingEnter(msg tea.Msg, msgType string, prevPending bool, prevValu
 }
 
 var (
-	inputDebugOut string
-	inputDebugFPS int
+	inputDebugOut         string
+	inputDebugFPS         int
+	inputDebugReemitPaste bool
 )
 
 var inputDebugCmd = &cobra.Command{
@@ -277,6 +306,7 @@ var inputDebugCmd = &cobra.Command{
 func init() {
 	inputDebugCmd.Flags().StringVar(&inputDebugOut, "out", "./input-debug.log", "path to write JSONL diagnostic log")
 	inputDebugCmd.Flags().IntVar(&inputDebugFPS, "fps", 0, "if >0, pass tea.WithFPS(N) to cap render rate (0 = uncapped)")
+	inputDebugCmd.Flags().BoolVar(&inputDebugReemitPaste, "reemit-paste", false, "QUM-608 Path 1c: re-emit ESC[?2004h after Bubble Tea init salvo (on first WindowSizeMsg)")
 	rootCmd.AddCommand(inputDebugCmd)
 }
 
@@ -287,9 +317,10 @@ func runInputDebug(cmd *cobra.Command, _ []string) error {
 	}
 	defer lg.close()
 
-	lg.write(debugRecord{Kind: "init", Notes: fmt.Sprintf("fps_cap=%d", inputDebugFPS)})
+	lg.write(debugRecord{Kind: "init", Notes: fmt.Sprintf("fps_cap=%d reemit_paste=%v", inputDebugFPS, inputDebugReemitPaste)})
 
 	m := newInputDebugModel(lg)
+	m.reemitPaste = inputDebugReemitPaste
 	var opts []tea.ProgramOption
 	if inputDebugFPS > 0 {
 		opts = append(opts, tea.WithFPS(inputDebugFPS))
