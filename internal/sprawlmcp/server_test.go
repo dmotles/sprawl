@@ -377,6 +377,11 @@ func TestServer_ToolsList(t *testing.T) {
 		"messages_peek",
 		"ask_user_question",
 	}
+	// QUM-606: under the sprawl_test build tag, `_test_induce_wedge`
+	// is appended by the inject seam. injectExpectedToolNames is empty
+	// in production builds and contains the inject tool name when the
+	// tag is set.
+	expectedTools = append(expectedTools, injectExpectedToolNames...)
 
 	if len(toolsRaw) != len(expectedTools) {
 		t.Fatalf("got %d tools, want %d", len(toolsRaw), len(expectedTools))

@@ -68,6 +68,7 @@ func (w *wedgingTransport) Recv(ctx context.Context) (*protocol.Message, error) 
 func (w *wedgingTransport) Close() error { return nil }
 func (w *wedgingTransport) Wait() error  { return nil }
 func (w *wedgingTransport) Kill() error  { return nil }
+func (w *wedgingTransport) Pid() int     { return 0 }
 
 // TestSession_Interrupt_BoundedOnWedgedTransportSend pins the QUM-600
 // contract: even when transport.Send wedges and does not honor ctx, a call
@@ -250,6 +251,7 @@ func (d *delayedWedgeTransport) Recv(ctx context.Context) (*protocol.Message, er
 func (d *delayedWedgeTransport) Close() error { return nil }
 func (d *delayedWedgeTransport) Wait() error  { return nil }
 func (d *delayedWedgeTransport) Kill() error  { return nil }
+func (d *delayedWedgeTransport) Pid() int     { return 0 }
 
 func (d *delayedWedgeTransport) engageWedge() {
 	d.wedgeMu.Lock()

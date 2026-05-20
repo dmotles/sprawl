@@ -21,6 +21,10 @@ func toolDefinitions() []map[string]any {
 	if testToolsEnabled() {
 		defs = append(defs, testToolDefinitions()...)
 	}
+	// QUM-606: append build-tag-gated test-only tools (`_test_induce_wedge`).
+	// injectToolDefinitions returns nil in non-`sprawl_test` builds, so the
+	// production tool surface is unaffected.
+	defs = append(defs, injectToolDefinitions()...)
 	return defs
 }
 

@@ -224,6 +224,11 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		}
 		return s.toolTestSleep(ctx, args)
 	default:
+		// QUM-606: build-tag-gated `_test_induce_wedge` is dispatched via
+		// the inject seam — present only when `sprawl_test` is set.
+		if text, matched, err := s.dispatchInjectTool(ctx, name, args); matched {
+			return text, err
+		}
 		// Unknown tools get a JSON-RPC error, not a tool content error
 		return "", &unknownToolError{name: name}
 	}

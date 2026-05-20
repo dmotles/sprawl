@@ -592,6 +592,14 @@ func (h *unifiedHandle) IsTerminallyFaulted() bool {
 	return h.session.IsTerminallyFaulted()
 }
 
+// InduceTerminalFault forwards to the underlying backend session's
+// test-seam fault injector. Used by the QUM-606 build-tag-gated
+// `_test_induce_wedge` MCP tool to drive a deterministic terminal fault.
+// Production callers MUST NOT invoke this.
+func (h *unifiedHandle) InduceTerminalFault(err error) {
+	h.session.InduceTerminalFault(err)
+}
+
 func (h *unifiedHandle) Capabilities() backendpkg.Capabilities {
 	return h.capabilities
 }

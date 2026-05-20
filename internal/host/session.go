@@ -60,3 +60,5 @@ type transportCompat struct {
 func (t *transportCompat) Wait() error { return nil }
 
 func (t *transportCompat) Kill() error { return nil }
+
+func (t *transportCompat) Pid() int { return 0 }

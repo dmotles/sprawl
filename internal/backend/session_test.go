@@ -72,6 +72,8 @@ func (m *mockManagedTransport) Kill() error {
 	return nil
 }
 
+func (m *mockManagedTransport) Pid() int { return 0 }
+
 func (m *mockManagedTransport) feedMessage(t *testing.T, raw string) {
 	t.Helper()
 	var msg protocol.Message

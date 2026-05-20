@@ -162,6 +162,10 @@ func (s *realStarter) Start(ctx context.Context, spec ExecSpec) (backend.Managed
 		return nil, fmt.Errorf("starting claude: %w", err)
 	}
 
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
 	return &transport{
 		reader: protocol.NewReader(stdout),
 		writer: protocol.NewWriter(stdin),
@@ -172,6 +176,7 @@ func (s *realStarter) Start(ctx context.Context, spec ExecSpec) (backend.Managed
 			}
 			return nil
 		},
+		pid: pid,
 	}, nil
 }
 
@@ -180,7 +185,11 @@ type transport struct {
 	writer *protocol.Writer
 	wait   func() error
 	kill   func() error
+	pid    int
 }
+
+// Pid returns the OS process ID of the underlying claude subprocess.
+func (t *transport) Pid() int { return t.pid }
 
 // Send honors ctx natively (QUM-603). WriteJSON is a blocking syscall write
 // to claude's stdin pipe; when claude is wedged and not draining stdin, the

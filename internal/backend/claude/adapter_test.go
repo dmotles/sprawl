@@ -49,6 +49,8 @@ func (m *mockManagedTransport) Kill() error {
 	return nil
 }
 
+func (m *mockManagedTransport) Pid() int { return 0 }
+
 type mockStarter struct {
 	specs     []ExecSpec
 	transport *mockManagedTransport

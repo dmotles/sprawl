@@ -8,6 +8,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
@@ -506,6 +507,8 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	starter := r.starter
 	handle := r.handle
 	lifecycle := r.snapshot.Lifecycle
+	agentName := r.snapshot.Name
+	sprawlRoot := r.sprawlRoot
 	spec := RuntimeStartSpec{
 		Name:       r.snapshot.Name,
 		Worktree:   r.snapshot.Worktree,
@@ -518,21 +521,52 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	}
 	r.mu.RUnlock()
 
-	if lifecycle != RuntimeLifecycleStarted {
-		return fmt.Errorf("supervisor: agent %q is in lifecycle %q, cannot recover", spec.Name, lifecycle)
+	// QUM-606 R3: propagate OnResumeFailure into the recover-path
+	// RuntimeStartSpec so a rejected --resume cookie flips the agent to
+	// StatusResumeFailed (mirrors Real.RecoverAgents).
+	spec.OnResumeFailure = func() {
+		cur, lErr := state.LoadAgent(sprawlRoot, agentName)
+		if lErr != nil {
+			slog.Warn("supervisor: Recover OnResumeFailure load", "agent", agentName, "err", lErr)
+			return
+		}
+		cur.Status = state.StatusResumeFailed
+		if sErr := state.SaveAgent(sprawlRoot, cur); sErr != nil {
+			slog.Warn("supervisor: Recover OnResumeFailure save", "agent", agentName, "err", sErr)
+			return
+		}
+		r.SyncAgentState(cur)
 	}
-	if handle == nil {
-		return fmt.Errorf("supervisor: agent %q has no live handle, cannot recover", spec.Name)
+
+	// QUM-606 R2 follow-up: a faulted UnifiedRuntime cancels its runCtx
+	// from the terminal-error handler, so watchHandleExit transitions the
+	// snapshot Lifecycle from Started → Stopped and the live handle is
+	// detached. Recover must accept Stopped here — that IS the visible
+	// state of a freshly faulted session. Lifecycles outside {Started,
+	// Stopped} (Registered / Killed / Retired) remain hard rejects.
+	if lifecycle != RuntimeLifecycleStarted && lifecycle != RuntimeLifecycleStopped {
+		return fmt.Errorf("supervisor: agent %q is in lifecycle %q, cannot recover", spec.Name, lifecycle)
 	}
 	if starter == nil {
 		return fmt.Errorf("supervisor: agent %q has no runtime starter, cannot recover", spec.Name)
 	}
+	// When lifecycle == Started, a live handle MUST be attached. When
+	// lifecycle == Stopped (post-fault), the handle was already detached
+	// by watchHandleExit, so it is expected to be nil — there is nothing
+	// to tear down.
+	if lifecycle == RuntimeLifecycleStarted && handle == nil {
+		return fmt.Errorf("supervisor: agent %q has no live handle, cannot recover", spec.Name)
+	}
 
-	// Probe handle for terminal-fault state. Handles that don't expose the
+	// Probe the live handle for terminal-fault state. Skipped when the
+	// handle is nil (lifecycle == Stopped) — that already proves the
+	// session faulted and was torn down. Handles that don't expose the
 	// probe are treated as faulted (always recover).
-	if probe, ok := handle.(interface{ IsTerminallyFaulted() bool }); ok {
-		if !probe.IsTerminallyFaulted() {
-			return ErrRecoverNotNeeded
+	if handle != nil {
+		if probe, ok := handle.(interface{ IsTerminallyFaulted() bool }); ok {
+			if !probe.IsTerminallyFaulted() {
+				return ErrRecoverNotNeeded
+			}
 		}
 	}
 
@@ -540,20 +574,28 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	// goroutine's `if r.handle == handle` guard sees a stale match and
 	// no-ops when the abandoned handle's Done() closes. This suppresses
 	// the spurious RuntimeEventStopped that would otherwise race against
-	// the post-restart RuntimeEventRecovered emission.
-	r.mu.Lock()
-	r.handle = nil
-	r.mu.Unlock()
+	// the post-restart RuntimeEventRecovered emission. Skipped when there
+	// is no live handle (post-R2-fault Stopped lifecycle).
+	if handle != nil {
+		r.mu.Lock()
+		r.handle = nil
+		r.mu.Unlock()
 
-	if err := handle.StopAbandon(ctx); err != nil {
-		slog.Warn(
-			"supervisor: Recover StopAbandon of faulted handle returned error; continuing with restart",
-			slog.String("agent", spec.Name),
-			slog.Any("err", err),
-		)
+		if err := handle.StopAbandon(ctx); err != nil {
+			slog.Warn(
+				"supervisor: Recover StopAbandon of faulted handle returned error; continuing with restart",
+				slog.String("agent", spec.Name),
+				slog.Any("err", err),
+			)
+		}
 	}
 
-	newHandle, err := starter.Start(ctx, spec)
+	// QUM-606 R1: subprocess lifetime must outlive the MCP request ctx.
+	// exec.CommandContext SIGKILLs the new claude as soon as toolRecover
+	// returns if we forward `ctx` here. The new handle has its own
+	// teardown path (Stop / StopAbandon / watchHandleExit), so the
+	// ctx-cancel safety net is unnecessary.
+	newHandle, err := starter.Start(context.Background(), spec)
 	if err != nil {
 		// Recovery failed — the agent has no live handle. Flip lifecycle
 		// to Stopped and emit so subscribers reflect the broken state.
@@ -562,6 +604,25 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 		r.mu.Unlock()
 		r.emit(RuntimeEventStopped)
 		return fmt.Errorf("supervisor: recover Start for %q: %w", spec.Name, err)
+	}
+
+	// QUM-606 R4: post-Start health probe. The starter may return a
+	// handle whose backend session has already faulted (e.g. --resume
+	// cookie rejected, or the transcript replays the wedge frame).
+	// Wait up to recoverHealthProbeTimeout for either a healthy beat
+	// (any non-init protocol frame on the handle's UnifiedRuntime
+	// EventBus) OR an IsTerminallyFaulted flip. Treat timeout or fault
+	// as recovery failure: tear the new handle down, return error, and
+	// emit RuntimeEventStopped so the TUI fault banner re-fires.
+	if probeErr := probeNewHandleHealth(newHandle, recoverHealthProbeTimeout); probeErr != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), recoverStopAbandonTimeout)
+		_ = newHandle.StopAbandon(stopCtx)
+		cancel()
+		r.mu.Lock()
+		r.snapshot.Lifecycle = RuntimeLifecycleStopped
+		r.mu.Unlock()
+		r.emit(RuntimeEventStopped)
+		return fmt.Errorf("supervisor: recover health probe for %q: %w", spec.Name, probeErr)
 	}
 
 	r.mu.Lock()
@@ -578,6 +639,123 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	if doneAware, ok := newHandle.(runtimeHandleDone); ok && doneAware.Done() != nil {
 		r.watchHandleExit(newHandle, doneAware.Done())
 	}
+	return nil
+}
+
+// recoverHealthProbeTimeout bounds how long AgentRuntime.Recover waits for
+// the freshly-started handle to demonstrate liveness (a non-init protocol
+// frame on its UnifiedRuntime EventBus) before declaring recovery a
+// failure. See QUM-606 R4.
+var recoverHealthProbeTimeout = 5 * time.Second
+
+// recoverStopAbandonTimeout bounds the StopAbandon call used to tear down
+// a handle that failed the post-Start health probe.
+var recoverStopAbandonTimeout = 5 * time.Second
+
+// probeNewHandleHealth waits up to timeout for the newly-started handle to
+// either (a) emit a non-init protocol frame on its UnifiedRuntime EventBus,
+// proving the backend subprocess is alive and serving, or (b) flip
+// IsTerminallyFaulted() to true. Returns nil on (a), an error on (b) or on
+// timeout. Handles that do not expose a UnifiedRuntime are treated as
+// healthy (skipped probe). QUM-606 R4.
+func probeNewHandleHealth(handle RuntimeHandle, timeout time.Duration) error {
+	provider, ok := handle.(unifiedRuntimeProvider)
+	if !ok {
+		// No bus to probe; fall back to the cheaper sticky-fault check
+		// (handles in tests that don't expose UnifiedRuntime still
+		// implement IsTerminallyFaulted via the embedded session).
+		return waitForTerminalFaultOrTimeout(handle, timeout)
+	}
+	rt := provider.UnifiedRuntime()
+	if rt == nil {
+		return waitForTerminalFaultOrTimeout(handle, timeout)
+	}
+
+	probe, hasProbe := handle.(interface{ IsTerminallyFaulted() bool })
+	if hasProbe && probe.IsTerminallyFaulted() {
+		return fmt.Errorf("session faulted before health probe began")
+	}
+
+	ch, unsub := rt.EventBus().SubscribeNamed("recover-health-probe", 8)
+	defer unsub()
+
+	// Re-check fault state AFTER subscribing to close the race where the
+	// fault fires between starter.Start return and our subscription.
+	if hasProbe && probe.IsTerminallyFaulted() {
+		return fmt.Errorf("session faulted before health probe completed")
+	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return fmt.Errorf("event bus closed before health probe completed")
+			}
+			if ev.Type == runtimepkg.EventBackendFaulted {
+				return fmt.Errorf("session faulted during health probe: %w", ev.Error)
+			}
+			if ev.Type == runtimepkg.EventStopped {
+				return fmt.Errorf("session stopped during health probe")
+			}
+			if ev.Type == runtimepkg.EventProtocolMessage && ev.Message != nil {
+				m := ev.Message
+				if m.Type != "system" || m.Subtype != "init" {
+					return nil
+				}
+			}
+		case <-tick.C:
+			if hasProbe && probe.IsTerminallyFaulted() {
+				return fmt.Errorf("session faulted during health probe")
+			}
+		case <-deadline.C:
+			if hasProbe && probe.IsTerminallyFaulted() {
+				return fmt.Errorf("session faulted during health probe")
+			}
+			return fmt.Errorf("no frames received within %s", timeout)
+		}
+	}
+}
+
+func waitForTerminalFaultOrTimeout(handle RuntimeHandle, timeout time.Duration) error {
+	probe, ok := handle.(interface{ IsTerminallyFaulted() bool })
+	if !ok {
+		return nil
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if probe.IsTerminallyFaulted() {
+			return fmt.Errorf("session faulted during health probe")
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// InduceTerminalFault forces the underlying backend session into the
+// terminally-faulted state. Used by the QUM-606 live-recover e2e harness
+// via a build-tag-gated MCP tool (`_test_induce_wedge`) to drive a
+// deterministic SubscriberWedge / HangTimeout fault. Returns an error
+// when no live handle is attached or when the handle does not expose
+// the test seam. Production callers MUST NOT invoke this.
+func (r *AgentRuntime) InduceTerminalFault(err error) error {
+	r.mu.RLock()
+	handle := r.handle
+	r.mu.RUnlock()
+	if handle == nil {
+		return fmt.Errorf("supervisor: agent has no live handle")
+	}
+	injector, ok := handle.(interface{ InduceTerminalFault(error) })
+	if !ok {
+		return fmt.Errorf("supervisor: handle does not expose InduceTerminalFault test seam")
+	}
+	injector.InduceTerminalFault(err)
 	return nil
 }
 

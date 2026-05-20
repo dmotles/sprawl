@@ -153,6 +153,14 @@ type Supervisor interface {
 	// session (QUM-601). Returns ErrRecoverNotNeeded if the session is still
 	// healthy. Errors out for unknown agents or agents not in Started state.
 	Recover(ctx context.Context, agentName string) error
+	// InduceTerminalFault forces the named agent's backend session into the
+	// terminally-faulted state with the supplied sentinel error (one of
+	// backend.ErrSubscriberWedged / backend.ErrHangTimeout, or any error).
+	// This is a test-only seam used by the QUM-606 live-recover e2e harness
+	// and is exposed via the build-tag-gated `_test_induce_wedge` MCP tool.
+	// Production callers MUST NOT invoke this — it bypasses the real fault
+	// detectors.
+	InduceTerminalFault(ctx context.Context, agentName string, err error) error
 	// RecoverAgents iterates all persisted agents under this caller and
 	// attempts to resume those in {suspended, active, running} via
 	// AgentRuntime.StartResume. Skips the caller itself, missing worktrees,

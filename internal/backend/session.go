@@ -81,6 +81,11 @@ type ManagedTransport interface {
 	Close() error
 	Wait() error
 	Kill() error
+	// Pid returns the OS process ID of the backing subprocess, or 0 if
+	// no subprocess is attached (in-memory test transports). Used by
+	// the QUM-606 live-recover smoke harness and adapter unit tests to
+	// assert subprocess lifetime independent of `ps` scraping.
+	Pid() int
 }
 
 // Observer receives every inbound protocol message before backend control
@@ -175,6 +180,14 @@ type Session interface {
 	// has been set (QUM-601). Used by the runtime-level Recover path to
 	// decide whether in-place recovery is needed.
 	IsTerminallyFaulted() bool
+	// InduceTerminalFault forces the session into the terminally-faulted
+	// state with the supplied sentinel error. Provided for the QUM-606
+	// live-recover e2e harness: an external caller (the build-tag-gated
+	// `_test_induce_wedge` MCP tool) needs a deterministic way to drive
+	// a SubscriberWedge / HangTimeout fault without inducing a real
+	// frame burst or stalled reader. Production callers MUST NOT use
+	// this — it bypasses the real fault detectors.
+	InduceTerminalFault(err error)
 }
 
 // ErrTurnInProgress is returned when callers try to start a second concurrent
@@ -1031,6 +1044,20 @@ func (s *session) IsTerminallyFaulted() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.terminalErr != nil
+}
+
+// InduceTerminalFault is the test/diagnostic seam used by the QUM-606
+// live-recover e2e harness (and the build-tag-gated `_test_induce_wedge`
+// MCP tool) to drive a deterministic terminal fault without inducing a
+// real frame burst or stalled reader. Calls the same internal
+// setTerminalErr path the real fault detectors use, so the runtime-side
+// terminalErrHandler fires identically. Production callers MUST NOT use
+// this method.
+func (s *session) InduceTerminalFault(err error) {
+	if err == nil {
+		err = ErrSubscriberWedged
+	}
+	s.setTerminalErr(err)
 }
 
 // BackendStats returns an atomic snapshot of the session's drop counters.

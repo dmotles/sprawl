@@ -744,6 +744,26 @@ func (r *Real) Recover(ctx context.Context, agentName string) error {
 	return nil
 }
 
+// InduceTerminalFault is the QUM-606 test-only seam: forces the named
+// agent's backend session into the terminally-faulted state with the
+// supplied error. Exposed via the build-tag-gated `_test_induce_wedge`
+// MCP tool so the live-recover e2e harness can drive a deterministic
+// SubscriberWedge / HangTimeout fault without inducing a real frame
+// burst or stalled reader. Production callers MUST NOT invoke this.
+func (r *Real) InduceTerminalFault(_ context.Context, agentName string, err error) error {
+	if err := agent.ValidateName(agentName); err != nil {
+		return err
+	}
+	if r.runtimeRegistry == nil {
+		return fmt.Errorf("agent %q not found", agentName)
+	}
+	runtime, ok := r.runtimeRegistry.Get(agentName)
+	if !ok {
+		return fmt.Errorf("agent %q not found", agentName)
+	}
+	return runtime.InduceTerminalFault(err)
+}
+
 // RecoverAgents iterates persisted agent state and resumes every non-terminal
 // child whose worktree still exists. Skips the root caller. Walks the tree
 // BFS-from-root so parents are resumed before children (defense in depth;

@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-recover-live-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -153,3 +153,22 @@ test-ask-user-question-e2e: build
 # internal/tui/viewport.go, or cmd/enter.go.
 test-drain-row-inject-e2e: build
 	bash scripts/test-drain-row-inject-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+# QUM-606: end-to-end gate for `mcp__sprawl__recover` subprocess
+# survival. Builds the sprawl binary with `-tags sprawl_test` so the
+# `_test_induce_wedge` MCP tool is present, then drives a real claude
+# child through fault → recover → post-recover turn in an isolated /tmp
+# sandbox. Asserts that a new `claude … --resume` subprocess survives
+# the recover return AND that a sentinel sent via send_message lands in
+# the child's activity.ndjson — pre-QUM-606-fix the subprocess died
+# immediately and no frames arrived. See scripts/test-recover-live-e2e.sh.
+# Mandatory before merging any change to the recover path:
+# internal/supervisor/runtime.go, internal/supervisor/real.go,
+# internal/backend/claude/adapter.go, internal/runtime/unified.go, or
+# internal/runtime/turnloop.go.
+test-recover-live-e2e:
+	cd $(CURDIR) && go build -tags sprawl_test -o sprawl-recover-e2e ./
+	SPRAWL_BIN=$(CURDIR)/sprawl-recover-e2e bash scripts/test-recover-live-e2e.sh; rc=$$?; \
+	    [ -x $(CURDIR)/sprawl ] && $(CURDIR)/sprawl sandbox-gc --max-age=10m || true; \
+	    rm -f $(CURDIR)/sprawl-recover-e2e; \
+	    exit $$rc

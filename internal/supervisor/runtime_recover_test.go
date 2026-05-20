@@ -77,7 +77,18 @@ func TestAgentRuntime_Recover_HealthySession_ReturnsErrRecoverNotNeeded(t *testi
 	}
 }
 
-func TestAgentRuntime_Recover_StoppedRuntime_Errors(t *testing.T) {
+// TestAgentRuntime_Recover_StoppedRuntime_RebuildsSession pins the
+// QUM-606 R2 follow-up: when a backend session faults, the new
+// terminal-error handler cancels the turn-loop runCtx, watchHandleExit
+// runs, and the snapshot's Lifecycle transitions to Stopped. Recover
+// MUST accept this Stopped state — that IS the visible signature of a
+// freshly faulted session, and refusing it would re-introduce the
+// QUM-606 zombie symptom (caller sees "stopped" but the user-facing
+// remediation `mcp__sprawl__recover` rejects it). The test calls
+// Stop() explicitly to put the runtime in the Stopped lifecycle (which
+// is the same observable state R2 produces after a fault), then
+// verifies Recover succeeds and a fresh handle is attached.
+func TestAgentRuntime_Recover_StoppedRuntime_RebuildsSession(t *testing.T) {
 	session := &runtimeTestSession{
 		sessionID: "sess-alice",
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
@@ -88,6 +99,12 @@ func TestAgentRuntime_Recover_StoppedRuntime_Errors(t *testing.T) {
 		Agent:      testAgentState("alice"),
 		Starter:    starter,
 	})
+	// Speed up the post-Start health probe for the test (the runtime
+	// test session never emits a real protocol frame).
+	prev := recoverHealthProbeTimeout
+	recoverHealthProbeTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { recoverHealthProbeTimeout = prev })
+
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -98,12 +115,16 @@ func TestAgentRuntime_Recover_StoppedRuntime_Errors(t *testing.T) {
 		t.Fatalf("after Stop, Lifecycle = %q, want %q", got, RuntimeLifecycleStopped)
 	}
 
-	err := rt.Recover(context.Background())
-	if err == nil {
-		t.Fatal("Recover on a Stopped runtime: err = nil, want a 'cannot recover' error")
+	if err := rt.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover on Stopped runtime: err = %v, want nil (must succeed — Stopped is the post-fault signature)", err)
 	}
-	if errors.Is(err, ErrRecoverNotNeeded) {
-		t.Errorf("Recover on Stopped runtime returned ErrRecoverNotNeeded; want a distinct hard error")
+	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStarted {
+		t.Errorf("Lifecycle after Recover = %q, want %q", got, RuntimeLifecycleStarted)
+	}
+	// Second Recover against the now-healthy handle should report
+	// ErrRecoverNotNeeded (idempotent no-op success).
+	if err := rt.Recover(context.Background()); !errors.Is(err, ErrRecoverNotNeeded) {
+		t.Errorf("second Recover on healthy session: err = %v, want ErrRecoverNotNeeded", err)
 	}
 }
 

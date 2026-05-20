@@ -134,6 +134,19 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 					FaultClass:      class,
 					FaultNextAction: hint,
 				})
+				// QUM-606 R2: cancel the turn-loop runCtx so the loop
+				// exits, loopWG unblocks, and rt.done closes. Without
+				// this, AgentRuntime.watchHandleExit is structurally
+				// blind to backend-session death (Done() only fired on
+				// Stop before this change). On cancel, the supervisor
+				// transitions Lifecycle → Stopped and emits
+				// RuntimeEventStopped so the TUI fault banner re-fires.
+				rt.mu.RLock()
+				cancel := rt.cancel
+				rt.mu.RUnlock()
+				if cancel != nil {
+					cancel()
+				}
 			})
 		}
 	}
