@@ -27,13 +27,12 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -290,9 +289,11 @@ func computePendingEnter(msg tea.Msg, msgType string, prevPending bool, prevValu
 }
 
 var (
-	inputDebugOut         string
-	inputDebugFPS         int
-	inputDebugReemitPaste bool
+	inputDebugOut            string
+	inputDebugFPS            int
+	inputDebugReemitPaste    bool
+	inputDebugCoalesce       bool
+	inputDebugCoalesceWindow int
 )
 
 var inputDebugCmd = &cobra.Command{
@@ -307,6 +308,8 @@ func init() {
 	inputDebugCmd.Flags().StringVar(&inputDebugOut, "out", "./input-debug.log", "path to write JSONL diagnostic log")
 	inputDebugCmd.Flags().IntVar(&inputDebugFPS, "fps", 0, "if >0, pass tea.WithFPS(N) to cap render rate (0 = uncapped)")
 	inputDebugCmd.Flags().BoolVar(&inputDebugReemitPaste, "reemit-paste", false, "QUM-608 Path 1c: re-emit ESC[?2004h after Bubble Tea init salvo (on first WindowSizeMsg)")
+	inputDebugCmd.Flags().BoolVar(&inputDebugCoalesce, "coalesce", false, "QUM-608 Path 2: wrap os.Stdin in a byte-level coalescer that synthesizes bracketed-paste markers around detected bursts")
+	inputDebugCmd.Flags().IntVar(&inputDebugCoalesceWindow, "coalesce-window", 5, "burst window in ms for --coalesce (default 5)")
 	rootCmd.AddCommand(inputDebugCmd)
 }
 
@@ -317,7 +320,7 @@ func runInputDebug(cmd *cobra.Command, _ []string) error {
 	}
 	defer lg.close()
 
-	lg.write(debugRecord{Kind: "init", Notes: fmt.Sprintf("fps_cap=%d reemit_paste=%v", inputDebugFPS, inputDebugReemitPaste)})
+	lg.write(debugRecord{Kind: "init", Notes: fmt.Sprintf("fps_cap=%d reemit_paste=%v coalesce=%v coalesce_window_ms=%d", inputDebugFPS, inputDebugReemitPaste, inputDebugCoalesce, inputDebugCoalesceWindow)})
 
 	m := newInputDebugModel(lg)
 	m.reemitPaste = inputDebugReemitPaste
@@ -325,20 +328,50 @@ func runInputDebug(cmd *cobra.Command, _ []string) error {
 	if inputDebugFPS > 0 {
 		opts = append(opts, tea.WithFPS(inputDebugFPS))
 	}
+	var coal *coalescer
+	if inputDebugCoalesce {
+		coal = newCoalescer(os.Stdin, time.Duration(inputDebugCoalesceWindow)*time.Millisecond, lg)
+		defer coal.Close()
+		opts = append(opts, tea.WithInput(coal))
+	}
 	p := tea.NewProgram(m, opts...)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
-	go func() {
-		if _, ok := <-sigCh; ok {
+	// Bubble Tea v2 already installs its own SIGINT/SIGTERM handler
+	// (tea.go handleSignals → QuitMsg/InterruptMsg). Installing a second
+	// signal.Notify here races on the unbuffered p.msgs channel and
+	// wedges shutdown's WaitGroup.Wait (QUM-608, comment e4760aca).
+
+	// When stdin is piped (non-TTY), exit cleanly on EOF so smoke-test
+	// pipelines don't hang waiting for a signal. Interactive TTY use is
+	// unaffected — Ctrl-C / SIGTERM still go through tea's handler.
+	if coal != nil && !isStdinTTY() {
+		go func() {
+			<-coal.Done()
+			// Give tea's input readLoop a brief moment to drain the
+			// final wrapped payload into a PasteMsg before quitting.
+			time.Sleep(50 * time.Millisecond)
 			p.Quit()
-		}
-	}()
-	defer signal.Stop(sigCh)
+		}()
+	}
 
 	if _, err := p.Run(); err != nil {
-		return fmt.Errorf("input-debug program: %w", err)
+		// SIGINT (Ctrl-C) → tea returns ErrInterrupted. Treat that as a
+		// clean exit for this diagnostic: the user asked to stop and the
+		// log has been written.
+		if !errors.Is(err, tea.ErrInterrupted) {
+			return fmt.Errorf("input-debug program: %w", err)
+		}
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "input-debug log written to %s\n", inputDebugOut)
 	return nil
+}
+
+// isStdinTTY reports whether os.Stdin is a terminal. False when stdin is
+// a pipe (e.g. smoke-test `printf … | sprawl input-debug --coalesce`).
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
