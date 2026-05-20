@@ -8,6 +8,13 @@
 // Msg received, with per-Update / per-View wall-clock cost and elapsed-since-
 // previous-msg deltas. Used to attribute per-char paste latency in the
 // coder→tmux stack where claude code pastes instantly but sprawl animates.
+//
+// Flags:
+//   --out PATH   destination JSONL log file (default ./input-debug.log)
+//   --fps N      pass tea.WithFPS(N) to coalesce renders; 0 (default) leaves
+//                the program uncapped (current behavior). The chosen cap is
+//                recorded in the first log record's notes field so runs can
+//                be told apart post-mortem.
 
 package cmd
 
@@ -254,7 +261,10 @@ func computePendingEnter(msg tea.Msg, msgType string, prevPending bool, prevValu
 	return prevPending
 }
 
-var inputDebugOut string
+var (
+	inputDebugOut string
+	inputDebugFPS int
+)
 
 var inputDebugCmd = &cobra.Command{
 	Use:    "input-debug",
@@ -266,6 +276,7 @@ var inputDebugCmd = &cobra.Command{
 
 func init() {
 	inputDebugCmd.Flags().StringVar(&inputDebugOut, "out", "./input-debug.log", "path to write JSONL diagnostic log")
+	inputDebugCmd.Flags().IntVar(&inputDebugFPS, "fps", 0, "if >0, pass tea.WithFPS(N) to cap render rate (0 = uncapped)")
 	rootCmd.AddCommand(inputDebugCmd)
 }
 
@@ -276,8 +287,14 @@ func runInputDebug(cmd *cobra.Command, _ []string) error {
 	}
 	defer lg.close()
 
+	lg.write(debugRecord{Kind: "init", Notes: fmt.Sprintf("fps_cap=%d", inputDebugFPS)})
+
 	m := newInputDebugModel(lg)
-	p := tea.NewProgram(m)
+	var opts []tea.ProgramOption
+	if inputDebugFPS > 0 {
+		opts = append(opts, tea.WithFPS(inputDebugFPS))
+	}
+	p := tea.NewProgram(m, opts...)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT)
