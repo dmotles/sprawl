@@ -289,6 +289,54 @@ func TestQuestionModel_OKey_EntersTextMode_EnterCommits(t *testing.T) {
 	}
 }
 
+// TestQuestionModel_Esc_FiresDismissHard is the QUM-611 unit guard: a plain
+// Esc inside select mode must emit DismissQuestionMsg{Hard: true} so the
+// AppModel takes the cancel-and-unwedge path.
+func TestQuestionModel_Esc_FiresDismissHard(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave", supervisor.Question{
+		ID: "q1", Prompt: "?", Options: []supervisor.QOption{{Label: "A"}},
+	})
+	m = m.Install(pq).Show()
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if cmd == nil {
+		t.Fatal("Esc must produce a cmd")
+	}
+	msg := cmd()
+	dq, ok := msg.(DismissQuestionMsg)
+	if !ok {
+		t.Fatalf("Esc cmd produced %T, want DismissQuestionMsg", msg)
+	}
+	if !dq.Hard {
+		t.Error("plain Esc must emit DismissQuestionMsg{Hard: true}")
+	}
+}
+
+// TestQuestionModel_CtrlQ_FiresDismissSoft is the QUM-611 unit guard for the
+// soft-hide path: Ctrl-Q inside the modal must emit
+// DismissQuestionMsg{Hard: false} so the QUM-538 draft contract holds.
+func TestQuestionModel_CtrlQ_FiresDismissSoft(t *testing.T) {
+	m := newTestQuestionModel(t)
+	pq := mkPending("r1", "weave", supervisor.Question{
+		ID: "q1", Prompt: "?", Options: []supervisor.QOption{{Label: "A"}},
+	})
+	m = m.Install(pq).Show()
+
+	_, cmd := m.Update(tea.KeyPressMsg{Code: 'q', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("Ctrl-Q must produce a cmd")
+	}
+	msg := cmd()
+	dq, ok := msg.(DismissQuestionMsg)
+	if !ok {
+		t.Fatalf("Ctrl-Q cmd produced %T, want DismissQuestionMsg", msg)
+	}
+	if dq.Hard {
+		t.Error("Ctrl-Q must emit DismissQuestionMsg{Hard: false} (soft-hide)")
+	}
+}
+
 func TestQuestionModel_TextMode_EscReturnsToSelect_NoAdvance(t *testing.T) {
 	m := newTestQuestionModel(t)
 	pq := mkPending("r1", "weave", supervisor.Question{

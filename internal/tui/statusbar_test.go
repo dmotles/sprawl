@@ -340,6 +340,24 @@ func TestStatusBar_PendingQuestions_DepthOne_RendersAsking(t *testing.T) {
 	}
 }
 
+// TestStatusBar_PendingQuestions_ModalHidden_AdvertisesEscHint is the
+// QUM-611 discoverability guard. When the modal is hidden but a question
+// is still pending, the segment must advertise the Esc-cancel affordance
+// alongside the Ctrl-Q reopen hint.
+func TestStatusBar_PendingQuestions_ModalHidden_AdvertisesEscHint(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	m.SetPendingQuestions(1, "weave")
+	m.SetQuestionModalHidden(true)
+	view := m.View()
+	if !strings.Contains(view, "Ctrl-Q") {
+		t.Errorf("View() must keep Ctrl-Q hint when hidden, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Esc") {
+		t.Errorf("View() must advertise Esc-cancel hint when modal hidden but pending, got:\n%s", view)
+	}
+}
+
 // TestStatusBar_PendingQuestions_DepthThree_RendersPlusMore checks depth>=2
 // renders the agent name and "+N more" where N = depth-1. (QUM-527)
 func TestStatusBar_PendingQuestions_DepthThree_RendersPlusMore(t *testing.T) {

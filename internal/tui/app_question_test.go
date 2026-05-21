@@ -130,13 +130,86 @@ func TestAppModel_DismissQuestionMsg_HidesPreservesDrafts(t *testing.T) {
 	updated, _ := app.Update(QuestionsAvailableMsg{Depth: 1, Head: pq})
 	app = updated.(AppModel)
 
-	updated, _ = app.Update(DismissQuestionMsg{})
+	// Hard=false (Ctrl-Q soft-hide) preserves the QUM-538 draft contract.
+	updated, _ = app.Update(DismissQuestionMsg{Hard: false})
 	app = updated.(AppModel)
 	if app.showQuestion {
-		t.Error("showQuestion should be false after DismissQuestionMsg")
+		t.Error("showQuestion should be false after soft DismissQuestionMsg")
 	}
 	if !app.questionModel.HasPending() {
-		t.Error("questionModel.HasPending() should remain true after dismiss")
+		t.Error("questionModel.HasPending() should remain true after soft dismiss")
+	}
+	sup.qmu.Lock()
+	cancels := len(sup.cancelCalls)
+	sup.qmu.Unlock()
+	if cancels != 0 {
+		t.Errorf("soft dismiss must NOT call CancelQuestion; got %d cancel calls", cancels)
+	}
+}
+
+// TestAppModel_DismissQuestionMsg_Hard_CancelsAndResets is the QUM-611
+// primary regression guard. Plain Esc inside the modal must call
+// Supervisor.CancelQuestion so the blocked MCP tool returns, then fully
+// reset the modal state (no preserved drafts).
+func TestAppModel_DismissQuestionMsg_Hard_CancelsAndResets(t *testing.T) {
+	sup := &mockSupervisor{}
+	app := readyAppWithSup(t, sup)
+
+	pq := samplePending("r1", "weave")
+	updated, _ := app.Update(QuestionsAvailableMsg{Depth: 1, Head: pq})
+	app = updated.(AppModel)
+
+	updated, cmd := app.Update(DismissQuestionMsg{Hard: true})
+	app = updated.(AppModel)
+	if app.showQuestion {
+		t.Error("showQuestion should be false after hard DismissQuestionMsg")
+	}
+	if app.questionModel.HasPending() {
+		t.Error("HasPending() should be false after hard dismiss (Reset, not Hide)")
+	}
+	// CancelQuestion is dispatched as a tea.Cmd to avoid deadlocking the
+	// bubbletea main loop when OnCancel fan-out calls Program.Send
+	// synchronously. Execute the cmd to observe the supervisor call.
+	if cmd == nil {
+		t.Fatal("hard dismiss must return a cmd that calls CancelQuestion")
+	}
+	if msg := cmd(); msg != nil {
+		t.Errorf("hard-dismiss cmd should return nil (cancel is fire-and-forget); got %T", msg)
+	}
+	sup.qmu.Lock()
+	cancels := append([]cancelCall(nil), sup.cancelCalls...)
+	sup.qmu.Unlock()
+	if len(cancels) != 1 {
+		t.Fatalf("hard dismiss must call CancelQuestion exactly once; got %d", len(cancels))
+	}
+	if cancels[0].ID != "r1" {
+		t.Errorf("CancelQuestion id = %q, want %q", cancels[0].ID, "r1")
+	}
+	if cancels[0].Reason == "" {
+		t.Errorf("CancelQuestion reason must not be empty (got %q)", cancels[0].Reason)
+	}
+}
+
+// TestAppModel_DismissHidden_StatusBarAdvertisesEsc is the QUM-611
+// discoverability guard. After a soft dismiss leaves the modal hidden but
+// the question pending, the status bar must advertise the Esc-cancel
+// affordance so users can recover from the wedge without spelunking.
+func TestAppModel_DismissHidden_StatusBarAdvertisesEsc(t *testing.T) {
+	sup := &mockSupervisor{}
+	app := readyAppWithSup(t, sup)
+
+	pq := samplePending("r1", "weave")
+	updated, _ := app.Update(QuestionsAvailableMsg{Depth: 1, Head: pq})
+	app = updated.(AppModel)
+	updated, _ = app.Update(DismissQuestionMsg{Hard: false})
+	app = updated.(AppModel)
+
+	view := app.statusBar.View()
+	if !strings.Contains(view, "Esc") {
+		t.Errorf("status bar should mention Esc-cancel hint while modal is hidden but pending; got:\n%s", view)
+	}
+	if !strings.Contains(view, "Ctrl-Q") {
+		t.Errorf("status bar must still surface Ctrl-Q reopen hint when hidden; got:\n%s", view)
 	}
 }
 

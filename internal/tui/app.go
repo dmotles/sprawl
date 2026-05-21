@@ -985,6 +985,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.showQuestion = true
 				}
 			}
+			m.statusBar.SetQuestionModalHidden(!m.showQuestion && m.questionModel.HasPending())
 		}
 		// QUM-391: only clear the status bar label if consolidation is not
 		// still running in the background.
@@ -1637,6 +1638,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.showQuestion = true
 			}
 		}
+		m.statusBar.SetQuestionModalHidden(!m.showQuestion && m.questionModel.HasPending())
 		return m, nil
 
 	case ShowQuestionMsg:
@@ -1644,11 +1646,40 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.questionModel = m.questionModel.Show()
 			m.showQuestion = true
 		}
+		m.statusBar.SetQuestionModalHidden(!m.showQuestion && m.questionModel.HasPending())
 		return m, nil
 
 	case DismissQuestionMsg:
+		// QUM-611: Hard=true (plain Esc inside modal) cancels the upstream
+		// question so the blocked MCP tool returns and the caller's turn
+		// finalizes. Drafts are discarded. Hard=false (Ctrl-Q) is the
+		// QUM-538 soft-hide: visibility off, request stays pending, drafts
+		// preserved.
+		if msg.Hard {
+			id := m.questionModel.activeRequestID()
+			m.questionModel = m.questionModel.Reset()
+			m.showQuestion = false
+			m.statusBar.SetPendingQuestions(0, "")
+			m.statusBar.SetQuestionModalHidden(false)
+			// CancelQuestion's cancelInternal fires OnCancel on every
+			// registered consumer, which for the TUI consumer calls
+			// Program.Send synchronously. Calling Send from inside Update
+			// can deadlock when the program's msg buffer is full (Update is
+			// the goroutine that drains that buffer). Run the cancel in a
+			// tea.Cmd so the main loop is free to make progress.
+			if id != "" && m.supervisor != nil {
+				sup := m.supervisor
+				cancelID := id
+				return m, func() tea.Msg {
+					sup.CancelQuestion(cancelID, "user dismissed via Esc")
+					return nil
+				}
+			}
+			return m, nil
+		}
 		m.showQuestion = false
 		m.questionModel = m.questionModel.Hide()
+		m.statusBar.SetQuestionModalHidden(!m.showQuestion && m.questionModel.HasPending())
 		return m, nil
 
 	case QuestionAnsweredMsg:
@@ -1671,6 +1702,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusBar.SetPendingQuestions(0, "")
 		}
+		m.statusBar.SetQuestionModalHidden(!m.showQuestion && m.questionModel.HasPending())
 		return m, nil
 
 	case CancelQuestionMsg:
@@ -1684,6 +1716,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusBar.SetPendingQuestions(0, "")
 		}
+		m.statusBar.SetQuestionModalHidden(!m.showQuestion && m.questionModel.HasPending())
 		return m, nil
 
 	case ChildTranscriptMsg:

@@ -32,7 +32,16 @@
 #      receive the response to call report_status with that exact label).
 #  10. Asserts the modal indicator cleared after Resolve (statusbar
 #      segment depth drops to 0).
-#  11. Cleanup: kill the tmux session, remove the sandbox.
+#  11. Phase 2 (QUM-611 Esc-cancel wedge regression guard) spawns a fresh
+#      manager that records a pre-question baseline via report_status,
+#      then calls ask_user_question, then unconditionally records a
+#      post-question report_status. The script asserts the modal appears,
+#      sends a SINGLE Esc keypress (NOT a selection), then asserts (a)
+#      the modal closes within 10s, (b) the manager's last_report_message
+#      advances from the pre-sentinel to the post-sentinel within 30s —
+#      proving the blocked MCP call returned and the manager's next turn
+#      fired (un-wedged).
+#  12. Cleanup: kill the tmux session, remove the sandbox.
 #
 # Eligibility note: this exercises BOTH allow-paths of the eligibility
 # gate — the root-weave allow-path (phase 0, QUM-535) and the manager
@@ -507,6 +516,160 @@ if capture_pane "$SESSION" | grep -qE "is asking"; then
     capture_pane "$SESSION" | tail -20 >&2
 else
     pass "statusbar 'is asking' segment cleared after Resolve"
+fi
+
+# --- Phase 2: Esc-cancel path (QUM-611 wedge regression guard) ---
+#
+# Plain Esc inside the modal must call Supervisor.CancelQuestion so the
+# blocked MCP tool returns immediately and the caller's turn finalizes.
+# Without the QUM-611 fix, DismissQuestionMsg only hides the modal and the
+# MCP call remains parked indefinitely — the user-visible wedge.
+#
+# The phase drives root weave to spawn a fresh manager that calls
+# ask_user_question, asserts the modal appears, sends a single Esc keypress
+# (NOT a selection), then asserts (a) the modal closes, (b) the manager's
+# blocked MCP call returns within 2s (proven by the manager's claude
+# emitting its next turn — state.last_report_message updates with a fresh
+# value), all within 30s.
+
+echo ""
+echo "=== Phase 2: Esc-cancel path (QUM-611 wedge regression guard) ==="
+
+PROBE2="AUQ-CANCEL-PROBE-$$-$(date +%s)"
+PROBE2_PRE="${PROBE2}-before-question"
+PROBE2_POST="${PROBE2}-after-cancel"
+PROBE2_ALPHA="${PROBE2}-alpha"
+PROBE2_BETA="${PROBE2}-beta"
+PROBE2_GAMMA="${PROBE2}-gamma"
+
+# Spawn a fresh manager. The manager must:
+#  STEP 1: call report_status with summary=<pre sentinel> so we have a
+#          known-good baseline value to detect "the manager's next turn fired".
+#  STEP 2: call ask_user_question. The blocked MCP call only returns on the
+#          user side via Resolve OR Cancel. With QUM-611 fixed, Esc cancels;
+#          the response carries Outcome=session_ended (no .selected[0]).
+#  STEP 3: regardless of how the call returned (answered or cancelled), call
+#          report_status with summary=<post sentinel>. We don't depend on the
+#          response shape — the proof of un-wedge is "the next turn fired".
+#  STEP 4: Stop.
+SPAWN_PROMPT2="Call mcp__sprawl__spawn with family='engineering', type='manager', branch='qum-611-auq-cancel-test', and prompt set to exactly: 'You are an automated QUM-611 probe. STEP 1: call mcp__sprawl__report_status with state=working summary=\"${PROBE2_PRE}\". STEP 2: call mcp__sprawl__ask_user_question with questions=[{question:\"Esc-cancel probe (${PROBE2})\",multi_select:false,options:[{label:\"${PROBE2_ALPHA}\"},{label:\"${PROBE2_BETA}\"},{label:\"${PROBE2_GAMMA}\"}]}]. STEP 3: regardless of the response value, call mcp__sprawl__report_status with state=complete summary=\"${PROBE2_POST}\". STEP 4: Stop. Do nothing else.'"
+
+_stmux send-keys -t "$SESSION" "$SPAWN_PROMPT2"
+sleep 0.5
+_stmux send-keys -t "$SESSION" Enter
+
+# Discover the second manager by polling for a manager state file that did
+# not exist before phase 2. Capture the set of pre-existing manager state
+# files, then poll until a new one appears.
+echo ""
+echo "=== Waiting for phase 2 manager to spawn ==="
+PRE_EXISTING_MANAGERS="|$(find "$SPRAWL_ROOT/.sprawl/agents" -maxdepth 1 -name '*.json' 2>/dev/null | sort | tr '\n' '|')"
+MANAGER2_STATE=""
+MANAGER2_NAME=""
+ELAPSED=0
+while [ "$ELAPSED" -lt 180 ]; do
+    while IFS= read -r candidate; do
+        [ -z "$candidate" ] && continue
+        case "$PRE_EXISTING_MANAGERS" in
+            *"|${candidate}|"*) continue ;;
+        esac
+        if [ -f "$candidate" ] && jq -e '.type == "manager"' "$candidate" >/dev/null 2>&1; then
+            MANAGER2_STATE="$candidate"
+            MANAGER2_NAME=$(jq -r '.name' "$MANAGER2_STATE")
+            break 2
+        fi
+    done < <(find "$SPRAWL_ROOT/.sprawl/agents" -maxdepth 1 -name '*.json' 2>/dev/null)
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
+done
+if [ -n "$MANAGER2_NAME" ]; then
+    pass "phase 2 manager spawned (name=$MANAGER2_NAME)"
+else
+    fail "phase 2 manager never spawned within 180s"
+    echo "  agents dir:" >&2
+    ls -la "$SPRAWL_ROOT/.sprawl/agents/" >&2 2>/dev/null || true
+    echo "==============================="
+    echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
+    exit 1
+fi
+
+# Wait for the baseline report_status so we can detect "next turn fired"
+# unambiguously: post-Esc, last_report_message must transition from the
+# pre-sentinel to the post-sentinel.
+echo ""
+echo "=== Waiting for phase 2 manager's pre-question baseline report ==="
+if wait_for_state_field_path "$MANAGER2_STATE" "last_report_message" "$PROBE2_PRE" 120; then
+    pass "phase 2 manager pre-question baseline observed"
+else
+    fail "phase 2 manager never reported pre-question baseline within 120s"
+    echo "==============================="
+    echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
+    exit 1
+fi
+
+echo ""
+echo "=== Waiting for phase 2 modal to appear ==="
+if wait_for_pattern "$SESSION" "is asking" 180; then
+    pass "phase 2 modal appeared (manager called ask_user_question)"
+else
+    fail "phase 2 modal never appeared within 180s"
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
+    echo "==============================="
+    echo "  Results: $PASS_COUNT passed, $FAIL_COUNT failed"
+    exit 1
+fi
+
+sleep 2
+
+# Send a SINGLE Esc keypress — must NOT pick an option. With QUM-611 fixed
+# this fires DismissQuestionMsg{Hard:true} → CancelQuestion → MCP call
+# returns OutcomeSessionEnded → manager's claude continues to STEP 3.
+echo ""
+echo "=== Sending single Esc keypress (QUM-611 cancel path) ==="
+# tmux buffers a lone ESC for `escape-time` (default 500ms) waiting for a
+# possible CSI follow-up; flatten that on this server so the byte lands
+# promptly. bubbletea v2 itself emits KeyEscape as soon as the buffered
+# escape sequence parser times out (~25ms).
+_stmux set-option -g escape-time 0 >/dev/null 2>&1 || true
+# Bubbletea's ultraviolet decoder waits for its 50ms EscTimeout before
+# finalizing a lone ESC as KeyEscape; we give it ample headroom (1.5s)
+# after the single-byte send.
+_stmux send-keys -t "$SESSION" Escape
+sleep 1.5
+
+# Assertion A: the modal indicator clears.
+echo ""
+echo "=== Asserting modal closes after Esc ==="
+ELAPSED=0
+MODAL_CLEARED=0
+while [ "$ELAPSED" -lt 10 ]; do
+    if ! capture_pane "$SESSION" | grep -qE "is asking"; then
+        MODAL_CLEARED=1
+        break
+    fi
+    sleep 1
+    ELAPSED=$((ELAPSED + 1))
+done
+if [ "$MODAL_CLEARED" -eq 1 ]; then
+    pass "modal closed after Esc"
+else
+    fail "modal still showing 'is asking' 10s after Esc — DismissQuestionMsg not firing"
+fi
+
+# Assertion B+C: the manager's NEXT turn fires (post-sentinel surfaces in
+# last_report_message), proving (b) the blocked MCP call returned and (c)
+# the manager's claude is no longer parked. 30s budget.
+echo ""
+echo "=== Asserting manager's MCP call returned and next turn fired ==="
+if wait_for_state_field_path "$MANAGER2_STATE" "last_report_message" "$PROBE2_POST" 30; then
+    pass "manager's last_report_message advanced to '$PROBE2_POST' within 30s (un-wedge confirmed)"
+else
+    fail "manager's last_report_message did NOT advance to post-sentinel within 30s — wedge persists (QUM-611 regression)"
+    echo "  current last_report_message:" >&2
+    jq -r '.last_report_message // "<unset>"' "$MANAGER2_STATE" 2>/dev/null >&2 || true
+    echo "  pane tail:" >&2
+    capture_pane "$SESSION" | tail -40 >&2
 fi
 
 # --- Summary ---

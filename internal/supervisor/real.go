@@ -727,6 +727,16 @@ func (r *Real) Recover(ctx context.Context, agentName string) error {
 	if cp != nil {
 		cp("recover.start", "agent_name", agentName)
 	}
+	// QUM-611: proactively release any AskUserQuestion calls originating
+	// from this agent BEFORE the runtime tears down its abandoned session.
+	// Today the question cleanup is incidental via drainInflight on the
+	// reader exit (cancels every inflight bridgeCtx, which the question
+	// queue observes via ctx.Done()). That works but is fragile — a future
+	// refactor moving teardown order around would leak the pending
+	// question. Doing it explicitly here is cheap, idempotent
+	// (cancelByAgent is a no-op on done entries), and removes the implicit
+	// dependency on drainInflight ordering.
+	r.questions.cancelByAgent(agentName, "agent recovering")
 	err := runtime.Recover(ctx)
 	if cp != nil {
 		var msg string

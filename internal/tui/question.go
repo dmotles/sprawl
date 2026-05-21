@@ -263,12 +263,18 @@ func (m QuestionModel) Update(msg tea.Msg) (QuestionModel, tea.Cmd) {
 		}
 		return m.submit()
 	case tea.KeyEscape:
-		return m, func() tea.Msg { return DismissQuestionMsg{} }
+		// QUM-611: plain Esc inside the modal is the hard-cancel path —
+		// AppModel will call Supervisor.CancelQuestion so the blocked
+		// MCP tool returns and the caller's turn finalizes. Drafts are
+		// discarded; the wedge is closed.
+		return m, func() tea.Msg { return DismissQuestionMsg{Hard: true} }
 	}
 
-	// Ctrl-Q from inside the modal also dismisses.
+	// Ctrl-Q from inside the modal is the soft-hide path (QUM-538): hide
+	// visibility but keep the request pending so the user can Ctrl-Q again
+	// to resume with drafts intact.
 	if key.Mod&tea.ModCtrl != 0 && (key.Code == 'q' || key.Code == 'Q') {
-		return m, func() tea.Msg { return DismissQuestionMsg{} }
+		return m, func() tea.Msg { return DismissQuestionMsg{Hard: false} }
 	}
 	return m, nil
 }

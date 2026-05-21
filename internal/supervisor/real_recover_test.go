@@ -119,6 +119,85 @@ func TestRealRecover_FiresBackendRecoveredEmitter(t *testing.T) {
 	}
 }
 
+// TestRealRecover_CancelsPendingQuestionsFromRecoveringAgent is the QUM-611
+// defensive guard. AskUserQuestion from the recovering agent must unblock
+// proactively (via cancelByAgent) BEFORE the runtime tears down the abandoned
+// session — not incidentally via drainInflight after the reader exits. The
+// test verifies this by calling AskUserQuestion with a plain
+// context.Background() (no bridgeCtx → no drainInflight), then calling
+// Real.Recover. Without the proactive cancel the ask blocks forever; with it
+// the ask returns OutcomeAgentRetired with a "recover"-flavored reason.
+func TestRealRecover_CancelsPendingQuestionsFromRecoveringAgent(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	agentState := testAgentState("alice")
+	saveTestAgent(t, tmpDir, agentState)
+
+	starter := &recoverCountingStarter{}
+	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("rt.Start: %v", err)
+	}
+	starter.mu.Lock()
+	first := starter.lastSessions[0]
+	starter.mu.Unlock()
+	first.terminallyFaulted = true
+
+	// A no-op consumer keeps the queue from rejecting with
+	// OutcomeTUIUnavailable; we don't actually care about OnEnqueue/OnCancel
+	// dispatch here.
+	if err := r.RegisterQuestionConsumer(&noopQuestionConsumer{}); err != nil {
+		t.Fatalf("RegisterQuestionConsumer: %v", err)
+	}
+
+	askDone := make(chan QuestionResponse, 1)
+	go func() {
+		resp, _ := r.AskUserQuestion(context.Background(), QuestionRequest{
+			RequestID: "req-1",
+			From:      "alice",
+			Questions: []Question{{ID: "q1", Prompt: "?"}},
+		})
+		askDone <- resp
+	}()
+	// Wait for the question to land in the queue before invoking Recover so
+	// the ordering under test (proactive cancel BEFORE StopAbandon) is the
+	// one actually exercised.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if d, _ := r.PeekQuestions(); d > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if d, _ := r.PeekQuestions(); d == 0 {
+		t.Fatal("setup: question never enqueued")
+	}
+
+	if err := r.Recover(context.Background(), "alice"); err != nil {
+		t.Fatalf("Real.Recover: %v", err)
+	}
+
+	select {
+	case resp := <-askDone:
+		if resp.Outcome != OutcomeAgentRetired {
+			t.Errorf("Outcome = %q, want %q", resp.Outcome, OutcomeAgentRetired)
+		}
+		if !strings.Contains(resp.Note, "recover") {
+			t.Errorf("Note = %q, want a 'recover'-flavored reason", resp.Note)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("AskUserQuestion did not return within 2s after Recover — proactive cancelByAgent missing")
+	}
+}
+
+// noopQuestionConsumer satisfies QuestionConsumer for tests that need a
+// registered consumer (so the queue accepts enqueues) but don't care about
+// observing dispatches.
+type noopQuestionConsumer struct{}
+
+func (noopQuestionConsumer) Name() string                      { return "noop-test" }
+func (noopQuestionConsumer) OnEnqueue(*PendingQuestion)        {}
+func (noopQuestionConsumer) OnCancel(requestID, reason string) {}
+
 func TestSetBackendRecoveredEmitter_NilClears(t *testing.T) {
 	r := &Real{}
 	rec := &recoverRecorder{}

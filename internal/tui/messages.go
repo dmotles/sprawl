@@ -182,9 +182,21 @@ type QuestionAnsweredMsg struct {
 // installed and no higher-priority modal is up.
 type ShowQuestionMsg struct{}
 
-// DismissQuestionMsg requests that the question modal be hidden. Drafts are
-// preserved so Ctrl-Q (or ShowQuestionMsg) can re-open with state intact.
-type DismissQuestionMsg struct{}
+// DismissQuestionMsg requests that the question modal be hidden.
+//
+// Hard=false is the QUM-538 soft-hide: visibility goes off but the request
+// stays in the supervisor's queue with drafts intact; Ctrl-Q (or
+// ShowQuestionMsg) re-opens with state preserved. Used by inside-modal Ctrl-Q.
+//
+// Hard=true is the QUM-611 cancel-and-unwedge path: AppModel calls
+// Supervisor.CancelQuestion so the blocked MCP tool returns immediately and
+// the caller's turn finalizes, then resets the modal (drafts discarded). Used
+// by inside-modal plain Esc — the user-facing "I'm done with this question"
+// exit. The status-bar hint advertises this affordance while the modal is
+// hidden but the question is still pending.
+type DismissQuestionMsg struct {
+	Hard bool
+}
 
 // CancelQuestionMsg signals that the named request was cancelled upstream
 // (e.g. by the supervisor's CancelByAgent path). The AppModel resets the

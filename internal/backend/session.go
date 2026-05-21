@@ -886,10 +886,11 @@ func (s *session) Interrupt(ctx context.Context) error {
 	//     and atomic with the wire-level interrupt request;
 	//   - observing EventInterrupted would arrive later and race with
 	//     normal handler completion;
-	//   - ctx-respecting handlers (retire/delegate/merge) will unwind
-	//     immediately; non-respecting handlers (ask_user_question
-	//     today — see QUM-553) are unaffected, which is no worse than
-	//     the pre-S3 behavior.
+	//   - ctx-respecting handlers (retire/delegate/merge/ask_user_question)
+	//     will unwind immediately. ask_user_question became ctx-respecting
+	//     after QUM-552 (see internal/supervisor/question.go ~q.ask) — the
+	//     entry's <-ctx.Done() branch fires cancelInternal and returns
+	//     OutcomeSessionEnded; the original QUM-553-era exception is gone.
 	// Entries are NOT removed here; the dispatch goroutines own
 	// their inflight-map cleanup on completion.
 	s.mu.Lock()

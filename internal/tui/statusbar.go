@@ -43,9 +43,13 @@ type StatusBarModel struct {
 
 	// pendingQuestionsDepth / pendingQuestionsAgent drive the
 	// "🔔 <agent> is asking (Ctrl-Q)" segment (QUM-527 slice 2c). Depth==0
-	// hides the segment entirely.
-	pendingQuestionsDepth int
-	pendingQuestionsAgent string
+	// hides the segment entirely. pendingQuestionsHidden (QUM-611)
+	// switches the hint to advertise the Esc-cancel affordance when the
+	// modal is hidden but a question is still pending — the recovery hint
+	// for the QUM-611 wedge state.
+	pendingQuestionsDepth  int
+	pendingQuestionsAgent  string
+	pendingQuestionsHidden bool
 
 	// activeOps lists in-flight MCP tool calls (QUM-497). When non-empty, a
 	// "⏳ tool(caller) M:SS" segment is rendered as the first right-side part
@@ -208,8 +212,18 @@ func (m *StatusBarModel) SetPendingQuestions(depth int, agent string) {
 	m.pendingQuestionsAgent = agent
 }
 
-// pendingQuestionsSegment renders the "🔔 <agent> is asking (Ctrl-Q)" or
-// "🔔 <agent> +N more (Ctrl-Q)" segment. Empty when depth==0.
+// SetQuestionModalHidden tells the status bar whether the question modal is
+// currently hidden while a request is still pending (QUM-611). When true, the
+// pending-questions segment advertises the Esc-cancel affordance so users
+// stuck in the hidden-but-pending wedge state have an obvious recovery path.
+func (m *StatusBarModel) SetQuestionModalHidden(hidden bool) {
+	m.pendingQuestionsHidden = hidden
+}
+
+// pendingQuestionsSegment renders the pending-questions indicator. The hint
+// suffix is "(Ctrl-Q)" when the modal is visible, "(Ctrl-Q to reopen, Esc to
+// cancel)" when the modal is hidden but a request is still pending (QUM-611).
+// Empty when depth==0.
 func (m StatusBarModel) pendingQuestionsSegment() string {
 	if m.pendingQuestionsDepth <= 0 {
 		return ""
@@ -218,10 +232,14 @@ func (m StatusBarModel) pendingQuestionsSegment() string {
 	if agent == "" {
 		agent = "?"
 	}
-	if m.pendingQuestionsDepth == 1 {
-		return fmt.Sprintf("🔔 %s is asking (Ctrl-Q)", agent)
+	hint := "Ctrl-Q"
+	if m.pendingQuestionsHidden {
+		hint = "Ctrl-Q to reopen, Esc to cancel"
 	}
-	return fmt.Sprintf("🔔 %s +%d more (Ctrl-Q)", agent, m.pendingQuestionsDepth-1)
+	if m.pendingQuestionsDepth == 1 {
+		return fmt.Sprintf("🔔 %s is asking (%s)", agent, hint)
+	}
+	return fmt.Sprintf("🔔 %s +%d more (%s)", agent, m.pendingQuestionsDepth-1, hint)
 }
 
 // SetActiveOps replaces the in-flight MCP ops list rendered in the status
