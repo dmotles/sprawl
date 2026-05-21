@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-recover-live-e2e test-paste-coalesce-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-recover-live-e2e test-paste-coalesce-e2e test-e2e-matrix
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -183,3 +183,12 @@ test-recover-live-e2e:
 # cmd/enter.go, or cmd/input_debug.go's coalescer consumer.
 test-paste-coalesce-e2e: build
 	bash scripts/test-paste-coalesce-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+# QUM-616 matrix-driven e2e harness foundation. Wave 1 — runs alongside
+# the per-test test-*-e2e targets. See scripts/e2e-matrix.sh.
+test-e2e-matrix: build
+	bash scripts/e2e-matrix.sh all; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+# Pattern target: `make test-e2e-matrix-merge-reuse` runs only that row.
+test-e2e-matrix-%: build
+	bash scripts/e2e-matrix.sh $*; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
