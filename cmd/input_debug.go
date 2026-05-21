@@ -38,6 +38,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
+	"github.com/dmotles/sprawl/internal/inputcoalesce"
 	"github.com/dmotles/sprawl/internal/tui"
 )
 
@@ -328,9 +329,12 @@ func runInputDebug(cmd *cobra.Command, _ []string) error {
 	if inputDebugFPS > 0 {
 		opts = append(opts, tea.WithFPS(inputDebugFPS))
 	}
-	var coal *coalescer
+	var coal *inputcoalesce.Coalescer
 	if inputDebugCoalesce {
-		coal = newCoalescer(os.Stdin, time.Duration(inputDebugCoalesceWindow)*time.Millisecond, lg)
+		coalLog := func(notes string) {
+			lg.write(debugRecord{Kind: "coalesce-read", Notes: notes})
+		}
+		coal = inputcoalesce.New(os.Stdin, time.Duration(inputDebugCoalesceWindow)*time.Millisecond, coalLog)
 		defer coal.Close()
 		opts = append(opts, tea.WithInput(coal))
 	}

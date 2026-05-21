@@ -35,6 +35,7 @@ import (
 	backendclaude "github.com/dmotles/sprawl/internal/backend/claude"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/host"
+	"github.com/dmotles/sprawl/internal/inputcoalesce"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/observe/sigdump"
@@ -77,6 +78,11 @@ type enterDeps struct {
 	// the operator suspects a poison-pill persisted child whose resume would
 	// re-crash the supervisor, or when running disposable test sessions.
 	noResume bool
+	// noCoalesce, when true, skips wrapping os.Stdin with the QUM-608
+	// paste coalescer. Set via the `--no-coalesce` flag. Emergency opt-
+	// out — the coalescer is ON by default and is what makes TUI paste
+	// instant on tmux <3.4.
+	noCoalesce bool
 }
 
 // restartState holds the rolling state tracked across restarts: when the last
@@ -172,12 +178,16 @@ func init() {
 	rootCmd.AddCommand(enterCmd)
 	// QUM-372: --no-resume disables the startup child-agent auto-resume scan.
 	enterCmd.Flags().Bool("no-resume", false, "skip auto-resuming suspended child agents (QUM-372)")
+	// QUM-608: --no-coalesce disables the stdin paste coalescer that wraps
+	// os.Stdin to synthesize bracketed-paste markers around detected
+	// bursts. Emergency opt-out; the coalescer is ON by default.
+	enterCmd.Flags().Bool("no-coalesce", false, "disable the stdin paste coalescer (QUM-608); use if it misbehaves in your terminal")
 }
 
 var enterCmd = &cobra.Command{
 	Use:   "enter",
 	Short: "Launch the TUI dashboard",
-	Long:  "Launch a fullscreen terminal UI for monitoring and interacting with agents. Works in any terminal — no tmux required.",
+	Long:  "Launch a fullscreen terminal UI for monitoring and interacting with agents. Works in any terminal — no tmux required.\n\nFlags:\n  --no-resume     skip auto-resuming suspended child agents (QUM-372)\n  --no-coalesce   disable the stdin paste coalescer (QUM-608); pastes will animate one char at a time on tmux <3.4",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		deps := resolveEnterDeps()
@@ -185,6 +195,9 @@ var enterCmd = &cobra.Command{
 		// deps share a singleton, so we update it on each invocation).
 		if v, err := cmd.Flags().GetBool("no-resume"); err == nil {
 			deps.noResume = v
+		}
+		if v, err := cmd.Flags().GetBool("no-coalesce"); err == nil {
+			deps.noCoalesce = v
 		}
 		return runEnter(deps)
 	},
@@ -195,54 +208,9 @@ func resolveEnterDeps() *enterDeps {
 		return defaultEnterDeps
 	}
 
-	return &enterDeps{
-		getenv: os.Getenv,
-		getwd:  os.Getwd,
-		runProgram: func(model tea.Model, onStart func(sender func(tea.Msg))) error {
-			p := tea.NewProgram(model)
-
-			// Catch SIGTERM/SIGHUP and forward as quit to the Bubble Tea program.
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
-			go func() {
-				if _, ok := <-sigCh; ok {
-					p.Quit()
-				}
-			}()
-			defer signal.Stop(sigCh)
-
-			// QUM-458 layer 3: arm the orphan watchdog when running under a
-			// sandbox/test context. installOrphanWatchdog gates internally on
-			// shouldEnableOrphanWatchdog and returns a no-op stop in
-			// production. STUB call site: implementer wires real getppid/stat
-			// and ticker.
-			stopWatchdog := installOrphanWatchdog(
-				os.Getenv,
-				os.Getenv("SPRAWL_ROOT"),
-				syscall.Getppid,
-				func() error {
-					root := os.Getenv("SPRAWL_ROOT")
-					if root == "" {
-						return nil
-					}
-					_, err := os.Stat(root)
-					return err
-				},
-				p.Quit,
-				func() (<-chan time.Time, func()) {
-					t := time.NewTicker(2 * time.Second)
-					return t.C, t.Stop
-				},
-			)
-			defer stopWatchdog()
-
-			if onStart != nil {
-				onStart(func(msg tea.Msg) { p.Send(msg) })
-			}
-
-			_, err := p.Run()
-			return err
-		},
+	deps := &enterDeps{
+		getenv:     os.Getenv,
+		getwd:      os.Getwd,
 		newSession: defaultNewSession,
 		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error {
 			deps := rootinit.DefaultDeps()
@@ -291,6 +259,64 @@ func resolveEnterDeps() *enterDeps {
 			return sup, mcpServer
 		},
 	}
+	deps.runProgram = func(model tea.Model, onStart func(sender func(tea.Msg))) error {
+		var opts []tea.ProgramOption
+		// QUM-608: wrap os.Stdin with the paste coalescer unless
+		// --no-coalesce is set. The coalescer synthesizes bracketed-
+		// paste markers around detected bursts so Bubble Tea emits a
+		// single tea.PasteMsg instead of one KeyPressMsg per character
+		// — fixes the typewriter animation on tmux <3.4. Only wrap a
+		// TTY stdin; piped stdin (tests, scripts) bypasses coalescing.
+		var coal *inputcoalesce.Coalescer
+		if !deps.noCoalesce && isStdinTTY() {
+			coal = inputcoalesce.New(os.Stdin, inputcoalesce.DefaultWindow, nil)
+			defer coal.Close()
+			opts = append(opts, tea.WithInput(coal))
+		}
+		p := tea.NewProgram(model, opts...)
+
+		// Catch SIGTERM/SIGHUP and forward as quit to the Bubble Tea program.
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGHUP)
+		go func() {
+			if _, ok := <-sigCh; ok {
+				p.Quit()
+			}
+		}()
+		defer signal.Stop(sigCh)
+
+		// QUM-458 layer 3: arm the orphan watchdog when running under a
+		// sandbox/test context. installOrphanWatchdog gates internally on
+		// shouldEnableOrphanWatchdog and returns a no-op stop in
+		// production.
+		stopWatchdog := installOrphanWatchdog(
+			os.Getenv,
+			os.Getenv("SPRAWL_ROOT"),
+			syscall.Getppid,
+			func() error {
+				root := os.Getenv("SPRAWL_ROOT")
+				if root == "" {
+					return nil
+				}
+				_, err := os.Stat(root)
+				return err
+			},
+			p.Quit,
+			func() (<-chan time.Time, func()) {
+				t := time.NewTicker(2 * time.Second)
+				return t.C, t.Stop
+			},
+		)
+		defer stopWatchdog()
+
+		if onStart != nil {
+			onStart(func(msg tea.Msg) { p.Send(msg) })
+		}
+
+		_, err := p.Run()
+		return err
+	}
+	return deps
 }
 
 // enterAllowedTools returns the root tool allowlist (root-loop tools plus the

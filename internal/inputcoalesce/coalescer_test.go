@@ -1,17 +1,16 @@
-// THROWAWAY DIAGNOSTIC TESTS: QUM-608 Path 2 prototype. Pairs with
-// cmd/input_debug_coalescer.go (the stdin coalescer that synthesizes
-// bracketed-paste markers around detected bursts). Safe to delete with
-// the rest of the input-debug command.
+// Tests for the stdin coalescer. QUM-608. The integration test that
+// drives bytes through tea.NewProgram(m, tea.WithInput(coal)) is the
+// regression-catch test that surfaced the four prototype bugs (data-
+// loss on (n>0, EOF), readLoop leak on Close, burst-window non-reset,
+// and Close idempotency).
 
-package cmd
+package inputcoalesce
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -25,42 +24,26 @@ const (
 	pasteEnd   = "\x1b[201~"
 )
 
-// newTestLogger creates a debugLogger writing to a temp file inside t.TempDir().
-// Returns the logger and a function that closes it and returns all decoded
-// records.
-func newTestLogger(t *testing.T) (*debugLogger, func() []debugRecord) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "coalesce.log")
-	lg, err := newDebugLogger(path)
-	if err != nil {
-		t.Fatalf("newDebugLogger: %v", err)
-	}
-	return lg, func() []debugRecord {
-		_ = lg.close()
-		f, err := os.Open(path)
-		if err != nil {
-			t.Fatalf("open log: %v", err)
+// captureLog returns a LogFunc that appends each note to a slice and a
+// thread-safe accessor for the captured notes.
+func captureLog() (LogFunc, func() []string) {
+	var mu sync.Mutex
+	var notes []string
+	return func(s string) {
+			mu.Lock()
+			defer mu.Unlock()
+			notes = append(notes, s)
+		}, func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			out := make([]string, len(notes))
+			copy(out, notes)
+			return out
 		}
-		defer f.Close()
-		dec := json.NewDecoder(f)
-		var out []debugRecord
-		for {
-			var r debugRecord
-			if err := dec.Decode(&r); err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-				t.Fatalf("decode log: %v", err)
-			}
-			out = append(out, r)
-		}
-		return out
-	}
 }
 
-// readAllAvailable repeatedly calls Read until EOF or a deadline. Used because
-// the coalescer can return data across multiple Read() calls.
-func readAllAvailable(t *testing.T, c *coalescer, bufSize int, deadline time.Duration) []byte {
+// readAllAvailable repeatedly calls Read until EOF or a deadline.
+func readAllAvailable(t *testing.T, c *Coalescer, bufSize int, deadline time.Duration) []byte {
 	t.Helper()
 	var got bytes.Buffer
 	buf := make([]byte, bufSize)
@@ -80,17 +63,25 @@ func readAllAvailable(t *testing.T, c *coalescer, bufSize int, deadline time.Dur
 	return got.Bytes()
 }
 
+func hasNoteContaining(notes []string, substr string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, substr) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCoalescer_SingleSmallByte_PassesThroughUnwrapped(t *testing.T) {
 	t.Parallel()
 
-	lg, records := newTestLogger(t)
+	log, getNotes := captureLog()
 	pr, pw := io.Pipe()
-	c := newCoalescer(pr, 10*time.Millisecond, lg)
+	c := New(pr, 10*time.Millisecond, log)
 	defer c.Close()
 
 	go func() {
 		_, _ = pw.Write([]byte("a"))
-		// Close to allow the reader to terminate cleanly after delivering.
 		time.Sleep(30 * time.Millisecond)
 		_ = pw.Close()
 	}()
@@ -102,19 +93,17 @@ func TestCoalescer_SingleSmallByte_PassesThroughUnwrapped(t *testing.T) {
 	if bytes.Contains(got, []byte(pasteStart)) || bytes.Contains(got, []byte(pasteEnd)) {
 		t.Fatalf("did not expect paste markers in single-byte output: %q", got)
 	}
-
-	recs := records()
-	if !hasCoalesceRead(recs, "wrapped=false") {
-		t.Fatalf("expected at least one coalesce-read record with wrapped=false; got: %+v", recs)
+	if !hasNoteContaining(getNotes(), "wrapped=false") {
+		t.Fatalf("expected at least one log note with wrapped=false; got: %+v", getNotes())
 	}
 }
 
 func TestCoalescer_LargeBurst_GetsWrappedWithBracketedPaste(t *testing.T) {
 	t.Parallel()
 
-	lg, records := newTestLogger(t)
+	log, getNotes := captureLog()
 	pr, pw := io.Pipe()
-	c := newCoalescer(pr, 10*time.Millisecond, lg)
+	c := New(pr, 10*time.Millisecond, log)
 	defer c.Close()
 
 	payload := bytes.Repeat([]byte("a"), 200)
@@ -127,7 +116,7 @@ func TestCoalescer_LargeBurst_GetsWrappedWithBracketedPaste(t *testing.T) {
 
 	got := readAllAvailable(t, c, 4096, 300*time.Millisecond)
 
-	wantLen := 200 + len(pasteStart) + len(pasteEnd) // 212
+	wantLen := 200 + len(pasteStart) + len(pasteEnd)
 	if len(got) != wantLen {
 		t.Fatalf("expected wrapped length %d, got %d (data=%q)", wantLen, len(got), got)
 	}
@@ -141,26 +130,22 @@ func TestCoalescer_LargeBurst_GetsWrappedWithBracketedPaste(t *testing.T) {
 	if !bytes.Equal(middle, payload) {
 		t.Fatalf("middle of wrapped output should equal payload; got %q", middle)
 	}
-
-	recs := records()
-	if !hasCoalesceRead(recs, "wrapped=true") {
-		t.Fatalf("expected at least one coalesce-read record with wrapped=true; got: %+v", recs)
+	if !hasNoteContaining(getNotes(), "wrapped=true") {
+		t.Fatalf("expected log note with wrapped=true; got: %+v", getNotes())
 	}
-	if !hasCoalesceRead(recs, "bytes_in=200") {
-		t.Fatalf("expected coalesce-read record with bytes_in=200; got: %+v", recs)
+	if !hasNoteContaining(getNotes(), "bytes_in=200") {
+		t.Fatalf("expected log note with bytes_in=200; got: %+v", getNotes())
 	}
 }
 
 func TestCoalescer_BurstContainingESC_PassesThroughUnwrapped(t *testing.T) {
 	t.Parallel()
 
-	lg, records := newTestLogger(t)
+	log, getNotes := captureLog()
 	pr, pw := io.Pipe()
-	c := newCoalescer(pr, 10*time.Millisecond, lg)
+	c := New(pr, 10*time.Millisecond, log)
 	defer c.Close()
 
-	// Mix printable bytes with an ESC byte — simulates arrow-key sequences
-	// interleaved or a real terminal escape inside the burst.
 	payload := append(bytes.Repeat([]byte("a"), 50), []byte("\x1b[A")...)
 	payload = append(payload, bytes.Repeat([]byte("b"), 50)...)
 
@@ -178,19 +163,16 @@ func TestCoalescer_BurstContainingESC_PassesThroughUnwrapped(t *testing.T) {
 	if bytes.HasPrefix(got, []byte(pasteStart)) {
 		t.Fatalf("payload with ESC byte must NOT be wrapped; got %q", got[:min(len(got), 8)])
 	}
-
-	recs := records()
-	if !hasCoalesceRead(recs, "wrapped=false") {
-		t.Fatalf("expected at least one coalesce-read record with wrapped=false; got: %+v", recs)
+	if !hasNoteContaining(getNotes(), "wrapped=false") {
+		t.Fatalf("expected log note with wrapped=false; got: %+v", getNotes())
 	}
 }
 
 func TestCoalescer_EOF_AfterPipeClose(t *testing.T) {
 	t.Parallel()
 
-	lg, _ := newTestLogger(t)
 	pr, pw := io.Pipe()
-	c := newCoalescer(pr, 10*time.Millisecond, lg)
+	c := New(pr, 10*time.Millisecond, nil)
 	defer c.Close()
 
 	go func() {
@@ -198,7 +180,6 @@ func TestCoalescer_EOF_AfterPipeClose(t *testing.T) {
 		_ = pw.Close()
 	}()
 
-	// Drain content first.
 	var collected bytes.Buffer
 	buf := make([]byte, 64)
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -208,12 +189,11 @@ func TestCoalescer_EOF_AfterPipeClose(t *testing.T) {
 		if n > 0 {
 			collected.Write(buf[:n])
 		}
-		// Per io.Reader best practice and ultraviolet's sendBytes contract
-		// (terminal_reader.go:121-127), Read MUST NOT return (n>0, io.EOF)
-		// in the same call — n bytes would be discarded by the consumer.
-		// EOF must arrive on a subsequent (0, io.EOF) Read.
+		// Per io.Reader best practice and ultraviolet's sendBytes
+		// contract, Read MUST NOT return (n>0, io.EOF) in the same
+		// call.
 		if err != nil && n > 0 {
-			t.Fatalf("coalescer.Read returned (%d, %v) — data-loss-prone; EOF must come on next call", n, err)
+			t.Fatalf("Coalescer.Read returned (%d, %v) — data-loss-prone; EOF must come on next call", n, err)
 		}
 		if errors.Is(err, io.EOF) {
 			sawEOF = true
@@ -231,18 +211,14 @@ func TestCoalescer_EOF_AfterPipeClose(t *testing.T) {
 	}
 }
 
-// TestCoalescer_BurstWindow_ResetsPerChunk verifies that the burst window
-// timer resets each time a chunk arrives within the window — so a paste
-// trickling in over a duration longer than the window is still coalesced
-// into a single wrapped output (not split into multiple PasteMsgs).
 func TestCoalescer_BurstWindow_ResetsPerChunk(t *testing.T) {
 	t.Parallel()
 
-	lg, records := newTestLogger(t)
+	log, getNotes := captureLog()
 	pr, pw := io.Pipe()
-	// 20ms window, but feed chunks every 10ms for 60ms total — without the
-	// reset fix, the first 20ms expiration would close the burst early.
-	c := newCoalescer(pr, 20*time.Millisecond, lg)
+	// 20ms window, but feed chunks every 10ms for 60ms total — without
+	// the reset fix, the first 20ms expiration would close the burst.
+	c := New(pr, 20*time.Millisecond, log)
 	defer c.Close()
 
 	const chunkCount = 6
@@ -257,7 +233,7 @@ func TestCoalescer_BurstWindow_ResetsPerChunk(t *testing.T) {
 
 	got := readAllAvailable(t, c, 8192, 2*time.Second)
 
-	wantPayloadLen := chunkCount * chunkSize // 240
+	wantPayloadLen := chunkCount * chunkSize
 	wantWrappedLen := wantPayloadLen + len(pasteStart) + len(pasteEnd)
 	if len(got) != wantWrappedLen {
 		t.Fatalf("expected single wrapped output of %d bytes (240 payload + markers), got %d bytes — burst window did not reset per chunk", wantWrappedLen, len(got))
@@ -265,53 +241,37 @@ func TestCoalescer_BurstWindow_ResetsPerChunk(t *testing.T) {
 	if !bytes.HasPrefix(got, []byte(pasteStart)) || !bytes.HasSuffix(got, []byte(pasteEnd)) {
 		t.Fatalf("expected exactly one paste wrap; got %q ... %q", got[:min(len(got), 8)], got[max(0, len(got)-8):])
 	}
-
-	// Count wrapped=true coalesce-reads — should be exactly one.
-	recs := records()
 	wrapped := 0
-	for _, r := range recs {
-		if r.Kind == "coalesce-read" && strings.Contains(r.Notes, "wrapped=true") {
+	for _, n := range getNotes() {
+		if strings.Contains(n, "wrapped=true") {
 			wrapped++
 		}
 	}
 	if wrapped != 1 {
-		t.Fatalf("expected exactly 1 wrapped coalesce-read record (single paste), got %d; records=%+v", wrapped, recs)
+		t.Fatalf("expected exactly 1 wrapped log record (single paste), got %d; notes=%+v", wrapped, getNotes())
 	}
 }
 
-// TestCoalescer_Close_UnblocksReadLoop verifies that Close() interrupts the
-// background read goroutine even when src.Read is blocked on a real OS pipe.
-// Pre-fix the readLoop would leak until the underlying reader returned on
-// its own (process exit). Uses os.Pipe() — a *os.File backed pipe — so the
-// cancellation path mirrors how os.Stdin would be cancelled in production.
 func TestCoalescer_Close_UnblocksReadLoop(t *testing.T) {
 	t.Parallel()
 
-	lg, _ := newTestLogger(t)
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
 	t.Cleanup(func() { _ = pw.Close() })
-	c := newCoalescer(pr, 5*time.Millisecond, lg)
+	c := New(pr, 5*time.Millisecond, nil)
 
-	// Give the readLoop time to enter the blocking Read on the empty pipe.
 	time.Sleep(50 * time.Millisecond)
 
-	// trackedReader wrapped pr; expose exit signal via a goroutine count
-	// approximation: after Close, repeatedly call c.Read and assert EOF
-	// arrives promptly. With the bug, the readLoop holds pr open and
-	// blocks forever; Close alone doesn't interrupt it.
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- c.Close() }()
 	select {
 	case <-closeDone:
 	case <-time.After(1 * time.Second):
-		t.Fatalf("coalescer.Close() did not return within 1s")
+		t.Fatalf("Coalescer.Close() did not return within 1s")
 	}
 
-	// After Close, the readLoop should have exited — verify by issuing a
-	// Read that must complete promptly (returning EOF / canceled error).
 	readDone := make(chan struct{})
 	go func() {
 		buf := make([]byte, 16)
@@ -331,9 +291,7 @@ func TestCoalescer_Close_UnblocksReadLoop(t *testing.T) {
 	}
 }
 
-// pasteWatcherModel is a minimal tea.Model used to assert that a tea.PasteMsg
-// reaches the program when bytes flow through the coalescer. Captures the
-// first PasteMsg seen, then quits.
+// pasteWatcherModel captures the first tea.PasteMsg seen, then quits.
 type pasteWatcherModel struct {
 	mu    sync.Mutex
 	got   *tea.PasteMsg
@@ -363,17 +321,15 @@ func (m *pasteWatcherModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *pasteWatcherModel) View() tea.View { return tea.NewView("") }
 
-// TestCoalescer_PasteMsgEmittedThroughBubbleTea is the integration test
-// ghost called out: pipe a burst through tea.NewProgram(m, tea.WithInput(coal))
-// and assert a tea.PasteMsg arrives end-to-end. This single test catches
-// BOTH the (n>0, io.EOF) data-loss bug AND any deadlock that prevents
-// shutdown from completing.
+// TestCoalescer_PasteMsgEmittedThroughBubbleTea: pipe a burst through
+// tea.NewProgram(m, tea.WithInput(coal)) and assert a tea.PasteMsg
+// arrives end-to-end. Catches BOTH the (n>0, io.EOF) data-loss bug AND
+// any deadlock that prevents shutdown from completing.
 func TestCoalescer_PasteMsgEmittedThroughBubbleTea(t *testing.T) {
 	t.Parallel()
 
-	lg, _ := newTestLogger(t)
 	pr, pw := io.Pipe()
-	coal := newCoalescer(pr, 10*time.Millisecond, lg)
+	coal := New(pr, 10*time.Millisecond, nil)
 	defer coal.Close()
 
 	m := &pasteWatcherModel{gotCh: make(chan struct{})}
@@ -386,14 +342,10 @@ func TestCoalescer_PasteMsgEmittedThroughBubbleTea(t *testing.T) {
 		tea.WithoutSignalHandler(),
 	)
 
-	// Drive bytes in parallel with p.Run.
 	payload := bytes.Repeat([]byte("a"), 200)
 	go func() {
-		// Small delay to let program init.
 		time.Sleep(30 * time.Millisecond)
 		_, _ = pw.Write(payload)
-		// Hold the pipe open just long enough for the burst window to
-		// close and the PasteMsg to be dispatched before EOF arrives.
 		time.Sleep(80 * time.Millisecond)
 		_ = pw.Close()
 	}()
@@ -406,13 +358,11 @@ func TestCoalescer_PasteMsgEmittedThroughBubbleTea(t *testing.T) {
 
 	select {
 	case <-m.gotCh:
-		// success — PasteMsg observed.
 	case <-time.After(3 * time.Second):
 		p.Quit()
 		t.Fatalf("no tea.PasteMsg observed within 3s — coalescer payload was dropped")
 	}
 
-	// Ensure the program shuts down cleanly (catches deadlocks).
 	select {
 	case err := <-runDone:
 		if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
@@ -422,7 +372,6 @@ func TestCoalescer_PasteMsgEmittedThroughBubbleTea(t *testing.T) {
 		t.Fatalf("tea.Program did not shut down within 2s after PasteMsg + EOF")
 	}
 
-	// Verify the paste payload reached the model intact.
 	m.mu.Lock()
 	got := m.got
 	m.mu.Unlock()
@@ -437,9 +386,9 @@ func TestCoalescer_PasteMsgEmittedThroughBubbleTea(t *testing.T) {
 func TestCoalescer_LoggerReceivesStructuredFields(t *testing.T) {
 	t.Parallel()
 
-	lg, records := newTestLogger(t)
+	log, getNotes := captureLog()
 	pr, pw := io.Pipe()
-	c := newCoalescer(pr, 10*time.Millisecond, lg)
+	c := New(pr, 10*time.Millisecond, log)
 	defer c.Close()
 
 	go func() {
@@ -450,20 +399,13 @@ func TestCoalescer_LoggerReceivesStructuredFields(t *testing.T) {
 
 	_ = readAllAvailable(t, c, 4096, 300*time.Millisecond)
 
-	recs := records()
-	var found *debugRecord
-	for i := range recs {
-		if recs[i].Kind == "coalesce-read" {
-			found = &recs[i]
-			break
-		}
-	}
-	if found == nil {
-		t.Fatalf("expected at least one coalesce-read record; got: %+v", recs)
+	notes := getNotes()
+	if len(notes) == 0 {
+		t.Fatalf("expected at least one log note")
 	}
 	for _, field := range []string{"bytes_in=", "bytes_out=", "wrapped=", "window_ms=", "duration_ns="} {
-		if !strings.Contains(found.Notes, field) {
-			t.Fatalf("coalesce-read Notes missing %q field; Notes=%q", field, found.Notes)
+		if !hasNoteContaining(notes, field) {
+			t.Fatalf("log notes missing %q field; notes=%+v", field, notes)
 		}
 	}
 }
@@ -471,9 +413,8 @@ func TestCoalescer_LoggerReceivesStructuredFields(t *testing.T) {
 func TestCoalescer_SmallReadBuffer_DeliversFullPayloadAcrossCalls(t *testing.T) {
 	t.Parallel()
 
-	lg, _ := newTestLogger(t)
 	pr, pw := io.Pipe()
-	c := newCoalescer(pr, 10*time.Millisecond, lg)
+	c := New(pr, 10*time.Millisecond, nil)
 	defer c.Close()
 
 	payload := bytes.Repeat([]byte("z"), 200)
@@ -483,8 +424,6 @@ func TestCoalescer_SmallReadBuffer_DeliversFullPayloadAcrossCalls(t *testing.T) 
 		_ = pw.Close()
 	}()
 
-	// Use a tiny 50-byte buffer; we should still receive all 212 wrapped bytes
-	// across multiple Read calls.
 	var got bytes.Buffer
 	buf := make([]byte, 50)
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -523,30 +462,16 @@ func TestCoalescer_SmallReadBuffer_DeliversFullPayloadAcrossCalls(t *testing.T) 
 func TestCoalescer_Close_Idempotent(t *testing.T) {
 	t.Parallel()
 
-	lg, _ := newTestLogger(t)
 	pr, _ := io.Pipe()
-	c := newCoalescer(pr, 10*time.Millisecond, lg)
+	c := New(pr, 10*time.Millisecond, nil)
 
 	if err := c.Close(); err != nil {
 		t.Fatalf("first Close returned error: %v", err)
 	}
-	// Second close must not panic and must not return a "fatal" error.
-	// io.ErrClosedPipe / nil are both acceptable.
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("second Close panicked: %v", r)
 		}
 	}()
 	_ = c.Close()
-}
-
-// hasCoalesceRead returns true if any record has Kind=="coalesce-read" and
-// Notes containing the given substring.
-func hasCoalesceRead(recs []debugRecord, noteSubstr string) bool {
-	for _, r := range recs {
-		if r.Kind == "coalesce-read" && strings.Contains(r.Notes, noteSubstr) {
-			return true
-		}
-	}
-	return false
 }

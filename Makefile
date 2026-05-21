@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-recover-live-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-recover-live-e2e test-paste-coalesce-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -172,3 +172,14 @@ test-recover-live-e2e:
 	    [ -x $(CURDIR)/sprawl ] && $(CURDIR)/sprawl sandbox-gc --max-age=10m || true; \
 	    rm -f $(CURDIR)/sprawl-recover-e2e; \
 	    exit $$rc
+
+# QUM-608 paste-coalescer e2e gate. Launches sprawl enter in an
+# isolated /tmp sandbox under tmux, injects a 200-char paste burst via
+# `tmux send-keys -l`, asserts the full payload appears in the input
+# panel within 5s (well below the typewriter-animation budget the bug
+# produces), then SIGINTs and asserts clean shutdown. See
+# scripts/test-paste-coalesce-e2e.sh. Mandatory before merging any
+# change to internal/inputcoalesce/, the tea.NewProgram call site in
+# cmd/enter.go, or cmd/input_debug.go's coalescer consumer.
+test-paste-coalesce-e2e: build
+	bash scripts/test-paste-coalesce-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
