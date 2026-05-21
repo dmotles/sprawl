@@ -10,6 +10,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -328,19 +329,22 @@ func TestReportStatus_PersistsAndNotifiesParent(t *testing.T) {
 		t.Errorf("LastReportDetail = %q, want empty (detail dropped from report_status)", got.LastReportDetail)
 	}
 
-	// QUM-559: parent "root" maildir + harness queue stay empty; the
-	// notification flows through the in-process ephemeral ring.
+	// QUM-614: report_status writes a type=status_change envelope into the
+	// parent's maildir, but it MUST stay hidden from the default messages
+	// listing (Inbox == List("all")), the unread badge, and the harness
+	// queue. The DrainStatusChangeLines helper surfaces it via the
+	// out-of-band "status" view.
 	msgs, _ := messages.Inbox(tmpDir, "root")
 	if len(msgs) != 0 {
-		t.Errorf("inbox len = %d, want 0 (QUM-559)", len(msgs))
+		t.Errorf("inbox len = %d, want 0 (status_change must be hidden from default filters, QUM-614)", len(msgs))
 	}
 	entries, _ := agentloop.ListPending(tmpDir, "root")
 	if len(entries) != 0 {
-		t.Errorf("queue len = %d, want 0 (QUM-559)", len(entries))
+		t.Errorf("queue len = %d, want 0 (QUM-614)", len(entries))
 	}
-	drained := sup.DrainStatusNotifications("root")
+	drained := inboxprompt.DrainStatusChangeLines(tmpDir, "root")
 	if len(drained) != 1 {
-		t.Fatalf("DrainStatusNotifications(root) len = %d, want 1; got %#v", len(drained), drained)
+		t.Fatalf("DrainStatusChangeLines(root) len = %d, want 1; got %#v", len(drained), drained)
 	}
 	if !strings.Contains(drained[0], "weave changed status to working: halfway") {
 		t.Errorf("drained line = %q; want it to mention weave's status update", drained[0])

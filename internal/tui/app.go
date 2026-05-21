@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
@@ -2319,19 +2320,17 @@ func sendMsgCmd(msg tea.Msg) tea.Cmd {
 // bridge.SendMessage returns success. Returns nil msg if queue is empty or
 // unreadable. QUM-323.
 //
-// QUM-559: in addition to the on-disk queue, drain the supervisor's
-// in-process ephemeral status-notification ring. Drained status lines are
+// QUM-614: in addition to the on-disk async/interrupt queue, drain weave's
+// type=status_change envelopes from the maildir (replaces the in-process
+// per-recipient ring drained pre-QUM-614). Drained status lines are
 // PREPENDED to the rendered prompt so report_status notifications surface
 // before any queued maildir messages on the next turn. If only status
 // lines exist, emit a standalone async-class InboxDrainMsg with no entry
 // IDs (nothing to MarkDelivered).
-func peekAndDrainCmd(sprawlRoot, rootName string, sup supervisor.Supervisor) tea.Cmd {
+func peekAndDrainCmd(sprawlRoot, rootName string, _ supervisor.Supervisor) tea.Cmd {
 	return func() tea.Msg {
 		pending, _ := agentloop.ListPending(sprawlRoot, rootName)
-		var statusLines []string
-		if sup != nil {
-			statusLines = sup.DrainStatusNotifications(rootName)
-		}
+		statusLines := inboxprompt.DrainStatusChangeLines(sprawlRoot, rootName)
 		if len(pending) == 0 && len(statusLines) == 0 {
 			return nil
 		}

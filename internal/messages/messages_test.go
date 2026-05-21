@@ -2464,3 +2464,453 @@ func TestSetDefaultNotifier_Clear(t *testing.T) {
 		t.Error("DefaultNotifier() should return nil after SetDefaultNotifier(nil)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// QUM-614 Stage A: status_change maildir schema
+// ---------------------------------------------------------------------------
+
+// readSingleEnvelope reads the only .json file in the given directory and
+// returns its parsed Message. Fails the test if there is not exactly one.
+func readSingleEnvelope(t *testing.T, dir string) Message {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading dir %s: %v", dir, err)
+	}
+	var jsonEntries []os.DirEntry
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			jsonEntries = append(jsonEntries, e)
+		}
+	}
+	if len(jsonEntries) != 1 {
+		t.Fatalf("expected exactly 1 .json envelope in %s, got %d", dir, len(jsonEntries))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, jsonEntries[0].Name()))
+	if err != nil {
+		t.Fatalf("reading envelope: %v", err)
+	}
+	var msg Message
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshaling envelope: %v", err)
+	}
+	return msg
+}
+
+func TestMessage_TypeRoundTrip(t *testing.T) {
+	// Non-empty Type round-trips through JSON.
+	m := Message{
+		ID:        "id-1",
+		From:      "alice",
+		To:        "bob",
+		Subject:   "status_change",
+		Body:      "{}",
+		Timestamp: "2026-05-21T00:00:00Z",
+		Type:      TypeStatusChange,
+	}
+	data, err := json.Marshal(&m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Type != TypeStatusChange {
+		t.Errorf("round-trip Type = %q, want %q", got.Type, TypeStatusChange)
+	}
+	if TypeStatusChange != "status_change" {
+		t.Errorf("TypeStatusChange = %q, want %q", TypeStatusChange, "status_change")
+	}
+
+	// Empty Type must be omitted from JSON (omitempty).
+	m2 := Message{
+		ID:        "id-2",
+		From:      "alice",
+		To:        "bob",
+		Subject:   "hi",
+		Body:      "body",
+		Timestamp: "2026-05-21T00:00:00Z",
+	}
+	data2, err := json.Marshal(&m2)
+	if err != nil {
+		t.Fatalf("marshal empty Type: %v", err)
+	}
+	if bytes.Contains(data2, []byte(`"type"`)) {
+		t.Errorf("expected omitempty to skip \"type\" key, got: %s", data2)
+	}
+}
+
+func TestSendStatusChange_WritesEnvelopeWithTypeAndSubject(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	payload := StatusChangePayload{
+		State:     "working",
+		Summary:   "reticulating splines",
+		Timestamp: "2026-05-21T12:00:00Z",
+	}
+	if _, err := SendStatusChange(tmpDir, "alice", "bob", payload); err != nil {
+		t.Fatalf("SendStatusChange: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	msg := readSingleEnvelope(t, newDir)
+
+	if msg.Type != TypeStatusChange {
+		t.Errorf("envelope Type = %q, want %q", msg.Type, TypeStatusChange)
+	}
+	if msg.Subject != "status_change" {
+		t.Errorf("envelope Subject = %q, want %q", msg.Subject, "status_change")
+	}
+	if msg.From != "alice" || msg.To != "bob" {
+		t.Errorf("envelope From/To = %q/%q, want alice/bob", msg.From, msg.To)
+	}
+
+	var body StatusChangePayload
+	if err := json.Unmarshal([]byte(msg.Body), &body); err != nil {
+		t.Fatalf("body should parse as StatusChangePayload, got error %v; body=%q", err, msg.Body)
+	}
+	if body.State != "working" {
+		t.Errorf("body.State = %q, want %q", body.State, "working")
+	}
+	if body.Summary != "reticulating splines" {
+		t.Errorf("body.Summary = %q, want %q", body.Summary, "reticulating splines")
+	}
+	if body.Timestamp != "2026-05-21T12:00:00Z" {
+		t.Errorf("body.Timestamp = %q, want %q", body.Timestamp, "2026-05-21T12:00:00Z")
+	}
+}
+
+func TestSendStatusChange_DoesNotInvokeDefaultNotifier(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var (
+		mu    sync.Mutex
+		count int
+	)
+	SetDefaultNotifier(func(to, from, subject, msgID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		count++
+	})
+	t.Cleanup(func() { SetDefaultNotifier(nil) })
+
+	if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+		State:     "idle",
+		Summary:   "nothing to do",
+		Timestamp: "2026-05-21T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SendStatusChange: %v", err)
+	}
+
+	mu.Lock()
+	c := count
+	mu.Unlock()
+	if c != 0 {
+		t.Errorf("default notifier invoked %d times by SendStatusChange; want 0", c)
+	}
+
+	// Sanity: regular Send still invokes notifier.
+	if _, err := Send(tmpDir, "alice", "bob", "regular", "body"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	mu.Lock()
+	c = count
+	mu.Unlock()
+	if c != 1 {
+		t.Errorf("default notifier invoked %d times after regular Send; want 1", c)
+	}
+}
+
+func TestSendStatusChange_TruncatesLongSummary(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	longSummary := strings.Repeat("x", 500)
+	if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+		State:     "working",
+		Summary:   longSummary,
+		Timestamp: "2026-05-21T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SendStatusChange: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	msg := readSingleEnvelope(t, newDir)
+
+	var body StatusChangePayload
+	if err := json.Unmarshal([]byte(msg.Body), &body); err != nil {
+		t.Fatalf("body parse: %v", err)
+	}
+	if len(body.Summary) > 160 {
+		t.Errorf("body.Summary len = %d, want <= 160", len(body.Summary))
+	}
+}
+
+func TestSendStatusChange_DefaultsTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	fixed := time.Date(2026, 5, 21, 9, 8, 7, 0, time.UTC)
+	origNow := NowFunc
+	NowFunc = func() time.Time { return fixed }
+	t.Cleanup(func() { NowFunc = origNow })
+
+	if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+		State:   "working",
+		Summary: "hello",
+		// Timestamp left empty
+	}); err != nil {
+		t.Fatalf("SendStatusChange: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "bob", "new")
+	msg := readSingleEnvelope(t, newDir)
+
+	var body StatusChangePayload
+	if err := json.Unmarshal([]byte(msg.Body), &body); err != nil {
+		t.Fatalf("body parse: %v", err)
+	}
+	want := fixed.UTC().Format(time.RFC3339)
+	if body.Timestamp != want {
+		t.Errorf("body.Timestamp = %q, want %q", body.Timestamp, want)
+	}
+}
+
+func TestSendStatusChange_NoSentCopy(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+		State:     "working",
+		Summary:   "hi",
+		Timestamp: "2026-05-21T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SendStatusChange: %v", err)
+	}
+
+	sentDir := filepath.Join(MessagesDir(tmpDir), "alice", "sent")
+	entries, err := os.ReadDir(sentDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return // acceptable: never created
+		}
+		t.Fatalf("reading sent dir: %v", err)
+	}
+	var jsonEntries int
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			jsonEntries++
+		}
+	}
+	if jsonEntries != 0 {
+		t.Errorf("sender's sent/ has %d .json files; want 0 for status_change (one-way telemetry)", jsonEntries)
+	}
+}
+
+func TestDrainStatusChange_ReturnsFIFOAndRemoves(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Step time forward each Send so timestamps order deterministically.
+	base := time.Date(2026, 5, 21, 0, 0, 0, 0, time.UTC)
+	var step int
+	origNow := NowFunc
+	NowFunc = func() time.Time {
+		t := base.Add(time.Duration(step) * time.Second)
+		step++
+		return t
+	}
+	t.Cleanup(func() { NowFunc = origNow })
+
+	summaries := []string{"first", "second", "third"}
+	for _, s := range summaries {
+		if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+			State:   "working",
+			Summary: s,
+			// Timestamp empty -> filled from NowFunc
+		}); err != nil {
+			t.Fatalf("SendStatusChange(%q): %v", s, err)
+		}
+	}
+
+	drained, err := DrainStatusChange(tmpDir, "bob")
+	if err != nil {
+		t.Fatalf("DrainStatusChange: %v", err)
+	}
+	if len(drained) != 3 {
+		t.Fatalf("drained len = %d, want 3", len(drained))
+	}
+
+	gotSummaries := make([]string, 0, 3)
+	for _, m := range drained {
+		var p StatusChangePayload
+		if err := json.Unmarshal([]byte(m.Body), &p); err != nil {
+			t.Fatalf("payload parse: %v", err)
+		}
+		gotSummaries = append(gotSummaries, p.Summary)
+	}
+	for i, want := range summaries {
+		if gotSummaries[i] != want {
+			t.Errorf("drained[%d].Summary = %q, want %q (full order: %v)", i, gotSummaries[i], want, gotSummaries)
+		}
+	}
+
+	// New/ and cur/ should have no status_change envelopes remaining.
+	for _, sub := range []string{"new", "cur"} {
+		dir := filepath.Join(MessagesDir(tmpDir), "bob", sub)
+		entries, err := os.ReadDir(dir)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", sub, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			t.Errorf("expected %s/ empty after drain, found %s", sub, e.Name())
+		}
+	}
+}
+
+func TestDrainStatusChange_LeavesRegularMessagesAlone(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if _, err := Send(tmpDir, "alice", "bob", "regular subject", "regular body"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	for i := range 2 {
+		if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+			State:     "working",
+			Summary:   "sc-" + strconv.Itoa(i),
+			Timestamp: time.Date(2026, 5, 21, 0, 0, i, 0, time.UTC).Format(time.RFC3339),
+		}); err != nil {
+			t.Fatalf("SendStatusChange: %v", err)
+		}
+	}
+
+	drained, err := DrainStatusChange(tmpDir, "bob")
+	if err != nil {
+		t.Fatalf("DrainStatusChange: %v", err)
+	}
+	if len(drained) != 2 {
+		t.Fatalf("drained len = %d, want 2", len(drained))
+	}
+
+	listed, err := List(tmpDir, "bob", "all")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List(all) len = %d, want 1 (only the regular message)", len(listed))
+	}
+	if listed[0].Subject != "regular subject" {
+		t.Errorf("remaining msg subject = %q, want %q", listed[0].Subject, "regular subject")
+	}
+	if listed[0].Type == TypeStatusChange {
+		t.Errorf("remaining msg should not be a status_change envelope")
+	}
+}
+
+func TestDrainStatusChange_EmptyIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	for i := range 2 {
+		drained, err := DrainStatusChange(tmpDir, "ghost")
+		if err != nil {
+			t.Fatalf("DrainStatusChange call %d: %v", i, err)
+		}
+		if drained != nil {
+			t.Errorf("call %d: drained = %v, want nil", i, drained)
+		}
+	}
+}
+
+func TestList_HidesStatusChangeFromDefaultFilters(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	regularID, err := Send(tmpDir, "alice", "bob", "regular", "body")
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+		State:     "working",
+		Summary:   "sc",
+		Timestamp: "2026-05-21T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SendStatusChange: %v", err)
+	}
+
+	for _, filter := range []string{"", "all", "unread"} {
+		listed, err := List(tmpDir, "bob", filter)
+		if err != nil {
+			t.Fatalf("List(%q): %v", filter, err)
+		}
+		if len(listed) != 1 {
+			t.Errorf("List(%q) len = %d, want 1 (status_change hidden)", filter, len(listed))
+			continue
+		}
+		if listed[0].Type == TypeStatusChange {
+			t.Errorf("List(%q) returned a status_change envelope; should be hidden", filter)
+		}
+		if listed[0].Subject != "regular" {
+			t.Errorf("List(%q) returned subject %q, want %q", filter, listed[0].Subject, "regular")
+		}
+	}
+
+	// Resolve the regular message's full ID and move to cur/, then verify
+	// "read" filter still hides status_change envelopes.
+	fullID, err := ResolvePrefix(tmpDir, "bob", regularID)
+	if err != nil {
+		t.Fatalf("ResolvePrefix: %v", err)
+	}
+	if err := MarkRead(tmpDir, "bob", fullID); err != nil {
+		t.Fatalf("MarkRead: %v", err)
+	}
+	read, err := List(tmpDir, "bob", "read")
+	if err != nil {
+		t.Fatalf("List(read): %v", err)
+	}
+	if len(read) != 1 {
+		t.Fatalf("List(read) len = %d, want 1", len(read))
+	}
+	if read[0].Type == TypeStatusChange {
+		t.Errorf("List(read) returned a status_change envelope; should be hidden")
+	}
+	if read[0].Subject != "regular" {
+		t.Errorf("List(read) subject = %q, want %q", read[0].Subject, "regular")
+	}
+}
+
+func TestList_StatusFilterReturnsOnlyStatusChange(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if _, err := Send(tmpDir, "alice", "bob", "regular", "body"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := SendStatusChange(tmpDir, "alice", "bob", StatusChangePayload{
+		State:     "working",
+		Summary:   "sc",
+		Timestamp: "2026-05-21T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SendStatusChange: %v", err)
+	}
+
+	listed, err := List(tmpDir, "bob", "status")
+	if err != nil {
+		t.Fatalf("List(status): %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List(status) len = %d, want 1", len(listed))
+	}
+	if listed[0].Type != TypeStatusChange {
+		t.Errorf("List(status)[0].Type = %q, want %q", listed[0].Type, TypeStatusChange)
+	}
+	if listed[0].Subject != "status_change" {
+		t.Errorf("List(status)[0].Subject = %q, want %q", listed[0].Subject, "status_change")
+	}
+
+	// Empty recipient (fresh, no envelopes at all): returns empty, no error.
+	empty, err := List(tmpDir, "nobody", "status")
+	if err != nil {
+		t.Fatalf("List(status) on empty recipient: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("List(status) on empty recipient len = %d, want 0", len(empty))
+	}
+}

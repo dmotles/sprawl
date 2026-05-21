@@ -72,8 +72,6 @@ func (*NoopSupervisor) ReportStatus(context.Context, string, string, string) (*s
 	return nil, nil
 }
 
-func (*NoopSupervisor) DrainStatusNotifications(string) []string { return nil }
-
 func (*NoopSupervisor) MessagesList(context.Context, string, int) (*supervisor.MessagesListResult, error) {
 	return nil, nil
 }

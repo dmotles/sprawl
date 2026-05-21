@@ -14,6 +14,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -442,11 +443,12 @@ func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 	}
 }
 
-// TestRealReportStatus_DrainedRingLineContainsSummaryVerbatim is the
-// QUM-559 successor to the legacy ParentInboxBodyContainsSummaryOnly test.
-// The status-notification line drained from the in-process ring must contain
-// the summary verbatim, with no \n\n separator (detail-concat regression).
-func TestRealReportStatus_DrainedRingLineContainsSummaryVerbatim(t *testing.T) {
+// TestRealReportStatus_DrainedStatusChangeLineContainsSummaryVerbatim is the
+// QUM-614 successor to the legacy QUM-559 ring-drain test. The
+// status-notification line drained from the parent's maildir via
+// inboxprompt.DrainStatusChangeLines must contain the summary verbatim, with
+// no \n\n separator (detail-concat regression).
+func TestRealReportStatus_DrainedStatusChangeLineContainsSummaryVerbatim(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	parent := testAgentState("alice")
 	child := testAgentState("bob")
@@ -468,9 +470,9 @@ func TestRealReportStatus_DrainedRingLineContainsSummaryVerbatim(t *testing.T) {
 		t.Fatalf("ReportStatus: %v", err)
 	}
 
-	drained := r.DrainStatusNotifications("alice")
+	drained := inboxprompt.DrainStatusChangeLines(tmpDir, "alice")
 	if len(drained) != 1 {
-		t.Fatalf("DrainStatusNotifications(alice) len = %d, want 1; got %#v", len(drained), drained)
+		t.Fatalf("DrainStatusChangeLines(alice) len = %d, want 1; got %#v", len(drained), drained)
 	}
 	if !strings.Contains(drained[0], summary) {
 		t.Errorf("drained line missing summary: %q", drained[0])

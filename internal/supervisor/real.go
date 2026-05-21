@@ -19,7 +19,6 @@ import (
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
-	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
@@ -125,13 +124,6 @@ type Real struct {
 	// questions is the in-process question queue for ask_user_question
 	// flows (QUM-527 slice 1). See question.go.
 	questions *questionQueue
-
-	// statusNotifier is the in-process per-recipient ring populated by
-	// ReportStatus and drained by the parent's drain pipeline
-	// (peekAndDrainCmd / unifiedHandle.drainPendingToQueue). QUM-559:
-	// status updates flow exclusively through this ring; no maildir
-	// write, no harness-queue enqueue.
-	statusNotifier *statusNotifier
 
 	// reportMu serializes ReportStatus calls. state.SaveAgent is not
 	// atomic on disk (read-modify-write), so concurrent reporters racing
@@ -317,14 +309,12 @@ func NewReal(cfg Config) (*Real, error) {
 		handoffWriteSignalFile:     memory.WriteHandoffSignal,
 		handoffNow:                 time.Now,
 
-		questions:      newQuestionQueue(),
-		statusNotifier: newStatusNotifier(),
+		questions: newQuestionQueue(),
 
 		mergeSem: make(chan struct{}, 1),
 	}
 	starter := newInProcessUnifiedStarter(cfg.ChildInitSpec, cfg.ChildAllowedTools)
 	if s, ok := starter.(*inProcessUnifiedStarter); ok {
-		s.statusDrainer = r.statusNotifier.Drain
 		s.faultEmitter = r.dispatchFault
 	}
 	r.runtimeStarter = starter
@@ -395,9 +385,6 @@ func (r *Real) SetChildMCPConfig(initSpec backendpkg.InitSpec, allowedTools []st
 	}
 	starter := newInProcessUnifiedStarter(initSpec, allowedTools)
 	if s, ok := starter.(*inProcessUnifiedStarter); ok {
-		if r.statusNotifier != nil {
-			s.statusDrainer = r.statusNotifier.Drain
-		}
 		s.faultEmitter = r.dispatchFault
 	}
 	r.runtimeStarter = starter
@@ -1385,24 +1372,31 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary s
 	}
 	r.syncRuntimeFromState(agentName)
 
-	// QUM-559: push the ephemeral notification onto the parent's ring and
-	// cooperatively wake the parent runtime. Status updates are never
-	// interrupt-class — children that genuinely need to preempt should use
-	// send_message(interrupt=true).
+	// QUM-614: write the status_change envelope into the parent's maildir
+	// (via messages.SendStatusChange — which deliberately bypasses the
+	// process-level defaultNotifier so this does NOT raise the inbox banner
+	// / unread badge / drain-row prompt-inject) and cooperatively wake the
+	// parent runtime. Status updates are never interrupt-class — children
+	// that genuinely need to preempt should use send_message(interrupt=true).
 	if parent != "" {
-		line := inboxprompt.BuildStatusNotification(agentName, reportState, summary)
-		r.statusNotifier.Enqueue(parent, line)
+		payload := messages.StatusChangePayload{
+			State:     reportState,
+			Summary:   summary,
+			Timestamp: res.ReportedAt,
+		}
+		if _, sendErr := messages.SendStatusChange(r.sprawlRoot, agentName, parent, payload); sendErr != nil {
+			slog.Default().Warn(
+				"supervisor: SendStatusChange failed",
+				slog.String("from", agentName),
+				slog.String("to", parent),
+				slog.Any("err", sendErr),
+			)
+		}
 		if parentRuntime, ok := r.startedRuntime(parent); ok {
 			_ = parentRuntime.WakeForDelivery()
 		}
 	}
 	return &ReportStatusResult{ReportedAt: res.ReportedAt}, nil
-}
-
-// DrainStatusNotifications returns and clears the per-recipient ephemeral
-// status-notification ring. See QUM-559.
-func (r *Real) DrainStatusNotifications(recipient string) []string {
-	return r.statusNotifier.Drain(recipient)
 }
 
 func (r *Real) syncRuntimeFromState(agentName string) {
@@ -1547,6 +1541,7 @@ var validMessagesListFilters = map[string]bool{
 	"unread":   true,
 	"read":     true,
 	"archived": true,
+	"status":   true,
 }
 
 const (
@@ -1602,7 +1597,7 @@ func (r *Real) MessagesList(ctx context.Context, filter string, limit int) (*Mes
 		return nil, err
 	}
 	if !validMessagesListFilters[filter] {
-		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived", filter)
+		return nil, fmt.Errorf("invalid filter %q: must be one of all, unread, read, archived, status", filter)
 	}
 	effective := filter
 	if effective == "" {

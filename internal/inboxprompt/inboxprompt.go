@@ -26,8 +26,12 @@
 package inboxprompt
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
+
+	"github.com/dmotles/sprawl/internal/messages"
 )
 
 // Class is the delivery class of a queued message.
@@ -157,4 +161,38 @@ func BuildInterruptFlushPrompt(entries []Entry) string {
 			e.From, displayMessageID(e))
 	}
 	return b.String()
+}
+
+// DrainStatusChangeLines pulls all type=status_change envelopes from the
+// recipient's maildir (QUM-614) and renders them as the same one-line
+// `<system-notification type="status_change">…</system-notification>` strings
+// that BuildStatusNotification produces, in FIFO order. The envelopes are
+// removed from disk by the drain — status_change updates are ephemeral and
+// not retrievable via messages_read.
+//
+// Returns nil on empty / missing recipient or on drain error (errors are
+// logged at debug and swallowed; status_change is best-effort telemetry).
+func DrainStatusChangeLines(sprawlRoot, recipient string) []string {
+	envs, err := messages.DrainStatusChange(sprawlRoot, recipient)
+	if err != nil {
+		slog.Default().Debug(
+			"inboxprompt: DrainStatusChange failed",
+			slog.String("recipient", recipient),
+			slog.Any("err", err),
+		)
+		return nil
+	}
+	if len(envs) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(envs))
+	for _, env := range envs {
+		var payload messages.StatusChangePayload
+		// Body is always valid JSON when written by SendStatusChange; a
+		// best-effort decode keeps a corrupt envelope from poisoning the
+		// batch.
+		_ = json.Unmarshal([]byte(env.Body), &payload)
+		lines = append(lines, BuildStatusNotification(env.From, payload.State, payload.Summary))
+	}
+	return lines
 }
