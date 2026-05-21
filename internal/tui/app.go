@@ -232,6 +232,13 @@ type AppModel struct {
 	// mutate it; safe because Bubble Tea discards prior AppModel values
 	// immediately after Update returns.
 	cache *viewCache
+
+	// selectionMode, when true, drops Bubble Tea's mouse-capture sequences
+	// (?1002h / ?1006h) on every frame so the host terminal can do native
+	// click-drag text selection on the viewport. Toggled by Ctrl-/. Tradeoff
+	// while on: scroll wheel events are no longer captured (PgUp/PgDn still
+	// scroll via keyboard). See QUM-617.
+	selectionMode bool
 }
 
 // NewAppModel constructs the root model with all sub-models.
@@ -471,6 +478,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.questionModel, cmd = m.questionModel.Update(msg)
 			return m, cmd
+		}
+
+		// QUM-617: Ctrl-/ toggles selection mode, which drops mouse-capture
+		// sequences so the terminal can do native click-drag text selection on
+		// the viewport. Ctrl-/ is delivered by the terminal as ASCII US (0x1F)
+		// — the same byte as Ctrl-_ — so the Bubble Tea key parser surfaces
+		// both as {Code: '_', Mod: ModCtrl}. Match either form for clarity
+		// across keyboard layouts.
+		if msg.Mod&tea.ModCtrl != 0 && msg.Code == '_' {
+			m.selectionMode = !m.selectionMode
+			m.statusBar.SetSelectionMode(m.selectionMode)
+			return m, nil
 		}
 
 		// QUM-527 slice 2c: Ctrl-Q reopens the question modal when a request
@@ -1795,7 +1814,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		msg := fmt.Sprintf("Terminal too small (minimum %dx%d)", MinTermWidth, MinTermHeight)
 		v := tea.NewView(msg)
 		v.AltScreen = true
-		v.MouseMode = tea.MouseModeCellMotion
+		v.MouseMode = m.mouseMode()
 		return v
 	}
 
@@ -1886,12 +1905,25 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	v := tea.NewView(content)
 	v.AltScreen = true
 	// QUM-280: mouse cell motion enables scroll-wheel events on the viewport.
-	// Tradeoff: this breaks native terminal text-select-and-copy. Users can
-	// typically hold Option/Alt (macOS) or Shift (most Linux terminals) while
-	// dragging to force native select. QUM-281 owns the proper
-	// selection-to-clipboard design.
-	v.MouseMode = tea.MouseModeCellMotion
+	// Tradeoff: this also captures click-drag, breaking native terminal
+	// text-select-and-copy. QUM-617 resolved that via the Ctrl-/ selection-mode
+	// toggle — see the selectionMode field on AppModel and m.mouseMode() below.
+	// Bonus: Shift+drag (or Option+drag on macOS) bypasses mouse capture in
+	// most terminals and is documented as an immediate workaround.
+	v.MouseMode = m.mouseMode()
 	return v
+}
+
+// mouseMode returns the MouseMode value renderView should attach to the
+// tea.View on the current frame. Normal mode is CellMotion so the viewport
+// receives scroll-wheel events; selection mode (QUM-617) returns None so the
+// Bubble Tea renderer emits ESC[?1002l on the next frame and the host
+// terminal can do native click-drag text selection.
+func (m AppModel) mouseMode() tea.MouseMode {
+	if m.selectionMode {
+		return tea.MouseModeNone
+	}
+	return tea.MouseModeCellMotion
 }
 
 func (m *AppModel) setTurnState(state TurnState) {

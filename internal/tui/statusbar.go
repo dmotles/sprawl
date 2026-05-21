@@ -28,8 +28,13 @@ type StatusBarModel struct {
 	sessionCostUsd float64
 	sessionID      string
 	selectMode     bool
-	contextTokens  int // latest input_tokens from assistant message
-	contextLimit   int // context window size derived from model name
+	// selectionMode is the QUM-617 mouse-capture-off toggle (Ctrl-/). When
+	// true, the status bar renders a prominent SELECT chip on the left so
+	// users discover the mode and know how to leave it. Distinct from
+	// selectMode above, which is the QUM-281 keyboard viewport-select mode.
+	selectionMode bool
+	contextTokens int // latest input_tokens from assistant message
+	contextLimit  int // context window size derived from model name
 	// restartLabel is the consolidation phase label (e.g. "Consolidating
 	// timeline...") rendered in the right-side parts list while a background
 	// consolidation pipeline is active after a handoff (QUM-391). Empty when
@@ -78,6 +83,12 @@ func (m StatusBarModel) View() string {
 	left := fmt.Sprintf(" %s", m.repoName)
 	if m.selectMode {
 		left = " -- SELECT -- " + m.repoName
+	}
+	// QUM-617 selection mode (mouse capture off, native drag-select on)
+	// supersedes the QUM-281 SELECT indicator visually because the user is
+	// far more likely to land here by accident and need clear exit guidance.
+	if m.selectionMode {
+		left = " -- SELECT (mouse capture off) — Ctrl-/ to resume -- " + m.repoName
 	}
 
 	var stateStr string
@@ -163,6 +174,12 @@ func (m *StatusBarModel) SetSessionID(id string) {
 // SetSelectMode toggles the SELECT-mode indicator on the left of the bar.
 func (m *StatusBarModel) SetSelectMode(on bool) {
 	m.selectMode = on
+}
+
+// SetSelectionMode toggles the QUM-617 mouse-capture-off indicator. Distinct
+// from SetSelectMode (QUM-281 keyboard select); see the field comment.
+func (m *StatusBarModel) SetSelectionMode(on bool) {
+	m.selectionMode = on
 }
 
 // SetTokenUsage updates the context token counter. The incoming value is the

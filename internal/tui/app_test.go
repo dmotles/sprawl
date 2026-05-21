@@ -1942,6 +1942,76 @@ func TestAppModel_View_MouseModeStillSetWhenTooSmall(t *testing.T) {
 	}
 }
 
+// QUM-617: Ctrl-/ toggles a selection mode that drops mouse capture so the
+// terminal can do native text-select-and-copy on the viewport.
+func TestAppModel_View_SelectionMode_DropsMouseCapture(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+
+	// Sanity: normal mode keeps cell-motion capture.
+	if v := app.View(); v.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("precondition: normal-mode MouseMode = %v, want CellMotion", v.MouseMode)
+	}
+
+	// Ctrl-/ is delivered by the terminal as 0x1F (ASCII US), which the
+	// Bubble Tea key parser surfaces as KeyPressMsg{Code: '_', Mod: ModCtrl}
+	// (same byte as Ctrl-_). Use that canonical form so the test exercises
+	// the real key path.
+	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
+	app = out.(AppModel)
+	if !app.selectionMode {
+		t.Fatal("expected selectionMode=true after Ctrl-/ toggle")
+	}
+	if v := app.View(); v.MouseMode != tea.MouseModeNone {
+		t.Errorf("after toggle: View().MouseMode = %v, want MouseModeNone", v.MouseMode)
+	}
+
+	// Toggle back.
+	out, _ = app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
+	app = out.(AppModel)
+	if app.selectionMode {
+		t.Fatal("expected selectionMode=false after second Ctrl-/ toggle")
+	}
+	if v := app.View(); v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("after second toggle: View().MouseMode = %v, want CellMotion", v.MouseMode)
+	}
+}
+
+func TestAppModel_View_SelectionMode_TooSmall(t *testing.T) {
+	// The tooSmall fallback view must honour the selection-mode toggle too:
+	// users may be in a narrow split when they realise they need to copy text.
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 10, Height: 5})
+	app := resized.(AppModel)
+	if !app.tooSmall {
+		t.Fatal("precondition: expected tooSmall to be true for 10x5")
+	}
+	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
+	app = out.(AppModel)
+	if v := app.View(); v.MouseMode != tea.MouseModeNone {
+		t.Errorf("too-small + selectionMode: View().MouseMode = %v, want MouseModeNone", v.MouseMode)
+	}
+}
+
+// QUM-617: while in selection mode the status bar shows a SELECT indicator
+// (different from the QUM-281 viewport-keyboard select mode — this one
+// surfaces "mouse capture is off, native drag-select will work").
+func TestAppModel_SelectionMode_StatusBarIndicator(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
+	app = out.(AppModel)
+	bar := app.statusBar.View()
+	if !strings.Contains(bar, "SELECT") {
+		t.Errorf("expected status bar to contain SELECT indicator while in selection mode, got: %q", bar)
+	}
+	if !strings.Contains(bar, "Ctrl-/") {
+		t.Errorf("expected status bar to advertise the Ctrl-/ resume hint, got: %q", bar)
+	}
+}
+
 func TestAppModel_MouseWheelUp_DisablesAutoScroll(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})

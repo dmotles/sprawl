@@ -62,6 +62,23 @@ lookup.
 >
 > To clear sandbox state, use the sanctioned `sprawl_sandbox_destroy` helper (from `scripts/sprawl-test-env.sh`) or the `_stmux kill-session -t $SPRAWL_NAMESPACE` wrapper — both target only the sandbox session on the sandbox socket. In scripts, always use `_stmux` (not bare `tmux`) for sandbox tmux operations.
 
+## Text selection in `sprawl enter` (QUM-617)
+
+`sprawl enter` enables Bubble Tea's mouse cell-motion capture so the viewport
+receives scroll-wheel events. The same capture mode prevents the host
+terminal from doing native click-drag text selection. Two ways to copy text
+out of the viewport:
+
+* **`Ctrl-/` toggles selection mode.** Press once to drop mouse capture (the
+  status bar shows `-- SELECT (mouse capture off) — Ctrl-/ to resume --`),
+  select / copy with your mouse the way you would anywhere else, then press
+  `Ctrl-/` again to resume normal capture. Scroll wheel won't work while in
+  selection mode — use PgUp/PgDn or the viewport keyboard scroll keys.
+* **Shift+drag** (or Option+drag on macOS) bypasses mouse capture in most
+  terminals (xterm.js / coder web terminal, gnome-terminal, kitty, wezterm,
+  Alacritty, iTerm2). Behaviour varies; if your terminal swallows the
+  modifier and selects nothing, fall back to the `Ctrl-/` toggle.
+
 ## Project Configuration
 
 Sprawl reads `.sprawl/config.yaml` for project-level settings:
