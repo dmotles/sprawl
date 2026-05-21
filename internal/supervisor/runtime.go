@@ -252,7 +252,7 @@ func (r *AgentRuntime) InAutonomousTurn() bool {
 	if h == nil {
 		return false
 	}
-	probe, ok := h.(interface{ InAutonomousTurn() bool })
+	probe, ok := h.(autonomousTurnProbe)
 	if !ok {
 		return false
 	}
@@ -572,7 +572,7 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	// session faulted and was torn down. Handles that don't expose the
 	// probe are treated as faulted (always recover).
 	if handle != nil {
-		if probe, ok := handle.(interface{ IsTerminallyFaulted() bool }); ok {
+		if probe, ok := handle.(terminalFaultProbe); ok {
 			if !probe.IsTerminallyFaulted() {
 				return ErrRecoverNotNeeded
 			}
@@ -681,7 +681,7 @@ func probeNewHandleHealth(handle RuntimeHandle, timeout time.Duration) error {
 		return waitForTerminalFaultOrTimeout(handle, timeout)
 	}
 
-	probe, hasProbe := handle.(interface{ IsTerminallyFaulted() bool })
+	probe, hasProbe := handle.(terminalFaultProbe)
 	if hasProbe && probe.IsTerminallyFaulted() {
 		return fmt.Errorf("session faulted before health probe began")
 	}
@@ -732,7 +732,7 @@ func probeNewHandleHealth(handle RuntimeHandle, timeout time.Duration) error {
 }
 
 func waitForTerminalFaultOrTimeout(handle RuntimeHandle, timeout time.Duration) error {
-	probe, ok := handle.(interface{ IsTerminallyFaulted() bool })
+	probe, ok := handle.(terminalFaultProbe)
 	if !ok {
 		return nil
 	}
@@ -761,7 +761,7 @@ func (r *AgentRuntime) InduceTerminalFault(err error) error {
 	if handle == nil {
 		return fmt.Errorf("supervisor: agent has no live handle")
 	}
-	injector, ok := handle.(interface{ InduceTerminalFault(error) })
+	injector, ok := handle.(terminalFaultInjectorProbe)
 	if !ok {
 		return fmt.Errorf("supervisor: handle does not expose InduceTerminalFault test seam")
 	}
@@ -785,7 +785,7 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 	// Capture the bounded-Wait timeout flag (QUM-542/QUM-546) even when Stop
 	// returns an error, so the retire.runtime-stop-done / kill.runtime-stop-done
 	// checkpoints reflect the actual handle state.
-	if probe, ok := handle.(interface{ StopWaitTimedOut() bool }); ok {
+	if probe, ok := handle.(stopWaitTimeoutProbe); ok {
 		r.stopWaitTimedOut.Store(probe.StopWaitTimedOut())
 	}
 	if stopErr != nil {
