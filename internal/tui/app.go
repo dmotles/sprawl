@@ -480,12 +480,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// QUM-617: Ctrl-/ toggles selection mode, which drops mouse-capture
-		// sequences so the terminal can do native click-drag text selection on
-		// the viewport. Ctrl-/ is delivered by the terminal as ASCII US (0x1F)
-		// — the same byte as Ctrl-_ — so the Bubble Tea key parser surfaces
-		// both as {Code: '_', Mod: ModCtrl}. Match either form for clarity
-		// across keyboard layouts.
+		// QUM-617: Ctrl+_ (or Ctrl+/) toggles selection mode, which drops
+		// mouse-capture sequences so the terminal can do native click-drag text
+		// selection on the viewport. Both keys are delivered by the terminal as
+		// ASCII US (0x1F), so the Bubble Tea key parser surfaces both as
+		// {Code: '_', Mod: ModCtrl}. Ctrl+_ is the reliable form on
+		// browser-based terminals (Chrome/Chromium intercepts Ctrl+/ for its
+		// own bindings — confirmed in the coder web terminal); Ctrl+/ works on
+		// native terminals. Match either form for clarity across layouts.
 		if msg.Mod&tea.ModCtrl != 0 && msg.Code == '_' {
 			m.selectionMode = !m.selectionMode
 			m.statusBar.SetSelectionMode(m.selectionMode)

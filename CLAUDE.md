@@ -69,15 +69,19 @@ receives scroll-wheel events. The same capture mode prevents the host
 terminal from doing native click-drag text selection. Two ways to copy text
 out of the viewport:
 
-* **`Ctrl-/` toggles selection mode.** Press once to drop mouse capture (the
-  status bar shows `-- SELECT (mouse capture off) — Ctrl-/ to resume --`),
-  select / copy with your mouse the way you would anywhere else, then press
-  `Ctrl-/` again to resume normal capture. Scroll wheel won't work while in
-  selection mode — use PgUp/PgDn or the viewport keyboard scroll keys.
+* **`Ctrl+_` toggles selection mode** (or `Ctrl+/` if your terminal allows it
+  — note: Chrome/Chromium-based browsers including the coder web terminal will
+  eat `Ctrl+/` for their own bindings, so use `Ctrl+_` as the reliable form).
+  Both keys send the same wire byte (ASCII US, 0x1F) so Bubble Tea surfaces
+  them identically. Press once to drop mouse capture (the status bar shows
+  `-- SELECT (mouse capture off) — Ctrl+_ to resume --`), select / copy with
+  your mouse the way you would anywhere else, then press the same key again to
+  resume normal capture. Scroll wheel won't work while in selection mode — use
+  PgUp/PgDn or the viewport keyboard scroll keys.
 * **Shift+drag** (or Option+drag on macOS) bypasses mouse capture in most
   terminals (xterm.js / coder web terminal, gnome-terminal, kitty, wezterm,
   Alacritty, iTerm2). Behaviour varies; if your terminal swallows the
-  modifier and selects nothing, fall back to the `Ctrl-/` toggle.
+  modifier and selects nothing, fall back to the `Ctrl+_` toggle.
 
 ## Project Configuration
 
