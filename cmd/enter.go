@@ -746,8 +746,13 @@ func runEnter(deps *enterDeps) error {
 
 		// QUM-372: surface the resume-scan outcome as a viewport banner.
 		// Silent when both counts are zero (fresh session / nothing to resume).
+		// Dispatched on a goroutine because onStart runs before p.Run(): a
+		// synchronous p.Send here deadlocks the main goroutine until the
+		// Bubble Tea message loop starts, which never happens because we
+		// haven't returned from onStart yet.
 		if pendingResume.resumed > 0 || pendingResume.failed > 0 {
-			send(tui.AgentsResumedMsg{Resumed: pendingResume.resumed, Failed: pendingResume.failed})
+			resumed, failed := pendingResume.resumed, pendingResume.failed
+			go send(tui.AgentsResumedMsg{Resumed: resumed, Failed: failed})
 		}
 
 		if sup == nil {
