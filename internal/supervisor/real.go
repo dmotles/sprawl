@@ -489,7 +489,7 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 		Agent:      st,
 		Starter:    r.runtimeStarter,
 	})
-	if err := runtime.Start(context.Background()); err != nil {
+	if err := runtime.Start(); err != nil {
 		r.rollbackSpawnArtifacts(st.Name)
 		return nil, fmt.Errorf("starting runtime for %s: %w", st.Name, err)
 	}
@@ -779,7 +779,7 @@ func (r *Real) InduceTerminalFault(_ context.Context, agentName string, err erro
 // BFS-from-root so parents are resumed before children (defense in depth;
 // maildir absorbs ordering gaps). Returns counts and per-agent errors. Does
 // not abort the loop on per-agent failure. QUM-372.
-func (r *Real) RecoverAgents(ctx context.Context) (resumed int, failed int, errs []error) {
+func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs []error) {
 	if r.runtimeRegistry == nil || r.runtimeStarter == nil {
 		return 0, 0, nil
 	}
@@ -826,7 +826,7 @@ func (r *Real) RecoverAgents(ctx context.Context) (resumed int, failed int, errs
 			}
 			rt.SyncAgentState(cur)
 		}
-		if err := rt.StartResume(ctx, onResumeFailure); err != nil {
+		if err := rt.StartResume(onResumeFailure); err != nil {
 			failed++
 			errs = append(errs, fmt.Errorf("resume %q: %w", agent.Name, err))
 			continue

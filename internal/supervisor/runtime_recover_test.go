@@ -32,7 +32,7 @@ type recoverCountingStarter struct {
 	specs []RuntimeStartSpec
 }
 
-func (s *recoverCountingStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
+func (s *recoverCountingStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.startCalls++
@@ -61,7 +61,7 @@ func TestAgentRuntime_Recover_HealthySession_ReturnsErrRecoverNotNeeded(t *testi
 		Agent:      testAgentState("alice"),
 		Starter:    starter,
 	})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if starter.callCount() != 1 {
@@ -105,7 +105,7 @@ func TestAgentRuntime_Recover_StoppedRuntime_RebuildsSession(t *testing.T) {
 	recoverHealthProbeTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { recoverHealthProbeTimeout = prev })
 
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := rt.Stop(context.Background()); err != nil {
@@ -160,7 +160,7 @@ func TestAgentRuntime_Recover_FaultedSession_StopsAbandonAndRestarts(t *testing.
 	events, cancel := rt.Subscribe(16)
 	defer cancel()
 
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("initial Start: %v", err)
 	}
 	if starter.callCount() != 1 {
@@ -242,7 +242,7 @@ func TestAgentRuntime_Recover_RetryWhileInFlight_Errors(t *testing.T) {
 		Agent:      testAgentState("alice"),
 		Starter:    starter,
 	})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("initial Start: %v", err)
 	}
 	<-initialReleased
@@ -318,7 +318,7 @@ type blockingRecoverStarter struct {
 	released    chan struct{}
 }
 
-func (s *blockingRecoverStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
+func (s *blockingRecoverStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, error) {
 	s.mu.Lock()
 	s.startCalls++
 	release := s.release

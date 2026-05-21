@@ -198,7 +198,7 @@ func TestInProcessUnifiedStarter_Start_ReuseBuildAgentSessionSpec(t *testing.T) 
 			unifiedRuntimeNewFn = runtimepkg.New
 
 			starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-			handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+			handle, err := starter.Start(RuntimeStartSpec{
 				Name:       "alice",
 				Worktree:   worktree,
 				SprawlRoot: sprawlRoot,
@@ -254,7 +254,7 @@ func TestInProcessUnifiedStarter_Start_CallsSessionInitializeWhenBridgePresent(t
 		ToolBridge:     bridge,
 	}
 	starter := newInProcessUnifiedStarter(initSpec, []string{"mcp__sprawl__spawn"})
-	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+	handle, err := starter.Start(RuntimeStartSpec{
 		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
 		SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -301,7 +301,7 @@ func TestInProcessUnifiedStarter_Start_SkipsInitializeWhenNoBridge(t *testing.T)
 	unifiedRuntimeNewFn = runtimepkg.New
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+	handle, err := starter.Start(RuntimeStartSpec{
 		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
 		SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -431,7 +431,7 @@ func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (
 	}
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+	handle, err := starter.Start(RuntimeStartSpec{
 		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
 		SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -1030,7 +1030,7 @@ func buildStartedUnifiedHandleWithStartErrForTest(t *testing.T, caps backend.Cap
 	unifiedRuntimeNewFn = runtimepkg.New
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+	handle, err := starter.Start(RuntimeStartSpec{
 		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
 		SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -1350,7 +1350,7 @@ func buildStartedUnifiedHandleForTestWithSeed(t *testing.T, caps backend.Capabil
 	}
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+	handle, err := starter.Start(RuntimeStartSpec{
 		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
 		SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -2069,7 +2069,7 @@ func TestInProcessUnifiedStarter_CallbacksSafeBeforeFirstEvent(t *testing.T) {
 	}
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+	handle, err := starter.Start(RuntimeStartSpec{
 		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
 		SessionID: "sess-alice", TreePath: "weave/alice",
 	})
@@ -2115,7 +2115,7 @@ func TestInProcessUnifiedStarter_BindInstallsWakeFn(t *testing.T) {
 	}
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-	handle, err := starter.Start(context.Background(), RuntimeStartSpec{
+	handle, err := starter.Start(RuntimeStartSpec{
 		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
 		SessionID: "sess-alice", TreePath: "weave/alice",
 	})

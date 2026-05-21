@@ -109,8 +109,17 @@ type RuntimeHandle interface {
 }
 
 // RuntimeStarter starts a child runtime and returns its live handle.
+//
+// Start takes no ctx by design (QUM-612). The ctx parameter was previously
+// forwarded all the way down to `exec.CommandContext`, which made it possible
+// for a short-lived MCP request ctx (e.g. `toolRecover`'s) to SIGKILL the
+// freshly-spawned subprocess the instant the MCP call returned — see QUM-606.
+// Subprocess teardown is the responsibility of the returned handle's
+// `Stop` / `StopAbandon` / `watchHandleExit` path, so the ctx-cancel safety
+// net was unused and dangerous. By dropping ctx from the signature, the
+// QUM-606 bug class is impossible to reintroduce.
 type RuntimeStarter interface {
-	Start(ctx context.Context, spec RuntimeStartSpec) (RuntimeHandle, error)
+	Start(spec RuntimeStartSpec) (RuntimeHandle, error)
 }
 
 type runtimeHandleDone interface {
@@ -281,7 +290,7 @@ func (r *AgentRuntime) Subscribe(buffer int) (<-chan RuntimeEvent, func()) {
 // Start attaches a backend session using the runtime's internal starter.
 // Production wiring does not call this yet; QUM-351 needs it only so child
 // runtimes can be exercised in tests without tmux or a child sprawl process.
-func (r *AgentRuntime) Start(ctx context.Context) error {
+func (r *AgentRuntime) Start() error {
 	r.mu.RLock()
 	spec := RuntimeStartSpec{
 		Name:       r.snapshot.Name,
@@ -291,11 +300,11 @@ func (r *AgentRuntime) Start(ctx context.Context) error {
 		TreePath:   r.snapshot.TreePath,
 	}
 	r.mu.RUnlock()
-	return r.startWithSpec(ctx, spec)
+	return r.startWithSpec(spec)
 }
 
 // startWithSpec is the shared body for Start and StartResume.
-func (r *AgentRuntime) startWithSpec(ctx context.Context, spec RuntimeStartSpec) error {
+func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) error {
 	r.mu.RLock()
 	starter := r.starter
 	r.mu.RUnlock()
@@ -303,7 +312,7 @@ func (r *AgentRuntime) startWithSpec(ctx context.Context, spec RuntimeStartSpec)
 	if starter == nil {
 		return fmt.Errorf("runtime starter not configured")
 	}
-	handle, err := starter.Start(ctx, spec)
+	handle, err := starter.Start(spec)
 	if err != nil {
 		return err
 	}
@@ -337,7 +346,7 @@ func (r *AgentRuntime) startWithSpec(ctx context.Context, spec RuntimeStartSpec)
 // reads it from the runtime starter's bound state, but tests inject through
 // AgentRuntimeConfig / RuntimeStartSpec seams as documented in
 // runtime_test.go.
-func (r *AgentRuntime) StartResume(ctx context.Context, onResumeFailure ...func()) error {
+func (r *AgentRuntime) StartResume(onResumeFailure ...func()) error {
 	var cb func()
 	for _, c := range onResumeFailure {
 		if c != nil {
@@ -356,7 +365,7 @@ func (r *AgentRuntime) StartResume(ctx context.Context, onResumeFailure ...func(
 		OnResumeFailure: cb,
 	}
 	r.mu.RUnlock()
-	return r.startWithSpec(ctx, spec)
+	return r.startWithSpec(spec)
 }
 
 // AttachHandle attaches a pre-built RuntimeHandle to this AgentRuntime
@@ -590,12 +599,13 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 		}
 	}
 
-	// QUM-606 R1: subprocess lifetime must outlive the MCP request ctx.
-	// exec.CommandContext SIGKILLs the new claude as soon as toolRecover
-	// returns if we forward `ctx` here. The new handle has its own
-	// teardown path (Stop / StopAbandon / watchHandleExit), so the
-	// ctx-cancel safety net is unnecessary.
-	newHandle, err := starter.Start(context.Background(), spec)
+	// QUM-606 R1 / QUM-612: subprocess lifetime must outlive the MCP request
+	// ctx. RuntimeStarter.Start no longer accepts a ctx — the QUM-606 bug
+	// class (exec.CommandContext SIGKILLing the new claude as soon as
+	// toolRecover returns) is now impossible by signature. The new handle's
+	// teardown path (Stop / StopAbandon / watchHandleExit) owns subprocess
+	// lifetime.
+	newHandle, err := starter.Start(spec)
 	if err != nil {
 		// Recovery failed — the agent has no live handle. Flip lifecycle
 		// to Stopped and emit so subscribers reflect the broken state.

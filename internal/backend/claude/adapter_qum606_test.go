@@ -1,7 +1,6 @@
 package claude
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -17,11 +16,10 @@ import (
 // We spawn a long-lived placeholder binary (`sleep`) instead of `claude`
 // because the production claude binary may not be on PATH in CI; the
 // subject under test is realStarter's wiring of cmd.Process.Pid into
-// transport.pid, which is binary-agnostic. The ctx-cancel kill path
-// itself is an os/exec.CommandContext contract — QUM-606 R1 avoids
-// triggering it by detaching the ctx upstream in AgentRuntime.Recover;
-// we cover that at the supervisor layer in
-// TestRuntime_Recover_DoesNotKillNewHandleOnCallerCtxCancel.
+// transport.pid, which is binary-agnostic. The QUM-606 ctx-cancel kill
+// path is now type-impossible after QUM-612 — Starter.Start no longer
+// accepts a ctx parameter at all, so no caller can forward a request-scoped
+// ctx into exec.CommandContext.
 func TestRealStarter_PidExposesSubprocessPID(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX-only test (sleep binary, signal-0 probe)")
@@ -32,10 +30,8 @@ func TestRealStarter_PidExposesSubprocessPID(t *testing.T) {
 	}
 
 	starter := &realStarter{}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 
-	transport, err := starter.Start(ctx, ExecSpec{
+	transport, err := starter.Start(ExecSpec{
 		Path: sleepBin,
 		Args: []string{"sleep", "5"},
 		Dir:  t.TempDir(),

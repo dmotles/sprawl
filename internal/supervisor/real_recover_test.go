@@ -54,7 +54,7 @@ func TestRealRecover_DispatchesToAgentRuntime(t *testing.T) {
 
 	starter := &recoverCountingStarter{}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("rt.Start: %v", err)
 	}
 	starter.mu.Lock()
@@ -98,7 +98,7 @@ func TestRealRecover_FiresBackendRecoveredEmitter(t *testing.T) {
 
 	starter := &recoverCountingStarter{}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("rt.Start: %v", err)
 	}
 	starter.mu.Lock()
@@ -134,7 +134,7 @@ func TestRealRecover_CancelsPendingQuestionsFromRecoveringAgent(t *testing.T) {
 
 	starter := &recoverCountingStarter{}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("rt.Start: %v", err)
 	}
 	starter.mu.Lock()

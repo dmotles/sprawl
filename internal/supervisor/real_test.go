@@ -1089,7 +1089,7 @@ func TestRetire_CascadePropagatesCallerToRecursiveRetire(t *testing.T) {
 			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 		}},
 	})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 

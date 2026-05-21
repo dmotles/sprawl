@@ -57,7 +57,7 @@ type mockStarter struct {
 	startErr  error
 }
 
-func (s *mockStarter) Start(_ context.Context, spec ExecSpec) (backendpkg.ManagedTransport, error) {
+func (s *mockStarter) Start(spec ExecSpec) (backendpkg.ManagedTransport, error) {
 	s.specs = append(s.specs, spec)
 	if s.startErr != nil {
 		return nil, s.startErr

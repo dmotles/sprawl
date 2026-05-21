@@ -274,7 +274,7 @@ func TestRealDelegate_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
 			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 		},
 	})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestRealReportStatus_SignalsParentRuntimeWakeAfterFullPersistence(t *testin
 			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 		},
 	})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -414,7 +414,7 @@ func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -459,7 +459,7 @@ func TestRealReportStatus_DrainedRingLineContainsSummaryVerbatim(t *testing.T) {
 			caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 		},
 	})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -516,7 +516,7 @@ func TestRealKill_RuntimeBackedAgentSkipsLegacyKillFn(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	r.killFn = func(*agentops.KillDeps, string, bool) error {
@@ -568,7 +568,7 @@ func TestRealKill_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	// QUM-372: SaveAgent now uses atomic rename via os.CreateTemp; the
@@ -660,7 +660,7 @@ func TestRealRetire_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
@@ -693,7 +693,7 @@ func TestRealRetire_RuntimeBackedAgentStopsRuntimeBeforeLegacyRetireFn(t *testin
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
@@ -736,7 +736,7 @@ func TestRealRetire_RuntimeBackedAgentRequiresCascadeWhenChildrenExist(t *testin
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, parent, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
@@ -822,7 +822,7 @@ func TestRealShutdown_StopsRuntimeBackedChildren(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	r.killFn = func(*agentops.KillDeps, string, bool) error {
@@ -879,7 +879,7 @@ func TestRealShutdown_TransitionMatrix(t *testing.T) {
 				caps:      backendpkg.Capabilities{SupportsInterrupt: true},
 			}
 			rt := ensureRuntimeWithStarter(t, r, tmpDir, ag, &runtimeTestStarter{session: session})
-			if err := rt.Start(context.Background()); err != nil {
+			if err := rt.Start(); err != nil {
 				t.Fatalf("runtime.Start: %v", err)
 			}
 
@@ -1011,7 +1011,7 @@ func TestRealRetire_EmitsRuntimeStopCheckpoints(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -1110,7 +1110,7 @@ func TestRealRetire_RuntimeStopDoneIncludesWaitTimeoutTrue(t *testing.T) {
 		stopWaitTimedOut: true,
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -1152,7 +1152,7 @@ func TestRealKill_EmitsRuntimeStopCheckpoints(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 

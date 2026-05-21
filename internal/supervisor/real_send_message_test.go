@@ -41,7 +41,7 @@ func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTur
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenTurnRunningTru
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenIdle(t *testin
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 

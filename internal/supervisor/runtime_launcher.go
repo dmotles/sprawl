@@ -93,15 +93,19 @@ type preparedLaunch struct {
 // construction: the only closures stored in RuntimeConfig (phase 4) capture
 // the coordinator (built in phase 3, immutable thereafter). The handle
 // pointer is never referenced from any closure created before phase 6.
-func (s *inProcessUnifiedStarter) Start(ctx context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
+func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, error) {
 	// Phase 1: prepare on-disk state and session spec.
 	prep, err := s.prepareLaunch(spec)
 	if err != nil {
 		return nil, err
 	}
 
-	// Phase 2: start the backend session. Rollback on error: close activity file.
-	session, err := s.startBackendSession(ctx, prep)
+	// Phase 2: start the backend session. Rollback on error: close activity
+	// file. We derive context.Background() here (QUM-612): a request-scoped
+	// ctx must NEVER reach exec.CommandContext (which is downstream of the
+	// adapter), because cancellation of that ctx — e.g. when an MCP request
+	// returns — would SIGKILL the freshly-spawned subprocess. See QUM-606.
+	session, err := s.startBackendSession(context.Background(), prep)
 	if err != nil {
 		_ = prep.activityFile.Close()
 		return nil, err

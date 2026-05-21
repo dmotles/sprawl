@@ -141,7 +141,7 @@ func TestStatus_ProcessAliveTriStateComesFromRuntimeKnowledge(t *testing.T) {
 			},
 		},
 	})
-	if err := liveRT.Start(context.Background()); err != nil {
+	if err := liveRT.Start(); err != nil {
 		t.Fatalf("live runtime start: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestStatus_ProcessAliveTriStateComesFromRuntimeKnowledge(t *testing.T) {
 		Agent:      stoppedActive,
 		Starter:    &runtimeTestStarter{session: stoppedSession},
 	})
-	if err := stoppedActiveRT.Start(context.Background()); err != nil {
+	if err := stoppedActiveRT.Start(); err != nil {
 		t.Fatalf("stopped runtime start: %v", err)
 	}
 	close(stoppedSession.doneCh)

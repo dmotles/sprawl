@@ -25,7 +25,7 @@ type recoverTestStarter struct {
 	callCounter int
 }
 
-func (s *recoverTestStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
+func (s *recoverTestStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, error) {
 	s.callCounter++
 	s.specs = append(s.specs, spec)
 	if err, ok := s.errByName[spec.Name]; ok && err != nil {

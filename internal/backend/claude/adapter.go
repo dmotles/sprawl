@@ -22,8 +22,16 @@ type ExecSpec struct {
 }
 
 // Starter launches a Claude subprocess from an ExecSpec.
+//
+// Start takes no ctx by design (QUM-612). The ctx parameter was previously
+// forwarded into `exec.CommandContext`, which made it possible for a
+// short-lived request ctx to SIGKILL the freshly-spawned subprocess the
+// instant the request returned — see QUM-606. Subprocess teardown is owned
+// by the returned ManagedTransport's Close/Kill path, so the ctx-cancel
+// safety net was unused and actively dangerous. Dropping ctx from the
+// signature makes the bug class impossible to reintroduce.
 type Starter interface {
-	Start(ctx context.Context, spec ExecSpec) (backend.ManagedTransport, error)
+	Start(spec ExecSpec) (backend.ManagedTransport, error)
 }
 
 // Config configures the Claude adapter.
@@ -58,7 +66,16 @@ func NewAdapter(cfg Config) *Adapter {
 }
 
 // Start launches a Claude-backed backend session.
-func (a *Adapter) Start(ctx context.Context, spec backend.SessionSpec) (backend.Session, error) {
+// Start launches a Claude-backed backend session.
+//
+// The ctx parameter is unused (QUM-612): it used to be forwarded into the
+// Starter, which forwarded it into exec.CommandContext — the exact ctx-cancel
+// chain that produced the QUM-606 zombie. The Starter interface no longer
+// accepts a ctx, so this seam can't forward one. The parameter is kept on
+// the signature because Adapter.Start sits behind the seam consumed by
+// internal/supervisor's `unifiedAdapterStartFn` (a `func(ctx, spec)` seam)
+// and the supervisor's call site already passes `context.Background()`.
+func (a *Adapter) Start(_ context.Context, spec backend.SessionSpec) (backend.Session, error) {
 	path := a.path
 	if path == "" {
 		var err error
@@ -108,7 +125,7 @@ func (a *Adapter) Start(ctx context.Context, spec backend.SessionSpec) (backend.
 	}
 
 	var err error
-	transport, err = a.starter.Start(ctx, execSpec)
+	transport, err = a.starter.Start(execSpec)
 	if err != nil {
 		return nil, err
 	}
@@ -142,8 +159,15 @@ func buildEnv(spec backend.SessionSpec) []string {
 
 type realStarter struct{}
 
-func (s *realStarter) Start(ctx context.Context, spec ExecSpec) (backend.ManagedTransport, error) {
-	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...) //nolint:gosec // spec.Path/spec.Args are constructed from trusted session policy and LookPath/config
+func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
+	// QUM-612: Subprocess lifetime MUST outlive any request-scoped ctx. The
+	// QUM-606 bug class — where a short-lived MCP request ctx (e.g.
+	// `toolRecover`'s) SIGKILLed the freshly-spawned claude the moment the
+	// MCP call returned — flowed entirely through exec.CommandContext. By
+	// deriving context.Background() internally (and refusing a ctx parameter
+	// at the type boundary) we make the bug impossible to reintroduce.
+	// Teardown is owned by the returned ManagedTransport's Kill/Close path.
+	cmd := exec.CommandContext(context.Background(), spec.Path, spec.Args...) //nolint:gosec // spec.Path/spec.Args are constructed from trusted session policy and LookPath/config
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
 	if spec.Stderr != nil {

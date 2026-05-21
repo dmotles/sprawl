@@ -100,7 +100,7 @@ type runtimeTestStarter struct {
 	err     error
 }
 
-func (s *runtimeTestStarter) Start(_ context.Context, spec RuntimeStartSpec) (RuntimeHandle, error) {
+func (s *runtimeTestStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.specs = append(s.specs, spec)
@@ -182,7 +182,7 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 	events, cancel := rt.Subscribe(16)
 	defer cancel()
 
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 	if err := rt.Interrupt(context.Background()); err != nil {
@@ -302,7 +302,7 @@ func TestAgentRuntime_UnexpectedHandleExitMarksStopped(t *testing.T) {
 		Starter:    starter,
 	})
 
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
 	close(session.doneCh)
@@ -507,7 +507,7 @@ func TestAgentRuntime_StartResume_PropagatesResumeTrue(t *testing.T) {
 		Starter:    starter,
 	})
 
-	if err := rt.StartResume(context.Background()); err != nil {
+	if err := rt.StartResume(); err != nil {
 		t.Fatalf("StartResume: %v", err)
 	}
 	if len(starter.specs) != 1 {
@@ -543,7 +543,7 @@ func TestAgentRuntime_StartResume_EmitsStartedEvent(t *testing.T) {
 	events, cancel := rt.Subscribe(4)
 	defer cancel()
 
-	if err := rt.StartResume(context.Background()); err != nil {
+	if err := rt.StartResume(); err != nil {
 		t.Fatalf("StartResume: %v", err)
 	}
 	kinds := nextRuntimeEventKinds(t, events, 1)
@@ -572,7 +572,7 @@ func TestAgentRuntime_StartResume_StarterError_LeavesLifecycleRegistered(t *test
 		Starter:    starter,
 	})
 
-	err := rt.StartResume(context.Background())
+	err := rt.StartResume()
 	if err == nil {
 		t.Fatal("StartResume must return the starter error")
 	}

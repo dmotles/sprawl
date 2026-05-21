@@ -30,7 +30,7 @@ func TestRealRetire_AbandonTrue_CallsStopAbandonNotStop(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
@@ -64,7 +64,7 @@ func TestRealRetire_AbandonFalse_CallsStopNotStopAbandon(t *testing.T) {
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
 	}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, &runtimeTestStarter{session: session})
-	if err := rt.Start(context.Background()); err != nil {
+	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
 	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
