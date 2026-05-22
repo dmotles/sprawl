@@ -267,6 +267,14 @@ type ToolCallMsg struct {
 	// HeaderArg on the compact header line (QUM-419). Dropped by the renderer
 	// when including them would shrink the main arg below MinMainArgCells.
 	HeaderParams []KVPair
+	// ParentToolUseID is the wire-level parent_tool_use_id from the assistant
+	// envelope (protocol.AssistantMessage.ParentToolUseID). Non-empty when the
+	// emitting assistant turn ran inside a sub-agent (sidechain). The viewport
+	// uses it verbatim to attribute the tool call to the correct outer Agent
+	// container, taking precedence over the lastActiveAgent heuristic for
+	// parallel-Agent scenarios. Empty for top-level assistant turns. (QUM-386 live-path fix —
+	// sibling to replay path's wire-field plumbing in scanTranscriptWithSidechain.)
+	ParentToolUseID string
 }
 
 // ToolResultMsg carries the result of a previously-emitted tool call. The

@@ -63,6 +63,11 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 		return nil
 	}
 
+	parentToolUseID := ""
+	if am.ParentToolUseID != nil {
+		parentToolUseID = *am.ParentToolUseID
+	}
+
 	var content assistantContent
 	if err := json.Unmarshal(am.Content, &content); err != nil {
 		return nil
@@ -77,13 +82,14 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 		case "tool_use":
 			headerArg, headerParams := FormatToolHeader(block.Name, block.Input)
 			msgs = append(msgs, ToolCallMsg{
-				ToolName:     block.Name,
-				ToolID:       block.ID,
-				Approved:     true, // Session auto-approves tool calls
-				Input:        summarizeToolInput(block.Name, block.Input),
-				FullInput:    expandToolInput(block.Name, block.Input),
-				HeaderArg:    headerArg,
-				HeaderParams: headerParams,
+				ToolName:        block.Name,
+				ToolID:          block.ID,
+				Approved:        true, // Session auto-approves tool calls
+				Input:           summarizeToolInput(block.Name, block.Input),
+				FullInput:       expandToolInput(block.Name, block.Input),
+				HeaderArg:       headerArg,
+				HeaderParams:    headerParams,
+				ParentToolUseID: parentToolUseID,
 			})
 		}
 	}

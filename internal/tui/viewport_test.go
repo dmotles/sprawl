@@ -2488,3 +2488,82 @@ func TestAppendSystemNotification_BackToBackPeelsBothEnvelopes(t *testing.T) {
 		t.Errorf("rendered viewport leaks raw tag:\n%s", rendered)
 	}
 }
+
+// TestAppendToolCallWithHeader_ParentToolUseID verifies the QUM-386 live-path
+// fix: AppendToolCallWithHeader accepts a parentToolUseID argument that, when
+// non-empty, sets MessageEntry.ParentToolID and Depth=1 unconditionally,
+// bypassing the legacy `lastActiveAgent` heuristic. The heuristic is preserved
+// as a fallback for callers that pass an empty parentToolUseID.
+//
+// Red-phase: today AppendToolCallWithHeader is 7 positional params; adding the
+// 8th `parentToolUseID string` is part of the fix. The compile error here is
+// the intended red signal.
+func TestAppendToolCallWithHeader_ParentToolUseID(t *testing.T) {
+	t.Run("wire field set, activeAgents empty", func(t *testing.T) {
+		m := newTestViewportModel(t)
+		m.SetSize(80, 40)
+
+		// No outer Agent pushed first — activeAgents is empty. Pre-fix the
+		// heuristic would set depth=0 / parentID="" because it gates on
+		// len(activeAgents) > 0. The wire field must be authoritative.
+		m.AppendToolCallWithHeader("Read", "R1", true, "/tmp/foo", "", "", nil, "A1")
+
+		msgs := m.GetMessages()
+		if len(msgs) != 1 {
+			t.Fatalf("got %d messages, want 1", len(msgs))
+		}
+		if msgs[0].ParentToolID != "A1" {
+			t.Errorf("ParentToolID = %q, want %q (wire parent_tool_use_id must be authoritative even when activeAgents is empty)", msgs[0].ParentToolID, "A1")
+		}
+		if msgs[0].Depth != 1 {
+			t.Errorf("Depth = %d, want 1 (wire parent_tool_use_id implies nesting)", msgs[0].Depth)
+		}
+	})
+
+	t.Run("wire field overrides last-active heuristic", func(t *testing.T) {
+		m := newTestViewportModel(t)
+		m.SetSize(80, 40)
+
+		// Push two outer Agents — lastActiveAgent becomes "a2".
+		m.AppendToolCallWithHeader("Agent", "a1", true, "task one", "", "", nil, "")
+		m.AppendToolCallWithHeader("Agent", "a2", true, "task two", "", "", nil, "")
+
+		// Now stream an inner Read whose wire envelope says parent=a1. The
+		// heuristic alone would attribute it to a2 (the last pushed). The
+		// wire field must override.
+		m.AppendToolCallWithHeader("Read", "R1", true, "/tmp/foo", "", "", nil, "a1")
+
+		msgs := m.GetMessages()
+		if len(msgs) != 3 {
+			t.Fatalf("got %d messages, want 3", len(msgs))
+		}
+		if msgs[2].ParentToolID != "a1" {
+			t.Errorf("ParentToolID = %q, want %q (wire parent_tool_use_id must override lastActiveAgent=a2)", msgs[2].ParentToolID, "a1")
+		}
+		if msgs[2].Depth != 1 {
+			t.Errorf("Depth = %d, want 1", msgs[2].Depth)
+		}
+	})
+
+	t.Run("empty wire field falls back to heuristic", func(t *testing.T) {
+		m := newTestViewportModel(t)
+		m.SetSize(80, 40)
+
+		m.AppendToolCallWithHeader("Agent", "a1", true, "task one", "", "", nil, "")
+		// Empty parentToolUseID: legacy behavior must be preserved so call
+		// sites that haven't been migrated (and the AppendToolCall shim) keep
+		// working.
+		m.AppendToolCallWithHeader("Bash", "b1", true, "ls", "", "", nil, "")
+
+		msgs := m.GetMessages()
+		if len(msgs) != 2 {
+			t.Fatalf("got %d messages, want 2", len(msgs))
+		}
+		if msgs[1].ParentToolID != "a1" {
+			t.Errorf("ParentToolID = %q, want %q (heuristic fallback when wire field empty)", msgs[1].ParentToolID, "a1")
+		}
+		if msgs[1].Depth != 1 {
+			t.Errorf("Depth = %d, want 1 (heuristic fallback)", msgs[1].Depth)
+		}
+	})
+}

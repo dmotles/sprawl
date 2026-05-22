@@ -297,7 +297,7 @@ func (m *ViewportModel) FinalizeAssistantMessage() {
 // pass "" if not available. The new entry starts in the Pending state
 // (QUM-336) — its indicator animates until MarkToolResult flips it.
 func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input, fullInput string) {
-	m.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, "", nil)
+	m.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, "", nil, "")
 }
 
 // AppendToolCallWithHeader is the QUM-419 entry point that carries the
@@ -306,12 +306,19 @@ func (m *ViewportModel) AppendToolCall(name, toolID string, approved bool, input
 // thin wrapper so existing call sites (tests, replay paths that haven't been
 // migrated) keep compiling; new production paths should set the header
 // fields so the compact header line reads correctly.
-func (m *ViewportModel) AppendToolCallWithHeader(name, toolID string, approved bool, input, fullInput, headerArg string, headerParams []KVPair) {
+func (m *ViewportModel) AppendToolCallWithHeader(name, toolID string, approved bool, input, fullInput, headerArg string, headerParams []KVPair, parentToolUseID string) {
 	depth := 0
 	parentID := ""
 	// Non-Agent tool calls inside any active agent get depth 1.
 	// Agent tool calls are always top-level (depth 0). (QUM-386)
-	if len(m.activeAgents) > 0 && name != "Agent" {
+	switch {
+	case parentToolUseID != "":
+		// QUM-386 live-path: wire field is authoritative for sidechain attribution.
+		// Sister of replay path's parent_tool_use_id read in scanTranscriptWithSidechain.
+		parentID = parentToolUseID
+		depth = 1
+	case len(m.activeAgents) > 0 && name != "Agent":
+		// Heuristic fallback retained for callers/tests that don't carry the wire field.
 		depth = 1
 		parentID = m.lastActiveAgent
 	}

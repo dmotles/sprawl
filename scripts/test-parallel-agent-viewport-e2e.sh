@@ -103,6 +103,17 @@ echo '{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[
 # Small delay so TUI can render the parallel containers
 sleep 2
 
+# Step 4b (QUM-386 live-path): emit sidechain assistant messages with
+# parent_tool_use_id pointing at each outer Agent. Each sidechain message
+# carries an inner tool_use (Read) whose attribution must follow the wire
+# parent_tool_use_id, NOT the "last active agent" heuristic. With the heuristic
+# both alpha-file.txt and beta-file.txt would land under agent-tool-2 (the
+# most recently pushed); post-fix alpha lives under agent-tool-1 and beta
+# under agent-tool-2.
+echo '{"type":"assistant","uuid":"s-1","parent_tool_use_id":"agent-tool-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"r-alpha","name":"Read","input":{"file_path":"/tmp/alpha-file.txt"}}]}}'
+echo '{"type":"assistant","uuid":"s-2","parent_tool_use_id":"agent-tool-2","message":{"role":"assistant","content":[{"type":"tool_use","id":"r-beta","name":"Read","input":{"file_path":"/tmp/beta-file.txt"}}]}}'
+sleep 1
+
 # Step 5: Emit tool_result user messages for the agents
 echo '{"type":"user","uuid":"u-3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"agent-tool-1","content":"Alpha research complete with findings"}]}}'
 echo '{"type":"user","uuid":"u-4","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"agent-tool-2","content":"Beta research complete with results"}]}}'
@@ -241,6 +252,54 @@ else
     fail "Agent container for 'Research task beta' not found"
     echo "  pane:" >&2
     echo "$PANE_CONTENT" >&2
+fi
+
+# --- Test B2: Sidechain inner tool_uses attribute to correct parent (QUM-386 live-path) ---
+echo ""
+echo "=== Test B2: Sidechain Reads attribute to correct parent Agent ==="
+
+# Allow extra time for sidechain assistant messages + inner Reads to render
+# inside their respective containers before tool_results collapse them.
+sleep 2
+PANE_B2=$(capture_pane "$SESSION")
+
+# Locate the line numbers of each outer Agent container by their unique task
+# descriptions. Container 1 = alpha, Container 2 = beta.
+ALPHA_HEADER_LINE=$(echo "$PANE_B2" | grep -n "Research task alpha" | head -n1 | cut -d: -f1 || true)
+BETA_HEADER_LINE=$(echo "$PANE_B2"  | grep -n "Research task beta"  | head -n1 | cut -d: -f1 || true)
+
+# The inner Reads' filenames are unique anchors for the inner tool_use lines.
+ALPHA_FILE_LINE=$(echo "$PANE_B2" | grep -n "alpha-file.txt" | head -n1 | cut -d: -f1 || true)
+BETA_FILE_LINE=$(echo "$PANE_B2"  | grep -n "beta-file.txt"  | head -n1 | cut -d: -f1 || true)
+
+if [ -z "$ALPHA_HEADER_LINE" ] || [ -z "$BETA_HEADER_LINE" ]; then
+    fail "could not locate both Agent container header lines (alpha=$ALPHA_HEADER_LINE beta=$BETA_HEADER_LINE)"
+    echo "  pane:" >&2
+    echo "$PANE_B2" >&2
+elif [ -z "$ALPHA_FILE_LINE" ] || [ -z "$BETA_FILE_LINE" ]; then
+    fail "inner Read filenames missing from pane (alpha-file.txt=$ALPHA_FILE_LINE beta-file.txt=$BETA_FILE_LINE)"
+    echo "  pane:" >&2
+    echo "$PANE_B2" >&2
+else
+    # alpha-file.txt must appear AFTER the alpha container header AND BEFORE
+    # the beta container header — i.e. inside container 1.
+    if [ "$ALPHA_FILE_LINE" -gt "$ALPHA_HEADER_LINE" ] && [ "$ALPHA_FILE_LINE" -lt "$BETA_HEADER_LINE" ]; then
+        pass "alpha-file.txt nested inside container 1 (line $ALPHA_FILE_LINE between $ALPHA_HEADER_LINE and $BETA_HEADER_LINE)"
+    else
+        fail "alpha-file.txt at line $ALPHA_FILE_LINE NOT between container 1 header ($ALPHA_HEADER_LINE) and container 2 header ($BETA_HEADER_LINE) — mis-attributed to wrong Agent"
+        echo "  pane:" >&2
+        echo "$PANE_B2" >&2
+    fi
+
+    # beta-file.txt must appear AFTER the beta container header (inside
+    # container 2 — pane end is implicit upper bound).
+    if [ "$BETA_FILE_LINE" -gt "$BETA_HEADER_LINE" ]; then
+        pass "beta-file.txt nested inside container 2 (line $BETA_FILE_LINE after $BETA_HEADER_LINE)"
+    else
+        fail "beta-file.txt at line $BETA_FILE_LINE NOT after container 2 header ($BETA_HEADER_LINE) — mis-attributed"
+        echo "  pane:" >&2
+        echo "$PANE_B2" >&2
+    fi
 fi
 
 # --- Test C: Containers collapse after completion ---

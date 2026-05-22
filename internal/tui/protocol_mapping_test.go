@@ -580,6 +580,86 @@ func TestMapAssistantMessage_NoUsage(t *testing.T) {
 	}
 }
 
+// TestMapAssistantMessage_ParallelSidechain_ParentToolIDFromWire verifies the
+// QUM-386 live-path fix: when the wire envelope carries `parent_tool_use_id`,
+// the resulting ToolCallMsg.ParentToolUseID must reflect that value verbatim
+// so the viewport can attribute the inner tool call to the correct outer
+// Agent. The replay-side sibling is
+// TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire.
+//
+// Red-phase: today ToolCallMsg has no ParentToolUseID field, so the .ParentToolUseID
+// references below are an intentional compile-time failure — the implementer
+// must add the field as the first step of the fix.
+func TestMapAssistantMessage_ParallelSidechain_ParentToolIDFromWire(t *testing.T) {
+	cases := []struct {
+		name             string
+		raw              string
+		wantToolID       string
+		wantToolName     string
+		wantParentToolID string
+	}{
+		{
+			name:             "parent_tool_use_id A1 with Read",
+			raw:              `{"type":"assistant","uuid":"s-1","parent_tool_use_id":"A1","message":{"role":"assistant","content":[{"type":"tool_use","id":"R1","name":"Read","input":{"file_path":"/tmp/foo"}}]}}`,
+			wantToolID:       "R1",
+			wantToolName:     "Read",
+			wantParentToolID: "A1",
+		},
+		{
+			name:             "parent_tool_use_id A2 with Bash",
+			raw:              `{"type":"assistant","uuid":"s-2","parent_tool_use_id":"A2","message":{"role":"assistant","content":[{"type":"tool_use","id":"B2","name":"Bash","input":{"command":"ls"}}]}}`,
+			wantToolID:       "B2",
+			wantToolName:     "Bash",
+			wantParentToolID: "A2",
+		},
+		{
+			name:             "no parent_tool_use_id (top-level envelope)",
+			raw:              `{"type":"assistant","uuid":"a-top","message":{"role":"assistant","content":[{"type":"tool_use","id":"T1","name":"Read","input":{"file_path":"/tmp/top"}}]}}`,
+			wantToolID:       "T1",
+			wantToolName:     "Read",
+			wantParentToolID: "",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var msg protocol.Message
+			if err := json.Unmarshal([]byte(tc.raw), &msg); err != nil {
+				t.Fatal(err)
+			}
+			msg.Raw = json.RawMessage(tc.raw)
+
+			result := MapProtocolMessage(&msg)
+			acm, ok := result.(AssistantContentMsg)
+			if !ok {
+				t.Fatalf("MapProtocolMessage returned %T, want AssistantContentMsg", result)
+			}
+			var picked ToolCallMsg
+			var foundTC bool
+			for _, inner := range acm.Msgs {
+				if tcm, isToolCall := inner.(ToolCallMsg); isToolCall && tcm.ToolID == tc.wantToolID {
+					picked = tcm
+					foundTC = true
+					break
+				}
+			}
+			if !foundTC {
+				t.Fatalf("no ToolCallMsg with ToolID=%q in AssistantContentMsg=%+v", tc.wantToolID, acm.Msgs)
+			}
+			if picked.ToolName != tc.wantToolName {
+				t.Errorf("ToolName = %q, want %q", picked.ToolName, tc.wantToolName)
+			}
+			// QUM-386 live-path: parent_tool_use_id must be plumbed from the wire
+			// envelope through to ToolCallMsg.ParentToolUseID, not inferred from
+			// activeAgents state in the viewport.
+			if picked.ParentToolUseID != tc.wantParentToolID {
+				t.Errorf("ParentToolUseID = %q, want %q (must read parent_tool_use_id from wire envelope)", picked.ParentToolUseID, tc.wantParentToolID)
+			}
+		})
+	}
+}
+
 func TestMapAssistantMessage_UsageAlongsideContent(t *testing.T) {
 	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input_tokens":5000,"output_tokens":200}}}`
 	var msg protocol.Message
