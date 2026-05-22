@@ -450,11 +450,22 @@ func (rt *UnifiedRuntime) WakeForDelivery(_ context.Context) error {
 	return nil
 }
 
-// ForceInterruptForDelivery is the unconditional preempt path used by
-// send_message(interrupt=true). Unlike interruptForDelivery, it has NO
-// `if turnRunning` guard — it always calls Session.Interrupt (and the
-// turn loop's Interrupt if running). This closes the QUM-549 blind spot
-// where send_interrupt against an idle recipient silently no-oped.
+// ForceInterruptForDelivery is the preempt path used by
+// send_message(interrupt=true). It snapshots `turnRunning` under `rt.mu`
+// and only calls Session.Interrupt / loop.Interrupt when a turn is
+// genuinely in flight (QUM-294 mid-turn preempt). When the recipient is
+// idle, the ClassInterrupt queue item already enqueued by
+// drainPendingToQueue plus the cooperative queue.Wake below is sufficient
+// to deliver the interrupt-class prompt at the next turn boundary —
+// issuing Session.Interrupt would cancel the very turn that exists to
+// deliver this message (QUM-619).
+//
+// The QUM-462 / QUM-510 failure mode ("interrupt is silently lost") does
+// NOT recur under this gate: the cooperative wake path is preserved, so
+// even when the snapshot races with a turn that starts immediately
+// after, the brand-new turn proceeds normally and processes the
+// ClassInterrupt prompt — which is the desired outcome. See
+// docs/research/qum-619-idle-interrupt-race-2026-05-21.md.
 func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
 	rt.mu.Lock()
 	if rt.stopped {
@@ -463,16 +474,19 @@ func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
 	}
 	sess := rt.cfg.Session
 	loop := rt.turnLoop
+	turnRunning := rt.turnRunning
 	if rt.state == StateTurnActive {
 		rt.state = StateInterrupting
 	}
 	rt.mu.Unlock()
 
-	if sess != nil {
-		_ = sess.Interrupt(ctx)
-	}
-	if loop != nil {
-		_ = loop.Interrupt(ctx)
+	if turnRunning {
+		if sess != nil {
+			_ = sess.Interrupt(ctx)
+		}
+		if loop != nil {
+			_ = loop.Interrupt(ctx)
+		}
 	}
 	rt.queue.Wake()
 	return nil
@@ -480,12 +494,17 @@ func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
 
 // QUM-462 / QUM-510 (removed in QUM-550 slice 4): the legacy
 // `InterruptDelivery` / `interruptForDelivery` pair conditionally called
-// `Session.Interrupt` based on a turn-running snapshot. That conditional
-// gate was the source of both bugs (QUM-462: arming pendingInterrupt against
-// an idle runtime; QUM-510: TOCTOU race between snapshot and Lock at the
-// turn-end boundary). The successors `WakeForDelivery` (never calls
-// Session.Interrupt) and `ForceInterruptForDelivery` (always calls it) don't
-// have the underlying race because neither makes a conditional decision.
+// `Session.Interrupt` based on a turn-running snapshot. That gate produced
+// "interrupt is silently lost" bugs when the snapshot raced with the
+// runtime entering a new turn AND the snapshot result was used to skip the
+// cooperative wake path. The successors `WakeForDelivery` (never calls
+// Session.Interrupt) and `ForceInterruptForDelivery` (preempt only when
+// turnRunning, but ALWAYS pokes queue.Wake) avoid that failure mode:
+// regardless of the snapshot's outcome, the wake-and-deliver path always
+// runs, so a ClassInterrupt queue item is observed at the next turn
+// boundary. QUM-619 added the `if turnRunning` gate around
+// `Session.Interrupt` to stop interrupts from canceling their own delivery
+// turn against an idle recipient.
 
 // Queue returns the runtime's MessageQueue. Stable for the lifetime of the
 // UnifiedRuntime.

@@ -93,36 +93,42 @@ func TestWakeForDelivery_NeverCallsSessionInterrupt_WhenIdle(t *testing.T) {
 	}
 }
 
-// TestForceInterruptForDelivery_CallsSessionInterrupt_WhenIdle pins the
-// QUM-549 spec for send_message(interrupt: true): the recipient must be
-// interrupted UNCONDITIONALLY, even when no turn is in flight. This is the
-// blind-spot fix — InterruptDelivery's `if turnRunning` guard caused
-// send_interrupt to silently no-op against an idle peer.
-func TestForceInterruptForDelivery_CallsSessionInterrupt_WhenIdle(t *testing.T) {
+// TestForceInterruptForDelivery_DoesNotCallSessionInterrupt_WhenIdle pins
+// the QUM-619 spec: when the recipient has no turn in flight,
+// ForceInterruptForDelivery must NOT call Session.Interrupt. The queue
+// item enqueued by the caller (drainPendingToQueue) plus the cooperative
+// queue.Wake is sufficient to deliver the interrupt-class prompt at the
+// next turn boundary. Calling Session.Interrupt against an idle recipient
+// would cancel the very turn that exists to deliver this message — see
+// docs/research/qum-619-idle-interrupt-race-2026-05-21.md.
+//
+// QUM-294 / QUM-549 mid-turn preempt semantics are preserved by the
+// sibling test _WhenTurnRunning below.
+func TestForceInterruptForDelivery_DoesNotCallSessionInterrupt_WhenIdle(t *testing.T) {
+	// Direct call against a non-running runtime so we can deterministically
+	// observe the queue Signal without competing with the TurnLoop. This
+	// mirrors TestWakeForDelivery_NeverCallsSessionInterrupt_WhenIdle.
 	mock := &mockUnifiedSession{}
 	rt := New(RuntimeConfig{Name: "x", Session: mock})
 
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-
-	if !waitForState(t, rt, StateIdle, 1*time.Second) {
-		t.Fatalf("not idle before ForceInterruptForDelivery; state=%v", rt.State())
-	}
-
-	before := mock.interruptCount()
 	if err := rt.ForceInterruptForDelivery(context.Background()); err != nil {
 		t.Fatalf("ForceInterruptForDelivery: %v", err)
 	}
 
-	// Allow a brief window for the call to land on the fake session.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && mock.interruptCount() <= before {
-		time.Sleep(5 * time.Millisecond)
+	// Give a brief window for any (incorrect) Session.Interrupt forwarding
+	// to land asynchronously, then assert no interrupt was issued.
+	time.Sleep(50 * time.Millisecond)
+	if got := mock.interruptCount(); got != 0 {
+		t.Errorf("Session.Interrupt count = %d, want 0 (QUM-619: ForceInterruptForDelivery must not call Session.Interrupt when idle)", got)
 	}
-	if got := mock.interruptCount(); got < before+1 {
-		t.Errorf("Session.Interrupt count = %d, want >= %d (ForceInterruptForDelivery must call Session.Interrupt even when idle — QUM-549)", got, before+1)
+
+	// Queue wake must still fire so the parked TurnLoop observes the
+	// already-enqueued ClassInterrupt item.
+	select {
+	case <-rt.Queue().Signal():
+		// good
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Queue.Signal did not fire after ForceInterruptForDelivery on idle runtime")
 	}
 }
 
