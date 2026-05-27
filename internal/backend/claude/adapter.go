@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	backend "github.com/dmotles/sprawl/internal/backend"
 	claudecli "github.com/dmotles/sprawl/internal/claude"
@@ -19,6 +20,9 @@ type ExecSpec struct {
 	Dir    string
 	Env    []string
 	Stderr io.Writer
+	// WireLogPath, when non-empty, is the NDJSON file the realStarter tees
+	// the subprocess stdin/stdout into (QUM-632).
+	WireLogPath string
 }
 
 // Starter launches a Claude subprocess from an ExecSpec.
@@ -116,12 +120,18 @@ func (a *Adapter) Start(_ context.Context, spec backend.SessionSpec) (backend.Se
 		})
 	}
 
+	wireLogPath := ""
+	if spec.SprawlRoot != "" && spec.Identity != "" && spec.SessionID != "" {
+		wireLogPath = filepath.Join(spec.SprawlRoot, ".sprawl", "logs", "sessions", spec.Identity, spec.SessionID+".ndjson")
+	}
+
 	execSpec := ExecSpec{
-		Path:   path,
-		Args:   args,
-		Dir:    spec.WorkDir,
-		Env:    buildEnv(spec),
-		Stderr: stderr,
+		Path:        path,
+		Args:        args,
+		Dir:         spec.WorkDir,
+		Env:         buildEnv(spec),
+		Stderr:      stderr,
+		WireLogPath: wireLogPath,
 	}
 
 	var err error
@@ -182,7 +192,27 @@ func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating stdout pipe: %w", err)
 	}
+	var wl *wireLog
+	if spec.WireLogPath != "" {
+		w, werr := newWireLog(spec.WireLogPath)
+		if werr != nil {
+			fmt.Fprintf(os.Stderr, "sprawl: wire-log disabled (open %s: %v)\n", spec.WireLogPath, werr)
+		} else {
+			wl = w
+		}
+	}
+
+	var rdr io.Reader = stdout
+	var wtr io.Writer = stdin
+	if wl != nil {
+		rdr = io.TeeReader(stdout, wl.dirWriter("out"))
+		wtr = io.MultiWriter(stdin, wl.dirWriter("in"))
+	}
+
 	if err := cmd.Start(); err != nil {
+		if wl != nil {
+			_ = wl.Close()
+		}
 		return nil, fmt.Errorf("starting claude: %w", err)
 	}
 
@@ -191,9 +221,10 @@ func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
 		pid = cmd.Process.Pid
 	}
 	return &transport{
-		reader: protocol.NewReader(stdout),
-		writer: protocol.NewWriter(stdin),
-		wait:   cmd.Wait,
+		reader:  protocol.NewReader(rdr),
+		writer:  protocol.NewWriter(wtr),
+		wireLog: wl,
+		wait:    cmd.Wait,
 		kill: func() error {
 			if cmd.Process != nil {
 				return cmd.Process.Kill()
@@ -205,11 +236,12 @@ func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
 }
 
 type transport struct {
-	reader *protocol.Reader
-	writer *protocol.Writer
-	wait   func() error
-	kill   func() error
-	pid    int
+	reader  *protocol.Reader
+	writer  *protocol.Writer
+	wireLog *wireLog
+	wait    func() error
+	kill    func() error
+	pid     int
 }
 
 // Pid returns the OS process ID of the underlying claude subprocess.
@@ -244,10 +276,17 @@ func (t *transport) Wait() error {
 	if t.wait == nil {
 		return nil
 	}
-	return t.wait()
+	err := t.wait()
+	if t.wireLog != nil {
+		_ = t.wireLog.Close()
+	}
+	return err
 }
 
 func (t *transport) Kill() error {
+	if t.wireLog != nil {
+		_ = t.wireLog.Close()
+	}
 	if t.kill == nil {
 		return nil
 	}

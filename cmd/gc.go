@@ -28,12 +28,14 @@ type gcDeps struct {
 }
 
 var (
-	defaultGCDeps *gcDeps
-	gcApply       bool
+	defaultGCDeps      *gcDeps
+	gcApply            bool
+	gcLogRetentionDays int
 )
 
 func init() {
 	gcCmd.Flags().BoolVar(&gcApply, "apply", false, "Actually remove orphan dirs and worktrees (default is dry-run)")
+	gcCmd.Flags().IntVar(&gcLogRetentionDays, "log-retention-days", 30, "Remove session wire logs older than N days")
 	rootCmd.AddCommand(gcCmd)
 }
 
@@ -44,7 +46,7 @@ var gcCmd = &cobra.Command{
 		"Default is a dry-run report; pass --apply to remove. Refuses to remove dirs with files newer than 7 days.",
 	Args: cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		return runGC(resolveGCDeps(), gcApply)
+		return runGC(resolveGCDeps(), gcApply, gcLogRetentionDays)
 	},
 }
 
@@ -69,7 +71,7 @@ func resolveGCDeps() *gcDeps {
 	}
 }
 
-func runGC(deps *gcDeps, apply bool) error {
+func runGC(deps *gcDeps, apply bool, logRetentionDays int) error {
 	root, err := deps.sprawlRoot()
 	if err != nil {
 		return err
@@ -81,13 +83,39 @@ func runGC(deps *gcDeps, apply bool) error {
 		RemoveAll:      deps.removeAll,
 		SprawlRoot:     root,
 	}
-	orphans, err := agentops.ScanOrphans(gcd)
+
+	orphanErrs, didSomething, err := runOrphanPass(deps, gcd, root, apply)
 	if err != nil {
 		return err
 	}
+
+	retention := time.Duration(logRetentionDays) * 24 * time.Hour
+	logErrs, logDidSomething, err := runLogPass(deps, gcd, retention, apply)
+	if err != nil {
+		return err
+	}
+	didSomething = didSomething || logDidSomething
+
+	if !didSomething {
+		fmt.Fprintln(deps.errOut, "No orphan agent dirs or stale session logs found. Nothing to do.")
+	}
+
+	totalErrs := orphanErrs + logErrs
+	if totalErrs > 0 {
+		return fmt.Errorf("gc: %d error(s) during apply", totalErrs)
+	}
+	return nil
+}
+
+// runOrphanPass scans and (when apply) removes orphan agent dirs. It returns
+// the number of removal errors and whether it found any orphans.
+func runOrphanPass(deps *gcDeps, gcd agentops.GCDeps, root string, apply bool) (int, bool, error) {
+	orphans, err := agentops.ScanOrphans(gcd)
+	if err != nil {
+		return 0, false, err
+	}
 	if len(orphans) == 0 {
-		fmt.Fprintln(deps.errOut, "No orphan agent dirs found. Nothing to do.")
-		return nil
+		return 0, false, nil
 	}
 
 	freshCount := 0
@@ -121,7 +149,7 @@ func runGC(deps *gcDeps, apply bool) error {
 		} else {
 			fmt.Fprintln(deps.errOut, "All orphans are <7 days old; re-run later to clean up.")
 		}
-		return nil
+		return 0, true, nil
 	}
 
 	fmt.Fprintf(deps.errOut, "Removing %d orphan agent dir(s)...\n", removableCount)
@@ -137,7 +165,6 @@ func runGC(deps *gcDeps, apply bool) error {
 			fmt.Fprintf(deps.out, "skipped  %s  FRESH\n", o.Name)
 			continue
 		}
-		// Only emit "removed" if we actually removed the dir.
 		dirRemoved := false
 		for _, p := range res.Removed {
 			if p == o.DirPath {
@@ -157,12 +184,57 @@ func runGC(deps *gcDeps, apply bool) error {
 
 	fmt.Fprintf(deps.errOut, "%d removed, %d fresh (skipped), %d error(s).\n",
 		len(res.Removed), len(res.Skipped), len(res.Errors))
-	if len(res.Errors) > 0 {
-		for _, e := range res.Errors {
-			fmt.Fprintf(deps.errOut, "  %v\n", e)
-		}
-		return fmt.Errorf("gc: %d error(s) during apply", len(res.Errors))
+	for _, e := range res.Errors {
+		fmt.Fprintf(deps.errOut, "  %v\n", e)
 	}
-	fmt.Fprintln(deps.errOut, "Done. Re-run to confirm clean state.")
-	return nil
+	return len(res.Errors), true, nil
+}
+
+// runLogPass scans and (when apply) removes stale session wire logs under
+// .sprawl/logs/sessions/. Output uses a distinct "wirelog" marker so it can't
+// be confused with the orphan-dir pass.
+func runLogPass(deps *gcDeps, gcd agentops.GCDeps, retention time.Duration, apply bool) (int, bool, error) {
+	recs, err := agentops.ScanSessionLogs(gcd, retention)
+	if err != nil {
+		return 0, false, err
+	}
+
+	staleCount := 0
+	for _, r := range recs {
+		if r.Stale {
+			staleCount++
+		}
+	}
+	if len(recs) == 0 {
+		return 0, false, nil
+	}
+
+	if !apply {
+		fmt.Fprintf(deps.errOut, "Scanning %s for stale session wire logs...\n",
+			filepath.Join(gcd.SprawlRoot, ".sprawl", "logs", "sessions"))
+		for _, r := range recs {
+			marker := "fresh"
+			if r.Stale {
+				marker = "stale"
+			}
+			fmt.Fprintf(deps.out, "wirelog  %s  mtime=%s  [%s]\n",
+				r.Path, r.Mtime.Format("2006-01-02"), marker)
+		}
+		fmt.Fprintf(deps.errOut, "%d session wire log(s) found, %d stale.\n", len(recs), staleCount)
+		if staleCount > 0 {
+			fmt.Fprintln(deps.errOut, "Re-run with --apply to remove stale wirelogs.")
+		}
+		return 0, true, nil
+	}
+
+	fmt.Fprintf(deps.errOut, "Removing %d stale session wire log(s)...\n", staleCount)
+	res := agentops.ApplyLogGC(gcd, recs)
+	for _, p := range res.Removed {
+		fmt.Fprintf(deps.out, "removed  wirelog  %s\n", p)
+	}
+	fmt.Fprintf(deps.errOut, "%d wirelog(s) removed, %d error(s).\n", len(res.Removed), len(res.Errors))
+	for _, e := range res.Errors {
+		fmt.Fprintf(deps.errOut, "  %v\n", e)
+	}
+	return len(res.Errors), true, nil
 }

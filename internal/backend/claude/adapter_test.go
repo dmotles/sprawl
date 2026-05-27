@@ -298,6 +298,60 @@ func TestAdapter_StartReturnsSessionThatForwardsLifecycle(t *testing.T) {
 	}
 }
 
+func TestAdapter_StartResolvesWireLogPath(t *testing.T) {
+	starter := &mockStarter{transport: &mockManagedTransport{}}
+	adapter := NewAdapter(Config{
+		Path:    "/opt/bin/claude",
+		Starter: starter,
+	})
+
+	_, err := adapter.Start(context.Background(), backendpkg.SessionSpec{
+		SprawlRoot: "/some/root",
+		Identity:   "weave",
+		SessionID:  "abc-123",
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	want := "/some/root/.sprawl/logs/sessions/weave/abc-123.ndjson"
+	if got := starter.specs[0].WireLogPath; got != want {
+		t.Errorf("WireLogPath = %q, want %q", got, want)
+	}
+}
+
+func TestAdapter_StartLeavesWireLogPathEmptyWhenComponentMissing(t *testing.T) {
+	cases := []struct {
+		name string
+		spec backendpkg.SessionSpec
+	}{
+		{
+			name: "missing SprawlRoot",
+			spec: backendpkg.SessionSpec{Identity: "weave", SessionID: "abc-123"},
+		},
+		{
+			name: "missing Identity",
+			spec: backendpkg.SessionSpec{SprawlRoot: "/some/root", SessionID: "abc-123"},
+		},
+		{
+			name: "missing SessionID",
+			spec: backendpkg.SessionSpec{SprawlRoot: "/some/root", Identity: "weave"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			starter := &mockStarter{transport: &mockManagedTransport{}}
+			adapter := NewAdapter(Config{Path: "/opt/bin/claude", Starter: starter})
+			if _, err := adapter.Start(context.Background(), tc.spec); err != nil {
+				t.Fatalf("Start() error: %v", err)
+			}
+			if got := starter.specs[0].WireLogPath; got != "" {
+				t.Errorf("WireLogPath = %q, want empty when %s", got, tc.name)
+			}
+		})
+	}
+}
+
 func argsContain(args []string, flag string) bool {
 	for _, arg := range args {
 		if arg == flag {

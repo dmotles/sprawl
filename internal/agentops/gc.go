@@ -45,6 +45,76 @@ type GCDeps struct {
 	SprawlRoot     string
 }
 
+// DefaultLogRetention is the default age cutoff for session wire-log files:
+// logs whose mtime is older than this are eligible for removal (QUM-632).
+const DefaultLogRetention = 30 * 24 * time.Hour
+
+// SessionLogRecord describes one session wire-log file under
+// .sprawl/logs/sessions/<agent>/.
+type SessionLogRecord struct {
+	Path  string
+	Mtime time.Time
+	Stale bool
+}
+
+// ScanSessionLogs walks .sprawl/logs/sessions/ and returns a record for every
+// *.ndjson file, flagging those older than retention as Stale. Returns
+// nil,nil if the sessions directory does not exist. Non-.ndjson files are
+// ignored. Records are sorted by Path for determinism.
+func ScanSessionLogs(deps GCDeps, retention time.Duration) ([]SessionLogRecord, error) {
+	sessionsDir := filepath.Join(deps.SprawlRoot, ".sprawl", "logs", "sessions")
+	if _, err := os.Stat(sessionsDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat sessions dir %s: %w", sessionsDir, err)
+	}
+
+	cutoff := deps.Now().Add(-retention)
+	var recs []SessionLogRecord
+	err := filepath.WalkDir(sessionsDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".ndjson") {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		mt := info.ModTime()
+		recs = append(recs, SessionLogRecord{
+			Path:  path,
+			Mtime: mt,
+			Stale: mt.Before(cutoff),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk sessions dir %s: %w", sessionsDir, err)
+	}
+	sort.Slice(recs, func(i, j int) bool { return recs[i].Path < recs[j].Path })
+	return recs, nil
+}
+
+// ApplyLogGC removes every Stale session-log record via deps.RemoveAll. Fresh
+// records are ignored. Never returns an error; inspect res.Errors instead.
+func ApplyLogGC(deps GCDeps, recs []SessionLogRecord) ApplyResult {
+	var res ApplyResult
+	for _, r := range recs {
+		if !r.Stale {
+			continue
+		}
+		if err := deps.RemoveAll(r.Path); err != nil {
+			res.Errors = append(res.Errors, fmt.Errorf("removing session log %s: %w", r.Path, err))
+		} else {
+			res.Removed = append(res.Removed, r.Path)
+		}
+	}
+	return res
+}
+
 // ApplyResult records the outcome of ApplyGC.
 type ApplyResult struct {
 	Removed       []string

@@ -361,6 +361,115 @@ func TestApplyGC_RemoveAllError(t *testing.T) {
 	}
 }
 
+// --- QUM-632: session wire-log retention pass ---
+
+// seedSessionLog writes <root>/.sprawl/logs/sessions/<agent>/<name> with the
+// given mtime and returns the absolute path.
+func seedSessionLog(t *testing.T, root, agent, name string, mtime time.Time) string {
+	t.Helper()
+	dir := filepath.Join(root, ".sprawl", "logs", "sessions", agent)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	full := filepath.Join(dir, name)
+	if err := os.WriteFile(full, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	if err := os.Chtimes(full, mtime, mtime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	return full
+}
+
+func TestScanSessionLogs_StaleAndFreshAndIgnored(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	oldPath := seedSessionLog(t, root, "agentA", "old.ndjson", now.Add(-40*24*time.Hour))
+	freshPath := seedSessionLog(t, root, "agentB", "fresh.ndjson", now)
+	// A stray non-.ndjson file must be ignored.
+	seedSessionLog(t, root, "agentA", "notes.txt", now.Add(-40*24*time.Hour))
+
+	deps := agentops.GCDeps{
+		Now:        func() time.Time { return now },
+		RemoveAll:  func(string) error { return nil },
+		SprawlRoot: root,
+	}
+	recs, err := agentops.ScanSessionLogs(deps, agentops.DefaultLogRetention)
+	if err != nil {
+		t.Fatalf("ScanSessionLogs err: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("want 2 ndjson records (txt ignored), got %d: %+v", len(recs), recs)
+	}
+	byPath := map[string]agentops.SessionLogRecord{}
+	for _, r := range recs {
+		byPath[r.Path] = r
+	}
+	if r, ok := byPath[oldPath]; !ok || !r.Stale {
+		t.Errorf("old log should be Stale: %+v (present=%v)", r, ok)
+	}
+	if r, ok := byPath[freshPath]; !ok || r.Stale {
+		t.Errorf("fresh log should not be Stale: %+v (present=%v)", r, ok)
+	}
+}
+
+func TestScanSessionLogs_SessionsDirMissing_ReturnsNil(t *testing.T) {
+	deps := agentops.GCDeps{
+		Now:        time.Now,
+		RemoveAll:  func(string) error { return nil },
+		SprawlRoot: t.TempDir(),
+	}
+	recs, err := agentops.ScanSessionLogs(deps, agentops.DefaultLogRetention)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if recs != nil {
+		t.Errorf("want nil for absent sessions dir, got %+v", recs)
+	}
+}
+
+func TestApplyLogGC_RemovesOnlyStale(t *testing.T) {
+	var removed []string
+	deps := agentops.GCDeps{
+		Now: time.Now,
+		RemoveAll: func(p string) error {
+			removed = append(removed, p)
+			return nil
+		},
+	}
+	recs := []agentops.SessionLogRecord{
+		{Path: "/logs/stale.ndjson", Stale: true},
+		{Path: "/logs/fresh.ndjson", Stale: false},
+	}
+	res := agentops.ApplyLogGC(deps, recs)
+	if len(removed) != 1 || removed[0] != "/logs/stale.ndjson" {
+		t.Errorf("RemoveAll calls = %v, want only the stale path", removed)
+	}
+	if len(res.Removed) != 1 || res.Removed[0] != "/logs/stale.ndjson" {
+		t.Errorf("res.Removed = %v, want only the stale path", res.Removed)
+	}
+	if len(res.Errors) != 0 {
+		t.Errorf("Errors should be empty, got %v", res.Errors)
+	}
+}
+
+func TestApplyLogGC_RemoveErrorCaptured(t *testing.T) {
+	deps := agentops.GCDeps{
+		Now:       time.Now,
+		RemoveAll: func(string) error { return errors.New("rm fail") },
+	}
+	recs := []agentops.SessionLogRecord{
+		{Path: "/logs/stale.ndjson", Stale: true},
+	}
+	res := agentops.ApplyLogGC(deps, recs)
+	if len(res.Errors) == 0 {
+		t.Errorf("expected RemoveAll error captured in Errors")
+	}
+	if len(res.Removed) != 0 {
+		t.Errorf("Removed should be empty on failure, got %v", res.Removed)
+	}
+}
+
 func TestParseWorktreeListPorcelain_MultipleEntries(t *testing.T) {
 	in := []byte(`worktree /repo/main
 HEAD abc123
