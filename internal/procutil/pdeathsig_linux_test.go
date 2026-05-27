@@ -108,6 +108,93 @@ func TestKillProcessGroup_KillsWholeGroup(t *testing.T) {
 	}
 }
 
+// TestKillChildProcessGroups_KillsDirectChildGroup spawns a bash child (in its
+// own process group, like sprawl's claude subprocess) that backgrounds a sleep
+// grandchild, then calls KillChildProcessGroups() from THIS process and asserts
+// both the child and its grandchild are gone. QUM-636: the shutdown watchdog
+// force-exit must reap child subprocess groups so claude does not orphan to
+// init (ppid=1) when sprawl os.Exit()s.
+func TestKillChildProcessGroups_KillsDirectChildGroup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns subprocesses; skipped in -short mode")
+	}
+
+	script := `echo $$; sleep 30 & echo $!; wait`
+	cmd := exec.Command("bash", "-c", script)
+	// Mirror SetPdeathsig: child is its own process-group leader.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("StdoutPipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	buf := make([]byte, 256)
+	n, _ := readNWithTimeout(stdout, buf, 2, 3*time.Second)
+	pids, err := parsePids(string(buf[:n]))
+	if err != nil || len(pids) < 2 {
+		_ = cmd.Process.Kill()
+		t.Fatalf("expected >=2 pids (leader + sleep), got %v (err %v)", pids, err)
+	}
+
+	KillChildProcessGroups()
+	go func() { _ = cmd.Wait() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		alive := 0
+		for _, pid := range pids {
+			if procExists(pid) {
+				alive++
+			}
+		}
+		if alive == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, pid := range pids {
+		if procExists(pid) {
+			t.Errorf("pid %d still alive after KillChildProcessGroups", pid)
+		}
+	}
+}
+
+// readNWithTimeout reads until at least want newlines are seen or the deadline
+// elapses.
+func readNWithTimeout(r interface{ Read([]byte) (int, error) }, buf []byte, want int, d time.Duration) (int, error) {
+	type result struct {
+		n   int
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		total := 0
+		for total < len(buf) {
+			n, err := r.Read(buf[total:])
+			total += n
+			if err != nil {
+				ch <- result{total, err}
+				return
+			}
+			if countNewlines(buf[:total]) >= want {
+				ch <- result{total, nil}
+				return
+			}
+		}
+		ch <- result{total, nil}
+	}()
+	select {
+	case res := <-ch:
+		return res.n, res.err
+	case <-time.After(d):
+		return 0, nil
+	}
+}
+
 func procExists(pid int) bool {
 	if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); err == nil {
 		// Also check it's not a zombie that's already been reaped logically.

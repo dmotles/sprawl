@@ -39,6 +39,7 @@ import (
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/observe/sigdump"
+	"github.com/dmotles/sprawl/internal/procutil"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
@@ -55,6 +56,11 @@ import (
 // exits within this window the next launch is force-fresh; outside it, normal
 // restart logic applies.
 const resumeFailureWindow = 5 * time.Second
+
+// shutdownWatchdogTimeout bounds how long `sprawl enter` teardown may run
+// before the shutdown watchdog force-dumps goroutines, releases the weave
+// lock, and force-exits. Package-level var so it can be overridden later.
+var shutdownWatchdogTimeout = 30 * time.Second
 
 // enterDeps holds dependencies for the enter command, enabling testability.
 type enterDeps struct {
@@ -281,6 +287,25 @@ func resolveEnterDeps() *enterDeps {
 		go func() {
 			if _, ok := <-sigCh; ok {
 				p.Quit()
+				// QUM-636: a quit signal means the user/parent wants out. If
+				// the bubbletea program (or downstream teardown) wedges — e.g.
+				// Program.Run won't drain its command goroutines while a
+				// question modal is parked — force-exit within the bound so the
+				// process never leaks and weave.lock is released (the kernel
+				// drops the flock on exit). KillChildProcessGroups first so the
+				// claude subprocess does not orphan to init. No disarm: a
+				// healthy exit terminates the process (and this goroutine) well
+				// before the bound, so the timer never fires.
+				_ = installShutdownWatchdog(
+					func() (<-chan time.Time, func()) {
+						tm := time.NewTimer(shutdownWatchdogTimeout)
+						return tm.C, func() { tm.Stop() }
+					},
+					defaultGoroutineDump,
+					os.Stderr,
+					procutil.KillChildProcessGroups,
+					os.Exit,
+				)
 			}
 		}()
 		defer signal.Stop(sigCh)
@@ -841,6 +866,20 @@ func runEnter(deps *enterDeps) error {
 	}
 
 	err = deps.runProgram(model, onStart)
+	// QUM-636: arm a shutdown watchdog over the teardown block. If teardown
+	// wedges (e.g. drainInflight blocks), this force-dumps goroutines into the
+	// still-redirected tui-stderr log, releases the weave flock, and exits.
+	stopShutdownWatchdog := installShutdownWatchdog(
+		func() (<-chan time.Time, func()) {
+			tm := time.NewTimer(shutdownWatchdogTimeout)
+			return tm.C, func() { tm.Stop() }
+		},
+		defaultGoroutineDump,
+		os.Stderr,
+		func() { procutil.KillChildProcessGroups(); _ = lock.Release() },
+		os.Exit,
+	)
+	defer stopShutdownWatchdog()
 	close(handoffDone)
 	// QUM-311: the send function captured by the notifier closure becomes a
 	// no-op once the tea.Program has exited, but be explicit and unregister
@@ -894,6 +933,10 @@ func runEnter(deps *enterDeps) error {
 	// Restore stderr after supervisor/bridge shutdown so any cleanup-time
 	// stderr writes are still captured in the log. The trailing
 	// "TUI session ended." line below then goes to the real terminal.
+	// QUM-636: disarm the shutdown watchdog before restoring stderr, so a
+	// force-dump (if it ever fired) lands in the still-redirected tui-stderr
+	// log rather than on the real terminal. Idempotent with the defer above.
+	stopShutdownWatchdog()
 	if stderrRedirect != nil {
 		_ = stderrRedirect.Restore()
 	}

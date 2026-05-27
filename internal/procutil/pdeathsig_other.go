@@ -20,3 +20,7 @@ func KillProcessGroup(p *os.Process) error {
 	}
 	return p.Kill()
 }
+
+// KillChildProcessGroups is a no-op on non-Linux platforms (the /proc-based
+// child enumeration is Linux-specific). QUM-636.
+func KillChildProcessGroups() {}

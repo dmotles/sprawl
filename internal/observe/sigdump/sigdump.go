@@ -42,7 +42,7 @@ func Dump(dir string, now time.Time, fdSource FDSource) (goroutinesPath, fdsPath
 
 	ts := now.UTC().Format(tsFormat)
 	goroutinesPath = filepath.Join(dir, "goroutines-"+ts+".txt")
-	stack := captureGoroutines()
+	stack := CaptureGoroutines()
 	if writeErr := os.WriteFile(goroutinesPath, stack, 0o600); writeErr != nil {
 		return "", "", fmt.Errorf("sigdump: write goroutines: %w", writeErr)
 	}
@@ -64,9 +64,9 @@ func Dump(dir string, now time.Time, fdSource FDSource) (goroutinesPath, fdsPath
 	return goroutinesPath, fdsPath, nil
 }
 
-// captureGoroutines invokes runtime.Stack with a growing buffer until the
+// CaptureGoroutines invokes runtime.Stack with a growing buffer until the
 // full dump fits, capped at 64 MiB to bound memory.
-func captureGoroutines() []byte {
+func CaptureGoroutines() []byte {
 	const (
 		initial = 256 * 1024
 		maxSize = 64 * 1024 * 1024

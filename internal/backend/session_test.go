@@ -17,6 +17,12 @@ type mockManagedTransport struct {
 	sendCh chan any
 	recvCh chan *protocol.Message
 
+	// recvIgnoresCtx, when true, makes Recv block solely on recvCh without
+	// selecting on ctx.Done() — simulating a real stdout read that does not
+	// honor ctx cancellation (and survives Close, which never closes recvCh).
+	// Used to exercise the bounded readerDone join in session.Close (QUM-636).
+	recvIgnoresCtx bool
+
 	mu          sync.Mutex
 	closeCalled bool
 	waitCalled  bool
@@ -40,6 +46,14 @@ func (m *mockManagedTransport) Send(ctx context.Context, msg any) error {
 }
 
 func (m *mockManagedTransport) Recv(ctx context.Context) (*protocol.Message, error) {
+	if m.recvIgnoresCtx {
+		// Block solely on recvCh; deliberately ignore ctx cancellation.
+		msg, ok := <-m.recvCh
+		if !ok {
+			return nil, io.EOF
+		}
+		return msg, nil
+	}
 	select {
 	case msg, ok := <-m.recvCh:
 		if !ok {

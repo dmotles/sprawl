@@ -301,7 +301,7 @@ type session struct {
 // inflightDrainTimeout bounds how long the reader waits for in-flight async
 // MCP handlers to finish on shutdown. A wedged handler must not be able to
 // permanently leak the session goroutine.
-const inflightDrainTimeout = 5 * time.Second
+var inflightDrainTimeout = 5 * time.Second
 
 // NewSession creates a backend session on top of the provided transport.
 func NewSession(t ManagedTransport, cfg SessionConfig) Session {
@@ -1048,7 +1048,19 @@ func (s *session) Close() error {
 	}
 	err := s.transport.Close()
 	if started {
-		<-s.readerDone
+		// Bounded wait for the reader to unwind. The reader can be wedged
+		// inside transport.Recv on a blocking stdout read that does NOT honor
+		// ctx cancellation and survives transport.Close while the subprocess
+		// still holds the pipe (QUM-636). An unbounded join here hangs the
+		// whole teardown forever and leaks the process + weave.lock, so we
+		// cap it: inflight async handlers were already cancelled via
+		// readerCancel above, so proceeding without the reader's drainInflight
+		// only leaves the (harmless) wedged reader goroutine for the imminent
+		// process exit to reap.
+		select {
+		case <-s.readerDone:
+		case <-time.After(inflightDrainTimeout):
+		}
 		// Bounded wait for the F2 observer drain to flush queued frames.
 		// On a wedged Observer.OnMessage we don't want Close to hang
 		// forever — surface that as a drop and proceed.

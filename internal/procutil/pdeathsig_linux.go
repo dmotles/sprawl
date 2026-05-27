@@ -12,6 +12,8 @@ package procutil
 import (
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -49,4 +51,53 @@ func KillProcessGroup(p *os.Process) error {
 	// cmd.Wait() (e.g. agentloop's waitFn). Descendants are reaped by their
 	// subreaper / init. Doing a Wait4 here would race with that caller.
 	return nil
+}
+
+// KillChildProcessGroups SIGKILLs the process group of every direct child of
+// the current process. QUM-636: a shutdown watchdog force-exit (os.Exit) does
+// NOT kill child processes, so the claude subprocess would orphan to init
+// (ppid=1) and leak. Calling this before os.Exit reaps those subprocesses.
+// Each child started via SetPdeathsig is its own process-group leader, so the
+// negative-pid group kill reaps it together with any of its descendants; the
+// single-pid kill is a fallback for children not started in their own group.
+// Best-effort: errors (already-gone, no-such-group) are ignored.
+func KillChildProcessGroups() {
+	self := os.Getpid()
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		if readProcPPID(pid) != self {
+			continue
+		}
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
+// readProcPPID returns the parent PID of pid from /proc/<pid>/stat, or 0 if it
+// cannot be read. The comm field (2nd) is parenthesized and may contain spaces
+// or ')', so we parse the fields after the LAST ')': they are
+// `state ppid pgrp ...`, making ppid the 2nd whitespace-separated field.
+func readProcPPID(pid int) int {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return 0
+	}
+	s := string(data)
+	rp := strings.LastIndexByte(s, ')')
+	if rp < 0 || rp+1 >= len(s) {
+		return 0
+	}
+	fields := strings.Fields(s[rp+1:])
+	if len(fields) < 2 {
+		return 0
+	}
+	ppid, _ := strconv.Atoi(fields[1])
+	return ppid
 }
