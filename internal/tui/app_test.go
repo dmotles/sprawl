@@ -3765,3 +3765,31 @@ func TestAppModel_SessionResultMsg_DoesNotKickWaitForEvent_OnLegacyBridge(t *tes
 	// Just ensure it does not panic and returns a non-nil cmd (cost cmd).
 	_, _ = app.Update(SessionResultMsg{IsError: false, DurationMs: 5})
 }
+
+// TestUpdate_AutoContinueMsg (QUM-634): dispatching an AutoContinueMsg through
+// the app Update must append a MessageAutoTrigger entry (carrying the summary)
+// to the root viewport, so the autonomous turn renders a visible trigger
+// marker before the assistant response.
+func TestUpdate_AutoContinueMsg(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app := resized.(AppModel)
+
+	const summary = "X"
+	updated, _ := app.Update(AutoContinueMsg{Summary: summary})
+	app = updated.(AppModel)
+
+	entries := app.rootVP().GetMessages()
+	var found bool
+	for _, e := range entries {
+		if e.Type == MessageAutoTrigger {
+			found = true
+			if e.Content != summary {
+				t.Errorf("auto-trigger entry Content = %q, want %q", e.Content, summary)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected a MessageAutoTrigger entry in the root viewport after AutoContinueMsg; got entries: %+v", entries)
+	}
+}

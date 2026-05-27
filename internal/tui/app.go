@@ -613,6 +613,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case AutoContinueMsg:
+		// QUM-634: render a trigger marker before the autonomous turn's
+		// assistant response so the user sees WHY weave responded.
+		m.rootVP().AppendAutoTrigger(msg.Summary)
+		return m, nil
+
 	case OpenPaletteMsg:
 		// Gate on modals AND observed-agent-is-root: when observing a child
 		// the input bar is hidden (QUM-340), so opening the palette would

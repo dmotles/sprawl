@@ -364,6 +364,42 @@ type SessionModelMsg struct {
 	Model string
 }
 
+// AutoContinueMsg signals a harness auto-continue (autonomous) turn was
+// triggered by a completed background task (QUM-634). Summary is the
+// human-readable task_notification summary, rendered as a distinct marker.
+type AutoContinueMsg struct {
+	Summary string
+}
+
+// taskNotification* are the literal wrapping tokens the harness records in the
+// JSONL transcript for an autonomous-turn trigger (QUM-634 resume path). The
+// trigger is a `type:user` record whose string content is a
+// `<task-notification>…</task-notification>` wrapper carrying a `<summary>`.
+const (
+	taskNotificationOpenTag      = "<task-notification>"
+	taskNotificationSummaryOpen  = "<summary>"
+	taskNotificationSummaryClose = "</summary>"
+)
+
+// parseTaskNotificationSummary extracts the <summary> text from a
+// <task-notification>…</task-notification> user-record body (QUM-634 resume
+// path). Returns ok=false when the wrapper or summary tag is absent.
+func parseTaskNotificationSummary(s string) (summary string, ok bool) {
+	if !strings.Contains(s, taskNotificationOpenTag) {
+		return "", false
+	}
+	start := strings.Index(s, taskNotificationSummaryOpen)
+	if start < 0 {
+		return "", false
+	}
+	start += len(taskNotificationSummaryOpen)
+	end := strings.Index(s[start:], taskNotificationSummaryClose)
+	if end < 0 {
+		return "", false
+	}
+	return s[start : start+end], true
+}
+
 // UserMessageSentMsg confirms that user input was dispatched to the session.
 type UserMessageSentMsg struct{}
 

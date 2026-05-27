@@ -58,6 +58,10 @@ const (
 	// the messages slice so it survives renderAndUpdate() cycles. Rendered
 	// verbatim without markdown processing.
 	MessageBanner
+	// MessageAutoTrigger is a synthetic header rendered before an autonomous
+	// (harness-initiated) turn's assistant response so the user sees WHY weave
+	// responded. Content is the task_notification summary. (QUM-634)
+	MessageAutoTrigger
 )
 
 // MessageEntry is a single item in the conversation buffer.
@@ -254,6 +258,18 @@ func (m *ViewportModel) AppendBanner(text string) {
 	m.messages = append(m.messages, MessageEntry{
 		Type:     MessageBanner,
 		Content:  text,
+		Complete: true,
+	})
+	m.renderAndUpdate()
+}
+
+// AppendAutoTrigger adds an auto-continue trigger marker (QUM-634) — a
+// synthetic header rendered before an autonomous turn's assistant response so
+// the user sees WHY weave responded. Content is the task_notification summary.
+func (m *ViewportModel) AppendAutoTrigger(summary string) {
+	m.messages = append(m.messages, MessageEntry{
+		Type:     MessageAutoTrigger,
+		Content:  summary,
 		Complete: true,
 	})
 	m.renderAndUpdate()
@@ -683,6 +699,10 @@ func (m *ViewportModel) renderMessages() string {
 			block.WriteString(style.Render("│ " + glyph + " " + formatted))
 		case MessageBanner:
 			block.WriteString(msg.Content)
+		case MessageAutoTrigger:
+			// QUM-634: a "why this turn happened" header for autonomous turns,
+			// visually distinct from assistant text and the user bubble.
+			block.WriteString(m.theme.SystemText.Render("↻ auto-continued — " + msg.Content))
 		}
 		if selecting && i >= selLo && i <= selHi {
 			sb.WriteString(addSelectionGutter(block.String(), m.theme.AccentText.Render(SelectionGutter)))

@@ -43,6 +43,16 @@ func MapProtocolMessage(msg *protocol.Message) tea.Msg {
 	case "result":
 		return mapResultMessage(msg)
 	case "system":
+		// QUM-634: a task_notification frame carries a ready-made human-readable
+		// summary used to render the auto-continue trigger marker. Sibling task_*
+		// subtypes (task_started/task_updated) are noisy and skipped.
+		if msg.Subtype == "task_notification" {
+			var tn protocol.TaskNotification
+			if err := json.Unmarshal(msg.Raw, &tn); err == nil && tn.Summary != "" {
+				return AutoContinueMsg{Summary: tn.Summary}
+			}
+			return nil
+		}
 		// QUM-385: system/init carries the model name, from which we derive the
 		// context window limit. Other system subtypes are still skipped.
 		if msg.Subtype == "init" {

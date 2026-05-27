@@ -2567,3 +2567,40 @@ func TestAppendToolCallWithHeader_ParentToolUseID(t *testing.T) {
 		}
 	})
 }
+
+// TestAppendAutoTrigger (QUM-634): AppendAutoTrigger appends a single
+// MessageAutoTrigger entry carrying the task_notification summary, and the
+// rendered output shows a distinct marker (↻ glyph + "auto-continued" + the
+// summary) that is visually distinct from a user bubble ("You: ").
+func TestAppendAutoTrigger(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+
+	const summary = `Background command "x" completed (exit code 0)`
+	m.AppendAutoTrigger(summary)
+
+	msgs := m.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("GetMessages() len = %d, want 1", len(msgs))
+	}
+	if msgs[0].Type != MessageAutoTrigger {
+		t.Errorf("entry Type = %v, want MessageAutoTrigger", msgs[0].Type)
+	}
+	if msgs[0].Content != summary {
+		t.Errorf("entry Content = %q, want %q", msgs[0].Content, summary)
+	}
+
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "↻") {
+		t.Errorf("rendered auto-trigger should contain the ↻ glyph, got:\n%s", view)
+	}
+	if !strings.Contains(view, "auto-continued") {
+		t.Errorf("rendered auto-trigger should contain \"auto-continued\", got:\n%s", view)
+	}
+	if !strings.Contains(view, summary) {
+		t.Errorf("rendered auto-trigger should contain the summary text, got:\n%s", view)
+	}
+	if strings.Contains(view, "You:") {
+		t.Errorf("auto-trigger must NOT render as a user bubble (\"You:\"), got:\n%s", view)
+	}
+}

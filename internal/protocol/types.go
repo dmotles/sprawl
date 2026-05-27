@@ -33,6 +33,18 @@ type SystemInit struct {
 	APIKeySource   string   `json:"apiKeySource"`
 }
 
+// TaskNotification is a harness task lifecycle frame (type=system,
+// subtype=task_notification) emitted when a background task completes. The
+// Summary is a human-readable one-liner used to render an auto-continue
+// trigger marker in the TUI (QUM-634).
+type TaskNotification struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
+	TaskID  string `json:"task_id"`
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
+}
+
 // AssistantMessage contains a complete assistant turn (type=assistant).
 // The Content field holds the Anthropic API message object as raw JSON.
 type AssistantMessage struct {

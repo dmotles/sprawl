@@ -237,6 +237,64 @@ func TestMapProtocolMessage_SystemInit_EmptyModel(t *testing.T) {
 	}
 }
 
+// TestMapProtocolMessage_SystemTaskNotification (QUM-634): a
+// system/task_notification frame carrying a summary maps to an
+// AutoContinueMsg so the TUI can render a trigger marker for the autonomous
+// turn the harness self-reprompted into.
+func TestMapProtocolMessage_SystemTaskNotification(t *testing.T) {
+	raw := `{"type":"system","subtype":"task_notification","task_id":"bzgr4iuq0","status":"completed","summary":"Background command \"sleep 30\" completed (exit code 0)"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := MapProtocolMessage(&msg)
+	ac, ok := result.(AutoContinueMsg)
+	if !ok {
+		t.Fatalf("MapProtocolMessage for system/task_notification returned %T, want AutoContinueMsg", result)
+	}
+	if ac.Summary != `Background command "sleep 30" completed (exit code 0)` {
+		t.Errorf("AutoContinueMsg.Summary = %q, want the task_notification summary", ac.Summary)
+	}
+}
+
+// TestMapProtocolMessage_SystemTaskNotification_EmptySummary (QUM-634): a
+// task_notification with no summary carries nothing renderable, so it maps to
+// nil (no marker emitted).
+func TestMapProtocolMessage_SystemTaskNotification_EmptySummary(t *testing.T) {
+	raw := `{"type":"system","subtype":"task_notification","task_id":"bzgr4iuq0","status":"completed","summary":""}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	if result := MapProtocolMessage(&msg); result != nil {
+		t.Errorf("MapProtocolMessage for task_notification with empty summary returned %T, want nil", result)
+	}
+}
+
+// TestMapProtocolMessage_SystemTaskOtherSubtypes (QUM-634): sibling task_*
+// subtypes (task_updated, task_started) are noisy and must NOT map to an
+// AutoContinueMsg — only task_notification triggers a marker.
+func TestMapProtocolMessage_SystemTaskOtherSubtypes(t *testing.T) {
+	for _, sub := range []string{"task_updated", "task_started"} {
+		t.Run(sub, func(t *testing.T) {
+			raw := `{"type":"system","subtype":"` + sub + `","task_id":"bzgr4iuq0","status":"in_progress","summary":"Background command running"}`
+			var msg protocol.Message
+			if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+				t.Fatal(err)
+			}
+			msg.Raw = json.RawMessage(raw)
+
+			if result := MapProtocolMessage(&msg); result != nil {
+				t.Errorf("MapProtocolMessage for system/%s returned %T, want nil (only task_notification renders a marker)", sub, result)
+			}
+		})
+	}
+}
+
 func TestMapProtocolMessage_SystemNonInit(t *testing.T) {
 	// Non-init system messages should still return nil.
 	raw := `{"type":"system","subtype":"session_state_changed","state":"idle"}`

@@ -171,6 +171,24 @@ func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain 
 				if c == "" {
 					continue
 				}
+				// QUM-634: detect the harness autonomous-turn trigger recorded
+				// as a `<task-notification>…</task-notification>` user-record
+				// wrapper. Render the parsed <summary> as a MessageAutoTrigger
+				// marker (NOT a raw user bubble leaking the XML), mirroring the
+				// live path so resumed turns read coherently. A wrapper with no
+				// parseable <summary> is suppressed entirely rather than leaked
+				// as a raw user bubble (matches the live path, which maps an
+				// empty-summary task_notification to nil).
+				if strings.Contains(c, taskNotificationOpenTag) {
+					if summary, ok := parseTaskNotificationSummary(c); ok {
+						entries = append(entries, MessageEntry{
+							Type:     MessageAutoTrigger,
+							Content:  summary,
+							Complete: true,
+						})
+					}
+					continue
+				}
 				// QUM-557 / QUM-562 / QUM-574: detect supervisor-injected
 				// `<system-notification>` wrapper(s) so resumed/replayed
 				// transcripts render identically to the live-drain path

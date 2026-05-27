@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1221,5 +1222,126 @@ func TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire(t *tes
 	}
 	if bashEntry.ParentToolID != "A2" {
 		t.Errorf("bashEntry.ParentToolID = %q, want %q (must read parent_tool_use_id from wire, not infer from lastActiveAgent stack)", bashEntry.ParentToolID, "A2")
+	}
+}
+
+// TestReplay_TaskNotificationRendersAutoTrigger (QUM-634): on resume the JSONL
+// records the autonomous-turn trigger as a `type:user` record whose string
+// message.content is a `<task-notification>...</task-notification>` wrapper
+// (origin.kind:"task-notification"). The replay user-string branch must detect
+// this wrapper and emit a MessageAutoTrigger entry carrying just the <summary>
+// text — NOT a plain MessageUser bubble leaking the raw XML.
+func TestReplay_TaskNotificationRendersAutoTrigger(t *testing.T) {
+	const summary = `Background command "Background sleep 30 for autonomous-turn smoke" completed (exit code 0)`
+	wrapper := "<task-notification>\n" +
+		"<task-id>b806ldj16</task-id>\n" +
+		"<tool-use-id>toolu_014DaFwB6wR4DxoPkc2mWygJ</tool-use-id>\n" +
+		"<output-file>/tmp/tasks/b806ldj16.output</output-file>\n" +
+		"<status>completed</status>\n" +
+		"<summary>" + summary + "</summary>\n" +
+		"</task-notification>"
+	rec := map[string]any{
+		"type":   "user",
+		"origin": map[string]any{"kind": "task-notification"},
+		"message": map[string]any{
+			"role":    "user",
+			"content": wrapper,
+		},
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeJSONL(t, []string{string(b)})
+
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageAutoTrigger {
+		t.Errorf("entries[0].Type = %v, want MessageAutoTrigger", entries[0].Type)
+	}
+	if entries[0].Content != summary {
+		t.Errorf("entries[0].Content = %q, want the summary text %q (not the raw XML)", entries[0].Content, summary)
+	}
+	for _, e := range entries {
+		if e.Type == MessageUser {
+			t.Errorf("a raw <task-notification> wrapper must NOT replay as a MessageUser bubble, got: %+v", e)
+		}
+		if strings.Contains(e.Content, "<task-notification>") || strings.Contains(e.Content, "<summary>") {
+			t.Errorf("entry content must not leak raw task-notification XML, got: %q", e.Content)
+		}
+	}
+}
+
+// TestReplay_AutoTriggerPrecedesAssistantOnResume (QUM-634): pins RESUME
+// ORDERING. When the JSONL records an autonomous-turn trigger
+// (`type:user` task-notification wrapper) immediately followed by the
+// `type:assistant` response, replay must emit the MessageAutoTrigger marker
+// BEFORE the MessageAssistant entry — i.e. the marker introduces the turn it
+// triggered, never trails it. Also re-asserts no MessageUser bubble leaks the
+// raw XML.
+func TestReplay_AutoTriggerPrecedesAssistantOnResume(t *testing.T) {
+	const summary = `Background command "Background sleep 30 for autonomous-turn smoke" completed (exit code 0)`
+	const assistantText = "Acknowledged — the background task finished, continuing."
+	wrapper := "<task-notification>\n" +
+		"<task-id>b806ldj16</task-id>\n" +
+		"<tool-use-id>toolu_014DaFwB6wR4DxoPkc2mWygJ</tool-use-id>\n" +
+		"<output-file>/tmp/tasks/b806ldj16.output</output-file>\n" +
+		"<status>completed</status>\n" +
+		"<summary>" + summary + "</summary>\n" +
+		"</task-notification>"
+	userRec := map[string]any{
+		"type":   "user",
+		"origin": map[string]any{"kind": "task-notification"},
+		"message": map[string]any{
+			"role":    "user",
+			"content": wrapper,
+		},
+	}
+	ub, err := json.Marshal(userRec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistantLine := `{"type":"assistant","message":{"role":"assistant","content":[` +
+		`{"type":"text","text":"` + assistantText + `"}]}}`
+
+	path := writeJSONL(t, []string{string(ub), assistantLine})
+
+	entries, err := scanTranscript(path, time.Time{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	triggerIdx, assistantIdx := -1, -1
+	for i := range entries {
+		switch entries[i].Type {
+		case MessageAutoTrigger:
+			if entries[i].Content != summary {
+				t.Errorf("MessageAutoTrigger.Content = %q, want summary %q", entries[i].Content, summary)
+			}
+			triggerIdx = i
+		case MessageAssistant:
+			if entries[i].Content == assistantText {
+				assistantIdx = i
+			}
+		case MessageUser:
+			t.Errorf("a raw <task-notification> wrapper must NOT replay as a MessageUser bubble, got: %+v", entries[i])
+		}
+		if strings.Contains(entries[i].Content, "<task-notification>") || strings.Contains(entries[i].Content, "<summary>") {
+			t.Errorf("entry content must not leak raw task-notification XML, got: %q", entries[i].Content)
+		}
+	}
+	if triggerIdx == -1 {
+		t.Fatalf("no MessageAutoTrigger entry found; entries=%+v", entries)
+	}
+	if assistantIdx == -1 {
+		t.Fatalf("no MessageAssistant entry with the resume text found; entries=%+v", entries)
+	}
+	if triggerIdx >= assistantIdx {
+		t.Errorf("MessageAutoTrigger at index %d must precede MessageAssistant at index %d (the marker introduces the turn it triggered)", triggerIdx, assistantIdx)
 	}
 }

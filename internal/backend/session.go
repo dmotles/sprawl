@@ -288,6 +288,14 @@ type session struct {
 	// non-blocking (the runtime's handler only does a bounded EventBus.Publish).
 	// Distinct from Observer, which sees EVERY frame regardless of turn kind.
 	autonomousFrameHandler atomic.Pointer[func(*protocol.Message)]
+
+	// pendingTrigger holds a pre-init system/task_notification frame (QUM-634).
+	// It arrives ~6ms before the system/init that opens the autonomous turn, so
+	// it's stashed single-slot here and emitted to autonomousFrameHandler just
+	// before the init frame. Single-slot: a later task_notification overwrites
+	// it; the next autonomous init or any StartTurn consumes/clears it. Passive
+	// capture — never allocates a turnFrame or gates StartTurn (QUM-570).
+	pendingTrigger *protocol.Message
 }
 
 // inflightDrainTimeout bounds how long the reader waits for in-flight async
@@ -461,6 +469,10 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 		ctx:        ctx,
 	}
 	s.currentTurn = tf
+	// QUM-634: a sprawl turn means any stashed pre-init trigger is no longer the
+	// immediately-preceding cause of an autonomous init; clear it so it can't
+	// leak onto a later autonomous turn.
+	s.pendingTrigger = nil
 	// QUM-599: re-seed the watchdog baseline so the first tick of this
 	// turn doesn't immediately fault on a stale lastFrameAt left over
 	// from a long between-turn idle gap.
@@ -621,6 +633,14 @@ func (s *session) runReader(ctx context.Context) {
 		// classifier would gate forever on between-turn telemetry that
 		// never ended in a `result`.
 		s.mu.Lock()
+		if s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "task_notification" {
+			// QUM-634: stash the pre-init trigger. Observer already saw it (above);
+			// do NOT allocate a turnFrame (QUM-570 — stray telemetry never gates).
+			s.pendingTrigger = msg
+			s.mu.Unlock()
+			continue
+		}
+		var pendingTrigger *protocol.Message
 		if s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "init" {
 			s.currentTurn = &turnFrame{
 				startedAt:  time.Now(),
@@ -628,6 +648,8 @@ func (s *session) runReader(ctx context.Context) {
 				done:       make(chan struct{}),
 				autonomous: true,
 			}
+			pendingTrigger = s.pendingTrigger
+			s.pendingTrigger = nil
 		}
 		tf := s.currentTurn
 		s.mu.Unlock()
@@ -640,6 +662,11 @@ func (s *session) runReader(ctx context.Context) {
 		// sprawl-initiated turns flow through the subscriber channel (QUM-578).
 		if tf != nil && tf.autonomous {
 			if hp := s.autonomousFrameHandler.Load(); hp != nil {
+				// QUM-634: emit the stashed trigger BEFORE the init frame so the TUI
+				// renders the auto-continue marker before the assistant response.
+				if pendingTrigger != nil {
+					(*hp)(pendingTrigger)
+				}
 				(*hp)(msg)
 			}
 		}
