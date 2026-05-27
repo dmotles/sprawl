@@ -1254,6 +1254,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Reason:     msg.Reason,
 			NextAction: msg.NextAction,
 		}
+		// QUM-602: the banner is appended unconditionally on every
+		// BackendFaultMsg — it is keyed off the fault transition/message
+		// arrival, NOT a latched boolean. This intentionally preserves the
+		// re-fire when a repeated fault occurs on the same agent.
 		m.rootVP().AppendStatus(fmt.Sprintf("backend fault on %s: %s — %s", msg.Agent, msg.Class, msg.NextAction))
 		m.rebuildTree()
 		return m, nil

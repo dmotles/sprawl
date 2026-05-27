@@ -5,6 +5,7 @@ package supervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -79,6 +80,122 @@ func saveRecoverAgent(t *testing.T, root, name, status, parent string) *state.Ag
 // every Ensure+StartResume path goes through it.
 func installStarter(r *Real, st RuntimeStarter) {
 	r.runtimeStarter = st
+}
+
+// writeRawV0RecoverAgent writes a genuine schema_version-0 agent fixture
+// (no schema_version key — SchemaVersion=0 is omitempty) directly to disk,
+// bypassing SaveAgent (which would stamp v1). It also creates the worktree so
+// the resume-eligibility worktree-exists check is not the reason an agent is
+// skipped. Used to exercise migrate-on-load through RecoverAgents.
+func writeRawV0RecoverAgent(t *testing.T, root, name, status, parent string) {
+	t.Helper()
+	wt := makeWorktreeDir(t, root, name)
+	ag := &state.AgentState{
+		Name:      name,
+		Type:      "engineer",
+		Family:    "engineering",
+		Parent:    parent,
+		Branch:    "dmotles/" + name,
+		Worktree:  wt,
+		Status:    status,
+		CreatedAt: "2026-05-19T00:00:00Z",
+		SessionID: "sess-" + name,
+		TreePath:  parent + "/" + name,
+		// SchemaVersion intentionally 0 (omitempty) → genuine v0 fixture.
+	}
+	data, err := json.MarshalIndent(ag, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal v0 fixture: %v", err)
+	}
+	if err := os.MkdirAll(state.AgentsDir(root), 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	path := filepath.Join(state.AgentsDir(root), name+".json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write v0 fixture: %v", err)
+	}
+}
+
+// TestRealRecoverAgents_CrashSurvivorActiveResumes (QUM-625 Q2 AC #1): an agent
+// left as disk Status="active" by an UNCLEAN exit (no Shutdown→suspend) — a
+// crash survivor — must STILL auto-resume. The liveness filter maps "active"→
+// Running, which is in the resume accept-set {Suspended, Running}.
+func TestRealRecoverAgents_CrashSurvivorActiveResumes(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-shared")}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "crashy", state.StatusActive, "weave")
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if failed != 0 || len(errs) != 0 {
+		t.Fatalf("unexpected failures: failed=%d errs=%v", failed, errs)
+	}
+	if resumed != 1 || len(starter.specs) != 1 || starter.specs[0].Name != "crashy" {
+		t.Fatalf("crash survivor (Status=active) not resumed: resumed=%d specs=%+v", resumed, starter.specs)
+	}
+}
+
+// TestRealRecoverAgents_CompletedAgentNotResumed (QUM-625 Q2 AC #2): an agent
+// that reported complete (LastReportState="complete") must NOT be auto-resumed,
+// even though its liveness Status ("active"/"suspended") is otherwise eligible.
+// The done-exclusion lives on the OUTCOME axis now, not the Status string.
+func TestRealRecoverAgents_CompletedAgentNotResumed(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-shared")}
+	installStarter(r, starter)
+
+	wt := makeWorktreeDir(t, tmpDir, "donezo")
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "donezo", Type: "engineer", Family: "engineering", Parent: "weave",
+		Branch: "dmotles/donezo", Worktree: wt, Status: state.StatusActive,
+		CreatedAt: "2026-05-19T00:00:00Z", SessionID: "sess-donezo", TreePath: "weave/donezo",
+		LastReportState: "complete",
+	})
+
+	resumed, _, _ := r.RecoverAgents(context.Background())
+	if resumed != 0 || len(starter.specs) != 0 {
+		t.Fatalf("completed agent (LastReportState=complete) must NOT resume: resumed=%d specs=%+v", resumed, starter.specs)
+	}
+}
+
+// TestRealRecoverAgents_LegacyV0DoneNotResumedAndIdempotent (QUM-625, weave's
+// requested pair): a legacy v0 agent with Status="done" must, after
+// migrate-on-load (done→Suspended + LastReportState=complete because SessionID
+// is set), (1) NOT be auto-resumed (outcome-axis exclusion), and (2) the
+// migration must be idempotent (re-load is a no-op).
+func TestRealRecoverAgents_LegacyV0DoneNotResumedAndIdempotent(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-shared")}
+	installStarter(r, starter)
+
+	writeRawV0RecoverAgent(t, tmpDir, "legacydone", state.StatusDone, "weave")
+
+	// (1) not auto-resumed — RecoverAgents loads (migrates in mem) and skips it.
+	resumed, _, _ := r.RecoverAgents(context.Background())
+	if resumed != 0 || len(starter.specs) != 0 {
+		t.Fatalf("legacy v0 done agent must NOT resume: resumed=%d specs=%+v", resumed, starter.specs)
+	}
+
+	// Verify the migration mapping + idempotence directly.
+	first, err := state.LoadAgent(tmpDir, "legacydone")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if first.Status != state.StatusSuspended || first.LastReportState != "complete" || first.SchemaVersion != state.CurrentSchemaVersion {
+		t.Fatalf("v0 done migration: Status=%q LastReportState=%q SchemaVersion=%d; want suspended/complete/%d",
+			first.Status, first.LastReportState, first.SchemaVersion, state.CurrentSchemaVersion)
+	}
+	// Idempotent: a second load yields an identical result (no further drift).
+	second, err := state.LoadAgent(tmpDir, "legacydone")
+	if err != nil {
+		t.Fatalf("LoadAgent (2nd): %v", err)
+	}
+	if second.Status != first.Status || second.LastReportState != first.LastReportState || second.SchemaVersion != first.SchemaVersion {
+		t.Fatalf("migration not idempotent: first={%q,%q,%d} second={%q,%q,%d}",
+			first.Status, first.LastReportState, first.SchemaVersion,
+			second.Status, second.LastReportState, second.SchemaVersion)
+	}
 }
 
 func TestRealRecoverAgents_EmptyDirReturnsZero(t *testing.T) {

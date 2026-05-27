@@ -216,6 +216,13 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 			// downstream callers can detect it via errors.Is. See QUM-581.
 			if ctx.Err() == nil && turnCtx.Err() == context.DeadlineExceeded {
 				l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: fmt.Errorf("turn deadline exceeded after %s: %w", l.cfg.TurnTimeout, turnCtx.Err())})
+				// QUM-618: best-effort bounded Interrupt to wind the SDK
+				// down politely after a per-turn deadline. Session.Interrupt
+				// is already internally bounded; use a bounded ctx so a
+				// wedged wire send can't block this teardown path.
+				ictx, icancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = l.cfg.Session.Interrupt(ictx)
+				icancel()
 			}
 			// The backend's readTurn is also wired to ctx and will close
 			// `events`; let the goroutine exit here without further bookkeeping.

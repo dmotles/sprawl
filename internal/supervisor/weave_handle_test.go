@@ -13,6 +13,7 @@ import (
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // resultEmittingSession wraps a fakeBackendSession so its StartTurn emits a
@@ -188,7 +189,9 @@ func TestWeaveRuntimeHandle_WakeForDelivery_TerminalEventIsCompleted_NotInterrup
 	// runtime + InterruptDelivery) is exercised.
 	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
-		if rt.State() == runtimepkg.StateIdle {
+		// Strict 1:1 with the pre-M5 StateIdle wait: idle == Running with no
+		// autonomous turn in flight (not mid-turn Running·AutonomousTurn).
+		if rt.State() == (liveness.State{Liveness: liveness.Running}) {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)

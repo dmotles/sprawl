@@ -21,6 +21,7 @@ import (
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // isExitError reports whether err wraps an *exec.ExitError. During intentional
@@ -122,10 +123,20 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 		Session:       session,
 		InitialPrompt: prep.agentState.Prompt,
 		Capabilities:  caps,
-		// Defends against wedged-SDK hangs (QUM-578/QUM-581). 30m is long
-		// enough for long autonomous turns but bounded so an SDK that opens
-		// system:init and never closes doesn't permanently freeze the agent.
-		TurnTimeout:          30 * time.Minute,
+		// TurnTimeout=0 DISABLES the wall-clock per-turn cap (QUM-618 verdict).
+		// The 30-min cap (QUM-578/QUM-581) was REMOVED because it false-
+		// guillotined healthy long autonomous turns (the finn M4 incident:
+		// a legitimate 30-min sub-agent turn was cut 3s before its deadline,
+		// pinning the backend currentTurn and wedging the agent). The real
+		// no-progress guard is the D1 frame-based hang watchdog
+		// (defaultHangTimeout=10m, gated on currentTurn != nil per QUM-599) —
+		// it catches a wedged-open SDK stream that stops emitting frames,
+		// which is the actual failure mode a wall-clock cap cannot distinguish
+		// from healthy long work. Do NOT re-add a wall-clock cap here. Note:
+		// 0 is a DISABLED sentinel — turnloop.go guards `TurnTimeout > 0`
+		// before wrapping with context.WithTimeout (passing 0 there would
+		// yield an already-expired ctx and instantly wedge every turn).
+		TurnTimeout:          0,
 		PostTurnSweep:        coord.PostTurnSweep,
 		OnQueueItemDelivered: coord.OnQueueItemDelivered,
 	})
@@ -301,27 +312,42 @@ func runActivitySubscriber(bus *runtimepkg.EventBus, obs interface {
 }
 
 // runFaultSubscriber subscribes to bus and forwards EventBackendFaulted
-// events to emitter. The returned stop function unsubscribes (closing the
-// channel) and waits for the goroutine to drain. A nil emitter is
-// tolerated — the subscriber still drains the bus so the channel doesn't
-// back up. QUM-602.
+// events to emitter (terminal fault banner). It ALSO forwards per-turn
+// deadline expiries — EventTurnFailed wrapping context.DeadlineExceeded —
+// under the distinct "TurnDeadlineExceeded" class so the TUI can show a
+// recoverable banner WITHOUT driving the terminal handler (QUM-618). The
+// returned stop function unsubscribes (closing the channel) and waits for the
+// goroutine to drain. A nil emitter is tolerated — the subscriber still drains
+// the bus so the channel doesn't back up. QUM-602.
 func runFaultSubscriber(bus *runtimepkg.EventBus, agentName string, emitter func(agent, class, reason, nextAction string), name string) func() {
 	ch, unsub := bus.SubscribeNamed(name, 4)
 	doneCh := make(chan struct{})
 	go func() {
 		defer close(doneCh)
 		for ev := range ch {
-			if ev.Type != runtimepkg.EventBackendFaulted {
-				continue
-			}
 			if emitter == nil {
 				continue
 			}
-			reason := ""
-			if ev.Error != nil {
-				reason = ev.Error.Error()
+			switch {
+			case ev.Type == runtimepkg.EventBackendFaulted:
+				reason := ""
+				if ev.Error != nil {
+					reason = ev.Error.Error()
+				}
+				emitter(agentName, ev.FaultClass, reason, ev.FaultNextAction)
+			case ev.Type == runtimepkg.EventTurnFailed && errors.Is(ev.Error, context.DeadlineExceeded):
+				// QUM-618: a per-turn deadline is recoverable, NOT a terminal
+				// fault — the agent remains live. Raise a DISTINCT banner via
+				// the same emitter, but do NOT trip any terminal rt.cancel
+				// path (only EventBackendFaulted drives the terminal handler in
+				// unified.go New()).
+				reason := ""
+				if ev.Error != nil {
+					reason = ev.Error.Error()
+				}
+				emitter(agentName, "TurnDeadlineExceeded", reason,
+					"turn exceeded the per-turn time cap; work was interrupted but the agent remains live — re-send or it will resume on next wake")
 			}
-			emitter(agentName, ev.FaultClass, reason, ev.FaultNextAction)
 		}
 	}()
 	var once sync.Once
@@ -372,7 +398,7 @@ func (h *unifiedHandle) StopWaitTimedOut() bool {
 // flipping each to in-progress as it is enqueued. Idempotent across concurrent
 // callers via tasksMu and EntryID-based dedup in the runtime queue.
 func (h *unifiedHandle) feedTasks() {
-	if h.rt.State() == runtimepkg.StateStopped {
+	if h.rt.State().Liveness == liveness.Stopped {
 		return
 	}
 	h.tasksMu.Lock()

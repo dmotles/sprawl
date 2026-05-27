@@ -29,7 +29,7 @@ func TestUnifiedRuntime_StopWithOptions_SkipPoliteInterrupt(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if !waitForState(t, rt, StateIdle, 1*time.Second) {
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
 		t.Fatalf("not idle before Stop; state=%v", rt.State())
 	}
 
@@ -43,8 +43,8 @@ func TestUnifiedRuntime_StopWithOptions_SkipPoliteInterrupt(t *testing.T) {
 	if got := mock.interruptCount(); got != 0 {
 		t.Errorf("Session.Interrupt count = %d, want 0 (QUM-600: SkipPoliteInterrupt must skip Stop's Interrupt forward)", got)
 	}
-	if got := rt.State(); got != StateStopped {
-		t.Errorf("State after StopWithOptions = %v, want StateStopped", got)
+	if got := rt.State(); got != liveStopped {
+		t.Errorf("State after StopWithOptions = %v, want liveStopped", got)
 	}
 }
 
@@ -59,7 +59,7 @@ func TestUnifiedRuntime_StopWithOptions_DefaultCallsPoliteInterrupt(t *testing.T
 		t.Fatalf("Start: %v", err)
 	}
 
-	if !waitForState(t, rt, StateIdle, 1*time.Second) {
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
 		t.Fatalf("not idle before Stop; state=%v", rt.State())
 	}
 
@@ -83,7 +83,7 @@ func TestUnifiedRuntime_Stop_DelegatesToStopWithOptions(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if !waitForState(t, rt, StateIdle, 1*time.Second) {
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
 		t.Fatalf("not idle before Stop; state=%v", rt.State())
 	}
 

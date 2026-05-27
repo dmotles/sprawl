@@ -7,44 +7,13 @@ package runtime
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
+	livenesspkg "github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
-
-// RuntimeState is the externally-visible lifecycle state of a UnifiedRuntime.
-type RuntimeState int
-
-const (
-	// StateIdle: runtime is alive but no turn is in flight.
-	StateIdle RuntimeState = iota
-	// StateTurnActive: the turn loop is currently executing a turn.
-	StateTurnActive
-	// StateInterrupting: an interrupt has been requested for the active turn
-	// and we are waiting for it to drain.
-	StateInterrupting
-	// StateStopped: Stop() has completed; the runtime is no longer usable.
-	StateStopped
-)
-
-// String returns a short diagnostic name for the state.
-func (s RuntimeState) String() string {
-	switch s {
-	case StateIdle:
-		return "idle"
-	case StateTurnActive:
-		return "turn-active"
-	case StateInterrupting:
-		return "interrupting"
-	case StateStopped:
-		return "stopped"
-	default:
-		return fmt.Sprintf("unknown(%d)", int(s))
-	}
-}
 
 // RuntimeConfig is the immutable construction-time configuration.
 type RuntimeConfig struct {
@@ -88,7 +57,7 @@ type UnifiedRuntime struct {
 	eventBus *EventBus
 
 	mu          sync.RWMutex
-	state       RuntimeState
+	liveness    livenesspkg.State
 	started     bool
 	stopped     bool
 	turnRunning bool
@@ -108,14 +77,15 @@ type UnifiedRuntime struct {
 	closeDoneOnce sync.Once
 }
 
-// New constructs a UnifiedRuntime in StateIdle with a fresh queue and event
-// bus. No goroutines are started until Start is called.
+// New constructs a UnifiedRuntime in the idle liveness state (Running,
+// non-autonomous) with a fresh queue and event bus. No goroutines are started
+// until Start is called.
 func New(cfg RuntimeConfig) *UnifiedRuntime {
 	rt := &UnifiedRuntime{
 		cfg:      cfg,
 		queue:    NewMessageQueue(),
 		eventBus: NewEventBus(),
-		state:    StateIdle,
+		liveness: livenesspkg.State{Liveness: livenesspkg.Running},
 		done:     make(chan struct{}),
 	}
 	// QUM-602: install the backend-fault handler on the session. We use a
@@ -170,7 +140,7 @@ func ClassifyBackendFault(err error) (class, nextAction string) {
 }
 
 // stateTrackingSession wraps a SessionHandle so the runtime can update its
-// internal RuntimeState synchronously from inside the TurnLoop goroutine.
+// internal liveness state synchronously from inside the TurnLoop goroutine.
 type stateTrackingSession struct {
 	inner SessionHandle
 	rt    *UnifiedRuntime
@@ -181,8 +151,8 @@ func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spe
 	// goroutine that polls State() after the StartTurn call returns sees
 	// the updated state.
 	s.rt.mu.Lock()
-	if s.rt.state == StateIdle {
-		s.rt.state = StateTurnActive
+	if s.rt.liveness.Liveness == livenesspkg.Running && !s.rt.liveness.InAutonomousTurn {
+		s.rt.liveness.InAutonomousTurn = true
 	}
 	s.rt.turnRunning = true
 	pending := s.rt.pendingInterrupt
@@ -194,8 +164,9 @@ func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spe
 		// Turn failed to start; revert state.
 		s.rt.mu.Lock()
 		s.rt.turnRunning = false
-		if s.rt.state == StateTurnActive || s.rt.state == StateInterrupting {
-			s.rt.state = StateIdle
+		if (s.rt.liveness.Liveness == livenesspkg.Running && s.rt.liveness.InAutonomousTurn) ||
+			s.rt.liveness.Liveness == livenesspkg.Stopping {
+			s.rt.liveness = livenesspkg.State{Liveness: livenesspkg.Running}
 		}
 		s.rt.mu.Unlock()
 		return nil, err
@@ -223,6 +194,20 @@ func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spe
 	out := make(chan *protocol.Message)
 	go func() {
 		defer close(out)
+		// QUM-618: reset turnRunning/state in a defer so BOTH exit paths —
+		// the normal "channel closed" path and the early ctx.Done() return
+		// (per-turn deadline / parent cancel) — flip the runtime back to Idle.
+		// Previously the ctx.Done() early-return skipped the reset, leaking
+		// turnRunning=true and wedging the queue drain. Defers run LIFO, so
+		// this reset runs before close(out) — that ordering is fine.
+		defer func() {
+			s.rt.mu.Lock()
+			s.rt.turnRunning = false
+			if s.rt.liveness.Liveness != livenesspkg.Stopped {
+				s.rt.liveness = livenesspkg.State{Liveness: livenesspkg.Running}
+			}
+			s.rt.mu.Unlock()
+		}()
 		for msg := range ch {
 			select {
 			case out <- msg:
@@ -233,13 +218,6 @@ func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spe
 				return
 			}
 		}
-		// Channel closed: turn ended (success, failure, or interrupt).
-		s.rt.mu.Lock()
-		s.rt.turnRunning = false
-		if s.rt.state != StateStopped {
-			s.rt.state = StateIdle
-		}
-		s.rt.mu.Unlock()
 	}()
 	return out, nil
 }
@@ -343,7 +321,7 @@ func (rt *UnifiedRuntime) StopWithOptions(ctx context.Context, opts StopOptions)
 	rt.mu.Lock()
 	if !rt.started {
 		rt.stopped = true
-		rt.state = StateStopped
+		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopped}
 		rt.closeDoneOnce.Do(func() { close(rt.done) })
 		rt.mu.Unlock()
 		return nil
@@ -383,38 +361,37 @@ func (rt *UnifiedRuntime) StopWithOptions(ctx context.Context, opts StopOptions)
 	}
 
 	rt.mu.Lock()
-	rt.state = StateStopped
+	rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopped}
 	rt.mu.Unlock()
 	return nil
 }
 
-// State returns the stored runtime state. Transitions are driven from the
-// wrapped Session's StartTurn / channel-close path. Callers that need to
+// State returns the stored runtime liveness state. Transitions are driven from
+// the wrapped Session's StartTurn / channel-close path. Callers that need to
 // observe a turn starting after Enqueue should subscribe to the EventBus
 // (EventTurnStarted) rather than poll State().
-func (rt *UnifiedRuntime) State() RuntimeState {
+func (rt *UnifiedRuntime) State() livenesspkg.State {
 	rt.mu.RLock()
-	s := rt.state
+	s := rt.liveness
 	rt.mu.RUnlock()
 	return s
 }
 
 // Interrupt always forwards to the underlying Session.Interrupt (Backends
 // must be idempotent). When a turn is in flight it additionally drives
-// runtime-state bookkeeping (TurnActive → Interrupting) and routes through
-// TurnLoop.Interrupt. No-op when stopped.
+// runtime-state bookkeeping (Running·autonomous-turn → Stopping) and routes
+// through TurnLoop.Interrupt. No-op when stopped.
 func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	rt.mu.Lock()
-	if rt.state == StateStopped {
+	if rt.liveness.Liveness == livenesspkg.Stopped {
 		rt.mu.Unlock()
 		return nil
 	}
 	sess := rt.cfg.Session
 	loop := rt.turnLoop
 	turnRunning := rt.turnRunning
-	state := rt.state
-	if state == StateTurnActive {
-		rt.state = StateInterrupting
+	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InAutonomousTurn {
+		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	} else if !turnRunning {
 		// Queue items may be pending but the wrapper hasn't entered StartTurn yet.
 		// Arm a pending-interrupt flag so the next StartTurn classifies its
@@ -475,8 +452,8 @@ func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
 	sess := rt.cfg.Session
 	loop := rt.turnLoop
 	turnRunning := rt.turnRunning
-	if rt.state == StateTurnActive {
-		rt.state = StateInterrupting
+	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InAutonomousTurn {
+		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	}
 	rt.mu.Unlock()
 

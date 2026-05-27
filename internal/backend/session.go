@@ -206,6 +206,21 @@ type turnFrame struct {
 	done       chan struct{} // closed by reader when the frame ends
 	lastErr    error
 	autonomous bool
+	// ctx is the per-turn context threaded in by StartTurn (QUM-618). nil for
+	// autonomous frames. When this ctx is cancelled (per-turn deadline or
+	// parent cancel) the watchTurnCtx goroutine clears currentTurn so the next
+	// StartTurn is accepted instead of returning ErrTurnInProgress.
+	ctx context.Context
+	// closeOnce makes close(done) idempotent across the watcher, the
+	// result-frame block, and the orphan-teardown defer — preventing a
+	// double-close panic.
+	closeOnce sync.Once
+}
+
+// finish closes tf.done exactly once. It does NOT touch tf.subscriber — the
+// reader exclusively owns the subscriber channel's lifetime.
+func (tf *turnFrame) finish() {
+	tf.closeOnce.Do(func() { close(tf.done) })
 }
 
 type session struct {
@@ -433,6 +448,7 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 		startedAt:  time.Now(),
 		subscriber: make(chan *protocol.Message, 100),
 		done:       make(chan struct{}),
+		ctx:        ctx,
 	}
 	s.currentTurn = tf
 	// QUM-599: re-seed the watchdog baseline so the first tick of this
@@ -454,11 +470,36 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 		s.currentTurn = nil
 		s.mu.Unlock()
 		close(tf.subscriber)
-		close(tf.done)
+		tf.finish()
 		return nil, err
 	}
 
+	// Spawn the per-turn ctx watcher AFTER Send success so the send-error fast
+	// path above (which already set currentTurn=nil + finish()) never leaves an
+	// orphan watcher. Only sprawl-initiated turns carry a non-nil ctx.
+	if ctx != nil {
+		go s.watchTurnCtx(tf)
+	}
+
 	return tf.subscriber, nil
+}
+
+// watchTurnCtx clears currentTurn deterministically when the per-turn ctx is
+// cancelled (deadline or parent cancel) so the NEXT StartTurn is accepted
+// instead of returning ErrTurnInProgress (QUM-618). Exits without side effects
+// on clean completion (tf.done closed by the result frame / reader teardown).
+func (s *session) watchTurnCtx(tf *turnFrame) {
+	select {
+	case <-tf.done:
+		return
+	case <-tf.ctx.Done():
+		s.mu.Lock()
+		if s.currentTurn == tf {
+			s.currentTurn = nil
+		}
+		s.mu.Unlock()
+		tf.finish() // does NOT close tf.subscriber — reader owns it
+	}
 }
 
 // runReader is the persistent stream-reader loop. It services transport.Recv
@@ -495,7 +536,7 @@ func (s *session) runReader(ctx context.Context) {
 			if cur.subscriber != nil {
 				close(cur.subscriber)
 			}
-			close(cur.done)
+			cur.finish()
 			s.currentTurn = nil
 		}
 		s.mu.Unlock()
@@ -587,11 +628,27 @@ func (s *session) runReader(ctx context.Context) {
 			// fault the session with ErrSubscriberWedged so StartTurn
 			// waiters unwind cleanly. See
 			// docs/research/permission-hang-forensic-2026-05-19.md.
+			//
+			// QUM-618: also race the per-turn ctx. When the turn was abandoned
+			// (per-turn deadline / parent cancel), the watcher has already
+			// cleared currentTurn and the consumer is gone by contract; drop
+			// the frame WITHOUT faulting as SubscriberWedged. A nil turnDone
+			// channel blocks forever in select — correct legacy behaviour for
+			// autonomous frames.
+			var turnDone <-chan struct{}
+			if tf.ctx != nil {
+				turnDone = tf.ctx.Done()
+			}
 			timer := time.NewTimer(sendDeadline)
 			select {
 			case tf.subscriber <- msg:
 				timer.Stop()
-			case <-ctx.Done():
+			case <-turnDone:
+				// QUM-618: per-turn ctx cancelled (deadline/abort). The consumer
+				// is gone by contract; drop the frame, do NOT fault as
+				// SubscriberWedged.
+				timer.Stop()
+			case <-ctx.Done(): // readerCtx — session shutdown
 				timer.Stop()
 				return
 			case <-timer.C:
@@ -611,7 +668,7 @@ func (s *session) runReader(ctx context.Context) {
 				if cur.subscriber != nil {
 					close(cur.subscriber)
 				}
-				close(cur.done)
+				cur.finish()
 			}
 		}
 	}

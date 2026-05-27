@@ -85,9 +85,12 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 		return nil, fmt.Errorf("cannot merge %q: you are not its parent (parent is %q)", agentName, agentState.Parent)
 	}
 
-	// Precondition 4: Agent status is "active" or "done"
-	if agentState.Status != "active" && agentState.Status != "done" {
-		return nil, fmt.Errorf("agent %q cannot be merged (status: %q). Agent must be active or done", agentName, agentState.Status)
+	// Precondition 4: Agent is mergeable — alive (Status=="active") OR has
+	// reported completion (LastReportState=="complete"). QUM-625 Q1: the old
+	// allow-set {active, done} is reproduced under the new axes — "done" is no
+	// longer a Status value; completion lives on the outcome axis.
+	if agentState.Status != state.StatusActive && agentState.LastReportState != ReportStateComplete {
+		return nil, fmt.Errorf("agent %q cannot be merged (status: %q). Agent must be active or have reported complete", agentName, agentState.Status)
 	}
 
 	// Precondition 5: No active children

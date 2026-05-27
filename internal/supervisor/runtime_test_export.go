@@ -15,6 +15,7 @@ import (
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // testExportUnifiedHandle is a minimal RuntimeHandle that exposes a UnifiedRuntime
@@ -51,5 +52,5 @@ func AttachUnifiedRuntimeForTest(tb testing.TB, rt *AgentRuntime, urt *runtimepk
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	rt.handle = &testExportUnifiedHandle{rt: urt}
-	rt.snapshot.Lifecycle = RuntimeLifecycleStarted
+	rt.snapshot.Liveness = liveness.Running
 }

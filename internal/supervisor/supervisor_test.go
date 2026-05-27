@@ -13,6 +13,7 @@ import (
 	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 func newTestSupervisor(t *testing.T) (*Real, string) {
@@ -161,10 +162,10 @@ func TestStatus_ProcessAliveTriStateComesFromRuntimeKnowledge(t *testing.T) {
 	}
 	close(stoppedSession.doneCh)
 	deadline := time.After(2 * time.Second)
-	for stoppedActiveRT.Snapshot().Lifecycle != RuntimeLifecycleStopped {
+	for stoppedActiveRT.Snapshot().Liveness != liveness.Stopped {
 		select {
 		case <-deadline:
-			t.Fatalf("stopped-active runtime lifecycle = %q, want %q", stoppedActiveRT.Snapshot().Lifecycle, RuntimeLifecycleStopped)
+			t.Fatalf("stopped-active runtime lifecycle = %q, want %q", stoppedActiveRT.Snapshot().Liveness, liveness.Stopped)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -360,8 +361,13 @@ func TestReportStatus_ExplicitAgentName(t *testing.T) {
 		t.Fatalf("ReportStatus: %v", err)
 	}
 	got, _ := state.LoadAgent(tmpDir, "ratz")
-	if got.Status != "done" {
-		t.Errorf("Status = %q, want done", got.Status)
+	// QUM-625 (slice M4): report.go writes the outcome axis (LastReportState),
+	// not the liveness Status axis. A "complete" report leaves Status unchanged.
+	if got.LastReportState != "complete" {
+		t.Errorf("LastReportState = %q, want complete", got.LastReportState)
+	}
+	if got.Status != "active" {
+		t.Errorf("Status = %q, want active (unchanged by report)", got.Status)
 	}
 }
 
@@ -827,8 +833,8 @@ func TestRegisterRootRuntime_RegistersInRegistryAsStarted(t *testing.T) {
 	if got != rt {
 		t.Error("registry Get returned a different runtime pointer")
 	}
-	if got.Snapshot().Lifecycle != RuntimeLifecycleStarted {
-		t.Errorf("Lifecycle = %q, want %q", got.Snapshot().Lifecycle, RuntimeLifecycleStarted)
+	if got.Snapshot().Liveness != liveness.Running {
+		t.Errorf("Lifecycle = %q, want %q", got.Snapshot().Liveness, liveness.Running)
 	}
 }
 

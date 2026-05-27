@@ -177,7 +177,14 @@ func (m TreeModel) View() string {
 		if node.LastReportMessage != "" {
 			line = fmt.Sprintf("%s%s %s %s%s — %s", indent, dot, icon, node.Name, costTag, node.LastReportMessage)
 		} else {
-			line = fmt.Sprintf("%s%s %s %s%s (%s)", indent, dot, icon, node.Name, costTag, node.Status)
+			// R4 (QUM-623): unknown/nil liveness renders sanely. Empty
+			// status would otherwise show a bare "()"; substitute the
+			// "unknown" placeholder. Non-empty statuses render verbatim.
+			status := node.Status
+			if status == "" {
+				status = "unknown"
+			}
+			line = fmt.Sprintf("%s%s %s %s%s (%s)", indent, dot, icon, node.Name, costTag, status)
 		}
 		if node.Unread > 0 {
 			line += fmt.Sprintf(" (%d)", node.Unread)

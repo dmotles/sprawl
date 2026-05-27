@@ -13,6 +13,7 @@ import (
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // ErrRecoverNotNeeded is returned by AgentRuntime.Recover when the live
@@ -41,16 +42,24 @@ func (r *AgentRuntime) UnifiedRuntime() *runtimepkg.UnifiedRuntime {
 	return nil
 }
 
-// RuntimeLifecycle describes the in-memory lifecycle of a tracked child runtime.
-type RuntimeLifecycle string
-
-const (
-	RuntimeLifecycleRegistered RuntimeLifecycle = "registered"
-	RuntimeLifecycleStarted    RuntimeLifecycle = "started"
-	RuntimeLifecycleStopped    RuntimeLifecycle = "stopped"
-	RuntimeLifecycleKilled     RuntimeLifecycle = "killed"
-	RuntimeLifecycleRetired    RuntimeLifecycle = "retired"
-)
+// livenessToLifecycleString renders the stored base liveness as the legacy
+// lifecycle token consumed by liveness.From. Only the five base/resting
+// livenesses reachable from a stored snapshot are produced; everything else
+// (including the Unstarted zero value) maps to "registered".
+func livenessToLifecycleString(l liveness.AgentLiveness) string {
+	switch l {
+	case liveness.Running:
+		return "started"
+	case liveness.Stopped:
+		return "stopped"
+	case liveness.Killed:
+		return "killed"
+	case liveness.Retired:
+		return "retired"
+	default:
+		return "registered"
+	}
+}
 
 // RuntimeEventKind labels the kind of runtime snapshot change that occurred.
 type RuntimeEventKind string
@@ -139,7 +148,7 @@ type RuntimeSnapshot struct {
 	SessionID      string
 	TreePath       string
 	CreatedAt      string
-	Lifecycle      RuntimeLifecycle
+	Liveness       liveness.AgentLiveness
 	QueueDepth     int
 	WakeCount      int
 	InterruptCount int
@@ -198,9 +207,6 @@ func NewAgentRuntime(cfg AgentRuntimeConfig) *AgentRuntime {
 	if cfg.Agent != nil {
 		rt.snapshot = snapshotFromAgentState(cfg.Agent)
 	}
-	if rt.snapshot.Lifecycle == "" {
-		rt.snapshot.Lifecycle = RuntimeLifecycleRegistered
-	}
 	return rt
 }
 
@@ -227,11 +233,11 @@ func snapshotFromAgentState(agentState *state.AgentState) RuntimeSnapshot {
 
 	switch agentState.Status {
 	case "killed":
-		snap.Lifecycle = RuntimeLifecycleKilled
+		snap.Liveness = liveness.Killed
 	case "retired":
-		snap.Lifecycle = RuntimeLifecycleRetired
+		snap.Liveness = liveness.Retired
 	default:
-		snap.Lifecycle = RuntimeLifecycleRegistered
+		snap.Liveness = liveness.Unstarted
 	}
 	return snap
 }
@@ -257,6 +263,22 @@ func (r *AgentRuntime) InAutonomousTurn() bool {
 		return false
 	}
 	return probe.InAutonomousTurn()
+}
+
+// IsTerminallyFaulted reports whether the live RuntimeHandle's backend session
+// has been terminally faulted (terminalErr set). Returns false when the runtime
+// is not started, has been stopped, or the handle does not implement the
+// optional IsTerminallyFaulted() bool method. (QUM-622)
+func (r *AgentRuntime) IsTerminallyFaulted() bool {
+	h := r.currentHandle()
+	if h == nil {
+		return false
+	}
+	probe, ok := h.(terminalFaultProbe)
+	if !ok {
+		return false
+	}
+	return probe.IsTerminallyFaulted()
 }
 
 // Snapshot returns the current runtime snapshot.
@@ -319,7 +341,7 @@ func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) error {
 
 	r.mu.Lock()
 	r.handle = handle
-	r.snapshot.Lifecycle = RuntimeLifecycleStarted
+	r.snapshot.Liveness = liveness.Running
 	r.snapshot.Capabilities = handle.Capabilities()
 	if sessionID := handle.SessionID(); sessionID != "" {
 		r.snapshot.SessionID = sessionID
@@ -380,7 +402,7 @@ func (r *AgentRuntime) AttachHandle(handle RuntimeHandle) {
 	}
 	r.mu.Lock()
 	r.handle = handle
-	r.snapshot.Lifecycle = RuntimeLifecycleStarted
+	r.snapshot.Liveness = liveness.Running
 	r.snapshot.Capabilities = handle.Capabilities()
 	if sessionID := handle.SessionID(); sessionID != "" {
 		r.snapshot.SessionID = sessionID
@@ -494,8 +516,12 @@ func (r *AgentRuntime) StopAbandon(ctx context.Context) error {
 // Behavior:
 //   - If another Recover is already in progress, returns a "recovery already
 //     in progress" error immediately (TryLock fail-fast).
-//   - If the runtime is not in lifecycle Started, returns a "cannot recover"
-//     error (no handle to swap).
+//   - The precondition is expressed through the M0 liveness projection
+//     (QUM-624/QUM-625): the request is accepted only when the snapshot
+//     projects to liveness Faulted (live or durable torn-down fault) or
+//     ResumeFailed (T19 manual-retry). A deliberately-Stopped agent is NOT a
+//     legal recover source (invariant 3, enforced in M4 now that Faulted is
+//     durable). Any other projected liveness returns a "cannot recover" error.
 //   - If the live handle's session reports !IsTerminallyFaulted(), returns
 //     ErrRecoverNotNeeded so callers can surface a "session healthy" ack.
 //   - Otherwise: builds a RuntimeStartSpec from the current snapshot, calls
@@ -515,7 +541,8 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	r.mu.RLock()
 	starter := r.starter
 	handle := r.handle
-	lifecycle := r.snapshot.Lifecycle
+	lifecycle := r.snapshot.Liveness
+	diskStatus := r.snapshot.Status
 	agentName := r.snapshot.Name
 	sprawlRoot := r.sprawlRoot
 	spec := RuntimeStartSpec{
@@ -547,14 +574,53 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 		r.SyncAgentState(cur)
 	}
 
-	// QUM-606 R2 follow-up: a faulted UnifiedRuntime cancels its runCtx
-	// from the terminal-error handler, so watchHandleExit transitions the
-	// snapshot Lifecycle from Started → Stopped and the live handle is
-	// detached. Recover must accept Stopped here — that IS the visible
-	// state of a freshly faulted session. Lifecycles outside {Started,
-	// Stopped} (Registered / Killed / Retired) remain hard rejects.
-	if lifecycle != RuntimeLifecycleStarted && lifecycle != RuntimeLifecycleStopped {
-		return fmt.Errorf("supervisor: agent %q is in lifecycle %q, cannot recover", spec.Name, lifecycle)
+	// QUM-624 (slice M2): the recover precondition is expressed through the
+	// M0 liveness projection rather than a raw Lifecycle literal. Compute the
+	// live-handle terminal-fault bit first — it feeds both the healthy-handle
+	// short-circuit and the projection. Handles that don't expose the probe
+	// are treated as faulted (defensive default; preserves prior behavior).
+	faulted := false
+	if handle != nil {
+		if probe, ok := handle.(terminalFaultProbe); ok {
+			faulted = probe.IsTerminallyFaulted()
+		} else {
+			faulted = true
+		}
+	}
+
+	// Preserve the healthy-live-handle sentinel: a non-nil handle that
+	// reports !IsTerminallyFaulted() is a no-op recover. Only the probe-
+	// reports-healthy case returns ErrRecoverNotNeeded; the no-probe path
+	// falls through (faulted == true) so it still recovers.
+	if handle != nil && !faulted {
+		return ErrRecoverNotNeeded
+	}
+
+	// Project the multi-source snapshot onto a unified liveness. Recover is
+	// accepted iff the agent projects to a recoverable fault state:
+	//   - Faulted: live-handle fault (Started + TerminalErr — the lie window),
+	//     OR a torn-down fault (watchHandleExit stamped durable
+	//     Status="faulted" → projects Faulted regardless of Lifecycle=Stopped).
+	//   - ResumeFailed: T19 manual-retry (disk Status="resume_failed" →
+	//     Lifecycle=Registered + snapshot.Status="resume_failed").
+	// Everything else (Stopped/Running/Killed/Retired/Unstarted/...) is a hard
+	// reject.
+	//
+	// QUM-625 (slice M4): invariant 3 is ENFORCED here. A *deliberately*
+	// Stopped agent now carries durable Status="stopped" (stopWithFunc) and
+	// projects Stopped, so it is no longer a legal recover source. A torn-down
+	// fault carries durable Status="faulted" (watchHandleExit) and projects
+	// Faulted, so it remains recoverable even though Lifecycle=Stopped. This is
+	// why Stopped can safely drop out of the accept-set: the two cases are now
+	// distinguishable by the durable disk Status.
+	st := liveness.From(liveness.Snapshot{
+		Lifecycle:   livenessToLifecycleString(lifecycle),
+		TerminalErr: faulted,
+		DiskStatus:  diskStatus,
+	})
+	if st.Liveness != liveness.Faulted &&
+		st.Liveness != liveness.ResumeFailed {
+		return fmt.Errorf("supervisor: agent %q is in liveness %q, cannot recover", spec.Name, st)
 	}
 	if starter == nil {
 		return fmt.Errorf("supervisor: agent %q has no runtime starter, cannot recover", spec.Name)
@@ -563,20 +629,8 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	// lifecycle == Stopped (post-fault), the handle was already detached
 	// by watchHandleExit, so it is expected to be nil — there is nothing
 	// to tear down.
-	if lifecycle == RuntimeLifecycleStarted && handle == nil {
+	if lifecycle == liveness.Running && handle == nil {
 		return fmt.Errorf("supervisor: agent %q has no live handle, cannot recover", spec.Name)
-	}
-
-	// Probe the live handle for terminal-fault state. Skipped when the
-	// handle is nil (lifecycle == Stopped) — that already proves the
-	// session faulted and was torn down. Handles that don't expose the
-	// probe are treated as faulted (always recover).
-	if handle != nil {
-		if probe, ok := handle.(terminalFaultProbe); ok {
-			if !probe.IsTerminallyFaulted() {
-				return ErrRecoverNotNeeded
-			}
-		}
 	}
 
 	// Detach the watcher BEFORE StopAbandon so the watchHandleExit
@@ -610,7 +664,7 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 		// Recovery failed — the agent has no live handle. Flip lifecycle
 		// to Stopped and emit so subscribers reflect the broken state.
 		r.mu.Lock()
-		r.snapshot.Lifecycle = RuntimeLifecycleStopped
+		r.snapshot.Liveness = liveness.Stopped
 		r.mu.Unlock()
 		r.emit(RuntimeEventStopped)
 		return fmt.Errorf("supervisor: recover Start for %q: %w", spec.Name, err)
@@ -629,7 +683,7 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 		_ = newHandle.StopAbandon(stopCtx)
 		cancel()
 		r.mu.Lock()
-		r.snapshot.Lifecycle = RuntimeLifecycleStopped
+		r.snapshot.Liveness = liveness.Stopped
 		r.mu.Unlock()
 		r.emit(RuntimeEventStopped)
 		return fmt.Errorf("supervisor: recover health probe for %q: %w", spec.Name, probeErr)
@@ -637,12 +691,33 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 
 	r.mu.Lock()
 	r.handle = newHandle
-	r.snapshot.Lifecycle = RuntimeLifecycleStarted
+	r.snapshot.Liveness = liveness.Running
 	r.snapshot.Capabilities = newHandle.Capabilities()
 	if sid := newHandle.SessionID(); sid != "" {
 		r.snapshot.SessionID = sid
 	}
+	// QUM-625 (slice M4): a successful in-place recover clears the durable
+	// resting Status (e.g. "faulted") and projects back to Running. Without
+	// this, disk Status would stay "faulted" (invariant 7 violation): merge
+	// would reject the healthy agent and a clean exit would leave it
+	// non-auto-resumable. Mirror Real.RecoverAgents which writes active on
+	// success.
+	r.snapshot.Status = state.StatusActive
+	recoveredName := r.snapshot.Name
 	r.mu.Unlock()
+
+	// Best-effort durable persist OUTSIDE r.mu so disk Status tracks the
+	// recovered liveness (Running → "active").
+	if recoveredName != "" {
+		if cur, lErr := state.LoadAgent(r.sprawlRoot, recoveredName); lErr != nil {
+			slog.Warn("supervisor: Recover durable status load", "agent", recoveredName, "err", lErr)
+		} else {
+			cur.Status = state.StatusActive
+			if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
+				slog.Warn("supervisor: Recover durable status save", "agent", recoveredName, "err", sErr)
+			}
+		}
+	}
 
 	r.emit(RuntimeEventRecovered)
 
@@ -793,13 +868,41 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 	}
 
 	emitStopped := false
+	var name string
 	r.mu.Lock()
 	r.handle = nil
-	if r.snapshot.Lifecycle == RuntimeLifecycleStarted {
-		r.snapshot.Lifecycle = RuntimeLifecycleStopped
+	if r.snapshot.Liveness == liveness.Running {
+		r.snapshot.Liveness = liveness.Stopped
 		emitStopped = true
 	}
+	// QUM-625 (slice M4): a deliberate Stop is durable + distinguishable from a
+	// fault. Stamp Status=stopped (never faulted) so the projection rests at
+	// Stopped after teardown and the agent is no longer a legal recover source.
+	name = r.snapshot.Name
+	r.snapshot.Status = state.StatusStopped
 	r.mu.Unlock()
+
+	// Best-effort durable persist OUTSIDE r.mu. A terminal-ish disk Status
+	// (killed/retired/retiring) or a completed/faulted resting status must not
+	// be relabeled "stopped" — only an otherwise-live agent's deliberate Stop
+	// becomes a durable Stopped resting state.
+	if name != "" {
+		cur, err := state.LoadAgent(r.sprawlRoot, name)
+		if err != nil {
+			slog.Warn("supervisor: stop durable status load", "agent", name, "err", err)
+		} else {
+			switch cur.Status {
+			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusFaulted:
+				// leave terminal-ish / faulted states as-is
+			default:
+				cur.Status = state.StatusStopped
+				if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
+					slog.Warn("supervisor: stop durable status save", "agent", name, "err", sErr)
+				}
+			}
+		}
+	}
+
 	if emitStopped {
 		r.emit(RuntimeEventStopped)
 	}
@@ -828,14 +931,25 @@ func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 	updated.Capabilities = r.snapshot.Capabilities
 
 	switch {
-	case updated.Lifecycle == RuntimeLifecycleKilled:
-	case updated.Lifecycle == RuntimeLifecycleRetired:
-	case r.snapshot.Lifecycle == RuntimeLifecycleStarted:
-		updated.Lifecycle = RuntimeLifecycleStarted
-	case r.snapshot.Lifecycle == RuntimeLifecycleStopped:
-		updated.Lifecycle = RuntimeLifecycleStopped
+	case updated.Liveness == liveness.Killed:
+	case updated.Liveness == liveness.Retired:
+	// QUM-625 (slice M4) R7: when disk Status is a durable resting/fault state
+	// AND there is no live handle, derive the resting liveness from it
+	// (Unstarted) so liveness.From can decode DiskStatus. Gated on r.handle ==
+	// nil so a live, just-recovered Running runtime (whose disk Status may still
+	// be catching up) is never demoted — a live handle is the source of truth.
+	case r.handle == nil &&
+		(updated.Status == state.StatusFaulted ||
+			updated.Status == state.StatusStopped ||
+			updated.Status == state.StatusSuspended ||
+			updated.Status == state.StatusResumeFailed):
+		updated.Liveness = liveness.Unstarted
+	case r.snapshot.Liveness == liveness.Running:
+		updated.Liveness = liveness.Running
+	case r.snapshot.Liveness == liveness.Stopped:
+		updated.Liveness = liveness.Stopped
 	default:
-		updated.Lifecycle = RuntimeLifecycleRegistered
+		updated.Liveness = liveness.Unstarted
 	}
 
 	r.snapshot = updated
@@ -847,16 +961,65 @@ func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{
 	go func() {
 		<-done
 
+		// QUM-625 (slice M4) AC a/b: probe whether the closing handle was
+		// terminally faulted BEFORE taking the lock (no disk/probe I/O under
+		// r.mu). A torn-down fault must survive teardown as a durable resting
+		// Status so liveness.From projects Faulted (not Stopped) after restart.
+		wasFaulted := false
+		if p, ok := handle.(terminalFaultProbe); ok {
+			wasFaulted = p.IsTerminallyFaulted()
+		}
+
 		emitStopped := false
+		matched := false
+		var name string
+		var durableStatus string
 		r.mu.Lock()
 		if r.handle == handle {
+			matched = true
+			name = r.snapshot.Name
 			r.handle = nil
-			if r.snapshot.Lifecycle == RuntimeLifecycleStarted {
-				r.snapshot.Lifecycle = RuntimeLifecycleStopped
+			if r.snapshot.Liveness == liveness.Running {
+				r.snapshot.Liveness = liveness.Stopped
 				emitStopped = true
 			}
+			// Stamp a durable resting Status so the projection distinguishes a
+			// torn-down fault (Faulted) from a clean stop (Stopped) after the
+			// handle is gone — Lifecycle stays Stopped, From() decodes Status.
+			if wasFaulted {
+				durableStatus = state.StatusFaulted
+			} else {
+				durableStatus = state.StatusStopped
+			}
+			r.snapshot.Status = durableStatus
 		}
 		r.mu.Unlock()
+
+		// Best-effort durable persist OUTSIDE r.mu. Gated on `matched` so a
+		// stale/already-swapped handle close (e.g. during Recover's
+		// StopAbandon of the abandoned handle) does NOT clobber disk Status.
+		if matched && name != "" {
+			cur, err := state.LoadAgent(r.sprawlRoot, name)
+			if err != nil {
+				slog.Warn("supervisor: watchHandleExit durable status load", "agent", name, "err", err)
+			} else {
+				// Defensive (mirrors stopWithFunc): never overwrite a terminal-ish
+				// disk Status with stopped/faulted. The `matched` guard already
+				// prevents clobbering during Recover, and kill/retire write their
+				// terminal Status after runtime.Stop returns, but guard here too so
+				// a late watcher goroutine can't race a terminal write.
+				switch cur.Status {
+				case state.StatusKilled, state.StatusRetired, state.StatusRetiring:
+					// leave terminal disk states as-is
+				default:
+					cur.Status = durableStatus
+					if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
+						slog.Warn("supervisor: watchHandleExit durable status save", "agent", name, "err", sErr)
+					}
+				}
+			}
+		}
+
 		if emitStopped {
 			r.emit(RuntimeEventStopped)
 		}

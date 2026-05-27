@@ -58,6 +58,9 @@ func TestReport_WorkingUpdatesState(t *testing.T) {
 	}
 }
 
+// QUM-625 M4: outcome moved off the Status axis. complete sets
+// LastReportState=complete and the back-compat LastReportType=done while
+// leaving Status (a pure liveness) untouched.
 func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "alice", Parent: "bob", Status: "active",
@@ -69,14 +72,20 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "alice")
-	if st.Status != "done" {
-		t.Errorf("Status = %q, want done", st.Status)
+	if st.Status != "active" {
+		t.Errorf("Status = %q, want active (unchanged — outcome lives on LastReportState)", st.Status)
+	}
+	if st.LastReportState != "complete" {
+		t.Errorf("LastReportState = %q, want complete", st.LastReportState)
 	}
 	if st.LastReportType != "done" {
 		t.Errorf("LastReportType = %q, want done (back-compat)", st.LastReportType)
 	}
 }
 
+// QUM-625 M4: outcome moved off the Status axis. failure sets
+// LastReportState=failure and the back-compat LastReportType=problem while
+// leaving Status (a pure liveness) untouched.
 func TestReport_FailureSetsStatusProblem(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "alice", Parent: "bob", Status: "active",
@@ -88,8 +97,11 @@ func TestReport_FailureSetsStatusProblem(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "alice")
-	if st.Status != "problem" {
-		t.Errorf("Status = %q, want problem", st.Status)
+	if st.Status != "active" {
+		t.Errorf("Status = %q, want active (unchanged — outcome lives on LastReportState)", st.Status)
+	}
+	if st.LastReportState != "failure" {
+		t.Errorf("LastReportState = %q, want failure", st.LastReportState)
 	}
 	if st.LastReportType != "problem" {
 		t.Errorf("LastReportType = %q, want problem", st.LastReportType)
@@ -114,6 +126,48 @@ func TestReport_BlockedDoesNotChangeStatus(t *testing.T) {
 	}
 }
 
+// QUM-625 M4: outcome (complete/failure) lives on LastReportState only — the
+// liveness axis (Status) must NOT be overwritten with "done"/"problem".
+// These tests FAIL today because Report still writes Status=done/problem.
+
+func TestReport_CompleteDoesNotWriteStatusDone(t *testing.T) {
+	root, deps := setupReportTest(t, &state.AgentState{
+		Name: "alice", Parent: "bob", Status: "active",
+	})
+
+	if _, err := Report(deps, root, "alice", "complete", "done"); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	st, _ := state.LoadAgent(root, "alice")
+	if st.Status != "active" {
+		t.Errorf("Status = %q, want %q (unchanged — outcome lives on LastReportState)", st.Status, "active")
+	}
+	if st.LastReportState != "complete" {
+		t.Errorf("LastReportState = %q, want %q", st.LastReportState, "complete")
+	}
+}
+
+func TestReport_FailureDoesNotWriteStatusProblem(t *testing.T) {
+	root, deps := setupReportTest(t, &state.AgentState{
+		Name: "alice", Parent: "bob", Status: "active",
+	})
+
+	if _, err := Report(deps, root, "alice", "failure", "blocked on API"); err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+
+	st, _ := state.LoadAgent(root, "alice")
+	if st.Status != "active" {
+		t.Errorf("Status = %q, want %q (unchanged — outcome lives on LastReportState)", st.Status, "active")
+	}
+	if st.LastReportState != "failure" {
+		t.Errorf("LastReportState = %q, want %q", st.LastReportState, "failure")
+	}
+}
+
+// QUM-625 M4: outcome lives on LastReportState; Status is untouched even when
+// the reporter has no parent.
 func TestReport_NoParentStillUpdatesState(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "solo", Parent: "", Status: "active",
@@ -128,8 +182,11 @@ func TestReport_NoParentStillUpdatesState(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "solo")
-	if st.Status != "done" {
-		t.Errorf("Status = %q", st.Status)
+	if st.Status != "active" {
+		t.Errorf("Status = %q, want active (unchanged)", st.Status)
+	}
+	if st.LastReportState != "complete" {
+		t.Errorf("LastReportState = %q, want complete", st.LastReportState)
 	}
 }
 

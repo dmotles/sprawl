@@ -317,6 +317,8 @@ func TestStatusConstants_Values(t *testing.T) {
 		"StatusRetiring":     StatusRetiring,
 		"StatusDone":         StatusDone,
 		"StatusResumeFailed": StatusResumeFailed,
+		"StatusFaulted":      StatusFaulted,
+		"StatusStopped":      StatusStopped,
 	}
 	wants := map[string]string{
 		"StatusActive":       "active",
@@ -327,6 +329,8 @@ func TestStatusConstants_Values(t *testing.T) {
 		"StatusRetiring":     "retiring",
 		"StatusDone":         "done",
 		"StatusResumeFailed": "resume_failed",
+		"StatusFaulted":      "faulted",
+		"StatusStopped":      "stopped",
 	}
 	for name, got := range cases {
 		if got != wants[name] {
@@ -394,6 +398,7 @@ func TestSaveAgent_ConcurrentWriters_NoCorruption(t *testing.T) {
 		StatusActive, StatusRunning, StatusSuspended,
 		StatusKilled, StatusRetired, StatusRetiring,
 		StatusDone, StatusResumeFailed,
+		StatusFaulted, StatusStopped,
 	}
 	allowed := make(map[string]bool, len(statuses))
 	for _, s := range statuses {

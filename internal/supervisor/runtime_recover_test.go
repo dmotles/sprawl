@@ -9,6 +9,8 @@ import (
 	"time"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // QUM-601: AgentRuntime.Recover tears down the existing handle via
@@ -77,18 +79,20 @@ func TestAgentRuntime_Recover_HealthySession_ReturnsErrRecoverNotNeeded(t *testi
 	}
 }
 
-// TestAgentRuntime_Recover_StoppedRuntime_RebuildsSession pins the
-// QUM-606 R2 follow-up: when a backend session faults, the new
-// terminal-error handler cancels the turn-loop runCtx, watchHandleExit
-// runs, and the snapshot's Lifecycle transitions to Stopped. Recover
-// MUST accept this Stopped state — that IS the visible signature of a
-// freshly faulted session, and refusing it would re-introduce the
-// QUM-606 zombie symptom (caller sees "stopped" but the user-facing
-// remediation `mcp__sprawl__recover` rejects it). The test calls
-// Stop() explicitly to put the runtime in the Stopped lifecycle (which
-// is the same observable state R2 produces after a fault), then
-// verifies Recover succeeds and a fresh handle is attached.
-func TestAgentRuntime_Recover_StoppedRuntime_RebuildsSession(t *testing.T) {
+// TestAgentRuntime_Recover_DeliberateStopRejected pins the QUM-625 (slice M4)
+// invariant-3 tightening. The legacy M2 premise — that "Stopped is the
+// post-fault signature, so Recover must accept it" — is exactly what M4 fixes:
+// once Faulted becomes a durable resting state, a torn-down fault is recorded
+// as durable Faulted (Status="faulted"), and a *deliberately* Stopped agent is
+// recorded as durable Stopped (Status="stopped"). The recover accept-set
+// therefore tightens to {Faulted, ResumeFailed}, DROPPING Stopped. A
+// deliberately-stopped agent is no longer a legal recover source.
+//
+// This test REPLACES TestAgentRuntime_Recover_StoppedRuntime_RebuildsSession,
+// whose premise M4 inverts: it asserted the deliberate-Stop case must succeed;
+// now it must be rejected. RED today: the M2 accept-set still includes
+// Stopped, so Recover proceeds and succeeds instead of rejecting.
+func TestAgentRuntime_Recover_DeliberateStopRejected(t *testing.T) {
 	session := &runtimeTestSession{
 		sessionID: "sess-alice",
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
@@ -108,23 +112,133 @@ func TestAgentRuntime_Recover_StoppedRuntime_RebuildsSession(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	// Deliberate Stop -> durable Stopped (Status="stopped" under M4).
 	if err := rt.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStopped {
-		t.Fatalf("after Stop, Lifecycle = %q, want %q", got, RuntimeLifecycleStopped)
+	if got := rt.Snapshot().Liveness; got != liveness.Stopped {
+		t.Fatalf("after Stop, Lifecycle = %q, want %q", got, liveness.Stopped)
+	}
+
+	err := rt.Recover(context.Background())
+	if err == nil {
+		t.Fatal("Recover on a deliberately-Stopped runtime: err = nil, want a 'cannot recover' rejection (Stopped is no longer a legal recover source under M4)")
+	}
+	if errors.Is(err, ErrRecoverNotNeeded) {
+		t.Errorf("Recover on deliberate Stop returned ErrRecoverNotNeeded; want a distinct hard rejection")
+	}
+	if calls := len(starter.specs); calls != 1 {
+		t.Errorf("starter must not be re-invoked for a rejected recover; Start calls = %d, want 1", calls)
+	}
+}
+
+// TestAgentRuntime_Recover_DurableFaultedRecovers is the M4 complement to the
+// rejection test above: an agent whose durable disk/snapshot Status is
+// "faulted" (a torn-down fault — no live handle) projects to liveness.Faulted
+// and MUST remain a legal recover source. RED today: a Status="faulted" agent
+// maps to Lifecycle=Registered, and the current accept-set rejects Registered
+// (no live handle, projects to Faulted only via the durable-disk branch which
+// M4 must add to the accept-set / the Registered+no-handle path which the
+// current precondition still hard-rejects).
+func TestAgentRuntime_Recover_DurableFaultedRecovers(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+	}
+	starter := &runtimeTestStarter{session: session}
+
+	agent := testAgentState("alice")
+	// Durable fault recorded across teardown: disk Status="faulted" -> the
+	// snapshot retains Status="faulted" and Lifecycle=Registered (no live
+	// handle), which the M0 projection maps to Faulted.
+	agent.Status = state.StatusFaulted
+
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      agent,
+		Starter:    starter,
+	})
+	// Speed up the post-Start health probe for the test.
+	prev := recoverHealthProbeTimeout
+	recoverHealthProbeTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { recoverHealthProbeTimeout = prev })
+
+	if got := rt.Snapshot().Status; got != state.StatusFaulted {
+		t.Fatalf("precondition: snapshot.Status = %q, want %q", got, state.StatusFaulted)
 	}
 
 	if err := rt.Recover(context.Background()); err != nil {
-		t.Fatalf("Recover on Stopped runtime: err = %v, want nil (must succeed — Stopped is the post-fault signature)", err)
+		t.Fatalf("Recover on durable-Faulted source: err = %v, want nil (Faulted is a valid recover source)", err)
 	}
-	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStarted {
-		t.Errorf("Lifecycle after Recover = %q, want %q", got, RuntimeLifecycleStarted)
+	if got := rt.Snapshot().Liveness; got != liveness.Running {
+		t.Errorf("Lifecycle after Recover = %q, want %q", got, liveness.Running)
 	}
-	// Second Recover against the now-healthy handle should report
-	// ErrRecoverNotNeeded (idempotent no-op success).
-	if err := rt.Recover(context.Background()); !errors.Is(err, ErrRecoverNotNeeded) {
-		t.Errorf("second Recover on healthy session: err = %v, want ErrRecoverNotNeeded", err)
+	// QUM-625 (slice M4): a successful recover must CLEAR the durable
+	// "faulted" Status back to "active" (invariant 7 — disk Status projects
+	// the recovered Running liveness). Otherwise merge would reject the healthy
+	// agent and a clean exit would leave it non-auto-resumable.
+	if got := rt.Snapshot().Status; got != state.StatusActive {
+		t.Errorf("Status after Recover = %q, want %q (durable faulted must clear to active)", got, state.StatusActive)
+	}
+}
+
+// TestAgentRuntime_Recover_ResumeFailedSource_Accepted pins the QUM-624
+// (slice M2) behavior change: when the M0 liveness projection maps an
+// agent's snapshot to ResumeFailed, Recover MUST accept it as a valid
+// recover source (T19 manual-retry).
+//
+// A resume_failed agent has disk Status "resume_failed", which
+// snapshotFromAgentState maps to Lifecycle=Registered with no live handle
+// (it special-cases only killed/retired). Under the M2 precondition,
+// liveness.From(Snapshot{Lifecycle:"registered", DiskStatus:"resume_failed"})
+// projects to ResumeFailed (the resume_failed disk branch precedes the
+// lifecycle branches), so Recover must proceed past the precondition and
+// rebuild a fresh session — mirroring the Stopped-rebuild path.
+//
+// RED today: the legacy precondition rejects any lifecycle outside
+// {Started, Stopped}, so a Registered (resume_failed) agent is hard-rejected
+// with "...cannot recover". This test fails until M2 lands.
+func TestAgentRuntime_Recover_ResumeFailedSource_Accepted(t *testing.T) {
+	session := &runtimeTestSession{
+		sessionID: "sess-alice",
+		caps:      backendpkg.Capabilities{SupportsInterrupt: true, SupportsResume: true},
+	}
+	starter := &runtimeTestStarter{session: session}
+
+	agent := testAgentState("alice")
+	// Disk status resume_failed → Lifecycle=Registered, handle=nil, but the
+	// snapshot retains Status=="resume_failed", which the M0 projection maps
+	// to ResumeFailed.
+	agent.Status = state.StatusResumeFailed
+
+	rt := NewAgentRuntime(AgentRuntimeConfig{
+		SprawlRoot: "/repo",
+		Agent:      agent,
+		Starter:    starter,
+	})
+	// Speed up the post-Start health probe for the test (the runtime
+	// test session never emits a real protocol frame).
+	prev := recoverHealthProbeTimeout
+	recoverHealthProbeTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { recoverHealthProbeTimeout = prev })
+
+	// The runtime must be in the Registered lifecycle with no live handle —
+	// the exact state a resume_failed agent presents before recovery.
+	if got := rt.Snapshot().Liveness; got != liveness.Unstarted {
+		t.Fatalf("precondition: Lifecycle = %q, want %q (resume_failed maps to Registered)", got, liveness.Unstarted)
+	}
+	if got := rt.Snapshot().Status; got != state.StatusResumeFailed {
+		t.Fatalf("precondition: Status = %q, want %q", got, state.StatusResumeFailed)
+	}
+
+	err := rt.Recover(context.Background())
+	if err != nil {
+		t.Fatalf("Recover on resume_failed source: err = %v, want nil (ResumeFailed is a valid recover source under M2)", err)
+	}
+	// Past the precondition, Recover rebuilds a fresh session and the runtime
+	// transitions to Started (same success signature as the Stopped-rebuild).
+	if got := rt.Snapshot().Liveness; got != liveness.Running {
+		t.Errorf("Lifecycle after Recover = %q, want %q", got, liveness.Running)
 	}
 }
 
@@ -200,8 +314,8 @@ func TestAgentRuntime_Recover_FaultedSession_StopsAbandonAndRestarts(t *testing.
 	if !specs[1].Resume {
 		t.Fatal("recover did not set spec.Resume=true on the restart")
 	}
-	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStarted {
-		t.Errorf("Lifecycle after Recover = %q, want %q", got, RuntimeLifecycleStarted)
+	if got := rt.Snapshot().Liveness; got != liveness.Running {
+		t.Errorf("Lifecycle after Recover = %q, want %q", got, liveness.Running)
 	}
 
 	// Recover must emit RuntimeEventRecovered to subscribers within 1s.

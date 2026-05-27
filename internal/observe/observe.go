@@ -191,13 +191,3 @@ func sortChildren(children []*TreeNode) {
 		return children[i].Agent.Name < children[j].Agent.Name
 	})
 }
-
-// IsTerminal reports whether the given status is a terminal state
-// (done, problem, retiring) where liveness checks are not applicable.
-func IsTerminal(status string) bool {
-	switch status {
-	case "done", "problem", "retiring":
-		return true
-	}
-	return false
-}

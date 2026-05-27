@@ -17,6 +17,7 @@ import (
 	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 type spawnPathWorktreeCreator struct {
@@ -116,8 +117,8 @@ func TestRealSpawn_StartsTrackedRuntime(t *testing.T) {
 		t.Fatalf("Spawn() error: %v", err)
 	}
 
-	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStarted {
-		t.Fatalf("Lifecycle = %q, want %q", got, RuntimeLifecycleStarted)
+	if got := rt.Snapshot().Liveness; got != liveness.Running {
+		t.Fatalf("Lifecycle = %q, want %q", got, liveness.Running)
 	}
 	if len(starter.specs) != 1 {
 		t.Fatalf("runtime starter calls = %d, want 1", len(starter.specs))
@@ -169,8 +170,8 @@ func TestRealSpawn_FreshSpawnUsesBootstrapAndRuntimeStarter(t *testing.T) {
 	if !ok {
 		t.Fatalf("runtime registry missing %s after fresh Spawn", info.Name)
 	}
-	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStarted {
-		t.Fatalf("Lifecycle = %q, want %q", got, RuntimeLifecycleStarted)
+	if got := rt.Snapshot().Liveness; got != liveness.Running {
+		t.Fatalf("Lifecycle = %q, want %q", got, liveness.Running)
 	}
 }
 
@@ -504,8 +505,8 @@ func TestRealKill_UpdatesRuntimeAfterPersistedSuccess(t *testing.T) {
 	if snap.Status != "killed" {
 		t.Fatalf("Status = %q, want killed", snap.Status)
 	}
-	if snap.Lifecycle != RuntimeLifecycleKilled {
-		t.Fatalf("Lifecycle = %q, want %q", snap.Lifecycle, RuntimeLifecycleKilled)
+	if snap.Liveness != liveness.Killed {
+		t.Fatalf("Lifecycle = %q, want %q", snap.Liveness, liveness.Killed)
 	}
 }
 
@@ -588,7 +589,7 @@ func TestRealKill_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 	if err == nil {
 		t.Fatal("Kill() error = nil, want failure after runtime stop")
 	}
-	if got := rt.Snapshot().Lifecycle; got == RuntimeLifecycleStarted {
+	if got := rt.Snapshot().Liveness; got == liveness.Running {
 		t.Fatalf("Lifecycle = %q, want not-started after failed persistence", got)
 	}
 	if _, ok := r.startedRuntime("alice"); ok {
@@ -673,7 +674,7 @@ func TestRealRetire_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 	if err == nil {
 		t.Fatal("Retire() error = nil, want boom")
 	}
-	if got := rt.Snapshot().Lifecycle; got == RuntimeLifecycleStarted {
+	if got := rt.Snapshot().Liveness; got == liveness.Running {
 		t.Fatalf("Lifecycle = %q, want not-started after failed retire", got)
 	}
 	if _, ok := r.startedRuntime("alice"); ok {
@@ -853,8 +854,11 @@ func TestRealShutdown_StopsRuntimeBackedChildren(t *testing.T) {
 
 // TestRealShutdown_TransitionMatrix pins the QUM-372 Shutdown status mapping:
 // any runtime-backed agent in a non-terminal state flips to "suspended"; agents
-// already in terminal states ({killed, retired, retiring, done}) are left as-is
-// so the next launch's RecoverAgents scan skips them.
+// already in terminal-ish / faulted states ({killed, retired, retiring,
+// faulted}) are left as-is so the next launch's RecoverAgents scan skips
+// suspendable ones and a faulted agent stays recoverable. QUM-625 (slice M4)
+// replaced the legacy "done" skip with "faulted" — StatusDone is never written
+// anymore (completion lives on the outcome axis).
 func TestRealShutdown_TransitionMatrix(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -867,7 +871,7 @@ func TestRealShutdown_TransitionMatrix(t *testing.T) {
 		{"killed stays killed", state.StatusKilled, state.StatusKilled},
 		{"retired stays retired", state.StatusRetired, state.StatusRetired},
 		{"retiring stays retiring", state.StatusRetiring, state.StatusRetiring},
-		{"done stays done", state.StatusDone, state.StatusDone},
+		{"faulted stays faulted", state.StatusFaulted, state.StatusFaulted},
 	}
 	for _, tc := range cases {
 		tc := tc

@@ -82,10 +82,13 @@ func ValidReportState(state string) bool {
 // `report_status` MCP tool delegates here).
 //
 // QUM-559: Report is state-only — it loads the reporter's agent state,
-// updates the LastReport* fields and (for complete/failure) the Status
-// field, and persists. The supervisor owns parent notification via the
-// in-process ephemeral status-notification ring; no maildir or harness
-// queue write happens here.
+// updates the LastReport* fields, and persists. The supervisor owns parent
+// notification via the in-process ephemeral status-notification ring; no
+// maildir or harness queue write happens here.
+//
+// QUM-625 M4: Report no longer touches the Status field. Status is a pure
+// liveness axis; the report outcome (complete/failure) lives solely on
+// LastReportState (and the back-compat LastReportType token).
 //
 // See docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
 func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (ReportResult, error) {
@@ -112,13 +115,6 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (
 	agentState.LastReportType = legacyType(stateVal)
 	agentState.LastReportMessage = summary
 	agentState.LastReportAt = reportedAt
-
-	switch stateVal {
-	case ReportStateComplete:
-		agentState.Status = "done"
-	case ReportStateFailure:
-		agentState.Status = "problem"
-	}
 
 	if err := deps.saveAgent(sprawlRoot, agentState); err != nil {
 		return ReportResult{}, fmt.Errorf("saving agent state: %w", err)

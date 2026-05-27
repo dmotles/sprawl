@@ -11,6 +11,7 @@ import (
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 type runtimeTestSession struct {
@@ -156,8 +157,8 @@ func TestAgentRuntime_SnapshotSeedsFromAgentState(t *testing.T) {
 	if snap.SessionID != "sess-alice" {
 		t.Fatalf("SessionID = %q", snap.SessionID)
 	}
-	if snap.Lifecycle != RuntimeLifecycleRegistered {
-		t.Fatalf("Lifecycle = %q, want %q", snap.Lifecycle, RuntimeLifecycleRegistered)
+	if snap.Liveness != liveness.Unstarted {
+		t.Fatalf("Lifecycle = %q, want %q", snap.Liveness, liveness.Unstarted)
 	}
 	if snap.QueueDepth != 0 {
 		t.Fatalf("QueueDepth = %d, want 0", snap.QueueDepth)
@@ -224,8 +225,8 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 	}
 
 	snap := rt.Snapshot()
-	if snap.Lifecycle != RuntimeLifecycleStarted {
-		t.Fatalf("Lifecycle = %q, want %q", snap.Lifecycle, RuntimeLifecycleStarted)
+	if snap.Liveness != liveness.Running {
+		t.Fatalf("Lifecycle = %q, want %q", snap.Liveness, liveness.Running)
 	}
 	if snap.QueueDepth != 1 {
 		t.Fatalf("QueueDepth = %d, want 1", snap.QueueDepth)
@@ -309,12 +310,12 @@ func TestAgentRuntime_UnexpectedHandleExitMarksStopped(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if snap := rt.Snapshot(); snap.Lifecycle == RuntimeLifecycleStopped {
+		if snap := rt.Snapshot(); snap.Liveness == liveness.Stopped {
 			return
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("Lifecycle = %q, want %q", rt.Snapshot().Lifecycle, RuntimeLifecycleStopped)
+			t.Fatalf("Lifecycle = %q, want %q", rt.Snapshot().Liveness, liveness.Stopped)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -345,8 +346,8 @@ func TestAgentRuntime_AttachHandle_SetsLifecycleStartedAndCapabilities(t *testin
 		SprawlRoot: "/repo",
 		Agent:      testAgentState("alice"),
 	})
-	if rt.Snapshot().Lifecycle != RuntimeLifecycleRegistered {
-		t.Fatalf("pre-attach Lifecycle = %q, want %q", rt.Snapshot().Lifecycle, RuntimeLifecycleRegistered)
+	if rt.Snapshot().Liveness != liveness.Unstarted {
+		t.Fatalf("pre-attach Lifecycle = %q, want %q", rt.Snapshot().Liveness, liveness.Unstarted)
 	}
 
 	h := &fakeAttachHandle{
@@ -356,8 +357,8 @@ func TestAgentRuntime_AttachHandle_SetsLifecycleStartedAndCapabilities(t *testin
 	rt.AttachHandle(h)
 
 	snap := rt.Snapshot()
-	if snap.Lifecycle != RuntimeLifecycleStarted {
-		t.Errorf("Lifecycle = %q, want %q", snap.Lifecycle, RuntimeLifecycleStarted)
+	if snap.Liveness != liveness.Running {
+		t.Errorf("Lifecycle = %q, want %q", snap.Liveness, liveness.Running)
 	}
 	if !snap.Capabilities.SupportsInterrupt {
 		t.Errorf("Capabilities.SupportsInterrupt = false, want true")
@@ -395,22 +396,22 @@ func TestAgentRuntime_AttachHandle_WatchesHandleDone_TransitionsToStopped(t *tes
 	doneCh := make(chan struct{})
 	h := &fakeAttachHandle{doneCh: doneCh}
 	rt.AttachHandle(h)
-	if rt.Snapshot().Lifecycle != RuntimeLifecycleStarted {
+	if rt.Snapshot().Liveness != liveness.Running {
 		t.Fatalf("after AttachHandle Lifecycle = %q, want %q",
-			rt.Snapshot().Lifecycle, RuntimeLifecycleStarted)
+			rt.Snapshot().Liveness, liveness.Running)
 	}
 
 	close(doneCh)
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if rt.Snapshot().Lifecycle == RuntimeLifecycleStopped {
+		if rt.Snapshot().Liveness == liveness.Stopped {
 			return
 		}
 		select {
 		case <-deadline:
 			t.Fatalf("Lifecycle = %q, want %q after handle.Done close",
-				rt.Snapshot().Lifecycle, RuntimeLifecycleStopped)
+				rt.Snapshot().Liveness, liveness.Stopped)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -576,9 +577,9 @@ func TestAgentRuntime_StartResume_StarterError_LeavesLifecycleRegistered(t *test
 	if err == nil {
 		t.Fatal("StartResume must return the starter error")
 	}
-	if rt.Snapshot().Lifecycle != RuntimeLifecycleRegistered {
+	if rt.Snapshot().Liveness != liveness.Unstarted {
 		t.Errorf("Lifecycle after failed StartResume = %q, want %q",
-			rt.Snapshot().Lifecycle, RuntimeLifecycleRegistered)
+			rt.Snapshot().Liveness, liveness.Unstarted)
 	}
 }
 

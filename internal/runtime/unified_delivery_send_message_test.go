@@ -43,8 +43,8 @@ func TestWakeForDelivery_NeverCallsSessionInterrupt_WhenTurnRunning(t *testing.T
 	})
 
 	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
-	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
-		t.Fatalf("did not enter StateTurnActive; current=%v", rt.State())
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive; current=%v", rt.State())
 	}
 
 	before := mock.interruptCount()
@@ -65,7 +65,7 @@ func TestWakeForDelivery_NeverCallsSessionInterrupt_WhenTurnRunning(t *testing.T
 	// no further interrupt fires.
 	turnCh <- makeResultMsg()
 	close(turnCh)
-	_ = waitForState(t, rt, StateIdle, 2*time.Second)
+	_ = waitForState(t, rt, liveIdle, 2*time.Second)
 }
 
 // TestWakeForDelivery_NeverCallsSessionInterrupt_WhenIdle pins the same
@@ -156,8 +156,8 @@ func TestForceInterruptForDelivery_CallsSessionInterrupt_WhenTurnRunning(t *test
 	})
 
 	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
-	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
-		t.Fatalf("did not enter StateTurnActive; current=%v", rt.State())
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive; current=%v", rt.State())
 	}
 
 	before := mock.interruptCount()
@@ -176,5 +176,5 @@ func TestForceInterruptForDelivery_CallsSessionInterrupt_WhenTurnRunning(t *test
 	// Release the turn so Stop can complete cleanly.
 	turnCh <- makeResultMsg()
 	close(turnCh)
-	_ = waitForState(t, rt, StateIdle, 2*time.Second)
+	_ = waitForState(t, rt, liveIdle, 2*time.Second)
 }

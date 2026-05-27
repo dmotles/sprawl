@@ -85,7 +85,7 @@ func TestMerge_HappyPath(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 		LastReportMessage: "Completed the task",
@@ -148,7 +148,7 @@ func TestMerge_SubagentRejected(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Subagent: true,
 	})
@@ -180,7 +180,7 @@ func TestMerge_NotParent(t *testing.T) {
 		Worktree: "/worktree/other", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 	})
 
@@ -220,7 +220,7 @@ func TestMerge_StatusDone_Accepted(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -253,6 +253,46 @@ func TestMerge_StatusOther_Rejected(t *testing.T) {
 	}
 }
 
+// TestMerge_CompleteViaLastReportState pins the QUM-625 (slice M4) merge
+// precondition-4 change. Once report.go stops writing Status=done/problem (the
+// status/report axis split), a finished agent is signaled by
+// LastReportState=="complete", not Status=="done". The merge precondition
+// therefore becomes: allow if Status=="active" OR LastReportState=="complete".
+// A suspended agent (Status="suspended") that has reported completion
+// (LastReportState="complete") must PASS precondition 4 and merge.
+//
+// RED today: precondition 4 only accepts Status active/done, so a
+// suspended+complete agent is rejected with "cannot be merged".
+func TestMerge_CompleteViaLastReportState(t *testing.T) {
+	deps, tmpDir := newTestMergeDeps(t)
+
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "parent-agent", Status: "active", Branch: "main",
+		Worktree: "/worktree/parent", Parent: "root",
+	})
+	createTestAgent(t, tmpDir, &state.AgentState{
+		Name: "target-agent", Status: "suspended", Branch: "feature-branch",
+		Worktree: "/worktree/target", Parent: "parent-agent",
+		Type: "engineer", Family: "engineering",
+		LastReportState:   "complete",
+		LastReportMessage: "Completed the task",
+	})
+
+	var mergeCalled bool
+	deps.DoMerge = func(_ context.Context, cfg *merge.Config, d *merge.Deps) (*merge.Result, error) {
+		mergeCalled = true
+		return &merge.Result{CommitHash: "abc1234"}, nil
+	}
+
+	err := runMerge(context.Background(), deps, "target-agent", "", true, false)
+	if err != nil {
+		t.Fatalf("merge of suspended+complete agent: err = %v, want nil (LastReportState=complete must satisfy precondition 4)", err)
+	}
+	if !mergeCalled {
+		t.Error("expected doMerge to be called for a suspended+complete agent")
+	}
+}
+
 func TestMerge_ActiveChildren(t *testing.T) {
 	deps, tmpDir := newTestMergeDeps(t)
 
@@ -261,7 +301,7 @@ func TestMerge_ActiveChildren(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -290,7 +330,7 @@ func TestMerge_BranchNotFound(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -314,7 +354,7 @@ func TestMerge_CallerDirtyWorktree(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -343,7 +383,7 @@ func TestMerge_AgentDirtyWorktree(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -394,7 +434,7 @@ func TestMerge_MissingCallerIdentity(t *testing.T) {
 	}
 
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 	})
 
@@ -415,7 +455,7 @@ func TestMerge_NoOp(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -446,7 +486,7 @@ func TestMerge_MergeError_Propagated(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -472,7 +512,7 @@ func TestMerge_ConfigWiring(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 		LastReportMessage: "did stuff",
@@ -529,7 +569,7 @@ func TestMerge_DryRun_PassedToConfig(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -564,7 +604,7 @@ func TestMerge_SuccessOutput(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "finn", Status: "done", Branch: "sprawl/finn",
+		Name: "finn", Status: "suspended", LastReportState: "complete", Branch: "sprawl/finn",
 		Worktree: "/worktree/finn", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 		LastReportMessage: "implement QUM-42 broadcast fix",
@@ -606,7 +646,7 @@ func TestMerge_ConfigValidateCmd_PassedThrough(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -647,7 +687,7 @@ func TestMerge_NoConfig_SkipsValidation(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -691,7 +731,7 @@ func TestMerge_UsesAgentWorktreeCurrentBranch(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "spawn-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "spawn-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -748,7 +788,7 @@ func TestMerge_DetachedHEADErrors(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "spawn-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "spawn-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -783,7 +823,7 @@ func TestMerge_StaleSpawnBranchAbsentDoesNotFail(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "spawn-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "spawn-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})
@@ -821,7 +861,7 @@ func TestMerge_ConfigLoadError(t *testing.T) {
 		Worktree: "/worktree/parent", Parent: "root",
 	})
 	createTestAgent(t, tmpDir, &state.AgentState{
-		Name: "target-agent", Status: "done", Branch: "feature-branch",
+		Name: "target-agent", Status: "suspended", LastReportState: "complete", Branch: "feature-branch",
 		Worktree: "/worktree/target", Parent: "parent-agent",
 		Type: "engineer", Family: "engineering",
 	})

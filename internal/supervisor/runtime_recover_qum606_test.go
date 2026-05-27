@@ -6,6 +6,7 @@ import (
 	"time"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // recoverRecordingStarter is a RuntimeStarter that counts Start calls and
@@ -88,8 +89,8 @@ func TestAgentRuntime_Recover_FlipsLifecycleStoppedOnFault(t *testing.T) {
 		t.Fatal("Recover returned nil error but the recover-path handle is pre-faulted; want non-nil error (QUM-606 R4)")
 	}
 
-	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStopped {
-		t.Errorf("Lifecycle after failed Recover = %q, want %q", got, RuntimeLifecycleStopped)
+	if got := rt.Snapshot().Liveness; got != liveness.Stopped {
+		t.Errorf("Lifecycle after failed Recover = %q, want %q", got, liveness.Stopped)
 	}
 
 	if starter.startCalls < 2 {

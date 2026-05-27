@@ -403,8 +403,13 @@ func TestReportStatus_UsesExplicitAgentName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent(finn): %v", err)
 	}
-	if st.Status != "done" {
-		t.Errorf("finn.Status = %q, want done", st.Status)
+	// QUM-625 (slice M4): report.go writes the outcome axis (LastReportState),
+	// not the liveness Status axis. A "complete" report leaves Status unchanged.
+	if st.LastReportState != "complete" {
+		t.Errorf("finn.LastReportState = %q, want complete", st.LastReportState)
+	}
+	if st.Status != "active" {
+		t.Errorf("finn.Status = %q, want active (unchanged by report)", st.Status)
 	}
 }
 

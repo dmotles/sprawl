@@ -9,6 +9,7 @@ import (
 	"time"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
 // QUM-601: Real.Recover dispatches to the AgentRuntime for the named agent
@@ -72,8 +73,8 @@ func TestRealRecover_DispatchesToAgentRuntime(t *testing.T) {
 	if got := starter.callCount(); got != 2 {
 		t.Errorf("starter.startCalls = %d, want 2 (initial + recover)", got)
 	}
-	if got := rt.Snapshot().Lifecycle; got != RuntimeLifecycleStarted {
-		t.Errorf("Lifecycle = %q, want %q", got, RuntimeLifecycleStarted)
+	if got := rt.Snapshot().Liveness; got != liveness.Running {
+		t.Errorf("Lifecycle = %q, want %q", got, liveness.Running)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/dmotles/sprawl/internal/messages"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 	"github.com/dmotles/sprawl/internal/worktree"
 	"github.com/gofrs/flock"
 )
@@ -407,14 +408,23 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 	processAliveByName := make(map[string]*bool)
 	for _, runtime := range r.runtimeRegistry.List() {
 		snap := runtime.Snapshot()
-		switch snap.Lifecycle {
-		case RuntimeLifecycleStarted:
-			alive := true
-			processAliveByName[snap.Name] = &alive
-		case RuntimeLifecycleStopped, RuntimeLifecycleKilled, RuntimeLifecycleRetired:
-			alive := false
-			processAliveByName[snap.Name] = &alive
+		// Derive process_alive from the AgentLiveness projection (QUM-615 M1)
+		// so a terminally-faulted runtime whose handle is not yet torn down
+		// reports alive=false instead of lying true (QUM-606, invariant 6). The
+		// stored base liveness is rendered to From's lifecycle token via
+		// livenessToLifecycleString(snap.Liveness) (QUM-627 M6). RuntimeState/
+		// DiskStatus are intentionally left empty in M1; later slices (M4/M5) feed
+		// them.
+		st := liveness.From(liveness.Snapshot{
+			Lifecycle:        livenessToLifecycleString(snap.Liveness),
+			TerminalErr:      runtime.IsTerminallyFaulted(),
+			InAutonomousTurn: runtime.InAutonomousTurn(),
+		})
+		if st.Liveness == liveness.Unstarted {
+			continue // leave process_alive absent (nil) — preserves registered/unknown semantics
 		}
+		alive := liveness.ProcessAlive(st)
+		processAliveByName[snap.Name] = &alive
 	}
 
 	result := make([]AgentInfo, 0, len(agents))
@@ -458,7 +468,7 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 	}
 	if runtime, ok := r.runtimeRegistry.Get(agentName); ok {
 		runtime.RecordQueuedTask()
-		if runtime.Snapshot().Lifecycle == RuntimeLifecycleStarted {
+		if runtime.Snapshot().Liveness == liveness.Running {
 			_ = runtime.Wake()
 		}
 	}
@@ -779,9 +789,23 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		if a == nil || a.Name == r.callerName {
 			continue
 		}
-		switch a.Status {
-		case state.StatusSuspended, state.StatusActive, state.StatusRunning:
-		default:
+		// QUM-625 (slice M4, Q2 ruling): resume-eligibility keys off the LIVENESS
+		// projection, NEVER the raw Status string. Routing through
+		// liveness.LivenessFromStatus keeps the two axes literally separate — a
+		// future Status value or projection tweak can't silently re-conflate
+		// liveness with outcome (the exact bug this refactor exists to kill).
+		// Accept-set is {Suspended, Running}: Running covers disk "active"/"running"
+		// crash-survivors (process died without a clean Shutdown→suspend), so they
+		// still auto-resume. Faulted/Stopped/ResumeFailed/Killed/Retired/Retiring
+		// (and any unrecognized status) are not auto-resumed.
+		lv, ok := liveness.LivenessFromStatus(a.Status)
+		if !ok || (lv != liveness.Suspended && lv != liveness.Running) {
+			continue
+		}
+		// Done-exclusion on the OUTCOME axis: a completed agent is not
+		// auto-resumed. This replaces the old implicit done-exclusion (Status=="done"
+		// no longer occurs after the axis split).
+		if a.LastReportState == agentops.ReportStateComplete {
 			continue
 		}
 		if a.Worktree == "" {
@@ -884,7 +908,7 @@ func (r *Real) Shutdown(ctx context.Context) error {
 	r.questions.closeAll(OutcomeSessionEnded, "supervisor shutdown")
 	for _, runtime := range r.runtimeRegistry.List() {
 		snap := runtime.Snapshot()
-		if snap.Lifecycle != RuntimeLifecycleStarted {
+		if snap.Liveness != liveness.Running {
 			continue
 		}
 		stopCtx, cancel := withRuntimeStopTimeout(ctx)
@@ -898,8 +922,11 @@ func (r *Real) Shutdown(ctx context.Context) error {
 			continue
 		}
 		switch agentState.Status {
-		case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusDone:
-			// leave terminal-ish states as-is
+		case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusFaulted:
+			// QUM-625 (slice M4): leave terminal-ish / faulted states as-is —
+			// a faulted agent must NOT be overwritten to "suspended" on clean
+			// sprawl exit so it stays recoverable. (StatusDone is never written
+			// anymore; swapped for StatusFaulted.)
 		default:
 			agentState.Status = state.StatusSuspended
 		}
@@ -1428,7 +1455,7 @@ func (r *Real) startedRuntime(agentName string) (*AgentRuntime, bool) {
 	if !ok {
 		return nil, false
 	}
-	if runtime.Snapshot().Lifecycle != RuntimeLifecycleStarted {
+	if runtime.Snapshot().Liveness != liveness.Running {
 		return nil, false
 	}
 	return runtime, true

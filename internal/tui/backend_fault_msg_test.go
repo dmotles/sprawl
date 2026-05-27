@@ -76,6 +76,78 @@ func TestAppModel_BackendFaultMsg_StoresFaultForAgent(t *testing.T) {
 	}
 }
 
+// QUM-602: the fault banner must re-fire on EACH repeated fault transition —
+// it keys off the BackendFaultMsg arrival, not a latched boolean. Dispatching
+// the same fault twice must produce two banner entries.
+func TestAppModel_BackendFaultMsg_RefiresBannerOnRepeat(t *testing.T) {
+	app := newTestAppModel(t)
+
+	fault := BackendFaultMsg{
+		Agent:      "alice",
+		Class:      "HangTimeout",
+		Reason:     "stalled",
+		NextAction: "retire+respawn",
+	}
+
+	updated, _ := app.Update(fault)
+	app = updated.(AppModel)
+	updated, _ = app.Update(fault)
+	app = updated.(AppModel)
+
+	var count int
+	for _, e := range app.viewportFor("weave").GetMessages() {
+		if strings.Contains(e.Content, "backend fault on alice") {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected 2 'backend fault on alice' banners after repeat fault, got %d", count)
+	}
+	if _, ok := app.faults["alice"]; !ok {
+		t.Errorf("faults[alice] missing after repeat fault; faults=%v", app.faults)
+	}
+}
+
+// QUM-602: after a fault is cleared, a subsequent fault for the same agent must
+// re-fire a fresh banner (and re-stamp the sticker) — no latch survives across
+// a clear.
+func TestAppModel_BackendFaultMsg_RefiresAfterClear(t *testing.T) {
+	app := newTestAppModel(t)
+
+	fault := BackendFaultMsg{
+		Agent:      "alice",
+		Class:      "HangTimeout",
+		Reason:     "stalled",
+		NextAction: "retire+respawn",
+	}
+
+	updated, _ := app.Update(fault)
+	app = updated.(AppModel)
+	updated, _ = app.Update(BackendFaultClearedMsg{Agent: "alice"})
+	app = updated.(AppModel)
+	updated, _ = app.Update(fault)
+	app = updated.(AppModel)
+
+	var faultCount, recoveredCount int
+	for _, e := range app.viewportFor("weave").GetMessages() {
+		if strings.Contains(e.Content, "backend fault on alice") {
+			faultCount++
+		}
+		if strings.Contains(e.Content, "backend recovered on alice") {
+			recoveredCount++
+		}
+	}
+	if faultCount != 2 {
+		t.Errorf("expected 2 'backend fault on alice' banners across fault→clear→fault, got %d", faultCount)
+	}
+	if recoveredCount != 1 {
+		t.Errorf("expected exactly 1 'backend recovered on alice' banner, got %d", recoveredCount)
+	}
+	if _, ok := app.faults["alice"]; !ok {
+		t.Errorf("faults[alice] missing after re-fault; faults=%v", app.faults)
+	}
+}
+
 func TestTreeView_RendersFaultIndicator(t *testing.T) {
 	m := newTestTreeModel(t)
 	m.SetSize(80, 20)

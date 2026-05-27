@@ -296,6 +296,53 @@ func TestTreeModel_ViewRendersIndentation(t *testing.T) {
 	}
 }
 
+// QUM-623 R4: tree rows must render any liveness status string verbatim —
+// including the new transients (starting/recovering/stopping) — without panic
+// and without being mistaken for a fault. No consumer may treat a non-
+// active/stopped status as an error.
+func TestTreeView_RendersLivenessStatusesGracefully(t *testing.T) {
+	statuses := []string{
+		"active", "stopped", "suspended", "resume_failed", "done",
+		"problem", "starting", "recovering", "stopping",
+	}
+	for _, status := range statuses {
+		t.Run(status, func(t *testing.T) {
+			m := newTestTreeModel(t)
+			m.SetSize(80, 20)
+			m.SetNodes([]TreeNode{
+				{Name: "alice", Type: "engineer", Status: status, Depth: 0},
+			})
+
+			view := stripAnsi(m.View())
+			want := "(" + status + ")"
+			if !strings.Contains(view, want) {
+				t.Errorf("View() should contain %q verbatim; got:\n%s", want, view)
+			}
+			if strings.Contains(view, "[FAULT") {
+				t.Errorf("status %q must not render as a fault; got:\n%s", status, view)
+			}
+		})
+	}
+}
+
+// QUM-623 R4: an empty status must render a sane placeholder "(unknown)"
+// rather than a bare "()".
+func TestTreeView_EmptyStatusRendersPlaceholder(t *testing.T) {
+	m := newTestTreeModel(t)
+	m.SetSize(80, 20)
+	m.SetNodes([]TreeNode{
+		{Name: "alice", Type: "engineer", Status: "", Depth: 0},
+	})
+
+	view := stripAnsi(m.View())
+	if !strings.Contains(view, "(unknown)") {
+		t.Errorf("empty status should render '(unknown)' placeholder; got:\n%s", view)
+	}
+	if strings.Contains(view, " ()") {
+		t.Errorf("empty status should not render a bare ' ()'; got:\n%s", view)
+	}
+}
+
 // stripAnsi removes ANSI escape sequences from a string for assertion purposes.
 func stripAnsi(s string) string {
 	var out strings.Builder

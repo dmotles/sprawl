@@ -9,6 +9,21 @@ import (
 
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
+	livenesspkg "github.com/dmotles/sprawl/internal/supervisor/liveness"
+)
+
+// Liveness-state literals used throughout these tests, mapping the legacy
+// RuntimeState enum onto its liveness.State equivalent (QUM-626 M5 fold):
+//
+//	liveIdle         -> Running (non-autonomous)
+//	liveTurnActive   -> Running·autonomous-turn
+//	liveInterrupting -> Stopping
+//	liveStopped      -> Stopped
+var (
+	liveIdle         = livenesspkg.State{Liveness: livenesspkg.Running}
+	liveTurnActive   = livenesspkg.State{Liveness: livenesspkg.Running, InAutonomousTurn: true}
+	liveInterrupting = livenesspkg.State{Liveness: livenesspkg.Stopping}
+	liveStopped      = livenesspkg.State{Liveness: livenesspkg.Stopped}
 )
 
 // mockUnifiedSession is a SessionHandle test double scoped to the unified
@@ -65,7 +80,7 @@ func makeResultMsg() *protocol.Message {
 }
 
 // waitForState polls rt.State() up to d, returning true on match.
-func waitForState(t *testing.T, rt *UnifiedRuntime, want RuntimeState, d time.Duration) bool {
+func waitForState(t *testing.T, rt *UnifiedRuntime, want livenesspkg.State, d time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
@@ -90,8 +105,8 @@ func TestNew_Defaults(t *testing.T) {
 	if rt.EventBus() == nil {
 		t.Errorf("EventBus() = nil, want non-nil")
 	}
-	if got := rt.State(); got != StateIdle {
-		t.Errorf("State() = %v, want StateIdle", got)
+	if got := rt.State(); got != liveIdle {
+		t.Errorf("State() = %v, want liveIdle", got)
 	}
 	if got := rt.Name(); got != "agent-1" {
 		t.Errorf("Name() = %q, want %q", got, "agent-1")
@@ -121,8 +136,8 @@ func TestStart_Stop_Lifecycle(t *testing.T) {
 		t.Fatal("Stop did not return within 2s")
 	}
 
-	if got := rt.State(); got != StateStopped {
-		t.Errorf("final State() = %v, want StateStopped", got)
+	if got := rt.State(); got != liveStopped {
+		t.Errorf("final State() = %v, want liveStopped", got)
 	}
 }
 
@@ -178,8 +193,8 @@ func TestStateTransitions_NormalTurn(t *testing.T) {
 		t.Errorf("StartTurn calls = %d, want >= 1", got)
 	}
 	// We may miss the brief TurnActive window, so only require eventual return to Idle.
-	if !waitForState(t, rt, StateIdle, 2*time.Second) {
-		t.Fatalf("did not return to StateIdle; current=%v", rt.State())
+	if !waitForState(t, rt, liveIdle, 2*time.Second) {
+		t.Fatalf("did not return to liveIdle; current=%v", rt.State())
 	}
 }
 
@@ -214,14 +229,14 @@ func TestStateTransitions_InitialPrompt(t *testing.T) {
 		_ = rt.Stop(context.Background())
 	}()
 
-	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
-		t.Fatalf("did not enter StateTurnActive after InitialPrompt; current=%v", rt.State())
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive after InitialPrompt; current=%v", rt.State())
 	}
 
 	close(released)
 
-	if !waitForState(t, rt, StateIdle, 2*time.Second) {
-		t.Fatalf("did not return to StateIdle; current=%v", rt.State())
+	if !waitForState(t, rt, liveIdle, 2*time.Second) {
+		t.Fatalf("did not return to liveIdle; current=%v", rt.State())
 	}
 }
 
@@ -238,7 +253,7 @@ func TestInterrupt_WhenIdle_ForwardsToSession(t *testing.T) {
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	// Make sure runtime is settled into Idle.
-	if !waitForState(t, rt, StateIdle, 1*time.Second) {
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
 		t.Fatalf("not idle before Interrupt; state=%v", rt.State())
 	}
 
@@ -249,8 +264,8 @@ func TestInterrupt_WhenIdle_ForwardsToSession(t *testing.T) {
 	if got := mock.interruptCount(); got != 1 {
 		t.Errorf("Session.Interrupt called %d times while idle, want 1 (QUM-435 Option A: always forward)", got)
 	}
-	if got := rt.State(); got != StateIdle {
-		t.Errorf("State after idle Interrupt = %v, want StateIdle (no turn running, no state mutation)", got)
+	if got := rt.State(); got != liveIdle {
+		t.Errorf("State after idle Interrupt = %v, want liveIdle (no turn running, no state mutation)", got)
 	}
 }
 
@@ -277,8 +292,8 @@ func TestInterrupt_WhenActive(t *testing.T) {
 
 	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
 
-	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
-		t.Fatalf("did not enter StateTurnActive; current=%v", rt.State())
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive; current=%v", rt.State())
 	}
 
 	if err := rt.Interrupt(context.Background()); err != nil {
@@ -286,8 +301,8 @@ func TestInterrupt_WhenActive(t *testing.T) {
 	}
 
 	// State should reflect Interrupting promptly.
-	if !waitForState(t, rt, StateInterrupting, 1*time.Second) {
-		t.Errorf("did not enter StateInterrupting; current=%v", rt.State())
+	if !waitForState(t, rt, liveInterrupting, 1*time.Second) {
+		t.Errorf("did not enter liveInterrupting; current=%v", rt.State())
 	}
 
 	// Wait for Session.Interrupt to be observed.
@@ -306,8 +321,8 @@ func TestInterrupt_WhenActive(t *testing.T) {
 	turnCh <- makeResultMsg()
 	close(turnCh)
 
-	if !waitForState(t, rt, StateIdle, 2*time.Second) {
-		t.Errorf("did not return to StateIdle after interrupt drain; current=%v", rt.State())
+	if !waitForState(t, rt, liveIdle, 2*time.Second) {
+		t.Errorf("did not return to liveIdle after interrupt drain; current=%v", rt.State())
 	}
 }
 
@@ -516,8 +531,8 @@ loop:
 		t.Errorf("did not observe EventStopped after Stop returned")
 	}
 
-	if got := rt.State(); got != StateStopped {
-		t.Errorf("State after Stop = %v, want StateStopped", got)
+	if got := rt.State(); got != liveStopped {
+		t.Errorf("State after Stop = %v, want liveStopped", got)
 	}
 }
 
@@ -607,8 +622,8 @@ func TestEnqueue_TurnStartedObservableViaEventBus(t *testing.T) {
 	})
 
 	// Post-event the wrapper has flipped state to TurnActive.
-	if got := rt.State(); got != StateTurnActive {
-		t.Errorf("State() after EventTurnStarted = %v, want StateTurnActive", got)
+	if got := rt.State(); got != liveTurnActive {
+		t.Errorf("State() after EventTurnStarted = %v, want liveTurnActive", got)
 	}
 
 	// Release the turn and observe completion.
@@ -618,13 +633,13 @@ func TestEnqueue_TurnStartedObservableViaEventBus(t *testing.T) {
 		return ev.Type == EventTurnCompleted
 	})
 
-	if !waitForState(t, rt, StateIdle, 2*time.Second) {
-		t.Errorf("did not return to StateIdle; current=%v", rt.State())
+	if !waitForState(t, rt, liveIdle, 2*time.Second) {
+		t.Errorf("did not return to liveIdle; current=%v", rt.State())
 	}
 }
 
 // TestState_DoesNotPeekAtQueue pins QUM-413 directly: State() returns the
-// stored runtime state and must NOT synthesize StateTurnActive based on queue
+// stored runtime state and must NOT synthesize liveTurnActive based on queue
 // length. Items enqueued before the loop has dequeued them must not affect the
 // state read.
 func TestState_DoesNotPeekAtQueue(t *testing.T) {
@@ -634,8 +649,8 @@ func TestState_DoesNotPeekAtQueue(t *testing.T) {
 	// Do NOT Start. Enqueue directly and observe State().
 	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "go"})
 
-	if got := rt.State(); got != StateIdle {
-		t.Errorf("State() with queued item but no running loop = %v, want StateIdle (state must not peek at queue)", got)
+	if got := rt.State(); got != liveIdle {
+		t.Errorf("State() with queued item but no running loop = %v, want liveIdle (state must not peek at queue)", got)
 	}
 }
 
@@ -690,8 +705,8 @@ func TestStop_DuringActiveTurn_CallsSessionInterrupt(t *testing.T) {
 
 	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
 
-	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
-		t.Fatalf("did not enter StateTurnActive; current=%v", rt.State())
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive; current=%v", rt.State())
 	}
 
 	// Release the inner channel concurrently so Stop can drain.
@@ -709,8 +724,8 @@ func TestStop_DuringActiveTurn_CallsSessionInterrupt(t *testing.T) {
 	if got := mock.interruptCount(); got < 1 {
 		t.Errorf("Session.Interrupt count after Stop-during-active-turn = %d, want >= 1", got)
 	}
-	if got := rt.State(); got != StateStopped {
-		t.Errorf("State after Stop = %v, want StateStopped", got)
+	if got := rt.State(); got != liveStopped {
+		t.Errorf("State after Stop = %v, want liveStopped", got)
 	}
 }
 
@@ -743,8 +758,8 @@ func TestStop_DuringActiveTurn_PublishesStoppedNotInterrupted(t *testing.T) {
 
 	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
 
-	if !waitForState(t, rt, StateTurnActive, 2*time.Second) {
-		t.Fatalf("did not enter StateTurnActive; current=%v", rt.State())
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive; current=%v", rt.State())
 	}
 
 	go func() {
@@ -799,7 +814,7 @@ func TestStop_Idle_CallsSessionInterruptOnce(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	if !waitForState(t, rt, StateIdle, 1*time.Second) {
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
 		t.Fatalf("not idle before Stop; state=%v", rt.State())
 	}
 
@@ -927,8 +942,8 @@ func TestWakeForDelivery_DoesNotArmPendingInterrupt_WhenIdle(t *testing.T) {
 	defer func() { _ = rt.Stop(context.Background()) }()
 
 	// Wait until the runtime is observably idle (loop blocked on Queue.Signal).
-	if !waitForState(t, rt, StateIdle, 1*time.Second) {
-		t.Fatalf("runtime did not reach StateIdle before WakeForDelivery; state=%v", rt.State())
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
+		t.Fatalf("runtime did not reach liveIdle before WakeForDelivery; state=%v", rt.State())
 	}
 
 	// Mirror WeaveRuntimeHandle.WakeForDelivery: enqueue a ClassInbox item
@@ -948,6 +963,176 @@ func TestWakeForDelivery_DoesNotArmPendingInterrupt_WhenIdle(t *testing.T) {
 	})
 	if ev.Type != EventTurnCompleted {
 		t.Fatalf("terminal event = %v, want EventTurnCompleted (QUM-462: WakeForDelivery must not arm pendingInterrupt against an idle runtime); seen=%v", ev.Type, seen)
+	}
+}
+
+// --- QUM-626 (M5) characterization gate -------------------------------------
+//
+// The three tests below pin the *observable* Interrupt/Stop/State contract that
+// the M5 refactor (QUM-626) must preserve. M5 will replace the private
+// `state RuntimeState` field on UnifiedRuntime with a `liveness.State` field and
+// delete the RuntimeState enum, while keeping StartTurn/Interrupt/Stop semantics
+// identical. The real interrupt gate is the unexported `turnRunning` bool, NOT
+// `state`: the `state` TurnActive→Interrupting flip is bookkeeping only.
+//
+// These tests are written against the CURRENT API (RuntimeState enum, State()
+// returns RuntimeState) so they COMPILE and PASS today — this is a safety net,
+// not a red test. After the M5 fold the `State() == StateX` assertions will be
+// migrated to `State().Liveness == <mapped>`; they must still pass, proving the
+// refactor preserved behavior.
+//
+// Observability note: the harness's mockUnifiedSession exposes only
+// interruptCount() (a count of Session.Interrupt calls). There is no direct
+// counter for TurnLoop.Interrupt, but the loop path is observable indirectly:
+// UnifiedRuntime.Interrupt only calls loop.Interrupt when turnRunning is true,
+// and the loop responds on its next tick by issuing its own Session.Interrupt.
+// So the loop gate manifests as the Session.Interrupt count plus the
+// liveTurnActive→liveInterrupting transition.
+
+// TestUnifiedRuntime_InterruptStopGuard_Stopped_Characterization pins guard #1:
+// Interrupt on a STOPPED runtime is a pure no-op — it returns nil, does NOT
+// re-invoke Session.Interrupt, and does not panic. State() observes
+// liveStopped both before and after the call. M5 must preserve this early
+// `state == liveStopped` return (mapped to the liveness Stopped state).
+func TestUnifiedRuntime_InterruptStopGuard_Stopped_Characterization(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := rt.State(); got != liveStopped {
+		t.Fatalf("State() after Stop = %v, want liveStopped", got)
+	}
+
+	// Baseline: Stop on an idle runtime issues exactly one polite
+	// Session.Interrupt (QUM-414). Snapshot it so the guard assertion is
+	// robust to that lifecycle call.
+	before := mock.interruptCount()
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Errorf("Interrupt after Stop = %v, want nil (no-op when stopped)", err)
+	}
+
+	if got := mock.interruptCount(); got != before {
+		t.Errorf("Session.Interrupt count after stopped-Interrupt = %d, want %d (no-op when stopped)", got, before)
+	}
+	if got := rt.State(); got != liveStopped {
+		t.Errorf("State() after stopped-Interrupt = %v, want liveStopped (unchanged)", got)
+	}
+}
+
+// TestUnifiedRuntime_InterruptStopGuard_Idle_Characterization pins guard #2:
+// Interrupt on an IDLE runtime (turnRunning == false) forwards to
+// Session.Interrupt exactly once but does NOT drive loop.Interrupt (the
+// turnRunning gate is closed). State stays liveIdle — the TurnActive→
+// Interrupting bookkeeping flip only happens when state == liveTurnActive.
+//
+// The "no loop.Interrupt" claim is asserted indirectly: if loop.Interrupt had
+// fired, the loop's next tick would issue a SECOND Session.Interrupt, pushing
+// the count above 1. We pin count == 1 to encode that exactly the direct
+// forward — and nothing from the loop — happened.
+func TestUnifiedRuntime_InterruptStopGuard_Idle_Characterization(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	// Settle into Idle (loop blocked on Queue.Signal, no turn running).
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
+		t.Fatalf("not idle before Interrupt; state=%v", rt.State())
+	}
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Errorf("Interrupt while idle = %v, want nil", err)
+	}
+
+	if got := mock.interruptCount(); got != 1 {
+		t.Errorf("Session.Interrupt count after idle Interrupt = %d, want 1 (direct forward only; loop.Interrupt gated off by turnRunning==false)", got)
+	}
+	if got := rt.State(); got != liveIdle {
+		t.Errorf("State() after idle Interrupt = %v, want liveIdle (no turn running, no state mutation)", got)
+	}
+}
+
+// TestUnifiedRuntime_InterruptStopGuard_TurnActive_Characterization pins
+// guard #3: when a turn is genuinely in flight (turnRunning == true), Interrupt
+// flips State() liveTurnActive→liveInterrupting AND drives the loop. The loop
+// path is observed via the Session.Interrupt count climbing to >= 2: one from
+// the direct forward in UnifiedRuntime.Interrupt, one from the loop's tick after
+// loop.Interrupt. After the turn drains, State() returns to liveIdle.
+//
+// The turn is held deterministically active with the released-channel idiom
+// (same as TestInterrupt_WhenActive / TestStateTransitions_InitialPrompt): the
+// onStart callback returns a channel whose terminal frame is only sent once the
+// test closes `released`, so the runtime sits in liveTurnActive with no flaky
+// sleep.
+func TestUnifiedRuntime_InterruptStopGuard_TurnActive_Characterization(t *testing.T) {
+	released := make(chan struct{})
+	mock := &mockUnifiedSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			go func() {
+				<-released
+				ch <- makeResultMsg()
+				close(ch)
+			}()
+			return ch, nil
+		},
+	}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		// Ensure the held turn is released so Stop can drain.
+		select {
+		case <-released:
+		default:
+			close(released)
+		}
+		_ = rt.Stop(context.Background())
+	}()
+
+	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
+
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive; current=%v", rt.State())
+	}
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt during active turn: %v", err)
+	}
+
+	// State must flip to Interrupting promptly (the TurnActive→Interrupting
+	// bookkeeping). M5 maps liveInterrupting to its liveness equivalent.
+	if !waitForState(t, rt, liveInterrupting, 1*time.Second) {
+		t.Errorf("did not enter liveInterrupting; current=%v", rt.State())
+	}
+
+	// loop.Interrupt was driven (turnRunning==true), so the loop issues its own
+	// Session.Interrupt in addition to the direct forward: count climbs to >= 2.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && mock.interruptCount() < 2 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := mock.interruptCount(); got < 2 {
+		t.Errorf("Session.Interrupt count during active-turn Interrupt = %d, want >= 2 (direct forward + loop.Interrupt tick; loop gated on by turnRunning==true)", got)
+	}
+
+	// Release the turn so the loop drains back to Idle.
+	close(released)
+
+	if !waitForState(t, rt, liveIdle, 2*time.Second) {
+		t.Errorf("did not return to liveIdle after interrupt drain; current=%v", rt.State())
 	}
 }
 
