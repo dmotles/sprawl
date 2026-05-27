@@ -278,6 +278,16 @@ type session struct {
 	// session, OUTSIDE s.mu so the handler can call back into session-safe
 	// read methods (e.g. BackendStats) without deadlock. nil clears.
 	terminalErrHandler atomic.Pointer[func(error)]
+
+	// autonomousFrameHandler, if installed by the runtime (QUM-631), is invoked
+	// for every frame routed to an autonomous (SDK/harness-initiated) turn —
+	// the turnFrame opened by a system:init while no sprawl StartTurn was
+	// pending. Lets the runtime surface harness-initiated turns to the EventBus
+	// (and thus the TUI), which would otherwise be dropped (they have a nil
+	// subscriber). Invoked synchronously from runReader; the handler MUST be
+	// non-blocking (the runtime's handler only does a bounded EventBus.Publish).
+	// Distinct from Observer, which sees EVERY frame regardless of turn kind.
+	autonomousFrameHandler atomic.Pointer[func(*protocol.Message)]
 }
 
 // inflightDrainTimeout bounds how long the reader waits for in-flight async
@@ -621,6 +631,18 @@ func (s *session) runReader(ctx context.Context) {
 		}
 		tf := s.currentTurn
 		s.mu.Unlock()
+
+		// QUM-631: surface autonomous-turn frames (harness self-reprompt) to the
+		// runtime so the TUI renders them. Autonomous turns have a nil subscriber,
+		// so without this they reach only the async Observer and are dropped from
+		// the live view. Only frames belonging to an autonomous turnFrame are
+		// forwarded; stray non-init telemetry never allocates a frame (QUM-570) and
+		// sprawl-initiated turns flow through the subscriber channel (QUM-578).
+		if tf != nil && tf.autonomous {
+			if hp := s.autonomousFrameHandler.Load(); hp != nil {
+				(*hp)(msg)
+			}
+		}
 
 		if tf != nil && tf.subscriber != nil {
 			// F1: bound the subscriber send. A wedged consumer must not
@@ -1092,6 +1114,17 @@ func (s *session) SetTerminalErrorHandler(h func(err error)) {
 		return
 	}
 	s.terminalErrHandler.Store(&h)
+}
+
+// SetAutonomousFrameHandler installs a handler invoked for each frame of an
+// autonomous (SDK/harness-initiated) turn (QUM-631). nil clears it. The
+// handler runs synchronously on the reader goroutine and MUST NOT block.
+func (s *session) SetAutonomousFrameHandler(h func(*protocol.Message)) {
+	if h == nil {
+		s.autonomousFrameHandler.Store(nil)
+		return
+	}
+	s.autonomousFrameHandler.Store(&h)
 }
 
 // IsTerminallyFaulted reports whether the sticky terminalErr has been set

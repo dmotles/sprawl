@@ -119,6 +119,23 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 				}
 			})
 		}
+		// QUM-631: install the autonomous-frame handler so harness-initiated
+		// (SDK self-reprompt) turns surface on the EventBus. Same type-assertion
+		// pattern as the terminal-error handler above.
+		if setter, ok := cfg.Session.(interface {
+			SetAutonomousFrameHandler(func(*protocol.Message))
+		}); ok {
+			setter.SetAutonomousFrameHandler(func(msg *protocol.Message) {
+				// QUM-631: surface harness-initiated (autonomous) turns to the
+				// EventBus so the TUI viewport + activity stream render them.
+				rt.eventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
+				if msg.Type == "result" {
+					var r protocol.ResultMessage
+					_ = protocol.ParseAs(msg, &r)
+					rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
+				}
+			})
+		}
 	}
 	return rt
 }
