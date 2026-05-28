@@ -17,6 +17,13 @@ import (
 	"github.com/dmotles/sprawl/internal/protocol"
 )
 
+// continuationPrompt is the synthetic, machine-originated nudge enqueued at
+// turn-end when a run_in_background task completed mid-turn (QUM-640). The
+// completed task's result is already present in the SDK's context as a
+// tool_result; this prompt only grants weave a turn to review it and continue.
+// It is terse and neutral to avoid steering the agent.
+const continuationPrompt = "[auto-continue] A background task you started has completed. Review its output above and continue your work."
+
 // SessionHandle is the subset of the backend Session API that the TurnLoop
 // needs. *backend.Session satisfies it structurally; tests may substitute a
 // mock. Keeping this an interface here (rather than depending on the concrete
@@ -206,6 +213,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 
 	delivered := false
 	interrupted := false
+	sawTaskNotification := false
 	for {
 		select {
 		case <-turnCtx.Done():
@@ -237,7 +245,28 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 			// terminal result message.
 		case msg, ok := <-events:
 			if !ok {
+				// QUM-640: clean end-of-stream. If a run_in_background task
+				// completed mid-turn (its task_notification surfaced in this
+				// turn) and the turn was not interrupted, enqueue exactly one
+				// synthetic continuation item so the existing
+				// queue→turnloop→StartTurn drive fires a continuation turn,
+				// which folds the stranded background result into context.
+				// Detection is per-turn (local boolean), so a continuation turn
+				// that sees no notification won't loop forever, and a
+				// notification arriving during a continuation turn schedules a
+				// further continuation. The !interrupted gate relies on the
+				// <-thisTurn arm having set interrupted on an earlier iteration:
+				// the backend delivers the terminal `result` frame before it
+				// closes `events`, so the loop keeps iterating (and drains the
+				// pending interrupt token) rather than reaching this close in
+				// the same tick the interrupt arrives.
+				if sawTaskNotification && !interrupted {
+					l.cfg.Queue.Enqueue(QueueItem{Class: ClassContinuation, Prompt: continuationPrompt})
+				}
 				return
+			}
+			if msg.Type == "system" && msg.Subtype == "task_notification" {
+				sawTaskNotification = true
 			}
 			// QUM-579: fire OnQueueItemDelivered on the first frame that
 			// is NOT system:init. system:init is emitted by the backend

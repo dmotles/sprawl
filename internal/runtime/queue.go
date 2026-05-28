@@ -14,11 +14,12 @@ import (
 // Class names recognized by the priority ordering. Items with any other
 // class are accepted but sort after all known classes.
 const (
-	ClassInterrupt = "interrupt"
-	ClassTask      = "task"
-	ClassUser      = "user"
-	ClassAsync     = "async"
-	ClassInbox     = "inbox"
+	ClassInterrupt    = "interrupt"
+	ClassTask         = "task"
+	ClassUser         = "user"
+	ClassAsync        = "async"
+	ClassInbox        = "inbox"
+	ClassContinuation = "continuation"
 )
 
 // classPriority returns the sort key for a class. Lower = higher priority.
@@ -36,8 +37,10 @@ func classPriority(class string) int {
 		return 3
 	case ClassInbox:
 		return 4
-	default:
+	case ClassContinuation:
 		return 5
+	default:
+		return 6
 	}
 }
 
