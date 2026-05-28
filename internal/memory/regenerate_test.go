@@ -312,6 +312,72 @@ func TestSummarizeSession_MultiLineModelOutputBecomesValidRow(t *testing.T) {
 	}
 }
 
+// TestSummarizePrompt_LeanStyleAnchors guards QUM-644: the prompt must steer
+// the model toward the lean, telegraphic, headline-first style by embedding
+// canonical example anchors AND an explicit anti-pattern block. A future
+// refactor that dilutes any of these anchors regresses the regen quality —
+// truncation markers reappeared on ~95% of rows when the prompt was generic.
+func TestSummarizePrompt_LeanStyleAnchors(t *testing.T) {
+	t.Parallel()
+	s := Session{
+		SessionID: "550e8400-e29b-41d4-a716-446655440000",
+		Timestamp: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC),
+	}
+	prompt := summarizePrompt(s, "body", false)
+
+	// Canonical lean-style example anchors from the QUM-644 issue. The prompt
+	// must embed at least 3 of these verbatim so the model has style anchors.
+	exampleAnchors := []string{
+		"QUM-329 shipped: TUI handoff restart fix works",
+		"Released v0.2.0; shipped QUM-555-562 notification UX arc.",
+		"8 commits merged: Phase 1 unified runtime (TurnLoop+wrapper), TDD sub-agents live, QUM-397 ready",
+		"Memory re-arch (3-tier append-only, QUM-513-517 Done); cruft cleanup wave 2 (-228 LOC); QUM-520 MCP wedge bug filed.",
+		"Fixed critical host stdout-reader wedge (QUM-595); shipped 5 TUI/cleanup waves; cut v0.2.1-v0.2.3.",
+	}
+	found := 0
+	for _, ex := range exampleAnchors {
+		if strings.Contains(prompt, ex) {
+			found++
+		}
+	}
+	if found < 3 {
+		t.Errorf("prompt contains %d/%d canonical example anchors; want ≥3", found, len(exampleAnchors))
+	}
+
+	// Explicit anti-pattern block — the cheapest way to keep the model from
+	// drifting back to narrative voice.
+	if !strings.Contains(prompt, "DO NOT") {
+		t.Errorf("prompt missing 'DO NOT' anti-pattern marker; got: %q", prompt)
+	}
+
+	// Action-verb opening vocabulary should be named.
+	wantVerbs := []string{"Shipped", "Fixed", "Released", "Filed"}
+	for _, v := range wantVerbs {
+		if !strings.Contains(prompt, v) {
+			t.Errorf("prompt missing action verb %q in vocabulary guidance", v)
+		}
+	}
+
+	// Length guidance — explicit character budget must be named (the model
+	// drifts long without an explicit cap).
+	if !strings.Contains(prompt, "200") {
+		t.Errorf("prompt missing hard length-ceiling guidance (~200 chars)")
+	}
+
+	// Narrative-voice openers we explicitly want banned.
+	for _, banned := range []string{"The session", "This session"} {
+		if !strings.Contains(prompt, banned) {
+			t.Errorf("prompt should explicitly call out banned opener %q", banned)
+		}
+	}
+
+	// Retry preamble must still survive when strict=true.
+	strictPrompt := summarizePrompt(s, "body", true)
+	if !strings.HasPrefix(strictPrompt, "RETRY:") {
+		t.Errorf("strict prompt should begin with RETRY:, got: %q", strictPrompt[:32])
+	}
+}
+
 func TestSummarizeSession_PromptOmitsSessionID(t *testing.T) {
 	t.Parallel()
 	id := "550e8400-e29b-41d4-a716-446655440000"
