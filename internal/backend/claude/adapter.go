@@ -2,17 +2,25 @@ package claude
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	backend "github.com/dmotles/sprawl/internal/backend"
 	claudecli "github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/protocol"
 )
+
+// defaultTermGrace is the default SIGTERM → SIGKILL grace window applied by
+// transport.Close()'s polite-shutdown handshake (QUM-638). 200ms is enough
+// for claude to flush its transcript/wirelog files cleanly on a normal exit
+// while keeping teardown well under the 500ms happy-path budget.
+const defaultTermGrace = 200 * time.Millisecond
 
 // ExecSpec is the subprocess launch description produced by the Claude adapter.
 type ExecSpec struct {
@@ -179,6 +187,69 @@ func resolveHangTimeout() (time.Duration, bool) {
 	return d, true
 }
 
+// resolveTermGrace reads the polite-shutdown grace from SPRAWL_TERM_GRACE
+// (a Go duration). Falls back to defaultTermGrace on unset / empty /
+// unparseable. Negative values are passed through to allow tests to force
+// immediate SIGKILL escalation. Mirrors the resolveHangTimeout test-seam
+// pattern (QUM-635). See QUM-638.
+func resolveTermGrace() time.Duration {
+	raw := os.Getenv("SPRAWL_TERM_GRACE")
+	if raw == "" {
+		return defaultTermGrace
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return defaultTermGrace
+	}
+	return d
+}
+
+// terminateProcess implements the QUM-638 polite-shutdown handshake on a
+// running subprocess: SIGTERM → wait up to grace for exit → SIGKILL if the
+// subprocess is still alive. The exited channel must be closed by the
+// caller's cmd.Wait reaper when the process exits, so we can race the grace
+// timer against actual exit. nil-process is a no-op. An already-exited
+// subprocess (exited already closed) is a no-op. Errors from Signal are
+// best-effort (the subprocess may have died between checks); only the
+// SIGKILL escalation error is returned. See internal/merge/runtests.go's
+// killGracePeriod pattern for the equivalent on subprocess trees.
+func terminateProcess(p *os.Process, exited <-chan struct{}, grace time.Duration) error {
+	if p == nil {
+		return nil
+	}
+	// Fast path: already exited.
+	select {
+	case <-exited:
+		return nil
+	default:
+	}
+	// Polite signal. ErrProcessDone (subprocess already reaped) means we
+	// raced with cmd.Wait — treat as success.
+	if err := p.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+		// Other errors (ESRCH on non-Linux variants, etc.) — fall through
+		// to the grace wait + escalation. The race is rare enough that
+		// best-effort is correct.
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-exited:
+		return nil
+	case <-timer.C:
+	}
+	// Escalate.
+	if err := p.Kill(); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func buildEnv(spec backend.SessionSpec) []string {
 	env := os.Environ()
 	env = append(env, "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1")
@@ -247,14 +318,34 @@ func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
 	}
+
+	// QUM-638: a single shared cmd.Wait reaper publishes the exit result on
+	// `exited`. transport.Wait reads it; transport.Close's polite-shutdown
+	// races the grace timer against it. cmd.Wait can only be called once, so
+	// centralizing it here is the only safe way to expose subprocess-exit
+	// observability to multiple call sites.
+	exited := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(exited)
+	}()
+
+	proc := cmd.Process
 	return &transport{
 		reader:  protocol.NewReader(rdr),
 		writer:  protocol.NewWriter(wtr),
 		wireLog: wl,
-		wait:    cmd.Wait,
+		wait: func() error {
+			<-exited
+			return waitErr
+		},
+		terminate: func(grace time.Duration) error {
+			return terminateProcess(proc, exited, grace)
+		},
 		kill: func() error {
-			if cmd.Process != nil {
-				return cmd.Process.Kill()
+			if proc != nil {
+				return proc.Kill()
 			}
 			return nil
 		},
@@ -263,12 +354,13 @@ func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
 }
 
 type transport struct {
-	reader  *protocol.Reader
-	writer  *protocol.Writer
-	wireLog *wireLog
-	wait    func() error
-	kill    func() error
-	pid     int
+	reader    *protocol.Reader
+	writer    *protocol.Writer
+	wireLog   *wireLog
+	wait      func() error
+	kill      func() error
+	terminate func(grace time.Duration) error
+	pid       int
 }
 
 // Pid returns the OS process ID of the underlying claude subprocess.
@@ -295,7 +387,18 @@ func (t *transport) Recv(_ context.Context) (*protocol.Message, error) {
 	return t.reader.Next()
 }
 
+// Close performs the QUM-638 polite-shutdown handshake — SIGTERM → wait
+// SPRAWL_TERM_GRACE for exit → SIGKILL escalation — then closes the stdin
+// pipe. Issuing SIGTERM before writer.Close means the kernel closes the
+// subprocess's stdout pipe as soon as it exits, so the host-side reader
+// unwinds in milliseconds rather than the 1-2s claude takes to notice
+// stdin EOF. The terminate hook is nil for transports constructed without
+// a backing subprocess (test seams); in that case Close degrades to the
+// pre-QUM-638 writer.Close-only behaviour.
 func (t *transport) Close() error {
+	if t.terminate != nil {
+		_ = t.terminate(resolveTermGrace())
+	}
 	return t.writer.Close()
 }
 
