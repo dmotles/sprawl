@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	backend "github.com/dmotles/sprawl/internal/backend"
 	claudecli "github.com/dmotles/sprawl/internal/claude"
@@ -140,7 +141,7 @@ func (a *Adapter) Start(_ context.Context, spec backend.SessionSpec) (backend.Se
 		return nil, err
 	}
 
-	return backend.NewSession(transport, backend.SessionConfig{
+	cfg := backend.SessionConfig{
 		SessionID: spec.SessionID,
 		Identity:  spec.Identity,
 		Capabilities: backend.Capabilities{
@@ -149,7 +150,33 @@ func (a *Adapter) Start(_ context.Context, spec backend.SessionSpec) (backend.Se
 			SupportsToolBridge: true,
 		},
 		Observer: spec.Observer,
-	}), nil
+	}
+	// QUM-635: optional override for the D1 frame-stall watchdog window. The
+	// 10-minute default makes the "ask_user_question idle past the watchdog"
+	// scenario impractical to exercise in an automated e2e; the idle-past-
+	// watchdog row sets a short duration so it runs in seconds. Production
+	// leaves SPRAWL_BACKEND_HANG_TIMEOUT unset and keeps the default.
+	if d, ok := resolveHangTimeout(); ok {
+		cfg.HangTimeout = d
+	}
+	return backend.NewSession(transport, cfg), nil
+}
+
+// resolveHangTimeout reads an optional override for the backend D1 hang
+// watchdog window from SPRAWL_BACKEND_HANG_TIMEOUT (a Go duration, e.g.
+// "20s"; a negative value disables the watchdog). Returns (0, false) when
+// unset or unparseable so the caller falls back to backend defaults. This is
+// a diagnostic / test seam — see QUM-635's idle-past-watchdog e2e.
+func resolveHangTimeout() (time.Duration, bool) {
+	raw := os.Getenv("SPRAWL_BACKEND_HANG_TIMEOUT")
+	if raw == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, false
+	}
+	return d, true
 }
 
 func buildEnv(spec backend.SessionSpec) []string {

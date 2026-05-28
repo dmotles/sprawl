@@ -65,6 +65,39 @@ func (s *mockStarter) Start(spec ExecSpec) (backendpkg.ManagedTransport, error) 
 	return s.transport, nil
 }
 
+func TestResolveHangTimeout(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		set     bool
+		wantDur time.Duration
+		wantOK  bool
+	}{
+		{name: "unset falls back to default", set: false, wantOK: false},
+		{name: "empty falls back to default", env: "", set: true, wantOK: false},
+		{name: "valid short duration", env: "20s", set: true, wantDur: 20 * time.Second, wantOK: true},
+		{name: "negative disables watchdog", env: "-1s", set: true, wantDur: -1 * time.Second, wantOK: true},
+		{name: "unparseable falls back to default", env: "not-a-duration", set: true, wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv("SPRAWL_BACKEND_HANG_TIMEOUT", tc.env)
+			} else {
+				// Ensure no ambient value leaks in from the host env.
+				t.Setenv("SPRAWL_BACKEND_HANG_TIMEOUT", "")
+			}
+			gotDur, gotOK := resolveHangTimeout()
+			if gotOK != tc.wantOK {
+				t.Fatalf("resolveHangTimeout() ok = %v, want %v", gotOK, tc.wantOK)
+			}
+			if gotOK && gotDur != tc.wantDur {
+				t.Errorf("resolveHangTimeout() dur = %v, want %v", gotDur, tc.wantDur)
+			}
+		})
+	}
+}
+
 func TestAdapter_StartBuildsStreamJSONExecSpecFromSessionSpec(t *testing.T) {
 	starter := &mockStarter{transport: &mockManagedTransport{}}
 	var lookedUp string

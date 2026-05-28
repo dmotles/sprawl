@@ -2812,6 +2812,55 @@ func TestAppModel_SessionResultMsg_DispatchesPendingSubmit(t *testing.T) {
 	}
 }
 
+// TestAppModel_SessionResultMsg_FaultPath_FinalizesOnceAndUngates is the
+// QUM-635 TUI guard for defects 2/3. A mid-turn backend fault surfaces as
+// EventTurnFailed -> SessionResultMsg{IsError:true} (see
+// event_translate.go). The TUI must finalize the turn (TurnStreaming ->
+// TurnIdle), re-fire any queued submit (ungate input), and be idempotent if a
+// second terminal message somehow arrives — so a fault can never strand the
+// TUI "streaming" with input gated.
+func TestAppModel_SessionResultMsg_FaultPath_FinalizesOnceAndUngates(t *testing.T) {
+	app := busyAppWithBridge(t)
+	app.pendingSubmit = "queued after fault"
+	app.input.SetPendingPreview("queued after fault")
+
+	// The IsError SessionResultMsg is exactly what EventTurnFailed translates
+	// to when the D1 watchdog cancels a turn blocked on ask_user_question.
+	updated, cmd := app.Update(SessionResultMsg{
+		IsError: true,
+		Result:  "backend: reader hang timeout (no frames within HangTimeout)",
+	})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v, want TurnIdle after fault-path SessionResultMsg", app.turnState)
+	}
+	if app.pendingSubmit != "" {
+		t.Errorf("pendingSubmit should be cleared (ungated) after fault, got %q", app.pendingSubmit)
+	}
+	if cmd == nil {
+		t.Fatal("fault with queued submit should return a cmd re-firing the SubmitMsg (ungate)")
+	}
+	subMsg, ok := cmd().(SubmitMsg)
+	if !ok {
+		t.Fatalf("auto-fire cmd resolved to %T, want SubmitMsg", cmd())
+	}
+	if subMsg.Text != "queued after fault" {
+		t.Errorf("dispatched SubmitMsg.Text = %q, want %q", subMsg.Text, "queued after fault")
+	}
+
+	// Idempotent: a second terminal message (e.g. a racing normal result) must
+	// not panic, must leave turnState Idle, and has nothing left to re-fire.
+	updated2, cmd2 := app.Update(SessionResultMsg{IsError: true, Result: "again"})
+	app = updated2.(AppModel)
+	if app.turnState != TurnIdle {
+		t.Errorf("turnState = %v after second terminal msg, want TurnIdle (idempotent)", app.turnState)
+	}
+	if cmd2 != nil {
+		t.Errorf("second terminal msg should have no queued submit to re-fire, got cmd %T", cmd2())
+	}
+}
+
 func TestAppModel_SessionResultMsg_NoQueuedSubmit_NoCmd(t *testing.T) {
 	app := busyAppWithBridge(t)
 	updated, cmd := app.Update(SessionResultMsg{Result: "done", DurationMs: 5})

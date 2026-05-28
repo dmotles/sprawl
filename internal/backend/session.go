@@ -766,10 +766,20 @@ func (s *session) runHangWatchdog(ctx context.Context, hangTimeout time.Duration
 		case <-ticker.C:
 			// QUM-599: skip the staleness check when no turn is in
 			// flight — between-turn idle is not a hang.
+			// QUM-635: also skip while a control_request is outstanding
+			// (len(s.inflight) > 0). An in-flight async MCP handler means we
+			// owe claude a control_response — claude is blocked on US, not
+			// hung — so zero frames is the expected state, not a stall. The
+			// canonical case is ask_user_question awaiting a human: it can sit
+			// far longer than HangTimeout with no frames. Pause until the
+			// request resolves; once inflight drains the staleness check
+			// resumes, so a genuine no-progress hang (turn active, nothing
+			// inflight, no frames) is still caught.
 			s.mu.Lock()
 			turnActive := s.currentTurn != nil
+			awaitingControlResponse := len(s.inflight) > 0
 			s.mu.Unlock()
-			if !turnActive {
+			if !turnActive || awaitingControlResponse {
 				continue
 			}
 			last := s.lastFrameAt.Load()
@@ -935,6 +945,18 @@ func (s *session) dispatchMCPAsync(parentCtx context.Context, requestID string, 
 		defer func() {
 			s.mu.Lock()
 			delete(s.inflight, requestID)
+			// QUM-635: when the last outstanding control_request drains, re-seed
+			// the D1 watchdog baseline. While inflight > 0 the watchdog is
+			// paused and lastFrameAt freezes at the request's arrival time; if
+			// the request outlived HangTimeout (e.g. a human answering an
+			// ask_user_question), that baseline is now stale and the first tick
+			// after resume would fault on it. Re-seeding gives the resumed turn
+			// a fresh HangTimeout window — mirroring the StartTurn re-seed
+			// (QUM-599). The response was already sent above, so this marks the
+			// resume instant.
+			if len(s.inflight) == 0 {
+				s.lastFrameAt.Store(time.Now().UnixNano())
+			}
 			s.mu.Unlock()
 			cancel()
 		}()

@@ -620,6 +620,204 @@ func TestSession_D1_HangWatchdog_DisabledWhenNegative(t *testing.T) {
 	}
 }
 
+// TestSession_D1_HangWatchdog_PausedWhileControlRequestInflight is the
+// QUM-635 fix guard. While an interactive control_request is outstanding
+// (len(s.inflight) > 0), the frame-staleness watchdog MUST be paused: we owe
+// claude a control_response, so claude is blocked on US, not hung, and no
+// frames are expected. The watchdog must NOT fault ErrHangTimeout for the
+// entire window the request is inflight — even past several × HangTimeout.
+//
+// Once the control_request resolves (inflight drains back to empty), the
+// watchdog must RE-ARM and still fault a genuine mid-turn hang (turn active,
+// no inflight, no frames). This proves D1 is paused, not permanently
+// disabled.
+//
+// RED today: runHangWatchdog (session.go) does not consult s.inflight, so it
+// faults ErrHangTimeout during the inflight window — step 8 below fails.
+func TestSession_D1_HangWatchdog_PausedWhileControlRequestInflight(t *testing.T) {
+	overrideHangCheckInterval(t, 20*time.Millisecond)
+
+	transport := newMockManagedTransport()
+	bridge := newCtxRespectingToolBridge()
+	sess := NewSession(transport, SessionConfig{
+		SessionID:   "sess-d1-inflight",
+		HangTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = sess.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	initSessionWithBridge(ctx, t, sess, transport, bridge)
+
+	if _, err := sess.StartTurn(ctx, "go"); err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	drainStartTurnPrompt(t, transport)
+
+	// Trigger an async MCP dispatch: registers an entry in s.inflight and
+	// parks the ctx-respecting bridge handler. The turn is active and no
+	// frames will arrive while the handler is parked.
+	transport.feedMessage(t, mcpControlRequest)
+	awaitCtxBridgeEntry(ctx, t, bridge)
+
+	// KEY RED ASSERTION: 4 × HangTimeout of pure silence while a
+	// control_request is inflight must NOT fault. Current code faults
+	// ErrHangTimeout here because the watchdog ignores s.inflight.
+	time.Sleep(400 * time.Millisecond)
+	if err := sess.LastTurnError(); err != nil {
+		t.Fatalf("LastTurnError while control_request inflight = %v, want nil (QUM-635: watchdog must pause while we owe claude a control_response)", err)
+	}
+
+	// Resolve the control_request: release the parked handler. It returns a
+	// response and dispatchMCPAsync sends the control_response on sendCh,
+	// then removes the entry from s.inflight (drains to empty).
+	close(bridge.release)
+	select {
+	case <-transport.sendCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control_response not emitted after releasing the bridge handler")
+	}
+
+	// Watchdog must RE-ARM now that inflight is empty: turn is still active
+	// (no result frame fed) and silence exceeds HangTimeout, so a genuine
+	// hang MUST surface. This proves D1 was paused, not disabled.
+	waitFor(t, 1500*time.Millisecond, "ErrHangTimeout after inflight resolved", func() bool {
+		e := sess.LastTurnError()
+		return e != nil && errors.Is(e, ErrHangTimeout)
+	})
+}
+
+// TestSession_D1_HangWatchdog_ReseedsBaselineWhenInflightDrains is the
+// resume-edge regression guard for QUM-635. lastFrameAt is refreshed only on
+// inbound frames; while a control_request is inflight it freezes at the
+// request's arrival time. If a human takes longer than HangTimeout to answer
+// an ask_user_question, the baseline is stale by the time the request
+// resolves. The watchdog must RE-SEED lastFrameAt when inflight drains so the
+// resumed turn gets a fresh HangTimeout window — otherwise the first tick
+// after the answer faults ErrHangTimeout on the stale (pre-answer) baseline,
+// re-introducing the exact bug the fix exists to prevent.
+//
+// hangCheckInterval is set to an hour so the watchdog cannot tick during the
+// test: this isolates the re-seed mechanism (lastFrameAt advancing without any
+// inbound frame) from fault timing.
+func TestSession_D1_HangWatchdog_ReseedsBaselineWhenInflightDrains(t *testing.T) {
+	overrideHangCheckInterval(t, time.Hour)
+
+	transport := newMockManagedTransport()
+	bridge := newCtxRespectingToolBridge()
+	sess := NewSession(transport, SessionConfig{
+		SessionID:   "sess-d1-reseed",
+		HangTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = sess.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	initSessionWithBridge(ctx, t, sess, transport, bridge)
+
+	if _, err := sess.StartTurn(ctx, "go"); err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	drainStartTurnPrompt(t, transport)
+
+	transport.feedMessage(t, mcpControlRequest)
+	awaitCtxBridgeEntry(ctx, t, bridge)
+
+	s := sess.(*session)
+	// Let the baseline (control_request arrival time) age past HangTimeout
+	// with no inbound frames, mimicking a human taking >HangTimeout to answer.
+	time.Sleep(150 * time.Millisecond)
+	before := s.lastFrameAt.Load()
+
+	// Resolve the request: dispatchMCPAsync sends the control_response, then
+	// drains the inflight entry to empty.
+	close(bridge.release)
+	select {
+	case <-transport.sendCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("control_response not emitted after releasing the bridge handler")
+	}
+
+	// No inbound frame is fed, so only the inflight-drain re-seed can advance
+	// lastFrameAt past the stale baseline.
+	waitFor(t, 2*time.Second, "lastFrameAt re-seeded after inflight drains", func() bool {
+		return s.lastFrameAt.Load() > before
+	})
+}
+
+// TestSession_D1_HangWatchdog_ReArmsAfterControlRequestCancelled is the
+// leak-safety guard for QUM-635. Pausing D1 while len(inflight) > 0 means a
+// LEAKED inflight entry would permanently neuter the watchdog. dispatchMCPAsync
+// deletes its entry in an unconditional defer, so a cancelled/errored request
+// must still drain inflight to empty and let D1 re-arm. Here Interrupt cancels
+// the in-flight (ctx-respecting) handler; we assert inflight returns to 0 and
+// a subsequent silent, still-active turn faults ErrHangTimeout.
+func TestSession_D1_HangWatchdog_ReArmsAfterControlRequestCancelled(t *testing.T) {
+	overrideHangCheckInterval(t, 20*time.Millisecond)
+
+	transport := newMockManagedTransport()
+	bridge := newCtxRespectingToolBridge()
+	sess := NewSession(transport, SessionConfig{
+		SessionID:   "sess-d1-cancel-rearm",
+		HangTimeout: 100 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = sess.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	initSessionWithBridge(ctx, t, sess, transport, bridge)
+
+	if _, err := sess.StartTurn(ctx, "go"); err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	drainStartTurnPrompt(t, transport)
+
+	transport.feedMessage(t, mcpControlRequest)
+	awaitCtxBridgeEntry(ctx, t, bridge)
+
+	s := sess.(*session)
+	// Sanity: the entry is registered (watchdog is now paused).
+	s.mu.Lock()
+	n := len(s.inflight)
+	s.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("len(inflight) = %d after dispatch, want 1", n)
+	}
+
+	// Cancel the in-flight request. Interrupt cancels every inflight handler
+	// ctx; the ctx-respecting bridge returns ctx.Err(), dispatchMCPAsync sends
+	// an error control_response, and its defer deletes the entry.
+	if err := sess.Interrupt(ctx); err != nil && !errors.Is(err, ErrInterruptTimeout) {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	// Drain whatever Interrupt + the error response queued on the wire.
+	go func() {
+		for {
+			select {
+			case <-transport.sendCh:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Leak-safety: inflight MUST drain back to empty even on the cancel path.
+	waitFor(t, 2*time.Second, "inflight drains to 0 after cancel", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.inflight) == 0
+	})
+
+	// D1 must re-arm: turn still active, nothing inflight, no frames → fault.
+	waitFor(t, 1500*time.Millisecond, "ErrHangTimeout after cancelled request drains", func() bool {
+		e := sess.LastTurnError()
+		return e != nil && errors.Is(e, ErrHangTimeout)
+	})
+}
+
 // -----------------------------------------------------------------------------
 // F2: observer queue flush on Close
 // -----------------------------------------------------------------------------

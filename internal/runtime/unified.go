@@ -104,6 +104,23 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 					FaultClass:      class,
 					FaultNextAction: hint,
 				})
+				// QUM-635: if a turn is in flight when the backend faults,
+				// the turn-loop's drain exits silently (parent-ctx cancel
+				// path below, not a per-turn DeadlineExceeded) and never
+				// publishes a terminal turn event. Without one, the TUI stays
+				// in TurnStreaming forever — input gated, Esc a no-op — the
+				// exact wedge seen when the D1 watchdog cancelled a turn
+				// blocked on an ask_user_question. Emit EventTurnFailed so the
+				// existing terminal path (bridge → SessionResultMsg →
+				// finalizeTurn) clears streaming state and ungates input. Gated
+				// on turnRunning so a fault between turns can't spuriously
+				// finalize an idle TUI.
+				rt.mu.RLock()
+				turnRunning := rt.turnRunning
+				rt.mu.RUnlock()
+				if turnRunning {
+					rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
+				}
 				// QUM-606 R2: cancel the turn-loop runCtx so the loop
 				// exits, loopWG unblocks, and rt.done closes. Without
 				// this, AgentRuntime.watchHandleExit is structurally
