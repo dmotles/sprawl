@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -43,9 +44,25 @@ type CLIInvoker struct {
 // NewCLIInvoker returns a CLIInvoker that uses the real claude binary.
 func NewCLIInvoker() *CLIInvoker {
 	return &CLIInvoker{
-		findBinary: func() (string, error) { return exec.LookPath("claude") },
+		findBinary: resolveClaudeBinary,
 		cmdFactory: exec.CommandContext,
 	}
+}
+
+// resolveClaudeBinary locates the claude binary. If $SPRAWL_CLAUDE is set and
+// non-empty it is used verbatim (typically the scripts/run-claude auth shim
+// that re-hydrates CLAUDE_CODE_OAUTH_TOKEN — see CLAUDE.md and QUM-518); the
+// path must exist. Otherwise it falls back to PATH lookup. Mirrors
+// internal/agent/claude.go's RealLauncher.FindBinary so the memory
+// regenerate/consolidate paths honor the same override as the rest of sprawl.
+func resolveClaudeBinary() (string, error) {
+	if override := os.Getenv("SPRAWL_CLAUDE"); override != "" {
+		if _, err := os.Stat(override); err != nil {
+			return "", fmt.Errorf("SPRAWL_CLAUDE=%q: %w", override, err)
+		}
+		return override, nil
+	}
+	return exec.LookPath("claude")
 }
 
 // Invoke runs claude -p with the given prompt on stdin and returns the response.

@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -237,7 +238,16 @@ func RegenerateTimeline(ctx context.Context, opts RegenerateOptions) error {
 	for _, e := range all {
 		row, err := SummarizeSession(ctx, opts.Invoker, opts.Cfg, e.s, e.body)
 		if err != nil {
-			return fmt.Errorf("summarizing session %s: %w", e.s.SessionID, err)
+			// A cancellation/timeout of the overall operation aborts the run;
+			// don't mask a genuine ctx cancellation as a per-session failure.
+			if ctx.Err() != nil {
+				return fmt.Errorf("summarizing session %s: %w", e.s.SessionID, err)
+			}
+			// Best-effort: a single per-session invoker failure (transient
+			// claude error, per-call timeout, etc.) must not discard the rest
+			// of the batch. Degrade this session to a placeholder and continue.
+			log.Printf("regenerate: summarizing session %s failed, using placeholder: %v", e.s.SessionID, err)
+			row = PlaceholderRow(e.s)
 		}
 		if verr := ValidateTimelineRow(row); verr != nil {
 			// Defense-in-depth: replace with placeholder rather than abort.

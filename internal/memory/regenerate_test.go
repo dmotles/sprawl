@@ -689,3 +689,106 @@ func TestRegenerateTimeline_PlaceholderOnSummarizerFailure(t *testing.T) {
 		t.Errorf("row should signal placeholder; got %q", lines[0])
 	}
 }
+
+// TestRegenerateTimeline_PerSessionInvokerErrorDegradesToPlaceholder seeds
+// three sessions and configures an invoker that errors for exactly one of
+// them (a transient claude failure). The run must NOT abort: the other two
+// sessions are still summarized and the failing one degrades to a
+// PlaceholderRow, so a single flaky LLM call cannot discard the whole batch
+// (QUM-641).
+func TestRegenerateTimeline_PerSessionInvokerErrorDegradesToPlaceholder(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	idA := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	idB := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	idC := "cccccccc-cccc-cccc-cccc-cccccccccccc"
+	sA := Session{SessionID: idA, Timestamp: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)}
+	sB := Session{SessionID: idB, Timestamp: time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC)}
+	sC := Session{SessionID: idC, Timestamp: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)}
+	if err := WriteSessionSummary(root, sA, "body A"); err != nil {
+		t.Fatalf("WriteSessionSummary(A): %v", err)
+	}
+	if err := WriteSessionSummary(root, sB, "body B"); err != nil {
+		t.Fatalf("WriteSessionSummary(B): %v", err)
+	}
+	if err := WriteSessionSummary(root, sC, "body C"); err != nil {
+		t.Fatalf("WriteSessionSummary(C): %v", err)
+	}
+
+	// keyedInvoker errors on the session whose body contains "body B"; the
+	// others return valid summary text.
+	inv := &keyedInvoker{
+		responses: map[string]string{
+			"body A": "Summary A",
+			"body C": "Summary C",
+		},
+		errs: map[string]error{
+			"body B": fmt.Errorf("transient claude failure for B"),
+		},
+	}
+
+	out := filepath.Join(root, ".sprawl", "memory", "timeline.md.next")
+	if err := RegenerateTimeline(context.Background(), RegenerateOptions{
+		SprawlRoot: root,
+		OutPath:    out,
+		Invoker:    inv,
+		Stdout:     io.Discard,
+	}); err != nil {
+		t.Fatalf("RegenerateTimeline must not abort on a single per-session error: %v", err)
+	}
+
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read out: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 rows (A, B-placeholder, C), got %d: %q", len(lines), string(data))
+	}
+	// Rows are sorted ascending by date: A (Jan) < B (Feb) < C (Mar).
+	wantA := RenderTimelineRow(sA.Timestamp, idA, "Summary A")
+	wantB := PlaceholderRow(sB)
+	wantC := RenderTimelineRow(sC.Timestamp, idC, "Summary C")
+	if lines[0] != wantA {
+		t.Errorf("row 0 = %q, want %q", lines[0], wantA)
+	}
+	if lines[1] != wantB {
+		t.Errorf("failed session B should degrade to placeholder; row 1 = %q, want %q", lines[1], wantB)
+	}
+	if lines[2] != wantC {
+		t.Errorf("row 2 = %q, want %q", lines[2], wantC)
+	}
+}
+
+// TestRegenerateTimeline_AbortsOnContextCancellation confirms that a
+// cancellation of the overall operation still aborts the run — we must not
+// mask a genuine ctx cancellation as a per-session degradation (QUM-641).
+func TestRegenerateTimeline_AbortsOnContextCancellation(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+
+	id := "11111111-1111-1111-1111-111111111111"
+	s := Session{SessionID: id, Timestamp: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)}
+	if err := WriteSessionSummary(root, s, "body"); err != nil {
+		t.Fatalf("WriteSessionSummary: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // overall operation canceled before we start
+
+	out := filepath.Join(root, ".sprawl", "memory", "timeline.md.next")
+	inv := &recordingInvoker{errs: []error{fmt.Errorf("invoker call under canceled ctx")}}
+	err := RegenerateTimeline(ctx, RegenerateOptions{
+		SprawlRoot: root,
+		OutPath:    out,
+		Invoker:    inv,
+		Stdout:     io.Discard,
+	})
+	if err == nil {
+		t.Fatal("expected RegenerateTimeline to abort when the overall context is canceled")
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Errorf("aborted run should not have written output file (statErr=%v)", statErr)
+	}
+}

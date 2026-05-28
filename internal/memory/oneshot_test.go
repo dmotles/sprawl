@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -209,6 +210,50 @@ func TestCLIInvoker_PromptPassedViaStdin(t *testing.T) {
 	}
 	if got != prompt {
 		t.Errorf("stdin echo = %q, want %q", got, prompt)
+	}
+}
+
+func TestResolveClaudeBinary_SprawlClaudeOverride(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "run-claude")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nexec claude \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+	t.Setenv("SPRAWL_CLAUDE", shim)
+
+	got, err := resolveClaudeBinary()
+	if err != nil {
+		t.Fatalf("resolveClaudeBinary returned error: %v", err)
+	}
+	if got != shim {
+		t.Errorf("resolveClaudeBinary = %q, want %q (verbatim SPRAWL_CLAUDE override)", got, shim)
+	}
+}
+
+func TestResolveClaudeBinary_SprawlClaudeMissing(t *testing.T) {
+	t.Setenv("SPRAWL_CLAUDE", filepath.Join(t.TempDir(), "does-not-exist"))
+
+	if _, err := resolveClaudeBinary(); err == nil {
+		t.Fatal("resolveClaudeBinary returned nil error for non-existent SPRAWL_CLAUDE path")
+	}
+}
+
+func TestResolveClaudeBinary_EmptySprawlClaudeFallsBackToLookPath(t *testing.T) {
+	// Stage a fake `claude` on PATH so LookPath succeeds deterministically.
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "claude")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("SPRAWL_CLAUDE", "")
+	t.Setenv("PATH", dir)
+
+	got, err := resolveClaudeBinary()
+	if err != nil {
+		t.Fatalf("resolveClaudeBinary returned error: %v", err)
+	}
+	if got != fake {
+		t.Errorf("resolveClaudeBinary = %q, want %q (from PATH lookup)", got, fake)
 	}
 }
 
