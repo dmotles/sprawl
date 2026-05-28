@@ -28,10 +28,11 @@ const (
 	cuidE = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
 )
 
-// keyedInvoker is a ClaudeInvoker fake that returns canned responses keyed
-// by a substring of the prompt (typically the session UUID, since
-// SummarizeSession embeds the session id directly in the prompt). It can
-// also fail per-key when an entry is registered in errs.
+// keyedInvoker is a ClaudeInvoker fake that returns canned summary text keyed
+// by a substring of the prompt. Under the summary-only contract (QUM-639) the
+// prompt no longer echoes the session id, so the keys are unique substrings of
+// each session's fenced body (e.g. "body A"). It can also fail per-key when an
+// entry is registered in errs.
 type keyedInvoker struct {
 	responses map[string]string
 	errs      map[string]error
@@ -108,18 +109,18 @@ func nonEmptyLines(s string) []string {
 func TestConsolidate_EmptyTimelinePopulatedWithAllSessions(t *testing.T) {
 	root := t.TempDir()
 
-	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
-	sB := writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
-	sC := writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
+	writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
 
-	rowA := canonicalRow(sA, "Summary of session A")
-	rowB := canonicalRow(sB, "Summary of session B")
-	rowC := canonicalRow(sC, "Summary of session C")
-
+	// Under the summary-only contract (QUM-639) the prompt no longer echoes
+	// the session id; the fenced session body is the only per-session marker
+	// in the prompt, so the fake keys on the body and returns summary text
+	// (our code constructs the deterministic row prefix).
 	inv := &keyedInvoker{responses: map[string]string{
-		cuidA: rowA,
-		cuidB: rowB,
-		cuidC: rowC,
+		"body A": "Summary of session A",
+		"body B": "Summary of session B",
+		"body C": "Summary of session C",
 	}}
 
 	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
@@ -208,8 +209,8 @@ func TestConsolidate_AppendsOnlyMissingSessions(t *testing.T) {
 	rowD := canonicalRow(sD, "appended D")
 	rowE := canonicalRow(sE, "appended E")
 	inv := &keyedInvoker{responses: map[string]string{
-		cuidD: rowD,
-		cuidE: rowE,
+		"body D": "appended D",
+		"body E": "appended E",
 	}}
 
 	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {
@@ -273,11 +274,11 @@ func TestConsolidate_PerSessionInvocationFailure_OthersStillAppend(t *testing.T)
 	rowC := canonicalRow(sC, "Summary C")
 	inv := &keyedInvoker{
 		responses: map[string]string{
-			cuidA: rowA,
-			cuidC: rowC,
+			"body A": "Summary A",
+			"body C": "Summary C",
 		},
 		errs: map[string]error{
-			cuidB: errors.New("transient invoker failure for B"),
+			"body B": errors.New("transient invoker failure for B"),
 		},
 	}
 
@@ -322,10 +323,11 @@ func TestConsolidateExcluding_SkipsExcludedSessions(t *testing.T) {
 
 	rowA := canonicalRow(sA, "Summary A")
 	rowB := canonicalRow(sB, "Summary B")
-	// No response registered for cuidC — keyedInvoker errors if asked.
+	// No response registered for session C ("body C") — keyedInvoker errors
+	// if asked, which would fail the test loudly if C were not excluded.
 	inv := &keyedInvoker{responses: map[string]string{
-		cuidA: rowA,
-		cuidB: rowB,
+		"body A": "Summary A",
+		"body B": "Summary B",
 	}}
 
 	excludeIDs := map[string]bool{cuidC: true}
@@ -354,14 +356,14 @@ func TestConsolidateExcluding_SkipsExcludedSessions(t *testing.T) {
 func TestConsolidate_NilExcludeAppendsAll(t *testing.T) {
 	root := t.TempDir()
 
-	sA := writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
-	sB := writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
-	sC := writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
+	writeUUIDSession(t, root, cuidA, time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC), "body A")
+	writeUUIDSession(t, root, cuidB, time.Date(2026, 2, 1, 12, 0, 0, 0, time.UTC), "body B")
+	writeUUIDSession(t, root, cuidC, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC), "body C")
 
 	inv := &keyedInvoker{responses: map[string]string{
-		cuidA: canonicalRow(sA, "Summary A"),
-		cuidB: canonicalRow(sB, "Summary B"),
-		cuidC: canonicalRow(sC, "Summary C"),
+		"body A": "Summary A",
+		"body B": "Summary B",
+		"body C": "Summary C",
 	}}
 
 	if err := Consolidate(context.Background(), root, inv, nil, consolidateNow()); err != nil {

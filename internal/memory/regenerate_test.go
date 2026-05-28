@@ -3,7 +3,6 @@ package memory
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // recordingInvoker is a fake ClaudeInvoker that returns canned responses in
@@ -63,6 +63,7 @@ func TestTimelineRowRegex(t *testing.T) {
 		"2026-05-07 " + uuidB + " | Fixed QUM-511: merge follows worktree branch",
 		"2025-12-31 " + uuidC + " | x",                                                // single-char summary (matches \S branch)
 		"2026-03-15 " + uuidD + " | " + strings.Repeat("a", 120),                      // exactly 120 chars
+		"2026-03-15 " + uuidD + " | " + strings.Repeat("a", 250),                      // exactly 250 chars (upper bound)
 		"2026-02-29 " + uuidE + " | Multi-word summary with: punctuation, commas; OK", // punctuation OK
 		"2026-04-01 " + uuidF + " | Began QUM-513 umbrella; first slice is regenerate-timeline",
 	}
@@ -83,7 +84,7 @@ func TestTimelineRowRegex(t *testing.T) {
 		{"month out of range — wrong length date", "2026-1-01 " + uuidA + " | Short month"},
 		{"malformed UUID — too short", "2026-01-01 deadbeef | Bad id"},
 		{"malformed UUID — wrong segment lengths", "2026-01-01 550e8400-e29b-41d4-a716-44665544 | Truncated id"},
-		{"summary too long (121 chars)", "2026-01-01 " + uuidA + " | " + strings.Repeat("a", 121)},
+		{"summary too long (251 chars)", "2026-01-01 " + uuidA + " | " + strings.Repeat("a", 251)},
 		{"empty summary", "2026-01-01 " + uuidA + " | "},
 		{"summary with leading whitespace", "2026-01-01 " + uuidA + " |  leading space"},
 		{"leading bullet dash", "- 2026-01-01 " + uuidA + " | Looks like markdown bullet"},
@@ -132,13 +133,14 @@ func TestSummarizeSession_ValidFirstTry(t *testing.T) {
 	t.Parallel()
 	id := "550e8400-e29b-41d4-a716-446655440000"
 	s := Session{SessionID: id, Timestamp: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)}
-	want := "2026-05-07 " + id + " | First-try success summary"
-	inv := &recordingInvoker{responses: []string{want}}
+	// The model now returns plain summary TEXT only — our code builds the row.
+	inv := &recordingInvoker{responses: []string{"First-try success summary"}}
 
 	got, err := SummarizeSession(context.Background(), inv, RegenerateConfig{}, s, "session body")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	want := RenderTimelineRow(s.Timestamp, id, "First-try success summary")
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -147,13 +149,15 @@ func TestSummarizeSession_ValidFirstTry(t *testing.T) {
 	}
 }
 
-func TestSummarizeSession_RetryOnMalformed(t *testing.T) {
+func TestSummarizeSession_RetryOnEmpty(t *testing.T) {
 	t.Parallel()
 	id := "550e8400-e29b-41d4-a716-446655440000"
 	s := Session{SessionID: id, Timestamp: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)}
-	good := "2026-05-07 " + id + " | Retry succeeded"
+	// First response is whitespace-only → sanitizes to "" → forces a retry.
+	// Second response is a plain, usable summary.
+	good := "Retry produced a good summary"
 	inv := &recordingInvoker{responses: []string{
-		"Here is your row:\n2026-05-07 " + id + " | Bad preamble",
+		"   ",
 		good,
 	}}
 
@@ -161,21 +165,29 @@ func TestSummarizeSession_RetryOnMalformed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got != good {
-		t.Errorf("got %q, want %q", got, good)
+	want := RenderTimelineRow(s.Timestamp, id, sanitizeSummary(good))
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if err := ValidateTimelineRow(got); err != nil {
+		t.Errorf("retry row %q failed validation: %v", got, err)
+	}
+	if !strings.HasPrefix(got, "2026-05-07 "+id+" | ") {
+		t.Errorf("row prefix wrong: %q", got)
 	}
 	if len(inv.calls) != 2 {
 		t.Errorf("invoker called %d times, want 2", len(inv.calls))
 	}
 }
 
-func TestSummarizeSession_FallbackAfterTwoFailures(t *testing.T) {
+func TestSummarizeSession_FallbackOnEmpty(t *testing.T) {
 	t.Parallel()
 	id := "550e8400-e29b-41d4-a716-446655440000"
 	s := Session{SessionID: id, Timestamp: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)}
+	// Both attempts sanitize to "" → placeholder fallback.
 	inv := &recordingInvoker{responses: []string{
-		"garbage attempt 1",
-		"still garbage attempt 2",
+		"  \n\t ",
+		"",
 	}}
 
 	got, err := SummarizeSession(context.Background(), inv, RegenerateConfig{}, s, "body")
@@ -190,22 +202,149 @@ func TestSummarizeSession_FallbackAfterTwoFailures(t *testing.T) {
 	}
 }
 
-// echoInvoker returns a deterministic valid row for any session it sees,
-// keyed by the session ID embedded in the prompt. The implementer's prompt
-// MUST include the session id and date in a recoverable form; this fake
-// just emits a canonical row with a fixed summary so tests can assert on
-// row order/validity without caring about LLM-specific prose.
-type echoInvoker struct {
-	sessions map[string]Session // sessionID -> Session, for date lookup
+func TestSanitizeSummary_CollapsesWhitespace(t *testing.T) {
+	t.Parallel()
+	out := sanitizeSummary("line one\nline two\twith\rtabs   and   spaces")
+	if strings.ContainsAny(out, "\n\r\t") {
+		t.Errorf("output still contains newline/tab/cr: %q", out)
+	}
+	if strings.Contains(out, "  ") {
+		t.Errorf("output still contains double space: %q", out)
+	}
+	if out == "" {
+		t.Errorf("output unexpectedly empty")
+	}
 }
 
-func (e *echoInvoker) Invoke(_ context.Context, prompt string, _ ...InvokeOption) (string, error) {
-	for id, s := range e.sessions {
-		if strings.Contains(prompt, id) {
-			return RenderTimelineRow(s.Timestamp, id, "Echo summary for "+id[:8]), nil
+func TestSanitizeSummary_TrimsSurrounding(t *testing.T) {
+	t.Parallel()
+	if out := sanitizeSummary("  padded summary  "); out != "padded summary" {
+		t.Errorf("got %q, want %q", out, "padded summary")
+	}
+}
+
+func TestSanitizeSummary_TruncatesWithMarker(t *testing.T) {
+	t.Parallel()
+	out := sanitizeSummary(strings.Repeat("a", 400))
+	if len(out) > 250 {
+		t.Errorf("output len %d exceeds 250: %q", len(out), out)
+	}
+	if !strings.HasSuffix(out, "… (see session file)") {
+		t.Errorf("truncated output missing marker suffix: %q", out)
+	}
+	if !utf8.ValidString(out) {
+		t.Errorf("output is not valid UTF-8: %q", out)
+	}
+	ts := time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)
+	id := "550e8400-e29b-41d4-a716-446655440000"
+	if err := ValidateTimelineRow(RenderTimelineRow(ts, id, out)); err != nil {
+		t.Errorf("row built from truncated summary failed validation: %v", err)
+	}
+}
+
+func TestSanitizeSummary_TruncationRuneBoundary(t *testing.T) {
+	t.Parallel()
+	// 227 ASCII bytes + 20 two-byte runes (é) = 267 bytes; truncation must
+	// land on a rune boundary, never splitting a multibyte rune.
+	out := sanitizeSummary(strings.Repeat("a", 227) + strings.Repeat("é", 20))
+	if !utf8.ValidString(out) {
+		t.Errorf("truncation split a multibyte rune: %q", out)
+	}
+	if len(out) > 250 {
+		t.Errorf("output len %d exceeds 250", len(out))
+	}
+}
+
+func TestSanitizeSummary_Empty(t *testing.T) {
+	t.Parallel()
+	for _, in := range []string{"", "   ", "\n\t\r"} {
+		if out := sanitizeSummary(in); out != "" {
+			t.Errorf("sanitizeSummary(%q) = %q, want empty", in, out)
 		}
 	}
-	return "", errors.New("echoInvoker: no matching session in prompt")
+}
+
+func TestSummarizeSession_PrefixDeterministicEvenIfModelEchoesDateUUID(t *testing.T) {
+	t.Parallel()
+	id := "550e8400-e29b-41d4-a716-446655440000"
+	s := Session{SessionID: id, Timestamp: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)}
+	// The model echoes a foreign date + UUID from the session body. Our code
+	// builds the prefix deterministically from the session, so the foreign
+	// date/uuid must NOT appear as the row prefix.
+	inv := &recordingInvoker{responses: []string{
+		"2099-12-31 ffffffff-ffff-ffff-ffff-ffffffffffff | injected",
+	}}
+
+	got, err := SummarizeSession(context.Background(), inv, RegenerateConfig{}, s, "body")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(got, "2026-05-07 "+id+" | ") {
+		t.Errorf("row prefix not deterministic from session: %q", got)
+	}
+	if err := ValidateTimelineRow(got); err != nil {
+		t.Errorf("row failed validation: %v", err)
+	}
+	if !strings.Contains(got, "injected") {
+		t.Errorf("row should retain the model summary text; got %q", got)
+	}
+}
+
+func TestSummarizeSession_MultiLineModelOutputBecomesValidRow(t *testing.T) {
+	t.Parallel()
+	id := "550e8400-e29b-41d4-a716-446655440000"
+	s := Session{SessionID: id, Timestamp: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)}
+	inv := &recordingInvoker{responses: []string{"First line.\nSecond line."}}
+
+	got, err := SummarizeSession(context.Background(), inv, RegenerateConfig{}, s, "body")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := RenderTimelineRow(s.Timestamp, id, "First line. Second line.")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if err := ValidateTimelineRow(got); err != nil {
+		t.Errorf("multi-line model output produced invalid row: %v", err)
+	}
+	if len(inv.calls) != 1 {
+		t.Errorf("invoker called %d times, want 1", len(inv.calls))
+	}
+}
+
+func TestSummarizeSession_PromptOmitsSessionID(t *testing.T) {
+	t.Parallel()
+	id := "550e8400-e29b-41d4-a716-446655440000"
+	s := Session{SessionID: id, Timestamp: time.Date(2026, 5, 7, 0, 0, 0, 0, time.UTC)}
+	inv := &recordingInvoker{responses: []string{"ok summary"}}
+
+	if _, err := SummarizeSession(context.Background(), inv, RegenerateConfig{}, s, "body"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(inv.calls) == 0 {
+		t.Fatal("invoker not called")
+	}
+	prompt := inv.calls[0].prompt
+	// The prompt should ask for summary TEXT ONLY — no prefix to reproduce —
+	// so neither the session id nor the date should be embedded in it.
+	if strings.Contains(prompt, id) {
+		t.Errorf("prompt should not contain session id %q; got: %q", id, prompt)
+	}
+	if strings.Contains(prompt, "2026-05-07") {
+		t.Errorf("prompt should not contain the session date; got: %q", prompt)
+	}
+}
+
+// echoInvoker returns a fixed, non-empty summary for any session. Under the
+// summary-only contract (QUM-639) the model emits summary TEXT only and the
+// caller constructs the deterministic row prefix, so the fake no longer needs
+// to recover the session id/date from the prompt — it just returns prose that
+// sanitizeSummary keeps verbatim, letting tests assert on row order/validity
+// without caring about LLM-specific wording.
+type echoInvoker struct{}
+
+func (e *echoInvoker) Invoke(_ context.Context, _ string, _ ...InvokeOption) (string, error) {
+	return "Echo summary", nil
 }
 
 func TestRegenerateTimeline_SortAndWrite(t *testing.T) {
@@ -238,7 +377,7 @@ func TestRegenerateTimeline_SortAndWrite(t *testing.T) {
 	}
 
 	out := filepath.Join(root, ".sprawl", "memory", "timeline.md.next")
-	inv := &echoInvoker{sessions: sessions}
+	inv := &echoInvoker{}
 
 	err := RegenerateTimeline(context.Background(), RegenerateOptions{
 		SprawlRoot: root,
@@ -306,7 +445,7 @@ func TestRegenerateTimeline_RefusesOverwrite(t *testing.T) {
 		t.Fatalf("seed out: %v", err)
 	}
 
-	inv := &echoInvoker{sessions: map[string]Session{id: s}}
+	inv := &echoInvoker{}
 
 	// Without Force: must refuse.
 	err := RegenerateTimeline(context.Background(), RegenerateOptions{
@@ -353,7 +492,7 @@ func TestRegenerateTimeline_DryRun(t *testing.T) {
 
 	out := filepath.Join(root, ".sprawl", "memory", "timeline.md.next")
 	var stdout bytes.Buffer
-	inv := &echoInvoker{sessions: map[string]Session{id: s}}
+	inv := &echoInvoker{}
 
 	err := RegenerateTimeline(context.Background(), RegenerateOptions{
 		SprawlRoot: root,
@@ -464,7 +603,7 @@ func TestRegenerateTimeline_AllSessionsRendered(t *testing.T) {
 	}
 
 	out := filepath.Join(root, ".sprawl", "memory", "timeline.md.next")
-	inv := &echoInvoker{sessions: sessions}
+	inv := &echoInvoker{}
 
 	err := RegenerateTimeline(context.Background(), RegenerateOptions{
 		SprawlRoot: root,
@@ -518,11 +657,10 @@ func TestRegenerateTimeline_PlaceholderOnSummarizerFailure(t *testing.T) {
 	}
 
 	out := filepath.Join(root, ".sprawl", "memory", "timeline.md.next")
-	// Always-malformed invoker — both attempts return junk that fails
-	// ValidateTimelineRow.
+	// Both attempts sanitize to "" → placeholder fallback.
 	inv := &recordingInvoker{responses: []string{
-		"garbage attempt 1",
-		"still garbage attempt 2",
+		"",
+		"   ",
 	}}
 
 	err := RegenerateTimeline(context.Background(), RegenerateOptions{

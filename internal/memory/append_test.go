@@ -63,10 +63,18 @@ func seedSession(t *testing.T, root string, s Session, body string) {
 	}
 }
 
-// validRowFor returns a canonical row for s using a fixed summary so
-// recordingInvoker outputs always pass ValidateTimelineRow.
+// summaryFor returns the fixed summary TEXT a fake invoker should return for
+// s under the summary-only contract (QUM-639). The caller constructs the row
+// deterministically, so feeding this through SummarizeSession yields exactly
+// validRowFor(s).
+func summaryFor(s Session) string {
+	return "Append-session test row " + s.SessionID[:8]
+}
+
+// validRowFor returns the canonical row our code constructs for s from
+// summaryFor(s). Used as the expected output and to seed pre-existing rows.
 func validRowFor(s Session) string {
-	return RenderTimelineRow(s.Timestamp, s.SessionID, "Append-session test row "+s.SessionID[:8])
+	return RenderTimelineRow(s.Timestamp, s.SessionID, summaryFor(s))
 }
 
 func mkSession(id string, year int, month time.Month, day int) Session {
@@ -96,7 +104,7 @@ func TestAppendSession_CreatesFileWhenMissing(t *testing.T) {
 	seedSession(t, root, s, "session body A")
 
 	want := validRowFor(s)
-	inv := &recordingInvoker{responses: []string{want}}
+	inv := &recordingInvoker{responses: []string{summaryFor(s)}}
 
 	res, err := runAppend(context.Background(), root, s, inv)
 	if err != nil {
@@ -173,7 +181,7 @@ func TestAppendSession_SortedInsertMiddle(t *testing.T) {
 	seedSession(t, root, sB, "body B")
 
 	rowB := validRowFor(sB)
-	inv := &recordingInvoker{responses: []string{rowB}}
+	inv := &recordingInvoker{responses: []string{summaryFor(sB)}}
 
 	if _, err := runAppend(context.Background(), root, sB, inv); err != nil {
 		t.Fatalf("AppendSessionWithOptions: %v", err)
@@ -212,7 +220,7 @@ func TestAppendSession_SortedInsertHead(t *testing.T) {
 	sA := mkSession(tuuidA, 2026, 1, 1)
 	seedSession(t, root, sA, "body A")
 	rowA := validRowFor(sA)
-	inv := &recordingInvoker{responses: []string{rowA}}
+	inv := &recordingInvoker{responses: []string{summaryFor(sA)}}
 
 	if _, err := runAppend(context.Background(), root, sA, inv); err != nil {
 		t.Fatalf("append: %v", err)
@@ -237,7 +245,7 @@ func TestAppendSession_SortedInsertTail(t *testing.T) {
 	sC := mkSession(tuuidC, 2026, 12, 31)
 	seedSession(t, root, sC, "body C")
 	rowC := validRowFor(sC)
-	inv := &recordingInvoker{responses: []string{rowC}}
+	inv := &recordingInvoker{responses: []string{summaryFor(sC)}}
 
 	if _, err := runAppend(context.Background(), root, sC, inv); err != nil {
 		t.Fatalf("append: %v", err)
@@ -262,7 +270,7 @@ func TestAppendSession_SameDateAppendsAfterEqualRows(t *testing.T) {
 	sC := mkSession(tuuidC, 2026, 2, 15)
 	seedSession(t, root, sC, "body C")
 	rowC := validRowFor(sC)
-	inv := &recordingInvoker{responses: []string{rowC}}
+	inv := &recordingInvoker{responses: []string{summaryFor(sC)}}
 
 	if _, err := runAppend(context.Background(), root, sC, inv); err != nil {
 		t.Fatalf("append: %v", err)
@@ -299,7 +307,7 @@ func TestAppendSession_LockContention_ReturnsErrorWithinTimeout(t *testing.T) {
 	s := mkSession(tuuidA, 2026, 5, 1)
 	seedSession(t, root, s, "body")
 
-	inv := &recordingInvoker{responses: []string{validRowFor(s)}}
+	inv := &recordingInvoker{responses: []string{summaryFor(s)}}
 
 	start := time.Now()
 	_, err = AppendSessionWithOptions(context.Background(), AppendOptions{
@@ -327,7 +335,7 @@ func TestAppendSession_LockReleasedOnSuccess(t *testing.T) {
 
 	s := mkSession(tuuidA, 2026, 5, 1)
 	seedSession(t, root, s, "body")
-	inv := &recordingInvoker{responses: []string{validRowFor(s)}}
+	inv := &recordingInvoker{responses: []string{summaryFor(s)}}
 
 	if _, err := runAppend(context.Background(), root, s, inv); err != nil {
 		t.Fatalf("append: %v", err)
@@ -350,7 +358,7 @@ func TestAppendSession_DryRun_DoesNotWrite_FileMissing(t *testing.T) {
 	s := mkSession(tuuidA, 2026, 5, 1)
 	seedSession(t, root, s, "body")
 	row := validRowFor(s)
-	inv := &recordingInvoker{responses: []string{row}}
+	inv := &recordingInvoker{responses: []string{summaryFor(s)}}
 
 	var stdout bytes.Buffer
 	res, err := AppendSessionWithOptions(context.Background(), AppendOptions{
@@ -388,7 +396,7 @@ func TestAppendSession_DryRun_DoesNotMutateExisting(t *testing.T) {
 	sB := mkSession(tuuidB, 2026, 6, 1)
 	seedSession(t, root, sB, "body B")
 	rowB := validRowFor(sB)
-	inv := &recordingInvoker{responses: []string{rowB}}
+	inv := &recordingInvoker{responses: []string{summaryFor(sB)}}
 
 	var stdout bytes.Buffer
 	if _, err := AppendSessionWithOptions(context.Background(), AppendOptions{
@@ -410,14 +418,17 @@ func TestAppendSession_DryRun_DoesNotMutateExisting(t *testing.T) {
 	}
 }
 
-func TestAppendSession_MalformedHaikuFallsBackToPlaceholder(t *testing.T) {
+func TestAppendSession_EmptySummaryFallsBackToPlaceholder(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 
 	s := mkSession(tuuidA, 2026, 5, 1)
 	seedSession(t, root, s, "body")
 
-	inv := &recordingInvoker{responses: []string{"garbage one", "garbage two"}}
+	// Under the summary-only contract (QUM-639) the placeholder is produced
+	// only when the sanitized model summary is empty/whitespace-only on both
+	// the initial attempt and the single retry.
+	inv := &recordingInvoker{responses: []string{"   ", ""}}
 	res, err := runAppend(context.Background(), root, s, inv)
 	if err != nil {
 		t.Fatalf("append: %v", err)
@@ -502,7 +513,7 @@ func TestAppendSession_PreservesUnrelatedRows(t *testing.T) {
 	sE := mkSession(tuuidE, 2026, 5, 1)
 	seedSession(t, root, sE, "body E")
 	rowE := validRowFor(sE)
-	inv := &recordingInvoker{responses: []string{rowE}}
+	inv := &recordingInvoker{responses: []string{summaryFor(sE)}}
 
 	if _, err := runAppend(context.Background(), root, sE, inv); err != nil {
 		t.Fatalf("append: %v", err)
