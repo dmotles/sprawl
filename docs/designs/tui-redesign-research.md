@@ -1,9 +1,40 @@
 # TUI Redesign — Design Research
 
-**Status:** research / design notes
+**Status:** research / design notes — **decisions locked 2026-06-02** (see §3 LOCKED markers)
 **Author:** ghost (research agent)
-**Date:** 2026-06-02
+**Date:** 2026-06-02 (rev 3: header tree style locked)
 **Branch:** `dmotles/tui-redesign-research`
+
+## Revision history
+
+- **rev 1** (2026-06-02): Initial inventory + recommendations.
+- **rev 2** (2026-06-02): Locked decisions after dmotles review.
+  Also folds three weave confirmations: toasts support **both**
+  condition-based and user-dismiss; Ctrl+R input history is
+  **persistent** across sessions with concrete spec (~10k entries,
+  consecutive-dedup, mode 0600); **no `ask_user_question` bug
+  audit** — Linear confirmed all 11 AUQ issues are Done.
+- **rev 3** (2026-06-02): **Header tree layout locked to
+  `orbital-pill`** (§3.1) — roots anchored left, children fan right
+  as tokens, grandchildren as `↳` tokens; selected agent rendered
+  as reverse-video cyan pill. Reference impl:
+  `internal/tuichat/header.go::treeOrbitalCore` @
+  `dmotles/tui-chat-spike` commit `5245510`. Tree collapse policy
+  reclassified as implementation detail (orbital degrades
+  gracefully at width).
+  Sections marked **LOCKED** are final. Sections marked **OPEN** are
+  pending a downstream input.
+  Notable changes from rev 1:
+  - §3.2 activity panel: **dropped entirely**, no preserved alternatives.
+  - §3.6 notifications: rewritten around **toast subsystem** +
+    **viewport stream contract**.
+  - §3.7 lifecycle: rewritten around **overlay modal for handoff**
+    + **toast for recovery/interrupt/fault**.
+  - §3.10 selection: **no mouse capture in v1** — terminal/tmux own
+    selection. Drops both Ctrl+_ toggle and v/j/k/y mode.
+  - §5 migration: locked to **incremental in-place (5b)**, no
+    parallel `internal/tui2/` tree.
+  - New §5.5: discrete infrastructure pieces to file as Linear issues.
 
 ## Purpose
 
@@ -93,119 +124,115 @@ spike and a real replacement for `internal/tui/`.
 
 ## 3. Design decisions
 
-### 3.1 Multi-agent observation
+### 3.1 Multi-agent observation — **LOCKED**
 
-**Current.** Ctrl+N / Ctrl+P cycle `observedAgent`. When observing a
-non-root agent (`observedAgent != rootAgent`) the input panel is
-**hidden** (`app.go:1872`), the activity panel switches to that
-agent's tail, and the viewport shows that agent's transcript via
-the unified `ChildStreamAdapter`. The user can also `/switch
-<agent>` from the palette or click into the tree.
+**Decision:** option (a) — separate per-agent transcripts;
+Ctrl+N / Ctrl+P cycle the observed agent; `/observe <name>` palette
+command for explicit jumps. When observing a non-root agent the
+input row swaps to a dim "observing &lt;name&gt; — Ctrl+N back to
+weave" hint (no textinput, matches today's `app.go:1872` behavior).
 
-**Crucial constraint that the prompt mis-stated.** The user
-**cannot send messages to a child agent from the TUI today**.
-Children receive messages only via weave's MCP `send_message` tool.
-The TUI is observe-only when looking at a child. That removes a
-whole open question — there is no UX to port for "address a child".
+**Constraint already established by today's code:** the user
+**cannot send messages to a child agent from the TUI** — children
+only receive messages via weave's MCP `send_message`. Preserve that
+contract (see §3.3).
 
-**Options for the new model:**
+**Header tree layout — LOCKED: `orbital-pill`.** Picked by dmotles
+from ratz's `sprawl chat --tree=<style>` visual spike.
 
-| Option | Pros | Cons |
+- **Layout: orbital.** Roots anchored on the left
+  (`weave ──●`, `tower ──●`); children fan to the right as tokens;
+  grandchildren rendered as `↳`-prefixed tokens.
+- **Selected-agent marker: reverse-video cyan pill.** Same
+  treatment as the spike's minimal-glyphs variant.
+- **Reference implementation:** `internal/tuichat/header.go` on
+  `dmotles/tui-chat-spike`, commit `5245510`, function
+  `treeOrbitalCore` (the pill marker lives in the same file).
+  Implementer ports the rendering logic from there.
+
+Considered + rejected: (b) interleaved single transcript with
+`[finn]` prefixes (drowns weave, tool-call expand/collapse gets
+ambiguous across agents); (c) tabs (extra primitive, ugly at N>4);
+(d) modal-only switcher (loses ambient awareness — the header tree
+is the ambient signal).
+
+### 3.2 Activity panel — **LOCKED: DROPPED**
+
+The activity panel goes away entirely in the new TUI. No header
+embellishment, no inline-in-weave-transcript, no replacement
+affordance. Users who want to see what a child is doing
+`Ctrl+N` to that child's transcript.
+
+`activity.ndjson` on disk continues to be written for debugging
+and post-hoc inspection; the UI just doesn't surface it.
+
+`internal/tui/activity.go` and `internal/tui/activity_stream.go`
+are deleted as part of Phase 1 of the migration (§5).
+
+### 3.3 Sending a message to a child — **LOCKED**
+
+No such feature today; none in scope for v1. The TUI is
+observe-only when looking at a child. If we ever add it, the
+palette `/send <name> <msg>` slot is reserved — but this is
+not v1 work.
+
+### 3.4 MCP tool calls weave makes — **LOCKED**
+
+Tools like `spawn`, `merge`, `retire`, `send_message`, `delegate`,
+`ask_user_question` render as **collapsed tool-call items** in
+weave's transcript — identical to any other tool call. The spike's
+`toolCallItem` collapses to a one-liner and expands on Ctrl+O. No
+special styling. The header tree already shows the side-effects
+(new agent appears, fault badge, status-dot transitions).
+
+**Important nuance — `/handoff` slash-command vs `handoff` MCP
+tool call (do not conflate):**
+
+- **`/handoff`** is a **user-facing slash command** in the palette.
+  It dispatches a `InjectPromptMsg` that injects a prompt-template
+  string *as if the user typed it*. The user sees it render as
+  their own message in the transcript (`userItem`-style). It is
+  not a tool call.
+- **`handoff`** (no slash) is the **MCP tool weave invokes** as the
+  actual handoff mechanism — wired through
+  `internal/rootinit/postrun.go`, `Supervisor.HandoffRequested()`.
+  This renders as a tool-call item in weave's transcript, just
+  like any other MCP tool.
+
+Both paths must exist; both must render correctly. They are
+different actors (user vs weave) with different render rules.
+
+**`ask_user_question` exception (preserve today's behavior):** its
+tool-call result is gated on the question modal closing. The
+tool-call entry renders in the transcript but its "result" body
+must **not** duplicate the user's answer back into the chat — the
+question modal already consumed that interaction. Today this
+works; preserve.
+
+### 3.5 Modals under altscreen — **LOCKED (with spike-validate gate per modal)**
+
+Placement model (three flavors):
+
+- (α) **Inline block** in the transcript that the user interacts
+  with, then collapses to a normal item.
+- (β) **Grow the sticky region** at the bottom temporarily (replace
+  the 1-line input with an N-line form).
+- (γ) **Centered altscreen overlay** painted on top.
+
+| Modal | LOCKED placement | Rationale |
 |---|---|---|
-| (a) **Separate transcripts** + slash-cmd `/observe <name>` + Ctrl+N/P cycle (status-quo behavior, new render) | Familiar; matches today's mental model; keeps weave's transcript clean; agent-specific tool-call rendering already implemented per-viewport | Mode-switching is invisible from the chat scrollback; no "where did weave come from" affordance |
-| (b) Interleaved single transcript with `[finn]` prefix per message | Simpler model; user sees everything in flight; no mode | Drowns weave; tool-call expand/collapse semantics get awkward across agents; cost rendering ambiguous |
-| (c) Tabs at top of viewport | Discoverable | Adds a UI primitive the spike doesn't have; gets ugly with N>4 agents |
-| (d) Modal switcher | Already exists (palette `/switch`) | Loses ambient awareness |
-
-**Recommendation: (a) — separate transcripts, Ctrl+N/P cycle,
-`/observe <name>` palette command.** This is the lowest-disruption
-mapping, preserves the per-agent viewport state we already have
-(seen-tool-ids, nesting state, backfill epoch), and the spike's
-3-line header is the ambient affordance for "which other agents
-exist + their state". The header tree must be **real**, not the
-spike's `fakeTree()`, and it must highlight the observed agent
-distinctly (e.g. underline + arrow on the observed node). When
-observing a child, the input row swaps to a dim "observing <name> —
-Ctrl+N back to weave" hint (no textinput, matches current behavior).
-
-### 3.2 Inline child activity (the dead sidebar)
-
-The activity sidebar dies with the multi-column layout. Three
-candidates for where the data goes:
-
-1. **Drop it.** Tool calls of the observed agent already render in
-   that agent's transcript when you `Ctrl+N` to them. The sidebar
-   today is largely a duplicate of what the viewport shows.
-2. **Header expansion.** Below the 3-line header, expose a 1-line
-   "currently: <tool name> · 12s" per non-idle agent. Cheap, ambient.
-3. **Inline as collapsed tool blocks in weave's transcript** when a
-   child agent is doing something noteworthy (delegated via
-   `spawn`/`delegate`).
-
-**Recommendation: drop the panel + add option (2) as a header
-embellishment.** The header tree already shows status dots
-(working / blocked / done / failure). Append the most-recent
-tool-name + elapsed for each non-idle non-weave agent as a one-line
-status under the tree. Users who want full activity can `Ctrl+N`
-into that agent. Option (3) is wrong: it conflates weave's
-transcript with what children are doing and breaks the
-chat-as-conversation metaphor.
-
-### 3.3 Sending a message to a child
-
-Already answered above: **users do not address children directly
-today and we should not start.** If we ever want this:
-
-- `/send <name> <msg>` palette command is the cleanest fit (matches
-  existing `/handoff` prompt-injection pattern).
-- `@finn …` prefix is a footgun (collides with markdown, GitHub
-  mentions, future autocomplete).
-- Modal is overkill.
-
-But this is a non-goal for the redesign — keep parity with today.
-
-### 3.4 MCP tool calls weave makes (`spawn`, `merge`, `retire`,
-`send_message`, `delegate`, `ask_user_question`)
-
-These already render today as collapsed tool blocks in weave's
-viewport — same machinery as any other tool call. The spike's
-`toolCallItem` collapses to a one-liner and expands on Ctrl+O.
-**Disposition: keep as-is, no special styling.** The header tree
-already shows the side-effects (new agent appears, fault badge,
-status dot transitions) so the user gets ambient feedback without
-us needing a bespoke "weave spawned finn" banner.
-
-Exceptions:
-
-- `ask_user_question` is special: its tool-call result is gated on
-  the question modal closing. The tool-call entry should render in
-  the transcript but its "result" body should not duplicate the
-  user's answer back into the chat — the question modal already
-  consumed that interaction. Today this works; preserve.
-- `handoff` is a *prompt-injection* template (palette
-  `InjectPromptMsg`), not a render. Keep that path.
-
-### 3.5 Modals under altscreen
-
-This is the chewiest area. We are already in altscreen, so we
-*can* paint overlay modals — but every overlay we draw fights the
-"chat = one column" thesis of the redesign. Three options per
-modal:
-
-(α) **Inline block in the transcript** that the user interacts
-with then it collapses to a normal item.
-(β) **Grow the sticky region** at the bottom temporarily (replace
-the 1-line input with an N-line form).
-(γ) **Centered altscreen overlay** as today.
-
-| Modal | Recommendation | Why |
-|---|---|---|
-| Help (F1/?) | **γ overlay** | Stateless reference; doesn't mutate session; overlay is what every TUI does and what users expect |
-| Palette (Ctrl+/) | **β grow sticky region** | The palette already replaces the input semantically; expanding the sticky input box into a filtered list is more honest than a free-floating box |
+| Help (F1/?) | **γ overlay** | Stateless reference; doesn't mutate session; users expect overlays for help |
+| Palette (Ctrl+/) | **β grow sticky region** | Palette already replaces the input semantically; expanding the sticky region is more honest than a floating box |
 | Error dialog (session-fatal) | **γ overlay** | Blocks all interaction; centered modal is the only safe affordance |
-| Confirm (Ctrl+C quit) | **α inline** as a "[y/n] Quit?" system message at the bottom of the scrollback, keyboard-focused | The dialog is one question with two answers; pinning it inline keeps history honest about "the user attempted to quit at T" |
-| Question (`ask_user_question`) | **β grow sticky region** | This is the hardest one. It's interactive (cursor + multi-pick + custom text + per-question tabs), it can be soft-hidden + reopened (Ctrl-Q), and there's a hard-cancel path that unwedges the MCP call. Trying to do α (inline) breaks Ctrl-Q reopen semantics — once it scrolls away you'd be hunting through scrollback. Trying to do γ (overlay) is fine but loses the "you have a pending question" ambient affordance. Growing the sticky region keeps it both visible and dismissible. Soft-hide collapses back to 1-line input + "🔔 pending question — Ctrl-Q" hint in the short-help strip (already the pattern today). |
-| Validate popup | **α inline** for the streamed output, plus an existing minimized **status-bar pill** for short cases | Validate output is *log content*. It belongs in the scrollback as a tool-call-like block. On failure, sticky-pin a header strip "validate failed — Ctrl-V to view" until the user dismisses. |
+| Confirm (Ctrl+C quit) | **α inline** "[y/n] Quit?" system message at the bottom of scrollback, keyboard-focused | Single question, two answers; pinning inline keeps history honest |
+| Question (`ask_user_question`) | **β grow sticky region** | Interactive (cursor + multi-pick + custom text + per-question tabs); supports soft-hide + Ctrl-Q reopen; α inline would break reopen (scrolls away); γ overlay loses ambient affordance |
+| Validate popup | **α inline** for streamed output + small **status-bar pill** for in-flight | See also §4 tweak: validate-failure popup is a small overlay near the merge/retire trigger, **not** a fullscreen takeover, auto-dismiss on validate completion. |
+
+**Per-modal spike-validate gate (LOCKED).** Each modal placement
+gets a small visual test before its phase ships. Phase 3 (modal
+migration in §5) does not advance a modal until its visual spike
+has been eyeballed and signed off. Spike artifacts live alongside
+ratz's visual spikes as a sibling.
 
 **Modal hierarchy.** Today: help > error > confirm > palette >
 question > validate. Preserve this with the caveat that β-style
@@ -214,36 +241,150 @@ modals (palette, question) live in the sticky region and γ-style
 at the same time; if an error arrives while the palette is open,
 the palette closes first (today's behavior).
 
-### 3.6 Notifications
+### 3.6 Notifications — **LOCKED (new model: toasts + viewport stream contract)**
 
-| Event | Today | Recommendation |
+This section is rewritten from rev 1. The model is now:
+
+**The Viewport Stream Contract (named principle, LOAD-BEARING).**
+The viewport renders **only** two kinds of content:
+
+> **(a) things sent *to* the agent**, and
+> **(b) things the agent responded *with*** (including tool-call
+> inputs/outputs).
+
+Everything else — system meta, harness chatter, MCP slow-warnings,
+faults, recoveries, interrupt acknowledgements, "session is
+restarting" status — goes through a separate **toast** or
+**overlay** layer. This contract is the design's spine; deviations
+from it should be treated as bugs.
+
+**Toast subsystem.** Toasts are overlay (non-stream) notifications
+for things the *agent itself* doesn't see — i.e. for the human
+operator. The subsystem is new infrastructure to be built (see
+§5.5 issue list).
+
+**Dismissal model (LOCKED, dual):** every toast supports **both**
+condition-based clearing **and** user-dismiss. The two are not
+exclusive — a toast persists until **either** its underlying
+condition clears **or** the user explicitly dismisses it,
+whichever happens first. User-dismiss is a single keybinding
+(TBD, e.g. Esc while no modal is up, or a small dismiss-toast
+chord) applied to the most-recent toast.
+
+Per-toast clearing conditions:
+
+| Toast | Cleared when (condition) | Also user-dismissible? |
 |---|---|---|
-| Inbox arrival (message-from-child) | AppendStatus + tree-badge refresh | Inline system message in chat + count badge on header tree node — identical to today, just rendered differently |
+| MCP slow-warning ("MCP call running > 60s: weave/spawn") | MCP call returns OR calling agent dies | yes |
+| Backend fault ("finn: backend fault (oom)") | agent is recovered (BackendFaultClearedMsg) OR retired | yes |
+| Interrupt issued ("interrupt sent to weave") | Harness injects the interrupt into the agent (i.e. the agent observes it and starts processing — at which point the viewport shows the agent's real response) | yes |
+| Rate-limit hit | Backoff window expires OR turn completes | yes |
+| Recovery startup ("recovered N agents") | **Timer-based exception** — informational, not state-bound. Auto-dismiss after ~5s. | yes (the user-dismiss is the primary affordance; the timer is a fallback) |
+
+**Per-event mapping under the new model:**
+
+| Event | Today's render | LOCKED render |
+|---|---|---|
+| Inbox arrival (message *to* weave) | AppendStatus + tree-badge | **In viewport** — it's content sent to the agent (matches contract). Unread badge on header tree for non-observed agents. |
 | Cost/token update | Status-bar field | Status-bar field, unchanged |
-| Rate-limit hit | Currently surfaces as a transport error → error dialog | Inline system message + sticky pill in status bar |
-| MCP op > 60s threshold | Banner in viewport + status-bar `⏳` pill | Same |
-| Backend fault on child | Tree FAULT badge + status-line banner | Header tree FAULT badge + inline system message in *weave's* transcript ("finn: backend fault: <class>"). When user `Ctrl+N`s to finn, the child viewport shows the fault context too |
-| Auto-continue triggered | AppendAutoTrigger banner | Same — inline system message |
+| Rate-limit hit | Transport error → error dialog | **Toast** + status-bar pill until backoff clears |
+| MCP op > 60s threshold | Banner in viewport + status-bar pill | **Toast** until MCP returns; status-bar pill unchanged |
+| Backend fault on child | Tree FAULT badge + status-bar banner | **Toast** + header tree FAULT badge; toast clears on recovery |
+| Backend recovered | Banner + tree-badge clear | **Toast** clears (no new toast needed) — header tree dot reverts; absence of fault is its own signal |
+| Auto-continue triggered | AppendAutoTrigger banner | Currently borderline: it's *sort of* a message-to-agent (the harness injects a continuation prompt). Render as a normal user-prompt-style item in the viewport (matches contract). |
+| Validate failure | Banner in viewport + sticky popup | **Small overlay near the merge/retire trigger** (per §4); auto-dismiss on completion. No fullscreen takeover. |
 
-Rule of thumb: anything observable in the past tense → inline
-system message. Anything in-flight or status-of-the-world →
-status-bar field or header decoration. Banner-flash (toast-style)
-is not needed; it doesn't fit chat ergonomics.
+**Anti-pattern.** "Sending interrupt…" / "Interrupt queued" /
+"Session restarting…" banners in the viewport are **out** —
+they violate the contract. Those events surface as toasts or
+overlays (§3.7).
 
-### 3.7 Lifecycle
+**Toast subsystem is its own engineering project.** See §5.5.
 
-| Path | Today | Recommendation |
-|---|---|---|
-| Handoff requested (`HandoffRequestedMsg` via `internal/rootinit/postrun.go`) | Status banner + `RestartSessionMsg` + async restart fn → `RestartCompleteMsg` reinstalls bridge | Identical state machine. Render: inline system message "Session restarting (handoff)…" → bridge closes → consolidation phase messages appear inline → new SessionBanner item on `RestartCompleteMsg`. |
-| Recover ("recovered N agents", `Real.Recover` + `cancelByAgent` for QUM-611) | `AgentsResumedMsg` banner on startup | Same — inline system message at top of weave's transcript |
-| In-flight turn cancel (Esc → bridge.Interrupt → `InterruptCompletedMsg`) | Status banner + finalizeTurn | Inline system "Interrupt sent — waiting for turn to end" then "Turn interrupted" |
-| Backend fault recovered (`BackendFaultClearedMsg`) | Banner + tree-badge clear | Inline system message in the *child's* viewport (where the fault happened) + tree dot reverts |
-| Terminal error (transport non-EOF) | Error dialog | γ overlay; user picks [r] / [q] |
-| EOF (graceful session end) | Auto-restart via `SessionErrorMsg{io.EOF}` → `RestartSessionMsg` | Same; inline "Session ended — restarting…" |
-| Question wedge (QUM-611) — child stuck on `ask_user_question` mid-`Recover` | `Real.Recover` proactively `cancelByAgent` then re-presents the queue | Unchanged; the TUI sees a `CancelQuestionMsg` followed by a fresh `QuestionsAvailableMsg`. Render: short flash "Question reset (recovery)" then re-show modal |
-| Drain/inject (QUM-555, QUM-619) | Inbox drained on idle → injected as `system-notification` wrappers | Inline system messages, identical to today; the `<system-notification>` envelope-strip code in `messages.go` ports unchanged |
+### 3.7 Lifecycle — **LOCKED (rewritten around overlay + toast model)**
 
-### 3.8 Resize edge cases
+All paths in this section honor the §3.6 **Viewport Stream
+Contract**: viewport shows what the agent sees or says;
+lifecycle/system meta surfaces as overlay or toast.
+
+**Handoff flow (LOCKED).** Introduces a new agent lifecycle state
+("standby for restart") — see §5.5 issue list.
+
+1. Weave invokes the **`handoff` MCP tool** (the actual mechanism,
+   not the `/handoff` slash-command).
+2. The MCP tool returns "handoff completed" to weave. Weave enters
+   the new **standby for restart** lifecycle state. Weave knows
+   not to start new work.
+3. On weave's next yield (turn end), a **floating overlay modal**
+   appears with the rest of the UI still visible underneath.
+4. Modal contents: animated progress + status messages
+   ("consolidating sessions…", "writing handoff…", "restarting…").
+   Sourced from today's `ConsolidationPhaseMsg` /
+   `ConsolidationCompleteMsg` events.
+5. Modal dismisses when restart completes; the new session takes
+   over rendering. No inline "Session restarting…" banner in the
+   viewport (that violated the contract).
+
+**Recovery flow (LOCKED).** Startup **toast**, *not* inline banner.
+"Recovered N agents." Timer-based dismissal (§3.6 exception).
+
+**Interrupt flow (LOCKED).**
+1. User presses Esc mid-turn.
+2. **Toast** appears: "interrupt sent" — acknowledges the user's
+   action.
+3. **Nothing in the viewport yet.** No "Interrupting…" or
+   "Interrupt queued" — those are system meta and violate the
+   contract.
+4. When the harness injects the interrupt into the agent and the
+   agent observes it, the agent's actual response renders in the
+   viewport as normal stream content.
+5. The toast clears when the harness completes injection.
+
+**Terminal error / backend fault.** Toast (per §3.6). Fatal
+session error still escalates to a γ-overlay error dialog with
+[r]estart / [q]uit.
+
+**EOF (graceful session end).** Auto-restart via `SessionErrorMsg{io.EOF}`
+→ `RestartSessionMsg`. The transition surfaces as a brief toast
+("Session ended — restarting…"); the new session banner is the
+visible signal that restart succeeded.
+
+**Sub-agents — Claude `Task` tool (NOT sprawl children).** The
+Claude harness's own `Task` tool spawns sub-instances inside a
+single agent's session. These are *not* sprawl agents and have no
+tree presence. Implementer picks one of:
+
+- (a) **Flatten** — render the `Task` tool plus all of its inner
+  tool calls as nested entries (current behavior, today's
+  QUM-379/386 nesting machinery), OR
+- (b) **Opaque** — render just the `Task` tool call with no inner
+  detail.
+
+Both meet the viewport contract; pick whichever is simpler at
+implementation time.
+
+**`ask_user_question` works as currently specified.** Linear
+audit confirmed no open AUQ bugs (all 11 AUQ-related issues are
+Done as of rev 2). Design proceeds assuming today's behavior is
+correct: tool-call item renders in the transcript; question
+modal owns the interaction; result body does not duplicate the
+user's answer into the chat (§3.4); soft-hide / hard-cancel work
+per QUM-611.
+
+**Question wedge (QUM-611).** When `Real.Recover` proactively
+`cancelByAgent`s a wedged question, the TUI sees `CancelQuestionMsg`
+followed by a fresh `QuestionsAvailableMsg`. Render: brief toast
+"question reset (recovery)" then re-show modal. Unchanged from
+rev 1 in behavior; just re-routed through the toast layer
+instead of an inline banner.
+
+**Drain/inject (QUM-555, QUM-619).** Inbox drained on idle →
+injected as `<system-notification>` wrappers. These **stay in the
+viewport** because they meet the contract: they are content sent
+*to* the agent. The envelope-strip code in `messages.go` ports
+verbatim.
+
+### 3.8 Resize edge cases — **LOCKED (adopt rev 1 plan as-is)**
 
 The spike already handles `WindowSizeMsg` by recomputing
 `header=3, status=1, input=1, gap=1, chat=remaining`, but graceful
@@ -269,51 +410,60 @@ degradation is missing. Add the following chain:
    re-running tool calls. The cached `view_cache.go` (QUM-451)
    pattern survives but its key needs to include width.
 
-### 3.9 Search — clarification + recommendation
+### 3.9 Search — **LOCKED**
 
-The prompt asked about a "searchOverlay" that lets users grep
-in-app scrollback. **There is no such thing today.** The Ctrl+R
-flow in `app.go:2400+` is shell-style reverse-search of the
-**input history** (`history.go`), not the transcript.
+- **Input-history reverse-search (Ctrl+R).** YES. Keep. (Note:
+  this searches input history, *not* viewport content — the rev 1
+  doc clarified that there is no scrollback search today.)
+- **Viewport grep.** NO. Just let the user scroll. Not in scope
+  for v1; not a follow-up either unless users explicitly ask.
 
-So this is two separate questions:
+**Persistence (LOCKED): persistent across sessions.** Not
+session-bound. Match shell muscle memory.
 
-1. **Input-history reverse-search (Ctrl+R).** Keep. It's keyboard
-   ergonomics, orthogonal to layout, renders fine as a one-line
-   prompt above the input.
-2. **Scrollback grep — should we add it?** Probably yes,
-   eventually, but **defer past the redesign cutover**. The
-   altscreen model can support it cheanly later as a β-style
-   sticky-region grow (`/` in viewport mode → grep prompt → next
-   match scrolls). It is not load-bearing for the redesign and
-   not currently a user expectation. Mark as follow-up.
+Concrete spec:
 
-### 3.10 Mouse capture / selection
+- **On-disk location.** `.sprawl/input-history` (already where
+  today's code writes) or under `.sprawl/memory/` — implementer's
+  choice between the two; either is sensible. Mode 0600.
+- **Append-only** semantics. New entries appended; old entries
+  stay until trim.
+- **Retention: ~10k entries**, trimmed in a rolling window from
+  the head (oldest dropped first when the cap is exceeded).
+- **De-duplicate consecutive duplicates.** If the user submits
+  the same string twice in a row, only one entry lands. (Non-
+  consecutive duplicates are kept; matches shell behavior.)
+- Load path must be **stable across session restarts** so handoff
+  loops preserve history.
 
-Two interacting features today:
+File this as its own issue (§5.5).
 
-- **Mouse cell-motion capture** so the viewport sees wheel scroll.
-  This blocks native terminal click-drag selection.
-- **Ctrl+_ / Ctrl+/ toggle** (QUM-617) drops mouse capture so the
-  user can drag-select with the host terminal. Status bar shows
-  `-- SELECT (mouse capture off) --`.
-- **Viewport `v`/`j`/`k`/`y` "select mode"** (QUM-281) for
-  yanking raw markdown via OSC 52.
+### 3.10 Mouse capture / selection — **LOCKED**
 
-Crush's approach (per the reference): implement own selection via
-OSC 52 inside the TUI, no need to drop mouse capture.
+**v1 has NO mouse capture at all.** Terminal/tmux own mouse
+entirely. Reason: the primary developer SSHs from a laptop and
+wants clipboard to live in the local viewer's OS, not on the
+remote host. Mouse capture inverts that and is a frequent
+papercut.
 
-| Option | Pros | Cons |
-|---|---|---|
-| (a) **Keep `Ctrl+_` toggle**, drop the viewport `v`/`j`/`k`/`y` mode | Simple; matches user expectation that "the terminal does selection"; one less mode to maintain | Loses the "yank a single message as raw markdown" affordance |
-| (b) Implement crush-style **own selection** via OSC 52, no capture toggle | Pretty; one consistent interaction model | Significant implementation work; OSC 52 paste-back is widely supported but copy out is not universal; mouse must do double-duty (scroll + drag-select) |
-| (c) Keep **both** | Maximum flexibility | Maximum confusion |
+Consequences:
 
-**Recommendation: (a) for the cutover; revisit (b) post-soak.**
-Ctrl+_ is well-understood, already documented in `CLAUDE.md`, and
-the redesign is risky enough without taking a dependency on
-broad OSC 52 copy support. The `v/j/k/y` mode is little-used per
-my reading of the code; punt it. (If users complain, revisit.)
+- The Ctrl+_ / Ctrl+/ selection-mode toggle (QUM-617) is **removed**
+  — there's nothing to toggle.
+- The viewport `v`/`j`/`k`/`y` own-selection mode (QUM-281) is
+  **removed**.
+- The TUI provides **keyboard scroll shortcuts** for the viewport:
+  PgUp / PgDn / Home / End / Up / Down (and ergonomic alternatives
+  on terminals that consume those). Wheel scroll is handed off to
+  the terminal emulator natively.
+- Crush-style OSC 52 own-selection is **future-maybe, not v1**.
+  Same SSH downside; can be revisited if the keyboard scroll
+  story turns out to be insufficient.
+
+`internal/tui/selection.go` is deleted as part of Phase 1.
+`CLAUDE.md`'s "Text selection in `sprawl enter` (QUM-617)" section
+will need to be updated to reflect the new model when v1 ships
+(file note for handoff).
 
 ---
 
@@ -327,6 +477,10 @@ the redesign:
    (`pendingSubmit string`, app.go ~line 200). The behavior is
    "last Enter wins". Esc cancels and — per QUM-576 — refuses to
    clobber a non-empty input. Spike has no queue at all today.
+   **v1 keeps single-slot.** Render the pending submit as a
+   hover-above-prompt indicator (the muted "⏸ queued: …" pattern
+   today, just rendered cleanly above the input row). A real
+   multi-message queue is future scope, not v1.
 2. **`UserMessageSentMsg` is the commit barrier for inbox drain**
    (QUM-323). `commitDrainCmd` only fires after the bridge confirms
    send. If you re-architect submit you must preserve this ordering
@@ -356,6 +510,10 @@ the redesign:
    survive paste bursts. Single-column has fewer panels to cache,
    but viewport renders during paste are still expensive — keep
    the cache, narrow its key.
+   **Copy/paste perf is an explicit regression-watch item.** It
+   took deliberate work to get right (QUM-451, QUM-608); v1 must
+   not regress it. Validate via the `paste-coalesce` mandatory-test
+   matrix row before flipping default.
 8. **Mouse events are routed only when no modal is up** (app.go
    ~line 600). Easy to forget when restructuring the Update.
 9. **Modal-stack swallowing**: each modal's Update returns early
@@ -370,6 +528,10 @@ the redesign:
     RunningHidden / RunningVisible / Minimized / Failed). On
     failure it is **sticky** until the next merge or kill. The
     redesign must carry this state through.
+    **v1 placement (per §3.5/§3.6):** small overlay near the
+    merge/retire trigger; auto-dismiss on validate completion;
+    **not** a fullscreen takeover. Failure stickiness is preserved
+    until the next merge/kill.
 12. **Question modal's hard vs soft dismiss** (QUM-611):
     `DismissQuestionMsg{Hard:true}` calls
     `Supervisor.CancelQuestion` which unwedges the MCP tool call.
@@ -416,77 +578,105 @@ the redesign:
 
 ---
 
-## 5. Migration plan
+## 5. Migration plan — **LOCKED: incremental in-place (5b)**
 
-### Phase 0 — finalize this doc + open Linear epic
+Rev 1 proposed two paths: (5a) promote `internal/tuichat/` to a
+parallel `internal/tui2/`, soak behind `sprawl enter --new`, then
+flip; or (5b) refactor `internal/tui/` in place, phase by phase,
+shipping each phase as the default.
 
-`QUM-???` (TBD) — TUI redesign tracking issue. Reference this doc.
+**Decision: (5b) incremental in-place.** Rationale:
 
-### Phase 1 — promote `internal/tuichat/` to `internal/tui2/`
+- Each phase is small, observable, and **daily-driver-testable**
+  the moment it merges.
+- **Bail-out** is possible at any phase — partial progress is
+  partial value.
+- (5a) concentrates soak risk at cutover day; (5b) distributes it.
+- "I'm using it daily" is a stronger forcing function than
+  "we'll cut over when X is done."
+- Slower in calendar time, but probably **faster to a stable
+  daily-driver-quality TUI** because each phase is shipped + dogfooded.
 
-Move the spike onto a redesign branch (off `dmotles/tui-chat-spike`).
-Replace `fakeTree()` with a real `*supervisor.Tree` adapter
-(read-only). Wire `protocol.Message` unmarshal to the real
-`tuiruntime.TUIAdapter` event stream. **No modals yet.** Goal:
-weave-only chat works against a real session for a single root
-agent. Validate manually.
+### Locked phase order
 
-### Phase 2 — multi-agent observation
+Each phase is a Linear issue + branch + PR. Each phase must:
 
-Add per-agent viewport buffers (`map[string][]Item`), `ChildStreamAdapter`
-integration, Ctrl+N/P cycle, observed-agent highlight in header
-tree, child-mode hides input. Backfill epoch ports verbatim from
-today.
+- pass `make validate`,
+- pass the relevant mandatory-test e2e matrix rows (see CLAUDE.md
+  table),
+- be visually signed off (per-modal spike gate in §3.5 applies to
+  modal phases),
+- be daily-driven by dmotles for ≥48h before the next phase opens
+  a PR.
 
-### Phase 3 — modals
+| # | Phase | Notes |
+|---|---|---|
+| 1 | **Rip out activity pane + simplify tree** | Smallest, safest. Deletes `activity.go`, `activity_stream.go`, drops the column from `layout.go`, simplifies `tree.go`. No new behavior — pure reduction. Matrix row at risk: `notify-tui` (must still surface child status changes via tree). |
+| 2 | **Port wordmark header into existing TUI** | Already tracked as **QUM-646**. Bring the spike's 3-line SPRAWL wordmark + cyan→purple gradient + `orbital-pill` header tree (§3.1) into `internal/tui/banner.go` / `tree.go`. Tree rendering ports from `internal/tuichat/header.go::treeOrbitalCore` @ `dmotles/tui-chat-spike` commit `5245510`. |
+| 3 | **Replace viewport with chat-style list + Expandable items (Ctrl+O)** | The biggest single change. `viewport.go` + `render.go` → item-list model from the spike. Ctrl+O expand/collapse. Glamour rendering ports. Per-agent buffers preserved. Backfill epoch preserved. Matrix rows at risk: most TUI-touching rows. |
+| 4 | **Toast notification subsystem (new infra)** | New file(s): `toast.go`. Condition-based dismissal subscribing to lifecycle events. No user-visible change until phase 5 wires events into it. See §5.5 issue. |
+| 5 | **Lifecycle pieces: handoff overlay, recovery toast, interrupt UX** | Wire `HandoffRequestedMsg` to the new overlay modal (§3.7). Wire `BackendFaultMsg` / `MCPCallStartedMsg` / recovery to toasts. Remove "Sending interrupt…" inline banner. Matrix rows: `handoff`, `recover-live`, `idle-interrupt-inject` all sensitive here. Introduces "standby for restart" agent state — see §5.5 issue. |
+| 6 | **Modal migration: palette, help, validate-popup, error, confirm, question** | Each modal moves to its locked placement (§3.5) with a small visual spike before the PR opens. Order within phase: help → confirm → error → palette → validate → question (hardest last). The `ask-user-question` mandatory-test row will likely flake until question modal lands; coordinate. |
+| 7 | **Mouse capture removal + keyboard scroll bindings** | Delete `selection.go`, remove Ctrl+_ / Ctrl+/ handlers, wire PgUp / PgDn / Home / End / arrow keys for viewport scroll. Update `CLAUDE.md` text-selection section. |
+| 8 | **Ctrl+R input reverse-search (re-spec)** | Already exists today; phase 8 is "do we change anything?" — likely keep it; just decide persistent-vs-session-scoped (§3.9 — leaning persistent). See §5.5 issue. |
+| 9 | **Cleanup: delete deprecated code paths** | Mop-up. Anything not deleted in earlier phases (dead message types, unused state fields) goes here. Update `CLAUDE.md` mandatory-test row paths if files moved. |
 
-Port in order of independence:
+**Order may shift if a dependency forces it.** For example, if the
+toast subsystem (phase 4) blocks lifecycle work (phase 5), 4
+*must* land first. If the wordmark header (phase 2) can land before
+or after the activity-pane removal (phase 1) without conflict,
+order is flexible. The constraint is: **phase 5 (lifecycle) cannot
+land before phase 4 (toast)**, and **phase 6 (modals) should not
+land before phase 3 (chat-style list)** because confirm/validate
+need the inline-item model.
 
-1. Help (γ overlay) — easy, stateless.
-2. Confirm (α inline) — small.
-3. Error dialog (γ overlay).
-4. Palette (β grow sticky region).
-5. Validate popup (α inline + status-bar pill).
-6. Question modal (β grow sticky region) — last, hardest, must
-   pass `ask-user-question` matrix row.
+### What does NOT happen under 5b
 
-### Phase 4 — lifecycle & notifications
+- No `internal/tui2/` parallel tree. No `sprawl enter --new` flag.
+  No "soak then flip" cutover day.
+- No giant atomic rewrite PR. Every phase is a normal PR.
+- No long-lived feature branch. Everything merges to main as it
+  lands.
 
-Handoff, recover, fault/recovery banners, inbox drain/inject,
-MCP-op pills, auto-continue. All of these are message-handler
-ports — the existing `messages.go` types come along.
+### Risk vs rev 1
 
-### Phase 5 — soak behind a flag
+(5a) had two safety nets (flag + parallel tree). (5b) has fewer,
+so each phase needs more discipline:
 
-Ship as `sprawl enter --new` for ~1 week. Old TUI is the default.
-Dogfood with the agent fleet. Fix paper-cuts.
+- **Mandatory-test e2e matrix rows are the safety net.** Every PR
+  in this plan must run them.
+- **Per-modal visual spike (§3.5)** is the second net for modals
+  specifically.
+- **48h daily-drive** is the third net — paper-cuts surface before
+  the next phase opens.
 
-### Phase 6 — flip default + delete old
+---
 
-`sprawl enter --new` becomes default; old code path becomes
-`--legacy`. After another week with no regressions, delete
-`internal/tui/` and rename `internal/tui2/` → `internal/tui/`.
-Update `CLAUDE.md`'s mandatory-test rows to point at the new
-paths.
+## 5.5 Discrete infrastructure pieces — file as separate Linear issues
 
-### Why phased + flagged, not atomic
+These are pieces of work surfaced by the redesign that warrant
+their own tracking issues (do not file the issues yet; this is
+just the list).
 
-- The mandatory-test e2e matrix is the contract. Six rows touch
-  TUI files. Flagged rollout lets the matrix run against *both*
-  implementations for the soak.
-- The TUI is the only user-facing surface; an atomic swap that
-  ships a broken modal kills user trust on the worst possible
-  surface.
-- Agents observing other agents (Phase 2) and the question modal
-  (Phase 3.6) are independently risky. Phasing them lets us back
-  out one without the other.
-
-### Why not keep the two side-by-side forever
-
-`agentBuffers`, `viewCache`, `view_cache.go`, `selection.go`,
-`tree.go`, `activity.go` are non-trivial code. Maintaining two
-TUIs taxes every TUI change. Hard cutover after soak; budget two
-weeks soak max.
+1. **Toast notification subsystem.**
+   New infra. Condition-based dismissal subscribing to lifecycle
+   events (MCP-op return, agent recovery, etc.). One timer-based
+   exception: recovery startup toast. Renders as overlay
+   (non-stream). See §3.6.
+2. **"Standby for restart" agent lifecycle state.**
+   New agent state introduced by the handoff flow (§3.7). Agent
+   enters standby after the `handoff` MCP tool returns; exits
+   when restart completes. Used to gate the handoff overlay
+   modal and prevent new turns from starting mid-restart.
+3. **Ctrl+R input reverse-search (persistence).**
+   Exists today as a per-session affordance; this issue makes it
+   **persistent across sessions** per §3.9. Concrete spec:
+   `.sprawl/input-history` (or `.sprawl/memory/`), mode 0600,
+   append-only, ~10k rolling retention, de-duplicate consecutive
+   duplicates, load path stable across session restarts.
+_(rev 2 dropped: a conditional "ask_user_question bug audit" entry.
+weave confirmed no open AUQ bugs; design assumes today's behavior
+is correct.)_
 
 ---
 
@@ -501,17 +691,36 @@ will feel sluggish. *Mitigation*: cache per-item rendered output,
 key by (width, expanded-state).
 
 **Load-bearing assumption #2: Ctrl+N/P + observed-agent input-hide
-remains the multi-agent UX.** If users push back hard ("I want to
-chat with finn directly") we will need to add `/send <name>` and
-revisit whether children should also have an input affordance.
-That's a chunk of supervisor work (`Real.SendMessage` is wired,
-the TUI just doesn't surface it).
+remains the multi-agent UX (LOCKED §3.1).** If users push back
+hard ("I want to chat with finn directly") we will need to add
+`/send <name>` and revisit. Out of v1 scope.
 
 **Load-bearing assumption #3: β-modals (palette, question) inside
-the sticky region won't be visually confusing.** This is the one
-that scares me most. The question modal can be 10+ lines of form;
-that's a lot of "input region". If users get lost we may have to
-revert to γ overlays for the question modal.
+the sticky region won't be visually confusing.** The question
+modal can be 10+ lines of form; that's a lot of "input region".
+**Mitigation locked in §3.5: per-modal spike-validate gate before
+each modal phase ships.** If the visual spike for the question
+modal feels wrong, fall back to γ overlay for that modal
+specifically.
+
+**Load-bearing assumption #5 (NEW, rev 2): the viewport stream
+contract (§3.6) is enforceable.** The model assumes every
+event/message can be cleanly bucketed as "agent-visible content"
+vs "system meta." If any event sits ambiguously between the two
+(today's `AutoContinueMsg` and inbox-drain `<system-notification>`
+wrappers are the borderline cases) we may end up either
+violating the contract or rendering important information only
+in toasts the user might miss. *Mitigation*: enumerate every
+`*Msg` type in `messages.go` against the contract during phase 4
+or 5 and document the bucket explicitly.
+
+**Load-bearing assumption #6 (NEW, rev 2): condition-based toast
+dismissal is implementable for every state-bound toast.** This
+requires each toast's clearing condition to actually fire as an
+observable event. MCP-call-end is fine; "calling agent dies" is
+fine (we have agent-state transitions). But "rate-limit window
+expires" may need a new timer/event we don't currently emit.
+*Mitigation*: validate per-toast during phase 4.
 
 **Load-bearing assumption #4: glamour markdown rendering is fast
 enough at terminal width.** Today's TUI uses glamour too. Should
@@ -530,69 +739,101 @@ be fine, but worth a benchmark on 100-item transcripts.
   also on a recent v2 release. Check API drift.
 - OSC 52 selection (if we revisit assumption from §3.10) has
   inconsistent terminal support; skip.
-- The header tree is going to be a lot more information-dense
-  than the spike's mock. At ≥6 agents the right-hand tree blob
-  starts to crowd the wordmark. Plan: when `len(tree.Nodes) > N`,
-  hide non-active branches behind a "…" with a hint.
+- The header tree is information-dense at high agent counts. The
+  `orbital-pill` layout (§3.1, rev 3) degrades gracefully at width
+  per ratz's spike notes; collapse policy when overflow does
+  occur is implementer's call (e.g. hide non-active branches
+  behind a "…" hint).
 
 ---
 
-## 7. Recommendations summary
+## 7. Locked decisions summary
 
 1. Adopt the spike's render model as the floor.
-2. Drop multi-pane layout; replace tree+activity sidebars with
-   the 3-line header tree + per-non-idle-agent status hint.
-3. Ctrl+N/P + observed-agent input-hide is the multi-agent UX,
-   identical to today. Header tree highlights the observed agent.
-4. β-style sticky-region growth for palette + question modal;
-   γ-style overlay for help + error; α inline for confirm +
-   validate.
-5. Drop the viewport `v`/`j`/`k`/`y` "select mode"; keep the
-   `Ctrl+_` mouse-capture toggle.
-6. Drop input-panel focus-cycling (Tab/Shift+Tab); single column
-   has nothing to cycle.
-7. Defer scrollback search to a follow-up.
-8. Phased migration behind `sprawl enter --new`; flip default
-   after ~1 week soak; delete old `internal/tui/` after another.
-9. Keep `messages.go` types stable across the rewrite — that's
-   how the mandatory-test e2e matrix rows survive the cutover.
+2. **Drop the activity panel entirely** (§3.2). No replacement.
+3. **Drop the multi-column layout**; the `orbital-pill` header
+   tree (§3.1) is the only multi-agent affordance.
+4. **Ctrl+N/P + observed-agent input-hide** is the multi-agent UX
+   (§3.1). Observed agent rendered with reverse-video cyan pill.
+5. **`/handoff` slash-command (user-injected prompt template) is
+   distinct from `handoff` MCP tool call (weave's mechanism)** —
+   render differently (§3.4).
+6. **Modal placements (§3.5)**: β grow-sticky for palette +
+   question, γ overlay for help + error, α inline for confirm +
+   validate. Per-modal spike-validate gate before shipping.
+7. **Viewport stream contract (§3.6, LOAD-BEARING)**: viewport
+   only renders agent-visible content. Everything else is toast
+   or overlay.
+8. **Toast subsystem** with **dual dismissal** — condition-based
+   *and* user-dismiss (whichever fires first). One timer
+   exception: recovery startup toast. New infra (§5.5 issue).
+9. **Handoff is a floating overlay modal** that appears at
+   weave's next yield after the `handoff` MCP returns (§3.7).
+   Introduces "standby for restart" agent state (§5.5 issue).
+10. **Interrupt UX**: toast acknowledges Esc; viewport stays
+    quiet until the harness injects the interrupt and the agent
+    responds for real (§3.7).
+11. **NO mouse capture in v1** (§3.10). Drop Ctrl+_ toggle, drop
+    `v`/`j`/`k`/`y`. Keyboard scroll shortcuts only.
+12. **Ctrl+R input reverse-search** preserved, **persistent**
+    across sessions; `.sprawl/input-history` (or `.sprawl/memory/`),
+    mode 0600, append-only, ~10k rolling retention, dedupe
+    consecutive duplicates (§3.9; §5.5 issue).
+13. **No viewport grep / scrollback search**, not even as future
+    scope unless users ask (§3.9).
+14. **Migration: incremental in-place (5b)**. 9-phase order
+    locked in §5. No `internal/tui2/`, no `--new` flag, no
+    parallel tree.
+15. **Keep `messages.go` types stable across phases** — that's
+    how the mandatory-test e2e matrix rows survive (§4 item 15).
+
+### OPEN (after rev 2)
+
+_(rev 3: header tree style + collapse policy are now resolved —
+`orbital-pill` layout locked, see §3.1. No design-level opens
+remain at the layout layer.)_
 
 ---
 
 ## Appendix A — file map for the redesign
 
-Production code that the new TUI replaces or absorbs:
+Refactor targets in `internal/tui/` (in-place per §5b — no
+`internal/tui2/`):
 
 ```
-internal/tui/app.go                  → split into chat/model.go + chat/update.go
-internal/tui/messages.go             → kept verbatim (contracts)
-internal/tui/viewport.go             → items.go (spike model)
-internal/tui/render.go               → items.go (Render method per type)
-internal/tui/tree.go                 → header.go (header tree)
-internal/tui/activity.go             → DELETED
-internal/tui/activity_stream.go      → DELETED
-internal/tui/statusbar.go            → status.go (kept shape)
+internal/tui/app.go                  → keep file; refactor Update/View phase-by-phase
+internal/tui/messages.go             → KEPT VERBATIM (contracts; mandatory-test safety net)
+internal/tui/viewport.go             → rewritten as item-list model (phase 3)
+internal/tui/render.go               → folded into per-item Render methods (phase 3)
+internal/tui/tree.go                 → header tree (phase 1 + 2)
+internal/tui/activity.go             → DELETED (phase 1)
+internal/tui/activity_stream.go      → DELETED (phase 1)
+internal/tui/activity_stream_test.go → DELETED (phase 1)
+internal/tui/activity_test.go        → DELETED (phase 1)
+internal/tui/statusbar.go            → kept shape; drop sidebar-related fields
 internal/tui/shorthelp.go            → kept
-internal/tui/question.go             → modal_question.go (β region)
-internal/tui/palette.go              → modal_palette.go (β region)
-internal/tui/help.go                 → modal_help.go (γ overlay)
-internal/tui/error_dialog.go         → modal_error.go (γ overlay)
-internal/tui/confirm.go              → inline_confirm.go (α inline)
-internal/tui/validate_popup.go       → inline_validate.go (α inline + pill)
-internal/tui/banner.go               → wordmark.go (header)
-internal/tui/selection.go            → DELETED (drop v/j/k/y)
+internal/tui/question.go             → β grow-sticky modal (phase 6)
+internal/tui/palette.go              → β grow-sticky modal (phase 6)
+internal/tui/help.go                 → γ overlay modal (phase 6)
+internal/tui/error_dialog.go         → γ overlay modal (phase 6)
+internal/tui/confirm.go              → α inline (phase 6)
+internal/tui/validate_popup.go       → α inline + pill, small-overlay-near-trigger (phase 6)
+internal/tui/banner.go               → wordmark (phase 2, QUM-646)
+internal/tui/selection.go            → DELETED (phase 7)
+internal/tui/selection_test.go       → DELETED (phase 7)
 internal/tui/child_stream.go         → kept verbatim
 internal/tui/event_translate.go      → kept verbatim
 internal/tui/protocol_mapping.go     → kept verbatim
-internal/tui/tool_header.go          → folded into items.go
-internal/tui/history.go              → kept verbatim
+internal/tui/tool_header.go          → folded into items (phase 3)
+internal/tui/history.go              → kept; re-spec for persistent (phase 8)
 internal/tui/replay.go               → kept verbatim
-internal/tui/layout.go               → simplified (no tree/activity columns)
-internal/tui/view_cache.go           → narrowed (per-item cache)
+internal/tui/layout.go               → simplified (phase 1: no activity col)
+internal/tui/view_cache.go           → narrowed (per-item cache, phase 3)
 internal/tui/colors.go, theme.go     → kept
 internal/tui/stderr_redirect.go      → kept
 internal/tui/session_backend.go      → kept verbatim
-cmd/enter.go                         → minor: swap NewAppModel → new constructor
+internal/tui/toast.go                → NEW (phase 4)
+cmd/enter.go                         → keep; minor wiring per phase
 cmd/enter_notify.go                  → kept verbatim
 ```
 
@@ -609,18 +850,19 @@ Test files in `internal/tui/*_test.go` need triage:
 
 ---
 
-## Appendix B — open questions for weave / the team
+## Appendix B — remaining open questions (rev 2)
 
-1. Are we OK losing the viewport `v`/`j`/`k`/`y` yank-as-raw-markdown
-   affordance? (§3.10)
-2. Is the β-grown sticky-region question modal acceptable, or do
-   we prefer γ-overlay for the question modal specifically?
-   (§3.5)
-3. Are we OK with **no** scrollback search at cutover? (§3.9)
-4. Header tree at ≥6 agents — collapse policy? Hide-non-active +
-   "…" hint is my proposal but it's a UX call.
-5. Do we want `/send <name> <msg>` in the palette as a forward-
-   looking nicety, or strictly observe-only? (§3.3)
+Most rev-1 open questions are locked. As of rev 3 the header-tree
+layout + collapse policy are also locked (orbital-pill, §3.1).
+What remains:
+
+1. **User-dismiss-toast keybinding** — Esc-when-no-modal? A
+   dedicated chord? Implementation-detail pick, not a design
+   question (§3.6).
+2. **Header tree collapse policy at high agent count** — the
+   orbital layout degrades gracefully at width per ratz's notes,
+   so collapse policy is now an **implementation detail** rather
+   than an open design question. Implementer picks at code time.
 
 ---
 
@@ -663,3 +905,46 @@ Where I would start next: prototype the β-grown sticky-region
 question modal in a throwaway branch. It is the single highest-
 risk decision in this doc, and 4 hours of code would tell us
 whether it feels OK or not. Everything else has clearer answers.
+
+## Reflections — rev 2 (post-locking)
+
+What I learned from the locking pass:
+
+- **The viewport stream contract (§3.6) is the most important
+  idea in the rewrite.** Once I had it written down I could see
+  rev 1's confusion: rev 1 wanted to inline-render lifecycle
+  banners *and* keep them as ambient affordances — which meant
+  the viewport became a mish-mash of "what the agent saw" plus
+  "what the harness was doing." The contract makes the split
+  load-bearing and tells us exactly what goes where. Future TUI
+  decisions can be checked against it.
+- **Toast subsystem is more than I expected.** I had pictured a
+  one-off helper. Condition-based dismissal subscribed to
+  lifecycle events is a real engineering project — it needs
+  agent-state subscription, MCP-call-state subscription, and a
+  small render layer with its own z-ordering vs modals. That's
+  why it's its own §5.5 issue.
+- **"Standby for restart" is a real new agent state**, not just
+  a TUI flag. The agent has to know not to start work; the
+  supervisor has to know not to feed it work; the TUI uses the
+  state to decide when to show the overlay. Cross-cutting.
+- **Dropping mouse capture entirely** removes a surprising amount
+  of code (selection.go, the Ctrl+_ toggle, the v/j/k/y mode,
+  parts of `view_cache.go`'s key, the cell-motion enable in
+  `cmd/enter.go`). Phase 7 is going to feel great.
+- **Incremental in-place (5b) is the right call.** Writing out
+  the 9-phase order made it obvious — each phase is a normal-
+  sized PR, each is shippable, each lands a real improvement.
+  The (5a) parallel-tree-with-flag plan was me over-engineering
+  the safety net.
+
+What I'd still chase if I had time:
+
+- Enumerate every `*Msg` type in `messages.go` against the
+  viewport stream contract (§3.6) and tag each as "viewport / toast
+  / overlay / status-bar." That catalog would make phase 3 + 4 +
+  5 mechanical. It's the next thing I'd produce.
+- Visual sketches of the handoff overlay modal — what does
+  "consolidating sessions…" actually look like rendered? The
+  animated progress could be a spinner or a phase indicator; the
+  choice affects how cluttered the overlay feels.
