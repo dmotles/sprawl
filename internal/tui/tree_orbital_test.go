@@ -29,6 +29,34 @@ func TestRenderTreeOrbital_SingleRoot(t *testing.T) {
 	}
 }
 
+func TestRenderTreeOrbital_RootNoChildren_NoAnchor(t *testing.T) {
+	// QUM-657: when the root has no children, the ──● orbital anchor should
+	// be suppressed and the status glyph appended directly to the root name.
+	nodes := []TreeNode{{Name: "weave", Type: "weave", Depth: 0}}
+	lines := RenderTreeOrbital(nodes, "", 80)
+	stripped := stripAnsi(strings.Join(lines, "\n"))
+
+	if strings.Contains(stripped, "──") {
+		t.Errorf("expected no ──● anchor when root has no children, got:\n%s", stripped)
+	}
+	if !strings.Contains(stripped, "weave ●") {
+		t.Errorf("expected 'weave ●' (name + glyph) when root has no children, got:\n%s", stripped)
+	}
+}
+
+func TestRenderTreeOrbital_RootWithChildren_KeepsAnchor(t *testing.T) {
+	// QUM-657: when the root has children, the ──● anchor is preserved.
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Depth: 0},
+		{Name: "finn", Type: "engineer", Depth: 1},
+	}
+	lines := RenderTreeOrbital(nodes, "", 100)
+	stripped := stripAnsi(strings.Join(lines, "\n"))
+	if !strings.Contains(stripped, "──●") {
+		t.Errorf("expected ──● anchor when root has children, got:\n%s", stripped)
+	}
+}
+
 func TestRenderTreeOrbital_RootWithChildren(t *testing.T) {
 	nodes := []TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},

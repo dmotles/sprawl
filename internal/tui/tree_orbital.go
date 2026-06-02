@@ -178,11 +178,25 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 	renderRootLine := func(g rootGroup) string {
 		rootState := TreeNodeAgentState(g.root)
 		var b strings.Builder
-		// Root name (no glyph appended — the ──● anchor stands in for it).
+		// QUM-657: with children, the trailing ──● anchor stands in for the
+		// root's status glyph; with no children the anchor would dangle, so
+		// we append the glyph directly to the root name and skip the anchor.
+		hasChildren := len(g.children) > 0
+		rootLabel := g.root.Name
+		if !hasChildren {
+			rootLabel = g.root.Name + " " + stateGlyph(rootState)
+		}
 		if selected != "" && g.root.Name == selected {
 			b.WriteString(selReverseStyle.Render(g.root.Name + " " + stateGlyph(rootState)))
 		} else {
-			b.WriteString(stateStyle(rootState).Render(g.root.Name))
+			b.WriteString(stateStyle(rootState).Render(rootLabel))
+		}
+		if !hasChildren {
+			// Surface unread badge even without children, then stop.
+			if g.root.Unread > 0 {
+				b.WriteString(" " + headerSep.Render(fmt.Sprintf("(%d)", g.root.Unread)))
+			}
+			return b.String()
 		}
 		b.WriteString(headerSep.Render(" ──● "))
 		// QUM-559: surface a root's unread maildir count as a dim `(N) ` badge
