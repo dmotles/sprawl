@@ -1239,10 +1239,10 @@ func TestAppModel_View_NoActivityColumn_OnWideTerm(t *testing.T) {
 	app := resized.(AppModel)
 
 	layout := ComputeLayout(app.width, app.height, app.inputBoxHeight())
-	if layout.TreeWidth+layout.ViewportWidth != layout.TermWidth {
-		t.Errorf("tree(%d)+viewport(%d)=%d must equal term=%d (no activity column)",
-			layout.TreeWidth, layout.ViewportWidth,
-			layout.TreeWidth+layout.ViewportWidth, layout.TermWidth)
+	// QUM-656: tree moved into the header, viewport claims the full width.
+	if layout.ViewportWidth != layout.TermWidth {
+		t.Errorf("viewport(%d) must equal term=%d (no left tree, no activity column)",
+			layout.ViewportWidth, layout.TermWidth)
 	}
 
 	// View() must still render without referencing any activity-panel state.

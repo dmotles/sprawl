@@ -1,8 +1,6 @@
 package tui
 
 const (
-	minTreeWidth = 20
-	maxTreeWidth = 50
 	// defaultInputHeight is the input box height when collapsed (1 line + 2
 	// border cells).
 	defaultInputHeight = 3
@@ -27,26 +25,32 @@ func IsTooSmall(width, height int) bool {
 }
 
 // Layout holds computed panel dimensions for the TUI.
+//
+// QUM-656: the left-column agent tree was removed; the tree now lives in the
+// top header alongside the SPRAWL wordmark. HeaderWidth / HeaderHeight describe
+// the header strip (3 wide / 1 narrow / 0 at zero width); HeaderTreeWidth is
+// the cell budget within the header reserved for the orbital tree.
 type Layout struct {
-	TreeWidth, TreeHeight         int
 	ViewportWidth, ViewportHeight int
 	InputWidth, InputHeight       int
 	StatusWidth, StatusHeight     int
 	// ShortHelpWidth / ShortHelpHeight describe the single-line short-help
 	// row sandwiched between the input bar and the status bar (QUM-420).
 	ShortHelpWidth, ShortHelpHeight int
-	// WordmarkWidth / WordmarkHeight describe the SPRAWL wordmark banner
-	// rendered at the top of the TUI (QUM-646). Three rows when the terminal
-	// is at least wordmarkNarrowThreshold cols wide, one row otherwise.
-	WordmarkWidth, WordmarkHeight int
-	TermWidth, TermHeight         int
+	// HeaderWidth / HeaderHeight describe the top-of-TUI header strip
+	// composing the SPRAWL wordmark + orbital agent tree (QUM-656).
+	HeaderWidth, HeaderHeight int
+	// HeaderTreeWidth is the cell budget within the header reserved for the
+	// orbital agent tree (QUM-656).
+	HeaderTreeWidth       int
+	TermWidth, TermHeight int
 }
 
 // ComputeLayout calculates panel dimensions from terminal size.
-// Tree panel is ~25% width (clamped to min/max). Input height is dynamic
-// (driven by the textarea's current line count) and clamped to
-// [defaultInputHeight, maxInputHeight]. Status bar is 1 line at bottom.
-// Viewport fills the rest.
+// The viewport now claims the full terminal width (QUM-656 removed the
+// left-column tree). Input height is dynamic (driven by the textarea's
+// current line count) and clamped to [defaultInputHeight, maxInputHeight].
+// Status bar is 1 line at bottom; header strip lives at the top.
 func ComputeLayout(width, height, inputHeight int) Layout {
 	// Clamp input height.
 	if inputHeight < defaultInputHeight {
@@ -61,41 +65,29 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 		TermHeight: height,
 	}
 
-	// Tree width: 25% clamped to [min, max].
-	l.TreeWidth = width / 4
-	if l.TreeWidth < minTreeWidth {
-		l.TreeWidth = minTreeWidth
-	}
-	if l.TreeWidth > maxTreeWidth {
-		l.TreeWidth = maxTreeWidth
-	}
-	if l.TreeWidth > width {
-		l.TreeWidth = width
-	}
-
-	// Viewport takes remaining horizontal space.
-	l.ViewportWidth = width - l.TreeWidth
+	// QUM-656: viewport claims the full terminal width — no left-column tree.
+	l.ViewportWidth = width
 	if l.ViewportWidth < 0 {
 		l.ViewportWidth = 0
 	}
 
-	// Vertical: status bar (1) + short-help (1) + input (dynamic) + main
-	// panels (rest).
+	// Vertical: status bar (1) + short-help (1) + input (dynamic) + header
+	// strip + main panels (rest).
 	l.StatusHeight = statusBarHeight
 	l.InputHeight = inputHeight
 	l.ShortHelpHeight = shortHelpHeight
 	l.StatusWidth = width
 	l.InputWidth = width
 	l.ShortHelpWidth = width
-	l.WordmarkWidth = width
-	l.WordmarkHeight = WordmarkHeight(width)
+	l.HeaderWidth = width
+	l.HeaderHeight = HeaderHeight(width)
+	l.HeaderTreeWidth = HeaderTreeWidth(width)
 
-	mainHeight := height - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.WordmarkHeight
+	mainHeight := height - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.HeaderHeight
 	if mainHeight < 0 {
 		mainHeight = 0
 	}
 
-	l.TreeHeight = mainHeight
 	l.ViewportHeight = mainHeight
 
 	return l

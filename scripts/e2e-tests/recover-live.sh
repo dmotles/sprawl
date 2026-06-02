@@ -63,8 +63,10 @@ test_run() {
     _stmux set-option -t "$SESSION" window-size manual >/dev/null
     _stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
 
-    if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
-        pass "TUI rendered ('weave (idle)' visible)"
+    # QUM-656: tree migrated into header; the old "weave (idle)" row no
+    # longer exists. Wait for the orbital root token instead.
+    if wait_for_pattern "$SESSION" "weave " 45; then
+        pass "TUI rendered (weave root visible in header tree)"
     else
         fail "TUI did not render within 45s"
         capture_pane "$SESSION" | tail -30 >&2

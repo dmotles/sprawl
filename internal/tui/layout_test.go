@@ -7,15 +7,7 @@ import (
 func TestComputeLayout_StandardSize(t *testing.T) {
 	l := ComputeLayout(80, 24, defaultInputHeight)
 
-	// Tree should be roughly 25% of width.
-	if l.TreeWidth < 15 || l.TreeWidth > 30 {
-		t.Errorf("TreeWidth = %d, want roughly 25%% of 80 (15-30)", l.TreeWidth)
-	}
-
 	// All dimensions should be positive.
-	if l.TreeHeight <= 0 {
-		t.Errorf("TreeHeight = %d, want > 0", l.TreeHeight)
-	}
 	if l.ViewportWidth <= 0 {
 		t.Errorf("ViewportWidth = %d, want > 0", l.ViewportWidth)
 	}
@@ -34,11 +26,6 @@ func TestComputeLayout_StandardSize(t *testing.T) {
 
 func TestComputeLayout_WideTerminal(t *testing.T) {
 	l := ComputeLayout(200, 50, defaultInputHeight)
-
-	// Tree width should be capped (not grow unbounded with terminal width).
-	if l.TreeWidth > 60 {
-		t.Errorf("TreeWidth = %d, want capped (<=60) for wide terminal", l.TreeWidth)
-	}
 	if l.ViewportWidth <= 0 {
 		t.Errorf("ViewportWidth = %d, want > 0", l.ViewportWidth)
 	}
@@ -47,13 +34,6 @@ func TestComputeLayout_WideTerminal(t *testing.T) {
 func TestComputeLayout_MinimumSize(t *testing.T) {
 	l := ComputeLayout(80, 24, defaultInputHeight)
 
-	// Nothing should be negative.
-	if l.TreeWidth < 0 {
-		t.Errorf("TreeWidth = %d, want >= 0", l.TreeWidth)
-	}
-	if l.TreeHeight < 0 {
-		t.Errorf("TreeHeight = %d, want >= 0", l.TreeHeight)
-	}
 	if l.ViewportWidth < 0 {
 		t.Errorf("ViewportWidth = %d, want >= 0", l.ViewportWidth)
 	}
@@ -78,12 +58,6 @@ func TestComputeLayout_TinyTerminal(t *testing.T) {
 	// Should not panic on very small terminal.
 	l := ComputeLayout(20, 8, defaultInputHeight)
 
-	if l.TreeWidth < 0 {
-		t.Errorf("TreeWidth = %d, want >= 0", l.TreeWidth)
-	}
-	if l.TreeHeight < 0 {
-		t.Errorf("TreeHeight = %d, want >= 0", l.TreeHeight)
-	}
 	if l.ViewportWidth < 0 {
 		t.Errorf("ViewportWidth = %d, want >= 0", l.ViewportWidth)
 	}
@@ -107,10 +81,9 @@ func TestComputeLayout_TinyTerminal(t *testing.T) {
 func TestComputeLayout_DimensionsConsistent(t *testing.T) {
 	l := ComputeLayout(120, 40, defaultInputHeight)
 
-	// Tree width + viewport width should not exceed terminal width.
-	if l.TreeWidth+l.ViewportWidth > l.TermWidth {
-		t.Errorf("TreeWidth(%d) + ViewportWidth(%d) = %d, exceeds TermWidth(%d)",
-			l.TreeWidth, l.ViewportWidth, l.TreeWidth+l.ViewportWidth, l.TermWidth)
+	// Viewport now claims the full terminal width.
+	if l.ViewportWidth != l.TermWidth {
+		t.Errorf("ViewportWidth(%d) != TermWidth(%d)", l.ViewportWidth, l.TermWidth)
 	}
 
 	// Status bar width should not exceed terminal width.
@@ -155,12 +128,6 @@ func TestMinTermConstants(t *testing.T) {
 func TestComputeLayout_ZeroSize(t *testing.T) {
 	l := ComputeLayout(0, 0, defaultInputHeight)
 
-	if l.TreeWidth < 0 {
-		t.Errorf("TreeWidth = %d, want >= 0", l.TreeWidth)
-	}
-	if l.TreeHeight < 0 {
-		t.Errorf("TreeHeight = %d, want >= 0", l.TreeHeight)
-	}
 	if l.ViewportWidth < 0 {
 		t.Errorf("ViewportWidth = %d, want >= 0", l.ViewportWidth)
 	}
@@ -181,8 +148,8 @@ func TestComputeLayout_ZeroSize(t *testing.T) {
 	}
 }
 
-// QUM-648: with the activity panel removed, tree + viewport must sum to the
-// full terminal width at every size. There is no third column anymore.
+// QUM-656: with the tree moved into the header, viewport must equal terminal
+// width at every size — there is no left-column tree anymore.
 func TestComputeLayout_ViewportReclaimsWidth_AllSizes(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -196,10 +163,9 @@ func TestComputeLayout_ViewportReclaimsWidth_AllSizes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			l := ComputeLayout(tt.width, 40, defaultInputHeight)
-			if l.TreeWidth+l.ViewportWidth != l.TermWidth {
-				t.Errorf("tree(%d)+viewport(%d)=%d must equal term=%d",
-					l.TreeWidth, l.ViewportWidth,
-					l.TreeWidth+l.ViewportWidth, l.TermWidth)
+			if l.ViewportWidth != l.TermWidth {
+				t.Errorf("viewport(%d) must equal term=%d",
+					l.ViewportWidth, l.TermWidth)
 			}
 		})
 	}
@@ -218,12 +184,6 @@ func TestComputeLayout_BelowMinimum(t *testing.T) {
 		t.Run(sz.name, func(t *testing.T) {
 			l := ComputeLayout(sz.width, sz.height, defaultInputHeight)
 
-			if l.TreeWidth < 0 {
-				t.Errorf("ComputeLayout(%d,%d): TreeWidth = %d, want >= 0", sz.width, sz.height, l.TreeWidth)
-			}
-			if l.TreeHeight < 0 {
-				t.Errorf("ComputeLayout(%d,%d): TreeHeight = %d, want >= 0", sz.width, sz.height, l.TreeHeight)
-			}
 			if l.ViewportWidth < 0 {
 				t.Errorf("ComputeLayout(%d,%d): ViewportWidth = %d, want >= 0", sz.width, sz.height, l.ViewportWidth)
 			}
@@ -257,10 +217,6 @@ func TestComputeLayout_DynamicInputHeight(t *testing.T) {
 		t.Errorf("larger input should shrink viewport: small=%d, large=%d",
 			small.ViewportHeight, large.ViewportHeight)
 	}
-	if large.TreeHeight >= small.TreeHeight {
-		t.Errorf("larger input should shrink tree: small=%d, large=%d",
-			small.TreeHeight, large.TreeHeight)
-	}
 }
 
 func TestComputeLayout_InputHeightClampedToMax(t *testing.T) {
@@ -289,13 +245,10 @@ func TestComputeLayout_ShortHelpHeightIsOne(t *testing.T) {
 func TestComputeLayout_ViewportShrunkByShortHelp(t *testing.T) {
 	w, h := 120, 40
 	l := ComputeLayout(w, h, defaultInputHeight)
-	want := h - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.WordmarkHeight
+	want := h - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.HeaderHeight
 	if l.ViewportHeight != want {
-		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - shortHelp(%d) - input(%d))",
-			l.ViewportHeight, want, h, l.StatusHeight, l.ShortHelpHeight, l.InputHeight)
-	}
-	if l.TreeHeight != want {
-		t.Errorf("TreeHeight = %d, want %d", l.TreeHeight, want)
+		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - shortHelp(%d) - input(%d) - header(%d))",
+			l.ViewportHeight, want, h, l.StatusHeight, l.ShortHelpHeight, l.InputHeight, l.HeaderHeight)
 	}
 }
 
@@ -303,5 +256,34 @@ func TestComputeLayout_ShortHelpWidthMatchesTerm(t *testing.T) {
 	l := ComputeLayout(120, 40, defaultInputHeight)
 	if l.ShortHelpWidth != l.TermWidth {
 		t.Errorf("ShortHelpWidth = %d, want %d (TermWidth)", l.ShortHelpWidth, l.TermWidth)
+	}
+}
+
+// QUM-656: with the tree moved to the header, viewport claims the full
+// terminal width — no left-column subtraction.
+func TestComputeLayout_NoLeftTreeColumn(t *testing.T) {
+	l := ComputeLayout(120, 40, defaultInputHeight)
+	if l.ViewportWidth != l.TermWidth {
+		t.Errorf("ViewportWidth = %d, want %d (TermWidth, no left tree)", l.ViewportWidth, l.TermWidth)
+	}
+}
+
+// QUM-656: the header carves out a positive width for the orbital tree at
+// wide terminal sizes.
+func TestComputeLayout_HeaderTreeWidth_Positive_Wide(t *testing.T) {
+	l := ComputeLayout(120, 40, defaultInputHeight)
+	if l.HeaderTreeWidth <= 0 {
+		t.Errorf("HeaderTreeWidth = %d, want > 0 at width=120", l.HeaderTreeWidth)
+	}
+}
+
+// QUM-656: HeaderHeight collapses from 3 (wide) to 1 (narrow) at the
+// wordmark-narrow boundary.
+func TestComputeLayout_HeaderHeight_Boundary(t *testing.T) {
+	if got := ComputeLayout(60, 40, defaultInputHeight).HeaderHeight; got != 1 {
+		t.Errorf("HeaderHeight at width=60 = %d, want 1", got)
+	}
+	if got := ComputeLayout(120, 40, defaultInputHeight).HeaderHeight; got != 3 {
+		t.Errorf("HeaderHeight at width=120 = %d, want 3", got)
 	}
 }

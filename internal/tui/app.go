@@ -1704,24 +1704,24 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	inputVisible := m.observedAgent == m.rootAgent
 	if !inputVisible {
 		layout.ViewportHeight += layout.InputHeight
-		layout.TreeHeight += layout.InputHeight
 		layout.InputHeight = 0
 	}
 
-	// Per-panel cached bordered render. Fingerprint key is the inner
-	// View() output + dimensions + active-panel flag (border style differs).
-	// Inner View() is cheap relative to lipgloss border render; the cache
-	// avoids the latter on the hot path (QUM-451).
-	treeView := m.cachedPanel(useCache, panelSlotTree, m.tree.View(),
-		layout.TreeWidth, layout.TreeHeight,
+	// QUM-656: the agent tree moved into the header (renderView prepends it
+	// below); the main row is now just the viewport. The tree panel cache
+	// slot is still populated so the per-tree-mutation cache key invalidates
+	// on tree changes — TODO(QUM-655): drop panelSlotTree + cachedMainRow
+	// once the cache-invariance tests are reshaped.
+	_ = m.cachedPanel(useCache, panelSlotTree, m.tree.View(),
+		layout.HeaderTreeWidth, OrbitalHeight(layout.TermWidth),
 		m.activePanel == PanelTree)
 
 	vpView := m.cachedPanel(useCache, panelSlotViewport, m.observedVP().View(),
 		layout.ViewportWidth, layout.ViewportHeight,
 		m.activePanel == PanelViewport)
 
-	// Combine tree and viewport horizontally.
-	mainRow := m.cachedMainRow(useCache, treeView, vpView)
+	// QUM-656: main row is the viewport only — the tree lives in the header.
+	mainRow := m.cachedMainRow(useCache, "", vpView)
 
 	// Status bar.
 	statusView := m.cachedStatus(useCache, m.statusBar.View(), layout.StatusWidth)
@@ -1743,11 +1743,12 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	}
 	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, inputView, shortHelpView, statusView, inputVisible)
 
-	// QUM-646: prepend the SPRAWL wordmark banner at the top of the layout.
-	// Height is already reserved by ComputeLayout via WordmarkHeight, so the
-	// composed content below fits within the terminal without clipping.
-	if layout.WordmarkHeight > 0 {
-		content = RenderWordmark(layout.TermWidth) + "\n" + content
+	// QUM-656: prepend the header strip (SPRAWL wordmark + orbital agent
+	// tree). Height is already reserved by ComputeLayout via HeaderHeight, so
+	// the composed content below fits within the terminal without clipping.
+	if layout.HeaderHeight > 0 {
+		treeLines := m.tree.OrbitalLines(layout.HeaderTreeWidth)
+		content = RenderHeader(layout.TermWidth, treeLines) + "\n" + content
 	}
 
 	if m.showPalette {
@@ -1972,7 +1973,9 @@ func (m *AppModel) resizePanels() {
 	// that lets long tree rows bleed past the border and soft-wrap, which
 	// then pushes the tree panel taller than its declared Height and clips
 	// the input box off the bottom of the screen (QUM-324 residual).
-	m.tree.SetSize(layout.TreeWidth-4, layout.TreeHeight-4)
+	// QUM-656: the tree lives in the header; size it to the header's tree
+	// budget and the orbital row count.
+	m.tree.SetSize(layout.HeaderTreeWidth, OrbitalHeight(layout.TermWidth))
 	for name, buf := range m.agentBuffers {
 		// The currently-observed viewport may need the input bar's reclaimed
 		// rows (QUM-340). Other buffers stay sized for the input-visible

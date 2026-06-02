@@ -215,6 +215,14 @@ func (m *TreeModel) SetSize(w, h int) {
 	m.height = h
 }
 
+// OrbitalLines returns the orbital-pill rendering of the tree, padded to
+// width. QUM-656: this is the entry point AppModel uses when composing the
+// header. The legacy View() rendering is retained for back-compat with the
+// (now-dead) left-pane callsite and existing tree_test.go assertions.
+func (m TreeModel) OrbitalLines(width int) []string {
+	return RenderTreeOrbital(m.nodes, m.SelectedAgent(), width)
+}
+
 // PrependWeaveRoot inserts a synthetic weave node at depth 0 and shifts all
 // existing nodes down by one depth level, returning the combined slice. The
 // rootUnread count is attached to the synthesized weave row so the tree can

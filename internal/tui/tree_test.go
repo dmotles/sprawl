@@ -242,107 +242,6 @@ func TestTreeModel_SetNodes_Empty(t *testing.T) {
 	}
 }
 
-func TestTreeModel_ViewRendersTypeIcons(t *testing.T) {
-	m := newTestTreeModel(t)
-	m.SetSize(40, 20)
-	m.SetNodes(newTestTreeNodes())
-
-	view := m.View()
-	for _, icon := range []string{"[W]", "[M]", "[E]", "[R]"} {
-		if !strings.Contains(view, icon) {
-			t.Errorf("View() should contain type icon %q, got:\n%s", icon, view)
-		}
-	}
-}
-
-func TestTreeModel_ViewRendersIndentation(t *testing.T) {
-	m := newTestTreeModel(t)
-	m.SetSize(40, 20)
-	m.SetNodes(newTestTreeNodes())
-
-	view := m.View()
-	lines := strings.Split(view, "\n")
-
-	// Find lines containing agents at different depths.
-	// Depth 0 = "weave" (no indent), Depth 1 = "tower" (indented), Depth 2 = "finn" (more indented).
-	var weaveLine, towerLine, finnLine string
-	for _, line := range lines {
-		stripped := stripAnsi(line)
-		if strings.Contains(stripped, "weave") {
-			weaveLine = stripped
-		}
-		if strings.Contains(stripped, "tower") {
-			towerLine = stripped
-		}
-		if strings.Contains(stripped, "finn") {
-			finnLine = stripped
-		}
-	}
-
-	if weaveLine == "" || towerLine == "" || finnLine == "" {
-		t.Fatalf("could not find weave/tower/finn lines in view:\n%s", view)
-	}
-
-	// tower (depth 1) should have more leading space than weave (depth 0).
-	weaveIndent := len(weaveLine) - len(strings.TrimLeft(weaveLine, " "))
-	towerIndent := len(towerLine) - len(strings.TrimLeft(towerLine, " "))
-	finnIndent := len(finnLine) - len(strings.TrimLeft(finnLine, " "))
-
-	if towerIndent <= weaveIndent {
-		t.Errorf("tower indent (%d) should be greater than weave indent (%d)", towerIndent, weaveIndent)
-	}
-	if finnIndent <= towerIndent {
-		t.Errorf("finn indent (%d) should be greater than tower indent (%d)", finnIndent, towerIndent)
-	}
-}
-
-// QUM-623 R4: tree rows must render any liveness status string verbatim —
-// including the new transients (starting/recovering/stopping) — without panic
-// and without being mistaken for a fault. No consumer may treat a non-
-// active/stopped status as an error.
-func TestTreeView_RendersLivenessStatusesGracefully(t *testing.T) {
-	statuses := []string{
-		"active", "stopped", "suspended", "resume_failed", "done",
-		"problem", "starting", "recovering", "stopping",
-	}
-	for _, status := range statuses {
-		t.Run(status, func(t *testing.T) {
-			m := newTestTreeModel(t)
-			m.SetSize(80, 20)
-			m.SetNodes([]TreeNode{
-				{Name: "alice", Type: "engineer", Status: status, Depth: 0},
-			})
-
-			view := stripAnsi(m.View())
-			want := "(" + status + ")"
-			if !strings.Contains(view, want) {
-				t.Errorf("View() should contain %q verbatim; got:\n%s", want, view)
-			}
-			if strings.Contains(view, "[FAULT") {
-				t.Errorf("status %q must not render as a fault; got:\n%s", status, view)
-			}
-		})
-	}
-}
-
-// QUM-623 R4: an empty status must render a sane placeholder "(unknown)"
-// rather than a bare "()".
-func TestTreeView_EmptyStatusRendersPlaceholder(t *testing.T) {
-	m := newTestTreeModel(t)
-	m.SetSize(80, 20)
-	m.SetNodes([]TreeNode{
-		{Name: "alice", Type: "engineer", Status: "", Depth: 0},
-	})
-
-	view := stripAnsi(m.View())
-	if !strings.Contains(view, "(unknown)") {
-		t.Errorf("empty status should render '(unknown)' placeholder; got:\n%s", view)
-	}
-	if strings.Contains(view, " ()") {
-		t.Errorf("empty status should not render a bare ' ()'; got:\n%s", view)
-	}
-}
-
 // stripAnsi removes ANSI escape sequences from a string for assertion purposes.
 func stripAnsi(s string) string {
 	var out strings.Builder
@@ -363,35 +262,6 @@ func stripAnsi(s string) string {
 	return out.String()
 }
 
-func TestTreeModel_ViewRendersUnreadBadge(t *testing.T) {
-	m := newTestTreeModel(t)
-	m.SetSize(40, 20)
-	m.SetNodes(newTestTreeNodes()) // weave has Unread: 2, finn has Unread: 1
-
-	view := m.View()
-	// Unread badge should show the count for weave (2) and finn (1).
-	if !strings.Contains(view, "(2)") {
-		t.Errorf("View() should contain unread badge '(2)' for weave, got:\n%s", view)
-	}
-	if !strings.Contains(view, "(1)") {
-		t.Errorf("View() should contain unread badge '(1)' for finn, got:\n%s", view)
-	}
-}
-
-func TestTreeModel_ViewOmitsZeroUnread(t *testing.T) {
-	m := newTestTreeModel(t)
-	m.SetSize(40, 20)
-	nodes := []TreeNode{
-		{Name: "tower", Type: "manager", Status: "active", Depth: 0, Unread: 0},
-	}
-	m.SetNodes(nodes)
-
-	view := m.View()
-	if strings.Contains(view, "(0)") {
-		t.Errorf("View() should not contain '(0)' badge for zero unread, got:\n%s", view)
-	}
-}
-
 func TestTreeModel_EnterEmitsAgentSelectedMsg(t *testing.T) {
 	m := newTestTreeModel(t)
 	m.SetSize(40, 20)
@@ -410,6 +280,41 @@ func TestTreeModel_EnterEmitsAgentSelectedMsg(t *testing.T) {
 	}
 	if sel.Name != "tower" {
 		t.Errorf("AgentSelectedMsg.Name = %q, want %q", sel.Name, "tower")
+	}
+}
+
+func TestTreeModel_OrbitalLines_ReturnsRenderedTree(t *testing.T) {
+	m := newTestTreeModel(t)
+	m.SetNodes([]TreeNode{
+		{Name: "weave", Type: "weave", Depth: 0},
+		{Name: "finn", Type: "engineer", Depth: 1, LastReportState: "working"},
+	})
+	m.SetSelected("finn")
+
+	lines := m.OrbitalLines(100)
+	if got, want := len(lines), 3; got != want {
+		t.Fatalf("len(lines) = %d, want %d", got, want)
+	}
+	joined := stripAnsi(strings.Join(lines, "\n"))
+	if !strings.Contains(joined, "weave") {
+		t.Errorf("expected 'weave' in OrbitalLines output, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "finn") {
+		t.Errorf("expected 'finn' in OrbitalLines output, got:\n%s", joined)
+	}
+
+	// Selection should drive the pill: same selReverseStyle substring as in
+	// tree_orbital_test.go must appear in the raw (un-stripped) output.
+	raw := strings.Join(lines, "\n")
+	expectedPill := lipgloss.NewStyle().
+		Reverse(true).
+		Foreground(lipgloss.Color("#0B0B12")).
+		Background(lipgloss.Color("#22D3EE")).
+		Bold(true).
+		Padding(0, 1).
+		Render("finn ⚙")
+	if !strings.Contains(raw, expectedPill) {
+		t.Errorf("expected selReverseStyle 'finn ⚙' pill in OrbitalLines output after SetSelected; raw:\n%q", raw)
 	}
 }
 
@@ -542,144 +447,6 @@ func TestBuildTreeNodes_ExcludesRootWeave(t *testing.T) {
 	}
 }
 
-func TestTreeModel_ReportChipRendering(t *testing.T) {
-	m := newTestTreeModel(t)
-	m.SetSize(80, 10)
-	m.SetNodes([]TreeNode{
-		{Name: "alice", Type: "engineer", Status: "active", LastReportState: "working", LastReportMessage: "writing tests"},
-		{Name: "bob", Type: "engineer", Status: "active", LastReportState: "blocked", LastReportMessage: "awaiting review"},
-		{Name: "carol", Type: "engineer", Status: "done", LastReportState: "complete", LastReportMessage: "merged PR"},
-		{Name: "dave", Type: "engineer", Status: "problem", LastReportState: "failure", LastReportMessage: "tests fail"},
-		{Name: "eve", Type: "engineer", Status: "active"}, // no report → idle
-	})
-	view := m.View()
-
-	// Dot glyph appears for every row (once per node).
-	if n := strings.Count(view, "●"); n != 5 {
-		t.Errorf("expected 5 dots (one per node), got %d; view:\n%s", n, view)
-	}
-	// When a summary is present, it replaces the "(status)" rendering.
-	if !strings.Contains(view, "alice — writing tests") {
-		t.Errorf("working chip summary missing; view:\n%s", view)
-	}
-	if !strings.Contains(view, "bob — awaiting review") {
-		t.Errorf("blocked chip summary missing; view:\n%s", view)
-	}
-	if !strings.Contains(view, "carol — merged PR") {
-		t.Errorf("complete chip summary missing; view:\n%s", view)
-	}
-	if !strings.Contains(view, "dave — tests fail") {
-		t.Errorf("failure chip summary missing; view:\n%s", view)
-	}
-	// No-report node falls back to "(status)".
-	if !strings.Contains(view, "eve (active)") {
-		t.Errorf("idle fallback missing for eve; view:\n%s", view)
-	}
-}
-
-// QUM-324: a LastReportMessage longer than the tree panel's inner width must
-// not bleed past the right border. Every rendered row — including the
-// ellipsised long-summary row — must fit inside m.width display cells.
-func TestTreeModel_ViewClipsLongSummary(t *testing.T) {
-	const panelWidth = 40
-	m := newTestTreeModel(t)
-	m.SetSize(panelWidth, 10)
-	m.SetNodes([]TreeNode{
-		{
-			Name:              "alice",
-			Type:              "engineer",
-			Status:            "active",
-			LastReportState:   "working",
-			LastReportMessage: strings.Repeat("abcdefghij", 200), // 2000 chars
-		},
-	})
-
-	view := m.View()
-	lines := strings.Split(view, "\n")
-	for _, line := range lines {
-		if w := lipgloss.Width(line); w > panelWidth {
-			t.Errorf("rendered line width %d exceeds panel width %d: %q", w, panelWidth, line)
-		}
-	}
-	// The view must render exactly one physical line per logical node — no
-	// soft-wrap into extra rows. This is the invariant that keeps the tree
-	// panel from overflowing its border's Height budget (which would push the
-	// input box off the bottom of the screen — QUM-324 follow-up).
-	if got, want := len(lines), len(m.nodes); got != want {
-		t.Errorf("view has %d physical lines, want %d (one per node); view:\n%s", got, want, view)
-	}
-	// Sanity: the row should still contain the agent name, proving the clip
-	// didn't just eat the whole line.
-	if !strings.Contains(stripAnsi(view), "alice") {
-		t.Errorf("expected 'alice' in clipped view, got:\n%s", view)
-	}
-	// And it should end with the ellipsis — the summary is well past the
-	// truncation point.
-	if !strings.Contains(view, "…") {
-		t.Errorf("expected ellipsis in clipped long-summary row, got:\n%s", view)
-	}
-}
-
-// QUM-324: a multi-line summary must render as a single row so the tree
-// can't push past its configured height, and the panel-width invariant still
-// holds on the (now single-line) output.
-func TestTreeModel_ViewStripsMultilineSummary(t *testing.T) {
-	const panelWidth = 80
-	m := newTestTreeModel(t)
-	m.SetSize(panelWidth, 5)
-	m.SetNodes([]TreeNode{
-		{
-			Name:              "alice",
-			Type:              "engineer",
-			Status:            "active",
-			LastReportState:   "working",
-			LastReportMessage: "line1\nline2\nline3",
-		},
-	})
-
-	view := m.View()
-	lines := strings.Split(view, "\n")
-	if len(lines) != 1 {
-		t.Errorf("multi-line summary should render as a single row, got %d:\n%s", len(lines), view)
-	}
-	stripped := stripAnsi(view)
-	for _, frag := range []string{"line1", "line2", "line3"} {
-		if !strings.Contains(stripped, frag) {
-			t.Errorf("expected fragment %q in flattened summary, got: %q", frag, stripped)
-		}
-	}
-	if strings.ContainsAny(stripped, "\n\r\t") {
-		t.Errorf("flattened summary still contains newline/tab: %q", stripped)
-	}
-}
-
-// QUM-324: the selected-row prefix ("> ") eats the same two cells as the
-// normal-row prefix ("  "), so both rows must fit the panel width when a
-// long summary is present.
-func TestTreeModel_ViewClipsLongSummary_SelectedRow(t *testing.T) {
-	const panelWidth = 30
-	m := newTestTreeModel(t)
-	m.SetSize(panelWidth, 10)
-	m.SetNodes([]TreeNode{
-		{Name: "bob", Type: "engineer", Status: "active"},
-		{
-			Name:              "alice",
-			Type:              "engineer",
-			Status:            "active",
-			LastReportState:   "working",
-			LastReportMessage: strings.Repeat("x", 500),
-		},
-	})
-	m.selected = 1 // select the row with the long summary
-
-	view := m.View()
-	for _, line := range strings.Split(view, "\n") {
-		if w := lipgloss.Width(line); w > panelWidth {
-			t.Errorf("rendered line width %d exceeds panel width %d: %q", w, panelWidth, line)
-		}
-	}
-}
-
 func TestTreeModel_ReportChip_ColorsDiffer(t *testing.T) {
 	// The five state classes should each yield a distinct ANSI-coded dot.
 	theme := NewTheme("colour212")
@@ -695,27 +462,6 @@ func TestTreeModel_ReportChip_ColorsDiffer(t *testing.T) {
 	// "" and "bogus" fall through to idle.
 	if len(seen) != 5 {
 		t.Errorf("expected 5 distinct rendered dots, got %d (%v)", len(seen), seen)
-	}
-}
-
-func TestTreeModel_ViewRendersCostTag(t *testing.T) {
-	m := newTestTreeModel(t)
-	m.SetSize(80, 10)
-	m.SetNodes([]TreeNode{
-		{Name: "alice", Type: "engineer", Status: "active", TotalCostUsd: 0.0312},
-		{Name: "bob", Type: "engineer", Status: "active", TotalCostUsd: 0},
-	})
-	view := m.View()
-	if !strings.Contains(view, "[$0.0312]") {
-		t.Errorf("View() should contain cost tag '[$0.0312]' for alice, got:\n%s", view)
-	}
-	// Zero cost should not render a cost tag.
-	stripped := stripAnsi(view)
-	lines := strings.Split(stripped, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "bob") && strings.Contains(line, "[$") {
-			t.Errorf("View() should not contain cost tag for zero-cost bob, got:\n%s", view)
-		}
 	}
 }
 

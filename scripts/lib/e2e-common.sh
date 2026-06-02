@@ -231,8 +231,11 @@ e2e_launch_tui() {
         "SPRAWL_ROOT='$SPRAWL_ROOT' '$SPRAWL_BIN' enter 2>'$stderr_log'"
     _stmux set-option -t "$session" window-size manual >/dev/null
     _stmux resize-window -t "$session" -x "$cols" -y "$rows" >/dev/null
-    if ! wait_for_pattern "$session" "weave \\(idle\\)" 45; then
-        echo "  FAIL: TUI did not render 'weave (idle)' within 45s" >&2
+    # QUM-656: tree migrated from a left-pane "weave (idle)" row into the
+    # header orbital row rendered as `weave ──●`. We wait for the root token
+    # as proxy for "supervisor data has propagated to the tree renderer".
+    if ! wait_for_pattern "$session" "weave " 45; then
+        echo "  FAIL: TUI did not render 'weave' root in header tree within 45s" >&2
         echo "  pane tail:" >&2
         capture_pane "$session" | tail -30 >&2
         echo "  stderr log tail:" >&2
