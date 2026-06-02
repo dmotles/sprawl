@@ -110,7 +110,7 @@ func newAppWithRegistry(t *testing.T, sup supervisor.Supervisor) AppModel {
 // ChildStreamMsg. For the AgentSelected tests we don't need to *run* it; we
 // only need to detect that a streaming-cmd was scheduled. We approximate this
 // by scanning the batch and asserting the presence of a non-nil cmd that is
-// neither the legacy poll cmd nor the activity-tick cmd. Callers cross-check
+// neither the legacy poll cmd nor a tick cmd. Callers cross-check
 // with stronger behavioural assertions where possible.
 
 // hasChildTranscriptMsg returns true if the batch contains an immediate

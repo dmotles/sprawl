@@ -14,14 +14,6 @@ const (
 	// drawn so the main panel area is shrunk by this amount.
 	shortHelpHeight = 1
 
-	// Activity panel sizing (QUM-296). The panel is a third column to the
-	// right of the viewport. It is only shown when the terminal is wide
-	// enough that shrinking the viewport to make room does not compromise
-	// readability.
-	minActivityWidth       = 30
-	maxActivityWidth       = 60
-	activityPanelThreshold = 140 // total term width below which the panel is hidden
-
 	// MinTermWidth is the minimum terminal width for rendering panels.
 	MinTermWidth = 40
 	// MinTermHeight is the minimum terminal height for rendering panels.
@@ -38,7 +30,6 @@ func IsTooSmall(width, height int) bool {
 type Layout struct {
 	TreeWidth, TreeHeight         int
 	ViewportWidth, ViewportHeight int
-	ActivityWidth, ActivityHeight int
 	InputWidth, InputHeight       int
 	StatusWidth, StatusHeight     int
 	// ShortHelpWidth / ShortHelpHeight describe the single-line short-help
@@ -51,9 +42,7 @@ type Layout struct {
 // Tree panel is ~25% width (clamped to min/max). Input height is dynamic
 // (driven by the textarea's current line count) and clamped to
 // [defaultInputHeight, maxInputHeight]. Status bar is 1 line at bottom.
-// Viewport fills the rest. When the terminal is at least
-// activityPanelThreshold wide, a third column (activity panel) is reserved
-// on the right; otherwise ActivityWidth is 0 and the panel is hidden.
+// Viewport fills the rest.
 func ComputeLayout(width, height, inputHeight int) Layout {
 	// Clamp input height.
 	if inputHeight < defaultInputHeight {
@@ -80,23 +69,8 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 		l.TreeWidth = width
 	}
 
-	// Activity panel: only on wide terminals; ~25% clamped.
-	if width >= activityPanelThreshold {
-		l.ActivityWidth = width / 4
-		if l.ActivityWidth < minActivityWidth {
-			l.ActivityWidth = minActivityWidth
-		}
-		if l.ActivityWidth > maxActivityWidth {
-			l.ActivityWidth = maxActivityWidth
-		}
-		// Guarantee the viewport still has room (≥30 chars) before reserving.
-		if width-l.TreeWidth-l.ActivityWidth < 30 {
-			l.ActivityWidth = 0
-		}
-	}
-
 	// Viewport takes remaining horizontal space.
-	l.ViewportWidth = width - l.TreeWidth - l.ActivityWidth
+	l.ViewportWidth = width - l.TreeWidth
 	if l.ViewportWidth < 0 {
 		l.ViewportWidth = 0
 	}
@@ -117,7 +91,6 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 
 	l.TreeHeight = mainHeight
 	l.ViewportHeight = mainHeight
-	l.ActivityHeight = mainHeight
 
 	return l
 }

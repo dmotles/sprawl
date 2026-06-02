@@ -11,7 +11,6 @@ package tui
 //                          per-panel render strings.
 //   m.cache.tree         — bordered tree panel render
 //   m.cache.viewport     — bordered viewport panel render
-//   m.cache.activity     — bordered activity panel render (may be "")
 //   m.cache.input        — bordered input panel render
 //   m.cache.status       — status bar render
 //
@@ -48,23 +47,19 @@ func TestViewCache_OutputUnchanged_AfterInputKeystroke_TreeAndViewportBytesIdent
 	treeBefore := app.cache.tree
 	vpBefore := app.cache.viewport
 	statusBefore := app.cache.status
-	activityBefore := app.cache.activity
 
 	next, _ := app.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	app = next.(AppModel)
 	_ = app.View()
 
 	if app.cache.tree != treeBefore {
-		t.Errorf("tree cache changed after input keystroke; only the input panel should be dirty")
+		t.Errorf("tree cache changed after input keystroke; only the input panel should be dirty (three of four)")
 	}
 	if app.cache.viewport != vpBefore {
-		t.Errorf("viewport cache changed after input keystroke; only the input panel should be dirty")
+		t.Errorf("viewport cache changed after input keystroke; only the input panel should be dirty (three of four)")
 	}
 	if app.cache.status != statusBefore {
-		t.Errorf("status cache changed after input keystroke; only the input panel should be dirty")
-	}
-	if app.cache.activity != activityBefore {
-		t.Errorf("activity cache changed after input keystroke; only the input panel should be dirty")
+		t.Errorf("status cache changed after input keystroke; only the input panel should be dirty (three of four)")
 	}
 }
 

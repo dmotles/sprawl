@@ -181,41 +181,27 @@ func TestComputeLayout_ZeroSize(t *testing.T) {
 	}
 }
 
-func TestComputeLayout_WideTerminalHasActivityPanel(t *testing.T) {
-	l := ComputeLayout(160, 40, defaultInputHeight)
-	if l.ActivityWidth <= 0 {
-		t.Errorf("ActivityWidth = %d, want > 0 at width=160", l.ActivityWidth)
+// QUM-648: with the activity panel removed, tree + viewport must sum to the
+// full terminal width at every size. There is no third column anymore.
+func TestComputeLayout_ViewportReclaimsWidth_AllSizes(t *testing.T) {
+	tests := []struct {
+		name  string
+		width int
+	}{
+		{"80", 80},
+		{"120", 120},
+		{"160", 160},
+		{"240", 240},
 	}
-	if l.ActivityHeight <= 0 {
-		t.Errorf("ActivityHeight = %d, want > 0 at height=40", l.ActivityHeight)
-	}
-	// Three-column sum must not exceed terminal width.
-	if l.TreeWidth+l.ViewportWidth+l.ActivityWidth > l.TermWidth {
-		t.Errorf("tree(%d)+viewport(%d)+activity(%d)=%d exceeds term=%d",
-			l.TreeWidth, l.ViewportWidth, l.ActivityWidth,
-			l.TreeWidth+l.ViewportWidth+l.ActivityWidth, l.TermWidth)
-	}
-	if l.ActivityHeight != l.ViewportHeight {
-		t.Errorf("ActivityHeight (%d) should equal ViewportHeight (%d)", l.ActivityHeight, l.ViewportHeight)
-	}
-}
-
-func TestComputeLayout_NarrowTerminalHidesActivityPanel(t *testing.T) {
-	l := ComputeLayout(80, 24, defaultInputHeight)
-	if l.ActivityWidth != 0 {
-		t.Errorf("ActivityWidth = %d, want 0 at narrow width=80 (activity panel hidden)", l.ActivityWidth)
-	}
-	// Viewport should still fill the remaining space (no activity reservation).
-	if l.TreeWidth+l.ViewportWidth != l.TermWidth {
-		t.Errorf("when activity panel hidden, tree(%d)+viewport(%d)=%d must equal term=%d",
-			l.TreeWidth, l.ViewportWidth, l.TreeWidth+l.ViewportWidth, l.TermWidth)
-	}
-}
-
-func TestComputeLayout_ActivityWidthClamped(t *testing.T) {
-	l := ComputeLayout(400, 50, defaultInputHeight)
-	if l.ActivityWidth > 60 {
-		t.Errorf("ActivityWidth = %d, want capped (<=60) for very wide terminal", l.ActivityWidth)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := ComputeLayout(tt.width, 40, defaultInputHeight)
+			if l.TreeWidth+l.ViewportWidth != l.TermWidth {
+				t.Errorf("tree(%d)+viewport(%d)=%d must equal term=%d",
+					l.TreeWidth, l.ViewportWidth,
+					l.TreeWidth+l.ViewportWidth, l.TermWidth)
+			}
+		})
 	}
 }
 

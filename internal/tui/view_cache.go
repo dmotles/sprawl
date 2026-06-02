@@ -13,7 +13,7 @@ import (
 // markers are stripped (QUM-432) and a paste arrives as N KeyPressMsgs, View()
 // is called N times even though only the input panel mutated between calls.
 // Each call previously re-ran lipgloss bordered-render of the tree, viewport,
-// activity, and status panels — measured at ~4 ms / call on a 200x60 layout.
+// and status panels — measured at ~4 ms / call on a 200x60 layout.
 //
 // The cache stores the bordered output strings keyed on a cheap fingerprint
 // of each panel's inner state. On cache hit (the common paste-burst case),
@@ -31,19 +31,18 @@ import (
 // the stored output when the fingerprint matches; otherwise it re-renders
 // and updates both.
 //
-// Field names tree/viewport/activity/input/status mirror the assertion
+// Field names tree/viewport/input/status mirror the assertion
 // surface used by app_view_cache_test.go — they hold the *bordered* output
 // strings. The *Key fields hold the corresponding fingerprint for cheap
 // equality comparison.
 type viewCache struct {
 	tree, treeKey         string
 	viewport, viewportKey string
-	activity, activityKey string
 	input, inputKey       string
 	status, statusKey     string
 
-	// mainRow caches lipgloss.JoinHorizontal(tree, viewport[, activity]).
-	// Reused while none of those three panel keys change — i.e. across an
+	// mainRow caches lipgloss.JoinHorizontal(tree, viewport).
+	// Reused while neither of those two panel keys change — i.e. across an
 	// entire paste burst, where only the input panel is invalidating.
 	mainRow, mainRowKey string
 
@@ -71,7 +70,6 @@ type panelSlot int
 const (
 	panelSlotTree panelSlot = iota
 	panelSlotViewport
-	panelSlotActivity
 	panelSlotInput
 )
 
@@ -121,14 +119,6 @@ func (m AppModel) cachedPanel(useCache bool, slot panelSlot, content string, w, 
 		m.cache.viewport = out
 		m.cache.viewportKey = key
 		return out
-	case panelSlotActivity:
-		if key == m.cache.activityKey && m.cache.activity != "" {
-			return m.cache.activity
-		}
-		out := m.renderPanel(content, w, h, active)
-		m.cache.activity = out
-		m.cache.activityKey = key
-		return out
 	case panelSlotInput:
 		if key == m.cache.inputKey && m.cache.input != "" {
 			return m.cache.input
@@ -142,8 +132,6 @@ func (m AppModel) cachedPanel(useCache bool, slot panelSlot, content string, w, 
 }
 
 // renderPanel applies the active/inactive border style at the given size.
-// The activity panel always renders with the inactive border (it isn't part
-// of the Tab cycle); other panels pick based on the active flag.
 //
 // QUM-501: w and h are the *outer* (post-border) panel dimensions. In
 // lipgloss v2, Width/Height already include the border frame, and the
@@ -165,14 +153,11 @@ func (m AppModel) renderPanel(content string, w, h int, active bool) string {
 		Render(content)
 }
 
-// cachedMainRow memoizes lipgloss.JoinHorizontal of the tree+viewport(+activity)
+// cachedMainRow memoizes lipgloss.JoinHorizontal of the tree+viewport
 // columns. The fingerprint is each constituent's cache key so the join is
 // reused across paste-burst Updates that only mutate the input panel.
-func (m AppModel) cachedMainRow(useCache bool, tree, viewport, activity string, hasActivity bool) string {
+func (m AppModel) cachedMainRow(useCache bool, tree, viewport string) string {
 	join := func() string {
-		if hasActivity {
-			return lipgloss.JoinHorizontal(lipgloss.Top, tree, viewport, activity)
-		}
 		return lipgloss.JoinHorizontal(lipgloss.Top, tree, viewport)
 	}
 	if !useCache || m.cache == nil {
@@ -180,11 +165,7 @@ func (m AppModel) cachedMainRow(useCache bool, tree, viewport, activity string, 
 	}
 	// Build a cheap composite key from per-panel cache keys. They were just
 	// computed by cachedPanel() and are stable while content is unchanged.
-	var ab byte = '0'
-	if hasActivity {
-		ab = '1'
-	}
-	key := m.cache.treeKey + "\x00" + m.cache.viewportKey + "\x00" + m.cache.activityKey + "\x00" + string(ab)
+	key := m.cache.treeKey + "\x00" + m.cache.viewportKey
 	if key == m.cache.mainRowKey && m.cache.mainRow != "" {
 		return m.cache.mainRow
 	}

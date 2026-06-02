@@ -6,7 +6,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -299,25 +298,13 @@ type TurnStateMsg struct {
 //
 // QUM-479: `Err: io.EOF` is reserved exclusively for the session backend
 // (`internal/tuiruntime.TUIAdapter`) — that producer signals end-of-session
-// and triggers AppModel's auto-restart path. Other EventBus adapters
-// (ActivityStreamAdapter, ChildStreamAdapter) MUST NOT emit
-// SessionErrorMsg{io.EOF} on subscription close; use the dedicated
-// ActivityStreamClosedMsg / ChildStreamClosedMsg sentinels instead, or the
-// AppModel will mis-interpret a harmless adapter teardown as the session
-// ending and fire a phantom "Session restarting..." cycle.
+// and triggers AppModel's auto-restart path. The ChildStreamAdapter EventBus
+// adapter MUST NOT emit SessionErrorMsg{io.EOF} on subscription close; use the
+// dedicated ChildStreamClosedMsg sentinel instead, or the AppModel will
+// mis-interpret a harmless adapter teardown as the session ending and fire a
+// phantom "Session restarting..." cycle.
 type SessionErrorMsg struct {
 	Err error
-}
-
-// ActivityStreamClosedMsg signals that an ActivityStreamAdapter's EventBus
-// subscription has closed (Cancel or runtime stop). Carries the agent name
-// (filled in by activityStreamWaitCmd) and the adapter epoch at the moment of
-// the read so AppModel can ignore stale-generation deliveries. The handler
-// silently tears down the adapter — it does NOT trigger a bridge restart.
-// (QUM-479)
-type ActivityStreamClosedMsg struct {
-	Agent string
-	Epoch uint64
 }
 
 // ChildStreamClosedMsg signals that a ChildStreamAdapter's EventBus
@@ -531,14 +518,6 @@ type ToggleHelpMsg struct{}
 // post-confirm semantics as the Ctrl-C path.
 type PaletteQuitMsg struct{}
 
-// ActivityTickMsg carries a freshly-fetched tail of an agent's activity ring
-// (QUM-296). Agent names the agent this tail belongs to; the App applies it
-// only if Agent matches the currently-observed agent.
-type ActivityTickMsg struct {
-	Agent   string
-	Entries []agentloop.ActivityEntry
-}
-
 // SessionRestartingMsg signals that the TUI is transitioning between Claude
 // subprocess sessions (e.g. after transport EOF or /handoff). The App renders
 // a status banner carrying Reason while the restart work runs.
@@ -608,16 +587,6 @@ type ChildStreamMsg struct {
 	Agent string
 	Epoch uint64
 	Inner tea.Msg
-}
-
-// ActivityStreamMsg carries one batch of activity entries derived from an
-// agent's UnifiedRuntime EventBus (QUM-440). Agent identifies which agent the
-// entries belong to; Epoch matches the AppModel's activity-adapter epoch so
-// stale deliveries (after a viewport switch / cancellation) are dropped.
-type ActivityStreamMsg struct {
-	Agent   string
-	Epoch   uint64
-	Entries []agentloop.ActivityEntry
 }
 
 // MCPCallStartedMsg is dispatched by the in-process MCP server when a tool

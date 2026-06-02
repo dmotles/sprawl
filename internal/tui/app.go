@@ -53,7 +53,6 @@ type AgentBuffer struct {
 // AppModel is the root Bubble Tea model composing all panels.
 type AppModel struct {
 	tree      TreeModel
-	activity  ActivityPanelModel
 	input     InputModel
 	statusBar StatusBarModel
 	shortHelp ShortHelpModel
@@ -159,25 +158,6 @@ type AppModel struct {
 	childBackfillPending bool
 	childPendingEvents   []ChildStreamMsg
 
-	// activityAdapter, activityAdapterAgent, activityAdapterEpoch back the
-	// unified activity-panel streaming path (QUM-440). Unlike the child
-	// viewport adapter, this is installed for the root agent too — selecting
-	// weave with a UnifiedRuntime registered streams its activity entries.
-	activityAdapter      *ActivityStreamAdapter
-	activityAdapterAgent string
-	activityAdapterEpoch uint64
-
-	// activityEntries stores the per-agent activity tail so the panel can be
-	// re-rendered when the user cycles back to an agent and so stream-vs-seed
-	// dedupe (QUM-440) operates over a stable canonical slice independent of
-	// the panel's render state. Keyed by agent name.
-	activityEntries map[string][]agentloop.ActivityEntry
-
-	// activitySeenKeys deduplicates live ActivityStreamMsg entries against
-	// already-recorded entries (seed or prior stream). Keyed by agent name,
-	// then by a canonical activityEntryKey string.
-	activitySeenKeys map[string]map[string]struct{}
-
 	// toolInputsExpanded is the global flag (QUM-335) toggled by Ctrl+O.
 	// When true, every per-agent viewport renders tool calls with their
 	// full ToolInputFull body instead of the truncated summary. Default
@@ -269,7 +249,6 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 
 	app := AppModel{
 		tree:                NewTreeModel(&theme),
-		activity:            NewActivityPanelModel(&theme),
 		input:               NewInputModel(&theme),
 		statusBar:           NewStatusBarModel(&theme, repoName, version, 0),
 		shortHelp:           NewShortHelpModel(&theme),
@@ -290,8 +269,6 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		spinner:             sp,
 		version:             version,
 		history:             NewHistory(sprawlRoot),
-		activityEntries:     make(map[string][]agentloop.ActivityEntry),
-		activitySeenKeys:    make(map[string]map[string]struct{}),
 		activeMCPOps:        make(map[string]OpDescriptor),
 		mcpOpThresholdShown: make(map[string]bool),
 		cache:               newViewCache(),
@@ -301,7 +278,6 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 	_ = app.history.Load()
 	app.updateFocus()
 	app.rebuildTree()
-	app.activity.SetAgent(rootAgent)
 	return app
 }
 
@@ -314,7 +290,6 @@ func (m AppModel) Init() tea.Cmd {
 	}
 	if m.supervisor != nil {
 		cmds = append(cmds, tickAgentsCmd(m.supervisor, m.sprawlRoot))
-		cmds = append(cmds, tickActivityCmd(m.supervisor, m.observedAgent))
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -358,7 +333,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// QUM-448: track input-box height across the Update so we can
-		// re-propagate sizes to the cached tree/viewport/activity sub-models
+		// re-propagate sizes to the cached tree/viewport sub-models
 		// when a paste grows the textarea. Without this the cached panels
 		// keep rendering at their pre-grow height and the composed View
 		// overflows the terminal.
@@ -1057,17 +1032,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.bridge.IsContinuous() {
 			cmds = append(cmds, m.bridge.WaitForEvent())
 		}
-		// QUM-479: when the activity adapter was streaming the root agent
-		// before the restart, the OLD UnifiedRuntime is gone — re-point the
-		// adapter at the freshly-registered runtime (if any) so the activity
-		// panel keeps streaming without the user manually re-selecting weave.
-		if m.activityAdapter != nil && m.activityAdapterAgent == m.rootAgent {
-			if urt := m.lookupUnifiedRuntime(m.rootAgent); urt != nil {
-				m.activityAdapter.Observe(urt)
-				m.activityAdapterEpoch++
-				cmds = append(cmds, activityStreamWaitCmd(m.activityAdapter, m.rootAgent, m.activityAdapterEpoch))
-			}
-		}
 		return m, tea.Batch(cmds...)
 
 	case InterruptResultMsg:
@@ -1083,81 +1047,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TurnStateMsg:
 		m.setTurnState(msg.State)
-		return m, nil
-
-	case ActivityTickMsg:
-		// QUM-440: when the unified streaming adapter owns this agent, the
-		// tick is the one-shot seed — apply, populate dedupe keys, do NOT
-		// reschedule (live deltas flow through ActivityStreamMsg instead).
-		if m.activityAdapter != nil && m.activityAdapterAgent == msg.Agent {
-			m.activityEntries[msg.Agent] = append([]agentloop.ActivityEntry(nil), msg.Entries...)
-			seen := make(map[string]struct{}, len(msg.Entries))
-			for _, e := range msg.Entries {
-				seen[activityEntryKey(e)] = struct{}{}
-			}
-			m.activitySeenKeys[msg.Agent] = seen
-			if msg.Agent == m.observedAgent {
-				m.activity.SetEntries(m.activityEntries[msg.Agent])
-			}
-			return m, nil
-		}
-		// Legacy poll path. Only apply the tick if it is for the
-		// currently-observed agent. A selection change that happened mid-flight
-		// can race us; dropping a stale tick is cheaper and simpler than
-		// cancelling the in-flight cmd.
-		if msg.Agent == m.observedAgent {
-			m.activity.SetEntries(msg.Entries)
-		}
-		if m.supervisor != nil {
-			return m, scheduleActivityTick(m.supervisor, m.observedAgent)
-		}
-		return m, nil
-
-	case ActivityStreamMsg:
-		// QUM-440: live activity entries from the per-agent unified adapter.
-		// Drop stale deliveries from a previous adapter generation.
-		if msg.Epoch != m.activityAdapterEpoch || msg.Agent != m.activityAdapterAgent {
-			return m, nil
-		}
-		seen, ok := m.activitySeenKeys[msg.Agent]
-		if !ok {
-			seen = make(map[string]struct{})
-			m.activitySeenKeys[msg.Agent] = seen
-		}
-		tail := m.activityEntries[msg.Agent]
-		for _, e := range msg.Entries {
-			k := activityEntryKey(e)
-			if _, dup := seen[k]; dup {
-				continue
-			}
-			seen[k] = struct{}{}
-			tail = append(tail, e)
-		}
-		// QUM-440: cap per-agent live tail to mirror agentloop.ActivityRing
-		// (DefaultActivityCapacity = 200). Without this, long sessions grow
-		// unbounded.
-		if len(tail) > agentloop.DefaultActivityCapacity {
-			tail = tail[len(tail)-agentloop.DefaultActivityCapacity:]
-		}
-		m.activityEntries[msg.Agent] = tail
-		if msg.Agent == m.observedAgent {
-			m.activity.SetEntries(tail)
-		}
-		return m, activityStreamWaitCmd(m.activityAdapter, msg.Agent, msg.Epoch)
-
-	case ActivityStreamClosedMsg:
-		// QUM-479: the activity-panel adapter's EventBus subscription closed
-		// (Cancel or runtime stop). Tear down silently — do NOT trigger a
-		// bridge restart. Stale-epoch deliveries from a prior generation are
-		// ignored.
-		if msg.Agent == m.activityAdapterAgent && msg.Epoch == m.activityAdapterEpoch {
-			if m.activityAdapter != nil {
-				m.activityAdapter.Cancel()
-				m.activityAdapter = nil
-			}
-			m.activityAdapterAgent = ""
-			m.activityAdapterEpoch++
-		}
 		return m, nil
 
 	case ChildStreamClosedMsg:
@@ -1479,64 +1368,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizePanels()
 		}
 
-		// Refresh the activity panel for the newly-observed agent.
-		m.activity.SetAgent(msg.Name)
-		m.activity.SetEntries(nil)
-
 		var cmds []tea.Cmd
-
-		// QUM-440: try the unified streaming path for the activity panel —
-		// applies to the root agent too. When the agent has a UnifiedRuntime
-		// backing handle, install (or re-point) the activity-stream adapter
-		// and reset per-agent dedupe state. Seed synchronously via
-		// PeekActivity (one-shot — no rescheduled tick); live deltas flow via
-		// ActivityStreamMsg.
-		activityAttached := false
-		if urt := m.lookupUnifiedRuntime(msg.Name); urt != nil {
-			if m.activityAdapter == nil {
-				m.activityAdapter = NewActivityStreamAdapter(urt)
-			} else {
-				m.activityAdapter.Observe(urt)
-			}
-			m.activityAdapterAgent = msg.Name
-			m.activityAdapterEpoch++
-			// Reset per-agent dedupe + tail so the seed re-population is
-			// clean.
-			delete(m.activitySeenKeys, msg.Name)
-			delete(m.activityEntries, msg.Name)
-			// Synchronous one-shot seed via PeekActivity. Errors yield an
-			// empty seed; the seen-keys map is still populated to keep the
-			// invariant clean.
-			if m.supervisor != nil {
-				if entries, err := m.supervisor.PeekActivity(context.Background(), msg.Name, 200); err == nil {
-					m.activityEntries[msg.Name] = append([]agentloop.ActivityEntry(nil), entries...)
-					seen := make(map[string]struct{}, len(entries))
-					for _, e := range entries {
-						seen[activityEntryKey(e)] = struct{}{}
-					}
-					m.activitySeenKeys[msg.Name] = seen
-					if msg.Name == m.observedAgent {
-						m.activity.SetEntries(m.activityEntries[msg.Name])
-					}
-				}
-			}
-			cmds = append(cmds, activityStreamWaitCmd(m.activityAdapter, msg.Name, m.activityAdapterEpoch))
-			activityAttached = true
-		} else {
-			if m.activityAdapter != nil {
-				m.activityAdapter.Cancel()
-				m.activityAdapter = nil
-			}
-			m.activityAdapterAgent = ""
-			m.activityAdapterEpoch++
-		}
-
-		// Legacy poll path: kick off the periodic activity tick. Skipped on
-		// the unified path because the seed is synchronous and live deltas
-		// flow via ActivityStreamMsg.
-		if !activityAttached && m.supervisor != nil {
-			cmds = append(cmds, tickActivityCmd(m.supervisor, msg.Name))
-		}
 
 		// QUM-439: try the unified streaming path for non-root children
 		// before falling back to JSONL polling. Resolve the child's
@@ -1873,7 +1705,6 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	if !inputVisible {
 		layout.ViewportHeight += layout.InputHeight
 		layout.TreeHeight += layout.InputHeight
-		layout.ActivityHeight += layout.InputHeight
 		layout.InputHeight = 0
 	}
 
@@ -1889,16 +1720,8 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		layout.ViewportWidth, layout.ViewportHeight,
 		m.activePanel == PanelViewport)
 
-	// Combine tree and viewport horizontally. On wide terminals, a third
-	// column (activity panel) is added to the right. See QUM-296.
-	hasActivity := layout.ActivityWidth > 0
-	var actView string
-	if hasActivity {
-		actView = m.cachedPanel(useCache, panelSlotActivity, m.activity.View(),
-			layout.ActivityWidth, layout.ActivityHeight,
-			false) // activity is never the active panel
-	}
-	mainRow := m.cachedMainRow(useCache, treeView, vpView, actView, hasActivity)
+	// Combine tree and viewport horizontally.
+	mainRow := m.cachedMainRow(useCache, treeView, vpView)
 
 	// Status bar.
 	statusView := m.cachedStatus(useCache, m.statusBar.View(), layout.StatusWidth)
@@ -2152,11 +1975,6 @@ func (m *AppModel) resizePanels() {
 			h = observedHeight
 		}
 		buf.vp.SetSize(layout.ViewportWidth-4, h-4)
-	}
-	if layout.ActivityWidth > 0 {
-		m.activity.SetSize(layout.ActivityWidth-4, layout.ActivityHeight-4)
-	} else {
-		m.activity.SetSize(0, 0)
 	}
 	m.input.SetWidth(layout.InputWidth - 4)
 	m.statusBar.SetWidth(layout.StatusWidth)
@@ -2517,29 +2335,6 @@ func scheduleAgentTick(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 	}
 }
 
-// tickActivityCmd fetches the activity tail for the given agent and emits
-// ActivityTickMsg. Errors yield an empty tick so the panel clears rather than
-// showing stale data. A nil/empty agent produces an empty tick.
-func tickActivityCmd(sup supervisor.Supervisor, agent string) tea.Cmd {
-	return func() tea.Msg {
-		if agent == "" {
-			return ActivityTickMsg{Agent: agent}
-		}
-		entries, err := sup.PeekActivity(context.Background(), agent, 200)
-		if err != nil {
-			return ActivityTickMsg{Agent: agent}
-		}
-		return ActivityTickMsg{Agent: agent, Entries: entries}
-	}
-}
-
-func scheduleActivityTick(sup supervisor.Supervisor, agent string) tea.Cmd {
-	return func() tea.Msg {
-		time.Sleep(2 * time.Second)
-		return tickActivityCmd(sup, agent)()
-	}
-}
-
 // SetHomeDir injects the user's home directory used to resolve Claude session
 // log paths for child-agent transcript tailing (QUM-332). Wired by cmd/enter.go
 // after model construction.
@@ -2554,61 +2349,6 @@ func (m *AppModel) SetHomeDir(homeDir string) {
 func (m *AppModel) SetValidatePopupAfter(d time.Duration) {
 	m.validatePopup = NewValidatePopupModel(&m.theme, d)
 	m.validatePopup.SetSize(m.width, m.height)
-}
-
-// ActivityAdapter returns the activity-panel streaming adapter, or nil when
-// no unified runtime is bound. (QUM-440)
-func (m AppModel) ActivityAdapter() *ActivityStreamAdapter { return m.activityAdapter }
-
-// ActivityAdapterAgent returns the agent name the activity-stream adapter is
-// currently pointed at, or "" when not attached. (QUM-440)
-func (m AppModel) ActivityAdapterAgent() string { return m.activityAdapterAgent }
-
-// ActivityAdapterEpoch returns the current activity-adapter epoch counter,
-// used by ActivityStreamMsg routing to drop stale deliveries. (QUM-440)
-func (m AppModel) ActivityAdapterEpoch() uint64 { return m.activityAdapterEpoch }
-
-// ActivityEntries returns the per-agent activity tail snapshot used by the
-// panel. Read-only; callers must not mutate the returned slice. (QUM-440)
-func (m AppModel) ActivityEntries(agent string) []agentloop.ActivityEntry {
-	return m.activityEntries[agent]
-}
-
-// activityStreamWaitCmd wraps the adapter's WaitForEvent in an
-// ActivityStreamMsg envelope keyed by agent + epoch so the AppModel can drop
-// stale deliveries from a prior adapter generation. (QUM-440)
-func activityStreamWaitCmd(a *ActivityStreamAdapter, agent string, epoch uint64) tea.Cmd {
-	if a == nil {
-		return nil
-	}
-	inner := a.WaitForEvent()
-	return func() tea.Msg {
-		raw := inner()
-		switch v := raw.(type) {
-		case ActivityStreamMsg:
-			v.Agent = agent
-			v.Epoch = epoch
-			return v
-		case ActivityStreamClosedMsg:
-			// QUM-479: forward the typed close sentinel so AppModel can tear
-			// down the adapter without mis-routing into the bridge-restart
-			// path. Fill in the agent name (the adapter only knows the epoch).
-			v.Agent = agent
-			return v
-		default:
-			// Drop adapter-internal stragglers. The AppModel only cares about
-			// ActivityStreamMsg / ActivityStreamClosedMsg from this adapter;
-			// leaking other msgs (notably SessionErrorMsg) up triggers
-			// spurious session restarts. (QUM-457 / QUM-479)
-			return nil
-		}
-	}
-}
-
-// activityEntryKey returns a canonical dedupe key for an ActivityEntry,
-// composed of fields that uniquely identify it. (QUM-440)
-func activityEntryKey(e agentloop.ActivityEntry) string {
-	return e.TS.UTC().Format(time.RFC3339Nano) + "\x00" + e.Kind + "\x00" + e.Tool + "\x00" + e.Summary
 }
 
 // ChildAdapter returns the child viewport streaming adapter, or nil when no

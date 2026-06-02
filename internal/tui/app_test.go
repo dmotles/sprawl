@@ -1227,47 +1227,45 @@ func TestAppModel_AgentTreeMsg_ChildrenShiftedByOne(t *testing.T) {
 	}
 }
 
-// --- QUM-296: activity panel ---
+// --- QUM-648: activity panel removed ---
 
-func TestAppModel_ActivityTickMsg_UpdatesPanelForObservedAgent(t *testing.T) {
+// TestAppModel_View_NoActivityColumn_OnWideTerm asserts that on a wide
+// terminal the viewport now reclaims all width previously reserved for the
+// activity panel — tree + viewport must equal term width.
+func TestAppModel_View_NoActivityColumn_OnWideTerm(t *testing.T) {
 	sup := &mockSupervisor{}
 	m := newTestAppModelWithSupervisor(t, sup)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 40})
 	app := resized.(AppModel)
 
-	entries := []agentloop.ActivityEntry{
-		{Kind: "assistant_text", Summary: "hello from weave"},
+	layout := ComputeLayout(app.width, app.height, app.inputBoxHeight())
+	if layout.TreeWidth+layout.ViewportWidth != layout.TermWidth {
+		t.Errorf("tree(%d)+viewport(%d)=%d must equal term=%d (no activity column)",
+			layout.TreeWidth, layout.ViewportWidth,
+			layout.TreeWidth+layout.ViewportWidth, layout.TermWidth)
 	}
-	updated, _ := app.Update(ActivityTickMsg{Agent: "weave", Entries: entries})
-	app = updated.(AppModel)
 
-	view := stripANSI(app.activity.View())
-	if !strings.Contains(view, "hello from weave") {
-		t.Errorf("activity panel should show entry for observed agent; got:\n%s", view)
-	}
+	// View() must still render without referencing any activity-panel state.
+	_ = app.View()
 }
 
-func TestAppModel_ActivityTickMsg_IgnoredForOtherAgent(t *testing.T) {
-	sup := &mockSupervisor{}
-	m := newTestAppModelWithSupervisor(t, sup)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
-	app := resized.(AppModel)
-
-	// Observed agent is weave by default. A tick for "ghost" must not replace it.
-	updated, _ := app.Update(ActivityTickMsg{
-		Agent:   "ghost",
-		Entries: []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "stale ghost entry"}},
-	})
-	app = updated.(AppModel)
-
-	view := stripANSI(app.activity.View())
-	if strings.Contains(view, "stale ghost entry") {
-		t.Errorf("tick for non-observed agent must not update panel; got:\n%s", view)
-	}
+// peekActivityRecordingSupervisor counts PeekActivity calls so we can assert
+// the TUI no longer fetches activity entries on agent selection.
+type peekActivityRecordingSupervisor struct {
+	mockSupervisor
+	peekCalls int
 }
 
-func TestAppModel_AgentSelectedMsg_SchedulesActivityRefresh(t *testing.T) {
-	sup := &mockSupervisor{}
+func (s *peekActivityRecordingSupervisor) PeekActivity(_ context.Context, _ string, _ int) ([]agentloop.ActivityEntry, error) {
+	s.peekCalls++
+	return nil, nil
+}
+
+// TestAppModel_AgentSelectedMsg_DoesNotCallPeekActivity asserts that selecting
+// an agent no longer triggers PeekActivity — the activity panel is gone, so
+// there is no seed to fetch.
+func TestAppModel_AgentSelectedMsg_DoesNotCallPeekActivity(t *testing.T) {
+	sup := &peekActivityRecordingSupervisor{}
 	m := newTestAppModelWithSupervisor(t, sup)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
 	app := resized.(AppModel)
@@ -1276,65 +1274,10 @@ func TestAppModel_AgentSelectedMsg_SchedulesActivityRefresh(t *testing.T) {
 	updated, _ := app.Update(AgentTreeMsg{Nodes: nodes})
 	app = updated.(AppModel)
 
-	_, cmd := app.Update(AgentSelectedMsg{Name: "tower"})
-	if cmd == nil {
-		t.Fatal("AgentSelectedMsg should return a non-nil cmd that fetches activity for the new agent")
-	}
-	msg := cmd()
-	tick, ok := msg.(ActivityTickMsg)
-	if !ok {
-		if batch, isBatch := msg.(tea.BatchMsg); isBatch {
-			for _, c := range batch {
-				if am, amOK := c().(ActivityTickMsg); amOK {
-					tick = am
-					ok = true
-					break
-				}
-			}
-		}
-	}
-	if !ok {
-		t.Fatalf("expected ActivityTickMsg from AgentSelectedMsg cmd, got %T", msg)
-	}
-	if tick.Agent != "tower" {
-		t.Errorf("ActivityTickMsg.Agent = %q, want %q", tick.Agent, "tower")
-	}
-}
+	_, _ = app.Update(AgentSelectedMsg{Name: "tower"})
 
-func TestAppModel_View_IncludesActivityPanelOnWideTerm(t *testing.T) {
-	sup := &mockSupervisor{}
-	m := newTestAppModelWithSupervisor(t, sup)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
-	app := resized.(AppModel)
-
-	// Seed the panel with an entry so rendering is non-placeholder.
-	updated, _ := app.Update(ActivityTickMsg{
-		Agent:   "weave",
-		Entries: []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "sentinel-activity-line"}},
-	})
-	app = updated.(AppModel)
-
-	view := stripANSI(app.View().Content)
-	if !strings.Contains(view, "sentinel-activity-line") {
-		t.Errorf("wide-terminal View() should include activity panel content; got:\n%s", view)
-	}
-}
-
-func TestAppModel_View_HidesActivityPanelOnNarrowTerm(t *testing.T) {
-	sup := &mockSupervisor{}
-	m := newTestAppModelWithSupervisor(t, sup)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
-
-	updated, _ := app.Update(ActivityTickMsg{
-		Agent:   "weave",
-		Entries: []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "sentinel-activity-line"}},
-	})
-	app = updated.(AppModel)
-
-	view := stripANSI(app.View().Content)
-	if strings.Contains(view, "sentinel-activity-line") {
-		t.Errorf("narrow-terminal View() should NOT render activity panel; got:\n%s", view)
+	if sup.peekCalls != 0 {
+		t.Errorf("AgentSelectedMsg must NOT call PeekActivity after QUM-648; got %d calls", sup.peekCalls)
 	}
 }
 

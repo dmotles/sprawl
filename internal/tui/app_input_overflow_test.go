@@ -4,7 +4,7 @@ package tui
 //
 // When typing or pasting grows the textarea past the default 3-row input
 // height, AppModel.resizePanels() must run again so the cached
-// tree/viewport/activity sub-models shrink to match the new layout. Without
+// tree/viewport sub-models shrink to match the new layout. Without
 // that propagation the cached panels keep rendering at their pre-grow height
 // and JoinVertical(mainRow, inputView, status) overflows the terminal —
 // status bar (and eventually the bottom of the input box itself) gets

@@ -16,8 +16,8 @@ import (
 //
 // Each iteration: fresh KeyPressMsg → Update (stop-timer) → View()
 // (start-timer). The input panel mutates every iteration; tree, viewport,
-// activity, status do not — so the cache should serve four of the five
-// panels' bordered renders + the JoinHorizontal mainRow on every call.
+// status do not — so the cache should serve three of the four panels'
+// bordered renders + the JoinHorizontal mainRow on every call.
 func BenchmarkAppModel_View_PasteBurst(b *testing.B) {
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
