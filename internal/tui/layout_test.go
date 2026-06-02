@@ -289,7 +289,7 @@ func TestComputeLayout_ShortHelpHeightIsOne(t *testing.T) {
 func TestComputeLayout_ViewportShrunkByShortHelp(t *testing.T) {
 	w, h := 120, 40
 	l := ComputeLayout(w, h, defaultInputHeight)
-	want := h - l.StatusHeight - l.ShortHelpHeight - l.InputHeight
+	want := h - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.WordmarkHeight
 	if l.ViewportHeight != want {
 		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - shortHelp(%d) - input(%d))",
 			l.ViewportHeight, want, h, l.StatusHeight, l.ShortHelpHeight, l.InputHeight)

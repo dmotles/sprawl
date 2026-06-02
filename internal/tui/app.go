@@ -1743,6 +1743,13 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	}
 	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, inputView, shortHelpView, statusView, inputVisible)
 
+	// QUM-646: prepend the SPRAWL wordmark banner at the top of the layout.
+	// Height is already reserved by ComputeLayout via WordmarkHeight, so the
+	// composed content below fits within the terminal without clipping.
+	if layout.WordmarkHeight > 0 {
+		content = RenderWordmark(layout.TermWidth) + "\n" + content
+	}
+
 	if m.showPalette {
 		content = m.palette.View()
 	}

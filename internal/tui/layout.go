@@ -35,7 +35,11 @@ type Layout struct {
 	// ShortHelpWidth / ShortHelpHeight describe the single-line short-help
 	// row sandwiched between the input bar and the status bar (QUM-420).
 	ShortHelpWidth, ShortHelpHeight int
-	TermWidth, TermHeight           int
+	// WordmarkWidth / WordmarkHeight describe the SPRAWL wordmark banner
+	// rendered at the top of the TUI (QUM-646). Three rows when the terminal
+	// is at least wordmarkNarrowThreshold cols wide, one row otherwise.
+	WordmarkWidth, WordmarkHeight int
+	TermWidth, TermHeight         int
 }
 
 // ComputeLayout calculates panel dimensions from terminal size.
@@ -83,8 +87,10 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 	l.StatusWidth = width
 	l.InputWidth = width
 	l.ShortHelpWidth = width
+	l.WordmarkWidth = width
+	l.WordmarkHeight = WordmarkHeight(width)
 
-	mainHeight := height - l.StatusHeight - l.ShortHelpHeight - l.InputHeight
+	mainHeight := height - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.WordmarkHeight
 	if mainHeight < 0 {
 		mainHeight = 0
 	}
