@@ -11,10 +11,248 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/state"
 )
+
+// TestRealRecoverAgents_SettlePassFlipsZombieStatus (QUM-668) — at the top of
+// RecoverAgents, before the resume filter loop, a "settle pass" reconciles
+// the on-disk Status with the persisted outcome. Any agent whose
+// LastReportState is terminal (complete/failure) but whose Status is still
+// "active" (e.g. an earlier session crashed before Report's atomic flip ran,
+// or migrated from before QUM-668) must have its Status flipped to the
+// matching terminal liveness and persisted. Agents whose Status is not
+// "active" are left untouched.
+func TestRealRecoverAgents_SettlePassFlipsZombieStatus(t *testing.T) {
+	cases := []struct {
+		name            string
+		initialStatus   string
+		lastReportState string
+		wantStatus      string
+		wantResumed     bool
+	}{
+		{
+			name:            "complete+active settles to stopped, skipped from resume",
+			initialStatus:   state.StatusActive,
+			lastReportState: "complete",
+			wantStatus:      state.StatusStopped,
+			wantResumed:     false,
+		},
+		{
+			name:            "failure+active settles to faulted, skipped from resume",
+			initialStatus:   state.StatusActive,
+			lastReportState: "failure",
+			wantStatus:      state.StatusFaulted,
+			wantResumed:     false,
+		},
+		{
+			name:            "working+active is a crash survivor — Status unchanged, resumed",
+			initialStatus:   state.StatusActive,
+			lastReportState: "working",
+			wantStatus:      state.StatusActive,
+			wantResumed:     true,
+		},
+		{
+			name:            "complete+suspended: settle pass does not touch Status (already non-active)",
+			initialStatus:   state.StatusSuspended,
+			lastReportState: "complete",
+			wantStatus:      state.StatusSuspended,
+			wantResumed:     false,
+		},
+		{
+			name:            "failure+suspended: settle pass does not touch Status (already non-active)",
+			initialStatus:   state.StatusSuspended,
+			lastReportState: "failure",
+			wantStatus:      state.StatusSuspended,
+			wantResumed:     false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, tmpDir := newFakeReal(t)
+			starter := &recoverTestStarter{session: recoverTestSession("sess-shared")}
+			installStarter(r, starter)
+
+			wt := makeWorktreeDir(t, tmpDir, "alice")
+			saveTestAgent(t, tmpDir, &state.AgentState{
+				Name: "alice", Type: "engineer", Family: "engineering", Parent: "weave",
+				Branch: "dmotles/alice", Worktree: wt, Status: tc.initialStatus,
+				CreatedAt: "2026-05-19T00:00:00Z", SessionID: "sess-alice", TreePath: "weave/alice",
+				LastReportState: tc.lastReportState,
+			})
+
+			resumed, _, _ := r.RecoverAgents(context.Background())
+
+			gotResumed := resumed == 1
+			if gotResumed != tc.wantResumed {
+				t.Errorf("resumed=%d want resumed=%v", resumed, tc.wantResumed)
+			}
+
+			loaded, err := state.LoadAgent(tmpDir, "alice")
+			if err != nil {
+				t.Fatalf("LoadAgent: %v", err)
+			}
+			if loaded.Status != tc.wantStatus {
+				t.Errorf("post-settle Status = %q, want %q", loaded.Status, tc.wantStatus)
+			}
+
+			// Resume-skip evidence: when a terminal-outcome settle path runs
+			// from Status=active, the agent must NOT appear in starter.specs.
+			// (Compare to working+active which DOES get resumed.)
+			if !tc.wantResumed {
+				for _, sp := range starter.specs {
+					if sp.Name == "alice" {
+						t.Errorf("starter.specs contains alice for non-resume case; settle pass should have excluded it before resume scan")
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestRealRecoverAgents_QuarantinesOrphanDir (QUM-668) — any directory under
+// .sprawl/agents/<name>/ without a matching <name>.json sibling is an orphan.
+// RecoverAgents quarantines orphans by moving them into
+// .sprawl/agents/_orphaned/<UTC-timestamp>/<name>/, preserving the contained
+// files. Legit agents (with sibling JSON) are untouched.
+func TestRealRecoverAgents_QuarantinesOrphanDir(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-x")}
+	installStarter(r, starter)
+
+	// Legit agent: alice has sibling JSON via saveRecoverAgent.
+	saveRecoverAgent(t, tmpDir, "alice", state.StatusSuspended, "weave")
+	aliceDir := filepath.Join(state.AgentsDir(tmpDir), "alice")
+	if err := os.MkdirAll(aliceDir, 0o755); err != nil {
+		t.Fatalf("mkdir alice dir: %v", err)
+	}
+
+	// Orphan: ghost has a dir + file but no ghost.json sibling.
+	ghostDir := filepath.Join(state.AgentsDir(tmpDir), "ghost")
+	ghostFindings := filepath.Join(ghostDir, "findings")
+	if err := os.MkdirAll(ghostFindings, 0o755); err != nil {
+		t.Fatalf("mkdir ghost: %v", err)
+	}
+	notePath := filepath.Join(ghostFindings, "note.txt")
+	if err := os.WriteFile(notePath, []byte("ghost note"), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+
+	if _, _, errs := r.RecoverAgents(context.Background()); len(errs) > 0 {
+		t.Fatalf("RecoverAgents errs: %v", errs)
+	}
+
+	// Ghost dir must be gone from its original location.
+	if _, err := os.Stat(ghostDir); !os.IsNotExist(err) {
+		t.Errorf("ghost dir still exists at %q (err=%v); want quarantined", ghostDir, err)
+	}
+
+	// The note must have been preserved under _orphaned/<ts>/ghost/findings/note.txt.
+	matches, err := filepath.Glob(filepath.Join(state.AgentsDir(tmpDir), "_orphaned", "*", "ghost", "findings", "note.txt"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Errorf("quarantined note matches = %v, want exactly 1", matches)
+	} else {
+		body, rerr := os.ReadFile(matches[0])
+		if rerr != nil {
+			t.Errorf("read quarantined note: %v", rerr)
+		} else if string(body) != "ghost note" {
+			t.Errorf("quarantined note body = %q, want %q", string(body), "ghost note")
+		}
+
+		// Pin the timestamp directory format: must be UTC compact form
+		// "20060102T150405Z" (time.Now().UTC().Format(...)). The timestamp
+		// segment is the parent of "ghost" in the matched path:
+		//   <agents>/_orphaned/<ts>/ghost/findings/note.txt
+		// Climb up 3 levels from note.txt → findings → ghost → <ts>.
+		tsDir := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(matches[0]))))
+		if _, perr := time.Parse("20060102T150405Z", tsDir); perr != nil {
+			t.Errorf("quarantine timestamp dir %q does not parse as UTC \"20060102T150405Z\": %v", tsDir, perr)
+		}
+	}
+
+	// Legit alice dir must be untouched.
+	if _, err := os.Stat(aliceDir); err != nil {
+		t.Errorf("alice dir vanished: %v", err)
+	}
+}
+
+// TestRealRecoverAgents_QuarantinesMultipleOrphans (QUM-668) — when there are
+// multiple orphan dirs in a single RecoverAgents call, all of them must be
+// quarantined, AND they must all land under the same single <ts> parent
+// directory (proving the timestamp is captured once per RecoverAgents call,
+// not re-sampled per orphan).
+func TestRealRecoverAgents_QuarantinesMultipleOrphans(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-x")}
+	installStarter(r, starter)
+
+	orphanNames := []string{"ghost", "phantom", "wraith"}
+	for _, name := range orphanNames {
+		dir := filepath.Join(state.AgentsDir(tmpDir), name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir orphan %q: %v", name, err)
+		}
+		marker := filepath.Join(dir, "marker.txt")
+		if err := os.WriteFile(marker, []byte(name), 0o644); err != nil {
+			t.Fatalf("write marker %q: %v", name, err)
+		}
+	}
+
+	if _, _, errs := r.RecoverAgents(context.Background()); len(errs) > 0 {
+		t.Fatalf("RecoverAgents errs: %v", errs)
+	}
+
+	// Collect the <ts> parent dirs across all orphans; they must all be equal.
+	tsDirs := make(map[string]struct{})
+	for _, name := range orphanNames {
+		// Original dir must be gone.
+		if _, err := os.Stat(filepath.Join(state.AgentsDir(tmpDir), name)); !os.IsNotExist(err) {
+			t.Errorf("orphan %q still at original location (err=%v)", name, err)
+		}
+
+		matches, err := filepath.Glob(filepath.Join(state.AgentsDir(tmpDir), "_orphaned", "*", name, "marker.txt"))
+		if err != nil {
+			t.Fatalf("glob %q: %v", name, err)
+		}
+		if len(matches) != 1 {
+			t.Errorf("quarantined %q matches = %v, want exactly 1", name, matches)
+			continue
+		}
+		// <agents>/_orphaned/<ts>/<name>/marker.txt → climb 2 dirs to get <ts>.
+		tsDir := filepath.Dir(filepath.Dir(matches[0]))
+		tsDirs[tsDir] = struct{}{}
+	}
+
+	if len(tsDirs) != 1 {
+		t.Errorf("orphans were spread across %d timestamp dirs; want 1 single timestamp per RecoverAgents call. tsDirs=%v", len(tsDirs), tsDirs)
+	}
+}
+
+// TestRealRecoverAgents_NoOrphansNoQuarantineDir (QUM-668) — if there are no
+// orphans, RecoverAgents must NOT create an empty _orphaned/ directory. The
+// quarantine path is opt-in by discovery.
+func TestRealRecoverAgents_NoOrphansNoQuarantineDir(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-x")}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "alice", state.StatusSuspended, "weave")
+
+	if _, _, errs := r.RecoverAgents(context.Background()); len(errs) > 0 {
+		t.Fatalf("RecoverAgents errs: %v", errs)
+	}
+
+	quarantineDir := filepath.Join(state.AgentsDir(tmpDir), "_orphaned")
+	if _, err := os.Stat(quarantineDir); !os.IsNotExist(err) {
+		t.Errorf("_orphaned dir exists (err=%v); want absent when there are no orphans", err)
+	}
+}
 
 // recoverTestStarter is a per-test starter that records every Start call
 // (spec + return) and lets the test inject per-agent errors. Reuses

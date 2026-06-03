@@ -90,6 +90,11 @@ func ValidReportState(state string) bool {
 // liveness axis; the report outcome (complete/failure) lives solely on
 // LastReportState (and the back-compat LastReportType token).
 //
+// QUM-668 partially reverses the M4 stance for TERMINAL outcomes: when the
+// outcome is complete/failure, Report atomically flips Status to the matching
+// terminal liveness (stopped/faulted) in the same save so a subsequent boot
+// never observes an "active" zombie next to a terminal LastReportState.
+//
 // See docs/designs/messaging-overhaul.md §4.2.3 / §4.7.
 func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (ReportResult, error) {
 	if deps == nil {
@@ -115,6 +120,21 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (
 	agentState.LastReportType = legacyType(stateVal)
 	agentState.LastReportMessage = summary
 	agentState.LastReportAt = reportedAt
+
+	// QUM-668: terminal report outcomes drive the liveness Status to its
+	// terminal value atomically in the same save. Non-terminal reports
+	// (working/blocked) leave Status untouched. This partially reverses
+	// QUM-625 M4 — outcome still lives on LastReportState, but terminal
+	// outcomes also drive the Status axis to a terminal liveness so that
+	// (a) MCP tools can give a clear "no longer running" error and
+	// (b) the resume filter never has to second-guess an active-but-done
+	// agent.
+	switch stateVal {
+	case ReportStateComplete:
+		agentState.Status = state.StatusStopped
+	case ReportStateFailure:
+		agentState.Status = state.StatusFaulted
+	}
 
 	if err := deps.saveAgent(sprawlRoot, agentState); err != nil {
 		return ReportResult{}, fmt.Errorf("saving agent state: %w", err)

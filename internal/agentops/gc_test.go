@@ -510,3 +510,44 @@ detached
 		t.Errorf("missing entries: %+v", m)
 	}
 }
+
+// TestScanOrphans_SkipsOrphanedQuarantineDir (QUM-668) — the supervisor's
+// RecoverAgents quarantines orphan dirs into .sprawl/agents/_orphaned/<ts>/.
+// On the next boot, ScanOrphans must NOT report _orphaned itself as an orphan
+// (it has no sibling _orphaned.json, but it's a reserved quarantine root, not
+// a stray agent dir). Real orphans next to it must still be detected.
+func TestScanOrphans_SkipsOrphanedQuarantineDir(t *testing.T) {
+	g := newGCEnv(t)
+
+	// Reserved quarantine dir with a stamped subdir + file.
+	quarantineSub := filepath.Join(state.AgentsDir(g.root), "_orphaned", "20260101T000000Z", "whatever")
+	if err := os.MkdirAll(quarantineSub, 0o755); err != nil {
+		t.Fatalf("mkdir quarantine: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(quarantineSub, "leftover.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write quarantine file: %v", err)
+	}
+
+	// Real orphan sibling.
+	g.mkOrphanDir(t, "zombie", map[string]time.Time{"f": g.now.Add(-30 * 24 * time.Hour)})
+
+	got, err := agentops.ScanOrphans(g.deps())
+	if err != nil {
+		t.Fatalf("ScanOrphans err: %v", err)
+	}
+
+	names := make([]string, 0, len(got))
+	for _, r := range got {
+		names = append(names, r.Name)
+	}
+	sort.Strings(names)
+
+	if len(names) != 1 || names[0] != "zombie" {
+		t.Errorf("orphan names = %v, want [zombie] only (_orphaned must be skipped)", names)
+	}
+	for _, n := range names {
+		if n == "_orphaned" {
+			t.Errorf("ScanOrphans returned %q as an orphan; quarantine root must be skipped", n)
+		}
+	}
+}

@@ -361,13 +361,13 @@ func TestReportStatus_ExplicitAgentName(t *testing.T) {
 		t.Fatalf("ReportStatus: %v", err)
 	}
 	got, _ := state.LoadAgent(tmpDir, "ratz")
-	// QUM-625 (slice M4): report.go writes the outcome axis (LastReportState),
-	// not the liveness Status axis. A "complete" report leaves Status unchanged.
+	// QUM-668: report.go atomically flips Status → stopped on a "complete"
+	// terminal outcome (partially reversing the QUM-625 M4 stance).
 	if got.LastReportState != "complete" {
 		t.Errorf("LastReportState = %q, want complete", got.LastReportState)
 	}
-	if got.Status != "active" {
-		t.Errorf("Status = %q, want active (unchanged by report)", got.Status)
+	if got.Status != state.StatusStopped {
+		t.Errorf("Status = %q, want %q (QUM-668: complete is terminal)", got.Status, state.StatusStopped)
 	}
 }
 

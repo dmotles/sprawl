@@ -163,6 +163,10 @@ func ScanOrphans(deps GCDeps) ([]OrphanRecord, error) {
 			continue
 		}
 		name := e.Name()
+		if name == "_orphaned" {
+			// QUM-668: the quarantine directory itself is not an orphan — skip.
+			continue
+		}
 		if jsonNames[name] {
 			continue
 		}

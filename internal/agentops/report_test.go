@@ -58,9 +58,10 @@ func TestReport_WorkingUpdatesState(t *testing.T) {
 	}
 }
 
-// QUM-625 M4: outcome moved off the Status axis. complete sets
-// LastReportState=complete and the back-compat LastReportType=done while
-// leaving Status (a pure liveness) untouched.
+// QUM-668: reversing the QUM-625 M4 stance for terminal outcomes. Report now
+// atomically flips Status to a terminal liveness when the outcome is terminal.
+// complete → Status=stopped, failure → Status=faulted. Non-terminal outcomes
+// (working/blocked) still leave Status untouched.
 func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "alice", Parent: "bob", Status: "active",
@@ -72,8 +73,8 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "alice")
-	if st.Status != "active" {
-		t.Errorf("Status = %q, want active (unchanged — outcome lives on LastReportState)", st.Status)
+	if st.Status != state.StatusStopped {
+		t.Errorf("Status = %q, want %q (QUM-668: complete is terminal — Status flips to stopped)", st.Status, state.StatusStopped)
 	}
 	if st.LastReportState != "complete" {
 		t.Errorf("LastReportState = %q, want complete", st.LastReportState)
@@ -83,9 +84,9 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	}
 }
 
-// QUM-625 M4: outcome moved off the Status axis. failure sets
-// LastReportState=failure and the back-compat LastReportType=problem while
-// leaving Status (a pure liveness) untouched.
+// QUM-668: failure is terminal — Status flips to faulted at the same time as
+// LastReportState is persisted, so a restart won't observe a stale "active"
+// liveness for a faulted agent.
 func TestReport_FailureSetsStatusProblem(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "alice", Parent: "bob", Status: "active",
@@ -97,8 +98,8 @@ func TestReport_FailureSetsStatusProblem(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "alice")
-	if st.Status != "active" {
-		t.Errorf("Status = %q, want active (unchanged — outcome lives on LastReportState)", st.Status)
+	if st.Status != state.StatusFaulted {
+		t.Errorf("Status = %q, want %q (QUM-668: failure is terminal — Status flips to faulted)", st.Status, state.StatusFaulted)
 	}
 	if st.LastReportState != "failure" {
 		t.Errorf("LastReportState = %q, want failure", st.LastReportState)
@@ -126,48 +127,7 @@ func TestReport_BlockedDoesNotChangeStatus(t *testing.T) {
 	}
 }
 
-// QUM-625 M4: outcome (complete/failure) lives on LastReportState only — the
-// liveness axis (Status) must NOT be overwritten with "done"/"problem".
-// These tests FAIL today because Report still writes Status=done/problem.
-
-func TestReport_CompleteDoesNotWriteStatusDone(t *testing.T) {
-	root, deps := setupReportTest(t, &state.AgentState{
-		Name: "alice", Parent: "bob", Status: "active",
-	})
-
-	if _, err := Report(deps, root, "alice", "complete", "done"); err != nil {
-		t.Fatalf("Report: %v", err)
-	}
-
-	st, _ := state.LoadAgent(root, "alice")
-	if st.Status != "active" {
-		t.Errorf("Status = %q, want %q (unchanged — outcome lives on LastReportState)", st.Status, "active")
-	}
-	if st.LastReportState != "complete" {
-		t.Errorf("LastReportState = %q, want %q", st.LastReportState, "complete")
-	}
-}
-
-func TestReport_FailureDoesNotWriteStatusProblem(t *testing.T) {
-	root, deps := setupReportTest(t, &state.AgentState{
-		Name: "alice", Parent: "bob", Status: "active",
-	})
-
-	if _, err := Report(deps, root, "alice", "failure", "blocked on API"); err != nil {
-		t.Fatalf("Report: %v", err)
-	}
-
-	st, _ := state.LoadAgent(root, "alice")
-	if st.Status != "active" {
-		t.Errorf("Status = %q, want %q (unchanged — outcome lives on LastReportState)", st.Status, "active")
-	}
-	if st.LastReportState != "failure" {
-		t.Errorf("LastReportState = %q, want %q", st.LastReportState, "failure")
-	}
-}
-
-// QUM-625 M4: outcome lives on LastReportState; Status is untouched even when
-// the reporter has no parent.
+// QUM-668: terminal outcomes flip Status even when the reporter has no parent.
 func TestReport_NoParentStillUpdatesState(t *testing.T) {
 	root, deps := setupReportTest(t, &state.AgentState{
 		Name: "solo", Parent: "", Status: "active",
@@ -182,11 +142,78 @@ func TestReport_NoParentStillUpdatesState(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "solo")
-	if st.Status != "active" {
-		t.Errorf("Status = %q, want active (unchanged)", st.Status)
+	if st.Status != state.StatusStopped {
+		t.Errorf("Status = %q, want %q (QUM-668: complete is terminal)", st.Status, state.StatusStopped)
 	}
 	if st.LastReportState != "complete" {
 		t.Errorf("LastReportState = %q, want complete", st.LastReportState)
+	}
+}
+
+// TestReport_TerminalOutcomesFlipStatus (QUM-668) — the canonical table-driven
+// pin for the atomic Status transition on terminal report outcomes. The
+// supervisor's settle pass on next boot relies on the invariant that if
+// LastReportState ∈ {complete, failure}, the persisted Status is either the
+// matching terminal liveness OR a hold-state (suspended) that the settle pass
+// can finalize.
+func TestReport_TerminalOutcomesFlipStatus(t *testing.T) {
+	cases := []struct {
+		name          string
+		initialStatus string
+		outcome       string
+		wantStatus    string
+	}{
+		{
+			name:          "complete from active flips to stopped",
+			initialStatus: state.StatusActive,
+			outcome:       ReportStateComplete,
+			wantStatus:    state.StatusStopped,
+		},
+		{
+			name:          "failure from active flips to faulted",
+			initialStatus: state.StatusActive,
+			outcome:       ReportStateFailure,
+			wantStatus:    state.StatusFaulted,
+		},
+		{
+			name:          "working from active leaves Status unchanged",
+			initialStatus: state.StatusActive,
+			outcome:       ReportStateWorking,
+			wantStatus:    state.StatusActive,
+		},
+		{
+			name:          "blocked from active leaves Status unchanged",
+			initialStatus: state.StatusActive,
+			outcome:       ReportStateBlocked,
+			wantStatus:    state.StatusActive,
+		},
+		{
+			name:          "complete from suspended still flips to stopped",
+			initialStatus: state.StatusSuspended,
+			outcome:       ReportStateComplete,
+			wantStatus:    state.StatusStopped,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, deps := setupReportTest(t, &state.AgentState{
+				Name: "alice", Parent: "bob", Status: tc.initialStatus,
+			})
+			if _, err := Report(deps, root, "alice", tc.outcome, "summary"); err != nil {
+				t.Fatalf("Report: %v", err)
+			}
+			st, err := state.LoadAgent(root, "alice")
+			if err != nil {
+				t.Fatalf("LoadAgent: %v", err)
+			}
+			if st.Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", st.Status, tc.wantStatus)
+			}
+			if st.LastReportState != tc.outcome {
+				t.Errorf("LastReportState = %q, want %q", st.LastReportState, tc.outcome)
+			}
+		})
 	}
 }
 

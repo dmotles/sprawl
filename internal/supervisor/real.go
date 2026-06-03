@@ -780,6 +780,41 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 	if r.runtimeRegistry == nil || r.runtimeStarter == nil {
 		return 0, 0, nil
 	}
+
+	// QUM-668 Problem A: quarantine orphan agent dirs (dirs without a sibling
+	// <name>.json). Safe, reversible — moves them under .sprawl/agents/_orphaned/<ts>/.
+	r.quarantineOrphanAgentDirs()
+
+	// QUM-668 Problem B: settle-pass. Belt-and-suspenders for any agent whose
+	// LAST report was terminal (complete/failure) but whose persisted Status is
+	// still "active" — flip to the terminal liveness on disk so the resume
+	// filter and downstream MCP tools see a consistent picture. Only acts when
+	// Status==active AND no runtime is registered for the agent (the latter is
+	// trivially true at this point but stays defensive).
+	if settleAgents, lerr := state.ListAgents(r.sprawlRoot); lerr == nil {
+		for _, a := range settleAgents {
+			if a == nil || a.Status != state.StatusActive {
+				continue
+			}
+			var terminal string
+			switch a.LastReportState {
+			case agentops.ReportStateComplete:
+				terminal = state.StatusStopped
+			case agentops.ReportStateFailure:
+				terminal = state.StatusFaulted
+			default:
+				continue
+			}
+			if _, registered := r.runtimeRegistry.Get(a.Name); registered {
+				continue
+			}
+			a.Status = terminal
+			if sErr := state.SaveAgent(r.sprawlRoot, a); sErr != nil {
+				slog.Warn("supervisor: RecoverAgents settle-pass save", "agent", a.Name, "err", sErr)
+			}
+		}
+	}
+
 	agents, err := state.ListAgents(r.sprawlRoot)
 	if err != nil {
 		return 0, 0, []error{fmt.Errorf("list agents: %w", err)}
@@ -802,10 +837,11 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		if !ok || (lv != liveness.Suspended && lv != liveness.Running) {
 			continue
 		}
-		// Done-exclusion on the OUTCOME axis: a completed agent is not
-		// auto-resumed. This replaces the old implicit done-exclusion (Status=="done"
-		// no longer occurs after the axis split).
-		if a.LastReportState == agentops.ReportStateComplete {
+		// Terminal-outcome exclusion on the OUTCOME axis: a completed or
+		// failed agent is not auto-resumed. This replaces the old implicit
+		// done-exclusion (Status=="done" no longer occurs after the axis
+		// split). QUM-668: failure is also terminal — extend exclusion.
+		if a.LastReportState == agentops.ReportStateComplete || a.LastReportState == agentops.ReportStateFailure {
 			continue
 		}
 		if a.Worktree == "" {
@@ -867,6 +903,38 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		resumed++
 	}
 	return resumed, failed, errs
+}
+
+// quarantineOrphanAgentDirs moves any .sprawl/agents/<name>/ directory that
+// lacks a sibling <name>.json file to .sprawl/agents/_orphaned/<UTC-ts>/<name>/.
+// One warning is logged per quarantined orphan. Errors are logged and
+// swallowed — orphan quarantine must not block recovery. QUM-668 Problem A.
+func (r *Real) quarantineOrphanAgentDirs() {
+	orphans, err := agentops.ScanOrphans(agentops.GCDeps{
+		SprawlRoot: r.sprawlRoot,
+		Now:        time.Now,
+	})
+	if err != nil {
+		slog.Warn("supervisor: RecoverAgents ScanOrphans", "err", err)
+		return
+	}
+	if len(orphans) == 0 {
+		return
+	}
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	quarantineRoot := filepath.Join(state.AgentsDir(r.sprawlRoot), "_orphaned", ts)
+	if err := os.MkdirAll(quarantineRoot, 0o750); err != nil {
+		slog.Warn("supervisor: orphan quarantine mkdir", "dir", quarantineRoot, "err", err)
+		return
+	}
+	for _, o := range orphans {
+		dst := filepath.Join(quarantineRoot, o.Name)
+		if err := os.Rename(o.DirPath, dst); err != nil {
+			slog.Warn("supervisor: orphan quarantine rename", "agent", o.Name, "from", o.DirPath, "to", dst, "err", err)
+			continue
+		}
+		slog.Warn("supervisor: quarantined orphan agent dir", "agent", o.Name, "from", o.DirPath, "to", dst)
+	}
 }
 
 // bfsByParent orders agents BFS-from-root, parents before children. Any
