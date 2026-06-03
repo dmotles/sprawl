@@ -274,6 +274,48 @@ func TestReportDots_UsePaletteRoles(t *testing.T) {
 	}
 }
 
+// QUM-664: Theme.UserPromptText is the bold bright-blue (ANSI 12) style
+// applied to user-message rendering in the viewport.
+func TestTheme_HasUserPromptStyle(t *testing.T) {
+	theme := NewTheme("")
+	got := theme.UserPromptText.GetForeground()
+	want := lipgloss.Color("12")
+	if renderColor(got) != renderColor(want) {
+		t.Errorf("Theme.UserPromptText foreground render = %q, want %q (ANSI 12)",
+			renderColor(got), renderColor(want))
+	}
+	if !theme.UserPromptText.GetBold() {
+		t.Error("Theme.UserPromptText should be Bold(true)")
+	}
+}
+
+// QUM-664: Theme.InputBarStyle is the grey (ANSI 8) foreground applied to
+// the "▌ " vertical bar gutter on the input chrome.
+func TestTheme_HasInputBarStyle(t *testing.T) {
+	theme := NewTheme("")
+	got := theme.InputBarStyle.GetForeground()
+	want := lipgloss.Color("8")
+	if renderColor(got) != renderColor(want) {
+		t.Errorf("Theme.InputBarStyle foreground render = %q, want %q (ANSI 8)",
+			renderColor(got), renderColor(want))
+	}
+}
+
+// QUM-664: Palette must expose UserPrompt (bright-blue 12) and InputBar
+// (grey 8) roles so the chevron + bar are sourced from the semantic palette
+// rather than raw literals scattered through render code.
+func TestNewTheme_PaletteHasUserPromptAndInputBarRoles(t *testing.T) {
+	theme := NewTheme("")
+	if renderColor(theme.Palette.UserPrompt) != renderColor(lipgloss.Color("12")) {
+		t.Errorf("Palette.UserPrompt = %q, want %q (ANSI 12)",
+			renderColor(theme.Palette.UserPrompt), renderColor(lipgloss.Color("12")))
+	}
+	if renderColor(theme.Palette.InputBar) != renderColor(lipgloss.Color("8")) {
+		t.Errorf("Palette.InputBar = %q, want %q (ANSI 8)",
+			renderColor(theme.Palette.InputBar), renderColor(lipgloss.Color("8")))
+	}
+}
+
 // QUM-417: Once the semantic palette lands, no TUI source file outside
 // theme.go and colors.go should reach for raw `lipgloss.Color("<digits>")`
 // literals — those should be migrated to palette references. This AST sweep

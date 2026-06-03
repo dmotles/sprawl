@@ -60,6 +60,12 @@ type Theme struct {
 	ReportDotFailure  lipgloss.Style
 	ReportDotComplete lipgloss.Style
 	ReportDotIdle     lipgloss.Style
+
+	// QUM-664: stub fields for visual-identity spike port. Zero-value styles
+	// until the implementer phase wires Palette.UserPrompt / Palette.InputBar
+	// into NewTheme.
+	UserPromptText lipgloss.Style
+	InputBarStyle  lipgloss.Style
 }
 
 // ReportDot returns the colored "●" for the given report state. Empty or
@@ -124,5 +130,9 @@ func NewTheme(accentColor string) Theme {
 		ReportDotFailure:  lipgloss.NewStyle().Foreground(pal.Error),
 		ReportDotComplete: lipgloss.NewStyle().Foreground(pal.Info),
 		ReportDotIdle:     lipgloss.NewStyle().Foreground(pal.FgMostSubtle),
+		// QUM-664: visual-identity spike — bold bright-blue chevron + grey
+		// vertical bar gutter sourced from the semantic palette.
+		UserPromptText: lipgloss.NewStyle().Foreground(pal.UserPrompt).Bold(true),
+		InputBarStyle:  lipgloss.NewStyle().Foreground(pal.InputBar),
 	}
 }

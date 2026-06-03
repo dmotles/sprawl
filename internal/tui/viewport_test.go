@@ -91,11 +91,67 @@ func TestViewportModel_AppendUserMessage(t *testing.T) {
 	m.SetSize(60, 20)
 	m.AppendUserMessage("hello")
 	view := stripANSI(m.View())
-	if !strings.Contains(view, "You:") {
-		t.Errorf("View() should contain 'You:' label, got:\n%s", view)
+	// QUM-664: user messages now render with a `› ` chevron prefix instead
+	// of the `You: ` label.
+	if strings.Contains(view, "You:") {
+		t.Errorf("View() should no longer contain 'You:' label, got:\n%s", view)
 	}
-	if !strings.Contains(view, "hello") {
-		t.Errorf("View() should contain user message text 'hello', got:\n%s", view)
+	if !strings.Contains(view, "› hello") {
+		t.Errorf("View() should contain user message with chevron prefix '› hello', got:\n%s", view)
+	}
+}
+
+// QUM-664: user messages render with a single chevron prefix "› " followed
+// by the first line of content. The "You: " label is gone.
+func TestViewportModel_RendersUserMessageWithPromptPrefix(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendUserMessage("hello there")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "› hello there") {
+		t.Errorf("View() should contain '› hello there', got:\n%s", view)
+	}
+	if strings.Contains(view, "You: ") {
+		t.Errorf("View() should NOT contain 'You: ' label, got:\n%s", view)
+	}
+}
+
+// QUM-664: multi-line user messages get a hanging indent — first line is
+// "› <content>", subsequent lines are "  <content>" (two spaces, no
+// chevron). Mirrors the spike's prefixLines("› ", "  ", body).
+func TestViewportModel_UserMessageMultiLineHang(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendUserMessage("line one\nline two")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "› line one") {
+		t.Errorf("first line should be '› line one', got:\n%s", view)
+	}
+	// Continuation must be hang-indented, NOT chevron-prefixed.
+	if !strings.Contains(view, "  line two") {
+		t.Errorf("continuation line should be hang-indented '  line two', got:\n%s", view)
+	}
+	if strings.Contains(view, "› line two") {
+		t.Errorf("continuation line must NOT carry the chevron, got:\n%s", view)
+	}
+}
+
+// QUM-664: the chevron + content render under theme.UserPromptText — a bold
+// bright-blue (ANSI 12) foreground. Compare against a control style so we are
+// not pinning brittle escape bytes.
+func TestViewportModel_UserMessageUsesUserPromptStyle(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(60, 20)
+	m.AppendUserMessage("hello")
+	raw := m.View()
+
+	control := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("12")).
+		Bold(true).
+		Render("›")
+	if !strings.Contains(raw, control) {
+		t.Errorf("raw View() should contain ANSI sequence for bold-bright-blue '›' (%q), got:\n%s",
+			control, raw)
 	}
 }
 

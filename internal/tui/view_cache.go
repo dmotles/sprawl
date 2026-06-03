@@ -182,15 +182,19 @@ func (m AppModel) cachedMainRow(useCache bool, tree, viewport string) string {
 // burst since each rune mutates input — but it does hit on no-op re-renders
 // (e.g. spinner ticks where view content is the same).
 func (m AppModel) cachedComposed(useCache bool, termWidth int, mainRow, overlay, inputView, shortHelpView, statusView string, inputVisible bool) string {
+	// QUM-664: shortHelpView is no longer composed into the chassis — the
+	// row was removed. The parameter is retained to keep the call-site
+	// signature stable during the spike port; it is intentionally unused.
+	_ = shortHelpView
 	if !useCache || m.cache == nil {
 		// Test oracle path: defer to lipgloss for ground-truth composition.
 		if inputVisible {
 			if overlay != "" {
-				return lipgloss.JoinVertical(lipgloss.Left, mainRow, overlay, inputView, shortHelpView, statusView)
+				return lipgloss.JoinVertical(lipgloss.Left, mainRow, overlay, inputView, statusView)
 			}
-			return lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, shortHelpView, statusView)
+			return lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, mainRow, shortHelpView, statusView)
+		return lipgloss.JoinVertical(lipgloss.Left, mainRow, statusView)
 	}
 	var iv byte = '0'
 	if inputVisible {
@@ -209,7 +213,6 @@ func (m AppModel) cachedComposed(useCache bool, termWidth int, mainRow, overlay,
 	// the TestViewCache_OutputEqualsUncached_AcrossKeystrokes test gates this
 	// invariant against the real-lipgloss path used by viewUncached().
 	mainRowPadded := m.cachedMainRowPadded(termWidth, mainRow)
-	shortHelpPadded := lipgloss.PlaceHorizontal(termWidth, lipgloss.Left, shortHelpView)
 	statusPadded := lipgloss.PlaceHorizontal(termWidth, lipgloss.Left, statusView)
 
 	var out string
@@ -217,12 +220,12 @@ func (m AppModel) cachedComposed(useCache bool, termWidth int, mainRow, overlay,
 		inputPadded := m.cachedInputPadded(termWidth, inputView)
 		if overlay != "" {
 			overlayPadded := lipgloss.PlaceHorizontal(termWidth, lipgloss.Left, overlay)
-			out = strings.Join([]string{mainRowPadded, overlayPadded, inputPadded, shortHelpPadded, statusPadded}, "\n")
+			out = strings.Join([]string{mainRowPadded, overlayPadded, inputPadded, statusPadded}, "\n")
 		} else {
-			out = strings.Join([]string{mainRowPadded, inputPadded, shortHelpPadded, statusPadded}, "\n")
+			out = strings.Join([]string{mainRowPadded, inputPadded, statusPadded}, "\n")
 		}
 	} else {
-		out = strings.Join([]string{mainRowPadded, shortHelpPadded, statusPadded}, "\n")
+		out = strings.Join([]string{mainRowPadded, statusPadded}, "\n")
 	}
 
 	m.cache.composed = out

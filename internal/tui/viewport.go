@@ -664,8 +664,7 @@ func (m *ViewportModel) renderMessages() string {
 		var block strings.Builder
 		switch msg.Type {
 		case MessageUser:
-			block.WriteString(m.theme.AccentText.Render("You: "))
-			block.WriteString(msg.Content)
+			block.WriteString(m.renderUserPromptBlock(msg.Content))
 		case MessageAssistant:
 			block.WriteString(m.renderer.Render(msg.Content))
 			if !msg.Complete {
@@ -1061,6 +1060,27 @@ func notificationGlyphAndStyle(theme *Theme, msg MessageEntry) (glyph string, st
 		}
 		return "✉", theme.NotificationText
 	}
+}
+
+// renderUserPromptBlock applies the QUM-664 chevron prefix to a user-message
+// body: the first content line gets "› ", continuation lines get two spaces
+// of hang indent (no chevron), and the whole block is rendered under
+// theme.UserPromptText (bold bright-blue) in a single Render pass.
+func (m ViewportModel) renderUserPromptBlock(content string) string {
+	style := m.theme.UserPromptText
+	lines := strings.Split(content, "\n")
+	out := make([]string, len(lines))
+	for i, ln := range lines {
+		if i == 0 {
+			// Render chevron and body as separate spans so the chevron's SGR
+			// sequence is independently identifiable in the output (QUM-664
+			// style assertion compares against style.Render("›")).
+			out[i] = style.Render("›") + " " + style.Render(ln)
+		} else {
+			out[i] = "  " + style.Render(ln)
+		}
+	}
+	return strings.Join(out, "\n")
 }
 
 func formatSystemMessage(content string, width int) string {

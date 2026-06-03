@@ -1748,7 +1748,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// the composed content below fits within the terminal without clipping.
 	if layout.HeaderHeight > 0 {
 		treeLines := m.tree.OrbitalLines(layout.HeaderTreeWidth)
-		content = RenderHeader(layout.TermWidth, treeLines) + "\n" + content
+		content = RenderHeader(layout.TermWidth, treeLines) + "\n\n" + content
 	}
 
 	if m.showPalette {
@@ -2021,13 +2021,14 @@ func agentFromHead(pq *supervisor.PendingQuestion) string {
 	return pq.Req.From
 }
 
-// inputBoxHeight returns the total height the input box occupies including
-// its border (2 cells). The textarea's Height() reflects the current content
-// line count when DynamicHeight is enabled. Before the textarea has been
-// sized (SetWidth), its Height() returns a stale default — fall back to the
-// layout default in that case.
+// inputBoxHeight returns the total height the input box occupies. The
+// textarea's Height() reflects the current content line count when
+// DynamicHeight is enabled. QUM-661 stripped the rounded border/bg fill so
+// the input is now flush textarea rows — no +2 border reservation needed.
+// Before the textarea has been sized (SetWidth), its Height() returns a
+// stale default — fall back to the layout default in that case.
 func (m *AppModel) inputBoxHeight() int {
-	h := m.input.Height() + 2 // +2 for top/bottom border
+	h := m.input.Height()
 	if h < defaultInputHeight {
 		h = defaultInputHeight
 	}

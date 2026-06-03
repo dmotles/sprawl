@@ -1116,7 +1116,10 @@ func TestAppModel_AgentSelectedMsg_RestoresInputBarOnCycleBack(t *testing.T) {
 	app = updated.(AppModel)
 
 	view := app.View().Content
-	if !strings.Contains(view, "ype a message") {
+	// QUM-664: placeholder text changed from "Type a message..." to the
+	// inline key-binding hint. Substring "commands" appears in the new
+	// placeholder and not elsewhere in the chassis.
+	if !strings.Contains(view, "commands") {
 		t.Error("input bar should be visible again after cycling back to weave")
 	}
 	weaveH := app.viewportFor("weave").Height()

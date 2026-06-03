@@ -233,24 +233,8 @@ func TestComputeLayout_InputHeightClampedToMin(t *testing.T) {
 	}
 }
 
-// QUM-420: layout must reserve exactly one row for the short-help strip and
-// shrink the main panel area accordingly.
-func TestComputeLayout_ShortHelpHeightIsOne(t *testing.T) {
-	l := ComputeLayout(120, 40, defaultInputHeight)
-	if l.ShortHelpHeight != 1 {
-		t.Errorf("ShortHelpHeight = %d, want 1", l.ShortHelpHeight)
-	}
-}
-
-func TestComputeLayout_ViewportShrunkByShortHelp(t *testing.T) {
-	w, h := 120, 40
-	l := ComputeLayout(w, h, defaultInputHeight)
-	want := h - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.HeaderHeight
-	if l.ViewportHeight != want {
-		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - shortHelp(%d) - input(%d) - header(%d))",
-			l.ViewportHeight, want, h, l.StatusHeight, l.ShortHelpHeight, l.InputHeight, l.HeaderHeight)
-	}
-}
+// QUM-664: the short-help strip was removed from the chassis. Superseded by
+// TestComputeLayout_NoShortHelpRow / TestComputeLayout_ReservesHeaderSpacerRow.
 
 func TestComputeLayout_ShortHelpWidthMatchesTerm(t *testing.T) {
 	l := ComputeLayout(120, 40, defaultInputHeight)
@@ -274,6 +258,35 @@ func TestComputeLayout_HeaderTreeWidth_Positive_Wide(t *testing.T) {
 	l := ComputeLayout(120, 40, defaultInputHeight)
 	if l.HeaderTreeWidth <= 0 {
 		t.Errorf("HeaderTreeWidth = %d, want > 0 at width=120", l.HeaderTreeWidth)
+	}
+}
+
+// QUM-664: the short-help strip is removed from the chassis. ShortHelpHeight
+// must report 0 (or its field must be gone — kept as 0 here to allow the
+// stub to compile during red phase).
+func TestComputeLayout_NoShortHelpRow(t *testing.T) {
+	l := ComputeLayout(120, 40, defaultInputHeight)
+	if l.ShortHelpHeight != 0 {
+		t.Errorf("ShortHelpHeight = %d, want 0 (QUM-664 removed short-help row)", l.ShortHelpHeight)
+	}
+}
+
+// QUM-664: ComputeLayout reserves a single spacer row between the header
+// (wordmark) and the chat viewport so the wordmark visually breathes from
+// the body content.
+func TestComputeLayout_ReservesHeaderSpacerRow(t *testing.T) {
+	w, h := 120, 40
+	l := ComputeLayout(w, h, defaultInputHeight)
+	// HeaderSpacerHeight is a first-class layout output — must be exactly 1.
+	if l.HeaderSpacerHeight != 1 {
+		t.Errorf("HeaderSpacerHeight = %d, want 1 (QUM-664)", l.HeaderSpacerHeight)
+	}
+	// mainHeight = termH - status - input - header - headerSpacer
+	// (no shortHelp anymore).
+	want := h - l.StatusHeight - l.InputHeight - l.HeaderHeight - l.HeaderSpacerHeight
+	if l.ViewportHeight != want {
+		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - input(%d) - header(%d) - spacer(%d))",
+			l.ViewportHeight, want, h, l.StatusHeight, l.InputHeight, l.HeaderHeight, l.HeaderSpacerHeight)
 	}
 }
 

@@ -11,9 +11,13 @@ const (
 	maxInputHeight  = 12
 	statusBarHeight = 1
 	// shortHelpHeight reserves one row above the status bar for the
-	// context-sensitive short-help strip (QUM-420). The strip is always
-	// drawn so the main panel area is shrunk by this amount.
-	shortHelpHeight = 1
+	// context-sensitive short-help strip (QUM-420). QUM-664 removed the
+	// short-help strip from the chassis; the height is now zero.
+	shortHelpHeight = 0
+	// headerSpacerHeight reserves a single blank row between the SPRAWL
+	// wordmark header and the chat viewport so the wordmark visually
+	// breathes from the body (QUM-664).
+	headerSpacerHeight = 1
 
 	// MinTermWidth is the minimum terminal width for rendering panels.
 	MinTermWidth = 40
@@ -45,7 +49,12 @@ type Layout struct {
 	HeaderWidth, HeaderHeight int
 	// HeaderTreeWidth is the cell budget within the header reserved for the
 	// orbital agent tree (QUM-656).
-	HeaderTreeWidth       int
+	HeaderTreeWidth int
+	// HeaderSpacerHeight is the height of the blank spacer row between the
+	// header (SPRAWL wordmark) and the chat viewport (QUM-664). Exposed as
+	// a first-class layout output so callers don't have to re-derive the
+	// "+1" implicitly.
+	HeaderSpacerHeight    int
 	TermWidth, TermHeight int
 }
 
@@ -79,6 +88,7 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 	l.StatusHeight = statusBarHeight
 	l.InputHeight = inputHeight
 	l.ShortHelpHeight = shortHelpHeight
+	l.HeaderSpacerHeight = headerSpacerHeight
 	l.StatusWidth = width
 	l.InputWidth = width
 	l.ShortHelpWidth = width
@@ -86,7 +96,7 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 	l.HeaderHeight = HeaderHeight(width)
 	l.HeaderTreeWidth = HeaderTreeWidth(width)
 
-	mainHeight := height - l.StatusHeight - l.ShortHelpHeight - l.InputHeight - l.HeaderHeight
+	mainHeight := height - l.StatusHeight - l.InputHeight - l.HeaderHeight - l.HeaderSpacerHeight
 	if mainHeight < 0 {
 		mainHeight = 0
 	}

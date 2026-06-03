@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func newTestInputModel(t *testing.T) InputModel {
@@ -769,6 +770,168 @@ func TestInputModel_AltEnter_AfterPendingEnter_ResolvesEnterAsEmbedded(t *testin
 		if _, ok := cmd().(SubmitMsg); ok {
 			t.Error("Alt+Enter following pending Enter must not produce SubmitMsg")
 		}
+	}
+}
+
+// --- QUM-664: input chrome (vertical bar gutter + inline placeholder help) ---
+
+// TestInputModel_PlaceholderShowsHelpWhenEmpty: an empty input must render
+// the static placeholder containing the key-binding hints (commands / help /
+// tab / ctrl+c) so the user always knows what to do.
+func TestInputModel_PlaceholderShowsHelpWhenEmpty(t *testing.T) {
+	m := newTestInputModel(t)
+	m.SetWidth(80)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "commands") {
+		t.Errorf("empty View() should contain placeholder help substring 'commands', got:\n%s", view)
+	}
+	if !strings.Contains(view, "tab: cycle panel") {
+		t.Errorf("empty View() should contain 'tab: cycle panel' placeholder hint, got:\n%s", view)
+	}
+	if !strings.Contains(view, "ctrl+c") {
+		t.Errorf("empty View() should contain 'ctrl+c' placeholder hint, got:\n%s", view)
+	}
+}
+
+// TestInputModel_PlaceholderHiddenWhenPopulated: once the user types into
+// the input, the placeholder must not be visible.
+func TestInputModel_PlaceholderHiddenWhenPopulated(t *testing.T) {
+	m := newTestInputModel(t)
+	m.SetWidth(80)
+	m.SetValue("x")
+	view := stripANSI(m.View())
+	if strings.Contains(view, "commands") {
+		t.Errorf("View() with content should NOT contain placeholder text 'commands', got:\n%s", view)
+	}
+}
+
+// TestInputModel_VerticalBarOnFirstRow: the input renders a "▌ " vertical
+// bar gutter on its first row. ANSI-stripped output must start with "▌ ".
+func TestInputModel_VerticalBarOnFirstRow(t *testing.T) {
+	m := newTestInputModel(t)
+	m.SetWidth(80)
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "▌") {
+		t.Errorf("View() should contain vertical bar '▌', got:\n%s", view)
+	}
+	// First non-empty line should start with "▌ ".
+	lines := strings.Split(view, "\n")
+	if len(lines) == 0 {
+		t.Fatal("View() returned no lines")
+	}
+	if !strings.HasPrefix(lines[0], "▌ ") {
+		t.Errorf("first row should start with '▌ ', got: %q", lines[0])
+	}
+}
+
+// TestInputModel_InputBgFillsEveryRow: when the input grows multi-line, the
+// chrome background tint must cover every textarea row, not only the cursor
+// row (QUM-664 v3 eyeball regression: bubbles textarea's default
+// Focused.CursorLine Background was rendering only on row 1, leaving rows 2+
+// against terminal-native bg).
+func TestInputModel_InputBgFillsEveryRow(t *testing.T) {
+	m := newTestInputModel(t)
+	m.SetWidth(80)
+	m.SetValue("a\nb\nc")
+	// Raw View() (ANSI preserved) — assert each non-empty row contains an
+	// ANSI sequence that sets the same background color as the gutter row.
+	raw := m.View()
+	lines := strings.Split(raw, "\n")
+	// Compute the expected bg-setter sequence from the same source the
+	// production code reads (bubbles textarea defaults). That keeps the test
+	// pinned to the contract rather than a hardcoded escape.
+	wantBgFrag := lipgloss.NewStyle().Background(m.inputBg).Render(" ")
+	// Extract the bg SGR open from the rendered fragment ("\x1b[...m " ...).
+	// The leading escape + parameters up to the terminator is the prefix.
+	idx := strings.Index(wantBgFrag, "m")
+	if idx < 0 {
+		t.Fatalf("could not derive bg SGR prefix from %q", wantBgFrag)
+	}
+	bgOpen := wantBgFrag[:idx+1]
+	nonEmpty := 0
+	for _, l := range lines {
+		if strings.TrimSpace(stripANSI(l)) == "" {
+			continue
+		}
+		nonEmpty++
+		if !strings.Contains(l, bgOpen) {
+			t.Errorf("row %q does not contain bg SGR open %q — input bg must fill every row, not just row 1",
+				stripANSI(l), bgOpen)
+		}
+	}
+	if nonEmpty < 3 {
+		t.Fatalf("expected at least 3 non-empty rows (a, b, c), got %d:\n%s", nonEmpty, stripANSI(raw))
+	}
+}
+
+// TestInputModel_VerticalBarOnEveryRow: a multi-row input value must render
+// the "▌ " gutter on every non-empty row, not just the first.
+func TestInputModel_VerticalBarOnEveryRow(t *testing.T) {
+	m := newTestInputModel(t)
+	m.SetWidth(80)
+	m.SetValue("a\nb\nc")
+	view := stripANSI(m.View())
+	lines := strings.Split(view, "\n")
+	rows := 0
+	for _, l := range lines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		rows++
+		if !strings.HasPrefix(l, "▌ ") {
+			t.Errorf("non-empty row should start with '▌ ', got: %q", l)
+		}
+	}
+	if rows < 3 {
+		t.Errorf("expected at least 3 non-empty input rows (a, b, c), got %d:\n%s", rows, view)
+	}
+}
+
+// TestInputModel_TextWidthShrinksByBarGutter: SetWidth(80) must leave the
+// textarea with width 78 — two cells reserved for the "▌ " gutter so wrap
+// happens inside the bar, not past it.
+func TestInputModel_TextWidthShrinksByBarGutter(t *testing.T) {
+	m := newTestInputModel(t)
+	m.SetWidth(80)
+	got := m.textInputWidth()
+	if got != 78 {
+		t.Errorf("textInputWidth() = %d, want 78 (m.width=80 minus 2 for '▌ ' gutter)", got)
+	}
+}
+
+// TestInputModel_VerticalBarUsesInputBarStyle: the "▌" gutter must be
+// rendered under theme.InputBarStyle (grey ANSI 8), mirroring how
+// TestViewportModel_UserMessageUsesUserPromptStyle pins the chevron color.
+func TestInputModel_VerticalBarUsesInputBarStyle(t *testing.T) {
+	theme := NewTheme("colour212")
+	m := NewInputModel(&theme)
+	m.SetWidth(80)
+	raw := m.View()
+
+	// The gutter inherits the input's chrome background so the bar reads as
+	// part of the input box (QUM-664 v3). Compose the same way production
+	// does so the assertion tracks the contract.
+	want := theme.InputBarStyle.Background(m.inputBg).Render("▌")
+	if !strings.Contains(raw, want) {
+		t.Errorf("raw View() should contain InputBarStyle-rendered '▌' (%q), got:\n%s",
+			want, raw)
+	}
+}
+
+// TestInputModel_QueuedIndicatorCoexistsWithBar: when a queued submit preview
+// is set alongside a value, both the "▌" gutter and the "queued: <preview>"
+// indicator must appear in the rendered view.
+func TestInputModel_QueuedIndicatorCoexistsWithBar(t *testing.T) {
+	m := newTestInputModel(t)
+	m.SetWidth(80)
+	m.SetValue("hi")
+	m.SetPendingPreview("draft text")
+	view := stripANSI(m.View())
+	if !strings.Contains(view, "▌") {
+		t.Errorf("View() should contain '▌' gutter, got:\n%s", view)
+	}
+	if !strings.Contains(view, "queued: draft text") {
+		t.Errorf("View() should contain 'queued: draft text', got:\n%s", view)
 	}
 }
 

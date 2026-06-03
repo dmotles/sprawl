@@ -35,6 +35,14 @@ type Palette struct {
 	FgMostSubtle  color.Color
 	BgBase        color.Color
 	BgLessVisible color.Color
+	// QUM-664: visual-identity spike port roles.
+	//   - UserPrompt: bold blue used for the `›` chevron prefix on user messages.
+	//   - InputBar:   grey foreground used for the `▌` gutter on the input box.
+	//   - InputBg:    dark chrome background that fills every textarea row so
+	//     the gutter + textarea read as one continuous input box.
+	UserPrompt color.Color
+	InputBar   color.Color
+	InputBg    color.Color
 }
 
 // defaultDarkPalette returns the default dark-terminal palette, with Primary
@@ -55,5 +63,9 @@ func defaultDarkPalette(accent color.Color) Palette {
 		FgMostSubtle:  lipgloss.Color("240"),
 		BgBase:        lipgloss.Color("233"),
 		BgLessVisible: lipgloss.Color("236"),
+		// QUM-664: visual-identity spike palette roles.
+		UserPrompt: lipgloss.Color("12"),  // bold bright-blue chevron
+		InputBar:   lipgloss.Color("8"),   // grey vertical bar gutter
+		InputBg:    lipgloss.Color("234"), // dark chrome bg filling every input row
 	}
 }

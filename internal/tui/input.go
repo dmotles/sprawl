@@ -1,15 +1,25 @@
 package tui
 
 import (
+	"image/color"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // maxInputLines caps how tall the input textarea can grow.
 const maxInputLines = 10
+
+// inputPlaceholderHelp is the static one-line key-binding hint shown as the
+// textarea placeholder while the input is empty (QUM-664).
+const inputPlaceholderHelp = "/: commands • ?: help • tab: cycle panel • ctrl+c: clear/quit"
+
+// inputBarGutter is the chrome prefix prepended to every visible input row —
+// a "▌ " gutter rendered under theme.InputBarStyle (QUM-664).
+const inputBarGutter = "▌ "
 
 // pasteLookaheadWindow is how long after a plain Enter we wait for a follow-up
 // KeyPressMsg before resolving the Enter as a real submit. If another key
@@ -24,6 +34,11 @@ type InputModel struct {
 	theme    *Theme
 	width    int
 	disabled bool
+
+	// inputBg is the background color that fills the input box on every row
+	// (QUM-664). Sourced from the bubbles textarea's default Focused.CursorLine
+	// background so the chrome reads identically across rows.
+	inputBg color.Color
 
 	// pendingPreview is a short preview of the queued submit (QUM-340). When
 	// non-empty the View() renders a dim indicator alongside the textarea
@@ -46,7 +61,7 @@ type InputModel struct {
 // NewInputModel creates an input model with a placeholder prompt.
 func NewInputModel(theme *Theme) InputModel {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message..."
+	ta.Placeholder = inputPlaceholderHelp
 	ta.Prompt = ""
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
@@ -54,9 +69,26 @@ func NewInputModel(theme *Theme) InputModel {
 	ta.MinHeight = 1
 	ta.MaxHeight = maxInputLines
 	ta.KeyMap.InsertNewline.SetKeys("shift+enter")
+
+	// QUM-664: bubbles textarea defaults paint a subtle Background on
+	// Focused.CursorLine only — visible as a 1-row "input box tint" that
+	// doesn't grow with the textarea when it goes multi-line. Drive the
+	// chrome bg from the palette (Palette.InputBg) and apply it to
+	// Focused/Blurred Base + CursorLine so every row of the input renders
+	// with the same tint, matching the `▌ ` gutter that already grows
+	// per-row.
+	inputBg := theme.Palette.InputBg
+	styles := ta.Styles()
+	styles.Focused.Base = styles.Focused.Base.Background(inputBg)
+	styles.Focused.CursorLine = styles.Focused.CursorLine.Background(inputBg)
+	styles.Blurred.Base = styles.Blurred.Base.Background(inputBg)
+	styles.Blurred.CursorLine = styles.Blurred.CursorLine.Background(inputBg)
+	ta.SetStyles(styles)
+
 	return InputModel{
-		ta:    ta,
-		theme: theme,
+		ta:      ta,
+		theme:   theme,
+		inputBg: inputBg,
 	}
 }
 
@@ -159,11 +191,23 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 // without wrapping.
 func (m InputModel) View() string {
 	base := m.ta.View()
-	if m.pendingPreview == "" {
-		return base
+	if m.pendingPreview != "" {
+		suffix := m.theme.PlaceholderStyle.Render("  " + queuedIndicator(m.pendingPreview))
+		base += suffix
 	}
-	suffix := m.theme.PlaceholderStyle.Render("  " + queuedIndicator(m.pendingPreview))
-	return base + suffix
+	// QUM-664: prepend the "▌ " gutter to every visible row of the rendered
+	// input. Rendered under InputBarStyle (grey) so the bar reads as chrome
+	// rather than text. The bar is two cells wide; textInputWidth() compensates
+	// so wrap happens inside the bar, not past it. The gutter background
+	// matches the textarea's row tint so the gutter + textarea read as one
+	// continuous input box across all rows.
+	gutterStyle := m.theme.InputBarStyle.Background(m.inputBg)
+	bar := gutterStyle.Render("▌") + gutterStyle.Render(" ")
+	lines := strings.Split(base, "\n")
+	for i, ln := range lines {
+		lines[i] = bar + ln
+	}
+	return strings.Join(lines, "\n")
 }
 
 // queuedPreviewMaxLen caps the indicator text so a long queued message
@@ -190,12 +234,19 @@ func (m *InputModel) SetWidth(w int) {
 // textInputWidth returns the width budget the textarea should receive,
 // shrinking by the indicator's footprint when a queued preview is active.
 func (m *InputModel) textInputWidth() int {
-	if m.pendingPreview == "" {
-		return m.width
+	// QUM-664: reserve two cells for the "▌ " gutter so wrap stays inside the
+	// bar. Width is computed from m.width only when it is positive — at
+	// construction time before SetWidth runs, m.width is 0 and the textarea
+	// should receive the unmodified 0 so its own defaults govern.
+	w := m.width
+	if w > 0 {
+		w -= lipgloss.Width(inputBarGutter)
 	}
-	indicatorLen := len(queuedIndicator(m.pendingPreview)) + 2 // +2 for leading spaces
-	w := m.width - indicatorLen
-	if w < 4 {
+	if m.pendingPreview != "" {
+		indicatorLen := len(queuedIndicator(m.pendingPreview)) + 2 // +2 for leading spaces
+		w -= indicatorLen
+	}
+	if m.width > 0 && w < 4 {
 		w = 4
 	}
 	return w
@@ -266,6 +317,6 @@ func (m *InputModel) SetDisabled(disabled bool) {
 	if disabled {
 		m.ta.Placeholder = "Thinking..."
 	} else {
-		m.ta.Placeholder = "Type a message..."
+		m.ta.Placeholder = inputPlaceholderHelp
 	}
 }
