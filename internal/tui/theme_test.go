@@ -65,13 +65,85 @@ func TestNewTheme_RenderStyles(t *testing.T) {
 	theme := NewTheme("212")
 
 	// Each style should be able to Render without panicking.
-	_ = theme.Background.Render("bg")
 	_ = theme.ActiveBorder.Render("active")
 	_ = theme.InactiveBorder.Render("inactive")
 	_ = theme.AccentText.Render("accent")
 	_ = theme.NormalText.Render("normal")
 	_ = theme.StatusBar.Render("status")
 	_ = theme.SelectedItem.Render("selected")
+}
+
+// QUM-661: chassis styles (panel chrome + foreground-only text) must render
+// without applying any background, so the host terminal's bg shows through.
+// StatusBar is the deliberate exception — it keeps Palette.BgLessVisible.
+func TestNewTheme_ChassisStylesHaveNoBackground(t *testing.T) {
+	theme := NewTheme("39")
+	cases := []struct {
+		name  string
+		style lipgloss.Style
+	}{
+		{"ActiveBorder", theme.ActiveBorder},
+		{"InactiveBorder", theme.InactiveBorder},
+		{"AccentText", theme.AccentText},
+		{"NormalText", theme.NormalText},
+		{"ErrorText", theme.ErrorText},
+		{"SystemText", theme.SystemText},
+		{"NotificationText", theme.NotificationText},
+		{"InterruptText", theme.InterruptText},
+		{"StatusChangeText", theme.StatusChangeText},
+		{"SelectedItem", theme.SelectedItem},
+		{"PlaceholderStyle", theme.PlaceholderStyle},
+		{"ReportDotWorking", theme.ReportDotWorking},
+		{"ReportDotBlocked", theme.ReportDotBlocked},
+		{"ReportDotFailure", theme.ReportDotFailure},
+		{"ReportDotComplete", theme.ReportDotComplete},
+		{"ReportDotIdle", theme.ReportDotIdle},
+	}
+	noColor := lipgloss.NoColor{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.style.GetBackground(); got != noColor {
+				t.Errorf("%s.GetBackground() = %v; want NoColor (QUM-661: chassis styles must not paint a bg)", tc.name, got)
+			}
+			// Belt-and-suspenders: render of an "x" should not include the
+			// SGR 48; (background) parameter — terminal-native bg shows
+			// through.
+			if got := tc.style.Render("x"); strings.Contains(got, "48;") {
+				t.Errorf("%s.Render(\"x\") = %q; contains a background SGR (48;) — chassis must render bg-free", tc.name, got)
+			}
+		})
+	}
+}
+
+// QUM-661: ActiveBorder/InactiveBorder must have zero frame size — the
+// chassis port strips the rounded border so panel content sits flush against
+// the terminal-native bg.
+func TestNewTheme_BorderStylesHaveNoFrame(t *testing.T) {
+	theme := NewTheme("39")
+	for _, tc := range []struct {
+		name  string
+		style lipgloss.Style
+	}{
+		{"ActiveBorder", theme.ActiveBorder},
+		{"InactiveBorder", theme.InactiveBorder},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if fh, fv := tc.style.GetHorizontalFrameSize(), tc.style.GetVerticalFrameSize(); fh != 0 || fv != 0 {
+				t.Errorf("%s frame = %dx%d; want 0x0 (QUM-661: borders stripped)", tc.name, fh, fv)
+			}
+		})
+	}
+}
+
+// QUM-661: StatusBar keeps its BgLessVisible tint — it is the one slot in
+// the chassis where a subtle bg fill is allowed (the redesign anchor that
+// distinguishes the status row from the terminal-native body).
+func TestNewTheme_StatusBarKeepsBgLessVisibleTint(t *testing.T) {
+	theme := NewTheme("39")
+	noColor := lipgloss.NoColor{}
+	if got := theme.StatusBar.GetBackground(); got == noColor {
+		t.Fatalf("StatusBar.GetBackground() = NoColor; want Palette.BgLessVisible")
+	}
 }
 
 // QUM-338: SystemText must render distinctly from AccentText so inbox-drained
@@ -173,13 +245,12 @@ func TestNewTheme_RolesAreDistinct(t *testing.T) {
 	}
 }
 
-// QUM-417: ReportDot styles must derive their colors from Palette roles so the
-// chip palette stays in lockstep with the semantic palette. The control style
-// pins both the foreground (role) and background (Palette.BgBase) — any drift
-// on either axis fails the test.
+// QUM-417 / QUM-661: ReportDot styles must derive their foreground colors
+// from Palette roles so the chip palette stays in lockstep with the semantic
+// palette. As of QUM-661 they no longer paint a background — terminal-native
+// bg shows through. The control style pins foreground-only.
 func TestReportDots_UsePaletteRoles(t *testing.T) {
 	theme := NewTheme("39")
-	bg := theme.Palette.BgBase
 
 	cases := []struct {
 		name string
@@ -194,40 +265,10 @@ func TestReportDots_UsePaletteRoles(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			control := lipgloss.NewStyle().Foreground(tc.role).Background(bg)
+			control := lipgloss.NewStyle().Foreground(tc.role)
 			if got, want := tc.dot.Render("●"), control.Render("●"); got != want {
 				t.Errorf("ReportDot render mismatch:\n got:  %q\n want: %q (foreground role %s)",
 					got, want, tc.name)
-			}
-		})
-	}
-}
-
-// QUM-417: Explicit assertion that every ReportDot uses Palette.BgBase as its
-// background. This is what TestReportDots_UsePaletteRoles asserts implicitly
-// (the control style sets .Background(bg)), but pulling it out makes the
-// intent obvious and gives a clearer failure mode if the background drifts.
-func TestReportDots_BackgroundIsBgBase(t *testing.T) {
-	theme := NewTheme("39")
-	bg := theme.Palette.BgBase
-
-	cases := []struct {
-		name string
-		dot  lipgloss.Style
-		role color.Color
-	}{
-		{"Failure", theme.ReportDotFailure, theme.Palette.Error},
-		{"Working", theme.ReportDotWorking, theme.Palette.Success},
-		{"Complete", theme.ReportDotComplete, theme.Palette.Info},
-		{"Blocked", theme.ReportDotBlocked, theme.Palette.Busy},
-		{"Idle", theme.ReportDotIdle, theme.Palette.FgMostSubtle},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			control := lipgloss.NewStyle().Foreground(tc.role).Background(bg).Render("●")
-			if got := tc.dot.Render("●"); got != control {
-				t.Errorf("ReportDot%s background drift:\n got:  %q\n want: %q (bg=Palette.BgBase)",
-					tc.name, got, control)
 			}
 		})
 	}

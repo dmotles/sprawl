@@ -144,10 +144,9 @@ func TestAppModel_ViewKeepsInputBoxAtNarrowWidths(t *testing.T) {
 	if got := len(lines); got > termHeight {
 		t.Errorf("rendered view is %d lines tall, want <= terminal height %d — the tree panel grew past its declared Height and pushed the input box off-screen", got, termHeight)
 	}
-	// And the input box's bottom border must still be present.
-	if !strings.Contains(v.Content, "╰") {
-		t.Errorf("View content missing bottom-border glyphs — panel layout collapsed:\n%s", v.Content)
-	}
+	// QUM-661: the chassis port stripped panel borders, so the legacy
+	// bottom-border-glyph (╰) assertion is no longer applicable. The
+	// height-clamp invariant above is now the load-bearing check.
 }
 
 func TestAppModel_TabCyclesPanel(t *testing.T) {
@@ -1085,10 +1084,10 @@ func TestAppModel_AgentSelectedMsg_HidesInputBarForNonRoot(t *testing.T) {
 	if strings.Contains(childView, "ype a message") {
 		t.Error("input bar placeholder should not appear in View when observing non-root agent")
 	}
-	if strings.Count(childView, "╭") >= strings.Count(rootView, "╭") {
-		t.Errorf("expected one fewer bordered panel after hiding input bar; root borders=%d child borders=%d",
-			strings.Count(rootView, "╭"), strings.Count(childView, "╭"))
-	}
+	// QUM-661: panel borders were stripped, so we can't count `╭` glyphs.
+	// The hide-input invariant is enforced by the viewport-height-grew check
+	// below and by the placeholder-absent check above.
+	_ = rootView
 	childViewportH := app.viewportFor("tower").Height()
 	if childViewportH <= rootViewportH {
 		t.Errorf("child viewport should be taller than root viewport after input-bar hide; child=%d root=%d", childViewportH, rootViewportH)

@@ -1,9 +1,12 @@
 package tui
 
 const (
-	// defaultInputHeight is the input box height when collapsed (1 line + 2
-	// border cells).
-	defaultInputHeight = 3
+	// defaultInputHeight is the input box height when collapsed. QUM-661
+	// dropped this from 3 to 1: the prior value reserved two extra rows
+	// for the rounded border frame, but the chassis port stripped the
+	// border so the input bar is now a single text row flush with the
+	// terminal-native bg.
+	defaultInputHeight = 1
 	// maxInputHeight caps input growth so it doesn't eat the viewport.
 	maxInputHeight  = 12
 	statusBarHeight = 1

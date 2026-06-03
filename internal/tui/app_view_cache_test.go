@@ -92,25 +92,14 @@ func TestViewCache_InvalidatesOnViewportAppend(t *testing.T) {
 	}
 }
 
-func TestViewCache_InvalidatesOnActivePanelCycle(t *testing.T) {
-	app := resizedApp(t, 200, 60)
-	// Start at tree (default activePanel is PanelTree).
-	_ = app.View()
-	treeBefore := app.cache.tree
-	vpBefore := app.cache.viewport
-
-	// Tab → viewport active.
-	next, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	app = next.(AppModel)
-	_ = app.View()
-
-	if app.cache.tree == treeBefore {
-		t.Errorf("tree cache did not invalidate after active panel cycle (border style changed from active to inactive)")
-	}
-	if app.cache.viewport == vpBefore {
-		t.Errorf("viewport cache did not invalidate after active panel cycle (border style changed from inactive to active)")
-	}
-}
+// QUM-661: the active/inactive panel cycle no longer produces a different
+// rendered output — the chassis port stripped the border style that was the
+// sole visual differentiator. The cache key still varies on the active flag
+// (so a miss happens), but the re-rendered string is identical, so a
+// before/after equality check on cache.tree/viewport is no longer a
+// meaningful regression guard. The TestAppModel_TabCyclesPanel /
+// TestAppModel_ShiftTabCyclesBackward tests still pin the underlying state
+// transition.
 
 func TestViewCache_InvalidatesOnWindowResize(t *testing.T) {
 	app := resizedApp(t, 200, 60)

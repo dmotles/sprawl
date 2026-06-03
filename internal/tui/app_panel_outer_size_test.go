@@ -55,39 +55,37 @@ func TestRenderPanel_OuterSizeMatchesDeclared(t *testing.T) {
 	}
 }
 
-// TestRenderPanel_DerivesContentFromFrame asserts the visible bordered
-// panel hits exactly outerW × outerH regardless of how small the content
-// is — the content area inside the border is derived from the style's
-// frame size by lipgloss. The frame here comes from
-// m.theme.InactiveBorder (active=false).
-func TestRenderPanel_DerivesContentFromFrame(t *testing.T) {
+// TestRenderPanel_PadsContentToOuter asserts the visible panel hits exactly
+// outerW × outerH regardless of how small the content is — lipgloss
+// Width/Height pad the content area out to the declared outer dims.
+//
+// QUM-661: the rounded border was stripped from the panel style so the
+// chassis renders terminal-native; the panel frame is now 0 and outer ==
+// content area.
+func TestRenderPanel_PadsContentToOuter(t *testing.T) {
 	m := newTestAppModel(t)
 
 	const outerW, outerH = 24, 6
 
 	style := m.theme.InactiveBorder
-	frameH := style.GetHorizontalFrameSize()
-	frameV := style.GetVerticalFrameSize()
-	if frameH == 0 || frameV == 0 {
-		t.Fatalf("expected non-zero frame on InactiveBorder; got h=%d v=%d", frameH, frameV)
+	if fh, fv := style.GetHorizontalFrameSize(), style.GetVerticalFrameSize(); fh != 0 || fv != 0 {
+		t.Fatalf("expected zero frame on InactiveBorder after QUM-661 chassis port; got h=%d v=%d", fh, fv)
 	}
 
 	out := m.renderPanel("hi", outerW, outerH, false)
 	lines := strings.Split(out, "\n")
 
 	if len(lines) != outerH {
-		t.Fatalf("renderPanel(\"hi\", outerW=%d, outerH=%d) produced %d lines; want exactly %d (QUM-501: outer dims include border)\n%s",
+		t.Fatalf("renderPanel(\"hi\", outerW=%d, outerH=%d) produced %d lines; want exactly %d (QUM-501: outer dims)\n%s",
 			outerW, outerH, len(lines), outerH, out)
 	}
 
-	// Every visible row — top border, middle rows, bottom border — must be
-	// exactly outerW wide. A middle row (lines[1]) exercises the content
-	// derivation: its width equals border-edge + content-area + border-edge,
-	// where content-area was derived as outerW - frameH.
+	// Every visible row must be exactly outerW wide — the panel pads its
+	// content out to the declared outer dimensions.
 	for i, ln := range lines {
 		if w := lipgloss.Width(ln); w != outerW {
-			t.Errorf("renderPanel line %d width = %d; want %d (QUM-501: renderPanel must derive content = outer - frame, frameH=%d)\n%s",
-				i, w, outerW, frameH, out)
+			t.Errorf("renderPanel line %d width = %d; want %d (QUM-501/QUM-661)\n%s",
+				i, w, outerW, out)
 		}
 	}
 }

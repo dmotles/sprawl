@@ -131,22 +131,22 @@ func (m AppModel) cachedPanel(useCache bool, slot panelSlot, content string, w, 
 	return m.renderPanel(content, w, h, active)
 }
 
-// renderPanel applies the active/inactive border style at the given size.
+// renderPanel sizes a panel slot to its declared outer dimensions.
 //
-// QUM-501: w and h are the *outer* (post-border) panel dimensions. In
-// lipgloss v2, Width/Height already include the border frame, and the
-// content area inside the border is derived automatically. Callers pass
-// layout slot dimensions directly without any frame math. MaxWidth/
-// MaxHeight clamp the outer render so overflowing content is truncated
-// rather than allowed to grow the panel past its declared size (QUM-483).
+// QUM-501: w and h are the *outer* panel dimensions. MaxWidth/MaxHeight
+// clamp overflowing content (QUM-483).
+//
+// QUM-661: the chassis port stripped the rounded border + bg fill from the
+// underlying ActiveBorder/InactiveBorder styles, so this call now applies a
+// no-decoration size+clamp. The `active` parameter is retained for caller
+// symmetry (and as part of the cache fingerprint) but is currently a visual
+// no-op pending the QUM-655 cleanup sweep. The cachedPanel memoization
+// upstream is intentionally kept — the per-keystroke paste-burst hot path
+// (QUM-451) keys composed-row caches off the per-panel render output, which
+// is still expensive enough to memoize even without the border decoration.
 func (m AppModel) renderPanel(content string, w, h int, active bool) string {
-	var style lipgloss.Style
-	if active {
-		style = m.theme.ActiveBorder
-	} else {
-		style = m.theme.InactiveBorder
-	}
-	return style.
+	_ = active
+	return lipgloss.NewStyle().
 		Width(w).Height(h).
 		MaxWidth(w).
 		MaxHeight(h).

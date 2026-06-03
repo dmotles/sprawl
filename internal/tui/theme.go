@@ -16,8 +16,14 @@ type Theme struct {
 	// Palette exposes the semantic color roles (QUM-417). Call sites that
 	// need a raw color should reach for Palette.<Role> rather than a raw
 	// `lipgloss.Color("<ansi>")` literal.
-	Palette        Palette
-	Background     lipgloss.Style
+	Palette Palette
+	// ActiveBorder / InactiveBorder are kept for caller-side symmetry but
+	// QUM-661 stripped their rounded border + Palette.BgBase fill so the
+	// chassis renders terminal-native. They are now zero-frame, no-bg
+	// styles; the rename/removal is deferred to the QUM-655 sweep.
+	//
+	// Note: the Theme.Background field was removed in QUM-661 — it was
+	// unreferenced outside the theme smoke test.
 	ActiveBorder   lipgloss.Style
 	InactiveBorder lipgloss.Style
 	AccentText     lipgloss.Style
@@ -85,42 +91,25 @@ func NewTheme(accentColor string) Theme {
 	accentColor = strings.TrimPrefix(accentColor, "colour")
 
 	pal := defaultDarkPalette(lipgloss.Color(accentColor))
-	bg := pal.BgBase
 
+	// QUM-661: chassis styles intentionally omit .Background(...) so the
+	// host terminal's bg shows through. The only style that still paints a
+	// bg is StatusBar (Palette.BgLessVisible — the deliberate redesign
+	// anchor). Palette.BgBase remains in use by modal overlays
+	// (palette.go / help.go / confirm.go / shorthelp.go) so floating
+	// surfaces still read as elevated against the chassis.
 	return Theme{
-		AccentColor: accentColor,
-		Palette:     pal,
-		Background: lipgloss.NewStyle().
-			Background(bg),
-		ActiveBorder: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(pal.Primary).
-			Background(bg),
-		InactiveBorder: lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(pal.FgMostSubtle).
-			Background(bg),
-		AccentText: lipgloss.NewStyle().
-			Foreground(pal.Primary).
-			Background(bg),
-		NormalText: lipgloss.NewStyle().
-			Foreground(pal.FgBase).
-			Background(bg),
-		ErrorText: lipgloss.NewStyle().
-			Foreground(pal.Error).
-			Background(bg),
-		SystemText: lipgloss.NewStyle().
-			Foreground(pal.System).
-			Background(bg),
-		NotificationText: lipgloss.NewStyle().
-			Foreground(pal.Accent).
-			Background(bg),
-		InterruptText: lipgloss.NewStyle().
-			Foreground(pal.Warning).
-			Background(bg),
-		StatusChangeText: lipgloss.NewStyle().
-			Foreground(pal.FgSubtle).
-			Background(bg),
+		AccentColor:      accentColor,
+		Palette:          pal,
+		ActiveBorder:     lipgloss.NewStyle(),
+		InactiveBorder:   lipgloss.NewStyle(),
+		AccentText:       lipgloss.NewStyle().Foreground(pal.Primary),
+		NormalText:       lipgloss.NewStyle().Foreground(pal.FgBase),
+		ErrorText:        lipgloss.NewStyle().Foreground(pal.Error),
+		SystemText:       lipgloss.NewStyle().Foreground(pal.System),
+		NotificationText: lipgloss.NewStyle().Foreground(pal.Accent),
+		InterruptText:    lipgloss.NewStyle().Foreground(pal.Warning),
+		StatusChangeText: lipgloss.NewStyle().Foreground(pal.FgSubtle),
 		// No Padding — StatusBarModel.View manages its own left/right spacing
 		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes
 		// the rendered width m.width+2 which wraps the trailing right-side
@@ -128,18 +117,12 @@ func NewTheme(accentColor string) Theme {
 		StatusBar: lipgloss.NewStyle().
 			Foreground(pal.FgBase).
 			Background(pal.BgLessVisible),
-		SelectedItem: lipgloss.NewStyle().
-			Foreground(pal.Primary).
-			Bold(true).
-			Background(bg),
-		PlaceholderStyle: lipgloss.NewStyle().
-			Foreground(pal.FgMostSubtle).
-			Faint(true).
-			Background(bg),
-		ReportDotWorking:  lipgloss.NewStyle().Foreground(pal.Success).Background(bg),
-		ReportDotBlocked:  lipgloss.NewStyle().Foreground(pal.Busy).Background(bg),
-		ReportDotFailure:  lipgloss.NewStyle().Foreground(pal.Error).Background(bg),
-		ReportDotComplete: lipgloss.NewStyle().Foreground(pal.Info).Background(bg),
-		ReportDotIdle:     lipgloss.NewStyle().Foreground(pal.FgMostSubtle).Background(bg),
+		SelectedItem:      lipgloss.NewStyle().Foreground(pal.Primary).Bold(true),
+		PlaceholderStyle:  lipgloss.NewStyle().Foreground(pal.FgMostSubtle).Faint(true),
+		ReportDotWorking:  lipgloss.NewStyle().Foreground(pal.Success),
+		ReportDotBlocked:  lipgloss.NewStyle().Foreground(pal.Busy),
+		ReportDotFailure:  lipgloss.NewStyle().Foreground(pal.Error),
+		ReportDotComplete: lipgloss.NewStyle().Foreground(pal.Info),
+		ReportDotIdle:     lipgloss.NewStyle().Foreground(pal.FgMostSubtle),
 	}
 }
