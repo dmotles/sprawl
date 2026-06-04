@@ -79,6 +79,13 @@ type StatusBarModel struct {
 	// in flight (QUM-669). Empty hides the segment.
 	resyncPill string
 
+	// transientLabel is the QUM-675 S5 single sink for the status/banner text
+	// that used to land in the viewport via vp.AppendStatus / vp.AppendBanner.
+	// Last-write-wins by construction; cleared by explicit reducer transitions
+	// (TurnIdle→TurnThinking, user prompt submit, RestartCompleteMsg) rather
+	// than an auto-decay timer.
+	transientLabel string
+
 	// nowFn returns the wall-clock time used for elapsed-time rendering.
 	// Defaults to time.Now; tests override it for deterministic output.
 	nowFn func() time.Time
@@ -149,6 +156,9 @@ func (m StatusBarModel) View() string {
 	}
 	if m.restartLabel != "" {
 		parts = append(parts, m.restartLabel)
+	}
+	if m.transientLabel != "" {
+		parts = append(parts, m.transientLabel)
 	}
 	if m.sessionCostUsd > 0 {
 		parts = append(parts, fmt.Sprintf("$%.4f", m.sessionCostUsd))
@@ -233,6 +243,14 @@ func (m *StatusBarModel) SetContextLimit(limit int) {
 // bar (QUM-391). Pass empty string to clear.
 func (m *StatusBarModel) SetRestartLabel(label string) {
 	m.restartLabel = label
+}
+
+// SetTransientLabel sets the QUM-675 S5 transient status text. This is the
+// single sink for one-shot status/banner text formerly routed through
+// vp.AppendStatus / vp.AppendBanner. Last-write-wins; pass "" to clear.
+// Cleared by explicit reducer transitions, not by a timer.
+func (m *StatusBarModel) SetTransientLabel(label string) {
+	m.transientLabel = label
 }
 
 // SetPendingQuestions updates the pending-questions indicator (QUM-527 slice

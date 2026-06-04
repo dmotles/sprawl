@@ -5,45 +5,73 @@ import (
 	"testing"
 )
 
-// QUM-372: when runEnter finishes its best-effort startup scan and resumes
-// (or fails to resume) suspended child agents, the TUI must render a short
-// viewport banner in the root viewport summarizing the counts.
+// QUM-372 / QUM-675 S5: when runEnter finishes its best-effort startup scan
+// and resumes (or fails to resume) suspended child agents, the TUI must
+// surface a short summary line via the status-bar transient label — NOT as
+// a viewport banner. Pre-S5 this was an AppendStatus call; S5 reroutes it
+// per tower's display-policy spec on QUM-675 ("[startup] resumed N agents"
+// row).
 
-func TestAppModel_AgentsResumedMsg_AppendsBanner_NoFailures(t *testing.T) {
+func TestAppModel_AgentsResumedMsg_TransientLabel_NoFailures(t *testing.T) {
 	app := newTestAppModel(t)
 
 	updated, _ := app.Update(AgentsResumedMsg{Resumed: 3, Failed: 0})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "[startup] resumed 3 agents") {
-		t.Errorf("viewport should contain startup banner; got:\n%s", view)
+	bar := stripAnsi(app.statusBar.View())
+	if !strings.Contains(bar, "[startup] resumed 3 agents") {
+		t.Errorf("status bar should contain startup label; got:\n%s", bar)
 	}
-	if strings.Contains(view, "failed") {
-		t.Errorf("viewport should not mention failures when Failed==0; got:\n%s", view)
+	if strings.Contains(bar, "failed") {
+		t.Errorf("status bar should not mention failures when Failed==0; got:\n%s", bar)
+	}
+	// And no viewport bleed.
+	for _, e := range app.viewportFor("weave").GetMessages() {
+		switch e.Type {
+		case MessageStatus, MessageBanner, MessageError:
+			if strings.Contains(e.Content, "[startup] resumed") {
+				t.Errorf("root viewport must NOT carry the startup banner (S5 reroute); got: %+v", e)
+			}
+		}
 	}
 }
 
-func TestAppModel_AgentsResumedMsg_AppendsBanner_WithFailures(t *testing.T) {
+func TestAppModel_AgentsResumedMsg_TransientLabel_WithFailures(t *testing.T) {
 	app := newTestAppModel(t)
 
 	updated, _ := app.Update(AgentsResumedMsg{Resumed: 3, Failed: 1})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "[startup] resumed 3 agents (1 failed)") {
-		t.Errorf("viewport should contain startup banner with failure count; got:\n%s", view)
+	bar := stripAnsi(app.statusBar.View())
+	if !strings.Contains(bar, "[startup] resumed 3 agents (1 failed)") {
+		t.Errorf("status bar should contain startup label with failure count; got:\n%s", bar)
+	}
+	for _, e := range app.viewportFor("weave").GetMessages() {
+		switch e.Type {
+		case MessageStatus, MessageBanner, MessageError:
+			if strings.Contains(e.Content, "[startup] resumed") {
+				t.Errorf("root viewport must NOT carry the startup banner (S5 reroute); got: %+v", e)
+			}
+		}
 	}
 }
 
-func TestAppModel_AgentsResumedMsg_ZeroCounts_NoBanner(t *testing.T) {
+func TestAppModel_AgentsResumedMsg_ZeroCounts_NoLabel(t *testing.T) {
 	app := newTestAppModel(t)
 
 	updated, _ := app.Update(AgentsResumedMsg{Resumed: 0, Failed: 0})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
-	if strings.Contains(view, "[startup]") {
-		t.Errorf("viewport should NOT contain a startup banner with zero counts; got:\n%s", view)
+	bar := stripAnsi(app.statusBar.View())
+	if strings.Contains(bar, "[startup]") {
+		t.Errorf("status bar should NOT contain a startup label with zero counts; got:\n%s", bar)
+	}
+	for _, e := range app.viewportFor("weave").GetMessages() {
+		switch e.Type {
+		case MessageStatus, MessageBanner, MessageError:
+			if strings.Contains(e.Content, "[startup]") {
+				t.Errorf("root viewport must NOT carry a startup banner with zero counts; got: %+v", e)
+			}
+		}
 	}
 }

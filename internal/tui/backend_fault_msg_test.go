@@ -5,12 +5,13 @@ import (
 	"testing"
 )
 
-// QUM-602: when the supervisor emits a backend fault for an agent, the TUI
-// must (a) render a viewport banner naming the agent + class + next-action
-// hint, and (b) tag the agent's tree row so the operator can spot the faulted
-// runtime at a glance.
+// QUM-602 / QUM-675 S5: when the supervisor emits a backend fault for an
+// agent, the TUI must (a) tag the agent's tree row with the fault sticker,
+// and (b) NOT pollute the chat viewport with a status banner — the tree
+// badge is the operator-facing surface (display-policy spec row 6: "pure
+// deletion"). Backend recovery routes to the statusbar transient label.
 
-func TestAppModel_BackendFaultMsg_AppendsBanner(t *testing.T) {
+func TestAppModel_BackendFaultMsg_NoViewportBanner(t *testing.T) {
 	app := newTestAppModel(t)
 
 	updated, _ := app.Update(BackendFaultMsg{
@@ -21,15 +22,19 @@ func TestAppModel_BackendFaultMsg_AppendsBanner(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "backend fault on alice") {
-		t.Errorf("viewport should mention agent name; got:\n%s", view)
-	}
-	if !strings.Contains(view, "HangTimeout") {
-		t.Errorf("viewport should mention fault class; got:\n%s", view)
-	}
-	if !strings.Contains(view, "retire+respawn") {
-		t.Errorf("viewport should mention next-action hint; got:\n%s", view)
+	// The viewport must NOT carry the "backend fault on alice" copy any more —
+	// S5 pure-deletes the vp.AppendStatus call. The tree badge owns the
+	// surface (see TestTreeView_RendersFaultIndicator).
+	for _, e := range app.viewportFor("weave").GetMessages() {
+		switch e.Type {
+		case MessageStatus, MessageBanner, MessageError:
+			if strings.Contains(e.Content, "backend fault on alice") {
+				t.Errorf("root viewport must NOT carry a backend-fault banner — tree badge owns it (S5 pure-deletion); got: %+v", e)
+			}
+			if strings.Contains(e.Content, "HangTimeout") && strings.Contains(e.Content, "retire+respawn") {
+				t.Errorf("root viewport must NOT carry fault-class/next-action as a status entry; got: %+v", e)
+			}
+		}
 	}
 }
 
@@ -76,42 +81,57 @@ func TestAppModel_BackendFaultMsg_StoresFaultForAgent(t *testing.T) {
 	}
 }
 
-// QUM-602: the fault banner must re-fire on EACH repeated fault transition —
-// it keys off the BackendFaultMsg arrival, not a latched boolean. Dispatching
-// the same fault twice must produce two banner entries.
-func TestAppModel_BackendFaultMsg_RefiresBannerOnRepeat(t *testing.T) {
+// QUM-602 / QUM-675 S5: the fault map must re-stamp on every repeated fault
+// arrival (no latched boolean). The original viewport-banner re-fire test is
+// replaced by an assertion on the faults map's freshness, since the tree
+// badge re-renders deterministically from that map.
+func TestAppModel_BackendFaultMsg_RestampsFaultsMapOnRepeat(t *testing.T) {
 	app := newTestAppModel(t)
 
-	fault := BackendFaultMsg{
+	first := BackendFaultMsg{
 		Agent:      "alice",
 		Class:      "HangTimeout",
-		Reason:     "stalled",
+		Reason:     "stalled-once",
+		NextAction: "retire+respawn",
+	}
+	second := BackendFaultMsg{
+		Agent:      "alice",
+		Class:      "HangTimeout",
+		Reason:     "stalled-twice",
 		NextAction: "retire+respawn",
 	}
 
-	updated, _ := app.Update(fault)
+	updated, _ := app.Update(first)
 	app = updated.(AppModel)
-	updated, _ = app.Update(fault)
+	updated, _ = app.Update(second)
 	app = updated.(AppModel)
 
-	var count int
+	got, ok := app.faults["alice"]
+	if !ok {
+		t.Fatalf("faults[alice] missing after repeat fault; faults=%v", app.faults)
+	}
+	if got.Reason != "stalled-twice" {
+		t.Errorf("faults[alice].Reason = %q, want %q (re-stamp on repeat)", got.Reason, "stalled-twice")
+	}
+
+	// And no viewport-banner bleed on either fault arrival.
 	for _, e := range app.viewportFor("weave").GetMessages() {
-		if strings.Contains(e.Content, "backend fault on alice") {
-			count++
+		switch e.Type {
+		case MessageStatus, MessageBanner, MessageError:
+			if strings.Contains(e.Content, "backend fault on alice") {
+				t.Errorf("root viewport must NOT carry a fault banner after repeat fault (S5 pure-deletion); got: %+v", e)
+			}
 		}
-	}
-	if count != 2 {
-		t.Errorf("expected 2 'backend fault on alice' banners after repeat fault, got %d", count)
-	}
-	if _, ok := app.faults["alice"]; !ok {
-		t.Errorf("faults[alice] missing after repeat fault; faults=%v", app.faults)
 	}
 }
 
-// QUM-602: after a fault is cleared, a subsequent fault for the same agent must
-// re-fire a fresh banner (and re-stamp the sticker) — no latch survives across
-// a clear.
-func TestAppModel_BackendFaultMsg_RefiresAfterClear(t *testing.T) {
+// QUM-602 / QUM-675 S5: after a fault is cleared, a subsequent fault for the
+// same agent must re-stamp the faults map. The viewport-banner re-fire
+// assertion from the original test is replaced by a check on the faults map
+// state + a no-viewport-bleed assertion. Recovery banner is checked via the
+// statusbar transient label (see TestBackendFaultClearedMsg_RoutesToTransientLabel
+// in app_transient_label_test.go).
+func TestAppModel_BackendFaultMsg_RestampsFaultsMapAfterClear(t *testing.T) {
 	app := newTestAppModel(t)
 
 	fault := BackendFaultMsg{
@@ -125,26 +145,26 @@ func TestAppModel_BackendFaultMsg_RefiresAfterClear(t *testing.T) {
 	app = updated.(AppModel)
 	updated, _ = app.Update(BackendFaultClearedMsg{Agent: "alice"})
 	app = updated.(AppModel)
+	if _, ok := app.faults["alice"]; ok {
+		t.Fatalf("faults[alice] should be deleted after BackendFaultClearedMsg; faults=%v", app.faults)
+	}
 	updated, _ = app.Update(fault)
 	app = updated.(AppModel)
 
-	var faultCount, recoveredCount int
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if strings.Contains(e.Content, "backend fault on alice") {
-			faultCount++
-		}
-		if strings.Contains(e.Content, "backend recovered on alice") {
-			recoveredCount++
-		}
-	}
-	if faultCount != 2 {
-		t.Errorf("expected 2 'backend fault on alice' banners across fault→clear→fault, got %d", faultCount)
-	}
-	if recoveredCount != 1 {
-		t.Errorf("expected exactly 1 'backend recovered on alice' banner, got %d", recoveredCount)
-	}
 	if _, ok := app.faults["alice"]; !ok {
-		t.Errorf("faults[alice] missing after re-fault; faults=%v", app.faults)
+		t.Errorf("faults[alice] should be re-stamped after fault→clear→fault; faults=%v", app.faults)
+	}
+	// No viewport-banner bleed across the cycle.
+	for _, e := range app.viewportFor("weave").GetMessages() {
+		switch e.Type {
+		case MessageStatus, MessageBanner, MessageError:
+			if strings.Contains(e.Content, "backend fault on alice") {
+				t.Errorf("root viewport must NOT carry fault banner across fault→clear→fault (S5 pure-deletion); got: %+v", e)
+			}
+			if strings.Contains(e.Content, "backend recovered on alice") {
+				t.Errorf("root viewport must NOT carry recovery banner — transient label owns it (S5 reroute); got: %+v", e)
+			}
+		}
 	}
 }
 

@@ -43,20 +43,8 @@ func TestAppModel_StatusBarAndBannerShowVersion(t *testing.T) {
 		t.Errorf("status bar should contain version %q, got:\n%s", version, statusView)
 	}
 
-	var bannerEntry *MessageEntry
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if e.Type == MessageBanner {
-			entry := e
-			bannerEntry = &entry
-			break
-		}
-	}
-	if bannerEntry == nil {
-		t.Fatalf("expected a MessageBanner entry in the weave viewport")
-	}
-	if !strings.Contains(bannerEntry.Content, "ABCDEF") {
-		t.Errorf("banner should contain version %q, got: %q", version, bannerEntry.Content)
-	}
+	// QUM-675 S5: the SessionBanner viewport entry was dropped. The version
+	// is only surfaced via the status bar segment (asserted above).
 }
 
 func TestAppModel_InitReturnsNil(t *testing.T) {
@@ -546,16 +534,18 @@ func TestAppModel_SessionErrorMsg_ShowsDialog_WhenStreaming(t *testing.T) {
 }
 
 func TestAppModel_SessionErrorMsg_NoDialog_WhenIdle(t *testing.T) {
+	// QUM-675 S5: SessionErrorMsg (non-EOF) now always escalates to the γ
+	// overlay, even from Idle. The previous "no dialog when idle" behavior
+	// (AppendError into the viewport) was retired with the structural rewrite.
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// turnState is TurnIdle by default
 	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("some error")})
 	app = updated.(AppModel)
 
-	if app.showError {
-		t.Error("showError should be false when SessionErrorMsg received during idle")
+	if !app.showError {
+		t.Error("showError should be true when SessionErrorMsg received during idle (QUM-675 S5)")
 	}
 }
 
@@ -681,6 +671,8 @@ func TestAppModel_RestartSessionMsg_NoRestartFunc_Quits(t *testing.T) {
 }
 
 func TestAppModel_SessionErrorMsg_WhenIdle_AppendsToViewport(t *testing.T) {
+	// QUM-675 S5: rerouted — non-EOF idle errors now show the γ overlay
+	// instead of appending a MessageError to the viewport.
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
@@ -688,20 +680,13 @@ func TestAppModel_SessionErrorMsg_WhenIdle_AppendsToViewport(t *testing.T) {
 	updated, _ := app.Update(SessionErrorMsg{Err: fmt.Errorf("some transient error")})
 	app = updated.(AppModel)
 
-	// Should not show dialog
-	if app.showError {
-		t.Error("showError should be false for idle error")
+	if !app.showError {
+		t.Error("non-EOF SessionErrorMsg should escalate to the γ overlay (QUM-675 S5)")
 	}
-	// Error text should be in viewport
-	found := false
 	for _, entry := range app.viewportFor("weave").messages {
-		if entry.Type == MessageError && strings.Contains(entry.Content, "some transient error") {
-			found = true
-			break
+		if entry.Type == MessageError {
+			t.Errorf("viewport must NOT carry a MessageError after S5 reroute; got: %+v", entry)
 		}
-	}
-	if !found {
-		t.Error("error text should be appended to viewport when error arrives during idle")
 	}
 }
 
@@ -1449,15 +1434,9 @@ func TestAppModel_SessionRestartingMsg_AppendsStatusAndDisablesInput(t *testing.
 	if app.turnState != TurnIdle {
 		t.Errorf("turnState = %v, want TurnIdle", app.turnState)
 	}
-	found := false
-	for _, entry := range app.viewportFor("weave").messages {
-		if strings.Contains(entry.Content, "session ended") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("SessionRestartingMsg should append a status line to the viewport containing the reason")
+	// QUM-675 S5: restart banner now lives on the statusbar transient label.
+	if !strings.Contains(stripAnsi(app.statusBar.View()), "session ended") {
+		t.Error("SessionRestartingMsg should set a transient label containing the reason")
 	}
 }
 
@@ -1756,19 +1735,10 @@ func TestAppModel_RestartSessionMsg_AppendsNewSessionBanner(t *testing.T) {
 	app = updated.(AppModel)
 	app = driveAsyncRestart(t, app, cmd)
 
-	// After restart, the messages slice should contain a MessageBanner entry
-	// with the new session ID (QUM-390).
-	vp := app.viewportFor("weave")
-	msgs := vp.GetMessages()
-	found := false
-	for _, e := range msgs {
-		if e.Type == MessageBanner && strings.Contains(e.Content, "abcdef12") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("expected a MessageBanner entry containing session ID 'abcdef12', messages: %+v", msgs)
+	// QUM-675 S5: SessionBanner viewport entry was dropped — the new
+	// session ID is now surfaced via the status bar segment instead.
+	if got := app.statusBar.sessionID; !strings.Contains(got, "abcdef12") {
+		t.Errorf("statusBar.sessionID = %q, expected to contain 'abcdef12'", got)
 	}
 }
 
@@ -1839,13 +1809,11 @@ func TestAppModel_SessionInitializedMsg_DoesNotClearPreloadedTranscript(t *testi
 func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 	m := newTestAppModel(t)
 	m.PreloadTranscript(nil)
-	// The viewport starts with a banner entry; preloading nil should not add
-	// any conversation messages beyond the initial banner.
+	// QUM-675 S5: viewport starts empty (the initial SessionBanner was
+	// dropped). Preloading nil must not add any messages.
 	got := m.viewportFor("weave").GetMessages()
-	for _, e := range got {
-		if e.Type != MessageBanner {
-			t.Errorf("unexpected non-banner message after nil preload: %+v", e)
-		}
+	if len(got) != 0 {
+		t.Errorf("preload(nil) should leave viewport empty; got %d entries: %+v", len(got), got)
 	}
 }
 
@@ -1854,10 +1822,16 @@ func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 // height). Returns the app with viewport already populated.
 func seedScrollableViewport(t *testing.T, app AppModel) AppModel {
 	t.Helper()
-	for i := 0; i < 200; i++ {
-		app.viewportFor("weave").AppendAssistantChunk(fmt.Sprintf("scroll line %d\n", i))
+	// QUM-675 S5: seed multiple finalized assistant messages so the
+	// rendered content height clears the inner vp height threshold for
+	// AtBottom() transitions on wheel events (previously the initial
+	// SessionBanner padded the buffer; that banner was removed in S5).
+	for chunk := 0; chunk < 4; chunk++ {
+		for i := 0; i < 60; i++ {
+			app.viewportFor("weave").AppendAssistantChunk(fmt.Sprintf("scroll line %d-%d\n", chunk, i))
+		}
+		app.viewportFor("weave").FinalizeAssistantMessage()
 	}
-	app.viewportFor("weave").FinalizeAssistantMessage()
 	return app
 }
 
@@ -2160,9 +2134,10 @@ func TestAppModel_InboxArrivalMsg_AppendsStatusBanner(t *testing.T) {
 	updated, _ := app.Update(InboxArrivalMsg{From: "pretend-child", Subject: "hello"})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
+	// QUM-675 S5: inbox banner now on the statusbar transient label.
+	view := stripAnsi(app.statusBar.View())
 	if !strings.Contains(view, "inbox: 1 new message from pretend-child") {
-		t.Errorf("viewport should show inbox banner after InboxArrivalMsg, got:\n%s", view)
+		t.Errorf("statusbar should show inbox banner after InboxArrivalMsg, got:\n%s", view)
 	}
 }
 
@@ -2204,9 +2179,10 @@ func TestAppModel_InboxArrivalMsg_EmptyFromUsesFallback(t *testing.T) {
 	updated, _ := app.Update(InboxArrivalMsg{})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
+	// QUM-675 S5: fallback banner now on the statusbar transient label.
+	view := stripAnsi(app.statusBar.View())
 	if !strings.Contains(view, "inbox: 1 new message from unknown") {
-		t.Errorf("viewport should show fallback banner when From empty, got:\n%s", view)
+		t.Errorf("statusbar should show fallback banner when From empty, got:\n%s", view)
 	}
 }
 
@@ -2243,7 +2219,7 @@ func TestAppModel_AgentTreeMsg_RisingRootUnreadEmitsBanner(t *testing.T) {
 	// Seed with 0 unread — no banner expected.
 	updated, _ := app.Update(AgentTreeMsg{RootUnread: 0})
 	app = updated.(AppModel)
-	before := stripAnsi(app.viewportFor("weave").View())
+	before := stripAnsi(app.statusBar.View())
 	if strings.Contains(before, "inbox:") {
 		t.Fatalf("pre-condition: no banner expected before rise, got:\n%s", before)
 	}
@@ -2252,9 +2228,10 @@ func TestAppModel_AgentTreeMsg_RisingRootUnreadEmitsBanner(t *testing.T) {
 	updated, _ = app.Update(AgentTreeMsg{RootUnread: 1})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
+	// QUM-675 S5: rise banner now lives on the statusbar transient label.
+	view := stripAnsi(app.statusBar.View())
 	if !strings.Contains(view, "inbox: 1 new message") {
-		t.Errorf("viewport should show rise banner after RootUnread 0→1, got:\n%s", view)
+		t.Errorf("statusbar should show rise banner after RootUnread 0→1, got:\n%s", view)
 	}
 }
 
@@ -2267,21 +2244,21 @@ func TestAppModel_AgentTreeMsg_NoBannerWhenUnreadUnchanged(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
 
-	// First tick sets unread to 2 (one banner).
+	// First tick sets unread to 2 — banner fires on the statusbar.
 	updated, _ := app.Update(AgentTreeMsg{RootUnread: 2})
 	app = updated.(AppModel)
-	firstView := stripAnsi(app.viewportFor("weave").View())
-	firstBanners := strings.Count(firstView, "inbox:")
-	if firstBanners != 1 {
-		t.Fatalf("pre-condition: expected 1 banner after first rise, got %d in:\n%s", firstBanners, firstView)
+	if !strings.Contains(stripAnsi(app.statusBar.View()), "inbox:") {
+		t.Fatalf("pre-condition: expected inbox banner on statusbar after first rise, got:\n%s", stripAnsi(app.statusBar.View()))
 	}
+	// QUM-675 S5: the statusbar is last-write-wins; we can't detect a
+	// repeat-fire by counting banners on the bar. Instead, clear the label
+	// and assert the unchanged-count tick does NOT re-set it.
+	app.statusBar.SetTransientLabel("")
 
-	// Second tick with the same count — no additional banner.
 	updated, _ = app.Update(AgentTreeMsg{RootUnread: 2})
 	app = updated.(AppModel)
-	secondView := stripAnsi(app.viewportFor("weave").View())
-	if got := strings.Count(secondView, "inbox:"); got != firstBanners {
-		t.Errorf("banner count changed on unchanged-tick: got %d, want %d\n%s", got, firstBanners, secondView)
+	if strings.Contains(stripAnsi(app.statusBar.View()), "inbox:") {
+		t.Errorf("unchanged-tick re-fired inbox banner on statusbar; got:\n%s", stripAnsi(app.statusBar.View()))
 	}
 }
 
@@ -2360,9 +2337,10 @@ func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd (bridge.SendMessage)")
 	}
-	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "inbox: draining 2 async message(s) into next prompt") {
-		t.Errorf("expected draining banner, got:\n%s", view)
+	// QUM-675 S5: the draining banner is on the statusbar transient label,
+	// not the viewport.
+	if sb := stripAnsi(app.statusBar.View()); !strings.Contains(sb, "inbox: draining 2 async message(s) into next prompt") {
+		t.Errorf("expected draining banner on statusbar, got:\n%s", sb)
 	}
 	if app.turnState != TurnThinking {
 		t.Errorf("turnState = %v, want TurnThinking", app.turnState)
@@ -2480,9 +2458,9 @@ func TestAppModel_InboxDrainMsg_InterruptClassBanner(t *testing.T) {
 		Prompt: "[interrupt] x", EntryIDs: []string{"i1"}, Class: "interrupt",
 	})
 	app = updated.(AppModel)
-	view := stripAnsi(app.viewportFor("weave").View())
-	if !strings.Contains(view, "inbox: draining 1 interrupt message(s)") {
-		t.Errorf("expected interrupt-class banner, got:\n%s", view)
+	// QUM-675 S5: routed to statusbar transient label.
+	if sb := stripAnsi(app.statusBar.View()); !strings.Contains(sb, "inbox: draining 1 interrupt message(s)") {
+		t.Errorf("expected interrupt-class banner on statusbar, got:\n%s", sb)
 	}
 }
 
@@ -2910,15 +2888,10 @@ func TestAppModel_SessionRestartingMsg_DropsPendingSubmit(t *testing.T) {
 	if app.input.PendingPreview() != "" {
 		t.Errorf("indicator preview should be cleared on session restart, got %q", app.input.PendingPreview())
 	}
-	found := false
-	for _, m := range app.viewportFor("weave").GetMessages() {
-		if m.Type == MessageStatus && strings.Contains(m.Content, "queued message dropped") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("expected a 'queued message dropped' status banner after session restart")
+	// QUM-675 S5: the "queued message dropped" banner now lives on the
+	// statusbar transient label.
+	if !strings.Contains(stripAnsi(app.statusBar.View()), "queued message dropped") {
+		t.Error("expected a 'queued message dropped' status banner on the statusbar after session restart")
 	}
 }
 
@@ -3087,15 +3060,9 @@ func TestAppModel_InterruptResultMsg_ShowsStatus(t *testing.T) {
 	updated, _ := app.Update(InterruptResultMsg{})
 	app = updated.(AppModel)
 
-	found := false
-	for _, m := range app.viewportFor("weave").GetMessages() {
-		if m.Type == MessageStatus && strings.Contains(m.Content, "Interrupt") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("InterruptResultMsg should append a status message about the interrupt")
+	// QUM-675 S5: interrupt status now lands on the statusbar transient label.
+	if !strings.Contains(stripAnsi(app.statusBar.View()), "Interrupt") {
+		t.Error("InterruptResultMsg should set a transient status label about the interrupt")
 	}
 	// QUM-475: the request-ack path must NOT transition turnState. Only the
 	// terminal InterruptCompletedMsg / SessionResultMsg events finalize a turn.
@@ -3113,15 +3080,9 @@ func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
 	updated, _ := app.Update(InterruptResultMsg{Err: fmt.Errorf("interrupt failed")})
 	app = updated.(AppModel)
 
-	found := false
-	for _, m := range app.viewportFor("weave").GetMessages() {
-		if m.Type == MessageStatus && strings.Contains(m.Content, "interrupt failed") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("InterruptResultMsg with error should show the error in status")
+	// QUM-675 S5: interrupt error status now lands on the statusbar transient label.
+	if !strings.Contains(stripAnsi(app.statusBar.View()), "interrupt failed") {
+		t.Error("InterruptResultMsg with error should show the error in the transient status label")
 	}
 	// QUM-475: even on the error branch, the request-ack must not finalize.
 	if app.turnState != TurnStreaming {
@@ -3338,8 +3299,10 @@ func TestAppModel_SessionErrorMsg_FromIdle_FinalizesTurn(t *testing.T) {
 	if app.turnState != TurnIdle {
 		t.Fatalf("turnState = %v, want TurnIdle", app.turnState)
 	}
-	if app.showError {
-		t.Error("non-streaming SessionErrorMsg must NOT show the error dialog")
+	// QUM-675 S5: non-EOF SessionErrorMsg always escalates to the γ overlay,
+	// even from Idle (was previously a viewport AppendError on the Idle path).
+	if !app.showError {
+		t.Error("non-EOF SessionErrorMsg from Idle should show the γ error dialog (QUM-675 S5)")
 	}
 	if cmd == nil {
 		t.Fatal("SessionErrorMsg should re-arm WaitForEvent on a continuous bridge")
@@ -3532,22 +3495,14 @@ func TestAppModel_ConsolidationPhaseMsg_AppendsStatusAndUpdatesLabel(t *testing.
 	updated, _ := app.Update(ConsolidationPhaseMsg{Phase: "Consolidating timeline..."})
 	app = updated.(AppModel)
 
-	// Verify the root viewport has a status entry containing the phase text.
-	msgs := app.rootVP().GetMessages()
-	found := false
-	for _, e := range msgs {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidating timeline...") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("rootVP should contain a status message with 'Consolidating timeline...', got %d messages: %+v", len(msgs), msgs)
-	}
-
-	// Verify status bar label is set.
+	// QUM-675 S5: the duplicate viewport status banner was dropped — the
+	// restartLabel statusbar segment is now the single surface for the
+	// consolidation phase text.
 	if app.statusBar.restartLabel == "" {
 		t.Error("statusBar.restartLabel should be set after ConsolidationPhaseMsg")
+	}
+	if !strings.Contains(stripAnsi(app.statusBar.View()), "Consolidating timeline...") {
+		t.Errorf("statusbar should render the consolidation phase; got: %s", stripAnsi(app.statusBar.View()))
 	}
 }
 
@@ -3563,16 +3518,10 @@ func TestAppModel_ConsolidationCompleteMsg_Success_AppendsCompleteBanner(t *test
 	updated, _ := app.Update(ConsolidationCompleteMsg{Duration: 15 * time.Second})
 	app = updated.(AppModel)
 
-	msgs := app.rootVP().GetMessages()
-	found := false
-	for _, e := range msgs {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidation complete") && strings.Contains(e.Content, "15s") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("rootVP should contain 'Consolidation complete (15s)' status, got messages: %+v", msgs)
+	// QUM-675 S5: success banner now lives on the statusbar transient label.
+	view := stripAnsi(app.statusBar.View())
+	if !strings.Contains(view, "Consolidation complete") || !strings.Contains(view, "15s") {
+		t.Errorf("statusbar should contain 'Consolidation complete (15s)'; got: %s", view)
 	}
 }
 
@@ -3588,53 +3537,19 @@ func TestAppModel_ConsolidationCompleteMsg_Error_AppendsFailureBanner(t *testing
 	updated, _ := app.Update(ConsolidationCompleteMsg{Err: fmt.Errorf("timeout")})
 	app = updated.(AppModel)
 
-	msgs := app.rootVP().GetMessages()
-	found := false
-	for _, e := range msgs {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidation failed") && strings.Contains(e.Content, "timeout") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("rootVP should contain 'Consolidation failed: timeout' status, got messages: %+v", msgs)
+	// QUM-675 S5: failure banner now lives on the statusbar transient label.
+	view := stripAnsi(app.statusBar.View())
+	if !strings.Contains(view, "Consolidation failed") || !strings.Contains(view, "timeout") {
+		t.Errorf("statusbar should contain 'Consolidation failed: timeout'; got: %s", view)
 	}
 }
 
-// TestAppModel_RestartCompleteMsg_PreservesStatusMessages verifies that
-// status messages (e.g. consolidation phase banners) survive through
-// a RestartCompleteMsg and are not lost when the restart completes.
-func TestAppModel_RestartCompleteMsg_PreservesStatusMessages(t *testing.T) {
-	mock := newFakeSessionBackend()
-	bridge := mock
-	app := newTestAppModelWithBridge(t, bridge)
-	resized, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app = resized.(AppModel)
-
-	// Append a status message before restart.
-	app.rootVP().AppendStatus("Consolidating timeline...")
-
-	// Set up restart with a new bridge.
-	newBridge := newFakeSessionBackend()
-	app.restartFunc = func() (SessionBackend, error) { return newBridge, nil }
-
-	updated, cmd := app.Update(RestartSessionMsg{})
-	app = updated.(AppModel)
-	app = driveAsyncRestart(t, app, cmd)
-
-	// The status message should still be present after restart.
-	msgs := app.rootVP().GetMessages()
-	found := false
-	for _, e := range msgs {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "Consolidating timeline...") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("status message 'Consolidating timeline...' should survive RestartCompleteMsg, got messages: %+v", msgs)
-	}
-}
+// TestAppModel_RestartCompleteMsg_PreservesStatusMessages was removed in
+// QUM-675 S5: with status/banner text rerouted out of the viewport, there
+// is nothing to preserve across restart. The dedicated statusbar surfaces
+// (restartLabel for consolidation phases; transientLabel for one-shot
+// banners) survive the restart-clear by virtue of not being in the
+// viewport in the first place.
 
 // --- QUM-399 Phase 3 continuous-bridge AppModel routing tests ---
 

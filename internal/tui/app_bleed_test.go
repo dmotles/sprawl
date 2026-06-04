@@ -163,15 +163,10 @@ func TestInbox_ArrivalWhileObservingChild_TargetsWeaveViewport(t *testing.T) {
 		t.Fatalf("finn vp must remain empty when inbox banner targets weave; got %+v", finnVP.GetMessages())
 	}
 
-	weaveVP := app.viewportFor("weave")
-	found := false
-	for _, e := range weaveVP.GetMessages() {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "alice") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected weave vp to contain inbox banner mentioning alice; got %+v", weaveVP.GetMessages())
+	// QUM-675 S5: the inbox banner now lives on the statusbar transient
+	// label, not the weave viewport. Assert the label carries the banner.
+	if !strings.Contains(stripAnsi(app.statusBar.View()), "alice") {
+		t.Errorf("expected statusbar transient label to contain inbox banner mentioning alice; got: %s", stripAnsi(app.statusBar.View()))
 	}
 }
 
@@ -332,14 +327,9 @@ func TestSessionRestartingMsg_TargetsWeaveViewport(t *testing.T) {
 		t.Fatalf("finn vp must not receive restart banner; got %+v", finnVP.GetMessages())
 	}
 
-	weaveVP := app.viewportFor("weave")
-	found := false
-	for _, e := range weaveVP.GetMessages() {
-		if e.Type == MessageStatus && strings.Contains(strings.ToLower(e.Content), "restart") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected weave vp to contain restart banner; got %+v", weaveVP.GetMessages())
+	// QUM-675 S5: the restart banner now lives on the statusbar transient
+	// label.
+	if !strings.Contains(strings.ToLower(stripAnsi(app.statusBar.View())), "restart") {
+		t.Errorf("expected statusbar transient label to contain restart banner; got: %s", stripAnsi(app.statusBar.View()))
 	}
 }

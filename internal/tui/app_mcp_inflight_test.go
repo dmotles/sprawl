@@ -10,13 +10,13 @@ import (
 
 // QUM-497: TUI surfacing for in-flight MCP operations.
 
-// findEntry returns the first MessageEntry whose body contains substr, or
-// (entry{}, false) if none match.
+// findStatusEntry searches the statusbar transient label (QUM-675 S5) for
+// substr. Pre-S5 this looked at viewport MessageStatus entries; post-S5 the
+// banner lives on the statusbar instead.
 func findStatusEntry(m AppModel, substr string) (string, bool) {
-	for _, e := range m.rootVP().GetMessages() {
-		if e.Type == MessageStatus && strings.Contains(e.Content, substr) {
-			return e.Content, true
-		}
+	view := stripAnsi(m.statusBar.View())
+	if strings.Contains(view, substr) {
+		return view, true
 	}
 	return "", false
 }
@@ -117,19 +117,21 @@ func TestMCPThresholdMsg_AfterEnded_NoBanner(t *testing.T) {
 }
 
 func TestMCPThresholdMsg_DuplicatesIgnored(t *testing.T) {
+	// QUM-675 S5: the threshold banner now lives on the statusbar transient
+	// label (last-write-wins, so multi-fire detection switches to the
+	// mcpOpThresholdShown gate which is the canonical anti-dup flag).
 	m := newInflightTestModel(t)
 	updated, _ := m.Update(MCPCallStartedMsg{CallID: "c1", Tool: "retire", Caller: "weave", Started: time.Now()})
 	updated, _ = updated.(AppModel).Update(mcpOpThresholdMsg{CallID: "c1"})
 	updated, _ = updated.(AppModel).Update(mcpOpThresholdMsg{CallID: "c1"})
 	app := updated.(AppModel)
-	count := 0
-	for _, e := range app.rootVP().GetMessages() {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "is taking longer than usual") {
-			count++
-		}
+	if !app.mcpOpThresholdShown["c1"] {
+		t.Errorf("mcpOpThresholdShown[c1] should be set after first fire")
 	}
-	if count != 1 {
-		t.Errorf("duplicate threshold should not double-render banner; count=%d", count)
+	// The label should still reflect the message — the second threshold
+	// reducer must not toggle the shown gate off (it's a one-way latch).
+	if _, ok := findStatusEntry(app, "is taking longer than usual"); !ok {
+		t.Errorf("expected statusbar to retain the threshold banner after dedup")
 	}
 }
 

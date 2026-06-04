@@ -142,16 +142,10 @@ func TestAppModel_InjectPromptMsg_SendsToBridgeWithoutAppendingUserMessage(t *te
 			t.Error("InjectPromptMsg must not AppendUserMessage with the template content")
 		}
 	}
-	// Viewport should have a status line indicating dispatch.
-	foundStatus := false
-	for _, m := range app.viewportFor("weave").GetMessages() {
-		if m.Type == MessageStatus && (strings.Contains(m.Content, "/handoff") || strings.Contains(m.Content, "dispatched")) {
-			foundStatus = true
-			break
-		}
-	}
-	if !foundStatus {
-		t.Error("InjectPromptMsg should append a status line (containing '/handoff' or 'dispatched') to the viewport")
+	// QUM-675 S5: dispatch status now lives on the statusbar transient label.
+	bar := stripAnsi(app.statusBar.View())
+	if !strings.Contains(bar, "/handoff") && !strings.Contains(bar, "dispatched") {
+		t.Errorf("InjectPromptMsg should set a transient status label (containing '/handoff' or 'dispatched'); got: %s", bar)
 	}
 
 	// Execute the cmd — should resolve to UserMessageSentMsg via the bridge.

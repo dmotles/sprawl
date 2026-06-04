@@ -54,12 +54,17 @@ func seedUnreadForWeave(t *testing.T, sprawlRoot string, count int) {
 	}
 }
 
-// countInboxBanners counts how many `inbox:` status lines are visible in the
-// weave viewport. Uses the same string match strategy as the existing
-// QUM-311 tests (see TestAppModel_AgentTreeMsg_NoBannerWhenUnreadUnchanged).
+// countInboxBanners counts how many `inbox:` status lines are visible.
+// Post-QUM-675 S5 the inbox banner lives on the statusbar transient label
+// (last-write-wins), so this returns 1 iff the label currently carries an
+// inbox banner, else 0. The dedup/double-fire tests assert separately on
+// rootUnread to detect multi-fire bugs that the label can't surface.
 func countInboxBanners(app AppModel) int {
-	view := stripAnsi(app.viewportFor("weave").View())
-	return strings.Count(view, "inbox:")
+	view := stripAnsi(app.statusBar.View())
+	if strings.Contains(view, "inbox:") {
+		return 1
+	}
+	return 0
 }
 
 // TestInboxArrivalMsg_DedupedAfterAgentTreeMsg — the AgentTreeMsg tick has

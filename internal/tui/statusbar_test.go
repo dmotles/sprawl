@@ -450,3 +450,64 @@ func TestStatusBarModel_SetResyncPill_ClearedByEmpty(t *testing.T) {
 		t.Errorf("View() should NOT contain resync pill %q after SetResyncPill(\"\"), got:\n%s", pill, view)
 	}
 }
+
+// --- QUM-675 S5: transient label (the new single sink for status/banner text
+// that used to land in the viewport via vp.AppendStatus / vp.AppendBanner).
+// Spec: docs/designs/tui-structural-rewrite-plan.md §3 S5 + tower's
+// display-policy comment on QUM-675. Single field, last-write-wins, no queue,
+// no timer. Cleared by explicit state transitions (tested at the AppModel
+// reducer level in app_test.go), not by an auto-decay.
+//
+// These tests are RED until SetTransientLabel + the transientLabel field land
+// in statusbar.go and the View() renders the field as one |-joined right-side
+// segment alongside the existing segments.
+
+func TestStatusBar_SetTransientLabel_RendersInRightSegments(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	const label = "Interrupt sent"
+	m.SetTransientLabel(label)
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, label) {
+		t.Fatalf("View() should contain transient label %q after SetTransientLabel, got:\n%s", label, view)
+	}
+	// The label must be joined with the existing pipe-delimited right-side
+	// parts list — not rendered as a standalone left-side chip. Asserting
+	// against a neighbour segment (the version string) is the cheapest way to
+	// verify it sits inside the same join.
+	if !strings.Contains(view, "| "+label) && !strings.Contains(view, label+" |") {
+		t.Errorf("transient label %q should be joined into the |-delimited right segments; got:\n%s", label, view)
+	}
+}
+
+func TestStatusBar_SetTransientLabel_EmptyHides(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	const label = "Interrupt sent"
+	m.SetTransientLabel(label)
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, label) {
+		t.Fatalf("precondition: View() should contain %q before clear, got:\n%s", label, view)
+	}
+	m.SetTransientLabel("")
+	view = ansi.Strip(m.View())
+	if strings.Contains(view, label) {
+		t.Errorf("View() should NOT contain transient label %q after SetTransientLabel(\"\"), got:\n%s", label, view)
+	}
+}
+
+func TestStatusBar_SetTransientLabel_LastWriteWins(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	const labelA = "Session restarting (handoff)..."
+	const labelB = "Interrupt sent"
+	m.SetTransientLabel(labelA)
+	m.SetTransientLabel(labelB)
+	view := ansi.Strip(m.View())
+	if strings.Contains(view, labelA) {
+		t.Errorf("View() should NOT contain superseded label %q (last-write-wins), got:\n%s", labelA, view)
+	}
+	if !strings.Contains(view, labelB) {
+		t.Errorf("View() should contain latest label %q, got:\n%s", labelB, view)
+	}
+}

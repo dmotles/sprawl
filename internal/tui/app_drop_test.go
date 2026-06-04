@@ -168,20 +168,10 @@ func TestAppModel_GapAboveBurstThreshold_TriggersImmediateResync(t *testing.T) {
 		t.Errorf("turnState = %v, want TurnIdle on burst-threshold gap (AC #4)", next.turnState)
 	}
 
-	// A "drop banner" should land in the viewport on entry to the dropped
-	// state (design §2.6: in-viewport banner / MessageStatus line on
-	// normal → dropped). Phrase is the implementer's call but must mention
-	// the drop.
-	gotDropBanner := false
-	for _, e := range next.rootVP().GetMessages() {
-		c := strings.ToLower(e.Content)
-		if strings.Contains(c, "dropped") || strings.Contains(c, "events lost") || strings.Contains(c, "gap detected") {
-			gotDropBanner = true
-			break
-		}
-	}
-	if !gotDropBanner {
-		t.Errorf("expected an in-viewport drop banner on burst-threshold gap; messages:\n%+v", next.rootVP().GetMessages())
+	// QUM-675 S5: drop banner now lives on the statusbar transient label.
+	bar := strings.ToLower(stripAnsi(next.statusBar.View()))
+	if !strings.Contains(bar, "events lost") && !strings.Contains(bar, "dropped") && !strings.Contains(bar, "gap detected") {
+		t.Errorf("expected a transient drop banner on the statusbar; got: %s", bar)
 	}
 
 	resync, ok := findViewportResync(t, cmd)

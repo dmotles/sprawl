@@ -330,12 +330,9 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 	// Init/Update fires, so lazy-init via viewportFor would arrive too late
 	// (QUM-334 §5). Child agent buffers are still lazy.
 	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme), cl: NewChatList(&theme)}
-	// Set the root viewport's initial content to the session banner.
-	initialSessionID := ""
-	if bridge != nil {
-		initialSessionID = shortSessionID(bridge.SessionID())
-	}
-	agentBuffers[rootAgent].vp.AppendBanner(SessionBanner(initialSessionID, version))
+	// QUM-675 S5: SessionBanner is redundant with the status-bar sess:<id>
+	// segment (set on SessionInitializedMsg). No banner is appended to the
+	// viewport on startup.
 
 	app := AppModel{
 		tree:                NewTreeModel(&theme),
@@ -664,7 +661,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// via SessionResultMsg/SessionErrorMsg; we show "Interrupting..."
 		// feedback immediately.
 		if msg.Code == tea.KeyEscape && (m.turnState == TurnStreaming || m.turnState == TurnThinking) && m.bridge != nil {
-			m.rootVP().AppendStatus("Interrupting...")
+			m.statusBar.SetTransientLabel("Interrupting...")
 			return m, m.bridge.Interrupt()
 		}
 
@@ -731,8 +728,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Template == "" || m.bridge == nil || m.turnState != TurnIdle {
 			return m, nil
 		}
-		m.rootVP().AppendStatus("/handoff dispatched — see output below")
 		m.setTurnState(TurnThinking)
+		m.statusBar.SetTransientLabel("/handoff dispatched — see output below")
 		return m, m.bridge.SendMessage(msg.Template)
 
 	case InboxDrainMsg:
@@ -746,7 +743,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Class == "interrupt" {
 			label = "interrupt"
 		}
-		m.rootVP().AppendStatus(fmt.Sprintf("inbox: draining %d %s message(s) into next prompt", len(msg.EntryIDs), label))
 		// QUM-323: render the flush prompt in the viewport so the human watching
 		// the TUI can see what got drained — parity with SubmitMsg which renders
 		// user-typed input. Without this, the drained frame is invisible (only
@@ -762,12 +758,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rootBuf().AppendSystemNotification(msg.Prompt)
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
+		// QUM-675 S5: set transient AFTER setTurnState — the Idle→Thinking
+		// transition inside setTurnState clears the label.
+		m.statusBar.SetTransientLabel(fmt.Sprintf("inbox: draining %d %s message(s) into next prompt", len(msg.EntryIDs), label))
 		return m, m.bridge.SendMessage(msg.Prompt)
 
 	case SubmitMsg:
 		if msg.Text == "" {
 			return m, nil
 		}
+		// QUM-675 S5: a new user prompt clears one-shot transient banners
+		// (Completed/Interrupted/startup/recovered).
+		m.statusBar.SetTransientLabel("")
 		// QUM-410: record the user input in shell-style history before
 		// dispatch. Done unconditionally (even when bridge is nil in tests)
 		// because history is a UX concern independent of transport.
@@ -874,9 +876,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// assistant entry.
 		finalizeCmd := m.finalizeTurn()
 		if msg.IsError {
-			root.AppendError(fmt.Sprintf("Error: %s", msg.Result))
+			// QUM-675 S5: session-level errors escalate to the γ overlay
+			// instead of being buried as a viewport error banner.
+			m.errorDialog = NewErrorDialog(&m.theme, errors.New(msg.Result))
+			m.errorDialog.SetSize(m.width, m.height)
+			m.showError = true
 		} else {
-			root.AppendStatus(fmt.Sprintf("Completed in %dms, cost $%.4f", msg.DurationMs, msg.TotalCostUsd))
+			m.statusBar.SetTransientLabel(fmt.Sprintf("Completed in %dms, cost $%.4f", msg.DurationMs, msg.TotalCostUsd))
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
 		}
 		var costCmd tea.Cmd
@@ -901,7 +907,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Finalize before status append (see SessionResultMsg comment).
 		finalizeCmd := m.finalizeTurn()
-		root.AppendStatus(fmt.Sprintf("Interrupted (%dms)", msg.DurationMs))
+		m.statusBar.SetTransientLabel(fmt.Sprintf("Interrupted (%dms)", msg.DurationMs))
 		var costCmd tea.Cmd
 		if msg.TotalCostUsd > 0 {
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
@@ -929,13 +935,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sendMsgCmd(RestartSessionMsg{}),
 			)
 		}
-		if m.turnState == TurnThinking || m.turnState == TurnStreaming {
-			m.errorDialog = NewErrorDialog(&m.theme, msg.Err)
-			m.errorDialog.SetSize(m.width, m.height)
-			m.showError = true
-			return m, m.finalizeTurn()
-		}
-		m.rootVP().AppendError(msg.Err.Error())
+		// QUM-675 S5: non-EOF SessionErrorMsg always escalates to the γ
+		// overlay (the Idle branch used to AppendError into the viewport;
+		// unified with the Thinking/Streaming branch here).
+		m.errorDialog = NewErrorDialog(&m.theme, msg.Err)
+		m.errorDialog.SetSize(m.width, m.height)
+		m.showError = true
 		return m, m.finalizeTurn()
 
 	case HandoffRequestedMsg:
@@ -956,14 +961,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// so any pending palette dispatch would hit a stale channel.
 		m.palette.Hide()
 		m.showPalette = false
-		m.rootVP().AppendStatus(fmt.Sprintf("Session restarting (%s)...", reason))
+		m.statusBar.SetTransientLabel(fmt.Sprintf("Session restarting (%s)...", reason))
 		// QUM-340: a session restart wipes the conversational context the user
 		// queued their next message against. Drop the slot and surface a
-		// one-line banner so the disappearance isn't silent.
+		// one-line banner so the disappearance isn't silent. The dropped
+		// message label supersedes the restart label (last-write-wins).
 		if m.pendingSubmit != "" {
 			m.pendingSubmit = ""
 			m.input.SetPendingPreview("")
-			m.rootVP().AppendStatus("queued message dropped due to session restart")
+			m.statusBar.SetTransientLabel("queued message dropped due to session restart")
 		}
 		m.setTurnState(TurnIdle)
 		return m, nil
@@ -1004,16 +1010,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ConsolidationPhaseMsg:
 		m.consolidating = true
 		m.statusBar.SetRestartLabel(msg.Phase)
-		m.rootVP().AppendStatus(msg.Phase)
+		// QUM-675 S5: restartLabel is the dedicated surface for this; the
+		// duplicate viewport banner is dropped.
 		return m, nil
 
 	case ConsolidationCompleteMsg:
 		m.consolidating = false
 		m.statusBar.SetRestartLabel("")
 		if msg.Err != nil {
-			m.rootVP().AppendStatus(fmt.Sprintf("Consolidation failed: %v", msg.Err))
+			m.statusBar.SetTransientLabel(fmt.Sprintf("Consolidation failed: %v", msg.Err))
 		} else {
-			m.rootVP().AppendStatus(fmt.Sprintf("Consolidation complete (%ds)", int(msg.Duration.Seconds())))
+			m.statusBar.SetTransientLabel(fmt.Sprintf("Consolidation complete (%ds)", int(msg.Duration.Seconds())))
 		}
 		return m, nil
 
@@ -1041,6 +1048,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.consolidating {
 			m.statusBar.SetRestartLabel("")
 		}
+		// QUM-675 S5: clear any stale "Session restarting…" transient label.
+		m.statusBar.SetTransientLabel("")
 		// A Ctrl-C confirm landing mid-restart also shuts us down here.
 		if m.quitting {
 			return m, tea.Quit
@@ -1062,20 +1071,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bridge = msg.Bridge
 		shortID := shortSessionID(m.bridge.SessionID())
 		buf := m.rootBuf()
-		root := m.rootVP()
-		// QUM-391: preserve status messages (consolidation banners) across
-		// restart — only clear conversation messages.
-		var preserved []MessageEntry
-		for _, e := range root.GetMessages() {
-			if e.Type == MessageStatus {
-				preserved = append(preserved, e)
-			}
-		}
-		// QUM-673 post-review fix: route restart-clear through the dual-shim
-		// so cl is Reset alongside vp. The MessageStatus entries are skipped
-		// by ChatList.Reset (contract violators); cl ends up empty + Idle, and
-		// chatRegionContent falls back to vp.View() so the banner renders.
-		buf.SetMessages(preserved)
+		// QUM-675 S5: with status/banner text rerouted out of the viewport,
+		// nothing to preserve across the restart-clear.
+		buf.SetMessages(nil)
 		// QUM-497: drop any in-flight MCP op state from the prior session
 		// so a stale call_id can't keep ticking on the new bar.
 		m.activeMCPOps = make(map[string]OpDescriptor)
@@ -1085,8 +1083,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-385: reset token usage; contextLimit is preserved across
 		// restarts since the model usually doesn't change.
 		m.statusBar.SetTokenUsage(0)
-		// Show the session banner with the new session ID (QUM-390).
-		root.AppendBanner(SessionBanner(shortID, m.version))
+		// QUM-675 S5: SessionBanner removed; the status bar's sess:<id>
+		// segment is the dedicated surface for the new session id.
 		m.statusBar.SetSessionID(shortID)
 		m.setTurnState(TurnIdle)
 		var cmds []tea.Cmd
@@ -1106,9 +1104,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Request-ack only — does not transition turnState; terminal cleanup
 		// happens in InterruptCompletedMsg (QUM-475).
 		if msg.Err != nil {
-			m.rootVP().AppendStatus(fmt.Sprintf("Interrupt failed: %v", msg.Err))
+			m.statusBar.SetTransientLabel(fmt.Sprintf("Interrupt failed: %v", msg.Err))
 		} else {
-			m.rootVP().AppendStatus("Interrupt sent — waiting for turn to end")
+			m.statusBar.SetTransientLabel("Interrupt sent — waiting for turn to end")
 		}
 		return m, nil
 
@@ -1142,7 +1140,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// gets the same UX whether the sender was in-process (InboxArrivalMsg
 		// via the TUI notifier) or out-of-process (caught on the 2s tick).
 		if msg.RootUnread > m.rootUnread {
-			m.rootVP().AppendStatus(formatInboxBanner(msg.RootUnread-m.rootUnread, ""))
+			m.statusBar.SetTransientLabel(formatInboxBanner(msg.RootUnread-m.rootUnread, ""))
 		}
 		m.rootUnread = msg.RootUnread
 		m.rebuildTree()
@@ -1192,15 +1190,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			from = "unknown"
 		}
 		diskUnread := m.rootUnread
-		if m.sprawlRoot != "" && m.rootAgent != "" {
+		hasDisk := m.sprawlRoot != "" && m.rootAgent != ""
+		if hasDisk {
 			if entries, err := messages.List(m.sprawlRoot, m.rootAgent, "unread"); err == nil {
 				diskUnread = len(entries)
 			}
 		}
-		if diskUnread > m.rootUnread {
-			m.rootVP().AppendStatus(formatInboxBanner(diskUnread-m.rootUnread, from))
+		switch {
+		case hasDisk && diskUnread > m.rootUnread:
+			m.statusBar.SetTransientLabel(formatInboxBanner(diskUnread-m.rootUnread, from))
 			m.rootUnread = diskUnread
 			m.rebuildTree()
+		case !hasDisk:
+			// QUM-675 S5: when no disk-truth is available (typical in unit
+			// tests with no sprawlRoot), trust the in-process notifier and
+			// surface the banner unconditionally.
+			m.statusBar.SetTransientLabel(formatInboxBanner(1, from))
 		}
 		return m, nil
 
@@ -1216,11 +1221,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			Reason:     msg.Reason,
 			NextAction: msg.NextAction,
 		}
-		// QUM-602: the banner is appended unconditionally on every
-		// BackendFaultMsg — it is keyed off the fault transition/message
-		// arrival, NOT a latched boolean. This intentionally preserves the
-		// re-fire when a repeated fault occurs on the same agent.
-		m.rootVP().AppendStatus(fmt.Sprintf("backend fault on %s: %s — %s", msg.Agent, msg.Class, msg.NextAction))
+		// QUM-675 S5: backend-fault user-facing surface is the tree-row
+		// FAULT badge (owned by m.faults + rebuildTree). The duplicate
+		// viewport banner is dropped.
 		m.rebuildTree()
 		return m, nil
 
@@ -1233,7 +1236,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.faults != nil {
 			delete(m.faults, msg.Agent)
 		}
-		m.rootVP().AppendStatus(fmt.Sprintf("backend recovered on %s", msg.Agent))
+		m.statusBar.SetTransientLabel(fmt.Sprintf("backend recovered on %s", msg.Agent))
 		m.rebuildTree()
 		// If the recovered agent is the one currently streaming into the
 		// child viewport, re-point the child adapter at the new unified
@@ -1262,9 +1265,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.Failed == 0 {
-			m.rootVP().AppendStatus(fmt.Sprintf("[startup] resumed %d agents", msg.Resumed))
+			m.statusBar.SetTransientLabel(fmt.Sprintf("[startup] resumed %d agents", msg.Resumed))
 		} else {
-			m.rootVP().AppendStatus(fmt.Sprintf("[startup] resumed %d agents (%d failed)", msg.Resumed, msg.Failed))
+			m.statusBar.SetTransientLabel(fmt.Sprintf("[startup] resumed %d agents (%d failed)", msg.Resumed, msg.Failed))
 		}
 		return m, nil
 
@@ -1395,7 +1398,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			caller = "?"
 		}
 		elapsed := formatElapsed(time.Since(op.Started))
-		m.rootVP().AppendStatus(fmt.Sprintf(
+		m.statusBar.SetTransientLabel(fmt.Sprintf(
 			"⏳ %s(%s) is taking longer than usual (T+%s). Send SIGUSR1 to capture state.",
 			op.Tool, caller, elapsed,
 		))
@@ -1473,7 +1476,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resyncInFlight = false
 		m.statusBar.SetResyncPill("")
 		if msg.Err != nil {
-			m.rootVP().AppendError(fmt.Sprintf("resync failed: %v — press Ctrl+L to retry", msg.Err))
+			// QUM-675 S5: route resync failures to the γ overlay so the
+			// retry hint is unmistakable.
+			m.errorDialog = NewErrorDialog(&m.theme, fmt.Errorf("resync failed: %w — press Ctrl+L to retry", msg.Err))
+			m.errorDialog.SetSize(m.width, m.height)
+			m.showError = true
 			m.gapState = gapStateDropped
 			return m, nil
 		}
@@ -1489,7 +1496,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-673 post-review fix: route resync replacement through the dual-
 		// shim so cl mirrors the recovered transcript alongside vp.
 		m.rootBuf().SetMessages(entries)
-		m.rootVP().AppendStatus(fmt.Sprintf("✓ resynced — recovered %d events from session log", msg.MissingCount))
+		m.statusBar.SetTransientLabel(fmt.Sprintf("✓ resynced — recovered %d events from session log", msg.MissingCount))
 		m.setTurnState(TurnIdle)
 		m.gapState = gapStateNormal
 		m.pendingMissing = 0
@@ -1743,7 +1750,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		isUnified := m.childAdapter != nil && m.childAdapterAgent == msg.Agent
 		switch {
 		case msg.Err != nil:
-			vp.AppendError(fmt.Sprintf("transcript load failed for %s: %v", msg.Agent, msg.Err))
+			// QUM-675 S5: escalate transcript-load failures to the γ overlay.
+			_ = vp
+			m.errorDialog = NewErrorDialog(&m.theme, fmt.Errorf("transcript load failed for %s: %w", msg.Agent, msg.Err))
+			m.errorDialog.SetSize(m.width, m.height)
+			m.showError = true
 		case len(msg.Entries) > 0:
 			m.agentBufferFor(msg.Agent).SetMessages(msg.Entries)
 			if buf, ok := m.agentBuffers[msg.Agent]; ok {
@@ -1981,6 +1992,12 @@ func (m AppModel) mouseMode() tea.MouseMode {
 }
 
 func (m *AppModel) setTurnState(state TurnState) {
+	// QUM-675 S5: clear the transient label on Idle→Thinking — the canonical
+	// "next turn started" edge — so stale "Interrupt sent" / startup banners
+	// don't survive into the new turn.
+	if m.turnState == TurnIdle && state == TurnThinking {
+		m.statusBar.SetTransientLabel("")
+	}
 	m.turnState = state
 	m.statusBar.SetTurnState(state)
 	m.rebuildTree()
@@ -2300,7 +2317,7 @@ func (m *AppModel) handleViewportSelectKey(msg tea.KeyPressMsg) (tea.Cmd, bool) 
 		if raw == "" {
 			return nil, true
 		}
-		vp.AppendStatus("Copied selection to clipboard")
+		m.statusBar.SetTransientLabel("Copied selection to clipboard")
 		return tea.SetClipboard(raw), true
 	}
 	// While selecting, swallow all other keys so they don't scroll the
@@ -2863,8 +2880,8 @@ func (m *AppModel) kickResyncFromGap(missing uint64) tea.Cmd {
 	m.gapState = gapStateResyncing
 	m.resyncInFlight = true
 	m.statusBar.SetResyncPill("resyncing…")
-	// Drop banner — design §2.6 (in-viewport banner on normal → dropped).
-	m.rootVP().AppendStatus(fmt.Sprintf("⚠ %d events lost — resync in flight (Ctrl+L to retry)", missing))
+	// QUM-675 S5: drop banner now lives on the transient label.
+	m.statusBar.SetTransientLabel(fmt.Sprintf("⚠ %d events lost — resync in flight (Ctrl+L to retry)", missing))
 	return m.resyncCmd(missing)
 }
 

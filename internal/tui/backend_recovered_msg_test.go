@@ -52,12 +52,13 @@ func TestAppModel_BackendFaultClearedMsg_AppendsBanner(t *testing.T) {
 	updated, _ = app.Update(BackendFaultClearedMsg{Agent: "alice"})
 	app = updated.(AppModel)
 
-	view := stripAnsi(app.viewportFor("weave").View())
+	// QUM-675 S5: recovery banner now lives on the statusbar transient label.
+	view := stripAnsi(app.statusBar.View())
 	if !strings.Contains(view, "alice") {
-		t.Errorf("viewport should mention agent name on recovery; got:\n%s", view)
+		t.Errorf("statusbar should mention agent name on recovery; got:\n%s", view)
 	}
 	if !strings.Contains(strings.ToLower(view), "recovered") {
-		t.Errorf("viewport should mention 'recovered' on recovery; got:\n%s", view)
+		t.Errorf("statusbar should mention 'recovered' on recovery; got:\n%s", view)
 	}
 }
 

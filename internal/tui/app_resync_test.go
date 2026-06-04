@@ -113,18 +113,10 @@ func TestAppModel_ViewportResyncMsg_ReplacesMessagesAndAppendsBanner(t *testing.
 		t.Errorf("rebuilt entries not installed: foundUser=%v foundAssistant=%v; msgs=%+v", foundUser, foundAssistant, msgs)
 	}
 
-	// Trailing banner: design §2.4 specifies
-	// "✓ resynced — recovered N events from session log"
+	// QUM-675 S5: trailing banner now lives on the statusbar transient label.
 	bannerRE := regexp.MustCompile(`(?i)resynced.*recovered\s+7\s+(events|messages).*session log`)
-	gotBanner := false
-	for _, e := range msgs {
-		if e.Type == MessageStatus && bannerRE.MatchString(e.Content) {
-			gotBanner = true
-			break
-		}
-	}
-	if !gotBanner {
-		t.Errorf("expected trailing resync banner matching %q; viewport msgs:\n%+v", bannerRE.String(), msgs)
+	if !bannerRE.MatchString(stripAnsi(next.statusBar.View())) {
+		t.Errorf("expected trailing resync banner matching %q on statusbar; got: %s", bannerRE.String(), stripAnsi(next.statusBar.View()))
 	}
 
 	if next.turnState != TurnIdle {
@@ -142,19 +134,15 @@ func TestAppModel_ViewportResyncMsg_FailurePathKeepsDroppedState(t *testing.T) {
 	failed, _ := app.Update(ViewportResyncMsg{Err: errors.New("boom")})
 	next := failed.(AppModel)
 
-	gotFailureBanner := false
-	for _, e := range next.rootVP().GetMessages() {
-		if e.Type != MessageStatus && e.Type != MessageError {
-			continue
-		}
-		c := strings.ToLower(e.Content)
-		if strings.Contains(c, "resync failed") && strings.Contains(c, "ctrl+l") {
-			gotFailureBanner = true
-			break
-		}
+	// QUM-675 S5: resync failures now escalate to the γ overlay instead of
+	// appending a banner to the viewport.
+	if !next.showError {
+		t.Errorf("expected γ overlay (showError=true) on resync failure; got showError=false")
 	}
-	if !gotFailureBanner {
-		t.Errorf("expected a 'resync failed ... Ctrl+L' banner on failure; viewport msgs:\n%+v", next.rootVP().GetMessages())
+	for _, e := range next.rootVP().GetMessages() {
+		if e.Type == MessageError {
+			t.Errorf("viewport must NOT carry a MessageError after S5 reroute; got: %+v", e)
+		}
 	}
 }
 
