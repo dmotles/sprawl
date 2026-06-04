@@ -37,6 +37,14 @@ const (
 type AgentBuffer struct {
 	vp ViewportModel
 
+	// cl is the QUM-672 ChatList shadow. S2 of the TUI structural rewrite
+	// arc (docs/designs/tui-structural-rewrite-plan.md §3 S2) wires user
+	// messages through both stores via the dual-append shim: vp stays the
+	// live-render path, cl silently accumulates the new render model's
+	// state in parallel. Subsequent slices (S3+) widen the mirrored verb
+	// set; S6 deletes the shim and vp's rendering surface.
+	cl *ChatList
+
 	// SessionID names the Claude session_id that the cached child transcript
 	// was hydrated against. Only populated for non-root agents. When the
 	// underlying agent state file's session_id changes (handoff / respawn),
@@ -49,6 +57,77 @@ type AgentBuffer struct {
 	// re-delivered for a seeded tool call can be dropped instead of
 	// double-rendered.
 	seenToolIDs map[string]struct{}
+}
+
+// AppendUser is the QUM-672 dual-append entry point for user-typed turns.
+// It mirrors the text into both the legacy ViewportModel (live-render path)
+// and the ChatList shadow so the new render model accumulates the same
+// state without yet driving the display. Every production AppendUserMessage
+// call site must route through this helper to preserve the dual-append
+// invariant (cl.Len() tracks the count of MessageUser entries in vp).
+func (b *AgentBuffer) AppendUser(text string) {
+	b.vp.AppendUserMessage(text)
+	b.cl.AppendUser(text)
+}
+
+// AppendAssistantChunk dual-appends a streaming assistant chunk (QUM-673 S3).
+// vp stays the live-render fallback while a stream is in flight; cl
+// accumulates state so View() can flip back to ChatList on Finalize.
+func (b *AgentBuffer) AppendAssistantChunk(text string) {
+	b.vp.AppendAssistantChunk(text)
+	b.cl.AppendAssistantChunk(text)
+}
+
+// FinalizeAssistantMessage dual-finalizes the in-flight assistant item on
+// both stores. Once cl.Idle()==true again, View() resumes rendering via
+// ChatList. QUM-673 S3.
+func (b *AgentBuffer) FinalizeAssistantMessage() {
+	b.vp.FinalizeAssistantMessage()
+	b.cl.FinalizeAssistantMessage()
+}
+
+// AppendToolCallWithHeader dual-appends a tool-call row. QUM-673 S3.
+func (b *AgentBuffer) AppendToolCallWithHeader(name, toolID string, approved bool,
+	input, fullInput, headerArg string, headerParams []KVPair,
+	parentToolUseID string,
+) {
+	b.vp.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, headerArg, headerParams, parentToolUseID)
+	b.cl.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, headerArg, headerParams, parentToolUseID)
+}
+
+// MarkToolResult dual-resolves a pending tool call on both stores. The
+// return value is the vp result (the load-bearing one — drives the spinner
+// counter and matrix-row assertions); cl's mirror is best-effort. QUM-673 S3.
+func (b *AgentBuffer) MarkToolResult(toolID, content string, isError bool) bool {
+	matched := b.vp.MarkToolResult(toolID, content, isError)
+	b.cl.MarkToolResult(toolID, content, isError)
+	return matched
+}
+
+// AppendSystemNotification dual-appends a notification envelope. QUM-673 S3.
+func (b *AgentBuffer) AppendSystemNotification(text string) {
+	b.vp.AppendSystemNotification(text)
+	b.cl.AppendSystemNotification(text)
+}
+
+// AppendAutoTrigger dual-appends a QUM-634 auto-continue marker. QUM-673 S3.
+func (b *AgentBuffer) AppendAutoTrigger(summary string) {
+	b.vp.AppendAutoTrigger(summary)
+	b.cl.AppendAutoTrigger(summary)
+}
+
+// SetToolInputsExpanded fans the QUM-335 global expand-all toggle into both
+// stores so the Ctrl+O loop covers the ChatList as well. QUM-673 S3.
+func (b *AgentBuffer) SetToolInputsExpanded(v bool) {
+	b.vp.SetToolInputsExpanded(v)
+	b.cl.SetToolInputsExpanded(v)
+}
+
+// SetMessages replaces the buffer's transcript on both stores from a backfill
+// snapshot (ChildTranscriptMsg / PreloadTranscript / resync). QUM-673 S3.
+func (b *AgentBuffer) SetMessages(entries []MessageEntry) {
+	b.vp.SetMessages(entries)
+	b.cl.Reset(entries)
 }
 
 // AppModel is the root Bubble Tea model composing all panels.
@@ -251,7 +330,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 	// Seed the root agent's buffer eagerly: PreloadTranscript can run before
 	// Init/Update fires, so lazy-init via viewportFor would arrive too late
 	// (QUM-334 §5). Child agent buffers are still lazy.
-	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme)}
+	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme), cl: NewChatList(&theme)}
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	sp.Style = theme.AccentText
 	// Set the root viewport's initial content to the session banner.
@@ -530,7 +609,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'o' {
 			m.toolInputsExpanded = !m.toolInputsExpanded
 			for _, buf := range m.agentBuffers {
-				buf.vp.SetToolInputsExpanded(m.toolInputsExpanded)
+				buf.SetToolInputsExpanded(m.toolInputsExpanded)
 			}
 			return m, nil
 		}
@@ -623,7 +702,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AutoContinueMsg:
 		// QUM-634: render a trigger marker before the autonomous turn's
 		// assistant response so the user sees WHY weave responded.
-		m.rootVP().AppendAutoTrigger(msg.Summary)
+		m.rootBuf().AppendAutoTrigger(msg.Summary)
 		return m, nil
 
 	case OpenPaletteMsg:
@@ -684,7 +763,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and emits MessageSystemNotification entries; falls back to AppendSystemMessage
 		// (legacy MessageSystem rendering) when the prompt isn't tagged — preserving
 		// behavior for pre-QUM-555 plain inbox banners.
-		m.rootVP().AppendSystemNotification(msg.Prompt)
+		m.rootBuf().AppendSystemNotification(msg.Prompt)
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
 		return m, m.bridge.SendMessage(msg.Prompt)
@@ -712,7 +791,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.SetPendingPreview(msg.Text)
 			return m, nil
 		}
-		m.rootVP().AppendUserMessage(msg.Text)
+		// QUM-672 dual-append: the user-typed turn lands in both the legacy
+		// viewport (live-render path) and the ChatList shadow. See
+		// docs/designs/tui-structural-rewrite-plan.md §3 S2.
+		m.agentBuffers[m.rootAgent].AppendUser(msg.Text)
 		m.setTurnState(TurnThinking)
 		return m, m.bridge.SendMessage(msg.Text)
 
@@ -739,7 +821,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch im := inner.(type) {
 			case AssistantTextMsg:
 				m.setTurnState(TurnStreaming)
-				m.rootVP().AppendAssistantChunk(im.Text)
+				m.rootBuf().AppendAssistantChunk(im.Text)
 			case SessionUsageMsg:
 				// QUM-385: true context window usage = input + cache_read +
 				// cache_creation. input_tokens alone is the non-cached subset
@@ -747,7 +829,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// caching is on.
 				m.statusBar.SetTokenUsage(im.InputTokens + im.CacheReadInputTokens + im.CacheCreationInputTokens)
 			case ToolCallMsg:
-				m.rootVP().AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
+				m.rootBuf().AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
 				wasZero := m.pendingToolCalls == 0
 				m.pendingToolCalls++
 				if wasZero {
@@ -765,14 +847,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case AssistantTextMsg:
 		m.setTurnState(TurnStreaming)
-		m.rootVP().AppendAssistantChunk(msg.Text)
+		m.rootBuf().AppendAssistantChunk(msg.Text)
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
 		return m, nil
 
 	case ToolCallMsg:
-		m.rootVP().AppendToolCallWithHeader(msg.ToolName, msg.ToolID, msg.Approved, msg.Input, msg.FullInput, msg.HeaderArg, msg.HeaderParams, msg.ParentToolUseID)
+		m.rootBuf().AppendToolCallWithHeader(msg.ToolName, msg.ToolID, msg.Approved, msg.Input, msg.FullInput, msg.HeaderArg, msg.HeaderParams, msg.ParentToolUseID)
 		// Bump the pending counter and (re)start the spinner ticker if this
 		// is the first in-flight call (QUM-336). The spinner self-perpetuates
 		// via spinner.Update returning the next tick cmd, but we gate that
@@ -800,7 +882,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-334's gating). MarkToolResult returns false for orphan IDs;
 		// only decrement the pending counter on a real match so the
 		// spinner keeps animating until every in-flight call resolves.
-		if m.rootVP().MarkToolResult(msg.ToolID, msg.Content, msg.IsError) {
+		if m.rootBuf().MarkToolResult(msg.ToolID, msg.Content, msg.IsError) {
 			if m.pendingToolCalls > 0 {
 				m.pendingToolCalls--
 			}
@@ -834,7 +916,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// in result.Result — avoid duplicating it.
 		root := m.rootVP()
 		if !msg.IsError && strings.TrimSpace(msg.Result) != "" && !root.HasPendingAssistant() {
-			root.AppendAssistantChunk(strings.TrimSpace(msg.Result))
+			m.rootBuf().AppendAssistantChunk(strings.TrimSpace(msg.Result))
 		}
 		// Finalize the assistant chunk before appending status/error so the
 		// last-entry probe in FinalizeAssistantMessage still sees an
@@ -864,7 +946,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the queue-drain gate re-opens.
 		root := m.rootVP()
 		if strings.TrimSpace(msg.Result) != "" && !root.HasPendingAssistant() {
-			root.AppendAssistantChunk(strings.TrimSpace(msg.Result))
+			m.rootBuf().AppendAssistantChunk(strings.TrimSpace(msg.Result))
 		}
 		// Finalize before status append (see SessionResultMsg comment).
 		finalizeCmd := m.finalizeTurn()
@@ -1028,6 +1110,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.bridge = msg.Bridge
 		shortID := shortSessionID(m.bridge.SessionID())
+		buf := m.rootBuf()
 		root := m.rootVP()
 		// QUM-391: preserve status messages (consolidation banners) across
 		// restart — only clear conversation messages.
@@ -1037,7 +1120,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				preserved = append(preserved, e)
 			}
 		}
-		root.SetMessages(preserved)
+		// QUM-673 post-review fix: route restart-clear through the dual-shim
+		// so cl is Reset alongside vp. The MessageStatus entries are skipped
+		// by ChatList.Reset (contract violators); cl ends up empty + Idle, and
+		// chatRegionContent falls back to vp.View() so the banner renders.
+		buf.SetMessages(preserved)
 		// New session starts with no in-flight tool calls; reset the
 		// counter so any stale tick is dropped on next arrival (QUM-336).
 		m.pendingToolCalls = 0
@@ -1451,7 +1538,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			entries[n-1].Content == "Resumed from prior session" {
 			entries = entries[:n-1]
 		}
-		m.rootVP().SetMessages(entries)
+		// QUM-673 post-review fix: route resync replacement through the dual-
+		// shim so cl mirrors the recovered transcript alongside vp.
+		m.rootBuf().SetMessages(entries)
 		m.rootVP().AppendStatus(fmt.Sprintf("✓ resynced — recovered %d events from session log", msg.MissingCount))
 		m.setTurnState(TurnIdle)
 		m.gapState = gapStateNormal
@@ -1708,7 +1797,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.Err != nil:
 			vp.AppendError(fmt.Sprintf("transcript load failed for %s: %v", msg.Agent, msg.Err))
 		case len(msg.Entries) > 0:
-			vp.SetMessages(msg.Entries)
+			m.agentBufferFor(msg.Agent).SetMessages(msg.Entries)
 			if buf, ok := m.agentBuffers[msg.Agent]; ok {
 				// QUM-439 fix 3: when the session_id changed (handoff /
 				// respawn) the previously-seeded ToolIDs no longer apply
@@ -1737,7 +1826,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			banner := fmt.Sprintf("Waiting for %s to start...", msg.Agent)
 			alreadyShowing := len(cur) == 1 && cur[0].Type == MessageStatus && cur[0].Content == banner
 			if !alreadyShowing {
-				vp.SetMessages([]MessageEntry{{
+				// QUM-673 post-review fix: route the waiting-banner placeholder
+				// through the dual-shim so cl is Reset to empty (the
+				// MessageStatus entry is skipped by ChatList.Reset). cl ends
+				// up empty + Idle; chatRegionContent falls back to vp.View()
+				// so the banner still renders.
+				m.agentBufferFor(msg.Agent).SetMessages([]MessageEntry{{
 					Type: MessageStatus, Content: banner, Complete: true,
 				}})
 			}
@@ -1847,7 +1941,11 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		layout.HeaderTreeWidth, OrbitalHeight(layout.TermWidth),
 		m.activePanel == PanelTree)
 
-	vpView := m.cachedPanel(useCache, panelSlotViewport, m.observedVP().View(),
+	// QUM-673 S3: render finished items via ChatList; fall back to vp.View()
+	// when a stream / tool call is in flight, or when ChatList has nothing
+	// to render (status placeholders + banners flow through vp only).
+	chatContent := m.chatRegionContent(layout.ViewportWidth - 4)
+	vpView := m.cachedPanel(useCache, panelSlotViewport, chatContent,
 		layout.ViewportWidth, layout.ViewportHeight,
 		m.activePanel == PanelViewport)
 
@@ -1947,7 +2045,7 @@ func (m *AppModel) setTurnState(state TurnState) {
 // continuous-bridge event pumps stay armed. Returns a tea.Cmd (possibly nil)
 // that the caller should batch with kind-specific cmds.
 func (m *AppModel) finalizeTurn() tea.Cmd {
-	m.rootVP().FinalizeAssistantMessage()
+	m.rootBuf().FinalizeAssistantMessage()
 	m.setTurnState(TurnIdle)
 	var cmds []tea.Cmd
 	// QUM-340: auto-fire any queued submit by re-dispatching a SubmitMsg
@@ -1982,7 +2080,9 @@ func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
 	if len(entries) == 0 {
 		return
 	}
-	m.rootVP().SetMessages(entries)
+	// QUM-673 post-review fix: route cold-boot transcript preload through the
+	// dual-shim so cl mirrors the resumed transcript alongside vp.
+	m.rootBuf().SetMessages(entries)
 }
 
 // backendFault stores the per-agent backend-fault sticker (QUM-602). Mirrors
@@ -2019,7 +2119,12 @@ func (m *AppModel) viewportFor(name string) *ViewportModel {
 			vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
 		}
 		vp.SetToolInputsExpanded(m.toolInputsExpanded)
-		buf = &AgentBuffer{vp: vp}
+		cl := NewChatList(&m.theme)
+		if m.ready && !m.tooSmall {
+			layout := ComputeLayout(m.width, m.height, m.inputBoxHeight())
+			cl.SetSize(layout.ViewportWidth - 4)
+		}
+		buf = &AgentBuffer{vp: vp, cl: cl}
 		m.agentBuffers[name] = buf
 	}
 	return &buf.vp
@@ -2029,6 +2134,19 @@ func (m *AppModel) viewportFor(name string) *ViewportModel {
 // inbox banners, and other weave-only annotations target this viewport
 // regardless of which agent the user is currently observing.
 func (m *AppModel) rootVP() *ViewportModel { return m.viewportFor(m.rootAgent) }
+
+// agentBufferFor returns the per-agent AgentBuffer for name, lazy-creating
+// the underlying buffer via viewportFor's side effect when missing. QUM-673.
+func (m *AppModel) agentBufferFor(name string) *AgentBuffer {
+	_ = m.viewportFor(name)
+	return m.agentBuffers[name]
+}
+
+// rootBuf is the dual-store entry point for weave's chat region (QUM-673 S3).
+// It returns the root agent's AgentBuffer so callers fan AppendX into both
+// vp (legacy live-render fallback) and cl (the new render model) via the
+// shared wrappers.
+func (m *AppModel) rootBuf() *AgentBuffer { return m.agentBufferFor(m.rootAgent) }
 
 // anyViewportHasPending reports whether any agent buffer's viewport has an
 // in-flight tool call. Used to gate spinner ticking across child viewports.
@@ -2044,6 +2162,24 @@ func (m *AppModel) anyViewportHasPending() bool {
 // observedVP returns the viewport for the currently-observed agent. Used
 // by View() and select-mode helpers.
 func (m *AppModel) observedVP() *ViewportModel { return m.viewportFor(m.observedAgent) }
+
+// chatRegionContent is the QUM-673 S3 chat-panel string source. When the
+// observed agent's ChatList has finished items and is idle (no streaming
+// assistant, no in-flight tool call), it pipes the ChatList's per-item-cached
+// render into the inner bubbles viewport so scroll machinery (PgUp/PgDn,
+// auto-scroll, "new content" indicator) is preserved. Otherwise (streaming,
+// pending tool, empty ChatList — e.g. status placeholders the contract
+// excludes from items), the legacy renderMessages path on vp drives the
+// chat region unchanged.
+func (m *AppModel) chatRegionContent(contentWidth int) string {
+	vp := m.observedVP()
+	buf := m.agentBuffers[m.observedAgent]
+	if buf != nil && buf.cl != nil && buf.cl.Idle() && buf.cl.Len() > 0 &&
+		contentWidth > 0 && !vp.HasContractViolators() {
+		vp.SetContentExternal(buf.cl.Render(contentWidth))
+	}
+	return vp.View()
+}
 
 // agentNames returns the ordered list of known agent names (weave + children
 // in tree order). Used by the palette's /switch agent-mode filter.
@@ -2116,6 +2252,10 @@ func (m *AppModel) resizePanels() {
 			h = observedHeight
 		}
 		buf.vp.SetSize(layout.ViewportWidth-4, h-4)
+		// QUM-672 dual-append shadow: keep the ChatList's content width in
+		// lockstep with the live-render viewport so future debug/inspection
+		// renders match the legacy layout.
+		buf.cl.SetSize(layout.ViewportWidth - 4)
 	}
 	m.input.SetWidth(layout.InputWidth - 4)
 	m.statusBar.SetWidth(layout.StatusWidth)
@@ -2565,7 +2705,11 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 		}
 		return nil
 	case AssistantTextMsg:
-		vp.AppendAssistantChunk(im.Text)
+		if buf != nil {
+			buf.AppendAssistantChunk(im.Text)
+		} else {
+			vp.AppendAssistantChunk(im.Text)
+		}
 		return nil
 	case ToolCallMsg:
 		if buf != nil && im.ToolID != "" {
@@ -2577,7 +2721,11 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 			}
 			buf.seenToolIDs[im.ToolID] = struct{}{}
 		}
-		vp.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
+		if buf != nil {
+			buf.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
+		} else {
+			vp.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
+		}
 		wasZero := m.pendingToolCalls == 0
 		m.pendingToolCalls++
 		if wasZero {
@@ -2585,14 +2733,24 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 		}
 		return nil
 	case ToolResultMsg:
-		if vp.MarkToolResult(im.ToolID, im.Content, im.IsError) {
+		var matched bool
+		if buf != nil {
+			matched = buf.MarkToolResult(im.ToolID, im.Content, im.IsError)
+		} else {
+			matched = vp.MarkToolResult(im.ToolID, im.Content, im.IsError)
+		}
+		if matched {
 			if m.pendingToolCalls > 0 {
 				m.pendingToolCalls--
 			}
 		}
 		return nil
 	case SessionResultMsg:
-		vp.FinalizeAssistantMessage()
+		if buf != nil {
+			buf.FinalizeAssistantMessage()
+		} else {
+			vp.FinalizeAssistantMessage()
+		}
 		return nil
 	}
 	return nil

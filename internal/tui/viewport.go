@@ -264,6 +264,23 @@ func (m ViewportModel) View() string {
 	return view
 }
 
+// SetContentExternal installs a pre-rendered chat-region string into the
+// inner bubbles viewport without walking the messages slice. Used by the
+// QUM-673 S3 View() switch so ChatList's per-item-cached render can ride
+// the same scroll/PageUp/PageDown machinery as the legacy renderMessages
+// walk. The next renderAndUpdate (driven by a vp Append* call) will
+// overwrite this content from the messages slice.
+func (m *ViewportModel) SetContentExternal(content string) {
+	if content == m.appliedContent && !m.disableRenderCacheForTest {
+		return
+	}
+	m.vp.SetContent(content)
+	m.appliedContent = content
+	if m.autoScroll {
+		m.vp.GotoBottom()
+	}
+}
+
 // Len returns the number of message entries currently in the buffer.
 func (m *ViewportModel) Len() int { return len(m.messages) }
 
@@ -470,6 +487,21 @@ func (m *ViewportModel) SetSpinnerFrame(frame string) {
 // in flight (Pending=true). Used by AppModel to decide whether to push the
 // spinner frame to a particular agent's viewport.
 func (m *ViewportModel) HasPendingToolCall() bool { return m.hasPendingToolCall() }
+
+// HasContractViolators reports whether the messages slice contains any entry
+// the ChatList contract excludes (Status / Banner / Error / System). The
+// QUM-673 S3 View() switch uses this to fall back to vp.View() while vp owns
+// surfaces ChatList does not render. Once S5 routes these elsewhere this
+// helper goes away alongside the contract violators themselves.
+func (m *ViewportModel) HasContractViolators() bool {
+	for _, e := range m.messages {
+		switch e.Type {
+		case MessageStatus, MessageError, MessageBanner, MessageSystem:
+			return true
+		}
+	}
+	return false
+}
 
 func (m *ViewportModel) hasPendingToolCall() bool {
 	for _, msg := range m.messages {
@@ -739,7 +771,7 @@ func (m *ViewportModel) entryCacheKey(e MessageEntry) string {
 func (m *ViewportModel) renderEntryBlock(block *strings.Builder, msg MessageEntry, childrenOf map[string][]int) {
 	switch msg.Type {
 	case MessageUser:
-		block.WriteString(m.renderUserPromptBlock(msg.Content))
+		block.WriteString(renderUserPromptBlock(m.theme, msg.Content))
 	case MessageAssistant:
 		block.WriteString(m.renderer.Render(msg.Content))
 		if !msg.Complete {
@@ -895,21 +927,7 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 	// Indicator: spinner while pending, ✗ on failure, ✓ on success.
 	// Pre-render with the right style so the failure glyph stands out
 	// (QUM-336).
-	var renderedIndicator string
-	switch {
-	case msg.Pending:
-		frame := m.spinnerFrame
-		if frame == "" {
-			// First render before any spinner.TickMsg has propagated; show a
-			// static glyph so the entry isn't blank.
-			frame = "⠋"
-		}
-		renderedIndicator = m.theme.AccentText.Render(frame)
-	case msg.Failed:
-		renderedIndicator = m.theme.ErrorText.Render("✗")
-	default:
-		renderedIndicator = m.theme.AccentText.Render("✓")
-	}
+	renderedIndicator := toolIndicator(m.theme, msg.Pending, msg.Failed, m.spinnerFrame, "⠋")
 	// QUM-419: compact per-tool header. The display tool name uses the
 	// `FormatToolDisplayName` mapping so MCP tools render as
 	// `<server>/<action>` (e.g. `mcp__linear__save_issue` → `linear/save_issue`,
@@ -979,15 +997,7 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 		if body == "" {
 			body = msg.ToolInput
 		}
-		if body != "" {
-			sb.WriteString("\n")
-			for i, ln := range wrapToolInput(body, m.width-toolCallInputPrefix) {
-				if i > 0 {
-					sb.WriteString("\n")
-				}
-				sb.WriteString(m.theme.NormalText.Render("│ " + ln))
-			}
-		}
+		sb.WriteString(renderToolInputBody(m.theme, body, m.width))
 	}
 	// Result preview block: shown only after the tool has completed (not
 	// pending) AND the bridge captured a non-empty result. Up to 3 non-empty
@@ -997,27 +1007,7 @@ func (m *ViewportModel) renderToolCall(sb *strings.Builder, msg MessageEntry) {
 	// expand-tool-calls flag is on (QUM-343) we render every non-empty
 	// result line and skip the trailer.
 	if !msg.Pending && msg.Result != "" {
-		previewStyle := m.theme.NormalText
-		if msg.Failed {
-			previewStyle = m.theme.ErrorText
-		}
-		maxLines := 3
-		if m.toolInputsExpanded {
-			maxLines = -1
-		}
-		previewLines, more := previewResultLines(msg.Result, maxLines, m.width-toolCallInputPrefix)
-		for _, ln := range previewLines {
-			sb.WriteString("\n")
-			sb.WriteString(previewStyle.Render("│ " + ln))
-		}
-		if more > 0 {
-			trailer := fmt.Sprintf("+ %d more lines", more)
-			if m.width > toolCallInputPrefix {
-				trailer = ansi.Truncate(trailer, m.width-toolCallInputPrefix, "…")
-			}
-			sb.WriteString("\n")
-			sb.WriteString(m.theme.NormalText.Render("│ " + trailer))
-		}
+		sb.WriteString(renderResultPreviewLines(m.theme, msg.Result, msg.Failed, m.toolInputsExpanded, m.width))
 	}
 	sb.WriteString("\n")
 	sb.WriteString(m.theme.AccentText.Render("└"))
@@ -1032,19 +1022,7 @@ const nestedToolCallIndent = 2
 // No box-drawing (┌/└), no result preview, no multi-line body. (QUM-379)
 func (m *ViewportModel) renderNestedToolCall(sb *strings.Builder, msg MessageEntry) {
 	// Indicator: same logic as the full-box path.
-	var renderedIndicator string
-	switch {
-	case msg.Pending:
-		frame := m.spinnerFrame
-		if frame == "" {
-			frame = "⠋"
-		}
-		renderedIndicator = m.theme.AccentText.Render(frame)
-	case msg.Failed:
-		renderedIndicator = m.theme.ErrorText.Render("✗")
-	default:
-		renderedIndicator = m.theme.AccentText.Render("✓")
-	}
+	renderedIndicator := toolIndicator(m.theme, msg.Pending, msg.Failed, m.spinnerFrame, "⠋")
 
 	// Build the plain-text content: "{name}  {input}" — truncated to fit.
 	indent := strings.Repeat(" ", msg.Depth*nestedToolCallIndent)
@@ -1071,19 +1049,7 @@ func (m *ViewportModel) renderNestedToolCall(sb *strings.Builder, msg MessageEnt
 // When complete: header + collapsed result preview (children hidden). (QUM-386)
 func (m *ViewportModel) renderAgentContainer(sb *strings.Builder, msg MessageEntry, childIndices []int) {
 	// Indicator
-	var renderedIndicator string
-	switch {
-	case msg.Pending:
-		frame := m.spinnerFrame
-		if frame == "" {
-			frame = "⠋"
-		}
-		renderedIndicator = m.theme.AccentText.Render(frame)
-	case msg.Failed:
-		renderedIndicator = m.theme.ErrorText.Render("✗")
-	default:
-		renderedIndicator = m.theme.AccentText.Render("✓")
-	}
+	renderedIndicator := toolIndicator(m.theme, msg.Pending, msg.Failed, m.spinnerFrame, "⠋")
 
 	// Header: ┌ {indicator} Agent
 	name := msg.Content
@@ -1104,15 +1070,7 @@ func (m *ViewportModel) renderAgentContainer(sb *strings.Builder, msg MessageEnt
 	if m.toolInputsExpanded && msg.ToolInputFull != "" {
 		body = msg.ToolInputFull
 	}
-	if body != "" {
-		sb.WriteString("\n")
-		for i, ln := range wrapToolInput(body, m.width-toolCallInputPrefix) {
-			if i > 0 {
-				sb.WriteString("\n")
-			}
-			sb.WriteString(m.theme.NormalText.Render("│ " + ln))
-		}
-	}
+	sb.WriteString(renderToolInputBody(m.theme, body, m.width))
 
 	if msg.Pending {
 		// Show nested children while in-flight.
@@ -1123,27 +1081,7 @@ func (m *ViewportModel) renderAgentContainer(sb *strings.Builder, msg MessageEnt
 		}
 	} else if msg.Result != "" {
 		// Collapsed: show result preview only (children hidden).
-		previewStyle := m.theme.NormalText
-		if msg.Failed {
-			previewStyle = m.theme.ErrorText
-		}
-		maxLines := 3
-		if m.toolInputsExpanded {
-			maxLines = -1
-		}
-		previewLines, more := previewResultLines(msg.Result, maxLines, m.width-toolCallInputPrefix)
-		for _, ln := range previewLines {
-			sb.WriteString("\n")
-			sb.WriteString(previewStyle.Render("│ " + ln))
-		}
-		if more > 0 {
-			trailer := fmt.Sprintf("+ %d more lines", more)
-			if m.width > toolCallInputPrefix {
-				trailer = ansi.Truncate(trailer, m.width-toolCallInputPrefix, "…")
-			}
-			sb.WriteString("\n")
-			sb.WriteString(m.theme.NormalText.Render("│ " + trailer))
-		}
+		sb.WriteString(renderResultPreviewLines(m.theme, msg.Result, msg.Failed, m.toolInputsExpanded, m.width))
 	}
 
 	sb.WriteString("\n")
@@ -1222,27 +1160,6 @@ func notificationGlyphAndStyle(theme *Theme, msg MessageEntry) (glyph string, st
 		}
 		return "✉", theme.NotificationText
 	}
-}
-
-// renderUserPromptBlock applies the QUM-664 chevron prefix to a user-message
-// body: the first content line gets "› ", continuation lines get two spaces
-// of hang indent (no chevron), and the whole block is rendered under
-// theme.UserPromptText (bold bright-blue) in a single Render pass.
-func (m ViewportModel) renderUserPromptBlock(content string) string {
-	style := m.theme.UserPromptText
-	lines := strings.Split(content, "\n")
-	out := make([]string, len(lines))
-	for i, ln := range lines {
-		if i == 0 {
-			// Render chevron and body as separate spans so the chevron's SGR
-			// sequence is independently identifiable in the output (QUM-664
-			// style assertion compares against style.Render("›")).
-			out[i] = style.Render("›") + " " + style.Render(ln)
-		} else {
-			out[i] = "  " + style.Render(ln)
-		}
-	}
-	return strings.Join(out, "\n")
 }
 
 func formatSystemMessage(content string, width int) string {

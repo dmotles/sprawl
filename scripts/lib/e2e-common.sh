@@ -190,6 +190,14 @@ wait_for_pattern() {
     local elapsed=0
     while [ "$elapsed" -lt "$timeout" ]; do
         if capture_pane "$session" | grep -qE "$pattern"; then
+            # QUM-671: emit a parseable elapsed-time record so consumers
+            # (e.g. the S3 startup-time regression gate fed by
+            # `recover-live.sh`'s TUI-rendered wait) have a comparable
+            # number. Format is `WAIT_FOR_PATTERN_ELAPSED <secs> <pattern>`
+            # — fixed prefix so a future scraper can grep without
+            # ambiguity. Backward compatible: existing callers only
+            # inspect the return code.
+            echo "WAIT_FOR_PATTERN_ELAPSED ${elapsed}s pattern=${pattern}"
             return 0
         fi
         sleep 1
@@ -200,9 +208,14 @@ wait_for_pattern() {
 
 wait_for_pattern_fast() {
     local session="$1" pattern="$2" timeout="$3"
+    local start="$SECONDS"
     local end=$((SECONDS + timeout))
     while [ "$SECONDS" -lt "$end" ]; do
         if capture_pane "$session" | grep -qE "$pattern"; then
+            # QUM-671: see wait_for_pattern above. Mirrored here so any
+            # consumer that switches between the slow and fast variants
+            # gets identical elapsed-time telemetry.
+            echo "WAIT_FOR_PATTERN_ELAPSED $((SECONDS - start))s pattern=${pattern}"
             return 0
         fi
         sleep 0.2
