@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"charm.land/lipgloss/v2"
+
+	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
 func TestRenderTreeOrbital_SingleRoot(t *testing.T) {
@@ -231,10 +233,12 @@ func TestRenderTreeOrbital_RespectsWidthBudget_WideTruncation(t *testing.T) {
 	}
 }
 
-// QUM-679: when weave has manager-typed children, each manager gets its own
-// row, with that manager's engineers (depth>=2) rendered inline on the same
-// row. This matches the spike's row-per-manager layout and replaces the
-// previous "everything orbits weave on a single row" behavior.
+// QUM-679 / QUM-686: when weave has manager-typed children, each manager gets
+// its own row below weave, with that manager's engineers (depth>=2) rendered
+// inline on the same row. Weave keeps row 0 (as the original spike layout
+// shows). When the count of pivoted manager rows exceeds the remaining row
+// budget (3 total rows minus weave's row 0 = 2 manager rows visible), the
+// last visible row gets a `+K more (name, …)` overflow indicator.
 func TestRenderTreeOrbital_WeavePivot_OneRowPerManager(t *testing.T) {
 	nodes := []TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
@@ -253,8 +257,19 @@ func TestRenderTreeOrbital_WeavePivot_OneRowPerManager(t *testing.T) {
 		t.Fatalf("expected at least 3 rendered rows, got %d", len(lines))
 	}
 
-	// Each of the first 3 lines should be anchored on its manager and contain
-	// only that manager's engineers.
+	// Row 0 anchors weave (no inline orbits — all depth-1 children are
+	// managers, which pivot to their own rows).
+	row0 := stripAnsi(lines[0])
+	if !strings.Contains(row0, "weave") {
+		t.Errorf("row 0 must anchor weave; got: %q", row0)
+	}
+	for _, n := range []string{"bastion", "forge", "tower", "finn", "ratz", "moss", "scout", "zone", "ghost"} {
+		if strings.Contains(row0, n) {
+			t.Errorf("row 0 should not contain %q (manager subtree belongs on a later row); got: %q", n, row0)
+		}
+	}
+
+	// Rows 1 and 2 each anchor one manager with that manager's engineers.
 	type want struct {
 		manager   string
 		engineers []string
@@ -262,24 +277,32 @@ func TestRenderTreeOrbital_WeavePivot_OneRowPerManager(t *testing.T) {
 	}
 	wants := []want{
 		{"bastion", []string{"finn", "ratz"}, []string{"forge", "tower", "moss", "scout", "zone", "ghost"}},
-		{"forge", []string{"moss", "scout"}, []string{"bastion", "tower", "finn", "ratz", "zone", "ghost"}},
-		{"tower", []string{"zone", "ghost"}, []string{"bastion", "forge", "finn", "ratz", "moss", "scout"}},
+		{"forge", []string{"moss", "scout"}, []string{"bastion", "finn", "ratz", "zone", "ghost"}},
 	}
 	for i, w := range wants {
-		stripped := stripAnsi(lines[i])
+		stripped := stripAnsi(lines[i+1])
 		if !strings.Contains(stripped, w.manager) {
-			t.Errorf("line %d should contain manager %q, got: %q", i, w.manager, stripped)
+			t.Errorf("line %d should contain manager %q, got: %q", i+1, w.manager, stripped)
 		}
 		for _, e := range w.engineers {
 			if !strings.Contains(stripped, e) {
-				t.Errorf("line %d (%s) should contain engineer %q, got: %q", i, w.manager, e, stripped)
+				t.Errorf("line %d (%s) should contain engineer %q, got: %q", i+1, w.manager, e, stripped)
 			}
 		}
 		for _, n := range w.notIn {
 			if strings.Contains(stripped, n) {
-				t.Errorf("line %d (%s) should NOT contain %q (belongs to sibling subtree), got: %q", i, w.manager, n, stripped)
+				t.Errorf("line %d (%s) should NOT contain %q (belongs to sibling subtree), got: %q", i+1, w.manager, n, stripped)
 			}
 		}
+	}
+
+	// Row 2 should surface tower as overflow ("+1 more (tower)").
+	row2 := stripAnsi(lines[2])
+	if !strings.Contains(row2, "tower") {
+		t.Errorf("row 2 should surface overflowed manager 'tower' via the `+K more` indicator; got: %q", row2)
+	}
+	if !strings.Contains(row2, "+1 more") {
+		t.Errorf("row 2 should contain '+1 more' overflow indicator; got: %q", row2)
 	}
 }
 
@@ -342,6 +365,97 @@ func TestRenderTreeOrbital_WeavePivot_SelectionOnManager(t *testing.T) {
 		Render("tower ⚙")
 	if !strings.Contains(out, expected) {
 		t.Errorf("expected selReverseStyle pill for selected manager 'tower'; raw:\n%q", out)
+	}
+}
+
+// QUM-686: the multi-agent topology that escaped QUM-679 — weave + a
+// researcher sibling + a manager sibling, all at depth 1, none with their own
+// children. Run through the REAL pipeline (buildTreeNodes → PrependWeaveRoot →
+// RenderTreeOrbital) so we exercise what `tickAgentsCmd` actually feeds the
+// renderer, not a hand-mocked TreeNode slice.
+//
+// Target per spike: weave stays as the row-0 anchor with the researcher
+// orbiting it; the manager gets its own anchored row below. The QUM-679
+// implementation discarded weave entirely and promoted EVERY direct child
+// (researcher included) into a separate top-level row.
+func TestRenderTreeOrbital_QUM686_LivePipeline_WeaveResearcherManager(t *testing.T) {
+	agents := []supervisor.AgentInfo{
+		{Name: "weave", Type: "root", Parent: "", Status: "active"},
+		{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"},
+		{Name: "tower", Type: "manager", Parent: "weave", Status: "active"},
+	}
+	// Mirror tickAgentsCmd: filter the synthetic-twin weave entry before
+	// PrependWeaveRoot re-adds it.
+	filtered := make([]supervisor.AgentInfo, 0, len(agents))
+	for _, a := range agents {
+		if a.Name != "weave" {
+			filtered = append(filtered, a)
+		}
+	}
+	nodes := buildTreeNodes(filtered, nil)
+	nodes = PrependWeaveRoot(nodes, "active", 0)
+
+	lines := RenderTreeOrbital(nodes, "", 120)
+	if len(lines) < 3 {
+		t.Fatalf("expected 3 rendered rows, got %d", len(lines))
+	}
+	row0 := stripAnsi(lines[0])
+	row1 := stripAnsi(lines[1])
+
+	// Row 0 anchors weave with the researcher inline.
+	if !strings.Contains(row0, "weave") {
+		t.Errorf("row 0 must anchor weave; got %q", row0)
+	}
+	if !strings.Contains(row0, "ghost") {
+		t.Errorf("row 0 must contain the researcher 'ghost' inline; got %q", row0)
+	}
+	if strings.Contains(row0, "tower") {
+		t.Errorf("row 0 must NOT contain the manager 'tower' (it belongs on its own row); got %q", row0)
+	}
+
+	// Row 1 anchors the manager.
+	if !strings.Contains(row1, "tower") {
+		t.Errorf("row 1 must anchor the manager 'tower'; got %q", row1)
+	}
+	if strings.Contains(row1, "ghost") {
+		t.Errorf("row 1 must NOT contain 'ghost' (it stays on weave's row); got %q", row1)
+	}
+}
+
+// QUM-686: single-agent regression — when weave has only one engineer child
+// (no managers), the layout must stay weave-anchored on a single row. Run
+// through the real pipeline so we lock in the simple-case behavior.
+func TestRenderTreeOrbital_QUM686_LivePipeline_SingleEngineer_Regression(t *testing.T) {
+	agents := []supervisor.AgentInfo{
+		{Name: "weave", Type: "root", Parent: "", Status: "active"},
+		{Name: "finn", Type: "engineer", Parent: "weave", Status: "active"},
+	}
+	filtered := make([]supervisor.AgentInfo, 0, len(agents))
+	for _, a := range agents {
+		if a.Name != "weave" {
+			filtered = append(filtered, a)
+		}
+	}
+	nodes := buildTreeNodes(filtered, nil)
+	nodes = PrependWeaveRoot(nodes, "active", 0)
+
+	lines := RenderTreeOrbital(nodes, "", 120)
+	if len(lines) < 1 {
+		t.Fatalf("expected at least 1 rendered row, got %d", len(lines))
+	}
+	row0 := stripAnsi(lines[0])
+	if !strings.Contains(row0, "weave") {
+		t.Errorf("row 0 must anchor weave; got %q", row0)
+	}
+	if !strings.Contains(row0, "finn") {
+		t.Errorf("row 0 must contain the engineer 'finn' inline; got %q", row0)
+	}
+	// Row 1 and 2 must be blank-only (no spurious anchors).
+	if len(lines) >= 2 {
+		row1 := stripAnsi(lines[1])
+		if strings.TrimSpace(row1) != "" {
+			t.Errorf("row 1 should be blank in single-engineer case; got %q", row1)
+		}
 	}
 }
 

@@ -138,12 +138,19 @@ func OrbitalHeight(width int) int {
 // Lines are right-padded to that width via padVisible and truncated via
 // ansi.Truncate so total visible width matches exactly.
 //
-// QUM-679: when the sole depth-0 root is weave and any of its depth-1 children
-// is a manager, the renderer pivots the layout so each manager (and any direct
-// engineer sibling) gets its own row, with that subtree's descendants
-// (depth >= 2) rendered inline. Weave's Unread badge is surfaced as a dim
-// `weave (N) ·` prefix on the first pivoted row so the e2e notify-tui regex
-// still matches.
+// QUM-679 / QUM-686: when the sole depth-0 root is weave and any of its
+// depth-1 children is a manager, the renderer pivots ONLY the managers into
+// their own row anchors below weave. Weave keeps row 0 with any non-manager
+// depth-1 children (engineers, researchers) rendered inline as orbits; each
+// manager gets its own row with that manager's depth-2 descendants rebased to
+// inline orbits. Descendants of a non-manager weave child stay attached to
+// weave's row as grandchildren (↳ prefix).
+//
+// QUM-686 fix: the original QUM-679 implementation discarded weave entirely
+// and promoted every depth-1 child (including researchers/engineers) into a
+// separate top-level row, which produced `ghost · tower` instead of the spike
+// layout `weave ──◉ ghost ✓ / tower ──◉` for the weave+researcher+manager
+// session shape.
 func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 	if width <= 0 {
 		return nil
@@ -176,40 +183,49 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		cur.children = append(cur.children, n)
 	}
 
-	// QUM-679: pivot weave's depth-1 children into top-level rows when at
-	// least one of them is a manager. Engineers under weave with no managers
-	// keep their existing layout (one row, all engineers orbit weave).
-	var pivotPrefix string
+	// QUM-686: pivot ONLY the manager children of weave into their own row
+	// anchors below weave. Weave keeps row 0; non-manager depth-1 children
+	// (researchers, engineers) stay inline on weave's row. Depth-2 descendants
+	// of a pivoted manager are rebased to depth 1 so they render as inline
+	// orbits of the manager. Depth-2 descendants of a non-manager direct
+	// weave child stay attached to weave as grandchildren (↳ glyph).
 	if len(roots) == 1 && roots[0].root.Type == "weave" && hasManagerChild(roots[0].children) {
 		w := roots[0]
-		var pivoted []rootGroup
-		var pcur *rootGroup
+		newWeave := rootGroup{root: w.root}
+		var managerRows []rootGroup
+		// pcurManager tracks the most-recent depth-1 manager so its depth-2
+		// descendants land on that manager's row. Nil when the most-recent
+		// depth-1 child was a non-manager (engineers/researchers): their
+		// depth-2 descendants stay on weave's row as grandchildren.
+		var pcurManager *rootGroup
 		for _, c := range w.children {
 			if c.Depth == 1 {
-				// New top-level subtree: the manager (or direct engineer) is
-				// now its own row anchor. renderRootLine doesn't read the
-				// root's Depth, so no rewrite needed there.
-				pivoted = append(pivoted, rootGroup{root: c})
-				pcur = &pivoted[len(pivoted)-1]
+				if c.Type == "manager" {
+					managerRows = append(managerRows, rootGroup{root: c})
+					pcurManager = &managerRows[len(managerRows)-1]
+				} else {
+					// Non-manager direct child of weave: render inline on
+					// weave's row.
+					newWeave.children = append(newWeave.children, c)
+					pcurManager = nil
+				}
 				continue
 			}
-			if pcur != nil {
-				// Rebase depth so the renderRootLine token-vs-↳ classifier
-				// (which compares Depth == 1) treats this subtree's direct
-				// engineers as inline tokens, not grandchildren. depth-2 →
-				// depth-1, depth-3 → depth-2, etc.
+			// Depth >= 2: attach to the most-recent depth-1 ancestor.
+			if pcurManager != nil {
+				// Rebase depth so renderRootLine's token-vs-↳ classifier
+				// (Depth == 1 → inline token) treats the manager's direct
+				// engineers as orbits, not grandchildren.
 				cc := c
 				cc.Depth = c.Depth - 1
-				pcur.children = append(pcur.children, cc)
+				pcurManager.children = append(pcurManager.children, cc)
+			} else {
+				// Grandchild of weave via a non-manager intermediary —
+				// keep depth as-is so it renders with the ↳ glyph.
+				newWeave.children = append(newWeave.children, c)
 			}
 		}
-		// Surface weave's Unread as a dim prefix on the first pivoted row.
-		// Format `weave (N) · ` keeps the e2e notify-tui regex
-		// `weave[^│]*\([1-9]` matchable.
-		if w.root.Unread > 0 {
-			pivotPrefix = headerSep.Render(fmt.Sprintf("weave (%d) · ", w.root.Unread))
-		}
-		roots = pivoted
+		roots = append([]rootGroup{newWeave}, managerRows...)
 	}
 
 	renderToken := func(n TreeNode) string {
@@ -302,17 +318,15 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		return []string{padVisible(line, width)}
 	}
 
-	// Wide: up to 3 lines, one per root. QUM-679: when pivoted from a weave
-	// subtree, the first row gets `pivotPrefix` so weave's Unread badge stays
-	// visible. If pivoted-root count > 3, the 3rd row is augmented with a
-	// `+K more` indicator that names overflowed managers.
+	// Wide: up to 3 lines, one per root. QUM-686: weave's Unread badge is
+	// already surfaced by renderRootLine directly (weave is now on row 0
+	// instead of being replaced by manager rows). If post-pivot root count
+	// exceeds 3, the 3rd row is augmented with a `+K more` indicator that
+	// names the overflowed managers.
 	out := make([]string, 3)
 	for i := 0; i < 3; i++ {
 		if i < len(roots) {
 			line := renderRootLine(roots[i])
-			if i == 0 && pivotPrefix != "" {
-				line = pivotPrefix + line
-			}
 			// QUM-679: overflow indicator on the last visible row.
 			if i == 2 && len(roots) > 3 {
 				extras := make([]TreeNode, 0, len(roots)-3)
