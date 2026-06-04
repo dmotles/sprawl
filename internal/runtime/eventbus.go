@@ -6,8 +6,16 @@
 // Backpressure: subscribers receive events on buffered channels via a
 // near-non-blocking send — the publisher waits at most publishDeadline for
 // a barely-keeping-up consumer to drain before dropping the event for that
-// subscriber only. Drops are observable via DroppedCounts(); a one-shot
-// warn is logged per subscriber on first drop.
+// subscriber only. Drops are observable via DroppedCounts() and the
+// structured DropTelemetry() snapshot (which is surfaced to the user via the
+// TUI status bar; see internal/tui/statusbar.go).
+//
+// Warn emission is rate+burst limited per subscriber (QUM-681): a warn fires
+// on the first drop, again whenever dropWarnInterval has elapsed since the
+// previous warn, and again whenever dropWarnBurstThreshold drops have
+// accumulated since the previous warn. This keeps a runaway slow subscriber
+// from spamming the slog stream while still surfacing pathological bursts
+// promptly.
 package runtime
 
 import (
@@ -26,6 +34,26 @@ import (
 // long enough that a barely-keeping-up consumer (e.g., buffer=4 in tight
 // burst) does not see spurious drops.
 const publishDeadline = 1 * time.Millisecond
+
+// QUM-681 drop-warn rate/burst gates and telemetry-clear interval. These
+// constants are referenced by the TUI status bar (via a mirrored constant
+// — see internal/tui/app.go's eventDropClearInterval) so the ⚠ segment
+// auto-clears after a quiet period.
+const (
+	dropWarnInterval       = 5 * time.Second
+	dropWarnBurstThreshold = uint64(10)
+	dropClearInterval      = 30 * time.Second
+)
+
+// DropTelemetry is a per-subscriber snapshot of drop accounting surfaced to
+// the TUI status bar (QUM-681). Cumulative is monotonic (matches DroppedCounts);
+// LastDropAt is the time of the most recent drop, used by the status bar to
+// decide when to clear the ⚠ segment once drops have been quiescent for
+// dropClearInterval.
+type DropTelemetry struct {
+	Cumulative uint64
+	LastDropAt time.Time
+}
 
 // RuntimeEventType discriminates entries published on the EventBus.
 type RuntimeEventType int
@@ -66,15 +94,31 @@ type RuntimeEvent struct {
 	// is an operator-facing next-step hint. QUM-602.
 	FaultClass      string
 	FaultNextAction string
+	// Seq is the publisher-stamped monotonic 1-indexed sequence number.
+	// Populated by EventBus.Publish before fan-out (QUM-669). Subscribers
+	// use gaps in Seq to detect dropped events.
+	Seq uint64
+}
+
+// CurrentSeq returns the last seq value the bus has stamped. Returns 0
+// before any Publish. (QUM-669.)
+func (b *EventBus) CurrentSeq() uint64 {
+	return b.seq.Load()
 }
 
 // subscriber tracks a single fan-out target. Each subscriber has its own
-// buffered channel, drop counter, and one-shot warn flag.
+// buffered channel and drop accounting. Warn emission is rate+burst limited
+// via lastWarnAt / lastWarnCount (QUM-681); lastDropAt anchors the status-bar
+// clear interval.
 type subscriber struct {
 	name    string
 	ch      chan RuntimeEvent
 	dropped atomic.Uint64
-	warned  atomic.Bool
+
+	telMu         sync.Mutex
+	lastWarnAt    time.Time
+	lastWarnCount uint64
+	lastDropAt    time.Time
 }
 
 // EventBus fans out RuntimeEvents to multiple subscribers without blocking
@@ -85,13 +129,87 @@ type EventBus struct {
 	mu          sync.RWMutex
 	subscribers map[int]*subscriber
 	nextID      int
+	// publishMu serializes Publish (and PublishWithSeq) so "stamp Seq" and
+	// "fan out to subscribers" happen atomically per event. Without this,
+	// two concurrent Publish calls could stamp Seq=N and Seq=N+1 but deliver
+	// them in reverse order to a subscriber — breaking the QUM-669
+	// gap-detection invariant that subscribers see Seq values in strictly
+	// ascending order. publishMu is held for the duration of the fan-out
+	// (including the bounded per-subscriber publishDeadline wait), so a slow
+	// subscriber cannot stall the publisher beyond the existing per-sub bound.
+	publishMu sync.Mutex
+	// now returns the wall clock used for drop-warn rate limiting and
+	// telemetry timestamps. Defaults to time.Now; tests override via setNow.
+	now func() time.Time
+	// seq is the monotonic publisher-side sequence counter stamped onto each
+	// RuntimeEvent before fan-out (QUM-669). 1-indexed (first Publish stamps 1).
+	seq atomic.Uint64
 }
 
 // NewEventBus returns an empty EventBus ready for use.
 func NewEventBus() *EventBus {
 	return &EventBus{
 		subscribers: make(map[int]*subscriber),
+		now:         time.Now,
 	}
+}
+
+// PublishWithSeq fans out ev to subscribers with ev.Seq forcibly set to seq.
+// Test-only. Lets tests deterministically produce a specific Seq sequence
+// (including gaps) on the wire path without needing a slow-consumer race to
+// provoke drops. Production code path is Publish(). QUM-669.
+func (b *EventBus) PublishWithSeq(ev RuntimeEvent, seq uint64) {
+	// Share publishMu with Publish so test injection cannot interleave with
+	// real production Publish stamping. QUM-669.
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	ev.Seq = seq
+	// Advance the bus's internal counter to max(current, seq) so subsequent
+	// production Publish calls do not replay lower seq values.
+	if cur := b.seq.Load(); seq > cur {
+		b.seq.Store(seq)
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for id, sub := range b.subscribers {
+		if trySendWithYield(sub.ch, ev) {
+			continue
+		}
+		sub.dropped.Add(1)
+		now := b.now()
+		sub.telMu.Lock()
+		sub.lastDropAt = now
+		total := sub.dropped.Load()
+		delta := total - sub.lastWarnCount
+		shouldWarn := sub.lastWarnAt.IsZero() ||
+			now.Sub(sub.lastWarnAt) >= dropWarnInterval ||
+			delta >= dropWarnBurstThreshold
+		if shouldWarn {
+			sub.lastWarnAt = now
+			sub.lastWarnCount = total
+		}
+		sub.telMu.Unlock()
+		if shouldWarn {
+			slog.Default().Warn(
+				"eventbus: dropping event for slow subscriber",
+				slog.String("name", subscriberKey(sub.name, id)),
+				slog.Int("buffer", cap(sub.ch)),
+				slog.Uint64("cumulative", total),
+				slog.Uint64("delta", delta),
+			)
+		}
+	}
+}
+
+// setNow overrides the wall clock used for drop-warn rate limiting and
+// telemetry timestamps. Test-only.
+func (b *EventBus) setNow(fn func() time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if fn == nil {
+		fn = time.Now
+	}
+	b.now = fn
 }
 
 // Subscribe registers a new anonymous subscriber and returns a receive-only
@@ -142,6 +260,11 @@ func (b *EventBus) SubscribeNamed(name string, buffer int) (<-chan RuntimeEvent,
 // near-non-blocking send (bounded per subscriber by publishDeadline).
 // With zero subscribers Publish is a no-op.
 func (b *EventBus) Publish(event RuntimeEvent) {
+	// QUM-669: serialize stamp+fanout so subscribers observe Seq in strictly
+	// ascending order. See publishMu's doc comment for rationale.
+	b.publishMu.Lock()
+	defer b.publishMu.Unlock()
+	event.Seq = b.seq.Add(1)
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for id, sub := range b.subscribers {
@@ -151,11 +274,26 @@ func (b *EventBus) Publish(event RuntimeEvent) {
 		// Slow subscriber: drop this event for them rather than block
 		// other subscribers (or the publisher) on backpressure.
 		sub.dropped.Add(1)
-		if sub.warned.CompareAndSwap(false, true) {
+		now := b.now()
+		sub.telMu.Lock()
+		sub.lastDropAt = now
+		total := sub.dropped.Load()
+		delta := total - sub.lastWarnCount
+		shouldWarn := sub.lastWarnAt.IsZero() ||
+			now.Sub(sub.lastWarnAt) >= dropWarnInterval ||
+			delta >= dropWarnBurstThreshold
+		if shouldWarn {
+			sub.lastWarnAt = now
+			sub.lastWarnCount = total
+		}
+		sub.telMu.Unlock()
+		if shouldWarn {
 			slog.Default().Warn(
 				"eventbus: dropping event for slow subscriber",
 				slog.String("name", subscriberKey(sub.name, id)),
 				slog.Int("buffer", cap(sub.ch)),
+				slog.Uint64("cumulative", total),
+				slog.Uint64("delta", delta),
 			)
 		}
 	}
@@ -172,6 +310,26 @@ func (b *EventBus) DroppedCounts() map[string]uint64 {
 	out := make(map[string]uint64, len(b.subscribers))
 	for id, sub := range b.subscribers {
 		out[subscriberKey(sub.name, id)] = sub.dropped.Load()
+	}
+	return out
+}
+
+// DropTelemetry returns a structured per-subscriber snapshot of cumulative
+// drop count + last-drop timestamp keyed by subscriber name (or "#<id>" for
+// anonymous subscribers). Pushed to the TUI status bar (QUM-681) on each
+// mcpOpTickMsg so a slow subscriber surfaces a ⚠ segment promptly and the
+// segment auto-clears once drops have been quiescent for dropClearInterval.
+func (b *EventBus) DropTelemetry() map[string]DropTelemetry {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make(map[string]DropTelemetry, len(b.subscribers))
+	for id, sub := range b.subscribers {
+		sub.telMu.Lock()
+		out[subscriberKey(sub.name, id)] = DropTelemetry{
+			Cumulative: sub.dropped.Load(),
+			LastDropAt: sub.lastDropAt,
+		}
+		sub.telMu.Unlock()
 	}
 	return out
 }

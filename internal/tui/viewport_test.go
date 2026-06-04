@@ -2660,3 +2660,151 @@ func TestAppendAutoTrigger(t *testing.T) {
 		t.Errorf("auto-trigger must NOT render as a user bubble (\"You:\"), got:\n%s", view)
 	}
 }
+
+// --- QUM-667: per-entry glamour render cache on MessageEntry ---
+//
+// The implementation adds two unexported fields to MessageEntry:
+//   renderedCache    string  // cached rendered output for this entry
+//   renderedCacheKey string  // content-derived key; mismatch ⇒ re-render
+//
+// And two methods on *MarkdownRenderer for observability in tests:
+//   RenderCalls() int
+//   ResetRenderCalls()
+//
+// And one bench-only escape hatch on *ViewportModel:
+//   disableRenderCacheForTest bool
+//
+// These tests are TDD red-phase: they will fail to compile until the
+// implementation lands the new fields/methods.
+
+// TestViewportModel_RenderCache_AssistantCompleteHits verifies that re-rendering
+// the viewport after a complete assistant entry has been cached does not call
+// glamour again — i.e. the per-entry cache hits for unchanged complete entries.
+func TestViewportModel_RenderCache_AssistantCompleteHits(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.AppendAssistantChunk("**hello** world")
+	m.FinalizeAssistantMessage()
+	// Prime the cache with one render.
+	_ = m.View()
+	m.renderer.ResetRenderCalls()
+	// Force another renderAndUpdate by appending a non-glamour entry.
+	m.AppendStatus("noop")
+	if got := m.renderer.RenderCalls(); got != 0 {
+		t.Errorf("expected 0 glamour render calls after cache prime, got %d", got)
+	}
+}
+
+// TestViewportModel_RenderCache_AssistantStreamingMisses verifies that a
+// streaming (Complete=false) assistant entry whose Content grows on each
+// chunk bypasses the cache (or invalidates it on every chunk).
+func TestViewportModel_RenderCache_AssistantStreamingMisses(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.AppendAssistantChunk("a")
+	m.renderer.ResetRenderCalls()
+	m.AppendAssistantChunk("b")
+	m.AppendAssistantChunk("c")
+	if got := m.renderer.RenderCalls(); got < 2 {
+		t.Errorf("expected ≥2 glamour render calls for streaming chunks, got %d", got)
+	}
+}
+
+// TestViewportModel_RenderCache_ToolCallStateChangeRerenders verifies that
+// flipping a tool call from Pending → completed-with-result invalidates the
+// per-entry cache so the result preview appears on the next render.
+func TestViewportModel_RenderCache_ToolCallStateChangeRerenders(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.AppendToolCall("Bash", "tid1", true, "ls", "ls -la")
+	pre := m.View()
+	if strings.Contains(stripANSI(pre), "RESULT_LINE") {
+		t.Fatalf("pre-result view should not contain RESULT_LINE, got:\n%s", pre)
+	}
+	if !m.MarkToolResult("tid1", "RESULT_LINE", false) {
+		t.Fatal("MarkToolResult returned false; expected match for tid1")
+	}
+	post := m.View()
+	if !strings.Contains(stripANSI(post), "RESULT_LINE") {
+		t.Errorf("post-result view should contain RESULT_LINE — cache should have been invalidated by tool state change, got:\n%s", post)
+	}
+}
+
+// TestViewportModel_RenderCache_CompleteToolCallSurvivesSpinnerTick verifies
+// that a completed tool call's cached render does NOT depend on spinnerFrame,
+// so spinner ticks for other pending tools don't bust the completed entry's
+// cache. We exercise this by directly mutating m.spinnerFrame and re-running
+// renderAndUpdate (same-package access).
+func TestViewportModel_RenderCache_CompleteToolCallSurvivesSpinnerTick(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.AppendToolCall("Bash", "tid_done", true, "ls", "ls -la")
+	m.MarkToolResult("tid_done", "ok", false)
+	_ = m.View() // prime cache for the completed entry
+	keyBefore := m.messages[0].renderedCacheKey
+	cacheBefore := m.messages[0].renderedCache
+	if keyBefore == "" || cacheBefore == "" {
+		t.Fatalf("expected completed tool to populate cache; got key=%q cache=%q", keyBefore, cacheBefore)
+	}
+	// Simulate a spinner tick. Mutate the frame directly (same-package access);
+	// SetSpinnerFrame is a no-op when no pending tool exists, so call the
+	// internal render path explicitly.
+	m.spinnerFrame = "X"
+	m.renderAndUpdate()
+	if got := m.messages[0].renderedCacheKey; got != keyBefore {
+		t.Errorf("completed-tool cache key changed across spinner tick: before=%q after=%q", keyBefore, got)
+	}
+	if got := m.messages[0].renderedCache; got != cacheBefore {
+		t.Errorf("completed-tool cached render changed across spinner tick")
+	}
+}
+
+// TestViewportModel_RenderCache_SetMessagesInvalidates verifies that
+// SetMessages zeroes per-entry cache fields on the replacement entries
+// (which are freshly copied in from the caller and so shouldn't carry stale
+// cache data from elsewhere — but we assert the post-condition explicitly).
+func TestViewportModel_RenderCache_SetMessagesInvalidates(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.AppendAssistantChunk("old content")
+	m.FinalizeAssistantMessage()
+	_ = m.View() // prime
+	m.SetMessages([]MessageEntry{{Type: MessageAssistant, Content: "fresh", Complete: true}})
+	if got := m.messages[0].renderedCache; got != "" {
+		t.Errorf("after SetMessages, renderedCache must be empty, got %q", got)
+	}
+	if got := m.messages[0].renderedCacheKey; got != "" {
+		t.Errorf("after SetMessages, renderedCacheKey must be empty, got %q", got)
+	}
+	view := m.View()
+	if !strings.Contains(stripANSI(view), "fresh") {
+		t.Errorf("post-SetMessages view should contain 'fresh', got:\n%s", view)
+	}
+}
+
+// TestViewportModel_RenderCache_SelectionDoesNotInvalidate verifies that
+// entering/exiting selection mode and moving the cursor does NOT bust the
+// per-entry cache — selection state is composited as a gutter wrapper,
+// outside the cached rendered block.
+func TestViewportModel_RenderCache_SelectionDoesNotInvalidate(t *testing.T) {
+	m := newTestViewportModel(t)
+	m.SetSize(80, 20)
+	m.AppendAssistantChunk("hi there")
+	m.FinalizeAssistantMessage()
+	_ = m.View() // prime
+	key1 := m.messages[0].renderedCacheKey
+	cache1 := m.messages[0].renderedCache
+	if key1 == "" || cache1 == "" {
+		t.Fatalf("expected cache populated after prime; key=%q cache-len=%d", key1, len(cache1))
+	}
+	m.EnterSelect()
+	m.MoveCursor(-1)
+	m.MoveCursor(1)
+	m.ExitSelect()
+	if m.messages[0].renderedCacheKey != key1 {
+		t.Errorf("selection mutated renderedCacheKey: was %q, now %q", key1, m.messages[0].renderedCacheKey)
+	}
+	if m.messages[0].renderedCache != cache1 {
+		t.Errorf("selection mutated renderedCache (cache-len was %d, now %d)", len(cache1), len(m.messages[0].renderedCache))
+	}
+}

@@ -466,7 +466,12 @@ func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 func (h *captureHandler) WithAttrs(_ []slog.Attr) slog.Handler { return h }
 func (h *captureHandler) WithGroup(_ string) slog.Handler      { return h }
 
-func TestEventBus_WarnsOnceOnFirstDrop(t *testing.T) {
+// TestEventBus_FirstDropWarns asserts the first-drop warn still fires under
+// the new rate+burst-limited policy (QUM-681). The exact emission count is
+// no longer pinned to one — under bursty drop conditions the policy may emit
+// additional warns when the burst threshold is crossed — but at minimum the
+// first drop must always produce a warn record carrying the subscriber name.
+func TestEventBus_FirstDropWarns(t *testing.T) {
 	h := &captureHandler{}
 	prev := slog.Default()
 	slog.SetDefault(slog.New(h))
@@ -489,8 +494,8 @@ func TestEventBus_WarnsOnceOnFirstDrop(t *testing.T) {
 			warns = append(warns, r)
 		}
 	}
-	if len(warns) != 1 {
-		t.Fatalf("got %d warn records, want exactly 1", len(warns))
+	if len(warns) < 1 {
+		t.Fatalf("got %d warn records, want at least 1", len(warns))
 	}
 
 	rec := warns[0]
@@ -517,6 +522,284 @@ func TestEventBus_WarnsOnceOnFirstDrop(t *testing.T) {
 	})
 	if !foundName {
 		t.Errorf("warn record attrs did not include subscriber name %q; record=%+v", "slow", rec)
+	}
+}
+
+// --- QUM-681: rate+burst-limited drop warn + telemetry snapshot ----------
+
+// installCaptureHandler swaps slog.Default with a captureHandler for the
+// duration of the test and returns the handler so the test can inspect
+// emitted records.
+func installCaptureHandler(t *testing.T) *captureHandler {
+	t.Helper()
+	h := &captureHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return h
+}
+
+func warnRecords(h *captureHandler) []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []slog.Record
+	for _, r := range h.records {
+		if r.Level == slog.LevelWarn {
+			out = append(out, r.Clone())
+		}
+	}
+	return out
+}
+
+// TestEventBus_DropWarn_BurstThresholdEmitsMultiple verifies that with a
+// frozen clock (so the interval gate never fires) the burst-count gate
+// emits multiple warns when many drops accumulate — but far fewer warns
+// than there are drops.
+func TestEventBus_DropWarn_BurstThresholdEmitsMultiple(t *testing.T) {
+	h := installCaptureHandler(t)
+
+	bus := NewEventBus()
+	t0 := time.Unix(1_700_000_000, 0)
+	bus.setNow(func() time.Time { return t0 })
+
+	_, unsub := bus.SubscribeNamed("slow", 1)
+	defer unsub()
+
+	const N = 25
+	for i := 0; i < N; i++ {
+		bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	}
+
+	warns := warnRecords(h)
+	if len(warns) < 2 {
+		t.Fatalf("got %d warns, want >= 2 (burst threshold should fire multiple times for %d drops)", len(warns), N)
+	}
+	if len(warns) >= N {
+		t.Fatalf("got %d warns for %d publishes, want strictly fewer (rate-limited)", len(warns), N)
+	}
+}
+
+// TestEventBus_DropWarn_IntervalRateLimited verifies the time-axis gate:
+// with the burst threshold uncrossed, a second warn fires only after
+// dropWarnInterval has elapsed (per the frozen, then advanced, clock).
+func TestEventBus_DropWarn_IntervalRateLimited(t *testing.T) {
+	h := installCaptureHandler(t)
+
+	bus := NewEventBus()
+	now := time.Unix(1_700_000_000, 0)
+	bus.setNow(func() time.Time { return now })
+
+	_, unsub := bus.SubscribeNamed("slow", 1)
+	defer unsub()
+
+	// First burst: 5 publishes -> 4 drops. Burst threshold (10) not crossed;
+	// only the first-drop warn should fire.
+	for i := 0; i < 5; i++ {
+		bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	}
+	got := len(warnRecords(h))
+	if got != 1 {
+		t.Fatalf("after first burst got %d warns, want 1", got)
+	}
+
+	// Advance the clock past dropWarnInterval and emit another small burst.
+	now = now.Add(dropWarnInterval + time.Second)
+	for i := 0; i < 5; i++ {
+		bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	}
+	got = len(warnRecords(h))
+	if got != 2 {
+		t.Fatalf("after interval-elapsed second burst got %d warns, want 2", got)
+	}
+}
+
+// TestEventBus_DropWarn_SingleBlip verifies a one-event blip emits exactly
+// one warn and that quiescence past dropClearInterval does not produce more.
+func TestEventBus_DropWarn_SingleBlip(t *testing.T) {
+	h := installCaptureHandler(t)
+
+	bus := NewEventBus()
+	now := time.Unix(1_700_000_000, 0)
+	bus.setNow(func() time.Time { return now })
+
+	_, unsub := bus.SubscribeNamed("slow", 1)
+	defer unsub()
+
+	// 2 publishes -> 1 drop.
+	for i := 0; i < 2; i++ {
+		bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	}
+	got := len(warnRecords(h))
+	if got != 1 {
+		t.Fatalf("blip got %d warns, want exactly 1", got)
+	}
+
+	// Advance past clear interval; no further drops occur, so no further warns.
+	now = now.Add(dropClearInterval + time.Second)
+	got = len(warnRecords(h))
+	if got != 1 {
+		t.Fatalf("after quiescent advance got %d warns, want still 1", got)
+	}
+}
+
+// TestEventBus_DropTelemetry_Snapshot verifies the structured snapshot API
+// returns cumulative count and last-drop timestamp anchored to the bus clock.
+func TestEventBus_DropTelemetry_Snapshot(t *testing.T) {
+	bus := NewEventBus()
+	t0 := time.Unix(1_700_000_000, 0)
+	bus.setNow(func() time.Time { return t0 })
+
+	_, unsub := bus.SubscribeNamed("slow", 1)
+	defer unsub()
+
+	for i := 0; i < 10; i++ {
+		bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	}
+
+	snap := bus.DropTelemetry()
+	tel, ok := snap["slow"]
+	if !ok {
+		t.Fatalf("DropTelemetry() missing key %q; snapshot=%v", "slow", snap)
+	}
+	if tel.Cumulative != 9 {
+		t.Errorf("DropTelemetry()[%q].Cumulative = %d, want 9", "slow", tel.Cumulative)
+	}
+	if !tel.LastDropAt.Equal(t0) {
+		t.Errorf("DropTelemetry()[%q].LastDropAt = %v, want %v", "slow", tel.LastDropAt, t0)
+	}
+}
+
+// --- QUM-669: publisher-side Seq stamping + subscriber-gap detection -----
+//
+// Per docs/designs/qum-669-viewport-wedge-recovery.md §2.1, the EventBus
+// stamps each RuntimeEvent with a monotonic 1-indexed Seq number BEFORE
+// fanning out to subscribers. This makes drops detectable purely from a gap
+// in received seq numbers on each subscriber, with no cross-subscriber
+// bookkeeping. CurrentSeq() exposes the last-stamped seq for callers (e.g.
+// the TUIAdapter's lastSeq baseline after an Observe swap).
+
+// TestEventBus_PublishStampsMonotonicSeq verifies the publisher-side
+// seq-stamping invariant: every received RuntimeEvent carries a Seq value
+// that is 1-indexed and monotonically increasing across the publish stream,
+// and CurrentSeq() reflects the last-stamped value.
+func TestEventBus_PublishStampsMonotonicSeq(t *testing.T) {
+	bus := NewEventBus()
+	ch, unsub := bus.SubscribeNamed("seq-probe", 64)
+	defer unsub()
+
+	const N = 5
+	for i := 0; i < N; i++ {
+		bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	}
+
+	for i := 1; i <= N; i++ {
+		ev := recvOrTimeout(t, ch, 2*time.Second)
+		if ev.Seq != uint64(i) {
+			t.Errorf("event %d: Seq = %d, want %d", i, ev.Seq, i)
+		}
+	}
+
+	if got := bus.CurrentSeq(); got != uint64(N) {
+		t.Errorf("CurrentSeq() = %d, want %d", got, N)
+	}
+}
+
+// TestEventBus_CurrentSeq_FreshBusIsZero verifies that a freshly-constructed
+// bus reports CurrentSeq() == 0 before any Publish has stamped a sequence.
+// QUM-669.
+func TestEventBus_CurrentSeq_FreshBusIsZero(t *testing.T) {
+	bus := NewEventBus()
+	if got := bus.CurrentSeq(); got != 0 {
+		t.Errorf("CurrentSeq() on fresh bus = %d, want 0", got)
+	}
+}
+
+// TestEventBus_MultipleSubscribersSeeSameSeqForSamePublish verifies that the
+// publisher stamps Seq once per Publish call and fans the identical Seq value
+// out to every subscriber. QUM-669.
+func TestEventBus_MultipleSubscribersSeeSameSeqForSamePublish(t *testing.T) {
+	bus := NewEventBus()
+	chA, unsubA := bus.SubscribeNamed("a", 4)
+	defer unsubA()
+	chB, unsubB := bus.SubscribeNamed("b", 4)
+	defer unsubB()
+
+	bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+
+	for i := 1; i <= 2; i++ {
+		a := recvOrTimeout(t, chA, 2*time.Second)
+		b := recvOrTimeout(t, chB, 2*time.Second)
+		if a.Seq != uint64(i) {
+			t.Errorf("subscriber a event %d: Seq = %d, want %d", i, a.Seq, i)
+		}
+		if b.Seq != uint64(i) {
+			t.Errorf("subscriber b event %d: Seq = %d, want %d", i, b.Seq, i)
+		}
+		if a.Seq != b.Seq {
+			t.Errorf("event %d: subscriber a Seq=%d, subscriber b Seq=%d; want equal",
+				i, a.Seq, b.Seq)
+		}
+	}
+}
+
+// TestEventBus_PublishWithSeq_DeterministicGap exercises the test-only
+// publishWithSeq seam to produce an observable gap in the Seq stream without
+// the flaky slow-consumer race. Subscriber sees the explicit seq values in
+// monotonic order with a clear gap. QUM-669.
+func TestEventBus_PublishWithSeq_DeterministicGap(t *testing.T) {
+	bus := NewEventBus()
+	ch, unsub := bus.SubscribeNamed("probe", 16)
+	defer unsub()
+
+	bus.PublishWithSeq(RuntimeEvent{Type: EventProtocolMessage}, 1)
+	bus.PublishWithSeq(RuntimeEvent{Type: EventProtocolMessage}, 2)
+	bus.PublishWithSeq(RuntimeEvent{Type: EventProtocolMessage}, 10)
+
+	wantSeqs := []uint64{1, 2, 10}
+	for i, want := range wantSeqs {
+		ev := recvOrTimeout(t, ch, 2*time.Second)
+		if ev.Seq != want {
+			t.Errorf("event %d: Seq = %d, want %d", i, ev.Seq, want)
+		}
+	}
+}
+
+// TestEventBus_ConcurrentPublishStampOrderMatchesDeliveryOrder guards the
+// QUM-669 invariant that publishMu serializes "stamp Seq" + "fanout" so a
+// subscriber observes Seq values in strictly ascending order even under
+// concurrent publishers. Pre-publishMu, two goroutines could stamp Seq=N and
+// Seq=N+1 but deliver them in reverse order, producing a backwards-Seq on
+// the wire that the TUIAdapter would underflow into a uint64-max "missing"
+// count. The drain-row-inject e2e tripped this in the wild.
+func TestEventBus_ConcurrentPublishStampOrderMatchesDeliveryOrder(t *testing.T) {
+	bus := NewEventBus()
+	const buf = 4096
+	ch, unsub := bus.SubscribeNamed("order-probe", buf)
+	defer unsub()
+
+	const workers = 8
+	const perWorker = 128
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+			}
+		}()
+	}
+	wg.Wait()
+
+	const total = workers * perWorker
+	var prev uint64
+	for i := 0; i < total; i++ {
+		ev := recvOrTimeout(t, ch, 2*time.Second)
+		if ev.Seq <= prev {
+			t.Fatalf("event %d: Seq = %d, prev = %d — out-of-order delivery violates the publishMu invariant", i, ev.Seq, prev)
+		}
+		prev = ev.Seq
 	}
 }
 

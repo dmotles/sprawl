@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -213,6 +214,19 @@ type AppModel struct {
 	// mutate it; safe because Bubble Tea discards prior AppModel values
 	// immediately after Update returns.
 	cache *viewCache
+
+	// gapState is the QUM-669 viewport-resync state machine. See gapStateNormal
+	// constants below. Mutated by EventDropDetectedMsg / gapConfirmMsg /
+	// ViewportResyncMsg. gapID is a monotonic counter used to discriminate
+	// stale debounce-confirm deliveries (mirror mcpOpThresholdCmd's pattern).
+	// pendingMissing accumulates Missing counts while the reducer is in the
+	// gap-pending state so a debounced burst can still cross gapBurstThreshold
+	// and short-circuit to dropped. resyncInFlight coalesces concurrent resync
+	// cmds.
+	gapState       gapState
+	gapID          uint64
+	pendingMissing uint64
+	resyncInFlight bool
 
 	// selectionMode, when true, drops Bubble Tea's mouse-capture sequences
 	// (?1002h / ?1006h) on every frame so the host terminal can do native
@@ -488,6 +502,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// Fall through if not consumed.
+		}
+
+		// QUM-669: Ctrl+L is the manual viewport-resync short-circuit. Bypasses
+		// the gap-debounce state machine and immediately rebuilds the viewport
+		// from the session JSONL. Gated by the modal precedence returns above
+		// (showConfirm/showError/showHelp/showPalette/showQuestion) and the
+		// searchActive guard at the top of the KeyPressMsg switch — Ctrl+R
+		// reverse-search owns the keystroke while active.
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'l' || msg.Code == 'L') {
+			if m.resyncInFlight {
+				return m, nil
+			}
+			m.resyncInFlight = true
+			m.gapState = gapStateResyncing
+			m.statusBar.SetResyncPill("resyncing…")
+			missing := m.pendingMissing
+			m.pendingMissing = 0
+			return m, m.resyncCmd(missing)
 		}
 
 		// Ctrl+O: toggle the global expand-tool-inputs flag (QUM-335).
@@ -1289,13 +1321,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpOpTickMsg:
 		// QUM-497: 1Hz re-render driver. Self-perpetuates only while ops are
 		// active; falls silent once the map drains so idle frames cost nothing.
+		// QUM-681: also pumps EventBus drop telemetry into the status bar so
+		// the ⚠ segment surfaces promptly and auto-clears after a quiet period.
 		if len(m.activeMCPOps) == 0 {
 			m.mcpOpTickPending = false
+			m.refreshDropTelemetry()
 			return m, nil
 		}
 		// SetActiveOps re-installs the slice; the View() call this cmd
 		// triggers will reformat elapsed time against the current clock.
 		m.statusBar.SetActiveOps(m.orderedMCPOps())
+		m.refreshDropTelemetry()
 		return m, mcpOpTickCmd()
 
 	case mcpOpThresholdMsg:
@@ -1328,6 +1364,101 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"⏳ %s(%s) is taking longer than usual (T+%s). Send SIGUSR1 to capture state.",
 			op.Tool, caller, elapsed,
 		))
+		return m, nil
+
+	case EventDropDetectedMsg:
+		// QUM-669: gap-detection state machine entry point.
+		// AC #4: a gap forces TurnIdle so Ctrl+C/quit chords are unblocked
+		// even before the debounce window elapses.
+		if m.turnState == TurnStreaming || m.turnState == TurnThinking {
+			m.setTurnState(TurnIdle)
+		}
+		// QUM-669 follow-up #1 (code-review): a drop arriving while a resync
+		// is already in flight (gapStateResyncing) must NOT downgrade us back
+		// to gap-pending or arm a fresh debounce — the JSONL re-read about to
+		// land will subsume it (design §5 hotspot #1). Absorb the missing
+		// count for the post-resync banner accuracy and keep state.
+		if m.resyncInFlight {
+			m.pendingMissing += msg.Missing
+			return m, nil
+		}
+		m.pendingMissing += msg.Missing
+		// Short-circuit to dropped when the accumulated gap is at or above
+		// the burst threshold, OR when we've already entered dropped (a
+		// follow-up drop during resync coalesces into a new resync only if
+		// not already in flight).
+		if m.pendingMissing >= gapBurstThreshold || m.gapState == gapStateDropped {
+			snapshot := m.pendingMissing
+			m.pendingMissing = 0
+			if m.resyncInFlight {
+				// Already resyncing — let the in-flight read complete; design
+				// §5 hotspot #1 says any "lost" events are by definition in the
+				// session JSONL we're about to read, so no second resync needed.
+				m.gapState = gapStateDropped
+				return m, nil
+			}
+			return m, m.kickResyncFromGap(snapshot)
+		}
+		// Below burst — enter gap-pending and arm a debounce tick. Per-call
+		// timer is created inside the cmd closure (instead of tea.Tick's
+		// shared-timer pattern) so test helpers that invoke the cmd multiple
+		// times don't block forever on a drained channel.
+		m.gapState = gapStatePending
+		m.gapID++
+		gid := m.gapID
+		return m, gapDebounceCmd(gid, gapDebounceWindow)
+
+	case gapConfirmMsg:
+		// QUM-669 debounce confirmation. Stale deliveries (gapID mismatch or
+		// state advanced) are no-ops — mirrors mcpOpThresholdMsg's pattern.
+		if msg.gapID != m.gapID {
+			return m, nil
+		}
+		if m.gapState != gapStatePending {
+			return m, nil
+		}
+		if m.pendingMissing >= gapBurstThreshold {
+			// Bursty accumulation crossed threshold during the window — kick
+			// the resync after all. (Defensive: the EventDropDetectedMsg arm
+			// already kicks the resync as soon as the threshold is crossed,
+			// so this branch is rarely hit.)
+			snapshot := m.pendingMissing
+			m.pendingMissing = 0
+			return m, m.kickResyncFromGap(snapshot)
+		}
+		// Single blip — walk back to normal silently.
+		m.gapState = gapStateNormal
+		m.pendingMissing = 0
+		return m, nil
+
+	case ViewportResyncMsg:
+		// QUM-669 resync result. On error, keep the dropped state and surface
+		// a recovery hint. On success, install the rebuilt transcript, append
+		// the resync banner, and collapse back to normal.
+		m.resyncInFlight = false
+		m.statusBar.SetResyncPill("")
+		if msg.Err != nil {
+			m.rootVP().AppendError(fmt.Sprintf("resync failed: %v — press Ctrl+L to retry", msg.Err))
+			m.gapState = gapStateDropped
+			return m, nil
+		}
+		entries := msg.Entries
+		// Strip the resume-path trailing "Resumed from prior session" status
+		// marker; this is a resync (mid-session recovery), not an initial
+		// resume, so the only trailing status the user should see is the
+		// resync banner below.
+		if n := len(entries); n > 0 && entries[n-1].Type == MessageStatus &&
+			entries[n-1].Content == "Resumed from prior session" {
+			entries = entries[:n-1]
+		}
+		m.rootVP().SetMessages(entries)
+		m.rootVP().AppendStatus(fmt.Sprintf("✓ resynced — recovered %d events from session log", msg.MissingCount))
+		m.setTurnState(TurnIdle)
+		m.gapState = gapStateNormal
+		m.pendingMissing = 0
+		// Note: lastSeq baseline is intentionally NOT reset on the adapter
+		// side. Design §5 hotspot #1: any events "lost" during the resync are
+		// by definition already in the session JSONL the resync just read.
 		return m, nil
 
 	case ConfirmResultMsg:
@@ -2506,14 +2637,46 @@ func readChildTranscript(sprawlRoot, homeDir, name string) ChildTranscriptMsg {
 	return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Entries: entries}
 }
 
+// gapState models the QUM-669 viewport-resync state machine. See the design
+// doc §2.3 for the full transition diagram.
+type gapState int
+
+const (
+	gapStateNormal    gapState = iota // no gap detected; default
+	gapStatePending                   // single-blip drop seen, debounce window armed
+	gapStateDropped                   // confirmed gap; resync in flight or queued
+	gapStateResyncing                 // resync cmd dispatched, awaiting ViewportResyncMsg
+	gapStateRecovered                 // resync completed; transient — collapsed to Normal
+)
+
+// gapDebounceWindow is the QUM-669 single-blip suppression window. After
+// receiving an EventDropDetectedMsg whose Missing count is below
+// gapBurstThreshold, the reducer enters the gap-pending state and arms a
+// gapConfirmMsg tick to fire after this delay. If no further drops accumulate
+// the AppModel returns to normal without resyncing.
+const gapDebounceWindow = 500 * time.Millisecond
+
+// gapBurstThreshold mirrors runtime.dropWarnBurstThreshold. A gap whose
+// Missing count is at or above this threshold short-circuits the debounce
+// window and triggers an immediate resync — the user has already lost too
+// much state for the "wait and see" path to be honest. QUM-669.
+const gapBurstThreshold = uint64(10)
+
 // mcpOpBannerThreshold is the elapsed time after which a long-running MCP
 // tool call earns a viewport banner with SIGUSR1 guidance. Package-level var
 // so reducer tests can compress it. (QUM-497)
 var mcpOpBannerThreshold = 60 * time.Second
 
 // mcpOpTickInterval is the refresh cadence for the live elapsed-time render
-// in the status bar. Package-level var so tests can override. (QUM-497)
+// in the status bar. Package-level var so tests can override. (QUM-497) The
+// same tick also pumps EventBus drop telemetry into the status bar (QUM-681).
 var mcpOpTickInterval = 1 * time.Second
+
+// eventDropClearInterval mirrors runtime.dropClearInterval so AppModel can
+// filter DropTelemetry snapshots without importing internal/runtime here.
+// Subscribers whose LastDropAt is older than this are omitted from the
+// status-bar segment so the ⚠ chip auto-clears after a quiet period (QUM-681).
+const eventDropClearInterval = 30 * time.Second
 
 // mcpLongRunningBannerExempt names MCP tools whose long elapsed time is
 // expected by design (blocking-on-human) and therefore should NOT raise the
@@ -2524,6 +2687,93 @@ var mcpOpTickInterval = 1 * time.Second
 // metadata (`BlocksOnHuman` flag on MCP tool registration) — Option 3.
 var mcpLongRunningBannerExempt = map[string]bool{
 	"ask_user_question": true,
+}
+
+// refreshDropTelemetry pulls EventBus drop telemetry from the backend (when
+// supported) and pushes the recent entries to the status bar (QUM-681).
+// Filters to subscribers whose LastDropAt is within eventDropClearInterval
+// so the ⚠ segment auto-clears after a quiet period; surviving entries are
+// sorted by Cumulative descending so the worst offender renders first.
+func (m *AppModel) refreshDropTelemetry() {
+	src, ok := m.bridge.(DropTelemetrySource)
+	if !ok {
+		return
+	}
+	snap := src.DropTelemetry()
+	now := time.Now()
+	segments := make([]EventDropSegment, 0, len(snap))
+	for name, tel := range snap {
+		if tel.Cumulative == 0 {
+			continue
+		}
+		if tel.LastDropAt.IsZero() || now.Sub(tel.LastDropAt) > eventDropClearInterval {
+			continue
+		}
+		segments = append(segments, EventDropSegment{Name: name, Count: tel.Cumulative})
+	}
+	sort.Slice(segments, func(i, j int) bool {
+		return segments[i].Count > segments[j].Count
+	})
+	m.statusBar.SetEventDrops(segments)
+}
+
+// gapDebounceCmd returns a one-shot tea.Cmd that fires a gapConfirmMsg after
+// delay. Unlike tea.Tick (which creates one shared timer at construction
+// time), gapDebounceCmd creates a fresh timer inside each invocation so test
+// helpers that call the returned cmd multiple times don't block on a drained
+// channel. (QUM-669)
+func gapDebounceCmd(gapID uint64, delay time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		timer := time.NewTimer(delay)
+		<-timer.C
+		return gapConfirmMsg{gapID: gapID}
+	}
+}
+
+// resyncCmd builds the async session-log read that produces a
+// ViewportResyncMsg. QUM-669 step 5. The caller owns transitioning the
+// gapState into gapStateResyncing and setting the status-bar pill BEFORE
+// returning this cmd so the user sees the in-flight indicator while the
+// read is happening.
+//
+// missing carries the gap size through to the resync banner ("recovered N
+// events"). Failure paths (empty session id, missing bridge/home, LoadTranscript
+// error) emit ViewportResyncMsg{Err: ...} so the reducer can render the
+// "resync failed — Ctrl+L to retry" banner uniformly.
+func (m *AppModel) resyncCmd(missing uint64) tea.Cmd {
+	if m.bridge == nil {
+		return func() tea.Msg { return ViewportResyncMsg{MissingCount: missing, Err: errors.New("no bridge")} }
+	}
+	if m.homeDir == "" || m.sprawlRoot == "" {
+		return func() tea.Msg {
+			return ViewportResyncMsg{MissingCount: missing, Err: errors.New("home/sprawlRoot unset")}
+		}
+	}
+	sessionID := m.bridge.SessionID()
+	if sessionID == "" {
+		return func() tea.Msg { return ViewportResyncMsg{MissingCount: missing, Err: errors.New("no session id")} }
+	}
+	path := memory.SessionLogPath(m.homeDir, m.sprawlRoot, sessionID)
+	return func() tea.Msg {
+		entries, err := LoadTranscript(path, ReplayMaxMessages)
+		return ViewportResyncMsg{Entries: entries, MissingCount: missing, Err: err}
+	}
+}
+
+// kickResyncFromGap transitions into the dropped/resyncing state and returns
+// the dispatch cmd. Appends the drop banner so the user sees the gap on the
+// normal→dropped boundary. QUM-669. Callers must clear pendingMissing after
+// they've captured the snapshot value into the cmd. The lastSeq baseline is
+// intentionally NOT reset on the adapter side — design §5 hotspot #1 notes
+// the resync read already includes all "lost" events from the session log,
+// so adapter-side state can keep advancing without violating invariants.
+func (m *AppModel) kickResyncFromGap(missing uint64) tea.Cmd {
+	m.gapState = gapStateResyncing
+	m.resyncInFlight = true
+	m.statusBar.SetResyncPill("resyncing…")
+	// Drop banner — design §2.6 (in-viewport banner on normal → dropped).
+	m.rootVP().AppendStatus(fmt.Sprintf("⚠ %d events lost — resync in flight (Ctrl+L to retry)", missing))
+	return m.resyncCmd(missing)
 }
 
 // mcpOpTickCmd returns a tea.Cmd that fires an mcpOpTickMsg after one tick

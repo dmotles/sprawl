@@ -975,3 +975,254 @@ func TestTUIAdapter_IsContinuous_ReturnsTrue(t *testing.T) {
 		t.Errorf("IsContinuous() = false, want true")
 	}
 }
+
+// --- QUM-669: gap detection at the adapter seam --------------------------
+//
+// Per docs/designs/qum-669-viewport-wedge-recovery.md §2.2, the TUIAdapter
+// tracks `lastSeq` on its EventBus subscription. When a received event's
+// Seq is non-contiguous with the previous one (and lastSeq != 0), the
+// adapter emits a tui.EventDropDetectedMsg as the *next* tea.Msg result
+// BEFORE returning the translated tea.Msg for the gap-arriving event. The
+// first event after subscription (lastSeq == 0 sentinel) never emits a
+// gap msg. After an Observe() swap, lastSeq resets to 0 so the first event
+// on the new subscription is likewise not flagged.
+
+// TestTUIAdapter_EmitsEventDropDetectedMsg drives the real WaitForEvent()
+// codepath, using EventBus.PublishWithSeq (test-only) to deterministically
+// stamp Seq=1, 2, 10 so the gap is observable without a slow-consumer race.
+func TestTUIAdapter_EmitsEventDropDetectedMsg(t *testing.T) {
+	mock := &adapterMockSession{}
+	rt, a := buildAdapter(t, mock)
+
+	mkProtoEvent := func(text string) sprawlrt.RuntimeEvent {
+		raw := `{"type":"assistant","uuid":"a-` + text +
+			`","message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}}`
+		return sprawlrt.RuntimeEvent{
+			Type:    sprawlrt.EventProtocolMessage,
+			Message: makeAssistantMsg(t, raw),
+		}
+	}
+
+	// Pre-publish all three events; the adapter subscription buffer is 64
+	// so they all enqueue without drops. The gap between Seq=2 and Seq=10
+	// must be inferred from the seq stamps alone.
+	rt.EventBus().PublishWithSeq(mkProtoEvent("one"), 1)
+	rt.EventBus().PublishWithSeq(mkProtoEvent("two"), 2)
+	rt.EventBus().PublishWithSeq(mkProtoEvent("ten"), 10)
+
+	// Read 1: Seq=1 (first event on fresh subscription, no gap msg).
+	msg1 := runCmd(t, a.WaitForEvent())
+	if _, ok := msg1.(tui.EventDropDetectedMsg); ok {
+		t.Fatalf("Seq=1 first event surfaced EventDropDetectedMsg; sentinel lastSeq=0 must suppress")
+	}
+	if _, ok := msg1.(tui.AssistantContentMsg); !ok {
+		t.Fatalf("read 1: got %T, want tui.AssistantContentMsg", msg1)
+	}
+
+	// Read 2: Seq=2 (contiguous, no gap msg).
+	msg2 := runCmd(t, a.WaitForEvent())
+	if _, ok := msg2.(tui.EventDropDetectedMsg); ok {
+		t.Fatalf("Seq=2 contiguous surfaced EventDropDetectedMsg; want none")
+	}
+	if _, ok := msg2.(tui.AssistantContentMsg); !ok {
+		t.Fatalf("read 2: got %T, want tui.AssistantContentMsg", msg2)
+	}
+
+	// Read 3: gap detected (Seq jumps 2 -> 10). Expect EventDropDetectedMsg.
+	msg3 := runCmd(t, a.WaitForEvent())
+	drop, ok := msg3.(tui.EventDropDetectedMsg)
+	if !ok {
+		t.Fatalf("read 3 (gap): got %T, want tui.EventDropDetectedMsg", msg3)
+	}
+	if drop.From != 2 {
+		t.Errorf("EventDropDetectedMsg.From = %d, want 2", drop.From)
+	}
+	if drop.To != 10 {
+		t.Errorf("EventDropDetectedMsg.To = %d, want 10", drop.To)
+	}
+	if drop.Missing != 7 {
+		t.Errorf("EventDropDetectedMsg.Missing = %d, want 7", drop.Missing)
+	}
+
+	// Read 4: the translated msg for the Seq=10 event must still flow in-band
+	// after the drop notice.
+	msg4 := runCmd(t, a.WaitForEvent())
+	if _, ok := msg4.(tui.AssistantContentMsg); !ok {
+		t.Fatalf("read 4 (post-gap event): got %T, want tui.AssistantContentMsg (in-band event must still flow)", msg4)
+	}
+}
+
+// TestTUIAdapter_OutOfOrderSeq_DoesNotUnderflow guards against a regression
+// observed in the QUM-669 drain-row-inject e2e: a backwards or duplicate Seq
+// arriving on the subscription must NOT produce an EventDropDetectedMsg with
+// a wrapped uint64 missing count (e.g. 18446744073709551615). Even though
+// EventBus.publishMu now serializes stamp+fanout production-side, the adapter
+// keeps a defensive guard so any future regression surfaces as a missing
+// gap-msg, not as a screaming-uint64 banner.
+func TestTUIAdapter_OutOfOrderSeq_DoesNotUnderflow(t *testing.T) {
+	mock := &adapterMockSession{}
+	rt, a := buildAdapter(t, mock)
+
+	mkEv := func(text string) sprawlrt.RuntimeEvent {
+		raw := `{"type":"assistant","uuid":"a-` + text +
+			`","message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}}`
+		return sprawlrt.RuntimeEvent{
+			Type:    sprawlrt.EventProtocolMessage,
+			Message: makeAssistantMsg(t, raw),
+		}
+	}
+
+	// Forward to Seq=5, then deliver Seq=3 (out-of-order / duplicate) and
+	// Seq=4 (also out-of-order). Neither must produce a drop msg.
+	rt.EventBus().PublishWithSeq(mkEv("five"), 5)
+	rt.EventBus().PublishWithSeq(mkEv("three"), 3)
+	rt.EventBus().PublishWithSeq(mkEv("four"), 4)
+
+	// Read 1: Seq=5 (first event, sentinel suppresses gap msg).
+	if _, ok := runCmd(t, a.WaitForEvent()).(tui.AssistantContentMsg); !ok {
+		t.Fatalf("read 1: want AssistantContentMsg")
+	}
+	// Read 2: Seq=3, backwards. Must NOT emit EventDropDetectedMsg.
+	msg2 := runCmd(t, a.WaitForEvent())
+	if drop, ok := msg2.(tui.EventDropDetectedMsg); ok {
+		t.Fatalf("backward Seq=3 surfaced EventDropDetectedMsg{Missing=%d}; want translated msg only", drop.Missing)
+	}
+	// Read 3: Seq=4, also backwards. Must NOT emit a drop msg.
+	msg3 := runCmd(t, a.WaitForEvent())
+	if drop, ok := msg3.(tui.EventDropDetectedMsg); ok {
+		t.Fatalf("backward Seq=4 surfaced EventDropDetectedMsg{Missing=%d}; want translated msg only", drop.Missing)
+	}
+}
+
+// TestTUIAdapter_ObserveResetsGapBaseline verifies that after Observe() swaps
+// the adapter onto a fresh runtime+bus, the first event on the new
+// subscription does NOT emit a spurious EventDropDetectedMsg even though its
+// Seq value (1) is less than the previous bus's lastSeq.
+func TestTUIAdapter_ObserveResetsGapBaseline(t *testing.T) {
+	mockA := &adapterMockSession{}
+	rtA, a := buildAdapter(t, mockA)
+
+	mkProtoEvent := func(text string) sprawlrt.RuntimeEvent {
+		raw := `{"type":"assistant","uuid":"a-` + text +
+			`","message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}}`
+		return sprawlrt.RuntimeEvent{
+			Type:    sprawlrt.EventProtocolMessage,
+			Message: makeAssistantMsg(t, raw),
+		}
+	}
+
+	// Pump bus A up to lastSeq=10 from the adapter's POV. Publish two
+	// events (Seq=1 and Seq=10); reading both establishes lastSeq=10 inside
+	// the adapter (after first event AND after the implied drop+translated
+	// pair when production logic lands). For the RED test we just need at
+	// least one read to occur so the swap path matters.
+	rtA.EventBus().PublishWithSeq(mkProtoEvent("a1"), 1)
+	rtA.EventBus().PublishWithSeq(mkProtoEvent("a10"), 10)
+
+	// Read until we've consumed both translated AssistantContentMsg events
+	// from bus A. Once production logic emits the gap msg there will be an
+	// additional EventDropDetectedMsg interleaved; tolerate that.
+	gotContent := 0
+	for gotContent < 2 {
+		msg := runCmd(t, a.WaitForEvent())
+		if _, ok := msg.(tui.AssistantContentMsg); ok {
+			gotContent++
+		}
+	}
+
+	// Swap onto a fresh runtime (and therefore a fresh bus whose CurrentSeq
+	// starts at 0).
+	mockB := &adapterMockSession{}
+	rtB := sprawlrt.New(sprawlrt.RuntimeConfig{
+		Name:    "tui-adapter-test-b",
+		Session: mockB,
+	})
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rtB.Stop(ctx)
+	})
+	a.Observe(rtB)
+
+	// First event on the new bus has Seq=1; must NOT emit a gap msg even
+	// though prior bus's lastSeq was 10.
+	rtB.EventBus().PublishWithSeq(mkProtoEvent("b1"), 1)
+	msg := runCmd(t, a.WaitForEvent())
+	if _, ok := msg.(tui.EventDropDetectedMsg); ok {
+		t.Fatalf("post-Observe first event surfaced spurious EventDropDetectedMsg; lastSeq must reset on Observe")
+	}
+	if _, ok := msg.(tui.AssistantContentMsg); !ok {
+		t.Fatalf("post-Observe first event: got %T, want tui.AssistantContentMsg", msg)
+	}
+
+	// Silence unused warnings if rtA is the only thing keeping the import live.
+	_ = rtA
+}
+
+// TestTUIAdapter_DebugGapInject_TriggersSyntheticDrop verifies the
+// SPRAWL_DEBUG_GAP_INJECT one-shot test seam (QUM-669 viewport-resync e2e
+// row). When the env var is set to a positive uint64 at subscribe time, the
+// adapter synthesizes an EventDropDetectedMsg with Missing=N at the SECOND
+// event of the subscription, then resumes normal lastSeq tracking from the
+// real Seq of the arriving event. The translated msg for that arriving
+// event must still flow in-band on the next WaitForEvent call.
+func TestTUIAdapter_DebugGapInject_TriggersSyntheticDrop(t *testing.T) {
+	t.Setenv("SPRAWL_DEBUG_GAP_INJECT", "15")
+
+	mock := &adapterMockSession{}
+	rt, a := buildAdapter(t, mock)
+
+	mkProtoEvent := func(text string) sprawlrt.RuntimeEvent {
+		raw := `{"type":"assistant","uuid":"a-` + text +
+			`","message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}}`
+		return sprawlrt.RuntimeEvent{
+			Type:    sprawlrt.EventProtocolMessage,
+			Message: makeAssistantMsg(t, raw),
+		}
+	}
+
+	rt.EventBus().PublishWithSeq(mkProtoEvent("one"), 1)
+	rt.EventBus().PublishWithSeq(mkProtoEvent("two"), 2)
+
+	// Read 1: first event on the fresh subscription — sentinel lastSeq=0
+	// suppresses any drop msg even with injectGap set.
+	msg1 := runCmd(t, a.WaitForEvent())
+	if _, ok := msg1.(tui.EventDropDetectedMsg); ok {
+		t.Fatalf("read 1: surfaced EventDropDetectedMsg; sentinel lastSeq=0 must suppress")
+	}
+	if _, ok := msg1.(tui.AssistantContentMsg); !ok {
+		t.Fatalf("read 1: got %T, want tui.AssistantContentMsg", msg1)
+	}
+
+	// Read 2: arrival of the second event (Seq=2). The one-shot inject
+	// seam must synthesize an EventDropDetectedMsg{Missing: 15} here BEFORE
+	// the translated msg for Seq=2 is delivered.
+	msg2 := runCmd(t, a.WaitForEvent())
+	drop, ok := msg2.(tui.EventDropDetectedMsg)
+	if !ok {
+		t.Fatalf("read 2: got %T, want tui.EventDropDetectedMsg (synthetic gap)", msg2)
+	}
+	if drop.Missing != 15 {
+		t.Errorf("EventDropDetectedMsg.Missing = %d, want 15", drop.Missing)
+	}
+	if drop.From != 1 {
+		t.Errorf("EventDropDetectedMsg.From = %d, want 1", drop.From)
+	}
+	if drop.To != 1+15+1 {
+		t.Errorf("EventDropDetectedMsg.To = %d, want %d", drop.To, 1+15+1)
+	}
+
+	// Read 3: the translated msg for the in-band Seq=2 event must still flow.
+	msg3 := runCmd(t, a.WaitForEvent())
+	if _, ok := msg3.(tui.AssistantContentMsg); !ok {
+		t.Fatalf("read 3 (post-synthetic-gap event): got %T, want tui.AssistantContentMsg", msg3)
+	}
+
+	// Read 4: a third real event must NOT trigger a second synthetic gap —
+	// injectGap is one-shot per subscription. Publish a contiguous Seq=3.
+	rt.EventBus().PublishWithSeq(mkProtoEvent("three"), 3)
+	msg4 := runCmd(t, a.WaitForEvent())
+	if _, ok := msg4.(tui.EventDropDetectedMsg); ok {
+		t.Fatalf("read 4: second synthetic gap fired; injectGap must be one-shot")
+	}
+}

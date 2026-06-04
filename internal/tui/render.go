@@ -8,9 +8,19 @@ import (
 
 // MarkdownRenderer wraps glamour to render markdown for the TUI viewport.
 type MarkdownRenderer struct {
-	width int
-	tr    *glamour.TermRenderer
+	width       int
+	tr          *glamour.TermRenderer
+	renderCalls int
 }
+
+// RenderCalls returns the number of times Render has been invoked since the
+// last ResetRenderCalls (or construction). Used by tests to assert that the
+// per-entry render cache is hitting on unchanged complete entries (QUM-667).
+func (r *MarkdownRenderer) RenderCalls() int { return r.renderCalls }
+
+// ResetRenderCalls zeroes the glamour-call counter so tests can measure
+// invocations across a specific window (QUM-667).
+func (r *MarkdownRenderer) ResetRenderCalls() { r.renderCalls = 0 }
 
 // NewMarkdownRenderer creates a renderer with the given width.
 func NewMarkdownRenderer(width int) *MarkdownRenderer {
@@ -36,6 +46,7 @@ func (r *MarkdownRenderer) SetWidth(width int) {
 
 // Render converts markdown text to styled terminal output.
 func (r *MarkdownRenderer) Render(markdown string) string {
+	r.renderCalls++
 	if strings.TrimSpace(markdown) == "" {
 		return ""
 	}

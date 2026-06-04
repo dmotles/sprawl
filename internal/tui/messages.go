@@ -642,6 +642,43 @@ type mcpOpThresholdMsg struct {
 	CallID string
 }
 
+// EventDropDetectedMsg signals that the TUIAdapter observed a gap in the
+// EventBus sequence number stream (QUM-669). From/To bracket the gap (From
+// is the last good seq the adapter saw, To is the seq of the first event
+// after the gap). Missing reports the number of skipped seq values
+// (To - From - 1). The AppModel reduces this msg into the gap-detection
+// state machine described in docs/designs/qum-669-viewport-wedge-recovery.md
+// §2.3 — it does not by itself trigger resync.
+type EventDropDetectedMsg struct {
+	From    uint64
+	To      uint64
+	Missing uint64
+}
+
+// ViewportResyncMsg carries the outcome of an async session-log resync read
+// (QUM-669). Entries is the rebuilt MessageEntry slice produced by
+// LoadTranscript; MissingCount is the gap size that triggered the resync
+// (carried through so the resync banner can say "recovered N events"). Err
+// is non-nil if the resync read failed (missing file, parse error, empty
+// session ID) — the AppModel's reducer treats Err != nil as the failure
+// path and emits a "resync failed" status entry.
+type ViewportResyncMsg struct {
+	Entries      []MessageEntry
+	MissingCount uint64
+	Err          error
+}
+
+// gapConfirmMsg is the QUM-669 internal debounce-confirmation tick. It fires
+// after gapDebounceWindow when the reducer enters the gap-pending state; if
+// the carried gapID still matches the AppModel's current pending gap ID,
+// the reducer transitions to the "dropped" state and kicks off the resync.
+// Stale deliveries (a recovery completed in the meantime, or a newer gap
+// supersedes this one) are ignored — same self-cancellation pattern as
+// mcpOpThresholdCmd.
+type gapConfirmMsg struct {
+	gapID uint64
+}
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new

@@ -1,6 +1,24 @@
 package tui
 
-import tea "charm.land/bubbletea/v2"
+import (
+	"time"
+
+	tea "charm.land/bubbletea/v2"
+)
+
+// DropTelemetrySource is an optional capability that backends may implement
+// to surface EventBus drop telemetry to the status bar (QUM-681). Backends
+// that don't implement it produce no status-bar segment.
+type DropTelemetrySource interface {
+	DropTelemetry() map[string]EventDropSnapshot
+}
+
+// EventDropSnapshot mirrors runtime.DropTelemetry on the TUI side so the
+// tui package doesn't need to import internal/runtime (QUM-681).
+type EventDropSnapshot struct {
+	Cumulative uint64
+	LastDropAt time.Time
+}
 
 // SessionBackend is the interface AppModel uses to drive the underlying
 // Claude session and pull events into the Bubble Tea model. It abstracts

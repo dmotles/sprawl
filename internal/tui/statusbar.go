@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// EventDropSegment describes one subscriber's drop telemetry surfaced in the
+// status bar (QUM-681). Pushed by AppModel on the mcpOpTickMsg cadence; the
+// caller filters to subscribers whose last drop is within dropClearInterval
+// so the segment auto-clears after a quiet period.
+type EventDropSegment struct {
+	Name  string
+	Count uint64
+}
+
 // OpDescriptor describes one in-flight MCP tool call surfaced in the status
 // bar (QUM-497). The status bar renders elapsed time live (≥1Hz) so a hung
 // tool call is visible long before the user reaches for Ctrl-C.
@@ -57,9 +66,18 @@ type StatusBarModel struct {
 	// is owned by the model — callers pass a fresh slice to SetActiveOps.
 	activeOps []OpDescriptor
 
+	// eventDrops surfaces EventBus drop telemetry as a ⚠ segment (QUM-681).
+	// Owned by the model — refreshed by AppModel on each mcpOpTickMsg from
+	// the runtime's DropTelemetry snapshot.
+	eventDrops []EventDropSegment
+
 	// validatePill renders a "validate: 12s, running" segment while the
 	// validate popup is minimized (QUM-588). Empty hides the segment.
 	validatePill string
+
+	// resyncPill renders a "resyncing…" segment while a viewport resync is
+	// in flight (QUM-669). Empty hides the segment.
+	resyncPill string
 
 	// nowFn returns the wall-clock time used for elapsed-time rendering.
 	// Defaults to time.Now; tests override it for deterministic output.
@@ -70,6 +88,12 @@ type StatusBarModel struct {
 // is minimized. Empty hides the segment. QUM-588.
 func (m *StatusBarModel) SetValidatePill(pill string) {
 	m.validatePill = pill
+}
+
+// SetResyncPill installs the segment text shown while a viewport resync is
+// in flight (QUM-669). Empty hides the segment.
+func (m *StatusBarModel) SetResyncPill(text string) {
+	m.resyncPill = text
 }
 
 // NewStatusBarModel creates a status bar with the given info.
@@ -114,8 +138,14 @@ func (m StatusBarModel) View() string {
 	if seg := m.activeOpsSegment(); seg != "" {
 		parts = append(parts, seg)
 	}
+	if seg := m.eventDropsSegment(); seg != "" {
+		parts = append(parts, seg)
+	}
 	if m.validatePill != "" {
 		parts = append(parts, m.validatePill)
+	}
+	if m.resyncPill != "" {
+		parts = append(parts, m.resyncPill)
 	}
 	if m.restartLabel != "" {
 		parts = append(parts, m.restartLabel)
@@ -240,6 +270,33 @@ func (m StatusBarModel) pendingQuestionsSegment() string {
 		return fmt.Sprintf("🔔 %s is asking (%s)", agent, hint)
 	}
 	return fmt.Sprintf("🔔 %s +%d more (%s)", agent, m.pendingQuestionsDepth-1, hint)
+}
+
+// SetEventDrops replaces the EventBus drop-telemetry segment list rendered
+// in the status bar (QUM-681). Pass nil/empty to clear. Callers should pass
+// only subscribers whose drops are still recent (within dropClearInterval)
+// so the segment auto-clears after a quiet period.
+func (m *StatusBarModel) SetEventDrops(drops []EventDropSegment) {
+	if len(drops) == 0 {
+		m.eventDrops = nil
+		return
+	}
+	m.eventDrops = append(m.eventDrops[:0], drops...)
+}
+
+// eventDropsSegment renders the "⚠ events dropped: N (name)" indicator, or
+// "⚠ events dropped: N (worst) (+K more)" when multiple subscribers are
+// dropping. Empty when no entries are present.
+func (m StatusBarModel) eventDropsSegment() string {
+	if len(m.eventDrops) == 0 {
+		return ""
+	}
+	worst := m.eventDrops[0]
+	base := fmt.Sprintf("⚠ events dropped: %d (%s)", worst.Count, worst.Name)
+	if extra := len(m.eventDrops) - 1; extra > 0 {
+		base += fmt.Sprintf(" (+%d more)", extra)
+	}
+	return base
 }
 
 // SetActiveOps replaces the in-flight MCP ops list rendered in the status

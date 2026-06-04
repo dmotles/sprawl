@@ -358,6 +358,52 @@ func TestStatusBar_PendingQuestions_ModalHidden_AdvertisesEscHint(t *testing.T) 
 	}
 }
 
+// --- QUM-681: EventBus drop telemetry status-bar segment ---
+
+// TestStatusBarModel_EventDropsSegment_Renders checks that a single
+// dropped-subscriber entry surfaces in the status bar with the canonical
+// "⚠ events dropped: N (name)" format.
+func TestStatusBarModel_EventDropsSegment_Renders(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	m.SetEventDrops([]EventDropSegment{{Name: "tui-viewport", Count: 42}})
+	view := m.View()
+	if !strings.Contains(view, "⚠ events dropped: 42 (tui-viewport)") {
+		t.Errorf("View() should contain drop segment, got:\n%s", view)
+	}
+}
+
+// TestStatusBarModel_EventDropsSegment_HiddenWhenEmpty checks that with no
+// drops, no warning segment is rendered.
+func TestStatusBarModel_EventDropsSegment_HiddenWhenEmpty(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	view := m.View()
+	if strings.Contains(view, "⚠ events dropped") {
+		t.Errorf("View() should not contain drop segment when empty, got:\n%s", view)
+	}
+}
+
+// TestStatusBarModel_EventDropsSegment_MultipleSubscribers checks that the
+// worst offender is named and a "+K more" tail tells the operator others
+// also dropped.
+func TestStatusBarModel_EventDropsSegment_MultipleSubscribers(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	m.SetEventDrops([]EventDropSegment{
+		{Name: "worst", Count: 100},
+		{Name: "mid", Count: 50},
+		{Name: "tail", Count: 5},
+	})
+	view := m.View()
+	if !strings.Contains(view, "⚠ events dropped: 100 (worst)") {
+		t.Errorf("View() should contain worst-offender segment, got:\n%s", view)
+	}
+	if !strings.Contains(view, "+2 more") {
+		t.Errorf("View() should contain '+2 more' for the tail, got:\n%s", view)
+	}
+}
+
 // TestStatusBar_PendingQuestions_DepthThree_RendersPlusMore checks depth>=2
 // renders the agent name and "+N more" where N = depth-1. (QUM-527)
 func TestStatusBar_PendingQuestions_DepthThree_RendersPlusMore(t *testing.T) {
@@ -373,5 +419,34 @@ func TestStatusBar_PendingQuestions_DepthThree_RendersPlusMore(t *testing.T) {
 	}
 	if !strings.Contains(view, "Ctrl-Q") {
 		t.Errorf("View() should contain 'Ctrl-Q' hint, got:\n%s", view)
+	}
+}
+
+// --- QUM-669 step 7: resync-pill segment ---
+//
+// SetResyncPill installs a status-bar segment shown while a viewport resync
+// is in flight. Empty hides the segment. Mirrors the SetValidatePill pattern
+// (statusbar.go:85). Tests are RED until View() is wired to render the pill.
+
+func TestStatusBarModel_SetResyncPill_RendersDuringResync(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	const pill = "resyncing…"
+	m.SetResyncPill(pill)
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, pill) {
+		t.Errorf("View() should contain resync pill %q after SetResyncPill, got:\n%s", pill, view)
+	}
+}
+
+func TestStatusBarModel_SetResyncPill_ClearedByEmpty(t *testing.T) {
+	m := newTestStatusBarModel(t)
+	m.SetWidth(200)
+	const pill = "resyncing…"
+	m.SetResyncPill(pill)
+	m.SetResyncPill("")
+	view := ansi.Strip(m.View())
+	if strings.Contains(view, pill) {
+		t.Errorf("View() should NOT contain resync pill %q after SetResyncPill(\"\"), got:\n%s", pill, view)
 	}
 }

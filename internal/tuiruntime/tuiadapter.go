@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"strconv"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -19,6 +21,16 @@ import (
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	tui "github.com/dmotles/sprawl/internal/tui"
 )
+
+// debugGapInjectEnv is a TEST-ONLY debug seam used by the QUM-669
+// `viewport-resync` e2e matrix row. If set to a positive uint64 N, the
+// adapter synthesizes one EventDropDetectedMsg{Missing: N} at the second
+// event of the current subscription, exercising the wedge-recovery path
+// end-to-end without needing to race a real slow subscriber. The synthesized
+// gap is one-shot per subscription (cleared after firing). This is NOT a
+// user-facing surface — do not document it outside the design doc / matrix
+// row script.
+const debugGapInjectEnv = "SPRAWL_DEBUG_GAP_INJECT"
 
 // adapterEventBufferSize is the per-subscription buffer used by the adapter.
 // Sized generously so a TUI render hiccup doesn't drop content blocks.
@@ -44,6 +56,21 @@ type TUIAdapter struct {
 	// subscribe + each successful Observe swap). WaitForEvent uses it to tell
 	// an Observe-driven channel close apart from a real EOF. (QUM-436 Item 2)
 	epoch uint64
+	// lastSeq tracks the last RuntimeEvent.Seq the adapter delivered to the
+	// TUI. Zero is a sentinel meaning "no event observed yet on the current
+	// subscription"; the first event after subscribe (or Observe swap) never
+	// triggers a gap msg. (QUM-669 §2.2)
+	lastSeq uint64
+	// pendingMsg holds the translated tea.Msg for an event that detected a
+	// gap. The gap notice (EventDropDetectedMsg) is returned first; the next
+	// WaitForEvent call drains pendingMsg before reading from the channel.
+	// (QUM-669 §2.2)
+	pendingMsg tea.Msg
+	// injectGap is the TEST-ONLY one-shot synthetic gap size read from
+	// SPRAWL_DEBUG_GAP_INJECT at subscribe time. When non-zero, the adapter
+	// fabricates an EventDropDetectedMsg with Missing=injectGap on the second
+	// event of the subscription, then zeros the field. See debugGapInjectEnv.
+	injectGap uint64
 }
 
 // NewTUIAdapter subscribes to the runtime's EventBus and returns an adapter
@@ -61,6 +88,20 @@ func (a *TUIAdapter) subscribe(rt *sprawlrt.UnifiedRuntime) {
 	a.events = ch
 	a.unsubscribe = unsub
 	a.epoch++
+	// Reset gap-detection baseline so the first event on the new subscription
+	// is never flagged as a drop (its Seq is unrelated to the previous bus's
+	// counter). (QUM-669 §2.2)
+	a.lastSeq = 0
+	a.pendingMsg = nil
+	// TEST-ONLY (QUM-669 viewport-resync e2e row): read the debug-gap-inject
+	// env var under the same lock that guards the rest of the adapter state.
+	// Ignore parse errors and zero values silently.
+	a.injectGap = 0
+	if raw := os.Getenv(debugGapInjectEnv); raw != "" {
+		if n, err := strconv.ParseUint(raw, 10, 64); err == nil && n > 0 {
+			a.injectGap = n
+		}
+	}
 }
 
 // Initialize returns a tea.Cmd that starts the underlying runtime. On
@@ -89,6 +130,14 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 	return func() tea.Msg {
 		for {
 			a.mu.Lock()
+			// Drain any pending translated msg from a prior gap-detection
+			// before reading from the channel. (QUM-669 §2.2)
+			if a.pendingMsg != nil {
+				msg := a.pendingMsg
+				a.pendingMsg = nil
+				a.mu.Unlock()
+				return msg
+			}
 			ch := a.events
 			cancelled := a.cancelled
 			epochAtRead := a.epoch
@@ -113,6 +162,58 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 				}
 				return tui.SessionErrorMsg{Err: io.EOF}
 			}
+
+			// Gap detection (QUM-669 §2.2): if we have a baseline lastSeq and
+			// this event's Seq is non-contiguous, emit an EventDropDetectedMsg
+			// first and stash any translated msg for the next call to drain.
+			a.mu.Lock()
+			// TEST-ONLY debug seam (QUM-669 viewport-resync row): synthesize a
+			// one-shot gap on the second event of the subscription so the
+			// resync path can be exercised end-to-end. The arriving event's
+			// real Seq is preserved for normal lastSeq tracking afterward.
+			if a.injectGap > 0 && a.lastSeq != 0 {
+				missing := a.injectGap
+				from := a.lastSeq
+				to := from + missing + 1
+				a.injectGap = 0
+				a.lastSeq = ev.Seq
+				if msg := tui.TranslateRuntimeEvent(ev, tui.InterruptedAsCompleted); msg != nil {
+					a.pendingMsg = msg
+				}
+				a.mu.Unlock()
+				return tui.EventDropDetectedMsg{From: from, To: to, Missing: missing}
+			}
+			// QUM-669 hardening: gap detection only fires on a FORWARD jump.
+			// EventBus.Publish serializes stamp+fanout so out-of-order delivery
+			// shouldn't be observable in production, but if a backwards or
+			// duplicate Seq slips through we'd otherwise underflow `missing` and
+			// surface a banner like "recovered 18446744073709551615 events".
+			// Treat ev.Seq <= a.lastSeq as a no-op (no gap msg, do not regress
+			// lastSeq) and fall through to normal translation.
+			gap := a.lastSeq != 0 && ev.Seq > a.lastSeq+1
+			if gap {
+				from := a.lastSeq
+				to := ev.Seq
+				missing := to - from - 1
+				a.lastSeq = ev.Seq
+				// Translate the gap-arriving event so its in-band msg still
+				// flows to the model on the next WaitForEvent call. If the
+				// translation is nil (lifecycle-only event), nothing to stash.
+				if msg := tui.TranslateRuntimeEvent(ev, tui.InterruptedAsCompleted); msg != nil {
+					a.pendingMsg = msg
+				}
+				a.mu.Unlock()
+				return tui.EventDropDetectedMsg{From: from, To: to, Missing: missing}
+			}
+			// Forward (contiguous) OR backward/duplicate (treat as no-op for
+			// gap accounting). In the backward case we deliberately do NOT
+			// rewind lastSeq — once we've crossed Seq=N, an older Seq=M<N is
+			// just a stale duplicate that should still translate normally for
+			// in-band UI.
+			if ev.Seq > a.lastSeq {
+				a.lastSeq = ev.Seq
+			}
+			a.mu.Unlock()
 
 			if msg := tui.TranslateRuntimeEvent(ev, tui.InterruptedAsCompleted); msg != nil {
 				return msg
@@ -191,6 +292,29 @@ func (a *TUIAdapter) SessionID() string {
 		return ""
 	}
 	return rt.SessionID()
+}
+
+// DropTelemetry exposes the observed runtime's EventBus drop telemetry to
+// the TUI status bar (QUM-681). Returns nil when no runtime is observed.
+// The runtime-side runtime.DropTelemetry is mirrored into the tui-side
+// tui.EventDropSnapshot so the tui package doesn't need to import
+// internal/runtime.
+func (a *TUIAdapter) DropTelemetry() map[string]tui.EventDropSnapshot {
+	a.mu.Lock()
+	rt := a.runtime
+	a.mu.Unlock()
+	if rt == nil {
+		return nil
+	}
+	src := rt.EventBus().DropTelemetry()
+	out := make(map[string]tui.EventDropSnapshot, len(src))
+	for k, v := range src {
+		out[k] = tui.EventDropSnapshot{
+			Cumulative: v.Cumulative,
+			LastDropAt: v.LastDropAt,
+		}
+	}
+	return out
 }
 
 // Observe swaps the adapter's observed runtime. The previous subscription is

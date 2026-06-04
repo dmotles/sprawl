@@ -126,6 +126,28 @@ type MessageEntry struct {
 	// after HeaderArg (QUM-419). Dropped at render time when including them
 	// would shrink the main arg below MinMainArgCells. MessageToolCall only.
 	HeaderParams []KVPair
+
+	// renderedCache / renderedCacheKey memoize this entry's rendered output
+	// to avoid re-glamouring already-Complete assistant text and re-rendering
+	// already-Complete tool calls on every renderAndUpdate (spinner ticks,
+	// streaming chunks elsewhere, selection moves). The fingerprint depends
+	// on Type:
+	//
+	//   MessageAssistant:  Complete | width | Content
+	//     (streaming, Complete=false, bypasses the cache entirely)
+	//   MessageToolCall:   Content (name) | Complete | Approved | Pending |
+	//                      Failed | Result | HeaderArg | HeaderParams |
+	//                      ToolInput | ToolInputFull | Depth | width |
+	//                      toolInputsExpanded | (spinnerFrame ONLY if Pending)
+	//     (Agent containers — Content=="Agent" — bypass because their render
+	//      depends on transient child entry state)
+	//   MessageSystemNotification: NotificationType | Interrupt | width | Content
+	//   other types:       Type | width | Content
+	//
+	// Selection state is intentionally NOT in the fingerprint: the gutter
+	// overlay is a post-render decoration in renderMessages.
+	renderedCache    string
+	renderedCacheKey string
 }
 
 // ViewportModel wraps a bubbles viewport with theme styling.
@@ -157,6 +179,23 @@ type ViewportModel struct {
 	// clears the map. (QUM-386)
 	activeAgents    map[string]bool
 	lastActiveAgent string
+	// disableRenderCacheForTest is a test-only escape hatch: when true,
+	// renderMessages skips both the cache lookup and the cache write, so
+	// benchmarks can measure the uncached cost (QUM-667).
+	disableRenderCacheForTest bool
+	// lastRenderedContent / lastRenderedFingerprint cache the full assembled
+	// rendered string from the previous renderMessages call. When the new
+	// render produces the same top-level fingerprint, renderMessages short-
+	// circuits and returns lastRenderedContent without walking entries.
+	// (QUM-667 second-level cache.)
+	lastRenderedContent     string
+	lastRenderedFingerprint string
+	// appliedContent is the last string passed to vp.SetContent. When
+	// renderAndUpdate sees an identical newly-rendered string, it skips the
+	// inner SetContent call — bubbles' SetContent walks the whole content
+	// with ansi.StringWidth to recompute wrap widths, which dominates the
+	// with-cache benchmark. (QUM-667.)
+	appliedContent string
 }
 
 // SelectionGutter is the visual prefix placed on selected message blocks when
@@ -239,6 +278,17 @@ func (m *ViewportModel) Height() int { return m.vp.Height() }
 
 // SetSize updates the viewport dimensions.
 func (m *ViewportModel) SetSize(w, h int) {
+	if w != m.width {
+		// QUM-667: width is part of every cache key. Eager zero-out is
+		// cheaper and clearer than lazy mismatch invalidation.
+		for i := range m.messages {
+			m.messages[i].renderedCache = ""
+			m.messages[i].renderedCacheKey = ""
+		}
+		m.lastRenderedContent = ""
+		m.lastRenderedFingerprint = ""
+		m.appliedContent = ""
+	}
 	m.width = w
 	m.vp.SetWidth(w)
 	m.vp.SetHeight(h)
@@ -576,6 +626,17 @@ func (m *ViewportModel) SetMessages(msgs []MessageEntry) {
 		}
 	}
 	m.renderAndUpdate()
+	// QUM-667: defensively zero cache fields so a GetMessages → SetMessages
+	// round-trip doesn't carry stale rendered output back in on the next
+	// render. Done after renderAndUpdate so the inner viewport content
+	// reflects the new messages but the per-entry cache is fresh.
+	for i := range m.messages {
+		m.messages[i].renderedCache = ""
+		m.messages[i].renderedCacheKey = ""
+	}
+	m.lastRenderedContent = ""
+	m.lastRenderedFingerprint = ""
+	m.appliedContent = ""
 }
 
 // IsSelecting reports whether the viewport is in select mode.
@@ -627,7 +688,16 @@ func (m *ViewportModel) SelectedRaw() string {
 
 func (m *ViewportModel) renderAndUpdate() {
 	rendered := m.renderMessages()
-	m.vp.SetContent(rendered)
+	// QUM-667: skip the inner SetContent call when the assembled content is
+	// byte-identical to the previously-applied value. bubbles' SetContent
+	// walks the whole string with ansi.StringWidth to recompute wrap widths,
+	// which dominates the with-cache benchmark. The disableRenderCacheForTest
+	// escape hatch keeps the no-cache benchmark calling SetContent every time
+	// so the speedup measurement remains apples-to-apples.
+	if m.disableRenderCacheForTest || rendered != m.appliedContent {
+		m.vp.SetContent(rendered)
+		m.appliedContent = rendered
+	}
 	if m.autoScroll {
 		m.vp.GotoBottom()
 	} else {
@@ -635,7 +705,119 @@ func (m *ViewportModel) renderAndUpdate() {
 	}
 }
 
+// entryCacheKey returns the cache fingerprint for entry e. A return value of
+// "" signals "do not cache" (streaming assistant text and Agent containers,
+// whose render depends on transient state outside the entry itself). (QUM-667)
+func (m *ViewportModel) entryCacheKey(e MessageEntry) string {
+	switch e.Type {
+	case MessageAssistant:
+		if !e.Complete {
+			return ""
+		}
+		return fmt.Sprintf("A|w=%d|%s", m.width, e.Content)
+	case MessageToolCall:
+		if e.Content == "Agent" {
+			return ""
+		}
+		spinner := ""
+		if e.Pending {
+			spinner = m.spinnerFrame
+		}
+		return fmt.Sprintf("T|w=%d|exp=%t|n=%s|c=%t|ap=%t|p=%t|f=%t|d=%d|ha=%s|hp=%s|ti=%s|tif=%s|res=%s|sp=%s",
+			m.width, m.toolInputsExpanded, e.Content, e.Complete, e.Approved,
+			e.Pending, e.Failed, e.Depth, e.HeaderArg, RenderKVPairs(e.HeaderParams),
+			e.ToolInput, e.ToolInputFull, e.Result, spinner)
+	case MessageSystemNotification:
+		return fmt.Sprintf("N|w=%d|t=%s|i=%t|%s", m.width, e.NotificationType, e.Interrupt, e.Content)
+	default:
+		return fmt.Sprintf("X|t=%d|w=%d|%s", e.Type, m.width, e.Content)
+	}
+}
+
+// renderEntryBlock is the type-switched render dispatcher extracted from
+// renderMessages. Reads msg by value — it does not mutate. (QUM-667)
+func (m *ViewportModel) renderEntryBlock(block *strings.Builder, msg MessageEntry, childrenOf map[string][]int) {
+	switch msg.Type {
+	case MessageUser:
+		block.WriteString(m.renderUserPromptBlock(msg.Content))
+	case MessageAssistant:
+		block.WriteString(m.renderer.Render(msg.Content))
+		if !msg.Complete {
+			block.WriteString(StreamingCursor)
+		}
+	case MessageToolCall:
+		switch {
+		case msg.Content == "Agent":
+			m.renderAgentContainer(block, msg, childrenOf[msg.ToolID])
+		case msg.Depth > 0:
+			m.renderNestedToolCall(block, msg)
+		default:
+			m.renderToolCall(block, msg)
+		}
+	case MessageStatus:
+		block.WriteString(m.theme.NormalText.Render("― " + msg.Content + " ―"))
+	case MessageError:
+		block.WriteString(m.theme.AccentText.Render("ERROR: "))
+		block.WriteString(msg.Content)
+	case MessageSystem:
+		formatted := formatSystemMessage(msg.Content, m.width)
+		block.WriteString(m.theme.SystemText.Render("✉ " + formatted))
+	case MessageSystemNotification:
+		// QUM-557 / QUM-562: left-bar accent + glyph + body, all under
+		// the same style so the row reads as a unified accent block.
+		// Tags are stripped at append/replay time; msg.Content is the
+		// raw body. Branch on NotificationType first, then on Interrupt
+		// within the message class.
+		glyph, style := notificationGlyphAndStyle(m.theme, msg)
+		formatted := formatSystemMessage(msg.Content, m.width)
+		block.WriteString(style.Render("│ " + glyph + " " + formatted))
+	case MessageBanner:
+		block.WriteString(msg.Content)
+	case MessageAutoTrigger:
+		// QUM-634: a "why this turn happened" header for autonomous turns,
+		// visually distinct from assistant text and the user bubble.
+		block.WriteString(m.theme.SystemText.Render("↻ auto-continued — " + msg.Content))
+	}
+}
+
+// renderMessagesFingerprint builds a fingerprint of all state that affects the
+// assembled renderMessages output. When the fingerprint matches the previous
+// call's value, renderMessages returns the cached assembled string without
+// walking entries. (QUM-667 second-level cache.)
+func (m *ViewportModel) renderMessagesFingerprint() string {
+	var fp strings.Builder
+	fmt.Fprintf(&fp, "v|w=%d|sel=%t", m.width, m.selection.Active)
+	if m.selection.Active {
+		lo, hi := m.selection.Range()
+		fmt.Fprintf(&fp, "|%d,%d", lo, hi)
+	}
+	fp.WriteByte('|')
+	for i := range m.messages {
+		e := m.messages[i]
+		k := m.entryCacheKey(e)
+		if k == "" {
+			// Bypass-cache entries (streaming assistant text / Agent
+			// containers): incorporate the bits that affect their render so
+			// changes invalidate the top-level cache.
+			fmt.Fprintf(&fp, "#%d:t=%d:c=%t:p=%t:f=%t:r=%s:n=%s:sp=%s:ct=%s|",
+				i, e.Type, e.Complete, e.Pending, e.Failed, e.Result,
+				e.ToolID, m.spinnerFrame, e.Content)
+		} else {
+			fp.WriteString(k)
+			fp.WriteByte('|')
+		}
+	}
+	return fp.String()
+}
+
 func (m *ViewportModel) renderMessages() string {
+	// QUM-667: top-level assembled-string cache. When the fingerprint of all
+	// state that affects the output is unchanged from the previous call,
+	// return the cached assembly without walking entries.
+	fp := m.renderMessagesFingerprint()
+	if !m.disableRenderCacheForTest && fp == m.lastRenderedFingerprint && m.lastRenderedContent != "" {
+		return m.lastRenderedContent
+	}
 	// QUM-386 Pass 1: build parent→children index for Agent containers.
 	childrenOf := make(map[string][]int)
 	childRendered := make(map[int]bool)
@@ -653,7 +835,7 @@ func (m *ViewportModel) renderMessages() string {
 	}
 	var sb strings.Builder
 	first := true
-	for i, msg := range m.messages {
+	for i := range m.messages {
 		if childRendered[i] {
 			continue
 		}
@@ -661,56 +843,36 @@ func (m *ViewportModel) renderMessages() string {
 			sb.WriteString("\n")
 		}
 		first = false
-		var block strings.Builder
-		switch msg.Type {
-		case MessageUser:
-			block.WriteString(m.renderUserPromptBlock(msg.Content))
-		case MessageAssistant:
-			block.WriteString(m.renderer.Render(msg.Content))
-			if !msg.Complete {
-				block.WriteString(StreamingCursor)
+		// QUM-667: consult per-entry render cache. The fingerprint depends
+		// only on entry-intrinsic state that affects the rendered bytes;
+		// selection state is intentionally post-decorated below.
+		key := m.entryCacheKey(m.messages[i])
+		var blockStr string
+		if key != "" && !m.disableRenderCacheForTest &&
+			key == m.messages[i].renderedCacheKey && m.messages[i].renderedCache != "" {
+			blockStr = m.messages[i].renderedCache
+		} else {
+			var block strings.Builder
+			m.renderEntryBlock(&block, m.messages[i], childrenOf)
+			blockStr = block.String()
+			if key != "" && !m.disableRenderCacheForTest {
+				m.messages[i].renderedCache = blockStr
+				m.messages[i].renderedCacheKey = key
 			}
-		case MessageToolCall:
-			switch {
-			case msg.Content == "Agent":
-				m.renderAgentContainer(&block, msg, childrenOf[msg.ToolID])
-			case msg.Depth > 0:
-				m.renderNestedToolCall(&block, msg)
-			default:
-				m.renderToolCall(&block, msg)
-			}
-		case MessageStatus:
-			block.WriteString(m.theme.NormalText.Render("― " + msg.Content + " ―"))
-		case MessageError:
-			block.WriteString(m.theme.AccentText.Render("ERROR: "))
-			block.WriteString(msg.Content)
-		case MessageSystem:
-			formatted := formatSystemMessage(msg.Content, m.width)
-			block.WriteString(m.theme.SystemText.Render("✉ " + formatted))
-		case MessageSystemNotification:
-			// QUM-557 / QUM-562: left-bar accent + glyph + body, all under
-			// the same style so the row reads as a unified accent block.
-			// Tags are stripped at append/replay time; msg.Content is the
-			// raw body. Branch on NotificationType first, then on Interrupt
-			// within the message class.
-			glyph, style := notificationGlyphAndStyle(m.theme, msg)
-			formatted := formatSystemMessage(msg.Content, m.width)
-			block.WriteString(style.Render("│ " + glyph + " " + formatted))
-		case MessageBanner:
-			block.WriteString(msg.Content)
-		case MessageAutoTrigger:
-			// QUM-634: a "why this turn happened" header for autonomous turns,
-			// visually distinct from assistant text and the user bubble.
-			block.WriteString(m.theme.SystemText.Render("↻ auto-continued — " + msg.Content))
 		}
 		if selecting && i >= selLo && i <= selHi {
-			sb.WriteString(addSelectionGutter(block.String(), m.theme.AccentText.Render(SelectionGutter)))
+			sb.WriteString(addSelectionGutter(blockStr, m.theme.AccentText.Render(SelectionGutter)))
 		} else {
-			sb.WriteString(block.String())
+			sb.WriteString(blockStr)
 		}
 		sb.WriteString("\n")
 	}
-	return sb.String()
+	result := sb.String()
+	if !m.disableRenderCacheForTest {
+		m.lastRenderedFingerprint = fp
+		m.lastRenderedContent = result
+	}
+	return result
 }
 
 // addSelectionGutter prefixes each line of block with the gutter marker so
