@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/backend"
@@ -636,19 +635,14 @@ func TestUnifiedStream_LiveEventBeforeBackfill_NotClobbered(t *testing.T) {
 	}
 }
 
-// -- QUM-463: child-panel spinner kick ---------------------------------------
+// -- QUM-463 (S4-rewrite): child-panel tool lifecycle -----------------------
 //
-// These tests cover the fix for QUM-463: when a child agent's live tool call
-// arrives via a ChildStreamMsg, the AppModel must
-//   (a) bump the global pendingToolCalls counter,
-//   (b) kick the spinner ticker (returned cmd is non-nil),
-//   (c) keep ticking even when the root viewport has nothing pending (gate
-//       must consult any-viewport pending state, not just rootVP).
-//
-// Each test currently FAILS because the production fix has not landed:
-// applyChildStreamInner does not bump the counter, ToolResult does not
-// decrement, and the spinner.TickMsg gate at app.go:717 only consults
-// rootVP().HasPendingToolCall().
+// Pre-S4 these tests pinned the global spinner counter / spinner.TickMsg
+// gate. QUM-674 removed the global spinner subsystem; per-item glyphs in
+// ToolCallItem replace the synchronized pulse. The behavioural intent is
+// preserved here as: live tool call from a child stream lands in BOTH stores
+// (vp.HasPendingToolCall + cl-not-Idle), and the matching tool result clears
+// them both.
 
 // setupChildAgentSelected wires up an AppModel with a unified-runtime-backed
 // alice child viewport and clears the backfill gate via empty
@@ -673,32 +667,25 @@ func setupChildAgentSelected(t *testing.T) (AppModel, uint64) {
 	return app, epoch
 }
 
-func TestChildStream_FirstToolCall_BumpsPendingCounter(t *testing.T) {
+func TestChildStream_FirstToolCall_LandsInBothStores(t *testing.T) {
 	app, epoch := setupChildAgentSelected(t)
 
-	if app.pendingToolCalls != 0 {
-		t.Fatalf("precondition: pendingToolCalls = %d, want 0", app.pendingToolCalls)
-	}
-
-	updated, cmd := app.Update(ChildStreamMsg{
+	updated, _ := app.Update(ChildStreamMsg{
 		Agent: "alice",
 		Epoch: epoch,
 		Inner: ToolCallMsg{ToolName: "Bash", ToolID: "t1", Approved: true, Input: "ls", FullInput: "ls"},
 	})
 	app = updated.(AppModel)
 
-	if app.pendingToolCalls != 1 {
-		t.Errorf("pendingToolCalls = %d, want 1 after first child ToolCallMsg", app.pendingToolCalls)
-	}
-	if cmd == nil {
-		t.Errorf("expected non-nil cmd (spinner.Tick should be kicked) after first child ToolCallMsg")
-	}
 	if !app.viewportFor("alice").HasPendingToolCall() {
 		t.Errorf("alice viewport HasPendingToolCall() = false, want true after live ToolCallMsg")
 	}
+	if buf := app.agentBuffers["alice"]; buf == nil || buf.cl.Idle() {
+		t.Errorf("alice cl must report not-Idle after live ToolCallMsg")
+	}
 }
 
-func TestChildStream_SecondToolCall_StillIncrements(t *testing.T) {
+func TestChildStream_ToolResult_ClearsBothStores(t *testing.T) {
 	app, epoch := setupChildAgentSelected(t)
 
 	updated, _ := app.Update(ChildStreamMsg{
@@ -707,56 +694,6 @@ func TestChildStream_SecondToolCall_StillIncrements(t *testing.T) {
 		Inner: ToolCallMsg{ToolName: "Bash", ToolID: "t1", Approved: true, Input: "ls", FullInput: "ls"},
 	})
 	app = updated.(AppModel)
-
-	updated, _ = app.Update(ChildStreamMsg{
-		Agent: "alice",
-		Epoch: epoch,
-		Inner: ToolCallMsg{ToolName: "Bash", ToolID: "t2", Approved: true, Input: "pwd", FullInput: "pwd"},
-	})
-	app = updated.(AppModel)
-
-	if app.pendingToolCalls != 2 {
-		t.Errorf("pendingToolCalls = %d, want 2 after two distinct child ToolCallMsg deliveries", app.pendingToolCalls)
-	}
-}
-
-func TestSpinnerTickGate_KeepsTickingWhenChildHasPending(t *testing.T) {
-	// Build the AppModel via the same registry helper so AppModel internals
-	// (theme, agentBuffers root, etc.) are wired up.
-	reg := supervisor.NewRuntimeRegistry()
-	sup := &supervisorWithRegistry{reg: reg}
-	app := newAppWithRegistry(t, sup)
-
-	// Force a child viewport to be pending. Don't touch rootVP.
-	app.viewportFor("alice").AppendToolCall("Bash", "t1", true, "ls", "ls")
-	app.pendingToolCalls = 1
-
-	if app.rootVP().HasPendingToolCall() {
-		t.Fatalf("precondition: rootVP must not have a pending tool call")
-	}
-	if !app.anyViewportHasPending() {
-		t.Errorf("anyViewportHasPending() = false; want true (alice has a pending tool call)")
-	}
-
-	updated, cmd := app.Update(spinner.TickMsg{})
-	_ = updated
-	if cmd == nil {
-		t.Errorf("spinner.TickMsg returned nil cmd; gate should keep ticking while a child viewport has a pending tool call")
-	}
-}
-
-func TestChildStream_ToolResult_DecrementsCounter(t *testing.T) {
-	app, epoch := setupChildAgentSelected(t)
-
-	updated, _ := app.Update(ChildStreamMsg{
-		Agent: "alice",
-		Epoch: epoch,
-		Inner: ToolCallMsg{ToolName: "Bash", ToolID: "t1", Approved: true, Input: "ls", FullInput: "ls"},
-	})
-	app = updated.(AppModel)
-	if app.pendingToolCalls != 1 {
-		t.Fatalf("precondition: pendingToolCalls = %d, want 1", app.pendingToolCalls)
-	}
 
 	updated, _ = app.Update(ChildStreamMsg{
 		Agent: "alice",
@@ -765,10 +702,10 @@ func TestChildStream_ToolResult_DecrementsCounter(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	if app.pendingToolCalls != 0 {
-		t.Errorf("pendingToolCalls = %d, want 0 after ToolResultMsg", app.pendingToolCalls)
-	}
 	if app.viewportFor("alice").HasPendingToolCall() {
 		t.Errorf("alice viewport HasPendingToolCall() = true after ToolResultMsg; want false")
+	}
+	if buf := app.agentBuffers["alice"]; buf == nil || !buf.cl.Idle() {
+		t.Errorf("alice cl must restore Idle after ToolResultMsg")
 	}
 }

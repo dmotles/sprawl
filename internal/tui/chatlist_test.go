@@ -300,19 +300,17 @@ func TestChatList_AppendSystemNotificationPeelsMultiple(t *testing.T) {
 	}
 }
 
-func TestChatList_AppendSystemNotificationFallbackForRawText(t *testing.T) {
+// TestChatList_AppendSystemNotificationDropsRawText pins the QUM-674 L3
+// alignment: no envelope means no cl item. The legacy vp side still
+// surfaces the text via AppendSystemMessage (a contract violator) which
+// trips HasContractViolators and routes the chat region via vp.View(), so
+// the user never loses the text — cl just doesn't duplicate-with-divergence.
+func TestChatList_AppendSystemNotificationDropsRawText(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)
 	cl.AppendSystemNotification("just a plain banner with no envelope")
-	if cl.Len() != 1 {
-		t.Fatalf("expected fallback to surface raw text as 1 item, got Len=%d", cl.Len())
-	}
-	item := cl.items[0].item.(*SystemNotificationItem)
-	if item.notificationType != NotificationKindMessage {
-		t.Errorf("fallback should default to message kind, got %q", item.notificationType)
-	}
-	if item.content == "" {
-		t.Errorf("fallback should preserve the input text")
+	if cl.Len() != 0 {
+		t.Errorf("L3: cl must drop raw-text notifications; got Len=%d", cl.Len())
 	}
 }
 

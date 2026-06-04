@@ -250,17 +250,22 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 
 // AppendSystemNotification peels one or more `<system-notification>`
 // envelopes off the input and appends one SystemNotificationItem per
-// envelope. When the input contains no envelope at all, the raw text is
-// surfaced as a single "message"-kind item so nothing is silently dropped.
-// Trailing residue after the last envelope is also surfaced as a
-// "message"-kind item.
+// envelope.
 //
-// Mirrors viewport.AppendSystemNotification's peel-loop + tail-residue
-// fallback (QUM-557/562/574) — the drain-row-inject matrix row's
-// expectations are inherited via this contract.
+// L3 alignment (QUM-674): when the input contains NO envelope at all, the
+// raw text is intentionally dropped from cl. The legacy vp side still
+// surfaces the text via its AppendSystemMessage fallback — that path creates
+// a MessageSystem entry (a ChatList "contract violator"), which trips
+// vp.HasContractViolators and routes chatRegionContent through vp.View() so
+// the user still sees the text. Surfacing it again in cl would diverge from
+// vp and double-render once S5 routes contract violators elsewhere.
+// Trailing residue after the last envelope is similarly dropped.
+//
+// Mirrors viewport.AppendSystemNotification's peel-loop (QUM-557/562/574)
+// for the envelope path — the drain-row-inject matrix row's expectations
+// are inherited via this contract.
 func (c *ChatList) AppendSystemNotification(text string) {
 	rest := text
-	appended := false
 	for {
 		stripped, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(rest)
 		if !ok {
@@ -269,23 +274,7 @@ func (c *ChatList) AppendSystemNotification(text string) {
 		c.items = append(c.items, &itemEnvelope{
 			item: NewSystemNotificationItem(&c.ctx, stripped, notifType, isInterrupt),
 		})
-		appended = true
 		rest = remaining
-	}
-	if !appended {
-		// No envelope at all — surface as a plain message-kind notification
-		// so the user still sees something. The legacy viewport falls back
-		// to AppendSystemMessage (mail-glyph); ChatList has no system-
-		// message surface (S5 routing), so we render under the message kind.
-		c.items = append(c.items, &itemEnvelope{
-			item: NewSystemNotificationItem(&c.ctx, text, NotificationKindMessage, false),
-		})
-		return
-	}
-	if strings.TrimSpace(rest) != "" {
-		c.items = append(c.items, &itemEnvelope{
-			item: NewSystemNotificationItem(&c.ctx, rest, NotificationKindMessage, false),
-		})
 	}
 }
 
@@ -354,6 +343,12 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 			// skip per the ChatList contract — surfaced via vp fallback.
 		}
 	}
+	// L2 (QUM-674): Reset is a snapshot-replay entry point (preload /
+	// restart / resync / waiting-banner / child transcript). A transcript
+	// with a trailing Complete=false assistant entry would otherwise leave
+	// streamingAssistant=true, sticking cl in not-Idle indefinitely. Force-
+	// finalize the trailing assistant so Reset always lands in a clean state.
+	c.FinalizeAssistantMessage()
 }
 
 // Render walks every envelope, hitting per-item caches keyed by

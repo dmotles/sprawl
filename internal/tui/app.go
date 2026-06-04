@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
@@ -95,13 +94,16 @@ func (b *AgentBuffer) AppendToolCallWithHeader(name, toolID string, approved boo
 	b.cl.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, headerArg, headerParams, parentToolUseID)
 }
 
-// MarkToolResult dual-resolves a pending tool call on both stores. The
-// return value is the vp result (the load-bearing one — drives the spinner
-// counter and matrix-row assertions); cl's mirror is best-effort. QUM-673 S3.
+// MarkToolResult dual-resolves a pending tool call on both stores. Returns
+// true if EITHER store matched the toolID — the disjunction is L1 (QUM-674):
+// when vp/cl diverge (e.g. cl received a live ToolCallMsg the vp dropped, or
+// the converse during recovery), the spinner counter must still drain on a
+// cl-only match. The legacy behavior of returning only vp's result risked
+// stranding cl in pendingTools>0 → not-Idle indefinitely.
 func (b *AgentBuffer) MarkToolResult(toolID, content string, isError bool) bool {
-	matched := b.vp.MarkToolResult(toolID, content, isError)
-	b.cl.MarkToolResult(toolID, content, isError)
-	return matched
+	vpMatched := b.vp.MarkToolResult(toolID, content, isError)
+	clMatched := b.cl.MarkToolResult(toolID, content, isError)
+	return vpMatched || clMatched
 }
 
 // AppendSystemNotification dual-appends a notification envelope. QUM-673 S3.
@@ -245,13 +247,10 @@ type AppModel struct {
 	// creation in viewportFor.
 	toolInputsExpanded bool
 
-	// spinner drives the in-flight indicator for pending tool calls
-	// (QUM-336). A single global spinner ticks while pendingToolCalls > 0,
-	// pushing its current frame to every per-agent viewport. When the
-	// counter drops to zero the AppModel stops re-issuing tick commands so
-	// no idle CPU is consumed.
-	spinner          spinner.Model
-	pendingToolCalls int
+	// QUM-674 S4: the global spinner subsystem (QUM-336) was removed when
+	// streaming + tool-call lifecycle moved into ChatList. ToolCallItem
+	// renders its own static glyph (⠿/✓/✗) per resolved Q6=option-a. The
+	// loss of synchronized pulse is accepted.
 
 	// pendingSubmit holds the next user message stashed while weave is mid-turn
 	// (QUM-340). Single slot — typing a fresh message and hitting Enter again
@@ -331,8 +330,6 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 	// Init/Update fires, so lazy-init via viewportFor would arrive too late
 	// (QUM-334 §5). Child agent buffers are still lazy.
 	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme), cl: NewChatList(&theme)}
-	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
-	sp.Style = theme.AccentText
 	// Set the root viewport's initial content to the session banner.
 	initialSessionID := ""
 	if bridge != nil {
@@ -359,7 +356,6 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		activePanel:         startPanel,
 		theme:               theme,
 		restartFunc:         restartFunc,
-		spinner:             sp,
 		version:             version,
 		history:             NewHistory(sprawlRoot),
 		activeMCPOps:        make(map[string]OpDescriptor),
@@ -830,11 +826,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusBar.SetTokenUsage(im.InputTokens + im.CacheReadInputTokens + im.CacheCreationInputTokens)
 			case ToolCallMsg:
 				m.rootBuf().AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
-				wasZero := m.pendingToolCalls == 0
-				m.pendingToolCalls++
-				if wasZero {
-					cmds = append(cmds, m.spinner.Tick)
-				}
 			}
 		}
 		if m.bridge != nil {
@@ -855,60 +846,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ToolCallMsg:
 		m.rootBuf().AppendToolCallWithHeader(msg.ToolName, msg.ToolID, msg.Approved, msg.Input, msg.FullInput, msg.HeaderArg, msg.HeaderParams, msg.ParentToolUseID)
-		// Bump the pending counter and (re)start the spinner ticker if this
-		// is the first in-flight call (QUM-336). The spinner self-perpetuates
-		// via spinner.Update returning the next tick cmd, but we gate that
-		// at the AppModel level — see spinner.TickMsg case below.
-		wasZero := m.pendingToolCalls == 0
-		m.pendingToolCalls++
-		var cmds []tea.Cmd
-		if wasZero {
-			cmds = append(cmds, m.spinner.Tick)
-		}
-		if m.bridge != nil {
-			cmds = append(cmds, m.bridge.WaitForEvent())
-		}
-		switch len(cmds) {
-		case 0:
-			return m, nil
-		case 1:
-			return m, cmds[0]
-		default:
-			return m, tea.Batch(cmds...)
-		}
-
-	case ToolResultMsg:
-		// Route to the root viewport (bridge events are weave-only per
-		// QUM-334's gating). MarkToolResult returns false for orphan IDs;
-		// only decrement the pending counter on a real match so the
-		// spinner keeps animating until every in-flight call resolves.
-		if m.rootBuf().MarkToolResult(msg.ToolID, msg.Content, msg.IsError) {
-			if m.pendingToolCalls > 0 {
-				m.pendingToolCalls--
-			}
-		}
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
 		return m, nil
 
-	case spinner.TickMsg:
-		// Drop ticks once no tool call is in flight — this is how the
-		// ticker stops without leaking work (QUM-336 AC-7). The counter
-		// can drift if an entire session ends with calls still pending
-		// (e.g. an EOF mid-turn); reconcile against the viewport's actual
-		// state so a stale counter cannot keep ticking forever.
-		if m.pendingToolCalls == 0 || !m.anyViewportHasPending() {
-			m.pendingToolCalls = 0
-			return m, nil
+	case ToolResultMsg:
+		// Route to the root buffer (bridge events are weave-only per
+		// QUM-334's gating). QUM-674 S4: the global spinner counter was
+		// removed; MarkToolResult's return is purely advisory now.
+		_ = m.rootBuf().MarkToolResult(msg.ToolID, msg.Content, msg.IsError)
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
 		}
-		var cmd tea.Cmd
-		m.spinner, cmd = m.spinner.Update(msg)
-		frame := m.spinner.View()
-		for _, buf := range m.agentBuffers {
-			buf.vp.SetSpinnerFrame(frame)
-		}
-		return m, cmd
+		return m, nil
 
 	case SessionResultMsg:
 		// Display result text only if no assistant text was already streamed.
@@ -1125,9 +1076,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// by ChatList.Reset (contract violators); cl ends up empty + Idle, and
 		// chatRegionContent falls back to vp.View() so the banner renders.
 		buf.SetMessages(preserved)
-		// New session starts with no in-flight tool calls; reset the
-		// counter so any stale tick is dropped on next arrival (QUM-336).
-		m.pendingToolCalls = 0
 		// QUM-497: drop any in-flight MCP op state from the prior session
 		// so a stale call_id can't keep ticking on the new bar.
 		m.activeMCPOps = make(map[string]OpDescriptor)
@@ -2148,33 +2096,29 @@ func (m *AppModel) agentBufferFor(name string) *AgentBuffer {
 // shared wrappers.
 func (m *AppModel) rootBuf() *AgentBuffer { return m.agentBufferFor(m.rootAgent) }
 
-// anyViewportHasPending reports whether any agent buffer's viewport has an
-// in-flight tool call. Used to gate spinner ticking across child viewports.
-func (m *AppModel) anyViewportHasPending() bool {
-	for _, buf := range m.agentBuffers {
-		if buf.vp.HasPendingToolCall() {
-			return true
-		}
-	}
-	return false
-}
-
 // observedVP returns the viewport for the currently-observed agent. Used
 // by View() and select-mode helpers.
 func (m *AppModel) observedVP() *ViewportModel { return m.viewportFor(m.observedAgent) }
 
-// chatRegionContent is the QUM-673 S3 chat-panel string source. When the
-// observed agent's ChatList has finished items and is idle (no streaming
-// assistant, no in-flight tool call), it pipes the ChatList's per-item-cached
-// render into the inner bubbles viewport so scroll machinery (PgUp/PgDn,
-// auto-scroll, "new content" indicator) is preserved. Otherwise (streaming,
-// pending tool, empty ChatList — e.g. status placeholders the contract
-// excludes from items), the legacy renderMessages path on vp drives the
-// chat region unchanged.
+// chatRegionContent is the QUM-674 S4 chat-panel string source. ChatList
+// drives rendering in all cases — including streaming assistant text and
+// pending tool calls (the S3 "in-flight → fall back to vp" branch is gone).
+// The ChatList per-item cache handles finished items; in-flight items bypass
+// the cache and rebuild on every Render (cheap because only the in-flight
+// item is uncached). Tool-call lifecycle (pending → finished) is owned by
+// ToolCallItem; the global spinner subsystem was deleted in this slice.
+//
+// vp.View() remains the outer rendering target so the scroll machinery
+// (PgUp/PgDn, auto-scroll, "new content" indicator) is preserved — cl's
+// per-item-cached render is piped in via SetContentExternal.
+//
+// vp.HasContractViolators / cl.Len()==0 still falls through to vp.View()
+// directly: contract violators (status / banner / error / system) are S5's
+// re-routing concern; until then vp keeps owning their surface.
 func (m *AppModel) chatRegionContent(contentWidth int) string {
 	vp := m.observedVP()
 	buf := m.agentBuffers[m.observedAgent]
-	if buf != nil && buf.cl != nil && buf.cl.Idle() && buf.cl.Len() > 0 &&
+	if buf != nil && buf.cl != nil && buf.cl.Len() > 0 &&
 		contentWidth > 0 && !vp.HasContractViolators() {
 		vp.SetContentExternal(buf.cl.Render(contentWidth))
 	}
@@ -2726,23 +2670,13 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 		} else {
 			vp.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
 		}
-		wasZero := m.pendingToolCalls == 0
-		m.pendingToolCalls++
-		if wasZero {
-			return m.spinner.Tick
-		}
 		return nil
 	case ToolResultMsg:
-		var matched bool
+		// QUM-674 S4: per-item glyph; no global spinner counter to drain.
 		if buf != nil {
-			matched = buf.MarkToolResult(im.ToolID, im.Content, im.IsError)
+			_ = buf.MarkToolResult(im.ToolID, im.Content, im.IsError)
 		} else {
-			matched = vp.MarkToolResult(im.ToolID, im.Content, im.IsError)
-		}
-		if matched {
-			if m.pendingToolCalls > 0 {
-				m.pendingToolCalls--
-			}
+			_ = vp.MarkToolResult(im.ToolID, im.Content, im.IsError)
 		}
 		return nil
 	case SessionResultMsg:
