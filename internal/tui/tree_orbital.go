@@ -120,17 +120,48 @@ var (
 )
 
 // OrbitalHeight reports how many rows RenderTreeOrbital will produce at the
-// given terminal width. Zero width yields zero rows so callers can subtract
-// safely on degenerate sizes; widths below the narrow threshold collapse to a
-// single breadcrumb line; wide widths get three orbital rows (one per root).
-func OrbitalHeight(width int) int {
+// given terminal width for the supplied node topology. Zero width yields zero
+// rows so callers can subtract safely on degenerate sizes. Below the narrow
+// threshold the renderer normally collapses to a single breadcrumb, EXCEPT
+// when weave has manager-typed children — that case (QUM-688) forces the
+// multi-row pivot layout even at narrow widths so each manager keeps its own
+// anchor row. Wide widths always get three rows (blank-padded).
+//
+// QUM-688: signature took only width before; it now also takes the node list
+// so the height matches the renderer's topology-dependent row count. The
+// invariant `OrbitalHeight(W, nodes) == len(RenderTreeOrbital(nodes, "", W))`
+// must hold at every width.
+func OrbitalHeight(width int, nodes []TreeNode) int {
 	if width <= 0 {
 		return 0
 	}
-	if width < wordmarkNarrowThreshold {
+	if width < wordmarkNarrowThreshold && !weaveHasManagerChild(nodes) {
 		return 1
 	}
 	return 3
+}
+
+// weaveHasManagerChild reports whether the supplied node list matches the
+// pivot condition used inside RenderTreeOrbital: a single depth-0 root of
+// type "weave" with at least one depth-1 manager child. Kept in lockstep
+// with the pivot guard at the top of RenderTreeOrbital.
+func weaveHasManagerChild(nodes []TreeNode) bool {
+	var rootCount int
+	var rootIsWeave bool
+	var managerSeen bool
+	for _, n := range nodes {
+		if n.Depth == 0 {
+			rootCount++
+			if rootCount == 1 {
+				rootIsWeave = n.Type == "weave"
+			}
+			continue
+		}
+		if n.Depth == 1 && n.Type == "manager" {
+			managerSeen = true
+		}
+	}
+	return rootCount == 1 && rootIsWeave && managerSeen
 }
 
 // RenderTreeOrbital returns the orbital-pill rendering of the tree. width is
@@ -155,6 +186,13 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 	if width <= 0 {
 		return nil
 	}
+	// QUM-688: narrow mode normally collapses to a single breadcrumb line.
+	// That choice is wrong when weave has manager children — the manager
+	// pivot (QUM-686) must still produce one row per manager so the
+	// hierarchy stays visible. `narrow` here only gates the breadcrumb
+	// path; the multi-row pivot path is reached even when width is below
+	// wordmarkNarrowThreshold, and ansi.Truncate clamps each row to the
+	// budget.
 	narrow := width < wordmarkNarrowThreshold
 	now := time.Now()
 
@@ -189,7 +227,9 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 	// of a pivoted manager are rebased to depth 1 so they render as inline
 	// orbits of the manager. Depth-2 descendants of a non-manager direct
 	// weave child stay attached to weave as grandchildren (↳ glyph).
+	pivoted := false
 	if len(roots) == 1 && roots[0].root.Type == "weave" && hasManagerChild(roots[0].children) {
+		pivoted = true
 		w := roots[0]
 		newWeave := rootGroup{root: w.root}
 		var managerRows []rootGroup
@@ -289,7 +329,7 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		return b.String()
 	}
 
-	if narrow {
+	if narrow && !pivoted {
 		// Breadcrumb: per-root chains joined with " · ", root→child joined with
 		// " → ". Only render the first child of each root (single-line budget).
 		var chunks []string

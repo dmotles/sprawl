@@ -183,8 +183,8 @@ func TestRenderTreeOrbital_NarrowWidth_SingleLine(t *testing.T) {
 		{Name: "weave", Type: "weave", Depth: 0},
 		{Name: "finn", Type: "engineer", Depth: 1},
 	}
-	if got, want := OrbitalHeight(50), 1; got != want {
-		t.Fatalf("OrbitalHeight(50) = %d, want %d", got, want)
+	if got, want := OrbitalHeight(50, nodes), 1; got != want {
+		t.Fatalf("OrbitalHeight(50, nodes) = %d, want %d", got, want)
 	}
 	lines := RenderTreeOrbital(nodes, "", 50)
 	if got, want := len(lines), 1; got != want {
@@ -459,6 +459,120 @@ func TestRenderTreeOrbital_QUM686_LivePipeline_SingleEngineer_Regression(t *test
 	}
 }
 
+// QUM-688: at narrow widths (W < wordmarkNarrowThreshold), if weave has a
+// manager-typed child the tree must render multi-row (weave on row 0, manager
+// on its own row below) — NOT collapse to a single breadcrumb. The 2026-06-04
+// live tmux capture (81-cell pane, tree budget < 70) hit the narrow branch and
+// merged weave + researcher + manager into one line; QUM-686's pivot was
+// unreachable.
+func TestRenderTreeOrbital_NarrowKeepsManagerRows(t *testing.T) {
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Depth: 0},
+		{Name: "ghost", Type: "researcher", Depth: 1},
+		{Name: "tower", Type: "manager", Depth: 1},
+	}
+	lines := RenderTreeOrbital(nodes, "", 40)
+	if len(lines) < 2 {
+		t.Fatalf("narrow + manager-child topology must render ≥2 rows; got %d row(s): %q", len(lines), lines)
+	}
+	row0 := stripAnsi(lines[0])
+	if !strings.Contains(row0, "weave") {
+		t.Errorf("row 0 must anchor weave; got: %q", row0)
+	}
+	// Manager 'tower' must appear on a row OTHER than row 0.
+	if strings.Contains(row0, "tower") {
+		t.Errorf("row 0 must NOT contain manager 'tower' (it belongs on its own row); got: %q", row0)
+	}
+	towerOnSomeOtherRow := false
+	for i := 1; i < len(lines); i++ {
+		if strings.Contains(stripAnsi(lines[i]), "tower") {
+			towerOnSomeOtherRow = true
+			break
+		}
+	}
+	if !towerOnSomeOtherRow {
+		t.Errorf("manager 'tower' must appear on a row distinct from weave's; lines: %q", lines)
+	}
+}
+
+// QUM-688: width sweep. Same topology (weave + researcher + manager + a
+// depth-2 engineer under the manager) through a range of widths. Whenever
+// managers are present, the renderer must produce multi-row output and place
+// the manager on its own row above some small minimum width.
+func TestRenderTreeOrbital_WidthSweep_ManagerKeepsOwnRow(t *testing.T) {
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Depth: 0},
+		{Name: "ghost", Type: "researcher", Depth: 1},
+		{Name: "tower", Type: "manager", Depth: 1},
+		{Name: "ratz", Type: "engineer", Depth: 2},
+	}
+	for _, w := range []int{20, 40, 60, 70, 90, 120} {
+		lines := RenderTreeOrbital(nodes, "", w)
+		if len(lines) < 2 {
+			t.Errorf("width=%d: managers present must yield ≥2 rows; got %d: %q", w, len(lines), lines)
+			continue
+		}
+		// Manager name on its own row (not on row 0).
+		row0 := stripAnsi(lines[0])
+		if strings.Contains(row0, "tower") {
+			t.Errorf("width=%d: row 0 should not contain manager 'tower'; got: %q", w, row0)
+		}
+		found := false
+		for i := 1; i < len(lines); i++ {
+			if strings.Contains(stripAnsi(lines[i]), "tower") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("width=%d: manager 'tower' missing from non-row-0; lines: %q", w, lines)
+		}
+	}
+}
+
+// QUM-688: OrbitalHeight(width, nodes) must equal len(RenderTreeOrbital(nodes,
+// "", width)) at every width. This is the parity invariant the layout sizing
+// code depends on.
+func TestOrbitalHeight_ParityWithRender(t *testing.T) {
+	topologies := map[string][]TreeNode{
+		"weave-only": {
+			{Name: "weave", Type: "weave", Depth: 0},
+		},
+		"weave+engineer": {
+			{Name: "weave", Type: "weave", Depth: 0},
+			{Name: "finn", Type: "engineer", Depth: 1},
+		},
+		"weave+researcher+manager+engineer": {
+			{Name: "weave", Type: "weave", Depth: 0},
+			{Name: "ghost", Type: "researcher", Depth: 1},
+			{Name: "tower", Type: "manager", Depth: 1},
+			{Name: "ratz", Type: "engineer", Depth: 2},
+		},
+	}
+	for name, nodes := range topologies {
+		for _, w := range []int{20, 40, 60, 69, 70, 90, 120} {
+			got := OrbitalHeight(w, nodes)
+			rendered := len(RenderTreeOrbital(nodes, "", w))
+			if got != rendered {
+				t.Errorf("topology=%s width=%d: OrbitalHeight=%d, len(RenderTreeOrbital)=%d", name, w, got, rendered)
+			}
+		}
+	}
+}
+
+// QUM-688: weave-only narrow case must still collapse to a single breadcrumb
+// line — the narrow optimization is preserved when no managers force a pivot.
+func TestRenderTreeOrbital_Narrow_WeaveOnly_StillSingleBreadcrumb(t *testing.T) {
+	nodes := []TreeNode{
+		{Name: "weave", Type: "weave", Depth: 0},
+		{Name: "finn", Type: "engineer", Depth: 1},
+	}
+	lines := RenderTreeOrbital(nodes, "", 40)
+	if got, want := len(lines), 1; got != want {
+		t.Fatalf("weave + non-manager engineer at narrow width must stay single breadcrumb; got %d rows: %q", got, lines)
+	}
+}
+
 func TestRenderTreeOrbital_Empty(t *testing.T) {
 	lines := RenderTreeOrbital(nil, "", 80)
 	if got, want := len(lines), 3; got != want {
@@ -487,6 +601,8 @@ func TestRenderTreeOrbital_ZeroWidth(t *testing.T) {
 }
 
 func TestOrbitalHeight_Boundary(t *testing.T) {
+	// Simple weave-only topology — narrow widths collapse to 1 row.
+	nodes := []TreeNode{{Name: "weave", Type: "weave", Depth: 0}}
 	cases := []struct {
 		width, want int
 	}{
@@ -496,8 +612,8 @@ func TestOrbitalHeight_Boundary(t *testing.T) {
 		{120, 3},
 	}
 	for _, tc := range cases {
-		if got := OrbitalHeight(tc.width); got != tc.want {
-			t.Errorf("OrbitalHeight(%d) = %d, want %d", tc.width, got, tc.want)
+		if got := OrbitalHeight(tc.width, nodes); got != tc.want {
+			t.Errorf("OrbitalHeight(%d, weave-only) = %d, want %d", tc.width, got, tc.want)
 		}
 	}
 }
