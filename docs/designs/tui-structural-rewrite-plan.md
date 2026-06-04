@@ -215,6 +215,14 @@ decomposes the same end-state into 6-7 daily-driver-shippable steps.
 
 ---
 
+> **ChatList Contract Invariants.** The invariants the slices below
+> depend on — what ChatList accepts/rejects, ordering/mutability rules,
+> render cache contract, `Idle()` semantics, the dual-append shim's
+> guarantees, and the QUM-669 resync semantics S6 must preserve — are
+> extracted from the shipped S1–S4 code in
+> `docs/designs/chatlist-invariants.md` (QUM-683). S5 and S6 implementers
+> should read that doc before dispatch.
+
 ## 3. Vertical-slice arc
 
 Naming convention: **S<n>** in this doc; Linear issues to be filed
