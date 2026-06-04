@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
@@ -38,6 +39,8 @@ type WeaveRuntimeHandle struct {
 	stopActivity  func()
 	sprawlRoot    string
 	name          string
+
+	ring *agentloop.ActivityRing
 
 	stopOnce sync.Once
 	stopErr  error
@@ -77,6 +80,7 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 		stopActivity: stopActivity,
 		sprawlRoot:   sprawlRoot,
 		name:         name,
+		ring:         ring,
 	}, nil
 }
 
@@ -178,6 +182,16 @@ func (h *WeaveRuntimeHandle) SessionID() string { return h.sessionID }
 // currently servicing an autonomous (SDK-initiated) turn frame. See
 // QUM-585 — surfaced through the peek MCP tool's JSON payload.
 func (h *WeaveRuntimeHandle) InAutonomousTurn() bool { return h.session.InAutonomousTurn() }
+
+// LastActivityAt returns the timestamp of the most recently recorded
+// activity-ring entry on this runtime. Zero time when the ring is empty.
+// (QUM-665)
+func (h *WeaveRuntimeHandle) LastActivityAt() time.Time {
+	if h.ring == nil {
+		return time.Time{}
+	}
+	return h.ring.LastAt()
+}
 
 // IsTerminallyFaulted reports whether the underlying backend session has been
 // poisoned with a sticky terminal error (QUM-601). Mirrors unifiedHandle.

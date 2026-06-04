@@ -265,6 +265,22 @@ func (r *AgentRuntime) InAutonomousTurn() bool {
 	return probe.InAutonomousTurn()
 }
 
+// LastActivityAt returns the timestamp of the most recently recorded
+// activity-ring entry on the live RuntimeHandle. Zero time when the
+// runtime is not started, has been stopped, or the handle does not
+// implement the optional LastActivityAt() time.Time method. (QUM-665)
+func (r *AgentRuntime) LastActivityAt() time.Time {
+	h := r.currentHandle()
+	if h == nil {
+		return time.Time{}
+	}
+	probe, ok := h.(lastActivityProbe)
+	if !ok {
+		return time.Time{}
+	}
+	return probe.LastActivityAt()
+}
+
 // IsTerminallyFaulted reports whether the live RuntimeHandle's backend session
 // has been terminally faulted (terminalErr set). Returns false when the runtime
 // is not started, has been stopped, or the handle does not implement the

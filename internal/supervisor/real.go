@@ -406,6 +406,8 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 	}
 
 	processAliveByName := make(map[string]*bool)
+	inAutonomousTurnByName := make(map[string]bool)
+	lastActivityAtByName := make(map[string]time.Time)
 	for _, runtime := range r.runtimeRegistry.List() {
 		snap := runtime.Snapshot()
 		// Derive process_alive from the AgentLiveness projection (QUM-615 M1)
@@ -420,6 +422,8 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			TerminalErr:      runtime.IsTerminallyFaulted(),
 			InAutonomousTurn: runtime.InAutonomousTurn(),
 		})
+		inAutonomousTurnByName[snap.Name] = runtime.InAutonomousTurn()
+		lastActivityAtByName[snap.Name] = runtime.LastActivityAt()
 		if st.Liveness == liveness.Unstarted {
 			continue // leave process_alive absent (nil) — preserves registered/unknown semantics
 		}
@@ -429,6 +433,13 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 
 	result := make([]AgentInfo, 0, len(agents))
 	for _, a := range agents {
+		lastActivity := lastActivityAtByName[a.Name]
+		if lastActivity.IsZero() {
+			entries, err := agentloop.ReadActivityFile(agentloop.ActivityPath(r.sprawlRoot, a.Name), 1)
+			if err == nil && len(entries) > 0 {
+				lastActivity = entries[len(entries)-1].TS
+			}
+		}
 		result = append(result, AgentInfo{
 			Name:              a.Name,
 			Type:              a.Type,
@@ -443,6 +454,8 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			LastReportDetail:  a.LastReportDetail,
 			TotalCostUsd:      a.TotalCostUsd,
 			ProcessAlive:      processAliveByName[a.Name],
+			InAutonomousTurn:  inAutonomousTurnByName[a.Name],
+			LastActivityAt:    lastActivity,
 		})
 	}
 	return result, nil

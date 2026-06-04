@@ -526,8 +526,8 @@ func TestServer_ToolsCall_SprawlDelegate(t *testing.T) {
 	msg := makeJSONRPCRequest(5, "tools/call", map[string]any{
 		"name": "delegate",
 		"arguments": map[string]any{
-			"agent_name": "ratz",
-			"task":       "implement feature Y",
+			"agent": "ratz",
+			"task":  "implement feature Y",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -556,7 +556,7 @@ func TestServer_ToolsCall_SprawlMerge(t *testing.T) {
 	msg := makeJSONRPCRequest(7, "tools/call", map[string]any{
 		"name": "merge",
 		"arguments": map[string]any{
-			"agent_name":  "ratz",
+			"agent":       "ratz",
 			"message":     "merge commit msg",
 			"no_validate": true,
 		},
@@ -624,7 +624,7 @@ func TestToolMerge_SuccessReturnsMergedAgent(t *testing.T) {
 	msg := makeJSONRPCRequest(700, "tools/call", map[string]any{
 		"name": "merge",
 		"arguments": map[string]any{
-			"agent_name": "engX",
+			"agent": "engX",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -651,7 +651,7 @@ func TestToolMerge_NoOpReturnsNothingToMerge(t *testing.T) {
 	msg := makeJSONRPCRequest(701, "tools/call", map[string]any{
 		"name": "merge",
 		"arguments": map[string]any{
-			"agent_name": "engX",
+			"agent": "engX",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -673,8 +673,8 @@ func TestServer_ToolsCall_SprawlRetire(t *testing.T) {
 	msg := makeJSONRPCRequest(8, "tools/call", map[string]any{
 		"name": "retire",
 		"arguments": map[string]any{
-			"agent_name": "ratz",
-			"merge":      true,
+			"agent": "ratz",
+			"merge": true,
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -715,9 +715,9 @@ func TestServer_ToolsCall_SprawlRetire_Cascade(t *testing.T) {
 	msg := makeJSONRPCRequest(80, "tools/call", map[string]any{
 		"name": "retire",
 		"arguments": map[string]any{
-			"agent_name": "manager-x",
-			"cascade":    true,
-			"abandon":    true,
+			"agent":   "manager-x",
+			"cascade": true,
+			"abandon": true,
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -755,9 +755,9 @@ func TestServer_ToolsCall_SprawlRetire_ValidateFalse(t *testing.T) {
 	msg := makeJSONRPCRequest(81, "tools/call", map[string]any{
 		"name": "retire",
 		"arguments": map[string]any{
-			"agent_name": "ratz",
-			"merge":      true,
-			"validate":   false,
+			"agent":    "ratz",
+			"merge":    true,
+			"validate": false,
 		},
 	})
 	if _, err := srv.HandleMessage(ctx, msg); err != nil {
@@ -776,9 +776,9 @@ func TestServer_ToolsCall_SprawlRetire_MergeAndAbandonMutuallyExclusive(t *testi
 	msg := makeJSONRPCRequest(82, "tools/call", map[string]any{
 		"name": "retire",
 		"arguments": map[string]any{
-			"agent_name": "ratz",
-			"merge":      true,
-			"abandon":    true,
+			"agent":   "ratz",
+			"merge":   true,
+			"abandon": true,
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -816,7 +816,7 @@ func TestServer_ToolsCall_SprawlKill(t *testing.T) {
 	msg := makeJSONRPCRequest(9, "tools/call", map[string]any{
 		"name": "kill",
 		"arguments": map[string]any{
-			"agent_name": "ratz",
+			"agent": "ratz",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -933,8 +933,8 @@ func TestServer_ToolsCall_SupervisorError(t *testing.T) {
 	msg := makeJSONRPCRequest(11, "tools/call", map[string]any{
 		"name": "delegate",
 		"arguments": map[string]any{
-			"agent_name": "nonexistent",
-			"task":       "do something",
+			"agent": "nonexistent",
+			"task":  "do something",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -1727,8 +1727,8 @@ func TestServer_ToolsCall_SprawlMerge_PassesCallerFromContext(t *testing.T) {
 	msg := makeJSONRPCRequest(110, "tools/call", map[string]any{
 		"name": "merge",
 		"arguments": map[string]any{
-			"agent_name": "finn",
-			"message":    "merge finn",
+			"agent":   "finn",
+			"message": "merge finn",
 		},
 	})
 	if _, err := srv.HandleMessage(ctx, msg); err != nil {
@@ -1752,8 +1752,8 @@ func TestServer_ToolsCall_SprawlRetire_PassesCallerFromContext(t *testing.T) {
 	msg := makeJSONRPCRequest(111, "tools/call", map[string]any{
 		"name": "retire",
 		"arguments": map[string]any{
-			"agent_name": "finn",
-			"merge":      true,
+			"agent": "finn",
+			"merge": true,
 		},
 	})
 	if _, err := srv.HandleMessage(ctx, msg); err != nil {
@@ -1874,8 +1874,8 @@ func TestHandleToolsCall_EndOnError(t *testing.T) {
 	msg := makeJSONRPCRequest(201, "tools/call", map[string]any{
 		"name": "delegate",
 		"arguments": map[string]any{
-			"agent_name": "nonexistent",
-			"task":       "do something",
+			"agent": "nonexistent",
+			"task":  "do something",
 		},
 	})
 	if _, err := srv.HandleMessage(context.Background(), msg); err != nil {

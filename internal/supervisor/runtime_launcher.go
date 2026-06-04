@@ -63,6 +63,7 @@ type preparedLaunch struct {
 	sessionSpec  backendpkg.SessionSpec
 	activityFile *os.File
 	observer     *agentloop.ObserverWriter
+	ring         *agentloop.ActivityRing
 }
 
 // Start orchestrates the in-process runtime launch as a sequence of discrete
@@ -166,6 +167,7 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 		sprawlRoot:   spec.SprawlRoot,
 		name:         spec.Name,
 		coord:        coord,
+		ring:         prep.ring,
 	}
 
 	// Phase 7: bind the coordinator's wake function. Closure captures the
@@ -235,6 +237,7 @@ func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*prepare
 		sessionSpec:  sessionSpec,
 		activityFile: activityFile,
 		observer:     observer,
+		ring:         ring,
 	}, nil
 }
 
@@ -384,6 +387,8 @@ type unifiedHandle struct {
 	coord *sweepCoordinator
 	// stopDelivery tears down the delivery-confirmation subscriber.
 	stopDelivery func()
+
+	ring *agentloop.ActivityRing
 }
 
 // StopWaitTimedOut reports whether the bounded session.Wait() inside Stop hit
@@ -598,6 +603,16 @@ func (h *unifiedHandle) SessionID() string {
 // QUM-585 — surfaced through the peek MCP tool's JSON payload.
 func (h *unifiedHandle) InAutonomousTurn() bool {
 	return h.session.InAutonomousTurn()
+}
+
+// LastActivityAt returns the timestamp of the most recently recorded
+// activity-ring entry on this runtime. Zero time when the ring is empty.
+// (QUM-665)
+func (h *unifiedHandle) LastActivityAt() time.Time {
+	if h.ring == nil {
+		return time.Time{}
+	}
+	return h.ring.LastAt()
 }
 
 // IsTerminallyFaulted reports whether the underlying backend session has been

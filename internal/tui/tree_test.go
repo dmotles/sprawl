@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -287,7 +288,7 @@ func TestTreeModel_OrbitalLines_ReturnsRenderedTree(t *testing.T) {
 	m := newTestTreeModel(t)
 	m.SetNodes([]TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
-		{Name: "finn", Type: "engineer", Depth: 1, LastReportState: "working"},
+		{Name: "finn", Type: "engineer", Depth: 1, InAutonomousTurn: true},
 	})
 	m.SetSelected("finn")
 
@@ -621,6 +622,208 @@ func TestPrependWeaveRoot_WeaveUnreadZeroByDefault(t *testing.T) {
 
 	if result[0].Unread != 0 {
 		t.Errorf("result[0].Unread = %d, want 0 when rootUnread=0", result[0].Unread)
+	}
+}
+
+// --- QUM-665: DeriveIconState liveness-first precedence ---
+
+// TestDeriveIconState_Mapping locks the precedence rules for the new icon
+// derivation: process-alive=false → idle; else in_autonomous_turn → working;
+// else recent activity (within RecentActivityWindow) → working; else fall
+// back to last_report_state for blocked/complete/failure; else idle.
+// "working" self-reports are NO LONGER special-cased — only liveness drives
+// the working state.
+func TestDeriveIconState_Mapping(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		node TreeNode
+		want string
+	}{
+		{
+			name: "working: in_autonomous_turn beats stale blocked report",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: true,
+				LastActivityAt:   time.Time{},
+				LastReportState:  "blocked",
+			},
+			want: "working",
+		},
+		{
+			name: "working: recent activity beats stale blocked report (QUM-665 repro)",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   now.Add(-1 * time.Second),
+				LastReportState:  "blocked",
+			},
+			want: "working",
+		},
+		{
+			name: "working: recent activity beats stale working report",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   now.Add(-500 * time.Millisecond),
+				LastReportState:  "working",
+			},
+			want: "working",
+		},
+		{
+			name: "idle: working self-report no longer special-cased (no recent activity)",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   now.Add(-10 * time.Second),
+				LastReportState:  "working",
+			},
+			want: "idle",
+		},
+		{
+			name: "blocked: idle by liveness, blocked self-report",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   time.Time{},
+				LastReportState:  "blocked",
+			},
+			want: "blocked",
+		},
+		{
+			name: "blocked: idle by liveness with old activity, blocked self-report",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   now.Add(-5 * time.Second),
+				LastReportState:  "blocked",
+			},
+			want: "blocked",
+		},
+		{
+			name: "complete: idle by liveness, complete self-report",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   time.Time{},
+				LastReportState:  "complete",
+			},
+			want: "complete",
+		},
+		{
+			name: "failure: idle by liveness, failure self-report",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   time.Time{},
+				LastReportState:  "failure",
+			},
+			want: "failure",
+		},
+		{
+			name: "idle: no signal at all",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   time.Time{},
+				LastReportState:  "",
+			},
+			want: "idle",
+		},
+		{
+			name: "idle: process dead beats any other signal",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(false),
+				InAutonomousTurn: true,
+				LastActivityAt:   now,
+				LastReportState:  "working",
+			},
+			want: "idle",
+		},
+		{
+			name: "weave row fallback: nil ProcessAlive + no signals + empty report",
+			node: TreeNode{
+				ProcessAlive:     nil,
+				InAutonomousTurn: false,
+				LastActivityAt:   time.Time{},
+				LastReportState:  "",
+			},
+			want: "idle",
+		},
+		{
+			name: "weave row fallback: nil ProcessAlive routes through report state when no activity",
+			node: TreeNode{
+				ProcessAlive:     nil,
+				InAutonomousTurn: false,
+				LastActivityAt:   time.Time{},
+				LastReportState:  "blocked",
+			},
+			want: "blocked",
+		},
+		{
+			name: "boundary: exactly at RecentActivityWindow counts as not-recent",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   now.Add(-RecentActivityWindow),
+				LastReportState:  "",
+			},
+			want: "idle",
+		},
+		{
+			name: "boundary: just inside RecentActivityWindow counts as recent",
+			node: TreeNode{
+				ProcessAlive:     boolPtr(true),
+				InAutonomousTurn: false,
+				LastActivityAt:   now.Add(-(RecentActivityWindow - 1*time.Millisecond)),
+				LastReportState:  "blocked",
+			},
+			want: "working",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DeriveIconState(tc.node, now)
+			if got != tc.want {
+				t.Errorf("DeriveIconState() = %q, want %q\n  node = %+v", got, tc.want, tc.node)
+			}
+		})
+	}
+}
+
+// TestBuildTreeNodes_PropagatesLivenessFields asserts the liveness fields on
+// AgentInfo (InAutonomousTurn, LastActivityAt, ProcessAlive) flow verbatim
+// into the TreeNode produced by buildTreeNodes. Without this, DeriveIconState
+// would always see zero-values and the QUM-665 fix would never engage.
+func TestBuildTreeNodes_PropagatesLivenessFields(t *testing.T) {
+	alive := true
+	ts := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	agents := []supervisor.AgentInfo{
+		{
+			Name:             "alice",
+			Type:             "engineer",
+			Status:           "active",
+			ProcessAlive:     &alive,
+			InAutonomousTurn: true,
+			LastActivityAt:   ts,
+		},
+	}
+	nodes := buildTreeNodes(agents, nil)
+	if len(nodes) != 1 {
+		t.Fatalf("len(nodes) = %d, want 1", len(nodes))
+	}
+	n := nodes[0]
+	if n.ProcessAlive == nil || *n.ProcessAlive != true {
+		t.Errorf("TreeNode.ProcessAlive = %v, want *bool→true", n.ProcessAlive)
+	}
+	if !n.InAutonomousTurn {
+		t.Errorf("TreeNode.InAutonomousTurn = false, want true")
+	}
+	if !n.LastActivityAt.Equal(ts) {
+		t.Errorf("TreeNode.LastActivityAt = %v, want %v", n.LastActivityAt, ts)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -14,6 +15,32 @@ import (
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui"
 )
+
+// resolveAgentTarget reads the canonical "agent" key from the supplied
+// values, falling back to the deprecated "agent_name" synonym (QUM-666).
+// When only the deprecated key is populated, a structured slog warning
+// is emitted naming the tool, the caller, and the deprecated key.
+//
+// Returns an error naming the canonical key 'agent' when neither value
+// is populated. The error explicitly avoids the legacy misleading
+// "must not be empty" phrasing so the caller can correct the key name.
+//
+// TODO(QUM-666): remove the agent_name fallback after one release of
+// soak time so the LLM stops being trained on the deprecated key.
+func resolveAgentTarget(agent, agentName, tool, caller string) (string, error) {
+	if agent != "" {
+		return agent, nil
+	}
+	if agentName != "" {
+		slog.Warn("mcp.deprecated_parameter",
+			"tool", tool,
+			"caller", caller,
+			"deprecated", "agent_name",
+			"canonical", "agent")
+		return agentName, nil
+	}
+	return "", fmt.Errorf("missing required field 'agent' (deprecated synonym 'agent_name' also accepted)")
+}
 
 // askUserQuestionRestrictedError is the canonical structured error text the
 // tool returns when an ineligible caller (engineer or researcher) invokes
@@ -291,16 +318,22 @@ func (s *Server) toolStatus(ctx context.Context) (string, error) {
 
 func (s *Server) toolDelegate(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		AgentName string `json:"agent_name"`
+		Agent     string `json:"agent"`
+		AgentName string `json:"agent_name"` // QUM-666: deprecated synonym
 		Task      string `json:"task"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := s.sup.Delegate(ctx, p.AgentName, p.Task); err != nil {
+	caller := backendpkg.CallerIdentity(ctx)
+	target, err := resolveAgentTarget(p.Agent, p.AgentName, "delegate", caller)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Delegated task to %s", p.AgentName), nil
+	if err := s.sup.Delegate(ctx, target, p.Task); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Delegated task to %s", target), nil
 }
 
 // toolSendMessage dispatches the canonical send_message MCP tool (QUM-550).
@@ -380,7 +413,8 @@ func (s *Server) toolReportStatus(ctx context.Context, args json.RawMessage) (st
 
 func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		AgentName  string `json:"agent_name"`
+		Agent      string `json:"agent"`
+		AgentName  string `json:"agent_name"` // QUM-666: deprecated synonym
 		Message    string `json:"message"`
 		NoValidate bool   `json:"no_validate"`
 	}
@@ -391,7 +425,11 @@ func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, e
 	// supervisor's per-call agentops deps reflect the caller (not the
 	// long-lived supervisor process's SPRAWL_AGENT_IDENTITY).
 	caller := backendpkg.CallerIdentity(ctx)
-	outcome, err := s.sup.Merge(ctx, caller, p.AgentName, p.Message, p.NoValidate)
+	target, err := resolveAgentTarget(p.Agent, p.AgentName, "merge", caller)
+	if err != nil {
+		return "", err
+	}
+	outcome, err := s.sup.Merge(ctx, caller, target, p.Message, p.NoValidate)
 	if err != nil {
 		return "", err
 	}
@@ -400,14 +438,15 @@ func (s *Server) toolMerge(ctx context.Context, args json.RawMessage) (string, e
 		prefix = fmt.Sprintf("Queued behind merge of %s (waited %s). ", outcome.QueuedBehind, outcome.QueueWait.Round(time.Millisecond))
 	}
 	if outcome != nil && outcome.NoOp {
-		return prefix + fmt.Sprintf("Nothing to merge: %s has no new commits", p.AgentName), nil
+		return prefix + fmt.Sprintf("Nothing to merge: %s has no new commits", target), nil
 	}
-	return prefix + fmt.Sprintf("Merged agent %s", p.AgentName), nil
+	return prefix + fmt.Sprintf("Merged agent %s", target), nil
 }
 
 func (s *Server) toolRetire(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		AgentName string `json:"agent_name"`
+		Agent     string `json:"agent"`
+		AgentName string `json:"agent_name"` // QUM-666: deprecated synonym
 		Merge     bool   `json:"merge"`
 		Abandon   bool   `json:"abandon"`
 		Cascade   bool   `json:"cascade"`
@@ -422,36 +461,46 @@ func (s *Server) toolRetire(ctx context.Context, args json.RawMessage) (string, 
 	noValidate := p.Validate != nil && !*p.Validate
 	// QUM-487: see toolMerge for rationale.
 	caller := backendpkg.CallerIdentity(ctx)
-	if err := s.sup.Retire(ctx, caller, p.AgentName, p.Merge, p.Abandon, p.Cascade, noValidate); err != nil {
+	target, err := resolveAgentTarget(p.Agent, p.AgentName, "retire", caller)
+	if err != nil {
+		return "", err
+	}
+	if err := s.sup.Retire(ctx, caller, target, p.Merge, p.Abandon, p.Cascade, noValidate); err != nil {
 		return "", err
 	}
 	switch {
 	case p.Cascade && p.Abandon:
-		return fmt.Sprintf("Retired agent %s and descendants (branches abandoned)", p.AgentName), nil
+		return fmt.Sprintf("Retired agent %s and descendants (branches abandoned)", target), nil
 	case p.Cascade && p.Merge:
-		return fmt.Sprintf("Merged and retired agent %s and descendants", p.AgentName), nil
+		return fmt.Sprintf("Merged and retired agent %s and descendants", target), nil
 	case p.Cascade:
-		return fmt.Sprintf("Retired agent %s and descendants", p.AgentName), nil
+		return fmt.Sprintf("Retired agent %s and descendants", target), nil
 	case p.Abandon:
-		return fmt.Sprintf("Retired agent %s (branch abandoned)", p.AgentName), nil
+		return fmt.Sprintf("Retired agent %s (branch abandoned)", target), nil
 	case p.Merge:
-		return fmt.Sprintf("Merged and retired agent %s", p.AgentName), nil
+		return fmt.Sprintf("Merged and retired agent %s", target), nil
 	default:
-		return fmt.Sprintf("Retired agent %s", p.AgentName), nil
+		return fmt.Sprintf("Retired agent %s", target), nil
 	}
 }
 
 func (s *Server) toolKill(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		AgentName string `json:"agent_name"`
+		Agent     string `json:"agent"`
+		AgentName string `json:"agent_name"` // QUM-666: deprecated synonym
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := s.sup.Kill(ctx, p.AgentName); err != nil {
+	caller := backendpkg.CallerIdentity(ctx)
+	target, err := resolveAgentTarget(p.Agent, p.AgentName, "kill", caller)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Killed agent %s", p.AgentName), nil
+	if err := s.sup.Kill(ctx, target); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Killed agent %s", target), nil
 }
 
 // toolRecover dispatches the recover MCP tool (QUM-601). On success returns a
@@ -460,18 +509,24 @@ func (s *Server) toolKill(ctx context.Context, args json.RawMessage) (string, er
 // tool-error content (IsError=true).
 func (s *Server) toolRecover(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		AgentName string `json:"agent_name"`
+		Agent     string `json:"agent"`
+		AgentName string `json:"agent_name"` // QUM-666: deprecated synonym
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	if err := s.sup.Recover(ctx, p.AgentName); err != nil {
+	caller := backendpkg.CallerIdentity(ctx)
+	target, err := resolveAgentTarget(p.Agent, p.AgentName, "recover", caller)
+	if err != nil {
+		return "", err
+	}
+	if err := s.sup.Recover(ctx, target); err != nil {
 		if errors.Is(err, supervisor.ErrRecoverNotNeeded) {
-			return fmt.Sprintf("Session healthy; no recovery needed for %s", p.AgentName), nil
+			return fmt.Sprintf("Session healthy; no recovery needed for %s", target), nil
 		}
 		return "", err
 	}
-	return fmt.Sprintf("Recovered backend session for %s", p.AgentName), nil
+	return fmt.Sprintf("Recovered backend session for %s", target), nil
 }
 
 func (s *Server) toolHandoff(ctx context.Context, args json.RawMessage) (string, error) {

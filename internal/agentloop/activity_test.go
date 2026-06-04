@@ -351,3 +351,62 @@ func TestActivityEntry_SummaryTruncation(t *testing.T) {
 		t.Errorf("summary len = %d, want ≤ %d", len(entries[0].Summary), maxSummaryLen)
 	}
 }
+
+// --- QUM-665: ActivityRing.LastAt accessor ---
+
+// TestActivityRing_LastAt_ZeroWhenEmpty asserts an unused ring returns the
+// zero time. Callers rely on IsZero() to mean "no activity recorded".
+func TestActivityRing_LastAt_ZeroWhenEmpty(t *testing.T) {
+	r := NewActivityRing(10, nil)
+	got := r.LastAt()
+	if !got.IsZero() {
+		t.Errorf("LastAt() on empty ring = %v, want zero time", got)
+	}
+}
+
+// TestActivityRing_LastAt_TracksLatestAppend asserts LastAt returns the TS
+// of the most-recently appended entry under normal monotonic append.
+func TestActivityRing_LastAt_TracksLatestAppend(t *testing.T) {
+	r := NewActivityRing(10, nil)
+	t1 := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(5 * time.Second)
+	r.Append(ActivityEntry{TS: t1, Kind: "system", Summary: "a"})
+	r.Append(ActivityEntry{TS: t2, Kind: "system", Summary: "b"})
+	got := r.LastAt()
+	if !got.Equal(t2) {
+		t.Errorf("LastAt() = %v, want %v (latest append)", got, t2)
+	}
+}
+
+// TestActivityRing_LastAt_SurvivesEviction asserts that when the ring's
+// oldest entry is evicted, LastAt still returns the most-recent TS — i.e.
+// LastAt is computed from the live entries, not a separate stale field.
+func TestActivityRing_LastAt_SurvivesEviction(t *testing.T) {
+	r := NewActivityRing(2, nil)
+	t1 := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(1 * time.Second)
+	t3 := t1.Add(2 * time.Second)
+	r.Append(ActivityEntry{TS: t1, Kind: "system", Summary: "a"})
+	r.Append(ActivityEntry{TS: t2, Kind: "system", Summary: "b"})
+	r.Append(ActivityEntry{TS: t3, Kind: "system", Summary: "c"}) // evicts t1
+	got := r.LastAt()
+	if !got.Equal(t3) {
+		t.Errorf("LastAt() = %v, want %v (latest survives eviction)", got, t3)
+	}
+}
+
+// TestActivityRing_LastAt_NotRegressedByOlderAppend defends the "max TS"
+// semantic of the accessor. Even if an older entry is appended after a
+// newer one (which shouldn't happen in practice but the accessor name says
+// "latest"), LastAt should not regress.
+func TestActivityRing_LastAt_NotRegressedByOlderAppend(t *testing.T) {
+	r := NewActivityRing(10, nil)
+	now := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	older := now.Add(-1 * time.Minute)
+	r.Append(ActivityEntry{TS: now, Kind: "system", Summary: "new"})
+	r.Append(ActivityEntry{TS: older, Kind: "system", Summary: "old"})
+	got := r.LastAt()
+	if !got.Equal(now) {
+		t.Errorf("LastAt() = %v, want %v (max TS, not last-appended TS)", got, now)
+	}
+}

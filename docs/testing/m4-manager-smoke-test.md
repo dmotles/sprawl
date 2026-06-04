@@ -241,7 +241,7 @@ root
       |  child-2: report_status({state: "complete", summary: "..."})
       |
       |  [Manager verifies each child's work]
-      |  [Manager merges each child: merge({agent_name: "child-1"}), merge({agent_name: "child-2"})]
+      |  [Manager merges each child: merge({agent: "child-1"}), merge({agent: "child-2"})]
       |
       |  [Manager runs final validation on integration branch]
       |

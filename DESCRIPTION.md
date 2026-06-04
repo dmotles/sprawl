@@ -137,9 +137,9 @@ Spawning & lifecycle:
 
 ```
 spawn({family, type, branch, prompt})    Create a new worktree-backed child agent
-delegate({agent_name, task})             Queue a tracked task on an existing agent
-retire({agent_name, merge?, abandon?})   Shut down (and optionally merge or discard work)
-kill({agent_name})                       Emergency stop; preserves state and worktree
+delegate({agent, task})                  Queue a tracked task on an existing agent
+retire({agent, merge?, abandon?})        Shut down (and optionally merge or discard work)
+kill({agent})                            Emergency stop; preserves state and worktree
 ```
 
 The calling agent's identity is inferred from `SPRAWL_AGENT_IDENTITY` — no parent argument is needed.

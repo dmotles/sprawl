@@ -9,6 +9,8 @@
 // (unexported, package-local).
 package supervisor
 
+import "time"
+
 // terminalFaultProbe is satisfied by RuntimeHandle implementations whose
 // backend session exposes sticky-fault state. Satisfied by *unifiedHandle,
 // *WeaveRuntimeHandle, *runtimeTestSession, *fakeBackendSession.
@@ -33,6 +35,14 @@ type autonomousTurnProbe interface {
 	InAutonomousTurn() bool
 }
 
+// lastActivityProbe is satisfied by RuntimeHandle implementations that
+// expose the timestamp of the most recently appended activity entry on
+// the runtime's ring buffer. Satisfied by *unifiedHandle and
+// *WeaveRuntimeHandle. (QUM-665)
+type lastActivityProbe interface {
+	LastActivityAt() time.Time
+}
+
 // terminalFaultInjectorProbe is a test-only seam exposed by handle types
 // that allow forcing the underlying session into a terminally-faulted
 // state. Satisfied by *unifiedHandle, *fakeBackendSession. Not implemented
@@ -50,4 +60,6 @@ var (
 	_ autonomousTurnProbe        = (*unifiedHandle)(nil)
 	_ autonomousTurnProbe        = (*WeaveRuntimeHandle)(nil)
 	_ terminalFaultInjectorProbe = (*unifiedHandle)(nil)
+	_ lastActivityProbe          = (*unifiedHandle)(nil)
+	_ lastActivityProbe          = (*WeaveRuntimeHandle)(nil)
 )

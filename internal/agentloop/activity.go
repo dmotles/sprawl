@@ -42,6 +42,7 @@ type ActivityRing struct {
 	entries  []ActivityEntry
 	capacity int
 	writer   io.Writer
+	lastAt   time.Time
 }
 
 // NewActivityRing returns a ring with the given capacity. If capacity ≤ 0,
@@ -66,6 +67,9 @@ func (r *ActivityRing) Append(e ActivityEntry) {
 		r.entries = r.entries[:len(r.entries)-1]
 	}
 	r.entries = append(r.entries, e)
+	if e.TS.After(r.lastAt) {
+		r.lastAt = e.TS
+	}
 	w := r.writer
 	r.mu.Unlock()
 
@@ -76,6 +80,15 @@ func (r *ActivityRing) Append(e ActivityEntry) {
 			_, _ = w.Write(b)
 		}
 	}
+}
+
+// LastAt returns the maximum TS of any entry ever appended to this ring,
+// or the zero time if no entry has been appended. Survives eviction of the
+// originating entry from the ring buffer.
+func (r *ActivityRing) LastAt() time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastAt
 }
 
 // Tail returns up to n most-recent entries (oldest-first).

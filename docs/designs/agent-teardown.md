@@ -4,7 +4,7 @@
 
 > **Implementation note (2026-05, M13 Phase 2.3):** The CLI synopses below are
 > the original CLI-first proposal. The teardown surface ultimately shipped as
-> MCP tools (`kill({agent_name})`, `retire({agent_name, merge?, abandon?, cascade?})`)
+> MCP tools (`kill({agent})`, `retire({agent, merge?, abandon?, cascade?})`)
 > driven from inside `sprawl enter`. The standalone CLI versions of these
 > commands (`kill` / `retire` as cobra subcommands) were deleted in QUM-566;
 > this document is kept
@@ -139,8 +139,8 @@ For `kill`, children are **not** affected. Killing a manager doesn't kill its en
 Stop an agent's process but preserve all state for respawn or inspection.
 
 ```
-kill({agent_name: "<name>"})                  # Graceful kill (SIGTERM → SIGKILL)
-kill({agent_name: "<name>", force: true})     # Immediate SIGKILL, handle wedged state
+kill({agent: "<name>"})                  # Graceful kill (SIGTERM → SIGKILL)
+kill({agent: "<name>", force: true})     # Immediate SIGKILL, handle wedged state
 ```
 
 **Exit codes:**
@@ -153,9 +153,9 @@ kill({agent_name: "<name>", force: true})     # Immediate SIGKILL, handle wedged
 Full teardown. Stop process, close tmux, remove worktree, delete state, free name.
 
 ```
-retire({agent_name: "<name>"})                              # Retire agent (fails if has children or dirty worktree)
-retire({agent_name: "<name>", cascade: true})               # Retire agent + all descendants
-retire({agent_name: "<name>", abandon: true, cascade: true}) # Override safety checks (orphan children, discard uncommitted work)
+retire({agent: "<name>"})                              # Retire agent (fails if has children or dirty worktree)
+retire({agent: "<name>", cascade: true})               # Retire agent + all descendants
+retire({agent: "<name>", abandon: true, cascade: true}) # Override safety checks (orphan children, discard uncommitted work)
 ```
 
 **Exit codes:**
@@ -261,11 +261,11 @@ Code Mergers are ephemeral by design — they should self-retire when their merg
 The current DESCRIPTION.md mentions `kill` and `respawn`. This design adds `retire`. The CLI section should be updated:
 
 ```
-kill({agent_name})                                  Kill an agent (preserves state for respawn)
-kill({agent_name, force: true})                     Force-kill a wedged agent
-retire({agent_name})                                Full teardown (fails if children or dirty worktree)
-retire({agent_name, cascade: true})                 Retire agent and all descendants
-retire({agent_name, abandon: true, cascade: true})  Override safety checks (orphans children, discards uncommitted work)
+kill({agent})                                  Kill an agent (preserves state for respawn)
+kill({agent, force: true})                     Force-kill a wedged agent
+retire({agent})                                Full teardown (fails if children or dirty worktree)
+retire({agent, cascade: true})                 Retire agent and all descendants
+retire({agent, abandon: true, cascade: true})  Override safety checks (orphans children, discards uncommitted work)
 ```
 
 (Note: the originally-proposed `respawn` CLI was never built — agent reuse is now handled by `delegate` against an existing agent.)

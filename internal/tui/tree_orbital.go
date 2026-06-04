@@ -10,6 +10,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -31,16 +32,17 @@ const (
 // Rules (highest priority first):
 //   - FaultClass != "" → StateFailure (overrides everything)
 //   - Type == "weave"  → StateRoot
-//   - LastReportState working/complete/blocked/failure → matching state
-//   - default → StateIdle
-func TreeNodeAgentState(n TreeNode) AgentState {
+//   - Otherwise delegate to DeriveIconState (liveness-first per QUM-665).
+//
+// `now` is passed in so the helper remains pure/testable.
+func TreeNodeAgentState(n TreeNode, now time.Time) AgentState {
 	if n.FaultClass != "" {
 		return StateFailure
 	}
 	if n.Type == "weave" {
 		return StateRoot
 	}
-	switch n.LastReportState {
+	switch DeriveIconState(n, now) {
 	case "working":
 		return StateWorking
 	case "complete":
@@ -135,11 +137,19 @@ func OrbitalHeight(width int) int {
 // the cell budget the tree must fit within (NOT the full terminal width).
 // Lines are right-padded to that width via padVisible and truncated via
 // ansi.Truncate so total visible width matches exactly.
+//
+// QUM-679: when the sole depth-0 root is weave and any of its depth-1 children
+// is a manager, the renderer pivots the layout so each manager (and any direct
+// engineer sibling) gets its own row, with that subtree's descendants
+// (depth >= 2) rendered inline. Weave's Unread badge is surfaced as a dim
+// `weave (N) ·` prefix on the first pivoted row so the e2e notify-tui regex
+// still matches.
 func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 	if width <= 0 {
 		return nil
 	}
 	narrow := width < wordmarkNarrowThreshold
+	now := time.Now()
 
 	// Group nodes by root. A root is any node at depth 0; subsequent nodes at
 	// deeper depths attach to the most-recent root with monotonically-deeper
@@ -166,8 +176,44 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		cur.children = append(cur.children, n)
 	}
 
+	// QUM-679: pivot weave's depth-1 children into top-level rows when at
+	// least one of them is a manager. Engineers under weave with no managers
+	// keep their existing layout (one row, all engineers orbit weave).
+	var pivotPrefix string
+	if len(roots) == 1 && roots[0].root.Type == "weave" && hasManagerChild(roots[0].children) {
+		w := roots[0]
+		var pivoted []rootGroup
+		var pcur *rootGroup
+		for _, c := range w.children {
+			if c.Depth == 1 {
+				// New top-level subtree: the manager (or direct engineer) is
+				// now its own row anchor. renderRootLine doesn't read the
+				// root's Depth, so no rewrite needed there.
+				pivoted = append(pivoted, rootGroup{root: c})
+				pcur = &pivoted[len(pivoted)-1]
+				continue
+			}
+			if pcur != nil {
+				// Rebase depth so the renderRootLine token-vs-↳ classifier
+				// (which compares Depth == 1) treats this subtree's direct
+				// engineers as inline tokens, not grandchildren. depth-2 →
+				// depth-1, depth-3 → depth-2, etc.
+				cc := c
+				cc.Depth = c.Depth - 1
+				pcur.children = append(pcur.children, cc)
+			}
+		}
+		// Surface weave's Unread as a dim prefix on the first pivoted row.
+		// Format `weave (N) · ` keeps the e2e notify-tui regex
+		// `weave[^│]*\([1-9]` matchable.
+		if w.root.Unread > 0 {
+			pivotPrefix = headerSep.Render(fmt.Sprintf("weave (%d) · ", w.root.Unread))
+		}
+		roots = pivoted
+	}
+
 	renderToken := func(n TreeNode) string {
-		st := TreeNodeAgentState(n)
+		st := TreeNodeAgentState(n, now)
 		label := n.Name + " " + stateGlyph(st)
 		if selected != "" && n.Name == selected {
 			return selReverseStyle.Render(label)
@@ -176,7 +222,7 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 	}
 
 	renderRootLine := func(g rootGroup) string {
-		rootState := TreeNodeAgentState(g.root)
+		rootState := TreeNodeAgentState(g.root, now)
 		var b strings.Builder
 		// QUM-657: with children, the trailing ──● anchor stands in for the
 		// root's status glyph; with no children the anchor would dangle, so
@@ -213,12 +259,12 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 			} else {
 				// Grandchild (depth >= 2): prefix with ↳ and render as a
 				// dim-prefixed token after its parent.
-				gcLabel := c.Name + " " + stateGlyph(TreeNodeAgentState(c))
+				gcLabel := c.Name + " " + stateGlyph(TreeNodeAgentState(c, now))
 				var gcStyled string
 				if selected != "" && c.Name == selected {
 					gcStyled = selReverseStyle.Render(gcLabel)
 				} else {
-					gcStyled = stateStyle(TreeNodeAgentState(c)).Render(gcLabel)
+					gcStyled = stateStyle(TreeNodeAgentState(c, now)).Render(gcLabel)
 				}
 				tokens = append(tokens, headerSep.Render("↳ ")+gcStyled)
 			}
@@ -232,7 +278,7 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		// " → ". Only render the first child of each root (single-line budget).
 		var chunks []string
 		for _, g := range roots {
-			rootState := TreeNodeAgentState(g.root)
+			rootState := TreeNodeAgentState(g.root, now)
 			var rs string
 			if selected != "" && g.root.Name == selected {
 				rs = selReverseStyle.Render(g.root.Name + " " + stateGlyph(rootState))
@@ -256,11 +302,25 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		return []string{padVisible(line, width)}
 	}
 
-	// Wide: up to 3 lines, one per root.
+	// Wide: up to 3 lines, one per root. QUM-679: when pivoted from a weave
+	// subtree, the first row gets `pivotPrefix` so weave's Unread badge stays
+	// visible. If pivoted-root count > 3, the 3rd row is augmented with a
+	// `+K more` indicator that names overflowed managers.
 	out := make([]string, 3)
 	for i := 0; i < 3; i++ {
 		if i < len(roots) {
 			line := renderRootLine(roots[i])
+			if i == 0 && pivotPrefix != "" {
+				line = pivotPrefix + line
+			}
+			// QUM-679: overflow indicator on the last visible row.
+			if i == 2 && len(roots) > 3 {
+				extras := make([]TreeNode, 0, len(roots)-3)
+				for _, r := range roots[3:] {
+					extras = append(extras, r.root)
+				}
+				line += headerSep.Render(overflowSuffix(extras))
+			}
 			line = ansi.Truncate(line, width, "…")
 			out[i] = padVisible(line, width)
 		} else {
@@ -268,4 +328,47 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		}
 	}
 	return out
+}
+
+// hasManagerChild reports whether any child has Type == "manager". Used by
+// RenderTreeOrbital to decide whether to pivot weave's children into separate
+// rows (QUM-679).
+func hasManagerChild(children []TreeNode) bool {
+	for _, c := range children {
+		if c.Type == "manager" {
+			return true
+		}
+	}
+	return false
+}
+
+// overflowSuffix builds the trailing `  +K more (name, name, …)` annotation
+// used when more pivoted manager rows exist than the 3-row header budget.
+func overflowSuffix(extras []TreeNode) string {
+	if len(extras) == 0 {
+		return ""
+	}
+	// Collect depth-1 (manager / direct-child) names only — descendants don't
+	// count as additional rows.
+	var names []string
+	for _, n := range extras {
+		if n.Depth <= 1 {
+			names = append(names, n.Name)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	const nameCap = 3
+	shown := names
+	more := 0
+	if len(shown) > nameCap {
+		more = len(shown) - nameCap
+		shown = shown[:nameCap]
+	}
+	joined := strings.Join(shown, ", ")
+	if more > 0 {
+		return fmt.Sprintf("  +%d more (%s, …)", len(names), joined)
+	}
+	return fmt.Sprintf("  +%d more (%s)", len(names), joined)
 }

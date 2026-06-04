@@ -4,12 +4,20 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// RecentActivityWindow is the maximum delta between now and the last
+// activity-ring entry for an agent to be considered "actively working"
+// by the tree icon. Tunable; chosen to comfortably bridge inter-tool
+// gaps in autonomous turns while not bleeding past true idle pauses.
+// (QUM-665)
+const RecentActivityWindow = 2 * time.Second
 
 // rowPrefixWidth is the cell width of the `"> "` / `"  "` prefix rendered
 // before every tree row by TreeModel.View. It is subtracted from the tree
@@ -46,6 +54,36 @@ type TreeNode struct {
 	// the AppModel's BackendFaultMsg handler + re-applied on every
 	// rebuildTree from a side map (faults). QUM-602.
 	FaultClass string
+
+	ProcessAlive     *bool
+	InAutonomousTurn bool
+	LastActivityAt   time.Time
+}
+
+// DeriveIconState returns the tree-row icon state for the given node,
+// derived primarily from liveness signals (InAutonomousTurn, recent
+// activity) and secondarily from the agent's self-reported LastReportState.
+// Returns one of "working", "blocked", "complete", "failure", "idle".
+// Pure (no time.Now); the caller supplies `now` for testability. (QUM-665)
+func DeriveIconState(n TreeNode, now time.Time) string {
+	if n.ProcessAlive != nil && !*n.ProcessAlive {
+		return "idle"
+	}
+	if n.InAutonomousTurn {
+		return "working"
+	}
+	if !n.LastActivityAt.IsZero() && now.Sub(n.LastActivityAt) < RecentActivityWindow {
+		return "working"
+	}
+	switch n.LastReportState {
+	case "failure":
+		return "failure"
+	case "complete":
+		return "complete"
+	case "blocked":
+		return "blocked"
+	}
+	return "idle"
 }
 
 // TreeModel is the agent tree panel displaying live agent hierarchy.
@@ -168,7 +206,7 @@ func (m TreeModel) View() string {
 
 		indent := strings.Repeat("  ", node.Depth)
 		icon := typeIcon(node.Type)
-		dot := m.theme.ReportDot(node.LastReportState)
+		dot := m.theme.ReportDot(DeriveIconState(node, time.Now()))
 		var costTag string
 		if node.TotalCostUsd > 0 {
 			costTag = fmt.Sprintf(" [$%.4f]", node.TotalCostUsd)
@@ -296,6 +334,9 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 			LastReportState:   a.LastReportState,
 			LastReportMessage: a.LastReportMessage,
 			TotalCostUsd:      a.TotalCostUsd,
+			ProcessAlive:      a.ProcessAlive,
+			InAutonomousTurn:  a.InAutonomousTurn,
+			LastActivityAt:    a.LastActivityAt,
 		})
 		for _, child := range children[a.Name] {
 			dfs(child, depth+1)

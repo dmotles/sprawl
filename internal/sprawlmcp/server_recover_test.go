@@ -40,7 +40,7 @@ func TestToolRecover_Success(t *testing.T) {
 	msg := makeJSONRPCRequest(101, "tools/call", map[string]any{
 		"name": "recover",
 		"arguments": map[string]any{
-			"agent_name": "alice",
+			"agent": "alice",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)
@@ -85,7 +85,7 @@ func TestToolRecover_PassesError(t *testing.T) {
 	msg := makeJSONRPCRequest(102, "tools/call", map[string]any{
 		"name": "recover",
 		"arguments": map[string]any{
-			"agent_name": "alice",
+			"agent": "alice",
 		},
 	})
 	resp, err := srv.HandleMessage(ctx, msg)

@@ -279,6 +279,123 @@ JSON
         capture_pane "$SESSION" | tail -40 >&2
     fi
 
+    # --- Test C: QUM-665 liveness-driven icon flip from paused to working ---
+    #
+    # Reuses sandbox-child but flips its self-reported state to "blocked".
+    # Expectation:
+    #   1) Initial render shows the blocked dot color on the sandbox-child row.
+    #   2) After writing a single activity.ndjson entry with TS=now, the row's
+    #      dot flips to the working color within ~3s (one 2s tree-rebuild tick
+    #      plus margin).
+    #   3) After ~3s with no further activity (>2s past last activity, the
+    #      RecentActivityWindow), the dot reverts to the blocked color.
+    #
+    # We grep for the ReportDotWorking / ReportDotBlocked ANSI escape sequences
+    # around the "●" glyph on the sandbox-child row. NewTheme builds these from
+    # the dark palette's Success (working/green) and Busy (blocked/amber)
+    # colors. If the ANSI grep approach proves too fragile in CI, the fallback
+    # documented in the spec is to invoke `sprawl status` and assert via JSON —
+    # but that path requires Status to expose in_autonomous_turn /
+    # last_activity_at (QUM-665 surface) so isn't strictly cheaper.
+    echo ""
+    echo "=== Test C: QUM-665 liveness-driven icon flip (paused → working → paused) ==="
+
+    # Rewrite child state to status=active, last_report_state=blocked so the
+    # baseline icon is blocked (not complete).
+    cat > "$CHILD_STATE_FILE" <<JSON
+{
+  "name": "${CHILD_NAME}",
+  "type": "engineer",
+  "family": "engineering",
+  "parent": "weave",
+  "prompt": "tui notify e2e test",
+  "branch": "tui-notify-e2e",
+  "worktree": "${SPRAWL_ROOT}",
+  "status": "active",
+  "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "tree_path": "weave├${CHILD_NAME}",
+  "last_report_type": "status",
+  "last_report_message": "waiting on user",
+  "last_report_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "last_report_state": "blocked"
+}
+JSON
+    pass "Test C setup: child state.last_report_state=blocked"
+
+    # Wait for the tree to pick up the state change (one 2s tick + margin).
+    sleep 3
+
+    # Extract the first orbital-state glyph appearing on the sandbox-child row.
+    # capture_pane (lib/e2e-common.sh) strips color via tmux `-p`. The orbital
+    # pill renderer (internal/tui/tree_orbital.go) emits one of the glyphs
+    # below per state: ⚙=working, ⏳=idle, ⏸=blocked, ✓=done, ✗=failure.
+    extract_child_glyph() {
+        local session="$1" child="$2"
+        capture_pane "$session" \
+            | grep -aoE "${child} [⚙⏳⏸✓✗]" \
+            | head -1 \
+            | awk '{print $2}'
+    }
+
+    # Baseline: assert blocked glyph (⏸) renders on the sandbox-child row.
+    local BLOCKED_GLYPH
+    BLOCKED_GLYPH=$(extract_child_glyph "$SESSION" "$CHILD_NAME")
+    if [ "$BLOCKED_GLYPH" = "⏸" ]; then
+        pass "QUM-665 baseline: sandbox-child renders blocked glyph (⏸)"
+    else
+        fail "expected ⏸ glyph for blocked sandbox-child, got: $BLOCKED_GLYPH"
+        capture_pane "$SESSION" | tail -10 >&2
+    fi
+
+    # Write a single activity entry with TS=now.
+    local ACTIVITY_DIR="${SPRAWL_ROOT}/.sprawl/agents/${CHILD_NAME}"
+    mkdir -p "$ACTIVITY_DIR"
+    local ACTIVITY_NOW
+    ACTIVITY_NOW="$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)"
+    printf '{"ts":"%s","kind":"tool_use","tool":"Bash","summary":"test"}\n' \
+        "$ACTIVITY_NOW" \
+        > "${ACTIVITY_DIR}/activity.ndjson"
+    pass "Test C: wrote activity.ndjson entry (ts=${ACTIVITY_NOW})"
+
+    # Poll up to 3s for the glyph to become ⚙ (working).
+    local end=$((SECONDS + 3))
+    local FLIPPED=0
+    while [ "$SECONDS" -lt "$end" ]; do
+        g=$(extract_child_glyph "$SESSION" "$CHILD_NAME")
+        if [ "$g" = "⚙" ]; then
+            FLIPPED=1
+            break
+        fi
+        sleep 0.2
+    done
+    if [ "$FLIPPED" -eq 1 ]; then
+        pass "QUM-665 flip: blocked → working glyph (⚙) within 3s of activity write"
+    else
+        fail "QUM-665 flip: glyph did not become ⚙ within 3s; last seen='$(extract_child_glyph "$SESSION" "$CHILD_NAME")'"
+        capture_pane "$SESSION" | tail -10 >&2
+    fi
+
+    # Wait past the 2s RecentActivityWindow.
+    sleep 3
+
+    # Poll up to 3s for the glyph to revert to ⏸ (blocked).
+    end=$((SECONDS + 3))
+    local REVERTED=0
+    while [ "$SECONDS" -lt "$end" ]; do
+        g=$(extract_child_glyph "$SESSION" "$CHILD_NAME")
+        if [ "$g" = "⏸" ]; then
+            REVERTED=1
+            break
+        fi
+        sleep 0.2
+    done
+    if [ "$REVERTED" -eq 1 ]; then
+        pass "QUM-665 reverted: glyph back to ⏸ (blocked) after window expired"
+    else
+        fail "QUM-665 reverted: glyph did not revert to ⏸; last seen='$(extract_child_glyph "$SESSION" "$CHILD_NAME")'"
+        capture_pane "$SESSION" | tail -10 >&2
+    fi
+
     echo ""
     e2e_print_results
 }

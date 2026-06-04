@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"context"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
@@ -16,19 +17,21 @@ type MergeOutcome = agentops.MergeOutcome
 
 // AgentInfo describes an agent's current state as seen by the supervisor.
 type AgentInfo struct {
-	Name              string  `json:"name"`
-	Type              string  `json:"type"`
-	Family            string  `json:"family"`
-	Parent            string  `json:"parent"`
-	Status            string  `json:"status"`
-	Branch            string  `json:"branch"`
-	TreePath          string  `json:"tree_path,omitempty"`
-	LastReportType    string  `json:"last_report_type,omitempty"`
-	LastReportState   string  `json:"last_report_state,omitempty"`
-	LastReportMessage string  `json:"last_report_message,omitempty"`
-	LastReportDetail  string  `json:"last_report_detail,omitempty"`
-	TotalCostUsd      float64 `json:"total_cost_usd,omitempty"`
-	ProcessAlive      *bool   `json:"process_alive"`
+	Name              string    `json:"name"`
+	Type              string    `json:"type"`
+	Family            string    `json:"family"`
+	Parent            string    `json:"parent"`
+	Status            string    `json:"status"`
+	Branch            string    `json:"branch"`
+	TreePath          string    `json:"tree_path,omitempty"`
+	LastReportType    string    `json:"last_report_type,omitempty"`
+	LastReportState   string    `json:"last_report_state,omitempty"`
+	LastReportMessage string    `json:"last_report_message,omitempty"`
+	LastReportDetail  string    `json:"last_report_detail,omitempty"`
+	TotalCostUsd      float64   `json:"total_cost_usd,omitempty"`
+	ProcessAlive      *bool     `json:"process_alive"`
+	InAutonomousTurn  bool      `json:"in_autonomous_turn"`
+	LastActivityAt    time.Time `json:"last_activity_at,omitempty"`
 }
 
 // SendMessageResult is returned by Supervisor.SendMessage. The canonical

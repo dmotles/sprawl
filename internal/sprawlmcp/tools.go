@@ -98,7 +98,7 @@ func baseToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"agent_name": map[string]any{
+					"agent": map[string]any{
 						"type":        "string",
 						"description": "Name of the target agent",
 					},
@@ -107,7 +107,7 @@ func baseToolDefinitions() []map[string]any {
 						"description": "Task description to delegate",
 					},
 				},
-				"required": []string{"agent_name", "task"},
+				"required": []string{"agent", "task"},
 			},
 		},
 		{
@@ -169,7 +169,7 @@ func baseToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"agent_name": map[string]any{
+					"agent": map[string]any{
 						"type":        "string",
 						"description": "Name of the agent whose branch to merge",
 					},
@@ -182,7 +182,7 @@ func baseToolDefinitions() []map[string]any {
 						"description": "Skip post-merge test validation",
 					},
 				},
-				"required": []string{"agent_name"},
+				"required": []string{"agent"},
 			},
 		},
 		{
@@ -191,7 +191,7 @@ func baseToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"agent_name": map[string]any{
+					"agent": map[string]any{
 						"type":        "string",
 						"description": "Name of the agent to retire",
 					},
@@ -212,7 +212,7 @@ func baseToolDefinitions() []map[string]any {
 						"description": "Run project validate after merge (default true). Only meaningful with merge=true.",
 					},
 				},
-				"required": []string{"agent_name"},
+				"required": []string{"agent"},
 			},
 		},
 		{
@@ -346,12 +346,12 @@ func baseToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"agent_name": map[string]any{
+					"agent": map[string]any{
 						"type":        "string",
 						"description": "Name of the agent to kill",
 					},
 				},
-				"required": []string{"agent_name"},
+				"required": []string{"agent"},
 			},
 		},
 		{
@@ -360,12 +360,12 @@ func baseToolDefinitions() []map[string]any {
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"agent_name": map[string]any{
+					"agent": map[string]any{
 						"type":        "string",
 						"description": "Name of the agent whose backend session should be recovered",
 					},
 				},
-				"required": []string{"agent_name"},
+				"required": []string{"agent"},
 			},
 		},
 	}

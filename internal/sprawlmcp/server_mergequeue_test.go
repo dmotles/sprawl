@@ -44,7 +44,7 @@ func Test_ToolMerge_FormatsQueuedBehindPrefix(t *testing.T) {
 	msg := makeJSONRPCRequest(900, "tools/call", map[string]any{
 		"name": "merge",
 		"arguments": map[string]any{
-			"agent_name": "beta",
+			"agent": "beta",
 		},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
@@ -70,7 +70,7 @@ func Test_ToolMerge_NoQueuedPrefixWhenUncontended(t *testing.T) {
 	msg := makeJSONRPCRequest(901, "tools/call", map[string]any{
 		"name": "merge",
 		"arguments": map[string]any{
-			"agent_name": "beta",
+			"agent": "beta",
 		},
 	})
 	resp, err := srv.HandleMessage(context.Background(), msg)
