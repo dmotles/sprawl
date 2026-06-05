@@ -15,7 +15,7 @@ const maxInputLines = 10
 
 // inputPlaceholderHelp is the static one-line key-binding hint shown as the
 // textarea placeholder while the input is empty (QUM-664).
-const inputPlaceholderHelp = "/: commands • ?: help • tab: cycle panel • ctrl+c: clear/quit"
+const inputPlaceholderHelp = "/: commands • ?: help • ctrl+c: clear/quit"
 
 // inputBarGutter is the chrome prefix prepended to every visible input row —
 // a "▌ " gutter rendered under theme.InputBarStyle (QUM-664).

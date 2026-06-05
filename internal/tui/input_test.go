@@ -777,7 +777,8 @@ func TestInputModel_AltEnter_AfterPendingEnter_ResolvesEnterAsEmbedded(t *testin
 
 // TestInputModel_PlaceholderShowsHelpWhenEmpty: an empty input must render
 // the static placeholder containing the key-binding hints (commands / help /
-// tab / ctrl+c) so the user always knows what to do.
+// ctrl+c) so the user always knows what to do. The `tab: cycle panel` hint
+// was dropped in QUM-694 (decision b) while panel cycling itself was retained.
 func TestInputModel_PlaceholderShowsHelpWhenEmpty(t *testing.T) {
 	m := newTestInputModel(t)
 	m.SetWidth(80)
@@ -785,11 +786,11 @@ func TestInputModel_PlaceholderShowsHelpWhenEmpty(t *testing.T) {
 	if !strings.Contains(view, "commands") {
 		t.Errorf("empty View() should contain placeholder help substring 'commands', got:\n%s", view)
 	}
-	if !strings.Contains(view, "tab: cycle panel") {
-		t.Errorf("empty View() should contain 'tab: cycle panel' placeholder hint, got:\n%s", view)
-	}
 	if !strings.Contains(view, "ctrl+c") {
 		t.Errorf("empty View() should contain 'ctrl+c' placeholder hint, got:\n%s", view)
+	}
+	if strings.Contains(view, "tab: cycle panel") {
+		t.Errorf("empty View() must not contain 'tab: cycle panel' (dropped in QUM-694), got:\n%s", view)
 	}
 }
 
