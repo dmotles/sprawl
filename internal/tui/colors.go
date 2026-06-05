@@ -64,8 +64,8 @@ func defaultDarkPalette(accent color.Color) Palette {
 		BgBase:        lipgloss.Color("233"),
 		BgLessVisible: lipgloss.Color("236"),
 		// QUM-664: visual-identity spike palette roles.
-		UserPrompt: lipgloss.Color("12"),  // bold bright-blue chevron
-		InputBar:   lipgloss.Color("8"),   // grey vertical bar gutter
-		InputBg:    lipgloss.Color("234"), // dark chrome bg filling every input row
+		UserPrompt: lipgloss.Color("#22D3EE"), // cyan — dominant + distinct from white assistant text (QUM-677 S7 v4)
+		InputBar:   lipgloss.Color("8"),       // grey vertical bar gutter
+		InputBg:    lipgloss.Color("234"),     // dark chrome bg filling every input row
 	}
 }

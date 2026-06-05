@@ -42,7 +42,7 @@ type Item interface {
 	//   - UserItem:               blockquoted (> prefix) lines
 	//   - AssistantTextItem:      verbatim markdown source
 	//   - ToolCallItem:           "<!-- tool: name (input) -->" HTML comment
-	//   - ThinkingItem:           verbatim thinking body
+	//   - ThinkingItem:           empty (transient count marker, no payload)
 	//   - SystemNotificationItem: envelope body verbatim
 	//   - AutoTriggerItem:        synthetic "auto-continued — …" marker
 	// QUM-676: introduced when selection.go migrated off the legacy
@@ -51,10 +51,11 @@ type Item interface {
 }
 
 // Expandable is implemented by items whose rendering depends on a
-// per-item expanded flag (ToolCallItem, ThinkingItem). ChatList's
-// global SetToolInputsExpanded fan-out calls SetExpanded on every
-// Expandable in every agent's list — preserves the QUM-335 "expand all"
-// semantics locked by plan §3 S1.
+// per-item expanded flag (currently ToolCallItem only — QUM-677 S7 pivot
+// removed ThinkingItem from this set; the marker has no body to expand).
+// ChatList's global SetToolInputsExpanded fan-out calls SetExpanded on
+// every Expandable in every agent's list — preserves the QUM-335
+// "expand all" semantics locked by plan §3 S1.
 type Expandable interface {
 	SetExpanded(bool)
 	IsExpanded() bool
@@ -187,53 +188,51 @@ func (i *AssistantTextItem) RawMarkdown() string { return i.text }
 // ThinkingItem
 // ---------------------------------------------------------------------------
 
-// ThinkingItem renders a model-emitted thinking block (plan §3 S7 promotes
-// this to a first-class viewport row). Collapsed by default; Ctrl+O fan-out
-// (via Expandable) flips it open. Always Finished on creation — thinking
-// blocks arrive whole, unlike assistant text which streams.
+// ThinkingItem is a transient "model is thinking" marker. QUM-677 S7 pivot:
+// Claude/Opus redacts thinking-block bodies server-side (only the wire
+// `signature` field is populated), so the marker carries a count of
+// consecutive thinking blocks in the current turn instead of any text.
+// `ChatList.AppendThinking` coalesces consecutive arrivals into one trailing
+// marker; the marker is dropped automatically when any non-thinking append
+// (assistant text, tool call, etc.) lands. Not Expandable — there is no
+// body to expand.
 type ThinkingItem struct {
-	ctx      *itemRenderCtx
-	text     string
-	expanded bool
+	ctx   *itemRenderCtx
+	count int
 }
 
-// NewThinkingItem constructs a finished ThinkingItem from the model's
-// thinking content block text.
-func NewThinkingItem(ctx *itemRenderCtx, text string) *ThinkingItem {
-	return &ThinkingItem{ctx: ctx, text: text}
+// NewThinkingItem constructs a fresh marker with count=1.
+func NewThinkingItem(ctx *itemRenderCtx) *ThinkingItem {
+	return &ThinkingItem{ctx: ctx, count: 1}
 }
 
-// Render produces the collapsed teaser when not expanded, or the full text
-// (wrapped) when expanded.
+// Bump increments the block counter. The owning envelope's cache must be
+// invalidated by the caller (ChatList.AppendThinking handles that).
+func (i *ThinkingItem) Bump() { i.count++ }
+
+// Count returns the current run-length of consecutive thinking blocks.
+func (i *ThinkingItem) Count() int { return i.count }
+
+// Render produces the dim/italic marker line, e.g. `✻ thinking… (3 blocks)`.
 func (i *ThinkingItem) Render(width int) string {
 	if width <= 0 {
 		return ""
 	}
-	style := i.ctx.theme.SystemText
-	if !i.expanded {
-		preview := firstNonBlankLine(i.text)
-		budget := width - 4 // "✻ " + " · ^O" trailing hint reserve
-		if budget > 0 {
-			preview = ansi.Truncate(preview, budget, "…")
-		}
-		return style.Render("✻ thinking ") + style.Render(preview) +
-			style.Render(" · ^O to expand")
+	style := i.ctx.theme.ThinkingText
+	unit := "blocks"
+	if i.count == 1 {
+		unit = "block"
 	}
-	body := formatSystemMessage(i.text, width)
-	return style.Render("✻ thinking") + "\n" + style.Render(body)
+	return style.Render(fmt.Sprintf("✻ thinking… (%d %s)", i.count, unit))
 }
 
-// Finished is always true: thinking blocks arrive whole.
+// Finished is always true: each marker update is self-contained and safe to
+// cache between counter bumps (every bump invalidates the envelope).
 func (i *ThinkingItem) Finished() bool { return true }
 
-// RawMarkdown returns the verbatim thinking-block text.
-func (i *ThinkingItem) RawMarkdown() string { return i.text }
-
-// SetExpanded flips the expanded flag.
-func (i *ThinkingItem) SetExpanded(v bool) { i.expanded = v }
-
-// IsExpanded reports the current expanded state.
-func (i *ThinkingItem) IsExpanded() bool { return i.expanded }
+// RawMarkdown returns "" — the marker has no yankable payload (the
+// underlying thinking-block bodies are redacted at the wire layer).
+func (i *ThinkingItem) RawMarkdown() string { return "" }
 
 // ---------------------------------------------------------------------------
 // ToolCallItem
@@ -498,14 +497,3 @@ func (i *AutoTriggerItem) RawMarkdown() string {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-// firstNonBlankLine returns the first non-empty trimmed line in s, or "" if
-// none. Used by ThinkingItem's collapsed teaser.
-func firstNonBlankLine(s string) string {
-	for _, ln := range strings.Split(s, "\n") {
-		if t := strings.TrimSpace(ln); t != "" {
-			return t
-		}
-	}
-	return ""
-}

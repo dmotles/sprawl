@@ -469,6 +469,44 @@ func TestAppModel_AssistantTextMsg_SetsTurnStateStreaming(t *testing.T) {
 	}
 }
 
+// QUM-677 S7 pivot: a ThinkingMsg arriving through Update must materialize
+// a count-marker ThinkingItem in the root chat list, preserve TurnThinking
+// state (no premature transition to Streaming), and coalesce subsequent
+// ThinkingMsgs into the trailing marker rather than spawning new rows.
+func TestAppModel_ThinkingMsg_AppendsCountMarker(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.setTurnState(TurnThinking)
+
+	updated, _ := app.Update(ThinkingMsg{Text: ""})
+	app = updated.(AppModel)
+	updated, _ = app.Update(ThinkingMsg{Text: ""})
+	app = updated.(AppModel)
+
+	if app.turnState != TurnThinking {
+		t.Errorf("turnState = %v after ThinkingMsg, want TurnThinking (unchanged)", app.turnState)
+	}
+	cl := app.rootBuf().cl
+	if cl == nil {
+		t.Fatal("rootBuf().cl is nil")
+	}
+	thinkingCount := 0
+	var ti *ThinkingItem
+	for _, env := range cl.items {
+		if t2, ok := env.item.(*ThinkingItem); ok {
+			ti = t2
+			thinkingCount++
+		}
+	}
+	if thinkingCount != 1 {
+		t.Fatalf("ThinkingMsg routing produced %d ThinkingItems, want 1 (coalesced)", thinkingCount)
+	}
+	if ti.Count() != 2 {
+		t.Errorf("ThinkingItem.Count() = %d, want 2", ti.Count())
+	}
+}
+
 func TestAppModel_SessionResultMsg_SetsTurnStateIdle(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

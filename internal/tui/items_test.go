@@ -74,30 +74,39 @@ func TestAssistantTextItem_AppendAfterFinalizeNoOp(t *testing.T) {
 	}
 }
 
-func TestThinkingItem_ExpandToggle(t *testing.T) {
+func TestThinkingItem_RenderCount(t *testing.T) {
+	// QUM-677 S7 pivot: ThinkingItem is a transient count marker. Render
+	// uses "block" (singular) for count=1 and "blocks" otherwise.
+	cases := []struct {
+		count int
+		want  string
+	}{
+		{1, "(1 block)"},
+		{5, "(5 blocks)"},
+		{20, "(20 blocks)"},
+	}
 	ctx := newTestCtx()
-	body := "internal reasoning across\nmultiple lines"
-	item := NewThinkingItem(ctx, body)
-	if !item.Finished() {
-		t.Fatalf("ThinkingItem.Finished() = false, want true")
-	}
-	collapsed := item.Render(80)
-	if !strings.Contains(collapsed, "thinking") || !strings.Contains(collapsed, "^O") {
-		t.Errorf("collapsed render missing teaser: %q", collapsed)
-	}
-	if strings.Contains(collapsed, "multiple lines") {
-		t.Errorf("collapsed render leaked full body: %q", collapsed)
-	}
-	item.SetExpanded(true)
-	if !item.IsExpanded() {
-		t.Fatalf("IsExpanded() = false after SetExpanded(true)")
-	}
-	expanded := item.Render(80)
-	if !strings.Contains(expanded, "multiple lines") {
-		t.Errorf("expanded render missing full body: %q", expanded)
-	}
-	if expanded == collapsed {
-		t.Errorf("expanded render unchanged from collapsed")
+	for _, tc := range cases {
+		item := NewThinkingItem(ctx)
+		for i := 1; i < tc.count; i++ {
+			item.Bump()
+		}
+		if !item.Finished() {
+			t.Errorf("count=%d: Finished()=false, want true", tc.count)
+		}
+		if got := item.Count(); got != tc.count {
+			t.Errorf("count=%d: Count()=%d", tc.count, got)
+		}
+		out := item.Render(80)
+		if !strings.Contains(out, "thinking") {
+			t.Errorf("count=%d: render missing 'thinking': %q", tc.count, out)
+		}
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("count=%d: render = %q, want substring %q", tc.count, out, tc.want)
+		}
+		if item.RawMarkdown() != "" {
+			t.Errorf("count=%d: RawMarkdown should be empty, got %q", tc.count, item.RawMarkdown())
+		}
 	}
 }
 

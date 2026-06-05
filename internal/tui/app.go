@@ -73,6 +73,13 @@ func (b *AgentBuffer) FinalizeAssistantMessage() {
 	b.vp.FinalizeAssistantMessage()
 }
 
+// AppendThinking records that a thinking content block arrived. The body
+// text is intentionally not stored — Claude/Opus redacts it server-side,
+// and the marker carries only a count. (QUM-677 S7)
+func (b *AgentBuffer) AppendThinking() {
+	b.vp.AppendThinking()
+}
+
 // AppendToolCallWithHeader appends a tool-call row.
 func (b *AgentBuffer) AppendToolCallWithHeader(name, toolID string, approved bool,
 	input, fullInput, headerArg string, headerParams []KVPair,
@@ -799,6 +806,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case AssistantTextMsg:
 				m.setTurnState(TurnStreaming)
 				m.rootBuf().AppendAssistantChunk(im.Text)
+			case ThinkingMsg:
+				// QUM-677 S7: thinking blocks render in-chat as a transient
+				// count marker. They don't bump the turn state — TurnThinking
+				// is already set by SubmitMsg/InjectPromptMsg, and the
+				// assistant-text branch owns the Thinking→Streaming transition.
+				_ = im
+				m.rootBuf().AppendThinking()
 			case SessionUsageMsg:
 				// QUM-385: true context window usage = input + cache_read +
 				// cache_creation. input_tokens alone is the non-cached subset
@@ -820,6 +834,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AssistantTextMsg:
 		m.setTurnState(TurnStreaming)
 		m.rootBuf().AppendAssistantChunk(msg.Text)
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
+		return m, nil
+
+	case ThinkingMsg:
+		// QUM-677 S7: standalone delivery path (mirrors AssistantContentMsg).
+		m.rootBuf().AppendThinking()
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
@@ -2636,6 +2658,17 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 			buf.AppendAssistantChunk(im.Text)
 		} else {
 			vp.AppendAssistantChunk(im.Text)
+		}
+		return nil
+	case ThinkingMsg:
+		// QUM-677 S7: per-child thinking blocks render into the child's
+		// AgentBuffer (or fall back to the agent's viewport when the buffer
+		// hasn't materialized yet — mirrors the AssistantText path).
+		_ = im
+		if buf != nil {
+			buf.AppendThinking()
+		} else {
+			vp.AppendThinking()
 		}
 		return nil
 	case ToolCallMsg:

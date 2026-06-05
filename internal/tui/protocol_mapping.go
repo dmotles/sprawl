@@ -14,6 +14,7 @@ import (
 type contentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	ID        string          `json:"id,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
@@ -89,6 +90,12 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 		switch block.Type {
 		case "text":
 			msgs = append(msgs, AssistantTextMsg{Text: block.Text})
+		case "thinking":
+			// QUM-677 S7: every thinking block produces a ThinkingMsg
+			// (including empty bodies — Claude/Opus redacts the body
+			// server-side, leaving `thinking==""`). The marker is a count,
+			// not the text, so empty arrivals are still meaningful.
+			msgs = append(msgs, ThinkingMsg{Text: block.Thinking})
 		case "tool_use":
 			headerArg, headerParams := FormatToolHeader(block.Name, block.Input)
 			msgs = append(msgs, ToolCallMsg{

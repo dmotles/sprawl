@@ -274,14 +274,16 @@ func TestReportDots_UsePaletteRoles(t *testing.T) {
 	}
 }
 
-// QUM-664: Theme.UserPromptText is the bold bright-blue (ANSI 12) style
-// applied to user-message rendering in the viewport.
+// QUM-677 S7 v4: Theme.UserPromptText is bold cyan (#22D3EE) so user
+// messages dominate without clashing with white assistant text.
+// (Originally ANSI 12 per QUM-664; bumped to ANSI 15 in v3 which proved
+// too close to assistant text on dmotles eyeball; v4 lands on cyan.)
 func TestTheme_HasUserPromptStyle(t *testing.T) {
 	theme := NewTheme("")
 	got := theme.UserPromptText.GetForeground()
-	want := lipgloss.Color("12")
+	want := lipgloss.Color("#22D3EE")
 	if renderColor(got) != renderColor(want) {
-		t.Errorf("Theme.UserPromptText foreground render = %q, want %q (ANSI 12)",
+		t.Errorf("Theme.UserPromptText foreground render = %q, want %q (#22D3EE cyan)",
 			renderColor(got), renderColor(want))
 	}
 	if !theme.UserPromptText.GetBold() {
@@ -306,9 +308,9 @@ func TestTheme_HasInputBarStyle(t *testing.T) {
 // rather than raw literals scattered through render code.
 func TestNewTheme_PaletteHasUserPromptAndInputBarRoles(t *testing.T) {
 	theme := NewTheme("")
-	if renderColor(theme.Palette.UserPrompt) != renderColor(lipgloss.Color("12")) {
-		t.Errorf("Palette.UserPrompt = %q, want %q (ANSI 12)",
-			renderColor(theme.Palette.UserPrompt), renderColor(lipgloss.Color("12")))
+	if renderColor(theme.Palette.UserPrompt) != renderColor(lipgloss.Color("#22D3EE")) {
+		t.Errorf("Palette.UserPrompt = %q, want %q (#22D3EE cyan)",
+			renderColor(theme.Palette.UserPrompt), renderColor(lipgloss.Color("#22D3EE")))
 	}
 	if renderColor(theme.Palette.InputBar) != renderColor(lipgloss.Color("8")) {
 		t.Errorf("Palette.InputBar = %q, want %q (ANSI 8)",

@@ -440,6 +440,15 @@ type AssistantTextMsg struct {
 	Text string
 }
 
+// ThinkingMsg carries a model-emitted thinking content block. Routed by
+// AppModel to ChatList.AppendThinking, which renders a ThinkingItem in the
+// viewport (collapsed by default with a ✻ glyph; expandable via Ctrl+O
+// fan-out). Always arrives whole — thinking blocks do not stream chunk by
+// chunk in the wire protocol the way assistant text does. (QUM-677 S7)
+type ThinkingMsg struct {
+	Text string
+}
+
 // ToolCallMsg represents a tool call observed in the assistant's response.
 type ToolCallMsg struct {
 	ToolName string

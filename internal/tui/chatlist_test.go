@@ -265,16 +265,19 @@ func TestChatList_ToolCallMarkResult(t *testing.T) {
 }
 
 func TestChatList_SetToolInputsExpandedFanout(t *testing.T) {
+	// QUM-677 S7 pivot: ThinkingItem no longer implements Expandable, and
+	// would in any case be dropped by AppendToolCall/MarkToolResult. The
+	// fan-out only fans across the actual Expandable items (ToolCallItem
+	// here).
 	cl := newTestChatList()
 	cl.SetSize(80)
 	cl.AppendToolCall(ToolCallSpec{Name: "Bash", ToolID: "t", Input: "ls", InputFull: "ls -la\n"})
-	cl.AppendThinking("private reasoning here")
 	cl.MarkToolResult("t", "ok", false)
 	collapsedAll := cl.Render(80)
 	// Trigger global fan-out.
 	cl.SetToolInputsExpanded(true)
 	for _, env := range cl.items {
-		if env.cache != nil {
+		if _, ok := env.item.(Expandable); ok && env.cache != nil {
 			t.Errorf("SetToolInputsExpanded did not invalidate cache for %T", env.item)
 		}
 	}
@@ -285,12 +288,8 @@ func TestChatList_SetToolInputsExpandedFanout(t *testing.T) {
 	if !strings.Contains(expandedAll, "ls -la") {
 		t.Errorf("expanded render missing tool InputFull content: %q", expandedAll)
 	}
-	if !strings.Contains(expandedAll, "private reasoning here") {
-		t.Errorf("expanded render missing thinking body: %q", expandedAll)
-	}
 	// Second call with identical state is a no-op.
 	cl.SetToolInputsExpanded(true)
-	// And re-render must serve from cache (Finished items only).
 	again := cl.Render(80)
 	if again != expandedAll {
 		t.Errorf("re-render after no-op SetToolInputsExpanded changed output")
@@ -337,7 +336,7 @@ func TestChatList_AppendAutoTriggerAndThinking(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)
 	cl.AppendAutoTrigger("inbox: 1 new")
-	cl.AppendThinking("ruminating")
+	cl.AppendThinking()
 	if cl.Len() != 2 {
 		t.Fatalf("expected 2 items, got %d", cl.Len())
 	}
@@ -540,13 +539,97 @@ func TestChatList_Separator_StreamingChunksContiguous(t *testing.T) {
 	}
 }
 
-func TestChatList_ThinkingInheritsGlobalExpandedAtAppend(t *testing.T) {
+// QUM-677 S7 pivot tests for the count-marker behavior.
+
+func TestChatList_AppendThinking_Coalesces(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)
-	cl.SetToolInputsExpanded(true)
-	cl.AppendThinking("global expand was active")
-	t1 := cl.items[0].item.(*ThinkingItem)
-	if !t1.IsExpanded() {
-		t.Errorf("appended ThinkingItem did not inherit global expanded state")
+	cl.AppendThinking()
+	cl.AppendThinking()
+	cl.AppendThinking()
+	if cl.Len() != 1 {
+		t.Fatalf("3 consecutive AppendThinking → Len=%d, want 1 (should coalesce)", cl.Len())
+	}
+	ti, ok := cl.items[0].item.(*ThinkingItem)
+	if !ok {
+		t.Fatalf("items[0] = %T, want *ThinkingItem", cl.items[0].item)
+	}
+	if ti.Count() != 3 {
+		t.Errorf("Count() = %d, want 3", ti.Count())
+	}
+	out := cl.Render(80)
+	if !strings.Contains(out, "(3 blocks)") {
+		t.Errorf("render missing '(3 blocks)': %q", out)
+	}
+}
+
+func TestChatList_AppendThinking_RemovedOnAssistantText(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendThinking()
+	cl.AppendThinking()
+	cl.AppendAssistantChunk("hi")
+	if cl.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1 (thinking marker should be dropped)", cl.Len())
+	}
+	if _, ok := cl.items[0].item.(*AssistantTextItem); !ok {
+		t.Errorf("items[0] = %T, want *AssistantTextItem", cl.items[0].item)
+	}
+}
+
+func TestChatList_AppendThinking_RemovedOnToolCall(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendThinking()
+	cl.AppendToolCall(ToolCallSpec{Name: "Bash", ToolID: "t1", Input: "ls"})
+	if cl.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1 (thinking marker dropped on tool call)", cl.Len())
+	}
+	if _, ok := cl.items[0].item.(*ToolCallItem); !ok {
+		t.Errorf("items[0] = %T, want *ToolCallItem", cl.items[0].item)
+	}
+}
+
+func TestChatList_AppendThinking_Mixed_NoOrphan(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendThinking()
+	cl.AppendToolCall(ToolCallSpec{Name: "Bash", ToolID: "t1", Input: "ls"})
+	cl.AppendThinking()
+	cl.AppendAssistantChunk("done")
+	if cl.Len() != 2 {
+		t.Fatalf("Len() = %d, want 2 (no orphan markers)", cl.Len())
+	}
+	if _, ok := cl.items[0].item.(*ToolCallItem); !ok {
+		t.Errorf("items[0] = %T, want *ToolCallItem", cl.items[0].item)
+	}
+	if _, ok := cl.items[1].item.(*AssistantTextItem); !ok {
+		t.Errorf("items[1] = %T, want *AssistantTextItem", cl.items[1].item)
+	}
+}
+
+func TestChatList_NoThinking_NoMarker(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendAssistantChunk("hello")
+	for _, env := range cl.items {
+		if _, ok := env.item.(*ThinkingItem); ok {
+			t.Errorf("unexpected ThinkingItem in list with no thinking arrivals")
+		}
+	}
+}
+
+func TestChatList_AppendThinking_DroppedOnNextUser(t *testing.T) {
+	// Turn-boundary cleanup: any orphan trailing marker at the next user
+	// turn must be dropped (symmetry with assistant/tool-call paths).
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendThinking()
+	cl.AppendUser("next prompt")
+	if cl.Len() != 1 {
+		t.Fatalf("Len() = %d, want 1 (orphan marker dropped on AppendUser)", cl.Len())
+	}
+	if _, ok := cl.items[0].item.(*UserItem); !ok {
+		t.Errorf("items[0] = %T, want *UserItem", cl.items[0].item)
 	}
 }

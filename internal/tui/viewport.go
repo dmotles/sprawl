@@ -244,6 +244,17 @@ func (m *ViewportModel) AppendAssistantChunk(text string) {
 	m.placeholderShown = false
 }
 
+// AppendThinking records a thinking content block on the ChatList as a
+// transient marker. Not mirrored into the legacy MessageEntry log — thinking
+// blocks have no replay representation and the marker is intentionally
+// transient (dropped on the next non-thinking append). (QUM-677 S7)
+func (m *ViewportModel) AppendThinking() {
+	if cl := m.ChatList(); cl != nil {
+		cl.AppendThinking()
+	}
+	m.placeholderShown = false
+}
+
 // FinalizeAssistantMessage marks the in-flight assistant entry as complete
 // on both stores.
 func (m *ViewportModel) FinalizeAssistantMessage() {

@@ -153,9 +153,11 @@ func TestMapProtocolMessage_ResultWithError(t *testing.T) {
 }
 
 func TestMapProtocolMessage_AssistantWithOnlyThinking(t *testing.T) {
-	// Assistant messages that only have thinking blocks should return nil
-	// (they contain no displayable content)
-	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about this..."}]}}`
+	// QUM-677 S7 pivot: every thinking block (even empty-bodied ones, which
+	// is the realistic Claude/Opus case) produces a ThinkingMsg. The Text
+	// field is no longer load-bearing — what matters is the count of
+	// ThinkingMsgs emitted.
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"thinking","thinking":""}]}}`
 	var msg protocol.Message
 	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
 		t.Fatal(err)
@@ -163,8 +165,77 @@ func TestMapProtocolMessage_AssistantWithOnlyThinking(t *testing.T) {
 	msg.Raw = json.RawMessage(raw)
 
 	result := MapProtocolMessage(&msg)
-	if result != nil {
-		t.Errorf("mapProtocolMessage for thinking-only assistant returned %T, want nil", result)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 1 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 1", len(acm.Msgs))
+	}
+	if _, ok := acm.Msgs[0].(ThinkingMsg); !ok {
+		t.Fatalf("Msgs[0] is %T, want ThinkingMsg", acm.Msgs[0])
+	}
+}
+
+func TestMapProtocolMessage_AssistantThinkingThenText(t *testing.T) {
+	// QUM-677 S7 pivot: a mixed thinking+text message must still emit a
+	// ThinkingMsg followed by an AssistantTextMsg, in order.
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[` +
+		`{"type":"thinking","thinking":""},` +
+		`{"type":"text","text":"Here is the answer."}` +
+		`]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := MapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("mapProtocolMessage returned %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 2 {
+		t.Fatalf("AssistantContentMsg has %d msgs, want 2", len(acm.Msgs))
+	}
+	if _, ok := acm.Msgs[0].(ThinkingMsg); !ok {
+		t.Errorf("Msgs[0] = %T, want ThinkingMsg", acm.Msgs[0])
+	}
+	if atm, ok := acm.Msgs[1].(AssistantTextMsg); !ok || atm.Text != "Here is the answer." {
+		t.Errorf("Msgs[1] = %#v, want AssistantTextMsg{Text:\"Here is the answer.\"}", acm.Msgs[1])
+	}
+}
+
+func TestMapProtocolMessage_AssistantWithEmptyThinkingNotSkipped(t *testing.T) {
+	// QUM-677 S7 pivot: empty thinking bodies are NOT skipped — the marker
+	// is count-based and the empty case is the realistic Claude/Opus shape
+	// (redacted server-side).
+	raw := `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[` +
+		`{"type":"thinking","thinking":""},` +
+		`{"type":"thinking","thinking":""},` +
+		`{"type":"text","text":"hi"}` +
+		`]}}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+	result := MapProtocolMessage(&msg)
+	acm, ok := result.(AssistantContentMsg)
+	if !ok {
+		t.Fatalf("got %T, want AssistantContentMsg", result)
+	}
+	if len(acm.Msgs) != 3 {
+		t.Fatalf("len(Msgs) = %d, want 3 (two ThinkingMsgs + one AssistantTextMsg)", len(acm.Msgs))
+	}
+	if _, ok := acm.Msgs[0].(ThinkingMsg); !ok {
+		t.Errorf("Msgs[0] = %T, want ThinkingMsg", acm.Msgs[0])
+	}
+	if _, ok := acm.Msgs[1].(ThinkingMsg); !ok {
+		t.Errorf("Msgs[1] = %T, want ThinkingMsg", acm.Msgs[1])
+	}
+	if _, ok := acm.Msgs[2].(AssistantTextMsg); !ok {
+		t.Errorf("Msgs[2] = %T, want AssistantTextMsg", acm.Msgs[2])
 	}
 }
 

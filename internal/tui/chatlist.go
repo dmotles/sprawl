@@ -129,6 +129,7 @@ func (c *ChatList) SetToolInputsExpanded(expanded bool) {
 
 // AppendUser appends a new UserItem.
 func (c *ChatList) AppendUser(text string) {
+	c.dropTrailingThinkingMarker()
 	c.items = append(c.items, &itemEnvelope{item: NewUserItem(&c.ctx, text)})
 }
 
@@ -147,6 +148,7 @@ func (c *ChatList) AppendAssistantChunk(text string) {
 			return
 		}
 	}
+	c.dropTrailingThinkingMarker()
 	c.items = append(c.items, &itemEnvelope{item: NewAssistantTextItem(&c.ctx, text)})
 	c.streamingAssistant = true
 }
@@ -163,13 +165,32 @@ func (c *ChatList) FinalizeAssistantMessage() {
 	c.streamingAssistant = false
 }
 
-// AppendThinking appends a finished ThinkingItem. Initial expanded state
-// inherits the current global toolsExpanded flag so a thinking block
-// surfacing while the user has "expand all" toggled comes in expanded.
-func (c *ChatList) AppendThinking(text string) {
-	item := NewThinkingItem(&c.ctx, text)
-	item.SetExpanded(c.toolsExpanded)
-	c.items = append(c.items, &itemEnvelope{item: item})
+// AppendThinking coalesces consecutive thinking arrivals into a single
+// trailing ThinkingItem marker. QUM-677 S7: thinking-block bodies are
+// redacted server-side, so the marker carries a count instead of text. The
+// marker is dropped on the next non-thinking append (see
+// dropTrailingThinkingMarker) — its purpose is purely the transient "model
+// is currently thinking" indicator.
+func (c *ChatList) AppendThinking() {
+	if n := len(c.items); n > 0 {
+		if t, ok := c.items[n-1].item.(*ThinkingItem); ok {
+			t.Bump()
+			c.items[n-1].cache = nil
+			return
+		}
+	}
+	c.items = append(c.items, &itemEnvelope{item: NewThinkingItem(&c.ctx)})
+}
+
+// dropTrailingThinkingMarker removes a trailing ThinkingItem if one is
+// present. Called by every non-thinking Append* verb — once real content
+// arrives, the transient marker has served its purpose.
+func (c *ChatList) dropTrailingThinkingMarker() {
+	if n := len(c.items); n > 0 {
+		if _, ok := c.items[n-1].item.(*ThinkingItem); ok {
+			c.items = c.items[:n-1]
+		}
+	}
 }
 
 // AppendToolCall appends a pending ToolCallItem. The item inherits the
@@ -177,6 +198,7 @@ func (c *ChatList) AppendThinking(text string) {
 // its first paint. Bumps the pendingTools counter so Idle() reports false
 // until MarkToolResult lands.
 func (c *ChatList) AppendToolCall(spec ToolCallSpec) {
+	c.dropTrailingThinkingMarker()
 	item := NewToolCallItem(&c.ctx, spec)
 	item.SetExpanded(c.toolsExpanded)
 	c.items = append(c.items, &itemEnvelope{item: item})
@@ -278,10 +300,15 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 // are inherited via this contract.
 func (c *ChatList) AppendSystemNotification(text string) {
 	rest := text
+	appended := false
 	for {
 		stripped, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(rest)
 		if !ok {
 			break
+		}
+		if !appended {
+			c.dropTrailingThinkingMarker()
+			appended = true
 		}
 		c.items = append(c.items, &itemEnvelope{
 			item: NewSystemNotificationItem(&c.ctx, stripped, notifType, isInterrupt),
@@ -292,6 +319,7 @@ func (c *ChatList) AppendSystemNotification(text string) {
 
 // AppendAutoTrigger appends a finished AutoTriggerItem.
 func (c *ChatList) AppendAutoTrigger(summary string) {
+	c.dropTrailingThinkingMarker()
 	c.items = append(c.items, &itemEnvelope{item: NewAutoTriggerItem(&c.ctx, summary)})
 }
 

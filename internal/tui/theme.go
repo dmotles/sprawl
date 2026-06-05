@@ -45,6 +45,11 @@ type Theme struct {
 	// `<system-notification>` entries — bodies starting with `[interrupt]`
 	// (QUM-557). Amber to signal "act soon" without screaming-red.
 	InterruptText lipgloss.Style
+	// ThinkingText is the dim/zinc foreground used for the ✻ thinking…
+	// transient marker (QUM-677 S7 v3). Darker than FgMostSubtle so the
+	// marker reads as ambient/ephemeral and does not compete with assistant
+	// text for the user's attention.
+	ThinkingText lipgloss.Style
 	// StatusChangeText is the foreground used for `type="status_change"`
 	// `<system-notification>` entries (QUM-562). Dim grey to read as a muted
 	// state-change pin, visually distinct from NotificationText cyan
@@ -113,6 +118,7 @@ func NewTheme(accentColor string) Theme {
 		NormalText:       lipgloss.NewStyle().Foreground(pal.FgBase),
 		ErrorText:        lipgloss.NewStyle().Foreground(pal.Error),
 		SystemText:       lipgloss.NewStyle().Foreground(pal.System),
+		ThinkingText:     lipgloss.NewStyle().Foreground(lipgloss.Color("#52525B")).Italic(true),
 		NotificationText: lipgloss.NewStyle().Foreground(pal.Accent),
 		InterruptText:    lipgloss.NewStyle().Foreground(pal.Warning),
 		StatusChangeText: lipgloss.NewStyle().Foreground(pal.FgSubtle),
