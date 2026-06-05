@@ -225,12 +225,11 @@ func TestAppModel_ResyncFromSessionLog_MatchesNonDroppedRender(t *testing.T) {
 // different code paths can be compared via reflect.DeepEqual on their
 // content-bearing fields. Operates on a copy; does not mutate the input.
 func normalizeEntriesForCompare(entries []MessageEntry) []MessageEntry {
+	// QUM-676: the per-entry rendered* cache fields are gone with the
+	// QUM-667 tactical cache. Identity comparison is now over the
+	// content-bearing fields directly.
 	out := make([]MessageEntry, len(entries))
-	for i, e := range entries {
-		e.renderedCache = ""
-		e.renderedCacheKey = ""
-		out[i] = e
-	}
+	copy(out, entries)
 	return out
 }
 

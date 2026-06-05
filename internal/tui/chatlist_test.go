@@ -90,6 +90,25 @@ func TestChatList_Reset_PendingToolKeepsBufferBusy(t *testing.T) {
 	}
 }
 
+// TestChatList_Reset_ForceFinalizesStreamingAssistant codifies the QUM-669
+// wedge-exit invariant (chatlist-invariants.md §8): Reset of a transcript
+// whose trailing entry is a Complete=false assistant must force-finalize it
+// so the resync path leaves cl Idle. Without this, a resync from a wedged
+// session would inherit a half-open assistant and the next user input would
+// stall behind pendingTools accounting. Direct unit assertion preserved
+// after S6 deleted the chatlist_s4_test.go suite that previously held it.
+func TestChatList_Reset_ForceFinalizesStreamingAssistant(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.Reset([]MessageEntry{
+		{Type: MessageUser, Content: "hi", Complete: true},
+		{Type: MessageAssistant, Content: "partial reply, no close fence", Complete: false},
+	})
+	if !cl.Idle() {
+		t.Errorf("Reset with trailing Complete=false assistant must force-finalize and leave Idle (QUM-669 wedge-exit)")
+	}
+}
+
 func TestChatList_Reset_SkipsContractViolators(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -45,102 +44,7 @@ func TestSelectionState_MoveCursorNoMessages(t *testing.T) {
 	}
 }
 
-func TestAssembleRawMarkdown_AssistantOnly(t *testing.T) {
-	msgs := []MessageEntry{
-		{Type: MessageAssistant, Content: "# Heading\n\nBody text.", Complete: true},
-	}
-	got := AssembleRawMarkdown(msgs, 0, 0)
-	want := "# Heading\n\nBody text."
-	if got != want {
-		t.Errorf("AssembleRawMarkdown() =\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestAssembleRawMarkdown_UserIsBlockquoted(t *testing.T) {
-	msgs := []MessageEntry{
-		{Type: MessageUser, Content: "please summarize\nthe design", Complete: true},
-	}
-	got := AssembleRawMarkdown(msgs, 0, 0)
-	want := "> please summarize\n> the design"
-	if got != want {
-		t.Errorf("AssembleRawMarkdown() =\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestAssembleRawMarkdown_ToolCallRenderedAsHTMLComment(t *testing.T) {
-	msgs := []MessageEntry{
-		{Type: MessageToolCall, Content: "Bash", ToolInput: "ls -la", Complete: true},
-	}
-	got := AssembleRawMarkdown(msgs, 0, 0)
-	if !strings.Contains(got, "<!--") || !strings.Contains(got, "Bash") || !strings.Contains(got, "ls -la") {
-		t.Errorf("AssembleRawMarkdown() tool call should be HTML comment with name+input, got %q", got)
-	}
-}
-
-func TestAssembleRawMarkdown_SkipsStatusAndError(t *testing.T) {
-	msgs := []MessageEntry{
-		{Type: MessageStatus, Content: "session started"},
-		{Type: MessageAssistant, Content: "hello", Complete: true},
-		{Type: MessageError, Content: "transient failure"},
-	}
-	got := AssembleRawMarkdown(msgs, 0, 2)
-	if strings.Contains(got, "session started") {
-		t.Errorf("status should be skipped, got %q", got)
-	}
-	if strings.Contains(got, "transient failure") {
-		t.Errorf("error should be skipped, got %q", got)
-	}
-	if !strings.Contains(got, "hello") {
-		t.Errorf("assistant content missing, got %q", got)
-	}
-}
-
-// QUM-338: system-injected entries (e.g. inbox-drain bodies) are TUI chrome
-// from the copy-selection perspective — the underlying body is already part
-// of the user-role turn the bridge delivered to Claude, so re-emitting it
-// here would double-count. Pin the skip behavior alongside Status/Error.
-func TestAssembleRawMarkdown_SkipsSystemMessage(t *testing.T) {
-	msgs := []MessageEntry{
-		{Type: MessageSystem, Content: "[inbox] You received 1 message(s)..."},
-		{Type: MessageAssistant, Content: "hello", Complete: true},
-	}
-	got := AssembleRawMarkdown(msgs, 0, 1)
-	if strings.Contains(got, "[inbox]") {
-		t.Errorf("system message should be skipped, got %q", got)
-	}
-	if !strings.Contains(got, "hello") {
-		t.Errorf("assistant content missing, got %q", got)
-	}
-}
-
-func TestAssembleRawMarkdown_MixedTypesBlankLineSeparated(t *testing.T) {
-	msgs := []MessageEntry{
-		{Type: MessageUser, Content: "hi", Complete: true},
-		{Type: MessageAssistant, Content: "hello back", Complete: true},
-	}
-	got := AssembleRawMarkdown(msgs, 0, 1)
-	want := "> hi\n\nhello back"
-	if got != want {
-		t.Errorf("AssembleRawMarkdown() =\n%q\nwant\n%q", got, want)
-	}
-}
-
-func TestAssembleRawMarkdown_EmptyRangeReturnsEmpty(t *testing.T) {
-	msgs := []MessageEntry{{Type: MessageAssistant, Content: "x"}}
-	got := AssembleRawMarkdown(msgs, 5, 7)
-	if got != "" {
-		t.Errorf("out-of-range should return empty, got %q", got)
-	}
-}
-
-func TestAssembleRawMarkdown_RangeClampedToBuffer(t *testing.T) {
-	msgs := []MessageEntry{
-		{Type: MessageAssistant, Content: "a", Complete: true},
-		{Type: MessageAssistant, Content: "b", Complete: true},
-	}
-	got := AssembleRawMarkdown(msgs, -3, 99)
-	want := "a\n\nb"
-	if got != want {
-		t.Errorf("clamped range = %q, want %q", got, want)
-	}
-}
+// AssembleRawMarkdown tests (legacy MessageEntry-based) were removed in
+// QUM-676 along with the legacy function. The ChatList items-based
+// equivalents (AssembleRawMarkdownFromItems) are covered by
+// selection_chatlist_test.go.

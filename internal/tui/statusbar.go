@@ -253,6 +253,14 @@ func (m *StatusBarModel) SetTransientLabel(label string) {
 	m.transientLabel = label
 }
 
+// TransientLabel returns the current QUM-675 transient-label payload (the
+// single sink for one-shot status/banner text formerly routed through
+// vp.AppendStatus / vp.AppendBanner). Empty string when nothing is installed.
+// Read accessor used by tests to make clear-on-transition assertions precise.
+func (m StatusBarModel) TransientLabel() string {
+	return m.transientLabel
+}
+
 // SetPendingQuestions updates the pending-questions indicator (QUM-527 slice
 // 2c). Depth==0 hides the indicator entirely.
 func (m *StatusBarModel) SetPendingQuestions(depth int, agent string) {

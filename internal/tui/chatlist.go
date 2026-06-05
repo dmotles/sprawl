@@ -76,6 +76,18 @@ func NewChatList(theme *Theme) *ChatList {
 // Len returns the number of items in the list.
 func (c *ChatList) Len() int { return len(c.items) }
 
+// Items returns the unwrapped Item slice in append-order. The returned slice
+// is a fresh copy so callers (selection-mode yank, debug inspection) cannot
+// mutate ChatList's internal envelope ordering. Render envelopes are NOT
+// exposed — the contract is per-Item access only. QUM-676.
+func (c *ChatList) Items() []Item {
+	out := make([]Item, len(c.items))
+	for i, env := range c.items {
+		out[i] = env.item
+	}
+	return out
+}
+
 // Width returns the most recently applied content width (0 if SetSize has
 // not been called yet).
 func (c *ChatList) Width() int { return c.width }

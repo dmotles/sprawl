@@ -18,31 +18,23 @@ const ReplayMaxMessages = 500
 // slice of MessageEntry values suitable for pre-populating the viewport.
 //
 // If the file does not exist, (nil, nil) is returned. If the file contains no
-// replayable records, (nil, nil) is returned (no status markers are emitted).
-// Otherwise, a trailing "Resumed from prior session" status marker is
-// appended. When maxMessages > 0 and the entry count exceeds it, the oldest
-// entries are dropped and a leading "earlier messages truncated" marker is
-// prepended.
+// replayable records, (nil, nil) is returned.
+//
+// QUM-676: pre-S6 this function also prepended an "earlier messages
+// truncated" marker on cap-truncation and appended a "Resumed from prior
+// session" marker on success. Both were MessageStatus entries that the
+// legacy viewport rendered inline. Post-S6 MessageStatus entries are
+// silently dropped by ChatList (S5 contract violators); the resume/truncate
+// signals are now surface-only — the caller routes them to the status-bar
+// transient label after Preload. See cmd/enter.go's PreloadTranscript site.
 func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
 	entries, err := scanTranscript(path, time.Time{})
 	if err != nil || len(entries) == 0 {
 		return nil, err
 	}
-
 	if maxMessages > 0 && len(entries) > maxMessages {
 		entries = entries[len(entries)-maxMessages:]
-		entries = append([]MessageEntry{{
-			Type:     MessageStatus,
-			Content:  "earlier messages truncated",
-			Complete: true,
-		}}, entries...)
 	}
-
-	entries = append(entries, MessageEntry{
-		Type:     MessageStatus,
-		Content:  "Resumed from prior session",
-		Complete: true,
-	})
 	return entries, nil
 }
 
@@ -63,13 +55,9 @@ func LoadChildTranscript(path string, since time.Time, maxMessages int) ([]Messa
 	if err != nil || len(entries) == 0 {
 		return nil, err
 	}
+	// QUM-676: truncation marker dropped — see LoadTranscript for rationale.
 	if maxMessages > 0 && len(entries) > maxMessages {
 		entries = entries[len(entries)-maxMessages:]
-		entries = append([]MessageEntry{{
-			Type:     MessageStatus,
-			Content:  "earlier messages truncated",
-			Complete: true,
-		}}, entries...)
 	}
 	return entries, nil
 }

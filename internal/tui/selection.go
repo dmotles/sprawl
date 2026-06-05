@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -42,14 +41,16 @@ func (s SelectionState) MoveCursor(delta, n int) SelectionState {
 	return s
 }
 
-// AssembleRawMarkdown returns the raw-markdown concatenation of messages whose
-// indices lie in [lo, hi] (inclusive, clamped to the buffer). Conversation
-// chrome (status, error) is skipped; user messages are rendered as markdown
-// blockquotes; tool calls are rendered as HTML comments. Assistant messages
-// are emitted verbatim so the payload reflects the source the renderer
-// consumed, not the reflowed terminal display.
-func AssembleRawMarkdown(msgs []MessageEntry, lo, hi int) string {
-	n := len(msgs)
+// AssembleRawMarkdownFromItems returns the raw-markdown concatenation of
+// items whose indices lie in [lo, hi] (inclusive, clamped to the slice).
+// Items emit their copy-for-selection payload via Item.RawMarkdown(); empty
+// payloads (e.g. ThinkingItem with no text) are skipped so the joined output
+// doesn't carry blank-line clusters. Adjacent non-empty payloads are
+// separated by a single blank line ("\n\n"). QUM-676 — replaces the legacy
+// AssembleRawMarkdown(msgs []MessageEntry, lo, hi) once ChatList is the
+// sole transcript store.
+func AssembleRawMarkdownFromItems(items []Item, lo, hi int) string {
+	n := len(items)
 	if n == 0 {
 		return ""
 	}
@@ -64,31 +65,11 @@ func AssembleRawMarkdown(msgs []MessageEntry, lo, hi int) string {
 	}
 	var parts []string
 	for i := lo; i <= hi; i++ {
-		m := msgs[i]
-		switch m.Type {
-		case MessageAssistant:
-			parts = append(parts, m.Content)
-		case MessageUser:
-			parts = append(parts, quoteLines(m.Content))
-		case MessageToolCall:
-			if m.ToolInput != "" {
-				parts = append(parts, fmt.Sprintf("<!-- tool: %s (%s) -->", m.Content, m.ToolInput))
-			} else {
-				parts = append(parts, fmt.Sprintf("<!-- tool: %s -->", m.Content))
-			}
-		case MessageStatus, MessageError, MessageSystem, MessageBanner:
-			// Skip: TUI chrome, not conversation content. MessageSystem
-			// (QUM-338) bodies are already part of the user-role turn the
-			// bridge delivered to Claude — re-emitting here would double-count.
+		raw := items[i].RawMarkdown()
+		if raw == "" {
+			continue
 		}
+		parts = append(parts, raw)
 	}
 	return strings.Join(parts, "\n\n")
-}
-
-func quoteLines(s string) string {
-	lines := strings.Split(s, "\n")
-	for i, ln := range lines {
-		lines[i] = "> " + ln
-	}
-	return strings.Join(lines, "\n")
 }

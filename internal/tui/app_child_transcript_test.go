@@ -156,39 +156,30 @@ func TestChildTranscriptMsg_PopulatesViewport(t *testing.T) {
 }
 
 func TestChildTranscriptMsg_EmptyEntries_ShowsWaitingBanner(t *testing.T) {
+	// QUM-676: the "Waiting for X to start" banner now lives on the
+	// status-bar transient label, not in the agent's viewport.
 	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
 	app.observedAgent = "finn"
 	updated, _ := app.Update(ChildTranscriptMsg{Agent: "finn", Entries: nil})
 	app = updated.(AppModel)
 
-	got := app.viewportFor("finn").GetMessages()
-	found := false
-	for _, e := range got {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "Waiting for finn") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected 'Waiting for finn' status entry, got %+v", got)
+	if got := app.statusBar.TransientLabel(); !strings.Contains(got, "Waiting for finn") {
+		t.Errorf("expected 'Waiting for finn' transient label, got %q", got)
 	}
 }
 
 func TestChildTranscriptMsg_EmptyEntries_Idempotent(t *testing.T) {
+	// QUM-676: repeated empty-arm ticks must keep showing the same banner
+	// once (the transient label is naturally idempotent — setting the same
+	// value repeatedly is a no-op).
 	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
 	app.observedAgent = "finn"
 	for i := 0; i < 3; i++ {
 		updated, _ := app.Update(ChildTranscriptMsg{Agent: "finn", Entries: nil})
 		app = updated.(AppModel)
 	}
-	got := app.viewportFor("finn").GetMessages()
-	count := 0
-	for _, e := range got {
-		if e.Type == MessageStatus && strings.Contains(e.Content, "Waiting for finn") {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Errorf("waiting banner repeated %d times, want exactly 1; viewport=%+v", count, got)
+	if got := app.statusBar.TransientLabel(); !strings.Contains(got, "Waiting for finn") {
+		t.Errorf("expected 'Waiting for finn' transient label after repeated empty ticks, got %q", got)
 	}
 }
 

@@ -668,7 +668,12 @@ func runEnter(deps *enterDeps) error {
 				if lErr != nil {
 					fmt.Fprintf(os.Stderr, "[enter] transcript replay failed: %v (continuing with empty viewport)\n", lErr)
 				} else if len(entries) > 0 {
+					// QUM-676: the legacy "Resumed from prior session" + "earlier
+					// messages truncated" MessageStatus markers are gone with the
+					// ChatList contract-violator routing. Surface the resume hint
+					// via the status-bar transient label instead.
 					model.PreloadTranscript(entries)
+					model.SetTransientStatus("Resumed from prior session")
 				}
 			}
 		}

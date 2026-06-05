@@ -10,8 +10,26 @@ package tui
 // Initial baselines are reported in the QUM-674 completion comment.
 
 import (
+	"path/filepath"
 	"testing"
 )
+
+// loadLongHistoryFixture loads the committed 1500-frame fixture and returns
+// the corresponding MessageEntry slice. Moved here when QUM-676 deleted the
+// legacy app_longhist_bench_test.go (the viewport-side benches retired with
+// the ViewportModel rendering surface).
+func loadLongHistoryFixture(tb testing.TB) []MessageEntry {
+	tb.Helper()
+	path := filepath.Join("testdata", "longhist-1500.jsonl")
+	entries, err := LoadTranscript(path, 0)
+	if err != nil {
+		tb.Fatalf("LoadTranscript(%s): %v", path, err)
+	}
+	if len(entries) < 1000 {
+		tb.Fatalf("fixture parsed too few entries: %d", len(entries))
+	}
+	return entries
+}
 
 // chatListFromEntries builds a ChatList seeded from the long-history fixture
 // via the Reset path. Width matches the existing viewport bench for

@@ -30,18 +30,17 @@ const (
 	panelCount // sentinel for wrapping
 )
 
-// AgentBuffer stores the viewport state for a specific agent. Each agent
-// owns its own ViewportModel so streamed assistant chunks, tool calls, and
-// status banners can never bleed across agent contexts (QUM-334).
+// AgentBuffer stores the per-agent chat-region state. Each agent owns its
+// own ViewportModel (facade over ChatRegion+ChatList) so streamed assistant
+// chunks, tool calls, and notification envelopes can never bleed across
+// agent contexts (QUM-334).
 type AgentBuffer struct {
 	vp ViewportModel
-
-	// cl is the QUM-672 ChatList shadow. S2 of the TUI structural rewrite
-	// arc (docs/designs/tui-structural-rewrite-plan.md §3 S2) wires user
-	// messages through both stores via the dual-append shim: vp stays the
-	// live-render path, cl silently accumulates the new render model's
-	// state in parallel. Subsequent slices (S3+) widen the mirrored verb
-	// set; S6 deletes the shim and vp's rendering surface.
+	// cl is a non-owning handle on the ChatList that lives inside
+	// vp.region. Retained as a field so existing tests (and AppModel
+	// shorthand call sites like rootBuf().cl) keep working. All Append* /
+	// MarkToolResult / SetMessages writes flow through vp; the cl handle is
+	// observe-only. QUM-676.
 	cl *ChatList
 
 	// SessionID names the Claude session_id that the cached child transcript
@@ -58,78 +57,57 @@ type AgentBuffer struct {
 	seenToolIDs map[string]struct{}
 }
 
-// AppendUser is the QUM-672 dual-append entry point for user-typed turns.
-// It mirrors the text into both the legacy ViewportModel (live-render path)
-// and the ChatList shadow so the new render model accumulates the same
-// state without yet driving the display. Every production AppendUserMessage
-// call site must route through this helper to preserve the dual-append
-// invariant (cl.Len() tracks the count of MessageUser entries in vp).
+// AppendUser appends a user-typed turn. QUM-676: routes through vp, which
+// now owns the single rendering pipeline (ChatList lives inside vp.region).
 func (b *AgentBuffer) AppendUser(text string) {
 	b.vp.AppendUserMessage(text)
-	b.cl.AppendUser(text)
 }
 
-// AppendAssistantChunk dual-appends a streaming assistant chunk (QUM-673 S3).
-// vp stays the live-render fallback while a stream is in flight; cl
-// accumulates state so View() can flip back to ChatList on Finalize.
+// AppendAssistantChunk appends a streaming assistant chunk.
 func (b *AgentBuffer) AppendAssistantChunk(text string) {
 	b.vp.AppendAssistantChunk(text)
-	b.cl.AppendAssistantChunk(text)
 }
 
-// FinalizeAssistantMessage dual-finalizes the in-flight assistant item on
-// both stores. Once cl.Idle()==true again, View() resumes rendering via
-// ChatList. QUM-673 S3.
+// FinalizeAssistantMessage finalizes the in-flight assistant item.
 func (b *AgentBuffer) FinalizeAssistantMessage() {
 	b.vp.FinalizeAssistantMessage()
-	b.cl.FinalizeAssistantMessage()
 }
 
-// AppendToolCallWithHeader dual-appends a tool-call row. QUM-673 S3.
+// AppendToolCallWithHeader appends a tool-call row.
 func (b *AgentBuffer) AppendToolCallWithHeader(name, toolID string, approved bool,
 	input, fullInput, headerArg string, headerParams []KVPair,
 	parentToolUseID string,
 ) {
 	b.vp.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, headerArg, headerParams, parentToolUseID)
-	b.cl.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, headerArg, headerParams, parentToolUseID)
 }
 
-// MarkToolResult dual-resolves a pending tool call on both stores. Returns
-// true if EITHER store matched the toolID — the disjunction is L1 (QUM-674):
-// when vp/cl diverge (e.g. cl received a live ToolCallMsg the vp dropped, or
-// the converse during recovery), the spinner counter must still drain on a
-// cl-only match. The legacy behavior of returning only vp's result risked
-// stranding cl in pendingTools>0 → not-Idle indefinitely.
+// MarkToolResult resolves a pending tool call. Returns true on match.
 func (b *AgentBuffer) MarkToolResult(toolID, content string, isError bool) bool {
-	vpMatched := b.vp.MarkToolResult(toolID, content, isError)
-	clMatched := b.cl.MarkToolResult(toolID, content, isError)
-	return vpMatched || clMatched
+	return b.vp.MarkToolResult(toolID, content, isError)
 }
 
-// AppendSystemNotification dual-appends a notification envelope. QUM-673 S3.
+// AppendSystemNotification appends notification envelope(s).
 func (b *AgentBuffer) AppendSystemNotification(text string) {
 	b.vp.AppendSystemNotification(text)
-	b.cl.AppendSystemNotification(text)
 }
 
-// AppendAutoTrigger dual-appends a QUM-634 auto-continue marker. QUM-673 S3.
+// AppendAutoTrigger appends a QUM-634 auto-continue marker.
 func (b *AgentBuffer) AppendAutoTrigger(summary string) {
 	b.vp.AppendAutoTrigger(summary)
-	b.cl.AppendAutoTrigger(summary)
 }
 
-// SetToolInputsExpanded fans the QUM-335 global expand-all toggle into both
-// stores so the Ctrl+O loop covers the ChatList as well. QUM-673 S3.
+// SetToolInputsExpanded fans the QUM-335 global expand-all toggle into the
+// ChatList.
 func (b *AgentBuffer) SetToolInputsExpanded(v bool) {
 	b.vp.SetToolInputsExpanded(v)
-	b.cl.SetToolInputsExpanded(v)
 }
 
-// SetMessages replaces the buffer's transcript on both stores from a backfill
-// snapshot (ChildTranscriptMsg / PreloadTranscript / resync). QUM-673 S3.
+// SetMessages replaces the buffer's transcript from a backfill snapshot
+// (ChildTranscriptMsg / PreloadTranscript / resync). ChatList.Reset
+// force-finalizes the trailing assistant and clears pendingTools per the
+// QUM-669 wedge-exit invariant.
 func (b *AgentBuffer) SetMessages(entries []MessageEntry) {
 	b.vp.SetMessages(entries)
-	b.cl.Reset(entries)
 }
 
 // AppModel is the root Bubble Tea model composing all panels.
@@ -329,7 +307,8 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 	// Seed the root agent's buffer eagerly: PreloadTranscript can run before
 	// Init/Update fires, so lazy-init via viewportFor would arrive too late
 	// (QUM-334 §5). Child agent buffers are still lazy.
-	agentBuffers[rootAgent] = &AgentBuffer{vp: NewViewportModel(&theme), cl: NewChatList(&theme)}
+	rootVP := NewViewportModel(&theme)
+	agentBuffers[rootAgent] = &AgentBuffer{vp: rootVP, cl: rootVP.ChatList()}
 	// QUM-675 S5: SessionBanner is redundant with the status-bar sess:<id>
 	// segment (set on SessionInitializedMsg). No banner is appended to the
 	// viewport on startup.
@@ -1484,17 +1463,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.gapState = gapStateDropped
 			return m, nil
 		}
+		// QUM-676: LoadTranscript no longer emits a trailing "Resumed from
+		// prior session" marker, so the legacy strip-tail-status defensive
+		// pass is gone with it. Install the rebuilt transcript via cl.Reset
+		// (force-finalizes the trailing assistant and clears pendingTools
+		// per the QUM-669 wedge-exit invariant).
 		entries := msg.Entries
-		// Strip the resume-path trailing "Resumed from prior session" status
-		// marker; this is a resync (mid-session recovery), not an initial
-		// resume, so the only trailing status the user should see is the
-		// resync banner below.
-		if n := len(entries); n > 0 && entries[n-1].Type == MessageStatus &&
-			entries[n-1].Content == "Resumed from prior session" {
-			entries = entries[:n-1]
-		}
-		// QUM-673 post-review fix: route resync replacement through the dual-
-		// shim so cl mirrors the recovered transcript alongside vp.
 		m.rootBuf().SetMessages(entries)
 		m.statusBar.SetTransientLabel(fmt.Sprintf("✓ resynced — recovered %d events from session log", msg.MissingCount))
 		m.setTurnState(TurnIdle)
@@ -1756,6 +1730,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.errorDialog.SetSize(m.width, m.height)
 			m.showError = true
 		case len(msg.Entries) > 0:
+			// QUM-676: a real backfill landed — clear any "Waiting for X
+			// to start" status-bar banner the empty arm installed earlier.
+			if want := fmt.Sprintf("Waiting for %s to start...", msg.Agent); m.statusBar.TransientLabel() == want {
+				m.statusBar.SetTransientLabel("")
+			}
 			m.agentBufferFor(msg.Agent).SetMessages(msg.Entries)
 			if buf, ok := m.agentBuffers[msg.Agent]; ok {
 				// QUM-439 fix 3: when the session_id changed (handoff /
@@ -1778,22 +1757,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		default:
-			// Empty entries: show "Waiting for X..." idempotently. Avoid
-			// re-appending on repeated empty ticks by checking whether the
-			// banner is already the only entry in the viewport.
-			cur := vp.GetMessages()
+			// QUM-676: empty entries — show "Waiting for X to start" via the
+			// status-bar transient label rather than as a MessageStatus
+			// entry on the agent's viewport. The legacy MessageStatus path
+			// is gone with the ChatList contract-violator routing.
 			banner := fmt.Sprintf("Waiting for %s to start...", msg.Agent)
-			alreadyShowing := len(cur) == 1 && cur[0].Type == MessageStatus && cur[0].Content == banner
-			if !alreadyShowing {
-				// QUM-673 post-review fix: route the waiting-banner placeholder
-				// through the dual-shim so cl is Reset to empty (the
-				// MessageStatus entry is skipped by ChatList.Reset). cl ends
-				// up empty + Idle; chatRegionContent falls back to vp.View()
-				// so the banner still renders.
-				m.agentBufferFor(msg.Agent).SetMessages([]MessageEntry{{
-					Type: MessageStatus, Content: banner, Complete: true,
-				}})
-			}
+			m.statusBar.SetTransientLabel(banner)
+			// Also clear the agent's buffer so prior content doesn't linger
+			// from a previous session under the same agent name.
+			m.agentBufferFor(msg.Agent).SetMessages(nil)
 		}
 		// QUM-439 fix 2: now that the seed (or banner) is applied, clear the
 		// backfill-pending gate and drain any live ChildStreamMsg events that
@@ -2041,6 +2013,13 @@ func (m *AppModel) finalizeTurn() tea.Cmd {
 // PreloadTranscript replaces the viewport's message buffer with the given
 // entries. Used on session resume to populate the viewport with the prior
 // transcript before the TUI starts. No-op if entries is empty.
+// SetTransientStatus installs a transient status-bar label from outside the
+// Bubble Tea loop (e.g. cmd/enter.go after PreloadTranscript surfaces a
+// resume hint). QUM-676.
+func (m *AppModel) SetTransientStatus(text string) {
+	m.statusBar.SetTransientLabel(text)
+}
+
 func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
 	if len(entries) == 0 {
 		return
@@ -2084,12 +2063,10 @@ func (m *AppModel) viewportFor(name string) *ViewportModel {
 			vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
 		}
 		vp.SetToolInputsExpanded(m.toolInputsExpanded)
-		cl := NewChatList(&m.theme)
-		if m.ready && !m.tooSmall {
-			layout := ComputeLayout(m.width, m.height, m.inputBoxHeight())
-			cl.SetSize(layout.ViewportWidth - 4)
-		}
-		buf = &AgentBuffer{vp: vp, cl: cl}
+		// QUM-676: ChatList now lives inside ViewportModel.region. The
+		// AgentBuffer.cl field shares the same pointer so dual-store
+		// references stay consistent.
+		buf = &AgentBuffer{vp: vp, cl: vp.ChatList()}
 		m.agentBuffers[name] = buf
 	}
 	return &buf.vp
@@ -2117,27 +2094,16 @@ func (m *AppModel) rootBuf() *AgentBuffer { return m.agentBufferFor(m.rootAgent)
 // by View() and select-mode helpers.
 func (m *AppModel) observedVP() *ViewportModel { return m.viewportFor(m.observedAgent) }
 
-// chatRegionContent is the QUM-674 S4 chat-panel string source. ChatList
-// drives rendering in all cases — including streaming assistant text and
-// pending tool calls (the S3 "in-flight → fall back to vp" branch is gone).
-// The ChatList per-item cache handles finished items; in-flight items bypass
-// the cache and rebuild on every Render (cheap because only the in-flight
-// item is uncached). Tool-call lifecycle (pending → finished) is owned by
-// ToolCallItem; the global spinner subsystem was deleted in this slice.
-//
-// vp.View() remains the outer rendering target so the scroll machinery
-// (PgUp/PgDn, auto-scroll, "new content" indicator) is preserved — cl's
-// per-item-cached render is piped in via SetContentExternal.
-//
-// vp.HasContractViolators / cl.Len()==0 still falls through to vp.View()
-// directly: contract violators (status / banner / error / system) are S5's
-// re-routing concern; until then vp keeps owning their surface.
+// chatRegionContent is the QUM-676 chat-panel string source. ChatList +
+// ChatRegion own the rendering pipeline end-to-end: ChatList caches per-Item
+// renders, ChatRegion wraps a bubbles viewport that handles PgUp/PgDn,
+// auto-scroll, and the "↓ New content below" indicator. The legacy
+// SetContentExternal dual-shim is gone — there is no second render store.
 func (m *AppModel) chatRegionContent(contentWidth int) string {
+	_ = contentWidth // sizing happens in resizePanels via region.SetSize
 	vp := m.observedVP()
-	buf := m.agentBuffers[m.observedAgent]
-	if buf != nil && buf.cl != nil && buf.cl.Len() > 0 &&
-		contentWidth > 0 && !vp.HasContractViolators() {
-		vp.SetContentExternal(buf.cl.Render(contentWidth))
+	if vp == nil {
+		return ""
 	}
 	return vp.View()
 }
@@ -2212,11 +2178,11 @@ func (m *AppModel) resizePanels() {
 		if name == m.observedAgent {
 			h = observedHeight
 		}
+		// QUM-676: vp.SetSize forwards to ChatRegion.SetSize which sizes both
+		// the inner bubbles viewport AND the inner ChatList. The legacy
+		// "dual-store sync" cl.SetSize call has gone with the dual-append
+		// shim.
 		buf.vp.SetSize(layout.ViewportWidth-4, h-4)
-		// QUM-672 dual-append shadow: keep the ChatList's content width in
-		// lockstep with the live-render viewport so future debug/inspection
-		// renders match the legacy layout.
-		buf.cl.SetSize(layout.ViewportWidth - 4)
 	}
 	m.input.SetWidth(layout.InputWidth - 4)
 	m.statusBar.SetWidth(layout.StatusWidth)

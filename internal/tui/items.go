@@ -19,6 +19,7 @@ package tui
 //     because S4 deletes the global ticker.
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -35,6 +36,18 @@ type Item interface {
 	// items are safe to memoize indefinitely. In-flight items (streaming
 	// assistant text, pending tool call) return false until terminal.
 	Finished() bool
+	// RawMarkdown returns the copy-for-selection payload for this item.
+	// Selection-mode yank concatenates per-item RawMarkdown() outputs to
+	// build the user-visible payload. Form is item-type-specific:
+	//   - UserItem:               blockquoted (> prefix) lines
+	//   - AssistantTextItem:      verbatim markdown source
+	//   - ToolCallItem:           "<!-- tool: name (input) -->" HTML comment
+	//   - ThinkingItem:           verbatim thinking body
+	//   - SystemNotificationItem: envelope body verbatim
+	//   - AutoTriggerItem:        synthetic "auto-continued — …" marker
+	// QUM-676: introduced when selection.go migrated off the legacy
+	// MessageEntry-based AssembleRawMarkdown.
+	RawMarkdown() string
 }
 
 // Expandable is implemented by items whose rendering depends on a
@@ -97,6 +110,16 @@ func (i *UserItem) Render(width int) string {
 // Finished always returns true: user turns are immutable on creation.
 func (i *UserItem) Finished() bool { return true }
 
+// RawMarkdown returns the blockquoted form of the user message body, matching
+// the legacy AssembleRawMarkdown user-branch (`> line1\n> line2…`).
+func (i *UserItem) RawMarkdown() string {
+	lines := strings.Split(i.text, "\n")
+	for j, ln := range lines {
+		lines[j] = "> " + ln
+	}
+	return strings.Join(lines, "\n")
+}
+
 // ---------------------------------------------------------------------------
 // AssistantTextItem
 // ---------------------------------------------------------------------------
@@ -156,6 +179,10 @@ func (i *AssistantTextItem) Render(width int) string {
 // Finished returns true only after Finalize has been called.
 func (i *AssistantTextItem) Finished() bool { return i.finished }
 
+// RawMarkdown returns the verbatim markdown source so yanked content can be
+// re-pasted as markdown (fenced code blocks survive untouched).
+func (i *AssistantTextItem) RawMarkdown() string { return i.text }
+
 // ---------------------------------------------------------------------------
 // ThinkingItem
 // ---------------------------------------------------------------------------
@@ -198,6 +225,9 @@ func (i *ThinkingItem) Render(width int) string {
 
 // Finished is always true: thinking blocks arrive whole.
 func (i *ThinkingItem) Finished() bool { return true }
+
+// RawMarkdown returns the verbatim thinking-block text.
+func (i *ThinkingItem) RawMarkdown() string { return i.text }
 
 // SetExpanded flips the expanded flag.
 func (i *ThinkingItem) SetExpanded(v bool) { i.expanded = v }
@@ -280,6 +310,16 @@ func (i *ToolCallItem) MarkResult(content string, isError bool) {
 
 // Finished is true once the result has landed.
 func (i *ToolCallItem) Finished() bool { return !i.pending }
+
+// RawMarkdown emits the legacy HTML-comment form so selection yank stays
+// source-compatible with pre-S6 transcripts: `<!-- tool: name (input) -->`
+// when an input summary is present, `<!-- tool: name -->` otherwise.
+func (i *ToolCallItem) RawMarkdown() string {
+	if i.input != "" {
+		return fmt.Sprintf("<!-- tool: %s (%s) -->", i.name, i.input)
+	}
+	return fmt.Sprintf("<!-- tool: %s -->", i.name)
+}
 
 // SetExpanded toggles the per-item expand flag (mirrors global Ctrl+O).
 func (i *ToolCallItem) SetExpanded(v bool) { i.expanded = v }
@@ -417,6 +457,10 @@ func (i *SystemNotificationItem) Render(width int) string {
 // Finished always returns true.
 func (i *SystemNotificationItem) Finished() bool { return true }
 
+// RawMarkdown returns the envelope body verbatim so peer-agent message
+// contents surface in yanked output.
+func (i *SystemNotificationItem) RawMarkdown() string { return i.content }
+
 // ---------------------------------------------------------------------------
 // AutoTriggerItem
 // ---------------------------------------------------------------------------
@@ -444,6 +488,12 @@ func (i *AutoTriggerItem) Render(width int) string {
 
 // Finished always returns true.
 func (i *AutoTriggerItem) Finished() bool { return true }
+
+// RawMarkdown surfaces the synthetic auto-trigger marker so yanked output
+// reflects the "why this turn happened" cue the user saw on screen.
+func (i *AutoTriggerItem) RawMarkdown() string {
+	return "↻ auto-continued — " + i.summary
+}
 
 // ---------------------------------------------------------------------------
 // helpers

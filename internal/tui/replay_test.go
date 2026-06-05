@@ -60,17 +60,16 @@ func TestLoadTranscript_BasicUserAssistantText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("len(entries) = %d, want 3 (user + assistant + trailing status); entries=%+v", len(entries), entries)
+	// QUM-676: trailing "Resumed from prior session" MessageStatus marker
+	// was dropped; the resume hint flows via the status-bar transient label.
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2 (user + assistant); entries=%+v", len(entries), entries)
 	}
 	if entries[0].Type != MessageUser || entries[0].Content != "hello" {
 		t.Errorf("entries[0] = %+v, want MessageUser 'hello'", entries[0])
 	}
 	if entries[1].Type != MessageAssistant || entries[1].Content != "hi there" {
 		t.Errorf("entries[1] = %+v, want MessageAssistant 'hi there'", entries[1])
-	}
-	if entries[2].Type != MessageStatus || entries[2].Content != "Resumed from prior session" {
-		t.Errorf("entries[2] = %+v, want trailing status", entries[2])
 	}
 }
 
@@ -85,8 +84,9 @@ func TestLoadTranscript_AssistantMultipleBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(entries) != 4 {
-		t.Fatalf("len(entries) = %d, want 4 (3 blocks + trailing status); entries=%+v", len(entries), entries)
+	// QUM-676: trailing status marker dropped.
+	if len(entries) != 3 {
+		t.Fatalf("len(entries) = %d, want 3 (3 blocks); entries=%+v", len(entries), entries)
 	}
 	if entries[0].Type != MessageAssistant || entries[0].Content != "before" {
 		t.Errorf("entries[0] = %+v", entries[0])
@@ -106,9 +106,6 @@ func TestLoadTranscript_AssistantMultipleBlocks(t *testing.T) {
 	if entries[2].Type != MessageAssistant || entries[2].Content != "after" {
 		t.Errorf("entries[2] = %+v", entries[2])
 	}
-	if entries[3].Type != MessageStatus {
-		t.Errorf("entries[3].Type = %v, want MessageStatus", entries[3].Type)
-	}
 }
 
 func TestLoadTranscript_SkipsThinkingBlocks(t *testing.T) {
@@ -121,14 +118,12 @@ func TestLoadTranscript_SkipsThinkingBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2; entries=%+v", len(entries), entries)
+	// QUM-676: trailing status marker dropped.
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
 	}
 	if entries[0].Type != MessageAssistant || entries[0].Content != "visible" {
 		t.Errorf("entries[0] = %+v", entries[0])
-	}
-	if entries[1].Type != MessageStatus {
-		t.Errorf("entries[1].Type = %v, want MessageStatus", entries[1].Type)
 	}
 }
 
@@ -142,8 +137,8 @@ func TestLoadTranscript_UserContentArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2 (user + trailing status); entries=%+v", len(entries), entries)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1 (user; QUM-676 dropped trailing status); entries=%+v", len(entries), entries)
 	}
 	if entries[0].Type != MessageUser || entries[0].Content != "hello" {
 		t.Errorf("entries[0] = %+v, want MessageUser 'hello'", entries[0])
@@ -166,8 +161,8 @@ func TestLoadTranscript_SkipsMetadataTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2; entries=%+v", len(entries), entries)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
 	}
 	if entries[0].Type != MessageUser || entries[0].Content != "real" {
 		t.Errorf("entries[0] = %+v", entries[0])
@@ -184,8 +179,8 @@ func TestLoadTranscript_SkipsSidechain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2; entries=%+v", len(entries), entries)
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
 	}
 	if entries[0].Content != "main" {
 		t.Errorf("entries[0].Content = %q, want 'main'", entries[0].Content)
@@ -204,8 +199,8 @@ func TestLoadTranscript_MalformedLinesIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("len(entries) = %d, want 3 (2 users + trailing status); entries=%+v", len(entries), entries)
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2 (users only; QUM-676); entries=%+v", len(entries), entries)
 	}
 	if entries[0].Content != "one" || entries[1].Content != "two" {
 		t.Errorf("entries contents = %q, %q; want 'one', 'two'", entries[0].Content, entries[1].Content)
@@ -222,21 +217,16 @@ func TestLoadTranscript_TruncationMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Expected: truncation marker + 5 users (msg5..msg9) + trailing status = 7
-	if len(entries) != 7 {
-		t.Fatalf("len(entries) = %d, want 7; entries=%+v", len(entries), entries)
-	}
-	if entries[0].Type != MessageStatus || entries[0].Content != "earlier messages truncated" {
-		t.Errorf("entries[0] = %+v, want truncation marker", entries[0])
+	// QUM-676: leading "earlier messages truncated" + trailing "Resumed
+	// from prior session" markers dropped. Expected: 5 users (msg5..msg9).
+	if len(entries) != 5 {
+		t.Fatalf("len(entries) = %d, want 5; entries=%+v", len(entries), entries)
 	}
 	for i := 0; i < 5; i++ {
 		want := "msg" + string(rune('0'+5+i))
-		if entries[1+i].Type != MessageUser || entries[1+i].Content != want {
-			t.Errorf("entries[%d] = %+v, want MessageUser %q", 1+i, entries[1+i], want)
+		if entries[i].Type != MessageUser || entries[i].Content != want {
+			t.Errorf("entries[%d] = %+v, want MessageUser %q", i, entries[i], want)
 		}
-	}
-	if entries[6].Type != MessageStatus || entries[6].Content != "Resumed from prior session" {
-		t.Errorf("entries[6] = %+v, want trailing status", entries[6])
 	}
 }
 
@@ -250,15 +240,12 @@ func TestLoadTranscript_NoCapWhenMaxZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// 10 users + trailing status = 11, no truncation marker
-	if len(entries) != 11 {
-		t.Fatalf("len(entries) = %d, want 11; entries=%+v", len(entries), entries)
+	// QUM-676: 10 users, no markers.
+	if len(entries) != 10 {
+		t.Fatalf("len(entries) = %d, want 10; entries=%+v", len(entries), entries)
 	}
 	if entries[0].Type != MessageUser || entries[0].Content != "msg0" {
 		t.Errorf("entries[0] = %+v, want MessageUser 'msg0' (no truncation marker)", entries[0])
-	}
-	if entries[10].Type != MessageStatus || entries[10].Content != "Resumed from prior session" {
-		t.Errorf("entries[10] = %+v, want trailing status", entries[10])
 	}
 }
 
@@ -342,16 +329,16 @@ func TestLoadChildTranscript_TruncationMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Expected: leading truncation marker + 5 user messages = 6 (no trailing marker)
-	if len(entries) != 6 {
-		t.Fatalf("len(entries) = %d, want 6; entries=%+v", len(entries), entries)
+	// QUM-676: leading "earlier messages truncated" marker dropped; expected
+	// to receive exactly 5 user entries (msg5..msg9).
+	if len(entries) != 5 {
+		t.Fatalf("len(entries) = %d, want 5; entries=%+v", len(entries), entries)
 	}
-	if entries[0].Type != MessageStatus || entries[0].Content != "earlier messages truncated" {
-		t.Errorf("entries[0] = %+v, want truncation marker", entries[0])
-	}
-	last := entries[len(entries)-1]
-	if last.Type == MessageStatus && strings.Contains(last.Content, "Resumed from prior session") {
-		t.Errorf("LoadChildTranscript should not emit trailing 'Resumed' marker; got %+v", last)
+	for i := 0; i < 5; i++ {
+		want := "msg" + string(rune('0'+5+i))
+		if entries[i].Type != MessageUser || entries[i].Content != want {
+			t.Errorf("entries[%d] = %+v, want MessageUser %q", i, entries[i], want)
+		}
 	}
 }
 

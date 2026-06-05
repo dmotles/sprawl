@@ -2367,9 +2367,11 @@ func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
 	if !foundSystem {
 		t.Errorf("expected a MessageSystem entry with the drained prompt %q; got entries: %+v", wantPrompt, entries)
 	}
-	if !strings.Contains(stripAnsi(weaveVP.View()), "✉") {
-		t.Errorf("expected mail glyph '✉' in rendered weave viewport for drained system message, got:\n%s", stripAnsi(weaveVP.View()))
-	}
+	// QUM-676: the legacy mail-glyph render for raw MessageSystem entries is
+	// gone with the ChatList contract-violator routing. The drain banner is
+	// now surfaced via the status-bar transient label (asserted above); the
+	// log retention of the MessageSystem entry is exercised by the loop
+	// above so back-compat callers still see "what landed".
 }
 
 // QUM-557: when the drained prompt is wrapped in <system-notification> tags,

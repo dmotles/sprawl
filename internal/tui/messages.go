@@ -5,9 +5,203 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
+
+// toolCallInputPrefix is the cell width of the `"│ "` gutter rendered before
+// each wrapped line of a tool-call input block. Subtracted from the content
+// width when deciding the wrap column.
+const toolCallInputPrefix = 2
+
+// StreamingCursor is the character shown at the end of an in-progress
+// assistant message.
+const StreamingCursor = "▍"
+
+// NewContentIndicator is shown by ChatRegion when auto-scroll is off and new
+// content exists below.
+const NewContentIndicator = "↓ New content below ↓"
+
+// MessageType identifies the kind of conversation entry.
+type MessageType int
+
+const (
+	MessageUser MessageType = iota
+	MessageAssistant
+	MessageToolCall
+	MessageStatus
+	MessageError
+	// MessageSystem is system-injected content (e.g. inbox-drain body
+	// surfaced into the conversation buffer by InboxDrainMsg). Pre-S6 the
+	// viewport renderer drew this with a mail glyph; post-S6 it is a log-
+	// only entry (S5 contract violator routed to the status bar). (QUM-338)
+	MessageSystem
+	// MessageSystemNotification is a supervisor-injected
+	// `<system-notification>` user-role message (QUM-557).
+	MessageSystemNotification
+	// MessageBanner is a session banner (ASCII art + tagline). Log-only
+	// post-S6.
+	MessageBanner
+	// MessageAutoTrigger is the synthetic header drawn before an
+	// autonomous (harness-initiated) turn's assistant response so the user
+	// sees WHY weave responded. Content is the task_notification summary
+	// (QUM-634).
+	MessageAutoTrigger
+)
+
+// MessageEntry is a single item in the conversation buffer log. Pre-S6 this
+// was the central data structure rendered by the viewport's renderMessages
+// walk; post-S6 it is the back-compat snapshot type returned by
+// ViewportModel.GetMessages and consumed by ChatList.Reset for replay/
+// preload/resync. Render logic lives entirely in ChatList + Item types.
+type MessageEntry struct {
+	Type      MessageType
+	Content   string
+	Complete  bool
+	Approved  bool   // MessageToolCall only
+	ToolInput string // concise tool input summary (MessageToolCall only)
+	// ToolInputFull is the un-truncated multi-line representation of the
+	// raw tool input — surfaced when the global expand-tool-inputs flag is
+	// on (QUM-335).
+	ToolInputFull string
+	// ToolID is the tool_use_id from Claude's protocol — used by
+	// ChatList.MarkToolResult and the legacy log's MarkToolResult to find
+	// the matching entry when a tool_result event arrives. (QUM-336)
+	ToolID string
+	// Pending is true while a tool call is in flight (no tool_result yet).
+	Pending bool
+	// Failed is true when the corresponding tool_result arrived with
+	// is_error=true. (QUM-336)
+	Failed bool
+	// Result is the raw tool result text. (QUM-336)
+	Result string
+	// Depth is the nesting level of a sub-agent tool call. (QUM-379)
+	Depth int
+	// ParentToolID is the ToolID of the enclosing Agent tool call. (QUM-386)
+	ParentToolID string
+	// Interrupt drives the renderer's color/glyph choice within the
+	// MessageSystemNotification class. (QUM-557 / QUM-562)
+	Interrupt bool
+	// NotificationType is the parsed `type` attribute on
+	// MessageSystemNotification entries (QUM-562).
+	NotificationType string
+	// HeaderArg is the per-tool main argument inlined on the compact header
+	// line (QUM-419). MessageToolCall only.
+	HeaderArg string
+	// HeaderParams is the ordered list of secondary k=v pairs displayed
+	// after HeaderArg (QUM-419). MessageToolCall only.
+	HeaderParams []KVPair
+}
+
+// notificationGlyphAndStyle selects the (glyph, style) pair for a
+// MessageSystemNotification entry, branching first on NotificationType
+// (QUM-562 status_change vs message-class) and then on Interrupt within
+// the message class.
+func notificationGlyphAndStyle(theme *Theme, msg MessageEntry) (glyph string, style lipgloss.Style) {
+	switch msg.NotificationType {
+	case NotificationKindStatusChange:
+		return "◉", theme.StatusChangeText
+	default: // NotificationKindMessage and any unknown/legacy value
+		if msg.Interrupt {
+			return "⚡", theme.InterruptText
+		}
+		return "✉", theme.NotificationText
+	}
+}
+
+// formatSystemMessage prepares a system-message body for rendering by:
+//  1. normalizing CRLF / lone CR into LF,
+//  2. collapsing runs of >=2 consecutive blank (whitespace-only) lines down
+//     to exactly one blank line (QUM-401),
+//  3. dropping leading and trailing blank lines, and
+//  4. soft-wrapping each non-blank line at word boundaries using
+//     ansi.Wordwrap so long messages don't escape the viewport.
+//
+// Word-wrap is skipped when the wrap budget would be <1.
+func formatSystemMessage(content string, width int) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	rawLines := strings.Split(content, "\n")
+	out := make([]string, 0, len(rawLines))
+	prevBlank := true // start as "blank" so leading blanks are dropped
+	wrapBudget := width - 4
+	for _, ln := range rawLines {
+		if strings.TrimSpace(ln) == "" {
+			if prevBlank {
+				continue
+			}
+			out = append(out, "")
+			prevBlank = true
+			continue
+		}
+		if wrapBudget > 0 {
+			wrapped := ansi.Wordwrap(ln, wrapBudget, "")
+			out = append(out, strings.Split(wrapped, "\n")...)
+		} else {
+			out = append(out, ln)
+		}
+		prevBlank = false
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
+}
+
+// previewResultLines splits result on newlines, drops empty/whitespace-only
+// entries, returns up to maxLines truncated to width cells, and the count
+// of remaining (non-empty) source lines that did not fit. width <= 0
+// disables truncation. maxLines < 0 means "no cap" (QUM-343 expanded form).
+func previewResultLines(result string, maxLines, width int) ([]string, int) {
+	result = strings.ReplaceAll(result, "\r\n", "\n")
+	result = strings.ReplaceAll(result, "\r", "\n")
+	var nonEmpty []string
+	for _, ln := range strings.Split(result, "\n") {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		nonEmpty = append(nonEmpty, ln)
+	}
+	if len(nonEmpty) == 0 {
+		return nil, 0
+	}
+	take := maxLines
+	if maxLines < 0 || len(nonEmpty) < take {
+		take = len(nonEmpty)
+	}
+	out := make([]string, 0, take)
+	for i := 0; i < take; i++ {
+		ln := nonEmpty[i]
+		if width > 0 {
+			ln = ansi.Truncate(ln, width, "…")
+		}
+		out = append(out, ln)
+	}
+	return out, len(nonEmpty) - take
+}
+
+// wrapToolInput prepares a tool-input string for rendering inside the tool
+// block. Carriage returns are dropped; each logical line is wrapped to at
+// most width cells. When width <= 0 the input is returned as-is.
+func wrapToolInput(input string, width int) []string {
+	input = strings.ReplaceAll(input, "\r", "")
+	if width <= 0 {
+		return strings.Split(input, "\n")
+	}
+	var out []string
+	for _, ln := range strings.Split(input, "\n") {
+		wrapped := ansi.Wrap(ln, width, "")
+		if wrapped == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, strings.Split(wrapped, "\n")...)
+	}
+	return out
+}
 
 // systemNotification* constants are the literal wrapping tokens used by the
 // supervisor's notification-injection path (QUM-555 / QUM-562). The TUI
