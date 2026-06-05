@@ -331,6 +331,196 @@ func TestChatList_AppendAutoTriggerAndThinking(t *testing.T) {
 	}
 }
 
+// QUM-691: Inter-item separator behavior. The outer Render loop owns blank
+// lines between items based on type transitions. Per-item Render returns
+// content WITHOUT leading/trailing blanks; the loop inserts one blank line
+// between items when the previous item's type differs from the current.
+// No leading blank on the first item. Streaming assistant chunks remain
+// contiguous (they mutate one in-flight item rather than appending).
+
+// chatLinesNoTrailingEmpty splits Render output into logical lines and trims
+// the single trailing empty element produced by the final "\n" terminator.
+// That trailing element is structural (every item is followed by "\n") and
+// not a blank visual line.
+func chatLinesNoTrailingEmpty(rendered string) []string {
+	lines := strings.Split(rendered, "\n")
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	return lines
+}
+
+// isBlankLine reports whether l contains no visible content after stripping
+// ANSI escapes and surrounding whitespace.
+func isBlankLine(l string) bool {
+	return strings.TrimSpace(stripANSI(l)) == ""
+}
+
+func TestChatList_Separator_UserAfterAssistantHasBlank(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendAssistantChunk("hello there")
+	cl.FinalizeAssistantMessage()
+	cl.AppendUser("follow up")
+	lines := chatLinesNoTrailingEmpty(cl.Render(80))
+	// Find the line containing the user chevron; the line immediately above
+	// it must be blank.
+	idx := -1
+	for i, ln := range lines {
+		if strings.Contains(stripANSI(ln), "follow up") {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("did not find user message in render:\n%s", cl.Render(80))
+	}
+	if idx == 0 {
+		t.Fatalf("user message at index 0, expected an assistant block above")
+	}
+	if !isBlankLine(lines[idx-1]) {
+		t.Errorf("expected blank line between assistant and user; got line %q above user line %q",
+			lines[idx-1], lines[idx])
+	}
+}
+
+func TestChatList_Separator_FirstItemNoLeadingBlank(t *testing.T) {
+	cases := []struct {
+		name string
+		seed func(*ChatList)
+	}{
+		{"user-first", func(cl *ChatList) { cl.AppendUser("hi") }},
+		{"assistant-first", func(cl *ChatList) {
+			cl.AppendAssistantChunk("hello")
+			cl.FinalizeAssistantMessage()
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cl := newTestChatList()
+			cl.SetSize(80)
+			tc.seed(cl)
+			out := cl.Render(80)
+			lines := chatLinesNoTrailingEmpty(out)
+			if len(lines) == 0 {
+				t.Fatalf("empty render")
+			}
+			if isBlankLine(lines[0]) {
+				t.Errorf("first item has unexpected leading blank line:\n%s", out)
+			}
+		})
+	}
+}
+
+func TestChatList_Separator_LastAssistantNoTrailingBlank(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendUser("hi")
+	cl.AppendAssistantChunk("hello there")
+	cl.FinalizeAssistantMessage()
+	out := cl.Render(80)
+	lines := chatLinesNoTrailingEmpty(out)
+	if len(lines) == 0 {
+		t.Fatalf("empty render")
+	}
+	if isBlankLine(lines[len(lines)-1]) {
+		t.Errorf("trailing blank line after last item:\n%s", out)
+	}
+}
+
+func TestChatList_Separator_ConsecutiveSameTypeNoExtraBlank(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendUser("first")
+	cl.AppendUser("second")
+	out := cl.Render(80)
+	lines := chatLinesNoTrailingEmpty(out)
+	blanks := 0
+	for _, ln := range lines {
+		if isBlankLine(ln) {
+			blanks++
+		}
+	}
+	if blanks != 0 {
+		t.Errorf("consecutive same-type items produced %d blank lines, want 0:\n%s",
+			blanks, out)
+	}
+}
+
+func TestChatList_Separator_FullSequenceBlankPattern(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendUser("u1")
+	cl.AppendAssistantChunk("a1")
+	cl.FinalizeAssistantMessage()
+	cl.AppendUser("u2")
+	cl.AppendAssistantChunk("a2")
+	cl.FinalizeAssistantMessage()
+	cl.AppendUser("u3")
+	out := cl.Render(80)
+	lines := chatLinesNoTrailingEmpty(out)
+
+	// Collect (index, marker) of recognizable boundaries. Markers we look
+	// for: "u1","u2","u3","a1","a2".
+	type marker struct {
+		idx   int
+		label string
+	}
+	want := []string{"u1", "a1", "u2", "a2", "u3"}
+	var found []marker
+	for i, ln := range lines {
+		clean := stripANSI(ln)
+		for _, w := range want {
+			if strings.Contains(clean, w) {
+				found = append(found, marker{i, w})
+			}
+		}
+	}
+	if len(found) < len(want) {
+		t.Fatalf("did not find all markers; found=%v\nrender:\n%s", found, out)
+	}
+	// Between every consecutive pair of distinct items (all 4 transitions
+	// here are between different types), expect at least one blank line.
+	for k := 1; k < len(found); k++ {
+		prev := found[k-1]
+		cur := found[k]
+		blanks := 0
+		for i := prev.idx + 1; i < cur.idx; i++ {
+			if isBlankLine(lines[i]) {
+				blanks++
+			}
+		}
+		if blanks != 1 {
+			t.Errorf("between %s and %s: want 1 blank line, got %d\nlines between:\n%q",
+				prev.label, cur.label, blanks, lines[prev.idx+1:cur.idx])
+		}
+	}
+}
+
+func TestChatList_Separator_StreamingChunksContiguous(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendAssistantChunk("first chunk ")
+	cl.AppendAssistantChunk("second chunk ")
+	cl.AppendAssistantChunk("third chunk")
+	out := cl.Render(80)
+	// Streaming chunks mutate a single in-flight item, so no inter-item
+	// separator can apply. The rendered text must contain all three chunks
+	// without an intervening blank line.
+	clean := stripANSI(out)
+	// Locate all three substrings — they must occur in order with no blank
+	// line (two consecutive newlines) between any pair.
+	idx1 := strings.Index(clean, "first chunk")
+	idx2 := strings.Index(clean, "second chunk")
+	idx3 := strings.Index(clean, "third chunk")
+	if idx1 < 0 || idx2 < 0 || idx3 < 0 {
+		t.Fatalf("missing streamed chunk in render:\n%s", out)
+	}
+	if strings.Contains(clean[idx1:idx3], "\n\n") {
+		t.Errorf("streaming chunks introduced a mid-message blank line:\n%s", out)
+	}
+}
+
 func TestChatList_ThinkingInheritsGlobalExpandedAtAppend(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)

@@ -358,6 +358,15 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 // after every block, not just between them). Matching the trailing-
 // newline produces visual parity with vp.View() for the matrix-row gate.
 //
+// QUM-691: the outer loop also owns inter-item separators. Between two
+// items whose Go-types differ, an additional "\n" is inserted before the
+// current item so a single blank line appears between them. Consecutive
+// items of the same type are joined with no extra blank. No leading blank
+// before the first item and no trailing blank after the last item. The
+// per-item Render contract is "no leading or trailing blank" — items.go
+// enforces that for AssistantTextItem; other items render without leading
+// or trailing newlines.
+//
 // Width-0 guard: returns "" if SetSize has not been called (width == 0).
 // Per plan §5 Q7 this prevents the cache filling with garbage at width 0
 // before the first WindowSizeMsg arrives.
@@ -366,11 +375,39 @@ func (c *ChatList) Render(width int) string {
 		return ""
 	}
 	var sb strings.Builder
-	for _, env := range c.items {
+	var prevType string
+	for idx, env := range c.items {
+		curType := itemTypeKey(env.item)
+		if idx > 0 && curType != prevType {
+			sb.WriteString("\n")
+		}
 		sb.WriteString(c.renderEnvelope(env, width))
 		sb.WriteString("\n")
+		prevType = curType
 	}
 	return sb.String()
+}
+
+// itemTypeKey returns a string identifier for an Item's concrete type,
+// used by Render to detect transitions between distinct item types for
+// inter-item blank-line insertion (QUM-691).
+func itemTypeKey(it Item) string {
+	switch it.(type) {
+	case *UserItem:
+		return "user"
+	case *AssistantTextItem:
+		return "assistant"
+	case *ThinkingItem:
+		return "thinking"
+	case *ToolCallItem:
+		return "tool"
+	case *SystemNotificationItem:
+		return "notification"
+	case *AutoTriggerItem:
+		return "auto"
+	default:
+		return "other"
+	}
 }
 
 // renderEnvelope returns the rendered output for one envelope, consulting

@@ -135,12 +135,18 @@ func (i *AssistantTextItem) Text() string { return i.text }
 
 // Render glamour-renders the markdown and appends a streaming cursor when
 // in flight. Width parameter selects the MarkdownRenderer's wrap width.
+//
+// QUM-691: enforce the "per-item content has no leading or trailing blank"
+// contract — the outer ChatList loop owns inter-item spacing. Glamour
+// prepends a leading blank line to its output; strip it so a first
+// assistant item (or any same-type predecessor) does not produce an extra
+// blank line. The MarkdownRenderer already trims trailing newlines.
 func (i *AssistantTextItem) Render(width int) string {
 	if width <= 0 {
 		return ""
 	}
 	i.ctx.renderer.SetWidth(width)
-	out := i.ctx.renderer.Render(i.text)
+	out := strings.TrimLeft(i.ctx.renderer.Render(i.text), "\n")
 	if !i.finished {
 		out += itemsStreamingCursor
 	}
