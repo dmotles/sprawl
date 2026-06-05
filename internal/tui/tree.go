@@ -17,7 +17,7 @@ import (
 // by the tree icon. Tunable; chosen to comfortably bridge inter-tool
 // gaps in autonomous turns while not bleeding past true idle pauses.
 // (QUM-665)
-const RecentActivityWindow = 2 * time.Second
+const RecentActivityWindow = 30 * time.Second
 
 // rowPrefixWidth is the cell width of the `"> "` / `"  "` prefix rendered
 // before every tree row by TreeModel.View. It is subtracted from the tree
@@ -55,13 +55,13 @@ type TreeNode struct {
 	// rebuildTree from a side map (faults). QUM-602.
 	FaultClass string
 
-	ProcessAlive     *bool
-	InAutonomousTurn bool
-	LastActivityAt   time.Time
+	ProcessAlive   *bool
+	InTurn         bool
+	LastActivityAt time.Time
 }
 
 // DeriveIconState returns the tree-row icon state for the given node,
-// derived primarily from liveness signals (InAutonomousTurn, recent
+// derived primarily from liveness signals (InTurn, recent
 // activity) and secondarily from the agent's self-reported LastReportState.
 // Returns one of "working", "blocked", "complete", "failure", "idle".
 // Pure (no time.Now); the caller supplies `now` for testability. (QUM-665)
@@ -69,7 +69,7 @@ func DeriveIconState(n TreeNode, now time.Time) string {
 	if n.ProcessAlive != nil && !*n.ProcessAlive {
 		return "idle"
 	}
-	if n.InAutonomousTurn {
+	if n.InTurn {
 		return "working"
 	}
 	if !n.LastActivityAt.IsZero() && now.Sub(n.LastActivityAt) < RecentActivityWindow {
@@ -320,10 +320,13 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 		return roots[i].Name < roots[j].Name
 	})
 
-	// DFS to build ordered nodes.
+	// DFS to build ordered nodes. Returns whether any node in the subtree
+	// rooted at `a` has InTurn=true so callers can roll up the flag onto
+	// ancestor manager rows (QUM-692).
 	var result []TreeNode
-	var dfs func(a supervisor.AgentInfo, depth int)
-	dfs = func(a supervisor.AgentInfo, depth int) {
+	var dfs func(a supervisor.AgentInfo, depth int) bool
+	dfs = func(a supervisor.AgentInfo, depth int) bool {
+		idx := len(result)
 		result = append(result, TreeNode{
 			Name:              a.Name,
 			Type:              a.Type,
@@ -335,12 +338,21 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 			LastReportMessage: a.LastReportMessage,
 			TotalCostUsd:      a.TotalCostUsd,
 			ProcessAlive:      a.ProcessAlive,
-			InAutonomousTurn:  a.InAutonomousTurn,
+			InTurn:            a.InTurn,
 			LastActivityAt:    a.LastActivityAt,
 		})
+		subtreeInTurn := a.InTurn
 		for _, child := range children[a.Name] {
-			dfs(child, depth+1)
+			if dfs(child, depth+1) {
+				subtreeInTurn = true
+			}
 		}
+		// Transitive rollup: a manager whose descendant is in-turn must
+		// itself render as in-turn so the row icon reflects subtree activity.
+		if subtreeInTurn {
+			result[idx].InTurn = true
+		}
+		return subtreeInTurn
 	}
 
 	for _, root := range roots {

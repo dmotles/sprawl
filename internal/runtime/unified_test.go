@@ -21,7 +21,7 @@ import (
 //	liveStopped      -> Stopped
 var (
 	liveIdle         = livenesspkg.State{Liveness: livenesspkg.Running}
-	liveTurnActive   = livenesspkg.State{Liveness: livenesspkg.Running, InAutonomousTurn: true}
+	liveTurnActive   = livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}
 	liveInterrupting = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	liveStopped      = livenesspkg.State{Liveness: livenesspkg.Stopped}
 )

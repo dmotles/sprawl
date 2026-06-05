@@ -120,7 +120,7 @@ func TestRenderTreeOrbital_MultipleRoots(t *testing.T) {
 func TestRenderTreeOrbital_SelectionPill_RendersReverseAndCyan(t *testing.T) {
 	nodes := []TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
-		{Name: "finn", Type: "engineer", Depth: 1, InAutonomousTurn: true},
+		{Name: "finn", Type: "engineer", Depth: 1, InTurn: true},
 	}
 	lines := RenderTreeOrbital(nodes, "finn", 100)
 	out := strings.Join(lines, "\n")
@@ -160,7 +160,7 @@ func TestRenderTreeOrbital_NoSelection_NoPill(t *testing.T) {
 func TestRenderTreeOrbital_OnlyOnePill(t *testing.T) {
 	nodes := []TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
-		{Name: "finn", Type: "engineer", Depth: 1, InAutonomousTurn: true},
+		{Name: "finn", Type: "engineer", Depth: 1, InTurn: true},
 		{Name: "scout", Type: "researcher", Depth: 1},
 	}
 	lines := RenderTreeOrbital(nodes, "finn", 100)
@@ -351,7 +351,7 @@ func TestRenderTreeOrbital_WeavePivot_PreservesWeaveUnreadBadge(t *testing.T) {
 func TestRenderTreeOrbital_WeavePivot_SelectionOnManager(t *testing.T) {
 	nodes := []TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
-		{Name: "tower", Type: "manager", Depth: 1, InAutonomousTurn: true},
+		{Name: "tower", Type: "manager", Depth: 1, InTurn: true},
 		{Name: "forge", Type: "manager", Depth: 1},
 	}
 	lines := RenderTreeOrbital(nodes, "tower", 200)
@@ -636,10 +636,10 @@ func TestTreeNodeAgentState_Classifier(t *testing.T) {
 		{"fault on idle (empty state) → Failure", TreeNode{Name: "a", Type: "engineer", LastReportState: "", FaultClass: "HangTimeout"}, StateFailure},
 		{"fault overrides working", TreeNode{Name: "a", Type: "engineer", LastReportState: "working", FaultClass: "HangTimeout"}, StateFailure},
 		{"fault overrides complete", TreeNode{Name: "a", Type: "engineer", LastReportState: "complete", FaultClass: "HangTimeout"}, StateFailure},
-		{"in_autonomous_turn → Working", TreeNode{Name: "a", Type: "engineer", InAutonomousTurn: true}, StateWorking},
+		{"in_autonomous_turn → Working", TreeNode{Name: "a", Type: "engineer", InTurn: true}, StateWorking},
 		{"recent activity → Working", TreeNode{Name: "a", Type: "engineer", LastActivityAt: now.Add(-1 * time.Second)}, StateWorking},
 		{"recent activity beats stale blocked report (QUM-665 repro)", TreeNode{Name: "a", Type: "engineer", LastReportState: "blocked", LastActivityAt: now.Add(-1 * time.Second)}, StateWorking},
-		{"process_alive=false stays Idle", TreeNode{Name: "a", Type: "engineer", ProcessAlive: ptr(false), InAutonomousTurn: true, LastReportState: "working"}, StateIdle},
+		{"process_alive=false stays Idle", TreeNode{Name: "a", Type: "engineer", ProcessAlive: ptr(false), InTurn: true, LastReportState: "working"}, StateIdle},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

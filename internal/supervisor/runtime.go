@@ -249,20 +249,20 @@ func (r *AgentRuntime) currentHandle() RuntimeHandle {
 	return r.handle
 }
 
-// InAutonomousTurn reports whether the live RuntimeHandle's backend Session is
+// InTurn reports whether the live RuntimeHandle's backend Session is
 // currently between sprawl-initiated turns (QUM-582/585). Returns false when
 // the runtime is not started, has been stopped, or the handle does not
-// implement the optional InAutonomousTurn() bool method.
-func (r *AgentRuntime) InAutonomousTurn() bool {
+// implement the optional InTurn() bool method.
+func (r *AgentRuntime) InTurn() bool {
 	h := r.currentHandle()
 	if h == nil {
 		return false
 	}
-	probe, ok := h.(autonomousTurnProbe)
+	probe, ok := h.(turnProbe)
 	if !ok {
 		return false
 	}
-	return probe.InAutonomousTurn()
+	return probe.InTurn()
 }
 
 // LastActivityAt returns the timestamp of the most recently recorded

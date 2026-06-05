@@ -64,18 +64,18 @@ func CanTransition(from, to State) bool {
 	// T4/T5: Running sub-state toggle. A Running→Running move is only a
 	// transition when the autonomous-turn bit actually flips.
 	if from.Liveness == Running && to.Liveness == Running {
-		return from.InAutonomousTurn != to.InAutonomousTurn
+		return from.InTurn != to.InTurn
 	}
 
 	// Guard: the autonomous-turn bit may only be set while Running.
-	if to.InAutonomousTurn && to.Liveness != Running {
+	if to.InTurn && to.Liveness != Running {
 		return false
 	}
 
 	// Invariant 4: an autonomous turn must resolve before leaving Running,
 	// except for a fault. T5 (back to idle Running) is handled above, so the
 	// only remaining legal target from Running·AutonomousTurn is Faulted.
-	if from.Liveness == Running && from.InAutonomousTurn {
+	if from.Liveness == Running && from.InTurn {
 		return to.Liveness == Faulted
 	}
 
@@ -85,7 +85,7 @@ func CanTransition(from, to State) bool {
 
 	// You always enter Running idle (T2/T10/T14): the autonomous-turn bit is
 	// raised later via T4.
-	if to.Liveness == Running && to.InAutonomousTurn {
+	if to.Liveness == Running && to.InTurn {
 		return false
 	}
 

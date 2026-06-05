@@ -996,10 +996,10 @@ func TestServer_UnknownMethod(t *testing.T) {
 func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 	mock := &mockSupervisor{
 		peekResult: &supervisor.PeekResult{
-			Status:           "active",
-			LastReport:       supervisor.LastReport{Type: "status", Message: "working", At: "2026-04-21T09:00:00Z"},
-			Activity:         []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "hi"}},
-			InAutonomousTurn: true,
+			Status:     "active",
+			LastReport: supervisor.LastReport{Type: "status", Message: "working", At: "2026-04-21T09:00:00Z"},
+			Activity:   []agentloop.ActivityEntry{{Kind: "assistant_text", Summary: "hi"}},
+			InTurn:     true,
 		},
 	}
 	srv := New(mock)
@@ -1042,8 +1042,8 @@ func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 		t.Errorf("activity = %v", body.Activity)
 	}
 	// QUM-585: in_autonomous_turn must round-trip through the MCP JSON payload.
-	if !body.InAutonomousTurn {
-		t.Errorf("InAutonomousTurn = false, want true (supervisor PeekResult set it true)")
+	if !body.InTurn {
+		t.Errorf("InTurn = false, want true (supervisor PeekResult set it true)")
 	}
 	// Also assert the raw JSON key is present with the right value — guards
 	// against the field being renamed/dropped/omitempty'd in the wire format.
@@ -1062,11 +1062,11 @@ func TestServer_ToolsCall_SprawlPeek(t *testing.T) {
 // QUM-585: false should also surface — the field must not be omitted when
 // false (boolean presence matters for consumers that distinguish
 // missing-vs-false).
-func TestServer_ToolsCall_SprawlPeek_InAutonomousTurnFalse(t *testing.T) {
+func TestServer_ToolsCall_SprawlPeek_InTurnFalse(t *testing.T) {
 	mock := &mockSupervisor{
 		peekResult: &supervisor.PeekResult{
-			Status:           "active",
-			InAutonomousTurn: false,
+			Status: "active",
+			InTurn: false,
 		},
 	}
 	srv := New(mock)
@@ -1089,8 +1089,8 @@ func TestServer_ToolsCall_SprawlPeek_InAutonomousTurnFalse(t *testing.T) {
 	if err := json.Unmarshal([]byte(text), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if body.InAutonomousTurn {
-		t.Errorf("InAutonomousTurn = true, want false")
+	if body.InTurn {
+		t.Errorf("InTurn = true, want false")
 	}
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(text), &raw); err != nil {
@@ -1101,6 +1101,74 @@ func TestServer_ToolsCall_SprawlPeek_InAutonomousTurnFalse(t *testing.T) {
 		t.Errorf("peek JSON missing in_autonomous_turn key (must be present even when false): %s", text)
 	} else if b, _ := got.(bool); b {
 		t.Errorf("in_autonomous_turn = %v, want false", got)
+	}
+}
+
+// QUM-692: the peek payload must emit a new "in_turn" key alongside (or in
+// place of) "in_autonomous_turn". Consumers (sprawl tree, weave checks)
+// should be able to read in_turn directly. This test asserts the key exists
+// and matches the InTurn value the supervisor reported.
+//
+// TODO(QUM-692): when the rename lands, in_autonomous_turn may be removed
+// entirely. At that point this test should be reduced to just asserting
+// in_turn, and the in_autonomous_turn assertions in the tests above should be
+// flipped to in_turn by the implementer.
+func TestServer_ToolsCall_SprawlPeek_EmitsInTurnField(t *testing.T) {
+	cases := []struct {
+		name string
+		val  bool
+	}{
+		{"true", true},
+		{"false", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockSupervisor{
+				peekResult: &supervisor.PeekResult{
+					Status: "active",
+					InTurn: tc.val,
+				},
+			}
+			srv := New(mock)
+
+			msg := makeJSONRPCRequest(232, "tools/call", map[string]any{
+				"name":      "peek",
+				"arguments": map[string]any{"agent": "ghost", "tail": 10},
+			})
+			resp, err := srv.HandleMessage(context.Background(), msg)
+			if err != nil {
+				t.Fatalf("HandleMessage: %v", err)
+			}
+
+			parsed := parseJSONRPCResponse(t, resp)
+			result := parsed["result"].(map[string]any)
+			content := result["content"].([]any)
+			text := content[0].(map[string]any)["text"].(string)
+
+			var raw map[string]any
+			if err := json.Unmarshal([]byte(text), &raw); err != nil {
+				t.Fatalf("raw unmarshal: %v", err)
+			}
+			got, ok := raw["in_turn"]
+			if !ok {
+				t.Fatalf("peek JSON missing in_turn key (QUM-692): %s", text)
+			}
+			b, isBool := got.(bool)
+			if !isBool {
+				t.Fatalf("in_turn = %v (%T), want bool", got, got)
+			}
+			if b != tc.val {
+				t.Errorf("in_turn = %v, want %v", b, tc.val)
+			}
+			// Must equal in_autonomous_turn for the duration of the
+			// transition (the rename keeps the semantic alignment).
+			legacy, ok := raw["in_autonomous_turn"]
+			if ok {
+				if lb, _ := legacy.(bool); lb != b {
+					t.Errorf("in_turn (%v) != in_autonomous_turn (%v)", b, lb)
+				}
+			}
+		})
 	}
 }
 

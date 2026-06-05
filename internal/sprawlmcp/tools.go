@@ -128,7 +128,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "peek",
-			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_autonomous_turn` (true when the target's backend session is mid-turn). Use to answer \"what is this agent doing?\" before sending a message.",
+			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_turn` (true when the target's backend session is mid-turn; `in_autonomous_turn` is emitted as a deprecated alias for one release — QUM-692). Use to answer \"what is this agent doing?\" before sending a message.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

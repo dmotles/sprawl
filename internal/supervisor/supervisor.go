@@ -30,7 +30,7 @@ type AgentInfo struct {
 	LastReportDetail  string    `json:"last_report_detail,omitempty"`
 	TotalCostUsd      float64   `json:"total_cost_usd,omitempty"`
 	ProcessAlive      *bool     `json:"process_alive"`
-	InAutonomousTurn  bool      `json:"in_autonomous_turn"`
+	InTurn            bool      `json:"in_turn"`
 	LastActivityAt    time.Time `json:"last_activity_at,omitempty"`
 }
 
@@ -67,10 +67,10 @@ type PeekResult struct {
 	Status     string                    `json:"status"`
 	LastReport LastReport                `json:"last_report"`
 	Activity   []agentloop.ActivityEntry `json:"activity"`
-	// InAutonomousTurn reflects backend.Session.InAutonomousTurn() for the
+	// InTurn reflects backend.Session.InTurn() for the
 	// target agent's registered runtime (QUM-585). False when no runtime is
 	// registered or the handle doesn't surface this signal.
-	InAutonomousTurn bool `json:"in_autonomous_turn"`
+	InTurn bool `json:"in_turn"`
 }
 
 // MessageSummary is a compact listing entry for a message in the caller's mailbox.

@@ -3,11 +3,11 @@ package liveness
 // Snapshot is the raw multi-source view of an agent used to derive a unified
 // liveness State.
 type Snapshot struct {
-	Lifecycle        string // registered|started|stopped|killed|retired
-	RuntimeState     string // idle|turn-active|interrupting|stopped
-	TerminalErr      bool
-	InAutonomousTurn bool
-	DiskStatus       string // active|running|suspended|killed|retired|retiring|done|resume_failed
+	Lifecycle    string // registered|started|stopped|killed|retired
+	RuntimeState string // idle|turn-active|interrupting|stopped
+	TerminalErr  bool
+	InTurn       bool
+	DiskStatus   string // active|running|suspended|killed|retired|retiring|done|resume_failed
 }
 
 // Local mirrors of the input string vocabularies. These are intentionally
@@ -86,8 +86,8 @@ func From(s Snapshot) State {
 
 	// 5. Started/live.
 	if s.Lifecycle == lifecycleStarted {
-		if s.RuntimeState == runtimeTurnActive || s.InAutonomousTurn {
-			return State{Liveness: Running, InAutonomousTurn: true}
+		if s.RuntimeState == runtimeTurnActive || s.InTurn {
+			return State{Liveness: Running, InTurn: true}
 		}
 		return State{Liveness: Running}
 	}

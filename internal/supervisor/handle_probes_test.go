@@ -24,14 +24,14 @@ func TestRuntimeHandleProbes(t *testing.T) {
 			t.Fatalf("*unifiedHandle does not satisfy stopWaitTimeoutProbe")
 		}
 	})
-	t.Run("autonomousTurnProbe/unifiedHandle", func(t *testing.T) {
-		if _, ok := any((*unifiedHandle)(nil)).(autonomousTurnProbe); !ok {
-			t.Fatalf("*unifiedHandle does not satisfy autonomousTurnProbe")
+	t.Run("turnProbe/unifiedHandle", func(t *testing.T) {
+		if _, ok := any((*unifiedHandle)(nil)).(turnProbe); !ok {
+			t.Fatalf("*unifiedHandle does not satisfy turnProbe")
 		}
 	})
-	t.Run("autonomousTurnProbe/WeaveRuntimeHandle", func(t *testing.T) {
-		if _, ok := any((*WeaveRuntimeHandle)(nil)).(autonomousTurnProbe); !ok {
-			t.Fatalf("*WeaveRuntimeHandle does not satisfy autonomousTurnProbe")
+	t.Run("turnProbe/WeaveRuntimeHandle", func(t *testing.T) {
+		if _, ok := any((*WeaveRuntimeHandle)(nil)).(turnProbe); !ok {
+			t.Fatalf("*WeaveRuntimeHandle does not satisfy turnProbe")
 		}
 	})
 	t.Run("terminalFaultInjectorProbe/unifiedHandle", func(t *testing.T) {

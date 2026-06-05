@@ -357,10 +357,10 @@ func TestTUIAdapter_WaitForEvent_Interrupted_InterruptCompletedMsg(t *testing.T)
 
 	// Wait for runtime to enter TurnActive before interrupting.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InAutonomousTurn: true}) {
+	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InAutonomousTurn: true}) {
+	if rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
 		t.Fatalf("did not enter StateTurnActive; got %v", rt.State())
 	}
 
@@ -497,10 +497,10 @@ func TestTUIAdapter_Interrupt_ForwardsToRuntime(t *testing.T) {
 
 	// Wait for an in-flight turn before triggering Interrupt.
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InAutonomousTurn: true}) {
+	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InAutonomousTurn: true}) {
+	if rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
 		t.Fatalf("not StateTurnActive; got %v", rt.State())
 	}
 

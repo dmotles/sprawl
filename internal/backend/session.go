@@ -168,11 +168,11 @@ type Session interface {
 	LastTurnError() error
 	SessionID() string
 	Capabilities() Capabilities
-	// InAutonomousTurn reports whether the session is currently servicing
-	// an autonomous (SDK-initiated) turn frame — opened by a system:init
-	// while no StartTurn was pending. Returns false when no turn is in
-	// flight and false during sprawl-initiated turns.
-	InAutonomousTurn() bool
+	// InTurn reports whether the session is currently servicing any open
+	// backend turn — autonomous (SDK-initiated, opened by a system:init
+	// while no StartTurn was pending) or sprawl-initiated (StartTurn).
+	// Returns false when no turn is in flight. (QUM-692)
+	InTurn() bool
 	// BackendStats returns an atomic snapshot of per-session drop counters
 	// (QUM-595). See Stats.
 	BackendStats() Stats
@@ -325,13 +325,13 @@ func (s *session) Capabilities() Capabilities {
 	return s.config.Capabilities
 }
 
-// InAutonomousTurn reports whether an autonomous (SDK-initiated) turn frame
-// is currently in flight. Race-safe under the persistent reader goroutine —
-// see TestSession_InAutonomousTurn_RaceSafeUnderConcurrentReader.
-func (s *session) InAutonomousTurn() bool {
+// InTurn reports whether the session is currently servicing any open backend
+// turn (autonomous or sprawl-initiated). Race-safe under the persistent reader
+// goroutine — see TestSession_InTurn_RaceSafeUnderConcurrentReader.
+func (s *session) InTurn() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.currentTurn != nil && s.currentTurn.autonomous
+	return s.currentTurn != nil
 }
 
 func (s *session) nextRequestID() string {

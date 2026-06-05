@@ -6,7 +6,7 @@ import (
 )
 
 // QUM-665: AgentRuntime.LastActivityAt must delegate to the live handle's
-// LastActivityAt() probe (mirroring InAutonomousTurn). When no handle is
+// LastActivityAt() probe (mirroring InTurn). When no handle is
 // registered, the accessor returns the zero time.
 func TestAgentRuntime_LastActivityAt_ZeroWhenNoHandle(t *testing.T) {
 	rt := &AgentRuntime{}
@@ -17,7 +17,7 @@ func TestAgentRuntime_LastActivityAt_ZeroWhenNoHandle(t *testing.T) {
 }
 
 // QUM-665: lastActivityProbe is a named optional sub-interface analogous to
-// autonomousTurnProbe. Production handle types (*unifiedHandle and
+// turnProbe. Production handle types (*unifiedHandle and
 // *WeaveRuntimeHandle) must satisfy it so AgentRuntime.LastActivityAt can
 // type-assert against them without a hard compile-time dependency.
 func TestLastActivityProbe_SatisfiedByProductionHandles(t *testing.T) {

@@ -418,11 +418,11 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 		// DiskStatus are intentionally left empty in M1; later slices (M4/M5) feed
 		// them.
 		st := liveness.From(liveness.Snapshot{
-			Lifecycle:        livenessToLifecycleString(snap.Liveness),
-			TerminalErr:      runtime.IsTerminallyFaulted(),
-			InAutonomousTurn: runtime.InAutonomousTurn(),
+			Lifecycle:   livenessToLifecycleString(snap.Liveness),
+			TerminalErr: runtime.IsTerminallyFaulted(),
+			InTurn:      runtime.InTurn(),
 		})
-		inAutonomousTurnByName[snap.Name] = runtime.InAutonomousTurn()
+		inAutonomousTurnByName[snap.Name] = runtime.InTurn()
 		lastActivityAtByName[snap.Name] = runtime.LastActivityAt()
 		if st.Liveness == liveness.Unstarted {
 			continue // leave process_alive absent (nil) — preserves registered/unknown semantics
@@ -454,7 +454,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			LastReportDetail:  a.LastReportDetail,
 			TotalCostUsd:      a.TotalCostUsd,
 			ProcessAlive:      processAliveByName[a.Name],
-			InAutonomousTurn:  inAutonomousTurnByName[a.Name],
+			InTurn:            inAutonomousTurnByName[a.Name],
 			LastActivityAt:    lastActivity,
 		})
 	}
@@ -1429,7 +1429,7 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 	// runtime is registered.
 	inAutonomousTurn := false
 	if rt, ok := r.runtimeRegistry.Get(agentName); ok {
-		inAutonomousTurn = rt.InAutonomousTurn()
+		inAutonomousTurn = rt.InTurn()
 	}
 
 	return &PeekResult{
@@ -1441,8 +1441,8 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 			State:   st.LastReportState,
 			Detail:  st.LastReportDetail,
 		},
-		Activity:         activity,
-		InAutonomousTurn: inAutonomousTurn,
+		Activity: activity,
+		InTurn:   inAutonomousTurn,
 	}, nil
 }
 

@@ -8,32 +8,32 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// fakeInAutonomousTurnHandle is a RuntimeHandle that additionally exposes
-// InAutonomousTurn() bool. Mirrors fakeRootHandle (supervisor_test.go) plus
+// fakeInTurnHandle is a RuntimeHandle that additionally exposes
+// InTurn() bool. Mirrors fakeRootHandle (supervisor_test.go) plus
 // the optional-interface method that Real.Peek is expected to type-assert
 // against (QUM-585).
-type fakeInAutonomousTurnHandle struct {
+type fakeInTurnHandle struct {
 	caps      backendpkg.Capabilities
 	sessionID string
 	autonomy  bool
 	doneCh    chan struct{}
 }
 
-func (h *fakeInAutonomousTurnHandle) Interrupt(context.Context) error       { return nil }
-func (h *fakeInAutonomousTurnHandle) Wake() error                           { return nil }
-func (h *fakeInAutonomousTurnHandle) WakeForDelivery() error                { return nil }
-func (h *fakeInAutonomousTurnHandle) ForceInterruptDelivery() error         { return nil }
-func (h *fakeInAutonomousTurnHandle) Stop(context.Context) error            { return nil }
-func (h *fakeInAutonomousTurnHandle) StopAbandon(context.Context) error     { return nil }
-func (h *fakeInAutonomousTurnHandle) SessionID() string                     { return h.sessionID }
-func (h *fakeInAutonomousTurnHandle) Capabilities() backendpkg.Capabilities { return h.caps }
-func (h *fakeInAutonomousTurnHandle) Done() <-chan struct{}                 { return h.doneCh }
-func (h *fakeInAutonomousTurnHandle) InAutonomousTurn() bool                { return h.autonomy }
+func (h *fakeInTurnHandle) Interrupt(context.Context) error       { return nil }
+func (h *fakeInTurnHandle) Wake() error                           { return nil }
+func (h *fakeInTurnHandle) WakeForDelivery() error                { return nil }
+func (h *fakeInTurnHandle) ForceInterruptDelivery() error         { return nil }
+func (h *fakeInTurnHandle) Stop(context.Context) error            { return nil }
+func (h *fakeInTurnHandle) StopAbandon(context.Context) error     { return nil }
+func (h *fakeInTurnHandle) SessionID() string                     { return h.sessionID }
+func (h *fakeInTurnHandle) Capabilities() backendpkg.Capabilities { return h.caps }
+func (h *fakeInTurnHandle) Done() <-chan struct{}                 { return h.doneCh }
+func (h *fakeInTurnHandle) InTurn() bool                          { return h.autonomy }
 
-// QUM-585: Real.Peek must populate PeekResult.InAutonomousTurn by querying
+// QUM-585: Real.Peek must populate PeekResult.InTurn by querying
 // the target agent's registered runtime handle. When the handle reports
 // true, the field must be true.
-func TestReal_Peek_InAutonomousTurn_TrueWhenHandleReportsTrue(t *testing.T) {
+func TestReal_Peek_InTurn_TrueWhenHandleReportsTrue(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "ratz",
@@ -42,7 +42,7 @@ func TestReal_Peek_InAutonomousTurn_TrueWhenHandleReportsTrue(t *testing.T) {
 		Status: "active",
 	})
 
-	h := &fakeInAutonomousTurnHandle{
+	h := &fakeInTurnHandle{
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
 		sessionID: "sess-ratz",
 		autonomy:  true,
@@ -55,13 +55,13 @@ func TestReal_Peek_InAutonomousTurn_TrueWhenHandleReportsTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Peek: %v", err)
 	}
-	if !got.InAutonomousTurn {
-		t.Errorf("InAutonomousTurn = false, want true (handle reports true)")
+	if !got.InTurn {
+		t.Errorf("InTurn = false, want true (handle reports true)")
 	}
 }
 
 // QUM-585: when the handle reports false, the field must be false.
-func TestReal_Peek_InAutonomousTurn_FalseWhenHandleReportsFalse(t *testing.T) {
+func TestReal_Peek_InTurn_FalseWhenHandleReportsFalse(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "ratz",
@@ -70,7 +70,7 @@ func TestReal_Peek_InAutonomousTurn_FalseWhenHandleReportsFalse(t *testing.T) {
 		Status: "active",
 	})
 
-	h := &fakeInAutonomousTurnHandle{
+	h := &fakeInTurnHandle{
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
 		sessionID: "sess-ratz",
 		autonomy:  false,
@@ -83,16 +83,16 @@ func TestReal_Peek_InAutonomousTurn_FalseWhenHandleReportsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Peek: %v", err)
 	}
-	if got.InAutonomousTurn {
-		t.Errorf("InAutonomousTurn = true, want false (handle reports false)")
+	if got.InTurn {
+		t.Errorf("InTurn = true, want false (handle reports false)")
 	}
 }
 
 // QUM-585: when a runtime is registered but its handle does NOT implement
-// the optional InAutonomousTurn() interface, Peek must default the field to
+// the optional InTurn() interface, Peek must default the field to
 // false (no panic, no error). Locks the optional-interface contract so a
 // future change to a hard cast would be caught.
-func TestReal_Peek_InAutonomousTurn_FalseWhenHandleLacksMethod(t *testing.T) {
+func TestReal_Peek_InTurn_FalseWhenHandleLacksMethod(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "stub",
@@ -110,15 +110,15 @@ func TestReal_Peek_InAutonomousTurn_FalseWhenHandleLacksMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Peek: %v", err)
 	}
-	if got.InAutonomousTurn {
-		t.Errorf("InAutonomousTurn = true, want false (handle lacks optional method)")
+	if got.InTurn {
+		t.Errorf("InTurn = true, want false (handle lacks optional method)")
 	}
 }
 
 // QUM-585: when no runtime is registered for the agent (only on-disk state
-// exists), Peek must still succeed and report InAutonomousTurn=false rather
+// exists), Peek must still succeed and report InTurn=false rather
 // than erroring.
-func TestReal_Peek_InAutonomousTurn_FalseWhenNoRuntimeRegistered(t *testing.T) {
+func TestReal_Peek_InTurn_FalseWhenNoRuntimeRegistered(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "ghost",
@@ -131,7 +131,7 @@ func TestReal_Peek_InAutonomousTurn_FalseWhenNoRuntimeRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Peek: %v", err)
 	}
-	if got.InAutonomousTurn {
-		t.Errorf("InAutonomousTurn = true, want false (no runtime registered)")
+	if got.InTurn {
+		t.Errorf("InTurn = true, want false (no runtime registered)")
 	}
 }

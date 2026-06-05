@@ -185,8 +185,8 @@ func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spe
 	// goroutine that polls State() after the StartTurn call returns sees
 	// the updated state.
 	s.rt.mu.Lock()
-	if s.rt.liveness.Liveness == livenesspkg.Running && !s.rt.liveness.InAutonomousTurn {
-		s.rt.liveness.InAutonomousTurn = true
+	if s.rt.liveness.Liveness == livenesspkg.Running && !s.rt.liveness.InTurn {
+		s.rt.liveness.InTurn = true
 	}
 	s.rt.turnRunning = true
 	pending := s.rt.pendingInterrupt
@@ -198,7 +198,7 @@ func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spe
 		// Turn failed to start; revert state.
 		s.rt.mu.Lock()
 		s.rt.turnRunning = false
-		if (s.rt.liveness.Liveness == livenesspkg.Running && s.rt.liveness.InAutonomousTurn) ||
+		if (s.rt.liveness.Liveness == livenesspkg.Running && s.rt.liveness.InTurn) ||
 			s.rt.liveness.Liveness == livenesspkg.Stopping {
 			s.rt.liveness = livenesspkg.State{Liveness: livenesspkg.Running}
 		}
@@ -424,7 +424,7 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	sess := rt.cfg.Session
 	loop := rt.turnLoop
 	turnRunning := rt.turnRunning
-	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InAutonomousTurn {
+	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
 		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	} else if !turnRunning {
 		// Queue items may be pending but the wrapper hasn't entered StartTurn yet.
@@ -486,7 +486,7 @@ func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
 	sess := rt.cfg.Session
 	loop := rt.turnLoop
 	turnRunning := rt.turnRunning
-	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InAutonomousTurn {
+	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
 		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	}
 	rt.mu.Unlock()

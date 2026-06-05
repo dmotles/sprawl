@@ -27,12 +27,12 @@ type stopWaitTimeoutProbe interface {
 	StopWaitTimedOut() bool
 }
 
-// autonomousTurnProbe is satisfied by RuntimeHandle implementations whose
+// turnProbe is satisfied by RuntimeHandle implementations whose
 // backend session can report whether it is currently between sprawl-initiated
 // turns. Satisfied by *unifiedHandle, *WeaveRuntimeHandle,
-// *fakeBackendSession, *fakeInAutonomousTurnHandle.
-type autonomousTurnProbe interface {
-	InAutonomousTurn() bool
+// *fakeBackendSession, *fakeInTurnHandle.
+type turnProbe interface {
+	InTurn() bool
 }
 
 // lastActivityProbe is satisfied by RuntimeHandle implementations that
@@ -57,8 +57,8 @@ var (
 	_ terminalFaultProbe         = (*unifiedHandle)(nil)
 	_ terminalFaultProbe         = (*WeaveRuntimeHandle)(nil)
 	_ stopWaitTimeoutProbe       = (*unifiedHandle)(nil)
-	_ autonomousTurnProbe        = (*unifiedHandle)(nil)
-	_ autonomousTurnProbe        = (*WeaveRuntimeHandle)(nil)
+	_ turnProbe                  = (*unifiedHandle)(nil)
+	_ turnProbe                  = (*WeaveRuntimeHandle)(nil)
 	_ terminalFaultInjectorProbe = (*unifiedHandle)(nil)
 	_ lastActivityProbe          = (*unifiedHandle)(nil)
 	_ lastActivityProbe          = (*WeaveRuntimeHandle)(nil)

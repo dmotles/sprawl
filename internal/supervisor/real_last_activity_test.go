@@ -13,7 +13,7 @@ import (
 )
 
 // fakeLastActivityHandle is a RuntimeHandle that additionally exposes
-// LastActivityAt() time.Time. Mirrors fakeInAutonomousTurnHandle. Used to
+// LastActivityAt() time.Time. Mirrors fakeInTurnHandle. Used to
 // exercise the QUM-665 runtime-wins path in Real.Status.
 type fakeLastActivityHandle struct {
 	caps         backendpkg.Capabilities
@@ -32,7 +32,7 @@ func (h *fakeLastActivityHandle) StopAbandon(context.Context) error     { return
 func (h *fakeLastActivityHandle) SessionID() string                     { return h.sessionID }
 func (h *fakeLastActivityHandle) Capabilities() backendpkg.Capabilities { return h.caps }
 func (h *fakeLastActivityHandle) Done() <-chan struct{}                 { return h.doneCh }
-func (h *fakeLastActivityHandle) InAutonomousTurn() bool                { return h.autonomy }
+func (h *fakeLastActivityHandle) InTurn() bool                          { return h.autonomy }
 func (h *fakeLastActivityHandle) LastActivityAt() time.Time             { return h.lastActivity }
 
 // QUM-665: when no runtime is registered for an agent, Real.Status must
@@ -133,10 +133,10 @@ func TestReal_Status_LastActivityAt_FromRuntime(t *testing.T) {
 	}
 }
 
-// QUM-665: AgentInfo.InAutonomousTurn must be populated from the runtime's
-// InAutonomousTurn() probe in Real.Status. Without this, the tree icon
+// QUM-665: AgentInfo.InTurn must be populated from the runtime's
+// InTurn() probe in Real.Status. Without this, the tree icon
 // derivation has no way to see autonomy.
-func TestReal_Status_InAutonomousTurn_FromRuntime(t *testing.T) {
+func TestReal_Status_InTurn_FromRuntime(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:   "auto",
@@ -145,7 +145,7 @@ func TestReal_Status_InAutonomousTurn_FromRuntime(t *testing.T) {
 		Status: "active",
 	})
 
-	h := &fakeInAutonomousTurnHandle{
+	h := &fakeInTurnHandle{
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
 		sessionID: "sess-auto",
 		autonomy:  true,
@@ -168,7 +168,7 @@ func TestReal_Status_InAutonomousTurn_FromRuntime(t *testing.T) {
 	if got == nil {
 		t.Fatalf("auto not in Status() output")
 	}
-	if !got.InAutonomousTurn {
-		t.Errorf("AgentInfo.InAutonomousTurn = false, want true (handle reports autonomy)")
+	if !got.InTurn {
+		t.Errorf("AgentInfo.InTurn = false, want true (handle reports autonomy)")
 	}
 }

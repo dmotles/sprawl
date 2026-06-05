@@ -12,7 +12,7 @@ import (
 //
 // Real.Status feeds liveness.From(...) only the inputs M1 actually populates:
 // the runtime's Lifecycle, its terminal-fault probe (IsTerminallyFaulted), and
-// its InAutonomousTurn() probe. RuntimeState and DiskStatus are left empty in
+// its InTurn() probe. RuntimeState and DiskStatus are left empty in
 // M1. Given those inputs, process_alive can only ever resolve to:
 //
 //	Unstarted (registered, never started) -> nil   (absent / unknown)
@@ -135,7 +135,7 @@ func TestStatus_RunningRuntimeReportsProcessAliveTrue(t *testing.T) {
 }
 
 // Gap 1 (M1 / QUM-622): a started runtime whose handle reports
-// InAutonomousTurn()==true projects to liveness Running·AutonomousTurn, which
+// InTurn()==true projects to liveness Running·AutonomousTurn, which
 // must still yield process_alive == true. Passes today (Lifecycle=started ->
 // true) but guards that the M1 liveness-projection rewrite keeps the
 // autonomous sub-state alive rather than collapsing it to nil/false.
@@ -145,12 +145,12 @@ func TestStatus_AutonomousTurnRuntimeReportsProcessAliveTrue(t *testing.T) {
 	agent := testAgentState("autonomous-agent")
 	saveTestAgent(t, tmpDir, agent)
 
-	// fakeInAutonomousTurnHandle (peek_inautonomousturn_test.go) implements the
-	// optional InAutonomousTurn() bool probe that AgentRuntime.InAutonomousTurn
+	// fakeInTurnHandle (peek_inautonomousturn_test.go) implements the
+	// optional InTurn() bool probe that AgentRuntime.InTurn
 	// type-asserts against. RegisterRootRuntime AttachHandles it, so the
 	// runtime's Lifecycle becomes started with a live handle reporting
 	// autonomy==true.
-	h := &fakeInAutonomousTurnHandle{
+	h := &fakeInTurnHandle{
 		caps:      backendpkg.Capabilities{SupportsInterrupt: true},
 		sessionID: "sess-autonomous",
 		autonomy:  true,
@@ -163,8 +163,8 @@ func TestStatus_AutonomousTurnRuntimeReportsProcessAliveTrue(t *testing.T) {
 	if got := rt.Snapshot().Liveness; got != liveness.Running {
 		t.Fatalf("precondition: Lifecycle = %q, want %q", got, liveness.Running)
 	}
-	if !rt.InAutonomousTurn() {
-		t.Fatalf("precondition: InAutonomousTurn() = false, want true (handle reports autonomy)")
+	if !rt.InTurn() {
+		t.Fatalf("precondition: InTurn() = false, want true (handle reports autonomy)")
 	}
 
 	agents, err := sup.Status(context.Background())

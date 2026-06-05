@@ -375,11 +375,11 @@ JSON
         capture_pane "$SESSION" | tail -10 >&2
     fi
 
-    # Wait past the 2s RecentActivityWindow.
-    sleep 3
+    # Wait past the 30s RecentActivityWindow (QUM-692 widened from 2s).
+    sleep 31
 
-    # Poll up to 3s for the glyph to revert to ⏸ (blocked).
-    end=$((SECONDS + 3))
+    # Poll up to 5s for the glyph to revert to ⏸ (blocked).
+    end=$((SECONDS + 5))
     local REVERTED=0
     while [ "$SECONDS" -lt "$end" ]; do
         g=$(extract_child_glyph "$SESSION" "$CHILD_NAME")

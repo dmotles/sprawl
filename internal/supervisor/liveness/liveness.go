@@ -57,14 +57,14 @@ func (l AgentLiveness) String() string {
 
 // State pairs a liveness with the Running·AutonomousTurn sub-state bool.
 type State struct {
-	Liveness         AgentLiveness
-	InAutonomousTurn bool
+	Liveness AgentLiveness
+	InTurn   bool
 }
 
 // String renders the state, distinguishing the autonomous-turn sub-state.
 // The middle char in the autonomous form is U+00B7 MIDDLE DOT.
 func (s State) String() string {
-	if s.Liveness == Running && s.InAutonomousTurn {
+	if s.Liveness == Running && s.InTurn {
 		return "running·autonomous-turn"
 	}
 	return s.Liveness.String()

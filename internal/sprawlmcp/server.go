@@ -382,7 +382,21 @@ func (s *Server) toolPeek(ctx context.Context, args json.RawMessage) (string, er
 	if err != nil {
 		return "", err
 	}
-	data, err := json.MarshalIndent(result, "", "  ")
+	// Round-trip the PeekResult through a generic map so we can emit both
+	// "in_turn" (canonical, QUM-692) and "in_autonomous_turn" (alias retained
+	// for one release; see QUM-692) with identical values.
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return "", fmt.Errorf("marshaling result: %w", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return "", fmt.Errorf("re-decoding result: %w", err)
+	}
+	if v, ok := m["in_turn"]; ok {
+		m["in_autonomous_turn"] = v
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshaling result: %w", err)
 	}

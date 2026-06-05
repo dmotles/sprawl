@@ -288,7 +288,7 @@ func TestTreeModel_OrbitalLines_ReturnsRenderedTree(t *testing.T) {
 	m := newTestTreeModel(t)
 	m.SetNodes([]TreeNode{
 		{Name: "weave", Type: "weave", Depth: 0},
-		{Name: "finn", Type: "engineer", Depth: 1, InAutonomousTurn: true},
+		{Name: "finn", Type: "engineer", Depth: 1, InTurn: true},
 	})
 	m.SetSelected("finn")
 
@@ -645,140 +645,140 @@ func TestDeriveIconState_Mapping(t *testing.T) {
 		{
 			name: "working: in_autonomous_turn beats stale blocked report",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: true,
-				LastActivityAt:   time.Time{},
-				LastReportState:  "blocked",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          true,
+				LastActivityAt:  time.Time{},
+				LastReportState: "blocked",
 			},
 			want: "working",
 		},
 		{
 			name: "working: recent activity beats stale blocked report (QUM-665 repro)",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   now.Add(-1 * time.Second),
-				LastReportState:  "blocked",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  now.Add(-1 * time.Second),
+				LastReportState: "blocked",
 			},
 			want: "working",
 		},
 		{
 			name: "working: recent activity beats stale working report",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   now.Add(-500 * time.Millisecond),
-				LastReportState:  "working",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  now.Add(-500 * time.Millisecond),
+				LastReportState: "working",
 			},
 			want: "working",
 		},
 		{
 			name: "idle: working self-report no longer special-cased (no recent activity)",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   now.Add(-10 * time.Second),
-				LastReportState:  "working",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  now.Add(-2 * RecentActivityWindow),
+				LastReportState: "working",
 			},
 			want: "idle",
 		},
 		{
 			name: "blocked: idle by liveness, blocked self-report",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   time.Time{},
-				LastReportState:  "blocked",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  time.Time{},
+				LastReportState: "blocked",
 			},
 			want: "blocked",
 		},
 		{
 			name: "blocked: idle by liveness with old activity, blocked self-report",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   now.Add(-5 * time.Second),
-				LastReportState:  "blocked",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  now.Add(-2 * RecentActivityWindow),
+				LastReportState: "blocked",
 			},
 			want: "blocked",
 		},
 		{
 			name: "complete: idle by liveness, complete self-report",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   time.Time{},
-				LastReportState:  "complete",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  time.Time{},
+				LastReportState: "complete",
 			},
 			want: "complete",
 		},
 		{
 			name: "failure: idle by liveness, failure self-report",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   time.Time{},
-				LastReportState:  "failure",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  time.Time{},
+				LastReportState: "failure",
 			},
 			want: "failure",
 		},
 		{
 			name: "idle: no signal at all",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   time.Time{},
-				LastReportState:  "",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  time.Time{},
+				LastReportState: "",
 			},
 			want: "idle",
 		},
 		{
 			name: "idle: process dead beats any other signal",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(false),
-				InAutonomousTurn: true,
-				LastActivityAt:   now,
-				LastReportState:  "working",
+				ProcessAlive:    boolPtr(false),
+				InTurn:          true,
+				LastActivityAt:  now,
+				LastReportState: "working",
 			},
 			want: "idle",
 		},
 		{
 			name: "weave row fallback: nil ProcessAlive + no signals + empty report",
 			node: TreeNode{
-				ProcessAlive:     nil,
-				InAutonomousTurn: false,
-				LastActivityAt:   time.Time{},
-				LastReportState:  "",
+				ProcessAlive:    nil,
+				InTurn:          false,
+				LastActivityAt:  time.Time{},
+				LastReportState: "",
 			},
 			want: "idle",
 		},
 		{
 			name: "weave row fallback: nil ProcessAlive routes through report state when no activity",
 			node: TreeNode{
-				ProcessAlive:     nil,
-				InAutonomousTurn: false,
-				LastActivityAt:   time.Time{},
-				LastReportState:  "blocked",
+				ProcessAlive:    nil,
+				InTurn:          false,
+				LastActivityAt:  time.Time{},
+				LastReportState: "blocked",
 			},
 			want: "blocked",
 		},
 		{
 			name: "boundary: exactly at RecentActivityWindow counts as not-recent",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   now.Add(-RecentActivityWindow),
-				LastReportState:  "",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  now.Add(-RecentActivityWindow),
+				LastReportState: "",
 			},
 			want: "idle",
 		},
 		{
 			name: "boundary: just inside RecentActivityWindow counts as recent",
 			node: TreeNode{
-				ProcessAlive:     boolPtr(true),
-				InAutonomousTurn: false,
-				LastActivityAt:   now.Add(-(RecentActivityWindow - 1*time.Millisecond)),
-				LastReportState:  "blocked",
+				ProcessAlive:    boolPtr(true),
+				InTurn:          false,
+				LastActivityAt:  now.Add(-(RecentActivityWindow - 1*time.Millisecond)),
+				LastReportState: "blocked",
 			},
 			want: "working",
 		},
@@ -795,7 +795,7 @@ func TestDeriveIconState_Mapping(t *testing.T) {
 }
 
 // TestBuildTreeNodes_PropagatesLivenessFields asserts the liveness fields on
-// AgentInfo (InAutonomousTurn, LastActivityAt, ProcessAlive) flow verbatim
+// AgentInfo (InTurn, LastActivityAt, ProcessAlive) flow verbatim
 // into the TreeNode produced by buildTreeNodes. Without this, DeriveIconState
 // would always see zero-values and the QUM-665 fix would never engage.
 func TestBuildTreeNodes_PropagatesLivenessFields(t *testing.T) {
@@ -803,12 +803,12 @@ func TestBuildTreeNodes_PropagatesLivenessFields(t *testing.T) {
 	ts := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
 	agents := []supervisor.AgentInfo{
 		{
-			Name:             "alice",
-			Type:             "engineer",
-			Status:           "active",
-			ProcessAlive:     &alive,
-			InAutonomousTurn: true,
-			LastActivityAt:   ts,
+			Name:           "alice",
+			Type:           "engineer",
+			Status:         "active",
+			ProcessAlive:   &alive,
+			InTurn:         true,
+			LastActivityAt: ts,
 		},
 	}
 	nodes := buildTreeNodes(agents, nil)
@@ -819,8 +819,8 @@ func TestBuildTreeNodes_PropagatesLivenessFields(t *testing.T) {
 	if n.ProcessAlive == nil || *n.ProcessAlive != true {
 		t.Errorf("TreeNode.ProcessAlive = %v, want *bool→true", n.ProcessAlive)
 	}
-	if !n.InAutonomousTurn {
-		t.Errorf("TreeNode.InAutonomousTurn = false, want true")
+	if !n.InTurn {
+		t.Errorf("TreeNode.InTurn = false, want true")
 	}
 	if !n.LastActivityAt.Equal(ts) {
 		t.Errorf("TreeNode.LastActivityAt = %v, want %v", n.LastActivityAt, ts)
@@ -835,5 +835,184 @@ func TestPrependWeaveRoot_WeaveIsDepthZero(t *testing.T) {
 
 	if result[0].Depth != 0 {
 		t.Errorf("result[0].Depth = %d, want 0 (weave always at depth 0)", result[0].Depth)
+	}
+}
+
+// --- QUM-692: tree liveness fix ---
+//
+// TODO(QUM-692): the implementer should rename TreeNode.InTurn and
+// AgentInfo.InTurn to InTurn (and Session.InTurn() to
+// InTurn()) as part of the fix. When that rename lands, update the field
+// references in the tests below from InTurn → InTurn.
+
+// TestDeriveIconState_InTurnTrue_AlwaysWorking_RegardlessOfActivityWindow
+// asserts the contract for the renamed InTurn flag (QUM-692): when the flag
+// is true the node must render as "working" no matter how stale
+// LastActivityAt is. Regression guard for the case where the only signal we
+// have is a still-open backend turn (no recent tool-use activity yet).
+func TestDeriveIconState_InTurnTrue_AlwaysWorking_RegardlessOfActivityWindow(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	node := TreeNode{
+		ProcessAlive:    boolPtr(true),
+		InTurn:          true,
+		LastActivityAt:  now.Add(-1 * time.Hour),
+		LastReportState: "",
+	}
+	if got := DeriveIconState(node, now); got != "working" {
+		t.Errorf("DeriveIconState() = %q, want \"working\" (InTurn=true must trump stale activity)", got)
+	}
+}
+
+// TestDeriveIconState_RecentActivityWindow_30Seconds asserts that QUM-692
+// bumps RecentActivityWindow from 2s to 30s: a node whose last activity was
+// 15s ago must still render as "working" via the fallback path.
+func TestDeriveIconState_RecentActivityWindow_30Seconds(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+
+	if RecentActivityWindow < 30*time.Second {
+		t.Errorf("RecentActivityWindow = %v, want >= 30s (QUM-692)", RecentActivityWindow)
+	}
+
+	node := TreeNode{
+		ProcessAlive:    boolPtr(true),
+		InTurn:          false,
+		LastActivityAt:  now.Add(-15 * time.Second),
+		LastReportState: "",
+	}
+	if got := DeriveIconState(node, now); got != "working" {
+		t.Errorf("DeriveIconState() = %q, want \"working\" (15s old activity must be within the 30s window)", got)
+	}
+}
+
+// TestDeriveIconState_Idle_NoInTurn_NoRecentActivity is a baseline regression
+// guard: with no InTurn signal, no recent activity, and no self-report,
+// DeriveIconState must return "idle". Pins the negative case so the wider
+// 30s window doesn't accidentally make idle nodes look working.
+func TestDeriveIconState_Idle_NoInTurn_NoRecentActivity(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	node := TreeNode{
+		ProcessAlive:    boolPtr(true),
+		InTurn:          false,
+		LastActivityAt:  now.Add(-5 * time.Minute),
+		LastReportState: "",
+	}
+	if got := DeriveIconState(node, now); got != "idle" {
+		t.Errorf("DeriveIconState() = %q, want \"idle\"", got)
+	}
+}
+
+// TestBuildTreeNodes_ManagerInheritsInTurn_FromDescendant asserts the
+// transitive rollup: a manager with any descendant whose InTurn=true must
+// itself be rendered as InTurn=true so the manager row shows "working" in
+// the tree. Without this, an active engineer under an idle-looking manager
+// makes the user think the family stack is dead.
+func TestBuildTreeNodes_ManagerInheritsInTurn_FromDescendant(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	agents := []supervisor.AgentInfo{
+		{
+			Name:           "tower",
+			Type:           "manager",
+			Family:         "tower",
+			Parent:         "",
+			Status:         "active",
+			ProcessAlive:   boolPtr(true),
+			InTurn:         false,
+			LastActivityAt: time.Time{},
+		},
+		{
+			Name:           "finn",
+			Type:           "engineer",
+			Family:         "tower",
+			Parent:         "tower",
+			Status:         "active",
+			ProcessAlive:   boolPtr(true),
+			InTurn:         true,
+			LastActivityAt: now,
+		},
+	}
+
+	nodes := buildTreeNodes(agents, nil)
+	if len(nodes) != 2 {
+		t.Fatalf("len(nodes) = %d, want 2", len(nodes))
+	}
+
+	var tower *TreeNode
+	for i := range nodes {
+		if nodes[i].Name == "tower" {
+			tower = &nodes[i]
+			break
+		}
+	}
+	if tower == nil {
+		t.Fatal("tower node not found in buildTreeNodes output")
+	}
+	if !tower.InTurn {
+		t.Errorf("tower.InTurn = false, want true (transitive rollup from finn)")
+	}
+	if got := DeriveIconState(*tower, now); got != "working" {
+		t.Errorf("DeriveIconState(tower) = %q, want \"working\" (manager should show working when descendant is in turn)", got)
+	}
+}
+
+// TestBuildTreeNodes_ManagerStaysIdle_NoActiveDescendants asserts the negative
+// case of the rollup: a manager whose descendants are all idle must remain
+// idle. Guards against an over-eager rollup that paints every manager as
+// working unconditionally.
+func TestBuildTreeNodes_ManagerStaysIdle_NoActiveDescendants(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	agents := []supervisor.AgentInfo{
+		{
+			Name:           "tower",
+			Type:           "manager",
+			Family:         "tower",
+			Parent:         "",
+			Status:         "active",
+			ProcessAlive:   boolPtr(true),
+			InTurn:         false,
+			LastActivityAt: time.Time{},
+		},
+		{
+			Name:           "finn",
+			Type:           "engineer",
+			Family:         "tower",
+			Parent:         "tower",
+			Status:         "active",
+			ProcessAlive:   boolPtr(true),
+			InTurn:         false,
+			LastActivityAt: time.Time{},
+		},
+		{
+			Name:           "oak",
+			Type:           "engineer",
+			Family:         "tower",
+			Parent:         "tower",
+			Status:         "idle",
+			ProcessAlive:   boolPtr(true),
+			InTurn:         false,
+			LastActivityAt: time.Time{},
+		},
+	}
+
+	nodes := buildTreeNodes(agents, nil)
+	var tower *TreeNode
+	for i := range nodes {
+		if nodes[i].Name == "tower" {
+			tower = &nodes[i]
+			break
+		}
+	}
+	if tower == nil {
+		t.Fatal("tower node not found")
+	}
+	if tower.InTurn {
+		t.Errorf("tower.InTurn = true, want false (no descendant is in turn)")
+	}
+	if got := DeriveIconState(*tower, now); got != "idle" {
+		t.Errorf("DeriveIconState(tower) = %q, want \"idle\"", got)
 	}
 }
