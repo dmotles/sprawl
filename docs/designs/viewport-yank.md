@@ -1,6 +1,11 @@
 # Design: Viewport Selection & Yank to Clipboard
 
-## Status: Draft (QUM-281)
+> **SUPERSEDED by [QUM-695](https://linear.app/qumulo-dmotles/issue/QUM-695) — 2026-06-05.**
+> Viewport yank-mode (the `v` → `j`/`k`/`y` workflow) was deleted wholesale
+> along with `activePanel` panel-cycling. dmotles confirmed the feature was
+> never used. This document is retained as historical design.
+
+## Status: Removed (originally QUM-281; removed in QUM-695)
 
 ## Motivation
 

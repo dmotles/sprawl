@@ -363,7 +363,6 @@ func TestAppModel_QuestionModal_ArrowKeysRouteToQuestion(t *testing.T) {
 	// Park focus on the input panel — the only branch where the
 	// history-arrow handler ever activates. Without this, the test
 	// passes trivially even with the bug present.
-	app.activePanel = PanelInput
 	app.updateFocus()
 	// Seed history so that `history.Prev` succeeds and would swallow KeyUp
 	// if the routing bug were still present.

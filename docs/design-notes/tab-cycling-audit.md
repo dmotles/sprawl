@@ -1,6 +1,14 @@
 # Tab Panel-Cycling Audit (QUM-694)
 
-**Status:** research / decision pending
+> **SUPERSEDED by [QUM-695](https://linear.app/qumulo-dmotles/issue/QUM-695) — 2026-06-05.**
+> The audit landed on option (b) "drop the hint, keep cycling"; dmotles
+> immediately escalated to option (c) "delete cycling outright" since
+> viewport yank-mode (the sole behavior cycling unlocked) was never used.
+> QUM-695 removed `activePanel`, the Panel enum, the Tab/Shift+Tab cycler,
+> and the entire `v` → `j`/`k`/`y` yank workflow. This document is retained
+> as historical research; it does not describe current behaviour.
+
+**Status:** superseded (research only)
 **Branch:** `dmotles/qum-694-tab-audit-research`
 **Date:** 2026-06-05
 

@@ -28,19 +28,13 @@ func (m *HelpModel) SetSize(w, h int) {
 // View renders the help overlay as a centered box with keybindings.
 func (m HelpModel) View() string {
 	bindings := [][2]string{
-		{"? / F1", "Toggle help"},
-		{"Tab / Shift+Tab", "Cycle panel focus"},
-		{"Up / Down / j / k", "Navigate agent tree"},
-		{"Enter", "Select agent"},
+		{"F1", "Toggle help"},
 		{"Ctrl+N / Ctrl+P", "Cycle observed agent"},
 		{"Ctrl+O", "Toggle expand tool-call inputs and outputs"},
 		{"Ctrl+V", "Toggle validate-output popup (while merge validate running)"},
 		{"Ctrl+_ (or Ctrl+/)", "Toggle selection mode (drop mouse capture to copy text)"},
 		{"/switch <name>", "Switch agent (fuzzy match)"},
 		{"PgUp / PgDn", "Scroll output"},
-		{"v (viewport)", "Enter select mode"},
-		{"j / k (select)", "Move selection cursor"},
-		{"y (select)", "Yank selection to clipboard (raw markdown)"},
 		{"Ctrl+C", "Clear input / Quit if empty"},
 		{"Shift+Enter", "Insert newline in input"},
 		{"Alt+Enter / Ctrl+J", "Insert newline in input"},
@@ -49,7 +43,7 @@ func (m HelpModel) View() string {
 		{"Up / Down (input)", "Navigate input history"},
 		{"Ctrl+R", "Reverse-search input history"},
 		{"Esc (search)", "Cancel reverse search"},
-		{"Esc", "Dismiss help / exit select / clear queue / interrupt turn"},
+		{"Esc", "Dismiss help / clear queue / interrupt turn"},
 	}
 
 	// Find max key width for alignment.

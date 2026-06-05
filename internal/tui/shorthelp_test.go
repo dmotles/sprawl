@@ -38,29 +38,17 @@ func hintFor(b []shortBinding, k string) string {
 	return ""
 }
 
-// hasHintContaining reports whether any binding's hint contains substring s.
-func hasHintContaining(b []shortBinding, s string) bool {
-	for _, kb := range b {
-		if strings.Contains(kb.Hint, s) {
-			return true
-		}
-	}
-	return false
-}
-
 func TestShortHelpBindings_AlwaysOn(t *testing.T) {
+	// QUM-695: with activePanel and yank-mode gone, ShortHelpState only
+	// distinguishes turn / input / palette state.
 	states := []ShortHelpState{
-		{Focus: PanelTree, TurnState: TurnIdle},
-		{Focus: PanelViewport, TurnState: TurnIdle},
-		{Focus: PanelInput, TurnState: TurnIdle, InputEmpty: true},
-		{Focus: PanelInput, TurnState: TurnStreaming},
+		{TurnState: TurnIdle, InputEmpty: true},
+		{TurnState: TurnStreaming},
+		{HasQueued: true},
 		{PaletteOpen: true},
-		{Focus: PanelViewport, SelectMode: true},
 	}
-	// For each always-on key, the hint must contain one of the substrings.
 	wantSubs := map[string][]string{
-		"?":      {"help"},
-		"tab":    {"cycle"},
+		"F1":     {"help"},
 		"ctrl+c": {"quit", "clear"},
 	}
 	for _, s := range states {
@@ -87,8 +75,24 @@ func TestShortHelpBindings_AlwaysOn(t *testing.T) {
 	}
 }
 
+func TestShortHelpBindings_NoTabHint(t *testing.T) {
+	// QUM-695: the "tab: cycle panel" always-on hint was removed; verify
+	// no state surfaces a "tab" key in the bindings.
+	states := []ShortHelpState{
+		{TurnState: TurnIdle, InputEmpty: true},
+		{TurnState: TurnStreaming},
+		{HasQueued: true},
+	}
+	for _, s := range states {
+		b := shortHelpBindings(s)
+		if containsKey(b, "tab") {
+			t.Errorf("state %+v: tab hint should be gone post-QUM-695, got keys=%v", s, keysOf(b))
+		}
+	}
+}
+
 func TestShortHelpBindings_EditorEmpty(t *testing.T) {
-	b := shortHelpBindings(ShortHelpState{Focus: PanelInput, InputEmpty: true})
+	b := shortHelpBindings(ShortHelpState{InputEmpty: true})
 	if !containsKey(b, "/") {
 		t.Fatalf("expected key %q for empty editor, got keys=%v", "/", keysOf(b))
 	}
@@ -98,14 +102,14 @@ func TestShortHelpBindings_EditorEmpty(t *testing.T) {
 }
 
 func TestShortHelpBindings_EditorNonEmpty(t *testing.T) {
-	b := shortHelpBindings(ShortHelpState{Focus: PanelInput, InputEmpty: false})
+	b := shortHelpBindings(ShortHelpState{InputEmpty: false})
 	if containsKey(b, "/") {
 		t.Errorf("expected key %q to be absent when editor non-empty, got keys=%v", "/", keysOf(b))
 	}
 }
 
 func TestShortHelpBindings_EditorQueued(t *testing.T) {
-	b := shortHelpBindings(ShortHelpState{Focus: PanelInput, HasQueued: true})
+	b := shortHelpBindings(ShortHelpState{HasQueued: true})
 	if !containsKey(b, "esc") {
 		t.Fatalf("expected key %q when queued, got keys=%v", "esc", keysOf(b))
 	}
@@ -146,60 +150,8 @@ func TestShortHelpBindings_StreamingPlusQueued(t *testing.T) {
 	}
 }
 
-func TestShortHelpBindings_TreeFocused(t *testing.T) {
-	b := shortHelpBindings(ShortHelpState{Focus: PanelTree})
-	// Navigation: assert via hint substring (key glyph may be "↑↓" or other).
-	if !hasHintContaining(b, "navigate") {
-		t.Errorf("tree-focused: expected a binding with hint containing %q, got bindings=%v", "navigate", keysOf(b))
-	}
-	// Enter is canonical/stable.
-	if !containsKey(b, "enter") {
-		t.Errorf("tree-focused: expected key %q, got keys=%v", "enter", keysOf(b))
-	}
-	// Cycle agent: assert via hint substring (key glyph may be "ctrl+n/p").
-	if !hasHintContaining(b, "cycle agent") {
-		t.Errorf("tree-focused: expected a binding with hint containing %q, got bindings=%v", "cycle agent", keysOf(b))
-	}
-}
-
-func TestShortHelpBindings_ViewportFocused(t *testing.T) {
-	b := shortHelpBindings(ShortHelpState{Focus: PanelViewport})
-	// Scroll: assert via hint substring (key glyph may be "pgup/pgdn").
-	if !hasHintContaining(b, "scroll") {
-		t.Errorf("viewport-focused: expected a binding with hint containing %q, got bindings=%v", "scroll", keysOf(b))
-	}
-	// v and ctrl+o are canonical/stable keys.
-	for _, k := range []string{"v", "ctrl+o"} {
-		if !containsKey(b, k) {
-			t.Errorf("viewport-focused: expected key %q, got keys=%v", k, keysOf(b))
-		}
-	}
-}
-
-func TestShortHelpBindings_SelectMode(t *testing.T) {
-	b := shortHelpBindings(ShortHelpState{Focus: PanelViewport, SelectMode: true})
-	// Move via j/k: assert via hint substring.
-	if !hasHintContaining(b, "move") {
-		t.Errorf("select-mode: expected a binding with hint containing %q, got bindings=%v", "move", keysOf(b))
-	}
-	// y is canonical for yank; also accept assertion via "yank" hint.
-	if !containsKey(b, "y") && !hasHintContaining(b, "yank") {
-		t.Errorf("select-mode: expected key %q or hint containing %q, got bindings=%v", "y", "yank", keysOf(b))
-	}
-	if !containsKey(b, "esc") {
-		t.Fatalf("select-mode: expected key esc, got keys=%v", keysOf(b))
-	}
-	if h := hintFor(b, "esc"); !strings.Contains(h, "exit") {
-		t.Errorf("select-mode esc hint=%q, want contains %q", h, "exit")
-	}
-}
-
 func TestShortHelpBindings_PaletteOpen(t *testing.T) {
 	b := shortHelpBindings(ShortHelpState{PaletteOpen: true})
-	// Palette navigation: assert via hint substring.
-	if !hasHintContaining(b, "navigate") {
-		t.Errorf("palette-open: expected a binding with hint containing %q, got bindings=%v", "navigate", keysOf(b))
-	}
 	if !containsKey(b, "enter") {
 		t.Errorf("palette-open: expected key %q, got keys=%v", "enter", keysOf(b))
 	}
@@ -216,20 +168,17 @@ func TestShortHelpBindings_CountBounded(t *testing.T) {
 		name  string
 		state ShortHelpState
 	}{
-		{"idle tree", ShortHelpState{Focus: PanelTree, TurnState: TurnIdle}},
-		{"idle viewport", ShortHelpState{Focus: PanelViewport, TurnState: TurnIdle}},
-		{"input empty", ShortHelpState{Focus: PanelInput, TurnState: TurnIdle, InputEmpty: true}},
-		{"input queued", ShortHelpState{Focus: PanelInput, HasQueued: true}},
+		{"input empty", ShortHelpState{TurnState: TurnIdle, InputEmpty: true}},
+		{"input queued", ShortHelpState{HasQueued: true}},
 		{"streaming", ShortHelpState{TurnState: TurnStreaming}},
 		{"thinking", ShortHelpState{TurnState: TurnThinking}},
-		{"select mode", ShortHelpState{Focus: PanelViewport, SelectMode: true}},
 		{"palette open", ShortHelpState{PaletteOpen: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			b := shortHelpBindings(tc.state)
-			if len(b) < 3 || len(b) > 7 {
-				t.Errorf("len=%d, want 3..7. bindings=%v", len(b), keysOf(b))
+			if len(b) < 2 || len(b) > 5 {
+				t.Errorf("len=%d, want 2..5. bindings=%v", len(b), keysOf(b))
 			}
 		})
 	}
@@ -244,7 +193,7 @@ func newTestShortHelpModel(t *testing.T) ShortHelpModel {
 func TestShortHelpModel_ViewSingleLine(t *testing.T) {
 	m := newTestShortHelpModel(t)
 	m.SetWidth(80)
-	m.SetState(ShortHelpState{Focus: PanelInput, TurnState: TurnIdle, InputEmpty: true})
+	m.SetState(ShortHelpState{TurnState: TurnIdle, InputEmpty: true})
 	out := m.View()
 	if strings.Contains(out, "\n") {
 		t.Errorf("View() must be single-line, got newline. out=%q", out)
@@ -268,7 +217,7 @@ func TestShortHelpModel_ViewTransitions(t *testing.T) {
 	m := newTestShortHelpModel(t)
 	m.SetWidth(120)
 
-	m.SetState(ShortHelpState{Focus: PanelInput, TurnState: TurnIdle, InputEmpty: true})
+	m.SetState(ShortHelpState{TurnState: TurnIdle, InputEmpty: true})
 	idleOut := m.View()
 	if strings.Contains(idleOut, "close") {
 		t.Errorf("idle View() should NOT contain palette 'close' hint, got: %q", idleOut)
@@ -292,7 +241,7 @@ func TestShortHelpModel_NarrowWidth(t *testing.T) {
 	}()
 	m := newTestShortHelpModel(t)
 	m.SetWidth(20)
-	m.SetState(ShortHelpState{Focus: PanelInput, TurnState: TurnIdle, InputEmpty: true})
+	m.SetState(ShortHelpState{TurnState: TurnIdle, InputEmpty: true})
 	out := m.View()
 	if strings.Contains(out, "\n") {
 		t.Errorf("View() at narrow width must be single-line, got newline. out=%q", out)
@@ -310,6 +259,6 @@ func TestShortHelpModel_ZeroWidth(t *testing.T) {
 	}()
 	m := newTestShortHelpModel(t)
 	m.SetWidth(0)
-	m.SetState(ShortHelpState{Focus: PanelInput, TurnState: TurnIdle, InputEmpty: true})
+	m.SetState(ShortHelpState{TurnState: TurnIdle, InputEmpty: true})
 	_ = m.View()
 }

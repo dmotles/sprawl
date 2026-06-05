@@ -26,11 +26,10 @@ func containsSubmitMsg(t *testing.T, cmd tea.Cmd) bool {
 	return false
 }
 
-// focusInputPanel mirrors how the input panel becomes active in real usage:
-// activePanel set to PanelInput followed by updateFocus() so the embedded
-// textarea is actually focused.
+// focusInputPanel focuses the embedded textarea. Post-QUM-695 the input
+// is the sole panel so updateFocus is unconditional; the helper is kept
+// for callsite readability.
 func focusInputPanel(m *AppModel) {
-	m.activePanel = PanelInput
 	m.updateFocus()
 }
 
@@ -52,28 +51,6 @@ func TestAppModel_PasteMsg_MultilineInsertedVerbatim(t *testing.T) {
 
 	if containsSubmitMsg(t, cmd) {
 		t.Error("paste should not produce SubmitMsg")
-	}
-}
-
-func TestAppModel_PasteMsg_IgnoredWhenTreeFocused(t *testing.T) {
-	m := newTestAppModel(t)
-	// Default startPanel is PanelTree when bridge is nil; assert it explicitly
-	// so this test fails loudly if that default ever changes.
-	m.activePanel = PanelTree
-	m.updateFocus()
-	prior := m.input.Value()
-
-	updated, cmd := m.Update(tea.PasteMsg{Content: "tree-browse paste\nshould be ignored"})
-	app, ok := updated.(AppModel)
-	if !ok {
-		t.Fatalf("Update returned %T, want AppModel", updated)
-	}
-
-	if app.input.Value() != prior {
-		t.Errorf("input.Value() = %q, want unchanged %q (tree focused)", app.input.Value(), prior)
-	}
-	if cmd != nil {
-		t.Errorf("paste with tree focused should return nil cmd, got non-nil")
 	}
 }
 

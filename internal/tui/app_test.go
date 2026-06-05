@@ -137,58 +137,8 @@ func TestAppModel_ViewKeepsInputBoxAtNarrowWidths(t *testing.T) {
 	// height-clamp invariant above is now the load-bearing check.
 }
 
-func TestAppModel_TabCyclesPanel(t *testing.T) {
-	m := newTestAppModel(t)
-	// Ensure ready state so panels are active.
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
-
-	initial := app.activePanel
-	tabMsg := tea.KeyPressMsg{Code: tea.KeyTab}
-	updated, _ := app.Update(tabMsg)
-	app = updated.(AppModel)
-	if app.activePanel == initial {
-		t.Errorf("activePanel should change after Tab, got %d both times", app.activePanel)
-	}
-}
-
-func TestAppModel_ShiftTabCyclesBackward(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
-
-	// Move forward first.
-	tabMsg := tea.KeyPressMsg{Code: tea.KeyTab}
-	updated, _ := app.Update(tabMsg)
-	app = updated.(AppModel)
-	afterTab := app.activePanel
-
-	// Shift+Tab should go back.
-	shiftTabMsg := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
-	updated, _ = app.Update(shiftTabMsg)
-	app = updated.(AppModel)
-	if app.activePanel == afterTab {
-		t.Errorf("activePanel should change after Shift+Tab, stayed at %d", app.activePanel)
-	}
-}
-
-func TestAppModel_TabWrapsAround(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
-
-	// Press Tab 3 times (number of panels) to cycle back to start.
-	panelCount := 3 // PanelTree, PanelViewport, PanelInput
-	tabMsg := tea.KeyPressMsg{Code: tea.KeyTab}
-	initial := app.activePanel
-	for i := 0; i < panelCount; i++ {
-		updated, _ := app.Update(tabMsg)
-		app = updated.(AppModel)
-	}
-	if app.activePanel != initial {
-		t.Errorf("activePanel = %d after %d Tabs, want %d (should wrap)", app.activePanel, panelCount, initial)
-	}
-}
+// QUM-695: Tab/Shift+Tab no longer cycle panels — `activePanel` was deleted.
+// Tab is now delivered to the input panel as a literal keystroke.
 
 func TestAppModel_CtrlCShowsConfirm(t *testing.T) {
 	m := newTestAppModel(t)
@@ -279,45 +229,31 @@ func TestAppModel_ConfirmYQuitsApp(t *testing.T) {
 	}
 }
 
-func TestAppModel_QuestionMarkOpensHelpOnTreePanel(t *testing.T) {
+// QUM-695: `?` is no longer wired as a help key — F1 is canonical. The
+// removal of activePanel means `?` is always typeable in the input.
+func TestAppModel_QuestionMarkDoesNotOpenHelp(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
-	app.activePanel = PanelTree
-	app.updateFocus()
-
-	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
-	app = updated.(AppModel)
-	if !app.showHelp {
-		t.Error("? on tree panel should toggle help")
-	}
-}
-
-func TestAppModel_QuestionMarkIgnoredOnInputPanel(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
-	app.activePanel = PanelInput
 	app.updateFocus()
 
 	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
 	app = updated.(AppModel)
 	if app.showHelp {
-		t.Error("? on input panel should NOT open help; it should be delegated as text")
+		t.Error("? should NOT open help post-QUM-695; F1 is the help key")
 	}
 }
 
-func TestAppModel_F1OpensHelpOnInputPanel(t *testing.T) {
+func TestAppModel_F1OpensHelp(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
-	app.activePanel = PanelInput
 	app.updateFocus()
 
 	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
 	app = updated.(AppModel)
 	if !app.showHelp {
-		t.Error("F1 should toggle help even on input panel")
+		t.Error("F1 should toggle help")
 	}
 }
 
@@ -346,13 +282,20 @@ func TestAppModel_ConfirmSwallowsKeys(t *testing.T) {
 	// Show confirm dialog.
 	updated, _ := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	app = updated.(AppModel)
-	initialPanel := app.activePanel
+	if !app.showConfirm {
+		t.Fatal("setup: confirm should be visible")
+	}
+	priorInput := app.input.Value()
 
-	// Tab should not change panel while confirm is visible.
+	// QUM-695: with panel cycling removed, Tab must not reach the input
+	// textarea while the confirm dialog owns keystrokes.
 	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	app = updated.(AppModel)
-	if app.activePanel != initialPanel {
-		t.Errorf("Tab should be swallowed when confirm is showing, panel changed from %d to %d", initialPanel, app.activePanel)
+	if app.input.Value() != priorInput {
+		t.Errorf("Tab should be swallowed when confirm is showing, input changed from %q to %q", priorInput, app.input.Value())
+	}
+	if !app.showConfirm {
+		t.Error("confirm dialog should remain open after Tab")
 	}
 }
 
@@ -614,13 +557,18 @@ func TestAppModel_ErrorDialog_BlocksKeys(t *testing.T) {
 	app.errorDialog = NewErrorDialog(&app.theme, fmt.Errorf("crash"))
 	app.errorDialog.SetSize(80, 24)
 
-	initial := app.activePanel
+	priorInput := app.input.Value()
 	tabMsg := tea.KeyPressMsg{Code: tea.KeyTab}
 	updated, _ := app.Update(tabMsg)
 	app = updated.(AppModel)
 
-	if app.activePanel != initial {
-		t.Errorf("Tab should not cycle panels when error dialog is shown, panel changed from %d to %d", initial, app.activePanel)
+	// QUM-695: with panel cycling removed, Tab must not reach the input
+	// textarea while the error dialog owns keystrokes.
+	if app.input.Value() != priorInput {
+		t.Errorf("Tab should be swallowed by error dialog, input changed from %q to %q", priorInput, app.input.Value())
+	}
+	if !app.showError {
+		t.Error("error dialog should remain open after Tab")
 	}
 }
 
@@ -2027,138 +1975,8 @@ func TestAppModel_MouseClick_DoesNotCrash(t *testing.T) {
 	_, _ = app.Update(tea.MouseReleaseMsg{Button: tea.MouseLeft, X: 10, Y: 10})
 }
 
-// --- QUM-281: viewport selection & yank ---
-
-// seedViewportApp returns an app with the viewport panel active and a few
-// assistant messages present, ready for select-mode testing.
-func seedViewportApp(t *testing.T) AppModel {
-	t.Helper()
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app := resized.(AppModel)
-	app.viewportFor("weave").AppendAssistantChunk("first reply")
-	app.viewportFor("weave").FinalizeAssistantMessage()
-	app.viewportFor("weave").AppendAssistantChunk("second reply")
-	app.viewportFor("weave").FinalizeAssistantMessage()
-	app.viewportFor("weave").AppendAssistantChunk("third reply")
-	app.viewportFor("weave").FinalizeAssistantMessage()
-	app.activePanel = PanelViewport
-	app.updateFocus()
-	return app
-}
-
-func TestAppModel_VEntersSelectModeOnViewport(t *testing.T) {
-	app := seedViewportApp(t)
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	if !app.viewportFor("weave").IsSelecting() {
-		t.Error("pressing 'v' on viewport panel should enter select mode")
-	}
-}
-
-func TestAppModel_VOnInputPanelDoesNotSelect(t *testing.T) {
-	app := seedViewportApp(t)
-	app.activePanel = PanelInput
-	app.updateFocus()
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	if app.viewportFor("weave").IsSelecting() {
-		t.Error("pressing 'v' on input panel must NOT enter select mode")
-	}
-}
-
-func TestAppModel_EscExitsSelectMode(t *testing.T) {
-	app := seedViewportApp(t)
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	app = updated.(AppModel)
-	if app.viewportFor("weave").IsSelecting() {
-		t.Error("Esc should exit select mode")
-	}
-}
-
-func TestAppModel_YYanksRawMarkdownAndExits(t *testing.T) {
-	app := seedViewportApp(t)
-	// Enter select mode (cursor on last msg), extend up by 1, then yank.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyPressMsg{Code: 'k'})
-	app = updated.(AppModel)
-	updated, cmd := app.Update(tea.KeyPressMsg{Code: 'y'})
-	app = updated.(AppModel)
-
-	if app.viewportFor("weave").IsSelecting() {
-		t.Error("'y' should exit select mode after yank")
-	}
-	if cmd == nil {
-		t.Fatal("'y' should return a non-nil Cmd (clipboard + status)")
-	}
-	// The Cmd should produce a BatchMsg or a setClipboard-like Msg. We verify
-	// by executing it and collecting messages.
-	msgs := collectCmdMsgs(cmd)
-	found := false
-	for _, m := range msgs {
-		// bubbletea v2's setClipboardMsg is a private type, but its string form
-		// equals the payload. Cast-check via fmt.Sprint.
-		if s, ok := m.(fmt.Stringer); ok && strings.Contains(s.String(), "second reply") && strings.Contains(s.String(), "third reply") {
-			found = true
-			break
-		}
-		// Fallback: any msg whose stringified form contains the content.
-		if strings.Contains(fmt.Sprintf("%v", m), "second reply") {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("yank cmd did not emit clipboard msg with selected content; msgs=%v", msgs)
-	}
-}
-
-// collectCmdMsgs executes a Cmd, unwrapping tea.BatchMsg into its constituent
-// cmds and collecting all resulting Msgs.
-func collectCmdMsgs(cmd tea.Cmd) []tea.Msg {
-	if cmd == nil {
-		return nil
-	}
-	out := []tea.Msg{}
-	msg := cmd()
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, c := range batch {
-			out = append(out, collectCmdMsgs(c)...)
-		}
-		return out
-	}
-	return append(out, msg)
-}
-
-func TestAppModel_JKMoveSelectionCursor(t *testing.T) {
-	app := seedViewportApp(t)
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	// cursor starts at index 2 (last). 'k' moves up.
-	updated, _ = app.Update(tea.KeyPressMsg{Code: 'k'})
-	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyPressMsg{Code: 'k'})
-	app = updated.(AppModel)
-	raw := app.viewportFor("weave").SelectedRaw()
-	for _, want := range []string{"first reply", "second reply", "third reply"} {
-		if !strings.Contains(raw, want) {
-			t.Errorf("SelectedRaw() after v+k+k should contain %q, got %q", want, raw)
-		}
-	}
-}
-
-func TestAppModel_StatusBarShowsSelectMode(t *testing.T) {
-	app := seedViewportApp(t)
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	view := stripAnsi(app.statusBar.View())
-	if !strings.Contains(view, "SELECT") {
-		t.Errorf("status bar should show SELECT indicator when selecting, got: %s", view)
-	}
-}
+// QUM-695: viewport selection / yank-mode (`v` / `j` / `k` / `y` / Esc) was
+// removed wholesale. The tests that asserted the workflow are gone with it.
 
 // --- Tests for QUM-311 / QUM-205: TUI inbox notifier + weave root unread ---
 
@@ -3063,33 +2881,8 @@ func TestAppModel_Esc_HelpDismissTakesPriority(t *testing.T) {
 	}
 }
 
-func TestAppModel_Esc_SelectModeTakesPriority(t *testing.T) {
-	mock := newFakeSessionBackend()
-	bridge := mock
-	app := readyAppWithBridge(t, bridge)
-	// Seed viewport with messages so select mode can activate.
-	app.viewportFor("weave").AppendAssistantChunk("some text")
-	app.viewportFor("weave").FinalizeAssistantMessage()
-	app.turnState = TurnStreaming
-	app.activePanel = PanelViewport
-	app.updateFocus()
-	// Enter select mode.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	if !app.observedVP().IsSelecting() {
-		t.Fatal("precondition: should be in select mode")
-	}
-
-	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	app = updated.(AppModel)
-
-	if app.observedVP().IsSelecting() {
-		t.Error("ESC in select mode should exit select mode")
-	}
-	if mock.interruptCalled {
-		t.Error("ESC in select mode should NOT call Interrupt")
-	}
-}
+// QUM-695: TestAppModel_Esc_SelectModeTakesPriority deleted along with the
+// rest of viewport yank-mode.
 
 func TestAppModel_InterruptResultMsg_ShowsStatus(t *testing.T) {
 	mock := newFakeSessionBackend()

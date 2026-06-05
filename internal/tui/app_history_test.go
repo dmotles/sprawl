@@ -21,13 +21,13 @@ func seedAppHistory(t *testing.T, app *AppModel, entries []string) {
 }
 
 // readyAppOnPanelInput returns an AppModel that has received a WindowSizeMsg
-// and has its activePanel set to PanelInput so input-panel keybinds fire.
+// and is ready for input-panel keybinds. (Post-QUM-695 the input is the
+// sole keystroke recipient; the helper name is preserved for continuity.)
 func readyAppOnPanelInput(t *testing.T) AppModel {
 	t.Helper()
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
-	app.activePanel = PanelInput
 	app.updateFocus()
 	return app
 }
@@ -68,24 +68,6 @@ func TestInput_UpArrowNavigatesHistory(t *testing.T) {
 	app = updated.(AppModel)
 	if got := app.input.Value(); got != "draft" {
 		t.Errorf("after Down #2 (live restore): input = %q, want %q", got, "draft")
-	}
-}
-
-// TestTree_UpArrowStillNavigatesTree: with PanelTree active, Up does NOT
-// touch the input value — history navigation is gated to PanelInput.
-func TestTree_UpArrowStillNavigatesTree(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
-	app.activePanel = PanelTree
-	app.updateFocus()
-	seedAppHistory(t, &app, []string{"first", "second"})
-
-	app.input.SetValue("draft")
-	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
-	app = updated.(AppModel)
-	if got := app.input.Value(); got != "draft" {
-		t.Errorf("PanelTree Up should not touch input, got %q", got)
 	}
 }
 

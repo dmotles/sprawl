@@ -271,7 +271,6 @@ func TestAppModel_CtrlPCyclesObservedAgentBackward(t *testing.T) {
 
 func TestAppModel_CtrlN_FiresGloballyFromInputPanel(t *testing.T) {
 	app := appWithAgents(t)
-	app.activePanel = PanelInput
 	app.updateFocus()
 	app = pressKeyAndApply(t, app, tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
 	if app.observedAgent != "finn" {
@@ -329,16 +328,24 @@ func TestAppModel_OpenPaletteMsg_PopulatesAgentsList(t *testing.T) {
 	}
 }
 
-func TestAppModel_TabDoesNotCyclePanelWhenPaletteVisible(t *testing.T) {
+// TestAppModel_TabRoutedToPaletteWhenVisible: with the palette open,
+// pressing Tab must reach the palette (which uses it for navigation)
+// instead of being intercepted as panel-cycling. QUM-695 deleted the
+// activePanel cycler; this test now asserts the keystroke is delivered to
+// the palette by observing that the input textarea is unaffected.
+func TestAppModel_TabRoutedToPaletteWhenVisible(t *testing.T) {
 	app := readyApp(t)
 	u, _ := app.Update(OpenPaletteMsg{})
 	app = u.(AppModel)
 
-	initialPanel := app.activePanel
+	priorInput := app.input.Value()
 	u, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	app = u.(AppModel)
-	if app.activePanel != initialPanel {
-		t.Errorf("Tab should NOT cycle panels when palette visible; activePanel changed from %d to %d",
-			initialPanel, app.activePanel)
+	if app.input.Value() != priorInput {
+		t.Errorf("Tab while palette visible should be consumed by palette; input changed from %q to %q",
+			priorInput, app.input.Value())
+	}
+	if !app.showPalette {
+		t.Error("palette should remain open after Tab")
 	}
 }

@@ -20,21 +20,18 @@ type shortBinding struct {
 // one from AppModel state and pass it to shortHelpBindings or
 // ShortHelpModel.SetState.
 type ShortHelpState struct {
-	Focus       Panel
 	TurnState   TurnState
 	InputEmpty  bool
 	HasQueued   bool
-	SelectMode  bool
 	PaletteOpen bool
 }
 
 // shortHelpBindings returns the bindings to render for the given state. The
 // result is ordered: state-specific bindings first, then the always-on
-// triple (?, tab, ctrl+c). Length is bounded to [3, 7] in practice — the
-// always-on bindings provide the floor and each state-specific branch caps
-// itself well below the ceiling.
+// pair (F1: help, ctrl+c: clear/quit). QUM-695 collapsed the focus/select
+// branches — the input panel is the sole keystroke recipient.
 func shortHelpBindings(s ShortHelpState) []shortBinding {
-	bindings := make([]shortBinding, 0, 7)
+	bindings := make([]shortBinding, 0, 5)
 
 	switch {
 	case s.PaletteOpen:
@@ -53,43 +50,20 @@ func shortHelpBindings(s ShortHelpState) []shortBinding {
 	case s.HasQueued:
 		bindings = append(bindings, shortBinding{Key: "esc", Hint: "clear queue"})
 
-	case s.SelectMode && s.Focus == PanelViewport:
-		bindings = append(bindings,
-			shortBinding{Key: "j/k", Hint: "move"},
-			shortBinding{Key: "y", Hint: "yank"},
-			shortBinding{Key: "esc", Hint: "exit select"},
-		)
-
 	default:
-		switch s.Focus {
-		case PanelInput:
-			if s.InputEmpty {
-				bindings = append(bindings, shortBinding{Key: "/", Hint: "commands"})
-			}
-		case PanelTree:
-			bindings = append(bindings,
-				shortBinding{Key: "↑↓", Hint: "navigate"},
-				shortBinding{Key: "enter", Hint: "select"},
-				shortBinding{Key: "ctrl+n/p", Hint: "cycle agent"},
-			)
-		case PanelViewport:
-			bindings = append(bindings,
-				shortBinding{Key: "pgup/pgdn", Hint: "scroll"},
-				shortBinding{Key: "v", Hint: "select mode"},
-				shortBinding{Key: "ctrl+o", Hint: "expand tools"},
-			)
+		if s.InputEmpty {
+			bindings = append(bindings, shortBinding{Key: "/", Hint: "commands"})
 		}
 	}
 
 	// Always-on bindings, appended last.
 	bindings = append(bindings,
-		shortBinding{Key: "?", Hint: "help"},
-		shortBinding{Key: "tab", Hint: "cycle panel"},
+		shortBinding{Key: "F1", Hint: "help"},
 		shortBinding{Key: "ctrl+c", Hint: "clear/quit"},
 	)
 
-	if len(bindings) > 7 {
-		bindings = bindings[:7]
+	if len(bindings) > 5 {
+		bindings = bindings[:5]
 	}
 	return bindings
 }

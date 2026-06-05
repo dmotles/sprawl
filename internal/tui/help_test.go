@@ -29,9 +29,7 @@ func TestHelpModel_View_ContainsAllBindings(t *testing.T) {
 
 	expected := []string{
 		"Toggle help",
-		"Cycle panel focus",
-		"Navigate agent tree",
-		"Select agent",
+		"Cycle observed agent",
 		"Scroll output",
 		"Quit",
 		"Dismiss help",
@@ -48,7 +46,7 @@ func TestHelpModel_View_ContainsKeyLabels(t *testing.T) {
 	m.SetSize(80, 24)
 	view := stripANSI(m.View())
 
-	keys := []string{"F1", "Tab", "Shift+Tab", "Enter", "PgUp", "PgDn", "Ctrl+C", "Esc"}
+	keys := []string{"F1", "PgUp", "PgDn", "Ctrl+C", "Esc"}
 	for _, key := range keys {
 		if !strings.Contains(view, key) {
 			t.Errorf("View() should contain key label %q, got:\n%s", key, view)
@@ -58,23 +56,17 @@ func TestHelpModel_View_ContainsKeyLabels(t *testing.T) {
 
 // --- App-level help overlay tests ---
 
-func TestAppModel_QuestionMarkTogglesHelp(t *testing.T) {
+// QUM-695: `?` is no longer wired to help. The canonical help key is F1
+// (see TestAppModel_F1TogglesHelp below).
+func TestAppModel_QuestionMarkDoesNotToggleHelp(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// Press ? to open help.
 	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
 	app = updated.(AppModel)
-	if !app.showHelp {
-		t.Error("showHelp should be true after pressing '?'")
-	}
-
-	// Press ? again to close help.
-	updated, _ = app.Update(tea.KeyPressMsg{Code: '?'})
-	app = updated.(AppModel)
 	if app.showHelp {
-		t.Error("showHelp should be false after pressing '?' again")
+		t.Error("? should NOT open help post-QUM-695")
 	}
 }
 
@@ -101,8 +93,8 @@ func TestAppModel_EscDismissesHelp(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// Open help.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
+	// Open help via F1.
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
 	app = updated.(AppModel)
 
 	// Press Esc to dismiss.
@@ -118,16 +110,23 @@ func TestAppModel_HelpSwallowsKeys(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// Open help.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
+	// Open help via F1 (post-QUM-695 the canonical help key).
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
 	app = updated.(AppModel)
-	panelBefore := app.activePanel
+	if !app.showHelp {
+		t.Fatal("setup: help should be open")
+	}
+	priorInput := app.input.Value()
 
-	// Tab should be swallowed (panel should not change).
+	// QUM-695: Tab no longer cycles panels — assert the help overlay
+	// swallows it instead of letting the input textarea consume it.
 	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 	app = updated.(AppModel)
-	if app.activePanel != panelBefore {
-		t.Errorf("activePanel changed from %d to %d while help is shown; Tab should be swallowed", panelBefore, app.activePanel)
+	if app.input.Value() != priorInput {
+		t.Errorf("Tab should be swallowed by help overlay, input changed from %q to %q", priorInput, app.input.Value())
+	}
+	if !app.showHelp {
+		t.Error("help overlay should remain open after Tab")
 	}
 }
 
@@ -136,8 +135,8 @@ func TestAppModel_CtrlCShowsConfirmWithHelpOpen(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// Open help.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
+	// Open help via F1.
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
 	app = updated.(AppModel)
 
 	// Ctrl+C should show confirm dialog (not quit directly).
@@ -153,8 +152,8 @@ func TestAppModel_ViewShowsHelpOverlay(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// Open help.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
+	// Open help via F1.
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
 	app = updated.(AppModel)
 
 	v := app.View()
@@ -169,8 +168,8 @@ func TestAppModel_ViewHidesHelpWhenDismissed(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// Open and close help.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: '?'})
+	// Open and close help via F1 → Esc.
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
 	app = updated.(AppModel)
 	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	app = updated.(AppModel)

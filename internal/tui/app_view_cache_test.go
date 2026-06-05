@@ -40,7 +40,6 @@ func resizedApp(t *testing.T, w, h int) AppModel {
 
 func TestViewCache_OutputUnchanged_AfterInputKeystroke_TreeAndViewportBytesIdentical(t *testing.T) {
 	app := resizedApp(t, 200, 60)
-	app.activePanel = PanelInput
 	app.updateFocus()
 	_ = app.View()
 
@@ -129,7 +128,6 @@ func TestViewCache_InvalidatesOnWindowResize(t *testing.T) {
 
 func TestViewCache_OutputEqualsUncached_AcrossKeystrokes(t *testing.T) {
 	app := resizedApp(t, 200, 60)
-	app.activePanel = PanelInput
 	app.updateFocus()
 
 	for i := 0; i < 30; i++ {

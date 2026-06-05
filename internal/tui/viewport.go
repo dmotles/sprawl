@@ -37,31 +37,20 @@ const placeholderContent = `Welcome to Sprawl TUI
 This is the output viewport. Agent output will appear here.
 
 Use PgUp/PgDn to scroll through content.
-Use Tab/Shift+Tab to switch between panels.
 Press Ctrl+C to quit.
 
 ---
 
 Waiting for agent activity...`
 
-// SelectionGutter is the visual prefix placed on selected message blocks when
-// the viewport is in select mode.
-const SelectionGutter = "▌ "
-
 // ViewportModel is the per-agent chat-region facade. It composes a
 // ChatRegion (scroll machinery + ChatList rendering) with a small
 // MessageEntry log used by tests/back-compat callers to inspect what was
 // appended.
 type ViewportModel struct {
-	region   *ChatRegion
-	theme    *Theme
-	messages []MessageEntry
-	// selection lives at the ViewportModel layer because select-mode is
-	// observed-agent scoped — switching agents tears down selection on the
-	// old buffer. The actual yank assembly walks ChatList items
-	// (AssembleRawMarkdownFromItems) so the MessageEntry log is not in the
-	// yank hot path.
-	selection          SelectionState
+	region             *ChatRegion
+	theme              *Theme
+	messages           []MessageEntry
 	width              int
 	height             int
 	toolInputsExpanded bool
@@ -175,7 +164,6 @@ func (m *ViewportModel) GetMessages() []MessageEntry {
 // pendingTools — the wedge-exit invariant.
 func (m *ViewportModel) SetMessages(msgs []MessageEntry) {
 	m.messages = append(m.messages[:0:0], msgs...)
-	m.selection = SelectionState{}
 	if cl := m.ChatList(); cl != nil {
 		cl.Reset(msgs)
 	}
@@ -190,8 +178,7 @@ func (m *ViewportModel) IsAutoScroll() bool {
 	return m.region.IsAutoScroll()
 }
 
-// SetAutoScroll forces auto-scroll on/off on the inner ChatRegion. Used by
-// select-mode entry to freeze the view in place.
+// SetAutoScroll forces auto-scroll on/off on the inner ChatRegion.
 func (m *ViewportModel) SetAutoScroll(v bool) {
 	if m.region == nil {
 		return
@@ -433,51 +420,4 @@ func (m *ViewportModel) AppendSystemNotification(text string) {
 func (m *ViewportModel) AppendError(text string) {
 	m.messages = append(m.messages, MessageEntry{Type: MessageError, Content: text, Complete: true})
 	m.placeholderShown = false
-}
-
-// IsSelecting reports whether the viewport is in select mode.
-func (m *ViewportModel) IsSelecting() bool { return m.selection.Active }
-
-// EnterSelect arms select mode anchored at the last item in the ChatList.
-func (m *ViewportModel) EnterSelect() {
-	cl := m.ChatList()
-	if cl == nil || cl.Len() == 0 {
-		return
-	}
-	last := cl.Len() - 1
-	m.selection = SelectionState{Active: true, Anchor: last, Cursor: last}
-	if m.region != nil {
-		m.region.autoScroll = false
-	}
-}
-
-// ExitSelect leaves select mode without yanking.
-func (m *ViewportModel) ExitSelect() {
-	m.selection = SelectionState{}
-}
-
-// MoveCursor shifts the selection cursor by delta within the ChatList.
-func (m *ViewportModel) MoveCursor(delta int) {
-	if !m.selection.Active {
-		return
-	}
-	cl := m.ChatList()
-	if cl == nil {
-		return
-	}
-	m.selection = m.selection.MoveCursor(delta, cl.Len())
-}
-
-// SelectedRaw returns the raw-markdown payload for the current selection,
-// assembled from ChatList items (NOT the legacy MessageEntry log).
-func (m *ViewportModel) SelectedRaw() string {
-	if !m.selection.Active {
-		return ""
-	}
-	cl := m.ChatList()
-	if cl == nil {
-		return ""
-	}
-	lo, hi := m.selection.Range()
-	return AssembleRawMarkdownFromItems(cl.Items(), lo, hi)
 }

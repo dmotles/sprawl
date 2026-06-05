@@ -22,7 +22,6 @@ func BenchmarkAppModel_View_PasteBurst(b *testing.B) {
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
-	app.activePanel = PanelInput
 	app.updateFocus()
 
 	b.ResetTimer()
@@ -45,7 +44,6 @@ func BenchmarkAppModel_UpdateAndView_PasteBurst(b *testing.B) {
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
-	app.activePanel = PanelInput
 	app.updateFocus()
 
 	b.ResetTimer()
@@ -67,7 +65,6 @@ func BenchmarkAppModel_View_SteadyState(b *testing.B) {
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
-	app.activePanel = PanelInput
 	app.updateFocus()
 	// Type a single key so the input has some content and the model
 	// is in a "post-update" state.
@@ -91,7 +88,6 @@ func BenchmarkAppModel_View_PasteBurst_BoundedInput(b *testing.B) {
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, "", nil)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
 	app := updated.(AppModel)
-	app.activePanel = PanelInput
 	app.updateFocus()
 
 	b.ResetTimer()

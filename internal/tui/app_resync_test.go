@@ -275,7 +275,6 @@ func TestAppModel_CtrlL_DoesNotConflictWithReverseSearch(t *testing.T) {
 
 	// Ctrl+R from PanelInput enters reverse-search (existing behavior; see
 	// app.go:368). It must remain intact after Ctrl+L is wired.
-	app.activePanel = PanelInput
 	rUpdated, _ := app.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	app = rUpdated.(AppModel)
 	if !app.searchActive {

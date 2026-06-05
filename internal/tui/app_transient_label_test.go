@@ -568,33 +568,11 @@ func TestChildTranscriptMsg_LoadError_EscalatesToErrorDialog(t *testing.T) {
 	}
 }
 
-// --- 26. Clipboard-copy status (the 'y' key in select-mode) -------------
-
-func TestClipboardCopy_OnYKeyInSelectMode_RoutesToTransientLabel(t *testing.T) {
-	mock := newFakeSessionBackend()
-	app := readyAppWithBridge(t, mock)
-	// Seed the viewport so select mode has something to grab.
-	app.viewportFor("weave").AppendAssistantChunk("the quick brown fox")
-	app.viewportFor("weave").FinalizeAssistantMessage()
-	app.activePanel = PanelViewport
-	app.updateFocus()
-	// Enter select mode (v) then press y to copy.
-	updated, _ := app.Update(tea.KeyPressMsg{Code: 'v'})
-	app = updated.(AppModel)
-	// Move cursor onto a real message so SelectedRaw() returns non-empty.
-	updated, _ = app.Update(tea.KeyPressMsg{Code: 'G'})
-	app = updated.(AppModel)
-	updated, _ = app.Update(tea.KeyPressMsg{Code: 'y'})
-	app = updated.(AppModel)
-
-	const want = "Copied selection"
-	if !statusBarContains(app, want) {
-		t.Errorf("status bar should contain %q after y-key in select mode; got:\n%s", want, stripAnsi(app.statusBar.View()))
-	}
-	if rootBannerOrStatusContains(app, want) {
-		t.Errorf("root viewport must NOT carry %q (S5 reroute)", want)
-	}
-}
+// --- 26. (Removed) Clipboard-copy status from viewport yank-mode --------
+//
+// QUM-695: viewport yank-mode (`v` enter / `y` yank) was removed wholesale.
+// The associated "Copied selection to clipboard" transient-label assertion
+// is gone with it.
 
 // --- 27. EventDropDetectedMsg "events lost" banner -----------------------
 //

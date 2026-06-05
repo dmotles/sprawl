@@ -20,16 +20,6 @@ import (
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
-// Panel identifies which panel is active.
-type Panel int
-
-const (
-	PanelTree Panel = iota
-	PanelViewport
-	PanelInput
-	panelCount // sentinel for wrapping
-)
-
 // AgentBuffer stores the per-agent chat-region state. Each agent owns its
 // own ViewportModel (facade over ChatRegion+ChatList) so streamed assistant
 // chunks, tool calls, and notification envelopes can never bleed across
@@ -155,7 +145,6 @@ type AppModel struct {
 	// rebuilds. QUM-602.
 	faults map[string]backendFault
 
-	activePanel Panel
 	showConfirm bool
 	theme       Theme
 	width       int
@@ -305,10 +294,6 @@ type AppModel struct {
 // restartFunc is called when the user requests a session restart after a crash.
 func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, sup supervisor.Supervisor, sprawlRoot string, restartFunc func() (SessionBackend, error)) AppModel {
 	theme := NewTheme(accentColor)
-	startPanel := PanelTree
-	if bridge != nil {
-		startPanel = PanelInput
-	}
 	rootAgent := "weave"
 	agentBuffers := make(map[string]*AgentBuffer)
 	// Seed the root agent's buffer eagerly: PreloadTranscript can run before
@@ -336,7 +321,6 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		rootAgent:           rootAgent,
 		agentBuffers:        agentBuffers,
 		faults:              make(map[string]backendFault),
-		activePanel:         startPanel,
 		theme:               theme,
 		restartFunc:         restartFunc,
 		version:             version,
@@ -401,7 +385,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Bracketed-paste from the terminal. Forward to the input panel so embedded
 		// newlines are inserted literally instead of being treated as Enter-submit.
 		// Only when the input bar is the active panel (root-agent view, no modal).
-		if m.observedAgent != m.rootAgent || m.activePanel != PanelInput || m.anyModalUp() {
+		if m.observedAgent != m.rootAgent || m.anyModalUp() {
 			return m, nil
 		}
 		// QUM-448: track input-box height across the Update so we can
@@ -438,7 +422,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// QUM-410: Ctrl+R from the input panel enters reverse-search mode.
 		// Stash the current input value so Esc can restore it.
-		if m.activePanel == PanelInput && msg.Mod&tea.ModCtrl != 0 && msg.Code == 'r' {
+		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'r' && !m.anyModalUp() && m.observedAgent == m.rootAgent {
 			m.searchActive = true
 			m.searchQuery = ""
 			m.searchPriorInput = m.input.Value()
@@ -458,7 +442,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// `history.Prev` (which always succeeds when history is non-empty)
 		// while KeyDown fell through to the modal because `history.Next`
 		// returns ok=false on a fresh model.
-		if m.activePanel == PanelInput && m.history != nil && !m.anyModalUp() &&
+		if m.history != nil && !m.anyModalUp() && m.observedAgent == m.rootAgent &&
 			(msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
 			if m.handleHistoryArrow(msg) {
 				return m, nil
@@ -489,9 +473,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// Toggle help on ? (but not while typing in the input panel) or F1.
-		// F1 remains global since it's unambiguous — no one types F1 as text.
-		if (msg.Code == '?' && m.activePanel != PanelInput) || msg.Code == tea.KeyF1 {
+		// Toggle help on F1. F1 is the canonical help key — `?` is reserved
+		// so users can type it literally in the input panel (QUM-695 dropped
+		// `activePanel` gating, so `?` is no longer disambiguated by focus).
+		if msg.Code == tea.KeyF1 {
 			m.showHelp = !m.showHelp
 			return m, nil
 		}
@@ -603,22 +588,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.cycleAgent(delta)
 		}
 
-		if msg.Code == tea.KeyTab {
-			if msg.Mod&tea.ModShift != 0 {
-				m.activePanel = (m.activePanel - 1 + panelCount) % panelCount
-			} else {
-				m.activePanel = (m.activePanel + 1) % panelCount
-			}
-			m.updateFocus()
-			return m, nil
-		}
-
-		// QUM-281: viewport select mode. Scoped to PanelViewport so the input
-		// panel still types 'v'/'y'/'j'/'k' as literals.
-		if m.activePanel == PanelViewport {
-			if cmd, handled := m.handleViewportSelectKey(msg); handled {
-				return m, cmd
-			}
+		// QUM-695: PgUp/PgDn forward to the viewport unconditionally. Mouse
+		// wheel scroll is handled earlier in the MouseMsg branch; this gives
+		// keyboard users an equivalent scroll surface now that the input
+		// panel always owns keystrokes.
+		if msg.Code == tea.KeyPgUp || msg.Code == tea.KeyPgDown {
+			vp := m.observedVP()
+			updated, cmd := vp.Update(msg)
+			*vp = updated
+			return m, cmd
 		}
 
 		// QUM-340: Esc with a queued submit revokes it. Only fire when there
@@ -1841,16 +1819,10 @@ func (m AppModel) View() tea.View {
 // AppModel state (QUM-420). Kept tight so the call site in renderView is
 // trivial and so unit tests can reason about the projection separately.
 func (m *AppModel) shortHelpState() ShortHelpState {
-	selectMode := false
-	if vp := m.observedVP(); vp != nil {
-		selectMode = vp.IsSelecting()
-	}
 	return ShortHelpState{
-		Focus:       m.activePanel,
 		TurnState:   m.turnState,
 		InputEmpty:  strings.TrimSpace(m.input.Value()) == "",
 		HasQueued:   m.pendingSubmit != "",
-		SelectMode:  selectMode,
 		PaletteOpen: m.showPalette,
 	}
 }
@@ -1892,7 +1864,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// once the cache-invariance tests are reshaped.
 	_ = m.cachedPanel(useCache, panelSlotTree, m.tree.View(),
 		layout.HeaderTreeWidth, OrbitalHeight(layout.TermWidth, m.tree.nodes),
-		m.activePanel == PanelTree)
+		false)
 
 	// QUM-673 S3: render finished items via ChatList; fall back to vp.View()
 	// when a stream / tool call is in flight, or when ChatList has nothing
@@ -1900,7 +1872,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	chatContent := m.chatRegionContent(layout.ViewportWidth - 4)
 	vpView := m.cachedPanel(useCache, panelSlotViewport, chatContent,
 		layout.ViewportWidth, layout.ViewportHeight,
-		m.activePanel == PanelViewport)
+		false)
 
 	// QUM-656: main row is the viewport only — the tree lives in the header.
 	mainRow := m.cachedMainRow(useCache, "", vpView)
@@ -1920,7 +1892,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	if inputVisible {
 		inputView = m.cachedPanel(useCache, panelSlotInput, m.input.View(),
 			layout.InputWidth, layout.InputHeight,
-			m.activePanel == PanelInput)
+			true)
 		overlay = m.searchOverlay()
 	}
 	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, inputView, shortHelpView, statusView, inputVisible)
@@ -2255,87 +2227,26 @@ func (m *AppModel) inputBoxHeight() int {
 	return h
 }
 
+// updateFocus is the post-QUM-695 stub kept for callsite stability. The
+// input panel is the sole keystroke recipient, so this unconditionally
+// focuses it. (Pre-QUM-695 it switched focus among Tree/Viewport/Input.)
 func (m *AppModel) updateFocus() {
-	if m.activePanel == PanelInput {
-		m.input.Focus()
-	} else {
-		m.input.Blur()
-	}
-}
-
-// handleViewportSelectKey handles 'v'/'j'/'k'/'y'/'g'/'G'/Esc for the
-// viewport select-mode UX (QUM-281). Returns handled=true to stop further
-// routing; returns handled=false when the key is not a select-mode key, in
-// which case the caller falls through to normal delegation.
-func (m *AppModel) handleViewportSelectKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
-	vp := m.observedVP()
-	// Entry: 'v' with no selection active.
-	if !vp.IsSelecting() {
-		if msg.Code == 'v' && msg.Mod == 0 {
-			vp.EnterSelect()
-			m.statusBar.SetSelectMode(vp.IsSelecting())
-			return nil, true
-		}
-		return nil, false
-	}
-
-	// Selection active — handle mode-specific keys.
-	switch msg.Code {
-	case tea.KeyEscape, 'v':
-		vp.ExitSelect()
-		m.statusBar.SetSelectMode(false)
-		return nil, true
-	case 'j', tea.KeyDown:
-		vp.MoveCursor(1)
-		return nil, true
-	case 'k', tea.KeyUp:
-		vp.MoveCursor(-1)
-		return nil, true
-	case 'g':
-		// Jump cursor to first message: move by -len.
-		vp.MoveCursor(-vp.Len())
-		return nil, true
-	case 'G':
-		vp.MoveCursor(vp.Len())
-		return nil, true
-	case 'y':
-		raw := vp.SelectedRaw()
-		vp.ExitSelect()
-		m.statusBar.SetSelectMode(false)
-		if raw == "" {
-			return nil, true
-		}
-		m.statusBar.SetTransientLabel("Copied selection to clipboard")
-		return tea.SetClipboard(raw), true
-	}
-	// While selecting, swallow all other keys so they don't scroll the
-	// viewport or leak to other panels.
-	return nil, true
+	m.input.Focus()
 }
 
 func (m AppModel) delegateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch m.activePanel {
-	case PanelTree:
-		var cmd tea.Cmd
-		m.tree, cmd = m.tree.Update(msg)
-		return m, cmd
-	case PanelViewport:
-		vp := m.observedVP()
-		updated, cmd := vp.Update(msg)
-		*vp = updated
-		return m, cmd
-	case PanelInput:
-		// QUM-448: re-propagate panel sizes if this keystroke grew (or
-		// shrank) the textarea. See PasteMsg branch for the same pattern.
-		prevInputH := m.inputBoxHeight()
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		if m.ready && !m.tooSmall && m.inputBoxHeight() != prevInputH {
-			m.resizePanels()
-		}
-		return m, cmd
+	// QUM-695: all keystrokes go to the input panel. PgUp/PgDn were
+	// intercepted earlier and forwarded to the viewport; nothing else needs
+	// to reach tree/viewport via key delegation.
+	// QUM-448: re-propagate panel sizes if this keystroke grew (or
+	// shrank) the textarea. See PasteMsg branch for the same pattern.
+	prevInputH := m.inputBoxHeight()
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	if m.ready && !m.tooSmall && m.inputBoxHeight() != prevInputH {
+		m.resizePanels()
 	}
-	return m, nil
+	return m, cmd
 }
 
 func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
