@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/dmotles/sprawl/internal/supervisor"
@@ -597,6 +598,99 @@ func TestRenderTreeOrbital_ZeroWidth(t *testing.T) {
 	lines := RenderTreeOrbital([]TreeNode{{Name: "weave", Type: "weave"}}, "", 0)
 	if len(lines) != 0 {
 		t.Errorf("expected empty/nil slice for width=0, got %d lines", len(lines))
+	}
+}
+
+// QUM-689: the app.go call sites must pass HeaderTreeWidth (not TermWidth)
+// to OrbitalHeight so the declared row count matches what RenderTreeOrbital
+// emits at the same width. This test exercises the call-site asymmetry:
+// at TermWidth = 80, HeaderTreeWidth = 80 - 40 (wordmark) - 3 (separator) =
+// 37, which is below wordmarkNarrowThreshold (70). Passing TermWidth to
+// OrbitalHeight returns 3 (wide); passing HeaderTreeWidth returns 1
+// (narrow), matching the renderer.
+func TestOrbitalHeight_CallSiteWidthBudget_QUM689(t *testing.T) {
+	cases := []struct {
+		name     string
+		termW    int
+		nodes    []TreeNode
+		wantRows int
+	}{
+		{
+			// TermWidth >= threshold but HeaderTreeWidth < threshold.
+			name:     "termWide_headerNarrow_weaveOnly",
+			termW:    80,
+			nodes:    []TreeNode{{Name: "weave", Type: "weave", Depth: 0}},
+			wantRows: 1,
+		},
+		{
+			// Same asymmetry, but with a manager child — the weave-manager
+			// carveout forces 3 rows even at narrow widths, so OrbitalHeight
+			// agrees with the renderer regardless. Locks in the invariant
+			// for the manager-pivot inverse direction.
+			name:  "termWide_headerNarrow_weaveWithManager",
+			termW: 80,
+			nodes: []TreeNode{
+				{Name: "weave", Type: "weave", Depth: 0},
+				{Name: "tower", Type: "manager", Depth: 1},
+			},
+			wantRows: 3,
+		},
+		{
+			// TermWidth and HeaderTreeWidth both >= threshold (sanity).
+			name:     "termWide_headerWide",
+			termW:    200,
+			nodes:    []TreeNode{{Name: "weave", Type: "weave", Depth: 0}},
+			wantRows: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			headerW := HeaderTreeWidth(tc.termW)
+			if tc.termW < wordmarkNarrowThreshold && headerW >= wordmarkNarrowThreshold {
+				t.Fatalf("precondition for inverse failed: HeaderTreeWidth(%d) = %d", tc.termW, headerW)
+			}
+			rendered := len(RenderTreeOrbital(tc.nodes, "", headerW))
+			if rendered != tc.wantRows {
+				t.Fatalf("len(RenderTreeOrbital(nodes,\"\",%d)) = %d, want %d", headerW, rendered, tc.wantRows)
+			}
+			// The fix: OrbitalHeight must be called with HeaderTreeWidth, not TermWidth.
+			if got := OrbitalHeight(headerW, tc.nodes); got != rendered {
+				t.Errorf("OrbitalHeight(HeaderTreeWidth=%d, nodes) = %d, want %d (parity with renderer)", headerW, got, rendered)
+			}
+			// Demonstrate the bug: passing TermWidth instead would mismatch
+			// the renderer in the asymmetric case.
+			if tc.termW >= wordmarkNarrowThreshold && headerW < wordmarkNarrowThreshold && !weaveHasManagerChild(tc.nodes) {
+				if buggy := OrbitalHeight(tc.termW, tc.nodes); buggy == rendered {
+					t.Errorf("expected the buggy width path to mismatch: OrbitalHeight(TermWidth=%d)=%d == renderer=%d (asymmetry no longer reproduces?)", tc.termW, buggy, rendered)
+				}
+			}
+		})
+	}
+}
+
+// QUM-689: resizePanels must size the tree using OrbitalHeight evaluated at
+// HeaderTreeWidth (the same budget RenderTreeOrbital sees), not TermWidth.
+// At TermWidth=80, HeaderTreeWidth=37 (< 70), and a weave-only topology
+// collapses to a single breadcrumb row. With the buggy call site the tree
+// is sized to height 3; with the fix it matches the renderer's 1 row.
+func TestResizePanels_TreeHeightUsesHeaderTreeWidth_QUM689(t *testing.T) {
+	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
+
+	// Force a weave-only topology so the narrow path differs from the wide
+	// path. AgentTreeMsg's PrependWeaveRoot synthesises the weave root.
+	updated, _ := app.Update(AgentTreeMsg{Nodes: nil})
+	app = updated.(AppModel)
+
+	updated, _ = app.Update(tea.WindowSizeMsg{Width: 80, Height: 40})
+	app = updated.(AppModel)
+
+	headerW := HeaderTreeWidth(80)
+	if headerW >= wordmarkNarrowThreshold {
+		t.Fatalf("precondition failed: HeaderTreeWidth(80)=%d should be < %d", headerW, wordmarkNarrowThreshold)
+	}
+	want := len(RenderTreeOrbital(app.tree.nodes, "", headerW))
+	if got := app.tree.height; got != want {
+		t.Errorf("tree.height = %d, want %d (resizePanels must call OrbitalHeight with HeaderTreeWidth, not TermWidth)", got, want)
 	}
 }
 

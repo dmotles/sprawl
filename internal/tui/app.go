@@ -1863,7 +1863,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// on tree changes — TODO(QUM-655): drop panelSlotTree + cachedMainRow
 	// once the cache-invariance tests are reshaped.
 	_ = m.cachedPanel(useCache, panelSlotTree, m.tree.View(),
-		layout.HeaderTreeWidth, OrbitalHeight(layout.TermWidth, m.tree.nodes),
+		layout.HeaderTreeWidth, OrbitalHeight(layout.HeaderTreeWidth, m.tree.nodes),
 		false)
 
 	// QUM-673 S3: render finished items via ChatList; fall back to vp.View()
@@ -2163,7 +2163,7 @@ func (m *AppModel) resizePanels() {
 	// the input box off the bottom of the screen (QUM-324 residual).
 	// QUM-656: the tree lives in the header; size it to the header's tree
 	// budget and the orbital row count.
-	m.tree.SetSize(layout.HeaderTreeWidth, OrbitalHeight(layout.TermWidth, m.tree.nodes))
+	m.tree.SetSize(layout.HeaderTreeWidth, OrbitalHeight(layout.HeaderTreeWidth, m.tree.nodes))
 	for name, buf := range m.agentBuffers {
 		// The currently-observed viewport may need the input bar's reclaimed
 		// rows (QUM-340). Other buffers stay sized for the input-visible
