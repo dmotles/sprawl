@@ -67,20 +67,9 @@ func copyFixtureToSessionLog(t *testing.T, sessionID string) (sprawlRoot, homeDi
 	return sprawlRoot, homeDir
 }
 
-// stripStatusMarker returns entries with any MessageStatus whose Content
-// matches `match` (case-insensitive substring) removed. Used to compare the
-// resume-path render against the resync-path render after stripping the
-// path-specific trailing-status markers.
-func stripStatusMarker(entries []MessageEntry, match string) []MessageEntry {
-	out := make([]MessageEntry, 0, len(entries))
-	for _, e := range entries {
-		if e.Type == MessageStatus && strings.Contains(strings.ToLower(e.Content), strings.ToLower(match)) {
-			continue
-		}
-		out = append(out, e)
-	}
-	return out
-}
+// Post QUM-693: MessageStatus / MessageBanner entries never enter the
+// ChatList, so the previous "strip path-specific status markers" helper has
+// no items to filter — the comparison is over the raw item list.
 
 func TestAppModel_ViewportResyncMsg_ReplacesMessagesAndAppendsBanner(t *testing.T) {
 	fake := newFakeSessionBackend()
@@ -97,15 +86,15 @@ func TestAppModel_ViewportResyncMsg_ReplacesMessagesAndAppendsBanner(t *testing.
 	resynced, _ := app.Update(ViewportResyncMsg{Entries: rebuilt, MissingCount: 7, Err: nil})
 	next := resynced.(AppModel)
 
-	msgs := next.rootVP().GetMessages()
+	msgs := next.rootVP().ChatList().Items()
 	// SetMessages should have installed the rebuilt entries — at least the
 	// two we supplied should appear in order.
 	foundUser, foundAssistant := false, false
-	for _, e := range msgs {
-		if e.Type == MessageUser && e.Content == "rebuilt user" {
+	for _, it := range msgs {
+		if u, ok := it.(*UserItem); ok && u.Text() == "rebuilt user" {
 			foundUser = true
 		}
-		if e.Type == MessageAssistant && e.Content == "rebuilt assistant" {
+		if a, ok := it.(*AssistantTextItem); ok && a.Text() == "rebuilt assistant" {
 			foundAssistant = true
 		}
 	}
@@ -139,11 +128,8 @@ func TestAppModel_ViewportResyncMsg_FailurePathKeepsDroppedState(t *testing.T) {
 	if !next.showError {
 		t.Errorf("expected γ overlay (showError=true) on resync failure; got showError=false")
 	}
-	for _, e := range next.rootVP().GetMessages() {
-		if e.Type == MessageError {
-			t.Errorf("viewport must NOT carry a MessageError after S5 reroute; got: %+v", e)
-		}
-	}
+	// QUM-693: MessageError can never enter ChatList — the negative
+	// assertion is structurally vacuous and was deleted.
 }
 
 // TestAppModel_ResyncFromSessionLog_MatchesNonDroppedRender is the gold
@@ -171,7 +157,7 @@ func TestAppModel_ResyncFromSessionLog_MatchesNonDroppedRender(t *testing.T) {
 	uGold, _ := mGold.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	mGold = uGold.(AppModel)
 	mGold.PreloadTranscript(goldEntries)
-	goldRender := stripStatusMarker(mGold.rootVP().GetMessages(), "resumed from prior session")
+	goldRender := mGold.rootVP().ChatList().Items()
 
 	// Path B — resync path. Burst-threshold gap, drive the produced cmd,
 	// feed the ViewportResyncMsg back through Update.
@@ -193,53 +179,45 @@ func TestAppModel_ResyncFromSessionLog_MatchesNonDroppedRender(t *testing.T) {
 	}
 	applied, _ := mResync.Update(resync)
 	mResync = applied.(AppModel)
-	// Strip the resync banner (path-B specific marker) so the comparison is
-	// content-equivalent.
-	resyncRender := stripStatusMarker(mResync.rootVP().GetMessages(), "resync")
-	// Also drop the drop-banner emitted on normal → dropped transition; it
-	// belongs to path B's transition story, not the rebuilt transcript.
-	resyncRender = stripStatusMarker(resyncRender, "dropped")
-	resyncRender = stripStatusMarker(resyncRender, "events lost")
-	resyncRender = stripStatusMarker(resyncRender, "gap detected")
-	// And the session banner the fresh AppModel auto-appends.
-	resyncRender = stripBanner(resyncRender)
-	goldRender = stripBanner(goldRender)
+	// QUM-693: Status / Banner / Error entries never enter ChatList, so
+	// there is no path-specific marker to strip. The comparison is over the
+	// raw item list from both paths.
+	resyncRender := mResync.rootVP().ChatList().Items()
 
-	// Full struct equivalence (design §4.4 gold check). MessageEntry has no
-	// time-bearing fields today (see internal/tui/viewport.go) so we don't
-	// need to zero a Timestamp; however the unexported render-cache fields
-	// (renderedCache / renderedCacheKey) get populated lazily during View()
-	// and are path-dependent — they must be zeroed before the comparison.
-	// If MessageEntry ever grows a time.Time field (e.g. Timestamp), extend
-	// normalizeEntriesForCompare below to zero it.
-	goldNorm := normalizeEntriesForCompare(goldRender)
-	resyncNorm := normalizeEntriesForCompare(resyncRender)
-	if !reflect.DeepEqual(resyncNorm, goldNorm) {
-		t.Errorf("resync render does not match gold render (full-struct DeepEqual)\n\npath A (gold) entries:\n%+v\n\npath B (resync) entries:\n%+v",
-			goldNorm, resyncNorm)
+	// Item-level equivalence (design §4.4 gold check). Compare the
+	// fingerprint of each item (concrete-type tag + content-bearing fields)
+	// rather than the rendered string so width-dependent layout drift does
+	// not break the comparison.
+	goldFP := itemFingerprints(goldRender)
+	resyncFP := itemFingerprints(resyncRender)
+	if !reflect.DeepEqual(resyncFP, goldFP) {
+		t.Errorf("resync items do not match gold items\n\npath A (gold):\n%+v\n\npath B (resync):\n%+v", goldFP, resyncFP)
 	}
 }
 
-// normalizeEntriesForCompare zeros render-cache fields (and any future
-// non-deterministic fields like timestamps) so two MessageEntry slices from
-// different code paths can be compared via reflect.DeepEqual on their
-// content-bearing fields. Operates on a copy; does not mutate the input.
-func normalizeEntriesForCompare(entries []MessageEntry) []MessageEntry {
-	// QUM-676: the per-entry rendered* cache fields are gone with the
-	// QUM-667 tactical cache. Identity comparison is now over the
-	// content-bearing fields directly.
-	out := make([]MessageEntry, len(entries))
-	copy(out, entries)
-	return out
-}
-
-func stripBanner(entries []MessageEntry) []MessageEntry {
-	out := make([]MessageEntry, 0, len(entries))
-	for _, e := range entries {
-		if e.Type == MessageBanner {
-			continue
+// itemFingerprints returns a comparable per-item digest used by the gold
+// equivalence check. Captures concrete-type and content-bearing fields only;
+// theme/renderer context pointers are intentionally excluded so two
+// independently-constructed AppModels produce equal fingerprints.
+func itemFingerprints(items []Item) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		switch v := it.(type) {
+		case *UserItem:
+			out = append(out, "user:"+v.Text())
+		case *AssistantTextItem:
+			out = append(out, "assistant:"+v.Text())
+		case *ToolCallItem:
+			out = append(out, "tool:"+v.ToolID()+":"+v.Name()+":"+v.Input()+":"+v.Result())
+		case *SystemNotificationItem:
+			out = append(out, "notif:"+v.NotificationType()+":"+v.Content())
+		case *AutoTriggerItem:
+			out = append(out, "auto:"+v.Summary())
+		case *ThinkingItem:
+			out = append(out, "thinking")
+		default:
+			out = append(out, "other")
 		}
-		out = append(out, e)
 	}
 	return out
 }

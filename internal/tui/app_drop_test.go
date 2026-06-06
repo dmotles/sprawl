@@ -66,19 +66,6 @@ func findViewportResync(t *testing.T, cmd tea.Cmd) (ViewportResyncMsg, bool) {
 	return ViewportResyncMsg{}, false
 }
 
-// containsResyncBanner reports whether any viewport entry's Content contains
-// the "resync" or "recovered" tokens used by the QUM-669 banner copy. Used
-// in negative assertions (no banner emitted yet).
-func containsResyncBanner(entries []MessageEntry) bool {
-	for _, e := range entries {
-		c := strings.ToLower(e.Content)
-		if strings.Contains(c, "resync") || strings.Contains(c, "recovered") {
-			return true
-		}
-	}
-	return false
-}
-
 func TestAppModel_GapBelowBurst_EntersDebouncePending(t *testing.T) {
 	app, _ := newAppForDropTest(t)
 	app.setTurnState(TurnStreaming)
@@ -98,11 +85,8 @@ func TestAppModel_GapBelowBurst_EntersDebouncePending(t *testing.T) {
 		t.Errorf("turnState after gap = %v, want TurnIdle (AC #4)", next.turnState)
 	}
 
-	// No banner appended yet — gap-pending stays silent so single transient
-	// blips don't churn the viewport.
-	if containsResyncBanner(next.rootVP().GetMessages()) {
-		t.Errorf("expected NO resync banner during gap-pending, got messages:\n%+v", next.rootVP().GetMessages())
-	}
+	// QUM-693: banners never enter ChatList, so the legacy "no banner in vp"
+	// negative assertion is structurally vacuous — deleted.
 
 	// A gapConfirmMsg should be scheduled (debounce tick).
 	if _, ok := findGapConfirm(t, cmd); !ok {
@@ -135,9 +119,7 @@ func TestAppModel_GapDebounce_NoFurtherDropsReturnsToNormal(t *testing.T) {
 	if _, ok := findViewportResync(t, confirmCmd); ok {
 		t.Errorf("gapConfirmMsg with no further drops must NOT trigger resync")
 	}
-	if containsResyncBanner(final.rootVP().GetMessages()) {
-		t.Errorf("expected NO resync banner after clean debounce, got:\n%+v", final.rootVP().GetMessages())
-	}
+	// QUM-693: banners never enter ChatList — negative assertion deleted.
 	view := final.statusBar.View()
 	if strings.Contains(strings.ToLower(view), "resync") {
 		t.Errorf("status bar should not show a resync pill after clean debounce, got:\n%s", view)
@@ -262,7 +244,6 @@ func TestAppModel_GapStaleConfirmIgnored(t *testing.T) {
 			t.Errorf("stale gapConfirmMsg produced a ViewportResyncMsg")
 		}
 	}
-	if containsResyncBanner(next.rootVP().GetMessages()) {
-		t.Errorf("stale gapConfirmMsg appended a resync banner; viewport:\n%+v", next.rootVP().GetMessages())
-	}
+	// QUM-693: banners never enter ChatList — negative assertion deleted.
+	_ = next
 }

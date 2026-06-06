@@ -669,11 +669,7 @@ func TestAppModel_SessionErrorMsg_WhenIdle_AppendsToViewport(t *testing.T) {
 	if !app.showError {
 		t.Error("non-EOF SessionErrorMsg should escalate to the γ overlay (QUM-675 S5)")
 	}
-	for _, entry := range app.viewportFor("weave").messages {
-		if entry.Type == MessageError {
-			t.Errorf("viewport must NOT carry a MessageError after S5 reroute; got: %+v", entry)
-		}
-	}
+	// QUM-693: MessageError never enters ChatList — vacuous assertion deleted.
 }
 
 func TestAppModel_SessionErrorMsg_WhenStreaming_ShowsErrorDialog(t *testing.T) {
@@ -795,8 +791,8 @@ func TestAppModel_SessionResultMsg_DisplaysResultText(t *testing.T) {
 
 	// The result text should be displayed as an assistant message in the viewport.
 	found := false
-	for _, entry := range app.viewportFor("weave").messages {
-		if entry.Type == MessageAssistant && strings.Contains(entry.Content, "pong") {
+	for _, it := range app.viewportFor("weave").ChatList().Items() {
+		if a, ok := it.(*AssistantTextItem); ok && strings.Contains(a.Text(), "pong") {
 			found = true
 			break
 		}
@@ -818,8 +814,8 @@ func TestAppModel_SessionResultMsg_ErrorDoesNotDisplayResultAsAssistant(t *testi
 	app = updated.(AppModel)
 
 	// Error result should NOT be displayed as assistant message
-	for _, entry := range app.viewportFor("weave").messages {
-		if entry.Type == MessageAssistant {
+	for _, it := range app.viewportFor("weave").ChatList().Items() {
+		if _, ok := it.(*AssistantTextItem); ok {
 			t.Error("Error SessionResultMsg should not create an assistant message entry")
 		}
 	}
@@ -965,7 +961,7 @@ func TestAppModel_AgentSelectedMsg_SwapsViewport(t *testing.T) {
 	app = updated.(AppModel)
 
 	// Add a message to the root agent's viewport.
-	app.viewportFor("weave").AppendUserMessage("root message")
+	app.viewportFor("weave").ChatList().AppendUser("root message")
 
 	// Switch to observing tower.
 	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
@@ -1641,18 +1637,18 @@ func TestAppModel_PreloadTranscript_SetsViewportMessages(t *testing.T) {
 	}
 	m.PreloadTranscript(entries)
 
-	got := m.viewportFor("weave").GetMessages()
-	if len(got) != 3 {
-		t.Fatalf("len(viewport messages) = %d, want 3", len(got))
+	// QUM-693: MessageStatus entries are silently skipped by ChatList.Reset
+	// (status text routes to the statusbar transient label instead). The
+	// viewport should contain only the user + assistant items.
+	got := m.viewportFor("weave").ChatList().Items()
+	if len(got) != 2 {
+		t.Fatalf("len(viewport items) = %d, want 2 (status entry routes to statusbar)", len(got))
 	}
-	if got[0].Type != MessageUser || got[0].Content != "hello" {
-		t.Errorf("got[0] = %+v, want MessageUser 'hello'", got[0])
+	if u, ok := got[0].(*UserItem); !ok || u.Text() != "hello" {
+		t.Errorf("got[0] = %+v, want UserItem 'hello'", got[0])
 	}
-	if got[1].Type != MessageAssistant || got[1].Content != "hi" {
-		t.Errorf("got[1] = %+v, want MessageAssistant 'hi'", got[1])
-	}
-	if got[2].Type != MessageStatus || got[2].Content != "Resumed from prior session" {
-		t.Errorf("got[2] = %+v, want trailing status", got[2])
+	if a, ok := got[1].(*AssistantTextItem); !ok || a.Text() != "hi" {
+		t.Errorf("got[1] = %+v, want AssistantTextItem 'hi'", got[1])
 	}
 }
 
@@ -1689,18 +1685,18 @@ func TestAppModel_RestartSessionMsg_ClearsViewport(t *testing.T) {
 	app := resized.(AppModel)
 
 	// Seed the viewport with prior-session conversation.
-	app.viewportFor("weave").AppendUserMessage("old user message")
-	app.viewportFor("weave").AppendAssistantChunk("old assistant reply")
-	app.viewportFor("weave").FinalizeAssistantMessage()
+	app.viewportFor("weave").ChatList().AppendUser("old user message")
+	app.viewportFor("weave").ChatList().AppendAssistantChunk("old assistant reply")
+	app.viewportFor("weave").ChatList().FinalizeAssistantMessage()
 
 	updated, cmd := app.Update(RestartSessionMsg{})
 	app = updated.(AppModel)
 	app = driveAsyncRestart(t, app, cmd)
 
-	msgs := app.viewportFor("weave").GetMessages()
-	for _, e := range msgs {
-		if strings.Contains(e.Content, "old user message") || strings.Contains(e.Content, "old assistant reply") {
-			t.Errorf("viewport should be cleared on restart; still contains prior message: %+v", e)
+	msgs := app.viewportFor("weave").ChatList().Items()
+	for _, it := range msgs {
+		if strings.Contains(itemContent(it), "old user message") || strings.Contains(itemContent(it), "old assistant reply") {
+			t.Errorf("viewport should be cleared on restart; still contains prior message: %+v", it)
 		}
 	}
 }
@@ -1783,12 +1779,15 @@ func TestAppModel_SessionInitializedMsg_DoesNotClearPreloadedTranscript(t *testi
 	updated, _ := app.Update(SessionInitializedMsg{})
 	app = updated.(AppModel)
 
-	msgs := app.viewportFor("weave").GetMessages()
+	msgs := app.viewportFor("weave").ChatList().Items()
 	if len(msgs) < 2 {
-		t.Fatalf("preloaded transcript was cleared by SessionInitializedMsg; got %d messages, want >=2", len(msgs))
+		t.Fatalf("preloaded transcript was cleared by SessionInitializedMsg; got %d items, want >=2", len(msgs))
 	}
-	if msgs[0].Content != "resumed hello" || msgs[1].Content != "resumed reply" {
-		t.Errorf("preloaded transcript was corrupted; got %+v", msgs)
+	if u, ok := msgs[0].(*UserItem); !ok || u.Text() != "resumed hello" {
+		t.Errorf("msgs[0] = %+v, want UserItem 'resumed hello'", msgs[0])
+	}
+	if a, ok := msgs[1].(*AssistantTextItem); !ok || a.Text() != "resumed reply" {
+		t.Errorf("msgs[1] = %+v, want AssistantTextItem 'resumed reply'", msgs[1])
 	}
 }
 
@@ -1797,9 +1796,9 @@ func TestAppModel_PreloadTranscript_EmptyNoOp(t *testing.T) {
 	m.PreloadTranscript(nil)
 	// QUM-675 S5: viewport starts empty (the initial SessionBanner was
 	// dropped). Preloading nil must not add any messages.
-	got := m.viewportFor("weave").GetMessages()
+	got := m.viewportFor("weave").ChatList().Items()
 	if len(got) != 0 {
-		t.Errorf("preload(nil) should leave viewport empty; got %d entries: %+v", len(got), got)
+		t.Errorf("preload(nil) should leave viewport empty; got %d items: %+v", len(got), got)
 	}
 }
 
@@ -1814,9 +1813,9 @@ func seedScrollableViewport(t *testing.T, app AppModel) AppModel {
 	// SessionBanner padded the buffer; that banner was removed in S5).
 	for chunk := 0; chunk < 4; chunk++ {
 		for i := 0; i < 60; i++ {
-			app.viewportFor("weave").AppendAssistantChunk(fmt.Sprintf("scroll line %d-%d\n", chunk, i))
+			app.viewportFor("weave").ChatList().AppendAssistantChunk(fmt.Sprintf("scroll line %d-%d\n", chunk, i))
 		}
-		app.viewportFor("weave").FinalizeAssistantMessage()
+		app.viewportFor("weave").ChatList().FinalizeAssistantMessage()
 	}
 	return app
 }
@@ -2205,29 +2204,17 @@ func TestAppModel_InboxDrainMsg_IdleAppendsBannerAndStashesIDs(t *testing.T) {
 		t.Errorf("pendingDrainIDs = %v, want [a1 a2]", app.pendingDrainIDs)
 	}
 
-	// QUM-338: the drained prompt should be surfaced in the weave viewport as
-	// a MessageSystem entry (not MessageUser) so the user sees it as a system
-	// notification rather than something they typed.
+	// QUM-693: post-deletion the ChatList drops raw MessageSystem entries
+	// (contract violators routed to the statusbar transient label). The
+	// remaining structural guarantee is that the drain prompt does NOT
+	// surface as a UserItem.
 	weaveVP := app.viewportFor("weave")
-	entries := weaveVP.GetMessages()
 	const wantPrompt = "[inbox] You received 1 message(s)..."
-	var foundSystem bool
-	for _, e := range entries {
-		if e.Type == MessageUser && e.Content == wantPrompt {
-			t.Errorf("drained prompt should not be a MessageUser entry, got: %+v", e)
-		}
-		if e.Type == MessageSystem && e.Content == wantPrompt {
-			foundSystem = true
+	for _, it := range weaveVP.ChatList().Items() {
+		if u, ok := it.(*UserItem); ok && u.Text() == wantPrompt {
+			t.Errorf("drained prompt should not be a UserItem, got: %+v", u)
 		}
 	}
-	if !foundSystem {
-		t.Errorf("expected a MessageSystem entry with the drained prompt %q; got entries: %+v", wantPrompt, entries)
-	}
-	// QUM-676: the legacy mail-glyph render for raw MessageSystem entries is
-	// gone with the ChatList contract-violator routing. The drain banner is
-	// now surfaced via the status-bar transient label (asserted above); the
-	// log retention of the MessageSystem entry is exercised by the loop
-	// above so back-compat callers still see "what landed".
 }
 
 // QUM-557: when the drained prompt is wrapped in <system-notification> tags,
@@ -2249,29 +2236,24 @@ func TestAppModel_InboxDrainMsg_SystemNotificationEmitsNotificationEntry(t *test
 	app = updated.(AppModel)
 
 	weaveVP := app.viewportFor("weave")
-	entries := weaveVP.GetMessages()
-	var found *MessageEntry
-	for i := range entries {
-		if entries[i].Type == MessageSystemNotification {
-			found = &entries[i]
+	entries := weaveVP.ChatList().Items()
+	var found *SystemNotificationItem
+	for _, it := range entries {
+		if n, ok := it.(*SystemNotificationItem); ok {
+			found = n
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("expected a MessageSystemNotification entry, got entries: %+v", entries)
+		t.Fatalf("expected a SystemNotificationItem, got entries: %+v", entries)
 	}
-	if found.Interrupt {
+	if found.Interrupt() {
 		t.Errorf("entry.Interrupt = true, want false (async)")
 	}
-	if found.Content != "From finn — msg id=9v6" {
-		t.Errorf("entry.Content = %q, want stripped body %q", found.Content, "From finn — msg id=9v6")
+	if found.Content() != "From finn — msg id=9v6" {
+		t.Errorf("entry.Content = %q, want stripped body %q", found.Content(), "From finn — msg id=9v6")
 	}
-	// Negative: must not have produced a MessageSystem entry carrying the raw tag.
-	for _, e := range entries {
-		if e.Type == MessageSystem && e.Content == wrapped {
-			t.Errorf("unexpected MessageSystem entry with raw tagged prompt: %+v", e)
-		}
-	}
+	// QUM-693: MessageSystem can never enter ChatList — negative deleted.
 }
 
 func TestAppModel_InboxDrainMsg_SystemNotificationInterruptFlag(t *testing.T) {
@@ -2289,18 +2271,18 @@ func TestAppModel_InboxDrainMsg_SystemNotificationInterruptFlag(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	entries := app.viewportFor("weave").GetMessages()
-	var found *MessageEntry
-	for i := range entries {
-		if entries[i].Type == MessageSystemNotification {
-			found = &entries[i]
+	entries := app.viewportFor("weave").ChatList().Items()
+	var found *SystemNotificationItem
+	for _, it := range entries {
+		if n, ok := it.(*SystemNotificationItem); ok {
+			found = n
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("expected a MessageSystemNotification entry, got entries: %+v", entries)
+		t.Fatalf("expected a SystemNotificationItem, got entries: %+v", entries)
 	}
-	if !found.Interrupt {
+	if !found.Interrupt() {
 		t.Errorf("entry.Interrupt = false, want true ([interrupt] body)")
 	}
 }
@@ -2444,7 +2426,7 @@ func TestAppModel_CtrlOToggleToolInputsExpanded(t *testing.T) {
 		t.Fatal("toolInputsExpanded should default to false")
 	}
 	// Seed a tool call so the viewport has something to flip.
-	app.rootVP().AppendToolCall("Bash", "", true, "ls", "ls -la /tmp")
+	app.rootVP().ChatList().AppendToolCallWithHeader("Bash", "", true, "ls", "ls -la /tmp", "", nil, "")
 
 	pressed, _ := app.Update(tea.KeyPressMsg{Code: 'o', Mod: tea.ModCtrl})
 	app = pressed.(AppModel)
@@ -2498,19 +2480,19 @@ func TestAppModel_ToolCallMsg_PreservesFullInput(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	msgs := app.rootVP().GetMessages()
+	msgs := app.rootVP().ChatList().Items()
 	if len(msgs) == 0 {
-		t.Fatal("expected at least one message after ToolCallMsg")
+		t.Fatal("expected at least one item after ToolCallMsg")
 	}
-	last := msgs[len(msgs)-1]
-	if last.Type != MessageToolCall {
-		t.Fatalf("last message type = %v, want MessageToolCall", last.Type)
+	last, ok := msgs[len(msgs)-1].(*ToolCallItem)
+	if !ok {
+		t.Fatalf("last item type = %T, want *ToolCallItem", msgs[len(msgs)-1])
 	}
-	if last.ToolInput != "ls" {
-		t.Errorf("ToolInput = %q, want %q", last.ToolInput, "ls")
+	if last.Input() != "ls" {
+		t.Errorf("Input = %q, want %q", last.Input(), "ls")
 	}
-	if last.ToolInputFull != "ls -la /tmp" {
-		t.Errorf("ToolInputFull = %q, want %q", last.ToolInputFull, "ls -la /tmp")
+	if last.InputFull() != "ls -la /tmp" {
+		t.Errorf("InputFull = %q, want %q", last.InputFull(), "ls -la /tmp")
 	}
 }
 
@@ -2544,8 +2526,8 @@ func TestAppModel_SubmitMsg_WhileBusy_QueuesPending(t *testing.T) {
 	if cmd != nil {
 		t.Errorf("queued SubmitMsg should not return a cmd, got %T", cmd())
 	}
-	for _, m := range app.viewportFor("weave").GetMessages() {
-		if m.Type == MessageUser && m.Content == "next prompt" {
+	for _, it := range app.viewportFor("weave").ChatList().Items() {
+		if u, ok := it.(*UserItem); ok && u.Text() == "next prompt" {
 			t.Error("queued submit must not be appended as a user message until it dispatches")
 		}
 	}
@@ -2934,7 +2916,7 @@ func TestAppModel_InterruptCompletedMsg_ReturnsToIdle(t *testing.T) {
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
 	// Plant a pending assistant chunk so we can assert it's finalized.
-	app.rootVP().AppendAssistantChunk("partial response ")
+	app.rootVP().ChatList().AppendAssistantChunk("partial response ")
 
 	updated, _ := app.Update(InterruptCompletedMsg{Result: "stopped", DurationMs: 5})
 	app = updated.(AppModel)
@@ -2942,7 +2924,7 @@ func TestAppModel_InterruptCompletedMsg_ReturnsToIdle(t *testing.T) {
 	if app.turnState != TurnIdle {
 		t.Errorf("turnState = %v, want TurnIdle (InterruptCompletedMsg must finalize)", app.turnState)
 	}
-	if app.rootVP().HasPendingAssistant() {
+	if app.rootVP().ChatList().HasPendingAssistant() {
 		t.Errorf("InterruptCompletedMsg must finalize pending assistant message, but HasPendingAssistant() is still true")
 	}
 }
@@ -3161,26 +3143,27 @@ func TestAppModel_AssistantContentMsg_DispatchesAll(t *testing.T) {
 	updated, _ := m.Update(contentMsg)
 	app := updated.(AppModel)
 
-	// Both tool calls should be in the root viewport (filter out the initial banner).
-	allMsgs := app.rootVP().GetMessages()
-	var msgs []MessageEntry
-	for _, e := range allMsgs {
-		if e.Type != MessageBanner {
-			msgs = append(msgs, e)
+	// Both tool calls should be in the root viewport. QUM-693: banners never
+	// enter ChatList so no filtering needed.
+	items := app.rootVP().ChatList().Items()
+	tools := make([]*ToolCallItem, 0, 2)
+	for _, it := range items {
+		if t, ok := it.(*ToolCallItem); ok {
+			tools = append(tools, t)
 		}
 	}
-	if len(msgs) != 2 {
-		t.Fatalf("got %d non-banner messages in viewport, want 2", len(msgs))
+	if len(tools) != 2 {
+		t.Fatalf("got %d ToolCallItems in viewport, want 2", len(tools))
 	}
-	if msgs[0].Content != "Agent" || msgs[0].ToolID != "a1" {
-		t.Errorf("msgs[0] = {Content:%q, ToolID:%q}, want {Agent, a1}", msgs[0].Content, msgs[0].ToolID)
+	if tools[0].Name() != "Agent" || tools[0].ToolID() != "a1" {
+		t.Errorf("tools[0] = {Name:%q, ToolID:%q}, want {Agent, a1}", tools[0].Name(), tools[0].ToolID())
 	}
-	if msgs[1].Content != "Agent" || msgs[1].ToolID != "a2" {
-		t.Errorf("msgs[1] = {Content:%q, ToolID:%q}, want {Agent, a2}", msgs[1].Content, msgs[1].ToolID)
+	if tools[1].Name() != "Agent" || tools[1].ToolID() != "a2" {
+		t.Errorf("tools[1] = {Name:%q, ToolID:%q}, want {Agent, a2}", tools[1].Name(), tools[1].ToolID())
 	}
 	// Both should be depth 0 (parallel siblings).
-	if msgs[0].Depth != 0 || msgs[1].Depth != 0 {
-		t.Errorf("parallel Agent depths = {%d, %d}, want {0, 0}", msgs[0].Depth, msgs[1].Depth)
+	if tools[0].Depth() != 0 || tools[1].Depth() != 0 {
+		t.Errorf("parallel Agent depths = {%d, %d}, want {0, 0}", tools[0].Depth(), tools[1].Depth())
 	}
 }
 
@@ -3521,17 +3504,17 @@ func TestUpdate_AutoContinueMsg(t *testing.T) {
 	updated, _ := app.Update(AutoContinueMsg{Summary: summary})
 	app = updated.(AppModel)
 
-	entries := app.rootVP().GetMessages()
+	entries := app.rootVP().ChatList().Items()
 	var found bool
-	for _, e := range entries {
-		if e.Type == MessageAutoTrigger {
+	for _, it := range entries {
+		if a, ok := it.(*AutoTriggerItem); ok {
 			found = true
-			if e.Content != summary {
-				t.Errorf("auto-trigger entry Content = %q, want %q", e.Content, summary)
+			if a.Summary() != summary {
+				t.Errorf("auto-trigger summary = %q, want %q", a.Summary(), summary)
 			}
 		}
 	}
 	if !found {
-		t.Errorf("expected a MessageAutoTrigger entry in the root viewport after AutoContinueMsg; got entries: %+v", entries)
+		t.Errorf("expected an AutoTriggerItem in the root viewport after AutoContinueMsg; got entries: %+v", entries)
 	}
 }

@@ -83,11 +83,15 @@ func TestViewCache_InvalidatesOnViewportAppend(t *testing.T) {
 	_ = app.View()
 	vpBefore := app.cache.viewport
 
-	app.rootVP().AppendStatus("hi")
+	// QUM-693: AppendStatus is gone (Status text routes to the statusbar
+	// transient label, not the ChatList). Use AppendUser to trigger an
+	// append-induced cache invalidation — the cache key includes ChatList
+	// item count, so any content append must invalidate.
+	app.rootVP().ChatList().AppendUser("hi")
 	_ = app.View()
 
 	if app.cache.viewport == vpBefore {
-		t.Errorf("viewport cache did not invalidate after AppendStatus(); cache still equals pre-append render")
+		t.Errorf("viewport cache did not invalidate after ChatList append; cache still equals pre-append render")
 	}
 }
 

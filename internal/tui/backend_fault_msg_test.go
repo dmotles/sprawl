@@ -22,20 +22,10 @@ func TestAppModel_BackendFaultMsg_NoViewportBanner(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	// The viewport must NOT carry the "backend fault on alice" copy any more —
-	// S5 pure-deletes the vp.AppendStatus call. The tree badge owns the
-	// surface (see TestTreeView_RendersFaultIndicator).
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, "backend fault on alice") {
-				t.Errorf("root viewport must NOT carry a backend-fault banner — tree badge owns it (S5 pure-deletion); got: %+v", e)
-			}
-			if strings.Contains(e.Content, "HangTimeout") && strings.Contains(e.Content, "retire+respawn") {
-				t.Errorf("root viewport must NOT carry fault-class/next-action as a status entry; got: %+v", e)
-			}
-		}
-	}
+	// QUM-693: Status/Banner/Error never enter ChatList — vacuous bleed
+	// assertion deleted. Tree badge is the operator-facing surface; see
+	// TestTreeView_RendersFaultIndicator.
+	_ = app
 }
 
 func TestAppModel_BackendFaultMsg_StoresFaultForAgent(t *testing.T) {
@@ -114,15 +104,7 @@ func TestAppModel_BackendFaultMsg_RestampsFaultsMapOnRepeat(t *testing.T) {
 		t.Errorf("faults[alice].Reason = %q, want %q (re-stamp on repeat)", got.Reason, "stalled-twice")
 	}
 
-	// And no viewport-banner bleed on either fault arrival.
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, "backend fault on alice") {
-				t.Errorf("root viewport must NOT carry a fault banner after repeat fault (S5 pure-deletion); got: %+v", e)
-			}
-		}
-	}
+	// QUM-693: viewport-banner bleed assertion is vacuous post-deletion.
 }
 
 // QUM-602 / QUM-675 S5: after a fault is cleared, a subsequent fault for the
@@ -154,18 +136,7 @@ func TestAppModel_BackendFaultMsg_RestampsFaultsMapAfterClear(t *testing.T) {
 	if _, ok := app.faults["alice"]; !ok {
 		t.Errorf("faults[alice] should be re-stamped after fault→clear→fault; faults=%v", app.faults)
 	}
-	// No viewport-banner bleed across the cycle.
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, "backend fault on alice") {
-				t.Errorf("root viewport must NOT carry fault banner across fault→clear→fault (S5 pure-deletion); got: %+v", e)
-			}
-			if strings.Contains(e.Content, "backend recovered on alice") {
-				t.Errorf("root viewport must NOT carry recovery banner — transient label owns it (S5 reroute); got: %+v", e)
-			}
-		}
-	}
+	// QUM-693: viewport-banner bleed assertion is vacuous post-deletion.
 }
 
 func TestTreeView_RendersFaultIndicator(t *testing.T) {

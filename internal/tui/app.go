@@ -50,24 +50,24 @@ type AgentBuffer struct {
 // AppendUser appends a user-typed turn. QUM-676: routes through vp, which
 // now owns the single rendering pipeline (ChatList lives inside vp.region).
 func (b *AgentBuffer) AppendUser(text string) {
-	b.vp.AppendUserMessage(text)
+	b.vp.ChatList().AppendUser(text)
 }
 
 // AppendAssistantChunk appends a streaming assistant chunk.
 func (b *AgentBuffer) AppendAssistantChunk(text string) {
-	b.vp.AppendAssistantChunk(text)
+	b.vp.ChatList().AppendAssistantChunk(text)
 }
 
 // FinalizeAssistantMessage finalizes the in-flight assistant item.
 func (b *AgentBuffer) FinalizeAssistantMessage() {
-	b.vp.FinalizeAssistantMessage()
+	b.vp.ChatList().FinalizeAssistantMessage()
 }
 
 // AppendThinking records that a thinking content block arrived. The body
 // text is intentionally not stored — Claude/Opus redacts it server-side,
 // and the marker carries only a count. (QUM-677 S7)
 func (b *AgentBuffer) AppendThinking() {
-	b.vp.AppendThinking()
+	b.vp.ChatList().AppendThinking()
 }
 
 // AppendToolCallWithHeader appends a tool-call row.
@@ -75,22 +75,22 @@ func (b *AgentBuffer) AppendToolCallWithHeader(name, toolID string, approved boo
 	input, fullInput, headerArg string, headerParams []KVPair,
 	parentToolUseID string,
 ) {
-	b.vp.AppendToolCallWithHeader(name, toolID, approved, input, fullInput, headerArg, headerParams, parentToolUseID)
+	b.vp.ChatList().AppendToolCallWithHeader(name, toolID, approved, input, fullInput, headerArg, headerParams, parentToolUseID)
 }
 
 // MarkToolResult resolves a pending tool call. Returns true on match.
 func (b *AgentBuffer) MarkToolResult(toolID, content string, isError bool) bool {
-	return b.vp.MarkToolResult(toolID, content, isError)
+	return b.vp.ChatList().MarkToolResult(toolID, content, isError)
 }
 
 // AppendSystemNotification appends notification envelope(s).
 func (b *AgentBuffer) AppendSystemNotification(text string) {
-	b.vp.AppendSystemNotification(text)
+	b.vp.ChatList().AppendSystemNotification(text)
 }
 
 // AppendAutoTrigger appends a QUM-634 auto-continue marker.
 func (b *AgentBuffer) AppendAutoTrigger(summary string) {
-	b.vp.AppendAutoTrigger(summary)
+	b.vp.ChatList().AppendAutoTrigger(summary)
 }
 
 // SetToolInputsExpanded fans the QUM-335 global expand-all toggle into the
@@ -104,7 +104,7 @@ func (b *AgentBuffer) SetToolInputsExpanded(v bool) {
 // force-finalizes the trailing assistant and clears pendingTools per the
 // QUM-669 wedge-exit invariant.
 func (b *AgentBuffer) SetMessages(entries []MessageEntry) {
-	b.vp.SetMessages(entries)
+	b.vp.ChatList().Reset(entries)
 }
 
 // AppModel is the root Bubble Tea model composing all panels.
@@ -712,13 +712,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// user-typed input. Without this, the drained frame is invisible (only
 		// the status line hints at it) and the only way to confirm drain worked
 		// is to grep logs — which also breaks the body-in-prompt e2e assertion.
-		// QUM-338: render as a MessageSystem entry (mail glyph + distinct
-		// style) so the human can tell the system spoke, not them. The Claude
-		// session still receives the body as a user-role turn via SendMessage.
-		// QUM-557: AppendSystemNotification strips `<system-notification>` wrappers
-		// and emits MessageSystemNotification entries; falls back to AppendSystemMessage
-		// (legacy MessageSystem rendering) when the prompt isn't tagged — preserving
-		// behavior for pre-QUM-555 plain inbox banners.
+		// QUM-338 / QUM-557 / QUM-693: AppendSystemNotification strips
+		// `<system-notification>` wrappers and emits SystemNotificationItem
+		// envelope items. Pre-QUM-555 plain inbox banners (untagged prompts)
+		// are silently dropped from ChatList; the Claude session still
+		// receives the body as a user-role turn via SendMessage.
 		m.rootBuf().AppendSystemNotification(msg.Prompt)
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
@@ -847,7 +845,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// When Claude returns text in the assistant message, it also appears
 		// in result.Result — avoid duplicating it.
 		root := m.rootVP()
-		if !msg.IsError && strings.TrimSpace(msg.Result) != "" && !root.HasPendingAssistant() {
+		if !msg.IsError && strings.TrimSpace(msg.Result) != "" && !root.ChatList().HasPendingAssistant() {
 			m.rootBuf().AppendAssistantChunk(strings.TrimSpace(msg.Result))
 		}
 		// Finalize the assistant chunk before appending status/error so the
@@ -881,7 +879,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Mirror SessionResultMsg cleanup so the TUI returns to TurnIdle and
 		// the queue-drain gate re-opens.
 		root := m.rootVP()
-		if strings.TrimSpace(msg.Result) != "" && !root.HasPendingAssistant() {
+		if strings.TrimSpace(msg.Result) != "" && !root.ChatList().HasPendingAssistant() {
 			m.rootBuf().AppendAssistantChunk(strings.TrimSpace(msg.Result))
 		}
 		// Finalize before status append (see SessionResultMsg comment).
@@ -1757,10 +1755,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		default:
-			// QUM-676: empty entries — show "Waiting for X to start" via the
-			// status-bar transient label rather than as a MessageStatus
-			// entry on the agent's viewport. The legacy MessageStatus path
-			// is gone with the ChatList contract-violator routing.
+			// QUM-676 / QUM-693: empty entries — show "Waiting for X to start"
+			// via the status-bar transient label. The legacy viewport status
+			// path is gone with the ChatList contract-violator routing.
 			banner := fmt.Sprintf("Waiting for %s to start...", msg.Agent)
 			m.statusBar.SetTransientLabel(banner)
 			// Also clear the agent's buffer so prior content doesn't linger
@@ -2568,7 +2565,7 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 		if buf != nil {
 			buf.AppendAssistantChunk(im.Text)
 		} else {
-			vp.AppendAssistantChunk(im.Text)
+			vp.ChatList().AppendAssistantChunk(im.Text)
 		}
 		return nil
 	case ThinkingMsg:
@@ -2579,7 +2576,7 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 		if buf != nil {
 			buf.AppendThinking()
 		} else {
-			vp.AppendThinking()
+			vp.ChatList().AppendThinking()
 		}
 		return nil
 	case ToolCallMsg:
@@ -2595,7 +2592,7 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 		if buf != nil {
 			buf.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
 		} else {
-			vp.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
+			vp.ChatList().AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
 		}
 		return nil
 	case ToolResultMsg:
@@ -2603,14 +2600,14 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 		if buf != nil {
 			_ = buf.MarkToolResult(im.ToolID, im.Content, im.IsError)
 		} else {
-			_ = vp.MarkToolResult(im.ToolID, im.Content, im.IsError)
+			_ = vp.ChatList().MarkToolResult(im.ToolID, im.Content, im.IsError)
 		}
 		return nil
 	case SessionResultMsg:
 		if buf != nil {
 			buf.FinalizeAssistantMessage()
 		} else {
-			vp.FinalizeAssistantMessage()
+			vp.ChatList().FinalizeAssistantMessage()
 		}
 		return nil
 	}

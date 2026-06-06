@@ -286,13 +286,9 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 // envelopes off the input and appends one SystemNotificationItem per
 // envelope.
 //
-// L3 alignment (QUM-674): when the input contains NO envelope at all, the
-// raw text is intentionally dropped from cl. The legacy vp side still
-// surfaces the text via its AppendSystemMessage fallback — that path creates
-// a MessageSystem entry (a ChatList "contract violator"), which trips
-// vp.HasContractViolators and routes chatRegionContent through vp.View() so
-// the user still sees the text. Surfacing it again in cl would diverge from
-// vp and double-render once S5 routes contract violators elsewhere.
+// L3 alignment (QUM-674 / QUM-693): when the input contains NO envelope at
+// all, the raw text is intentionally dropped from cl — untagged inbox
+// banners route to the statusbar transient label, not the chat region.
 // Trailing residue after the last envelope is similarly dropped.
 //
 // Mirrors viewport.AppendSystemNotification's peel-loop (QUM-557/562/574)
@@ -322,6 +318,14 @@ func (c *ChatList) AppendAutoTrigger(summary string) {
 	c.dropTrailingThinkingMarker()
 	c.items = append(c.items, &itemEnvelope{item: NewAutoTriggerItem(&c.ctx, summary)})
 }
+
+// HasPendingAssistant reports whether the trailing item is an in-flight
+// AssistantTextItem (set on first chunk, cleared on Finalize).
+func (c *ChatList) HasPendingAssistant() bool { return c.streamingAssistant }
+
+// HasPendingToolCall reports whether at least one ToolCallItem is still in
+// flight (Finished()==false). Mirrors the legacy ViewportModel helper.
+func (c *ChatList) HasPendingToolCall() bool { return c.pendingTools > 0 }
 
 // Idle reports whether the list has no in-flight items: no streaming
 // AssistantTextItem and no pending ToolCallItem. The S3 View() switch uses
@@ -379,8 +383,9 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 		case MessageAutoTrigger:
 			c.AppendAutoTrigger(e.Content)
 		default:
-			// MessageStatus / MessageError / MessageBanner / MessageSystem:
-			// skip per the ChatList contract — surfaced via vp fallback.
+			// Status / error / banner / system entries: skip per the ChatList
+			// contract — these surfaces route to the statusbar transient
+			// label / γ overlay / tree badge instead.
 		}
 	}
 	// L2 (QUM-674): Reset is a snapshot-replay entry point (preload /

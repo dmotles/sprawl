@@ -24,18 +24,16 @@ func TestAppModel_ToolResultMsg_RoutesToRootViewport(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	allMsgs := app.rootVP().GetMessages()
-	// Filter out banner entries to find tool call messages.
-	var rootMsgs []MessageEntry
-	for _, e := range allMsgs {
-		if e.Type != MessageBanner {
-			rootMsgs = append(rootMsgs, e)
-		}
+	// QUM-693: banners never enter ChatList; filter dropped.
+	items := app.rootVP().ChatList().Items()
+	if len(items) != 1 {
+		t.Fatalf("root viewport items = %+v, want one item", items)
 	}
-	if len(rootMsgs) != 1 || rootMsgs[0].Type != MessageToolCall {
-		t.Fatalf("root viewport entries = %+v, want one MessageToolCall", rootMsgs)
+	tool, ok := items[0].(*ToolCallItem)
+	if !ok {
+		t.Fatalf("items[0] = %T, want *ToolCallItem", items[0])
 	}
-	if !rootMsgs[0].Pending {
+	if !tool.Pending() {
 		t.Errorf("Pending = false, want true after ToolCallMsg")
 	}
 
@@ -47,21 +45,19 @@ func TestAppModel_ToolResultMsg_RoutesToRootViewport(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	allMsgs = app.rootVP().GetMessages()
-	rootMsgs = nil
-	for _, e := range allMsgs {
-		if e.Type != MessageBanner {
-			rootMsgs = append(rootMsgs, e)
-		}
+	items = app.rootVP().ChatList().Items()
+	tool, ok = items[0].(*ToolCallItem)
+	if !ok {
+		t.Fatalf("items[0] = %T, want *ToolCallItem", items[0])
 	}
-	if rootMsgs[0].Pending {
+	if tool.Pending() {
 		t.Errorf("Pending = true, want false after ToolResultMsg")
 	}
-	if rootMsgs[0].Failed {
+	if tool.Failed() {
 		t.Errorf("Failed = true, want false on success")
 	}
-	if rootMsgs[0].Result != "fileA\nfileB" {
-		t.Errorf("Result = %q, want %q", rootMsgs[0].Result, "fileA\nfileB")
+	if tool.Result() != "fileA\nfileB" {
+		t.Errorf("Result = %q, want %q", tool.Result(), "fileA\nfileB")
 	}
 
 	view := stripANSI(app.rootVP().View())
@@ -83,11 +79,9 @@ func TestAppModel_ToolResultMsg_NoMatchingEntry_NoOp(t *testing.T) {
 	updated, _ = app.Update(ToolResultMsg{ToolID: "nope", Content: "x"})
 	app = updated.(AppModel)
 
-	// Only the initial banner should be present — the orphan tool result
-	// should not have appended anything.
-	for _, e := range app.rootVP().GetMessages() {
-		if e.Type != MessageBanner {
-			t.Errorf("unexpected non-banner entry after orphan tool result: %+v", e)
-		}
+	// QUM-693: ChatList should be empty — the orphan tool result must not
+	// have appended anything (banners never enter ChatList either).
+	if got := app.rootVP().ChatList().Items(); len(got) != 0 {
+		t.Errorf("unexpected items after orphan tool result: %+v", got)
 	}
 }

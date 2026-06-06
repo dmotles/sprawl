@@ -137,8 +137,8 @@ func TestAppModel_InjectPromptMsg_SendsToBridgeWithoutAppendingUserMessage(t *te
 		t.Fatal("InjectPromptMsg must return a cmd that calls bridge.SendMessage")
 	}
 	// Viewport must NOT contain the template as a user message (would blow up viewport for 2KB templates).
-	for _, m := range app.viewportFor("weave").GetMessages() {
-		if m.Type == MessageUser && m.Content == template {
+	for _, it := range app.viewportFor("weave").ChatList().Items() {
+		if u, ok := it.(*UserItem); ok && u.Text() == template {
 			t.Error("InjectPromptMsg must not AppendUserMessage with the template content")
 		}
 	}

@@ -10,8 +10,11 @@ package tui
 //
 //  1. The statusbar's transient label (rendered into m.statusBar.View())
 //     OR the γ overlay (m.showError == true) carries the user-visible text.
-//  2. The viewport (m.rootVP().GetMessages()) does NOT carry the same text
-//     as a MessageStatus / MessageBanner / MessageError entry.
+//  2. The viewport (m.rootVP().ChatList().Items()) does NOT carry the same
+//     text as a contract-violator surface (status/banner/error/system). Post
+//     QUM-693 those entries can no longer enter the ChatList at all, so the
+//     negative half of (2) is structurally vacuous — most call sites were
+//     deleted; a few are retained as documentation via the helper stubs.
 //
 // Reference: docs/designs/tui-structural-rewrite-plan.md §3 S5 + the
 // display-policy comment on https://linear.app/qumulo-dmotles/issue/QUM-675.
@@ -26,18 +29,12 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// rootBannerOrStatusContains returns true iff some MessageStatus / MessageBanner
-// / MessageError entry in the root viewport's message slice contains substr.
-// Used to assert the *absence* of viewport bleed for rerouted surfaces.
-func rootBannerOrStatusContains(app AppModel, substr string) bool {
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, substr) {
-				return true
-			}
-		}
-	}
+// rootBannerOrStatusContains is retained as a structurally-vacuous helper
+// after QUM-693. MessageStatus / MessageBanner / MessageError entries can
+// never enter the ChatList (the only viewport-rendered surface), so the
+// search is guaranteed to be false. The function survives so existing call
+// sites continue to document the absence guarantee.
+func rootBannerOrStatusContains(_ AppModel, _ string) bool {
 	return false
 }
 
@@ -192,11 +189,7 @@ func TestSessionResultMsg_Error_EscalatesToErrorDialog(t *testing.T) {
 	if !app.showError {
 		t.Errorf("SessionResultMsg{IsError:true} should escalate to the γ overlay (showError=true); got showError=%v", app.showError)
 	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if e.Type == MessageError {
-			t.Errorf("root viewport must NOT carry a MessageError entry after S5 reroute; got: %+v", e)
-		}
-	}
+	// QUM-693: MessageError never enters ChatList — vacuous assertion deleted.
 }
 
 // --- 9. ConsolidationPhaseMsg ---------------------------------------------
@@ -320,14 +313,7 @@ func TestBackendFaultMsg_NoViewportCopy(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, "backend fault on alice") {
-				t.Errorf("root viewport must NOT carry a backend-fault banner — tree badge owns it now (S5 pure-deletion); got: %+v", e)
-			}
-		}
-	}
+	// QUM-693: status/banner/error never enter ChatList — vacuous assertion deleted.
 	if statusBarContains(app, "backend fault on alice") {
 		t.Errorf("status bar transient label must NOT carry the backend-fault text — tree badge owns it (S5 spec row 6: pure deletion)")
 	}
@@ -403,11 +389,7 @@ func TestSessionErrorMsg_NonEOF_Idle_EscalatesToErrorDialog(t *testing.T) {
 	if !app.showError {
 		t.Errorf("SessionErrorMsg (non-EOF, Idle) should escalate to the γ overlay (showError=true); got showError=%v", app.showError)
 	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if e.Type == MessageError {
-			t.Errorf("root viewport must NOT carry a MessageError entry after S5 reroute; got: %+v", e)
-		}
-	}
+	// QUM-693: MessageError never enters ChatList — vacuous assertion deleted.
 }
 
 // Streaming/Thinking branch already escalates pre-S5 — this guards it stays.
@@ -421,11 +403,7 @@ func TestSessionErrorMsg_NonEOF_Streaming_EscalatesToErrorDialog(t *testing.T) {
 	if !app.showError {
 		t.Errorf("SessionErrorMsg (non-EOF, Streaming) should escalate to the γ overlay (showError=true)")
 	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if e.Type == MessageError {
-			t.Errorf("root viewport must NOT carry a MessageError entry; got: %+v", e)
-		}
-	}
+	// QUM-693: MessageError never enters ChatList — vacuous assertion deleted.
 }
 
 // EOF SessionErrorMsg has a separate auto-restart path — guard that it does
@@ -479,11 +457,7 @@ func TestInboxArrivalMsg_BannerRoutesToTransientLabel(t *testing.T) {
 	if !statusBarContains(app, wantPrefix) {
 		t.Errorf("status bar should contain %q after InboxArrivalMsg; got:\n%s", wantPrefix, stripAnsi(app.statusBar.View()))
 	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if e.Type == MessageStatus && strings.HasPrefix(strings.TrimSpace(e.Content), wantPrefix) {
-			t.Errorf("root viewport must NOT carry an inbox banner as a MessageStatus entry; got: %+v", e)
-		}
-	}
+	// QUM-693: MessageStatus never enters ChatList — vacuous assertion deleted.
 }
 
 // --- 22. mcpOpThresholdMsg → transient label ------------------------------
@@ -522,11 +496,7 @@ func TestResyncResultMsg_Failure_EscalatesToErrorDialog(t *testing.T) {
 	if !app.showError {
 		t.Errorf("ViewportResyncMsg{Err:!=nil} should escalate to the γ overlay (showError=true); got showError=%v", app.showError)
 	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if e.Type == MessageError && strings.Contains(e.Content, "resync failed") {
-			t.Errorf("root viewport must NOT carry a 'resync failed' MessageError entry (S5 reroute to γ overlay); got: %+v", e)
-		}
-	}
+	// QUM-693: MessageError never enters ChatList — vacuous assertion deleted.
 }
 
 // Success path: the "✓ resynced — recovered N events" message is a different
@@ -560,12 +530,7 @@ func TestChildTranscriptMsg_LoadError_EscalatesToErrorDialog(t *testing.T) {
 	if !app.showError {
 		t.Errorf("ChildTranscriptMsg{Err:!=nil} should escalate to the γ overlay (showError=true); got showError=%v", app.showError)
 	}
-	// Failing child's viewport must not carry a MessageError entry.
-	for _, e := range app.viewportFor("alice").GetMessages() {
-		if e.Type == MessageError {
-			t.Errorf("alice viewport must NOT carry a MessageError entry after S5 reroute; got: %+v", e)
-		}
-	}
+	// QUM-693: MessageError never enters ChatList — vacuous assertion deleted.
 }
 
 // --- 26. (Removed) Clipboard-copy status from viewport yank-mode --------
@@ -643,15 +608,7 @@ func TestUserPromptSent_ClearsTransientLabel(t *testing.T) {
 	}
 }
 
-// countBanners returns the number of MessageBanner entries currently in the
-// root viewport. Used by RestartCompleteMsg tests to assert no NEW banner
-// was appended.
-func countBanners(app AppModel) int {
-	n := 0
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if e.Type == MessageBanner {
-			n++
-		}
-	}
-	return n
-}
+// countBanners is structurally vacuous after QUM-693: MessageBanner can
+// never enter the ChatList. Always returns 0. Retained so the RestartComplete
+// pre/post call sites still document the absence guarantee.
+func countBanners(_ AppModel) int { return 0 }

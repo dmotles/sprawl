@@ -20,13 +20,13 @@ const ReplayMaxMessages = 500
 // If the file does not exist, (nil, nil) is returned. If the file contains no
 // replayable records, (nil, nil) is returned.
 //
-// QUM-676: pre-S6 this function also prepended an "earlier messages
-// truncated" marker on cap-truncation and appended a "Resumed from prior
-// session" marker on success. Both were MessageStatus entries that the
-// legacy viewport rendered inline. Post-S6 MessageStatus entries are
-// silently dropped by ChatList (S5 contract violators); the resume/truncate
-// signals are now surface-only — the caller routes them to the status-bar
-// transient label after Preload. See cmd/enter.go's PreloadTranscript site.
+// QUM-676 / QUM-693: pre-S6 this function also prepended an "earlier
+// messages truncated" marker on cap-truncation and appended a "Resumed
+// from prior session" marker on success. Both were status entries that
+// the legacy viewport rendered inline. Those entries are silently dropped
+// by ChatList (S5 contract violators); the resume/truncate signals are
+// now surface-only — the caller routes them to the status-bar transient
+// label after Preload. See cmd/enter.go's PreloadTranscript site.
 func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
 	entries, err := scanTranscript(path, time.Time{})
 	if err != nil || len(entries) == 0 {

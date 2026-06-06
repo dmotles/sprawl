@@ -100,6 +100,10 @@ func NewUserItem(ctx *itemRenderCtx, text string) *UserItem {
 	return &UserItem{ctx: ctx, text: text}
 }
 
+// Text returns the user-typed text body. Used by tests to assert content
+// without re-parsing the rendered output.
+func (i *UserItem) Text() string { return i.text }
+
 // Render draws the chevron-prefixed user prompt block (QUM-664 styling).
 func (i *UserItem) Render(width int) string {
 	if width <= 0 {
@@ -320,6 +324,31 @@ func (i *ToolCallItem) RawMarkdown() string {
 	return fmt.Sprintf("<!-- tool: %s -->", i.name)
 }
 
+// Name returns the tool name.
+func (i *ToolCallItem) Name() string { return i.name }
+
+// Pending reports whether the tool call is still in flight.
+func (i *ToolCallItem) Pending() bool { return i.pending }
+
+// Failed reports whether the tool call result indicated an error.
+func (i *ToolCallItem) Failed() bool { return i.failed }
+
+// Result returns the result body recorded by MarkResult.
+func (i *ToolCallItem) Result() string { return i.result }
+
+// Input returns the (possibly truncated) input summary.
+func (i *ToolCallItem) Input() string { return i.input }
+
+// InputFull returns the full input payload retained for the expanded body.
+func (i *ToolCallItem) InputFull() string { return i.inputFull }
+
+// Depth returns the indentation depth (0 = top-level, 1 = nested inside an
+// Agent container, etc.).
+func (i *ToolCallItem) Depth() int { return i.depth }
+
+// ParentToolID returns the parent Agent tool_use_id when Depth > 0.
+func (i *ToolCallItem) ParentToolID() string { return i.parentToolID }
+
 // SetExpanded toggles the per-item expand flag (mirrors global Ctrl+O).
 func (i *ToolCallItem) SetExpanded(v bool) { i.expanded = v }
 
@@ -440,6 +469,15 @@ func NewSystemNotificationItem(ctx *itemRenderCtx, content, notifType string, in
 	}
 }
 
+// Content returns the peeled envelope body.
+func (i *SystemNotificationItem) Content() string { return i.content }
+
+// Interrupt reports whether the envelope was marked as an interrupt.
+func (i *SystemNotificationItem) Interrupt() bool { return i.interrupt }
+
+// NotificationType returns the envelope's type attribute (kind).
+func (i *SystemNotificationItem) NotificationType() string { return i.notificationType }
+
 // Render produces the accent-prefixed envelope row.
 func (i *SystemNotificationItem) Render(width int) string {
 	if width <= 0 {
@@ -476,6 +514,9 @@ type AutoTriggerItem struct {
 func NewAutoTriggerItem(ctx *itemRenderCtx, summary string) *AutoTriggerItem {
 	return &AutoTriggerItem{ctx: ctx, summary: summary}
 }
+
+// Summary returns the trigger summary text.
+func (i *AutoTriggerItem) Summary() string { return i.summary }
 
 // Render produces the single-line marker.
 func (i *AutoTriggerItem) Render(width int) string {

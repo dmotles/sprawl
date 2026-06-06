@@ -25,15 +25,8 @@ func TestAppModel_AgentsResumedMsg_TransientLabel_NoFailures(t *testing.T) {
 	if strings.Contains(bar, "failed") {
 		t.Errorf("status bar should not mention failures when Failed==0; got:\n%s", bar)
 	}
-	// And no viewport bleed.
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, "[startup] resumed") {
-				t.Errorf("root viewport must NOT carry the startup banner (S5 reroute); got: %+v", e)
-			}
-		}
-	}
+	// Status/Banner/Error never enter ChatList post QUM-693 — viewport-bleed
+	// negative assertion is structurally vacuous and was deleted.
 }
 
 func TestAppModel_AgentsResumedMsg_TransientLabel_WithFailures(t *testing.T) {
@@ -46,14 +39,6 @@ func TestAppModel_AgentsResumedMsg_TransientLabel_WithFailures(t *testing.T) {
 	if !strings.Contains(bar, "[startup] resumed 3 agents (1 failed)") {
 		t.Errorf("status bar should contain startup label with failure count; got:\n%s", bar)
 	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, "[startup] resumed") {
-				t.Errorf("root viewport must NOT carry the startup banner (S5 reroute); got: %+v", e)
-			}
-		}
-	}
 }
 
 func TestAppModel_AgentsResumedMsg_ZeroCounts_NoLabel(t *testing.T) {
@@ -65,13 +50,5 @@ func TestAppModel_AgentsResumedMsg_ZeroCounts_NoLabel(t *testing.T) {
 	bar := stripAnsi(app.statusBar.View())
 	if strings.Contains(bar, "[startup]") {
 		t.Errorf("status bar should NOT contain a startup label with zero counts; got:\n%s", bar)
-	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		switch e.Type {
-		case MessageStatus, MessageBanner, MessageError:
-			if strings.Contains(e.Content, "[startup]") {
-				t.Errorf("root viewport must NOT carry a startup banner with zero counts; got: %+v", e)
-			}
-		}
 	}
 }

@@ -61,16 +61,16 @@ func TestBridge_BleedDuringObservation_DoesNotPolluteChildViewport(t *testing.T)
 	app = updated.(AppModel)
 
 	finnVP := app.viewportFor("finn")
-	for _, e := range finnVP.GetMessages() {
-		if strings.Contains(e.Content, "weave-chunk") {
-			t.Fatalf("finn vp polluted with weave-chunk: %+v", finnVP.GetMessages())
-		}
-	}
-	gotFinn := finnVP.GetMessages()
+	gotFinn := finnVP.ChatList().Items()
 	foundFinnContent := false
-	for _, e := range gotFinn {
-		if strings.Contains(e.Content, "finn-content") {
-			foundFinnContent = true
+	for _, it := range gotFinn {
+		if a, ok := it.(*AssistantTextItem); ok {
+			if strings.Contains(a.Text(), "weave-chunk") {
+				t.Fatalf("finn vp polluted with weave-chunk: %+v", gotFinn)
+			}
+			if strings.Contains(a.Text(), "finn-content") {
+				foundFinnContent = true
+			}
 		}
 	}
 	if !foundFinnContent {
@@ -79,13 +79,13 @@ func TestBridge_BleedDuringObservation_DoesNotPolluteChildViewport(t *testing.T)
 
 	weaveVP := app.viewportFor("weave")
 	foundWeaveChunk := false
-	for _, e := range weaveVP.GetMessages() {
-		if e.Type == MessageAssistant && strings.Contains(e.Content, "weave-chunk") {
+	for _, it := range weaveVP.ChatList().Items() {
+		if a, ok := it.(*AssistantTextItem); ok && strings.Contains(a.Text(), "weave-chunk") {
 			foundWeaveChunk = true
 		}
 	}
 	if !foundWeaveChunk {
-		t.Errorf("expected weave-chunk in weave vp; got %+v", weaveVP.GetMessages())
+		t.Errorf("expected weave-chunk in weave vp; got %+v", weaveVP.ChatList().Items())
 	}
 }
 
@@ -114,32 +114,32 @@ func TestBridge_MidStreamCycle_PreservesAssistantChunks(t *testing.T) {
 	app = cycleTo(t, app, "weave")
 
 	weaveVP := app.viewportFor("weave")
-	msgs := weaveVP.GetMessages()
+	msgs := weaveVP.ChatList().Items()
 	assistantCount := 0
-	var assistant MessageEntry
-	for _, m := range msgs {
-		if m.Type == MessageAssistant {
+	var assistant *AssistantTextItem
+	for _, it := range msgs {
+		if a, ok := it.(*AssistantTextItem); ok {
 			assistantCount++
-			assistant = m
+			assistant = a
 		}
 	}
 	if assistantCount != 1 {
 		t.Fatalf("expected exactly 1 assistant entry on weave vp; got %d (%+v)", assistantCount, msgs)
 	}
-	if assistant.Content != "hello world!" {
-		t.Errorf("assistant.Content = %q, want %q", assistant.Content, "hello world!")
+	if assistant.Text() != "hello world!" {
+		t.Errorf("assistant text = %q, want %q", assistant.Text(), "hello world!")
 	}
-	if !assistant.Complete {
+	if !assistant.Finished() {
 		t.Errorf("assistant entry should be finalized after SessionResultMsg")
 	}
-	if weaveVP.HasPendingAssistant() {
+	if weaveVP.ChatList().HasPendingAssistant() {
 		t.Errorf("weave vp should have no pending assistant after finalize")
 	}
 
 	// finn's vp must never have received any of the streamed chunks.
 	finnVP := app.viewportFor("finn")
-	if finnVP.Len() != 0 {
-		t.Errorf("finn vp should be empty (no bleed); got %+v", finnVP.GetMessages())
+	if finnVP.ChatList().Len() != 0 {
+		t.Errorf("finn vp should be empty (no bleed); got %+v", finnVP.ChatList().Items())
 	}
 }
 
@@ -159,8 +159,8 @@ func TestInbox_ArrivalWhileObservingChild_TargetsWeaveViewport(t *testing.T) {
 	app = updated.(AppModel)
 
 	finnVP := app.viewportFor("finn")
-	if finnVP.Len() != 0 {
-		t.Fatalf("finn vp must remain empty when inbox banner targets weave; got %+v", finnVP.GetMessages())
+	if finnVP.ChatList().Len() != 0 {
+		t.Fatalf("finn vp must remain empty when inbox banner targets weave; got %+v", finnVP.ChatList().Items())
 	}
 
 	// QUM-675 S5: the inbox banner now lives on the statusbar transient
@@ -240,7 +240,7 @@ func TestSessionResultMsg_PendingCheck_UsesWeaveVP(t *testing.T) {
 	app := newBleedApp(t)
 	app = cycleTo(t, app, "finn")
 
-	app.viewportFor("weave").AppendAssistantChunk("partial")
+	app.viewportFor("weave").ChatList().AppendAssistantChunk("partial")
 
 	updated, _ := app.Update(SessionResultMsg{
 		Result:       "partial extra",
@@ -251,33 +251,33 @@ func TestSessionResultMsg_PendingCheck_UsesWeaveVP(t *testing.T) {
 	app = updated.(AppModel)
 
 	weaveVP := app.viewportFor("weave")
-	msgs := weaveVP.GetMessages()
+	msgs := weaveVP.ChatList().Items()
 	assistantCount := 0
-	var lastAssistant MessageEntry
-	for _, m := range msgs {
-		if m.Type == MessageAssistant {
+	var lastAssistant *AssistantTextItem
+	for _, it := range msgs {
+		if a, ok := it.(*AssistantTextItem); ok {
 			assistantCount++
-			lastAssistant = m
+			lastAssistant = a
 		}
 	}
 	if assistantCount != 1 {
 		t.Fatalf("expected 1 assistant entry on weave vp (no re-append); got %d (%+v)", assistantCount, msgs)
 	}
-	if lastAssistant.Content != "partial" {
-		t.Errorf("weave assistant.Content = %q, want %q (Result must NOT have been appended)", lastAssistant.Content, "partial")
+	if lastAssistant.Text() != "partial" {
+		t.Errorf("weave assistant text = %q, want %q (Result must NOT have been appended)", lastAssistant.Text(), "partial")
 	}
-	if !lastAssistant.Complete {
+	if !lastAssistant.Finished() {
 		t.Errorf("weave assistant entry should be finalized after SessionResultMsg")
 	}
-	if weaveVP.HasPendingAssistant() {
+	if weaveVP.ChatList().HasPendingAssistant() {
 		t.Errorf("weave vp must not report pending after finalize")
 	}
 
 	finnVP := app.viewportFor("finn")
-	if finnVP.Len() != 0 {
-		t.Errorf("finn vp should be untouched; got %+v", finnVP.GetMessages())
+	if finnVP.ChatList().Len() != 0 {
+		t.Errorf("finn vp should be untouched; got %+v", finnVP.ChatList().Items())
 	}
-	if finnVP.HasPendingAssistant() {
+	if finnVP.ChatList().HasPendingAssistant() {
 		t.Errorf("finn vp should not have pending assistant; SessionResultMsg must target rootVP")
 	}
 }
@@ -295,10 +295,10 @@ func TestPreloadTranscript_TargetsRootViewport(t *testing.T) {
 	app.PreloadTranscript(entries)
 
 	weaveVP := app.viewportFor("weave")
-	wMsgs := weaveVP.GetMessages()
+	wMsgs := weaveVP.ChatList().Items()
 	found := false
-	for _, e := range wMsgs {
-		if e.Content == "preloaded" {
+	for _, it := range wMsgs {
+		if a, ok := it.(*AssistantTextItem); ok && a.Text() == "preloaded" {
 			found = true
 		}
 	}
@@ -307,8 +307,8 @@ func TestPreloadTranscript_TargetsRootViewport(t *testing.T) {
 	}
 
 	finnVP := app.viewportFor("finn")
-	if finnVP.Len() != 0 {
-		t.Errorf("finn vp should be empty after PreloadTranscript; got %+v", finnVP.GetMessages())
+	if finnVP.ChatList().Len() != 0 {
+		t.Errorf("finn vp should be empty after PreloadTranscript; got %+v", finnVP.ChatList().Items())
 	}
 }
 
@@ -323,8 +323,8 @@ func TestSessionRestartingMsg_TargetsWeaveViewport(t *testing.T) {
 	app = updated.(AppModel)
 
 	finnVP := app.viewportFor("finn")
-	if finnVP.Len() != 0 {
-		t.Fatalf("finn vp must not receive restart banner; got %+v", finnVP.GetMessages())
+	if finnVP.ChatList().Len() != 0 {
+		t.Fatalf("finn vp must not receive restart banner; got %+v", finnVP.ChatList().Items())
 	}
 
 	// QUM-675 S5: the restart banner now lives on the statusbar transient

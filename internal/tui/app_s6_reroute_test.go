@@ -128,15 +128,8 @@ func TestChildTranscriptMsg_EmptyEntries_RoutesWaitingBannerToStatusBar(t *testi
 		t.Errorf("status bar should contain %q after empty ChildTranscriptMsg; got:\n%s", want, view)
 	}
 
-	// Negative assertion: the child's viewport must NOT carry a MessageStatus
-	// entry with the waiting banner — that's the legacy behavior S6 ends.
-	if vp := app.viewportFor(childName); vp != nil {
-		for _, e := range vp.GetMessages() {
-			if e.Type == MessageStatus && strings.Contains(e.Content, want) {
-				t.Errorf("child viewport must NOT carry MessageStatus %q after S6 reroute; got %+v", want, e)
-			}
-		}
-	}
+	// QUM-693: MessageStatus can never enter ChatList — the negative
+	// assertion is structurally vacuous and was deleted.
 }
 
 // TestChildTranscriptMsg_NonEmpty_ClearsWaitingBanner asserts the recovery

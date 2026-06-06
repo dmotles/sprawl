@@ -358,7 +358,7 @@ func TestChildStreamMsg_StaleEpoch_Dropped(t *testing.T) {
 	currentEpoch := app.ChildAdapterEpoch()
 
 	// Snapshot alice's buffer.
-	before := len(app.viewportFor("alice").GetMessages())
+	before := app.viewportFor("alice").ChatList().Len()
 
 	stale := ChildStreamMsg{
 		Agent: "alice",
@@ -368,12 +368,12 @@ func TestChildStreamMsg_StaleEpoch_Dropped(t *testing.T) {
 	updated, _ = app.Update(stale)
 	app = updated.(AppModel)
 
-	got := app.viewportFor("alice").GetMessages()
+	got := app.viewportFor("alice").ChatList().Items()
 	if len(got) != before {
 		t.Errorf("stale-epoch ChildStreamMsg mutated buffer (len %d -> %d): %+v", before, len(got), got)
 	}
-	for _, e := range got {
-		if e.Content == "leaked" {
+	for _, it := range got {
+		if itemContent(it) == "leaked" {
 			t.Errorf("stale-epoch ChildStreamMsg leaked content into alice buffer: %+v", got)
 		}
 	}
@@ -396,7 +396,7 @@ func TestChildStreamMsg_RoutesToCorrectAgent(t *testing.T) {
 	updated, _ = app.Update(ChildTranscriptMsg{Agent: "alice", SessionID: "sid", Entries: nil})
 	app = updated.(AppModel)
 
-	rootBefore := len(app.viewportFor("weave").GetMessages())
+	rootBefore := app.viewportFor("weave").ChatList().Len()
 
 	updated, _ = app.Update(ChildStreamMsg{
 		Agent: "alice",
@@ -407,22 +407,22 @@ func TestChildStreamMsg_RoutesToCorrectAgent(t *testing.T) {
 
 	// Alice buffer must contain the new text.
 	aliceFound := false
-	for _, e := range app.viewportFor("alice").GetMessages() {
-		if e.Content != "" && contains(e.Content, "hi from alice") {
+	for _, it := range app.viewportFor("alice").ChatList().Items() {
+		if contains(itemContent(it), "hi from alice") {
 			aliceFound = true
 			break
 		}
 	}
 	if !aliceFound {
-		t.Errorf("expected 'hi from alice' in alice buffer; got %+v", app.viewportFor("alice").GetMessages())
+		t.Errorf("expected 'hi from alice' in alice buffer; got %+v", app.viewportFor("alice").ChatList().Items())
 	}
 	// Root must not be polluted.
-	if got := len(app.viewportFor("weave").GetMessages()); got != rootBefore {
+	if got := app.viewportFor("weave").ChatList().Len(); got != rootBefore {
 		t.Errorf("root viewport len changed (%d -> %d) on child stream", rootBefore, got)
 	}
-	for _, e := range app.viewportFor("weave").GetMessages() {
-		if contains(e.Content, "hi from alice") {
-			t.Errorf("alice's stream leaked into root buffer: %+v", e)
+	for _, it := range app.viewportFor("weave").ChatList().Items() {
+		if contains(itemContent(it), "hi from alice") {
+			t.Errorf("alice's stream leaked into root buffer: %+v", it)
 		}
 	}
 }
@@ -456,8 +456,8 @@ func TestUnifiedStream_DedupesSeededToolCalls(t *testing.T) {
 	app = updated.(AppModel)
 
 	count := 0
-	for _, e := range app.viewportFor("alice").GetMessages() {
-		if e.ToolID == "tool-1" {
+	for _, it := range app.viewportFor("alice").ChatList().Items() {
+		if itemToolID(it) == "tool-1" {
 			count++
 		}
 	}
@@ -491,14 +491,14 @@ func TestUnifiedStream_LiveAssistantTextAppears(t *testing.T) {
 	app = updated.(AppModel)
 
 	found := false
-	for _, e := range app.viewportFor("alice").GetMessages() {
-		if contains(e.Content, "live response") {
+	for _, it := range app.viewportFor("alice").ChatList().Items() {
+		if contains(itemContent(it), "live response") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("live AssistantTextMsg did not appear in alice buffer; got %+v", app.viewportFor("alice").GetMessages())
+		t.Errorf("live AssistantTextMsg did not appear in alice buffer; got %+v", app.viewportFor("alice").ChatList().Items())
 	}
 }
 
@@ -602,16 +602,16 @@ func TestUnifiedStream_LiveEventBeforeBackfill_NotClobbered(t *testing.T) {
 	updated, _ = app.Update(ChildTranscriptMsg{Agent: "alice", SessionID: "sid", Entries: seed})
 	app = updated.(AppModel)
 
-	entries := app.viewportFor("alice").GetMessages()
+	entries := app.viewportFor("alice").ChatList().Items()
 
 	// Seed entries must be present.
 	foundSeedTool := false
 	foundSeedText := false
-	for _, e := range entries {
-		if e.ToolID == "t-seed-1" {
+	for _, it := range entries {
+		if itemToolID(it) == "t-seed-1" {
 			foundSeedTool = true
 		}
-		if e.Type == MessageAssistant && contains(e.Content, "seeded text") {
+		if a, ok := it.(*AssistantTextItem); ok && contains(a.Text(), "seeded text") {
 			foundSeedText = true
 		}
 	}
@@ -624,8 +624,8 @@ func TestUnifiedStream_LiveEventBeforeBackfill_NotClobbered(t *testing.T) {
 
 	// Live tool call must also be present (not clobbered by SetMessages).
 	foundLive := false
-	for _, e := range entries {
-		if e.ToolID == "t-live" {
+	for _, it := range entries {
+		if itemToolID(it) == "t-live" {
 			foundLive = true
 			break
 		}
@@ -677,7 +677,7 @@ func TestChildStream_FirstToolCall_LandsInBothStores(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	if !app.viewportFor("alice").HasPendingToolCall() {
+	if !app.viewportFor("alice").ChatList().HasPendingToolCall() {
 		t.Errorf("alice viewport HasPendingToolCall() = false, want true after live ToolCallMsg")
 	}
 	if buf := app.agentBuffers["alice"]; buf == nil || buf.cl.Idle() {
@@ -702,7 +702,7 @@ func TestChildStream_ToolResult_ClearsBothStores(t *testing.T) {
 	})
 	app = updated.(AppModel)
 
-	if app.viewportFor("alice").HasPendingToolCall() {
+	if app.viewportFor("alice").ChatList().HasPendingToolCall() {
 		t.Errorf("alice viewport HasPendingToolCall() = true after ToolResultMsg; want false")
 	}
 	if buf := app.agentBuffers["alice"]; buf == nil || !buf.cl.Idle() {

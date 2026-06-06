@@ -17,9 +17,8 @@ import (
 )
 
 // TestAppModel_ViewportResyncMsg_PopulatesChatList asserts that after S6
-// the rebuilt entries land in the ChatList (cl.Items()) — not just in the
-// legacy vp.messages slice. The legacy slice access goes away when
-// viewport.go is deleted; the test pins ChatList as the post-resync store.
+// the rebuilt entries land in the ChatList (cl.Items()). QUM-693 deleted the
+// legacy ViewportModel facade; this test pins ChatList as the post-resync store.
 func TestAppModel_ViewportResyncMsg_PopulatesChatList(t *testing.T) {
 	fake := newFakeSessionBackend()
 	fake.SetContinuous(true)

@@ -146,12 +146,17 @@ func TestChildTranscriptMsg_PopulatesViewport(t *testing.T) {
 	updated, _ := app.Update(ChildTranscriptMsg{Agent: "finn", SessionID: "sid", Entries: entries})
 	app = updated.(AppModel)
 
-	got := app.viewportFor("finn").GetMessages()
+	got := app.viewportFor("finn").ChatList().Items()
 	if len(got) != 2 {
 		t.Fatalf("len(viewport) = %d, want 2; got %+v", len(got), got)
 	}
-	if got[0].Content != "hi" || got[1].Content != "hello back" {
-		t.Errorf("viewport entries = %+v, want hi/hello back", got)
+	user, isUser := got[0].(*UserItem)
+	asst, isAsst := got[1].(*AssistantTextItem)
+	if !isUser || user.Text() != "hi" {
+		t.Errorf("got[0] = %+v, want UserItem 'hi'", got[0])
+	}
+	if !isAsst || asst.Text() != "hello back" {
+		t.Errorf("got[1] = %+v, want AssistantTextItem 'hello back'", got[1])
 	}
 }
 
@@ -186,7 +191,7 @@ func TestChildTranscriptMsg_EmptyEntries_Idempotent(t *testing.T) {
 func TestChildTranscriptMsg_StaleAgent_NoViewportMutation(t *testing.T) {
 	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
 	// observedAgent stays as default "weave".
-	before := app.viewportFor("weave").GetMessages()
+	before := app.viewportFor("weave").ChatList().Items()
 	updated, _ := app.Update(ChildTranscriptMsg{
 		Agent:   "finn",
 		Entries: []MessageEntry{{Type: MessageUser, Content: "leaked", Complete: true}},
@@ -194,9 +199,9 @@ func TestChildTranscriptMsg_StaleAgent_NoViewportMutation(t *testing.T) {
 	app = updated.(AppModel)
 	// QUM-334: writing to finn's per-agent vp is correct — the guarantee is
 	// that weave's vp is not polluted.
-	got := app.viewportFor("weave").GetMessages()
-	for _, e := range got {
-		if e.Content == "leaked" {
+	got := app.viewportFor("weave").ChatList().Items()
+	for _, it := range got {
+		if u, ok := it.(*UserItem); ok && u.Text() == "leaked" {
 			t.Errorf("stale ChildTranscriptMsg leaked into weave viewport; got %+v", got)
 		}
 	}
@@ -229,18 +234,21 @@ func TestAgentSelectedMsg_NonRoot_PopulatesAgentBuffer(t *testing.T) {
 	if buf.SessionID != sessionID {
 		t.Errorf("buf.SessionID = %q, want %q", buf.SessionID, sessionID)
 	}
-	bufMsgs := buf.vp.GetMessages()
-	if len(bufMsgs) != 1 || bufMsgs[0].Content != "q" {
-		t.Errorf("buf.vp messages = %+v, want one entry 'q'", bufMsgs)
+	bufMsgs := buf.vp.ChatList().Items()
+	if len(bufMsgs) != 1 {
+		t.Fatalf("buf.vp messages = %+v, want one entry 'q'", bufMsgs)
+	}
+	if u, ok := bufMsgs[0].(*UserItem); !ok || u.Text() != "q" {
+		t.Errorf("buf.vp messages[0] = %+v, want UserItem 'q'", bufMsgs[0])
 	}
 }
 
 func TestAgentSelectedMsg_BackToRoot_RestoresBufferNoTranscriptCmd(t *testing.T) {
 	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
 	// Seed a weave buffer.
-	app.viewportFor("weave").AppendUserMessage("weave-msg")
+	app.viewportFor("weave").ChatList().AppendUser("weave-msg")
 	app.observedAgent = "finn"
-	app.viewportFor("finn").SetMessages([]MessageEntry{{Type: MessageAssistant, Content: "finn-stuff", Complete: true}})
+	app.viewportFor("finn").ChatList().Reset([]MessageEntry{{Type: MessageAssistant, Content: "finn-stuff", Complete: true}})
 
 	_, cmd := app.Update(AgentSelectedMsg{Name: "weave"})
 	msgs := collectBatchMsgs(t, cmd)
