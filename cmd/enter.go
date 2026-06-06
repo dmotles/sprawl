@@ -89,6 +89,10 @@ type enterDeps struct {
 	// out — the coalescer is ON by default and is what makes TUI paste
 	// instant on tmux <3.4.
 	noCoalesce bool
+	// pprofAddr, when non-empty, causes runEnter to start a net/http/pprof
+	// listener on the given address in a background goroutine. Set via
+	// the `--pprof` flag (wins) or the SPRAWL_PPROF_ADDR env var. QUM-678.
+	pprofAddr string
 }
 
 // restartState holds the rolling state tracked across restarts: when the last
@@ -188,6 +192,10 @@ func init() {
 	// os.Stdin to synthesize bracketed-paste markers around detected
 	// bursts. Emergency opt-out; the coalescer is ON by default.
 	enterCmd.Flags().Bool("no-coalesce", false, "disable the stdin paste coalescer (QUM-608); use if it misbehaves in your terminal")
+	// QUM-678: --pprof <addr> exposes net/http/pprof on the given address.
+	// Also accepts SPRAWL_PPROF_ADDR; flag wins. Suggest a loopback bind so
+	// users don't accidentally expose pprof to other hosts.
+	enterCmd.Flags().String("pprof", "", "expose net/http/pprof on this address (e.g., 127.0.0.1:6060); also reads SPRAWL_PPROF_ADDR (QUM-678)")
 }
 
 var enterCmd = &cobra.Command{
@@ -205,6 +213,9 @@ var enterCmd = &cobra.Command{
 		if v, err := cmd.Flags().GetBool("no-coalesce"); err == nil {
 			deps.noCoalesce = v
 		}
+		// QUM-678: resolve pprof bind addr from --pprof (wins) or env var.
+		pprofFlag, _ := cmd.Flags().GetString("pprof")
+		deps.pprofAddr = resolvePprofAddr(pprofFlag, os.Getenv("SPRAWL_PPROF_ADDR"))
 		return runEnter(deps)
 	},
 }
@@ -540,6 +551,11 @@ func runEnter(deps *enterDeps) error {
 		sprawlRoot = cwd
 		fmt.Fprintf(os.Stderr, "SPRAWL_ROOT not set — defaulting to %s\n", sprawlRoot)
 	}
+
+	// QUM-678: start the opt-in pprof listener as early as possible so it's
+	// up before heavy init in case the operator wants to profile startup.
+	// No-op when neither --pprof nor SPRAWL_PPROF_ADDR is set.
+	startPprof(deps.pprofAddr, os.Stderr)
 
 	// Single-weave invariant: acquire the flock before any init work, and
 	// hold it for the lifetime of the sprawl enter process (including
