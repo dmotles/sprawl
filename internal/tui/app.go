@@ -1954,10 +1954,32 @@ func (m AppModel) mouseMode() tea.MouseMode {
 	return tea.MouseModeCellMotion
 }
 
+// setTurnState mutates the turn state and propagates the change to the status
+// bar and agent tree. Side-effects to be aware of:
+//
+//   - On the Idle→Thinking edge it clears the status bar's transient label
+//     (QUM-675 S5 "next turn started" rule). This means any reducer that both
+//     transitions the turn state to TurnThinking AND wants to install a
+//     transient label for the new turn MUST call setTurnState(TurnThinking)
+//     BEFORE m.statusBar.SetTransientLabel(...). The reverse order silently
+//     wipes the just-set label. See InjectPromptMsg (the "/handoff dispatched"
+//     path) and InboxDrainMsg (the "inbox: draining N…" path) for the
+//     load-bearing call-site ordering. QUM-690 tracks this hazard; QUM-649
+//     (toast subsystem) is the natural future resolution that will obviate it.
+//   - Rebuilds the agent tree so the weave-root turn badge reflects the new
+//     state.
 func (m *AppModel) setTurnState(state TurnState) {
 	// QUM-675 S5: clear the transient label on Idle→Thinking — the canonical
 	// "next turn started" edge — so stale "Interrupt sent" / startup banners
 	// don't survive into the new turn.
+	//
+	// SEQUENCING HAZARD (QUM-690): callers that want to set a transient label
+	// for the new turn MUST call setTurnState(TurnThinking) BEFORE
+	// m.statusBar.SetTransientLabel(...), or the label gets wiped here.
+	// Existing load-bearing examples: InjectPromptMsg ("/handoff dispatched —
+	// see output below") and InboxDrainMsg ("inbox: draining N async
+	// message(s) into next prompt"). QUM-649 (toast subsystem) is the natural
+	// future resolution that will obviate this hazard.
 	if m.turnState == TurnIdle && state == TurnThinking {
 		m.statusBar.SetTransientLabel("")
 	}
