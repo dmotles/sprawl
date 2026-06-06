@@ -3,6 +3,7 @@ package agentloop
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,295 @@ import (
 
 	"github.com/dmotles/sprawl/internal/protocol"
 )
+
+// countingReadSeeker wraps an io.ReadSeeker and tracks total bytes read.
+// This seam is intentional: tests use readActivityTailFrom (the lower-level
+// entry point that accepts an io.ReadSeeker) to assert byte-level read
+// bounds without depending on the OS filesystem. Production callers use
+// ReadActivityTail(path, n) which opens the file and delegates here.
+type countingReadSeeker struct {
+	rs   io.ReadSeeker
+	read int64
+}
+
+func (c *countingReadSeeker) Read(p []byte) (int, error) {
+	n, err := c.rs.Read(p)
+	c.read += int64(n)
+	return n, err
+}
+
+func (c *countingReadSeeker) Seek(o int64, w int) (int64, error) { return c.rs.Seek(o, w) }
+
+// marshalEntryLine encodes an ActivityEntry as one NDJSON line (with '\n').
+func marshalEntryLine(t *testing.T, e ActivityEntry) []byte {
+	t.Helper()
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return append(b, '\n')
+}
+
+func TestReadActivityTail_MissingFile(t *testing.T) {
+	got, err := ReadActivityTail(filepath.Join(t.TempDir(), "missing.ndjson"), 10)
+	if err != nil {
+		t.Fatalf("missing file should not error, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestReadActivityTail_EmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 10)
+	if err != nil {
+		t.Fatalf("empty file should not error, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestReadActivityTail_SingleEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	now := fixedNow()
+	e := ActivityEntry{TS: now(), Kind: "system", Summary: "only"}
+	if err := os.WriteFile(path, marshalEntryLine(t, e), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 3)
+	if err != nil {
+		t.Fatalf("ReadActivityTail: %v", err)
+	}
+	if len(got) != 1 || got[0].Summary != "only" {
+		t.Errorf("got %+v, want 1 entry with Summary=only", got)
+	}
+}
+
+func TestReadActivityTail_MultiEntry_OldestFirst(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	var buf bytes.Buffer
+	base := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		e := ActivityEntry{TS: base.Add(time.Duration(i) * time.Second), Kind: "system", Summary: "s" + string(rune('0'+i))}
+		buf.Write(marshalEntryLine(t, e))
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 3)
+	if err != nil {
+		t.Fatalf("ReadActivityTail: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3", len(got))
+	}
+	wantSummaries := []string{"s2", "s3", "s4"}
+	for i, e := range got {
+		if e.Summary != wantSummaries[i] {
+			t.Errorf("got[%d].Summary = %q, want %q", i, e.Summary, wantSummaries[i])
+		}
+	}
+}
+
+func TestReadActivityTail_PartialTrailingLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	now := fixedNow()
+	var buf bytes.Buffer
+	buf.Write(marshalEntryLine(t, ActivityEntry{TS: now(), Kind: "system", Summary: "first"}))
+	buf.Write(marshalEntryLine(t, ActivityEntry{TS: now().Add(time.Second), Kind: "system", Summary: "second"}))
+	// Malformed partial trailing line with NO trailing newline.
+	buf.WriteString(`{"kind":"broken","summa`)
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 5)
+	if err != nil {
+		t.Fatalf("ReadActivityTail: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2 (malformed trailing skipped)", len(got))
+	}
+	if got[0].Summary != "first" || got[1].Summary != "second" {
+		t.Errorf("got %+v, want [first second]", got)
+	}
+}
+
+func TestReadActivityTail_TrailingNewline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	var buf bytes.Buffer
+	now := fixedNow()
+	buf.Write(marshalEntryLine(t, ActivityEntry{TS: now(), Kind: "system", Summary: "a"}))
+	buf.Write(marshalEntryLine(t, ActivityEntry{TS: now().Add(time.Second), Kind: "system", Summary: "b"}))
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 5)
+	if err != nil {
+		t.Fatalf("ReadActivityTail: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	wantSummaries := []string{"a", "b"}
+	for i, e := range got {
+		if e.Summary != wantSummaries[i] {
+			t.Errorf("entry[%d].Summary = %q, want %q", i, e.Summary, wantSummaries[i])
+		}
+	}
+}
+
+func TestReadActivityTail_NLargerThanFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	var buf bytes.Buffer
+	base := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	wantSummaries := []string{"a", "b", "c"}
+	for i, s := range wantSummaries {
+		buf.Write(marshalEntryLine(t, ActivityEntry{TS: base.Add(time.Duration(i) * time.Second), Kind: "system", Summary: s}))
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 10)
+	if err != nil {
+		t.Fatalf("ReadActivityTail: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("got %d entries, want 3", len(got))
+	}
+	for i, e := range got {
+		if e.Summary != wantSummaries[i] {
+			t.Errorf("got[%d].Summary = %q, want %q (oldest-first)", i, e.Summary, wantSummaries[i])
+		}
+	}
+}
+
+func TestReadActivityTail_NoTrailingNewline_ValidLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	now := fixedNow()
+	var buf bytes.Buffer
+	buf.Write(marshalEntryLine(t, ActivityEntry{TS: now(), Kind: "system", Summary: "a"}))
+	// Last line: valid JSON, NO trailing newline.
+	b, _ := json.Marshal(ActivityEntry{TS: now().Add(time.Second), Kind: "system", Summary: "b"})
+	buf.Write(b)
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 5)
+	if err != nil {
+		t.Fatalf("ReadActivityTail: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	if got[1].Summary != "b" {
+		t.Errorf("last entry Summary = %q, want b", got[1].Summary)
+	}
+}
+
+func TestReadActivityTail_MalformedLinesSkipped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	content := "not json\n" +
+		`{"kind":"ok","summary":"valid"}` + "\n" +
+		"{broken\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadActivityTail(path, 10)
+	if err != nil {
+		t.Fatalf("ReadActivityTail: %v", err)
+	}
+	if len(got) != 1 || got[0].Kind != "ok" {
+		t.Errorf("got %+v, want 1 valid entry", got)
+	}
+}
+
+func TestReadActivityTail_NZeroOrNegative(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "activity.ndjson")
+	now := fixedNow()
+	if err := os.WriteFile(path, marshalEntryLine(t, ActivityEntry{TS: now(), Kind: "system", Summary: "x"}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{0, -1, -100} {
+		got, err := ReadActivityTail(path, n)
+		if err != nil {
+			t.Errorf("n=%d: unexpected err %v", n, err)
+		}
+		if got != nil {
+			t.Errorf("n=%d: got %+v, want nil", n, got)
+		}
+	}
+}
+
+func TestReadActivityTail_ChunkBoundary(t *testing.T) {
+	var buf bytes.Buffer
+	base := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 8; i++ {
+		e := ActivityEntry{TS: base.Add(time.Duration(i) * time.Second), Kind: "system", Summary: "entry-" + string(rune('0'+i))}
+		buf.Write(marshalEntryLine(t, e))
+	}
+	if buf.Len() <= 16 {
+		t.Fatalf("test setup: buffer too small (%d bytes)", buf.Len())
+	}
+	rs := bytes.NewReader(buf.Bytes())
+	got, err := readActivityTailFrom(rs, 4, 16)
+	if err != nil {
+		t.Fatalf("readActivityTailFrom: %v", err)
+	}
+	if len(got) != 4 {
+		t.Fatalf("got %d entries, want 4", len(got))
+	}
+	wantSummaries := []string{"entry-4", "entry-5", "entry-6", "entry-7"}
+	for i, e := range got {
+		if e.Summary != wantSummaries[i] {
+			t.Errorf("got[%d].Summary = %q, want %q", i, e.Summary, wantSummaries[i])
+		}
+	}
+}
+
+func TestReadActivityTail_BoundedReadFor1MBFile(t *testing.T) {
+	var buf bytes.Buffer
+	base := time.Date(2026, 6, 3, 12, 0, 0, 0, time.UTC)
+	var lastSummary string
+	for i := 0; buf.Len() < 1_048_576; i++ {
+		lastSummary = "summary-line-" + strings.Repeat("x", 50) + "-" + string(rune('a'+(i%26))) + "-" + string(rune('0'+(i%10)))
+		e := ActivityEntry{TS: base.Add(time.Duration(i) * time.Second), Kind: "system", Summary: lastSummary}
+		buf.Write(marshalEntryLine(t, e))
+	}
+	if buf.Len() < 1_048_576 {
+		t.Fatalf("test setup: buf size %d < 1MB", buf.Len())
+	}
+	counter := &countingReadSeeker{rs: bytes.NewReader(buf.Bytes())}
+	got, err := readActivityTailFrom(counter, 1, 4096)
+	if err != nil {
+		t.Fatalf("readActivityTailFrom: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	if got[0].Summary != lastSummary {
+		t.Errorf("got Summary=%q, want %q", got[0].Summary, lastSummary)
+	}
+	if counter.read <= 0 {
+		t.Errorf("read %d bytes, want > 0 (must actually read tail data)", counter.read)
+	}
+	if counter.read >= 8192 {
+		t.Errorf("read %d bytes, want < 8192 (bounded tail read)", counter.read)
+	}
+}
 
 // fixedNow returns a closure producing a fixed timestamp for reproducibility.
 func fixedNow() func() time.Time {

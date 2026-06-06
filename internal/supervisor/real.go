@@ -435,9 +435,11 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 	for _, a := range agents {
 		lastActivity := lastActivityAtByName[a.Name]
 		if lastActivity.IsZero() {
-			entries, err := agentloop.ReadActivityFile(agentloop.ActivityPath(r.sprawlRoot, a.Name), 1)
-			if err == nil && len(entries) > 0 {
-				lastActivity = entries[len(entries)-1].TS
+			if _, registered := r.runtimeRegistry.Get(a.Name); !registered {
+				entries, err := agentloop.ReadActivityTail(agentloop.ActivityPath(r.sprawlRoot, a.Name), 1)
+				if err == nil && len(entries) > 0 {
+					lastActivity = entries[len(entries)-1].TS
+				}
 			}
 		}
 		result = append(result, AgentInfo{

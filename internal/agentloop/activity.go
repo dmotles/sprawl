@@ -2,6 +2,7 @@ package agentloop
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -259,6 +260,97 @@ func ReadActivityFile(path string, tail int) ([]ActivityEntry, error) {
 		return all, nil
 	}
 	return all[len(all)-tail:], nil
+}
+
+// activityTailChunkSize is the default chunk size for backward seek reads.
+const activityTailChunkSize = 4096
+
+// ReadActivityTail returns the last n entries from an NDJSON activity file
+// without reading the entire file into memory. It seeks from EOF backwards in
+// chunks until n valid entries are recovered (or BOF is reached). A missing
+// file yields (nil, nil); malformed lines are skipped silently (matches
+// ReadActivityFile). Returned entries are oldest-first.
+func ReadActivityTail(path string, n int) ([]ActivityEntry, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("open activity file: %w", err)
+	}
+	defer f.Close()
+	return readActivityTailFrom(f, n, activityTailChunkSize)
+}
+
+// readActivityTailFrom is the seam used by tests: it reads from an
+// io.ReadSeeker rather than the filesystem so byte-bound assertions can be
+// made without temp files.
+func readActivityTailFrom(rs io.ReadSeeker, n, chunk int) ([]ActivityEntry, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+	if chunk <= 0 {
+		chunk = activityTailChunkSize
+	}
+	size, err := rs.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, fmt.Errorf("seek end: %w", err)
+	}
+	if size == 0 {
+		return nil, nil
+	}
+	pos := size
+	var buf []byte
+	var result []ActivityEntry
+	for pos > 0 {
+		readLen := int64(chunk)
+		if readLen > pos {
+			readLen = pos
+		}
+		pos -= readLen
+		if _, err := rs.Seek(pos, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("seek: %w", err)
+		}
+		tmp := make([]byte, readLen)
+		if _, err := io.ReadFull(rs, tmp); err != nil {
+			return nil, fmt.Errorf("read: %w", err)
+		}
+		buf = append(tmp, buf...)
+
+		// Split by '\n'. If pos > 0, the first element is potentially partial
+		// — hold it back for the next iteration. If pos == 0, the first element
+		// is a complete line.
+		lines := bytes.Split(buf, []byte{'\n'})
+		var complete [][]byte
+		if pos > 0 {
+			// Hold first segment for next iteration.
+			buf = lines[0]
+			complete = lines[1:]
+		} else {
+			buf = nil
+			complete = lines
+		}
+		// Parse from right to left, skipping empty / malformed.
+		for i := len(complete) - 1; i >= 0; i-- {
+			line := complete[i]
+			if len(line) == 0 {
+				continue
+			}
+			var e ActivityEntry
+			if err := json.Unmarshal(line, &e); err != nil {
+				continue
+			}
+			// Prepend.
+			result = append([]ActivityEntry{e}, result...)
+			if len(result) >= n {
+				return result, nil
+			}
+		}
+	}
+	return result, nil
 }
 
 // --- Redaction ---
