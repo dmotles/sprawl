@@ -643,6 +643,9 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 		r.runtimeRegistry.Remove(agentName)
 		return nil
 	}
+	if err := agentops.TerminalAgentError(r.sprawlRoot, agentName); err != nil {
+		return err
+	}
 	if err := r.retireFn(ctx, retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)
@@ -1326,6 +1329,11 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt bool)
 	if _, err := state.LoadAgent(r.sprawlRoot, to); err != nil {
 		return nil, fmt.Errorf("agent %q not found: %w", to, err)
 	}
+	if _, ok := r.startedRuntime(to); !ok {
+		if err := agentops.TerminalAgentError(r.sprawlRoot, to); err != nil {
+			return nil, err
+		}
+	}
 
 	caller := r.effectiveCaller(ctx)
 	if interrupt {
@@ -1415,6 +1423,11 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 	st, err := state.LoadAgent(r.sprawlRoot, agentName)
 	if err != nil {
 		return nil, fmt.Errorf("agent %q not found: %w", agentName, err)
+	}
+	if _, ok := r.startedRuntime(agentName); !ok {
+		if err := agentops.TerminalAgentError(r.sprawlRoot, agentName); err != nil {
+			return nil, err
+		}
 	}
 	if tail <= 0 {
 		tail = 20

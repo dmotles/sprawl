@@ -186,3 +186,50 @@ func TestReal_SendMessage_InterruptTrue_RequiresAncestor(t *testing.T) {
 		t.Errorf("error message %q should mention 'ancestor' or '§8.5' (parent→descendants gate)", msg)
 	}
 }
+
+// TestReal_SendMessage_TerminalStatus_ReturnsClearerError pins QUM-680: when
+// the recipient is persisted with a terminal lifecycle status (faulted /
+// stopped / retired / killed) AND no live runtime is registered for it,
+// SendMessage must surface a clear "no longer running" error referencing the
+// last reported state and timestamp — rather than silently enqueueing into a
+// dead agent's pending queue.
+func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	// Seed a faulted recipient. Deliberately do NOT register a runtime — the
+	// terminal-status gate only fires when there is no live runtime to fall
+	// back on.
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:            "alice",
+		Type:            "engineer",
+		Family:          "engineering",
+		Parent:          "weave",
+		Status:          state.StatusFaulted,
+		LastReportState: "failure",
+		LastReportAt:    "2026-06-06T12:00:00Z",
+	})
+
+	res, err := r.SendMessage(context.Background(), "alice", "hello body", false)
+	if err == nil {
+		t.Fatalf("SendMessage to faulted agent returned nil error; want descriptive terminal-status error (res=%+v)", res)
+	}
+	if res != nil {
+		t.Errorf("SendMessage result = %+v, want nil when send fails", res)
+	}
+	for _, want := range []string{"no longer running", "failure", `"alice"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing substring %q", err.Error(), want)
+		}
+	}
+
+	// Nothing should have been enqueued into the (dead) recipient's pending
+	// queue.
+	entries, listErr := agentloop.ListPending(tmpDir, "alice")
+	if listErr != nil {
+		// ListPending may return nil/empty for an absent queue dir — only
+		// fail on truly unexpected errors.
+		t.Fatalf("ListPending: %v", listErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("pending entries = %d, want 0 (must not enqueue into terminal agent)", len(entries))
+	}
+}

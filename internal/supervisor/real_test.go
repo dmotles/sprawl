@@ -1252,3 +1252,75 @@ func TestSpawnDepsForCaller_ResolveBaseReturnsEmptyWhenCallerHasNoWorktree(t *te
 		t.Errorf("gitRevParseHEAD was called %d times when caller has no worktree, want 0", callCount)
 	}
 }
+
+// TestReal_Peek_TerminalStatus_ReturnsClearerError pins QUM-680: when an
+// agent's persisted state shows a terminal lifecycle status (faulted /
+// stopped / retired / killed) AND no live runtime is registered, Peek must
+// return a descriptive "no longer running" error referencing the last
+// reported state and timestamp rather than blandly succeeding (or returning
+// the bare state object as if the agent were still operational).
+func TestReal_Peek_TerminalStatus_ReturnsClearerError(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:            "alice",
+		Type:            "engineer",
+		Family:          "engineering",
+		Parent:          "weave",
+		Status:          state.StatusFaulted,
+		LastReportState: "failure",
+		LastReportAt:    "2026-06-06T12:00:00Z",
+	})
+
+	got, err := r.Peek(context.Background(), "alice", 10)
+	if err == nil {
+		t.Fatalf("Peek on faulted agent returned nil error; want descriptive terminal-status error (got=%+v)", got)
+	}
+	for _, want := range []string{"no longer running", "failure", `"alice"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing substring %q", err.Error(), want)
+		}
+	}
+}
+
+// TestReal_Retire_TerminalStatus_ReturnsClearerError pins QUM-680 for the
+// Retire path: when an agent has a terminal status persisted AND no runtime
+// is registered, Retire must short-circuit with a descriptive error and must
+// NOT invoke retireFn (there is nothing to clean up; the agent already
+// reported terminal state).
+func TestReal_Retire_TerminalStatus_ReturnsClearerError(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name:            "alice",
+		Type:            "engineer",
+		Family:          "engineering",
+		Parent:          "weave",
+		Status:          state.StatusFaulted,
+		LastReportState: "failure",
+		LastReportAt:    "2026-06-06T12:00:00Z",
+	})
+
+	var retireCalls int
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
+		retireCalls++
+		return nil
+	}
+
+	err := r.Retire(context.Background(), "", "alice",
+		false, /* mergeFirst */
+		false, /* abandon */
+		false, /* cascade */
+		false, /* noValidate */
+	)
+	if err == nil {
+		t.Fatal("Retire on faulted agent returned nil error; want descriptive terminal-status error")
+	}
+	for _, want := range []string{"no longer running", "failure", `"alice"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing substring %q", err.Error(), want)
+		}
+	}
+	if retireCalls != 0 {
+		t.Errorf("retireFn was invoked %d times for a terminal-status agent; want 0 (Retire must short-circuit before delegating)", retireCalls)
+	}
+}
