@@ -1,0 +1,48 @@
+role        plain-fg  bold  inverse  bg-fill
+Primary     [38;5;39minterrupt sent to weave[m  [1;38;5;39minterrupt sent to weave[m  [38;5;233;48;5;39minterrupt sent to weave[m  [38;5;252;48;5;39minterrupt sent to weave[m
+Accent      [38;5;39minterrupt sent to weave[m  [1;38;5;39minterrupt sent to weave[m  [38;5;233;48;5;39minterrupt sent to weave[m  [38;5;252;48;5;39minterrupt sent to weave[m
+Info        [38;5;51minterrupt sent to weave[m  [1;38;5;51minterrupt sent to weave[m  [38;5;233;48;5;51minterrupt sent to weave[m  [38;5;252;48;5;51minterrupt sent to weave[m
+Success     [38;5;42minterrupt sent to weave[m  [1;38;5;42minterrupt sent to weave[m  [38;5;233;48;5;42minterrupt sent to weave[m  [38;5;252;48;5;42minterrupt sent to weave[m
+Warning     [38;5;214minterrupt sent to weave[m  [1;38;5;214minterrupt sent to weave[m  [38;5;233;48;5;214minterrupt sent to weave[m  [38;5;252;48;5;214minterrupt sent to weave[m
+Error       [38;5;196minterrupt sent to weave[m  [1;38;5;196minterrupt sent to weave[m  [38;5;233;48;5;196minterrupt sent to weave[m  [38;5;252;48;5;196minterrupt sent to weave[m
+Busy        [38;5;220minterrupt sent to weave[m  [1;38;5;220minterrupt sent to weave[m  [38;5;233;48;5;220minterrupt sent to weave[m  [38;5;252;48;5;220minterrupt sent to weave[m
+System      [38;5;141minterrupt sent to weave[m  [1;38;5;141minterrupt sent to weave[m  [38;5;233;48;5;141minterrupt sent to weave[m  [38;5;252;48;5;141minterrupt sent to weave[m
+FgSubtle    [38;5;245minterrupt sent to weave[m  [1;38;5;245minterrupt sent to weave[m  [38;5;233;48;5;245minterrupt sent to weave[m  [38;5;252;48;5;245minterrupt sent to weave[m
+
+bordered:
+Primary
+[38;5;39m╭───────────────────────╮[m
+[38;5;39m│[m[38;5;39minterrupt sent to weave[m[38;5;39m│[m
+[38;5;39m╰───────────────────────╯[m
+Accent
+[38;5;39m╭───────────────────────╮[m
+[38;5;39m│[m[38;5;39minterrupt sent to weave[m[38;5;39m│[m
+[38;5;39m╰───────────────────────╯[m
+Info
+[38;5;51m╭───────────────────────╮[m
+[38;5;51m│[m[38;5;51minterrupt sent to weave[m[38;5;51m│[m
+[38;5;51m╰───────────────────────╯[m
+Success
+[38;5;42m╭───────────────────────╮[m
+[38;5;42m│[m[38;5;42minterrupt sent to weave[m[38;5;42m│[m
+[38;5;42m╰───────────────────────╯[m
+Warning
+[38;5;214m╭───────────────────────╮[m
+[38;5;214m│[m[38;5;214minterrupt sent to weave[m[38;5;214m│[m
+[38;5;214m╰───────────────────────╯[m
+Error
+[38;5;196m╭───────────────────────╮[m
+[38;5;196m│[m[38;5;196minterrupt sent to weave[m[38;5;196m│[m
+[38;5;196m╰───────────────────────╯[m
+Busy
+[38;5;220m╭───────────────────────╮[m
+[38;5;220m│[m[38;5;220minterrupt sent to weave[m[38;5;220m│[m
+[38;5;220m╰───────────────────────╯[m
+System
+[38;5;141m╭───────────────────────╮[m
+[38;5;141m│[m[38;5;141minterrupt sent to weave[m[38;5;141m│[m
+[38;5;141m╰───────────────────────╯[m
+FgSubtle
+[38;5;245m╭───────────────────────╮[m
+[38;5;245m│[m[38;5;245minterrupt sent to weave[m[38;5;245m│[m
+[38;5;245m╰───────────────────────╯[m

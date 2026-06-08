@@ -1,0 +1,80 @@
+coder@conway:~/sprawl/.sprawl/worktrees/tower$ /tmp/sprawl-qum698 debug colors
+role        plain-fg  bold  inverse  bg-fill
+Primary     [38;5;39minterrupt sent to weave[39m  [1m[38;5;39minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;39minterrupt sent to weave[39m[49m  [38;5;252m[48;5;39minterrupt sent to weave[39m[49m
+Accent      [38;5;39minterrupt sent to weave[39m  [1m[38;5;39minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;39minterrupt sent to weave[39m[49m  [38;5;252m[48;5;39minterrupt sent to weave[39m[49m
+Info        [38;5;51minterrupt sent to weave[39m  [1m[38;5;51minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;51minterrupt sent to weave[39m[49m  [38;5;252m[48;5;51minterrupt sent to weave[39m[49m
+Success     [38;5;42minterrupt sent to weave[39m  [1m[38;5;42minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;42minterrupt sent to weave[39m[49m  [38;5;252m[48;5;42minterrupt sent to weave[39m[49m
+Warning     [38;5;214minterrupt sent to weave[39m  [1m[38;5;214minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;214minterrupt sent to weave[39m[49m  [38;5;252m[48;5;214minterrupt sent to weave[39m[49m
+Error       [38;5;196minterrupt sent to weave[39m  [1m[38;5;196minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;196minterrupt sent to weave[39m[49m  [38;5;252m[48;5;196minterrupt sent to weave[39m[49m
+Busy        [38;5;220minterrupt sent to weave[39m  [1m[38;5;220minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;220minterrupt sent to weave[39m[49m  [38;5;252m[48;5;220minterrupt sent to weave[39m[49m
+System      [38;5;141minterrupt sent to weave[39m  [1m[38;5;141minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;141minterrupt sent to weave[39m[49m  [38;5;252m[48;5;141minterrupt sent to weave[39m[49m
+FgSubtle    [38;5;245minterrupt sent to weave[39m  [1m[38;5;245minterrupt sent to weave[0m[39m[49m  [38;5;233m[48;5;245minterrupt sent to weave[39m[49m  [38;5;252m[48;5;245minterrupt sent to weave[39m[49m
+
+bordered:
+Primary
+[38;5;39m╭───────────────────────╮[39m
+[38;5;39m│interrupt sent to weave│[39m
+[38;5;39m╰───────────────────────╯[39m
+Accent
+[38;5;39m╭───────────────────────╮[39m
+[38;5;39m│interrupt sent to weave│[39m
+[38;5;39m╰───────────────────────╯[39m
+Info
+[38;5;51m╭───────────────────────╮[39m
+[38;5;51m│interrupt sent to weave│[39m
+[38;5;51m╰───────────────────────╯[39m
+Success
+[38;5;42m╭───────────────────────╮[39m
+[38;5;42m│interrupt sent to weave│[39m
+[38;5;42m╰───────────────────────╯[39m
+Warning
+[38;5;214m╭───────────────────────╮[39m
+[38;5;214m│interrupt sent to weave│[39m
+[38;5;214m╰───────────────────────╯[39m
+Error
+[38;5;196m╭───────────────────────╮[39m
+[38;5;196m│interrupt sent to weave│[39m
+[38;5;196m╰───────────────────────╯[39m
+Busy
+[38;5;220m╭───────────────────────╮[39m
+[38;5;220m│interrupt sent to weave│[39m
+[38;5;220m╰───────────────────────╯[39m
+System
+[38;5;141m╭───────────────────────╮[39m
+[38;5;141m│interrupt sent to weave│[39m
+[38;5;141m╰───────────────────────╯[39m
+FgSubtle
+[38;5;245m╭───────────────────────╮[39m
+[38;5;245m│interrupt sent to weave│[39m
+[38;5;245m╰───────────────────────╯[39m
+coder@conway:~/sprawl/.sprawl/worktrees/tower$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

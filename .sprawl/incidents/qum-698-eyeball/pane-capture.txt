@@ -1,0 +1,80 @@
+coder@conway:~/sprawl/.sprawl/worktrees/tower$ /tmp/sprawl-qum698 debug colors
+role        plain-fg  bold  inverse  bg-fill
+Primary     interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+Accent      interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+Info        interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+Success     interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+Warning     interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+Error       interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+Busy        interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+System      interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+FgSubtle    interrupt sent to weave  interrupt sent to weave  interrupt sent to weave  interrupt sent to weave
+
+bordered:
+Primary
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+Accent
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+Info
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+Success
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+Warning
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+Error
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+Busy
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+System
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+FgSubtle
+╭───────────────────────╮
+│interrupt sent to weave│
+╰───────────────────────╯
+coder@conway:~/sprawl/.sprawl/worktrees/tower$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
