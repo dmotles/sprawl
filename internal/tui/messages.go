@@ -882,6 +882,26 @@ type gapConfirmMsg struct {
 	gapID uint64
 }
 
+// ToastSpawnMsg requests that a toast notification be rendered (QUM-649).
+type ToastSpawnMsg struct{ Toast Toast }
+
+// ToastDismissMsg requests removal of a specific toast (by ID) or all toasts
+// (All=true). (QUM-649)
+type ToastDismissMsg struct {
+	ID  string
+	All bool
+}
+
+// ToastConditionClearedMsg signals that a condition-keyed toast should be
+// dismissed. Every toast registered via ConditionDismiss(ID) is removed.
+// (QUM-649)
+type ToastConditionClearedMsg struct{ ID string }
+
+// toastTimerMsg is the internal tick fired by ToastModel.Spawn when a toast
+// is registered with TimerDismiss(d). Idempotent: Dismiss is a no-op on
+// unknown IDs. (QUM-649)
+type toastTimerMsg struct{ ID string }
+
 // RestartCompleteMsg delivers the outcome of the async restart work
 // (QUM-260). Bridge carries the freshly-launched Claude subprocess on
 // success; Err is non-nil if restartFunc failed. The App installs the new

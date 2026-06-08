@@ -169,6 +169,10 @@ type AppModel struct {
 	// cmd/enter.go (which wraps the supervisor's validateEmitter).
 	validatePopup ValidatePopupModel
 
+	// toasts is the right-anchored notification overlay (QUM-649). Composited
+	// above chat content but below all modals in View(). Ctrl+T clears all.
+	toasts ToastModel
+
 	// quitting is set when the user confirms shutdown (Ctrl-C confirm
 	// dialog). It guards against a late RestartSessionMsg triggered from an
 	// EOF that arrived just before the user confirmed quit; without the
@@ -330,6 +334,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		cache:               newViewCache(),
 		questionModel:       NewQuestionModel(&theme),
 		validatePopup:       NewValidatePopupModel(&theme, 0),
+		toasts:              NewToastModel(&theme),
 	}
 	_ = app.history.Load()
 	app.updateFocus()
@@ -537,6 +542,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Ctrl+T: dismiss all toasts (QUM-649). Only consumes the keystroke
+		// when at least one toast is up — otherwise 't' falls through to the
+		// input panel so the user can type it literally.
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 't' || msg.Code == 'T') {
+			if !m.toasts.Empty() {
+				m.toasts.DismissAll()
+				return m, nil
+			}
+		}
+
 		// Ctrl+V: toggle the validate-output popup between visible and
 		// minimized states (QUM-588). No-op when no validate is running or
 		// when the popup is in queued/failed sticky state.
@@ -682,6 +697,28 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ToggleHelpMsg:
 		m.showHelp = !m.showHelp
+		return m, nil
+
+	case ToastSpawnMsg:
+		// QUM-649: append a toast (auto-ID assigned if Toast.ID is empty).
+		// Returned cmd schedules the auto-dismiss tick for TimerDismiss.
+		cmd := m.toasts.Spawn(msg.Toast)
+		return m, cmd
+
+	case ToastDismissMsg:
+		if msg.All {
+			m.toasts.DismissAll()
+		} else {
+			m.toasts.Dismiss(msg.ID)
+		}
+		return m, nil
+
+	case ToastConditionClearedMsg:
+		m.toasts.ClearCondition(msg.ID)
+		return m, nil
+
+	case toastTimerMsg:
+		m.toasts.Dismiss(msg.ID)
 		return m, nil
 
 	case PaletteQuitMsg:
@@ -1902,6 +1939,11 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		content = RenderHeader(layout.TermWidth, treeLines) + "\n\n" + content
 	}
 
+	// QUM-649: composite toasts on top of chat/header but below all modals.
+	if !m.toasts.Empty() {
+		content = m.toasts.Overlay(content)
+	}
+
 	if m.showPalette {
 		content = m.palette.View()
 	}
@@ -2032,6 +2074,16 @@ func (m *AppModel) finalizeTurn() tea.Cmd {
 func (m *AppModel) SetTransientStatus(text string) {
 	m.statusBar.SetTransientLabel(text)
 }
+
+// SpawnToast appends a toast to the overlay stack. Returns the tea.Cmd to
+// schedule auto-dismiss (non-nil only for TimerDismiss contracts). Exposed
+// so callers outside the bubbletea reducer (e.g. cmd/enter.go bootstraps)
+// can install toasts before Update fires. (QUM-649)
+func (m *AppModel) SpawnToast(t Toast) tea.Cmd { return m.toasts.Spawn(t) }
+
+// DismissToast removes the toast with the given ID. No-op for unknown IDs.
+// (QUM-649)
+func (m *AppModel) DismissToast(id string) { m.toasts.Dismiss(id) }
 
 func (m *AppModel) PreloadTranscript(entries []MessageEntry) {
 	if len(entries) == 0 {
@@ -2205,6 +2257,7 @@ func (m *AppModel) resizePanels() {
 	m.palette.SetSize(m.width, m.height)
 	m.questionModel.SetSize(m.width, m.height)
 	m.validatePopup.SetSize(m.width, m.height)
+	m.toasts.SetSize(m.width, m.height)
 }
 
 // anyOtherModalUp reports whether any modal OTHER than the question modal is
