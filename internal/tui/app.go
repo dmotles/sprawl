@@ -1961,6 +1961,8 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	}
 
 	// QUM-649: composite toasts on top of chat/header but below all modals.
+	// QUM-701: anchor toasts immediately below the header (centered, stacked).
+	m.toasts.SetHeaderHeight(layout.HeaderHeight)
 	if !m.toasts.Empty() {
 		content = m.toasts.Overlay(content)
 	}

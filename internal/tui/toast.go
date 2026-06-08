@@ -94,11 +94,12 @@ type Toast struct {
 // ToastConditionClearedMsg / toastTimerMsg through the reducer wrappers in
 // app.go.
 type ToastModel struct {
-	theme  *Theme
-	width  int
-	height int
-	toasts []Toast
-	seq    uint64
+	theme        *Theme
+	width        int
+	height       int
+	headerHeight int
+	toasts       []Toast
+	seq          uint64
 }
 
 // NewToastModel constructs an empty ToastModel bound to the given theme.
@@ -112,6 +113,17 @@ func NewToastModel(theme *Theme) ToastModel {
 func (m *ToastModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
+}
+
+// SetHeaderHeight records the height (in rows) of the SPRAWL header strip
+// that the chat region is rendered below. Toasts anchor at headerHeight+1
+// (one row below the header). When n is 0 (no header), toasts anchor at
+// row 0. Negative values are clamped to 0.
+func (m *ToastModel) SetHeaderHeight(n int) {
+	if n < 0 {
+		n = 0
+	}
+	m.headerHeight = n
 }
 
 // Spawn appends t to the stack. If t.ID is empty an auto-ID is assigned. If
@@ -178,59 +190,94 @@ func (m ToastModel) Toasts() []Toast {
 // Empty reports whether the toast stack is empty.
 func (m ToastModel) Empty() bool { return len(m.toasts) == 0 }
 
-// Overlay returns base with the toast stack composited on top, anchored to
-// the top-right. Visible line widths are preserved (cell-by-cell) and the
-// bottom two rows of base are never altered.
+// Overlay returns base with the toast stack composited on top, anchored
+// horizontally centered immediately below the header (anchor row =
+// headerHeight + 1, or row 0 when no header is set). Toasts stack
+// vertically in insertion order; each toast is a 3-line bordered box.
+// Visible line widths are preserved (cell-by-cell) and the bottom two
+// rows of base are never altered. Toasts that would land within the
+// bottom-two-row reserve are skipped.
 func (m ToastModel) Overlay(base string) string {
 	if len(m.toasts) == 0 {
 		return base
 	}
 	lines := strings.Split(base, "\n")
-	maxToasts := len(lines) - 2
-	if maxToasts < 0 {
-		maxToasts = 0
+	const bottomReserve = 2
+	maxRow := len(lines) - bottomReserve
+	anchor := m.headerHeight
+	if anchor > 0 {
+		anchor++ // one blank row of breathing room below the header
 	}
-	n := len(m.toasts)
-	if n > maxToasts {
-		n = maxToasts
+	if anchor < 0 {
+		anchor = 0
 	}
-	for i := 0; i < n; i++ {
-		boxed := m.renderToast(m.toasts[i])
-		boxW := ansi.StringWidth(boxed)
-		line := lines[i]
-		lineW := ansi.StringWidth(line)
-		if boxW >= lineW {
-			lines[i] = ansi.Truncate(boxed, lineW, "")
-			continue
+	for _, t := range m.toasts {
+		boxed := m.renderToast(t)
+		boxLines := strings.Split(boxed, "\n")
+		if anchor+len(boxLines) > maxRow {
+			break
 		}
-		leftW := lineW - boxW
-		leftPart := ansi.Truncate(line, leftW, "")
-		leftPartW := ansi.StringWidth(leftPart)
-		if leftPartW < leftW {
-			leftPart += strings.Repeat(" ", leftW-leftPartW)
+		for i, bl := range boxLines {
+			row := anchor + i
+			if row < 0 || row >= len(lines) {
+				continue
+			}
+			lines[row] = compositeCentered(lines[row], bl)
 		}
-		lines[i] = leftPart + boxed
+		anchor += len(boxLines)
 	}
 	return strings.Join(lines, "\n")
 }
 
-// renderToast formats a single toast as a styled, padded single-line box.
-func (m ToastModel) renderToast(t Toast) string {
-	box := " " + t.Text + " "
-	if m.theme == nil {
-		return box
+// compositeCentered overlays `box` horizontally centered onto `line`,
+// preserving the visible width of `line` and the left/right base segments
+// that fall outside the box footprint.
+func compositeCentered(line, box string) string {
+	lineW := ansi.StringWidth(line)
+	boxW := ansi.StringWidth(box)
+	if boxW >= lineW {
+		return ansi.Truncate(box, lineW, "")
 	}
-	var fg color.Color
+	leftW := (lineW - boxW) / 2
+	rightW := lineW - boxW - leftW
+
+	leftPart := ansi.Truncate(line, leftW, "")
+	if lw := ansi.StringWidth(leftPart); lw < leftW {
+		leftPart += strings.Repeat(" ", leftW-lw)
+	}
+	rightPart := ansi.TruncateLeft(line, leftW+boxW, "")
+	if rw := ansi.StringWidth(rightPart); rw < rightW {
+		rightPart += strings.Repeat(" ", rightW-rw)
+	} else if rw > rightW {
+		rightPart = ansi.Truncate(rightPart, rightW, "")
+	}
+	return leftPart + box + rightPart
+}
+
+// renderToast formats a single toast as a 3-line bordered box. The border
+// and foreground both track the per-style palette color: ToastInfo →
+// Primary (accent), ToastWarning → Warning, ToastError → Error.
+func (m ToastModel) renderToast(t Toast) string {
+	if m.theme == nil {
+		return lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			Padding(0, 1).
+			Render(t.Text)
+	}
+	var c color.Color
 	switch t.Style {
 	case ToastWarning:
-		fg = m.theme.Palette.Warning
+		c = m.theme.Palette.Warning
 	case ToastError:
-		fg = m.theme.Palette.Error
-	default:
-		fg = m.theme.Palette.Info
+		c = m.theme.Palette.Error
+	default: // ToastInfo
+		c = m.theme.Palette.Primary
 	}
-	if fg == nil {
-		return box
+	style := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		Padding(0, 1)
+	if c != nil {
+		style = style.BorderForeground(c).Foreground(c)
 	}
-	return lipgloss.NewStyle().Foreground(fg).Render(box)
+	return style.Render(t.Text)
 }

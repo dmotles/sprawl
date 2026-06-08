@@ -411,9 +411,9 @@ func TestApp_ResizeReanchorsToast(t *testing.T) {
 	}
 	stripped := ansi.Strip(lines[foundRow])
 	idx := strings.Index(stripped, "anchored")
-	// On a 160-col terminal, right-anchored content should sit past the
-	// midpoint of the line.
-	if idx < 80 {
-		t.Errorf("after resize to width=160, 'anchored' at col %d, want right-side (>= 80) in row: %q", idx, stripped)
+	// QUM-701: toasts are horizontally centered. On a 160-col terminal,
+	// the "anchored" text should land near the midpoint.
+	if idx < 60 || idx > 100 {
+		t.Errorf("after resize to width=160, 'anchored' at col %d, want roughly centered (60..100) in row: %q", idx, stripped)
 	}
 }
