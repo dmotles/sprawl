@@ -51,11 +51,11 @@ type Palette struct {
 func defaultDarkPalette(accent color.Color) Palette {
 	return Palette{
 		Primary:       accent,
-		Accent:        lipgloss.Color("39"),  // cyan-blue (notifications)
+		Accent:        lipgloss.Color("51"),  // cyan (notifications)
 		Success:       lipgloss.Color("42"),  // green
 		Warning:       lipgloss.Color("214"), // amber
 		Error:         lipgloss.Color("196"), // red
-		Info:          lipgloss.Color("51"),  // cyan
+		Info:          lipgloss.Color("39"),  // cyan-blue
 		Busy:          lipgloss.Color("220"), // yellow
 		System:        lipgloss.Color("141"), // magenta (system/inbox-drain)
 		FgBase:        lipgloss.Color("252"),
