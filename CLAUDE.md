@@ -62,26 +62,24 @@ lookup.
 >
 > To clear sandbox state, use the sanctioned `sprawl_sandbox_destroy` helper (from `scripts/sprawl-test-env.sh`) or the `_stmux kill-session -t $SPRAWL_NAMESPACE` wrapper — both target only the sandbox session on the sandbox socket. In scripts, always use `_stmux` (not bare `tmux`) for sandbox tmux operations.
 
-## Text selection in `sprawl enter` (QUM-617)
+## Text selection in `sprawl enter` (QUM-653)
 
-`sprawl enter` enables Bubble Tea's mouse cell-motion capture so the viewport
-receives scroll-wheel events. The same capture mode prevents the host
-terminal from doing native click-drag text selection. Two ways to copy text
-out of the viewport:
+The TUI no longer captures the mouse, so terminal- and tmux-native selection
+mechanisms work without any modal toggling:
 
-* **`Ctrl+_` toggles selection mode** (or `Ctrl+/` if your terminal allows it
-  — note: Chrome/Chromium-based browsers including the coder web terminal will
-  eat `Ctrl+/` for their own bindings, so use `Ctrl+_` as the reliable form).
-  Both keys send the same wire byte (ASCII US, 0x1F) so Bubble Tea surfaces
-  them identically. Press once to drop mouse capture (the status bar shows
-  `-- SELECT (mouse capture off) — Ctrl+_ to resume --`), select / copy with
-  your mouse the way you would anywhere else, then press the same key again to
-  resume normal capture. Scroll wheel won't work while in selection mode — use
-  PgUp/PgDn or the viewport keyboard scroll keys.
-* **Shift+drag** (or Option+drag on macOS) bypasses mouse capture in most
-  terminals (xterm.js / coder web terminal, gnome-terminal, kitty, wezterm,
-  Alacritty, iTerm2). Behaviour varies; if your terminal swallows the
-  modifier and selects nothing, fall back to the `Ctrl+_` toggle.
+* **Native click-drag selection** in your terminal — select text and copy with
+  your usual keystroke (Cmd+C / Ctrl+Shift+C / right-click → Copy).
+* **tmux copy-mode** (`prefix` + `[`) — scroll, search, and yank tmux-style.
+* **Shift+drag** also works in terminals that bind it to bypass mouse capture
+  (xterm.js / coder web terminal, gnome-terminal, kitty, wezterm, Alacritty,
+  iTerm2) — though it is now redundant.
+
+Keyboard scroll inside the TUI:
+
+* `PgUp` / `PgDn` — page up/down
+* `Home` / `End` — jump to top/bottom
+* `Up` / `Down` — line-by-line scroll **when the input is empty** (otherwise
+  they navigate input history)
 
 ## Project Configuration
 

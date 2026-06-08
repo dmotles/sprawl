@@ -1820,116 +1820,133 @@ func seedScrollableViewport(t *testing.T, app AppModel) AppModel {
 	return app
 }
 
-// QUM-280: mouse support for viewport scroll.
-func TestAppModel_View_EnablesMouseCellMotion(t *testing.T) {
+// QUM-653: Mouse capture is fully disabled in the TUI. View() should never
+// emit MouseModeCellMotion, both in the normal and the too-small fallback
+// views. The Ctrl+_/Ctrl+/ selection-mode toggle is removed: pressing it
+// must be a no-op (no panic, no MouseMode change, no selectionMode field).
+func TestAppModel_View_NoMouseCapture(t *testing.T) {
 	m := newTestAppModel(t)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := updated.(AppModel)
-	v := app.View()
-	if v.MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("View().MouseMode = %v, want tea.MouseModeCellMotion", v.MouseMode)
+	if v := app.View(); v.MouseMode != tea.MouseModeNone {
+		t.Errorf("normal View().MouseMode = %v, want tea.MouseModeNone", v.MouseMode)
 	}
-}
 
-func TestAppModel_View_MouseModeStillSetWhenTooSmall(t *testing.T) {
-	// Even in the "too small" fallback view, mouse mode should be enabled —
-	// a later resize should not require a full re-init to activate wheel.
-	m := newTestAppModel(t)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 10, Height: 5})
-	app := updated.(AppModel)
-	if !app.tooSmall {
+	// Same invariant in the too-small fallback path.
+	m2 := newTestAppModel(t)
+	updated2, _ := m2.Update(tea.WindowSizeMsg{Width: 10, Height: 5})
+	app2 := updated2.(AppModel)
+	if !app2.tooSmall {
 		t.Fatal("precondition: expected tooSmall to be true for 10x5")
 	}
-	v := app.View()
-	if v.MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("View().MouseMode (too-small) = %v, want tea.MouseModeCellMotion", v.MouseMode)
+	if v := app2.View(); v.MouseMode != tea.MouseModeNone {
+		t.Errorf("too-small View().MouseMode = %v, want tea.MouseModeNone", v.MouseMode)
 	}
 }
 
-// QUM-617: Ctrl-/ toggles a selection mode that drops mouse capture so the
-// terminal can do native text-select-and-copy on the viewport.
-func TestAppModel_View_SelectionMode_DropsMouseCapture(t *testing.T) {
+// QUM-653: Ctrl+_ (formerly Ctrl-/ selection-mode toggle) is no longer wired.
+// Pressing it must not panic and must leave MouseMode as None.
+func TestAppModel_NoSelectionModeToggle(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
-
-	// Sanity: normal mode keeps cell-motion capture.
-	if v := app.View(); v.MouseMode != tea.MouseModeCellMotion {
-		t.Fatalf("precondition: normal-mode MouseMode = %v, want CellMotion", v.MouseMode)
-	}
-
-	// Ctrl-/ is delivered by the terminal as 0x1F (ASCII US), which the
-	// Bubble Tea key parser surfaces as KeyPressMsg{Code: '_', Mod: ModCtrl}
-	// (same byte as Ctrl-_). Use that canonical form so the test exercises
-	// the real key path.
-	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
-	app = out.(AppModel)
-	if !app.selectionMode {
-		t.Fatal("expected selectionMode=true after Ctrl-/ toggle")
-	}
 	if v := app.View(); v.MouseMode != tea.MouseModeNone {
-		t.Errorf("after toggle: View().MouseMode = %v, want MouseModeNone", v.MouseMode)
-	}
-
-	// Toggle back.
-	out, _ = app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
-	app = out.(AppModel)
-	if app.selectionMode {
-		t.Fatal("expected selectionMode=false after second Ctrl-/ toggle")
-	}
-	if v := app.View(); v.MouseMode != tea.MouseModeCellMotion {
-		t.Errorf("after second toggle: View().MouseMode = %v, want CellMotion", v.MouseMode)
-	}
-}
-
-func TestAppModel_View_SelectionMode_TooSmall(t *testing.T) {
-	// The tooSmall fallback view must honour the selection-mode toggle too:
-	// users may be in a narrow split when they realise they need to copy text.
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 10, Height: 5})
-	app := resized.(AppModel)
-	if !app.tooSmall {
-		t.Fatal("precondition: expected tooSmall to be true for 10x5")
+		t.Fatalf("precondition: View().MouseMode = %v, want MouseModeNone", v.MouseMode)
 	}
 	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
 	app = out.(AppModel)
 	if v := app.View(); v.MouseMode != tea.MouseModeNone {
-		t.Errorf("too-small + selectionMode: View().MouseMode = %v, want MouseModeNone", v.MouseMode)
+		t.Errorf("after Ctrl+_: View().MouseMode = %v, want MouseModeNone (no toggle)", v.MouseMode)
 	}
 }
 
-// QUM-617: while in selection mode the status bar shows a SELECT indicator
-// (different from the QUM-281 viewport-keyboard select mode — this one
-// surfaces "mouse capture is off, native drag-select will work").
-func TestAppModel_SelectionMode_StatusBarIndicator(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app := resized.(AppModel)
-	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
-	app = out.(AppModel)
-	bar := app.statusBar.View()
-	if !strings.Contains(bar, "SELECT") {
-		t.Errorf("expected status bar to contain SELECT indicator while in selection mode, got: %q", bar)
-	}
-	if !strings.Contains(bar, "Ctrl-/") {
-		t.Errorf("expected status bar to advertise the Ctrl-/ resume hint, got: %q", bar)
-	}
-}
-
-func TestAppModel_MouseWheelUp_DisablesAutoScroll(t *testing.T) {
+// QUM-653: Home key scrolls the observed viewport to the top.
+func TestAppModel_HomeKey_ScrollsViewportToTop(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
 	app = seedScrollableViewport(t, app)
-	if !app.viewportFor("weave").IsAutoScroll() {
-		t.Fatal("precondition: autoScroll should be true after seeding")
+	// Force a paint so the inner viewport reflects the seeded content height.
+	_ = app.observedVP().region.View()
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Fatalf("precondition: expected AtBottom after seeding+paint")
 	}
 
-	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyHome})
+	app = out.(AppModel)
+	if !app.observedVP().region.vp.AtTop() {
+		t.Errorf("expected AtTop=true after KeyHome; YOffset=%d", app.observedVP().region.vp.YOffset())
+	}
+}
+
+// QUM-653: End key scrolls the observed viewport to the bottom (after Home).
+func TestAppModel_EndKey_ScrollsViewportToBottom(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+
+	// Scroll to top first via KeyHome, then End must bring us back to bottom.
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyHome})
+	app = out.(AppModel)
+	if !app.observedVP().region.vp.AtTop() {
+		t.Fatalf("precondition: KeyHome should have scrolled to top")
+	}
+
+	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	app = out.(AppModel)
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Errorf("expected AtBottom=true after KeyEnd; YOffset=%d", app.observedVP().region.vp.YOffset())
+	}
+}
+
+// QUM-653: when the input panel is empty, KeyUp scrolls the viewport up
+// instead of loading the latest history entry. Catches the QUM-410
+// regression where empty-input KeyUp was hijacked by history.Prev.
+func TestAppModel_UpArrow_ScrollsViewport_WhenInputEmpty(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	seedAppHistory(t, &app, []string{"first", "second"})
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Fatalf("precondition: expected AtBottom after seeding+paint")
+	}
+	beforeOffset := app.observedVP().region.vp.YOffset()
+	if app.input.Value() != "" {
+		t.Fatalf("precondition: input should be empty, got %q", app.input.Value())
+	}
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	app = out.(AppModel)
 
-	if app.viewportFor("weave").IsAutoScroll() {
-		t.Error("expected autoScroll=false after MouseWheelUp; mouse wheel msg did not reach viewport")
+	// Input must remain empty — history was NOT loaded.
+	if got := app.input.Value(); got != "" {
+		t.Errorf("KeyUp on empty input loaded history entry %q; want empty (history hijack regression)", got)
+	}
+	// Viewport should have scrolled up (YOffset decreased).
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset >= beforeOffset {
+		t.Errorf("expected YOffset to decrease after KeyUp on empty input; before=%d after=%d", beforeOffset, afterOffset)
+	}
+}
+
+// QUM-653: when the input panel has text, KeyUp continues to navigate
+// history (existing QUM-410 contract preserved for non-empty input).
+func TestAppModel_UpArrow_NavigatesHistory_WhenInputNonEmpty(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	seedAppHistory(t, &app, []string{"first", "second"})
+	app.input.SetValue("draft")
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	app = out.(AppModel)
+
+	if got := app.input.Value(); got != "second" {
+		t.Errorf("after KeyUp on non-empty input: input = %q, want %q (history.Prev)", got, "second")
 	}
 }
 
@@ -3516,5 +3533,164 @@ func TestUpdate_AutoContinueMsg(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected an AutoTriggerItem in the root viewport after AutoContinueMsg; got entries: %+v", entries)
+	}
+}
+
+// QUM-653: when input is empty, KeyDown scrolls the viewport down (symmetric
+// to KeyUp). After scrolling up first, a KeyDown should grow YOffset (or at
+// the limit, restore AtBottom). Catches regression where empty-input KeyDown
+// is hijacked by history.Next.
+func TestAppModel_DownArrow_ScrollsViewport_WhenInputEmpty(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	seedAppHistory(t, &app, []string{"first", "second"})
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Fatalf("precondition: expected AtBottom after seeding+paint")
+	}
+
+	// Scroll up first so there's room to scroll back down.
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyHome})
+	app = out.(AppModel)
+	if !app.observedVP().region.vp.AtTop() {
+		t.Fatalf("precondition: KeyHome should have scrolled to top")
+	}
+	beforeOffset := app.observedVP().region.vp.YOffset()
+	if app.input.Value() != "" {
+		t.Fatalf("precondition: input should be empty, got %q", app.input.Value())
+	}
+
+	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	app = out.(AppModel)
+
+	// Input must remain empty — history.Next was NOT invoked.
+	if got := app.input.Value(); got != "" {
+		t.Errorf("KeyDown on empty input modified input to %q; want empty (history hijack regression)", got)
+	}
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset <= beforeOffset {
+		t.Errorf("expected YOffset to increase after KeyDown on empty input; before=%d after=%d", beforeOffset, afterOffset)
+	}
+}
+
+// QUM-653: when the input panel has text and history is positioned (Prev was
+// already called), KeyDown should continue to navigate history forward rather
+// than scroll the viewport. Preserves the QUM-410 contract.
+func TestAppModel_DownArrow_NavigatesHistory_WhenInputNonEmpty(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	seedAppHistory(t, &app, []string{"first", "second"})
+	app.input.SetValue("draft")
+
+	// Position into history with two KeyUps: "second", then "first".
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	app = out.(AppModel)
+	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	app = out.(AppModel)
+	if got := app.input.Value(); got != "first" {
+		t.Fatalf("precondition: expected input %q after two KeyUps, got %q", "first", got)
+	}
+
+	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	app = out.(AppModel)
+
+	if got := app.input.Value(); got != "second" {
+		t.Errorf("after KeyDown on non-empty input positioned in history: input = %q, want %q (history.Next)", got, "second")
+	}
+}
+
+// QUM-653: PgUp scrolls the viewport up (regression guard — must keep working
+// after Up/Down rewire).
+func TestAppModel_PgUp_ScrollsViewport(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Fatalf("precondition: expected AtBottom after seeding+paint")
+	}
+	beforeOffset := app.observedVP().region.vp.YOffset()
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	app = out.(AppModel)
+
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset >= beforeOffset {
+		t.Errorf("expected YOffset to decrease after KeyPgUp; before=%d after=%d", beforeOffset, afterOffset)
+	}
+	if app.observedVP().region.vp.AtBottom() {
+		t.Errorf("expected AtBottom=false after KeyPgUp")
+	}
+}
+
+// QUM-653: PgDn scrolls the viewport down (regression guard).
+func TestAppModel_PgDn_ScrollsViewport(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+
+	// Scroll to top first via repeated PgUp so PgDn has room to scroll down.
+	for i := 0; i < 20; i++ {
+		out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+		app = out.(AppModel)
+		if app.observedVP().region.vp.AtTop() {
+			break
+		}
+	}
+	if !app.observedVP().region.vp.AtTop() {
+		t.Fatalf("precondition: KeyPgUp loop should have reached AtTop")
+	}
+	beforeOffset := app.observedVP().region.vp.YOffset()
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	app = out.(AppModel)
+
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset <= beforeOffset {
+		t.Errorf("expected YOffset to increase after KeyPgDown; before=%d after=%d", beforeOffset, afterOffset)
+	}
+}
+
+// QUM-653: when a modal (help) is open, KeyHome must NOT scroll the viewport.
+// Mirrors the gating pattern in TestAppModel_MouseWheel_SuppressedByModalHelp.
+func TestAppModel_HomeKey_NoScroll_WhenModalOpen(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Fatalf("precondition: expected AtBottom after seeding+paint")
+	}
+
+	app.showHelp = true
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyHome})
+	app = out.(AppModel)
+
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Errorf("expected viewport to remain AtBottom when help modal is open; YOffset=%d", app.observedVP().region.vp.YOffset())
+	}
+}
+
+// QUM-653: the status bar must NOT render the legacy "SELECT (mouse capture
+// off)" banner after Ctrl+_ — the selection-mode toggle was removed.
+func TestAppModel_StatusBar_NoSelectBanner_AfterCtrlUnderscore(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
+	app = out.(AppModel)
+
+	view := stripANSI(app.statusBar.View())
+	if strings.Contains(view, "SELECT") {
+		t.Errorf("status bar must not contain SELECT banner after Ctrl+_; got:\n%s", view)
 	}
 }

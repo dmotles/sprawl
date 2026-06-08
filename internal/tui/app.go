@@ -283,13 +283,6 @@ type AppModel struct {
 	gapID          uint64
 	pendingMissing uint64
 	resyncInFlight bool
-
-	// selectionMode, when true, drops Bubble Tea's mouse-capture sequences
-	// (?1002h / ?1006h) on every frame so the host terminal can do native
-	// click-drag text selection on the viewport. Toggled by Ctrl-/. Tradeoff
-	// while on: scroll wheel events are no longer captured (PgUp/PgDn still
-	// scroll via keyboard). See QUM-617.
-	selectionMode bool
 }
 
 // NewAppModel constructs the root model with all sub-models.
@@ -371,21 +364,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.MouseMsg:
-		// Mouse capture is enabled (see View().MouseMode) so scroll wheel
-		// events reach us. Suppress mouse events entirely while any modal is
-		// visible — wheel scrolling behind a dialog would be disorienting —
-		// and otherwise forward to the viewport (the only scrollable area).
-		// Non-wheel clicks/motion are accepted but currently ignored; they
-		// fall through viewport.Update harmlessly.
-		if m.anyModalUp() {
-			return m, nil
-		}
-		vp := m.observedVP()
-		updated, cmd := vp.Update(msg)
-		*vp = updated
-		return m, cmd
-
 	case tea.PasteMsg:
 		// Bracketed-paste from the terminal. Forward to the input panel so embedded
 		// newlines are inserted literally instead of being treated as Enter-submit.
@@ -437,6 +415,42 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchMatchIdx = 0
 			}
 			return m, nil
+		}
+
+		// QUM-653: keyboard scroll bindings. PgUp/PgDn always forward to the
+		// viewport. Home/End forward via vp.GotoTop / GotoBottom. Up/Down
+		// forward only when the input is empty (otherwise they remain input
+		// cursor / history navigation). Gated by modal-up so scroll keys
+		// don't bypass dialogs.
+		if !m.anyModalUp() {
+			if msg.Code == tea.KeyPgUp || msg.Code == tea.KeyPgDown {
+				vp := m.observedVP()
+				updated, cmd := vp.Update(msg)
+				*vp = updated
+				return m, cmd
+			}
+			if msg.Code == tea.KeyHome || msg.Code == tea.KeyEnd {
+				vp := m.observedVP()
+				if msg.Code == tea.KeyHome {
+					vp.region.vp.GotoTop()
+				} else {
+					vp.region.vp.GotoBottom()
+				}
+				// Mirror the auto-scroll bookkeeping ViewportModel.Update does.
+				if vp.region.vp.AtBottom() {
+					vp.region.autoScroll = true
+					vp.region.hasNewContent = false
+				} else {
+					vp.region.autoScroll = false
+				}
+				return m, nil
+			}
+			if (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) && m.input.Value() == "" {
+				vp := m.observedVP()
+				updated, cmd := vp.Update(msg)
+				*vp = updated
+				return m, cmd
+			}
 		}
 
 		// QUM-410: input-panel history navigation. Up/Down walk history
@@ -518,20 +532,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
-		// QUM-617: Ctrl+_ (or Ctrl+/) toggles selection mode, which drops
-		// mouse-capture sequences so the terminal can do native click-drag text
-		// selection on the viewport. Both keys are delivered by the terminal as
-		// ASCII US (0x1F), so the Bubble Tea key parser surfaces both as
-		// {Code: '_', Mod: ModCtrl}. Ctrl+_ is the reliable form on
-		// browser-based terminals (Chrome/Chromium intercepts Ctrl+/ for its
-		// own bindings — confirmed in the coder web terminal); Ctrl+/ works on
-		// native terminals. Match either form for clarity across layouts.
-		if msg.Mod&tea.ModCtrl != 0 && msg.Code == '_' {
-			m.selectionMode = !m.selectionMode
-			m.statusBar.SetSelectionMode(m.selectionMode)
-			return m, nil
-		}
-
 		// QUM-527 slice 2c: Ctrl-Q reopens the question modal when a request
 		// is pending and no higher-priority modal is up. No-op otherwise.
 		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'q' || msg.Code == 'Q') {
@@ -601,17 +601,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				delta = -1
 			}
 			return m, m.cycleAgent(delta)
-		}
-
-		// QUM-695: PgUp/PgDn forward to the viewport unconditionally. Mouse
-		// wheel scroll is handled earlier in the MouseMsg branch; this gives
-		// keyboard users an equivalent scroll surface now that the input
-		// panel always owns keystrokes.
-		if msg.Code == tea.KeyPgUp || msg.Code == tea.KeyPgDown {
-			vp := m.observedVP()
-			updated, cmd := vp.Update(msg)
-			*vp = updated
-			return m, cmd
 		}
 
 		// QUM-340: Esc with a queued submit revokes it. Only fire when there
@@ -1876,7 +1865,6 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		msg := fmt.Sprintf("Terminal too small (minimum %dx%d)", MinTermWidth, MinTermHeight)
 		v := tea.NewView(msg)
 		v.AltScreen = true
-		v.MouseMode = m.mouseMode()
 		return v
 	}
 
@@ -1974,26 +1962,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
-	// QUM-280: mouse cell motion enables scroll-wheel events on the viewport.
-	// Tradeoff: this also captures click-drag, breaking native terminal
-	// text-select-and-copy. QUM-617 resolved that via the Ctrl-/ selection-mode
-	// toggle — see the selectionMode field on AppModel and m.mouseMode() below.
-	// Bonus: Shift+drag (or Option+drag on macOS) bypasses mouse capture in
-	// most terminals and is documented as an immediate workaround.
-	v.MouseMode = m.mouseMode()
 	return v
-}
-
-// mouseMode returns the MouseMode value renderView should attach to the
-// tea.View on the current frame. Normal mode is CellMotion so the viewport
-// receives scroll-wheel events; selection mode (QUM-617) returns None so the
-// Bubble Tea renderer emits ESC[?1002l on the next frame and the host
-// terminal can do native click-drag text selection.
-func (m AppModel) mouseMode() tea.MouseMode {
-	if m.selectionMode {
-		return tea.MouseModeNone
-	}
-	return tea.MouseModeCellMotion
 }
 
 // setTurnState mutates the turn state and propagates the change to the status
