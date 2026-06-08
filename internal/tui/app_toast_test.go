@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,220 @@ func TestApp_ModalOverlaysToast(t *testing.T) {
 	stripped := ansi.Strip(app.View().Content)
 	if strings.Contains(stripped, "hidden-by-modal") {
 		t.Errorf("modal must fully replace content — toast should not bleed through; got:\n%s", stripped)
+	}
+}
+
+// --- QUM-651: lifecycle toast consumers (recovery, interrupt, fault) ---
+
+// TestApp_AgentsResumedMsg_SpawnsRecoveryToast verifies that when the
+// runEnter startup scan resumes N>0 child agents, the TUI surfaces an Info
+// toast "recovered N agents" with a 5s timer-dismiss (QUM-651 consumer #1).
+func TestApp_AgentsResumedMsg_SpawnsRecoveryToast(t *testing.T) {
+	m := newTestAppModel(t)
+	app := applyResize(t, m)
+	updated, cmd := app.Update(AgentsResumedMsg{Resumed: 3, Failed: 0})
+	app = updated.(AppModel)
+
+	toasts := app.toasts.Toasts()
+	if len(toasts) != 1 {
+		t.Fatalf("expected 1 toast after AgentsResumedMsg{Resumed:3}, got %d", len(toasts))
+	}
+	got := toasts[0]
+	if got.Text != "recovered 3 agents" {
+		t.Errorf("toast.Text = %q, want %q", got.Text, "recovered 3 agents")
+	}
+	if got.Style != ToastInfo {
+		t.Errorf("toast.Style = %v, want ToastInfo", got.Style)
+	}
+	if got.DismissOn.Kind != DismissTimer || got.DismissOn.Timer != 5*time.Second {
+		t.Errorf("toast.DismissOn = %+v, want TimerDismiss(5s)", got.DismissOn)
+	}
+	if cmd == nil {
+		t.Error("AgentsResumedMsg with Resumed>0 should return a non-nil cmd (timer tick)")
+	}
+}
+
+// TestApp_AgentsResumedMsg_ZeroResumed_NoToast verifies the early-return
+// path: a 0/0 msg is silent (no toast, existing transient-label behavior
+// unchanged).
+func TestApp_AgentsResumedMsg_ZeroResumed_NoToast(t *testing.T) {
+	m := newTestAppModel(t)
+	app := applyResize(t, m)
+	app = sendMsg(t, app, AgentsResumedMsg{Resumed: 0, Failed: 0})
+	if !app.toasts.Empty() {
+		t.Errorf("AgentsResumedMsg{0,0} should not spawn a toast; got %d", len(app.toasts.Toasts()))
+	}
+}
+
+// TestApp_AgentsResumedMsg_FailedOnly_NoToast verifies that a startup with
+// only failures (no successful resumes) does NOT spawn a recovery toast —
+// the spec only spawns on Resumed>0.
+func TestApp_AgentsResumedMsg_FailedOnly_NoToast(t *testing.T) {
+	m := newTestAppModel(t)
+	app := applyResize(t, m)
+	app = sendMsg(t, app, AgentsResumedMsg{Resumed: 0, Failed: 2})
+	if !app.toasts.Empty() {
+		t.Errorf("AgentsResumedMsg{0,2} should not spawn a recovery toast; got %d", len(app.toasts.Toasts()))
+	}
+}
+
+// TestApp_BackendFaultMsg_SpawnsErrorToast verifies that a backend fault
+// produces an Error toast "<agent> faulted: <reason>" with a
+// Condition("fault-<agent>") dismissal (QUM-651 consumer #3).
+func TestApp_BackendFaultMsg_SpawnsErrorToast(t *testing.T) {
+	m := newTestAppModel(t)
+	app := applyResize(t, m)
+	app = sendMsg(t, app, BackendFaultMsg{
+		Agent:  "alpha",
+		Class:  "HangTimeout",
+		Reason: "stalled",
+	})
+	toasts := app.toasts.Toasts()
+	if len(toasts) != 1 {
+		t.Fatalf("expected 1 toast after BackendFaultMsg, got %d", len(toasts))
+	}
+	got := toasts[0]
+	if got.Text != "alpha faulted: stalled" {
+		t.Errorf("toast.Text = %q, want %q", got.Text, "alpha faulted: stalled")
+	}
+	if got.Style != ToastError {
+		t.Errorf("toast.Style = %v, want ToastError", got.Style)
+	}
+	if got.DismissOn.Kind != DismissCondition || got.DismissOn.Condition != "fault-alpha" {
+		t.Errorf("toast.DismissOn = %+v, want ConditionDismiss(\"fault-alpha\")", got.DismissOn)
+	}
+	// Regression guard: the per-agent fault sticker must still be set
+	// (the tree-row FAULT badge is the persistent surface; the toast is
+	// the transient surface).
+	if _, ok := app.faults["alpha"]; !ok {
+		t.Errorf("BackendFaultMsg should still populate m.faults[\"alpha\"]; got faults=%+v", app.faults)
+	}
+}
+
+// TestApp_BackendFaultClearedMsg_ClearsFaultToast verifies that on
+// in-place recovery the fault toast is removed (condition-dismissed).
+func TestApp_BackendFaultClearedMsg_ClearsFaultToast(t *testing.T) {
+	m := newTestAppModel(t)
+	app := applyResize(t, m)
+	app = sendMsg(t, app, BackendFaultMsg{Agent: "alpha", Class: "X", Reason: "boom"})
+	if app.toasts.Empty() {
+		t.Fatalf("setup: fault toast should be present")
+	}
+	app = sendMsg(t, app, BackendFaultClearedMsg{Agent: "alpha"})
+	if !app.toasts.Empty() {
+		t.Errorf("BackendFaultClearedMsg should clear matching fault toast; got %d", len(app.toasts.Toasts()))
+	}
+	// Existing behavior preserved: the sticker is dropped.
+	if _, ok := app.faults["alpha"]; ok {
+		t.Errorf("BackendFaultClearedMsg should drop m.faults[\"alpha\"]; got %+v", app.faults)
+	}
+}
+
+// TestApp_BackendFaultClearedMsg_PerAgent verifies that clearing one
+// agent's fault does NOT remove another agent's fault toast.
+func TestApp_BackendFaultClearedMsg_PerAgent(t *testing.T) {
+	m := newTestAppModel(t)
+	app := applyResize(t, m)
+	app = sendMsg(t, app, BackendFaultMsg{Agent: "alpha", Reason: "a"})
+	app = sendMsg(t, app, BackendFaultMsg{Agent: "beta", Reason: "b"})
+	if len(app.toasts.Toasts()) != 2 {
+		t.Fatalf("setup: expected 2 fault toasts, got %d", len(app.toasts.Toasts()))
+	}
+	app = sendMsg(t, app, BackendFaultClearedMsg{Agent: "alpha"})
+	toasts := app.toasts.Toasts()
+	if len(toasts) != 1 {
+		t.Fatalf("expected 1 surviving toast, got %d", len(toasts))
+	}
+	if toasts[0].DismissOn.Condition != "fault-beta" {
+		t.Errorf("survivor toast condition = %q, want %q", toasts[0].DismissOn.Condition, "fault-beta")
+	}
+}
+
+// TestApp_Esc_SpawnsInterruptToast verifies the Esc-during-turn key path
+// also spawns an Info toast "interrupt sent to <agent>" with
+// Condition("interrupt-<agent>") dismissal (QUM-651 consumer #2 spawn).
+func TestApp_Esc_SpawnsInterruptToast(t *testing.T) {
+	mock := newFakeSessionBackend()
+	app := newTestAppModelWithBridge(t, mock)
+	app = applyResize(t, app)
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	toasts := app.toasts.Toasts()
+	if len(toasts) != 1 {
+		t.Fatalf("expected 1 toast after Esc during streaming, got %d", len(toasts))
+	}
+	got := toasts[0]
+	wantText := "interrupt sent to " + app.rootAgent
+	if got.Text != wantText {
+		t.Errorf("toast.Text = %q, want %q", got.Text, wantText)
+	}
+	if got.Style != ToastInfo {
+		t.Errorf("toast.Style = %v, want ToastInfo", got.Style)
+	}
+	wantCond := "interrupt-" + app.rootAgent
+	if got.DismissOn.Kind != DismissCondition || got.DismissOn.Condition != wantCond {
+		t.Errorf("toast.DismissOn = %+v, want ConditionDismiss(%q)", got.DismissOn, wantCond)
+	}
+}
+
+// TestApp_Esc_InterruptToast_OnlyDuringActiveTurn verifies that Esc when
+// idle does NOT spawn the interrupt toast.
+func TestApp_Esc_InterruptToast_OnlyDuringActiveTurn(t *testing.T) {
+	mock := newFakeSessionBackend()
+	app := newTestAppModelWithBridge(t, mock)
+	app = applyResize(t, app)
+	// turnState defaults to TurnIdle.
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+
+	if !app.toasts.Empty() {
+		t.Errorf("Esc during idle should NOT spawn an interrupt toast; got %d", len(app.toasts.Toasts()))
+	}
+}
+
+// TestApp_InterruptResultMsg_NoErr_ClearsInterruptToast verifies that the
+// supervisor-side ack (Err==nil) clears the interrupt toast (QUM-651
+// consumer #2 clear).
+func TestApp_InterruptResultMsg_NoErr_ClearsInterruptToast(t *testing.T) {
+	mock := newFakeSessionBackend()
+	app := newTestAppModelWithBridge(t, mock)
+	app = applyResize(t, app)
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+	if app.toasts.Empty() {
+		t.Fatalf("setup: interrupt toast should be present")
+	}
+
+	app = sendMsg(t, app, InterruptResultMsg{Err: nil})
+	if !app.toasts.Empty() {
+		t.Errorf("InterruptResultMsg{Err:nil} should clear interrupt toast; got %d", len(app.toasts.Toasts()))
+	}
+}
+
+// TestApp_InterruptResultMsg_WithErr_KeepsInterruptToast verifies that a
+// failed interrupt-write leaves the toast in place so the user knows the
+// interrupt did NOT land.
+func TestApp_InterruptResultMsg_WithErr_KeepsInterruptToast(t *testing.T) {
+	mock := newFakeSessionBackend()
+	app := newTestAppModelWithBridge(t, mock)
+	app = applyResize(t, app)
+	app.turnState = TurnStreaming
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+	if app.toasts.Empty() {
+		t.Fatalf("setup: interrupt toast should be present")
+	}
+
+	app = sendMsg(t, app, InterruptResultMsg{Err: fmt.Errorf("write failed")})
+	if app.toasts.Empty() {
+		t.Errorf("InterruptResultMsg{Err:!=nil} should NOT clear interrupt toast")
 	}
 }
 

@@ -630,7 +630,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// feedback immediately.
 		if msg.Code == tea.KeyEscape && (m.turnState == TurnStreaming || m.turnState == TurnThinking) && m.bridge != nil {
 			m.statusBar.SetTransientLabel("Interrupting...")
-			return m, m.bridge.Interrupt()
+			// QUM-651: surface a transient toast so the user sees that the
+			// interrupt request was issued. Cleared on InterruptResultMsg
+			// (Err==nil), i.e. when the harness confirms the stdin write.
+			toastCmd := m.toasts.Spawn(Toast{
+				Text:      fmt.Sprintf("interrupt sent to %s", m.rootAgent),
+				Style:     ToastInfo,
+				DismissOn: ConditionDismiss("interrupt-" + m.rootAgent),
+			})
+			return m, tea.Batch(m.bridge.Interrupt(), toastCmd)
 		}
 
 		// Delegate to active panel.
@@ -1110,6 +1118,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetTransientLabel(fmt.Sprintf("Interrupt failed: %v", msg.Err))
 		} else {
 			m.statusBar.SetTransientLabel("Interrupt sent — waiting for turn to end")
+			// QUM-651: the harness confirmed the interrupt was written to the
+			// agent's stdin — dismiss the "interrupt sent to <agent>" toast.
+			// On failure we intentionally leave the toast up so the user
+			// notices the request did not land.
+			m.toasts.ClearCondition("interrupt-" + m.rootAgent)
 		}
 		return m, nil
 
@@ -1228,7 +1241,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// FAULT badge (owned by m.faults + rebuildTree). The duplicate
 		// viewport banner is dropped.
 		m.rebuildTree()
-		return m, nil
+		// QUM-651: spawn a transient error toast so the user sees the fault
+		// even when their attention is on a non-tree surface. Cleared on
+		// BackendFaultClearedMsg (in-place recovery success).
+		toastCmd := m.toasts.Spawn(Toast{
+			Text:      fmt.Sprintf("%s faulted: %s", msg.Agent, msg.Reason),
+			Style:     ToastError,
+			DismissOn: ConditionDismiss("fault-" + msg.Agent),
+		})
+		return m, toastCmd
 
 	case BackendFaultClearedMsg:
 		// QUM-601: in-place recovery succeeded. Drop the per-agent fault
@@ -1239,6 +1260,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.faults != nil {
 			delete(m.faults, msg.Agent)
 		}
+		// QUM-651: in-place recovery succeeded; clear the matching fault
+		// toast spawned by the BackendFaultMsg reducer.
+		m.toasts.ClearCondition("fault-" + msg.Agent)
 		m.statusBar.SetTransientLabel(fmt.Sprintf("backend recovered on %s", msg.Agent))
 		m.rebuildTree()
 		// If the recovered agent is the one currently streaming into the
@@ -1271,6 +1295,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetTransientLabel(fmt.Sprintf("[startup] resumed %d agents", msg.Resumed))
 		} else {
 			m.statusBar.SetTransientLabel(fmt.Sprintf("[startup] resumed %d agents (%d failed)", msg.Resumed, msg.Failed))
+		}
+		// QUM-651: surface an Info toast for successful resumes. Auto-dismisses
+		// after 5s. Failure-only events keep the status-bar transient label
+		// path above without a toast (the spec spawns on Resumed>0 only).
+		if msg.Resumed > 0 {
+			return m, m.toasts.Spawn(Toast{
+				Text:      fmt.Sprintf("recovered %d agents", msg.Resumed),
+				Style:     ToastInfo,
+				DismissOn: TimerDismiss(5 * time.Second),
+			})
 		}
 		return m, nil
 
