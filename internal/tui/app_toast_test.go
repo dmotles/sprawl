@@ -315,9 +315,10 @@ func TestApp_Esc_SpawnsInterruptToast(t *testing.T) {
 	if got.Style != ToastInfo {
 		t.Errorf("toast.Style = %v, want ToastInfo", got.Style)
 	}
-	wantCond := "interrupt-" + app.rootAgent
-	if got.DismissOn.Kind != DismissCondition || got.DismissOn.Condition != wantCond {
-		t.Errorf("toast.DismissOn = %+v, want ConditionDismiss(%q)", got.DismissOn, wantCond)
+	// QUM-697: interrupt toast now auto-dismisses on a 2s timer so it remains
+	// visible regardless of how fast the InterruptResultMsg ack lands.
+	if got.DismissOn.Kind != DismissTimer || got.DismissOn.Timer != 2*time.Second {
+		t.Errorf("toast.DismissOn = %+v, want TimerDismiss(2s)", got.DismissOn)
 	}
 }
 
@@ -337,10 +338,11 @@ func TestApp_Esc_InterruptToast_OnlyDuringActiveTurn(t *testing.T) {
 	}
 }
 
-// TestApp_InterruptResultMsg_NoErr_ClearsInterruptToast verifies that the
-// supervisor-side ack (Err==nil) clears the interrupt toast (QUM-651
-// consumer #2 clear).
-func TestApp_InterruptResultMsg_NoErr_ClearsInterruptToast(t *testing.T) {
+// TestApp_InterruptResultMsg_NoErr_KeepsInterruptToast verifies that the
+// supervisor-side ack (Err==nil) does NOT clear the interrupt toast. Under
+// QUM-697 the toast auto-dismisses on a 2s timer; clearing it on the ack
+// would race the first paint and the user would never see it.
+func TestApp_InterruptResultMsg_NoErr_KeepsInterruptToast(t *testing.T) {
 	mock := newFakeSessionBackend()
 	app := newTestAppModelWithBridge(t, mock)
 	app = applyResize(t, app)
@@ -351,10 +353,17 @@ func TestApp_InterruptResultMsg_NoErr_ClearsInterruptToast(t *testing.T) {
 	if app.toasts.Empty() {
 		t.Fatalf("setup: interrupt toast should be present")
 	}
+	id := app.toasts.Toasts()[0].ID
 
 	app = sendMsg(t, app, InterruptResultMsg{Err: nil})
+	if app.toasts.Empty() {
+		t.Errorf("InterruptResultMsg{Err:nil} must NOT clear interrupt toast (QUM-697); timer-dismiss only")
+	}
+
+	// And the timer-dismiss path still removes it.
+	app = sendMsg(t, app, toastTimerMsg{ID: id})
 	if !app.toasts.Empty() {
-		t.Errorf("InterruptResultMsg{Err:nil} should clear interrupt toast; got %d", len(app.toasts.Toasts()))
+		t.Errorf("toastTimerMsg should remove the interrupt toast; got %d", len(app.toasts.Toasts()))
 	}
 }
 

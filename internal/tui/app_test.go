@@ -2794,14 +2794,13 @@ func TestAppModel_Esc_InterruptsDuringStreaming(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("ESC during streaming should return a cmd (interrupt)")
 	}
-	// The cmd should call bridge.Interrupt which calls mock.Interrupt.
-	result := cmd()
+	// The cmd is a Batch(interrupt, toast-timer-tick) — find the
+	// InterruptResultMsg among the batched commands.
+	if !batchContainsInterruptResult(cmd) {
+		t.Errorf("interrupt cmd should produce InterruptResultMsg, got %T", cmd())
+	}
 	if !mock.interruptCalled {
 		t.Error("ESC during streaming should call Interrupt on the session")
-	}
-	// Should return an InterruptResultMsg.
-	if _, ok := result.(InterruptResultMsg); !ok {
-		t.Errorf("interrupt cmd should return InterruptResultMsg, got %T", result)
 	}
 }
 
@@ -2818,13 +2817,35 @@ func TestAppModel_Esc_InterruptsDuringThinking(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("ESC during thinking should return a cmd (interrupt)")
 	}
-	result := cmd()
+	if !batchContainsInterruptResult(cmd) {
+		t.Errorf("interrupt cmd should produce InterruptResultMsg, got %T", cmd())
+	}
 	if !mock.interruptCalled {
 		t.Error("ESC during thinking should call Interrupt on the session")
 	}
-	if _, ok := result.(InterruptResultMsg); !ok {
-		t.Errorf("interrupt cmd should return InterruptResultMsg, got %T", result)
+}
+
+// batchContainsInterruptResult invokes cmd (expected to be tea.Batch of the
+// real Interrupt cmd + the toast timer tick — QUM-697) and reports whether
+// any branch produces an InterruptResultMsg. Tolerates a bare cmd too.
+func batchContainsInterruptResult(cmd tea.Cmd) bool {
+	msg := cmd()
+	if _, ok := msg.(InterruptResultMsg); ok {
+		return true
 	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return false
+	}
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		if _, ok := c().(InterruptResultMsg); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAppModel_Esc_NoInterruptDuringIdle(t *testing.T) {

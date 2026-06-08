@@ -631,12 +631,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Code == tea.KeyEscape && (m.turnState == TurnStreaming || m.turnState == TurnThinking) && m.bridge != nil {
 			m.statusBar.SetTransientLabel("Interrupting...")
 			// QUM-651: surface a transient toast so the user sees that the
-			// interrupt request was issued. Cleared on InterruptResultMsg
-			// (Err==nil), i.e. when the harness confirms the stdin write.
+			// interrupt request was issued. QUM-697: auto-dismiss on a 2s
+			// timer — the supervisor ack (InterruptResultMsg) for local-bridge
+			// agents lands in the same/next event-loop pass, so a
+			// condition-dismiss would clear the toast before it ever renders.
 			toastCmd := m.toasts.Spawn(Toast{
 				Text:      fmt.Sprintf("interrupt sent to %s", m.rootAgent),
 				Style:     ToastInfo,
-				DismissOn: ConditionDismiss("interrupt-" + m.rootAgent),
+				DismissOn: TimerDismiss(2 * time.Second),
 			})
 			return m, tea.Batch(m.bridge.Interrupt(), toastCmd)
 		}
@@ -1118,11 +1120,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetTransientLabel(fmt.Sprintf("Interrupt failed: %v", msg.Err))
 		} else {
 			m.statusBar.SetTransientLabel("Interrupt sent — waiting for turn to end")
-			// QUM-651: the harness confirmed the interrupt was written to the
-			// agent's stdin — dismiss the "interrupt sent to <agent>" toast.
-			// On failure we intentionally leave the toast up so the user
-			// notices the request did not land.
-			m.toasts.ClearCondition("interrupt-" + m.rootAgent)
+			// QUM-697: the "interrupt sent to <agent>" toast auto-dismisses on
+			// a 2s timer; no condition-clear here so the user always sees it.
 		}
 		return m, nil
 
