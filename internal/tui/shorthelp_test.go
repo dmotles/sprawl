@@ -41,10 +41,12 @@ func hintFor(b []shortBinding, k string) string {
 func TestShortHelpBindings_AlwaysOn(t *testing.T) {
 	// QUM-695: with activePanel and yank-mode gone, ShortHelpState only
 	// distinguishes turn / input / palette state.
+	// QUM-630: when HasQueued is set, ctrl+c is repurposed to "edit" (recall
+	// queued to prompt). Skip that state from the ctrl+c=clear/quit
+	// always-on check; the dedicated HasQueued tests assert the new copy.
 	states := []ShortHelpState{
 		{TurnState: TurnIdle, InputEmpty: true},
 		{TurnState: TurnStreaming},
-		{HasQueued: true},
 		{PaletteOpen: true},
 	}
 	wantSubs := map[string][]string{
@@ -108,13 +110,40 @@ func TestShortHelpBindings_EditorNonEmpty(t *testing.T) {
 	}
 }
 
-func TestShortHelpBindings_EditorQueued(t *testing.T) {
+// QUM-630: with a queued msg AND idle, esc now SENDS the queued message and
+// ctrl+c recalls it. The legacy "clear queue" hint is gone — Ctrl+C does
+// that.
+func TestShortHelpBindings_HasQueuedIdle_AdvertisesSendAndEdit(t *testing.T) {
 	b := shortHelpBindings(ShortHelpState{HasQueued: true})
 	if !containsKey(b, "esc") {
-		t.Fatalf("expected key %q when queued, got keys=%v", "esc", keysOf(b))
+		t.Fatalf("expected key %q when queued+idle, got keys=%v", "esc", keysOf(b))
 	}
-	if h := hintFor(b, "esc"); !strings.Contains(h, "clear queue") {
-		t.Errorf("esc hint=%q, want contains %q", h, "clear queue")
+	if h := hintFor(b, "esc"); !strings.Contains(h, "send queued") {
+		t.Errorf("esc hint=%q while queued+idle, want contains %q (post-QUM-630 the queued msg is sent, not cleared)", h, "send queued")
+	}
+	if !containsKey(b, "ctrl+c") {
+		t.Fatalf("expected key ctrl+c when queued+idle, got keys=%v", keysOf(b))
+	}
+	if h := hintFor(b, "ctrl+c"); !strings.Contains(h, "edit") {
+		t.Errorf("ctrl+c hint=%q while queued+idle, want contains %q (recall queued to prompt)", h, "edit")
+	}
+}
+
+// QUM-630: with a queued msg AND active turn, esc preempts (interrupt+send)
+// and ctrl+c still recalls the queued msg.
+func TestShortHelpBindings_HasQueuedStreaming_AdvertisesInterruptAndSend(t *testing.T) {
+	b := shortHelpBindings(ShortHelpState{TurnState: TurnStreaming, HasQueued: true})
+	if !containsKey(b, "esc") {
+		t.Fatalf("expected key %q when queued+streaming, got keys=%v", "esc", keysOf(b))
+	}
+	if h := hintFor(b, "esc"); !strings.Contains(h, "interrupt & send") {
+		t.Errorf("esc hint=%q while queued+streaming, want contains %q", h, "interrupt & send")
+	}
+	if !containsKey(b, "ctrl+c") {
+		t.Fatalf("expected key ctrl+c when queued+streaming, got keys=%v", keysOf(b))
+	}
+	if h := hintFor(b, "ctrl+c"); !strings.Contains(h, "edit") {
+		t.Errorf("ctrl+c hint=%q while queued+streaming, want contains %q (recall queued to prompt)", h, "edit")
 	}
 }
 

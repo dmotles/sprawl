@@ -491,16 +491,21 @@ func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
 	}
 	rt.mu.Unlock()
 
+	var interruptErr error
 	if turnRunning {
 		if sess != nil {
-			_ = sess.Interrupt(ctx)
+			if err := sess.Interrupt(ctx); err != nil {
+				interruptErr = err
+			}
 		}
 		if loop != nil {
-			_ = loop.Interrupt(ctx)
+			if err := loop.Interrupt(ctx); err != nil && interruptErr == nil {
+				interruptErr = err
+			}
 		}
 	}
 	rt.queue.Wake()
-	return nil
+	return interruptErr
 }
 
 // QUM-462 / QUM-510 (removed in QUM-550 slice 4): the legacy

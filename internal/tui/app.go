@@ -468,6 +468,22 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// QUM-630: Ctrl+C with a queued submit recalls it into the prompt
+		// (refuse-to-clobber). Precedence above the QUM-409 clear/quit
+		// ladder so the quit-confirm invariant is reached only when nothing
+		// is queued. Second Ctrl+C (queue now empty) falls through to the
+		// existing clear-text / quit-confirm rungs unchanged.
+		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'c' && m.pendingSubmit != "" && !m.showConfirm {
+			queued := m.pendingSubmit
+			m.pendingSubmit = ""
+			m.input.SetPendingPreview("")
+			if strings.TrimSpace(m.input.Value()) == "" {
+				m.input.SetValue(queued)
+				m.input.CursorEnd()
+			}
+			return m, nil
+		}
+
 		// Ctrl+C: REPL convention (QUM-409). With non-empty input, clear the
 		// textarea and consume the event. With empty (or whitespace-only)
 		// input, fall through to the existing quit-confirm dialog.
@@ -603,24 +619,35 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.cycleAgent(delta)
 		}
 
-		// QUM-340: Esc with a queued submit revokes it. Only fire when there
-		// is something queued so the key is otherwise free for whatever the
-		// active panel does with it. The textinput buffer is left intact so
-		// the user keeps composing without losing partial typing.
+		// QUM-630: Esc with a queued submit is the preempt-and-send key.
+		// - Mid-turn: interrupt the current turn AND deliver queued as next prompt.
+		// - Idle: submit queued immediately via the standard SubmitMsg path.
+		// Either way clear pendingSubmit + preview synchronously. The QUM-576
+		// "reload draft on empty input" affordance has moved to Ctrl+C above.
 		if msg.Code == tea.KeyEscape && m.pendingSubmit != "" {
-			// QUM-576: option-a "refuse to clobber" rule. If the textarea is
-			// empty, reload the queued draft into the input so the user can
-			// edit it. If the user is mid-compose (textarea non-empty), we
-			// only clear the queue and leave the buffer alone — never
-			// overwrite in-flight typing.
 			queued := m.pendingSubmit
 			m.pendingSubmit = ""
 			m.input.SetPendingPreview("")
-			if strings.TrimSpace(m.input.Value()) == "" {
-				m.input.SetValue(queued)
-				m.input.CursorEnd()
+			if m.bridge == nil {
+				return m, nil
 			}
-			return m, nil
+			// Record in shell history so Up-arrow recall works regardless of
+			// whether the preempt round-trip succeeds (text-never-lost).
+			if m.history != nil {
+				m.history.Append(queued)
+				m.history.Reset()
+			}
+			if m.turnState == TurnStreaming || m.turnState == TurnThinking {
+				m.statusBar.SetTransientLabel("Interrupting...")
+				toastCmd := m.toasts.Spawn(Toast{
+					Text:      fmt.Sprintf("interrupt sent to %s", m.rootAgent),
+					Style:     ToastInfo,
+					DismissOn: TimerDismiss(2 * time.Second),
+				})
+				return m, tea.Batch(m.bridge.InterruptAndSend(queued), toastCmd)
+			}
+			// Idle: route through SubmitMsg so the standard send path runs.
+			return m, sendMsgCmd(SubmitMsg{Text: queued})
 		}
 
 		// QUM-380: Esc during an active turn sends an interrupt request to

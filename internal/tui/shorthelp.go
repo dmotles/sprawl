@@ -43,12 +43,33 @@ func shortHelpBindings(s ShortHelpState) []shortBinding {
 		)
 
 	case s.TurnState == TurnStreaming || s.TurnState == TurnThinking:
-		// Streaming/thinking precedence: esc means interrupt, even when a
-		// submit is queued.
+		// QUM-630: queued + streaming means esc preempts (interrupt & send)
+		// and ctrl+c recalls the queued msg into the prompt.
+		if s.HasQueued {
+			bindings = append(bindings,
+				shortBinding{Key: "esc", Hint: "interrupt & send"},
+				shortBinding{Key: "F1", Hint: "help"},
+				shortBinding{Key: "ctrl+c", Hint: "edit"},
+			)
+			if len(bindings) > 5 {
+				bindings = bindings[:5]
+			}
+			return bindings
+		}
+		// Streaming/thinking precedence: esc means interrupt.
 		bindings = append(bindings, shortBinding{Key: "esc", Hint: "interrupt"})
 
 	case s.HasQueued:
-		bindings = append(bindings, shortBinding{Key: "esc", Hint: "clear queue"})
+		// QUM-630: queued + idle. Esc sends the queued msg; ctrl+c recalls.
+		bindings = append(bindings,
+			shortBinding{Key: "esc", Hint: "send queued"},
+			shortBinding{Key: "F1", Hint: "help"},
+			shortBinding{Key: "ctrl+c", Hint: "edit"},
+		)
+		if len(bindings) > 5 {
+			bindings = bindings[:5]
+		}
+		return bindings
 
 	default:
 		if s.InputEmpty {

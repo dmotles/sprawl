@@ -253,6 +253,25 @@ func (a *TUIAdapter) Interrupt() tea.Cmd {
 	}
 }
 
+// InterruptAndSend (QUM-630) enqueues a ClassInterrupt queue item carrying
+// `text` and then preempts the current turn via ForceInterruptForDelivery.
+// The enqueue happens FIRST so the prompt survives even if the preempt
+// returns an error (text-never-lost invariant). Wraps the result in
+// tui.InterruptResultMsg.
+func (a *TUIAdapter) InterruptAndSend(text string) tea.Cmd {
+	return func() tea.Msg {
+		a.mu.Lock()
+		rt := a.runtime
+		a.mu.Unlock()
+		if rt == nil {
+			return tui.InterruptResultMsg{Err: ErrNoRuntime}
+		}
+		rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassInterrupt, Prompt: text})
+		err := rt.ForceInterruptForDelivery(context.Background())
+		return tui.InterruptResultMsg{Err: err}
+	}
+}
+
 // Close cancels the adapter's EventBus subscription. Part of the
 // tui.SessionBackend contract. Always returns nil; idempotent.
 func (a *TUIAdapter) Close() error {

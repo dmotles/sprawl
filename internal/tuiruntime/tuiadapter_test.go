@@ -526,6 +526,164 @@ func TestTUIAdapter_Interrupt_ForwardsToRuntime(t *testing.T) {
 	close(turnCh)
 }
 
+// QUM-630: InterruptAndSend is the preempt-and-deliver path used by the TUI
+// when the user hits Esc while a msg is queued and a turn is in flight. The
+// adapter must (a) enqueue a ClassInterrupt queue item carrying the queued
+// prompt, and (b) call ForceInterruptForDelivery on the runtime so the
+// in-flight turn is preempted and the new prompt fires next. The result is
+// surfaced as tui.InterruptResultMsg.
+func TestTUIAdapter_InterruptAndSend_EnqueuesClassInterruptAndForcesInterrupt(t *testing.T) {
+	turnCh := make(chan *protocol.Message, 4)
+	mock := &adapterMockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			return turnCh, nil
+		},
+	}
+	rt, a := buildAdapter(t, mock)
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Drive the runtime into TurnActive so ForceInterruptForDelivery has
+	// something to preempt (and so Session.Interrupt is plausibly called).
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	msg := runCmd(t, a.InterruptAndSend("preempt prompt"))
+	ir, ok := msg.(tui.InterruptResultMsg)
+	if !ok {
+		t.Fatalf("InterruptAndSend() = %T, want tui.InterruptResultMsg", msg)
+	}
+	if ir.Err != nil {
+		t.Errorf("InterruptResultMsg.Err = %v, want nil", ir.Err)
+	}
+
+	// Drain the active turn so we can inspect the queue without racing the
+	// turn loop dequeuing the ClassInterrupt item we just enqueued.
+	turnCh <- makeAssistantMsg(t, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`)
+	close(turnCh)
+
+	// ClassInterrupt enqueued with the supplied prompt. Either it's still
+	// in the queue (interrupt happened before next turn started) OR it was
+	// picked up as the next prompt; in both cases mock.starts records "preempt prompt".
+	q := rt.Queue()
+	items := q.DrainAll()
+	foundInQueue := false
+	for _, it := range items {
+		if it.Class == sprawlrt.ClassInterrupt && it.Prompt == "preempt prompt" {
+			foundInQueue = true
+		}
+	}
+
+	mock.mu.Lock()
+	starts := append([]string(nil), mock.starts...)
+	mock.mu.Unlock()
+	foundInStarts := false
+	for _, s := range starts {
+		if s == "preempt prompt" {
+			foundInStarts = true
+		}
+	}
+	if !foundInQueue && !foundInStarts {
+		t.Errorf("ClassInterrupt{prompt=%q} not observed in queue nor session starts; queue=%+v starts=%v",
+			"preempt prompt", items, starts)
+	}
+
+	// Session.Interrupt should have been invoked at least once (preempt).
+	if mock.interruptCount() == 0 {
+		t.Errorf("Session.Interrupt was not invoked by InterruptAndSend (expected ForceInterruptForDelivery to preempt the active turn)")
+	}
+}
+
+// QUM-630: When the preempt itself fails (Session.Interrupt returns an error
+// underneath ForceInterruptForDelivery), InterruptAndSend MUST still enqueue
+// the ClassInterrupt queue item carrying the queued prompt — that's the
+// "text never lost" contract. The failure MUST also be surfaced on the
+// returned tui.InterruptResultMsg so the TUI can render a failure toast.
+func TestTUIAdapter_InterruptAndSend_InterruptFails_StillEnqueuesClassInterrupt(t *testing.T) {
+	turnCh := make(chan *protocol.Message, 4)
+	mock := &adapterMockSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			return turnCh, nil
+		},
+		// Drive the preempt-time Session.Interrupt to return an error so
+		// ForceInterruptForDelivery's interrupt path observes a failure.
+		interruptErr: errors.New("injected session interrupt failure"),
+	}
+	rt, a := buildAdapter(t, mock)
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Drive the runtime into TurnActive so the preempt path is exercised.
+	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	msg := runCmd(t, a.InterruptAndSend("preempt prompt"))
+	ir, ok := msg.(tui.InterruptResultMsg)
+	if !ok {
+		t.Fatalf("InterruptAndSend() = %T, want tui.InterruptResultMsg", msg)
+	}
+	// (b) The TUI must see the failure so it can render a toast.
+	if ir.Err == nil {
+		t.Errorf("InterruptResultMsg.Err = nil, want non-nil so the TUI can surface a failure toast")
+	}
+
+	// Drain the active turn so we can inspect the queue without racing.
+	turnCh <- makeAssistantMsg(t, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`)
+	close(turnCh)
+
+	// (a) ClassInterrupt with the supplied prompt MUST still be enqueued —
+	// either still parked in the queue or already pulled into starts as the
+	// next turn's prompt.
+	q := rt.Queue()
+	items := q.DrainAll()
+	foundInQueue := false
+	for _, it := range items {
+		if it.Class == sprawlrt.ClassInterrupt && it.Prompt == "preempt prompt" {
+			foundInQueue = true
+		}
+	}
+
+	mock.mu.Lock()
+	starts := append([]string(nil), mock.starts...)
+	mock.mu.Unlock()
+	foundInStarts := false
+	for _, s := range starts {
+		if s == "preempt prompt" {
+			foundInStarts = true
+		}
+	}
+	if !foundInQueue && !foundInStarts {
+		t.Errorf("ClassInterrupt{prompt=%q} not enqueued despite interrupt failure (text-never-lost contract); queue=%+v starts=%v",
+			"preempt prompt", items, starts)
+	}
+}
+
+// QUM-630: InterruptAndSend against a nil runtime must NOT panic; it surfaces
+// a tui.InterruptResultMsg with the ErrNoRuntime sentinel, mirroring the
+// other adapter methods' guard behavior.
+func TestTUIAdapter_InterruptAndSend_NilRuntime_ReturnsInterruptResultErr(t *testing.T) {
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
+	a.Observe(nil)
+
+	msg := runCmd(t, a.InterruptAndSend("x"))
+	ir, ok := msg.(tui.InterruptResultMsg)
+	if !ok {
+		t.Fatalf("InterruptAndSend() with nil runtime = %T, want tui.InterruptResultMsg", msg)
+	}
+	if !errors.Is(ir.Err, ErrNoRuntime) {
+		t.Errorf("Err = %v, want errors.Is(_, ErrNoRuntime)=true", ir.Err)
+	}
+}
+
 func TestTUIAdapter_Observe_SwapsSubscription(t *testing.T) {
 	chA := make(chan *protocol.Message, 4)
 	mockA := &adapterMockSession{

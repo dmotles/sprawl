@@ -45,6 +45,10 @@ type SessionBackend interface {
 	// in-flight turn. Emits InterruptResultMsg.
 	Interrupt() tea.Cmd
 
+	// InterruptAndSend preempts the in-flight turn (if any) AND delivers
+	// `text` as the next prompt. Emits InterruptResultMsg.
+	InterruptAndSend(text string) tea.Cmd
+
 	// Close shuts down the underlying session.
 	Close() error
 

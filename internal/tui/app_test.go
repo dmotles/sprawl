@@ -2674,31 +2674,6 @@ func TestAppModel_Esc_ClearsPendingSubmit(t *testing.T) {
 	}
 }
 
-// TestAppModel_Esc_PendingSubmit_EmptyTextarea_ReloadsIntoInput: Esc with a
-// queued submit AND an empty textarea should reload the queued draft into the
-// input buffer so the user can edit it (QUM-576). The pendingSubmit
-// state and indicator preview are cleared as in the non-empty branch.
-func TestAppModel_Esc_PendingSubmit_EmptyTextarea_ReloadsIntoInput(t *testing.T) {
-	app := busyAppWithBridge(t)
-	app.pendingSubmit = "draft"
-	app.input.SetPendingPreview("draft")
-	// Empty textarea — distinguishes from the "composing more" branch.
-	app.input.ta.SetValue("")
-
-	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "" {
-		t.Errorf("Esc should clear pendingSubmit, got %q", app.pendingSubmit)
-	}
-	if app.input.PendingPreview() != "" {
-		t.Errorf("Esc should clear indicator preview, got %q", app.input.PendingPreview())
-	}
-	if got, want := app.input.Value(), "draft"; got != want {
-		t.Errorf("Esc with empty textarea should reload pendingSubmit into input, got %q want %q", got, want)
-	}
-}
-
 func TestAppModel_PendingSubmit_PersistsAcrossAgentCycle(t *testing.T) {
 	sup := &mockSupervisor{}
 	mock := newFakeSessionBackend()
@@ -3439,6 +3414,14 @@ func (c *continuousFakeDelegate) WaitForEvent() tea.Cmd {
 func (c *continuousFakeDelegate) Interrupt() tea.Cmd {
 	c.intCalls++
 	return func() tea.Msg { return nil }
+}
+
+// InterruptAndSend stub so this fake satisfies SessionBackend post-QUM-630.
+// Counter intentionally piggybacks on intCalls for now since no current
+// test inspects it via this delegate.
+func (c *continuousFakeDelegate) InterruptAndSend(_ string) tea.Cmd {
+	c.intCalls++
+	return func() tea.Msg { return InterruptResultMsg{} }
 }
 
 func (c *continuousFakeDelegate) Close() error       { c.closeCnt++; return nil }

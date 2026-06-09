@@ -25,16 +25,19 @@ import (
 type fakeSessionBackend struct {
 	mu sync.Mutex
 
-	initCalls      int
-	sendCalls      int
-	waitCalls      int
-	interruptCalls int
-	closeCalls     int
+	initCalls                int
+	sendCalls                int
+	waitCalls                int
+	interruptCalls           int
+	closeCalls               int
+	interruptAndSendCalls    int
+	lastInterruptAndSendText string
 
-	initErr      error
-	sendErr      error
-	interruptErr error
-	closeErr     error
+	initErr             error
+	sendErr             error
+	interruptErr        error
+	closeErr            error
+	interruptAndSendErr error
 
 	sessionID    string
 	isContinuous bool
@@ -141,6 +144,20 @@ func (f *fakeSessionBackend) Interrupt() tea.Cmd {
 	f.interruptCalls++
 	f.interruptCalled = true
 	err := f.interruptErr
+	f.mu.Unlock()
+	return func() tea.Msg { return InterruptResultMsg{Err: err} }
+}
+
+// InterruptAndSend records the call and returns a cmd that emits an
+// InterruptResultMsg carrying the configured interruptAndSendErr. The TUI
+// expects the adapter to be responsible for enqueuing `text` as the next
+// prompt regardless of whether the preempt itself succeeded — this fake
+// mirrors that contract by recording the text unconditionally.
+func (f *fakeSessionBackend) InterruptAndSend(text string) tea.Cmd {
+	f.mu.Lock()
+	f.interruptAndSendCalls++
+	f.lastInterruptAndSendText = text
+	err := f.interruptAndSendErr
 	f.mu.Unlock()
 	return func() tea.Msg { return InterruptResultMsg{Err: err} }
 }
