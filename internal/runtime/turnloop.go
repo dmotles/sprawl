@@ -214,6 +214,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 	delivered := false
 	interrupted := false
 	sawTaskNotification := false
+	terminalPublished := false
 	for {
 		select {
 		case <-turnCtx.Done():
@@ -263,6 +264,23 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 				if sawTaskNotification && !interrupted {
 					l.cfg.Queue.Enqueue(QueueItem{Class: ClassContinuation, Prompt: continuationPrompt})
 				}
+				// QUM-647: channel-close safety net. If the events channel
+				// closed without ever yielding a terminal `result` frame
+				// (observed in the captured local_bash-interrupt transcript),
+				// the loop must still publish a terminal event so downstream
+				// finalize paths (TUI finalizeTurn, runtime InterruptCount
+				// snapshot bookkeeping) can unblock. Coexists with the
+				// QUM-640 continuation enqueue above: in the
+				// (sawTaskNotification && !interrupted) branch, a TurnFailed
+				// is still surfaced because we never saw a terminal frame,
+				// and the continuation will drive a fresh turn afterwards.
+				if !terminalPublished {
+					if interrupted {
+						l.cfg.EventBus.Publish(RuntimeEvent{Type: EventInterrupted})
+					} else {
+						l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: fmt.Errorf("stream closed without terminal result")})
+					}
+				}
 				return
 			}
 			if msg.Type == "system" && msg.Subtype == "task_notification" {
@@ -293,6 +311,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 				} else {
 					l.cfg.EventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
 				}
+				terminalPublished = true
 			}
 		}
 	}
