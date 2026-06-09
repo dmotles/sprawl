@@ -163,6 +163,47 @@ func BuildInterruptFlushPrompt(entries []Entry) string {
 	return b.String()
 }
 
+// heartbeatNotificationBody is the verbatim body of the QUM-730 supervisor
+// heartbeat liveness-check nudge. Pinned by
+// TestBuildHeartbeatNotification_VerbatimBody — do NOT tweak without
+// updating the test in lockstep.
+const heartbeatNotificationBody = `<system-notification type="liveness_check">This is an automated liveness check from the sprawl system. If there's no work to do just ignore this message. If you're still waiting on something or you were in the middle of something, please continue your work.</system-notification>` + "\n"
+
+// BuildHeartbeatNotification returns the verbatim system-notification line
+// that the supervisor heartbeat injects into a stalled child's next-turn
+// prompt. Always ends with a newline. (QUM-730)
+func BuildHeartbeatNotification() string {
+	return heartbeatNotificationBody
+}
+
+// DrainLivenessCheckLines pulls all type=liveness_check envelopes from the
+// recipient's maildir (QUM-730) and renders them as repeated copies of
+// BuildHeartbeatNotification, in FIFO order. The envelopes are removed
+// from disk by the drain — liveness checks are ephemeral and not
+// retrievable via messages_read.
+//
+// Returns nil on empty/missing recipient or on drain error (errors are
+// logged at debug and swallowed; liveness_check is best-effort telemetry).
+func DrainLivenessCheckLines(sprawlRoot, recipient string) []string {
+	envs, err := messages.DrainLivenessCheck(sprawlRoot, recipient)
+	if err != nil {
+		slog.Default().Debug(
+			"inboxprompt: DrainLivenessCheck failed",
+			slog.String("recipient", recipient),
+			slog.Any("err", err),
+		)
+		return nil
+	}
+	if len(envs) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(envs))
+	for range envs {
+		lines = append(lines, BuildHeartbeatNotification())
+	}
+	return lines
+}
+
 // DrainStatusChangeLines pulls all type=status_change envelopes from the
 // recipient's maildir (QUM-614) and renders them as the same one-line
 // `<system-notification type="status_change">…</system-notification>` strings

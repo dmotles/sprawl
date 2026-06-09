@@ -122,6 +122,12 @@ type AppModel struct {
 	palette     PaletteModel
 	showPalette bool
 
+	// QUM-733 5b: agent-tree modal (TreeModalModel). Opened via `/tree`
+	// palette command (ToggleTreeMsg). Lowest-priority modal — suppressed
+	// while any other modal is up.
+	treeModal TreeModalModel
+	showTree  bool
+
 	bridge    SessionBackend
 	turnState TurnState
 
@@ -204,6 +210,13 @@ type AppModel struct {
 	// banner.
 	homeDir string
 
+	// snapshotCmd is the injected incident-bundle producer triggered by
+	// Ctrl+\ (QUM-728). When nil the key handler still fires the request
+	// message, but the reducer synthesizes an error-complete instead of
+	// invoking a real capture. Wired by cmd/enter.go to
+	// internal/observe/incident.Snapshotter.
+	snapshotCmd func() tea.Msg
+
 	// childAdapter, childAdapterAgent, childAdapterEpoch back the unified
 	// child-viewport streaming path (QUM-439). When the observed child has a
 	// UnifiedRuntime backing handle, AppModel installs an adapter pointed at
@@ -230,10 +243,12 @@ type AppModel struct {
 	// creation in viewportFor.
 	toolInputsExpanded bool
 
-	// QUM-674 S4: the global spinner subsystem (QUM-336) was removed when
-	// streaming + tool-call lifecycle moved into ChatList. ToolCallItem
-	// renders its own static glyph (⠿/✓/✗) per resolved Q6=option-a. The
-	// loss of synchronized pulse is accepted.
+	// QUM-674 S4 / QUM-732: the global spinner subsystem (QUM-336) was
+	// removed when streaming + tool-call lifecycle moved into ChatList.
+	// QUM-732 reintroduces animation as a per-item tea.Tick driven by
+	// ToolCallItem itself (toolTickMsg) — no global pulse, no shared frame
+	// counter. The animator runs only for pending items in the observed
+	// agent's pane; ✓ (success) and ✗ (failure) stay static.
 
 	// pendingSubmit holds the next user message stashed while weave is mid-turn
 	// (QUM-340). Single slot — typing a fresh message and hitting Enter again
@@ -315,6 +330,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		help:                NewHelpModel(&theme),
 		confirm:             NewConfirmModel(&theme),
 		palette:             NewPaletteModel(&theme),
+		treeModal:           NewTreeModalModel(&theme),
 		bridge:              bridge,
 		turnState:           TurnIdle,
 		supervisor:          sup,
@@ -370,6 +386,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case toolTickMsg:
+		// QUM-732: route per-item animation tick to the observed agent's
+		// ChatList. Background panes never receive ticks (AC #4 — only the
+		// observed pane drives renders for spinner animation). Modal overlays
+		// do NOT suppress this case: the underlying tool is still in flight
+		// and we want the user to see the row pulsing while the modal is up.
+		vp := m.observedVP()
+		if vp == nil {
+			return m, nil
+		}
+		return m, vp.ChatList().Update(msg)
+
 	case tea.PasteMsg:
 		// Bracketed-paste from the terminal. Forward to the input panel so embedded
 		// newlines are inserted literally instead of being treated as Enter-submit.
@@ -388,6 +416,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.ready && !m.tooSmall && m.inputBoxHeight() != prevInputH {
 			m.resizePanels()
 		}
+		return m, cmd
+
+	case tea.MouseMsg:
+		// QUM-731: restore mouse-wheel scroll. Mouse capture is back on via
+		// MouseModeCellMotion in renderView; forward wheel / motion / click
+		// events to the observed viewport so the wheel scrolls chat. Mirrors
+		// the modal gating used for keyboard scroll bindings (QUM-653) — when
+		// any modal is up, swallow the event so dialogs are not bypassed.
+		if m.anyModalUp() {
+			return m, nil
+		}
+		vp := m.observedVP()
+		updated, cmd := vp.Update(msg)
+		*vp = updated
 		return m, cmd
 
 	case pasteLookaheadMsg:
@@ -561,6 +603,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// QUM-733 5b: while the tree modal is up, all key events route to
+		// it. Placed after the higher-priority modal gates (confirm, error,
+		// palette, question, help, usage) so those always take precedence.
+		if m.showTree {
+			var cmd tea.Cmd
+			m.treeModal, cmd = m.treeModal.Update(msg)
+			if !m.treeModal.Visible() {
+				m.showTree = false
+			}
+			return m, cmd
+		}
+
 		// QUM-527 slice 2c: Ctrl-Q reopens the question modal when a request
 		// is pending and no higher-priority modal is up. No-op otherwise.
 		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'q' || msg.Code == 'Q') {
@@ -607,6 +661,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			missing := m.pendingMissing
 			m.pendingMissing = 0
 			return m, m.resyncCmd(missing)
+		}
+
+		// QUM-728: Ctrl+\ triggers an in-process incident snapshot. The actual
+		// capture runs as a tea.Cmd (background goroutine) so the TUI stays
+		// responsive. Ctrl+G was the runner-up; \ chosen because it's analogous
+		// to SIGQUIT and is unbound elsewhere in the TUI. Gated by the modal
+		// precedence returns above (showConfirm/showError/showHelp/showPalette/
+		// showQuestion/showTree).
+		if msg.Mod&tea.ModCtrl != 0 && msg.Code == '\\' {
+			return m, func() tea.Msg { return IncidentSnapshotRequestedMsg{} }
 		}
 
 		// Ctrl+O: toggle the global expand-tool-inputs flag (QUM-335).
@@ -755,6 +819,24 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.usageModal = m.usageModal.Hide()
 		return m, nil
 
+	case ToggleTreeMsg:
+		// QUM-733 5b: open/close the agent-tree modal. Opening is suppressed
+		// while any higher-priority modal is up (mirrors the Ctrl-Q reopen
+		// gate at app.go:582-586). Closing is unconditional.
+		if m.showTree {
+			m.showTree = false
+			m.treeModal.Hide()
+			return m, nil
+		}
+		if anyOtherModalUpExceptTree(&m) {
+			return m, nil
+		}
+		m.treeModal.SetSize(m.width, m.height)
+		m.treeModal.SetNodes(m.tree.nodes, m.observedAgent)
+		m.treeModal.Show()
+		m.showTree = true
+		return m, nil
+
 	case ToastSpawnMsg:
 		// QUM-649: append a toast (auto-ID assigned if Toast.ID is empty).
 		// Returned cmd schedules the auto-dismiss tick for TimerDismiss.
@@ -890,6 +972,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusBar.SetTokenUsage(im.InputTokens + im.CacheReadInputTokens + im.CacheCreationInputTokens)
 			case ToolCallMsg:
 				m.rootBuf().AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
+				// QUM-732: arm per-item spinner tick only for the observed pane.
+				if m.observedAgent == m.rootAgent {
+					if tick := m.rootBuf().cl.PendingToolTickCmds(); tick != nil {
+						cmds = append(cmds, tick)
+					}
+				}
 			}
 		}
 		if m.bridge != nil {
@@ -918,10 +1006,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ToolCallMsg:
 		m.rootBuf().AppendToolCallWithHeader(msg.ToolName, msg.ToolID, msg.Approved, msg.Input, msg.FullInput, msg.HeaderArg, msg.HeaderParams, msg.ParentToolUseID)
-		if m.bridge != nil {
-			return m, m.bridge.WaitForEvent()
+		var cmds []tea.Cmd
+		// QUM-732: arm per-item spinner tick only for the observed pane.
+		if m.observedAgent == m.rootAgent {
+			if tick := m.rootBuf().cl.PendingToolTickCmds(); tick != nil {
+				cmds = append(cmds, tick)
+			}
 		}
-		return m, nil
+		if m.bridge != nil {
+			cmds = append(cmds, m.bridge.WaitForEvent())
+		}
+		if len(cmds) == 0 {
+			return m, nil
+		}
+		return m, tea.Batch(cmds...)
 
 	case ToolResultMsg:
 		// Route to the root buffer (bridge events are weave-only per
@@ -1068,6 +1166,33 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.SetRestartLabel(msg.Phase)
 		// QUM-675 S5: restartLabel is the dedicated surface for this; the
 		// duplicate viewport banner is dropped.
+		return m, nil
+
+	case IncidentSnapshotRequestedMsg:
+		// QUM-728: capture an incident bundle out-of-band. snapshotCmd is
+		// injected by cmd/enter.go; nil in unit tests / when no supervisor
+		// is wired.
+		m.statusBar.SetTransientLabel("capturing incident snapshot...")
+		if m.snapshotCmd != nil {
+			return m, m.snapshotCmd
+		}
+		return m, func() tea.Msg {
+			return IncidentSnapshotCompleteMsg{Err: errors.New("snapshot not configured")}
+		}
+
+	case IncidentSnapshotCompleteMsg:
+		// QUM-728: surface outcome via transient label + (on error) a toast
+		// so the user has the bundle path or the failure reason at a glance.
+		if msg.Err != nil {
+			m.statusBar.SetTransientLabel("snapshot failed")
+			toastCmd := m.toasts.Spawn(Toast{
+				Text:      "snapshot failed: " + msg.Err.Error(),
+				Style:     ToastError,
+				DismissOn: TimerDismiss(5 * time.Second),
+			})
+			return m, toastCmd
+		}
+		m.statusBar.SetTransientLabel("snapshot saved → " + msg.Path)
 		return m, nil
 
 	case ConsolidationCompleteMsg:
@@ -1619,6 +1744,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		var cmds []tea.Cmd
 
+		// QUM-732: when switching the observed agent, arm spinner ticks for
+		// any already-pending ToolCallItems in the newly-observed pane so
+		// the animation resumes immediately on the freshly-visible buffer.
+		// ResetPendingToolTicking first: a previous switch may have orphaned
+		// a tick chain (delivered to a different pane, dead-ended), leaving
+		// items stuck with ticking=true that StartTickCmd would refuse to
+		// re-arm.
+		if vp := m.viewportFor(msg.Name); vp != nil {
+			vp.ChatList().ResetPendingToolTicking()
+			if tick := vp.ChatList().PendingToolTickCmds(); tick != nil {
+				cmds = append(cmds, tick)
+			}
+		}
+
 		// QUM-439: try the unified streaming path for non-root children
 		// before falling back to JSONL polling. Resolve the child's
 		// AgentRuntime via the supervisor's RuntimeRegistry; if its handle
@@ -1941,6 +2080,11 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		msg := fmt.Sprintf("Terminal too small (minimum %dx%d)", MinTermWidth, MinTermHeight)
 		v := tea.NewView(msg)
 		v.AltScreen = true
+		// QUM-731: keep mouse capture on in the too-small fallback so the
+		// wheel still works once the user resizes back up — bubbletea diffs
+		// MouseMode across frames, so flipping it off here would emit a
+		// disable sequence the user wouldn't expect.
+		v.MouseMode = tea.MouseModeCellMotion
 		return v
 	}
 
@@ -2010,6 +2154,13 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		content = m.toasts.Overlay(content)
 	}
 
+	// QUM-733 5b: tree modal sits ABOVE chat/toasts but BELOW the higher-
+	// priority modals (palette, help, question, validate popup, confirm,
+	// error) so those always override.
+	if m.showTree {
+		content = m.treeModal.View()
+	}
+
 	if m.showPalette {
 		content = m.palette.View()
 	}
@@ -2044,6 +2195,11 @@ func (m AppModel) renderView(useCache bool) tea.View {
 
 	v := tea.NewView(content)
 	v.AltScreen = true
+	// QUM-731: restore mouse capture so the scroll wheel reaches the TUI.
+	// Native click-drag selection is blocked while this is on; users can
+	// still copy via Shift+drag, tmux copy-mode (prefix [), or right-click →
+	// Copy. The QUM-617 selection-mode toggle stays retired (QUM-653).
+	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
 
@@ -2306,6 +2462,7 @@ func (m *AppModel) resizePanels() {
 	m.confirm.SetSize(m.width, m.height)
 	m.errorDialog.SetSize(m.width, m.height)
 	m.palette.SetSize(m.width, m.height)
+	m.treeModal.SetSize(m.width, m.height)
 	m.questionModel.SetSize(m.width, m.height)
 	m.usageModal = m.usageModal.SetSize(m.width, m.height)
 	m.validatePopup.SetSize(m.width, m.height)
@@ -2315,7 +2472,14 @@ func (m *AppModel) resizePanels() {
 // anyOtherModalUp reports whether any modal OTHER than the question modal is
 // active. Used to gate auto-show / Ctrl-Q reopen.
 func anyOtherModalUp(m *AppModel) bool {
-	return m.showError || m.showConfirm || m.showHelp || m.showPalette || m.showUsage
+	return m.showError || m.showConfirm || m.showHelp || m.showPalette || m.showUsage || m.showTree
+}
+
+// anyOtherModalUpExceptTree reports whether any modal OTHER than the tree
+// modal is up. Used by the ToggleTreeMsg open gate so the tree modal cannot
+// pre-empt a higher-priority overlay (QUM-733 5b).
+func anyOtherModalUpExceptTree(m *AppModel) bool {
+	return m.showError || m.showConfirm || m.showHelp || m.showPalette || m.showQuestion || m.showUsage
 }
 
 // anyModalUp reports whether ANY modal is currently visible. The four input-
@@ -2326,7 +2490,7 @@ func anyOtherModalUp(m *AppModel) bool {
 // anyOtherModalUp, which deliberately excludes showQuestion for the
 // question-auto-show / Ctrl-Q-reopen gates.
 func (m *AppModel) anyModalUp() bool {
-	return m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion || m.showUsage
+	return m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion || m.showUsage || m.showTree
 }
 
 // agentFromHead returns pq.Req.From if pq is non-nil, else "".
@@ -2608,6 +2772,12 @@ func (m *AppModel) SetHomeDir(homeDir string) {
 	m.homeDir = homeDir
 }
 
+// SetSnapshotCmd installs the incident-snapshot producer used by Ctrl+\
+// (QUM-728). Wired by cmd/enter.go to internal/observe/incident.Snapshotter.
+func (m *AppModel) SetSnapshotCmd(fn func() tea.Msg) {
+	m.snapshotCmd = fn
+}
+
 // SetValidatePopupAfter configures the auto-open threshold for the validate
 // popup. Pass 0 to use the default (10s). Wired by cmd/enter.go after model
 // construction from .sprawl/config.yaml's validate_popup_after_seconds.
@@ -2720,6 +2890,11 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 			buf.AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
 		} else {
 			vp.ChatList().AppendToolCallWithHeader(im.ToolName, im.ToolID, im.Approved, im.Input, im.FullInput, im.HeaderArg, im.HeaderParams, im.ParentToolUseID)
+		}
+		// QUM-732: arm per-item spinner tick only when this child buffer's
+		// agent is the observed pane (background panes do not animate).
+		if agent == m.observedAgent {
+			return vp.ChatList().PendingToolTickCmds()
 		}
 		return nil
 	case ToolResultMsg:

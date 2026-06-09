@@ -22,6 +22,7 @@ func TestToolIndicator(t *testing.T) {
 		wantContains string
 	}{
 		{"pending-with-frame", true, false, "⠋", "⠿", "⠋"},
+		{"pending-with-frame-suppresses-default", true, false, "⠋", "⠿", "⠋"},
 		{"pending-empty-frame-falls-back", true, false, "", "⠿", "⠿"},
 		{"failed", false, true, "", "⠿", "✗"},
 		{"success", false, false, "", "⠿", "✓"},
@@ -33,6 +34,17 @@ func TestToolIndicator(t *testing.T) {
 				t.Errorf("toolIndicator: want contains %q, got %q", tc.wantContains, got)
 			}
 		})
+	}
+}
+
+func TestToolIndicator_PendingFrameSuppressesDefaultGlyph(t *testing.T) {
+	theme := NewTheme(defaultAccentColor)
+	got := toolIndicator(&theme, true, false, "⠋", "⠿")
+	if strings.Contains(got, "⠿") {
+		t.Errorf("non-empty spinner frame must suppress default glyph; got %q", got)
+	}
+	if !strings.Contains(got, "⠋") {
+		t.Errorf("expected spinner frame ⠋ in output, got %q", got)
 	}
 }
 

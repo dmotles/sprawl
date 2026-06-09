@@ -102,7 +102,9 @@ type MessageEntry struct {
 // the message class.
 func notificationGlyphAndStyle(theme *Theme, msg MessageEntry) (glyph string, style lipgloss.Style) {
 	switch msg.NotificationType {
-	case NotificationKindStatusChange:
+	case NotificationKindStatusChange, NotificationKindLivenessCheck:
+		// QUM-730: liveness_check shares the status_change visual treatment
+		// (KISS — distinct from the mail glyph but no bespoke styling).
 		return "◉", theme.StatusChangeText
 	default: // NotificationKindMessage and any unknown/legacy value
 		if msg.Interrupt {
@@ -225,6 +227,10 @@ const (
 const (
 	NotificationKindMessage      = "message"
 	NotificationKindStatusChange = "status_change"
+	// NotificationKindLivenessCheck is the QUM-730 supervisor heartbeat
+	// liveness-check class. Same glyph/style as status_change for KISS —
+	// distinct from "message" so the operator can see the heartbeat fired.
+	NotificationKindLivenessCheck = "liveness_check"
 )
 
 // stripSystemNotificationTag peels ONE `<system-notification [attrs]>...
@@ -288,7 +294,7 @@ func stripSystemNotificationTag(s string) (body, notifType string, isInterrupt b
 
 	attrs := parseTagAttributes(attrSegment)
 	notifType = attrs["type"]
-	if notifType != NotificationKindMessage && notifType != NotificationKindStatusChange {
+	if notifType != NotificationKindMessage && notifType != NotificationKindStatusChange && notifType != NotificationKindLivenessCheck {
 		// Unknown or missing type → fall back to message per the QUM-562
 		// back-compat contract.
 		notifType = NotificationKindMessage
@@ -716,6 +722,10 @@ type InboxDrainMsg struct {
 // ToggleHelpMsg flips the help overlay visibility (same effect as F1).
 type ToggleHelpMsg struct{}
 
+// ToggleTreeMsg flips the agent-tree modal visibility. Emitted by the /tree
+// palette command (QUM-733 5b). No-op when a higher-priority modal is up.
+type ToggleTreeMsg struct{}
+
 // PaletteQuitMsg requests an immediate app quit triggered by the palette's
 // /exit command. The app sets `quitting=true` then returns tea.Quit — same
 // post-confirm semantics as the Ctrl-C path.
@@ -917,3 +927,19 @@ type ShowUsageMsg struct{}
 
 // DismissUsageMsg requests that the /usage modal be closed (QUM-721).
 type DismissUsageMsg struct{}
+
+// IncidentSnapshotRequestedMsg requests that the configured snapshot helper
+// run to produce an incident bundle under .sprawl/incidents/. Emitted by the
+// Ctrl+\ key handler (QUM-728). The AppModel reducer surfaces a "capturing"
+// transient label and dispatches the configured snapshotCmd; the cmd runs in
+// a background goroutine (Bubble Tea Cmd) and returns IncidentSnapshotCompleteMsg.
+type IncidentSnapshotRequestedMsg struct{}
+
+// IncidentSnapshotCompleteMsg carries the outcome of a snapshot run. On
+// success Path is the absolute incident dir; on failure Err is non-nil and
+// the AppModel spawns an error toast plus a "snapshot failed" transient
+// label. (QUM-728)
+type IncidentSnapshotCompleteMsg struct {
+	Path string
+	Err  error
+}

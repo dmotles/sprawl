@@ -425,14 +425,14 @@ func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 		t.Fatalf("ReportStatus: %v", err)
 	}
 
-	if session.interrupts != 0 {
-		t.Errorf("session.Interrupt called %d times by ReportStatus; want 0 (QUM-550 slice 2 cooperative lock-in)", session.interrupts)
+	if got := session.interrupts.Load(); got != 0 {
+		t.Errorf("session.Interrupt called %d times by ReportStatus; want 0 (QUM-550 slice 2 cooperative lock-in)", got)
 	}
-	if session.forceInterruptDeliveryCalls != 0 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d; want 0 (report_status must use cooperative wake)", session.forceInterruptDeliveryCalls)
+	if got := session.forceInterruptDeliveryCalls.Load(); got != 0 {
+		t.Errorf("session.ForceInterruptDelivery calls = %d; want 0 (report_status must use cooperative wake)", got)
 	}
-	if session.wakeForDeliveryCalls < 1 {
-		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 after ReportStatus rewire", session.wakeForDeliveryCalls)
+	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
+		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 after ReportStatus rewire", got)
 	}
 
 	snap := rt.Snapshot()
@@ -538,8 +538,8 @@ func TestRealKill_RuntimeBackedAgentSkipsLegacyKillFn(t *testing.T) {
 	if updated.Status != "killed" {
 		t.Fatalf("Status = %q, want killed", updated.Status)
 	}
-	if session.stopCalls != 1 {
-		t.Fatalf("runtime stop calls = %d, want 1", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 1 {
+		t.Fatalf("runtime stop calls = %d, want 1", got)
 	}
 }
 
@@ -595,8 +595,8 @@ func TestRealKill_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 	if _, ok := r.startedRuntime("alice"); ok {
 		t.Fatal("startedRuntime should reject a stopped runtime after persistence failure")
 	}
-	if session.stopCalls != 1 {
-		t.Fatalf("runtime stop calls = %d, want 1", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 1 {
+		t.Fatalf("runtime stop calls = %d, want 1", got)
 	}
 }
 
@@ -680,8 +680,8 @@ func TestRealRetire_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 	if _, ok := r.startedRuntime("alice"); ok {
 		t.Fatal("startedRuntime should reject a stopped runtime after retire failure")
 	}
-	if session.stopCalls != 1 {
-		t.Fatalf("runtime stop calls = %d, want 1", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 1 {
+		t.Fatalf("runtime stop calls = %d, want 1", got)
 	}
 }
 
@@ -703,8 +703,8 @@ func TestRealRetire_RuntimeBackedAgentStopsRuntimeBeforeLegacyRetireFn(t *testin
 		if name != "alice" {
 			t.Fatalf("retireFn name = %q, want alice", name)
 		}
-		if session.stopCalls != 1 {
-			t.Fatalf("retireFn called before runtime stop; stop calls = %d", session.stopCalls)
+		if got := session.stopCalls.Load(); got != 1 {
+			t.Fatalf("retireFn called before runtime stop; stop calls = %d", got)
 		}
 		if cascade {
 			t.Fatal("runtime-backed retire should recurse children before calling retireFn")
@@ -722,8 +722,8 @@ func TestRealRetire_RuntimeBackedAgentStopsRuntimeBeforeLegacyRetireFn(t *testin
 	if _, ok := r.runtimeRegistry.Get("alice"); ok {
 		t.Fatal("runtime should be removed after runtime-backed retire")
 	}
-	if session.stopCalls != 1 {
-		t.Fatalf("runtime stop calls = %d, want 1", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 1 {
+		t.Fatalf("runtime stop calls = %d, want 1", got)
 	}
 }
 
@@ -751,8 +751,8 @@ func TestRealRetire_RuntimeBackedAgentRequiresCascadeWhenChildrenExist(t *testin
 	if err == nil {
 		t.Fatal("Retire() error = nil, want active-children guard")
 	}
-	if session.stopCalls != 0 {
-		t.Fatalf("runtime stop calls = %d, want 0 when guard fails", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 0 {
+		t.Fatalf("runtime stop calls = %d, want 0 when guard fails", got)
 	}
 	if _, ok := r.runtimeRegistry.Get("alice"); !ok {
 		t.Fatal("runtime should remain registered when retire is rejected")
@@ -847,8 +847,8 @@ func TestRealShutdown_StopsRuntimeBackedChildren(t *testing.T) {
 	if updated.Status != state.StatusSuspended {
 		t.Fatalf("Status = %q, want %q (QUM-372: Shutdown suspends rather than kills)", updated.Status, state.StatusSuspended)
 	}
-	if session.stopCalls != 1 {
-		t.Fatalf("runtime stop calls = %d, want 1", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 1 {
+		t.Fatalf("runtime stop calls = %d, want 1", got)
 	}
 }
 

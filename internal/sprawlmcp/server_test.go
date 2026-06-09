@@ -1975,3 +1975,129 @@ func TestHandleToolsCall_EndOnError(t *testing.T) {
 		t.Errorf("end.error = %q, want to contain 'agent not found'", errMsg)
 	}
 }
+
+// panickingSupervisor embeds NoopSupervisor and panics from Status. It is
+// the smallest seam for driving a tool-dispatch panic through
+// handleToolsCall without modifying production code.
+type panickingSupervisor struct {
+	supervisortest.NoopSupervisor
+	panicMsg string
+}
+
+func (p *panickingSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, error) {
+	panic(p.panicMsg)
+}
+
+// TestHandleToolsCall_PanicEmitsEndRecord — QUM-729: when a tool dispatch
+// panics, handleToolsCall must emit a paired start/end pair in the calllog
+// with status="panic" before re-panicking. This locks the existing behavior
+// across the upcoming refactor (which moves the End-on-panic logic into a
+// centralized teardown path).
+func TestHandleToolsCall_PanicEmitsEndRecord(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := calllog.Open(dir)
+	if err != nil {
+		t.Fatalf("calllog.Open: %v", err)
+	}
+	defer logger.Close()
+
+	sup := &panickingSupervisor{panicMsg: "boom-from-status"}
+	srv := New(sup).WithCallLog(logger)
+
+	msg := makeJSONRPCRequest(729, "tools/call", map[string]any{
+		"name":      "status",
+		"arguments": map[string]any{},
+	})
+
+	// handleToolsCall re-panics after emitting the end record; recover so
+	// the test can inspect the calllog. Failing to recover would crash the
+	// test binary, which is the wrong signal.
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("expected handleToolsCall to re-panic; got no panic")
+			}
+		}()
+		_, _ = srv.HandleMessage(context.Background(), msg)
+	}()
+
+	// Flush before reading.
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger.Close: %v", err)
+	}
+
+	path := filepath.Join(dir, ".sprawl", "logs", "mcp-calls.jsonl")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open call log: %v", err)
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var lines []map[string]any
+	for scanner.Scan() {
+		b := scanner.Bytes()
+		if len(b) == 0 {
+			continue
+		}
+		var obj map[string]any
+		if err := json.Unmarshal(b, &obj); err != nil {
+			t.Fatalf("malformed JSONL %q: %v", string(b), err)
+		}
+		lines = append(lines, obj)
+	}
+
+	// Find the start record for the status tool — its call_id is the
+	// anchor for asserting the paired end.
+	var start, end map[string]any
+	startIdx, endIdx := -1, -1
+	for i, ln := range lines {
+		if ln["tool"] == "status" && ln["phase"] == "start" {
+			start = ln
+			startIdx = i
+		}
+	}
+	if start == nil {
+		t.Fatalf("no start record for tool=status in lines=%+v", lines)
+	}
+	callID, _ := start["call_id"].(string)
+	if callID == "" {
+		t.Fatal("start record missing call_id")
+	}
+
+	endCount := 0
+	for i, ln := range lines {
+		if ln["call_id"] == callID && ln["phase"] == "end" {
+			endCount++
+			if end == nil {
+				end = ln
+				endIdx = i
+			}
+		}
+	}
+	if end == nil {
+		t.Fatalf("no end record for call_id=%s (panic path must emit paired end). lines=%+v", callID, lines)
+	}
+	if endCount != 1 {
+		t.Errorf("got %d end records for call_id=%s, want exactly 1 (no duplicates)", endCount, callID)
+	}
+	if startIdx >= endIdx {
+		t.Errorf("start record at index %d must appear before end record at index %d", startIdx, endIdx)
+	}
+	if end["status"] != "panic" {
+		t.Errorf("end.status = %v, want panic", end["status"])
+	}
+	errStr, _ := end["error"].(string)
+	if errStr == "" {
+		t.Error("end.error empty; want non-empty panic message")
+	}
+	if !strings.Contains(errStr, "boom-from-status") {
+		t.Errorf("end.error = %q, want to contain panic msg 'boom-from-status'", errStr)
+	}
+	dur, ok := end["duration_s"].(float64)
+	if !ok {
+		t.Errorf("end.duration_s not numeric: %v (%T)", end["duration_s"], end["duration_s"])
+	} else if dur <= 0 {
+		t.Errorf("end.duration_s = %v, want > 0", dur)
+	}
+}

@@ -68,12 +68,12 @@ func RenderHeader(width int, treeLines []string) string {
 
 	if width < wordmarkNarrowThreshold {
 		left := gradientLine("SPRAWL")
-		sep := headerSep.Render(" · ")
+		sep := pillSep.Render(" · ")
 		row := left + sep + getLine(0)
 		return padVisible(row, width)
 	}
 
-	sep := headerSep.Render(" │ ")
+	sep := pillSep.Render(" │ ")
 	wordmarkW := lipgloss.Width(sprawlWordmark[0])
 	lines := make([]string, 3)
 	for i := 0; i < 3; i++ {

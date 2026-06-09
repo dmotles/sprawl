@@ -125,8 +125,8 @@ func TestToolCallItem_PendingThenResultLifecycle(t *testing.T) {
 		t.Errorf("ToolID() = %q, want %q", got, "toolu_x")
 	}
 	pending := item.Render(80)
-	if !strings.Contains(pending, pendingToolGlyph) {
-		t.Errorf("pending render missing pending glyph: %q", pending)
+	if !strings.Contains(pending, toolSpinnerFrames[0]) {
+		t.Errorf("pending render missing initial spinner frame %q: %q", toolSpinnerFrames[0], pending)
 	}
 	if !strings.Contains(pending, "Bash") {
 		t.Errorf("pending render missing tool name: %q", pending)
@@ -136,8 +136,10 @@ func TestToolCallItem_PendingThenResultLifecycle(t *testing.T) {
 		t.Fatalf("MarkResult did not flip Finished()")
 	}
 	done := item.Render(80)
-	if strings.Contains(done, pendingToolGlyph) {
-		t.Errorf("completed render still shows pending glyph: %q", done)
+	for _, frame := range toolSpinnerFrames {
+		if strings.Contains(done, frame) {
+			t.Errorf("completed render still shows spinner frame %q: %q", frame, done)
+		}
 	}
 	if !strings.Contains(done, "✓") {
 		t.Errorf("completed render missing success glyph: %q", done)
@@ -190,6 +192,79 @@ func TestToolCallItem_NestedDepthCompactRender(t *testing.T) {
 	}
 	if strings.Contains(out, "┌") || strings.Contains(out, "└") {
 		t.Errorf("nested render leaked box-drawing chars: %q", out)
+	}
+}
+
+func TestToolCallItem_StartTickCmdNilWhenNotPending(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t"})
+	item.MarkResult("done", false)
+	if cmd := item.StartTickCmd(); cmd != nil {
+		t.Errorf("StartTickCmd on finished item should be nil")
+	}
+}
+
+func TestToolCallItem_StartTickCmdNonNilWhenPending(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t"})
+	if cmd := item.StartTickCmd(); cmd == nil {
+		t.Errorf("StartTickCmd on pending item should be non-nil")
+	}
+	// Idempotent: a second call while ticking returns nil.
+	if cmd := item.StartTickCmd(); cmd != nil {
+		t.Errorf("StartTickCmd while already ticking should return nil (no double-arm)")
+	}
+}
+
+func TestToolCallItem_TickAdvancesFrame(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "ls"})
+	before := item.Render(80)
+	cmd := item.Update(toolTickMsg{ToolID: "t"})
+	if cmd == nil {
+		t.Errorf("Update(toolTickMsg) on pending item should return follow-up cmd")
+	}
+	after := item.Render(80)
+	if before == after {
+		t.Errorf("Tick should change rendered output. before=%q after=%q", before, after)
+	}
+}
+
+func TestToolCallItem_TickIgnoresWrongID(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t1"})
+	before := item.Render(80)
+	cmd := item.Update(toolTickMsg{ToolID: "other"})
+	if cmd != nil {
+		t.Errorf("Update with mismatched ToolID should return nil cmd")
+	}
+	after := item.Render(80)
+	if before != after {
+		t.Errorf("mismatched tick should not change render")
+	}
+}
+
+func TestToolCallItem_TickAfterMarkResultTerminates(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t"})
+	_ = item.StartTickCmd()
+	item.MarkResult("done", false)
+	if cmd := item.Update(toolTickMsg{ToolID: "t"}); cmd != nil {
+		t.Errorf("Update after MarkResult must return nil (no follow-up tick)")
+	}
+}
+
+func TestToolCallItem_NestedTickAnimates(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{
+		Name: "Read", ToolID: "t", Input: "x.go",
+		Depth: 1, ParentToolID: "agent_root",
+	})
+	before := item.Render(80)
+	_ = item.Update(toolTickMsg{ToolID: "t"})
+	after := item.Render(80)
+	if before == after {
+		t.Errorf("nested-render tick should change output. before=%q after=%q", before, after)
 	}
 }
 

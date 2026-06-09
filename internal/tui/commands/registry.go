@@ -34,6 +34,8 @@ const (
 	ActionToggleHelp
 	// ActionShowUsage opens the /usage modal (QUM-721).
 	ActionShowUsage
+	// ActionToggleTree toggles the agent-tree modal overlay (QUM-733 5b).
+	ActionToggleTree
 )
 
 // Command describes a palette entry.
@@ -59,6 +61,12 @@ var registry = []Command{
 		Description: "Show key bindings and help",
 		Kind:        KindUI,
 		Action:      ActionToggleHelp,
+	},
+	{
+		Name:        "/tree",
+		Description: "Show full agent tree",
+		Kind:        KindUI,
+		Action:      ActionToggleTree,
 	},
 	{
 		Name:           "/handoff",

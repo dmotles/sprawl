@@ -666,8 +666,8 @@ func TestRealRecoverAgents_WakesForDeliveryAfterSuccess(t *testing.T) {
 	if resumed != 1 || failed != 0 || len(errs) != 0 {
 		t.Fatalf("RecoverAgents = (%d,%d,%v), want (1,0,nil)", resumed, failed, errs)
 	}
-	if session.wakeForDeliveryCalls < 1 {
-		t.Errorf("wakeForDeliveryCalls = %d, want >= 1 (QUM-605: resumed agents must drain pending maildir on resume)", session.wakeForDeliveryCalls)
+	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
+		t.Errorf("wakeForDeliveryCalls = %d, want >= 1 (QUM-605: resumed agents must drain pending maildir on resume)", got)
 	}
 }
 
@@ -688,8 +688,8 @@ func TestRealRecoverAgents_NoWakeAfterFailedStart(t *testing.T) {
 	if _, failed, _ := r.RecoverAgents(context.Background()); failed != 1 {
 		t.Fatalf("failed = %d, want 1", failed)
 	}
-	if session.wakeForDeliveryCalls != 0 {
-		t.Errorf("wakeForDeliveryCalls = %d, want 0 (must not wake when StartResume failed)", session.wakeForDeliveryCalls)
+	if got := session.wakeForDeliveryCalls.Load(); got != 0 {
+		t.Errorf("wakeForDeliveryCalls = %d, want 0 (must not wake when StartResume failed)", got)
 	}
 }
 

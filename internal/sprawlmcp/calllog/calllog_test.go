@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -606,6 +607,162 @@ func TestLogger_DoesNotRotateUndersizedLog(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath + ".1"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf(".1 should not exist when current is undersized; stat err=%v", err)
+	}
+}
+
+// TestClose_FlushesActiveCallsAsShutdown — QUM-729: when the Logger is
+// closed while a call is still in-flight (no End was ever called — e.g. the
+// MCP server process is shutting down or the handler returned without
+// emitting End), Close must synthesize a terminal "end" record so the JSONL
+// stream is balanced and downstream consumers don't see a dangling start.
+func TestClose_FlushesActiveCallsAsShutdown(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	_, callID := l.Begin(context.Background(), "report_status", "finn", nil)
+	if callID == "" {
+		t.Fatal("Begin returned empty callID")
+	}
+
+	// Intentionally do NOT call End — simulating shutdown mid-call.
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	lines := jsonlLines(t, callLogPath(dir))
+
+	// Filter lines for our call_id.
+	var ours []map[string]any
+	for _, ln := range lines {
+		if ln["call_id"] == callID {
+			ours = append(ours, ln)
+		}
+	}
+	if len(ours) != 2 {
+		t.Fatalf("got %d lines for call_id %s, want 2 (start + synthesized end): %+v", len(ours), callID, ours)
+	}
+
+	start := ours[0]
+	end := ours[1]
+
+	if start["phase"] != "start" {
+		t.Errorf("line[0].phase = %v, want start", start["phase"])
+	}
+	if end["phase"] != "end" {
+		t.Errorf("line[1].phase = %v, want end", end["phase"])
+	}
+	if end["status"] != "shutdown" {
+		t.Errorf("end.status = %v, want shutdown", end["status"])
+	}
+	errStr, _ := end["error"].(string)
+	if errStr == "" {
+		t.Errorf("end.error empty; want non-empty shutdown reason")
+	}
+	if !strings.Contains(strings.ToLower(errStr), "shutdown") {
+		t.Errorf("end.error = %q, want to contain 'shutdown'", errStr)
+	}
+	if end["call_id"] != callID {
+		t.Errorf("end.call_id = %v, want %s", end["call_id"], callID)
+	}
+	dur, ok := end["duration_s"].(float64)
+	if !ok {
+		t.Fatalf("end.duration_s not numeric: %v (%T)", end["duration_s"], end["duration_s"])
+	}
+	if dur <= 0 {
+		t.Errorf("end.duration_s = %v, want > 0", dur)
+	}
+}
+
+// TestClose_FlushesMultipleActiveCalls — QUM-729: every in-flight call must
+// receive a synthesized end record at Close time, not just one.
+func TestClose_FlushesMultipleActiveCalls(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	_, id1 := l.Begin(context.Background(), "retire", "weave", map[string]any{"agent_name": "finn"})
+	_, id2 := l.Begin(context.Background(), "report_status", "finn", nil)
+	if id1 == "" || id2 == "" {
+		t.Fatalf("Begin returned empty callIDs: %q %q", id1, id2)
+	}
+	if id1 == id2 {
+		t.Fatalf("expected distinct call_ids, got %q == %q", id1, id2)
+	}
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	lines := jsonlLines(t, callLogPath(dir))
+
+	endsByID := map[string]map[string]any{}
+	for _, ln := range lines {
+		if ln["phase"] != "end" {
+			continue
+		}
+		id, _ := ln["call_id"].(string)
+		endsByID[id] = ln
+	}
+
+	for _, id := range []string{id1, id2} {
+		end, ok := endsByID[id]
+		if !ok {
+			t.Errorf("missing synthesized end for call_id %s; lines=%+v", id, lines)
+			continue
+		}
+		if end["status"] != "shutdown" {
+			t.Errorf("end.status for %s = %v, want shutdown", id, end["status"])
+		}
+		errStr, _ := end["error"].(string)
+		if errStr == "" {
+			t.Errorf("end.error for %s empty; want non-empty shutdown reason", id)
+		}
+		dur, ok := end["duration_s"].(float64)
+		if !ok {
+			t.Errorf("end.duration_s for %s not numeric: %v (%T)", id, end["duration_s"], end["duration_s"])
+		} else if dur <= 0 {
+			t.Errorf("end.duration_s for %s = %v, want > 0", id, dur)
+		}
+	}
+}
+
+// TestClose_IdempotentNoDoubleFlush — QUM-729: calling Close twice must not
+// emit a second synthesized end record for the same call_id.
+func TestClose_IdempotentNoDoubleFlush(t *testing.T) {
+	dir := t.TempDir()
+	l, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	_, callID := l.Begin(context.Background(), "report_status", "finn", nil)
+	if callID == "" {
+		t.Fatal("Begin returned empty callID")
+	}
+
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close #1: %v", err)
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close #2: %v", err)
+	}
+
+	lines := jsonlLines(t, callLogPath(dir))
+	endCount := 0
+	for _, ln := range lines {
+		if ln["call_id"] == callID && ln["phase"] == "end" {
+			endCount++
+		}
+	}
+	if endCount != 1 {
+		t.Errorf("got %d end records for call_id %s, want exactly 1 (Close must be idempotent)", endCount, callID)
 	}
 }
 

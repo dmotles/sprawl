@@ -27,6 +27,13 @@ var RandReader = rand.Reader
 // and is hidden from default `messages_list` views. See StatusChangePayload.
 const TypeStatusChange = "status_change"
 
+// TypeLivenessCheck marks a maildir envelope as a supervisor heartbeat
+// liveness-check nudge (QUM-730). Like TypeStatusChange, it is ephemeral
+// telemetry: no inbox banner, no unread badge, no sent/ copy, and it is
+// drained off-band by the runtime launcher's status-class batch — never
+// surfaced via the regular `messages_list` views.
+const TypeLivenessCheck = "liveness_check"
+
 // StatusChangePayload is the JSON shape encoded into Message.Body for
 // envelopes with Type == TypeStatusChange. Exported so consumers can
 // unmarshal symmetrically.
@@ -320,6 +327,136 @@ func DrainStatusChange(sprawlRoot, recipient string) ([]Message, error) {
 				continue
 			}
 			if msg.Type != TypeStatusChange {
+				continue
+			}
+			msg.Dir = dir
+			found = append(found, located{msg: msg, path: fullPath})
+		}
+	}
+
+	if len(found) == 0 {
+		return nil, nil
+	}
+
+	sort.Slice(found, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, found[i].msg.Timestamp)
+		tj, _ := time.Parse(time.RFC3339, found[j].msg.Timestamp)
+		return ti.Before(tj)
+	})
+
+	out := make([]Message, 0, len(found))
+	for _, f := range found {
+		if err := os.Remove(f.path); err != nil && !os.IsNotExist(err) {
+			return out, fmt.Errorf("removing drained envelope %s: %w", f.path, err)
+		}
+		out = append(out, f.msg)
+	}
+	return out, nil
+}
+
+// SendLivenessCheck writes a liveness_check envelope into the recipient's
+// maildir (QUM-730). Like SendStatusChange, it is ephemeral telemetry:
+// it does NOT invoke the process-level default notifier, writes no sent/
+// copy, and carries no body payload. The envelope is drained off-band
+// by the supervisor's runtime launcher and rendered into the recipient's
+// next-turn prompt via inboxprompt.DrainLivenessCheckLines.
+func SendLivenessCheck(sprawlRoot, from, to string) (string, error) {
+	if from == "" {
+		return "", fmt.Errorf("sender (from) must not be empty")
+	}
+	if to == "" {
+		return "", fmt.Errorf("recipient (to) must not be empty")
+	}
+
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), to)
+	for _, sub := range []string{"tmp", "new", "cur", "archive"} {
+		if err := os.MkdirAll(filepath.Join(agentDir, sub), 0o755); err != nil { //nolint:gosec // G301: world-readable message dirs are intentional
+			return "", fmt.Errorf("creating directory %s: %w", sub, err)
+		}
+	}
+
+	suffixBytes := make([]byte, 4)
+	if _, err := rand.Read(suffixBytes); err != nil {
+		return "", fmt.Errorf("generating random suffix: %w", err)
+	}
+	hexSuffix := hex.EncodeToString(suffixBytes)
+
+	now := NowFunc()
+	id := fmt.Sprintf("%d.%s.%s", now.UnixNano(), from, hexSuffix)
+
+	shortID, err := generateShortID(agentDir)
+	if err != nil {
+		return "", fmt.Errorf("generating short ID: %w", err)
+	}
+
+	msg := &Message{
+		ID:        id,
+		ShortID:   shortID,
+		From:      from,
+		To:        to,
+		Subject:   "liveness_check",
+		Body:      "",
+		Timestamp: now.UTC().Format(time.RFC3339),
+		Type:      TypeLivenessCheck,
+	}
+
+	data, err := json.MarshalIndent(msg, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshaling message: %w", err)
+	}
+
+	filename := id + ".json"
+	tmpPath := filepath.Join(agentDir, "tmp", filename)
+	newPath := filepath.Join(agentDir, "new", filename)
+
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil { //nolint:gosec // G306: world-readable message files are intentional
+		return "", fmt.Errorf("writing tmp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, newPath); err != nil {
+		return "", fmt.Errorf("moving message to new/: %w", err)
+	}
+
+	// Intentionally skip sent/ copy + notifier — liveness_check is ephemeral.
+	return shortID, nil
+}
+
+// DrainLivenessCheck reads all type=liveness_check envelopes from the
+// recipient's new/ and cur/ dirs in FIFO order, removes them from disk,
+// and returns them. Mirrors DrainStatusChange. Idempotent: empty/missing
+// recipient returns (nil, nil). Leaves non-liveness_check envelopes
+// untouched.
+func DrainLivenessCheck(sprawlRoot, recipient string) ([]Message, error) {
+	agentDir := filepath.Join(MessagesDir(sprawlRoot), recipient)
+
+	type located struct {
+		msg  Message
+		path string
+	}
+	var found []located
+
+	for _, dir := range []string{"new", "cur"} {
+		dirPath := filepath.Join(agentDir, dir)
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("reading %s directory: %w", dir, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			fullPath := filepath.Join(dirPath, entry.Name())
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				continue
+			}
+			var msg Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				continue
+			}
+			if msg.Type != TypeLivenessCheck {
 				continue
 			}
 			msg.Dir = dir
@@ -663,10 +800,23 @@ func List(sprawlRoot, agent, filter string) ([]*Message, error) {
 		return nil, err
 	}
 	if !hideStatus && !keepOnlyStatus {
-		return msgs, nil
+		// Even on un-filtered views (archived/sent), hide ephemeral
+		// liveness_check envelopes — they should never surface in
+		// messages_list output. (QUM-730)
+		out := msgs[:0]
+		for _, m := range msgs {
+			if m.Type == TypeLivenessCheck {
+				continue
+			}
+			out = append(out, m)
+		}
+		return out, nil
 	}
 	out := msgs[:0]
 	for _, m := range msgs {
+		if m.Type == TypeLivenessCheck {
+			continue
+		}
 		isStatus := m.Type == TypeStatusChange
 		if keepOnlyStatus && isStatus {
 			out = append(out, m)

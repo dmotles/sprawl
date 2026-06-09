@@ -21,7 +21,9 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -73,6 +75,24 @@ type itemRenderCtx struct {
 // while a ToolCallItem is in flight. Plan §3 S4 + §5 Q6 resolved the global
 // spinner subsystem out of existence; for S1 we render a fixed glyph.
 const pendingToolGlyph = "⠿"
+
+// toolSpinnerFrames is the per-item braille pulse used to animate in-flight
+// ToolCallItem rows (QUM-732 revisit of QUM-674 Q6). The frames are advanced
+// by toolTickMsg deliveries scheduled via tea.Tick from each pending item's
+// Update method — there is intentionally NO global ticker (the QUM-336
+// subsystem was removed by QUM-674 S4 and is not reintroduced).
+var toolSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// toolSpinnerInterval is the cadence at which each pending ToolCallItem
+// advances its frame. ~10 fps lands inside the AC's 80-120ms window.
+const toolSpinnerInterval = 100 * time.Millisecond
+
+// toolTickMsg is delivered by tea.Tick to a single pending ToolCallItem.
+// ToolID scopes routing; ChatList.Update forwards only to the matching item.
+// This msg is LOCAL to the TUI — it never flows through the runtime EventBus
+// (internal/tuiruntime/tuiadapter.go only translates RuntimeEvents), so it
+// cannot trip QUM-669 gap-detect / EventDropDetectedMsg.
+type toolTickMsg struct{ ToolID string }
 
 // streamingCursor is the trailing marker drawn after an in-flight
 // AssistantTextItem. Matches viewport.StreamingCursor by intent but kept as
@@ -267,6 +287,8 @@ type ToolCallItem struct {
 	failed       bool
 	result       string
 	expanded     bool
+	frame        int  // current spinner frame index; advances on toolTickMsg
+	ticking      bool // an in-flight tea.Tick has been armed for this item
 }
 
 // ToolCallSpec captures the constructor inputs for a ToolCallItem so the
@@ -367,7 +389,55 @@ func (i *ToolCallItem) Render(width int) string {
 }
 
 func (i *ToolCallItem) indicator() string {
-	return toolIndicator(i.ctx.theme, i.pending, i.failed, "", pendingToolGlyph)
+	frame := ""
+	if i.pending {
+		frame = toolSpinnerFrames[i.frame%len(toolSpinnerFrames)]
+	}
+	return toolIndicator(i.ctx.theme, i.pending, i.failed, frame, pendingToolGlyph)
+}
+
+// StartTickCmd returns a tea.Cmd that fires the next toolTickMsg for this
+// item after toolSpinnerInterval. Returns nil when the item is not pending
+// or a tick is already in flight (idempotent — safe to call from
+// ChatList.PendingToolTickCmds on every append batch).
+func (i *ToolCallItem) StartTickCmd() tea.Cmd {
+	if !i.pending || i.ticking {
+		return nil
+	}
+	i.ticking = true
+	id := i.toolID
+	return tea.Tick(toolSpinnerInterval, func(time.Time) tea.Msg {
+		return toolTickMsg{ToolID: id}
+	})
+}
+
+// ResetTicking clears the in-flight tick flag without modifying frame state.
+// Called on observed-agent switches so the newly-observed pane's pending
+// items can be re-armed by PendingToolTickCmds — any tick chain previously
+// armed for this item has either already terminated (delivered to the now-
+// previous observed pane and dead-ended) or will dead-end on next delivery,
+// so resetting the flag is safe and necessary to avoid a frozen spinner
+// after a switch-away-then-back (QUM-732).
+func (i *ToolCallItem) ResetTicking() { i.ticking = false }
+
+// Update advances the spinner frame on a toolTickMsg destined for this item
+// and returns the next-tick cmd while still pending. Returns nil when the
+// item has resolved — the tick cmd chain naturally terminates, so no
+// goroutine / cmd leak. Returns nil for mis-routed toolTickMsg (different
+// ToolID), letting ChatList.Update treat them as no-ops.
+func (i *ToolCallItem) Update(msg tea.Msg) tea.Cmd {
+	tm, ok := msg.(toolTickMsg)
+	if !ok || tm.ToolID != i.toolID {
+		return nil
+	}
+	if !i.pending {
+		i.ticking = false
+		return nil
+	}
+	i.frame = (i.frame + 1) % len(toolSpinnerFrames)
+	return tea.Tick(toolSpinnerInterval, func(time.Time) tea.Msg {
+		return toolTickMsg{ToolID: i.toolID}
+	})
 }
 
 func (i *ToolCallItem) renderBox(width int) string {

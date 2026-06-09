@@ -355,3 +355,27 @@ func TestBuildPromptsMatchGolden(t *testing.T) {
 		})
 	}
 }
+
+// --- QUM-730: heartbeat / liveness_check notification --------------------
+
+// TestBuildHeartbeatNotification_VerbatimBody pins the exact wire string the
+// supervisor heartbeat injects into a stalled child's next-turn prompt. The
+// body is intentionally chatty (it shows up in the child's transcript) so any
+// future tweak to the wording must update this golden in lockstep.
+//
+// The verbatim body — including the trailing newline — is:
+//
+//	<system-notification type="liveness_check">This is an automated liveness check from the sprawl system. If there's no work to do just ignore this message. If you're still waiting on something or you were in the middle of something, please continue your work.</system-notification>\n
+func TestBuildHeartbeatNotification_VerbatimBody(t *testing.T) {
+	want := `<system-notification type="liveness_check">This is an automated liveness check from the sprawl system. If there's no work to do just ignore this message. If you're still waiting on something or you were in the middle of something, please continue your work.</system-notification>` + "\n"
+	got := inboxprompt.BuildHeartbeatNotification()
+	if got != want {
+		t.Errorf("BuildHeartbeatNotification mismatch\n got: %q\nwant: %q", got, want)
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Errorf("BuildHeartbeatNotification must end with newline: %q", got)
+	}
+	if !strings.Contains(got, `type="liveness_check"`) {
+		t.Errorf("must carry type=\"liveness_check\" attribute: %q", got)
+	}
+}

@@ -38,6 +38,7 @@ import (
 	"github.com/dmotles/sprawl/internal/inputcoalesce"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
+	"github.com/dmotles/sprawl/internal/observe/incident"
 	"github.com/dmotles/sprawl/internal/observe/sigdump"
 	"github.com/dmotles/sprawl/internal/procutil"
 	"github.com/dmotles/sprawl/internal/rootinit"
@@ -701,6 +702,30 @@ func runEnter(deps *enterDeps) error {
 		// QUM-332: child-agent transcript tailing resolves Claude session
 		// log paths via memory.SessionLogPath(homeDir, worktree, sessionID).
 		model.SetHomeDir(homeDir)
+	}
+
+	// QUM-728: wire the incident-snapshot producer used by Ctrl+\.
+	if sup != nil {
+		snap := &incident.Snapshotter{
+			SprawlRoot: sprawlRoot,
+			Now:        time.Now,
+			FDSource:   sigdump.ProcFDSource(),
+			StatusFn: func(ctx context.Context) ([]supervisor.AgentInfo, error) {
+				return sup.Status(ctx)
+			},
+			WeavePid: os.Getpid(),
+			Runner: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+				return exec.CommandContext(ctx, name, args...).Output()
+			},
+			MCPLogPath:   filepath.Join(sprawlRoot, ".sprawl", "logs", "mcp-calls.jsonl"),
+			ActivityRoot: filepath.Join(sprawlRoot, ".sprawl", "agents"),
+		}
+		model.SetSnapshotCmd(func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			dir, err := snap.Capture(ctx)
+			return tui.IncidentSnapshotCompleteMsg{Path: dir, Err: err}
+		})
 	}
 
 	if bridge != nil && state.lastWasResume {

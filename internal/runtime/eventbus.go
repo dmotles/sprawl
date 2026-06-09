@@ -106,6 +106,15 @@ func (b *EventBus) CurrentSeq() uint64 {
 	return b.seq.Load()
 }
 
+// SubscriberCount returns the number of currently-registered subscribers.
+// QUM-727: surfaced through mcp__sprawl__status as the eventbus_subscribed
+// boolean so stopped-but-leaking runtimes are visible.
+func (b *EventBus) SubscriberCount() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.subscribers)
+}
+
 // subscriber tracks a single fan-out target. Each subscriber has its own
 // buffered channel and drop accounting. Warn emission is rate+burst limited
 // via lastWarnAt / lastWarnCount (QUM-681); lastDropAt anchors the status-bar

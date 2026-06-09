@@ -525,6 +525,11 @@ func (h *unifiedHandle) drainPendingToQueue() {
 		)
 	}
 	statusLines := inboxprompt.DrainStatusChangeLines(h.sprawlRoot, h.name)
+	// QUM-730: liveness_check envelopes ride the same status-class channel
+	// as status_change — drained off-band and rendered into the next-turn
+	// prompt's prologue.
+	livenessLines := inboxprompt.DrainLivenessCheckLines(h.sprawlRoot, h.name)
+	statusLines = append(statusLines, livenessLines...)
 	if len(pending) == 0 && len(statusLines) == 0 {
 		return
 	}

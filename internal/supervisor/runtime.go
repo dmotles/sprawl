@@ -297,6 +297,38 @@ func (r *AgentRuntime) IsTerminallyFaulted() bool {
 	return probe.IsTerminallyFaulted()
 }
 
+// SubprocessAlive reports whether a live RuntimeHandle is currently
+// attached. Distinct from the projected liveness — a fault that has
+// detached but not yet been disk-stamped reads false here. (QUM-727)
+func (r *AgentRuntime) SubprocessAlive() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.handle != nil
+}
+
+// EventBusSubscriberCount returns the live subscriber count on the
+// underlying UnifiedRuntime's EventBus, or 0 if no handle is attached
+// or the handle does not expose a UnifiedRuntime. (QUM-727)
+func (r *AgentRuntime) EventBusSubscriberCount() int {
+	handle := r.currentHandle()
+	if handle == nil {
+		return 0
+	}
+	p, ok := handle.(unifiedRuntimeProvider)
+	if !ok {
+		return 0
+	}
+	rt := p.UnifiedRuntime()
+	if rt == nil {
+		return 0
+	}
+	bus := rt.EventBus()
+	if bus == nil {
+		return 0
+	}
+	return bus.SubscriberCount()
+}
+
 // Snapshot returns the current runtime snapshot.
 func (r *AgentRuntime) Snapshot() RuntimeSnapshot {
 	r.mu.RLock()

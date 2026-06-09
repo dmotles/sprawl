@@ -146,6 +146,10 @@ type Real struct {
 	// HEAD SHA. Unit tests inject a fake; production callers leave this
 	// nil and the package-level realGitRevParseHEAD is used. See QUM-572.
 	gitRevParseHEAD func(dir string) (string, error)
+
+	// heartbeat is the QUM-730 supervisor liveness-check goroutine. Started
+	// by NewReal when LivenessConfig.Enabled, stopped by Shutdown.
+	heartbeat *heartbeat
 }
 
 // realGitRevParseHEAD shells out to `git -C <dir> rev-parse HEAD`. stdio is
@@ -320,7 +324,53 @@ func NewReal(cfg Config) (*Real, error) {
 		s.faultEmitter = r.dispatchFault
 	}
 	r.runtimeStarter = starter
+
+	// QUM-730: install the heartbeat goroutine. Defaults enable it; the
+	// project config can disable or tune via the `liveness:` YAML block.
+	livenessCfg := ResolveLivenessConfig(loadRawLiveness(cfg.SprawlRoot))
+	r.heartbeat = newHeartbeat(heartbeatDeps{
+		Cfg:        livenessCfg,
+		SprawlRoot: cfg.SprawlRoot,
+		Registry:   &registryListerAdapter{reg: r.runtimeRegistry},
+		SendMessage: func(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error) {
+			return r.SendMessage(ctx, to, body, interrupt)
+		},
+		SendLivenessCheck: func(sprawlRoot, to string) (string, error) {
+			return messages.SendLivenessCheck(sprawlRoot, r.callerName, to)
+		},
+		LoadAgent:        state.LoadAgent,
+		ReadActivityTail: agentloop.ReadActivityTail,
+		ActivityPath:     agentloop.ActivityPath,
+		WakeForDelivery: func(rt *AgentRuntime) error {
+			if rt == nil {
+				return nil
+			}
+			return rt.WakeForDelivery()
+		},
+		Logger: slog.Default(),
+	})
+	r.heartbeat.Start()
 	return r, nil
+}
+
+// loadRawLiveness reads `.sprawl/config.yaml`'s `liveness:` block. Errors
+// (or absent file) yield nil so ResolveLivenessConfig applies defaults.
+func loadRawLiveness(sprawlRoot string) *LivenessConfigRaw {
+	if sprawlRoot == "" {
+		return nil
+	}
+	c, err := config.Load(sprawlRoot)
+	if err != nil || c == nil || c.Liveness == nil {
+		return nil
+	}
+	raw := c.Liveness
+	return &LivenessConfigRaw{
+		Enabled:               raw.Enabled,
+		HeartbeatInterval:     raw.HeartbeatInterval,
+		IdleThreshold:         raw.IdleThreshold,
+		Tier2ConsecutiveTicks: raw.Tier2ConsecutiveTicks,
+		EscalationThreshold:   raw.EscalationThreshold,
+	}
 }
 
 // RegisterRootRuntime attaches a pre-built RuntimeHandle to the runtime
@@ -409,8 +459,12 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 	processAliveByName := make(map[string]*bool)
 	inAutonomousTurnByName := make(map[string]bool)
 	lastActivityAtByName := make(map[string]time.Time)
+	subprocessAliveByName := make(map[string]bool)
+	eventbusSubCountByName := make(map[string]int)
 	for _, runtime := range r.runtimeRegistry.List() {
 		snap := runtime.Snapshot()
+		subprocessAliveByName[snap.Name] = runtime.SubprocessAlive()
+		eventbusSubCountByName[snap.Name] = runtime.EventBusSubscriberCount()
 		// Derive process_alive from the AgentLiveness projection (QUM-615 M1)
 		// so a terminally-faulted runtime whose handle is not yet torn down
 		// reports alive=false instead of lying true (QUM-606, invariant 6). The
@@ -444,21 +498,24 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			}
 		}
 		result = append(result, AgentInfo{
-			Name:              a.Name,
-			Type:              a.Type,
-			Family:            a.Family,
-			Parent:            a.Parent,
-			Status:            a.Status,
-			Branch:            a.Branch,
-			TreePath:          a.TreePath,
-			LastReportType:    a.LastReportType,
-			LastReportState:   a.LastReportState,
-			LastReportMessage: a.LastReportMessage,
-			LastReportDetail:  a.LastReportDetail,
-			TotalCostUsd:      sumUsageCostForAgent(r.sprawlRoot, a.Name),
-			ProcessAlive:      processAliveByName[a.Name],
-			InTurn:            inAutonomousTurnByName[a.Name],
-			LastActivityAt:    lastActivity,
+			Name:               a.Name,
+			Type:               a.Type,
+			Family:             a.Family,
+			Parent:             a.Parent,
+			Status:             a.Status,
+			Branch:             a.Branch,
+			TreePath:           a.TreePath,
+			LastReportType:     a.LastReportType,
+			LastReportState:    a.LastReportState,
+			LastReportMessage:  a.LastReportMessage,
+			LastReportDetail:   a.LastReportDetail,
+			TotalCostUsd:       sumUsageCostForAgent(r.sprawlRoot, a.Name),
+			ProcessAlive:       processAliveByName[a.Name],
+			SubprocessAlive:    subprocessAliveByName[a.Name],
+			EventbusSubscribed: eventbusSubCountByName[a.Name] > 0,
+			EventbusSubCount:   eventbusSubCountByName[a.Name],
+			InTurn:             inAutonomousTurnByName[a.Name],
+			LastActivityAt:     lastActivity,
 		})
 	}
 	return result, nil
@@ -990,6 +1047,11 @@ func bfsByParent(eligible []*state.AgentState, root string) []*state.AgentState 
 }
 
 func (r *Real) Shutdown(ctx context.Context) error {
+	// QUM-730: stop the heartbeat first so it can't fire a stray nudge
+	// against a runtime that's about to be torn down.
+	if r.heartbeat != nil {
+		r.heartbeat.Stop()
+	}
 	// Release any in-flight AskUserQuestion callers with OutcomeSessionEnded
 	// BEFORE tearing down runtimes. (QUM-527 slice 1.)
 	r.questions.closeAll(OutcomeSessionEnded, "supervisor shutdown")
@@ -1469,7 +1531,8 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 // An empty agentName defaults to r.callerName — the MCP tool invokes this
 // method with an empty name so child agents can report without passing their
 // own identity as a parameter.
-func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary string) (*ReportStatusResult, error) {
+func (r *Real) ReportStatus(ctx context.Context, agentName, reportState, summary string) (*ReportStatusResult, error) {
+	_ = ctx // QUM-727: teardown uses a fresh background ctx since the goroutine outlives this request.
 	if agentName == "" {
 		agentName = r.callerName
 	}
@@ -1494,7 +1557,49 @@ func (r *Real) ReportStatus(_ context.Context, agentName, reportState, summary s
 	if err != nil {
 		return nil, err
 	}
-	r.syncRuntimeFromState(agentName)
+
+	// QUM-727: terminal-outcome reports (complete/failure) must release the
+	// live runtime — subprocess + EventBus subscribers — to prevent stopped
+	// agents from pinning ~280 MB RSS each and inflating goroutine fan-out.
+	// Run runtime.Stop in a goroutine so this method (and the MCP reply path)
+	// returns immediately: the JSON result frame must flush to claude's stdin
+	// before the subprocess transport closes (design §7). Use a fresh
+	// background ctx because the original MCP-request ctx is cancelled when
+	// the request returns — the goroutine outlives the request.
+	teardown := reportState == agentops.ReportStateComplete || reportState == agentops.ReportStateFailure
+	if teardown {
+		if runtime, ok := r.startedRuntime(agentName); ok {
+			go func(rt *AgentRuntime) {
+				stopCtx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)
+				defer cancel()
+				if err := rt.Stop(stopCtx); err != nil {
+					slog.Default().Warn("supervisor: ReportStatus runtime.Stop failed",
+						slog.String("agent", agentName),
+						slog.String("state", reportState),
+						slog.Any("err", err))
+				}
+				// QUM-727: for the failure path, stopWithFunc clobbers the
+				// in-memory snapshot.Status to "stopped" (it cannot
+				// distinguish a polite Stop from a Stop driven by a
+				// failure-report). The durable on-disk Status is "faulted"
+				// (agentops.Report wrote it, stopWithFunc's preservation
+				// switch kept it). Re-sync the snapshot from disk so the
+				// projection sees DiskStatus=Faulted and QUM-606 Recover
+				// accepts the agent as a legal source. The complete path
+				// keeps Liveness=Stopped (post-stopWithFunc) so callers see
+				// a deliberate-stop projection.
+				if reportState == agentops.ReportStateFailure {
+					r.syncRuntimeFromState(agentName)
+				}
+			}(runtime)
+		}
+	} else {
+		// Non-terminal report (working/blocked): the live handle stays
+		// attached; just mirror persisted state into the snapshot. For
+		// terminal reports we skip this sync to avoid racing the async
+		// Stop above — Stop owns the final snapshot mutation.
+		r.syncRuntimeFromState(agentName)
+	}
 
 	// QUM-614: write the status_change envelope into the parent's maildir
 	// (via messages.SendStatusChange — which deliberately bypasses the

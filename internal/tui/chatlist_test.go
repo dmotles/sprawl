@@ -619,6 +619,86 @@ func TestChatList_NoThinking_NoMarker(t *testing.T) {
 	}
 }
 
+func TestChatList_PendingToolTickCmds_NoPendingReturnsNil(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendUser("hi")
+	if cmd := cl.PendingToolTickCmds(); cmd != nil {
+		t.Errorf("no pending tools should yield nil cmd, got non-nil")
+	}
+}
+
+func TestChatList_PendingToolTickCmds_ArmsOncePerItem(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendToolCallWithHeader("Bash", "t1", true, "ls", "ls", "ls", nil, "")
+	cl.AppendToolCallWithHeader("Bash", "t2", true, "pwd", "pwd", "pwd", nil, "")
+	first := cl.PendingToolTickCmds()
+	if first == nil {
+		t.Fatalf("expected non-nil tick cmd for 2 pending items")
+	}
+	// Second call returns nil — both items already ticking.
+	if again := cl.PendingToolTickCmds(); again != nil {
+		t.Errorf("PendingToolTickCmds must be idempotent for already-ticking items")
+	}
+}
+
+func TestChatList_Update_RoutesToMatchingItem(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendToolCallWithHeader("Bash", "t1", true, "ls", "ls", "ls", nil, "")
+	cl.AppendToolCallWithHeader("Bash", "t2", true, "pwd", "pwd", "pwd", nil, "")
+	before := cl.Render(80)
+	cmd := cl.Update(toolTickMsg{ToolID: "t2"})
+	if cmd == nil {
+		t.Errorf("Update with matching ToolID should return follow-up cmd")
+	}
+	after := cl.Render(80)
+	if before == after {
+		t.Errorf("matching tick should change render")
+	}
+}
+
+func TestChatList_Update_NoLeakAfterCompletion(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendToolCallWithHeader("Bash", "t1", true, "ls", "ls", "ls", nil, "")
+	cl.MarkToolResult("t1", "out", false)
+	if cmd := cl.Update(toolTickMsg{ToolID: "t1"}); cmd != nil {
+		t.Errorf("Update after MarkToolResult must return nil cmd (tick lifecycle dies)")
+	}
+}
+
+func TestChatList_Update_UnknownIDReturnsNil(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	if cmd := cl.Update(toolTickMsg{ToolID: "ghost"}); cmd != nil {
+		t.Errorf("Update for missing item should return nil")
+	}
+}
+
+func TestChatList_ResetPendingToolTicking_AllowsReArm(t *testing.T) {
+	// Models the observed-agent switch-back scenario: an item was previously
+	// armed for ticking, its tick chain was orphaned (delivered elsewhere,
+	// dead-ended), and PendingToolTickCmds on switch-back must be able to
+	// arm a fresh tick. Without ResetPendingToolTicking the item would stay
+	// frozen for the rest of its lifetime (QUM-732).
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendToolCallWithHeader("Bash", "t1", true, "ls", "ls", "ls", nil, "")
+	if cmd := cl.PendingToolTickCmds(); cmd == nil {
+		t.Fatalf("initial arm should be non-nil")
+	}
+	// Simulate orphaned tick chain: items now have ticking=true.
+	if cmd := cl.PendingToolTickCmds(); cmd != nil {
+		t.Fatalf("second arm without reset should be nil (item already ticking)")
+	}
+	cl.ResetPendingToolTicking()
+	if cmd := cl.PendingToolTickCmds(); cmd == nil {
+		t.Errorf("after ResetPendingToolTicking, PendingToolTickCmds must re-arm pending items")
+	}
+}
+
 func TestChatList_AppendThinking_DroppedOnNextUser(t *testing.T) {
 	// Turn-boundary cleanup: any orphan trailing marker at the next user
 	// turn must be dropped (symmetry with assistant/tool-call paths).

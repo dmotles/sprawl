@@ -2914,3 +2914,132 @@ func TestList_StatusFilterReturnsOnlyStatusChange(t *testing.T) {
 		t.Errorf("List(status) on empty recipient len = %d, want 0", len(empty))
 	}
 }
+
+// --- QUM-730: liveness_check envelopes -------------------------------------
+
+// TestTypeLivenessCheck_ConstantValue pins the wire constant. Bumping this
+// without also updating the TUI parser (NotificationKindLivenessCheck) and
+// the inboxprompt heartbeat formatter would silently misroute the envelope.
+func TestTypeLivenessCheck_ConstantValue(t *testing.T) {
+	if TypeLivenessCheck != "liveness_check" {
+		t.Errorf("TypeLivenessCheck = %q, want %q", TypeLivenessCheck, "liveness_check")
+	}
+}
+
+// TestSendLivenessCheck_WritesEnvelopeWithTypeAndSubject mirrors
+// TestSendStatusChange_WritesEnvelopeWithTypeAndSubject: the new helper must
+// write a maildir envelope of Type=liveness_check / Subject=liveness_check.
+func TestSendLivenessCheck_WritesEnvelopeWithTypeAndSubject(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	if _, err := SendLivenessCheck(tmpDir, "weave", "alice"); err != nil {
+		t.Fatalf("SendLivenessCheck: %v", err)
+	}
+
+	newDir := filepath.Join(MessagesDir(tmpDir), "alice", "new")
+	msg := readSingleEnvelope(t, newDir)
+
+	if msg.Type != TypeLivenessCheck {
+		t.Errorf("envelope Type = %q, want %q", msg.Type, TypeLivenessCheck)
+	}
+	if msg.Subject != "liveness_check" {
+		t.Errorf("envelope Subject = %q, want %q", msg.Subject, "liveness_check")
+	}
+	if msg.From != "weave" || msg.To != "alice" {
+		t.Errorf("envelope From/To = %q/%q, want weave/alice", msg.From, msg.To)
+	}
+}
+
+// TestSendLivenessCheck_DoesNotInvokeDefaultNotifier — liveness_check is
+// ephemeral telemetry; it must not raise the inbox banner / unread badge.
+func TestSendLivenessCheck_DoesNotInvokeDefaultNotifier(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	var (
+		mu    sync.Mutex
+		count int
+	)
+	SetDefaultNotifier(func(to, from, subject, msgID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		count++
+	})
+	t.Cleanup(func() { SetDefaultNotifier(nil) })
+
+	if _, err := SendLivenessCheck(tmpDir, "weave", "alice"); err != nil {
+		t.Fatalf("SendLivenessCheck: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if count != 0 {
+		t.Errorf("default notifier invoked %d times by SendLivenessCheck; want 0", count)
+	}
+}
+
+// TestDrainLivenessCheck_ReturnsFIFOAndRemoves mirrors
+// TestDrainStatusChange_ReturnsFIFOAndRemoves.
+func TestDrainLivenessCheck_ReturnsFIFOAndRemoves(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	for range 3 {
+		if _, err := SendLivenessCheck(tmpDir, "weave", "alice"); err != nil {
+			t.Fatalf("SendLivenessCheck: %v", err)
+		}
+		// Make timestamps strictly increasing.
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	drained, err := DrainLivenessCheck(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("DrainLivenessCheck: %v", err)
+	}
+	if len(drained) != 3 {
+		t.Fatalf("DrainLivenessCheck len = %d, want 3", len(drained))
+	}
+	for _, m := range drained {
+		if m.Type != TypeLivenessCheck {
+			t.Errorf("drained Type = %q, want %q", m.Type, TypeLivenessCheck)
+		}
+	}
+
+	// Second drain must yield empty — envelopes removed.
+	again, err := DrainLivenessCheck(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("DrainLivenessCheck (2nd): %v", err)
+	}
+	if len(again) != 0 {
+		t.Errorf("second DrainLivenessCheck len = %d, want 0", len(again))
+	}
+}
+
+// TestDrainLivenessCheck_LeavesRegularMessagesAlone — selective drain only.
+func TestDrainLivenessCheck_LeavesRegularMessagesAlone(t *testing.T) {
+	tmpDir := t.TempDir()
+	if _, err := Send(tmpDir, "weave", "alice", "regular", "body"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if _, err := SendLivenessCheck(tmpDir, "weave", "alice"); err != nil {
+		t.Fatalf("SendLivenessCheck: %v", err)
+	}
+
+	drained, err := DrainLivenessCheck(tmpDir, "alice")
+	if err != nil {
+		t.Fatalf("DrainLivenessCheck: %v", err)
+	}
+	if len(drained) != 1 {
+		t.Errorf("DrainLivenessCheck len = %d, want 1", len(drained))
+	}
+
+	// Regular message must still be listable.
+	listed, err := List(tmpDir, "alice", "all")
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 1 {
+		t.Fatalf("List(all) len = %d after drain; want 1 (regular msg untouched)", len(listed))
+	}
+	if listed[0].Type == TypeLivenessCheck {
+		t.Errorf("listed message should be regular, got Type=%q", listed[0].Type)
+	}
+}

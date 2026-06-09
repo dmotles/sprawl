@@ -175,6 +175,16 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 		})
 	}
 
+	// QUM-729: route every exit path (ok / error / panic) through a single
+	// defer so End is always emitted exactly once, even if future code in
+	// this function gains another early return.
+	endStatus := "ok"
+	endErr := ""
+	defer func() {
+		s.callLog.End(callID, endStatus, endErr)
+		endMCP(endStatus, endErr)
+	}()
+
 	var (
 		text     string
 		err      error
@@ -192,22 +202,21 @@ func (s *Server) handleToolsCall(ctx context.Context, id json.RawMessage, params
 	}()
 
 	if panicked {
-		s.callLog.End(callID, "panic", fmt.Sprintf("%v", panicErr))
-		endMCP("panic", fmt.Sprintf("%v", panicErr))
+		endStatus = "panic"
+		endErr = fmt.Sprintf("%v", panicErr)
+		// Re-panic AFTER deferred End fires.
 		panic(panicErr)
 	}
 
 	if err != nil {
-		s.callLog.End(callID, "error", err.Error())
-		endMCP("error", err.Error())
+		endStatus = "error"
+		endErr = err.Error()
 		var ute *unknownToolError
 		if ok := isUnknownToolError(err, &ute); ok {
 			return jsonRPCError(id, -32602, ute.Error())
 		}
 		return toolErrorResult(id, err.Error())
 	}
-	s.callLog.End(callID, "ok", "")
-	endMCP("ok", "")
 	return toolSuccessResult(id, text)
 }
 

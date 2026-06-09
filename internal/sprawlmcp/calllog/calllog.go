@@ -75,6 +75,7 @@ type Logger struct {
 	tickReq chan chan struct{}
 	stop    chan struct{}
 	stopped chan struct{}
+	closing bool // set under mu on Close entry to bar concurrent Close re-entry
 }
 
 // Open creates the logs/ and runtime/ directories under sprawlRoot/.sprawl/
@@ -195,27 +196,73 @@ func NewNoop() *Logger {
 
 // Close stops the heartbeat goroutine, flushes the registry, and closes
 // the JSONL file. Idempotent.
+//
+// QUM-729: before closing the file, any calls still in `l.active` (no End
+// was ever emitted — e.g. handler returned without calling End, process is
+// shutting down mid-call) get a synthesized phase:"end" record with
+// status="shutdown" so the JSONL stream stays balanced and downstream
+// consumers don't see a dangling start.
+//
+// Unrecoverable failure modes remain: SIGKILL, OOM kill, power loss — in
+// those cases the process is gone before Close can run, so no end record
+// can possibly be written. Those are acceptable and out of scope here.
 func (l *Logger) Close() error {
 	if l == nil || l.noop {
 		return nil
 	}
 	l.mu.Lock()
-	if l.closed {
+	if l.closing {
 		l.mu.Unlock()
 		return nil
 	}
-	l.closed = true
+	// Gate re-entry with l.closing (set now, under the lock) so a second
+	// concurrent Close bails before re-closing l.stop. l.closed stays
+	// false until the synthetic-end flush completes — writeLine bails on
+	// l.closed, so we can't set it yet.
+	l.closing = true
 	stop := l.stop
 	stopped := l.stopped
-	file := l.file
+
+	// Snapshot + drain active under the lock.
+	pending := make([]*CallState, 0, len(l.active))
+	for _, cs := range l.active {
+		pending = append(pending, cs)
+	}
+	l.active = map[string]*CallState{}
 	l.mu.Unlock()
 
+	// Stop heartbeat goroutine first so it can't race with our final
+	// writes / registry update.
 	if stop != nil {
 		close(stop)
 	}
 	if stopped != nil {
 		<-stopped
 	}
+
+	// Flush synthetic end records for any in-flight calls.
+	now := l.now()
+	for _, cs := range pending {
+		dur := now.Sub(cs.StartedAt).Seconds()
+		rec := map[string]any{
+			"ts":         now.UTC().Format(time.RFC3339Nano),
+			"call_id":    cs.CallID,
+			"phase":      "end",
+			"status":     "shutdown",
+			"error":      "logger closed with call in flight (shutdown)",
+			"duration_s": dur,
+		}
+		l.writeLine(rec)
+	}
+	// Reflect the drained state in the in-flight registry once.
+	if len(pending) > 0 {
+		l.writeRegistry()
+	}
+
+	l.mu.Lock()
+	l.closed = true
+	file := l.file
+	l.mu.Unlock()
 
 	if file != nil {
 		_ = file.Sync()

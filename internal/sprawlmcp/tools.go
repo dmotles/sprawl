@@ -86,7 +86,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "status",
-			"description": "List all agents with their current state, type, family, and branch.",
+			"description": "List all agents with their current state, type, family, and branch. Each entry includes `subprocess_alive` (whether a live claude handle is attached) and `eventbus_subscribed` (whether the agent's per-runtime EventBus has any live subscribers); both are false in steady state for terminal-Status agents (stopped/faulted/killed/retired). `eventbus_sub_count` reports the exact subscriber count when nonzero.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},

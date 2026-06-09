@@ -1,11 +1,16 @@
 package tui
 
-// QUM-656: orbital-pill agent tree, ported from the dmotles/tui-chat-spike
-// branch (internal/tuichat/tree.go treeOrbitalCore). Roots render as a left
-// anchor (`<root> ──●`) and children orbit out to the right as inline
-// `name glyph` tokens, separated by dim two-space gaps. Grandchildren
-// hang from their parent with a leading `↳ `. The currently selected agent
-// renders as a reverse-video cyan pill.
+// QUM-733 5a: horizontal-wrapped pill list, replacing the orbital-pill
+// scaffolding (QUM-656). Each agent renders as a `<name> <glyph>` pill in
+// agentNames() order — weave first, then DFS children. Pills wrap to
+// additional rows when the joined width exceeds HeaderTreeWidth.
+//
+// Open-Q decision (header row budget on 8+ agents): cap at WordmarkHeight
+// (3 rows wide / 1 row narrow). Excess pills are truncated with an
+// ellipsis on the trailing row. Rationale: keeps HeaderHeight a function
+// of width alone, preserves ComputeLayout's signature, and the /tree
+// modal (5b) is the deep-dive surface for many-agent scenarios. The spec
+// allowed an implementer-time cap if documented (per QUM-733 issue body).
 
 import (
 	"fmt"
@@ -104,8 +109,6 @@ var (
 	treeFailureStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
 
 	// selReverseStyle styles the selected agent as a reverse-video cyan pill.
-	// Exact SGR shape matters — tree_orbital_test.go matches against a lipgloss
-	// style with identical attributes.
 	selReverseStyle = lipgloss.NewStyle().
 			Reverse(true).
 			Foreground(lipgloss.Color("#0B0B12")).
@@ -113,316 +116,123 @@ var (
 			Bold(true).
 			Padding(0, 1)
 
-	// headerSep is the dim foreground style used for orbital scaffolding
-	// (the ` ──● ` anchor, two-space token separator, `↳ ` grandchild prefix,
-	// and the narrow-mode `·` / `→` breadcrumb glyphs).
-	headerSep = lipgloss.NewStyle().Foreground(lipgloss.Color("#3F3F46"))
+	// pillSep is the dim foreground style used for the two-space separator
+	// between adjacent pills in the horizontal list (QUM-733 5a).
+	pillSep = lipgloss.NewStyle().Foreground(lipgloss.Color("#3F3F46"))
 )
 
+// pillSeparator is the dim two-space rendered between adjacent pills.
+const pillSeparatorWidth = 2
+
 // OrbitalHeight reports how many rows RenderTreeOrbital will produce at the
-// given terminal width for the supplied node topology. Zero width yields zero
-// rows so callers can subtract safely on degenerate sizes. Below the narrow
-// threshold the renderer normally collapses to a single breadcrumb, EXCEPT
-// when weave has manager-typed children — that case (QUM-688) forces the
-// multi-row pivot layout even at narrow widths so each manager keeps its own
-// anchor row. Wide widths always get three rows (blank-padded).
-//
-// QUM-688: signature took only width before; it now also takes the node list
-// so the height matches the renderer's topology-dependent row count. The
+// given width. The renderer pads to WordmarkHeight rows at the width so the
 // invariant `OrbitalHeight(W, nodes) == len(RenderTreeOrbital(nodes, "", W))`
-// must hold at every width.
+// holds regardless of topology. The `nodes` parameter is retained for
+// signature stability (callers still pass it through).
 func OrbitalHeight(width int, nodes []TreeNode) int {
+	_ = nodes
 	if width <= 0 {
 		return 0
 	}
-	if width < wordmarkNarrowThreshold && !weaveHasManagerChild(nodes) {
-		return 1
-	}
-	return 3
+	return WordmarkHeight(width)
 }
 
-// weaveHasManagerChild reports whether the supplied node list matches the
-// pivot condition used inside RenderTreeOrbital: a single depth-0 root of
-// type "weave" with at least one depth-1 manager child. Kept in lockstep
-// with the pivot guard at the top of RenderTreeOrbital.
-func weaveHasManagerChild(nodes []TreeNode) bool {
-	var rootCount int
-	var rootIsWeave bool
-	var managerSeen bool
-	for _, n := range nodes {
-		if n.Depth == 0 {
-			rootCount++
-			if rootCount == 1 {
-				rootIsWeave = n.Type == "weave"
-			}
-			continue
-		}
-		if n.Depth == 1 && n.Type == "manager" {
-			managerSeen = true
-		}
-	}
-	return rootCount == 1 && rootIsWeave && managerSeen
-}
-
-// RenderTreeOrbital returns the orbital-pill rendering of the tree. width is
-// the cell budget the tree must fit within (NOT the full terminal width).
-// Lines are right-padded to that width via padVisible and truncated via
-// ansi.Truncate so total visible width matches exactly.
+// RenderTreeOrbital returns the horizontal-wrapped pill list. width is the
+// cell budget within the header (NOT the full terminal width). Each line is
+// right-padded to that width via padVisible; truncation uses ansi.Truncate
+// when a pill would exceed the row budget.
 //
-// QUM-679 / QUM-686: when the sole depth-0 root is weave and any of its
-// depth-1 children is a manager, the renderer pivots ONLY the managers into
-// their own row anchors below weave. Weave keeps row 0 with any non-manager
-// depth-1 children (engineers, researchers) rendered inline as orbits; each
-// manager gets its own row with that manager's depth-2 descendants rebased to
-// inline orbits. Descendants of a non-manager weave child stay attached to
-// weave's row as grandchildren (↳ prefix).
-//
-// QUM-686 fix: the original QUM-679 implementation discarded weave entirely
-// and promoted every depth-1 child (including researchers/engineers) into a
-// separate top-level row, which produced `ghost · tower` instead of the spike
-// layout `weave ──◉ ghost ✓ / tower ──◉` for the weave+researcher+manager
-// session shape.
+// QUM-733 5a: pills follow agentNames() order — the caller (AppModel) passes
+// in nodes already in this order (PrependWeaveRoot + DFS).
 func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 	if width <= 0 {
 		return nil
 	}
-	// QUM-688: narrow mode normally collapses to a single breadcrumb line.
-	// That choice is wrong when weave has manager children — the manager
-	// pivot (QUM-686) must still produce one row per manager so the
-	// hierarchy stays visible. `narrow` here only gates the breadcrumb
-	// path; the multi-row pivot path is reached even when width is below
-	// wordmarkNarrowThreshold, and ansi.Truncate clamps each row to the
-	// budget.
-	narrow := width < wordmarkNarrowThreshold
+	rowCap := WordmarkHeight(width)
+	if rowCap < 1 {
+		rowCap = 1
+	}
 	now := time.Now()
 
-	// Group nodes by root. A root is any node at depth 0; subsequent nodes at
-	// deeper depths attach to the most-recent root with monotonically-deeper
-	// indices walked depth-first.
-	type rootGroup struct {
-		root     TreeNode
-		children []TreeNode // depth >= 1, in original DFS order
+	type pill struct {
+		styled string
+		plainW int // visible cell width of the unstyled label (incl. selReverseStyle padding)
 	}
-	var roots []rootGroup
-	var cur *rootGroup
+	pills := make([]pill, 0, len(nodes))
 	for _, n := range nodes {
-		if n.Depth == 0 {
-			roots = append(roots, rootGroup{root: n})
-			cur = &roots[len(roots)-1]
-			continue
-		}
-		if cur == nil {
-			// Orphaned non-root before any root — synthesize a pseudo-root so
-			// it still renders somewhere.
-			roots = append(roots, rootGroup{root: n})
-			cur = &roots[len(roots)-1]
-			continue
-		}
-		cur.children = append(cur.children, n)
-	}
-
-	// QUM-686: pivot ONLY the manager children of weave into their own row
-	// anchors below weave. Weave keeps row 0; non-manager depth-1 children
-	// (researchers, engineers) stay inline on weave's row. Depth-2 descendants
-	// of a pivoted manager are rebased to depth 1 so they render as inline
-	// orbits of the manager. Depth-2 descendants of a non-manager direct
-	// weave child stay attached to weave as grandchildren (↳ glyph).
-	pivoted := false
-	if len(roots) == 1 && roots[0].root.Type == "weave" && hasManagerChild(roots[0].children) {
-		pivoted = true
-		w := roots[0]
-		newWeave := rootGroup{root: w.root}
-		var managerRows []rootGroup
-		// pcurManager tracks the most-recent depth-1 manager so its depth-2
-		// descendants land on that manager's row. Nil when the most-recent
-		// depth-1 child was a non-manager (engineers/researchers): their
-		// depth-2 descendants stay on weave's row as grandchildren.
-		var pcurManager *rootGroup
-		for _, c := range w.children {
-			if c.Depth == 1 {
-				if c.Type == "manager" {
-					managerRows = append(managerRows, rootGroup{root: c})
-					pcurManager = &managerRows[len(managerRows)-1]
-				} else {
-					// Non-manager direct child of weave: render inline on
-					// weave's row.
-					newWeave.children = append(newWeave.children, c)
-					pcurManager = nil
-				}
-				continue
-			}
-			// Depth >= 2: attach to the most-recent depth-1 ancestor.
-			if pcurManager != nil {
-				// Rebase depth so renderRootLine's token-vs-↳ classifier
-				// (Depth == 1 → inline token) treats the manager's direct
-				// engineers as orbits, not grandchildren.
-				cc := c
-				cc.Depth = c.Depth - 1
-				pcurManager.children = append(pcurManager.children, cc)
-			} else {
-				// Grandchild of weave via a non-manager intermediary —
-				// keep depth as-is so it renders with the ↳ glyph.
-				newWeave.children = append(newWeave.children, c)
-			}
-		}
-		roots = append([]rootGroup{newWeave}, managerRows...)
-	}
-
-	renderToken := func(n TreeNode) string {
 		st := TreeNodeAgentState(n, now)
 		label := n.Name + " " + stateGlyph(st)
+		var styled string
+		plainW := lipgloss.Width(label)
 		if selected != "" && n.Name == selected {
-			return selReverseStyle.Render(label)
-		}
-		return stateStyle(st).Render(label)
-	}
-
-	renderRootLine := func(g rootGroup) string {
-		rootState := TreeNodeAgentState(g.root, now)
-		var b strings.Builder
-		// QUM-657: with children, the trailing ──● anchor stands in for the
-		// root's status glyph; with no children the anchor would dangle, so
-		// we append the glyph directly to the root name and skip the anchor.
-		hasChildren := len(g.children) > 0
-		rootLabel := g.root.Name
-		if !hasChildren {
-			rootLabel = g.root.Name + " " + stateGlyph(rootState)
-		}
-		if selected != "" && g.root.Name == selected {
-			b.WriteString(selReverseStyle.Render(g.root.Name + " " + stateGlyph(rootState)))
+			styled = selReverseStyle.Render(label)
+			// Padding(0,1) on either side → +2 visible cells.
+			plainW += 2
 		} else {
-			b.WriteString(stateStyle(rootState).Render(rootLabel))
+			styled = stateStyle(st).Render(label)
 		}
-		if !hasChildren {
-			// Surface unread badge even without children, then stop.
-			if g.root.Unread > 0 {
-				b.WriteString(" " + headerSep.Render(fmt.Sprintf("(%d)", g.root.Unread)))
-			}
-			return b.String()
+		// QUM-559: surface the per-agent unread badge as a dim `(N)` suffix
+		// outside the pill so the e2e regex `weave[^│]*\([1-9]` matches.
+		if n.Unread > 0 {
+			badge := fmt.Sprintf(" (%d)", n.Unread)
+			styled += pillSep.Render(badge)
+			plainW += lipgloss.Width(badge)
 		}
-		b.WriteString(headerSep.Render(" ──● "))
-		// QUM-559: surface a root's unread maildir count as a dim `(N) ` badge
-		// right after the anchor. e2e-tests/notify-tui.sh asserts this badge
-		// appears on the weave row after a maildir delivery.
-		if g.root.Unread > 0 {
-			b.WriteString(headerSep.Render(fmt.Sprintf("(%d) ", g.root.Unread)))
-		}
-
-		var tokens []string
-		for _, c := range g.children {
-			if c.Depth == 1 {
-				tokens = append(tokens, renderToken(c))
-			} else {
-				// Grandchild (depth >= 2): prefix with ↳ and render as a
-				// dim-prefixed token after its parent.
-				gcLabel := c.Name + " " + stateGlyph(TreeNodeAgentState(c, now))
-				var gcStyled string
-				if selected != "" && c.Name == selected {
-					gcStyled = selReverseStyle.Render(gcLabel)
-				} else {
-					gcStyled = stateStyle(TreeNodeAgentState(c, now)).Render(gcLabel)
-				}
-				tokens = append(tokens, headerSep.Render("↳ ")+gcStyled)
-			}
-		}
-		b.WriteString(strings.Join(tokens, headerSep.Render("  ")))
-		return b.String()
+		pills = append(pills, pill{styled: styled, plainW: plainW})
 	}
 
-	if narrow && !pivoted {
-		// Breadcrumb: per-root chains joined with " · ", root→child joined with
-		// " → ". Only render the first child of each root (single-line budget).
-		var chunks []string
-		for _, g := range roots {
-			rootState := TreeNodeAgentState(g.root, now)
-			var rs string
-			if selected != "" && g.root.Name == selected {
-				rs = selReverseStyle.Render(g.root.Name + " " + stateGlyph(rootState))
-			} else {
-				rs = stateStyle(rootState).Render(g.root.Name)
-			}
-			chunk := rs
-			if g.root.Unread > 0 {
-				chunk += " " + headerSep.Render(fmt.Sprintf("(%d)", g.root.Unread))
-			}
-			if len(g.children) > 0 {
-				chunk += headerSep.Render(" → ") + renderToken(g.children[0])
-			}
-			chunks = append(chunks, chunk)
+	sepStyled := pillSep.Render("  ")
+
+	// Greedy wrap into rows up to (rowCap-1) rows. The final row absorbs all
+	// remaining pills and lets ansi.Truncate clip with `…`.
+	rendered := make([]string, 0, rowCap)
+	flush := func(items []string) {
+		if len(items) == 0 {
+			rendered = append(rendered, strings.Repeat(" ", width))
+			return
 		}
-		line := strings.Join(chunks, headerSep.Render(" · "))
-		if line == "" {
-			return []string{strings.Repeat(" ", width)}
-		}
+		line := strings.Join(items, sepStyled)
 		line = ansi.Truncate(line, width, "…")
-		return []string{padVisible(line, width)}
+		rendered = append(rendered, padVisible(line, width))
 	}
 
-	// Wide: up to 3 lines, one per root. QUM-686: weave's Unread badge is
-	// already surfaced by renderRootLine directly (weave is now on row 0
-	// instead of being replaced by manager rows). If post-pivot root count
-	// exceeds 3, the 3rd row is augmented with a `+K more` indicator that
-	// names the overflowed managers.
-	out := make([]string, 3)
-	for i := 0; i < 3; i++ {
-		if i < len(roots) {
-			line := renderRootLine(roots[i])
-			// QUM-679: overflow indicator on the last visible row.
-			if i == 2 && len(roots) > 3 {
-				extras := make([]TreeNode, 0, len(roots)-3)
-				for _, r := range roots[3:] {
-					extras = append(extras, r.root)
-				}
-				line += headerSep.Render(overflowSuffix(extras))
+	var (
+		rowItems []string
+		rowWidth int
+	)
+	for i, p := range pills {
+		// On the final allowed row, keep packing without wrapping so
+		// ansi.Truncate can clip with `…` for overflow.
+		if len(rendered) == rowCap-1 {
+			rowItems = append(rowItems, p.styled)
+			continue
+		}
+		needed := p.plainW
+		if len(rowItems) > 0 {
+			needed += pillSeparatorWidth
+		}
+		if len(rowItems) > 0 && rowWidth+needed > width {
+			flush(rowItems)
+			rowItems = nil
+			rowWidth = 0
+			if len(rendered) == rowCap-1 {
+				rowItems = append(rowItems, p.styled)
+				continue
 			}
-			line = ansi.Truncate(line, width, "…")
-			out[i] = padVisible(line, width)
-		} else {
-			out[i] = strings.Repeat(" ", width)
+			needed = p.plainW
 		}
+		rowItems = append(rowItems, p.styled)
+		rowWidth += needed
+		_ = i
 	}
-	return out
-}
+	if len(rowItems) > 0 {
+		flush(rowItems)
+	}
 
-// hasManagerChild reports whether any child has Type == "manager". Used by
-// RenderTreeOrbital to decide whether to pivot weave's children into separate
-// rows (QUM-679).
-func hasManagerChild(children []TreeNode) bool {
-	for _, c := range children {
-		if c.Type == "manager" {
-			return true
-		}
+	// Pad to rowCap with blank rows so callers can rely on a stable height
+	// at this width.
+	for len(rendered) < rowCap {
+		rendered = append(rendered, strings.Repeat(" ", width))
 	}
-	return false
-}
-
-// overflowSuffix builds the trailing `  +K more (name, name, …)` annotation
-// used when more pivoted manager rows exist than the 3-row header budget.
-func overflowSuffix(extras []TreeNode) string {
-	if len(extras) == 0 {
-		return ""
-	}
-	// Collect depth-1 (manager / direct-child) names only — descendants don't
-	// count as additional rows.
-	var names []string
-	for _, n := range extras {
-		if n.Depth <= 1 {
-			names = append(names, n.Name)
-		}
-	}
-	if len(names) == 0 {
-		return ""
-	}
-	const nameCap = 3
-	shown := names
-	more := 0
-	if len(shown) > nameCap {
-		more = len(shown) - nameCap
-		shown = shown[:nameCap]
-	}
-	joined := strings.Join(shown, ", ")
-	if more > 0 {
-		return fmt.Sprintf("  +%d more (%s, …)", len(names), joined)
-	}
-	return fmt.Sprintf("  +%d more (%s)", len(names), joined)
+	return rendered
 }

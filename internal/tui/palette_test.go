@@ -205,7 +205,8 @@ func TestPaletteModel_EnterOnHelpEmitsToggleHelp(t *testing.T) {
 func TestPaletteModel_EnterOnHandoffEmitsInjectPrompt(t *testing.T) {
 	p := newTestPaletteModel(t)
 	p.Show()
-	// Move cursor to /handoff (index 2).
+	// Move cursor to /handoff (index 3 after /tree was added at index 2).
+	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})

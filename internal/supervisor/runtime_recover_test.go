@@ -290,11 +290,11 @@ func TestAgentRuntime_Recover_FaultedSession_StopsAbandonAndRestarts(t *testing.
 		t.Fatalf("Recover on faulted session: %v", err)
 	}
 
-	if first.stopAbandonCalls != 1 {
-		t.Errorf("first handle stopAbandonCalls = %d, want 1 (Recover must use abandon, not polite Stop)", first.stopAbandonCalls)
+	if got := first.stopAbandonCalls.Load(); got != 1 {
+		t.Errorf("first handle stopAbandonCalls = %d, want 1 (Recover must use abandon, not polite Stop)", got)
 	}
-	if first.stopCalls != 0 {
-		t.Errorf("first handle stopCalls = %d, want 0 (recover path skips polite Interrupt+Stop)", first.stopCalls)
+	if got := first.stopCalls.Load(); got != 0 {
+		t.Errorf("first handle stopCalls = %d, want 0 (recover path skips polite Interrupt+Stop)", got)
 	}
 	if starter.callCount() != 2 {
 		t.Errorf("starter.startCalls = %d, want 2 (initial + recover)", starter.callCount())

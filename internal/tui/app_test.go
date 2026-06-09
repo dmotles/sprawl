@@ -1820,16 +1820,17 @@ func seedScrollableViewport(t *testing.T, app AppModel) AppModel {
 	return app
 }
 
-// QUM-653: Mouse capture is fully disabled in the TUI. View() should never
-// emit MouseModeCellMotion, both in the normal and the too-small fallback
-// views. The Ctrl+_/Ctrl+/ selection-mode toggle is removed: pressing it
-// must be a no-op (no panic, no MouseMode change, no selectionMode field).
-func TestAppModel_View_NoMouseCapture(t *testing.T) {
+// QUM-731: Mouse capture is on so the scroll wheel reaches the TUI. View()
+// must emit MouseModeCellMotion in both the normal and the too-small fallback
+// paths. The QUM-617 Ctrl+_/Ctrl+/ selection-mode toggle stays retired:
+// pressing Ctrl+_ must be a no-op (no panic, no MouseMode change, no
+// selectionMode field).
+func TestAppModel_View_EnablesMouseCellMotion(t *testing.T) {
 	m := newTestAppModel(t)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := updated.(AppModel)
-	if v := app.View(); v.MouseMode != tea.MouseModeNone {
-		t.Errorf("normal View().MouseMode = %v, want tea.MouseModeNone", v.MouseMode)
+	if v := app.View(); v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("normal View().MouseMode = %v, want tea.MouseModeCellMotion", v.MouseMode)
 	}
 
 	// Same invariant in the too-small fallback path.
@@ -1839,24 +1840,25 @@ func TestAppModel_View_NoMouseCapture(t *testing.T) {
 	if !app2.tooSmall {
 		t.Fatal("precondition: expected tooSmall to be true for 10x5")
 	}
-	if v := app2.View(); v.MouseMode != tea.MouseModeNone {
-		t.Errorf("too-small View().MouseMode = %v, want tea.MouseModeNone", v.MouseMode)
+	if v := app2.View(); v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("too-small View().MouseMode = %v, want tea.MouseModeCellMotion", v.MouseMode)
 	}
 }
 
 // QUM-653: Ctrl+_ (formerly Ctrl-/ selection-mode toggle) is no longer wired.
-// Pressing it must not panic and must leave MouseMode as None.
+// QUM-731: MouseMode is now CellMotion at all times — Ctrl+_ must not toggle
+// it off (the QUM-617 selection toggle stays retired).
 func TestAppModel_NoSelectionModeToggle(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
-	if v := app.View(); v.MouseMode != tea.MouseModeNone {
-		t.Fatalf("precondition: View().MouseMode = %v, want MouseModeNone", v.MouseMode)
+	if v := app.View(); v.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("precondition: View().MouseMode = %v, want MouseModeCellMotion", v.MouseMode)
 	}
 	out, _ := app.Update(tea.KeyPressMsg{Code: '_', Mod: tea.ModCtrl})
 	app = out.(AppModel)
-	if v := app.View(); v.MouseMode != tea.MouseModeNone {
-		t.Errorf("after Ctrl+_: View().MouseMode = %v, want MouseModeNone (no toggle)", v.MouseMode)
+	if v := app.View(); v.MouseMode != tea.MouseModeCellMotion {
+		t.Errorf("after Ctrl+_: View().MouseMode = %v, want MouseModeCellMotion (no toggle)", v.MouseMode)
 	}
 }
 
@@ -1947,6 +1949,32 @@ func TestAppModel_UpArrow_NavigatesHistory_WhenInputNonEmpty(t *testing.T) {
 
 	if got := app.input.Value(); got != "second" {
 		t.Errorf("after KeyUp on non-empty input: input = %q, want %q (history.Prev)", got, "second")
+	}
+}
+
+// QUM-731: a wheel-up MouseMsg with no modal up scrolls the observed viewport
+// (YOffset decreases). Mirrors TestAppModel_PgUp_ScrollsViewport for the
+// mouse-wheel input path.
+func TestAppModel_MouseWheelUp_ScrollsViewport_WhenNoModal(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	if !app.observedVP().region.vp.AtBottom() {
+		t.Fatalf("precondition: expected AtBottom after seeding+paint")
+	}
+	beforeOffset := app.observedVP().region.vp.YOffset()
+
+	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = out.(AppModel)
+
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset >= beforeOffset {
+		t.Errorf("expected YOffset to decrease after MouseWheelUp; before=%d after=%d", beforeOffset, afterOffset)
+	}
+	if app.observedVP().region.vp.AtBottom() {
+		t.Errorf("expected AtBottom=false after MouseWheelUp")
 	}
 }
 

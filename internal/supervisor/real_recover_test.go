@@ -67,7 +67,7 @@ func TestRealRecover_DispatchesToAgentRuntime(t *testing.T) {
 		t.Fatalf("Real.Recover: %v", err)
 	}
 
-	if got := first.stopAbandonCalls; got != 1 {
+	if got := first.stopAbandonCalls.Load(); got != 1 {
 		t.Errorf("first handle stopAbandonCalls = %d, want 1", got)
 	}
 	if got := starter.callCount(); got != 2 {

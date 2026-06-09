@@ -18,7 +18,11 @@ package tui
 //     called with width > 0. SetSize is the only mutator of the width field,
 //     so a zero sentinel is sufficient.
 
-import "strings"
+import (
+	"strings"
+
+	tea "charm.land/bubbletea/v2"
+)
 
 // cachedRender captures one envelope's last rendered output for a specific
 // (width, expanded) pairing. expanded is meaningless for non-Expandable items
@@ -280,6 +284,67 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 		return true
 	}
 	return false
+}
+
+// Update routes a toolTickMsg to the matching pending ToolCallItem and
+// returns its follow-up cmd. Returns nil if no item matches (e.g. the row
+// was removed) or if the matching item has resolved — the cmd chain dies
+// naturally, satisfying AC #3 (no leak).
+func (c *ChatList) Update(msg tea.Msg) tea.Cmd {
+	tm, ok := msg.(toolTickMsg)
+	if !ok {
+		return nil
+	}
+	for _, env := range c.items {
+		t, ok := env.item.(*ToolCallItem)
+		if !ok || t.ToolID() != tm.ToolID {
+			continue
+		}
+		cmd := t.Update(tm)
+		// Cache invalidation: pending items already bypass the envelope
+		// cache (Finished()==false short-circuit in renderEnvelope), so
+		// mutating frame requires no cache nil-out. Keep it explicit anyway
+		// for safety against future caching of in-flight items.
+		env.cache = nil
+		return cmd
+	}
+	return nil
+}
+
+// ResetPendingToolTicking clears the in-flight tick flag on every pending
+// ToolCallItem in this list. Called by AppModel on observed-agent switches
+// before re-arming with PendingToolTickCmds — otherwise an item whose tick
+// chain was orphaned by a previous switch (its tick was delivered to the
+// then-observed pane, found no match, dead-ended) would never re-arm,
+// leaving the spinner frozen for the remainder of the tool call (QUM-732).
+func (c *ChatList) ResetPendingToolTicking() {
+	for _, env := range c.items {
+		if t, ok := env.item.(*ToolCallItem); ok {
+			t.ResetTicking()
+		}
+	}
+}
+
+// PendingToolTickCmds returns a batched tea.Cmd that arms a tick for every
+// pending ToolCallItem that doesn't already have one in flight. Idempotent:
+// calling it repeatedly only arms ticks on freshly-appended items. Returns
+// nil when nothing needs arming, so the caller can append it safely to a
+// cmd batch.
+func (c *ChatList) PendingToolTickCmds() tea.Cmd {
+	var cmds []tea.Cmd
+	for _, env := range c.items {
+		t, ok := env.item.(*ToolCallItem)
+		if !ok {
+			continue
+		}
+		if cmd := t.StartTickCmd(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 // AppendSystemNotification peels one or more `<system-notification>`

@@ -54,17 +54,17 @@ func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTur
 	}
 
 	// QUM-549 lock-in: cooperative wake path must NOT call Session.Interrupt.
-	if session.interrupts != 0 {
-		t.Errorf("session.Interrupt called %d times for interrupt=false send_message; want 0 (QUM-549)", session.interrupts)
+	if got := session.interrupts.Load(); got != 0 {
+		t.Errorf("session.Interrupt called %d times for interrupt=false send_message; want 0 (QUM-549)", got)
 	}
 	// Cooperative wake path MUST have signalled the new WakeForDelivery
 	// counter at least once; the existing InterruptDelivery counter must
 	// stay at zero (cooperative ≠ interrupt-delivery).
-	if session.wakeForDeliveryCalls < 1 {
-		t.Errorf("session.WakeForDelivery calls = %d, want >= 1", session.wakeForDeliveryCalls)
+	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
+		t.Errorf("session.WakeForDelivery calls = %d, want >= 1", got)
 	}
-	if session.forceInterruptDeliveryCalls != 0 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d, want 0 for interrupt=false", session.forceInterruptDeliveryCalls)
+	if got := session.forceInterruptDeliveryCalls.Load(); got != 0 {
+		t.Errorf("session.ForceInterruptDelivery calls = %d, want 0 for interrupt=false", got)
 	}
 
 	// Persistence: the queue entry must be ClassAsync, body forwarded, subject empty.
@@ -117,8 +117,8 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenTurnRunningTru
 		t.Error("res.Interrupted = false, want true for interrupt=true")
 	}
 
-	if session.forceInterruptDeliveryCalls < 1 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d, want >= 1", session.forceInterruptDeliveryCalls)
+	if got := session.forceInterruptDeliveryCalls.Load(); got < 1 {
+		t.Errorf("session.ForceInterruptDelivery calls = %d, want >= 1", got)
 	}
 
 	// Persistence: ClassInterrupt.
@@ -154,8 +154,8 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenIdle(t *testin
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	if session.forceInterruptDeliveryCalls < 1 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d, want >= 1 (idle recipient must still be interrupted — QUM-549)", session.forceInterruptDeliveryCalls)
+	if got := session.forceInterruptDeliveryCalls.Load(); got < 1 {
+		t.Errorf("session.ForceInterruptDelivery calls = %d, want >= 1 (idle recipient must still be interrupted — QUM-549)", got)
 	}
 }
 

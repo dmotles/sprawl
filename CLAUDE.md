@@ -62,24 +62,40 @@ lookup.
 >
 > To clear sandbox state, use the sanctioned `sprawl_sandbox_destroy` helper (from `scripts/sprawl-test-env.sh`) or the `_stmux kill-session -t $SPRAWL_NAMESPACE` wrapper — both target only the sandbox session on the sandbox socket. In scripts, always use `_stmux` (not bare `tmux`) for sandbox tmux operations.
 
-## Text selection in `sprawl enter` (QUM-653)
+## Text selection in `sprawl enter` (QUM-653 / QUM-731)
 
-The TUI no longer captures the mouse, so terminal- and tmux-native selection
-mechanisms work without any modal toggling:
+The TUI captures the mouse so the scroll wheel scrolls the chat viewport
+(QUM-731). Mouse capture intercepts plain click-drag, so use one of the
+terminal- or tmux-native paths below to select and copy — none require a
+modal toggle (the QUM-617 selection-mode toggle stays retired):
 
-* **Native click-drag selection** in your terminal — select text and copy with
-  your usual keystroke (Cmd+C / Ctrl+Shift+C / right-click → Copy).
+* **Shift+drag** — most terminals (xterm.js / coder web terminal, gnome-
+  terminal, kitty, wezterm, Alacritty, iTerm2) bypass mouse capture while
+  Shift is held; copy with your usual keystroke (Cmd+C / Ctrl+Shift+C).
 * **tmux copy-mode** (`prefix` + `[`) — scroll, search, and yank tmux-style.
-* **Shift+drag** also works in terminals that bind it to bypass mouse capture
-  (xterm.js / coder web terminal, gnome-terminal, kitty, wezterm, Alacritty,
-  iTerm2) — though it is now redundant.
+  Works regardless of terminal.
+* **Right-click → Copy** — in most terminals the right-click context menu
+  copies the OS-level selection even with mouse capture on.
 
-Keyboard scroll inside the TUI:
+Scroll inside the TUI:
 
+* **Mouse wheel** — scrolls the observed chat viewport up/down (suppressed
+  while a modal — `/help`, palette, confirm, question, validate-popup — is
+  open).
 * `PgUp` / `PgDn` — page up/down
 * `Home` / `End` — jump to top/bottom
 * `Up` / `Down` — line-by-line scroll **when the input is empty** (otherwise
   they navigate input history)
+
+### Incident snapshot hotkey (QUM-728)
+
+Press `Ctrl+\` to write a forensic bundle to
+`<repoRoot>/.sprawl/incidents/<ISO8601>-tui-snapshot/`. Includes:
+goroutine dump, fd list, sprawl status, `ps auxf`, `/proc/<pid>/status`
+for weave, last 10k mcp-calls.jsonl lines, per-agent activity rates,
+memory + loadavg. Non-blocking — TUI stays interactive. Status bar shows
+`snapshot saved → <path>` on completion (or `snapshot failed` + an error
+toast on failure).
 
 ## Project Configuration
 

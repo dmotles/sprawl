@@ -42,11 +42,11 @@ func TestRealRetire_AbandonTrue_CallsStopAbandonNotStop(t *testing.T) {
 		t.Fatalf("Retire(abandon=true) error: %v", err)
 	}
 
-	if session.stopAbandonCalls != 1 {
-		t.Errorf("session.stopAbandonCalls = %d, want 1 (QUM-600: abandon=true must route through StopAbandon)", session.stopAbandonCalls)
+	if got := session.stopAbandonCalls.Load(); got != 1 {
+		t.Errorf("session.stopAbandonCalls = %d, want 1 (QUM-600: abandon=true must route through StopAbandon)", got)
 	}
-	if session.stopCalls != 0 {
-		t.Errorf("session.stopCalls = %d, want 0 (abandon path must NOT call Stop)", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 0 {
+		t.Errorf("session.stopCalls = %d, want 0 (abandon path must NOT call Stop)", got)
 	}
 }
 
@@ -76,10 +76,10 @@ func TestRealRetire_AbandonFalse_CallsStopNotStopAbandon(t *testing.T) {
 		t.Fatalf("Retire(abandon=false) error: %v", err)
 	}
 
-	if session.stopCalls != 1 {
-		t.Errorf("session.stopCalls = %d, want 1 (abandon=false must route through Stop)", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 1 {
+		t.Errorf("session.stopCalls = %d, want 1 (abandon=false must route through Stop)", got)
 	}
-	if session.stopAbandonCalls != 0 {
-		t.Errorf("session.stopAbandonCalls = %d, want 0 (polite path must NOT call StopAbandon)", session.stopAbandonCalls)
+	if got := session.stopAbandonCalls.Load(); got != 0 {
+		t.Errorf("session.stopAbandonCalls = %d, want 0 (polite path must NOT call StopAbandon)", got)
 	}
 }

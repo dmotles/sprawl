@@ -17,21 +17,32 @@ type MergeOutcome = agentops.MergeOutcome
 
 // AgentInfo describes an agent's current state as seen by the supervisor.
 type AgentInfo struct {
-	Name              string    `json:"name"`
-	Type              string    `json:"type"`
-	Family            string    `json:"family"`
-	Parent            string    `json:"parent"`
-	Status            string    `json:"status"`
-	Branch            string    `json:"branch"`
-	TreePath          string    `json:"tree_path,omitempty"`
-	LastReportType    string    `json:"last_report_type,omitempty"`
-	LastReportState   string    `json:"last_report_state,omitempty"`
-	LastReportMessage string    `json:"last_report_message,omitempty"`
-	LastReportDetail  string    `json:"last_report_detail,omitempty"`
-	TotalCostUsd      float64   `json:"total_cost_usd,omitempty"`
-	ProcessAlive      *bool     `json:"process_alive"`
-	InTurn            bool      `json:"in_turn"`
-	LastActivityAt    time.Time `json:"last_activity_at,omitempty"`
+	Name              string  `json:"name"`
+	Type              string  `json:"type"`
+	Family            string  `json:"family"`
+	Parent            string  `json:"parent"`
+	Status            string  `json:"status"`
+	Branch            string  `json:"branch"`
+	TreePath          string  `json:"tree_path,omitempty"`
+	LastReportType    string  `json:"last_report_type,omitempty"`
+	LastReportState   string  `json:"last_report_state,omitempty"`
+	LastReportMessage string  `json:"last_report_message,omitempty"`
+	LastReportDetail  string  `json:"last_report_detail,omitempty"`
+	TotalCostUsd      float64 `json:"total_cost_usd,omitempty"`
+	ProcessAlive      *bool   `json:"process_alive"`
+	// SubprocessAlive is the ground-truth "is a live RuntimeHandle attached"
+	// boolean. Distinct from ProcessAlive (the liveness-projection field):
+	// after QUM-727, the two should agree in steady state.
+	SubprocessAlive bool `json:"subprocess_alive"`
+	// EventbusSubscribed is true iff the runtime's per-agent EventBus has at
+	// least one live subscriber. QUM-727 invariant: terminal-Status agents
+	// (stopped/faulted/killed/retired) must read false here.
+	EventbusSubscribed bool `json:"eventbus_subscribed"`
+	// EventbusSubCount is the exact subscriber count, surfaced for debugging
+	// fan-out load. Omitted when zero.
+	EventbusSubCount int       `json:"eventbus_sub_count,omitempty"`
+	InTurn           bool      `json:"in_turn"`
+	LastActivityAt   time.Time `json:"last_activity_at,omitempty"`
 }
 
 // SendMessageResult is returned by Supervisor.SendMessage. The canonical

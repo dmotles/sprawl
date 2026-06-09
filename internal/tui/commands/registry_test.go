@@ -4,12 +4,12 @@ import (
 	"testing"
 )
 
-func TestAll_ReturnsFourCommandsInStableOrder(t *testing.T) {
+func TestAll_ReturnsSixCommandsInStableOrder(t *testing.T) {
 	cmds := All()
-	if len(cmds) != 5 {
-		t.Fatalf("All() len = %d, want 5", len(cmds))
+	if len(cmds) != 6 {
+		t.Fatalf("All() len = %d, want 6", len(cmds))
 	}
-	want := []string{"/exit", "/help", "/handoff", "/usage", "/switch"}
+	want := []string{"/exit", "/help", "/tree", "/handoff", "/usage", "/switch"}
 	for i, w := range want {
 		if cmds[i].Name != w {
 			t.Errorf("All()[%d].Name = %q, want %q", i, cmds[i].Name, w)
@@ -77,6 +77,37 @@ func TestAll_EachCommandHasDescription(t *testing.T) {
 		if c.Description == "" {
 			t.Errorf("command %q has empty Description", c.Name)
 		}
+	}
+}
+
+// QUM-733 5b: /tree opens the tree modal as a UI command.
+func TestAll_TreeIsUIKindWithToggleTreeAction(t *testing.T) {
+	var c *Command
+	for _, cc := range All() {
+		if cc.Name == "/tree" {
+			x := cc
+			c = &x
+			break
+		}
+	}
+	if c == nil {
+		t.Fatal("/tree not found in registry")
+	}
+	if c.Kind != KindUI {
+		t.Errorf("/tree Kind = %v, want KindUI", c.Kind)
+	}
+	if c.Action != ActionToggleTree {
+		t.Errorf("/tree Action = %v, want ActionToggleTree", c.Action)
+	}
+	if c.Description == "" {
+		t.Error("/tree Description is empty")
+	}
+}
+
+func TestFilter_TreeMatchesPrefix(t *testing.T) {
+	got := Filter("tr")
+	if len(got) != 1 || got[0].Name != "/tree" {
+		t.Errorf("Filter(\"tr\") = %v, want [/tree]", names(got))
 	}
 }
 

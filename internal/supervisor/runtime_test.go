@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,12 +18,12 @@ import (
 type runtimeTestSession struct {
 	sessionID                   string
 	caps                        backendpkg.Capabilities
-	interrupts                  int
-	wakes                       int
-	wakeForDeliveryCalls        int
-	forceInterruptDeliveryCalls int
-	stopCalls                   int
-	stopAbandonCalls            int
+	interrupts                  atomic.Int64
+	wakes                       atomic.Int64
+	wakeForDeliveryCalls        atomic.Int64
+	forceInterruptDeliveryCalls atomic.Int64
+	stopCalls                   atomic.Int64
+	stopAbandonCalls            atomic.Int64
 	doneCh                      chan struct{}
 	// stopWaitTimedOut, when set, is what this handle reports from its
 	// StopWaitTimedOut() method (QUM-546). AgentRuntime captures the value
@@ -44,27 +45,27 @@ func (s *runtimeTestSession) StartTurn(context.Context, string, ...backendpkg.Tu
 }
 
 func (s *runtimeTestSession) Interrupt(context.Context) error {
-	s.interrupts++
+	s.interrupts.Add(1)
 	return nil
 }
 
 func (s *runtimeTestSession) Wake() error {
-	s.wakes++
+	s.wakes.Add(1)
 	return nil
 }
 
 func (s *runtimeTestSession) WakeForDelivery() error {
-	s.wakeForDeliveryCalls++
+	s.wakeForDeliveryCalls.Add(1)
 	return nil
 }
 
 func (s *runtimeTestSession) ForceInterruptDelivery() error {
-	s.forceInterruptDeliveryCalls++
+	s.forceInterruptDeliveryCalls.Add(1)
 	return nil
 }
 
 func (s *runtimeTestSession) Stop(context.Context) error {
-	s.stopCalls++
+	s.stopCalls.Add(1)
 	return nil
 }
 
@@ -72,7 +73,7 @@ func (s *runtimeTestSession) Stop(context.Context) error {
 // RuntimeHandle must provide it; the test fake records call counts so
 // abandon-vs-polite assertions can distinguish the two routes.
 func (s *runtimeTestSession) StopAbandon(context.Context) error {
-	s.stopAbandonCalls++
+	s.stopAbandonCalls.Add(1)
 	return nil
 }
 func (s *runtimeTestSession) Close() error                          { return nil }
@@ -220,8 +221,8 @@ func TestAgentRuntime_StartInterruptQueueAndSyncEmitSnapshotsWithoutTmux(t *test
 	if starter.specs[0].Worktree != "/repo/.sprawl/worktrees/alice" {
 		t.Fatalf("starter spec worktree = %q", starter.specs[0].Worktree)
 	}
-	if session.interrupts != 1 {
-		t.Fatalf("interrupts = %d, want 1", session.interrupts)
+	if got := session.interrupts.Load(); got != 1 {
+		t.Fatalf("interrupts = %d, want 1", got)
 	}
 
 	snap := rt.Snapshot()
@@ -484,11 +485,11 @@ func TestAgentRuntime_StopAbandon_CallsHandleStopAbandon(t *testing.T) {
 	if err := rt.StopAbandon(context.Background()); err != nil {
 		t.Fatalf("StopAbandon: %v", err)
 	}
-	if session.stopAbandonCalls != 1 {
-		t.Errorf("session.stopAbandonCalls = %d, want 1", session.stopAbandonCalls)
+	if got := session.stopAbandonCalls.Load(); got != 1 {
+		t.Errorf("session.stopAbandonCalls = %d, want 1", got)
 	}
-	if session.stopCalls != 0 {
-		t.Errorf("session.stopCalls = %d, want 0 (StopAbandon must not call Stop)", session.stopCalls)
+	if got := session.stopCalls.Load(); got != 0 {
+		t.Errorf("session.stopCalls = %d, want 0 (StopAbandon must not call Stop)", got)
 	}
 }
 

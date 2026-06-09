@@ -248,6 +248,34 @@ func TestStripSystemNotificationTag_TagNotAtStart(t *testing.T) {
 	}
 }
 
+// TestStripSystemNotificationTag_LivenessCheckPreserved — QUM-730: the
+// `type="liveness_check"` attribute must NOT be coerced back to "message" by
+// the YAGNI fallback. Heartbeat injection is its own glyph/color channel in
+// the TUI; treating it as a regular message would erase the operator's only
+// visual cue that the heartbeat fired.
+func TestStripSystemNotificationTag_LivenessCheckPreserved(t *testing.T) {
+	body, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(
+		`<system-notification type="liveness_check">are you alive?</system-notification>`)
+	if !ok {
+		t.Fatalf("ok = false, want true")
+	}
+	if notifType != NotificationKindLivenessCheck {
+		t.Errorf("notifType = %q, want %q (must NOT fall back to message)", notifType, NotificationKindLivenessCheck)
+	}
+	if NotificationKindLivenessCheck != "liveness_check" {
+		t.Errorf("NotificationKindLivenessCheck = %q, want %q", NotificationKindLivenessCheck, "liveness_check")
+	}
+	if isInterrupt {
+		t.Errorf("isInterrupt = true, want false (liveness_check is not an interrupt)")
+	}
+	if body != "are you alive?" {
+		t.Errorf("body = %q, want %q", body, "are you alive?")
+	}
+	if remaining != "" {
+		t.Errorf("remaining = %q, want empty", remaining)
+	}
+}
+
 // TestStripSystemNotificationTag_UnknownTypeFallsBackToMessage — YAGNI guard
 // (per QUM-562 design decision #5): unrecognized `type` values must not crash
 // the parser; they fall back to type="message" so an updated emitter can ship
