@@ -42,6 +42,7 @@ import (
 	"github.com/dmotles/sprawl/internal/procutil"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
+	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/sprawlmcp"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
@@ -93,6 +94,27 @@ type enterDeps struct {
 	// listener on the given address in a background goroutine. Set via
 	// the `--pprof` flag (wins) or the SPRAWL_PPROF_ADDR env var. QUM-678.
 	pprofAddr string
+	// pickAccent returns a randomly-picked accent color name (e.g.
+	// "colour39"). Used by resolveAccentColor on first-run when no accent
+	// has been persisted yet. Injected for deterministic tests. QUM-704.
+	pickAccent func() string
+}
+
+// resolveAccentColor returns the persisted accent color, seeding a randomly-
+// picked one on first run (QUM-704). On empty read, it calls pick(), persists
+// the result via state.WriteAccentColor, and returns the picked value. Persist
+// errors are logged to stderr but do not block startup — the in-memory value
+// is still used for the current session so the TUI never silently falls back
+// to the default cyan. A non-empty persisted color is returned as-is.
+func resolveAccentColor(sprawlRoot string, pick func() string) string {
+	if c := state.ReadAccentColor(sprawlRoot); c != "" {
+		return c
+	}
+	c := pick()
+	if err := state.WriteAccentColor(sprawlRoot, c); err != nil {
+		fmt.Fprintf(os.Stderr, "[enter] warning: persisting seeded accent color failed: %v\n", err)
+	}
+	return c
 }
 
 // restartState holds the rolling state tracked across restarts: when the last
@@ -229,6 +251,7 @@ func resolveEnterDeps() *enterDeps {
 		getenv:     os.Getenv,
 		getwd:      os.Getwd,
 		newSession: defaultNewSession,
+		pickAccent: runtimecfg.PickAccentColor,
 		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error {
 			deps := rootinit.DefaultDeps()
 			deps.LogPrefix = "[enter]"
@@ -578,7 +601,11 @@ func runEnter(deps *enterDeps) error {
 	stopSigDump := sigdump.Install(context.Background(), sprawlRoot, log.New(os.Stderr, "[sigdump] ", log.LstdFlags))
 	defer stopSigDump()
 
-	accentColor := state.ReadAccentColor(sprawlRoot)
+	pickAccent := deps.pickAccent
+	if pickAccent == nil {
+		pickAccent = runtimecfg.PickAccentColor
+	}
+	accentColor := resolveAccentColor(sprawlRoot, pickAccent)
 	repoName := filepath.Base(sprawlRoot)
 
 	// Track last session's start time + whether it was a resume attempt so

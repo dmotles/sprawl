@@ -1385,3 +1385,59 @@ func TestRunEnter_BannerSilentOnZero(t *testing.T) {
 		}
 	}
 }
+
+// --- QUM-704: first-run accent color randomization ---
+
+// TestResolveAccentColor_SeedsOnEmpty verifies that on a fresh install (no
+// persisted accent-color file), resolveAccentColor picks a random color via
+// the injected pick fn, persists it to disk via state.WriteAccentColor, and
+// returns it. This guards the regression introduced by QUM-346 where cmd/init
+// was deleted and nothing else seeded the accent file — every install fell
+// back to the default cyan.
+func TestResolveAccentColor_SeedsOnEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	if c := state.ReadAccentColor(tmpDir); c != "" {
+		t.Fatalf("precondition: expected empty accent color, got %q", c)
+	}
+
+	var pickCalls int
+	pick := func() string {
+		pickCalls++
+		return "colour208"
+	}
+
+	got := resolveAccentColor(tmpDir, pick)
+	if got != "colour208" {
+		t.Errorf("resolveAccentColor = %q, want %q (picked value)", got, "colour208")
+	}
+	if pickCalls != 1 {
+		t.Errorf("pick called %d times, want 1", pickCalls)
+	}
+	if persisted := state.ReadAccentColor(tmpDir); persisted != "colour208" {
+		t.Errorf("persisted accent color = %q, want %q (seed must persist for next run)", persisted, "colour208")
+	}
+}
+
+// TestResolveAccentColor_LeavesNonEmptyAlone verifies that when an accent
+// color has already been persisted, resolveAccentColor returns it as-is and
+// does NOT re-randomize. This ensures `sprawl color set/rotate` values
+// survive subsequent `sprawl enter` launches.
+func TestResolveAccentColor_LeavesNonEmptyAlone(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := state.WriteAccentColor(tmpDir, "colour198"); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	pick := func() string {
+		t.Error("pick must not be called when accent color is already persisted")
+		return "colour39"
+	}
+
+	got := resolveAccentColor(tmpDir, pick)
+	if got != "colour198" {
+		t.Errorf("resolveAccentColor = %q, want %q (persisted value)", got, "colour198")
+	}
+	if persisted := state.ReadAccentColor(tmpDir); persisted != "colour198" {
+		t.Errorf("persisted value changed to %q, want %q (must not re-randomize)", persisted, "colour198")
+	}
+}
