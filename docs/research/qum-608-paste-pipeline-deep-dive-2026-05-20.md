@@ -1,5 +1,9 @@
 # QUM-608 — Paste pipeline deep-dive: why bracketed paste fails in sprawl on tmux 3.2a (but works in claude code)
 
+> **2026-06-09 note (QUM-699):** the `cmd/input_debug.go` diagnostic command
+> referenced throughout this investigation was deleted after QUM-608 shipped.
+> Line/file refs below are historical — recover from `git log` if needed.
+
 **Status:** research-only. No code changes.
 **Branch:** `dmotles/qum-608-paste-pipeline-research`.
 **Investigated by:** ghost (research agent), 2026-05-20.

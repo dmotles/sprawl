@@ -969,3 +969,13 @@ func runEnter(deps *enterDeps) error {
 	fmt.Fprintln(os.Stderr, "TUI session ended.")
 	return nil
 }
+
+// isStdinTTY reports whether os.Stdin is a terminal. False when stdin is
+// a pipe.
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}

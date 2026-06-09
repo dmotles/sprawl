@@ -1,5 +1,9 @@
 # QUM-617 — TUI text selection blocked by mouse capture
 
+> **2026-06-09 note (QUM-699):** the `cmd/input_debug.go` diagnostic command
+> referenced below was deleted after QUM-608 shipped. Line/file refs are
+> historical.
+
 **Status:** research only (no code change). **Author:** ghost. **Date:** 2026-05-21.
 **Linear:** [QUM-617](https://linear.app/qumulo-dmotles/issue/QUM-617/tui-cannot-select-copy-text-from-viewport-mouse-capture-blocks-native).
 **HEAD verified:** `cb4dabb` (descendant of `6d108eb` on main).

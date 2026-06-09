@@ -179,8 +179,8 @@ test-recover-live-e2e:
 # panel within 5s (well below the typewriter-animation budget the bug
 # produces), then SIGINTs and asserts clean shutdown. See
 # scripts/test-paste-coalesce-e2e.sh. Mandatory before merging any
-# change to internal/inputcoalesce/, the tea.NewProgram call site in
-# cmd/enter.go, or cmd/input_debug.go's coalescer consumer.
+# change to internal/inputcoalesce/ or the tea.NewProgram call site in
+# cmd/enter.go.
 test-paste-coalesce-e2e: build
 	bash scripts/test-paste-coalesce-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 

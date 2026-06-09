@@ -63,10 +63,6 @@ type Coalescer struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
-	// done is closed by readLoop when it exits (EOF or cancel). Callers
-	// piping stdin can watch this to know when input is exhausted and
-	// drive program shutdown.
-	done chan struct{}
 
 	// State shared only with Read (single-caller assumption; Bubble Tea
 	// calls Read serially from a single goroutine).
@@ -109,7 +105,6 @@ func New(src io.Reader, window time.Duration, log LogFunc) *Coalescer {
 		chunks:  make(chan []byte, 16),
 		readErr: make(chan error, 1),
 		closed:  make(chan struct{}),
-		done:    make(chan struct{}),
 	}
 	go c.readLoop()
 	return c
@@ -163,7 +158,6 @@ func (n *noopCancelReader) Close() error { return nil }
 // error to c.readErr (buffered, size 1) and closes c.chunks. It never
 // closes c.readErr — the Read consumer drains it once.
 func (c *Coalescer) readLoop() {
-	defer close(c.done)
 	buf := make([]byte, ChunkSize)
 	for {
 		n, err := c.src.Read(buf)
@@ -188,12 +182,6 @@ func (c *Coalescer) readLoop() {
 		}
 	}
 }
-
-// Done returns a channel that is closed when the background read loop
-// exits (input reader returned EOF/error, or Close was called).
-// Callers driving the Coalescer over a pipe can watch this to detect
-// end-of-input.
-func (c *Coalescer) Done() <-chan struct{} { return c.done }
 
 // Read implements io.Reader. It blocks until at least one byte is
 // available, then opens a burst window of c.window and drains any
