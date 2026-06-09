@@ -1,0 +1,4 @@
+AGENT  INPUT  OUTPUT  CACHE_READ  CACHE_CREATE
+alice  3,500  350     120         55
+bob    300    30      5           2
+TOTAL  3,800  380     125         57

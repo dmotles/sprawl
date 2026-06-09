@@ -1,0 +1,4 @@
+MODEL   INPUT  OUTPUT  CACHE_READ  CACHE_CREATE
+opus    500    50      10          5
+sonnet  3,300  330     115         52
+TOTAL   3,800  380     125         57

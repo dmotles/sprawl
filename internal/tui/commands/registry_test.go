@@ -6,10 +6,10 @@ import (
 
 func TestAll_ReturnsFourCommandsInStableOrder(t *testing.T) {
 	cmds := All()
-	if len(cmds) != 4 {
-		t.Fatalf("All() len = %d, want 4", len(cmds))
+	if len(cmds) != 5 {
+		t.Fatalf("All() len = %d, want 5", len(cmds))
 	}
-	want := []string{"/exit", "/help", "/handoff", "/switch"}
+	want := []string{"/exit", "/help", "/handoff", "/usage", "/switch"}
 	for i, w := range want {
 		if cmds[i].Name != w {
 			t.Errorf("All()[%d].Name = %q, want %q", i, cmds[i].Name, w)
@@ -142,6 +142,8 @@ func TestFilter_PrefixMatchesCaseInsensitive(t *testing.T) {
 		{"help", []string{"/help"}},
 		{"s", []string{"/switch"}},
 		{"sw", []string{"/switch"}},
+		{"u", []string{"/usage"}},
+		{"usage", []string{"/usage"}},
 	}
 	for _, tc := range cases {
 		got := Filter(tc.filter)
@@ -174,6 +176,30 @@ func names(cs []Command) []string {
 		out[i] = c.Name
 	}
 	return out
+}
+
+// QUM-721 — /usage palette entry contract.
+func TestAll_UsageIsUIKindWithShowUsageAction(t *testing.T) {
+	var u *Command
+	for _, c := range All() {
+		if c.Name == "/usage" {
+			cc := c
+			u = &cc
+			break
+		}
+	}
+	if u == nil {
+		t.Fatal("/usage not found in registry")
+	}
+	if u.Kind != KindUI {
+		t.Errorf("/usage Kind = %v, want KindUI", u.Kind)
+	}
+	if u.Action != ActionShowUsage {
+		t.Errorf("/usage Action = %v, want ActionShowUsage", u.Action)
+	}
+	if u.Description == "" {
+		t.Error("/usage Description is empty")
+	}
 }
 
 func TestHandoffPromptTemplate_NonEmptyAndReferencesMCPTool(t *testing.T) {

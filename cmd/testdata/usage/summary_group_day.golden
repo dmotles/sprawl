@@ -1,0 +1,4 @@
+DAY         INPUT  OUTPUT  CACHE_READ  CACHE_CREATE
+2026-05-01  3,000  300     110         50
+2026-05-02  800    80      15          7
+TOTAL       3,800  380     125         57

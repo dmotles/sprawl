@@ -1,0 +1,5 @@
+SESSION   INPUT  OUTPUT  CACHE_READ  CACHE_CREATE
+alice/s1  3,000  300     110         50
+alice/s2  500    50      10          5
+bob/s1    300    30      5           2
+TOTAL     3,800  380     125         57

@@ -25,6 +25,7 @@ import (
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
+	"github.com/dmotles/sprawl/internal/usage"
 	"github.com/dmotles/sprawl/internal/worktree"
 	"github.com/gofrs/flock"
 )
@@ -454,7 +455,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			LastReportState:   a.LastReportState,
 			LastReportMessage: a.LastReportMessage,
 			LastReportDetail:  a.LastReportDetail,
-			TotalCostUsd:      a.TotalCostUsd,
+			TotalCostUsd:      sumUsageCostForAgent(r.sprawlRoot, a.Name),
 			ProcessAlive:      processAliveByName[a.Name],
 			InTurn:            inAutonomousTurnByName[a.Name],
 			LastActivityAt:    lastActivity,
@@ -1856,4 +1857,17 @@ func (r *Real) MessagesPeek(ctx context.Context) (*MessagesPeekResult, error) {
 		UnreadCount: len(msgs),
 		Preview:     preview,
 	}, nil
+}
+
+// sumUsageCostForAgent returns the aggregated total_cost_usd for the named
+// agent across all per-session usage NDJSON logs under
+// .sprawl/logs/usage/<agent>/*.ndjson. Errors are swallowed (returns 0) so
+// the Status build path is robust against transient I/O issues — usage data
+// is informational, not load-bearing for control flow.
+func sumUsageCostForAgent(sprawlRoot, name string) float64 {
+	t, err := usage.SumForAgent(sprawlRoot, name)
+	if err != nil {
+		return 0
+	}
+	return t.TotalCostUsd
 }

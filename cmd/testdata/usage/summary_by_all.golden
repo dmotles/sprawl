@@ -1,0 +1,4 @@
+AGENT  INPUT  OUTPUT  CACHE_READ  CACHE_CREATE  COST
+alice  3,500  350     120         55            $0.0800
+bob    300    30      5           2             $0.0030
+TOTAL  3,800  380     125         57            $0.0830

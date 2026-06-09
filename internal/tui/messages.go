@@ -911,3 +911,9 @@ type RestartCompleteMsg struct {
 	Bridge SessionBackend
 	Err    error
 }
+
+// ShowUsageMsg requests that the /usage modal be opened (QUM-721).
+type ShowUsageMsg struct{}
+
+// DismissUsageMsg requests that the /usage modal be closed (QUM-721).
+type DismissUsageMsg struct{}

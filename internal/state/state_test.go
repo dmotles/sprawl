@@ -143,57 +143,6 @@ func TestListAgents_Multiple(t *testing.T) {
 	}
 }
 
-func TestSaveAndLoadAgent_CostFields(t *testing.T) {
-	dir := t.TempDir()
-	agent := &AgentState{
-		Name:             "alice",
-		Type:             "engineer",
-		Status:           "active",
-		TotalCostUsd:     0.0523,
-		LastCostUpdateAt: "2026-04-30T12:00:00Z",
-	}
-
-	if err := SaveAgent(dir, agent); err != nil {
-		t.Fatalf("SaveAgent: %v", err)
-	}
-
-	loaded, err := LoadAgent(dir, "alice")
-	if err != nil {
-		t.Fatalf("LoadAgent: %v", err)
-	}
-
-	if loaded.TotalCostUsd != 0.0523 {
-		t.Errorf("TotalCostUsd = %f, want 0.0523", loaded.TotalCostUsd)
-	}
-	if loaded.LastCostUpdateAt != "2026-04-30T12:00:00Z" {
-		t.Errorf("LastCostUpdateAt = %q, want %q", loaded.LastCostUpdateAt, "2026-04-30T12:00:00Z")
-	}
-}
-
-func TestSaveAndLoadAgent_CostFieldsOmittedWhenZero(t *testing.T) {
-	dir := t.TempDir()
-	agent := &AgentState{
-		Name:   "bob",
-		Type:   "engineer",
-		Status: "active",
-	}
-
-	if err := SaveAgent(dir, agent); err != nil {
-		t.Fatalf("SaveAgent: %v", err)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(AgentsDir(dir), "bob.json"))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if strings.Contains(string(raw), "total_cost_usd") {
-		t.Errorf("agent state JSON should not contain total_cost_usd when zero:\n%s", raw)
-	}
-	if strings.Contains(string(raw), "last_cost_update_at") {
-		t.Errorf("agent state JSON should not contain last_cost_update_at when empty:\n%s", raw)
-	}
-}
-
 func TestWriteAndReadAccentColor(t *testing.T) {
 	dir := t.TempDir()
 
@@ -447,5 +396,63 @@ func TestWriteSystemPrompt_CreatesDirectory(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Error("expected agent directory to be created")
+	}
+}
+
+// TestAgentState_LegacyCostFieldsTolerated locks in graceful upgrade from old
+// state files that carried `total_cost_usd` and `last_cost_update_at` at the
+// top level (QUM-368: cost tracking is being moved out of AgentState into
+// the per-turn usage NDJSON logs). LoadAgent must continue to parse these
+// blobs without error and preserve the other AgentState fields.
+func TestAgentState_LegacyCostFieldsTolerated(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := AgentsDir(dir)
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Hand-craft a legacy JSON blob with cost fields populated.
+	blob := `{
+  "name": "legacy",
+  "type": "engineer",
+  "family": "engineering",
+  "parent": "tower",
+  "prompt": "do the thing",
+  "branch": "dmotles/legacy",
+  "worktree": "/tmp/w/legacy",
+  "status": "active",
+  "created_at": "2026-01-01T00:00:00Z",
+  "session_id": "sess-legacy",
+  "total_cost_usd": 4.20,
+  "last_cost_update_at": "2026-01-02T03:04:05Z",
+  "schema_version": 1
+}`
+	if err := os.WriteFile(filepath.Join(agentsDir, "legacy.json"), []byte(blob), 0o644); err != nil {
+		t.Fatalf("write legacy blob: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "legacy")
+	if err != nil {
+		t.Fatalf("LoadAgent on legacy blob errored: %v", err)
+	}
+	if loaded.Name != "legacy" {
+		t.Errorf("Name = %q, want legacy", loaded.Name)
+	}
+	if loaded.Type != "engineer" {
+		t.Errorf("Type = %q, want engineer", loaded.Type)
+	}
+	if loaded.Family != "engineering" {
+		t.Errorf("Family = %q, want engineering", loaded.Family)
+	}
+	if loaded.Parent != "tower" {
+		t.Errorf("Parent = %q, want tower", loaded.Parent)
+	}
+	if loaded.Branch != "dmotles/legacy" {
+		t.Errorf("Branch = %q, want dmotles/legacy", loaded.Branch)
+	}
+	if loaded.SessionID != "sess-legacy" {
+		t.Errorf("SessionID = %q, want sess-legacy", loaded.SessionID)
+	}
+	if loaded.Status != "active" {
+		t.Errorf("Status = %q, want active", loaded.Status)
 	}
 }

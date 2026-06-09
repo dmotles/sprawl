@@ -22,6 +22,7 @@ import (
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
+	"github.com/dmotles/sprawl/internal/usage"
 )
 
 // isExitError reports whether err wraps an *exec.ExitError. During intentional
@@ -153,6 +154,12 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	// doesn't back up.
 	stopFault := runFaultSubscriber(rt.EventBus(), spec.Name, s.faultEmitter, "backend-fault")
 
+	// QUM-368: per-runtime usage recorder. Constructed here (needs sprawlRoot
+	// + agent name). Failure to construct is non-fatal — we skip the
+	// subscriber and continue without usage logging.
+	usageRec, _ := usage.NewRecorder(spec.SprawlRoot, spec.Name)
+	stopUsage := runUsageSubscriber(rt.EventBus(), usageRec, "usage")
+
 	// Phase 6: assemble the handle. Single linear block, no closures already
 	// in flight observe partial state.
 	handle := &unifiedHandle{
@@ -164,6 +171,7 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 		stopActivity: stopActivity,
 		stopDelivery: stopDelivery,
 		stopFault:    stopFault,
+		stopUsage:    stopUsage,
 		sprawlRoot:   spec.SprawlRoot,
 		name:         spec.Name,
 		coord:        coord,
@@ -179,6 +187,7 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	// Phase 8: start the runtime. Rollback on error: tear down subscribers,
 	// close + reap session, close activity file.
 	if err := rt.Start(context.Background()); err != nil {
+		stopUsage()
 		stopFault()
 		stopDelivery()
 		stopActivity()
@@ -314,6 +323,37 @@ func runActivitySubscriber(bus *runtimepkg.EventBus, obs interface {
 	}
 }
 
+// runUsageSubscriber subscribes to bus and forwards every RuntimeEvent to the
+// usage.Recorder (QUM-368). Buffer is 32 — if full, the EventBus drops
+// events for this subscriber only (existing QUM-681 drop telemetry surfaces
+// it). The returned stop function unsubscribes (which closes the channel),
+// waits for the goroutine to drain, then closes the recorder so the last
+// in-flight file is fsync'd. A nil recorder is tolerated — the subscriber
+// still drains the bus so the channel doesn't back up.
+func runUsageSubscriber(bus *runtimepkg.EventBus, rec *usage.Recorder, name string) func() {
+	ch, unsub := bus.SubscribeNamed(name, 32)
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		for ev := range ch {
+			if rec == nil {
+				continue
+			}
+			rec.Handle(ev)
+		}
+		if rec != nil {
+			_ = rec.Close()
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			unsub()
+			<-doneCh
+		})
+	}
+}
+
 // runFaultSubscriber subscribes to bus and forwards EventBackendFaulted
 // events to emitter (terminal fault banner). It ALSO forwards per-turn
 // deadline expiries — EventTurnFailed wrapping context.DeadlineExceeded —
@@ -371,6 +411,7 @@ type unifiedHandle struct {
 	activityClose func() error
 	stopActivity  func()
 	stopFault     func()
+	stopUsage     func()
 	sprawlRoot    string
 	name          string
 
@@ -554,6 +595,11 @@ func (h *unifiedHandle) stopOnceWith(ctx context.Context, stopRuntime func(conte
 		if h.stopFault != nil {
 			joinWithTimeout(h.stopFault, stopActivityTimeout,
 				"stopFault abandoned — likely wedged backend-fault subscriber goroutine (QUM-602)",
+				"handle", "unifiedHandle", "agent", h.name)
+		}
+		if h.stopUsage != nil {
+			joinWithTimeout(h.stopUsage, stopActivityTimeout,
+				"stopUsage abandoned — likely wedged usage subscriber goroutine (QUM-368)",
 				"handle", "unifiedHandle", "agent", h.name)
 		}
 		if h.stopDelivery != nil {

@@ -626,7 +626,6 @@ func TestPrepare_ResumePath_PreservesExistingFields(t *testing.T) {
 			Branch:            "main",
 			CreatedAt:         "2026-04-01T00:00:00Z",
 			SessionID:         "old-sess",
-			TotalCostUsd:      42.5,
 			LastReportMessage: "all good",
 		}, nil
 	}
@@ -651,10 +650,6 @@ func TestPrepare_ResumePath_PreservesExistingFields(t *testing.T) {
 	// CreatedAt should be preserved from original.
 	if savedAgent.CreatedAt != "2026-04-01T00:00:00Z" {
 		t.Errorf("CreatedAt: got %q, want preserved value", savedAgent.CreatedAt)
-	}
-	// Cost fields should be preserved.
-	if savedAgent.TotalCostUsd != 42.5 {
-		t.Errorf("TotalCostUsd: got %f, want 42.5", savedAgent.TotalCostUsd)
 	}
 	// Report fields should be preserved.
 	if savedAgent.LastReportMessage != "all good" {

@@ -211,6 +211,8 @@ func (m PaletteModel) dispatchSelected() (PaletteModel, tea.Cmd) {
 			action = sendMsgCmd(PaletteQuitMsg{})
 		case commands.ActionToggleHelp:
 			action = sendMsgCmd(ToggleHelpMsg{})
+		case commands.ActionShowUsage:
+			action = sendMsgCmd(ShowUsageMsg{})
 		}
 	case commands.KindPromptInjection:
 		tmpl := cmd.PromptTemplate

@@ -9,8 +9,13 @@ import (
 )
 
 // AgentInfo wraps AgentState with runtime liveness and role info.
+//
+// TotalCostUsd is sourced from the per-agent usage NDJSON logs at
+// supervisor.Status() build time (QUM-368), not from AgentState. The
+// AgentState.TotalCostUsd field was removed; readers treewalk on demand.
 type AgentInfo struct {
 	state.AgentState
+	TotalCostUsd float64
 	ProcessAlive *bool
 	IsRoot       bool
 }
@@ -62,12 +67,12 @@ func loadFromSupervisor(ctx context.Context, deps Deps, sprawlRoot string) ([]*A
 				Status:            info.Status,
 				Branch:            info.Branch,
 				TreePath:          info.TreePath,
-				TotalCostUsd:      info.TotalCostUsd,
 				LastReportType:    info.LastReportType,
 				LastReportState:   info.LastReportState,
 				LastReportMessage: info.LastReportMessage,
 				LastReportDetail:  info.LastReportDetail,
 			},
+			TotalCostUsd: info.TotalCostUsd,
 			ProcessAlive: info.ProcessAlive,
 		})
 	}

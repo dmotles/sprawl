@@ -235,6 +235,40 @@ func TestPaletteModel_EnterOnHandoffEmitsInjectPrompt(t *testing.T) {
 	}
 }
 
+// QUM-721 — /usage palette dispatch.
+func TestPaletteModel_EnterOnUsageEmitsShowUsage(t *testing.T) {
+	p := newTestPaletteModel(t)
+	p.Show()
+	// Filter to /usage exclusively.
+	for _, r := range "usage" {
+		p, _ = p.Update(tea.KeyPressMsg{Code: r})
+	}
+	if len(p.matches) != 1 || p.matches[0].Name != "/usage" {
+		t.Fatalf("setup: filter 'usage' matches = %v, want [/usage]", p.matches)
+	}
+	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter should emit a cmd")
+	}
+	msg := cmd()
+	gotClose := false
+	gotShow := false
+	walkBatch(msg, func(m tea.Msg) {
+		switch m.(type) {
+		case ClosePaletteMsg:
+			gotClose = true
+		case ShowUsageMsg:
+			gotShow = true
+		}
+	})
+	if !gotClose {
+		t.Error("Enter on /usage should emit ClosePaletteMsg")
+	}
+	if !gotShow {
+		t.Error("Enter on /usage should emit ShowUsageMsg")
+	}
+}
+
 func TestPaletteModel_EnterWithNoMatchesIsNoop(t *testing.T) {
 	p := newTestPaletteModel(t)
 	p.Show()
@@ -269,7 +303,7 @@ func TestPaletteModel_ViewVisibleListsCommands(t *testing.T) {
 	p := newTestPaletteModel(t)
 	p.Show()
 	v := p.View()
-	for _, name := range []string{"/exit", "/help", "/handoff"} {
+	for _, name := range []string{"/exit", "/help", "/handoff", "/usage"} {
 		if !strings.Contains(v, name) {
 			t.Errorf("View() missing %q\n%s", name, v)
 		}

@@ -18,6 +18,7 @@ import (
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/usage"
 )
 
 // AgentBuffer stores the per-agent chat-region state. Each agent owns its
@@ -163,6 +164,10 @@ type AppModel struct {
 	// re-opens it).
 	showQuestion  bool
 	questionModel QuestionModel
+
+	// QUM-721 — /usage modal state.
+	showUsage  bool
+	usageModal UsageModalModel
 
 	// validatePopup renders the live validate-output popup (QUM-588).
 	// State transitions are driven by ValidateEventMsg dispatched from
@@ -326,6 +331,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		mcpOpThresholdShown: make(map[string]bool),
 		cache:               newViewCache(),
 		questionModel:       NewQuestionModel(&theme),
+		usageModal:          NewUsageModalModel(&theme),
 		validatePopup:       NewValidatePopupModel(&theme, 0),
 		toasts:              NewToastModel(&theme),
 	}
@@ -548,6 +554,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// QUM-721: when the /usage modal is visible, route ALL keys to it.
+		if m.showUsage {
+			var cmd tea.Cmd
+			m.usageModal, cmd = m.usageModal.Update(msg)
+			return m, cmd
+		}
+
 		// QUM-527 slice 2c: Ctrl-Q reopens the question modal when a request
 		// is pending and no higher-priority modal is up. No-op otherwise.
 		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'q' || msg.Code == 'Q') {
@@ -723,6 +736,23 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ToggleHelpMsg:
 		m.showHelp = !m.showHelp
+		return m, nil
+
+	case ShowUsageMsg:
+		// QUM-721: gate on other modals so usage doesn't stack atop help/etc.
+		if m.input.disabled || m.anyModalUp() {
+			return m, nil
+		}
+		totals, _ := usage.SumByAgent(m.sprawlRoot)
+		m.usageModal = m.usageModal.Install(totals)
+		m.usageModal = m.usageModal.SetSize(m.width, m.height)
+		m.usageModal = m.usageModal.Show()
+		m.showUsage = true
+		return m, nil
+
+	case DismissUsageMsg:
+		m.showUsage = false
+		m.usageModal = m.usageModal.Hide()
 		return m, nil
 
 	case ToastSpawnMsg:
@@ -925,17 +955,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetTransientLabel(fmt.Sprintf("Completed in %dms, cost $%.4f", msg.DurationMs, msg.TotalCostUsd))
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
 		}
-		var costCmd tea.Cmd
-		if msg.TotalCostUsd > 0 && m.sprawlRoot != "" && m.rootAgent != "" {
-			costCmd = persistCostCmd(m.sprawlRoot, m.rootAgent, msg.TotalCostUsd)
-		}
-		if costCmd != nil && finalizeCmd != nil {
-			return m, tea.Batch(costCmd, finalizeCmd)
-		}
 		if finalizeCmd != nil {
 			return m, finalizeCmd
 		}
-		return m, costCmd
+		return m, nil
 
 	case InterruptCompletedMsg:
 		// QUM-475: terminal interrupted-turn event from the unified runtime.
@@ -948,20 +971,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Finalize before status append (see SessionResultMsg comment).
 		finalizeCmd := m.finalizeTurn()
 		m.statusBar.SetTransientLabel(fmt.Sprintf("Interrupted (%dms)", msg.DurationMs))
-		var costCmd tea.Cmd
 		if msg.TotalCostUsd > 0 {
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)
-			if m.sprawlRoot != "" && m.rootAgent != "" {
-				costCmd = persistCostCmd(m.sprawlRoot, m.rootAgent, msg.TotalCostUsd)
-			}
-		}
-		if costCmd != nil && finalizeCmd != nil {
-			return m, tea.Batch(costCmd, finalizeCmd)
 		}
 		if finalizeCmd != nil {
 			return m, finalizeCmd
 		}
-		return m, costCmd
+		return m, nil
 
 	case SessionErrorMsg:
 		// Transport EOF is the normal end-of-session signal (clean exit or
@@ -2006,6 +2022,10 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		content = m.questionModel.View()
 	}
 
+	if m.showUsage {
+		content = m.usageModal.View()
+	}
+
 	// QUM-588: the validate popup overlays content when Visible (queued,
 	// running-visible, or failed-restored). Drawn after question/help so
 	// it sits above ambient content but below confirm/error which are
@@ -2287,6 +2307,7 @@ func (m *AppModel) resizePanels() {
 	m.errorDialog.SetSize(m.width, m.height)
 	m.palette.SetSize(m.width, m.height)
 	m.questionModel.SetSize(m.width, m.height)
+	m.usageModal = m.usageModal.SetSize(m.width, m.height)
 	m.validatePopup.SetSize(m.width, m.height)
 	m.toasts.SetSize(m.width, m.height)
 }
@@ -2294,7 +2315,7 @@ func (m *AppModel) resizePanels() {
 // anyOtherModalUp reports whether any modal OTHER than the question modal is
 // active. Used to gate auto-show / Ctrl-Q reopen.
 func anyOtherModalUp(m *AppModel) bool {
-	return m.showError || m.showConfirm || m.showHelp || m.showPalette
+	return m.showError || m.showConfirm || m.showHelp || m.showPalette || m.showUsage
 }
 
 // anyModalUp reports whether ANY modal is currently visible. The four input-
@@ -2305,7 +2326,7 @@ func anyOtherModalUp(m *AppModel) bool {
 // anyOtherModalUp, which deliberately excludes showQuestion for the
 // question-auto-show / Ctrl-Q-reopen gates.
 func (m *AppModel) anyModalUp() bool {
-	return m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion
+	return m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion || m.showUsage
 }
 
 // agentFromHead returns pq.Req.From if pq is non-nil, else "".
@@ -2940,21 +2961,6 @@ func removeStr(ss []string, v string) []string {
 		}
 	}
 	return ss
-}
-
-// persistCostCmd writes the session cost to the agent's state file. Fire-and-
-// forget: errors are swallowed because cost display is best-effort. (QUM-366)
-func persistCostCmd(sprawlRoot, agentName string, totalCostUsd float64) tea.Cmd {
-	return func() tea.Msg {
-		agent, err := state.LoadAgent(sprawlRoot, agentName)
-		if err != nil {
-			return nil
-		}
-		agent.TotalCostUsd = totalCostUsd
-		agent.LastCostUpdateAt = time.Now().UTC().Format(time.RFC3339)
-		_ = state.SaveAgent(sprawlRoot, agent)
-		return nil
-	}
 }
 
 // formatInboxBanner renders the unified "inbox: ..." viewport banner used by

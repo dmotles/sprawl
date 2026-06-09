@@ -115,6 +115,23 @@ type StreamEvent struct {
 	ParentToolUseID *string         `json:"parent_tool_use_id"`
 }
 
+// ParseUsage extracts the inline usage and model from an AssistantMessage's
+// Content blob. Returns (nil, "", nil) if Content is empty (no usage data to
+// extract); a non-nil error indicates malformed JSON.
+func (m *AssistantMessage) ParseUsage() (*Usage, string, error) {
+	if len(m.Content) == 0 {
+		return nil, "", nil
+	}
+	var inner struct {
+		Model string `json:"model"`
+		Usage *Usage `json:"usage"`
+	}
+	if err := json.Unmarshal(m.Content, &inner); err != nil {
+		return nil, "", err
+	}
+	return inner.Usage, inner.Model, nil
+}
+
 // Usage contains token consumption metrics from an Anthropic API response.
 type Usage struct {
 	InputTokens              int `json:"input_tokens"`

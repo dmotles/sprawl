@@ -24,6 +24,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
+	"github.com/dmotles/sprawl/internal/usage"
 )
 
 // WeaveRuntimeHandle is the RuntimeHandle for the root weave agent's
@@ -37,6 +38,7 @@ type WeaveRuntimeHandle struct {
 	activityFile  *os.File
 	activityClose func() error
 	stopActivity  func()
+	stopUsage     func()
 	sprawlRoot    string
 	name          string
 
@@ -71,6 +73,11 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 
 	stopActivity := runActivitySubscriber(rt.EventBus(), observer, "weave-activity")
 
+	// QUM-368: per-turn usage NDJSON recorder for the root weave agent.
+	// Construction failure is non-fatal; we skip the subscriber wiring.
+	usageRec, _ := usage.NewRecorder(sprawlRoot, name)
+	stopUsage := runUsageSubscriber(rt.EventBus(), usageRec, "weave-usage")
+
 	return &WeaveRuntimeHandle{
 		rt:           rt,
 		session:      session,
@@ -78,6 +85,7 @@ func NewWeaveRuntimeHandle(rt *runtimepkg.UnifiedRuntime, session backendpkg.Ses
 		sessionID:    session.SessionID(),
 		activityFile: activityFile,
 		stopActivity: stopActivity,
+		stopUsage:    stopUsage,
 		sprawlRoot:   sprawlRoot,
 		name:         name,
 		ring:         ring,
@@ -150,6 +158,11 @@ func (h *WeaveRuntimeHandle) stopOnceWith(ctx context.Context, stopRuntime func(
 		if h.stopActivity != nil {
 			joinWithTimeout(h.stopActivity, stopActivityTimeout,
 				"stopActivity abandoned — likely wedged activity subscriber goroutine (QUM-547)",
+				"handle", "WeaveRuntimeHandle", "agent", h.name)
+		}
+		if h.stopUsage != nil {
+			joinWithTimeout(h.stopUsage, stopActivityTimeout,
+				"stopUsage abandoned — likely wedged usage subscriber goroutine (QUM-368)",
 				"handle", "WeaveRuntimeHandle", "agent", h.name)
 		}
 		// QUM-545: shared Close → Kill teardown helper. waitTimeout=0 means

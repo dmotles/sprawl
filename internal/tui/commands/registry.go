@@ -32,6 +32,8 @@ const (
 	ActionQuit
 	// ActionToggleHelp toggles the help overlay (same semantics as F1).
 	ActionToggleHelp
+	// ActionShowUsage opens the /usage modal (QUM-721).
+	ActionShowUsage
 )
 
 // Command describes a palette entry.
@@ -63,6 +65,12 @@ var registry = []Command{
 		Description:    "Consolidate session and start fresh with updated memory",
 		Kind:           KindPromptInjection,
 		PromptTemplate: HandoffPromptTemplate,
+	},
+	{
+		Name:        "/usage",
+		Description: "Show token & cost usage by agent",
+		Kind:        KindUI,
+		Action:      ActionShowUsage,
 	},
 	{
 		Name:        "/switch",

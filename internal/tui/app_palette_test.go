@@ -328,6 +328,80 @@ func TestAppModel_OpenPaletteMsg_PopulatesAgentsList(t *testing.T) {
 	}
 }
 
+// --- QUM-721: /usage modal wiring at the AppModel level ---
+
+func TestAppModel_ShowUsageMsg_OpensModal(t *testing.T) {
+	app := readyApp(t)
+	updated, _ := app.Update(ShowUsageMsg{})
+	app = updated.(AppModel)
+	if !app.showUsage {
+		t.Error("ShowUsageMsg should set showUsage=true")
+	}
+	if !app.usageModal.Visible() {
+		t.Error("usage modal should be visible after ShowUsageMsg")
+	}
+}
+
+func TestAppModel_DismissUsageMsg_ClosesModal(t *testing.T) {
+	app := readyApp(t)
+	u, _ := app.Update(ShowUsageMsg{})
+	app = u.(AppModel)
+	u, _ = app.Update(DismissUsageMsg{})
+	app = u.(AppModel)
+	if app.showUsage {
+		t.Error("DismissUsageMsg should clear showUsage")
+	}
+	if app.usageModal.Visible() {
+		t.Error("usage modal should be hidden after DismissUsageMsg")
+	}
+}
+
+func TestAppModel_KeysRouteToUsageModalWhenVisible(t *testing.T) {
+	app := readyApp(t)
+	u, _ := app.Update(ShowUsageMsg{})
+	app = u.(AppModel)
+	priorInput := app.input.Value()
+	u, _ = app.Update(tea.KeyPressMsg{Code: 'x'})
+	app = u.(AppModel)
+	if app.input.Value() != priorInput {
+		t.Errorf("key 'x' while usage modal visible should be consumed by modal; input changed from %q to %q",
+			priorInput, app.input.Value())
+	}
+}
+
+func TestAppModel_QInUsageModalDismisses(t *testing.T) {
+	app := readyApp(t)
+	u, _ := app.Update(ShowUsageMsg{})
+	app = u.(AppModel)
+	// Pressing 'q' (no modifier) should route to modal and dismiss it.
+	u, cmd := app.Update(tea.KeyPressMsg{Code: 'q'})
+	app = u.(AppModel)
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			u2, _ := app.Update(msg)
+			app = u2.(AppModel)
+		}
+	}
+	if app.showUsage {
+		t.Error("q while usage modal visible should dismiss it")
+	}
+}
+
+func TestAppModel_ShowUsageMsg_GatedWhenAnotherModalUp(t *testing.T) {
+	app := readyApp(t)
+	// Open help first.
+	u, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
+	app = u.(AppModel)
+	if !app.showHelp {
+		t.Fatal("setup: F1 should open help")
+	}
+	u, _ = app.Update(ShowUsageMsg{})
+	app = u.(AppModel)
+	if app.showUsage {
+		t.Error("ShowUsageMsg must be no-op when another modal (help) is already up")
+	}
+}
+
 // TestAppModel_TabRoutedToPaletteWhenVisible: with the palette open,
 // pressing Tab must reach the palette (which uses it for navigation)
 // instead of being intercepted as panel-cycling. QUM-695 deleted the
