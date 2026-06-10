@@ -465,11 +465,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// QUM-653: keyboard scroll bindings. PgUp/PgDn always forward to the
-		// viewport. Home/End forward via vp.GotoTop / GotoBottom. Up/Down
-		// forward only when the input is empty (otherwise they remain input
-		// cursor / history navigation). Gated by modal-up so scroll keys
-		// don't bypass dialogs.
+		// QUM-653 / QUM-774: keyboard scroll bindings. PgUp/PgDn/Home/End
+		// always scroll the chat viewport (independent of input state).
+		// Up/Down are routed by QUM-774: empty input → walk prompt history;
+		// non-empty input → no-op (no history nav, no viewport scroll).
+		// Gated by modal-up so scroll/arrow keys don't bypass dialogs.
 		if !m.anyModalUp() {
 			if msg.Code == tea.KeyPgUp || msg.Code == tea.KeyPgDown {
 				vp := m.observedVP()
@@ -493,25 +493,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if (msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) && m.input.Value() == "" {
-				vp := m.observedVP()
-				updated, cmd := vp.Update(msg)
-				*vp = updated
-				return m, cmd
-			}
-		}
-
-		// QUM-410: input-panel history navigation. Up/Down walk history
-		// only when the textarea cursor is at the first / last line so
-		// multi-line editing isn't hijacked. QUM-536: gate on the modal
-		// flags too — any visible modal owns arrow keys, and prior to
-		// this gate KeyUp was being asymmetrically swallowed by
-		// `history.Prev` (which always succeeds when history is non-empty)
-		// while KeyDown fell through to the modal because `history.Next`
-		// returns ok=false on a fresh model.
-		if m.history != nil && !m.anyModalUp() && m.observedAgent == m.rootAgent &&
-			(msg.Code == tea.KeyUp || msg.Code == tea.KeyDown) {
-			if m.handleHistoryArrow(msg) {
+			if msg.Code == tea.KeyUp || msg.Code == tea.KeyDown {
+				// QUM-774 variant (b): empty input → walk prompt history.
+				// Non-empty input → no-op (no history nav, no viewport
+				// scroll, no textarea cursor movement). Continue walking
+				// once a walk has started even though the input now holds
+				// the recalled entry — InWalk() means there is a stashed
+				// live buffer waiting for Down-past-newest to restore.
+				// Only routes to history on the root agent; modal-gate
+				// above already protects against dialog bypass.
+				if m.history != nil && m.observedAgent == m.rootAgent &&
+					(m.input.Value() == "" || m.history.InWalk()) {
+					m.handleHistoryArrow(msg)
+				}
 				return m, nil
 			}
 		}
@@ -2646,35 +2640,27 @@ func commitDrainCmd(sprawlRoot, rootName string, ids []string) tea.Cmd {
 }
 
 // handleHistoryArrow drives Up/Down history navigation for the input panel
-// (QUM-410). Returns handled=false when the textarea cursor is mid-buffer so
-// the caller falls through to normal textarea movement.
-func (m *AppModel) handleHistoryArrow(msg tea.KeyPressMsg) bool {
+// (QUM-410, QUM-774). Caller guarantees the input is empty and no modal is
+// up. Up walks toward older entries; Down walks toward newer entries (and
+// restores the live buffer past the newest).
+func (m *AppModel) handleHistoryArrow(msg tea.KeyPressMsg) {
 	if m.history == nil {
-		return false
+		return
 	}
 	switch msg.Code {
 	case tea.KeyUp:
-		if !m.input.AtFirstLine() {
-			return false
-		}
 		entry, ok := m.history.Prev(m.input.Value())
 		if !ok {
-			return true
+			return
 		}
 		m.input.SetValue(entry)
-		return true
 	case tea.KeyDown:
-		if !m.input.AtLastLine() {
-			return false
-		}
 		entry, _, ok := m.history.Next()
 		if !ok {
-			return false
+			return
 		}
 		m.input.SetValue(entry)
-		return true
 	}
-	return false
 }
 
 // handleSearchKey dispatches a key while reverse-i-search is active

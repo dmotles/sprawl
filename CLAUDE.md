@@ -92,8 +92,10 @@ Scroll inside the TUI:
   open).
 * `PgUp` / `PgDn` — page up/down
 * `Home` / `End` — jump to top/bottom
-* `Up` / `Down` — line-by-line scroll **when the input is empty** (otherwise
-  they navigate input history)
+* `Up` / `Down` — navigate prompt input history **when the input is empty**
+  (or while a history walk is already in progress); no-op when freshly
+  typing. `PgUp` / `PgDn` / mouse wheel scroll the chat viewport regardless
+  of input state.
 
 ### Incident snapshot hotkey (QUM-728)
 

@@ -188,6 +188,13 @@ func (h *History) Next() (string, bool, bool) {
 	return stash, true, true
 }
 
+// InWalk reports whether the user has started walking history with Prev and
+// has not yet committed or escaped — i.e. there is a stashed live buffer
+// waiting to be restored. Used by callers to keep arrow-key navigation alive
+// across consecutive presses even though the input is no longer empty
+// (QUM-774).
+func (h *History) InWalk() bool { return h.hasStash }
+
 // Reset clears cursor and stash state.
 func (h *History) Reset() {
 	h.cursor = len(h.entries)

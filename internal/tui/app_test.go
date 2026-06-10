@@ -1903,10 +1903,10 @@ func TestAppModel_EndKey_ScrollsViewportToBottom(t *testing.T) {
 	}
 }
 
-// QUM-653: when the input panel is empty, KeyUp scrolls the viewport up
-// instead of loading the latest history entry. Catches the QUM-410
-// regression where empty-input KeyUp was hijacked by history.Prev.
-func TestAppModel_UpArrow_ScrollsViewport_WhenInputEmpty(t *testing.T) {
+// QUM-774: when the input panel is empty, KeyUp recalls the newest history
+// entry (shell-style muscle memory). The viewport must NOT scroll. Replaces
+// the QUM-653 viewport-scroll path for empty input.
+func TestAppModel_UpArrow_RecallsHistory_WhenInputEmpty(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
@@ -1924,31 +1924,39 @@ func TestAppModel_UpArrow_ScrollsViewport_WhenInputEmpty(t *testing.T) {
 	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	app = out.(AppModel)
 
-	// Input must remain empty — history was NOT loaded.
-	if got := app.input.Value(); got != "" {
-		t.Errorf("KeyUp on empty input loaded history entry %q; want empty (history hijack regression)", got)
+	// Input must now hold the most recent history entry.
+	if got := app.input.Value(); got != "second" {
+		t.Errorf("KeyUp on empty input: input = %q, want %q (newest history entry)", got, "second")
 	}
-	// Viewport should have scrolled up (YOffset decreased).
+	// Viewport must NOT have moved.
 	afterOffset := app.observedVP().region.vp.YOffset()
-	if afterOffset >= beforeOffset {
-		t.Errorf("expected YOffset to decrease after KeyUp on empty input; before=%d after=%d", beforeOffset, afterOffset)
+	if afterOffset != beforeOffset {
+		t.Errorf("KeyUp on empty input must not scroll viewport; before=%d after=%d", beforeOffset, afterOffset)
 	}
 }
 
-// QUM-653: when the input panel has text, KeyUp continues to navigate
-// history (existing QUM-410 contract preserved for non-empty input).
-func TestAppModel_UpArrow_NavigatesHistory_WhenInputNonEmpty(t *testing.T) {
+// QUM-774: when the input panel has text, KeyUp is a no-op. No history
+// navigation, no viewport scroll. Variant (b) — drop the QUM-410
+// cursor-position-aware history path.
+func TestAppModel_UpArrow_NoOp_WhenInputNonEmpty(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
 	seedAppHistory(t, &app, []string{"first", "second"})
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	beforeOffset := app.observedVP().region.vp.YOffset()
 	app.input.SetValue("draft")
 
 	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	app = out.(AppModel)
 
-	if got := app.input.Value(); got != "second" {
-		t.Errorf("after KeyUp on non-empty input: input = %q, want %q (history.Prev)", got, "second")
+	if got := app.input.Value(); got != "draft" {
+		t.Errorf("KeyUp on non-empty input must be a no-op: input = %q, want %q", got, "draft")
+	}
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset != beforeOffset {
+		t.Errorf("KeyUp on non-empty input must not scroll viewport; before=%d after=%d", beforeOffset, afterOffset)
 	}
 }
 
@@ -3568,11 +3576,11 @@ func TestUpdate_AutoContinueMsg(t *testing.T) {
 	}
 }
 
-// QUM-653: when input is empty, KeyDown scrolls the viewport down (symmetric
-// to KeyUp). After scrolling up first, a KeyDown should grow YOffset (or at
-// the limit, restore AtBottom). Catches regression where empty-input KeyDown
-// is hijacked by history.Next.
-func TestAppModel_DownArrow_ScrollsViewport_WhenInputEmpty(t *testing.T) {
+// QUM-774: when input is empty, KeyDown walks forward through history that
+// was previously recalled by KeyUp. After KeyUp loaded the newest entry,
+// KeyDown past the newest restores the (empty) live buffer. Viewport must
+// NOT scroll.
+func TestAppModel_DownArrow_RecallsHistory_WhenInputEmpty(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	app := resized.(AppModel)
@@ -3582,55 +3590,59 @@ func TestAppModel_DownArrow_ScrollsViewport_WhenInputEmpty(t *testing.T) {
 	if !app.observedVP().region.vp.AtBottom() {
 		t.Fatalf("precondition: expected AtBottom after seeding+paint")
 	}
-
-	// Scroll up first so there's room to scroll back down.
-	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyHome})
-	app = out.(AppModel)
-	if !app.observedVP().region.vp.AtTop() {
-		t.Fatalf("precondition: KeyHome should have scrolled to top")
-	}
-	beforeOffset := app.observedVP().region.vp.YOffset()
 	if app.input.Value() != "" {
 		t.Fatalf("precondition: input should be empty, got %q", app.input.Value())
 	}
 
-	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	app = out.(AppModel)
-
-	// Input must remain empty — history.Next was NOT invoked.
-	if got := app.input.Value(); got != "" {
-		t.Errorf("KeyDown on empty input modified input to %q; want empty (history hijack regression)", got)
-	}
-	afterOffset := app.observedVP().region.vp.YOffset()
-	if afterOffset <= beforeOffset {
-		t.Errorf("expected YOffset to increase after KeyDown on empty input; before=%d after=%d", beforeOffset, afterOffset)
-	}
-}
-
-// QUM-653: when the input panel has text and history is positioned (Prev was
-// already called), KeyDown should continue to navigate history forward rather
-// than scroll the viewport. Preserves the QUM-410 contract.
-func TestAppModel_DownArrow_NavigatesHistory_WhenInputNonEmpty(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
-	app := resized.(AppModel)
-	seedAppHistory(t, &app, []string{"first", "second"})
-	app.input.SetValue("draft")
-
-	// Position into history with two KeyUps: "second", then "first".
+	// Walk Up to "first" (oldest).
 	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	app = out.(AppModel)
 	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	app = out.(AppModel)
 	if got := app.input.Value(); got != "first" {
-		t.Fatalf("precondition: expected input %q after two KeyUps, got %q", "first", got)
+		t.Fatalf("precondition: expected %q after two KeyUps, got %q", "first", got)
 	}
+	beforeOffset := app.observedVP().region.vp.YOffset()
 
+	// Down → "second".
 	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	app = out.(AppModel)
-
 	if got := app.input.Value(); got != "second" {
-		t.Errorf("after KeyDown on non-empty input positioned in history: input = %q, want %q (history.Next)", got, "second")
+		t.Errorf("after KeyDown #1: input = %q, want %q", got, "second")
+	}
+	// Down past newest → live buffer (empty) restored.
+	out, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	app = out.(AppModel)
+	if got := app.input.Value(); got != "" {
+		t.Errorf("after KeyDown past newest: input = %q, want %q (live buffer restored)", got, "")
+	}
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset != beforeOffset {
+		t.Errorf("KeyDown on empty input must not scroll viewport; before=%d after=%d", beforeOffset, afterOffset)
+	}
+}
+
+// QUM-774: when input has text, KeyDown is a no-op (variant b). No history
+// navigation, no viewport scroll.
+func TestAppModel_DownArrow_NoOp_WhenInputNonEmpty(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	seedAppHistory(t, &app, []string{"first", "second"})
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	beforeOffset := app.observedVP().region.vp.YOffset()
+	app.input.SetValue("draft")
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	app = out.(AppModel)
+
+	if got := app.input.Value(); got != "draft" {
+		t.Errorf("KeyDown on non-empty input must be a no-op: input = %q, want %q", got, "draft")
+	}
+	afterOffset := app.observedVP().region.vp.YOffset()
+	if afterOffset != beforeOffset {
+		t.Errorf("KeyDown on non-empty input must not scroll viewport; before=%d after=%d", beforeOffset, afterOffset)
 	}
 }
 
@@ -3686,6 +3698,75 @@ func TestAppModel_PgDn_ScrollsViewport(t *testing.T) {
 	afterOffset := app.observedVP().region.vp.YOffset()
 	if afterOffset <= beforeOffset {
 		t.Errorf("expected YOffset to increase after KeyPgDown; before=%d after=%d", beforeOffset, afterOffset)
+	}
+}
+
+// QUM-774: PgUp scrolls the viewport even when the input has content
+// (variant b: PgUp/PgDn ignore the input state).
+func TestAppModel_PgUp_ScrollsViewport_WhenInputNonEmpty(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	app.input.SetValue("draft")
+	beforeOffset := app.observedVP().region.vp.YOffset()
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
+	app = out.(AppModel)
+
+	if got := app.input.Value(); got != "draft" {
+		t.Errorf("PgUp must not mutate input; got %q, want %q", got, "draft")
+	}
+	if app.observedVP().region.vp.YOffset() >= beforeOffset {
+		t.Errorf("PgUp on non-empty input must still scroll viewport; before=%d after=%d", beforeOffset, app.observedVP().region.vp.YOffset())
+	}
+}
+
+// QUM-774: mouse wheel still scrolls the viewport even when the input has
+// content.
+func TestAppModel_MouseWheelUp_ScrollsViewport_WhenInputNonEmpty(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	app.input.SetValue("draft")
+	beforeOffset := app.observedVP().region.vp.YOffset()
+
+	out, _ := app.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	app = out.(AppModel)
+
+	if got := app.input.Value(); got != "draft" {
+		t.Errorf("MouseWheelUp must not mutate input; got %q, want %q", got, "draft")
+	}
+	if app.observedVP().region.vp.YOffset() >= beforeOffset {
+		t.Errorf("MouseWheelUp on non-empty input must still scroll viewport; before=%d after=%d", beforeOffset, app.observedVP().region.vp.YOffset())
+	}
+}
+
+// QUM-774: empty input + KeyDown with no prior KeyUp is a no-op (history
+// cursor is at the live buffer position; nothing to walk forward to).
+func TestAppModel_DownArrow_NoOp_WhenInputEmpty_NoHistoryStash(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	app := resized.(AppModel)
+	seedAppHistory(t, &app, []string{"first", "second"})
+	app = seedScrollableViewport(t, app)
+	_ = app.observedVP().region.View()
+	beforeOffset := app.observedVP().region.vp.YOffset()
+	if app.input.Value() != "" {
+		t.Fatalf("precondition: input should be empty")
+	}
+
+	out, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	app = out.(AppModel)
+
+	if got := app.input.Value(); got != "" {
+		t.Errorf("KeyDown with no prior Up: input = %q, want %q", got, "")
+	}
+	if app.observedVP().region.vp.YOffset() != beforeOffset {
+		t.Errorf("KeyDown with no history stash must not scroll viewport; before=%d after=%d", beforeOffset, app.observedVP().region.vp.YOffset())
 	}
 }
 

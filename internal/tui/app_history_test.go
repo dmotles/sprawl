@@ -32,15 +32,14 @@ func readyAppOnPanelInput(t *testing.T) AppModel {
 	return app
 }
 
-// TestInput_UpArrowNavigatesHistory: Up cycles back through history; Down
-// cycles forward; final Down restores the live (pre-navigation) buffer.
+// TestInput_UpArrowNavigatesHistory (QUM-774 variant b): with an empty input,
+// Up cycles back through history; Down cycles forward; final Down past the
+// newest restores the (empty) live buffer.
 func TestInput_UpArrowNavigatesHistory(t *testing.T) {
 	app := readyAppOnPanelInput(t)
 	seedAppHistory(t, &app, []string{"first", "second"})
 
-	// Establish a "live" buffer that should be restored when Down passes the
-	// front of history.
-	app.input.SetValue("draft")
+	// Input starts empty — variant (b) gates history nav on empty input.
 
 	// Up: newest entry "second"
 	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
@@ -63,11 +62,11 @@ func TestInput_UpArrowNavigatesHistory(t *testing.T) {
 		t.Errorf("after Down #1: input = %q, want %q", got, "second")
 	}
 
-	// Down: live buffer "draft" restored.
+	// Down past newest: empty live buffer restored.
 	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	app = updated.(AppModel)
-	if got := app.input.Value(); got != "draft" {
-		t.Errorf("after Down #2 (live restore): input = %q, want %q", got, "draft")
+	if got := app.input.Value(); got != "" {
+		t.Errorf("after Down #2 (live restore): input = %q, want %q", got, "")
 	}
 }
 
@@ -244,27 +243,28 @@ func TestInput_HistoryArrow_BlockedByEachModal(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			app := readyAppOnPanelInput(t)
 			seedAppHistory(t, &app, []string{"first", "second"})
-			app.input.SetValue("draft")
+			// Input is empty — under QUM-774 (variant b) this would
+			// normally trigger history nav, so the modal-gate is the only
+			// thing preventing it. That's exactly what we want to verify.
 			tc.set(&app)
 
-			// Up must not be swallowed by the history-arrow handler. Note that
-			// when showConfirm / showError / showPalette / showQuestion are
-			// set, downstream modal routing in Update() will consume the key
-			// (or no-op); none of those paths mutate input.Value(). showHelp
-			// likewise swallows non-Esc keys. So the live "draft" value must
-			// survive untouched — proof the history handler did not run.
+			// Up must not be swallowed by the history-arrow handler under
+			// any modal flag — the modal owns arrow keys. None of the
+			// downstream modal paths mutate input.Value(), so the empty
+			// value must survive untouched if the history handler did not
+			// run.
 			updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 			app = updated.(AppModel)
-			if got := app.input.Value(); got != "draft" {
+			if got := app.input.Value(); got != "" {
 				t.Errorf("[%s] Up was swallowed by history handler: input = %q, want %q",
-					tc.name, got, "draft")
+					tc.name, got, "")
 			}
 
 			updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 			app = updated.(AppModel)
-			if got := app.input.Value(); got != "draft" {
+			if got := app.input.Value(); got != "" {
 				t.Errorf("[%s] Down was swallowed by history handler: input = %q, want %q",
-					tc.name, got, "draft")
+					tc.name, got, "")
 			}
 		})
 	}
@@ -299,21 +299,32 @@ func TestAppModel_anyModalUp(t *testing.T) {
 	}
 }
 
-// TestMultilineUpDown_DoesNotHijackHistory: when the textarea contains
-// multiple lines and the cursor isn't on the first line, Up should move the
-// cursor within the textarea instead of loading history. Implementation must
-// expose a helper such as input.AtFirstLine() to disambiguate.
+// TestMultilineUpDown_DoesNotHijackHistory (QUM-774 variant b): when the
+// textarea has any content (multi-line or otherwise), Up/Down are a no-op
+// at the app level — history is gated on empty input. The textarea value
+// must be unchanged, and the history cursor must not have advanced
+// (verified by following up with an empty-input Up that should still
+// return the newest entry).
 func TestMultilineUpDown_DoesNotHijackHistory(t *testing.T) {
 	app := readyAppOnPanelInput(t)
 	seedAppHistory(t, &app, []string{"first", "second"})
 
-	// Seed a multi-line value and place cursor at the end (line 2).
+	// Seed a multi-line value.
 	app.input.SetValue("line1\nline2")
 
-	// Up should move cursor to line 1, NOT load "second" from history.
+	// Up should be a no-op — input has content.
 	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	app = updated.(AppModel)
 	if got := app.input.Value(); got != "line1\nline2" {
-		t.Errorf("multi-line Up should not load history; value = %q, want unchanged", got)
+		t.Errorf("multi-line Up should be a no-op; value = %q, want unchanged", got)
+	}
+
+	// Clearing input and pressing Up should still recall the newest entry,
+	// proving the prior Up did not advance the history cursor.
+	app.input.SetValue("")
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	app = updated.(AppModel)
+	if got := app.input.Value(); got != "second" {
+		t.Errorf("after clearing input, Up should recall newest entry; got %q, want %q", got, "second")
 	}
 }
