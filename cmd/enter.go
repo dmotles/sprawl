@@ -917,6 +917,7 @@ func runEnter(deps *enterDeps) error {
 						go func() {
 							defer cancel()
 							fired := false
+							faultCleared := false
 							for {
 								select {
 								case <-handoffDone:
@@ -929,6 +930,18 @@ func runEnter(deps *enterDeps) error {
 										continue
 									}
 									snap := runtime.Snapshot()
+									// QUM-776: when a faulted (or any) agent
+									// reaches a terminal liveness — retired,
+									// killed, stopped, or died — the persistent
+									// fault toast spawned by BackendFaultMsg
+									// becomes moot. Fan-out a fault-clear so
+									// the TUI condition-dismisses the toast and
+									// drops the per-agent sticker. Reducer is a
+									// no-op when no fault was tracked.
+									if !faultCleared && isTerminalLiveness(snap.Liveness) {
+										faultCleared = true
+										send(tui.BackendFaultClearedMsg{Agent: agentName})
+									}
 									if snap.Liveness != liveness.Died {
 										continue
 									}
@@ -1091,6 +1104,19 @@ func runEnter(deps *enterDeps) error {
 
 	fmt.Fprintln(os.Stderr, "TUI session ended.")
 	return nil
+}
+
+// isTerminalLiveness reports whether the given liveness is an absorbing /
+// resting terminal state — i.e. the agent will not transition back to
+// Running on its own. Used by the TUI registry subscriber (QUM-776) to
+// decide when to fan out a fault-clear so a stale BackendFault toast does
+// not outlive its agent.
+func isTerminalLiveness(l liveness.AgentLiveness) bool {
+	switch l {
+	case liveness.Stopped, liveness.Killed, liveness.Retired, liveness.Died:
+		return true
+	}
+	return false
 }
 
 // isStdinTTY reports whether os.Stdin is a terminal. False when stdin is

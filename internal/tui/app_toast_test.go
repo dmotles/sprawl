@@ -271,6 +271,22 @@ func TestApp_BackendFaultClearedMsg_ClearsFaultToast(t *testing.T) {
 	}
 }
 
+// TestApp_BackendFaultClearedMsg_NoPriorFault_SuppressesRecoveryLabel verifies
+// that the retire-driven fault-clear path (QUM-776) does NOT set the
+// "backend recovered on X" transient label — that label is recovery-specific
+// and is misleading when the agent is gone. The reducer must gate that label
+// (and the child-adapter rebuild) on whether m.faults[agent] was actually
+// populated before the clear.
+func TestApp_BackendFaultClearedMsg_NoPriorFault_SuppressesRecoveryLabel(t *testing.T) {
+	m := newTestAppModel(t)
+	app := applyResize(t, m)
+	// No prior BackendFaultMsg — m.faults is empty for "alpha".
+	app = sendMsg(t, app, BackendFaultClearedMsg{Agent: "alpha"})
+	if got := app.statusBar.TransientLabel(); strings.Contains(got, "backend recovered on alpha") {
+		t.Errorf("fault-clear without prior fault should NOT set recovery transient label; got %q", got)
+	}
+}
+
 // TestApp_BackendFaultClearedMsg_PerAgent verifies that clearing one
 // agent's fault does NOT remove another agent's fault toast.
 func TestApp_BackendFaultClearedMsg_PerAgent(t *testing.T) {

@@ -329,6 +329,13 @@ func TestBackendFaultMsg_NoViewportCopy(t *testing.T) {
 func TestBackendFaultClearedMsg_RoutesToTransientLabel(t *testing.T) {
 	app := readyApp(t)
 
+	// QUM-776: the transient label is now gated on a prior tracked fault —
+	// in-place recovery (the original caller of BackendFaultClearedMsg)
+	// always observes one. Stage the fault before clearing to match that
+	// real-world ordering.
+	staged, _ := app.Update(BackendFaultMsg{Agent: "alice", Class: "HangTimeout", Reason: "stalled"})
+	app = staged.(AppModel)
+
 	updated, _ := app.Update(BackendFaultClearedMsg{Agent: "alice"})
 	app = updated.(AppModel)
 

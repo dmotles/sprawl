@@ -13,6 +13,19 @@ type DropTelemetrySource interface {
 	DropTelemetry() map[string]EventDropSnapshot
 }
 
+// LivenessProbe is an optional capability that backends may implement to
+// allow the AppModel watchdog (QUM-775 item 2) to ask the underlying
+// runtime whether it is genuinely in a turn. The watchdog uses this as a
+// backstop: when the TUI's turnState has been stuck in TurnStreaming/
+// TurnThinking for longer than the watchdog timeout with no bus activity,
+// the watchdog probes RuntimeInTurn() and, if the runtime is idle, forces
+// finalizeTurn() to recover from a dropped terminal event. Backends that
+// don't implement this interface are simply not watchdog-probed (the
+// watchdog stays a fail-safe no-op).
+type LivenessProbe interface {
+	RuntimeInTurn() bool
+}
+
 // EventDropSnapshot mirrors runtime.DropTelemetry on the TUI side so the
 // tui package doesn't need to import internal/runtime (QUM-681).
 type EventDropSnapshot struct {

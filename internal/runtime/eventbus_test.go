@@ -198,7 +198,10 @@ func TestEventBus_ConcurrentPublishSubscribeUnsubscribe(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					bus.Publish(RuntimeEvent{Type: EventTurnCompleted})
+					// QUM-775: terminal events now block up to ~5s on a slow
+					// subscriber. Use a non-terminal type for this churn test
+					// so subscriber-unsubscribe races don't park publishers.
+					bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
 				}
 			}
 		}()
@@ -813,4 +816,194 @@ var _ = [...]RuntimeEventType{
 	EventInterrupted,
 	EventQueueDrained,
 	EventStopped,
+}
+
+// --- QUM-775: undroppable terminal events --------------------------------
+//
+// Terminal lifecycle events (EventTurnCompleted, EventTurnFailed,
+// EventInterrupted) are once-per-turn and load-bearing for TUI state
+// reconciliation. If one of these is silently dropped on a slow subscriber,
+// the TUI may wedge in TurnStreaming/TurnThinking forever. Publish must
+// special-case these types and wait up to ~terminalPublishDeadline for the
+// subscriber to make room, rather than dropping after the 1ms publishDeadline
+// used for non-terminal events.
+
+// TestEventBus_TerminalEventBlocksOnSlowSubscriber stresses a buffer=1
+// subscriber whose channel is already full at publish time. A goroutine
+// drains the buffer ~25ms later. A terminal event must survive — i.e. the
+// publisher waits past the 1ms non-terminal deadline and the subscriber
+// eventually receives the terminal event.
+func TestEventBus_TerminalEventBlocksOnSlowSubscriber(t *testing.T) {
+	cases := []struct {
+		name string
+		typ  RuntimeEventType
+	}{
+		{"EventTurnCompleted", EventTurnCompleted},
+		{"EventTurnFailed", EventTurnFailed},
+		{"EventInterrupted", EventInterrupted},
+	}
+	for _, c := range cases {
+		term := c.typ
+		t.Run(c.name, func(t *testing.T) {
+			bus := NewEventBus()
+			ch, unsub := bus.SubscribeNamed("slow", 1)
+			defer unsub()
+
+			// Prime the buffer with a non-terminal event so the next send blocks.
+			bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+
+			// Schedule a drain that opens a slot after a short delay — well past
+			// the 1ms non-terminal deadline, well within the 5s terminal deadline.
+			drained := make(chan RuntimeEvent, 4)
+			go func() {
+				time.Sleep(25 * time.Millisecond)
+				drained <- <-ch // drain the primer
+				drained <- <-ch // drain the terminal
+			}()
+
+			start := time.Now()
+			bus.Publish(RuntimeEvent{Type: term})
+			elapsed := time.Since(start)
+			if elapsed < 10*time.Millisecond {
+				t.Fatalf("terminal Publish returned in %s; expected to wait for drain (>=10ms)", elapsed)
+			}
+			if elapsed > 2*time.Second {
+				t.Fatalf("terminal Publish blocked too long: %s", elapsed)
+			}
+
+			// Both events should have been delivered (no drop).
+			var got []RuntimeEvent
+			for i := 0; i < 2; i++ {
+				select {
+				case ev := <-drained:
+					got = append(got, ev)
+				case <-time.After(2 * time.Second):
+					t.Fatalf("only received %d/2 events", i)
+				}
+			}
+			var sawTerminal bool
+			for _, ev := range got {
+				if ev.Type == term {
+					sawTerminal = true
+				}
+			}
+			if !sawTerminal {
+				t.Errorf("terminal event %v not delivered (got types: %+v)", term, got)
+			}
+			if drops := bus.DroppedCounts()["slow"]; drops != 0 {
+				t.Errorf("DroppedCounts()[slow] = %d, want 0 (terminal must not drop)", drops)
+			}
+		})
+	}
+}
+
+// TestEventBus_NonTerminalDropsMidTurnButTerminalSurvives is the headline
+// invariant for QUM-775. A buffer=1 subscriber is held with a full buffer
+// and never drained; we publish 20 EventProtocolMessage events (each must
+// drop fast, within ~1ms each), then publish one EventTurnCompleted, then
+// finally drain. The terminal event must survive while the mid-turn
+// protocol events are allowed to drop.
+func TestEventBus_NonTerminalDropsMidTurnButTerminalSurvives(t *testing.T) {
+	bus := NewEventBus()
+	ch, unsub := bus.SubscribeNamed("slow", 1)
+	defer unsub()
+
+	// Fill the buffer with one entry that we'll never drain until the end.
+	bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+
+	// Publish 20 more non-terminal events. Each should drop after ~1ms.
+	startNT := time.Now()
+	for i := 0; i < 20; i++ {
+		bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+	}
+	if elapsed := time.Since(startNT); elapsed > 500*time.Millisecond {
+		t.Fatalf("non-terminal publishes took %s; expected fast drop", elapsed)
+	}
+	if drops := bus.DroppedCounts()["slow"]; drops == 0 {
+		t.Fatalf("expected mid-turn drops, got DroppedCounts()[slow]=0")
+	}
+
+	// Now publish the terminal event AND start a drain goroutine that opens
+	// a slot after a short delay. The publish must wait for the slot.
+	drained := make(chan RuntimeEvent, 32)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		for {
+			select {
+			case ev, ok := <-ch:
+				if !ok {
+					return
+				}
+				drained <- ev
+			case <-time.After(2 * time.Second):
+				return
+			}
+		}
+	}()
+
+	bus.Publish(RuntimeEvent{Type: EventTurnCompleted})
+
+	// Walk drained events and prove terminal survived.
+	deadline := time.After(3 * time.Second)
+	var sawTerminal bool
+loop:
+	for {
+		select {
+		case ev := <-drained:
+			if ev.Type == EventTurnCompleted {
+				sawTerminal = true
+				break loop
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	if !sawTerminal {
+		t.Fatalf("EventTurnCompleted dropped — TUI wedge scenario reproduced (QUM-775 not fixed)")
+	}
+}
+
+// TestEventBus_TerminalDropAfterDeadlineWarns verifies that if a subscriber
+// genuinely never drains, the terminal event eventually times out (~the
+// terminal deadline) and emits a Warn record loud enough to surface in
+// triage — but the publisher does NOT block forever.
+func TestEventBus_TerminalDropAfterDeadlineWarns(t *testing.T) {
+	h := installCaptureHandler(t)
+
+	bus := NewEventBus()
+	// Shrink the terminal deadline so the test runs in <100ms instead of >5s.
+	restoreDeadline := setTerminalDeadlineForTest(50 * time.Millisecond)
+	t.Cleanup(restoreDeadline)
+
+	_, unsub := bus.SubscribeNamed("wedged", 1)
+	defer unsub()
+
+	// Fill buffer; never drain.
+	bus.Publish(RuntimeEvent{Type: EventProtocolMessage})
+
+	start := time.Now()
+	bus.Publish(RuntimeEvent{Type: EventTurnCompleted})
+	elapsed := time.Since(start)
+	if elapsed < 40*time.Millisecond {
+		t.Fatalf("terminal publish returned in %s; expected to wait for terminal deadline", elapsed)
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("terminal publish blocked too long: %s", elapsed)
+	}
+
+	// A loud warn record should reference the terminal drop.
+	var sawTerminalWarn bool
+	for _, r := range warnRecords(h) {
+		if strings.Contains(strings.ToLower(r.Message), "terminal") {
+			sawTerminalWarn = true
+			break
+		}
+	}
+	if !sawTerminalWarn {
+		t.Errorf("expected a warn record mentioning 'terminal'; got: %+v", warnRecords(h))
+	}
+	// Drop bookkeeping still applies on the terminal-timeout path.
+	if drops := bus.DroppedCounts()["wedged"]; drops == 0 {
+		t.Errorf("DroppedCounts()[wedged] = 0 after terminal timeout, want > 0")
+	}
 }

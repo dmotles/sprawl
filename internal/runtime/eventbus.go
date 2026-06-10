@@ -35,6 +35,39 @@ import (
 // burst) does not see spurious drops.
 const publishDeadline = 1 * time.Millisecond
 
+// terminalPublishDeadlineDefault bounds how long Publish will wait on a
+// slow subscriber for a TERMINAL lifecycle event (EventTurnCompleted,
+// EventTurnFailed, EventInterrupted) before giving up. Terminal events are
+// load-bearing for TUI state reconciliation — silently dropping one wedges
+// the TUI in TurnStreaming/TurnThinking forever (QUM-775). The deadline is
+// long enough to absorb a transient slow consumer but short enough that a
+// truly wedged subscriber cannot stall the publisher indefinitely. Tests
+// shrink it via setTerminalDeadlineForTest.
+const terminalPublishDeadlineDefault = 5 * time.Second
+
+// terminalPublishDeadline is read on every terminal publish. Mutated only
+// via setTerminalDeadlineForTest. Not exported.
+var terminalPublishDeadline = terminalPublishDeadlineDefault
+
+// setTerminalDeadlineForTest overrides the terminal-event publish deadline.
+// Returns a restore function. Test-only — guarded by no production caller.
+func setTerminalDeadlineForTest(d time.Duration) func() {
+	prev := terminalPublishDeadline
+	terminalPublishDeadline = d
+	return func() { terminalPublishDeadline = prev }
+}
+
+// isTerminalEvent reports whether ev carries terminal lifecycle semantics —
+// i.e. whether dropping it could wedge a downstream state reducer. QUM-775.
+func isTerminalEvent(t RuntimeEventType) bool {
+	switch t {
+	case EventTurnCompleted, EventTurnFailed, EventInterrupted:
+		return true
+	default:
+		return false
+	}
+}
+
 // QUM-681 drop-warn rate/burst gates and telemetry-clear interval. These
 // constants are referenced by the TUI status bar (via a mirrored constant
 // — see internal/tui/app.go's eventDropClearInterval) so the ⚠ segment
@@ -146,6 +179,14 @@ type EventBus struct {
 	// ascending order. publishMu is held for the duration of the fan-out
 	// (including the bounded per-subscriber publishDeadline wait), so a slow
 	// subscriber cannot stall the publisher beyond the existing per-sub bound.
+	//
+	// QUM-775 trade-off: for terminal lifecycle events (EventTurnCompleted/
+	// Failed/Interrupted), the per-subscriber wait extends to
+	// terminalPublishDeadline (~5s). A subscriber that is genuinely wedged on
+	// a terminal-event publish therefore stalls other publishes (including
+	// unrelated fast subscribers) for up to that deadline. This is accepted
+	// because terminal events are once-per-turn and load-bearing, and the
+	// TUI wedge they prevent is far worse than transient publisher latency.
 	publishMu sync.Mutex
 	// now returns the wall clock used for drop-warn rate limiting and
 	// telemetry timestamps. Defaults to time.Now; tests override via setNow.
@@ -178,10 +219,22 @@ func (b *EventBus) PublishWithSeq(ev RuntimeEvent, seq uint64) {
 	if cur := b.seq.Load(); seq > cur {
 		b.seq.Store(seq)
 	}
+	b.fanout(ev)
+}
+
+// fanout delivers ev to every current subscriber, applying the terminal-event
+// undroppable policy (QUM-775). Caller must hold publishMu so Seq order is
+// preserved on the wire. Acquires b.mu.RLock internally.
+func (b *EventBus) fanout(ev RuntimeEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	terminal := isTerminalEvent(ev.Type)
+	deadline := publishDeadline
+	if terminal {
+		deadline = terminalPublishDeadline
+	}
 	for id, sub := range b.subscribers {
-		if trySendWithYield(sub.ch, ev) {
+		if trySendWithDeadline(sub.ch, ev, deadline) {
 			continue
 		}
 		sub.dropped.Add(1)
@@ -190,7 +243,10 @@ func (b *EventBus) PublishWithSeq(ev RuntimeEvent, seq uint64) {
 		sub.lastDropAt = now
 		total := sub.dropped.Load()
 		delta := total - sub.lastWarnCount
-		shouldWarn := sub.lastWarnAt.IsZero() ||
+		// Terminal-event drops always warn loudly — they are load-bearing for
+		// downstream state reducers (TUI finalizeTurn). Don't rate-limit them.
+		shouldWarn := terminal ||
+			sub.lastWarnAt.IsZero() ||
 			now.Sub(sub.lastWarnAt) >= dropWarnInterval ||
 			delta >= dropWarnBurstThreshold
 		if shouldWarn {
@@ -199,12 +255,18 @@ func (b *EventBus) PublishWithSeq(ev RuntimeEvent, seq uint64) {
 		}
 		sub.telMu.Unlock()
 		if shouldWarn {
+			msg := "eventbus: dropping event for slow subscriber"
+			if terminal {
+				msg = "eventbus: dropping TERMINAL event after deadline — downstream state may wedge"
+			}
 			slog.Default().Warn(
-				"eventbus: dropping event for slow subscriber",
+				msg,
 				slog.String("name", subscriberKey(sub.name, id)),
 				slog.Int("buffer", cap(sub.ch)),
 				slog.Uint64("cumulative", total),
 				slog.Uint64("delta", delta),
+				slog.Int("event_type", int(ev.Type)),
+				slog.Uint64("seq", ev.Seq),
 			)
 		}
 	}
@@ -267,45 +329,17 @@ func (b *EventBus) SubscribeNamed(name string, buffer int) (<-chan RuntimeEvent,
 
 // Publish fans the event out to every current subscriber using a
 // near-non-blocking send (bounded per subscriber by publishDeadline).
-// With zero subscribers Publish is a no-op.
+// Terminal lifecycle events (EventTurnCompleted, EventTurnFailed,
+// EventInterrupted) use the larger terminalPublishDeadline so a slow
+// subscriber cannot silently wedge the downstream TUI state reducer
+// (QUM-775). With zero subscribers Publish is a no-op.
 func (b *EventBus) Publish(event RuntimeEvent) {
 	// QUM-669: serialize stamp+fanout so subscribers observe Seq in strictly
 	// ascending order. See publishMu's doc comment for rationale.
 	b.publishMu.Lock()
 	defer b.publishMu.Unlock()
 	event.Seq = b.seq.Add(1)
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	for id, sub := range b.subscribers {
-		if trySendWithYield(sub.ch, event) {
-			continue
-		}
-		// Slow subscriber: drop this event for them rather than block
-		// other subscribers (or the publisher) on backpressure.
-		sub.dropped.Add(1)
-		now := b.now()
-		sub.telMu.Lock()
-		sub.lastDropAt = now
-		total := sub.dropped.Load()
-		delta := total - sub.lastWarnCount
-		shouldWarn := sub.lastWarnAt.IsZero() ||
-			now.Sub(sub.lastWarnAt) >= dropWarnInterval ||
-			delta >= dropWarnBurstThreshold
-		if shouldWarn {
-			sub.lastWarnAt = now
-			sub.lastWarnCount = total
-		}
-		sub.telMu.Unlock()
-		if shouldWarn {
-			slog.Default().Warn(
-				"eventbus: dropping event for slow subscriber",
-				slog.String("name", subscriberKey(sub.name, id)),
-				slog.Int("buffer", cap(sub.ch)),
-				slog.Uint64("cumulative", total),
-				slog.Uint64("delta", delta),
-			)
-		}
-	}
+	b.fanout(event)
 }
 
 // DroppedCounts returns a snapshot of cumulative drop counts keyed by
@@ -343,19 +377,22 @@ func (b *EventBus) DropTelemetry() map[string]DropTelemetry {
 	return out
 }
 
-// trySendWithYield attempts to deliver an event with bounded patience. A
+// trySendWithDeadline attempts to deliver an event with bounded patience. A
 // fast non-blocking send is tried first; if the buffer is full, the
-// publisher waits up to publishDeadline for a barely-keeping-up consumer
-// to make room. This preserves the "publisher cannot be stalled
-// indefinitely by a slow subscriber" invariant while avoiding spurious
-// drops when the consumer would have drained moments later.
-func trySendWithYield(ch chan RuntimeEvent, event RuntimeEvent) bool {
+// publisher waits up to deadline for a barely-keeping-up consumer to make
+// room. This preserves the "publisher cannot be stalled indefinitely by a
+// slow subscriber" invariant while avoiding spurious drops when the
+// consumer would have drained moments later. Non-terminal events pass
+// publishDeadline (1ms); terminal events (QUM-775) pass
+// terminalPublishDeadline (5s) so they are not silently dropped on a
+// transient slow consumer.
+func trySendWithDeadline(ch chan RuntimeEvent, event RuntimeEvent, deadline time.Duration) bool {
 	select {
 	case ch <- event:
 		return true
 	default:
 	}
-	timer := time.NewTimer(publishDeadline)
+	timer := time.NewTimer(deadline)
 	defer timer.Stop()
 	select {
 	case ch <- event:

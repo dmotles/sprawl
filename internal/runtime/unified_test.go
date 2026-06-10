@@ -1136,6 +1136,149 @@ func TestUnifiedRuntime_InterruptStopGuard_TurnActive_Characterization(t *testin
 	}
 }
 
+// TestInterrupt_WhenIdle_PublishesSyntheticEventInterrupted is the QUM-775
+// item 4 regression test: when Interrupt fires against an idle runtime
+// (turnRunning == false), the runtime must publish a synthetic
+// EventInterrupted on the bus so the TUI can finalize its turnState. Before
+// this fix, the TUI got no event when its turnState was wedged in
+// TurnStreaming after a dropped EventTurnCompleted, leaving "Interrupting…"
+// forever.
+func TestInterrupt_WhenIdle_PublishesSyntheticEventInterrupted(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	// Subscribe BEFORE Interrupt so we observe the synthetic event.
+	evCh, unsub := rt.EventBus().SubscribeNamed("probe", 8)
+	defer unsub()
+
+	if !waitForState(t, rt, liveIdle, 1*time.Second) {
+		t.Fatalf("not idle before Interrupt; state=%v", rt.State())
+	}
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt while idle: %v", err)
+	}
+
+	// We should receive a synthetic EventInterrupted within a short window.
+	deadline := time.After(1 * time.Second)
+	var saw bool
+loop:
+	for {
+		select {
+		case ev := <-evCh:
+			if ev.Type == EventInterrupted {
+				saw = true
+				break loop
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	if !saw {
+		t.Fatalf("idle Interrupt did not publish synthetic EventInterrupted (TUI would stay wedged in TurnStreaming)")
+	}
+}
+
+// TestInterrupt_WhenStopped_NoSyntheticEvent ensures the synthetic publish
+// is gated off when the runtime is already Stopped — no event should appear
+// on the bus.
+func TestInterrupt_WhenStopped_NoSyntheticEvent(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := rt.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	evCh, unsub := rt.EventBus().SubscribeNamed("probe", 8)
+	defer unsub()
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Errorf("Interrupt after Stop: %v", err)
+	}
+
+	select {
+	case ev := <-evCh:
+		t.Errorf("unexpected event after stopped Interrupt: %+v", ev)
+	case <-time.After(150 * time.Millisecond):
+		// good
+	}
+}
+
+// TestInterrupt_WhenTurnActive_NoSyntheticDoubleEmit confirms that when a
+// turn is genuinely in flight, the idle-branch synthetic publish does NOT
+// fire — the TurnLoop's own EventInterrupted emission is the single source
+// of truth for the active-turn path.
+func TestInterrupt_WhenTurnActive_NoSyntheticDoubleEmit(t *testing.T) {
+	released := make(chan struct{})
+	mock := &mockUnifiedSession{
+		onStart: func(_ int) (<-chan *protocol.Message, error) {
+			ch := make(chan *protocol.Message, 1)
+			go func() {
+				<-released
+				ch <- makeResultMsg()
+				close(ch)
+			}()
+			return ch, nil
+		},
+	}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		select {
+		case <-released:
+		default:
+			close(released)
+		}
+		_ = rt.Stop(context.Background())
+	}()
+
+	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "long"})
+	if !waitForState(t, rt, liveTurnActive, 2*time.Second) {
+		t.Fatalf("did not enter liveTurnActive; current=%v", rt.State())
+	}
+
+	evCh, unsub := rt.EventBus().SubscribeNamed("probe", 16)
+	defer unsub()
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt during active turn: %v", err)
+	}
+
+	// Count EventInterrupted within a short window AFTER subscribing, BEFORE
+	// the loop tears down. The TurnLoop fires exactly one EventInterrupted
+	// when it drains; the synthetic idle branch must NOT fire here.
+	close(released)
+	deadline := time.After(2 * time.Second)
+	var interruptedCount int
+collect:
+	for {
+		select {
+		case ev := <-evCh:
+			if ev.Type == EventInterrupted {
+				interruptedCount++
+			}
+		case <-deadline:
+			break collect
+		}
+		if interruptedCount > 1 {
+			break collect
+		}
+	}
+	if interruptedCount > 1 {
+		t.Errorf("got %d EventInterrupted; want at most 1 (no double-emit on active-turn path)", interruptedCount)
+	}
+}
+
 // CHANGELOG (QUM-550 slice 4): the QUM-510 regression test
 // `TestInterruptDelivery_DoesNotArmPendingInterrupt_OnTurnEndBoundary` was
 // removed alongside the legacy `InterruptDelivery` / `interruptForDelivery`

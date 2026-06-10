@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -303,6 +306,53 @@ type AppModel struct {
 	gapID          uint64
 	pendingMissing uint64
 	resyncInFlight bool
+
+	// QUM-775 item 2: TUI liveness watchdog. lastBusActivityAt is updated by
+	// noteBusActivity() whenever a bus-derived msg arrives; the periodic
+	// TurnWatchdogTickMsg reducer compares it against watchdogClock() to
+	// decide whether to probe the backend's LivenessProbe (if any) and force
+	// finalizeTurn() on a wedge. watchdogClock and watchdogTimeout are test
+	// seams — the defaults are time.Now and watchdogTimeoutDefault.
+	lastBusActivityAt time.Time
+	watchdogClock     func() time.Time
+	watchdogTimeout   time.Duration
+}
+
+// watchdogTimeoutDefault is the default "stuck in Streaming/Thinking with no
+// bus activity" threshold before the watchdog probes the runtime. QUM-775.
+const watchdogTimeoutDefault = 30 * time.Second
+
+// watchdogTimeoutEnv is the test-only env var that overrides
+// watchdogTimeoutDefault (in milliseconds). Used by the viewport-resync
+// e2e row to fast-forward the wedge-recovery path. QUM-775.
+const watchdogTimeoutEnv = "SPRAWL_TUI_WATCHDOG_TIMEOUT_MS"
+
+// resolveWatchdogTimeout returns watchdogTimeoutDefault, optionally
+// overridden by watchdogTimeoutEnv. Invalid / zero values fall back to the
+// default. QUM-775.
+func resolveWatchdogTimeout() time.Duration {
+	raw := os.Getenv(watchdogTimeoutEnv)
+	if raw == "" {
+		return watchdogTimeoutDefault
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return watchdogTimeoutDefault
+	}
+	return time.Duration(n) * time.Millisecond
+}
+
+// watchdogTickInterval is the period of the self-perpetuating watchdog tick.
+// Short enough to recover within a few seconds of crossing the timeout,
+// long enough to be free in the reducer. QUM-775.
+const watchdogTickInterval = 5 * time.Second
+
+// watchdogTickCmd returns the periodic tick driving the wedge-recovery
+// watchdog. QUM-775.
+func watchdogTickCmd() tea.Cmd {
+	return tea.Tick(watchdogTickInterval, func(time.Time) tea.Msg {
+		return TurnWatchdogTickMsg{}
+	})
 }
 
 // NewAppModel constructs the root model with all sub-models.
@@ -350,6 +400,9 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		usageModal:          NewUsageModalModel(&theme),
 		validatePopup:       NewValidatePopupModel(&theme, 0),
 		toasts:              NewToastModel(&theme),
+		watchdogClock:       time.Now,
+		watchdogTimeout:     resolveWatchdogTimeout(),
+		lastBusActivityAt:   time.Now(),
 	}
 	_ = app.history.Load()
 	app.updateFocus()
@@ -367,6 +420,11 @@ func (m AppModel) Init() tea.Cmd {
 	if m.supervisor != nil {
 		cmds = append(cmds, tickAgentsCmd(m.supervisor, m.sprawlRoot))
 	}
+	// QUM-775 item 2: arm the wedge-recovery watchdog tick only when a
+	// bridge is attached — the watchdog has nothing to recover otherwise.
+	if m.bridge != nil {
+		cmds = append(cmds, watchdogTickCmd())
+	}
 	if len(cmds) == 0 {
 		return nil
 	}
@@ -375,6 +433,12 @@ func (m AppModel) Init() tea.Cmd {
 
 // Update handles messages: window resize, global keybinds, bridge messages, and panel delegation.
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// QUM-775 item 2: refresh the watchdog "last bus activity" timestamp
+	// before dispatching, so any bus-derived msg (translated runtime event,
+	// gap notice, session lifecycle) resets the wedge timer. Non-bus msgs
+	// (window resize, ticks, key events) are excluded so the watchdog stays
+	// scoped to actual EventBus traffic.
+	m.noteBusActivityIfApplicable(msg)
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -1419,25 +1483,38 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, toastCmd
 
 	case BackendFaultClearedMsg:
-		// QUM-601: in-place recovery succeeded. Drop the per-agent fault
-		// sticker, surface a recovery banner in the root viewport, and
-		// rebuild the tree so the FAULT badge disappears from the row.
+		// Fired in two cases: (a) QUM-601 in-place recovery succeeded, and
+		// (b) QUM-776 a faulted agent reached terminal liveness (retire /
+		// kill / abandon / died). Both paths drop the per-agent fault
+		// sticker and condition-dismiss the matching toast; only the
+		// recovery path surfaces the "backend recovered on X" banner and
+		// re-attaches the child adapter.
 		// Viewport history is intentionally retained — operators keep the
 		// fault/recovery sequence visible for forensics.
+		//
+		// QUM-776: cmd/enter.go also dispatches this message when a faulted
+		// agent reaches terminal liveness (retire/kill/abandon). In that
+		// case the "backend recovered on X" transient label and the
+		// child-adapter re-attach are misleading — the agent is gone, not
+		// recovered. Gate those side-effects on whether the agent actually
+		// had a tracked fault at receipt time.
+		_, hadFault := m.faults[msg.Agent]
 		if m.faults != nil {
 			delete(m.faults, msg.Agent)
 		}
 		// QUM-651: in-place recovery succeeded; clear the matching fault
 		// toast spawned by the BackendFaultMsg reducer.
 		m.toasts.ClearCondition("fault-" + msg.Agent)
-		m.statusBar.SetTransientLabel(fmt.Sprintf("backend recovered on %s", msg.Agent))
+		if hadFault {
+			m.statusBar.SetTransientLabel(fmt.Sprintf("backend recovered on %s", msg.Agent))
+		}
 		m.rebuildTree()
 		// If the recovered agent is the one currently streaming into the
 		// child viewport, re-point the child adapter at the new unified
 		// runtime. When no new runtime is reachable (e.g. recovery is still
 		// in flight), tear down the adapter and let the next AgentSelectedMsg
 		// re-attach.
-		if m.childAdapterAgent == msg.Agent && m.childAdapter != nil {
+		if hadFault && m.childAdapterAgent == msg.Agent && m.childAdapter != nil {
 			if urt := m.lookupUnifiedRuntime(msg.Agent); urt != nil {
 				m.childAdapter.Observe(urt)
 				m.childAdapterEpoch++
@@ -1559,6 +1636,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetActiveOps(m.orderedMCPOps())
 		}
 		return m, nil
+
+	case TurnWatchdogTickMsg:
+		// QUM-775 item 2: wedge-recovery watchdog. If turnState has been
+		// stuck in Streaming/Thinking for longer than watchdogTimeout with
+		// no bus activity, probe the backend's LivenessProbe (if any) and
+		// force finalizeTurn() when the runtime reports it's not in a turn.
+		// Self-perpetuating tick — always re-arm.
+		cmd := m.runTurnWatchdog()
+		return m, tea.Batch(cmd, watchdogTickCmd())
 
 	case mcpOpTickMsg:
 		// QUM-497: 1Hz re-render driver. Self-perpetuates only while ops are
@@ -2201,6 +2287,59 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// Copy. The QUM-617 selection-mode toggle stays retired (QUM-653).
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
+}
+
+// noteBusActivityIfApplicable refreshes the watchdog "last bus activity"
+// timestamp when msg is a bus-derived msg type (a translated RuntimeEvent
+// or a session-lifecycle msg). Non-bus msg types — window resize, global
+// keys, periodic ticks, palette/help/confirm/tree modal, etc. — are
+// excluded so a busy keyboard doesn't mask a wedged turn. QUM-775 item 2.
+func (m *AppModel) noteBusActivityIfApplicable(msg tea.Msg) {
+	switch msg.(type) {
+	case AssistantContentMsg,
+		ToolCallMsg,
+		ToolResultMsg,
+		SessionResultMsg,
+		SessionInitializedMsg,
+		SessionErrorMsg,
+		UserMessageSentMsg,
+		InterruptResultMsg,
+		InterruptCompletedMsg,
+		EventDropDetectedMsg,
+		AutoContinueMsg,
+		SessionModelMsg:
+		m.lastBusActivityAt = m.watchdogClock()
+	}
+}
+
+// runTurnWatchdog implements the QUM-775 item 2 wedge-recovery check.
+// Returns a tea.Cmd produced by finalizeTurn() if recovery fired, else nil.
+// Safe to call when bridge==nil or the bridge does not implement
+// LivenessProbe — both paths are no-ops.
+func (m *AppModel) runTurnWatchdog() tea.Cmd {
+	if m.turnState != TurnStreaming && m.turnState != TurnThinking {
+		return nil
+	}
+	if m.watchdogClock == nil {
+		return nil
+	}
+	if m.watchdogClock().Sub(m.lastBusActivityAt) < m.watchdogTimeout {
+		return nil
+	}
+	probe, ok := m.bridge.(LivenessProbe)
+	if !ok || probe == nil {
+		return nil
+	}
+	if probe.RuntimeInTurn() {
+		return nil
+	}
+	slog.Default().Warn(
+		"tui: watchdog forcing finalizeTurn — runtime idle but turnState=streaming/thinking",
+		slog.String("turn_state", m.turnState.String()),
+		slog.Duration("since_last_bus_event", m.watchdogClock().Sub(m.lastBusActivityAt)),
+	)
+	m.statusBar.SetTransientLabel("watchdog: recovered wedged turn")
+	return m.finalizeTurn()
 }
 
 // setTurnState mutates the turn state and propagates the change to the status

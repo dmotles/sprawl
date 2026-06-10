@@ -424,13 +424,17 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	sess := rt.cfg.Session
 	loop := rt.turnLoop
 	turnRunning := rt.turnRunning
+	armedIdle := false
 	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
 		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	} else if !turnRunning {
 		// Queue items may be pending but the wrapper hasn't entered StartTurn yet.
 		// Arm a pending-interrupt flag so the next StartTurn classifies its
-		// terminal event as EventInterrupted (not EventTurnCompleted).
+		// terminal event as EventInterrupted (not EventTurnCompleted). This
+		// preserves the QUM-510-class semantics (interrupt racing the next
+		// StartTurn from a non-TUI source).
 		rt.pendingInterrupt = true
+		armedIdle = true
 	}
 	rt.mu.Unlock()
 
@@ -441,6 +445,18 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 
 	if loop != nil && turnRunning {
 		return loop.Interrupt(ctx)
+	}
+
+	// QUM-775 item 4: when an interrupt is issued against an idle runtime,
+	// emit a synthetic EventInterrupted so a downstream state reducer (TUI
+	// turnState) that is wedged in TurnStreaming after a dropped terminal
+	// event has a chance to finalize. The pendingInterrupt flag may also
+	// later trigger a real EventInterrupted from the loop when StartTurn
+	// runs — duplicate EventInterrupted events are tolerated (finalizeTurn
+	// is idempotent), and the synthetic event recovers the TUI even when
+	// no subsequent StartTurn ever arrives.
+	if armedIdle && rt.eventBus != nil {
+		rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted})
 	}
 	return nil
 }
