@@ -14,8 +14,36 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
+
+// TestChatViewport_FillsLayoutSlotNoSlack (QUM-779) pins that the chat
+// region's inner viewport is sized to exactly layout.ViewportWidth ×
+// layout.ViewportHeight after a WindowSizeMsg — no `-4` slack from the
+// stale pre-QUM-661 border reservation. Lipgloss pads under-sized
+// content with blank rows at the bottom, so any deficit here surfaces as
+// blank rows wedged between the last chat line and the input box.
+func TestChatViewport_FillsLayoutSlotNoSlack(t *testing.T) {
+	m := newTestAppModel(t)
+	const w, h = 120, 30
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	app, ok := updated.(AppModel)
+	if !ok {
+		t.Fatalf("Update returned %T, want AppModel", updated)
+	}
+
+	layout := ComputeLayout(w, h, (&app).inputBoxHeight())
+	vp := (&app).rootVP()
+	if got := vp.Height(); got != layout.ViewportHeight {
+		t.Errorf("rootVP.Height() = %d, want layout.ViewportHeight = %d (QUM-779: no -4 slack)",
+			got, layout.ViewportHeight)
+	}
+	if got := vp.Width(); got != layout.ViewportWidth {
+		t.Errorf("rootVP.Width() = %d, want layout.ViewportWidth = %d (QUM-779: no -4 slack)",
+			got, layout.ViewportWidth)
+	}
+}
 
 // TestRenderPanel_OuterSizeMatchesDeclared asserts that for non-overflowing
 // content, the rendered panel is exactly outerH lines and exactly outerW

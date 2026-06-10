@@ -2197,7 +2197,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// QUM-673 S3: render finished items via ChatList; fall back to vp.View()
 	// when a stream / tool call is in flight, or when ChatList has nothing
 	// to render (status placeholders + banners flow through vp only).
-	chatContent := m.chatRegionContent(layout.ViewportWidth - 4)
+	chatContent := m.chatRegionContent(layout.ViewportWidth)
 	vpView := m.cachedPanel(useCache, panelSlotViewport, chatContent,
 		layout.ViewportWidth, layout.ViewportHeight,
 		false)
@@ -2471,7 +2471,7 @@ func (m *AppModel) viewportFor(name string) *ViewportModel {
 		vp := NewViewportModel(&m.theme)
 		if m.ready && !m.tooSmall {
 			layout := ComputeLayout(m.width, m.height, m.inputBoxHeight())
-			vp.SetSize(layout.ViewportWidth-4, layout.ViewportHeight-4)
+			vp.SetSize(layout.ViewportWidth, layout.ViewportHeight)
 		}
 		vp.SetToolInputsExpanded(m.toolInputsExpanded)
 		// QUM-676: ChatList now lives inside ViewportModel.region. The
@@ -2593,7 +2593,7 @@ func (m *AppModel) resizePanels() {
 		// the inner bubbles viewport AND the inner ChatList. The legacy
 		// "dual-store sync" cl.SetSize call has gone with the dual-append
 		// shim.
-		buf.vp.SetSize(layout.ViewportWidth-4, h-4)
+		buf.vp.SetSize(layout.ViewportWidth, h)
 	}
 	m.input.SetWidth(layout.InputWidth - 4)
 	m.statusBar.SetWidth(layout.StatusWidth)
