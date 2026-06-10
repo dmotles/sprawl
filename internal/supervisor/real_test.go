@@ -1282,12 +1282,14 @@ func TestReal_Peek_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	}
 }
 
-// TestReal_Retire_TerminalStatus_ReturnsClearerError pins QUM-680 for the
-// Retire path: when an agent has a terminal status persisted AND no runtime
-// is registered, Retire must short-circuit with a descriptive error and must
-// NOT invoke retireFn (there is nothing to clean up; the agent already
-// reported terminal state).
-func TestReal_Retire_TerminalStatus_ReturnsClearerError(t *testing.T) {
+// TestReal_Retire_TerminalStatus_DelegatesCleanup pins QUM-739: retire is the
+// legitimate cleanup path for terminal agents. When an agent has a terminal
+// status persisted AND no runtime is registered, Retire must delegate to
+// retireFn so the worktree / branch / state file are cleaned up — NOT short-
+// circuit with TerminalAgentError (which trapped zombie agents pre-QUM-739).
+// This reverses the QUM-680 short-circuit on the retire path; send_message
+// and peek still gate on TerminalAgentError.
+func TestReal_Retire_TerminalStatus_DelegatesCleanup(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -1312,15 +1314,10 @@ func TestReal_Retire_TerminalStatus_ReturnsClearerError(t *testing.T) {
 		false, /* cascade */
 		false, /* noValidate */
 	)
-	if err == nil {
-		t.Fatal("Retire on faulted agent returned nil error; want descriptive terminal-status error")
+	if err != nil {
+		t.Fatalf("Retire on faulted agent returned error: %v; want nil (cleanup must proceed)", err)
 	}
-	for _, want := range []string{"no longer running", "failure", `"alice"`} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q missing substring %q", err.Error(), want)
-		}
-	}
-	if retireCalls != 0 {
-		t.Errorf("retireFn was invoked %d times for a terminal-status agent; want 0 (Retire must short-circuit before delegating)", retireCalls)
+	if retireCalls != 1 {
+		t.Errorf("retireFn was invoked %d times for a terminal-status agent; want 1 (Retire must delegate cleanup)", retireCalls)
 	}
 }

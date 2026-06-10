@@ -741,9 +741,9 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 		r.runtimeRegistry.Remove(agentName)
 		return nil
 	}
-	if err := agentops.TerminalAgentError(r.sprawlRoot, agentName); err != nil {
-		return err
-	}
+	// QUM-739: retire is the legitimate cleanup path for terminal agents;
+	// the TerminalAgentError gate that used to live here trapped zombies.
+	// Keep the gate on send_message / peek (still callers of TerminalAgentError).
 	if err := r.retireFn(ctx, retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)
@@ -2100,7 +2100,9 @@ func (r *Real) listDirectChildren(parentName string) ([]*state.AgentState, error
 	}
 	var children []*state.AgentState
 	for _, agentState := range agents {
-		if agentState.Parent == parentName {
+		// QUM-739: terminal-status children are resolved orphans — they
+		// don't block parent retire/merge and shouldn't be cascaded.
+		if agentState.Parent == parentName && !state.IsTerminal(agentState.Status) {
 			children = append(children, agentState)
 		}
 	}

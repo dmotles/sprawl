@@ -462,3 +462,35 @@ func TestAgentState_LegacyCostFieldsTolerated(t *testing.T) {
 		t.Errorf("Status = %q, want active", loaded.Status)
 	}
 }
+
+// TestIsTerminal covers the QUM-739 helper that classifies a status string
+// as terminal (the agent cannot transition back to running on its own).
+// "paused" is NOT terminal (wake-able). "retiring" is NOT terminal (in-flight
+// teardown — a concurrent retire must still see it as active to avoid races).
+func TestIsTerminal(t *testing.T) {
+	cases := []struct {
+		status string
+		want   bool
+	}{
+		{StatusStopped, true},
+		{StatusFaulted, true},
+		{StatusRetired, true},
+		{StatusKilled, true},
+		{StatusDied, true},
+		{StatusResumeFailed, true},
+
+		{StatusActive, false},
+		{StatusRunning, false},
+		{StatusSuspended, false},
+		{StatusPaused, false},
+		{StatusRetiring, false},
+		{StatusDone, false}, // legacy outcome token; not a liveness
+		{"", false},
+		{"unknown", false},
+	}
+	for _, tc := range cases {
+		if got := IsTerminal(tc.status); got != tc.want {
+			t.Errorf("IsTerminal(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}

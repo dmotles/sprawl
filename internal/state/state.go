@@ -29,6 +29,29 @@ const (
 	StatusDied   = "died"
 )
 
+// IsTerminal reports whether a Status value names a terminal liveness — an
+// agent in this state cannot transition back to running on its own and is
+// safe to treat as "no longer active" by callers performing cleanup
+// (retire/merge) or filtering child lists. The terminal set is:
+//
+//	stopped, faulted, retired, killed, died, resume_failed
+//
+// Notably NOT terminal:
+//   - paused: wake-able (QUM-722 / QUM-708)
+//   - retiring: in-flight teardown — a concurrent retire must still see it
+//     as active to avoid racing the in-progress operation.
+//
+// Added by QUM-739 to unify the filter across agentops/merge.go,
+// agentops/retire.go, and supervisor/real.go.
+func IsTerminal(status string) bool {
+	switch status {
+	case StatusStopped, StatusFaulted, StatusRetired,
+		StatusKilled, StatusDied, StatusResumeFailed:
+		return true
+	}
+	return false
+}
+
 // CurrentSchemaVersion is the schema version stamped onto agent state files by
 // the current code. LoadAgent migrates older (v0) files forward on read and
 // SaveAgent stamps this value (QUM-625 M4).

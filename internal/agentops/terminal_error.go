@@ -18,6 +18,10 @@ func TerminalAgentError(sprawlRoot, name string) error {
 	if err != nil {
 		return nil
 	}
+	// Intentionally narrower than state.IsTerminal (QUM-739): `died` and
+	// `resume_failed` have their own handling on the send_message path
+	// (QUM-725 dead-routing routes up to a live ancestor; QUM-708 wake) and
+	// must NOT short-circuit here.
 	switch st.Status {
 	case state.StatusStopped, state.StatusFaulted, state.StatusRetired, state.StatusKilled:
 	default:

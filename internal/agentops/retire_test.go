@@ -233,3 +233,176 @@ func TestRetire_Subagent_SkipsWorktreeAndBranchDelete(t *testing.T) {
 		t.Errorf("state file for retired sub-agent still loads; want not-found")
 	}
 }
+
+// TestRetire_TerminalStatuses_Succeed pins QUM-739 Bug 1: retire (with or
+// without --abandon) must succeed when the agent is in any terminal status
+// and no live runtime is registered. The previous TerminalAgentError gate
+// refused these cases, trapping zombie agents.
+func TestRetire_TerminalStatuses_Succeed(t *testing.T) {
+	terminalStatuses := []string{
+		state.StatusStopped,
+		state.StatusFaulted,
+		state.StatusRetired,
+		state.StatusKilled,
+		state.StatusDied,
+		state.StatusResumeFailed,
+	}
+	for _, status := range terminalStatuses {
+		for _, abandon := range []bool{false, true} {
+			name := status
+			if abandon {
+				name = status + "+abandon"
+			}
+			t.Run(name, func(t *testing.T) {
+				sprawlRoot := t.TempDir()
+				agentName := "zombie"
+				worktreePath := filepath.Join(sprawlRoot, ".sprawl", "worktrees", agentName)
+				if err := os.MkdirAll(worktreePath, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				agentState := &state.AgentState{
+					Name:            agentName,
+					Type:            "engineer",
+					Family:          "engineering",
+					Branch:          "dmotles/zombie",
+					Worktree:        worktreePath,
+					Parent:          "weave",
+					Status:          status,
+					LastReportState: "complete",
+					LastReportAt:    "2026-06-09T20:00:00Z",
+				}
+				if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
+					t.Fatalf("SaveAgent: %v", err)
+				}
+				deps := terminalRetireDeps(sprawlRoot)
+				err := Retire(context.Background(), deps, agentName,
+					false /* cascade */, false /* force */, abandon,
+					false /* mergeFirst */, true /* yes */, false /* noValidate */)
+				if err != nil {
+					t.Fatalf("Retire(status=%q, abandon=%v): unexpected error: %v", status, abandon, err)
+				}
+				if _, err := state.LoadAgent(sprawlRoot, agentName); err == nil {
+					t.Errorf("state file still loads after Retire; expected removal")
+				}
+			})
+		}
+	}
+}
+
+// TestRetire_TerminalChildren_DoNotRequireCascade pins QUM-739 Bug 2 on the
+// retire path: a parent whose only children are in terminal status must be
+// retire-able without --cascade.
+func TestRetire_TerminalChildren_DoNotRequireCascade(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	parentName := "parent"
+	parentWT := filepath.Join(sprawlRoot, ".sprawl", "worktrees", parentName)
+	if err := os.MkdirAll(parentWT, 0o755); err != nil {
+		t.Fatalf("mkdir parent wt: %v", err)
+	}
+	parentState := &state.AgentState{
+		Name: parentName, Type: "manager", Family: "engineering",
+		Branch: "dmotles/parent", Worktree: parentWT, Parent: "weave",
+		Status: state.StatusActive,
+	}
+	if err := state.SaveAgent(sprawlRoot, parentState); err != nil {
+		t.Fatalf("SaveAgent parent: %v", err)
+	}
+
+	terminalStatuses := []string{
+		state.StatusStopped,
+		state.StatusFaulted,
+		state.StatusRetired,
+		state.StatusKilled,
+		state.StatusDied,
+		state.StatusResumeFailed,
+	}
+	for i, s := range terminalStatuses {
+		childName := "child" + s
+		childWT := filepath.Join(sprawlRoot, ".sprawl", "worktrees", childName)
+		if err := os.MkdirAll(childWT, 0o755); err != nil {
+			t.Fatalf("mkdir child wt %d: %v", i, err)
+		}
+		child := &state.AgentState{
+			Name: childName, Type: "engineer", Family: "engineering",
+			Branch: "dmotles/" + childName, Worktree: childWT, Parent: parentName,
+			Status: s,
+		}
+		if err := state.SaveAgent(sprawlRoot, child); err != nil {
+			t.Fatalf("SaveAgent child: %v", err)
+		}
+	}
+
+	deps := terminalRetireDeps(sprawlRoot)
+	// cascade=false: must still succeed because all children are terminal.
+	if err := Retire(context.Background(), deps, parentName,
+		false /* cascade */, false /* force */, false, /* abandon */
+		false /* mergeFirst */, false /* yes */, false /* noValidate */); err != nil {
+		t.Fatalf("Retire parent with terminal-only children: %v", err)
+	}
+}
+
+// TestRetire_ActiveChildBlocks pins the negative case: a live child still
+// blocks parent retire without --cascade. Guards against the filter being too
+// permissive.
+func TestRetire_ActiveChildBlocks(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	parentName := "parent"
+	parentWT := filepath.Join(sprawlRoot, ".sprawl", "worktrees", parentName)
+	if err := os.MkdirAll(parentWT, 0o755); err != nil {
+		t.Fatalf("mkdir parent wt: %v", err)
+	}
+	parentState := &state.AgentState{
+		Name: parentName, Type: "manager", Family: "engineering",
+		Branch: "dmotles/parent", Worktree: parentWT, Parent: "weave",
+		Status: state.StatusActive,
+	}
+	if err := state.SaveAgent(sprawlRoot, parentState); err != nil {
+		t.Fatalf("SaveAgent parent: %v", err)
+	}
+	childWT := filepath.Join(sprawlRoot, ".sprawl", "worktrees", "kid")
+	if err := os.MkdirAll(childWT, 0o755); err != nil {
+		t.Fatalf("mkdir child wt: %v", err)
+	}
+	child := &state.AgentState{
+		Name: "kid", Type: "engineer", Family: "engineering",
+		Branch: "dmotles/kid", Worktree: childWT, Parent: parentName,
+		Status: state.StatusActive,
+	}
+	if err := state.SaveAgent(sprawlRoot, child); err != nil {
+		t.Fatalf("SaveAgent child: %v", err)
+	}
+
+	deps := terminalRetireDeps(sprawlRoot)
+	err := Retire(context.Background(), deps, parentName,
+		false, false, false, false, false, false)
+	if err == nil {
+		t.Fatalf("Retire of parent with active child must fail without --cascade")
+	}
+}
+
+// terminalRetireDeps builds RetireDeps suitable for the QUM-739 tests above.
+// No live runtime is wired in (the agentops.Retire path treats absence of a
+// runtime as offline cleanup); all git operations are stubbed.
+func terminalRetireDeps(sprawlRoot string) *RetireDeps {
+	return &RetireDeps{
+		Getenv: func(key string) string {
+			if key == "SPRAWL_ROOT" {
+				return sprawlRoot
+			}
+			return ""
+		},
+		WorktreeRemove:      func(_, p string, _ bool) error { return os.RemoveAll(p) },
+		GitStatus:           func(string) (string, error) { return "", nil },
+		RemoveAll:           os.RemoveAll,
+		GitBranchDelete:     func(string, string) error { return nil },
+		GitBranchIsMerged:   func(string, string) (bool, error) { return false, nil },
+		GitBranchSafeDelete: func(string, string) error { return nil },
+		LoadAgent:           state.LoadAgent,
+		CurrentBranch:       func(string) (string, error) { return "main", nil },
+		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
+		LoadConfig: func(string) (*config.Config, error) {
+			return &config.Config{}, nil
+		},
+		RunScript: func(string, string, map[string]string) ([]byte, error) { return nil, nil },
+	}
+}

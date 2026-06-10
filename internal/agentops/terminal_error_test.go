@@ -115,6 +115,26 @@ func TestTerminalAgentError(t *testing.T) {
 				"no longer running",
 			},
 		},
+		{
+			// QUM-739: TerminalAgentError is intentionally narrower than
+			// state.IsTerminal — died has its own QUM-725 route-up handling
+			// on the send_message path and must NOT short-circuit here.
+			name: "died status returns nil (route-up handles it)",
+			seed: &state.AgentState{
+				Name:   "alice",
+				Status: state.StatusDied,
+			},
+			wantErr: false,
+		},
+		{
+			// QUM-739: paused is wake-able, NOT terminal.
+			name: "paused status returns nil",
+			seed: &state.AgentState{
+				Name:   "alice",
+				Status: state.StatusPaused,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range cases {
