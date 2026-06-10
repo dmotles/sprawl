@@ -9,7 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	agentpkg "github.com/dmotles/sprawl/internal/agent"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
@@ -59,11 +61,20 @@ type Server struct {
 	sup       supervisor.Supervisor
 	callLog   *calllog.Logger
 	msgSender atomic.Pointer[MsgSender] // QUM-497: TUI in-flight indicator hook
+	cfg       *config.Config            // QUM-722: project config for pause defaults; may be nil
 }
 
 // New creates a new MCP server backed by the given supervisor.
 func New(sup supervisor.Supervisor) *Server {
 	return &Server{sup: sup, callLog: calllog.NewNoop()}
+}
+
+// WithConfig attaches the loaded project config so MCP tools can read
+// project-level defaults (e.g. pause_timeout_seconds). QUM-722. Returns
+// the receiver for chaining. nil clears any prior config.
+func (s *Server) WithConfig(c *config.Config) *Server {
+	s.cfg = c
+	return s
 }
 
 // SetMsgSender installs (or clears) the TUI message sender used to surface
@@ -240,8 +251,10 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolRetire(ctx, args)
 	case "kill":
 		return s.toolKill(ctx, args)
-	case "recover":
-		return s.toolRecover(ctx, args)
+	case "pause":
+		return s.toolPause(ctx, args)
+	case "wake":
+		return s.toolWake(ctx, args)
 	case "handoff":
 		return s.toolHandoff(ctx, args)
 	case "messages_list":
@@ -300,17 +313,39 @@ func (s *Server) toolTestSleep(ctx context.Context, args json.RawMessage) (strin
 	return fmt.Sprintf("slept %s", time.Since(start).Round(time.Millisecond)), nil
 }
 
+// weaveEngineerAdvisory is the non-blocking orchestration advisory appended
+// to toolSpawn results when the root weave spawns type="engineer" directly
+// (QUM-710 §4 / QUM-719). The advisory nudges weave toward the standard
+// weave → manager → (engineer + QA) shape without rejecting the spawn.
+const weaveEngineerAdvisory = `ADVISORY: weave should normally spawn an engineering manager rather than an engineer directly.
+The standard shape is weave → manager → (engineer + QA). If this is a deliberate single-file,
+single-commit exception, proceed; otherwise retire this agent and spawn a manager.`
+
 func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, error) {
 	var req supervisor.SpawnRequest
 	if err := json.Unmarshal(args, &req); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	// QUM-709: validate subagent / branch interaction before forwarding.
+	if req.Subagent && req.Branch != "" {
+		return "", fmt.Errorf("branch must not be set when subagent is true; sub-agents share the parent's branch")
+	}
+	if !req.Subagent && req.Branch == "" {
+		return "", fmt.Errorf("branch is required when subagent is false")
 	}
 	info, err := s.sup.Spawn(ctx, req)
 	if err != nil {
 		return "", err
 	}
 	data, _ := json.MarshalIndent(info, "", "  ")
-	return fmt.Sprintf("Spawned agent:\n%s", string(data)), nil
+	result := fmt.Sprintf("Spawned agent:\n%s", string(data))
+	// QUM-719: when the root weave (empty caller identity) spawns an
+	// engineer directly, append a non-blocking orchestration advisory.
+	// The spawn still succeeds and the agent stays alive.
+	if req.Type == "engineer" && backendpkg.CallerIdentity(ctx) == "" {
+		result += "\n\n" + weaveEngineerAdvisory
+	}
+	return result, nil
 }
 
 func (s *Server) toolStatus(ctx context.Context) (string, error) {
@@ -327,9 +362,10 @@ func (s *Server) toolStatus(ctx context.Context) (string, error) {
 
 func (s *Server) toolDelegate(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		Agent     string `json:"agent"`
-		AgentName string `json:"agent_name"` // QUM-666: deprecated synonym
-		Task      string `json:"task"`
+		Agent         string `json:"agent"`
+		AgentName     string `json:"agent_name"` // QUM-666: deprecated synonym
+		Task          string `json:"task"`
+		WakeIfOffline bool   `json:"wake_if_offline"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
@@ -339,7 +375,7 @@ func (s *Server) toolDelegate(ctx context.Context, args json.RawMessage) (string
 	if err != nil {
 		return "", err
 	}
-	if err := s.sup.Delegate(ctx, target, p.Task); err != nil {
+	if err := s.sup.Delegate(ctx, target, p.Task, p.WakeIfOffline); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Delegated task to %s", target), nil
@@ -349,14 +385,15 @@ func (s *Server) toolDelegate(ctx context.Context, args json.RawMessage) (string
 // interrupt=false maps to a cooperative wake; interrupt=true forces a preempt.
 func (s *Server) toolSendMessage(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
-		To        string `json:"to"`
-		Body      string `json:"body"`
-		Interrupt bool   `json:"interrupt"`
+		To            string `json:"to"`
+		Body          string `json:"body"`
+		Interrupt     bool   `json:"interrupt"`
+		WakeIfOffline bool   `json:"wake_if_offline"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
-	result, err := s.sup.SendMessage(ctx, p.To, p.Body, p.Interrupt)
+	result, err := s.sup.SendMessage(ctx, p.To, p.Body, p.Interrupt, p.WakeIfOffline)
 	if err != nil {
 		return "", err
 	}
@@ -526,11 +563,64 @@ func (s *Server) toolKill(ctx context.Context, args json.RawMessage) (string, er
 	return fmt.Sprintf("Killed agent %s", target), nil
 }
 
-// toolRecover dispatches the recover MCP tool (QUM-601). On success returns a
-// short ack string. ErrRecoverNotNeeded is treated as a success ("Session
-// healthy; no recovery needed"). Other supervisor errors propagate as
-// tool-error content (IsError=true).
-func (s *Server) toolRecover(ctx context.Context, args json.RawMessage) (string, error) {
+// toolPause dispatches the pause MCP tool (QUM-722). Cascade defaults to
+// true; an omitted timeout_seconds falls back to the project config's
+// PauseTimeout (or config.DefaultPauseTimeoutSeconds when no config is loaded).
+func (s *Server) toolPause(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Agent          string `json:"agent"`
+		AgentName      string `json:"agent_name"`
+		TimeoutSeconds *int   `json:"timeout_seconds"`
+		Cascade        *bool  `json:"cascade"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+	caller := backendpkg.CallerIdentity(ctx)
+	target, err := resolveAgentTarget(p.Agent, p.AgentName, "pause", caller)
+	if err != nil {
+		return "", err
+	}
+	var timeout time.Duration
+	switch {
+	case p.TimeoutSeconds != nil && *p.TimeoutSeconds > 0:
+		timeout = time.Duration(*p.TimeoutSeconds) * time.Second
+	case s.cfg != nil:
+		timeout = s.cfg.PauseTimeout()
+	default:
+		timeout = time.Duration(config.DefaultPauseTimeoutSeconds) * time.Second
+	}
+	cascade := true
+	if p.Cascade != nil {
+		cascade = *p.Cascade
+	}
+	opts := supervisor.PauseOptions{
+		Timeout: timeout,
+		Cascade: cascade,
+	}
+	res, err := s.sup.Pause(ctx, target, opts)
+	if err != nil {
+		return "", err
+	}
+	if res == nil {
+		return fmt.Sprintf("Paused agent %s", target), nil
+	}
+	switch res.Outcome {
+	case "paused":
+		return fmt.Sprintf("Agent %s paused cleanly (waited %dms)", target, res.WaitMs), nil
+	case "escalated_to_kill":
+		return fmt.Sprintf("Escalated pause of agent %s to kill (timeout after %dms)", target, res.WaitMs), nil
+	default:
+		return fmt.Sprintf("Pause of agent %s completed (outcome=%s)", target, res.Outcome), nil
+	}
+}
+
+// toolWake dispatches the wake MCP tool (QUM-724, renamed from recover/
+// QUM-601 with expanded scope). On success returns a JSON-marshaled WakeResult
+// so callers can branch on Mode. ErrWakeNotNeeded is treated as a success
+// ack ("Agent <name> already running; no wake needed"). Other supervisor
+// errors propagate as tool-error content (IsError=true).
+func (s *Server) toolWake(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Agent     string `json:"agent"`
 		AgentName string `json:"agent_name"` // QUM-666: deprecated synonym
@@ -539,17 +629,25 @@ func (s *Server) toolRecover(ctx context.Context, args json.RawMessage) (string,
 		return "", fmt.Errorf("invalid arguments: %w", err)
 	}
 	caller := backendpkg.CallerIdentity(ctx)
-	target, err := resolveAgentTarget(p.Agent, p.AgentName, "recover", caller)
+	target, err := resolveAgentTarget(p.Agent, p.AgentName, "wake", caller)
 	if err != nil {
 		return "", err
 	}
-	if err := s.sup.Recover(ctx, target); err != nil {
-		if errors.Is(err, supervisor.ErrRecoverNotNeeded) {
-			return fmt.Sprintf("Session healthy; no recovery needed for %s", target), nil
+	res, err := s.sup.Wake(ctx, target, agentpkg.WakeReasonBare, "")
+	if err != nil {
+		if errors.Is(err, supervisor.ErrWakeNotNeeded) {
+			return fmt.Sprintf("Agent %s already running; no wake needed", target), nil
 		}
 		return "", err
 	}
-	return fmt.Sprintf("Recovered backend session for %s", target), nil
+	if res == nil {
+		return fmt.Sprintf("Woke agent %s", target), nil
+	}
+	data, mErr := json.Marshal(res)
+	if mErr != nil {
+		return "", fmt.Errorf("marshaling WakeResult: %w", mErr)
+	}
+	return string(data), nil
 }
 
 func (s *Server) toolHandoff(ctx context.Context, args json.RawMessage) (string, error) {

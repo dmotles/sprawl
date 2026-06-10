@@ -162,10 +162,11 @@ func TestStatus_ProcessAliveTriStateComesFromRuntimeKnowledge(t *testing.T) {
 	}
 	close(stoppedSession.doneCh)
 	deadline := time.After(2 * time.Second)
-	for stoppedActiveRT.Snapshot().Liveness != liveness.Stopped {
+	// QUM-722: unexpected exit now classifies as Died (not Stopped).
+	for stoppedActiveRT.Snapshot().Liveness != liveness.Died {
 		select {
 		case <-deadline:
-			t.Fatalf("stopped-active runtime lifecycle = %q, want %q", stoppedActiveRT.Snapshot().Liveness, liveness.Stopped)
+			t.Fatalf("stopped-active runtime lifecycle = %q, want %q", stoppedActiveRT.Snapshot().Liveness, liveness.Died)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -212,7 +213,7 @@ func TestDelegate_EnqueuesTask(t *testing.T) {
 		Status: "active",
 	})
 
-	err := sup.Delegate(context.Background(), "ratz", "implement feature X")
+	err := sup.Delegate(context.Background(), "ratz", "implement feature X", false)
 	if err != nil {
 		t.Fatalf("Delegate() error: %v", err)
 	}
@@ -236,7 +237,7 @@ func TestDelegate_EnqueuesTask(t *testing.T) {
 func TestDelegate_AgentNotFound(t *testing.T) {
 	sup, _ := newTestSupervisor(t)
 
-	err := sup.Delegate(context.Background(), "nonexistent", "do something")
+	err := sup.Delegate(context.Background(), "nonexistent", "do something", false)
 	if err == nil {
 		t.Fatal("expected error for nonexistent agent")
 	}
@@ -253,7 +254,7 @@ func TestDelegate_KilledAgent(t *testing.T) {
 		Status: "killed",
 	})
 
-	err := sup.Delegate(context.Background(), "ratz", "do something")
+	err := sup.Delegate(context.Background(), "ratz", "do something", false)
 	if err == nil {
 		t.Fatal("expected error for killed agent")
 	}

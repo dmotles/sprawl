@@ -1292,3 +1292,137 @@ func TestSession_InTurn_TrueDuringSprawlTurn(t *testing.T) {
 		t.Errorf("InTurn() = true after result frame, want false (turn is closed)")
 	}
 }
+
+// QUM-760: an unsolicited transport.Recv error (subprocess died — e.g. SIGKILL
+// closed claude's stdout, transport sees EOF) must promote to terminalErr so
+// the runtime-side terminalErrHandler fires. Without this the supervisor's
+// watchHandleExit is structurally blind to idle-subprocess death and disk
+// Status never flips to "died".
+func TestSession_RunReader_UnsolicitedEOFPromotesToTerminalErr(t *testing.T) {
+	transport := newMockManagedTransport()
+	sess := NewSession(transport, SessionConfig{SessionID: "sess-eof"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	handlerFired := make(chan error, 1)
+	sess.(interface {
+		SetTerminalErrorHandler(func(error))
+	}).SetTerminalErrorHandler(func(err error) {
+		select {
+		case handlerFired <- err:
+		default:
+		}
+	})
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Simulate subprocess exit: close recvCh so transport.Recv returns io.EOF
+	// without anyone having called sess.Close() first.
+	close(transport.recvCh)
+
+	select {
+	case err := <-handlerFired:
+		if !errors.Is(err, ErrSubprocessExited) {
+			t.Errorf("terminalErrHandler fired with %v, want ErrSubprocessExited", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminalErrHandler did not fire within 2s after unsolicited EOF")
+	}
+
+	if got := sess.(*session).terminalErr; !errors.Is(got, ErrSubprocessExited) {
+		t.Errorf("session.terminalErr = %v, want ErrSubprocessExited", got)
+	}
+}
+
+// QUM-760: a planned Close() that races against EOF must NOT promote to
+// terminalErr — the caller is committed to a clean teardown and a spurious
+// Died classification would convert every retire/pause cleanup into a
+// faulted-looking exit on disk.
+func TestSession_RunReader_ClosedEOFDoesNotPromoteToTerminalErr(t *testing.T) {
+	transport := newMockManagedTransport()
+	sess := NewSession(transport, SessionConfig{SessionID: "sess-close"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	handlerFired := make(chan error, 1)
+	sess.(interface {
+		SetTerminalErrorHandler(func(error))
+	}).SetTerminalErrorHandler(func(err error) {
+		select {
+		case handlerFired <- err:
+		default:
+		}
+	})
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Initiate Close() first (sets s.closing=true, then cancels readerCtx).
+	// The reader's transport.Recv unblocks via ctx-cancel and observes
+	// closing=true → does NOT promote.
+	_ = sess.Close()
+
+	// Give the reader a chance to unwind and (incorrectly, if buggy) fire
+	// the handler. We assert ABSENCE of handler fire within a generous
+	// window.
+	select {
+	case err := <-handlerFired:
+		t.Fatalf("terminalErrHandler fired during planned Close() with err=%v (should be suppressed by closing gate)", err)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no handler fire.
+	}
+
+	if got := sess.(*session).terminalErr; got != nil {
+		t.Errorf("session.terminalErr = %v after planned Close(), want nil", got)
+	}
+}
+
+// QUM-760: idempotency / sticky-once — if an unsolicited EOF promotes to
+// terminalErr and then a real Close() runs, the handler must NOT fire a
+// second time (setTerminalErr is sticky-once by contract; ErrSubprocessExited
+// stays observable).
+func TestSession_RunReader_EOFPromoteIsStickyOnce(t *testing.T) {
+	transport := newMockManagedTransport()
+	sess := NewSession(transport, SessionConfig{SessionID: "sess-sticky"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var fireCount int
+	var fireMu sync.Mutex
+	sess.(interface {
+		SetTerminalErrorHandler(func(error))
+	}).SetTerminalErrorHandler(func(error) {
+		fireMu.Lock()
+		fireCount++
+		fireMu.Unlock()
+	})
+
+	if err := sess.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	close(transport.recvCh) // first promotion
+	// Wait until the handler has fired once.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fireMu.Lock()
+		got := fireCount
+		fireMu.Unlock()
+		if got > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = sess.Close()
+	// Settle.
+	time.Sleep(100 * time.Millisecond)
+
+	fireMu.Lock()
+	got := fireCount
+	fireMu.Unlock()
+	if got != 1 {
+		t.Errorf("terminalErrHandler fired %d times, want exactly 1 (sticky-once)", got)
+	}
+}

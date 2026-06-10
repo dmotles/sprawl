@@ -61,6 +61,17 @@ var ErrHangTimeout = errors.New("backend: reader hang timeout (no frames within 
 // waits on the wire, so callers can safely fall through to teardown.
 var ErrInterruptTimeout = errors.New("backend: interrupt send exceeded deadline (stdin writer wedged)")
 
+// ErrSubprocessExited is the sentinel terminal error set by runReader when
+// transport.Recv returns an unsolicited error (i.e. NOT during Close()).
+// QUM-760: SIGKILL of the claude subprocess closes its stdout, transport.Recv
+// returns EOF, and we promote that to terminalErr so the runtime's
+// terminalErrHandler fires (runtime/unified.go), the turn-loop ctx cancels,
+// rt.done closes, and supervisor.watchHandleExit classifies the agent as
+// Died (status=died on disk + AgentDiedMsg dispatched). Without this
+// promotion an idle SIGKILL'd child would silently leak — fatalErr alone
+// does NOT trigger the handler.
+var ErrSubprocessExited = errors.New("backend: claude subprocess exited unexpectedly")
+
 // Stats reports per-session drop counters surfaced for observability /
 // forensics. All fields are atomic-backed snapshots.
 type Stats struct {
@@ -119,10 +130,6 @@ type SessionSpec struct {
 	PermissionMode  string
 	AllowedTools    []string
 	DisallowedTools []string
-	// Agents carries the JSON payload for claude's `--agents` flag (Claude
-	// Code sub-agent definitions). Empty means the flag is omitted. See
-	// internal/agent.TDDSubAgentsJSON() for the engineer payload (QUM-408).
-	Agents          string
 	AdditionalEnv   map[string]string
 	Resume          bool
 	Stderr          io.Writer
@@ -238,6 +245,12 @@ type session struct {
 	// non-recoverable reader-side fault (F1 wedge / D1 hang).
 	terminalErr error
 	started     bool
+	// closing is set by Close() BEFORE it cancels the reader ctx. The reader's
+	// EOF-on-error branch checks this under s.mu to distinguish a planned
+	// shutdown (no terminalErr promotion — caller is committed to teardown)
+	// from an unsolicited subprocess exit (promote to terminalErr so the
+	// runtime's terminalErrHandler fires Died-detection). QUM-760.
+	closing bool
 
 	// readerCtx/readerCancel control the persistent stream reader.
 	readerCtx    context.Context
@@ -590,7 +603,17 @@ func (s *session) runReader(ctx context.Context) {
 					s.fatalErr = err
 				}
 			}
+			closing := s.closing
 			s.mu.Unlock()
+			// QUM-760: promote an unsolicited transport error (i.e. NOT a
+			// planned Close()) to terminalErr so the runtime-side
+			// terminalErrHandler fires, cancels the turn-loop ctx, closes
+			// rt.done, and lets supervisor.watchHandleExit classify the
+			// agent as Died. setTerminalErr is sticky-once; a subsequent
+			// SubscriberWedged / HangTimeout promotion is a no-op here.
+			if !closing {
+				s.setTerminalErr(ErrSubprocessExited)
+			}
 			return
 		}
 		if msg == nil {
@@ -1062,6 +1085,12 @@ func (s *session) Close() error {
 	// dispatchMCPAsync race against transport shutdown and stamp a
 	// spurious fatalErr.
 	s.mu.Lock()
+	// QUM-760: mark the session as closing BEFORE we cancel the reader ctx,
+	// so the reader's transport-error branch (which observes ctx.Canceled
+	// the instant cancel() runs) sees closing=true and does NOT promote the
+	// teardown-induced EOF to terminalErr. Without this gate every planned
+	// session teardown would misclassify as Died.
+	s.closing = true
 	cancel := s.readerCancel
 	started := s.started
 	s.mu.Unlock()
@@ -1192,10 +1221,25 @@ func (s *session) SetAutonomousFrameHandler(h func(*protocol.Message)) {
 // on this session (QUM-601). Mirrors the LastTurnError / reject-next-StartTurn
 // semantics: once true, the session will never service another sprawl-initiated
 // turn and the runtime-layer Recover path must rebuild the handle.
+//
+// QUM-760 carve-out: ErrSubprocessExited is a sticky terminalErr (so that
+// setTerminalErr fires the runtime handler and the turn-loop ctx cancels)
+// but it represents subprocess death, NOT a backend protocol fault. The
+// supervisor's watchHandleExit checks IsTerminallyFaulted() to choose
+// between liveness.Faulted and liveness.Died; reporting "faulted" for a
+// SIGKILL'd subprocess would misclassify the agent (and skip the
+// AgentDiedMsg / death-toast path). Returning false for ErrSubprocessExited
+// lets the classifier fall through to its default Died branch.
 func (s *session) IsTerminallyFaulted() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.terminalErr != nil
+	if s.terminalErr == nil {
+		return false
+	}
+	if errors.Is(s.terminalErr, ErrSubprocessExited) {
+		return false
+	}
+	return true
 }
 
 // InduceTerminalFault is the test/diagnostic seam used by the QUM-606

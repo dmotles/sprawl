@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # Weave session cycling under unified runtime — root-cause analysis
 
 **Date:** 2026-05-05

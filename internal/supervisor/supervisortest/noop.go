@@ -9,6 +9,7 @@ package supervisortest
 import (
 	"context"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
@@ -32,7 +33,7 @@ func (*NoopSupervisor) Status(context.Context) ([]supervisor.AgentInfo, error) {
 	return nil, nil
 }
 
-func (*NoopSupervisor) Delegate(context.Context, string, string) error { return nil }
+func (*NoopSupervisor) Delegate(context.Context, string, string, bool) error { return nil }
 
 func (*NoopSupervisor) Merge(context.Context, string, string, string, bool) (*supervisor.MergeOutcome, error) {
 	return nil, nil
@@ -44,7 +45,13 @@ func (*NoopSupervisor) Retire(context.Context, string, string, bool, bool, bool,
 
 func (*NoopSupervisor) Kill(context.Context, string) error { return nil }
 
-func (*NoopSupervisor) Recover(context.Context, string) error { return nil }
+func (*NoopSupervisor) Pause(context.Context, string, supervisor.PauseOptions) (*supervisor.PauseResult, error) {
+	return nil, nil
+}
+
+func (*NoopSupervisor) Wake(context.Context, string, agent.WakeReason, string) (*supervisor.WakeResult, error) {
+	return nil, nil
+}
 
 func (*NoopSupervisor) InduceTerminalFault(context.Context, string, error) error { return nil }
 
@@ -60,7 +67,7 @@ func (*NoopSupervisor) PeekActivity(context.Context, string, int) ([]agentloop.A
 	return nil, nil
 }
 
-func (*NoopSupervisor) SendMessage(context.Context, string, string, bool) (*supervisor.SendMessageResult, error) {
+func (*NoopSupervisor) SendMessage(context.Context, string, string, bool, bool) (*supervisor.SendMessageResult, error) {
 	return nil, nil
 }
 

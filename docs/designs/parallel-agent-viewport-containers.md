@@ -243,14 +243,14 @@ This is a bridge-layer change, orthogonal to the viewport rendering fix.
 | `SetMessages` called (transcript reload) | Clears `activeAgents` and `lastActiveAgent` (same as current stack clear). |
 | Tool call arrives with no active agent | `depth=0, ParentToolID=""` — renders as normal top-level box. |
 | Agent result arrives before any nested calls | Container shows just the result, no nested section. Same as any non-Agent tool call with a result. |
-| Attribution error (tool attributed to wrong agent) | Worst case: a tool call shows under the wrong Agent's container. Visually imperfect but not broken. The "most recent agent" heuristic works well because Claude Code serializes sub-agent activity bursts. |
+| Attribution error (tool attributed to wrong agent) | Worst case: a tool call shows under the wrong Agent's container. Visually imperfect but not broken. The "most recent agent" heuristic works well because Claude Code serializes sidechain activity bursts. |
 
 ## Tradeoffs
 
 | Decision | Rationale |
 |----------|-----------|
 | Depth capped at 1 | YAGNI. True multi-level nesting (Agent→Agent→Agent) is extremely rare. `ParentToolID` preserves the info if needed later. |
-| "Most recent agent" heuristic for attribution | The protocol doesn't carry a parent-agent field. Ordering heuristic works because Claude Code serializes sub-agent activity. Perfect attribution would require protocol changes. |
+| "Most recent agent" heuristic for attribution | The protocol doesn't carry a parent-agent field. Ordering heuristic works because Claude Code serializes sidechain activity. Perfect attribution would require protocol changes. |
 | No real sub-viewports | Bubbles viewport is string-only. Sub-viewports would require a major refactor (multiple `viewport.Model` instances stitched together). The box-drawing illusion is much simpler and consistent with existing patterns. |
 | Collapse on completion | Matches Claude Code's UX. Keeps the viewport uncluttered as agents finish. The full activity is still in `messages[]` for scroll-back / expand-mode if needed later. |
 
@@ -276,7 +276,7 @@ This is a bridge-layer change, orthogonal to the viewport rendering fix.
 ## Open Questions
 
 - **Protocol fidelity**: Does Claude Code's streaming protocol actually
-  interleave sub-agent events from parallel Agent calls? Or does it serialize
+  interleave sidechain events from parallel Agent calls? Or does it serialize
   them? If serialized, the attribution heuristic is reliable. If truly
   interleaved, we may need protocol-level parent tracking.
 

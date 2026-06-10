@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
 	"github.com/dmotles/sprawl/internal/state"
@@ -43,6 +44,28 @@ type AgentInfo struct {
 	EventbusSubCount int       `json:"eventbus_sub_count,omitempty"`
 	InTurn           bool      `json:"in_turn"`
 	LastActivityAt   time.Time `json:"last_activity_at,omitempty"`
+	// Liveness is the unified-projection token (QUM-722) for this agent.
+	Liveness string `json:"liveness"`
+	// Subagent indicates the agent shares its parent's worktree/branch. QUM-709.
+	Subagent bool `json:"subagent,omitempty"`
+	// SharedWorktreeWith is the parent agent name when Subagent is true. QUM-709.
+	SharedWorktreeWith string `json:"shared_worktree_with,omitempty"`
+}
+
+// PauseOptions configures a Supervisor.Pause call. QUM-722.
+type PauseOptions struct {
+	Timeout time.Duration
+	Cascade bool
+}
+
+// PauseResult is returned by Supervisor.Pause. Outcome is one of:
+// "paused" (clean) or "escalated_to_kill" (timeout escalation). WaitMs
+// records elapsed wall time spent in the pause flow. Cascade lists the
+// descendant agent names walked when Cascade=true. QUM-722.
+type PauseResult struct {
+	Outcome string   `json:"outcome"`
+	WaitMs  int64    `json:"wait_ms"`
+	Cascade []string `json:"cascade,omitempty"`
 }
 
 // SendMessageResult is returned by Supervisor.SendMessage. The canonical
@@ -82,6 +105,12 @@ type PeekResult struct {
 	// target agent's registered runtime (QUM-585). False when no runtime is
 	// registered or the handle doesn't surface this signal.
 	InTurn bool `json:"in_turn"`
+	// Liveness is the unified-projection token (QUM-722).
+	Liveness string `json:"liveness"`
+	// Subagent indicates the agent shares its parent's worktree/branch. QUM-709.
+	Subagent bool `json:"subagent,omitempty"`
+	// SharedWorktreeWith is the parent agent name when Subagent is true. QUM-709.
+	SharedWorktreeWith string `json:"shared_worktree_with,omitempty"`
 }
 
 // MessageSummary is a compact listing entry for a message in the caller's mailbox.
@@ -141,17 +170,37 @@ type MessagesPeekResult struct {
 
 // SpawnRequest holds parameters for spawning a new agent.
 type SpawnRequest struct {
-	Family string `json:"family"`
-	Type   string `json:"type"`
-	Prompt string `json:"prompt"`
-	Branch string `json:"branch"`
+	Family   string `json:"family"`
+	Type     string `json:"type"`
+	Prompt   string `json:"prompt"`
+	Branch   string `json:"branch"`
+	Subagent bool   `json:"subagent,omitempty"`
+}
+
+// WakeResult is returned by Supervisor.Wake. Mode is one of:
+//   - "resumed" — the prior claude session was successfully resumed via
+//     --resume <session-id>; transcript continuity preserved.
+//   - "fresh"   — the resume path failed (cookie rejected or post-start health
+//     probe failed); the agent is back online via a freshly-minted session.
+//
+// SessionRestored mirrors Mode (true iff "resumed") as an explicit boolean for
+// callers that branch on session continuity. QUM-724.
+type WakeResult struct {
+	Mode            string `json:"mode"`
+	SessionRestored bool   `json:"session_restored"`
 }
 
 // Supervisor manages agent lifecycle. All methods are safe for concurrent use.
 type Supervisor interface {
 	Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error)
 	Status(ctx context.Context) ([]AgentInfo, error)
-	Delegate(ctx context.Context, agentName, task string) error
+	// Delegate enqueues a task for agentName. When wakeIfOffline is true and
+	// the target's projected liveness is offline-but-recoverable
+	// ({Paused,Killed,Died,Faulted,ResumeFailed}), the supervisor wakes the
+	// agent and threads a delegate-flavored RestartInjection (built via
+	// agent.BuildWakePrompt(WakeReasonDelegate, ...)) so the recipient's
+	// first post-wake turn sees the task as a hard task redirect. QUM-726.
+	Delegate(ctx context.Context, agentName, task string, wakeIfOffline bool) error
 	// Merge merges agentName's branch up to its parent. `caller` is the
 	// agent identity invoking this operation — used to override
 	// SPRAWL_AGENT_IDENTITY in the per-call agentops deps so child-agent MCP
@@ -163,10 +212,26 @@ type Supervisor interface {
 	// Retire retires agentName. `caller` semantics match Merge — see QUM-487.
 	Retire(ctx context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error
 	Kill(ctx context.Context, agentName string) error
-	// Recover performs in-place recovery for the named agent's backend
-	// session (QUM-601). Returns ErrRecoverNotNeeded if the session is still
-	// healthy. Errors out for unknown agents or agents not in Started state.
-	Recover(ctx context.Context, agentName string) error
+	// Pause politely stops the named agent at its next turn boundary,
+	// preserving the transcript so the agent can be `wake`d later. Escalates
+	// to a hard kill after PauseOptions.Timeout. When Cascade is true, all
+	// descendants are paused first (children before parent). QUM-722.
+	Pause(ctx context.Context, agentName string, opts PauseOptions) (*PauseResult, error)
+	// Wake brings an offline agent back online. The accept-set is the union
+	// of liveness states that present as "offline-but-recoverable":
+	// {Faulted, ResumeFailed, Paused, Killed, Died}. Wake first attempts to
+	// resume the prior claude session via --resume <session-id>; on cookie
+	// rejection or post-start health-probe failure, it falls back once to a
+	// fresh session. Returns ErrWakeNotNeeded when the live handle is still
+	// healthy (no-op success). QUM-724 (renamed from Recover/QUM-601 with
+	// expanded scope).
+	// Wake brings agentName online via the standard wake path. QUM-726
+	// extends the signature: reason names why the wake was issued and
+	// injectedBody carries the message-body / task-prompt to embed in the
+	// RestartInjection via agent.BuildWakePrompt. WakeReasonBare with empty
+	// body preserves the old behavior — no payload, just the neutral resume
+	// notice.
+	Wake(ctx context.Context, agentName string, reason agent.WakeReason, injectedBody string) (*WakeResult, error)
 	// InduceTerminalFault forces the named agent's backend session into the
 	// terminally-faulted state with the supplied sentinel error (one of
 	// backend.ErrSubscriberWedged / backend.ErrHangTimeout, or any error).
@@ -208,7 +273,15 @@ type Supervisor interface {
 	// false, delivery is strictly cooperative (no Session.Interrupt). When true,
 	// the recipient is preempted unconditionally and the message is enqueued at
 	// the front of the queue (ClassInterrupt priority).
-	SendMessage(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error)
+	// QUM-726: when wakeIfOffline is true and the recipient's projected
+	// liveness is offline-but-recoverable, the supervisor wakes the
+	// recipient and threads a send_message-flavored RestartInjection (built
+	// via agent.BuildWakePrompt(WakeReasonSendMessage, ...)) before the
+	// message is enqueued so the recipient's first post-wake turn sees the
+	// body. When false, an offline target returns the canonical
+	// "Delivery failed: agent <name> is <state>. Set wake_if_offline: true
+	// to wake and deliver." error.
+	SendMessage(ctx context.Context, to, body string, interrupt, wakeIfOffline bool) (*SendMessageResult, error)
 
 	// Peek returns an agent's status, last report, and the tail of its
 	// activity ring in one call. See §4.2.4.

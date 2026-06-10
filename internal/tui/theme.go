@@ -86,6 +86,12 @@ func (t *Theme) ReportDot(state string) string {
 		return t.ReportDotFailure.Render(dot)
 	case "complete":
 		return t.ReportDotComplete.Render(dot)
+	case "paused":
+		// QUM-722: pause glyph — visually distinct from the idle dot.
+		return t.ReportDotIdle.Render("⏸")
+	case "died":
+		// QUM-722: died glyph — bright X distinct from killed (☠).
+		return t.ReportDotFailure.Render("✗")
 	default:
 		return t.ReportDotIdle.Render(dot)
 	}

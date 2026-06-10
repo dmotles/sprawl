@@ -150,3 +150,86 @@ func TestRetire_NilCheckpointSafe(t *testing.T) {
 		t.Fatalf("Retire: %v", err)
 	}
 }
+
+// TestRetire_Subagent_SkipsWorktreeAndBranchDelete pins QUM-709: retiring a
+// sub-agent must NOT remove the shared worktree (already gated by
+// agent.RetireAgent) and must NOT delete the shared branch via
+// GitBranchDelete or GitBranchSafeDelete. The state file IS removed.
+func TestRetire_Subagent_SkipsWorktreeAndBranchDelete(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	agentName := "sub-x"
+
+	// Shared worktree dir (lives outside .sprawl/worktrees to make it obvious
+	// it isn't owned by the sub-agent).
+	sharedWT := filepath.Join(sprawlRoot, "shared-wt")
+	if err := os.MkdirAll(sharedWT, 0o755); err != nil {
+		t.Fatalf("mkdir shared worktree: %v", err)
+	}
+
+	agentState := &state.AgentState{
+		Name:     agentName,
+		Type:     "engineer",
+		Family:   "engineering",
+		Parent:   "manager-x",
+		Branch:   "shared-br",
+		Worktree: sharedWT,
+		Status:   "active",
+		Subagent: true,
+	}
+	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	var removedWorktree, deletedBranch bool
+	deps := &RetireDeps{
+		Getenv: func(key string) string {
+			switch key {
+			case "SPRAWL_ROOT":
+				return sprawlRoot
+			case "SPRAWL_AGENT_IDENTITY":
+				return "manager-x"
+			}
+			return ""
+		},
+		WorktreeRemove: func(_, _ string, _ bool) error {
+			removedWorktree = true
+			return nil
+		},
+		GitStatus:       func(string) (string, error) { return "", nil },
+		RemoveAll:       os.RemoveAll,
+		GitBranchDelete: func(string, string) error { deletedBranch = true; return nil },
+		GitBranchIsMerged: func(string, string) (bool, error) {
+			return false, nil
+		},
+		GitBranchSafeDelete: func(string, string) error { deletedBranch = true; return nil },
+		LoadAgent:           state.LoadAgent,
+		CurrentBranch:       func(string) (string, error) { return "main", nil },
+		GitUnmergedCommits:  func(string, string) ([]string, error) { return nil, nil },
+		LoadConfig: func(string) (*config.Config, error) {
+			return &config.Config{}, nil
+		},
+		RunScript: func(string, string, map[string]string) ([]byte, error) { return nil, nil },
+	}
+
+	// abandon=true, yes=true: typical sub-agent retire path.
+	if err := Retire(context.Background(), deps, agentName, false, false, true, false, true, false); err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+
+	if removedWorktree {
+		t.Errorf("WorktreeRemove was called for sub-agent retire; must be skipped (shared worktree)")
+	}
+	if deletedBranch {
+		t.Errorf("GitBranchDelete/GitBranchSafeDelete was called for sub-agent retire; must be skipped (shared branch)")
+	}
+
+	// Shared worktree dir must still exist.
+	if _, err := os.Stat(sharedWT); err != nil {
+		t.Errorf("shared worktree dir was removed: %v", err)
+	}
+
+	// State file must be gone.
+	if _, err := state.LoadAgent(sprawlRoot, agentName); err == nil {
+		t.Errorf("state file for retired sub-agent still loads; want not-found")
+	}
+}

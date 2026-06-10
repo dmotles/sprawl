@@ -52,6 +52,20 @@ var legalEdges = map[edge]bool{
 	{Suspended, Retiring}:    true,
 	{ResumeFailed, Retiring}: true,
 	{Retiring, Retired}:      true, // T18
+	// QUM-722: T20–T29 pause/death edges.
+	{Running, Pausing}: true, // T20
+	{Pausing, Paused}:  true, // T21
+	{Pausing, Killed}:  true, // T22
+	{Pausing, Faulted}: true, // T23
+	{Paused, Killed}:   true, // T25
+	{Paused, Retiring}: true, // T26
+	// T27: Running/Recovering/Resuming → Died (unexpected exit)
+	{Running, Died}:    true,
+	{Recovering, Died}: true,
+	{Resuming, Died}:   true,
+	// T29: Died → Killed/Retiring (extends T16/T17)
+	{Died, Killed}:   true,
+	{Died, Retiring}: true,
 }
 
 // CanTransition reports whether moving from one state to another is legal.

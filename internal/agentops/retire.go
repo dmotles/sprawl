@@ -240,6 +240,12 @@ func runTeardownScript(deps *RetireDeps, sprawlRoot string, agentState *state.Ag
 }
 
 func printRetireSuccess(agentState *state.AgentState, abandon, mergeFirst bool, deps *RetireDeps, sprawlRoot string) {
+	// Sub-agents share their parent's worktree and branch — skip branch
+	// deletion entirely. QUM-709.
+	if agentState.Subagent {
+		fmt.Fprintf(os.Stderr, "Retired sub-agent %q (shared worktree/branch preserved)\n", agentState.Name)
+		return
+	}
 	switch {
 	case abandon && agentState.Branch != "":
 		if err := deps.GitBranchDelete(sprawlRoot, agentState.Branch); err != nil {

@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # MCP Surface Audit — Phase 1 Gate for tmux Deprecation
 
 **Author:** ghost (researcher)

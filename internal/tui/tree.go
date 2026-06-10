@@ -58,6 +58,12 @@ type TreeNode struct {
 	ProcessAlive   *bool
 	InTurn         bool
 	LastActivityAt time.Time
+
+	// Liveness is the QUM-722 unified projection token (e.g. "paused",
+	// "died"). When non-empty and one of those values, DeriveIconState
+	// returns the matching icon state before falling back to the existing
+	// liveness/activity/report heuristics.
+	Liveness string
 }
 
 // DeriveIconState returns the tree-row icon state for the given node,
@@ -66,6 +72,15 @@ type TreeNode struct {
 // Returns one of "working", "blocked", "complete", "failure", "idle".
 // Pure (no time.Now); the caller supplies `now` for testability. (QUM-665)
 func DeriveIconState(n TreeNode, now time.Time) string {
+	// QUM-722: Paused / Died are surfaced by the unified liveness projection
+	// BEFORE the legacy ProcessAlive=false shortcut so a paused agent doesn't
+	// get flattened into the generic idle bucket.
+	switch n.Liveness {
+	case "paused":
+		return "paused"
+	case "died":
+		return "died"
+	}
 	if n.ProcessAlive != nil && !*n.ProcessAlive {
 		return "idle"
 	}
@@ -340,6 +355,7 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 			ProcessAlive:      a.ProcessAlive,
 			InTurn:            a.InTurn,
 			LastActivityAt:    a.LastActivityAt,
+			Liveness:          a.Liveness,
 		})
 		subtreeInTurn := a.InTurn
 		for _, child := range children[a.Name] {

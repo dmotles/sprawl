@@ -133,7 +133,7 @@ func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain 
 		}
 		// QUM-577: for sidechain records, read parent_tool_use_id from the
 		// top-level JSONL record (wire-level), not from the agentStack
-		// heuristic. Parallel sub-agents would otherwise be misattributed.
+		// heuristic. Parallel sidechains would otherwise be misattributed.
 		wireParentToolID, _ := rec["parent_tool_use_id"].(string)
 		if !since.IsZero() {
 			tsStr, _ := rec["timestamp"].(string)
@@ -342,7 +342,7 @@ func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain 
 					// QUM-577: sidechain tool_use records carry an explicit
 					// wire-level parent_tool_use_id pointing at the outer
 					// Agent call. Use it directly — the agentStack heuristic
-					// would misattribute parallel sub-agents (see
+					// would misattribute parallel sidechains (see
 					// TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire).
 					if isSidechain && wireParentToolID != "" {
 						parentID = wireParentToolID
@@ -367,7 +367,7 @@ func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain 
 						// the spinner ticker only animates Pending entries.
 					})
 					// QUM-379: push Agent IDs onto the nesting stack.
-					// Sidechain records are inner sub-agent activity — do
+					// Sidechain records are inner sidechain activity — do
 					// not push their tool_use IDs onto the outer agentStack.
 					if !isSidechain && name == "Agent" && id != "" {
 						agentStack = append(agentStack, id)

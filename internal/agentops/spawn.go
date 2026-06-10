@@ -14,7 +14,7 @@ import (
 )
 
 // ValidTypes lists the known agent types.
-var ValidTypes = []string{"manager", "researcher", "engineer", "tester", "code-merger"}
+var ValidTypes = []string{"manager", "researcher", "engineer", "qa", "tester", "code-merger"}
 
 // ValidFamilies lists the known agent families.
 var ValidFamilies = []string{"engineering", "product", "qa"}
@@ -24,7 +24,23 @@ var SupportedTypes = map[string]bool{
 	"engineer":   true,
 	"researcher": true,
 	"manager":    true,
+	"qa":         true,
 }
+
+// AgentTypesAllowedToSpawnSubAgents enumerates the agent types permitted to
+// host sub-agents (children that share the parent's worktree and branch).
+// See QUM-709.
+var AgentTypesAllowedToSpawnSubAgents = map[string]bool{
+	"manager":    true,
+	"engineer":   true,
+	"researcher": true,
+	"qa":         true,
+}
+
+// MaxSubagentChainDepth caps the depth of consecutive Subagent ancestors. A
+// fresh sub-agent under a non-subagent parent has depth 1; once the chain
+// reaches this limit, further sub-agent spawns are rejected. See QUM-709.
+const MaxSubagentChainDepth = 3
 
 // SpawnDeps holds the injectable dependencies for Spawn.
 type SpawnDeps struct {
@@ -69,13 +85,13 @@ func IsValidFamily(f string) bool {
 	return false
 }
 
-func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*preparedSpawn, error) {
+func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string, subagent bool) (*preparedSpawn, error) {
 	// Validate type
 	if !IsValidType(agentType) {
 		return nil, fmt.Errorf("invalid agent type %q; valid types: %v", agentType, ValidTypes)
 	}
 	if !SupportedTypes[agentType] {
-		return nil, fmt.Errorf("agent type %q is not yet supported; currently supported: engineer, researcher", agentType)
+		return nil, fmt.Errorf("agent type %q is not yet supported; currently supported: engineer, researcher, manager, qa", agentType)
 	}
 
 	// Validate family
@@ -83,8 +99,12 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*p
 		return nil, fmt.Errorf("invalid agent family %q; valid families: %v", family, ValidFamilies)
 	}
 
-	// Validate branch
-	if branch == "" {
+	// Validate branch — gated on subagent mode (QUM-709).
+	if subagent {
+		if branch != "" {
+			return nil, fmt.Errorf("branch must not be set when subagent is true; sub-agents share the parent's branch")
+		}
+	} else if branch == "" {
 		return nil, fmt.Errorf("--branch is required; provide a descriptive branch name for the agent's worktree")
 	}
 
@@ -97,6 +117,39 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*p
 	sprawlRoot := deps.Getenv("SPRAWL_ROOT")
 	if sprawlRoot == "" {
 		return nil, fmt.Errorf("SPRAWL_ROOT environment variable is not set; spawn must be called from within a sprawl agent")
+	}
+
+	// Sub-agent pre-flight validation: caller must have AgentState on disk
+	// (i.e. not the root weave), must be of an allowed type, and the
+	// consecutive Subagent-ancestor depth must be < MaxSubagentChainDepth.
+	// See QUM-709.
+	var parentSubagentState *state.AgentState
+	if subagent {
+		ps, err := state.LoadAgent(sprawlRoot, parentName)
+		if err != nil {
+			return nil, fmt.Errorf("root cannot host sub-agents: caller %q has no agent state (root weave cannot spawn sub-agents)", parentName)
+		}
+		if !AgentTypesAllowedToSpawnSubAgents[ps.Type] {
+			return nil, fmt.Errorf("agent type %q is not permitted to spawn sub-agents; allowed: [manager engineer researcher qa]", ps.Type)
+		}
+		// Walk consecutive subagent ancestors starting from the parent.
+		depth := 0
+		cur := ps
+		for cur != nil && cur.Subagent {
+			depth++
+			if depth >= MaxSubagentChainDepth {
+				return nil, fmt.Errorf("sub-agent depth limit (3) reached; collapse work into the current sub-agent or escalate to a non-subagent ancestor")
+			}
+			if cur.Parent == "" {
+				break
+			}
+			next, lerr := state.LoadAgent(sprawlRoot, cur.Parent)
+			if lerr != nil {
+				break
+			}
+			cur = next
+		}
+		parentSubagentState = ps
 	}
 
 	// Allocate name (inside spawn lock to prevent concurrent name collisions)
@@ -117,51 +170,60 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*p
 		return nil, err
 	}
 
-	// Resolve base ref. Prefer the caller's worktree HEAD (so manager-spawned
-	// children inherit the manager's integration-branch commits). Falls back to
-	// the main repo's current branch when ResolveBase is nil or returns empty —
-	// covers the root-weave case where the caller has no per-agent worktree
-	// state. See QUM-572.
-	//
-	// NOTE: ResolveBase pins to the caller's COMMITTED HEAD. Uncommitted changes
-	// in the caller's worktree do NOT propagate to the child.
-	var baseBranch string
-	if deps.ResolveBase != nil {
-		resolved, err := deps.ResolveBase(parentName, sprawlRoot)
-		if err != nil {
-			return nil, fmt.Errorf("resolving caller's worktree HEAD: %w", err)
+	// Determine worktree + branch. Sub-agents reuse the parent's worktree
+	// and branch verbatim (QUM-709) — no worktree creation, no setup script.
+	var worktreePath, branchName string
+	if subagent {
+		worktreePath = parentSubagentState.Worktree
+		branchName = parentSubagentState.Branch
+	} else {
+		// Resolve base ref. Prefer the caller's worktree HEAD (so manager-spawned
+		// children inherit the manager's integration-branch commits). Falls back to
+		// the main repo's current branch when ResolveBase is nil or returns empty —
+		// covers the root-weave case where the caller has no per-agent worktree
+		// state. See QUM-572.
+		//
+		// NOTE: ResolveBase pins to the caller's COMMITTED HEAD. Uncommitted changes
+		// in the caller's worktree do NOT propagate to the child.
+		var baseBranch string
+		if deps.ResolveBase != nil {
+			resolved, err := deps.ResolveBase(parentName, sprawlRoot)
+			if err != nil {
+				return nil, fmt.Errorf("resolving caller's worktree HEAD: %w", err)
+			}
+			baseBranch = resolved
 		}
-		baseBranch = resolved
-	}
-	if baseBranch == "" {
-		var err error
-		baseBranch, err = deps.CurrentBranch(sprawlRoot)
-		if err != nil {
-			return nil, fmt.Errorf("determining current branch: %w", err)
+		if baseBranch == "" {
+			var err error
+			baseBranch, err = deps.CurrentBranch(sprawlRoot)
+			if err != nil {
+				return nil, fmt.Errorf("determining current branch: %w", err)
+			}
 		}
-	}
 
-	// Create worktree
-	worktreePath, branchName, err := deps.WorktreeCreator.Create(sprawlRoot, agentName, branch, baseBranch)
-	if err != nil {
-		return nil, fmt.Errorf("creating worktree for %s: %w", agentName, err)
-	}
-
-	// Run worktree setup script if configured
-	cfg, cfgErr := deps.LoadConfig(sprawlRoot)
-	if cfgErr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not load config: %v\n", cfgErr)
-	} else if setupScript, ok := cfg.Get("worktree.setup"); ok && setupScript != "" {
-		setupEnv := map[string]string{
-			"SPRAWL_AGENT_IDENTITY": agentName,
-			"SPRAWL_ROOT":           sprawlRoot,
+		// Create worktree
+		var cerr error
+		worktreePath, branchName, cerr = deps.WorktreeCreator.Create(sprawlRoot, agentName, branch, baseBranch)
+		if cerr != nil {
+			return nil, fmt.Errorf("creating worktree for %s: %w", agentName, cerr)
 		}
-		fmt.Fprintf(os.Stderr, "Running worktree setup script for %s...\n", agentName)
-		output, scriptErr := deps.RunScript(setupScript, worktreePath, setupEnv)
-		if scriptErr != nil {
-			// Clean up the partially-created worktree
-			_ = deps.WorktreeRemove(sprawlRoot, worktreePath, true)
-			return nil, fmt.Errorf("worktree setup script failed for %s:\n%s\nEscalate to your parent agent or the user — agent spawning is broken and needs attention", agentName, string(output))
+
+		// Run worktree setup script if configured
+		cfg, cfgErr := deps.LoadConfig(sprawlRoot)
+		if cfgErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not load config: %v\n", cfgErr)
+		} else if setupScript, ok := cfg.Get("worktree.setup"); ok && setupScript != "" {
+			setupEnv := map[string]string{
+				"SPRAWL_AGENT_IDENTITY": agentName,
+				"SPRAWL_ROOT":           sprawlRoot,
+			}
+			fmt.Fprintf(os.Stderr, "Running worktree setup script for %s...\n", agentName)
+			output, scriptErr := deps.RunScript(setupScript, worktreePath, setupEnv)
+			if scriptErr != nil {
+				// Clean up the partially-created worktree
+				_ = deps.WorktreeRemove(sprawlRoot, worktreePath, true)
+				return nil, fmt.Errorf("worktree setup script failed for %s:\n%s\nEscalate to your parent agent or the user — agent spawning is broken and needs attention", agentName, string(output))
+			}
 		}
 	}
 
@@ -228,6 +290,7 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*p
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		SessionID: sessionID,
 		TreePath:  childTreePath,
+		Subagent:  subagent,
 	}
 	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
 		return nil, fmt.Errorf("saving agent state: %w", err)
@@ -242,8 +305,10 @@ func prepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*p
 
 // PrepareSpawn performs the runtime-neutral child bootstrap: validation,
 // worktree creation, prompt/session metadata generation, and persisted state.
-func PrepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
-	prepared, err := prepareSpawn(deps, family, agentType, prompt, branch)
+// When subagent is true the child reuses the caller's worktree and branch
+// rather than getting a new one (QUM-709).
+func PrepareSpawn(deps *SpawnDeps, family, agentType, prompt, branch string, subagent bool) (*state.AgentState, error) {
+	prepared, err := prepareSpawn(deps, family, agentType, prompt, branch, subagent)
 	if err != nil {
 		return nil, err
 	}

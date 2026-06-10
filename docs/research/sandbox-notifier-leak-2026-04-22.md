@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # Sandbox notifier leak — why `[inbox]` pokes escape into the outer weave pane
 
 **Date:** 2026-04-22

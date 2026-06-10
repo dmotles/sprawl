@@ -7,12 +7,12 @@ Captured from weave session c79aee5d at 06:23:45Z. These are things dmotles noti
 Agents should use MCP for send + status reporting. The go harness queues notifications and injects them into the stream when the receiving agent yields — **do not use tmux send-keys**, it collides with active user typing and AskUserQuestion modals.
 
 Two message classes:
-- **async**: sub-agent → parent status. Parent reads on its next yield. No interruption.
+- **async**: sidechain → parent status. Parent reads on its next yield. No interruption.
 - **interrupt**: parent → child 'hey I forgot to tell you something, it's important'. Pauses the child, it reads the message, then resumes what it was doing (unless the message explicitly tells it to stop).
 
-## 2. Sub-agent visibility + status reporting
+## 2. Sidechain visibility + status reporting
 
-- When I try to see what a sub-agent is doing, I can't see anything.
+- When I try to see what a sidechain is doing, I can't see anything.
 - Status reporting appears broken both via MCP→parent and in the TUI.
 
 ## 3. TUI UX pass

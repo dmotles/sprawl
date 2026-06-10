@@ -25,23 +25,6 @@ func TestBuildArgs_AllowedAndDisallowedTools(t *testing.T) {
 	assertContains(t, args, "--disallowed-tools", "Edit")
 }
 
-func TestBuildArgs_Agents(t *testing.T) {
-	agentsJSON := `{"oracle":{"description":"Plans","prompt":"You plan"}}`
-	args := LaunchOpts{
-		Agents: agentsJSON,
-	}.BuildArgs()
-	assertContains(t, args, "--agents", agentsJSON)
-}
-
-func TestBuildArgs_Agents_Empty(t *testing.T) {
-	args := LaunchOpts{}.BuildArgs()
-	for _, a := range args {
-		if a == "--agents" {
-			t.Error("expected no --agents flag when Agents is empty")
-		}
-	}
-}
-
 func TestBuildArgs_SystemPromptFile(t *testing.T) {
 	args := LaunchOpts{
 		SystemPromptFile: "/tmp/SYSTEM.md",

@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # BEADS (bd) Worktree Integration Research
 
 **Date:** 2026-04-07

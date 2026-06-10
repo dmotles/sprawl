@@ -14,11 +14,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dmotles/sprawl/internal/agent"
+	agentpkg "github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/merge"
 	"github.com/dmotles/sprawl/internal/messages"
@@ -67,7 +68,7 @@ type Real struct {
 	retireDeps *agentops.RetireDeps
 	killDeps   *agentops.KillDeps
 
-	spawnFn  func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error)
+	spawnFn  func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error)
 	mergeFn  func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error)
 	retireFn func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error
 	killFn   func(*agentops.KillDeps, string, bool) error
@@ -118,10 +119,10 @@ type Real struct {
 	// rebuilds.
 	faultEmitter func(agent, class, reason, nextAction string)
 
-	// recoveredEmitter, when non-nil, is invoked after a successful
-	// Real.Recover so the TUI can clear its per-agent fault sticker (QUM-601).
+	// wokenEmitter, when non-nil, is invoked after a successful Real.Wake
+	// so the TUI can clear its per-agent fault sticker (QUM-601/QUM-724).
 	// Mirrors faultEmitter contracts: nil-safe, idempotent install/clear.
-	recoveredEmitter func(agent string)
+	wokenEmitter func(agent string)
 
 	// questions is the in-process question queue for ask_user_question
 	// flows (QUM-527 slice 1). See question.go.
@@ -202,13 +203,13 @@ func (r *Real) dispatchFault(agent, class, reason, nextAction string) {
 	}
 }
 
-// SetBackendRecoveredEmitter installs a fan-out hook invoked whenever
-// Real.Recover successfully completes in-place recovery for an agent
-// (QUM-601). The TUI uses this to clear the per-agent fault sticker and
-// surface a "backend recovered on X" banner. nil is allowed and clears the
-// emitter; install + clear must both be idempotent and panic-free.
-func (r *Real) SetBackendRecoveredEmitter(fn func(agent string)) {
-	r.recoveredEmitter = fn
+// SetBackendWokenEmitter installs a fan-out hook invoked whenever Real.Wake
+// successfully brings an offline agent back online (QUM-601/QUM-724). The TUI
+// uses this to clear the per-agent fault sticker and surface a "backend
+// recovered on X" banner. nil is allowed and clears the emitter; install +
+// clear must both be idempotent and panic-free.
+func (r *Real) SetBackendWokenEmitter(fn func(agent string)) {
+	r.wokenEmitter = fn
 }
 
 // SetCallLogger installs the per-MCP-call observability logger on this
@@ -333,7 +334,8 @@ func NewReal(cfg Config) (*Real, error) {
 		SprawlRoot: cfg.SprawlRoot,
 		Registry:   &registryListerAdapter{reg: r.runtimeRegistry},
 		SendMessage: func(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error) {
-			return r.SendMessage(ctx, to, body, interrupt)
+			// Heartbeat liveness-checks never wake an offline target.
+			return r.SendMessage(ctx, to, body, interrupt, false)
 		},
 		SendLivenessCheck: func(sprawlRoot, to string) (string, error) {
 			return messages.SendLivenessCheck(sprawlRoot, r.callerName, to)
@@ -461,6 +463,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 	lastActivityAtByName := make(map[string]time.Time)
 	subprocessAliveByName := make(map[string]bool)
 	eventbusSubCountByName := make(map[string]int)
+	livenessByName := make(map[string]string)
 	for _, runtime := range r.runtimeRegistry.List() {
 		snap := runtime.Snapshot()
 		subprocessAliveByName[snap.Name] = runtime.SubprocessAlive()
@@ -476,9 +479,15 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			Lifecycle:   livenessToLifecycleString(snap.Liveness),
 			TerminalErr: runtime.IsTerminallyFaulted(),
 			InTurn:      runtime.InTurn(),
+			// QUM-722: feed DiskStatus into the projection so Paused/Died
+			// resting states surface via Status, not just Unstarted.
+			DiskStatus: snap.Status,
 		})
 		inAutonomousTurnByName[snap.Name] = runtime.InTurn()
 		lastActivityAtByName[snap.Name] = runtime.LastActivityAt()
+		// QUM-722: surface the unified projection token on the wire so callers
+		// (TUI / MCP / tests) see Paused / Died / Stopping / Faulted distinctly.
+		livenessByName[snap.Name] = st.String()
 		if st.Liveness == liveness.Unstarted {
 			continue // leave process_alive absent (nil) — preserves registered/unknown semantics
 		}
@@ -497,7 +506,13 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 				}
 			}
 		}
-		result = append(result, AgentInfo{
+		liv := livenessByName[a.Name]
+		if liv == "" {
+			// QUM-722: disk-only agents (no registered runtime) — project
+			// liveness from the durable disk Status alone.
+			liv = liveness.From(liveness.Snapshot{DiskStatus: a.Status}).String()
+		}
+		info := AgentInfo{
 			Name:               a.Name,
 			Type:               a.Type,
 			Family:             a.Family,
@@ -516,24 +531,44 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			EventbusSubCount:   eventbusSubCountByName[a.Name],
 			InTurn:             inAutonomousTurnByName[a.Name],
 			LastActivityAt:     lastActivity,
-		})
+			Liveness:           liv,
+		}
+		if a.Subagent {
+			info.Subagent = true
+			info.SharedWorktreeWith = a.Parent
+		}
+		result = append(result, info)
 	}
 	return result, nil
 }
 
-func (r *Real) Delegate(_ context.Context, agentName, task string) error {
+func (r *Real) Delegate(ctx context.Context, agentName, task string, wakeIfOffline bool) error {
 	agentState, err := state.LoadAgent(r.sprawlRoot, agentName)
 	if err != nil {
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
 	switch agentState.Status {
-	case "killed", "retired", "retiring":
+	case "retired", "retiring":
 		return fmt.Errorf("cannot delegate to agent %q: status is %q", agentName, agentState.Status)
 	}
 
 	if task == "" {
 		return fmt.Errorf("task prompt must not be empty")
+	}
+
+	// QUM-726: offline-recoverable gate. For Paused/Killed/Died/Faulted/ResumeFailed, either
+	// reject with the canonical error or wake-and-enqueue.
+	if lv, ok := r.livenessOf(agentName); ok {
+		if lv == liveness.Paused || lv == liveness.Killed || lv == liveness.Died || lv == liveness.Faulted || lv == liveness.ResumeFailed {
+			if !wakeIfOffline {
+				// QUM-726: canonical error string is byte-pinned in tests; do not reword.
+				return fmt.Errorf("Delivery failed: agent %s is %s. Set wake_if_offline: true to wake and deliver.", agentName, lv.String()) //nolint:revive,staticcheck
+			}
+			if _, wErr := r.Wake(ctx, agentName, agentpkg.WakeReasonDelegate, task); wErr != nil {
+				return wErr
+			}
+		}
 	}
 
 	if _, err := state.EnqueueTask(r.sprawlRoot, agentName, task); err != nil {
@@ -542,7 +577,7 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 	if runtime, ok := r.runtimeRegistry.Get(agentName); ok {
 		runtime.RecordQueuedTask()
 		if runtime.Snapshot().Liveness == liveness.Running {
-			_ = runtime.Wake()
+			_ = runtime.NotifyWake()
 		}
 	}
 	return nil
@@ -550,7 +585,7 @@ func (r *Real) Delegate(_ context.Context, agentName, task string) error {
 
 func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) {
 	deps := r.spawnDepsForCaller(r.effectiveCaller(ctx))
-	st, err := r.spawnFn(deps, req.Family, req.Type, req.Prompt, req.Branch)
+	st, err := r.spawnFn(deps, req.Family, req.Type, req.Prompt, req.Branch, req.Subagent)
 	if err != nil {
 		return nil, err
 	}
@@ -563,14 +598,19 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 		r.rollbackSpawnArtifacts(st.Name)
 		return nil, fmt.Errorf("starting runtime for %s: %w", st.Name, err)
 	}
-	return &AgentInfo{
+	info := &AgentInfo{
 		Name:   st.Name,
 		Type:   st.Type,
 		Family: st.Family,
 		Parent: st.Parent,
 		Status: st.Status,
 		Branch: st.Branch,
-	}, nil
+	}
+	if st.Subagent {
+		info.Subagent = true
+		info.SharedWorktreeWith = st.Parent
+	}
+	return info, nil
 }
 
 // Merge accepts a `caller` parameter so MCP-invoked merges run with the
@@ -722,7 +762,7 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 // was already killed, it returns nil. Enter.go's graceful shutdown iterates
 // every agent and calls Kill, so transient absence must not fail.
 func (r *Real) Kill(ctx context.Context, agentName string) error {
-	if err := agent.ValidateName(agentName); err != nil {
+	if err := agentpkg.ValidateName(agentName); err != nil {
 		return err
 	}
 
@@ -751,7 +791,9 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 			cp("kill.runtime-stop-start", "agent_name", agentName)
 		}
 		stopStart := time.Now()
-		stopErr := runtime.Stop(stopCtx)
+		// QUM-722: Kill is now HARD — flipped from polite Stop to StopAbandon.
+		// The previous polite-Stop semantics moved to the new `pause` verb.
+		stopErr := runtime.StopAbandon(stopCtx)
 		if cp != nil {
 			cp("kill.runtime-stop-done",
 				"agent_name", agentName,
@@ -779,26 +821,167 @@ func (r *Real) Kill(ctx context.Context, agentName string) error {
 	return nil
 }
 
-// Recover dispatches in-place recovery on the named agent's runtime (QUM-601).
-// On success, fires the BackendRecoveredEmitter (if installed) so the TUI can
-// clear its per-agent fault sticker. ErrRecoverNotNeeded (session healthy) is
-// propagated to the caller verbatim — callers (notably the MCP recover tool)
-// treat it as a success-with-no-op.
-func (r *Real) Recover(ctx context.Context, agentName string) error {
-	if err := agent.ValidateName(agentName); err != nil {
-		return err
+// Pause politely stops the named agent at its next turn boundary, preserving
+// the transcript so the agent can be `wake`d later. QUM-722.
+//
+// Outcome:
+//   - "paused" — clean pause completed within the timeout.
+//   - "escalated_to_kill" — wait timed out, runtime was hard-stopped.
+//
+// When opts.Cascade is true, descendants are paused first (children-before-
+// parent) in parallel via errgroup. Per-child results are collected (no
+// first-error-abort). When opts.Cascade is false but children exist, Pause
+// returns an error.
+//
+// AskUserQuestion calls originating from the agent are cancelled at pause
+// ENTRY so a parked modal cannot force the timeout escalation.
+func (r *Real) Pause(ctx context.Context, agentName string, opts PauseOptions) (*PauseResult, error) {
+	if err := agentpkg.ValidateName(agentName); err != nil {
+		return nil, err
+	}
+	start := time.Now()
+
+	// QUM-722 (code-review nit #3): refuse to pause an agent that is
+	// currently waking — the wake path is mid-flight tearing down and
+	// re-launching the runtime, and racing a Pause against that leaves disk
+	// state in an undefined intermediate. Caller must retry after wake
+	// completes (the Recovering liveness token name is unchanged — it's a
+	// transient projection state).
+	if r.runtimeRegistry != nil {
+		if rt, ok := r.runtimeRegistry.Get(agentName); ok {
+			if rt.Snapshot().Liveness == liveness.Recovering {
+				return nil, fmt.Errorf("agent %q is waking; retry pause after wake completes", agentName)
+			}
+		}
+	}
+
+	// Cancel any parked AskUserQuestion calls originating from this agent
+	// BEFORE we hit the runtime Pause path — otherwise a pending modal would
+	// hold the in-flight turn open until pause_timeout fires.
+	r.questions.cancelByAgent(agentName, "agent pausing")
+
+	var cascaded []string
+	if opts.Cascade {
+		children, err := r.listDirectChildren(agentName)
+		if err != nil {
+			return nil, fmt.Errorf("checking children: %w", err)
+		}
+		// Children first — pause in parallel. Collect results; do NOT abort
+		// siblings on first error.
+		if len(children) > 0 {
+			var wg sync.WaitGroup
+			var mu sync.Mutex
+			for _, child := range children {
+				child := child
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					sub, err := r.Pause(ctx, child.Name, opts)
+					mu.Lock()
+					defer mu.Unlock()
+					cascaded = append(cascaded, child.Name)
+					if sub != nil {
+						cascaded = append(cascaded, sub.Cascade...)
+					}
+					if err != nil {
+						slog.Warn("supervisor: cascade pause child", "child", child.Name, "err", err)
+					}
+				}()
+			}
+			wg.Wait()
+		}
+	} else {
+		// Reject cascade=false when there are still children — orphaning a
+		// running subtree under a paused parent is not allowed.
+		children, err := r.listDirectChildren(agentName)
+		if err != nil {
+			return nil, fmt.Errorf("checking children: %w", err)
+		}
+		if len(children) > 0 {
+			names := make([]string, len(children))
+			for i, c := range children {
+				names[i] = c.Name
+			}
+			sort.Strings(names)
+			return nil, fmt.Errorf("agent %s has %d active children: %s; pass cascade=true to pause the subtree", agentName, len(children), strings.Join(names, ", "))
+		}
+	}
+
+	outcome := "paused"
+	if runtime, ok := r.startedRuntime(agentName); ok {
+		stopCtx, cancel := withRuntimeStopTimeout(ctx)
+		defer cancel()
+		timeout := opts.Timeout
+		if timeout <= 0 {
+			timeout = 30 * time.Second
+		}
+		clean, err := runtime.Pause(stopCtx, timeout)
+		if err != nil {
+			return nil, err
+		}
+		if !clean {
+			outcome = "escalated_to_kill"
+		}
+		// Sync runtime snapshot from disk so a subsequent Status call reflects
+		// the freshly stamped Paused/Killed token.
+		if updated, lErr := state.LoadAgent(r.sprawlRoot, agentName); lErr == nil {
+			runtime.SyncAgentState(updated)
+		}
+	} else {
+		// No live runtime — best-effort durable mark. QUM-722
+		// (code-review nit #6): do NOT clobber an already-terminal disk
+		// status. Mirrors the defensive switch in stopWithFunc /
+		// watchHandleExit — Killed/Retired/Died/Faulted carry distinct
+		// resting semantics and must not be downgraded to Paused.
+		if cur, lErr := state.LoadAgent(r.sprawlRoot, agentName); lErr == nil && cur != nil {
+			switch cur.Status {
+			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusFaulted, state.StatusDied:
+				// leave as-is; terminal-ish state wins over Paused.
+			default:
+				cur.Status = state.StatusPaused
+				if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
+					return nil, fmt.Errorf("persisting paused state: %w", sErr)
+				}
+			}
+		}
+	}
+
+	return &PauseResult{
+		Outcome: outcome,
+		WaitMs:  time.Since(start).Milliseconds(),
+		Cascade: cascaded,
+	}, nil
+}
+
+// Wake dispatches the named agent's runtime Wake path (QUM-724, renamed
+// from Recover/QUM-601 with expanded scope). On success, fires the
+// BackendWokenEmitter (if installed) so the TUI can clear its per-agent
+// fault sticker. ErrWakeNotNeeded (session healthy) is propagated to the
+// caller verbatim — callers (notably the MCP wake tool) treat it as a
+// success-with-no-op.
+func (r *Real) Wake(ctx context.Context, agentName string, reason agentpkg.WakeReason, injectedBody string) (*WakeResult, error) {
+	if err := agentpkg.ValidateName(agentName); err != nil {
+		return nil, err
 	}
 	if r.runtimeRegistry == nil {
-		return fmt.Errorf("agent %q not found", agentName)
+		return nil, fmt.Errorf("agent %q not found", agentName)
 	}
 	runtime, ok := r.runtimeRegistry.Get(agentName)
 	if !ok {
-		return fmt.Errorf("agent %q not found", agentName)
+		return nil, fmt.Errorf("agent %q not found", agentName)
 	}
+	// QUM-726: capture the projected previous-state token BEFORE the wake
+	// path tears the runtime down, so the wake-prompt template can interpolate
+	// it. Falls back to the empty string when the projection is unavailable.
+	previousState := ""
+	if lv, ok := r.livenessOf(agentName); ok {
+		previousState = lv.String()
+	}
+	injection := agentpkg.BuildWakePrompt(reason, previousState, injectedBody)
 	id := calllog.CallID(ctx)
 	cp := r.composeCheckpoint(id)
 	if cp != nil {
-		cp("recover.start", "agent_name", agentName)
+		cp("wake.start", "agent_name", agentName)
 	}
 	// QUM-611: proactively release any AskUserQuestion calls originating
 	// from this agent BEFORE the runtime tears down its abandoned session.
@@ -809,22 +992,22 @@ func (r *Real) Recover(ctx context.Context, agentName string) error {
 	// question. Doing it explicitly here is cheap, idempotent
 	// (cancelByAgent is a no-op on done entries), and removes the implicit
 	// dependency on drainInflight ordering.
-	r.questions.cancelByAgent(agentName, "agent recovering")
-	err := runtime.Recover(ctx)
+	r.questions.cancelByAgent(agentName, "agent waking")
+	res, err := runtime.Wake(ctx, injection)
 	if cp != nil {
 		var msg string
 		if err != nil {
 			msg = err.Error()
 		}
-		cp("recover.done", "agent_name", agentName, "err", msg)
+		cp("wake.done", "agent_name", agentName, "err", msg)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if emit := r.recoveredEmitter; emit != nil {
+	if emit := r.wokenEmitter; emit != nil {
 		emit(agentName)
 	}
-	return nil
+	return res, nil
 }
 
 // InduceTerminalFault is the QUM-606 test-only seam: forces the named
@@ -834,7 +1017,7 @@ func (r *Real) Recover(ctx context.Context, agentName string) error {
 // SubscriberWedge / HangTimeout fault without inducing a real frame
 // burst or stalled reader. Production callers MUST NOT invoke this.
 func (r *Real) InduceTerminalFault(_ context.Context, agentName string, err error) error {
-	if err := agent.ValidateName(agentName); err != nil {
+	if err := agentpkg.ValidateName(agentName); err != nil {
 		return err
 	}
 	if r.runtimeRegistry == nil {
@@ -852,6 +1035,12 @@ func (r *Real) InduceTerminalFault(_ context.Context, agentName string, err erro
 // BFS-from-root so parents are resumed before children (defense in depth;
 // maildir absorbs ordering gaps). Returns counts and per-agent errors. Does
 // not abort the loop on per-agent failure. QUM-372.
+//
+// NOTE: RecoverAgents is sprawl-enter STARTUP auto-resume — distinct from the
+// QUM-724 `wake` MCP verb (Real.Wake). The two share no code path; the rename
+// of recover→wake (QUM-724) deliberately leaves this startup helper named
+// RecoverAgents because it has nothing to do with the operator-facing
+// lifecycle verb.
 func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs []error) {
 	if r.runtimeRegistry == nil || r.runtimeStarter == nil {
 		return 0, 0, nil
@@ -908,9 +1097,19 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 		// Accept-set is {Suspended, Running}: Running covers disk "active"/"running"
 		// crash-survivors (process died without a clean Shutdown→suspend), so they
 		// still auto-resume. Faulted/Stopped/ResumeFailed/Killed/Retired/Retiring
-		// (and any unrecognized status) are not auto-resumed.
+		// (and any unrecognized status) are not auto-resumed. QUM-723: Paused is
+		// also excluded — it is an explicit user-initiated rest state.
 		lv, ok := liveness.LivenessFromStatus(a.Status)
 		if !ok || (lv != liveness.Suspended && lv != liveness.Running) {
+			continue
+		}
+		// QUM-723: `paused` is an explicit user-initiated rest state — paused agents
+		// must NEVER auto-resume on sprawl-enter restart; they only revive via the
+		// explicit `wake` verb (Sub-3 of QUM-708). The accept-set above
+		// ({Suspended, Running}) already excludes Paused by construction, but we
+		// add an explicit guard here so a future projection tweak can't silently
+		// regress this contract.
+		if lv == liveness.Paused {
 			continue
 		}
 		// Terminal-outcome exclusion on the OUTCOME axis: a completed or
@@ -949,7 +1148,7 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 			}
 			rt.SyncAgentState(cur)
 		}
-		if err := rt.StartResume(onResumeFailure); err != nil {
+		if err := rt.StartResume(agentpkg.RestartInjectionPrompt, onResumeFailure); err != nil {
 			failed++
 			errs = append(errs, fmt.Errorf("resume %q: %w", agent.Name, err))
 			continue
@@ -1055,36 +1254,73 @@ func (r *Real) Shutdown(ctx context.Context) error {
 	// Release any in-flight AskUserQuestion callers with OutcomeSessionEnded
 	// BEFORE tearing down runtimes. (QUM-527 slice 1.)
 	r.questions.closeAll(OutcomeSessionEnded, "supervisor shutdown")
+
+	// QUM-722: graceful shutdown is pause-then-kill for in-turn agents,
+	// preserving the legacy "auto-suspend on clean exit" contract for idle
+	// agents (existing transition matrix). Idle agents flow through the
+	// classic Stop → suspended path; in-turn agents flow through Pause with a
+	// bounded budget that escalates to StopAbandon → killed if the turn
+	// doesn't drain in time. Iteration is parallel so the wall-clock floor
+	// is one budget, not N.
+	const pauseBudget = 5 * time.Second
+	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var firstErr error
 	for _, runtime := range r.runtimeRegistry.List() {
 		snap := runtime.Snapshot()
 		if snap.Liveness != liveness.Running {
 			continue
 		}
-		stopCtx, cancel := withRuntimeStopTimeout(ctx)
-		if err := runtime.Stop(stopCtx); err != nil {
-			cancel()
-			return err
-		}
-		cancel()
-		agentState, err := state.LoadAgent(r.sprawlRoot, snap.Name)
-		if err != nil {
-			continue
-		}
-		switch agentState.Status {
-		case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusFaulted:
-			// QUM-625 (slice M4): leave terminal-ish / faulted states as-is —
-			// a faulted agent must NOT be overwritten to "suspended" on clean
-			// sprawl exit so it stays recoverable. (StatusDone is never written
-			// anymore; swapped for StatusFaulted.)
-		default:
-			agentState.Status = state.StatusSuspended
-		}
-		if err := state.SaveAgent(r.sprawlRoot, agentState); err != nil {
-			return fmt.Errorf("updating agent state: %w", err)
-		}
-		runtime.SyncAgentState(agentState)
+		runtime := runtime
+		name := snap.Name
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stopCtx, cancel := withRuntimeStopTimeout(ctx)
+			defer cancel()
+			if runtime.InTurn() {
+				// In-turn → use Pause (bounded escalation to killed).
+				if _, pErr := runtime.Pause(stopCtx, pauseBudget); pErr != nil {
+					_ = runtime.StopAbandon(stopCtx)
+				}
+			} else {
+				// Idle → classic polite Stop (fast). Falls through to the
+				// status-rewrite block below which stamps "suspended" so
+				// auto-resume picks it up on next launch.
+				if sErr := runtime.Stop(stopCtx); sErr != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = sErr
+					}
+					errMu.Unlock()
+					return
+				}
+			}
+			agentState, lErr := state.LoadAgent(r.sprawlRoot, name)
+			if lErr != nil {
+				return
+			}
+			switch agentState.Status {
+			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusFaulted, state.StatusPaused, state.StatusDied:
+				// QUM-625 (slice M4): leave terminal-ish / faulted states
+				// as-is. QUM-722: also leave Paused / Died as-is — they
+				// carry distinct resting semantics.
+			default:
+				agentState.Status = state.StatusSuspended
+				if sErr := state.SaveAgent(r.sprawlRoot, agentState); sErr != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = fmt.Errorf("updating agent state: %w", sErr)
+					}
+					errMu.Unlock()
+					return
+				}
+			}
+			runtime.SyncAgentState(agentState)
+		}()
 	}
-	return nil
+	wg.Wait()
+	return firstErr
 }
 
 // Handoff persists the given summary as a session memory file (with
@@ -1336,7 +1572,7 @@ func (r *Real) spawnDepsForCaller(caller string) *agentops.SpawnDeps {
 // state file or unparseable CreatedAt → no filter (fail-open: better to show
 // stale entries than to hide a live agent's activity).
 func (r *Real) PeekActivity(_ context.Context, agentName string, tail int) ([]agentloop.ActivityEntry, error) {
-	if err := agent.ValidateName(agentName); err != nil {
+	if err := agentpkg.ValidateName(agentName); err != nil {
 		return nil, err
 	}
 	path := agentloop.ActivityPath(r.sprawlRoot, agentName)
@@ -1385,20 +1621,35 @@ func agentCreatedAt(sprawlRoot, agentName string) (time.Time, bool) {
 // send_async + send_interrupt. interrupt=false: cooperative wake, ClassAsync,
 // no Session.Interrupt. interrupt=true: force preempt, ClassInterrupt, gated
 // to ancestor-only per §8.5.
-func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt bool) (*SendMessageResult, error) {
-	if err := agent.ValidateName(to); err != nil {
+func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wakeIfOffline bool) (*SendMessageResult, error) {
+	if err := agentpkg.ValidateName(to); err != nil {
 		return nil, err
 	}
 	if _, err := state.LoadAgent(r.sprawlRoot, to); err != nil {
 		return nil, fmt.Errorf("agent %q not found: %w", to, err)
 	}
-	if _, ok := r.startedRuntime(to); !ok {
-		if err := agentops.TerminalAgentError(r.sprawlRoot, to); err != nil {
-			return nil, err
+	// QUM-726: offline-recoverable gate. For Paused/Killed/Faulted/ResumeFailed, either
+	// reject with the canonical error or wake-and-deliver. For Died, defer to
+	// the QUM-725 route-up walk below; only if that walk fails (no live
+	// ancestor reachable) does the canonical error / wake fallback fire.
+	caller := r.effectiveCaller(ctx)
+	currentLv, lvOK := r.livenessOf(to)
+	switch {
+	case lvOK && (currentLv == liveness.Paused || currentLv == liveness.Killed || currentLv == liveness.Faulted || currentLv == liveness.ResumeFailed):
+		if !wakeIfOffline {
+			// QUM-726: canonical error string is byte-pinned in tests; do not reword.
+			return nil, fmt.Errorf("Delivery failed: agent %s is %s. Set wake_if_offline: true to wake and deliver.", to, currentLv.String()) //nolint:revive,staticcheck
+		}
+		if _, wErr := r.Wake(ctx, to, agentpkg.WakeReasonSendMessage, body); wErr != nil {
+			return nil, wErr
+		}
+	default:
+		if _, ok := r.startedRuntime(to); !ok {
+			if err := agentops.TerminalAgentError(r.sprawlRoot, to); err != nil {
+				return nil, err
+			}
 		}
 	}
-
-	caller := r.effectiveCaller(ctx)
 	if interrupt {
 		if caller == "" {
 			return nil, fmt.Errorf("send_message: caller identity unknown; refusing to send")
@@ -1406,6 +1657,9 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt bool)
 		if caller == to {
 			return nil, fmt.Errorf("send_message: cannot interrupt self")
 		}
+		// QUM-725: the §8.5 ancestor gate fires against the ORIGINAL `to`
+		// (caller intent), NOT the route-up target. Otherwise a sibling that
+		// fails the gate would be silently rerouted up to a shared ancestor.
 		ok, err := isAncestor(r.sprawlRoot, caller, to)
 		if err != nil {
 			return nil, fmt.Errorf("checking ancestry: %w", err)
@@ -1413,6 +1667,45 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt bool)
 		if !ok {
 			return nil, fmt.Errorf("send_message: %q is not an ancestor of %q (parent→descendants only per §8.5)", caller, to)
 		}
+	}
+
+	// QUM-725: if the target is Died, walk up to the first live ancestor and
+	// wrap the body so the recipient can distinguish a routed-up notification
+	// from a direct message. The §8.5 gate above intentionally still checks
+	// the ORIGINAL `to`.
+	originalTo := to
+	liveAncestor, deadChain, walkErr := WalkDeadAncestors(to, r.livenessOf, r.parentOf)
+	// QUM-726: Died fallback. When route-up cannot resolve to a genuinely-
+	// known-live ancestor (walkErr, OR liveAncestor unknown to the probe), the
+	// offline-gate semantics fire: canonical error or wake-the-original.
+	deadFallback := false
+	if lvOK && currentLv == liveness.Died {
+		if walkErr != nil {
+			deadFallback = true
+		} else if deadChain != nil {
+			if lv, ok := r.livenessOf(liveAncestor); !ok || lv == liveness.Died {
+				deadFallback = true
+			}
+		}
+	}
+	if deadFallback {
+		if !wakeIfOffline {
+			// QUM-726: canonical error string is byte-pinned in tests; do not reword.
+			return nil, fmt.Errorf("Delivery failed: agent %s is %s. Set wake_if_offline: true to wake and deliver.", originalTo, currentLv.String()) //nolint:revive,staticcheck
+		}
+		if _, wErr := r.Wake(ctx, originalTo, agentpkg.WakeReasonSendMessage, body); wErr != nil {
+			return nil, wErr
+		}
+		// Wake succeeded — fall through to normal persistence against the
+		// original recipient.
+		to = originalTo
+		deadChain = nil
+	} else if walkErr != nil {
+		return nil, walkErr
+	}
+	if deadChain != nil {
+		to = liveAncestor
+		body = inboxprompt.WrapForDeadTarget(caller, originalTo, deadChain, body)
 	}
 
 	runtime, runtimeBacked := r.startedRuntime(to)
@@ -1451,6 +1744,44 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt bool)
 	}, nil
 }
 
+// livenessOf is the QUM-725 LivenessProbe used by WalkDeadAncestors. It
+// resolves liveness from the runtime registry first (briefly acquires registry
+// mu via Get, then runtime mu via Snapshot — never holding both); falls back
+// to disk-only projection via state.LoadAgent when no runtime is registered.
+// Returns ok=false when the agent is unknown to both sources.
+//
+// Lock-order (QUM-615 R5): registry.Get → snapshot read; no other locks
+// crossed; no wake/interrupt invoked under any acquired lock.
+func (r *Real) livenessOf(name string) (liveness.AgentLiveness, bool) {
+	if r.runtimeRegistry != nil {
+		if rt, ok := r.runtimeRegistry.Get(name); ok {
+			snap := rt.Snapshot()
+			st := liveness.From(liveness.Snapshot{
+				Lifecycle:   livenessToLifecycleString(snap.Liveness),
+				TerminalErr: rt.IsTerminallyFaulted(),
+				InTurn:      rt.InTurn(),
+				DiskStatus:  snap.Status,
+			})
+			return st.Liveness, true
+		}
+	}
+	st, err := state.LoadAgent(r.sprawlRoot, name)
+	if err != nil {
+		return 0, false
+	}
+	return liveness.From(liveness.Snapshot{DiskStatus: st.Status}).Liveness, true
+}
+
+// parentOf is the QUM-725 ParentLookup used by WalkDeadAncestors. Reads the
+// persisted Parent field. An unknown agent surfaces as a propagated error.
+func (r *Real) parentOf(name string) (string, error) {
+	st, err := state.LoadAgent(r.sprawlRoot, name)
+	if err != nil {
+		return "", fmt.Errorf("loading agent %q: %w", name, err)
+	}
+	return st.Parent, nil
+}
+
 // isAncestor reports whether `maybeAncestor` appears anywhere in `agent`'s
 // parent chain. Returns true iff maybeAncestor == agent.Parent, or a parent
 // of that parent, and so on up to the root. The root agent (empty Parent)
@@ -1480,7 +1811,7 @@ func isAncestor(sprawlRoot, maybeAncestor, agentName string) (bool, error) {
 // Peek loads the agent's state plus the tail of its activity ring.
 // A tail ≤ 0 defaults to 20; the caller should clamp the upper bound.
 func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResult, error) {
-	if err := agent.ValidateName(agentName); err != nil {
+	if err := agentpkg.ValidateName(agentName); err != nil {
 		return nil, err
 	}
 	st, err := state.LoadAgent(r.sprawlRoot, agentName)
@@ -1506,11 +1837,22 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 	// Session is currently in an autonomous turn. Defaults to false when no
 	// runtime is registered.
 	inAutonomousTurn := false
+	var livenessTok string
 	if rt, ok := r.runtimeRegistry.Get(agentName); ok {
 		inAutonomousTurn = rt.InTurn()
+		snap := rt.Snapshot()
+		livenessTok = liveness.From(liveness.Snapshot{
+			Lifecycle:   livenessToLifecycleString(snap.Liveness),
+			TerminalErr: rt.IsTerminallyFaulted(),
+			InTurn:      rt.InTurn(),
+			DiskStatus:  st.Status,
+		}).String()
+	} else {
+		// QUM-722: disk-only — project from durable Status.
+		livenessTok = liveness.From(liveness.Snapshot{DiskStatus: st.Status}).String()
 	}
 
-	return &PeekResult{
+	pr := &PeekResult{
 		Status: st.Status,
 		LastReport: LastReport{
 			Type:    st.LastReportType,
@@ -1521,7 +1863,13 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 		},
 		Activity: activity,
 		InTurn:   inAutonomousTurn,
-	}, nil
+		Liveness: livenessTok,
+	}
+	if st.Subagent {
+		pr.Subagent = true
+		pr.SharedWorktreeWith = st.Parent
+	}
+	return pr, nil
 }
 
 // ReportStatus delegates to agentops.Report, which is the single persistence
@@ -1608,9 +1956,32 @@ func (r *Real) ReportStatus(ctx context.Context, agentName, reportState, summary
 	// parent runtime. Status updates are never interrupt-class — children
 	// that genuinely need to preempt should use send_message(interrupt=true).
 	if parent != "" {
+		// QUM-725: if the parent is dead, route the status_change envelope up
+		// to the first live ancestor with the summary wrapped so the live
+		// recipient can tell the routed-up notification apart from a normal
+		// status_change.
+		originalParent := parent
+		effectiveSummary := summary
+		liveAncestor, deadChain, walkErr := WalkDeadAncestors(parent, r.livenessOf, r.parentOf)
+		if walkErr != nil {
+			// ReportStatus is best-effort (we already warn-and-continue on
+			// SendStatusChange errors below); log walkErr at warn and fall
+			// through to direct delivery against the original parent rather
+			// than failing the report.
+			slog.Default().Warn(
+				"supervisor: ReportStatus dead-parent walk failed",
+				slog.String("from", agentName),
+				slog.String("parent", parent),
+				slog.Any("err", walkErr),
+			)
+		}
+		if walkErr == nil && deadChain != nil {
+			parent = liveAncestor
+			effectiveSummary = inboxprompt.WrapForDeadTarget(agentName, originalParent, deadChain, summary)
+		}
 		payload := messages.StatusChangePayload{
 			State:     reportState,
-			Summary:   summary,
+			Summary:   effectiveSummary,
 			Timestamp: res.ReportedAt,
 		}
 		if _, sendErr := messages.SendStatusChange(r.sprawlRoot, agentName, parent, payload); sendErr != nil {
@@ -1710,7 +2081,7 @@ func (r *Real) reconcileStateFromRegistry(agentName string) error {
 func (r *Real) rollbackSpawnArtifacts(agentName string) {
 	r.runtimeRegistry.Remove(agentName)
 	agentState, err := state.LoadAgent(r.sprawlRoot, agentName)
-	if err == nil {
+	if err == nil && !agentState.Subagent {
 		if agentState.Worktree != "" && r.spawnDeps != nil && r.spawnDeps.WorktreeRemove != nil {
 			_ = r.spawnDeps.WorktreeRemove(r.sprawlRoot, agentState.Worktree, true)
 		}

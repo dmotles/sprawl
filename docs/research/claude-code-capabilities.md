@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # Claude Code Capabilities Research: Agents, Skills, Plugins
 
 **Date:** 2026-03-31

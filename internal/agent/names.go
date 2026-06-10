@@ -26,11 +26,18 @@ var ManagerNames = []string{
 	"axis", "vault", "bridge", "cortex", "matrix", "prime", "zenith", "apex",
 }
 
+// QANames contains cyberpunk verifier/inspector-themed names for QA agents.
+var QANames = []string{
+	"sentry", "audit", "verify", "tally", "proof", "sieve", "gate",
+	"judge", "oversight", "warden", "tribunal", "assay", "lens", "clarity",
+}
+
 // NamePools maps agent type to its name pool.
 var NamePools = map[string][]string{
 	"engineer":    EngineerNames,
 	"researcher":  ResearcherNames,
 	"manager":     ManagerNames,
+	"qa":          QANames,
 	"tester":      EngineerNames,
 	"code-merger": EngineerNames,
 }
@@ -40,16 +47,18 @@ var FallbackPrefix = map[string]string{
 	"engineer":    "runner",
 	"researcher":  "decker",
 	"manager":     "fixer",
+	"qa":          "inspector",
 	"tester":      "runner",
 	"code-merger": "runner",
 }
 
 // NamePool is the union of all partitioned pools, preserved for backward compatibility.
 var NamePool = func() []string {
-	all := make([]string, 0, len(EngineerNames)+len(ResearcherNames)+len(ManagerNames))
+	all := make([]string, 0, len(EngineerNames)+len(ResearcherNames)+len(ManagerNames)+len(QANames))
 	all = append(all, EngineerNames...)
 	all = append(all, ResearcherNames...)
 	all = append(all, ManagerNames...)
+	all = append(all, QANames...)
 	return all
 }()
 

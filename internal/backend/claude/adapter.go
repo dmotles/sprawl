@@ -110,7 +110,6 @@ func (a *Adapter) Start(_ context.Context, spec backend.SessionSpec) (backend.Se
 		SystemPromptFile: spec.PromptFile,
 		AllowedTools:     spec.AllowedTools,
 		DisallowedTools:  spec.DisallowedTools,
-		Agents:           spec.Agents,
 		Resume:           spec.Resume,
 	}.BuildArgs()
 

@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # QUM-386 regression investigation — 2026-05-21
 
 **Researcher**: ghost

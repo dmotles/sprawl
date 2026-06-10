@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # TUI input bar disappears when agent tree grows tall
 
 **Date:** 2026-05-06

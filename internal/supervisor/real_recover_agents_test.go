@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/state"
 )
@@ -728,5 +729,154 @@ func TestRealRecoverAgents_BFSOrderParentsBeforeChildren(t *testing.T) {
 	}
 	if aliceIdx >= bobIdx {
 		t.Errorf("BFS order violation: alice idx=%d, bob idx=%d (parent must precede child)", aliceIdx, bobIdx)
+	}
+}
+
+// TestRecoverAgentsSkipsPaused (QUM-723) — a paused agent must NEVER be
+// auto-resumed by RecoverAgents. Paused is an explicit user-initiated state
+// (set by Real.Pause, persisted as state.StatusPaused) that must survive
+// process restart untouched. The starter must not be invoked, the resume
+// counter must be 0, and the on-disk Status must remain "paused".
+func TestRecoverAgentsSkipsPaused(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-x")}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "snoozy", state.StatusPaused, "weave")
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if resumed != 0 || failed != 0 || len(errs) != 0 {
+		t.Errorf("RecoverAgents = (%d,%d,%v); want (0,0,nil) — paused must be skipped", resumed, failed, errs)
+	}
+	if len(starter.specs) != 0 {
+		t.Errorf("starter.specs len = %d, want 0 — paused agent must not invoke starter; specs=%+v", len(starter.specs), starter.specs)
+	}
+
+	loaded, err := state.LoadAgent(tmpDir, "snoozy")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != state.StatusPaused {
+		t.Errorf("post-recover Status = %q, want %q (paused must survive RecoverAgents untouched)", loaded.Status, state.StatusPaused)
+	}
+}
+
+// TestRecoverAgentsPausedSurvivesDirtyShutdown (QUM-723) — a paused agent
+// whose LastReportState is still "working" (paused mid-turn without a clean
+// outcome flip) must STILL be skipped and remain Status=paused after
+// RecoverAgents. The pause persistence axis is independent of the
+// last-report-state crash-survivor logic.
+func TestRecoverAgentsPausedSurvivesDirtyShutdown(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-x")}
+	installStarter(r, starter)
+
+	wt := makeWorktreeDir(t, tmpDir, "snoozy")
+	saveTestAgent(t, tmpDir, &state.AgentState{
+		Name: "snoozy", Type: "engineer", Family: "engineering", Parent: "weave",
+		Branch: "dmotles/snoozy", Worktree: wt, Status: state.StatusPaused,
+		CreatedAt: "2026-05-19T00:00:00Z", SessionID: "sess-snoozy", TreePath: "weave/snoozy",
+		LastReportState: "working",
+	})
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if resumed != 0 || failed != 0 || len(errs) != 0 {
+		t.Errorf("RecoverAgents = (%d,%d,%v); want (0,0,nil)", resumed, failed, errs)
+	}
+	if len(starter.specs) != 0 {
+		t.Errorf("starter.specs len = %d, want 0 — paused+dirty-shutdown agent must not be auto-resumed; specs=%+v", len(starter.specs), starter.specs)
+	}
+
+	loaded, err := state.LoadAgent(tmpDir, "snoozy")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != state.StatusPaused {
+		t.Errorf("post-recover Status = %q, want %q (paused must NOT be flipped by the settle pass or by resume)", loaded.Status, state.StatusPaused)
+	}
+}
+
+// TestRecoverAgentsSkipResumePattern_PausedActivePaused (QUM-741) — defensive
+// insurance probe. Single-agent tests in this file exercise the paused-skip
+// and the restart-injection seam independently. This test verifies the
+// multi-agent single-pass skip/resume/skip ordering: a paused/active/paused
+// trio under "weave" must produce exactly ONE resume call (for the active
+// sibling), with RestartInjection populated, and the on-disk Status of the
+// paused siblings must remain "paused" with no spurious flips.
+func TestRecoverAgentsSkipResumePattern_PausedActivePaused(t *testing.T) {
+	cases := []struct {
+		name   string
+		status string
+		want   string // expected post-recover on-disk Status
+	}{
+		{"alpha", state.StatusPaused, state.StatusPaused},
+		{"beta", state.StatusSuspended, state.StatusActive},
+		{"gamma", state.StatusPaused, state.StatusPaused},
+	}
+
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-beta")}
+	installStarter(r, starter)
+
+	for _, c := range cases {
+		saveRecoverAgent(t, tmpDir, c.name, c.status, "weave")
+	}
+
+	resumed, failed, errs := r.RecoverAgents(context.Background())
+	if resumed != 1 || failed != 0 || len(errs) != 0 {
+		t.Fatalf("RecoverAgents = (%d,%d,%v); want (1,0,nil)", resumed, failed, errs)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("starter.specs len = %d, want 1 (only beta is resume-eligible); specs=%+v", len(starter.specs), starter.specs)
+	}
+	got := starter.specs[0]
+	if got.Name != "beta" {
+		t.Errorf("starter.specs[0].Name = %q, want %q (alpha/gamma are paused and must be skipped)", got.Name, "beta")
+	}
+	if !got.Resume {
+		t.Errorf("starter.specs[0].Resume = false, want true")
+	}
+	if got.RestartInjection != agent.RestartInjectionPrompt {
+		t.Errorf("starter.specs[0].RestartInjection = %q, want agent.RestartInjectionPrompt (%q)",
+			got.RestartInjection, agent.RestartInjectionPrompt)
+	}
+
+	for _, c := range cases {
+		loaded, err := state.LoadAgent(tmpDir, c.name)
+		if err != nil {
+			t.Fatalf("LoadAgent(%q): %v", c.name, err)
+		}
+		if loaded.Status != c.want {
+			t.Errorf("%s post-recover Status = %q, want %q", c.name, loaded.Status, c.want)
+		}
+	}
+}
+
+// TestRecoverAgentsPassesRestartInjection (QUM-723) — a resume-eligible agent
+// must reach the starter with RuntimeStartSpec.RestartInjection populated by
+// the canonical agent.RestartInjectionPrompt. This is the seam that flows the
+// neutral "Sprawl was just restarted..." nudge into the resumed session's
+// first turn so the child does not re-execute whatever prompt was in flight at
+// shutdown. Resume must still be true on the same spec.
+func TestRecoverAgentsPassesRestartInjection(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	starter := &recoverTestStarter{session: recoverTestSession("sess-alice")}
+	installStarter(r, starter)
+
+	saveRecoverAgent(t, tmpDir, "alice", state.StatusSuspended, "weave")
+
+	if _, _, errs := r.RecoverAgents(context.Background()); len(errs) > 0 {
+		t.Fatalf("RecoverAgents errs: %v", errs)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("starter.specs len = %d, want 1", len(starter.specs))
+	}
+	got := starter.specs[0]
+	if !got.Resume {
+		t.Errorf("spec.Resume = false, want true (RestartInjection rides ALONGSIDE Resume=true, never replaces it)")
+	}
+	if got.RestartInjection != agent.RestartInjectionPrompt {
+		t.Errorf("spec.RestartInjection = %q, want agent.RestartInjectionPrompt (%q)",
+			got.RestartInjection, agent.RestartInjectionPrompt)
 	}
 }

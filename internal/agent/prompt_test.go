@@ -129,7 +129,7 @@ func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
 		"STOP and plan FIRST",
 		"Do not write any code until you have a complete plan",
 		// Test-critic must enforce the loop
-		"go back to test-writer",
+		"revise the test",
 		"Repeat until approved",
 		// Each step must require verification before proceeding
 		"verify the step is complete before moving on",
@@ -141,20 +141,99 @@ func TestBuildEngineerPrompt_TDDWorkflowIsMandatory(t *testing.T) {
 	}
 }
 
-func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
+func TestBuildEngineerPrompt_PreservesSidechainNames(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
 	subAgents := []string{
 		"oracle",
-		"test-writer",
 		"test-critic",
-		"implementer",
-		"code-reviewer",
-		"qa-validator",
 	}
 	for _, agent := range subAgents {
 		if !strings.Contains(prompt, agent) {
-			t.Errorf("engineer prompt missing sub-agent name: %q", agent)
+			t.Errorf("engineer prompt missing sidechain name: %q", agent)
+		}
+	}
+}
+
+// TestBuildEngineerPrompt_QAValidatorRemoved pins QUM-715: the engineer prompt
+// must not invoke the old qa-validator Claude sidechain — QA is now a sprawl
+// agent of type="qa" spawned by the manager after the engineer reports done.
+func TestBuildEngineerPrompt_QAValidatorRemoved(t *testing.T) {
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
+
+	// The phrase "qa-validator" must not appear as an action the engineer
+	// invokes. We allow the literal token only in explanatory context that
+	// names it as REMOVED — so guard by a stricter check: there should be no
+	// numbered TDD step that calls qa-validator.
+	if strings.Contains(prompt, "qa-validator — Validate") {
+		t.Error("engineer prompt still invokes qa-validator sidechain (QUM-715: removed)")
+	}
+	// Engineer must be told manager spawns the QA sprawl agent.
+	for _, phrase := range []string{
+		`QA agent`,
+		`type="qa"`,
+	} {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("engineer prompt missing QA routing phrase %q (QUM-715)", phrase)
+		}
+	}
+}
+
+// TestBuildEngineerPrompt_CodeReviewerIsSubAgentSpawn pins QUM-714: the
+// engineer's TDD step-5 code review is no longer a Claude sidechain; it is
+// a sprawl sub-agent spawned directly by the engineer (subagent:true so the
+// reviewer shares the engineer's worktree).
+func TestBuildEngineerPrompt_CodeReviewerIsSubAgentSpawn(t *testing.T) {
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
+
+	required := []string{
+		"subagent: true",
+		`type: "engineer"`,
+		"send_message",
+		"shares your worktree",
+	}
+	for _, phrase := range required {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("engineer prompt missing sub-agent spawn phrase: %q (QUM-714)", phrase)
+		}
+	}
+}
+
+// TestBuildEngineerPrompt_CodeReviewerNotInSidechainPreamble pins QUM-714:
+// the TDD preamble must no longer list "code-reviewer" among the Claude
+// sidechains, since it is now a sprawl sub-agent spawn.
+func TestBuildEngineerPrompt_CodeReviewerNotInSidechainPreamble(t *testing.T) {
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
+
+	if strings.Contains(prompt, `"oracle", "test-critic", "code-reviewer"`) {
+		t.Errorf(`engineer prompt sidechain preamble still lists "code-reviewer" alongside oracle/test-critic (QUM-714)`)
+	}
+}
+
+func TestBuildEngineerPrompt_DoesNotInvokeRemovedSidechains(t *testing.T) {
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
+
+	// QUM-712: engineer IS the writer and implementer; these sidechains were removed.
+	for _, removed := range []string{"test-writer", "implementer"} {
+		if strings.Contains(prompt, removed) {
+			t.Errorf("engineer prompt must not reference removed sidechain %q (QUM-712)", removed)
+		}
+	}
+}
+
+func TestBuildEngineerPrompt_InlineWriteAndImplementGuidance(t *testing.T) {
+	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
+
+	// QUM-712: explicit inline "write failing test, then implement to green" guidance.
+	required := []string{
+		"Write a failing test FIRST",
+		"You write the test yourself",
+		"Implement to green",
+		"You write the implementation yourself",
+	}
+	for _, phrase := range required {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("engineer prompt missing inline guidance phrase: %q", phrase)
 		}
 	}
 }
@@ -162,8 +241,10 @@ func TestBuildEngineerPrompt_PreservesSubAgentNames(t *testing.T) {
 func TestBuildEngineerPrompt_PreservesWorkflowOrder(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
-	// Verify the workflow steps appear in order
-	steps := []string{"oracle", "test-writer", "test-critic", "implementer", "code-reviewer", "qa-validator"}
+	// Verify the workflow steps appear in order. The "Code review sub-agent"
+	// step replaced the code-reviewer sidechain (QUM-714); the qa-validator
+	// step was removed entirely (QUM-715: now a sprawl QA agent).
+	steps := []string{"oracle", "test-critic", "Code review sub-agent"}
 	lastIdx := -1
 	for _, step := range steps {
 		idx := strings.Index(prompt, step)
@@ -215,12 +296,13 @@ func TestBuildResearcherPrompt_ReflectionStep(t *testing.T) {
 func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 	prompt := BuildEngineerPrompt("zone", "root", "sprawl/zone", testEnvConfig())
 
-	qaIdx := strings.Index(prompt, "qa-validator")
+	// QUM-714 renamed the code-reviewer step to "Code review sub-agent".
+	reviewerIdx := strings.Index(prompt, "Code review sub-agent")
 	reflectIdx := strings.Index(prompt, "Reflect")
 	doneIdx := strings.Index(prompt, "Report done via:")
 
-	if qaIdx == -1 {
-		t.Fatal("engineer prompt missing 'qa-validator'")
+	if reviewerIdx == -1 {
+		t.Fatal("engineer prompt missing 'Code review sub-agent'")
 	}
 	if reflectIdx == -1 {
 		t.Fatal("engineer prompt missing 'Reflect'")
@@ -229,8 +311,8 @@ func TestBuildEngineerPrompt_ReflectionBeforeDone(t *testing.T) {
 		t.Fatal("engineer prompt missing 'Report done via:'")
 	}
 
-	if reflectIdx <= qaIdx {
-		t.Errorf("'Reflect' (idx %d) should appear after 'qa-validator' (idx %d)", reflectIdx, qaIdx)
+	if reflectIdx <= reviewerIdx {
+		t.Errorf("'Reflect' (idx %d) should appear after 'Code review sub-agent' (idx %d)", reflectIdx, reviewerIdx)
 	}
 	if reflectIdx >= doneIdx {
 		t.Errorf("'Reflect' (idx %d) should appear before 'Report done' (idx %d)", reflectIdx, doneIdx)
@@ -302,8 +384,6 @@ func TestBuildRootPrompt_ManagerTypeInAgentTypes(t *testing.T) {
 	keyPhrases := []string{
 		"Manager",
 		`type: "manager"`,
-		"3+ subtasks",
-		"spawning an engineer directly",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
@@ -311,23 +391,41 @@ func TestBuildRootPrompt_ManagerTypeInAgentTypes(t *testing.T) {
 		}
 	}
 
-	// Manager entry should appear after Engineer and Researcher but before AGENT FAMILIES
+	// Manager entry should appear before AGENT FAMILIES.
 	managerIdx := strings.Index(prompt, `type: "manager"`)
-	engineerIdx := strings.Index(prompt, `type: "engineer"`)
-	researcherIdx := strings.Index(prompt, `type: "researcher"`)
 	familiesIdx := strings.Index(prompt, "AGENT FAMILIES")
 
 	if managerIdx == -1 {
 		t.Fatal(`root prompt missing 'type: "manager"'`)
 	}
-	if managerIdx <= engineerIdx {
-		t.Errorf("manager (idx %d) should appear after engineer (idx %d)", managerIdx, engineerIdx)
-	}
-	if managerIdx <= researcherIdx {
-		t.Errorf("manager (idx %d) should appear after researcher (idx %d)", managerIdx, researcherIdx)
+	if familiesIdx == -1 {
+		t.Fatal("root prompt missing 'AGENT FAMILIES'")
 	}
 	if managerIdx >= familiesIdx {
 		t.Errorf("manager (idx %d) should appear before AGENT FAMILIES (idx %d)", managerIdx, familiesIdx)
+	}
+}
+
+// TestBuildRootPrompt_OrchestrationStandardization (QUM-718) locks the
+// weave → manager → (engineer + QA) orchestration shape in the root prompt.
+func TestBuildRootPrompt_OrchestrationStandardization(t *testing.T) {
+	prompt := BuildRootPrompt(defaultRootConfig("weave"))
+
+	if !strings.Contains(prompt, "spawn a manager") {
+		t.Errorf("root prompt should mention 'spawn a manager' (QUM-718)")
+	}
+	if strings.Contains(prompt, "prefer spawning an engineer directly") {
+		t.Errorf("root prompt must NOT contain deleted line 'prefer spawning an engineer directly' (QUM-718)")
+	}
+}
+
+// TestBuildManagerPrompt_RequiresQADispatch (QUM-718) locks the
+// manager-owned QA dispatch requirement.
+func TestBuildManagerPrompt_RequiresQADispatch(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	if !strings.Contains(prompt, "MUST dispatch a QA pass") {
+		t.Errorf("manager prompt should contain 'MUST dispatch a QA pass' (QUM-718)")
 	}
 }
 
@@ -342,7 +440,7 @@ func TestBuildRootPrompt_PromptConfigStruct(t *testing.T) {
 	}
 }
 
-func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
+func TestBuildRootPrompt_SidechainGuidance_ClaudeCode(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "claude-code",
@@ -350,60 +448,60 @@ func TestBuildRootPrompt_SubAgentGuidance_ClaudeCode(t *testing.T) {
 	prompt := BuildRootPrompt(cfg)
 
 	keyPhrases := []string{
-		"AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS",
+		"AGENT TYPES: SPRAWL AGENTS vs CLAUDE SIDECHAINS",
 		"Sprawl agents",
 		"spawn",
-		"Claude Code sub-agents",
+		"Claude Code sidechains",
 		"Agent tool",
 		"fire off an agent",
 		"spawn an agent",
-		"sub-agent",
+		"sidechain",
 		"Default to sprawl agents for real work",
 	}
 	for _, phrase := range keyPhrases {
 		if !strings.Contains(prompt, phrase) {
-			t.Errorf("root prompt (claude-code) missing sub-agent guidance phrase: %q", phrase)
+			t.Errorf("root prompt (claude-code) missing sidechain guidance phrase: %q", phrase)
 		}
 	}
 }
 
-func TestBuildRootPrompt_SubAgentGuidance_NotIncludedForUnknownCLI(t *testing.T) {
+func TestBuildRootPrompt_SidechainGuidance_NotIncludedForUnknownCLI(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "codex",
 	}
 	prompt := BuildRootPrompt(cfg)
 
-	// Sub-agent guidance should NOT be present for non-claude-code CLIs
-	if strings.Contains(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS") {
-		t.Error("sub-agent guidance should not be included for non-claude-code CLI")
+	// Sidechain guidance should NOT be present for non-claude-code CLIs
+	if strings.Contains(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SIDECHAINS") {
+		t.Error("sidechain guidance should not be included for non-claude-code CLI")
 	}
-	if strings.Contains(prompt, "Claude Code sub-agents") {
-		t.Error("Claude Code sub-agent references should not be included for non-claude-code CLI")
+	if strings.Contains(prompt, "Claude Code sidechains") {
+		t.Error("Claude Code sidechain references should not be included for non-claude-code CLI")
 	}
 }
 
-func TestBuildRootPrompt_SubAgentGuidance_EmptyCLI(t *testing.T) {
+func TestBuildRootPrompt_SidechainGuidance_EmptyCLI(t *testing.T) {
 	cfg := PromptConfig{
 		RootName: "weave",
 		AgentCLI: "",
 	}
 	prompt := BuildRootPrompt(cfg)
 
-	// Sub-agent guidance should NOT be present when AgentCLI is empty
-	if strings.Contains(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS") {
-		t.Error("sub-agent guidance should not be included when AgentCLI is empty")
+	// Sidechain guidance should NOT be present when AgentCLI is empty
+	if strings.Contains(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SIDECHAINS") {
+		t.Error("sidechain guidance should not be included when AgentCLI is empty")
 	}
 }
 
-func TestBuildRootPrompt_SubAgentGuidanceSectionOrdering(t *testing.T) {
+func TestBuildRootPrompt_SidechainGuidanceSectionOrdering(t *testing.T) {
 	prompt := BuildRootPrompt(defaultRootConfig("weave"))
 
-	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS")
+	agentTypesIdx := strings.Index(prompt, "AGENT TYPES: SPRAWL AGENTS vs CLAUDE SIDECHAINS")
 	verifyIdx := strings.Index(prompt, "VERIFYING AGENT WORK:")
 
 	if agentTypesIdx == -1 {
-		t.Fatal("BuildRootPrompt missing 'AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS'")
+		t.Fatal("BuildRootPrompt missing 'AGENT TYPES: SPRAWL AGENTS vs CLAUDE SIDECHAINS'")
 	}
 	if verifyIdx == -1 {
 		t.Fatal("BuildRootPrompt missing 'VERIFYING AGENT WORK:'")
@@ -735,7 +833,7 @@ func TestBuildManagerPrompt_ContainsIntegrationBranch(t *testing.T) {
 	}
 }
 
-func TestBuildManagerPrompt_ContainsSubAgentGuidance(t *testing.T) {
+func TestBuildManagerPrompt_ContainsSidechainGuidance(t *testing.T) {
 	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
 
 	if !strings.Contains(prompt, "Agent tool") {
@@ -1550,6 +1648,7 @@ func TestGenerateGoldenFiles(t *testing.T) {
 	write("engineer_tui.golden", BuildEngineerPrompt("zone", "root", "sprawl/zone", env))
 	write("researcher_tui.golden", BuildResearcherPrompt("birch", "root", "sprawl/birch", env))
 	write("manager_tui.golden", BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", env))
+	write("qa_tui.golden", BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env))
 	// Root-prompt goldens.
 	write("golden_tui_claude_code.txt", BuildRootPrompt(PromptConfig{RootName: "weave", AgentCLI: "claude-code"}))
 }
@@ -1597,6 +1696,293 @@ func firstDiffIndex(a, b string) int {
 	return -1
 }
 
+// --- BuildQAPrompt tests (QUM-707, TDD red phase — function does not exist yet) ---
+
+func TestBuildQAPrompt_DoesNotContainTaskSection(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	if strings.Contains(prompt, "YOUR TASK:") {
+		t.Error("qa prompt should not contain YOUR TASK section")
+	}
+}
+
+func TestBuildQAPrompt_ContainsKeyPhrases(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	keyPhrases := []string{
+		"inspector",
+		"tower",
+		"dmotles/feature-x",
+		"report_status",
+		"send_message",
+		"verdict",
+		"git fetch",
+		"git diff",
+		"make validate",
+		"Linear",
+		"VERIFICATION PROTOCOL",
+	}
+	// QA agent identity should be referenced (case-insensitive).
+	if !strings.Contains(prompt, "QA agent") && !strings.Contains(prompt, "qa agent") {
+		t.Error("qa prompt should identify itself as 'QA agent' or 'qa agent'")
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("qa prompt missing key phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildQAPrompt_DoesNotContainEngineerRole(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	if strings.Contains(prompt, "hands-on builder") {
+		t.Error("qa prompt should not contain engineer role 'hands-on builder'")
+	}
+	if strings.Contains(prompt, "TDD WORKFLOW (MANDATORY)") {
+		t.Error("qa prompt should not contain engineer-only TDD WORKFLOW section")
+	}
+}
+
+func TestBuildQAPrompt_VerificationProtocol(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	keyPhrases := []string{
+		"VERIFICATION PROTOCOL",
+		"acceptance criteria",
+		"git fetch",
+		"git diff",
+		"make validate",
+		"engineer-not-done",
+		"pass",
+		"fail",
+		"needs-rework",
+	}
+	for _, phrase := range keyPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("qa prompt missing verification protocol phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildQAPrompt_VerificationProtocolOrder(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	peekIdx := strings.Index(prompt, "peek")
+	gitDiffIdx := strings.Index(prompt, "git diff")
+	makeValidateIdx := strings.Index(prompt, "make validate")
+	linearIdx := strings.Index(prompt, "Linear")
+	sendMsgIdx := strings.Index(prompt, "send_message")
+	reportStatusIdx := strings.Index(prompt, "report_status")
+
+	if peekIdx == -1 {
+		t.Fatal("qa prompt missing 'peek'")
+	}
+	if gitDiffIdx == -1 {
+		t.Fatal("qa prompt missing 'git diff'")
+	}
+	if makeValidateIdx == -1 {
+		t.Fatal("qa prompt missing 'make validate'")
+	}
+	if linearIdx == -1 {
+		t.Fatal("qa prompt missing 'Linear'")
+	}
+	if sendMsgIdx == -1 {
+		t.Fatal("qa prompt missing 'send_message'")
+	}
+	if reportStatusIdx == -1 {
+		t.Fatal("qa prompt missing 'report_status'")
+	}
+
+	type entry struct {
+		name string
+		idx  int
+	}
+	order := []entry{
+		{"peek", peekIdx},
+		{"git diff", gitDiffIdx},
+		{"make validate", makeValidateIdx},
+		{"Linear", linearIdx},
+		{"send_message", sendMsgIdx},
+		{"report_status", reportStatusIdx},
+	}
+	for i := 1; i < len(order); i++ {
+		if order[i].idx <= order[i-1].idx {
+			t.Errorf("expected %q (idx %d) to appear after %q (idx %d)",
+				order[i].name, order[i].idx, order[i-1].name, order[i-1].idx)
+		}
+	}
+}
+
+func TestBuildQAPrompt_RulesForbidProductionEdits(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	// Must explicitly forbid production code edits.
+	if !strings.Contains(prompt, "production code") {
+		t.Error("qa prompt should mention 'production code' (in forbidding edits)")
+	}
+	if !strings.Contains(prompt, "Do NOT") {
+		t.Error("qa prompt should contain 'Do NOT' rule (forbidding production edits)")
+	}
+
+	// Must mention forbidden actions: spawn, merge, push.
+	for _, phrase := range []string{"spawn", "merge", "push"} {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("qa prompt should mention forbidden action %q in rules", phrase)
+		}
+	}
+}
+
+func TestBuildQAPrompt_ReflectionStep(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	// Reflection step is required (mirror researcher conventions).
+	if !strings.Contains(prompt, "REFLECTION") && !strings.Contains(prompt, "Reflect") {
+		t.Error("qa prompt should contain a reflection step (REFLECTION or Reflect)")
+	}
+}
+
+func TestBuildQAPrompt_ReflectionBeforeDone(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	reflectIdx := strings.Index(prompt, "REFLECTION")
+	if reflectIdx == -1 {
+		reflectIdx = strings.Index(prompt, "Reflect")
+	}
+	doneIdx := strings.Index(prompt, `report_status({state: "complete"`)
+	if doneIdx == -1 {
+		doneIdx = strings.Index(prompt, "Report done")
+	}
+
+	if reflectIdx == -1 {
+		t.Fatal("qa prompt missing reflection step")
+	}
+	if doneIdx == -1 {
+		t.Fatal("qa prompt missing done-report step")
+	}
+	if reflectIdx >= doneIdx {
+		t.Errorf("reflection (idx %d) should appear before done-report (idx %d)", reflectIdx, doneIdx)
+	}
+}
+
+func TestBuildQAPrompt_TestMode_InjectsWarning(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = true
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env)
+
+	if !strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("qa prompt should contain 'TEST SANDBOX MODE' when TestMode is true")
+	}
+	if !strings.Contains(prompt, "$SPRAWL_ROOT") {
+		t.Error("qa prompt should reference $SPRAWL_ROOT in sandbox warning")
+	}
+	if !strings.Contains(prompt, "$SPRAWL_BIN") {
+		t.Error("qa prompt should reference $SPRAWL_BIN in sandbox warning")
+	}
+}
+
+func TestBuildQAPrompt_TestMode_NoWarningWhenOff(t *testing.T) {
+	env := testEnvConfig()
+	env.TestMode = false
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env)
+
+	if strings.Contains(prompt, "TEST SANDBOX MODE") {
+		t.Error("qa prompt should NOT contain 'TEST SANDBOX MODE' when TestMode is false")
+	}
+}
+
+func TestBuildQAPrompt_NoCLICommands(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	if strings.Contains(prompt, "sprawl report done") {
+		t.Error("qa prompt should NOT contain CLI command 'sprawl report done'")
+	}
+	if strings.Contains(prompt, "sprawl messages send") {
+		t.Error("qa prompt should NOT contain CLI command 'sprawl messages send'")
+	}
+}
+
+func TestBuildQAPrompt_ContainsMCPTools(t *testing.T) {
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+
+	required := []string{"send_message", "report_status", "peek"}
+	for _, tool := range required {
+		if !strings.Contains(prompt, tool) {
+			t.Errorf("qa prompt should contain MCP tool %q", tool)
+		}
+	}
+}
+
+func TestBuildQAPrompt_EnvironmentSection(t *testing.T) {
+	env := EnvConfig{
+		WorkDir:  "/tmp/worktrees/inspector",
+		Platform: "linux",
+		Shell:    "/bin/zsh",
+	}
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env)
+
+	envPhrases := []string{
+		"# Environment",
+		"Working directory: /tmp/worktrees/inspector",
+		"Git repository: yes",
+		"Git branch: dmotles/feature-x",
+		"Platform: linux",
+		"Shell: /bin/zsh",
+	}
+	for _, phrase := range envPhrases {
+		if !strings.Contains(prompt, phrase) {
+			t.Errorf("qa prompt missing environment phrase: %q", phrase)
+		}
+	}
+}
+
+func TestBuildQAPrompt_EnvironmentOmitsEmptyFields(t *testing.T) {
+	env := EnvConfig{} // all empty
+	prompt := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", env)
+
+	if strings.Contains(prompt, "Working directory:") {
+		t.Error("should omit working directory when empty")
+	}
+	if strings.Contains(prompt, "Platform:") {
+		t.Error("should omit platform when empty")
+	}
+	if strings.Contains(prompt, "Shell:") {
+		t.Error("should omit shell when empty")
+	}
+	if !strings.Contains(prompt, "Git repository: yes") {
+		t.Error("should always include git repository")
+	}
+	if !strings.Contains(prompt, "Git branch: dmotles/feature-x") {
+		t.Error("should always include git branch")
+	}
+}
+
+func TestBuildQAPrompt_TuiGolden(t *testing.T) {
+	got := BuildQAPrompt("inspector", "tower", "dmotles/feature-x", testEnvConfig())
+	want := readGolden(t, "qa_tui.golden")
+	if got != want {
+		t.Fatalf("qa tui prompt does not match golden snapshot.\nGot length: %d, Want length: %d\nFirst diff at byte %d",
+			len(got), len(want), firstDiffIndex(got, want))
+	}
+}
+
+// --- Cross-prompt regression: QA must be listed in AGENT TYPES section ---
+
+// TestBuildRootPrompt_QATypeInAgentTypes was removed in QUM-718: the new
+// root prompt intentionally drops QA from the spawn listing because manager
+// owns QA dispatch (weave → manager → engineer + QA).
+
+func TestBuildManagerPrompt_QATypeInAgentTypes(t *testing.T) {
+	prompt := BuildManagerPrompt("cedar", "weave", "dmotles/feature-x", "engineering", testEnvConfig())
+
+	if !strings.Contains(prompt, "QA") && !strings.Contains(prompt, "qa") {
+		t.Error("manager prompt AGENT TYPES section should mention QA")
+	}
+	if !strings.Contains(prompt, `type: "qa"`) {
+		t.Errorf(`manager prompt AGENT TYPES section missing 'type: "qa"'`)
+	}
+}
+
 // TestPromptRenderers_NoResidualPlaceholderTokens (QUM-539) guards the
 // `{{PLACEHOLDER}}` + strings.ReplaceAll templating idiom in prompt_mode.go
 // against typoed placeholder tokens (e.g. `{{AGNETNAME}}` vs `{{AGENTNAME}}`).
@@ -1642,6 +2028,9 @@ func TestPromptRenderers_NoResidualPlaceholderTokens(t *testing.T) {
 		}},
 		{"manager", func() string {
 			return BuildManagerPrompt(agentName, parentName, branchName, "engineering", env)
+		}},
+		{"qa", func() string {
+			return BuildQAPrompt(agentName, parentName, branchName, env)
 		}},
 	}
 

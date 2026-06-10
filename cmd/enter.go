@@ -48,6 +48,7 @@ import (
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 	"github.com/dmotles/sprawl/internal/tui"
 	"github.com/dmotles/sprawl/internal/tuiruntime"
 	"github.com/spf13/cobra"
@@ -288,6 +289,11 @@ func resolveEnterDeps() *enterDeps {
 			// Two-phase init: the child MCP server needs a reference to the
 			// supervisor, so we create it after construction and wire it in.
 			mcpServer := sprawlmcp.New(sup).WithCallLog(logger)
+			// QUM-722: surface project config so toolPause's default
+			// timeout honors `pause_timeout_seconds` from .sprawl/config.yaml.
+			if cfg, cErr := config.Load(sprawlRoot); cErr == nil && cfg != nil {
+				mcpServer.WithConfig(cfg)
+			}
 			childBridge := host.NewMCPBridge()
 			childBridge.Register("sprawl", mcpServer)
 			sup.SetChildMCPConfig(
@@ -795,10 +801,10 @@ func runEnter(deps *enterDeps) error {
 					NextAction: nextAction,
 				})
 			})
-			// QUM-601: backend-recovered fan-out. The TUI clears the
+			// QUM-601/QUM-724: backend-woken fan-out. The TUI clears the
 			// per-agent fault sticker, rebuilds the tree to drop the FAULT
 			// badge, and surfaces a "backend recovered on X" banner.
-			r.SetBackendRecoveredEmitter(func(agent string) {
+			r.SetBackendWokenEmitter(func(agent string) {
 				send(tui.BackendFaultClearedMsg{Agent: agent})
 			})
 		}
@@ -877,6 +883,71 @@ func runEnter(deps *enterDeps) error {
 		if pendingResume.resumed > 0 || pendingResume.failed > 0 {
 			resumed, failed := pendingResume.resumed, pendingResume.failed
 			go send(tui.AgentsResumedMsg{Resumed: resumed, Failed: failed})
+		}
+
+		// QUM-725: subscribe to per-runtime events and dispatch AgentDiedMsg
+		// when a runtime transitions to liveness.Died. Uses a polling pattern
+		// because new runtimes can join the registry after onStart returns
+		// (spawn, recover). Subscribed-set + emitted-Died set are local to
+		// this goroutine — no shared mutation. handoffDone gates shutdown.
+		if r, ok := sup.(*supervisor.Real); ok && r.RuntimeRegistry() != nil {
+			reg := r.RuntimeRegistry()
+			go func() {
+				subscribed := map[string]struct{}{}
+				ticker := time.NewTicker(500 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-handoffDone:
+						return
+					case <-ticker.C:
+					}
+					for _, rt := range reg.List() {
+						name := rt.Snapshot().Name
+						if name == "" {
+							continue
+						}
+						if _, already := subscribed[name]; already {
+							continue
+						}
+						subscribed[name] = struct{}{}
+						ch, cancel := rt.Subscribe(8)
+						runtime := rt
+						agentName := name
+						go func() {
+							defer cancel()
+							fired := false
+							for {
+								select {
+								case <-handoffDone:
+									return
+								case ev, ok := <-ch:
+									if !ok {
+										return
+									}
+									if ev.Kind != supervisor.RuntimeEventStopped && ev.Kind != supervisor.RuntimeEventStateSynced {
+										continue
+									}
+									snap := runtime.Snapshot()
+									if snap.Liveness != liveness.Died {
+										continue
+									}
+									if fired {
+										continue
+									}
+									fired = true
+									send(tui.AgentDiedMsg{
+										Name:     agentName,
+										Type:     snap.Type,
+										Parent:   snap.Parent,
+										LastSeen: runtime.LastActivityAt(),
+									})
+								}
+							}
+						}()
+					}
+				}
+			}()
 		}
 
 		if sup == nil {
@@ -969,7 +1040,7 @@ func runEnter(deps *enterDeps) error {
 		r.SetProgressEmitter(nil)
 		r.SetValidateEmitter(nil)
 		r.SetBackendFaultEmitter(nil)
-		r.SetBackendRecoveredEmitter(nil)
+		r.SetBackendWokenEmitter(nil)
 	}
 	// QUM-527 slice 2c: unregister the TUI question consumer so the
 	// supervisor's queue stops fanning out OnEnqueue / OnCancel to a dead

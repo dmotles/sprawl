@@ -78,7 +78,7 @@ type MessageEntry struct {
 	Failed bool
 	// Result is the raw tool result text. (QUM-336)
 	Result string
-	// Depth is the nesting level of a sub-agent tool call. (QUM-379)
+	// Depth is the nesting level of a sidechain tool call. (QUM-379)
 	Depth int
 	// ParentToolID is the ToolID of the enclosing Agent tool call. (QUM-386)
 	ParentToolID string
@@ -477,7 +477,7 @@ type ToolCallMsg struct {
 	HeaderParams []KVPair
 	// ParentToolUseID is the wire-level parent_tool_use_id from the assistant
 	// envelope (protocol.AssistantMessage.ParentToolUseID). Non-empty when the
-	// emitting assistant turn ran inside a sub-agent (sidechain). The viewport
+	// emitting assistant turn ran inside a sidechain. The viewport
 	// uses it verbatim to attribute the tool call to the correct outer Agent
 	// container, taking precedence over the lastActiveAgent heuristic for
 	// parallel-Agent scenarios. Empty for top-level assistant turns. (QUM-386 live-path fix —

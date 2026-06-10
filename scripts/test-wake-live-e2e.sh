@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# test-recover-live-e2e.sh — End-to-end gate for `mcp__sprawl__recover`
+# test-wake-live-e2e.sh — End-to-end gate for `mcp__sprawl__wake`
 # subprocess survival (QUM-606).
 #
-# Background: QUM-601 introduced `mcp__sprawl__recover` to rebuild a
+# Background: QUM-601 introduced `mcp__sprawl__wake` to rebuild a
 # faulted backend session in-place. QUM-606 found that the original
 # implementation forwarded the MCP request ctx all the way down to
 # `exec.CommandContext`, so the freshly-spawned claude subprocess was
@@ -18,7 +18,7 @@
 #   Phase 2: induce a terminal SubscriberWedge fault on the child via
 #            the build-tag-gated `mcp__sprawl___test_induce_wedge` MCP
 #            tool. Wait for the TUI fault banner.
-#   Phase 3: drive weave to call `mcp__sprawl__recover` on the child,
+#   Phase 3: drive weave to call `mcp__sprawl__wake` on the child,
 #            assert the success ack lands in the pane.
 #   Phase 4 (PRIMARY): a NEW `claude … --resume …` subprocess for the
 #            child is alive 2s after recover returned, AND its PID
@@ -31,7 +31,7 @@
 #
 # Build requirement: this harness requires the `sprawl` binary to be
 # built with `-tags sprawl_test` so `mcp__sprawl___test_induce_wedge` is
-# present in the MCP tool surface. The `make test-recover-live-e2e`
+# present in the MCP tool surface. The `make test-wake-live-e2e`
 # target handles this. Invoking the script directly without the tag
 # build will fail in Phase 2.
 #
@@ -41,7 +41,7 @@
 #
 # Gate: if `claude` is missing and SPRAWL_E2E_SKIP_NO_CLAUDE=1, skip.
 #
-# Usage: bash scripts/test-recover-live-e2e.sh
+# Usage: bash scripts/test-wake-live-e2e.sh
 #
 # NOTE: creates a real tmux session and at least two real claude
 # subprocesses (weave + child). Do not run in parallel with other
@@ -73,7 +73,7 @@ fi
 
 unset SPRAWL_AGENT_IDENTITY
 
-SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-recover-e2e-$$}"
+SPRAWL_TMUX_SOCKET="${SPRAWL_TMUX_SOCKET:-sprawl-wake-e2e-$$}"
 export SPRAWL_TMUX_SOCKET
 _stmux() { tmux ${SPRAWL_TMUX_SOCKET:+-L "$SPRAWL_TMUX_SOCKET"} "$@"; }
 
@@ -94,8 +94,8 @@ if ! command -v pgrep >/dev/null 2>&1; then echo "FATAL: pgrep not on PATH" >&2;
 # binary; otherwise build with the tag here.
 if [ -z "${SPRAWL_BIN:-}" ]; then
     echo "=== Building sprawl with -tags sprawl_test ==="
-    (cd "$REPO_ROOT" && go build -tags sprawl_test -o sprawl-recover-e2e ./)
-    SPRAWL_BIN="$REPO_ROOT/sprawl-recover-e2e"
+    (cd "$REPO_ROOT" && go build -tags sprawl_test -o sprawl-wake-e2e ./)
+    SPRAWL_BIN="$REPO_ROOT/sprawl-wake-e2e"
 fi
 if [ ! -x "$SPRAWL_BIN" ]; then
     echo "FATAL: sprawl binary not found at $SPRAWL_BIN" >&2
@@ -104,7 +104,7 @@ fi
 
 # --- Sandbox under /tmp/ ---
 
-SPRAWL_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sprawl-qum606-XXXXXX")
+SPRAWL_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sprawl-qum724-XXXXXX")
 SPRAWL_ROOT_REAL="$(cd "$SPRAWL_ROOT" 2>/dev/null && pwd -P || echo "$SPRAWL_ROOT")"
 case "$SPRAWL_ROOT_REAL" in
     /tmp/*) ;;
@@ -128,9 +128,9 @@ fi
 # than "unknown tool".
 export SPRAWL_ENABLE_TEST_TOOLS=1
 
-SESSION="sprawl-recover-e2e-$(head -c4 /dev/urandom | xxd -p)"
+SESSION="sprawl-wake-e2e-$(head -c4 /dev/urandom | xxd -p)"
 STDERR_LOG="$SPRAWL_ROOT/.sprawl/tui-stderr.log"
-PROBE="RECOVER-PROBE-$$-$(date +%s)"
+PROBE="WAKE-PROBE-$$-$(date +%s)"
 BRANCH_SUFFIX="$(head -c4 /dev/urandom | xxd -p)"
 
 CHILD_STATE=""
@@ -312,14 +312,14 @@ fi
 # --- Phase 3: drive recover ---
 
 echo ""
-echo "=== Phase 3: drive mcp__sprawl__recover on $CHILD_NAME ==="
-RECOVER_PROMPT="Call mcp__sprawl__recover with agent_name='$CHILD_NAME'. Quote the exact tool response back to me."
+echo "=== Phase 3: drive mcp__sprawl__wake on $CHILD_NAME ==="
+RECOVER_PROMPT="Call mcp__sprawl__wake with agent_name='$CHILD_NAME'. Quote the exact tool response back to me."
 _stmux send-keys -t "$SESSION" "$RECOVER_PROMPT"
 sleep 0.5
 _stmux send-keys -t "$SESSION" Enter
 
-if wait_for_pattern_fast "$SESSION" "Recovered backend session for $CHILD_NAME" 60; then
-    pass "mcp__sprawl__recover returned success ack"
+if wait_for_pattern_fast "$SESSION" "Woke agent $CHILD_NAME" 60; then
+    pass "mcp__sprawl__wake returned success ack"
 else
     fail "recover success ack did not appear within 60s"
     capture_pane "$SESSION" | tail -60 >&2

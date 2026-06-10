@@ -16,11 +16,11 @@ import (
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
 )
 
-// ErrRecoverNotNeeded is returned by AgentRuntime.Recover when the live
-// handle's backend session is still healthy (IsTerminallyFaulted() == false),
-// signaling to callers (Real.Recover / the MCP recover tool) that the request
-// is a no-op success. QUM-601.
-var ErrRecoverNotNeeded = errors.New("supervisor: session healthy, no recovery needed")
+// ErrWakeNotNeeded is returned by AgentRuntime.Wake when the live handle's
+// backend session is still healthy (IsTerminallyFaulted() == false), signaling
+// to callers (Real.Wake / the MCP wake tool) that the request is a no-op
+// success. QUM-724 (renamed from ErrRecoverNotNeeded, QUM-601).
+var ErrWakeNotNeeded = errors.New("supervisor: session healthy, no wake needed")
 
 // unifiedRuntimeProvider is implemented by RuntimeHandles backed by a
 // UnifiedRuntime, so consumers (e.g. the TUI viewport stream wiring) can
@@ -70,9 +70,12 @@ const (
 	RuntimeEventInterrupted RuntimeEventKind = "interrupted"
 	RuntimeEventTaskQueued  RuntimeEventKind = "task_queued"
 	RuntimeEventStateSynced RuntimeEventKind = "state_synced"
-	// RuntimeEventRecovered fires after AgentRuntime.Recover swaps in a
-	// fresh handle for a faulted session. QUM-601.
-	RuntimeEventRecovered RuntimeEventKind = "recovered"
+	// RuntimeEventWoken fires after AgentRuntime.Wake swaps in a fresh
+	// handle for an offline session (faulted/paused/killed/died/resume_failed).
+	// QUM-724 (renamed from RuntimeEventRecovered, QUM-601).
+	RuntimeEventWoken RuntimeEventKind = "woken"
+	// RuntimeEventPaused fires after a clean Pause flow completes. QUM-722.
+	RuntimeEventPaused RuntimeEventKind = "paused"
 )
 
 // RuntimeStartSpec is the internal-only launch seam for same-process child runtimes.
@@ -94,6 +97,14 @@ type RuntimeStartSpec struct {
 	// SessionSpec.OnResumeFailure in prepareLaunch so children get the same
 	// fast-fail signal weave does. QUM-372.
 	OnResumeFailure func()
+	// RestartInjection, when non-empty, replaces the otherwise-used
+	// AgentState.Prompt as the first turn fed to the spawned claude session.
+	// This is the seam Real.RecoverAgents uses (QUM-723) to deliver the canonical
+	// neutral restart-injection prompt after `sprawl enter` relaunch. Empty on
+	// fresh-spawn paths (preserves spawn-prompt behavior) and on in-place
+	// recovery (AgentRuntime.Recover — that is a mid-session fault recovery,
+	// not a sprawl-startup recovery, so no injection is desired).
+	RestartInjection string
 }
 
 // RuntimeHandle is the live controller for a started in-process child runtime.
@@ -184,10 +195,15 @@ type AgentRuntime struct {
 
 	stopWaitTimedOut atomic.Bool
 
-	// recoverMu serializes Recover. TryLock-based fail-fast so concurrent
-	// callers get a "recovery already in progress" error rather than queuing.
-	// QUM-601.
-	recoverMu sync.Mutex
+	// expectingExit is set true by Stop/StopAbandon BEFORE invoking the
+	// underlying handle's stop fn. watchHandleExit reads it on done close to
+	// classify the exit: true → Stopped, false → Died. QUM-722.
+	expectingExit atomic.Bool
+
+	// wakeMu serializes Wake. TryLock-based fail-fast so concurrent callers
+	// get a "wake already in progress" error rather than queuing.
+	// QUM-724 (renamed from recoverMu, QUM-601).
+	wakeMu sync.Mutex
 }
 
 // StopWaitTimedOut reports whether the most recent Stop on this runtime's
@@ -387,6 +403,10 @@ func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) error {
 		return err
 	}
 
+	// QUM-722: a fresh start is an expected entry into Running; clear the
+	// expectingExit bit so a later unexpected handle exit classifies as Died.
+	r.expectingExit.Store(false)
+
 	r.mu.Lock()
 	r.handle = handle
 	r.snapshot.Liveness = liveness.Running
@@ -416,7 +436,10 @@ func (r *AgentRuntime) startWithSpec(spec RuntimeStartSpec) error {
 // reads it from the runtime starter's bound state, but tests inject through
 // AgentRuntimeConfig / RuntimeStartSpec seams as documented in
 // runtime_test.go.
-func (r *AgentRuntime) StartResume(onResumeFailure ...func()) error {
+//
+// restartInjection, when non-empty, is forwarded via RuntimeStartSpec to
+// replace AgentState.Prompt as the first post-resume turn (QUM-723).
+func (r *AgentRuntime) StartResume(restartInjection string, onResumeFailure ...func()) error {
 	var cb func()
 	for _, c := range onResumeFailure {
 		if c != nil {
@@ -426,13 +449,14 @@ func (r *AgentRuntime) StartResume(onResumeFailure ...func()) error {
 	}
 	r.mu.RLock()
 	spec := RuntimeStartSpec{
-		Name:            r.snapshot.Name,
-		Worktree:        r.snapshot.Worktree,
-		SprawlRoot:      r.sprawlRoot,
-		SessionID:       r.snapshot.SessionID,
-		TreePath:        r.snapshot.TreePath,
-		Resume:          true,
-		OnResumeFailure: cb,
+		Name:             r.snapshot.Name,
+		Worktree:         r.snapshot.Worktree,
+		SprawlRoot:       r.sprawlRoot,
+		SessionID:        r.snapshot.SessionID,
+		TreePath:         r.snapshot.TreePath,
+		Resume:           true,
+		OnResumeFailure:  cb,
+		RestartInjection: restartInjection,
 	}
 	r.mu.RUnlock()
 	return r.startWithSpec(spec)
@@ -448,6 +472,9 @@ func (r *AgentRuntime) AttachHandle(handle RuntimeHandle) {
 	if handle == nil {
 		return
 	}
+	// QUM-722: attaching a fresh handle = expected Running state; reset the
+	// expectingExit bit so a later unexpected exit classifies as Died.
+	r.expectingExit.Store(false)
 	r.mu.Lock()
 	r.handle = handle
 	r.snapshot.Liveness = liveness.Running
@@ -485,8 +512,10 @@ func (r *AgentRuntime) Interrupt(ctx context.Context) error {
 	return nil
 }
 
-// Wake notifies an idle runtime that persisted work is ready to be observed.
-func (r *AgentRuntime) Wake() error {
+// NotifyWake notifies an idle runtime that persisted work is ready to be
+// observed. Distinct from the lifecycle verb AgentRuntime.Wake(ctx) (QUM-724)
+// — this is the lower-level "poke the handle" path used by delegate dispatch.
+func (r *AgentRuntime) NotifyWake() error {
 	r.mu.RLock()
 	handle := r.handle
 	r.mu.RUnlock()
@@ -549,6 +578,10 @@ func (r *AgentRuntime) ForceInterruptDelivery() error {
 
 // Stop stops the tracked runtime handle, if any.
 func (r *AgentRuntime) Stop(ctx context.Context) error {
+	// QUM-722: signal an expected exit BEFORE invoking the handle stop fn so
+	// watchHandleExit observes expectingExit=true via the atomic happens-before
+	// the done close (avoids classifying a polite stop as Died).
+	r.expectingExit.Store(true)
 	return r.stopWithFunc(ctx, func(h RuntimeHandle) error { return h.Stop(ctx) })
 }
 
@@ -556,35 +589,157 @@ func (r *AgentRuntime) Stop(ctx context.Context) error {
 // path that skips the polite Session.Interrupt issued by Stop. Used by
 // Real.Retire(abandon=true). See QUM-600.
 func (r *AgentRuntime) StopAbandon(ctx context.Context) error {
+	// QUM-722: same expected-exit signal as Stop, ahead of the handle call.
+	r.expectingExit.Store(true)
 	return r.stopWithFunc(ctx, func(h RuntimeHandle) error { return h.StopAbandon(ctx) })
 }
 
-// Recover performs in-place recovery on a faulted backend session (QUM-601).
+// Pause politely stops the runtime at the next turn boundary, preserving the
+// transcript so the agent can be woken later. QUM-722.
 //
 // Behavior:
-//   - If another Recover is already in progress, returns a "recovery already
-//     in progress" error immediately (TryLock fail-fast).
-//   - The precondition is expressed through the M0 liveness projection
-//     (QUM-624/QUM-625): the request is accepted only when the snapshot
-//     projects to liveness Faulted (live or durable torn-down fault) or
-//     ResumeFailed (T19 manual-retry). A deliberately-Stopped agent is NOT a
-//     legal recover source (invariant 3, enforced in M4 now that Faulted is
-//     durable). Any other projected liveness returns a "cannot recover" error.
-//   - If the live handle's session reports !IsTerminallyFaulted(), returns
-//     ErrRecoverNotNeeded so callers can surface a "session healthy" ack.
-//   - Otherwise: builds a RuntimeStartSpec from the current snapshot, calls
-//     StopAbandon on the dead handle (errors logged but not fatal), invokes
-//     starter.Start to build a fresh handle, swaps it in atomically, and
-//     emits RuntimeEventRecovered.
+//   - When the runtime is not in-turn, Pause skips the EventBus wait and goes
+//     straight to a polite Stop.
+//   - Otherwise it subscribes to the underlying UnifiedRuntime's EventBus and
+//     waits for one of: EventTurnCompleted / EventInterrupted / EventTurnFailed
+//     / EventBackendFaulted. The wait MUST NOT issue Session.Interrupt —
+//     the in-flight turn drains naturally.
+//   - If any of the above events fires before the timeout: clean = true.
+//     Pause then calls r.Stop, writes disk Status=paused, and emits
+//     RuntimeEventPaused.
+//   - If the timeout fires first: clean = false. Pause calls r.StopAbandon
+//     and writes disk Status=killed (escalation). RuntimeEventStopped is
+//     emitted by the underlying StopAbandon flow.
 //
-// Handles that do not expose IsTerminallyFaulted() bool are treated as faulted
-// (always recover) — defensive default; production handles all expose it via
-// the embedded backend.Session.
-func (r *AgentRuntime) Recover(ctx context.Context) error {
-	if !r.recoverMu.TryLock() {
-		return fmt.Errorf("supervisor: recovery already in progress")
+// Returns (clean, nil) on success; (false, err) on a setup error. Currently
+// the err return is reserved — never non-nil — so callers can treat a
+// returned err as fatal.
+func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean bool, err error) {
+	r.mu.RLock()
+	name := r.snapshot.Name
+	sprawlRoot := r.sprawlRoot
+	r.mu.RUnlock()
+
+	// Decide whether we need to wait. InTurn() == false short-circuits the
+	// subscribe path — proving the "no-subscribe" test invariant. We probe
+	// the InTurn first WITHOUT touching the EventBus.
+	inTurn := r.InTurn()
+
+	cleanExit := true
+	if inTurn {
+		// Resolve a UnifiedRuntime for the EventBus. When unavailable, we
+		// have no signal for "turn boundary observed", so the wait collapses
+		// to a pure timeout — which is what the escalation path tests assert.
+		var ch <-chan runtimepkg.RuntimeEvent
+		var unsub func()
+		if urt := r.UnifiedRuntime(); urt != nil {
+			ch, unsub = urt.EventBus().SubscribeNamed("pause-wait", 8)
+		}
+		waitTimer := time.NewTimer(timeout)
+	waitLoop:
+		for {
+			select {
+			case ev, ok := <-ch:
+				if !ok {
+					// Either ch is nil (no bus) — select will never fire this
+					// case on a nil channel; or the bus closed. Treat closure
+					// as a natural termination signal.
+					if ch != nil {
+						break waitLoop
+					}
+				}
+				switch ev.Type {
+				case runtimepkg.EventTurnCompleted,
+					runtimepkg.EventInterrupted,
+					runtimepkg.EventTurnFailed,
+					runtimepkg.EventBackendFaulted:
+					break waitLoop
+				}
+			case <-waitTimer.C:
+				cleanExit = false
+				break waitLoop
+			case <-ctx.Done():
+				cleanExit = false
+				break waitLoop
+			}
+		}
+		waitTimer.Stop()
+		if unsub != nil {
+			unsub()
+		}
 	}
-	defer r.recoverMu.Unlock()
+
+	if cleanExit {
+		if err := r.Stop(ctx); err != nil {
+			return false, err
+		}
+		// Persist disk Status=paused so the projection rests at Paused.
+		if name != "" {
+			if cur, lErr := state.LoadAgent(sprawlRoot, name); lErr == nil && cur != nil {
+				cur.Status = state.StatusPaused
+				if sErr := state.SaveAgent(sprawlRoot, cur); sErr != nil {
+					slog.Warn("supervisor: Pause durable status save", "agent", name, "err", sErr)
+				}
+				// Mirror in-memory snapshot.
+				r.mu.Lock()
+				r.snapshot.Status = state.StatusPaused
+				r.snapshot.Liveness = liveness.Paused
+				r.mu.Unlock()
+			}
+		}
+		r.emit(RuntimeEventPaused)
+		return true, nil
+	}
+
+	// Escalation: timeout fired. Hard-abandon and stamp killed on disk.
+	if err := r.StopAbandon(ctx); err != nil {
+		return false, err
+	}
+	if name != "" {
+		if cur, lErr := state.LoadAgent(sprawlRoot, name); lErr == nil && cur != nil {
+			cur.Status = state.StatusKilled
+			if sErr := state.SaveAgent(sprawlRoot, cur); sErr != nil {
+				slog.Warn("supervisor: Pause escalation durable status save", "agent", name, "err", sErr)
+			}
+			r.mu.Lock()
+			r.snapshot.Status = state.StatusKilled
+			r.snapshot.Liveness = liveness.Killed
+			r.mu.Unlock()
+		}
+	}
+	return false, nil
+}
+
+// Wake brings an offline backend session back online. Expanded from the
+// QUM-601 in-place recover verb (QUM-724) — the accept-set is now the union
+// of liveness states that present as "offline-but-recoverable":
+// {Faulted, ResumeFailed, Paused, Killed, Died}.
+//
+// Behavior:
+//   - If another Wake is already in progress, returns a "wake already in
+//     progress" error immediately (TryLock fail-fast).
+//   - If the live handle's session reports !IsTerminallyFaulted() AND the
+//     snapshot projects to a healthy liveness, returns ErrWakeNotNeeded.
+//   - Otherwise: builds a RuntimeStartSpec from the current snapshot with
+//     Resume=true + SessionID set, tears down any abandoned handle, and
+//     invokes starter.Start. If the initial --resume attempt's OnResumeFailure
+//     fires (cookie rejected) OR the post-start health probe fails, falls
+//     back ONCE with Resume=false and an empty SessionID (fresh session).
+//   - On final success: clears disk Status → "active", transitions liveness →
+//     Running, emits RuntimeEventWoken, and returns
+//     WakeResult{Mode:"resumed"|"fresh", SessionRestored:Mode=="resumed"}.
+//
+// Handles that do not expose IsTerminallyFaulted() bool are treated as
+// faulted (defensive default; production handles all expose it via the
+// embedded backend.Session).
+func (r *AgentRuntime) Wake(ctx context.Context, restartInjection string) (*WakeResult, error) {
+	// QUM-726: restartInjection is forwarded to RuntimeStartSpec on both
+	// the resume-attempt and fresh-fallback specs so the recipient's first
+	// post-wake turn sees the wake-flavored prompt.
+	if !r.wakeMu.TryLock() {
+		return nil, fmt.Errorf("supervisor: wake already in progress")
+	}
+	defer r.wakeMu.Unlock()
 
 	r.mu.RLock()
 	starter := r.starter
@@ -592,41 +747,19 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	lifecycle := r.snapshot.Liveness
 	diskStatus := r.snapshot.Status
 	agentName := r.snapshot.Name
-	sprawlRoot := r.sprawlRoot
-	spec := RuntimeStartSpec{
+	baseSpec := RuntimeStartSpec{
 		Name:       r.snapshot.Name,
 		Worktree:   r.snapshot.Worktree,
 		SprawlRoot: r.sprawlRoot,
 		SessionID:  r.snapshot.SessionID,
 		TreePath:   r.snapshot.TreePath,
-		// Recover instructs the new backend session to resume the prior
-		// conversation transcript so history is preserved (QUM-601).
-		Resume: true,
 	}
 	r.mu.RUnlock()
 
-	// QUM-606 R3: propagate OnResumeFailure into the recover-path
-	// RuntimeStartSpec so a rejected --resume cookie flips the agent to
-	// StatusResumeFailed (mirrors Real.RecoverAgents).
-	spec.OnResumeFailure = func() {
-		cur, lErr := state.LoadAgent(sprawlRoot, agentName)
-		if lErr != nil {
-			slog.Warn("supervisor: Recover OnResumeFailure load", "agent", agentName, "err", lErr)
-			return
-		}
-		cur.Status = state.StatusResumeFailed
-		if sErr := state.SaveAgent(sprawlRoot, cur); sErr != nil {
-			slog.Warn("supervisor: Recover OnResumeFailure save", "agent", agentName, "err", sErr)
-			return
-		}
-		r.SyncAgentState(cur)
-	}
-
-	// QUM-624 (slice M2): the recover precondition is expressed through the
-	// M0 liveness projection rather than a raw Lifecycle literal. Compute the
-	// live-handle terminal-fault bit first — it feeds both the healthy-handle
-	// short-circuit and the projection. Handles that don't expose the probe
-	// are treated as faulted (defensive default; preserves prior behavior).
+	// Healthy-live-handle short-circuit. A non-nil handle that reports
+	// !IsTerminallyFaulted() is a no-op wake — only the probe-reports-healthy
+	// case returns ErrWakeNotNeeded; the no-probe path treats as faulted so
+	// it still wakes.
 	faulted := false
 	if handle != nil {
 		if probe, ok := handle.(terminalFaultProbe); ok {
@@ -635,58 +768,35 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 			faulted = true
 		}
 	}
-
-	// Preserve the healthy-live-handle sentinel: a non-nil handle that
-	// reports !IsTerminallyFaulted() is a no-op recover. Only the probe-
-	// reports-healthy case returns ErrRecoverNotNeeded; the no-probe path
-	// falls through (faulted == true) so it still recovers.
 	if handle != nil && !faulted {
-		return ErrRecoverNotNeeded
+		return nil, ErrWakeNotNeeded
 	}
 
-	// Project the multi-source snapshot onto a unified liveness. Recover is
-	// accepted iff the agent projects to a recoverable fault state:
-	//   - Faulted: live-handle fault (Started + TerminalErr — the lie window),
-	//     OR a torn-down fault (watchHandleExit stamped durable
-	//     Status="faulted" → projects Faulted regardless of Lifecycle=Stopped).
-	//   - ResumeFailed: T19 manual-retry (disk Status="resume_failed" →
-	//     Lifecycle=Registered + snapshot.Status="resume_failed").
-	// Everything else (Stopped/Running/Killed/Retired/Unstarted/...) is a hard
-	// reject.
-	//
-	// QUM-625 (slice M4): invariant 3 is ENFORCED here. A *deliberately*
-	// Stopped agent now carries durable Status="stopped" (stopWithFunc) and
-	// projects Stopped, so it is no longer a legal recover source. A torn-down
-	// fault carries durable Status="faulted" (watchHandleExit) and projects
-	// Faulted, so it remains recoverable even though Lifecycle=Stopped. This is
-	// why Stopped can safely drop out of the accept-set: the two cases are now
-	// distinguishable by the durable disk Status.
+	// QUM-724: accept-set is the union of offline-but-recoverable livenesses.
+	// Project the snapshot through liveness.From; reject anything outside the
+	// accept-set with a clear error.
 	st := liveness.From(liveness.Snapshot{
 		Lifecycle:   livenessToLifecycleString(lifecycle),
 		TerminalErr: faulted,
 		DiskStatus:  diskStatus,
 	})
-	if st.Liveness != liveness.Faulted &&
-		st.Liveness != liveness.ResumeFailed {
-		return fmt.Errorf("supervisor: agent %q is in liveness %q, cannot recover", spec.Name, st)
+	switch st.Liveness {
+	case liveness.Faulted, liveness.ResumeFailed,
+		liveness.Paused, liveness.Killed, liveness.Died:
+		// accept — fall through to wake mechanics
+	default:
+		return nil, fmt.Errorf("supervisor: agent %q is in liveness %q, cannot wake", agentName, st)
 	}
 	if starter == nil {
-		return fmt.Errorf("supervisor: agent %q has no runtime starter, cannot recover", spec.Name)
-	}
-	// When lifecycle == Started, a live handle MUST be attached. When
-	// lifecycle == Stopped (post-fault), the handle was already detached
-	// by watchHandleExit, so it is expected to be nil — there is nothing
-	// to tear down.
-	if lifecycle == liveness.Running && handle == nil {
-		return fmt.Errorf("supervisor: agent %q has no live handle, cannot recover", spec.Name)
+		return nil, fmt.Errorf("supervisor: agent %q has no runtime starter, cannot wake", agentName)
 	}
 
 	// Detach the watcher BEFORE StopAbandon so the watchHandleExit
 	// goroutine's `if r.handle == handle` guard sees a stale match and
 	// no-ops when the abandoned handle's Done() closes. This suppresses
 	// the spurious RuntimeEventStopped that would otherwise race against
-	// the post-restart RuntimeEventRecovered emission. Skipped when there
-	// is no live handle (post-R2-fault Stopped lifecycle).
+	// the post-restart RuntimeEventWoken emission. Skipped when there
+	// is no live handle (post-fault Stopped/Died/etc lifecycle).
 	if handle != nil {
 		r.mu.Lock()
 		r.handle = nil
@@ -694,47 +804,91 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 
 		if err := handle.StopAbandon(ctx); err != nil {
 			slog.Warn(
-				"supervisor: Recover StopAbandon of faulted handle returned error; continuing with restart",
-				slog.String("agent", spec.Name),
+				"supervisor: Wake StopAbandon of abandoned handle returned error; continuing with restart",
+				slog.String("agent", agentName),
 				slog.Any("err", err),
 			)
 		}
 	}
 
-	// QUM-606 R1 / QUM-612: subprocess lifetime must outlive the MCP request
-	// ctx. RuntimeStarter.Start no longer accepts a ctx — the QUM-606 bug
-	// class (exec.CommandContext SIGKILLing the new claude as soon as
-	// toolRecover returns) is now impossible by signature. The new handle's
-	// teardown path (Stop / StopAbandon / watchHandleExit) owns subprocess
-	// lifetime.
-	newHandle, err := starter.Start(spec)
-	if err != nil {
-		// Recovery failed — the agent has no live handle. Flip lifecycle
-		// to Stopped and emit so subscribers reflect the broken state.
-		r.mu.Lock()
-		r.snapshot.Liveness = liveness.Stopped
-		r.mu.Unlock()
-		r.emit(RuntimeEventStopped)
-		return fmt.Errorf("supervisor: recover Start for %q: %w", spec.Name, err)
+	// First attempt: --resume. Wire OnResumeFailure into a local atomic
+	// flag so a synchronously-fired callback flips the fallback bit without
+	// writing resume_failed to disk during the in-band wake flow (we don't
+	// want to persist a transient signal; on success the disk Status flips
+	// straight to "active").
+	var resumeRejected atomic.Bool
+	resumeSpec := baseSpec
+	resumeSpec.Resume = true
+	resumeSpec.RestartInjection = restartInjection
+	resumeSpec.OnResumeFailure = func() {
+		resumeRejected.Store(true)
 	}
 
-	// QUM-606 R4: post-Start health probe. The starter may return a
-	// handle whose backend session has already faulted (e.g. --resume
-	// cookie rejected, or the transcript replays the wedge frame).
-	// Wait up to recoverHealthProbeTimeout for either a healthy beat
-	// (any non-init protocol frame on the handle's UnifiedRuntime
-	// EventBus) OR an IsTerminallyFaulted flip. Treat timeout or fault
-	// as recovery failure: tear the new handle down, return error, and
-	// emit RuntimeEventStopped so the TUI fault banner re-fires.
-	if probeErr := probeNewHandleHealth(newHandle, recoverHealthProbeTimeout); probeErr != nil {
-		stopCtx, cancel := context.WithTimeout(context.Background(), recoverStopAbandonTimeout)
+	mode := "resumed"
+	newHandle, startErr := starter.Start(resumeSpec)
+	needFallback := false
+	if startErr != nil {
+		// Initial Start error is treated as needing a fresh fallback only if
+		// it's the OnResumeFailure signal in disguise; but starter.Start
+		// errors are conservatively fatal — fall back once with fresh.
+		needFallback = true
+	} else if probeErr := probeNewHandleHealth(newHandle, wakeHealthProbeTimeout); probeErr != nil {
+		stopCtx, cancel := context.WithTimeout(context.Background(), wakeStopAbandonTimeout)
 		_ = newHandle.StopAbandon(stopCtx)
 		cancel()
-		r.mu.Lock()
-		r.snapshot.Liveness = liveness.Stopped
-		r.mu.Unlock()
-		r.emit(RuntimeEventStopped)
-		return fmt.Errorf("supervisor: recover health probe for %q: %w", spec.Name, probeErr)
+		newHandle = nil
+		needFallback = true
+		slog.Info("supervisor: Wake resume-path health probe failed; falling back to fresh",
+			slog.String("agent", agentName), slog.Any("err", probeErr))
+	} else if resumeRejected.Load() {
+		// OnResumeFailure fired synchronously before/during Start return.
+		stopCtx, cancel := context.WithTimeout(context.Background(), wakeStopAbandonTimeout)
+		_ = newHandle.StopAbandon(stopCtx)
+		cancel()
+		newHandle = nil
+		needFallback = true
+		slog.Info("supervisor: Wake resume cookie rejected; falling back to fresh",
+			slog.String("agent", agentName))
+	}
+
+	// OnResumeFailure may also fire shortly AFTER a seemingly-healthy probe,
+	// but the typical signal lands inside the probe window (stderr "No
+	// conversation found" marker hits before any frame). The above checks
+	// cover the in-band cases the tests pin.
+
+	if needFallback {
+		mode = "fresh"
+		freshSpec := baseSpec
+		freshSpec.Resume = false
+		// Mint a fresh session_id host-side so the backend session config
+		// (and thus newHandle.SessionID()) carries the new id forward — the
+		// snapshot + on-disk SessionID update below depends on this. Letting
+		// the spec carry SessionID="" and trusting claude to self-generate
+		// loses the id at the host (session.config.SessionID is set at
+		// construction time and never re-populated from the init frame), so
+		// a later sprawl-restart's RecoverAgents would try to --resume the
+		// now-defunct old session_id. QUM-744.
+		freshSID, sidErr := state.GenerateUUID()
+		if sidErr != nil {
+			r.stampDoublyFailedWake(agentName)
+			return nil, fmt.Errorf("supervisor: wake fresh SessionID mint for %q: %w", agentName, sidErr)
+		}
+		freshSpec.SessionID = freshSID
+		freshSpec.RestartInjection = restartInjection
+		freshSpec.OnResumeFailure = nil
+		var freshErr error
+		newHandle, freshErr = starter.Start(freshSpec)
+		if freshErr != nil {
+			r.stampDoublyFailedWake(agentName)
+			return nil, fmt.Errorf("supervisor: wake fresh Start for %q: %w", agentName, freshErr)
+		}
+		if probeErr := probeNewHandleHealth(newHandle, wakeHealthProbeTimeout); probeErr != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), wakeStopAbandonTimeout)
+			_ = newHandle.StopAbandon(stopCtx)
+			cancel()
+			r.stampDoublyFailedWake(agentName)
+			return nil, fmt.Errorf("supervisor: wake fresh health probe for %q: %w", agentName, probeErr)
+		}
 	}
 
 	r.mu.Lock()
@@ -744,46 +898,80 @@ func (r *AgentRuntime) Recover(ctx context.Context) error {
 	if sid := newHandle.SessionID(); sid != "" {
 		r.snapshot.SessionID = sid
 	}
-	// QUM-625 (slice M4): a successful in-place recover clears the durable
-	// resting Status (e.g. "faulted") and projects back to Running. Without
-	// this, disk Status would stay "faulted" (invariant 7 violation): merge
-	// would reject the healthy agent and a clean exit would leave it
-	// non-auto-resumable. Mirror Real.RecoverAgents which writes active on
-	// success.
+	// QUM-625/QUM-724: a successful wake clears the durable resting Status
+	// (e.g. "faulted"/"paused"/"killed"/"died") and projects back to Running.
 	r.snapshot.Status = state.StatusActive
-	recoveredName := r.snapshot.Name
+	wokenName := r.snapshot.Name
+	wokenSID := r.snapshot.SessionID
 	r.mu.Unlock()
 
+	// QUM-722: re-arm expectingExit so a future unexpected exit classifies
+	// as Died rather than inheriting a stale Pause/Stop intent.
+	r.expectingExit.Store(false)
+
 	// Best-effort durable persist OUTSIDE r.mu so disk Status tracks the
-	// recovered liveness (Running → "active").
-	if recoveredName != "" {
-		if cur, lErr := state.LoadAgent(r.sprawlRoot, recoveredName); lErr != nil {
-			slog.Warn("supervisor: Recover durable status load", "agent", recoveredName, "err", lErr)
+	// woken liveness (Running → "active") AND — critical for the fresh
+	// fallback path — disk SessionID tracks the freshly-minted session so a
+	// later sprawl-restart's RecoverAgents resumes the right transcript
+	// rather than the now-defunct one. (QUM-744)
+	if wokenName != "" {
+		if cur, lErr := state.LoadAgent(r.sprawlRoot, wokenName); lErr != nil {
+			slog.Warn("supervisor: Wake durable status load", "agent", wokenName, "err", lErr)
 		} else {
 			cur.Status = state.StatusActive
+			if wokenSID != "" && cur.SessionID != wokenSID {
+				cur.SessionID = wokenSID
+			}
 			if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
-				slog.Warn("supervisor: Recover durable status save", "agent", recoveredName, "err", sErr)
+				slog.Warn("supervisor: Wake durable status save", "agent", wokenName, "err", sErr)
 			}
 		}
 	}
 
-	r.emit(RuntimeEventRecovered)
+	r.emit(RuntimeEventWoken)
 
 	if doneAware, ok := newHandle.(runtimeHandleDone); ok && doneAware.Done() != nil {
 		r.watchHandleExit(newHandle, doneAware.Done())
 	}
-	return nil
+	return &WakeResult{Mode: mode, SessionRestored: mode == "resumed"}, nil
 }
 
-// recoverHealthProbeTimeout bounds how long AgentRuntime.Recover waits for
-// the freshly-started handle to demonstrate liveness (a non-init protocol
-// frame on its UnifiedRuntime EventBus) before declaring recovery a
-// failure. See QUM-606 R4.
-var recoverHealthProbeTimeout = 5 * time.Second
+// stampDoublyFailedWake records the terminal "wake fell back to fresh and
+// fresh also failed" outcome on both the in-memory snapshot and disk. Both
+// the resume-attempt and fresh-attempt have already been torn down by the
+// time this is called, so there is no live handle whose watchHandleExit
+// could race the disk Status — we stamp StatusResumeFailed directly here
+// (QUM-744) rather than relying on watcher normalization.
+func (r *AgentRuntime) stampDoublyFailedWake(agentName string) {
+	r.mu.Lock()
+	r.snapshot.Liveness = liveness.Stopped
+	r.snapshot.Status = state.StatusResumeFailed
+	r.mu.Unlock()
+	if agentName != "" {
+		if cur, lErr := state.LoadAgent(r.sprawlRoot, agentName); lErr != nil {
+			slog.Warn("supervisor: Wake doubly-failed durable status load",
+				slog.String("agent", agentName), slog.Any("err", lErr))
+		} else if cur != nil {
+			cur.Status = state.StatusResumeFailed
+			if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
+				slog.Warn("supervisor: Wake doubly-failed durable status save",
+					slog.String("agent", agentName), slog.Any("err", sErr))
+			}
+		}
+	}
+	r.emit(RuntimeEventStopped)
+}
 
-// recoverStopAbandonTimeout bounds the StopAbandon call used to tear down
+// wakeHealthProbeTimeout bounds how long AgentRuntime.Wake waits for the
+// freshly-started handle to demonstrate liveness (a non-init protocol frame
+// on its UnifiedRuntime EventBus) before declaring the attempt a failure.
+// See QUM-606 R4. QUM-724 (renamed from recoverHealthProbeTimeout).
+var wakeHealthProbeTimeout = 5 * time.Second
+
+// wakeStopAbandonTimeout bounds the StopAbandon call used to tear down
 // a handle that failed the post-Start health probe.
-var recoverStopAbandonTimeout = 5 * time.Second
+// QUM-724 (renamed from recoverStopAbandonTimeout).
+var wakeStopAbandonTimeout = 5 * time.Second
 
 // probeNewHandleHealth waits up to timeout for the newly-started handle to
 // either (a) emit a non-init protocol frame on its UnifiedRuntime EventBus,
@@ -809,7 +997,7 @@ func probeNewHandleHealth(handle RuntimeHandle, timeout time.Duration) error {
 		return fmt.Errorf("session faulted before health probe began")
 	}
 
-	ch, unsub := rt.EventBus().SubscribeNamed("recover-health-probe", 8)
+	ch, unsub := rt.EventBus().SubscribeNamed("wake-health-probe", 8)
 	defer unsub()
 
 	// Re-check fault state AFTER subscribing to close the race where the
@@ -1017,27 +1205,37 @@ func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{
 		if p, ok := handle.(terminalFaultProbe); ok {
 			wasFaulted = p.IsTerminallyFaulted()
 		}
+		// QUM-722: read expectingExit AFTER receiving <-done. The Store in
+		// Stop/StopAbandon happens-before the close of done (channel close
+		// synchronizes), so a paired Stop+close observes expectingExit=true.
+		// An unexpected exit observes false → classify as Died.
+		expectedExit := r.expectingExit.Load()
 
 		emitStopped := false
 		matched := false
 		var name string
 		var durableStatus string
+		var newLiveness liveness.AgentLiveness
 		r.mu.Lock()
 		if r.handle == handle {
 			matched = true
 			name = r.snapshot.Name
 			r.handle = nil
-			if r.snapshot.Liveness == liveness.Running {
-				r.snapshot.Liveness = liveness.Stopped
-				emitStopped = true
-			}
-			// Stamp a durable resting Status so the projection distinguishes a
-			// torn-down fault (Faulted) from a clean stop (Stopped) after the
-			// handle is gone — Lifecycle stays Stopped, From() decodes Status.
-			if wasFaulted {
+			// QUM-722: three-way classifier — faulted beats died beats stopped.
+			switch {
+			case wasFaulted:
+				newLiveness = liveness.Faulted
 				durableStatus = state.StatusFaulted
-			} else {
+			case expectedExit:
+				newLiveness = liveness.Stopped
 				durableStatus = state.StatusStopped
+			default:
+				newLiveness = liveness.Died
+				durableStatus = state.StatusDied
+			}
+			if r.snapshot.Liveness == liveness.Running {
+				r.snapshot.Liveness = newLiveness
+				emitStopped = true
 			}
 			r.snapshot.Status = durableStatus
 		}
@@ -1057,8 +1255,11 @@ func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{
 				// terminal Status after runtime.Stop returns, but guard here too so
 				// a late watcher goroutine can't race a terminal write.
 				switch cur.Status {
-				case state.StatusKilled, state.StatusRetired, state.StatusRetiring:
-					// leave terminal disk states as-is
+				case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusPaused:
+					// QUM-722: also preserve StatusPaused — a clean Pause flow
+					// stamped paused on disk before tearing the handle down;
+					// the watcher must not clobber it with stopped/died.
+					// leave terminal / paused disk states as-is
 				default:
 					cur.Status = durableStatus
 					if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {

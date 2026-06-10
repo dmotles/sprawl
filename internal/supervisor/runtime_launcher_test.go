@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/agentloop"
 	backend "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/inboxprompt"
@@ -152,17 +151,17 @@ func writeAgentState(t *testing.T, sprawlRoot string, st *state.AgentState) {
 
 // TestInProcessUnifiedStarter_Start_ReuseBuildAgentSessionSpec ensures that
 // the unified starter feeds the backend adapter a SessionSpec produced by
-// agentloop.BuildAgentSessionSpec. The load-bearing assertion is that
-// engineer agents carry agent.TDDSubAgentsJSON() via spec.Agents and
-// researchers do not. See QUM-408.
+// agentloop.BuildAgentSessionSpec. The load-bearing assertion is that the
+// captured spec carries the agent identity/session, regardless of type.
+// The `--agents` plumbing was removed end-to-end in QUM-716 (#4.5); the
+// historical engineer-only injection is no longer relevant.
 func TestInProcessUnifiedStarter_Start_ReuseBuildAgentSessionSpec(t *testing.T) {
 	cases := []struct {
-		name       string
-		agentType  string
-		wantAgents string
+		name      string
+		agentType string
 	}{
-		{"engineer carries TDD sub-agents", "engineer", agent.TDDSubAgentsJSON()},
-		{"researcher omits sub-agents", "researcher", ""},
+		{"engineer", "engineer"},
+		{"researcher", "researcher"},
 	}
 
 	for _, tc := range cases {
@@ -210,9 +209,6 @@ func TestInProcessUnifiedStarter_Start_ReuseBuildAgentSessionSpec(t *testing.T) 
 			}
 			defer func() { _ = handle.Stop(context.Background()) }()
 
-			if got := captured.Agents; got != tc.wantAgents {
-				t.Fatalf("captured SessionSpec.Agents = %q, want %q", got, tc.wantAgents)
-			}
 			if captured.Identity != "alice" {
 				t.Errorf("Identity = %q, want \"alice\"", captured.Identity)
 			}
@@ -2130,5 +2126,81 @@ func TestInProcessUnifiedStarter_BindInstallsWakeFn(t *testing.T) {
 	uh.coord.mu.Unlock()
 	if wakeIsNil {
 		t.Fatal("sweepCoordinator.wake is nil after Start — Bind step did not run before rt.Start")
+	}
+}
+
+// TestStartUsesRestartInjectionWhenSet (QUM-723) — when
+// RuntimeStartSpec.RestartInjection is non-empty, the in-process unified
+// starter must feed that string into runtimepkg.RuntimeConfig.InitialPrompt
+// (overriding the persisted AgentState.Prompt). When RestartInjection is
+// empty, InitialPrompt falls back to AgentState.Prompt as before.
+//
+// This is the seam that delivers the neutral "Sprawl was just restarted..."
+// nudge into the resumed session's first turn (see agent.RestartInjectionPrompt)
+// instead of replaying whatever was in agent_state.Prompt at suspend.
+func TestStartUsesRestartInjectionWhenSet(t *testing.T) {
+	cases := []struct {
+		name             string
+		restartInjection string
+		agentPrompt      string
+		wantInitial      string
+	}{
+		{
+			name:             "empty RestartInjection falls back to AgentState.Prompt",
+			restartInjection: "",
+			agentPrompt:      "do the original thing",
+			wantInitial:      "do the original thing",
+		},
+		{
+			name:             "non-empty RestartInjection overrides AgentState.Prompt",
+			restartInjection: "Sprawl was just restarted. If you were in the middle of something, continue where you left off. Otherwise, hang tight.",
+			agentPrompt:      "do the original thing",
+			wantInitial:      "Sprawl was just restarted. If you were in the middle of something, continue where you left off. Otherwise, hang tight.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldStart := unifiedAdapterStartFn
+			oldNew := unifiedRuntimeNewFn
+			defer func() {
+				unifiedAdapterStartFn = oldStart
+				unifiedRuntimeNewFn = oldNew
+			}()
+
+			sprawlRoot := t.TempDir()
+			worktree := filepath.Join(sprawlRoot, "wt")
+			_ = os.MkdirAll(worktree, 0o755)
+			writeAgentState(t, sprawlRoot, &state.AgentState{
+				Name: "alice", Type: "researcher", Worktree: worktree,
+				SessionID: "sess-alice", Prompt: tc.agentPrompt,
+			})
+
+			fakeSession := newFakeBackendSession("sess-alice", backend.Capabilities{})
+			unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
+				return fakeSession, nil
+			}
+			var capturedInitial string
+			unifiedRuntimeNewFn = func(cfg runtimepkg.RuntimeConfig) *runtimepkg.UnifiedRuntime {
+				capturedInitial = cfg.InitialPrompt
+				return runtimepkg.New(cfg)
+			}
+
+			starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
+			handle, err := starter.Start(RuntimeStartSpec{
+				Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
+				SessionID: "sess-alice", TreePath: "weave/alice",
+				Resume:           tc.restartInjection != "",
+				RestartInjection: tc.restartInjection,
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer func() { _ = handle.Stop(context.Background()) }()
+
+			if capturedInitial != tc.wantInitial {
+				t.Errorf("RuntimeConfig.InitialPrompt = %q, want %q", capturedInitial, tc.wantInitial)
+			}
+		})
 	}
 }

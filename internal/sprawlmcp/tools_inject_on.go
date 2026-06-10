@@ -1,10 +1,10 @@
 //go:build sprawl_test
 
-// Build-tag-gated test seam used by the QUM-606 live-recover e2e harness.
-// `_test_induce_wedge` drives a deterministic backend session fault on a
-// named agent's runtime so the harness can validate that
-// mcp__sprawl__recover survives an MCP-request-ctx cancel and that the
-// recovered subprocess actually outlives the recover call. Compiled in
+// Build-tag-gated test seam used by the QUM-606/QUM-724 live-wake e2e
+// harness. `_test_induce_wedge` drives a deterministic backend session
+// fault on a named agent's runtime so the harness can validate that
+// mcp__sprawl__wake survives an MCP-request-ctx cancel and that the
+// recovered subprocess actually outlives the wake call. Compiled in
 // ONLY when the `sprawl_test` build tag is set (e.g. `go build -tags
 // sprawl_test`). Production builds do not include this file, so the tool
 // is wholly absent from the production MCP surface.

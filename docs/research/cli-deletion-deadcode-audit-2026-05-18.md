@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # Dead-Code Audit After CLI Deletion (QUM-568, Phase 2.3d)
 
 **Author:** ghost (researcher under weave)

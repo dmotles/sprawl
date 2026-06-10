@@ -843,6 +843,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.toasts.Spawn(msg.Toast)
 		return m, cmd
 
+	case AgentDiedMsg:
+		// QUM-725: surface a persistent (user-only-dismiss) error toast when
+		// a child runtime transitions to Died.
+		cmd := m.toasts.Spawn(BuildDeathToast(msg, time.Now()))
+		return m, cmd
+
 	case ToastDismissMsg:
 		if msg.All {
 			m.toasts.DismissAll()

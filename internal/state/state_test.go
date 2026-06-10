@@ -268,6 +268,9 @@ func TestStatusConstants_Values(t *testing.T) {
 		"StatusResumeFailed": StatusResumeFailed,
 		"StatusFaulted":      StatusFaulted,
 		"StatusStopped":      StatusStopped,
+		// QUM-722: new lifecycle states for pause/death.
+		"StatusPaused": StatusPaused,
+		"StatusDied":   StatusDied,
 	}
 	wants := map[string]string{
 		"StatusActive":       "active",
@@ -280,6 +283,8 @@ func TestStatusConstants_Values(t *testing.T) {
 		"StatusResumeFailed": "resume_failed",
 		"StatusFaulted":      "faulted",
 		"StatusStopped":      "stopped",
+		"StatusPaused":       "paused",
+		"StatusDied":         "died",
 	}
 	for name, got := range cases {
 		if got != wants[name] {
@@ -348,6 +353,7 @@ func TestSaveAgent_ConcurrentWriters_NoCorruption(t *testing.T) {
 		StatusKilled, StatusRetired, StatusRetiring,
 		StatusDone, StatusResumeFailed,
 		StatusFaulted, StatusStopped,
+		StatusPaused, StatusDied, // QUM-722
 	}
 	allowed := make(map[string]bool, len(statuses))
 	for _, s := range statuses {

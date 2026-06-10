@@ -9,11 +9,17 @@ import (
 
 // EnvConfig holds runtime environment information for agent prompts.
 type EnvConfig struct {
-	WorkDir  string // The agent's working directory (worktree path).
-	Platform string // OS platform (e.g. "linux", "darwin").
-	Shell    string // The user's shell (e.g. "/bin/zsh").
-	TestMode bool   // When true, inject sandbox warning into prompt.
+	WorkDir    string // The agent's working directory (worktree path).
+	Platform   string // OS platform (e.g. "linux", "darwin").
+	Shell      string // The user's shell (e.g. "/bin/zsh").
+	TestMode   bool   // When true, inject sandbox warning into prompt.
+	Subagent   bool   // When true, the agent shares its parent's worktree/branch. QUM-709.
+	ParentName string // Name of the parent agent when Subagent is true. QUM-709.
 }
+
+// subagentBanner is prepended to a sub-agent's system prompt. The %q
+// placeholder receives the parent agent's name. QUM-709.
+const subagentBanner = "# SUB-AGENT BANNER:\nYou are a SPRAWL SUB-AGENT sharing the git worktree and branch of your parent agent %q. Do NOT git checkout, git switch, or git branch — your commits land directly on your parent's working branch. Coordinate file edits with your parent. You retain your own inbox, MCP session, and state file."
 
 // DefaultEnvConfig returns an EnvConfig populated from the current runtime.
 func DefaultEnvConfig() EnvConfig {
@@ -147,7 +153,7 @@ Concurrent changes to the same files create merge conflicts that cost more to re
 
 const rootFollowThrough = `FOLLOW THROUGH:
 If you have worked with the user on de-composing a large task into multiple
-chunks, and you are helping the user farm the work out to sub-agents, and you
+chunks, and you are helping the user farm the work out to sidechains, and you
 know the user's intent is to run ALL the tasks down and complete them - after
 one wave of agents completes, or an agent finishes and unblocks another chunk
 of work, ALWAYS automatically schedule the next chunk of work that you and the
@@ -228,7 +234,7 @@ func BuildRootPrompt(cfg PromptConfig) string {
 	base := strings.Join(sections, "\n\n")
 
 	if cfg.AgentCLI == "claude-code" {
-		base += "\n" + claudeCodeSubAgentGuidance()
+		base += "\n" + claudeCodeSidechainGuidance()
 		base += "\n" + rootVerifyingWork
 	} else {
 		base += "\n\n" + rootVerifyingWork
@@ -256,6 +262,9 @@ func BuildEngineerPrompt(agentName, parentName, branchName string, env EnvConfig
 		engineerToneSection,
 		engineerBranchRebasingSection,
 		childRulesBlock(parentName),
+	}
+	if env.Subagent {
+		sections = append([]string{fmt.Sprintf(subagentBanner, env.ParentName)}, sections...)
 	}
 
 	prompt := strings.Join(sections, "\n\n")
@@ -294,6 +303,9 @@ func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConf
 		researcherReflectionSection,
 		researcherRulesBlock(parentName),
 	}
+	if env.Subagent {
+		sections = append([]string{fmt.Sprintf(subagentBanner, env.ParentName)}, sections...)
+	}
 
 	prompt := strings.Join(sections, "\n\n")
 
@@ -301,6 +313,27 @@ func BuildResearcherPrompt(agentName, parentName, branchName string, env EnvConf
 		prompt += testSandboxWarning
 	}
 	return prompt
+}
+
+// BuildQAPrompt constructs the system prompt for a QA agent.
+func BuildQAPrompt(agentName, parentName, branchName string, env EnvConfig) string {
+	sections := []string{
+		qaIdentitySection(agentName, parentName, branchName),
+		qaReflectionSection,
+		qaVerificationProtocolSection(agentName),
+		qaRulesBlock(parentName),
+	}
+	if env.Subagent {
+		sections = append([]string{fmt.Sprintf(subagentBanner, env.ParentName)}, sections...)
+	}
+
+	prompt := strings.Join(sections, "\n\n")
+
+	result := prompt + envContextBlock(branchName, env)
+	if env.TestMode {
+		result += testSandboxWarning
+	}
+	return result
 }
 
 // BuildManagerPrompt constructs the system prompt for a manager agent.
@@ -317,11 +350,14 @@ func BuildManagerPrompt(agentName, parentName, branchName, family string, env En
 		managerScopeSection(),
 		managerFollowThroughSection,
 		managerTaskTrackingSection,
-		managerSubAgentGuidanceSection,
+		managerSidechainGuidanceSection,
 		managerSystemSection(),
 		managerExecutingActionsSection,
 		managerToneSection,
 		managerRulesBlock(parentName),
+	}
+	if env.Subagent {
+		sections = append([]string{fmt.Sprintf(subagentBanner, env.ParentName)}, sections...)
 	}
 
 	prompt := strings.Join(sections, "\n\n")

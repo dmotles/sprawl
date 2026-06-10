@@ -278,7 +278,7 @@ func TestMerge_NonMergeOpsNotSerialized(t *testing.T) {
 	}
 
 	// Spawn must NOT block on the merge lock.
-	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error) {
+	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error) {
 		return &state.AgentState{Name: "n", Type: "engineer", Family: "engineering", Parent: "weave", Status: "active"}, nil
 	}
 	spawnDone := make(chan error, 1)

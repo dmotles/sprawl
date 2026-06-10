@@ -19,6 +19,10 @@ const (
 	Killed
 	Retiring
 	Retired
+	// QUM-722: new lifecycle states for pause/death.
+	Pausing
+	Paused
+	Died
 )
 
 // String renders the liveness as a lowercase token.
@@ -50,6 +54,12 @@ func (l AgentLiveness) String() string {
 		return "retiring"
 	case Retired:
 		return "retired"
+	case Pausing:
+		return "pausing"
+	case Paused:
+		return "paused"
+	case Died:
+		return "died"
 	default:
 		return fmt.Sprintf("unknown(%d)", int(l))
 	}

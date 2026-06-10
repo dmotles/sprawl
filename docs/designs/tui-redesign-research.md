@@ -77,7 +77,7 @@ needs design call below. **DROP** = goes away under the new model.
 | 3 | Tool call lifecycle (pending spinner → success/failure glyph → result) | `app.go` spinner + `tool_header.go` | **PORT** — spike already has `toolCallItem` with ⚙/⠿/✗ |
 | 4 | Expand/collapse tool call inputs/outputs | Ctrl+O (global flag), `viewport.go` | **PORT** — spike's `Expandable` + Ctrl+O is the target |
 | 5 | Thinking-block rendering | TurnThinking state in status bar (text not shown) | **DECIDE** — promote to a collapsed `thinkingItem` (spike already has it) |
-| 6 | Nested / sub-agent tool calls (Depth>0 indented under parent Agent call) | `viewport.go` QUM-379/386 | **PORT** with care — indent rule survives |
+| 6 | Nested / sidechain tool calls (Depth>0 indented under parent Agent call) | `viewport.go` QUM-379/386 | **PORT** with care — indent rule survives |
 | 7 | Tree panel (agent list, status dots, unread badges, cost tags, FAULT badge) | `tree.go` | **DECIDE** — collapses into the 3-line header (multi-agent question §3.1) |
 | 8 | Activity panel (tool-call tail for observed agent) | `activity.go`, `activity_stream.go` | **DECIDE** — sidebar dies; see §3.2 |
 | 9 | Status bar (cost, tokens, session ID, turn state, version, agent count, pending MCP ops, validate pill, question pill) | `statusbar.go` | **PORT** — already 1 line, fits spike model |

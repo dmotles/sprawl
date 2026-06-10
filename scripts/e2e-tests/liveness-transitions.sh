@@ -8,7 +8,7 @@
 #
 # Build tag: needs_build_tags=sprawl_test so the build-tag-gated
 # `mcp__sprawl___test_induce_wedge` MCP tool is compiled in (same as
-# recover-live).
+# wake-live).
 #
 # Live phases (driven against this single TUI session):
 #   P1  spawn→idle      : disk Status=active; process_alive=true        (T1/T2)
@@ -221,23 +221,23 @@ test_run() {
         return 1
     fi
 
-    # --- Phase 5 (T9/T10): recover-from-faulted → new --resume PID, back to alive ---
-    # QUM-624 M2: the Recover precondition now keys off the liveness projection
-    # (accepts Faulted/Stopped/ResumeFailed). A genuinely-faulted agent (P3) must
-    # still recover in place: a NEW claude --resume subprocess replaces the dead
-    # one and the agent returns to Running (process_alive=true). This subsumes the
-    # recover-live row's PID-swap guard.
+    # --- Phase 5 (T9/T10): wake-from-faulted → new --resume PID, back to alive ---
+    # QUM-624 M2 / QUM-724: the wake precondition keys off the liveness projection
+    # (accepts Faulted/Stopped/ResumeFailed/Paused/Killed/Died). A genuinely-faulted
+    # agent (P3) must still recover in place: a NEW claude --resume subprocess
+    # replaces the dead one and the agent returns to Running (process_alive=true).
+    # This subsumes the wake-live row's PID-swap guard.
     echo ""
-    echo "=== Phase 5 (T9/T10): recover from faulted → swap subprocess, back to Running ==="
-    local RECOVER_PROMPT="Call mcp__sprawl__recover with agent_name='$CHILD_NAME'. Quote the exact tool response back to me."
+    echo "=== Phase 5 (T9/T10): wake from faulted → swap subprocess, back to Running ==="
+    local RECOVER_PROMPT="Call mcp__sprawl__wake with agent_name='$CHILD_NAME'. Quote the exact tool response back to me."
     _stmux send-keys -t "$SESSION" "$RECOVER_PROMPT"
     sleep 0.5
     _stmux send-keys -t "$SESSION" Enter
 
-    if wait_for_pattern_fast "$SESSION" "Recovered backend session for $CHILD_NAME" 60; then
-        pass "P5: mcp__sprawl__recover returned success ack (Faulted accepted as recover source)"
+    if wait_for_pattern_fast "$SESSION" '"mode":"resumed"|"mode":"fresh"|"mode": "resumed"|"mode": "fresh"' 60; then
+        pass "P5: mcp__sprawl__wake returned success ack (Faulted accepted as wake source)"
     else
-        fail "P5: recover success ack did not appear within 60s"
+        fail "P5: wake success ack did not appear within 60s"
         capture_pane "$SESSION" | tail -60 >&2
         e2e_print_results
         return 1

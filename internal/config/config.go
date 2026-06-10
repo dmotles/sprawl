@@ -17,8 +17,24 @@ type Config struct {
 	ValidateTimeout           string             `yaml:"validate_timeout"`
 	ValidatePopupAfterSeconds int                `yaml:"validate_popup_after_seconds"`
 	Liveness                  *LivenessConfigRaw `yaml:"liveness"`
-	sprawlRoot                string
-	values                    map[string]string
+	// PauseTimeoutSeconds is the default escalation budget (in seconds) for
+	// the `pause` MCP tool. QUM-722. Defaults to DefaultPauseTimeoutSeconds
+	// when not present or non-positive.
+	PauseTimeoutSeconds int `yaml:"pause_timeout_seconds"`
+	sprawlRoot          string
+	values              map[string]string
+}
+
+// DefaultPauseTimeoutSeconds is the fallback pause-escalation budget. QUM-722.
+const DefaultPauseTimeoutSeconds = 30
+
+// PauseTimeout returns the configured pause timeout, or the default when
+// unset/non-positive.
+func (c *Config) PauseTimeout() time.Duration {
+	if c.PauseTimeoutSeconds <= 0 {
+		return time.Duration(DefaultPauseTimeoutSeconds) * time.Second
+	}
+	return time.Duration(c.PauseTimeoutSeconds) * time.Second
 }
 
 // LivenessConfigRaw mirrors supervisor.LivenessConfigRaw so the YAML
@@ -68,8 +84,9 @@ func (c *Config) ValidateTimeoutDuration() time.Duration {
 // Returns a zero-value Config (no error) if the file does not exist.
 func Load(sprawlRoot string) (*Config, error) {
 	cfg := &Config{
-		sprawlRoot: sprawlRoot,
-		values:     make(map[string]string),
+		sprawlRoot:          sprawlRoot,
+		values:              make(map[string]string),
+		PauseTimeoutSeconds: DefaultPauseTimeoutSeconds,
 	}
 
 	path := filepath.Join(sprawlRoot, ".sprawl", "config.yaml")

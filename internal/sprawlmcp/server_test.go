@@ -82,12 +82,16 @@ type mockSupervisor struct {
 	reportStatusErr     error
 
 	// SendMessage recording + seams (QUM-550)
-	sendMessageCalls     int
-	sendMessageTo        string
-	sendMessageBody      string
-	sendMessageInterrupt bool
-	sendMessageResult    *supervisor.SendMessageResult
-	sendMessageErr       error
+	sendMessageCalls         int
+	sendMessageTo            string
+	sendMessageBody          string
+	sendMessageInterrupt     bool
+	sendMessageWakeIfOffline bool // QUM-726
+	sendMessageResult        *supervisor.SendMessageResult
+	sendMessageErr           error
+
+	// Delegate recording (QUM-726 wake_if_offline)
+	delegateWakeIfOffline bool
 
 	// Messages* recording + seams (QUM-316)
 	messagesListFilter       string
@@ -192,9 +196,10 @@ func (m *mockSupervisor) Status(_ context.Context) ([]supervisor.AgentInfo, erro
 	return m.statusResult, m.statusErr
 }
 
-func (m *mockSupervisor) Delegate(_ context.Context, agentName, task string) error {
+func (m *mockSupervisor) Delegate(_ context.Context, agentName, task string, wakeIfOffline bool) error {
 	m.delegateAgent = agentName
 	m.delegateTask = task
+	m.delegateWakeIfOffline = wakeIfOffline
 	return m.delegateErr
 }
 
@@ -267,11 +272,12 @@ func (m *mockSupervisor) Peek(_ context.Context, agentName string, tail int) (*s
 	return &supervisor.PeekResult{Status: "active"}, nil
 }
 
-func (m *mockSupervisor) SendMessage(_ context.Context, to, body string, interrupt bool) (*supervisor.SendMessageResult, error) {
+func (m *mockSupervisor) SendMessage(_ context.Context, to, body string, interrupt, wakeIfOffline bool) (*supervisor.SendMessageResult, error) {
 	m.sendMessageCalls++
 	m.sendMessageTo = to
 	m.sendMessageBody = body
 	m.sendMessageInterrupt = interrupt
+	m.sendMessageWakeIfOffline = wakeIfOffline
 	if m.sendMessageErr != nil {
 		return nil, m.sendMessageErr
 	}
@@ -369,7 +375,8 @@ func TestServer_ToolsList(t *testing.T) {
 		"merge",
 		"retire",
 		"kill",
-		"recover",
+		"pause",
+		"wake",
 		"handoff",
 		"messages_list",
 		"messages_read",
@@ -515,6 +522,117 @@ func TestServer_ToolsCall_SprawlSpawn(t *testing.T) {
 	parsed := parseJSONRPCResponse(t, resp)
 	if _, ok := parsed["error"]; ok {
 		t.Errorf("unexpected error in response: %v", parsed["error"])
+	}
+}
+
+// TestServer_ToolsCall_SprawlSpawn_AdvisoryFromWeave asserts that when the
+// root weave (empty caller identity) spawns type="engineer", the spawn
+// result string carries the QUM-710 §4 orchestration advisory. The advisory
+// is non-blocking — the spawn still succeeds.
+func TestServer_ToolsCall_SprawlSpawn_AdvisoryFromWeave(t *testing.T) {
+	mock := &mockSupervisor{
+		spawnResult: &supervisor.AgentInfo{
+			Name:   "chip",
+			Type:   "engineer",
+			Family: "engineering",
+			Status: "active",
+			Branch: "dmotles/feature",
+		},
+	}
+	srv := New(mock)
+	ctx := context.Background() // root weave: empty caller identity
+
+	msg := makeJSONRPCRequest(40, "tools/call", map[string]any{
+		"name": "spawn",
+		"arguments": map[string]any{
+			"family": "engineering",
+			"type":   "engineer",
+			"prompt": "implement feature X",
+			"branch": "dmotles/feature",
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	if errObj, ok := parsed["error"]; ok {
+		t.Fatalf("unexpected error in response: %v", errObj)
+	}
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatal("missing result")
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatal("missing or empty content array")
+	}
+	first, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatal("content[0] is not an object")
+	}
+	text, ok := first["text"].(string)
+	if !ok {
+		t.Fatal("content[0].text is not a string")
+	}
+	if !strings.Contains(text, "ADVISORY:") {
+		t.Errorf("weave→engineer spawn text should contain ADVISORY, got:\n%s", text)
+	}
+	if !strings.Contains(text, "engineering manager") {
+		t.Errorf("advisory should mention 'engineering manager', got:\n%s", text)
+	}
+	if !strings.Contains(text, "Spawned agent:") {
+		t.Errorf("spawn result text missing original 'Spawned agent:' prefix:\n%s", text)
+	}
+}
+
+// TestServer_ToolsCall_SprawlSpawn_NoAdvisoryFromManager asserts that when a
+// non-root caller (e.g. a manager) spawns type="engineer", the advisory is
+// NOT appended — the advisory is scoped to root-weave→engineer spawns only.
+func TestServer_ToolsCall_SprawlSpawn_NoAdvisoryFromManager(t *testing.T) {
+	mock := &mockSupervisor{
+		spawnResult: &supervisor.AgentInfo{
+			Name:   "chip",
+			Type:   "engineer",
+			Family: "engineering",
+			Status: "active",
+			Branch: "dmotles/feature",
+		},
+	}
+	srv := New(mock)
+	ctx := withTestCallerIdentity(context.Background(), "mgr-1")
+
+	msg := makeJSONRPCRequest(41, "tools/call", map[string]any{
+		"name": "spawn",
+		"arguments": map[string]any{
+			"family": "engineering",
+			"type":   "engineer",
+			"prompt": "implement feature X",
+			"branch": "dmotles/feature",
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	if errObj, ok := parsed["error"]; ok {
+		t.Fatalf("unexpected error in response: %v", errObj)
+	}
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatal("missing result")
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatal("missing or empty content array")
+	}
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if strings.Contains(text, "ADVISORY:") {
+		t.Errorf("manager→engineer spawn should NOT contain ADVISORY, got:\n%s", text)
 	}
 }
 
@@ -2099,5 +2217,53 @@ func TestHandleToolsCall_PanicEmitsEndRecord(t *testing.T) {
 		t.Errorf("end.duration_s not numeric: %v (%T)", end["duration_s"], end["duration_s"])
 	} else if dur <= 0 {
 		t.Errorf("end.duration_s = %v, want > 0", dur)
+	}
+}
+
+// TestToolSpawn_SubagentWithBranchRejected pins QUM-709: when the spawn tool
+// receives subagent:true together with a non-empty branch, the server must
+// reject the call BEFORE forwarding to Supervisor.Spawn. The error must name
+// the specific contract being violated.
+func TestToolSpawn_SubagentWithBranchRejected(t *testing.T) {
+	mock := &mockSupervisor{}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(909, "tools/call", map[string]any{
+		"name": "spawn",
+		"arguments": map[string]any{
+			"family":   "engineering",
+			"type":     "engineer",
+			"prompt":   "x",
+			"branch":   "y",
+			"subagent": true,
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+
+	parsed := parseJSONRPCResponse(t, resp)
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected MCP result, got: %v", parsed)
+	}
+	isErr, _ := result["isError"].(bool)
+	if !isErr {
+		t.Errorf("expected isError=true, got result=%v", result)
+	}
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("missing or empty content array: %v", result)
+	}
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if !strings.Contains(text, "branch must not be set when subagent is true") {
+		t.Errorf("error text = %q, want substring %q", text, "branch must not be set when subagent is true")
+	}
+
+	if mock.spawnCalled != nil {
+		t.Errorf("Supervisor.Spawn must NOT be called when subagent+branch is rejected; got %+v", mock.spawnCalled)
 	}
 }

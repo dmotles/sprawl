@@ -45,8 +45,8 @@
 # Claude Code SDK Bash tool subprocess (i.e. a sprawl agent running the
 # harness), the SDK strips CLAUDE_CODE_OAUTH_TOKEN from the child env by
 # design — both a security boundary (don't leak auth to arbitrary shells)
-# and a recursion-prevention mechanism (forces sub-agent spawning through
-# the SDK's blessed `--agents` path). Without it the spawned `claude`
+# and a recursion-prevention mechanism (forces sidechain spawning through
+# the SDK's blessed Agent-tool path). Without it the spawned `claude`
 # subprocess hits "Not logged in · Please run /login" before ever calling
 # the MCP handoff tool, and assertions 2-6 cascade-fail with confusing
 # "QUM-329 regression" labels (see the bug filed as QUM-411). We recover

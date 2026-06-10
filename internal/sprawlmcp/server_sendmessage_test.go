@@ -30,19 +30,21 @@ import (
 type mockSupervisorSendMessage struct {
 	mockSupervisor
 
-	sendMessageCalls     int
-	sendMessageTo        string
-	sendMessageBody      string
-	sendMessageInterrupt bool
-	sendMessageResult    *supervisor.SendMessageResult
-	sendMessageErr       error
+	sendMessageCalls         int
+	sendMessageTo            string
+	sendMessageBody          string
+	sendMessageInterrupt     bool
+	sendMessageWakeIfOffline bool // QUM-726
+	sendMessageResult        *supervisor.SendMessageResult
+	sendMessageErr           error
 }
 
-func (m *mockSupervisorSendMessage) SendMessage(_ context.Context, to, body string, interrupt bool) (*supervisor.SendMessageResult, error) {
+func (m *mockSupervisorSendMessage) SendMessage(_ context.Context, to, body string, interrupt, wakeIfOffline bool) (*supervisor.SendMessageResult, error) {
 	m.sendMessageCalls++
 	m.sendMessageTo = to
 	m.sendMessageBody = body
 	m.sendMessageInterrupt = interrupt
+	m.sendMessageWakeIfOffline = wakeIfOffline
 	if m.sendMessageErr != nil {
 		return nil, m.sendMessageErr
 	}

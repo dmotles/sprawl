@@ -29,6 +29,9 @@ const (
 	diskResumeFailed = "resume_failed"
 	diskFaulted      = "faulted"
 	diskStopped      = "stopped"
+	// QUM-722: new disk tokens for pause/death.
+	diskPaused = "paused"
+	diskDied   = "died"
 )
 
 // From projects a raw Snapshot onto a unified liveness State.
@@ -57,6 +60,11 @@ func From(s Snapshot) State {
 	if s.DiskStatus == diskRetiring {
 		return State{Liveness: Retiring}
 	}
+	// QUM-722: Died is a terminal/operator durable state (no handle, durable
+	// marker). Placed in the terminal block so it beats stale Lifecycle=started.
+	if s.DiskStatus == diskDied {
+		return State{Liveness: Died}
+	}
 
 	// 2. Fault beats Running. A durable on-disk "faulted" status is honored
 	// here too so a crash recorded across processes survives.
@@ -70,6 +78,12 @@ func From(s Snapshot) State {
 	}
 	if s.DiskStatus == diskSuspended {
 		return State{Liveness: Suspended}
+	}
+
+	// QUM-722: Paused is a cross-process resting state — beats stale
+	// Lifecycle="stopped" so the agent surfaces as Paused not Stopped.
+	if s.DiskStatus == diskPaused {
+		return State{Liveness: Paused}
 	}
 
 	// A durable on-disk "stopped" status wins over a stale Lifecycle:

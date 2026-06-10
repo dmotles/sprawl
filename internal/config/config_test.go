@@ -259,6 +259,35 @@ func TestSave_RoundTrip(t *testing.T) {
 	}
 }
 
+// QUM-722: PauseTimeoutSeconds carries the default 30s pause-escalation
+// budget for the `pause` MCP tool.
+func TestConfig_PauseTimeoutSecondsDefault30(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, err := Load(tmpDir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PauseTimeoutSeconds != 30 {
+		t.Errorf("PauseTimeoutSeconds default = %d, want 30", cfg.PauseTimeoutSeconds)
+	}
+}
+
+func TestConfig_PauseTimeoutSecondsOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+	configDir := filepath.Join(tmpDir, ".sprawl")
+	os.MkdirAll(configDir, 0o755)
+	content := "pause_timeout_seconds: 5\n"
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(content), 0o644)
+
+	cfg, err := Load(tmpDir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PauseTimeoutSeconds != 5 {
+		t.Errorf("PauseTimeoutSeconds = %d, want 5 (yaml override)", cfg.PauseTimeoutSeconds)
+	}
+}
+
 func TestKeys_ReturnsSorted(t *testing.T) {
 	tmpDir := t.TempDir()
 

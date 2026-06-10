@@ -86,12 +86,8 @@ func TestEngineerSystemPrompt_ContainsKeyPhrases(t *testing.T) {
 		"send_message",
 		"TDD WORKFLOW",
 		"oracle",
-		"test-writer",
 		"test-critic",
-		"implementer",
-		"code-reviewer",
-		"qa-validator",
-		"sub-agents",
+		"sidechains",
 	}
 	for _, phrase := range phrases {
 		if !strings.Contains(prompt, phrase) {

@@ -25,6 +25,10 @@ func TestAgentLiveness_String(t *testing.T) {
 		{"killed", Killed, "killed"},
 		{"retiring", Retiring, "retiring"},
 		{"retired", Retired, "retired"},
+		// QUM-722: new lifecycle states.
+		{"pausing", Pausing, "pausing"},
+		{"paused", Paused, "paused"},
+		{"died", Died, "died"},
 		{"unknown", AgentLiveness(99), "unknown(99)"},
 	}
 	for _, tc := range cases {

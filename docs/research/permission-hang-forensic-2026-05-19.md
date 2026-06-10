@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # Forensic: ratz 5-hour hang (QUM-588 close-out) — 2026-05-19
 
 **Author:** ghost (researcher)

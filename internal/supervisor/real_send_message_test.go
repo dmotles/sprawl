@@ -45,7 +45,7 @@ func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTur
 		t.Fatalf("runtime start: %v", err)
 	}
 
-	res, err := r.SendMessage(context.Background(), "alice", "hello body", false)
+	res, err := r.SendMessage(context.Background(), "alice", "hello body", false, false)
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenTurnRunningTru
 		t.Fatalf("runtime start: %v", err)
 	}
 
-	res, err := r.SendMessage(context.Background(), "alice", "stop now", true)
+	res, err := r.SendMessage(context.Background(), "alice", "stop now", true, false)
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenIdle(t *testin
 		t.Fatalf("runtime start: %v", err)
 	}
 
-	if _, err := r.SendMessage(context.Background(), "alice", "stop now", true); err != nil {
+	if _, err := r.SendMessage(context.Background(), "alice", "stop now", true, false); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestReal_SendMessage_InterruptTrue_RequiresAncestor(t *testing.T) {
 	})
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "bob")
-	_, err := r.SendMessage(ctx, "alice", "stop", true)
+	_, err := r.SendMessage(ctx, "alice", "stop", true, false)
 	if err == nil {
 		t.Fatal("SendMessage(interrupt=true) sibling→sibling returned nil error; want ancestor-gate rejection")
 	}
@@ -188,14 +188,15 @@ func TestReal_SendMessage_InterruptTrue_RequiresAncestor(t *testing.T) {
 }
 
 // TestReal_SendMessage_TerminalStatus_ReturnsClearerError pins QUM-680: when
-// the recipient is persisted with a terminal lifecycle status (faulted /
-// stopped / retired / killed) AND no live runtime is registered for it,
-// SendMessage must surface a clear "no longer running" error referencing the
-// last reported state and timestamp — rather than silently enqueueing into a
-// dead agent's pending queue.
+// the recipient is persisted with a terminal lifecycle status (stopped /
+// retired) AND no live runtime is registered for it, SendMessage must surface
+// a clear "no longer running" error referencing the last reported state and
+// timestamp — rather than silently enqueueing into a dead agent's pending
+// queue. Note: faulted/killed/died/paused now fall under the QUM-726
+// wake-on-traffic gate which returns a different canonical error.
 func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
-	// Seed a faulted recipient. Deliberately do NOT register a runtime — the
+	// Seed a stopped recipient. Deliberately do NOT register a runtime — the
 	// terminal-status gate only fires when there is no live runtime to fall
 	// back on.
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -203,12 +204,12 @@ func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
 		Type:            "engineer",
 		Family:          "engineering",
 		Parent:          "weave",
-		Status:          state.StatusFaulted,
+		Status:          state.StatusStopped,
 		LastReportState: "failure",
 		LastReportAt:    "2026-06-06T12:00:00Z",
 	})
 
-	res, err := r.SendMessage(context.Background(), "alice", "hello body", false)
+	res, err := r.SendMessage(context.Background(), "alice", "hello body", false, false)
 	if err == nil {
 		t.Fatalf("SendMessage to faulted agent returned nil error; want descriptive terminal-status error (res=%+v)", res)
 	}

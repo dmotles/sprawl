@@ -30,7 +30,7 @@ func newFakeReal(t *testing.T) (*Real, string) {
 			},
 		},
 	}
-	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error) {
+	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error) {
 		return nil, errors.New("spawnFn not overridden")
 	}
 	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
@@ -49,7 +49,7 @@ func TestSpawn_MapsSpawnRequestAndReturnsAgentInfo(t *testing.T) {
 	r, _ := newFakeReal(t)
 
 	var gotFamily, gotType, gotPrompt, gotBranch string
-	r.spawnFn = func(_ *agentops.SpawnDeps, family, agentType, prompt, branch string) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, family, agentType, prompt, branch string, _ bool) (*state.AgentState, error) {
 		gotFamily = family
 		gotType = agentType
 		gotPrompt = prompt
@@ -91,7 +91,7 @@ func TestSpawn_MapsSpawnRequestAndReturnsAgentInfo(t *testing.T) {
 
 func TestSpawn_PropagatesError(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error) {
+	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error) {
 		return nil, errors.New("boom")
 	}
 
@@ -108,7 +108,7 @@ func TestSpawn_InjectsCallerAndRootViaGetenv(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 
 	captured := map[string]string{}
-	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		captured["SPRAWL_AGENT_IDENTITY"] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		captured["SPRAWL_ROOT"] = deps.Getenv("SPRAWL_ROOT")
 		return &state.AgentState{Name: "x"}, nil
@@ -344,7 +344,7 @@ var _ Supervisor = (*Real)(nil)
 // guard: ensure returned AgentInfo fields survive a round-trip (sanity).
 func TestSpawn_AgentInfoRoundTrip(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string) (*state.AgentState, error) {
+	r.spawnFn = func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error) {
 		return &state.AgentState{Name: "a", Type: "b", Family: "c", Parent: "d", Status: "e", Branch: "f"}, nil
 	}
 	info, err := r.Spawn(context.Background(), SpawnRequest{Family: "engineering", Type: "engineer", Prompt: "p", Branch: "b"})
@@ -428,7 +428,7 @@ func TestSendMessage_ContextIdentitySetsSender(t *testing.T) {
 
 	// Child "finn" sends to "weave" via MCP — context carries finn's identity.
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "finn")
-	result, err := r.SendMessage(ctx, "weave", "I'm done", false)
+	result, err := r.SendMessage(ctx, "weave", "I'm done", false, false)
 	if err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestSpawn_UsesEffectiveCallerAsParentIdentity(t *testing.T) {
 	}
 
 	captured := map[string]string{}
-	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		captured["SPRAWL_AGENT_IDENTITY"] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		captured["SPRAWL_ROOT"] = deps.Getenv("SPRAWL_ROOT")
 		return &state.AgentState{Name: "byte"}, nil
@@ -523,7 +523,7 @@ func TestSpawn_FallsBackToCallerNameWithoutContextOverride(t *testing.T) {
 	r, _ := newFakeReal(t)
 
 	var capturedIdentity string
-	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &state.AgentState{Name: "x"}, nil
 	}
@@ -856,7 +856,7 @@ func TestSpawn_UsesEffectiveCallerTreePathAsParentTreePath(t *testing.T) {
 	})
 
 	captured := map[string]string{}
-	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		captured["SPRAWL_TREE_PATH"] = deps.Getenv("SPRAWL_TREE_PATH")
 		captured["SPRAWL_AGENT_IDENTITY"] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		return &state.AgentState{Name: "byte"}, nil
@@ -890,7 +890,7 @@ func TestSpawn_TreePathFallsBackToProcessEnvWhenCallerHasNoState(t *testing.T) {
 	t.Setenv("SPRAWL_TREE_PATH", "weave")
 
 	var capturedTreePath string
-	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		capturedTreePath = deps.Getenv("SPRAWL_TREE_PATH")
 		return &state.AgentState{Name: "x"}, nil
 	}
@@ -921,7 +921,7 @@ func TestSpawn_GrandchildTreePathDepth3(t *testing.T) {
 	})
 
 	var capturedTreePath string
-	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(deps *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		capturedTreePath = deps.Getenv("SPRAWL_TREE_PATH")
 		return &state.AgentState{Name: "great-grandchild"}, nil
 	}

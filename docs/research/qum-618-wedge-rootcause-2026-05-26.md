@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # QUM-618 — SubscriberWedged / SubscriberWedge root cause (live repro, 2026-05-26)
 
 **Author:** ghost (researcher, parent: weave)

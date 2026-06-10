@@ -24,6 +24,9 @@ const (
 	StatusResumeFailed = "resume_failed"
 	StatusFaulted      = "faulted"
 	StatusStopped      = "stopped"
+	// QUM-722: new lifecycle states for pause/death.
+	StatusPaused = "paused"
+	StatusDied   = "died"
 )
 
 // CurrentSchemaVersion is the schema version stamped onto agent state files by

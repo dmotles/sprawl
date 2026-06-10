@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # M13 Phase 1 Validation — 2026-04-22
 
 Author: tower (manager agent)

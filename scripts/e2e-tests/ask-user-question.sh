@@ -45,7 +45,7 @@ test_run() {
     echo "  PROBE=$PROBE"
 
     # Local helper: poll a state file's jq field for a substring. Not in
-    # lib because recover-live does not need it (QUM-616 anti-goal:
+    # lib because wake-live does not need it (QUM-616 anti-goal:
     # minimize cross-row conflict surface in lib/e2e-common.sh).
     wait_for_state_field_path() {
         local state_path="$1" field="$2" needle="$3" timeout="$4"

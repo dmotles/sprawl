@@ -21,7 +21,6 @@ type LaunchOpts struct {
 
 	AllowedTools    []string
 	DisallowedTools []string
-	Agents          string
 }
 
 // BuildArgs constructs the claude CLI argument slice from the opts fields.
@@ -70,10 +69,6 @@ func (o LaunchOpts) BuildArgs() []string {
 	}
 	for _, t := range o.DisallowedTools {
 		args = append(args, "--disallowed-tools", t)
-	}
-
-	if o.Agents != "" {
-		args = append(args, "--agents", o.Agents)
 	}
 
 	if o.Resume {

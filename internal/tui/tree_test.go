@@ -627,6 +627,39 @@ func TestPrependWeaveRoot_WeaveUnreadZeroByDefault(t *testing.T) {
 
 // --- QUM-665: DeriveIconState liveness-first precedence ---
 
+// QUM-722: TreeNode.Liveness drives Paused/Died icon variants.
+
+func TestDeriveIconState_PausedReturnsPaused(t *testing.T) {
+	n := TreeNode{Liveness: "paused"}
+	got := DeriveIconState(n, time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC))
+	if got != "paused" {
+		t.Errorf("DeriveIconState(paused) = %q, want %q", got, "paused")
+	}
+}
+
+func TestDeriveIconState_DiedReturnsDied(t *testing.T) {
+	n := TreeNode{Liveness: "died"}
+	got := DeriveIconState(n, time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC))
+	if got != "died" {
+		t.Errorf("DeriveIconState(died) = %q, want %q", got, "died")
+	}
+}
+
+// QUM-722: theme renders distinct glyphs for Paused (⏸) and Died (✗).
+// Mirrors the ReportDot test pattern (theme_test.go) — pin the dot/glyph
+// per icon state.
+func TestTheme_ReportDot_PausedAndDied(t *testing.T) {
+	theme := NewTheme("")
+	paused := theme.ReportDot("paused")
+	if !strings.Contains(paused, "⏸") {
+		t.Errorf("ReportDot(paused) = %q, want it to contain ⏸", paused)
+	}
+	died := theme.ReportDot("died")
+	if !strings.Contains(died, "✗") {
+		t.Errorf("ReportDot(died) = %q, want it to contain ✗", died)
+	}
+}
+
 // TestDeriveIconState_Mapping locks the precedence rules for the new icon
 // derivation: process-alive=false → idle; else in_autonomous_turn → working;
 // else recent activity (within RecentActivityWindow) → working; else fall

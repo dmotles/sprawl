@@ -69,8 +69,8 @@ func baseToolDefinitions() []map[string]any {
 					},
 					"type": map[string]any{
 						"type":        "string",
-						"description": "Agent type: engineer, researcher, or manager",
-						"enum":        []string{"engineer", "researcher", "manager"},
+						"description": "Agent type: engineer, researcher, manager, or qa",
+						"enum":        []string{"engineer", "researcher", "manager", "qa"},
 					},
 					"prompt": map[string]any{
 						"type":        "string",
@@ -80,13 +80,17 @@ func baseToolDefinitions() []map[string]any {
 						"type":        "string",
 						"description": "Git branch name for the agent's worktree",
 					},
+					"subagent": map[string]any{
+						"type":        "boolean",
+						"description": "If true, the child shares the caller's worktree and branch instead of getting its own. `branch` must be omitted. Subject to depth limit (3) and capability gate (caller must be manager/engineer/researcher/qa).",
+					},
 				},
-				"required": []string{"family", "type", "prompt", "branch"},
+				"required": []string{"family", "type", "prompt"},
 			},
 		},
 		{
 			"name":        "status",
-			"description": "List all agents with their current state, type, family, and branch. Each entry includes `subprocess_alive` (whether a live claude handle is attached) and `eventbus_subscribed` (whether the agent's per-runtime EventBus has any live subscribers); both are false in steady state for terminal-Status agents (stopped/faulted/killed/retired). `eventbus_sub_count` reports the exact subscriber count when nonzero.",
+			"description": "List all agents with their current state, type, family, and branch. Each entry includes `subprocess_alive` (whether a live claude handle is attached) and `eventbus_subscribed` (whether the agent's per-runtime EventBus has any live subscribers); both are false in steady state for terminal-Status agents (stopped/faulted/killed/retired). `eventbus_sub_count` reports the exact subscriber count when nonzero. Does NOT wake the agent.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -106,6 +110,10 @@ func baseToolDefinitions() []map[string]any {
 						"type":        "string",
 						"description": "Task description to delegate",
 					},
+					"wake_if_offline": map[string]any{
+						"type":        "boolean",
+						"description": "If the target is paused/killed/died/faulted, wake it first and deliver this message/task as its first inbox item. Default false (delivery errors if target is offline).",
+					},
 				},
 				"required": []string{"agent", "task"},
 			},
@@ -122,13 +130,17 @@ func baseToolDefinitions() []map[string]any {
 						"type":        "boolean",
 						"description": "Default false. true = jump the recipient's queue and request preemption. Best-effort during MCP-tool-waits: honored for streaming/thinking but observable only after the wait returns. Use `kill` to hard-recover a wedged MCP call. See QUM-549.",
 					},
+					"wake_if_offline": map[string]any{
+						"type":        "boolean",
+						"description": "If the target is paused/killed/died/faulted, wake it first and deliver this message/task as its first inbox item. Default false (delivery errors if target is offline).",
+					},
 				},
 				"required": []string{"to", "body"},
 			},
 		},
 		{
 			"name":        "peek",
-			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_turn` (true when the target's backend session is mid-turn; `in_autonomous_turn` is emitted as a deprecated alias for one release — QUM-692). Use to answer \"what is this agent doing?\" before sending a message.",
+			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_turn` (true when the target's backend session is mid-turn; `in_autonomous_turn` is emitted as a deprecated alias for one release — QUM-692). Use to answer \"what is this agent doing?\" before sending a message. Does NOT wake the agent.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -355,14 +367,36 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
-			"name":        "recover",
-			"description": "Recover a faulted backend session in-place. Tears down the dead claude subprocess and spawns a fresh one with --resume to preserve conversation history. No-op success if the session is healthy. Use after a backend fault banner.",
+			"name":        "pause",
+			"description": "Politely stop an agent at its next turn boundary, preserving transcript+worktree so it can be `wake`d later. Escalates to `kill` after a configurable timeout (default 30s). Cascades to descendants by default. (QUM-722)",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"agent": map[string]any{
 						"type":        "string",
-						"description": "Name of the agent whose backend session should be recovered",
+						"description": "Name of the agent to pause",
+					},
+					"timeout_seconds": map[string]any{
+						"type":        "integer",
+						"description": "Seconds to wait for a turn boundary before escalating to kill. Defaults to 30.",
+					},
+					"cascade": map[string]any{
+						"type":        "boolean",
+						"description": "Default true. Set false to pause only this agent (errors if children exist).",
+					},
+				},
+				"required": []string{"agent"},
+			},
+		},
+		{
+			"name":        "wake",
+			"description": "Bring an offline agent (paused/killed/died/faulted/resume_failed) back online. Attempts to resume the prior claude session by session-id; falls back to a fresh session if the session cookie is rejected or no session exists. No-op success if the agent is already running. Does NOT inject any task — combine with `delegate` or `send_message` (with `wake_if_offline: true`) for wake-with-work.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"agent": map[string]any{
+						"type":        "string",
+						"description": "Name of the agent to wake",
 					},
 				},
 				"required": []string{"agent"},

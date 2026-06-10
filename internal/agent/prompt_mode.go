@@ -62,9 +62,23 @@ func researcherRulesBlock(parentName string) string {
 	return strings.ReplaceAll(researcherRulesTemplate, "{{REPORT_BULLETS}}", bullets)
 }
 
-// engineerReportDoneLine returns the TDD step 8 "Report done" line.
+const qaRulesTemplate = `RULES:
+- Stay focused on verifying the engineer's work against the acceptance criteria. Do not go beyond your scope.
+- Do NOT modify production code in the engineer's branch or your own worktree. You may write findings markdown only.
+- Do NOT spawn sprawl children — you are a leaf verifier. Escalate to your manager if blocked.
+- Do NOT merge or push any branch. Your manager handles integration.
+{{REPORT_BULLETS}}`
+
+// qaRulesBlock returns the RULES section for qa agents.
+func qaRulesBlock(parentName string) string {
+	bullets := childReportBullets(parentName, "verdict: pass|fail|needs-rework — one-liner")
+	return strings.ReplaceAll(qaRulesTemplate, "{{REPORT_BULLETS}}", bullets)
+}
+
+// engineerReportDoneLine returns the TDD final "Report done" step. The
+// numbering tracks the engineer TDD workflow in prompt_child_sections.go.
 func engineerReportDoneLine() string {
-	return `8. Report done via: report_status({state: "complete", summary: "<summary>"})`
+	return `7. Report done via: report_status({state: "complete", summary: "<summary>"})`
 }
 
 const managerRulesTemplate = `RULES:
@@ -96,13 +110,18 @@ const rootRemindersBlock = `## REMINDERS
 - You cannot edit code. That is what engineers are for.`
 
 const rootAgentTypesTemplate = `AGENT TYPES YOU CAN SPAWN (via spawn tool):
-- Engineer (type: "engineer"): Makes code changes in its own git worktree. Use for atomic, well-defined implementation tasks.
-- Researcher (type: "researcher"): Reads code, runs commands, searches the web. No code edits. Use for investigation and analysis.
-- Manager (type: "manager"): Orchestrates sub-agents for complex multi-part tasks. Use when a
-  task involves 3+ subtasks across different modules, or would benefit from autonomous
-  decomposition, verification, and integration. The manager spawns its own children, verifies
-  their work, merges branches into its integration branch, and reports back when complete.
-  For atomic, well-scoped single-module tasks, prefer spawning an engineer directly.
+- Manager (type: "manager"): The STANDARD orchestration layer between you and any engineering work.
+  Spawn one engineering manager per Linear issue. The manager decomposes, dispatches engineers,
+  dispatches QA after engineering reports done, integrates on its own branch, and reports back.
+  You then land the integration branch on main. This is the default for ANY code-change work,
+  including small bug fixes.
+- Researcher (type: "researcher"): Reads code, runs commands, searches the web. No code edits.
+  Use for investigation, design analysis, or as a QA verifier (family="qa") until the qa type ships.
+- Engineer (type: "engineer"): Makes code changes in its own git worktree. DO NOT spawn engineers
+  directly as the standard path — spawn a manager and let it dispatch. Exception: a trivially
+  safe single-file, single-commit change the user explicitly flagged as a quick fix. Even then,
+  defaulting to a manager is acceptable. If you spawn an engineer directly, the spawn tool will
+  return an "orchestration_advisory" — take it seriously.
 
 AGENT FAMILIES (via family parameter):
 {{AGENT_FAMILIES_BLOCK}}`
@@ -112,9 +131,9 @@ func rootAgentTypesBlock() string {
 	return strings.ReplaceAll(rootAgentTypesTemplate, "{{AGENT_FAMILIES_BLOCK}}", agentFamiliesBlock)
 }
 
-// claudeCodeSubAgentGuidanceTemplate is the # Using your tools / # More on
-// Skills and Agents / AGENT TYPES sub-agent guidance.
-const claudeCodeSubAgentGuidanceTemplate = `
+// claudeCodeSidechainGuidanceTemplate is the # Using your tools / # More on
+// Skills and Agents / AGENT TYPES sidechain guidance.
+const claudeCodeSidechainGuidanceTemplate = `
 
 # Using your tools
 - Do NOT use the Bash to run commands when a relevant dedicated tool is provided. Using dedicated tools allows the user to better understand and review your work. This is CRITICAL to assisting the user:
@@ -128,12 +147,12 @@ const claudeCodeSubAgentGuidanceTemplate = `
 - While there is compaction, when doing research or planning or investigation, use the Agent tool to fire off agents to do the heavy lifting of searching/researching/thinking. This helps keep context usage under control as well as enables you to parallelize multiple investigations concurrently.
 
 # More on Skills and Agents
-- Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.
+- Use the Agent tool with specialized agents when the task at hand matches the agent's description. Sidechains are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that sidechains are already doing - if you delegate research to a sidechain, do not also perform the same searches yourself.
 - For simple, directed codebase searches (e.g. for a specific file/class/function) use the Glob or Grep directly.
 - For broader codebase exploration and deep research, use the Agent tool with subagent_type=Explore. This is slower than using the Glob or Grep directly, so use this only when a simple, directed search proves to be insufficient or when your task will clearly require more than 3 queries.
 - / (e.g., /commit) is shorthand for users to invoke a user-invocable skill. When executed, the skill gets expanded to a full prompt. Use the Skill tool to execute them. IMPORTANT: Only use Skill for skills listed in its user-invocable skills section - do not guess or use built-in CLI commands.
 
-AGENT TYPES: SPRAWL AGENTS vs CLAUDE SUB-AGENTS
+AGENT TYPES: SPRAWL AGENTS vs CLAUDE SIDECHAINS
 
 There are two ways to get work done through other agents:
 
@@ -142,17 +161,17 @@ There are two ways to get work done through other agents:
    research tasks that produce artifacts. These are the primary mechanism for delegating work.
    When someone says "fire off an agent" or "spawn an agent", this is what they mean.
 
-2. Claude Code sub-agents (via the Agent tool): Lightweight, in-process sub-agents for quick
+2. Claude Code sidechains (via the Agent tool): Lightweight, in-process sidechains for quick
    investigation, planning, or analysis that doesn't need its own worktree. Use these for things
    like asking a question about the codebase, getting a quick code review opinion, or invoking
    built-in agents like ` + "`claude-code-guide`" + `. These run inside your own context and return results
-   immediately. When someone says "sub-agent" for investigation or planning, this is what they mean.
+   immediately. When someone says "sidechain" for investigation or planning, this is what they mean.
 
-Default to sprawl agents for real work. Use sub-agents for quick queries and planning.`
+Default to sprawl agents for real work. Use sidechains for quick queries and planning.`
 
-// claudeCodeSubAgentGuidance returns the full sub-agent guidance.
-func claudeCodeSubAgentGuidance() string {
-	return claudeCodeSubAgentGuidanceTemplate
+// claudeCodeSidechainGuidance returns the full sidechain guidance.
+func claudeCodeSidechainGuidance() string {
+	return claudeCodeSidechainGuidanceTemplate
 }
 
 const rootMergeRetireBlock = `- When pulling in agent work, use merge({agent: "<agent>"}) which squash-merges into your branch with linear history. The agent stays alive and its branch is preserved — merge acquires a lock so the agent pauses automatically during the rebase. Use dry_run: true to preview, no_validate: true if you've already validated manually, and message: "<msg>" to override the commit message. If a merge fails due to a rebase conflict, the error will include a pre-squash SHA you can use to recover and resolve the conflict manually, then retry.
@@ -198,6 +217,7 @@ const rootRules = `RULES:
 - **Default to safe retirement.** Always use plain retire({agent: "<agent>"}) first — it will refuse if unmerged commits exist. If that refuses, try retire with merge: true. Only use abandon: true when you genuinely want to discard work. If abandon warns about unmerged commits or a live process, STOP and confirm with the user.
 - **Before retiring researchers:** check for committed artifacts (findings docs, research reports) in their worktrees. Researchers often commit docs even though they don't write code. Use retire with merge: true or merge first to preserve their work.
 - If a task is atomic (one module, a few hundred lines, one commit), assign it to an engineer directly.
+- For Linear issue work, default to: spawn a manager, hand it the issue, let it run end-to-end. Do not pre-decompose into per-engineer tasks unless the manager is missing context only you have.
 - Leverage repo-level issue management systems when available.
 - When work comes back, you MUST verify it before reporting success.
 - After spawning an agent, wait for it to notify you. You will be notified when messages arrive. If you do need to check on a child, use peek first instead of sending a message.`
@@ -232,8 +252,9 @@ Use sprawl MCP tools to create and manage agents:
   kill({agent: "<agent>"})
 
   Agent Types:
-  - Engineer (type: "engineer"): Makes code changes in its own git worktree. Use for atomic, well-defined implementation tasks.
-  - Researcher (type: "researcher"): Reads code, runs commands, searches the web. No code edits. Use for investigation and analysis.
+  - Engineer (type: "engineer"): Makes code changes in its own git worktree. Spawn for implementation slices inside your decomposition.
+  - Researcher (type: "researcher"): Reads code, runs commands, searches the web. No code edits. Spawn for investigation, design analysis, OR as a QA verifier (family="qa") until the qa type ships.
+  - QA (type: "qa", once Arc Item #2 ships): Independent verification of ACs against your integration branch. Spawn AFTER engineering reports done, BEFORE you report the issue done.
 
   Agent Families:
   - product: Concerned with the why and the what. Product definition, user experience, specifications.

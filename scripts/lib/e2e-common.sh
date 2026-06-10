@@ -192,7 +192,7 @@ wait_for_pattern() {
         if capture_pane "$session" | grep -qE "$pattern"; then
             # QUM-671: emit a parseable elapsed-time record so consumers
             # (e.g. the S3 startup-time regression gate fed by
-            # `recover-live.sh`'s TUI-rendered wait) have a comparable
+            # `wake-live.sh`'s TUI-rendered wait) have a comparable
             # number. Format is `WAIT_FOR_PATTERN_ELAPSED <secs> <pattern>`
             # — fixed prefix so a future scraper can grep without
             # ambiguity. Backward compatible: existing callers only

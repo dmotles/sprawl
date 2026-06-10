@@ -119,16 +119,22 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 	// capture only `coord` — there is no `handle` reference reachable from
 	// the turn loop, so there is no way for a partially-built handle to be
 	// observed by the first PostTurnSweep / OnQueueItemDelivered firing.
+	// QUM-723: when RestartInjection is set (RecoverAgents path), it replaces
+	// the persisted spawn prompt as the first post-resume turn.
+	initialPrompt := prep.agentState.Prompt
+	if spec.RestartInjection != "" {
+		initialPrompt = spec.RestartInjection
+	}
 	rt := unifiedRuntimeNewFn(runtimepkg.RuntimeConfig{
 		Name:          spec.Name,
 		SprawlRoot:    spec.SprawlRoot,
 		Session:       session,
-		InitialPrompt: prep.agentState.Prompt,
+		InitialPrompt: initialPrompt,
 		Capabilities:  caps,
 		// TurnTimeout=0 DISABLES the wall-clock per-turn cap (QUM-618 verdict).
 		// The 30-min cap (QUM-578/QUM-581) was REMOVED because it false-
 		// guillotined healthy long autonomous turns (the finn M4 incident:
-		// a legitimate 30-min sub-agent turn was cut 3s before its deadline,
+		// a legitimate 30-min sidechain turn was cut 3s before its deadline,
 		// pinning the backend currentTurn and wedging the agent). The real
 		// no-progress guard is the D1 frame-based hang watchdog
 		// (defaultHangTimeout=10m, gated on currentTurn != nil per QUM-599) —
@@ -226,6 +232,16 @@ func (s *inProcessUnifiedStarter) prepareLaunch(spec RuntimeStartSpec) (*prepare
 	// claude to resume the prior conversation transcript.
 	sessionSpec.Resume = spec.Resume
 	sessionSpec.OnResumeFailure = spec.OnResumeFailure
+	// QUM-744: BuildAgentSessionSpec pulls SessionID from agentState (the
+	// on-disk projection), but the AgentRuntime.Wake fresh-fallback path
+	// mints a brand-new session_id host-side and forwards it via
+	// spec.SessionID so the host can track which transcript the backend
+	// will be writing to. Honor that override when present so the new
+	// id propagates into the backend session config (and thus through
+	// to handle.SessionID() and the post-wake disk persist).
+	if spec.SessionID != "" && spec.SessionID != sessionSpec.SessionID {
+		sessionSpec.SessionID = spec.SessionID
+	}
 
 	activityDir := filepath.Join(spec.SprawlRoot, ".sprawl", "agents", spec.Name)
 	if err := os.MkdirAll(activityDir, 0o750); err != nil {
@@ -282,16 +298,29 @@ func buildAgentSystemPrompt(a *state.AgentState) string {
 	case "researcher":
 		env := agent.DefaultEnvConfig()
 		env.TestMode = testMode
+		env.Subagent = a.Subagent
+		env.ParentName = a.Parent
 		return agent.BuildResearcherPrompt(a.Name, a.Parent, a.Branch, env)
 	case "manager":
 		env := agent.DefaultEnvConfig()
 		env.WorkDir = a.Worktree
 		env.TestMode = testMode
+		env.Subagent = a.Subagent
+		env.ParentName = a.Parent
 		return agent.BuildManagerPrompt(a.Name, a.Parent, a.Branch, a.Family, env)
+	case "qa":
+		env := agent.DefaultEnvConfig()
+		env.WorkDir = a.Worktree
+		env.TestMode = testMode
+		env.Subagent = a.Subagent
+		env.ParentName = a.Parent
+		return agent.BuildQAPrompt(a.Name, a.Parent, a.Branch, env)
 	default:
 		env := agent.DefaultEnvConfig()
 		env.WorkDir = a.Worktree
 		env.TestMode = testMode
+		env.Subagent = a.Subagent
+		env.ParentName = a.Parent
 		return agent.BuildEngineerPrompt(a.Name, a.Parent, a.Branch, env)
 	}
 }

@@ -311,12 +311,14 @@ func TestAgentRuntime_UnexpectedHandleExitMarksStopped(t *testing.T) {
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if snap := rt.Snapshot(); snap.Liveness == liveness.Stopped {
+		// QUM-722: an unexpected exit (no Stop, no terminalErr) classifies as
+		// Died — not Stopped. Stopped now requires expectingExit=true.
+		if snap := rt.Snapshot(); snap.Liveness == liveness.Died {
 			return
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("Lifecycle = %q, want %q", rt.Snapshot().Liveness, liveness.Stopped)
+			t.Fatalf("Lifecycle = %q, want %q", rt.Snapshot().Liveness, liveness.Died)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -386,8 +388,8 @@ func TestAgentRuntime_AttachHandle_EmitsStartedEvent(t *testing.T) {
 }
 
 // QUM-399: AttachHandle must wire a Done() watcher when the handle exposes
-// one, so that an unexpected exit transitions the runtime lifecycle to
-// Stopped (mirrors the Start() path's handle.Done watcher).
+// one, so that an unexpected exit transitions the runtime lifecycle.
+// QUM-722: an unexpected exit (no Stop call) now lands at Died, not Stopped.
 func TestAgentRuntime_AttachHandle_WatchesHandleDone_TransitionsToStopped(t *testing.T) {
 	rt := NewAgentRuntime(AgentRuntimeConfig{
 		SprawlRoot: "/repo",
@@ -406,13 +408,14 @@ func TestAgentRuntime_AttachHandle_WatchesHandleDone_TransitionsToStopped(t *tes
 
 	deadline := time.After(2 * time.Second)
 	for {
-		if rt.Snapshot().Liveness == liveness.Stopped {
+		// QUM-722: unexpected exit now lands at Died.
+		if rt.Snapshot().Liveness == liveness.Died {
 			return
 		}
 		select {
 		case <-deadline:
 			t.Fatalf("Lifecycle = %q, want %q after handle.Done close",
-				rt.Snapshot().Liveness, liveness.Stopped)
+				rt.Snapshot().Liveness, liveness.Died)
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -509,7 +512,7 @@ func TestAgentRuntime_StartResume_PropagatesResumeTrue(t *testing.T) {
 		Starter:    starter,
 	})
 
-	if err := rt.StartResume(); err != nil {
+	if err := rt.StartResume(""); err != nil {
 		t.Fatalf("StartResume: %v", err)
 	}
 	if len(starter.specs) != 1 {
@@ -545,7 +548,7 @@ func TestAgentRuntime_StartResume_EmitsStartedEvent(t *testing.T) {
 	events, cancel := rt.Subscribe(4)
 	defer cancel()
 
-	if err := rt.StartResume(); err != nil {
+	if err := rt.StartResume(""); err != nil {
 		t.Fatalf("StartResume: %v", err)
 	}
 	kinds := nextRuntimeEventKinds(t, events, 1)
@@ -574,7 +577,7 @@ func TestAgentRuntime_StartResume_StarterError_LeavesLifecycleRegistered(t *test
 		Starter:    starter,
 	})
 
-	err := rt.StartResume()
+	err := rt.StartResume("")
 	if err == nil {
 		t.Fatal("StartResume must return the starter error")
 	}

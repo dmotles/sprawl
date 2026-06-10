@@ -73,7 +73,7 @@ func ensureRuntimeWithStarter(t *testing.T, r *Real, sprawlRoot string, agentSta
 
 func TestRealSpawn_RegistersRuntimeForSpawnedAgent(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return testAgentState("alice"), nil
 	}
 
@@ -104,7 +104,7 @@ func TestRealSpawn_StartsTrackedRuntime(t *testing.T) {
 	}
 	starter := &runtimeTestStarter{session: session}
 	rt := ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return agentState, nil
 	}
 
@@ -198,7 +198,7 @@ func TestRealSpawn_RuntimeStartFailureRollsBackPersistedArtifacts(t *testing.T) 
 
 	starter := &runtimeTestStarter{err: errors.New("runtime start failed")}
 	ensureRuntimeWithStarter(t, r, tmpDir, agentState, starter)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return agentState, nil
 	}
 
@@ -233,7 +233,7 @@ func TestRealSpawn_RuntimeStartFailureRollsBackPersistedArtifacts(t *testing.T) 
 
 func TestRealSpawn_FailedSpawnDoesNotRegisterRuntime(t *testing.T) {
 	r, _ := newFakeReal(t)
-	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string) (*state.AgentState, error) {
+	r.spawnFn = func(_ *agentops.SpawnDeps, _, _, _, _ string, _ bool) (*state.AgentState, error) {
 		return nil, errors.New("boom")
 	}
 
@@ -257,7 +257,7 @@ func TestRealDelegate_UpdatesRuntimeAfterPersistedSuccess(t *testing.T) {
 	saveTestAgent(t, tmpDir, agentState)
 	rt := ensureRuntime(t, r, tmpDir, agentState)
 
-	if err := r.Delegate(context.Background(), "alice", "implement feature"); err != nil {
+	if err := r.Delegate(context.Background(), "alice", "implement feature", false); err != nil {
 		t.Fatalf("Delegate() error: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestRealDelegate_SignalsWakeOnlyAfterPersistedSuccess(t *testing.T) {
 		t.Fatalf("runtime start: %v", err)
 	}
 
-	if err := r.Delegate(context.Background(), "alice", "implement feature"); err != nil {
+	if err := r.Delegate(context.Background(), "alice", "implement feature", false); err != nil {
 		t.Fatalf("Delegate() error: %v", err)
 	}
 
@@ -297,7 +297,7 @@ func TestRealDelegate_DoesNotCreateRuntimeWhenAgentIsUntracked(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, testAgentState("alice"))
 
-	if err := r.Delegate(context.Background(), "alice", "implement feature"); err != nil {
+	if err := r.Delegate(context.Background(), "alice", "implement feature", false); err != nil {
 		t.Fatalf("Delegate() error: %v", err)
 	}
 
@@ -312,7 +312,7 @@ func TestRealDelegate_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 	rt := ensureRuntime(t, r, tmpDir, agentState)
 
 	before := rt.Snapshot()
-	err := r.Delegate(context.Background(), "alice", "implement feature")
+	err := r.Delegate(context.Background(), "alice", "implement feature", false)
 	if err == nil {
 		t.Fatal("Delegate() error = nil, want failure when state file is missing")
 	}
@@ -538,8 +538,9 @@ func TestRealKill_RuntimeBackedAgentSkipsLegacyKillFn(t *testing.T) {
 	if updated.Status != "killed" {
 		t.Fatalf("Status = %q, want killed", updated.Status)
 	}
-	if got := session.stopCalls.Load(); got != 1 {
-		t.Fatalf("runtime stop calls = %d, want 1", got)
+	// QUM-722: Kill is now hard StopAbandon, not polite Stop.
+	if got := session.stopAbandonCalls.Load(); got != 1 {
+		t.Fatalf("runtime stopAbandon calls = %d, want 1 (Kill is hard, QUM-722)", got)
 	}
 }
 
@@ -595,8 +596,10 @@ func TestRealKill_StartedRuntimeFailureLeavesRuntimeNotStarted(t *testing.T) {
 	if _, ok := r.startedRuntime("alice"); ok {
 		t.Fatal("startedRuntime should reject a stopped runtime after persistence failure")
 	}
-	if got := session.stopCalls.Load(); got != 1 {
-		t.Fatalf("runtime stop calls = %d, want 1", got)
+	// QUM-722: Kill flipped from polite Stop to hard StopAbandon; the assertion
+	// migrates to stopAbandonCalls accordingly.
+	if got := session.stopAbandonCalls.Load(); got != 1 {
+		t.Fatalf("runtime stopAbandon calls = %d, want 1 (Kill is hard, QUM-722)", got)
 	}
 }
 

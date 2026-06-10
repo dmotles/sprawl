@@ -1,5 +1,5 @@
 // QUM-666: tests covering the rename of agent_name → agent across all
-// agent-targeting MCP tools (delegate, merge, retire, kill, recover).
+// agent-targeting MCP tools (delegate, merge, retire, kill, wake).
 // `peek` already uses the canonical `agent` key and is unaffected.
 //
 // Three behaviors are exercised for each renamed tool:
@@ -95,9 +95,9 @@ func renamedToolCall(t *testing.T, id int, tool, key, value string) json.RawMess
 }
 
 // supervisorTarget extracts the agent name recorded by the mock supervisor
-// for a given tool. recoverAwareSupervisor wraps mockSupervisor so we read
-// from the outer struct only for the recover tool.
-func supervisorTarget(tool string, mock *mockSupervisor, rec *recoverAwareSupervisor) string {
+// for a given tool. wakeAwareSupervisor wraps mockSupervisor so we read
+// from the outer struct only for the wake tool.
+func supervisorTarget(tool string, mock *mockSupervisor, rec *wakeAwareSupervisor) string {
 	switch tool {
 	case "delegate":
 		return mock.delegateAgent
@@ -107,19 +107,19 @@ func supervisorTarget(tool string, mock *mockSupervisor, rec *recoverAwareSuperv
 		return mock.retireAgent
 	case "kill":
 		return mock.killAgent
-	case "recover":
-		return rec.recoverAgent
+	case "wake":
+		return rec.wakeAgent
 	}
 	return ""
 }
 
-var renamedAgentToolNames = []string{"delegate", "merge", "retire", "kill", "recover"}
+var renamedAgentToolNames = []string{"delegate", "merge", "retire", "kill", "wake"}
 
 // newSupForRenamed returns a supervisor wired to record the agent name
-// regardless of which renamed tool is dispatched. recoverAwareSupervisor
+// regardless of which renamed tool is dispatched. wakeAwareSupervisor
 // embeds mockSupervisor so its address satisfies supervisor.Supervisor.
-func newSupForRenamed() (*mockSupervisor, *recoverAwareSupervisor) {
-	rec := newRecoverAware()
+func newSupForRenamed() (*mockSupervisor, *wakeAwareSupervisor) {
+	rec := newWakeAware()
 	return rec.mockSupervisor, rec
 }
 

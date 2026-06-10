@@ -1,6 +1,6 @@
 ---
 name: issue-execution-rigor
-description: "Use when implementing a non-trivial Linear issue in this repository. Follow a phase-gated workflow: plan, red tests, green implementation, validation with end-to-end tests, reflection, and closeout, with sub-agent review at each phase."
+description: "Use when implementing a non-trivial Linear issue in this repository. Follow a phase-gated workflow: plan, red tests, green implementation, validation with end-to-end tests, reflection, and closeout, with sidechain review at each phase."
 ---
 
 # Issue Execution Rigor
@@ -49,7 +49,7 @@ Load the repo skills that match the work before changing code:
   - risks
   - verification strategy
   - required end-to-end tests
-- Have a sub-agent review the plan.
+- Have a sidechain review the plan.
 - If the review finds real gaps, revise the plan before proceeding.
 
 Do not start coding before the plan exists.
@@ -59,7 +59,7 @@ Do not start coding before the plan exists.
 - Write tests first for the intended seam or behavior.
 - Run the narrowest useful test target.
 - Confirm the failure is real and matches the intended gap.
-- Have a sub-agent review the red tests and failure shape.
+- Have a sidechain review the red tests and failure shape.
 - Fix weak tests before implementing.
 
 Do not skip the red phase by writing tests after the fix.
@@ -69,7 +69,7 @@ Do not skip the red phase by writing tests after the fix.
 - Implement the minimum change that makes the red tests pass.
 - Keep scope tight to the issue.
 - Re-run focused tests until green.
-- Have a sub-agent review the implementation.
+- Have a sidechain review the implementation.
 - Address feedback worth fixing before broad validation.
 
 ### 5. Validation
@@ -81,7 +81,7 @@ Do not skip the red phase by writing tests after the fix.
   - product regression
   - test/harness drift
   - unrelated pre-existing failure
-- Have a sub-agent review the validation evidence.
+- Have a sidechain review the validation evidence.
 - If the reviewer raises a real concern, address it and re-validate.
 
 ### 6. Reflection
@@ -98,16 +98,16 @@ Do not skip the red phase by writing tests after the fix.
 - Commit with a good message.
 - Mark the issue `Done` only after validation and issue comments are complete.
 
-## Sub-Agent Review Standard
+## Sidechain Review Standard
 
-At each gated phase, ask a sub-agent for review of the artifact from that phase:
+At each gated phase, ask a sidechain for review of the artifact from that phase:
 
 - plan
 - red tests
 - green implementation
 - validation evidence
 
-The sub-agent should review the artifact, not redo the whole task.
+The sidechain should review the artifact, not redo the whole task.
 
 If the reviewer has actionable feedback, address it and confirm the reviewer is satisfied before moving on.
 
@@ -130,7 +130,7 @@ Use this workflow for `QUM-351`:
 ```text
 Use $issue-execution-rigor for QUM-351.
 Follow plan -> red -> green -> validation -> reflection -> closeout.
-Require sub-agent review at each phase.
+Require sidechain review at each phase.
 Run mandatory end-to-end tests before calling it done.
 ```
 
@@ -140,6 +140,6 @@ Before declaring the work done, ask:
 
 - Did I write and review a plan before coding?
 - Did I prove the tests were red first?
-- Did a sub-agent review each phase?
+- Did a sidechain review each phase?
 - Did final QA include end-to-end validation?
 - Did I capture follow-up improvements instead of letting them disappear?

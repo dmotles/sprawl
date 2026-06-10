@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # Branch Hygiene Root Cause Analysis: Wave 1 Commits Landing on Main
 
 ## Executive Summary

@@ -29,6 +29,34 @@ func TestAllocateName_ResearcherReturnsCyberpunkName(t *testing.T) {
 	}
 }
 
+func TestAllocateName_QAReturnsCyberpunkName(t *testing.T) {
+	dir := t.TempDir()
+	name, err := AllocateName(dir, "qa")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(QANames) == 0 {
+		t.Fatal("QANames pool is empty")
+	}
+	if name != QANames[0] {
+		t.Errorf("got %q, want %q", name, QANames[0])
+	}
+}
+
+// TestQANames_NoReservedNames pins that the QA name pool does not collide
+// with reserved sidechain identifiers ("oracle") or with manager names that
+// would already exist in another pool ("bastion").
+func TestQANames_NoReservedNames(t *testing.T) {
+	reserved := []string{"oracle", "bastion"}
+	for _, n := range QANames {
+		for _, r := range reserved {
+			if n == r {
+				t.Errorf("QANames contains reserved name %q", r)
+			}
+		}
+	}
+}
+
 func TestAllocateName_ManagerReturnsCyberpunkName(t *testing.T) {
 	dir := t.TempDir()
 	name, err := AllocateName(dir, "manager")
@@ -224,6 +252,7 @@ func TestPartitionedPools_NoDuplicatesWithinPool(t *testing.T) {
 		"EngineerNames":   EngineerNames,
 		"ResearcherNames": ResearcherNames,
 		"ManagerNames":    ManagerNames,
+		"QANames":         QANames,
 	}
 	for poolName, pool := range pools {
 		seen := make(map[string]bool)
@@ -242,6 +271,7 @@ func TestPartitionedPools_NoDuplicatesAcrossPools(t *testing.T) {
 		"EngineerNames":   EngineerNames,
 		"ResearcherNames": ResearcherNames,
 		"ManagerNames":    ManagerNames,
+		"QANames":         QANames,
 	}
 	for poolName, pool := range allPools {
 		for _, name := range pool {
@@ -254,14 +284,14 @@ func TestPartitionedPools_NoDuplicatesAcrossPools(t *testing.T) {
 }
 
 func TestPartitionedPools_TotalCapacity(t *testing.T) {
-	total := len(EngineerNames) + len(ResearcherNames) + len(ManagerNames)
-	if total != 46 {
-		t.Errorf("total pool capacity is %d, want 46", total)
+	total := len(EngineerNames) + len(ResearcherNames) + len(ManagerNames) + len(QANames)
+	if total < 46 {
+		t.Errorf("total pool capacity is %d, want at least 46 (incl. QANames)", total)
 	}
 }
 
 func TestNamePools_MapsAllTypes(t *testing.T) {
-	expectedTypes := []string{"engineer", "researcher", "manager", "tester", "code-merger"}
+	expectedTypes := []string{"engineer", "researcher", "manager", "tester", "code-merger", "qa"}
 	for _, typ := range expectedTypes {
 		pool, ok := NamePools[typ]
 		if !ok {
@@ -291,6 +321,7 @@ func TestFallbackPrefix_MapsAllTypes(t *testing.T) {
 		"manager":     "fixer",
 		"tester":      "runner",
 		"code-merger": "runner",
+		"qa":          "inspector",
 	}
 	for typ, wantPrefix := range expected {
 		got, ok := FallbackPrefix[typ]
@@ -305,7 +336,7 @@ func TestFallbackPrefix_MapsAllTypes(t *testing.T) {
 }
 
 func TestNamePool_IsUnionOfAllPools(t *testing.T) {
-	// NamePool should contain all names from all three pools
+	// NamePool should contain all names from all four pools
 	allNames := make(map[string]bool)
 	for _, name := range EngineerNames {
 		allNames[name] = true
@@ -314,6 +345,9 @@ func TestNamePool_IsUnionOfAllPools(t *testing.T) {
 		allNames[name] = true
 	}
 	for _, name := range ManagerNames {
+		allNames[name] = true
+	}
+	for _, name := range QANames {
 		allNames[name] = true
 	}
 

@@ -1,3 +1,5 @@
+> Terminology note (2026-06): pre-rename "sub-agent" = current "sidechain".
+
 # Research: Claude Code stream-json Protocol and Agent SDK Internals
 
 ## Status: Complete

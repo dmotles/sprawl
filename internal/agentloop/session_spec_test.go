@@ -1,12 +1,9 @@
 package agentloop
 
 import (
-	"encoding/json"
 	"io"
-	"strings"
 	"testing"
 
-	"github.com/dmotles/sprawl/internal/agent"
 	"github.com/dmotles/sprawl/internal/claude"
 	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/state"
@@ -18,7 +15,7 @@ import (
 // in AllowedTools. These tools require an outer harness and have no meaning
 // inside a child claude session.
 func TestBuildAgentSessionSpec_DisallowsLoopOnlyTools(t *testing.T) {
-	for _, agentType := range []string{"engineer", "researcher", "manager"} {
+	for _, agentType := range []string{"engineer", "researcher", "manager", "qa"} {
 		t.Run(agentType, func(t *testing.T) {
 			agentState := &state.AgentState{
 				Name:      "test-agent",
@@ -134,82 +131,32 @@ func TestBuildAgentSessionSpec_ModelByAgentType(t *testing.T) {
 	}
 }
 
-// TestBuildAgentSessionSpec_AgentsByAgentType pins the QUM-408 wiring: only
-// engineer agents must launch claude with `--agents <TDD JSON>`. Researchers,
-// managers, and weave run without the TDD sub-agents. This test guards against
-// re-regression during future spawn-path refactors (notably the unified
-// runtime, QUM-396/QUM-398).
-func TestBuildAgentSessionSpec_AgentsByAgentType(t *testing.T) {
-	tests := []struct {
-		name       string
-		agentType  string
-		wantAgents bool
-	}{
-		{"engineer gets TDD sub-agents", "engineer", true},
-		{"researcher does not", "researcher", false},
-		{"manager does not", "manager", false},
-		{"weave does not", "weave", false},
-	}
-	expectedNames := []string{"oracle", "test-writer", "test-critic", "implementer", "code-reviewer", "qa-validator"}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+// TestBuildAgentSessionSpec_NoAgentsArgv pins QUM-716 (#4.5): the `--agents`
+// plumbing has been removed end-to-end. No agent type — including engineer —
+// should produce a claude argv containing `--agents`.
+func TestBuildAgentSessionSpec_NoAgentsArgv(t *testing.T) {
+	for _, agentType := range []string{"engineer", "researcher", "manager", "weave", "qa"} {
+		t.Run(agentType, func(t *testing.T) {
 			agentState := &state.AgentState{
 				Name:      "test-agent",
-				Type:      tt.agentType,
+				Type:      agentType,
 				Worktree:  "/tmp/worktrees/test",
 				SessionID: "sess-test",
 			}
 			spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
-			if tt.wantAgents {
-				if spec.Agents == "" {
-					t.Fatalf("Agents = %q, want non-empty for agent type %q", spec.Agents, tt.agentType)
+			args := claude.LaunchOpts{
+				Model:           spec.Model,
+				Effort:          spec.Effort,
+				PermissionMode:  spec.PermissionMode,
+				SessionID:       spec.SessionID,
+				AllowedTools:    spec.AllowedTools,
+				DisallowedTools: spec.DisallowedTools,
+			}.BuildArgs()
+			for _, a := range args {
+				if a == "--agents" {
+					t.Errorf("argv contains --agents for agent type %q (QUM-716 regression): %v", agentType, args)
 				}
-				var parsed map[string]agent.SubAgent
-				if err := json.Unmarshal([]byte(spec.Agents), &parsed); err != nil {
-					t.Fatalf("Agents not valid JSON: %v (got %q)", err, spec.Agents)
-				}
-				if len(parsed) != len(expectedNames) {
-					t.Errorf("Agents map has %d entries, want %d", len(parsed), len(expectedNames))
-				}
-				for _, name := range expectedNames {
-					if _, ok := parsed[name]; !ok {
-						t.Errorf("Agents JSON missing sub-agent %q (got keys %v)", name, mapKeys(parsed))
-					}
-				}
-				if spec.Agents != agent.TDDSubAgentsJSON() {
-					t.Errorf("Agents JSON does not match agent.TDDSubAgentsJSON() output")
-				}
-			} else if spec.Agents != "" {
-				t.Errorf("Agents = %q, want empty for agent type %q", spec.Agents, tt.agentType)
 			}
 		})
-	}
-}
-
-func mapKeys(m map[string]agent.SubAgent) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
-// TestBuildAgentSessionSpec_AgentsRoundTripsContainsExpectedFlag verifies that
-// when SessionSpec.Agents is non-empty, the resulting claude argv contains
-// `--agents <json>`. Catches the case where SessionSpec gains an Agents field
-// but adapters fail to thread it into LaunchOpts.
-func TestBuildAgentSessionSpec_AgentsRoundTripsToLaunchArgs(t *testing.T) {
-	agentState := &state.AgentState{
-		Name:      "engineer-agent",
-		Type:      "engineer",
-		Worktree:  "/tmp/worktrees/test",
-		SessionID: "sess-engineer",
-	}
-	spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
-	if spec.Agents == "" {
-		t.Fatal("precondition: engineer SessionSpec.Agents is empty")
-	}
-	if !strings.Contains(spec.Agents, "oracle") {
-		t.Fatalf("SessionSpec.Agents missing oracle sub-agent: %q", spec.Agents)
 	}
 }

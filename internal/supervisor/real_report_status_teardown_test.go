@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dmotles/sprawl/internal/agent"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
@@ -102,9 +103,9 @@ func TestReportStatusCompleteTearsDownRuntime(t *testing.T) {
 func TestReportStatusFailureTearsDownRuntimeAndStaysRecoverable(t *testing.T) {
 	// Trim the recover health-probe wait so the test doesn't spend the full
 	// 5s default polling for a fault that never comes from the fake session.
-	prev := recoverHealthProbeTimeout
-	recoverHealthProbeTimeout = 100 * time.Millisecond
-	t.Cleanup(func() { recoverHealthProbeTimeout = prev })
+	prev := wakeHealthProbeTimeout
+	wakeHealthProbeTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { wakeHealthProbeTimeout = prev })
 
 	r, tmpDir := newFakeReal(t)
 	parent := testAgentState("weave")
@@ -149,8 +150,8 @@ func TestReportStatusFailureTearsDownRuntimeAndStaysRecoverable(t *testing.T) {
 	// state where Recover is legal (Status="faulted" + handle nil →
 	// Liveness projection = Faulted). Verify Recover succeeds and the
 	// runtime flips back to Running.
-	if err := r.Recover(context.Background(), "alice"); err != nil {
-		t.Fatalf("Recover after failure-report: %v (the QUM-606 invariant must survive QUM-727)", err)
+	if _, err := r.Wake(context.Background(), "alice", agent.WakeReasonBare, ""); err != nil {
+		t.Fatalf("Wake after failure-report: %v (the QUM-606 invariant must survive QUM-727)", err)
 	}
 	waitFor(t, func() bool {
 		return rt.Snapshot().Liveness == liveness.Running

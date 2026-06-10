@@ -123,7 +123,7 @@ func summarizePrompt(s Session, body string, strict bool) string {
 	b.WriteString("Good examples (match this style):\n")
 	b.WriteString("- QUM-329 shipped: TUI handoff restart fix works\n")
 	b.WriteString("- Released v0.2.0; shipped QUM-555-562 notification UX arc.\n")
-	b.WriteString("- 8 commits merged: Phase 1 unified runtime (TurnLoop+wrapper), TDD sub-agents live, QUM-397 ready\n")
+	b.WriteString("- 8 commits merged: Phase 1 unified runtime (TurnLoop+wrapper), TDD sidechains live, QUM-397 ready\n")
 	b.WriteString("- Memory re-arch (3-tier append-only, QUM-513-517 Done); cruft cleanup wave 2 (-228 LOC); QUM-520 MCP wedge bug filed.\n")
 	b.WriteString("- Fixed critical host stdout-reader wedge (QUM-595); shipped 5 TUI/cleanup waves; cut v0.2.1-v0.2.3.\n\n")
 	b.WriteString("DO NOT do this (too wordy, narrative, no headline):\n")
