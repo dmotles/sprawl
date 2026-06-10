@@ -41,6 +41,14 @@ type itemEnvelope struct {
 	cache *cachedRender
 }
 
+// renderCacheEntry memoizes the outer ChatList.Render walk so a steady-
+// state Render (no mutations between calls) returns in O(1). QUM-769.
+type renderCacheEntry struct {
+	width    int
+	revision uint64
+	out      string
+}
+
 // ChatList is the per-agent ordered list of Items. Owns the renderer +
 // theme passed to each Item via the shared itemRenderCtx.
 type ChatList struct {
@@ -64,7 +72,29 @@ type ChatList struct {
 	// produces identical Depth + ParentToolID values to the legacy path.
 	activeAgents    map[string]bool
 	lastActiveAgent string
+
+	// QUM-769 outer Render cache. revision is bumped by invalidate() on every
+	// observable state change; renderCache hits while revision and width are
+	// unchanged AND the list is Idle (streaming bypasses so chunk-by-chunk
+	// text repaints live). renderBuilds is a same-package instrumentation
+	// counter incremented inside the cache-miss path; tests assert on it.
+	revision     uint64
+	renderCache  *renderCacheEntry
+	renderBuilds int
 }
+
+// invalidate marks the outer Render cache dirty. Called by every mutator
+// that changes the rendered output. Bumping a monotonic counter is cheaper
+// than recomputing a fingerprint and harder to forget than per-mutator
+// cache nilling.
+func (c *ChatList) invalidate() {
+	c.revision++
+}
+
+// Revision returns the current observable-state counter. ChatRegion uses
+// this as a cheap cache fingerprint so it can skip vp.SetContent + vp.View
+// when nothing under it has changed. QUM-769.
+func (c *ChatList) Revision() uint64 { return c.revision }
 
 // NewChatList constructs an empty ChatList bound to the given theme.
 // Width starts at 0; Render is a no-op until SetSize is called.
@@ -108,8 +138,14 @@ func (c *ChatList) ToolInputsExpanded() bool { return c.toolsExpanded }
 // lazily on demand.
 func (c *ChatList) SetSize(width int) {
 	if width <= 0 {
+		if c.width != 0 {
+			c.invalidate()
+		}
 		c.width = 0
 		return
+	}
+	if c.width != width {
+		c.invalidate()
 	}
 	c.width = width
 }
@@ -129,12 +165,14 @@ func (c *ChatList) SetToolInputsExpanded(expanded bool) {
 			env.cache = nil
 		}
 	}
+	c.invalidate()
 }
 
 // AppendUser appends a new UserItem.
 func (c *ChatList) AppendUser(text string) {
 	c.dropTrailingThinkingMarker()
 	c.items = append(c.items, &itemEnvelope{item: NewUserItem(&c.ctx, text)})
+	c.invalidate()
 }
 
 // AppendAssistantChunk appends a streaming chunk to the trailing
@@ -149,17 +187,20 @@ func (c *ChatList) AppendAssistantChunk(text string) {
 			// invalidate, but null out defensively to be explicit.
 			c.items[n-1].cache = nil
 			c.streamingAssistant = true
+			c.invalidate()
 			return
 		}
 	}
 	c.dropTrailingThinkingMarker()
 	c.items = append(c.items, &itemEnvelope{item: NewAssistantTextItem(&c.ctx, text)})
 	c.streamingAssistant = true
+	c.invalidate()
 }
 
 // FinalizeAssistantMessage marks the trailing AssistantTextItem (if any) as
 // finished, allowing its render to be cached on next Render.
 func (c *ChatList) FinalizeAssistantMessage() {
+	wasStreaming := c.streamingAssistant
 	if n := len(c.items); n > 0 {
 		if a, ok := c.items[n-1].item.(*AssistantTextItem); ok && !a.Finished() {
 			a.Finalize()
@@ -167,6 +208,9 @@ func (c *ChatList) FinalizeAssistantMessage() {
 		}
 	}
 	c.streamingAssistant = false
+	if wasStreaming {
+		c.invalidate()
+	}
 }
 
 // AppendThinking coalesces consecutive thinking arrivals into a single
@@ -180,10 +224,12 @@ func (c *ChatList) AppendThinking() {
 		if t, ok := c.items[n-1].item.(*ThinkingItem); ok {
 			t.Bump()
 			c.items[n-1].cache = nil
+			c.invalidate()
 			return
 		}
 	}
 	c.items = append(c.items, &itemEnvelope{item: NewThinkingItem(&c.ctx)})
+	c.invalidate()
 }
 
 // dropTrailingThinkingMarker removes a trailing ThinkingItem if one is
@@ -193,6 +239,7 @@ func (c *ChatList) dropTrailingThinkingMarker() {
 	if n := len(c.items); n > 0 {
 		if _, ok := c.items[n-1].item.(*ThinkingItem); ok {
 			c.items = c.items[:n-1]
+			c.invalidate()
 		}
 	}
 }
@@ -207,6 +254,7 @@ func (c *ChatList) AppendToolCall(spec ToolCallSpec) {
 	item.SetExpanded(c.toolsExpanded)
 	c.items = append(c.items, &itemEnvelope{item: item})
 	c.pendingTools++
+	c.invalidate()
 	if spec.Name == "Agent" && spec.ToolID != "" {
 		if c.activeAgents == nil {
 			c.activeAgents = make(map[string]bool)
@@ -270,6 +318,7 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 		if wasPending && c.pendingTools > 0 {
 			c.pendingTools--
 		}
+		c.invalidate()
 		// QUM-386 mirror: remove completed Agent from active set.
 		if c.activeAgents[toolID] {
 			delete(c.activeAgents, toolID)
@@ -306,6 +355,7 @@ func (c *ChatList) Update(msg tea.Msg) tea.Cmd {
 		// mutating frame requires no cache nil-out. Keep it explicit anyway
 		// for safety against future caching of in-flight items.
 		env.cache = nil
+		c.invalidate()
 		return cmd
 	}
 	return nil
@@ -376,12 +426,16 @@ func (c *ChatList) AppendSystemNotification(text string) {
 		})
 		rest = remaining
 	}
+	if appended {
+		c.invalidate()
+	}
 }
 
 // AppendAutoTrigger appends a finished AutoTriggerItem.
 func (c *ChatList) AppendAutoTrigger(summary string) {
 	c.dropTrailingThinkingMarker()
 	c.items = append(c.items, &itemEnvelope{item: NewAutoTriggerItem(&c.ctx, summary)})
+	c.invalidate()
 }
 
 // HasPendingAssistant reports whether the trailing item is an in-flight
@@ -418,6 +472,7 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 	c.streamingAssistant = false
 	c.activeAgents = nil
 	c.lastActiveAgent = ""
+	c.invalidate()
 	for _, e := range entries {
 		switch e.Type {
 		case MessageUser:
@@ -484,6 +539,25 @@ func (c *ChatList) Render(width int) string {
 	if width <= 0 || c.width <= 0 {
 		return ""
 	}
+	// QUM-769: while anything is streaming or a tool tick is in flight, bypass
+	// the outer cache so chunk-by-chunk text + spinner frames repaint live.
+	// The per-envelope cache still serves finished items inside the walk.
+	if !c.Idle() {
+		return c.buildRender(width)
+	}
+	if c.renderCache != nil && c.renderCache.width == width && c.renderCache.revision == c.revision {
+		return c.renderCache.out
+	}
+	out := c.buildRender(width)
+	c.renderCache = &renderCacheEntry{width: width, revision: c.revision, out: out}
+	return out
+}
+
+// buildRender is the uncached worker: walks every envelope, applies the
+// per-envelope cache, and concatenates with QUM-691 inter-type separator
+// semantics. Counts invocations via renderBuilds for in-package test probes.
+func (c *ChatList) buildRender(width int) string {
+	c.renderBuilds++
 	var sb strings.Builder
 	var prevType string
 	for idx, env := range c.items {

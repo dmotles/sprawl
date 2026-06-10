@@ -177,9 +177,12 @@ func TestChatList_CacheHitOnSecondRenderSameWidth(t *testing.T) {
 	}
 	// Sentinel: forcibly poison the underlying item so a cache miss would
 	// produce different output. If the cache is honored, the second render
-	// returns the cached string verbatim.
+	// returns the cached string verbatim. QUM-769 added an outer Render
+	// cache on top; drop it here so this test still pins the per-envelope
+	// cache behavior in isolation.
 	env := cl.items[0]
 	env.cache.out = "POISONED"
+	cl.renderCache = nil
 	second := cl.Render(80)
 	// Render writes a trailing "\n" after each item to match the legacy
 	// viewport.renderMessages convention; the cached envelope output is

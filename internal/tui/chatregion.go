@@ -36,6 +36,27 @@ type ChatRegion struct {
 	// at-bottom invariant.
 	lastClLen int
 	lastWidth int
+
+	// QUM-769 View() output cache. Hits when the inner ChatList revision,
+	// viewport geometry, scroll offset, and indicator flags are unchanged
+	// since the last paint — the steady-state typing case. disableViewCache
+	// is a same-package test toggle for the byte-equivalence oracle.
+	viewCache        *chatRegionViewCache
+	viewBuilds       int
+	disableViewCache bool
+}
+
+// chatRegionViewCache stores the post-vp.View() string keyed on every input
+// that can change the rendered bytes. revision is the ChatList's monotonic
+// observable-state counter (QUM-769); yOffset captures user scroll position;
+// autoScroll + hasNewContent capture the indicator-splice flags.
+type chatRegionViewCache struct {
+	revision      uint64
+	width, height int
+	yOffset       int
+	autoScroll    bool
+	hasNewContent bool
+	out           string
 }
 
 // NewChatRegion constructs a fresh ChatRegion bound to the given theme. The
@@ -122,6 +143,23 @@ func (r *ChatRegion) View() string {
 	if w <= 0 {
 		return ""
 	}
+	// QUM-769 fast-path: when nothing observable to View() output has changed
+	// since the last paint, return the cached string. Skips ChatList.Render
+	// (already cached) + vp.SetContent (re-soft-wraps the full content) +
+	// vp.View() (emits the visible window) — the ~220ms per-keystroke cost.
+	rev := r.cl.Revision()
+	h := r.vp.Height()
+	if !r.disableViewCache && r.viewCache != nil &&
+		r.viewCache.revision == rev &&
+		r.viewCache.width == w &&
+		r.viewCache.height == h &&
+		r.viewCache.yOffset == r.vp.YOffset() &&
+		r.viewCache.autoScroll == r.autoScroll &&
+		r.viewCache.hasNewContent == r.hasNewContent {
+		return r.viewCache.out
+	}
+
+	r.viewBuilds++
 	// Re-render the ChatList content into the inner viewport. ChatList caches
 	// finished items per (width, expanded) so the per-call cost is bounded by
 	// the count of in-flight (streaming / pending-tool) items.
@@ -148,6 +186,17 @@ func (r *ChatRegion) View() string {
 			lines[len(lines)-1] = indicator
 		}
 		view = strings.Join(lines, "\n")
+	}
+	if !r.disableViewCache {
+		r.viewCache = &chatRegionViewCache{
+			revision:      rev,
+			width:         w,
+			height:        h,
+			yOffset:       r.vp.YOffset(),
+			autoScroll:    r.autoScroll,
+			hasNewContent: r.hasNewContent,
+			out:           view,
+		}
 	}
 	return view
 }
