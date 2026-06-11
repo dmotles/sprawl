@@ -616,10 +616,12 @@ func (s *Server) toolPause(ctx context.Context, args json.RawMessage) (string, e
 }
 
 // toolWake dispatches the wake MCP tool (QUM-724, renamed from recover/
-// QUM-601 with expanded scope). On success returns a JSON-marshaled WakeResult
-// so callers can branch on Mode. ErrWakeNotNeeded is treated as a success
-// ack ("Agent <name> already running; no wake needed"). Other supervisor
-// errors propagate as tool-error content (IsError=true).
+// QUM-601 with expanded scope; QUM-790 broadened the accept-set further so
+// wake accepts any agent that is not retired/retiring — including the new
+// StatusComplete resting state from QUM-787). On success returns a JSON-
+// marshaled WakeResult so callers can branch on Mode. ErrWakeNotNeeded is
+// treated as a success ack ("Agent <name> already running; no wake needed").
+// Other supervisor errors propagate as tool-error content (IsError=true).
 func (s *Server) toolWake(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Agent     string `json:"agent"`

@@ -548,18 +548,29 @@ func (r *Real) Delegate(ctx context.Context, agentName, task string, wakeIfOffli
 		return fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
-	switch agentState.Status {
-	case "retired", "retiring":
-		return fmt.Errorf("cannot delegate to agent %q: status is %q", agentName, agentState.Status)
+	// QUM-789 lifecycle arc #2: retired/retiring is truly terminal — surface
+	// the canonical "no longer running" error.
+	if state.IsTerminal(agentState.Status) {
+		if err := agentops.TerminalAgentError(r.sprawlRoot, agentName); err != nil {
+			return err
+		}
 	}
 
 	if task == "" {
 		return fmt.Errorf("task prompt must not be empty")
 	}
 
-	// QUM-726: offline-recoverable gate. For Paused/Killed/Died/Faulted/ResumeFailed, either
-	// reject with the canonical error or wake-and-enqueue.
-	if lv, ok := r.livenessOf(agentName); ok {
+	// QUM-789 lifecycle arc #2: Status==complete is revivable via auto-wake
+	// — NO wake_if_offline flag required. Wake first so the recipient's
+	// first post-wake turn sees the delegate prompt, then continue to the
+	// standard task enqueue below.
+	if agentState.Status == state.StatusComplete {
+		if _, wErr := r.Wake(ctx, agentName, agentpkg.WakeReasonDelegate, task); wErr != nil {
+			return wErr
+		}
+	} else if lv, ok := r.livenessOf(agentName); ok {
+		// QUM-726: offline-recoverable gate. For Paused/Killed/Died/Faulted/ResumeFailed, either
+		// reject with the canonical error or wake-and-enqueue.
 		if lv == liveness.Paused || lv == liveness.Killed || lv == liveness.Died || lv == liveness.Faulted || lv == liveness.ResumeFailed {
 			if !wakeIfOffline {
 				// QUM-726: canonical error string is byte-pinned in tests; do not reword.
@@ -977,6 +988,13 @@ func (r *Real) Wake(ctx context.Context, agentName string, reason agentpkg.WakeR
 	if lv, ok := r.livenessOf(agentName); ok {
 		previousState = lv.String()
 	}
+	// QUM-789: StatusComplete projects to liveness.Unstarted (intentional;
+	// see runtime.go SyncAgentState). For the wake prompt, prefer the more
+	// informative disk-status token so the recipient learns it was woken
+	// from a `complete` resting state rather than the bland "unstarted".
+	if st, lErr := state.LoadAgent(r.sprawlRoot, agentName); lErr == nil && st.Status == state.StatusComplete {
+		previousState = state.StatusComplete
+	}
 	injection := agentpkg.BuildWakePrompt(reason, previousState, injectedBody)
 	id := calllog.CallID(ctx)
 	cp := r.composeCheckpoint(id)
@@ -1064,7 +1082,10 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 			var terminal string
 			switch a.LastReportState {
 			case agentops.ReportStateComplete:
-				terminal = state.StatusStopped
+				// QUM-787: an agent that reported complete settles to
+				// StatusComplete (revivable). StatusStopped is no longer
+				// a write target.
+				terminal = state.StatusComplete
 			case agentops.ReportStateFailure:
 				terminal = state.StatusFaulted
 			default:
@@ -1278,6 +1299,14 @@ func (r *Real) Shutdown(ctx context.Context) error {
 			defer wg.Done()
 			stopCtx, cancel := withRuntimeStopTimeout(ctx)
 			defer cancel()
+			// QUM-787: capture pre-Stop disk Status so the post-Stop
+			// promotion-to-suspended can distinguish "agent was already
+			// in a terminal-ish resting state on disk" (preserve) from
+			// "Stop just landed StatusFaulted because there was no
+			// complete report" (promote to suspended). Without this
+			// snapshot the new stopWithFunc behavior would mask the
+			// legacy active→suspended Shutdown contract.
+			preStop, _ := state.LoadAgent(r.sprawlRoot, name)
 			if runtime.InTurn() {
 				// In-turn → use Pause (bounded escalation to killed).
 				if _, pErr := runtime.Pause(stopCtx, pauseBudget); pErr != nil {
@@ -1300,12 +1329,27 @@ func (r *Real) Shutdown(ctx context.Context) error {
 			if lErr != nil {
 				return
 			}
+			preserve := false
 			switch agentState.Status {
-			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusFaulted, state.StatusPaused, state.StatusDied:
-				// QUM-625 (slice M4): leave terminal-ish / faulted states
-				// as-is. QUM-722: also leave Paused / Died as-is — they
-				// carry distinct resting semantics.
-			default:
+			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusPaused, state.StatusDied, state.StatusComplete:
+				// QUM-625 (slice M4): leave terminal-ish states as-is.
+				// QUM-722: also leave Paused / Died as-is — they carry
+				// distinct resting semantics. QUM-787: leave Complete
+				// as-is — an agent that reported state=complete finished
+				// its work and should not be auto-resumed.
+				preserve = true
+			case state.StatusFaulted:
+				// QUM-787: preserve only if disk was ALREADY faulted
+				// pre-Stop (genuine fault). If Stop is what landed the
+				// faulted Status (clean idle-Stop with no complete
+				// report under the new stopWithFunc semantics), promote
+				// to suspended so the active→suspended Shutdown
+				// contract still holds.
+				if preStop != nil && preStop.Status == state.StatusFaulted {
+					preserve = true
+				}
+			}
+			if !preserve {
 				agentState.Status = state.StatusSuspended
 				if sErr := state.SaveAgent(r.sprawlRoot, agentState); sErr != nil {
 					errMu.Lock()
@@ -1625,16 +1669,29 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 	if err := agentpkg.ValidateName(to); err != nil {
 		return nil, err
 	}
-	if _, err := state.LoadAgent(r.sprawlRoot, to); err != nil {
+	agentState, err := state.LoadAgent(r.sprawlRoot, to)
+	if err != nil {
 		return nil, fmt.Errorf("agent %q not found: %w", to, err)
 	}
+	caller := r.effectiveCaller(ctx)
+	// currentLv/lvOK are captured ONCE here pre-Wake; the deadFallback block
+	// below intentionally consults this pre-Wake snapshot (a post-Wake agent
+	// is no longer Died, so the route-up walk would skip otherwise).
+	currentLv, lvOK := r.livenessOf(to)
+	switch {
+	// QUM-789 lifecycle arc #2: Status==complete is revivable via auto-wake
+	// — NO wake_if_offline flag required. Wake first so the recipient's
+	// first post-wake turn sees the send_message prompt, then continue to
+	// the interrupt gate + persistence below. Bypasses the offline-gate /
+	// TerminalAgentError branches since complete is not terminal.
+	case agentState.Status == state.StatusComplete:
+		if _, wErr := r.Wake(ctx, to, agentpkg.WakeReasonSendMessage, body); wErr != nil {
+			return nil, wErr
+		}
 	// QUM-726: offline-recoverable gate. For Paused/Killed/Faulted/ResumeFailed, either
 	// reject with the canonical error or wake-and-deliver. For Died, defer to
 	// the QUM-725 route-up walk below; only if that walk fails (no live
 	// ancestor reachable) does the canonical error / wake fallback fire.
-	caller := r.effectiveCaller(ctx)
-	currentLv, lvOK := r.livenessOf(to)
-	switch {
 	case lvOK && (currentLv == liveness.Paused || currentLv == liveness.Killed || currentLv == liveness.Faulted || currentLv == liveness.ResumeFailed):
 		if !wakeIfOffline {
 			// QUM-726: canonical error string is byte-pinned in tests; do not reword.
@@ -1644,6 +1701,7 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 			return nil, wErr
 		}
 	default:
+		// QUM-789: TerminalAgentError now fires only for retired/retiring.
 		if _, ok := r.startedRuntime(to); !ok {
 			if err := agentops.TerminalAgentError(r.sprawlRoot, to); err != nil {
 				return nil, err
@@ -2100,9 +2158,10 @@ func (r *Real) listDirectChildren(parentName string) ([]*state.AgentState, error
 	}
 	var children []*state.AgentState
 	for _, agentState := range agents {
-		// QUM-739: terminal-status children are resolved orphans — they
-		// don't block parent retire/merge and shouldn't be cascaded.
-		if agentState.Parent == parentName && !state.IsTerminal(agentState.Status) {
+		// QUM-739 / QUM-787: resolved-orphan children don't block parent
+		// retire/merge and shouldn't be cascaded. Uses IsResolvedOrphan
+		// because QUM-787 narrowed IsTerminal to {retired, retiring}.
+		if agentState.Parent == parentName && !state.IsResolvedOrphan(agentState.Status) {
 			children = append(children, agentState)
 		}
 	}

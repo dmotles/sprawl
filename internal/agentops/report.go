@@ -131,7 +131,10 @@ func Report(deps *ReportDeps, sprawlRoot, agentName, stateVal, summary string) (
 	// agent.
 	switch stateVal {
 	case ReportStateComplete:
-		agentState.Status = state.StatusStopped
+		// QUM-787: state=complete lands the agent in StatusComplete
+		// (revivable per the QUM-786 lifecycle arc). StatusStopped is no
+		// longer a write target.
+		agentState.Status = state.StatusComplete
 	case ReportStateFailure:
 		agentState.Status = state.StatusFaulted
 	}

@@ -31,6 +31,10 @@ const (
 	StateDone
 	StateBlocked
 	StateFailure
+	// StateDormant is the QUM-788 projection for agents whose disk Status is
+	// "complete" — terminal-but-revivable. Distinct dim style so it does not
+	// collide with StateIdle (gray) or StateFailure (red).
+	StateDormant
 )
 
 // TreeNodeAgentState classifies a TreeNode into an AgentState for rendering.
@@ -56,6 +60,8 @@ func TreeNodeAgentState(n TreeNode, now time.Time) AgentState {
 		return StateBlocked
 	case "failure":
 		return StateFailure
+	case "dormant":
+		return StateDormant
 	}
 	return StateIdle
 }
@@ -75,6 +81,8 @@ func stateGlyph(s AgentState) string {
 		return "⏸"
 	case StateFailure:
 		return "✗"
+	case StateDormant:
+		return "◌"
 	}
 	return "·"
 }
@@ -96,6 +104,8 @@ func stateStyle(s AgentState) lipgloss.Style {
 		return treeBlockedStyle
 	case StateFailure:
 		return treeFailureStyle
+	case StateDormant:
+		return treeDormantStyle
 	}
 	return treeIdleStyle
 }
@@ -107,6 +117,10 @@ var (
 	treeDoneStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399"))
 	treeBlockedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
 	treeFailureStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
+	// QUM-788: dormant-revivable agents (Status="complete"). Desaturated
+	// info-blue with Faint(true) so the pill reads as ambient/at-rest but
+	// distinct from StateIdle gray (#71717A) and StateFailure red.
+	treeDormantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA")).Faint(true)
 
 	// selReverseStyle styles the selected agent as a reverse-video cyan pill.
 	selReverseStyle = lipgloss.NewStyle().

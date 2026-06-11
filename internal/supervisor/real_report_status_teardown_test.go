@@ -75,8 +75,8 @@ func TestReportStatusCompleteTearsDownRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAgent: %v", err)
 	}
-	if st.Status != state.StatusStopped {
-		t.Errorf("alice.Status = %q, want %q (QUM-668)", st.Status, state.StatusStopped)
+	if st.Status != state.StatusComplete {
+		t.Errorf("alice.Status = %q, want %q (QUM-787)", st.Status, state.StatusComplete)
 	}
 
 	// Teardown invariants — the QUM-727 fix targets. Stop may run in a
@@ -292,8 +292,8 @@ func TestReportStatusCompleteTearsDownMultipleRuntimesConcurrently(t *testing.T)
 		if err != nil {
 			t.Fatalf("LoadAgent(%s): %v", c.name, err)
 		}
-		if st.Status != state.StatusStopped {
-			t.Errorf("%s.Status = %q, want %q", c.name, st.Status, state.StatusStopped)
+		if st.Status != state.StatusComplete {
+			t.Errorf("%s.Status = %q, want %q", c.name, st.Status, state.StatusComplete)
 		}
 		if got := c.runtime.Snapshot().Liveness; got != liveness.Stopped {
 			t.Errorf("%s.Snapshot().Liveness = %q, want %q", c.name, got, liveness.Stopped)

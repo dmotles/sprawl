@@ -271,6 +271,8 @@ func TestStatusConstants_Values(t *testing.T) {
 		// QUM-722: new lifecycle states for pause/death.
 		"StatusPaused": StatusPaused,
 		"StatusDied":   StatusDied,
+		// QUM-787: new lifecycle state for agent-reported completion.
+		"StatusComplete": StatusComplete,
 	}
 	wants := map[string]string{
 		"StatusActive":       "active",
@@ -285,6 +287,7 @@ func TestStatusConstants_Values(t *testing.T) {
 		"StatusStopped":      "stopped",
 		"StatusPaused":       "paused",
 		"StatusDied":         "died",
+		"StatusComplete":     "complete",
 	}
 	for name, got := range cases {
 		if got != wants[name] {
@@ -463,27 +466,30 @@ func TestAgentState_LegacyCostFieldsTolerated(t *testing.T) {
 	}
 }
 
-// TestIsTerminal covers the QUM-739 helper that classifies a status string
-// as terminal (the agent cannot transition back to running on its own).
-// "paused" is NOT terminal (wake-able). "retiring" is NOT terminal (in-flight
-// teardown — a concurrent retire must still see it as active to avoid races).
+// TestIsTerminal covers the helper that classifies a status string as
+// terminal. QUM-787 narrows the terminal set to ONLY parent-decided
+// permanent states: {retired, retiring}. Every other state — including the
+// old "terminal" set (stopped, faulted, killed, died, resume_failed) and
+// the new StatusComplete — is revivable per the QUM-786 lifecycle arc and
+// must report false.
 func TestIsTerminal(t *testing.T) {
 	cases := []struct {
 		status string
 		want   bool
 	}{
-		{StatusStopped, true},
-		{StatusFaulted, true},
 		{StatusRetired, true},
-		{StatusKilled, true},
-		{StatusDied, true},
-		{StatusResumeFailed, true},
+		{StatusRetiring, true},
 
+		{StatusComplete, false},
+		{StatusStopped, false},
+		{StatusFaulted, false},
+		{StatusKilled, false},
+		{StatusDied, false},
+		{StatusResumeFailed, false},
 		{StatusActive, false},
 		{StatusRunning, false},
 		{StatusSuspended, false},
 		{StatusPaused, false},
-		{StatusRetiring, false},
 		{StatusDone, false}, // legacy outcome token; not a liveness
 		{"", false},
 		{"unknown", false},
@@ -492,5 +498,154 @@ func TestIsTerminal(t *testing.T) {
 		if got := IsTerminal(tc.status); got != tc.want {
 			t.Errorf("IsTerminal(%q) = %v, want %v", tc.status, got, tc.want)
 		}
+	}
+}
+
+// TestIsResolvedOrphan covers the helper used by retire/merge cleanup paths
+// to identify children that no longer block parent teardown. The set is
+// strictly broader than IsTerminal — every "torn-down, not currently
+// holding the agent slot live" state qualifies, even revivable ones, so
+// retire/merge of a parent does not get blocked by a child that already
+// finished its work and let go of its runtime handle.
+func TestIsResolvedOrphan(t *testing.T) {
+	cases := []struct {
+		status string
+		want   bool
+	}{
+		// Parent-decided terminal: trivially resolved.
+		{StatusRetired, true},
+		{StatusRetiring, true},
+		// Torn-down-but-revivable states: still resolved orphans for the
+		// purposes of retire/merge cascade.
+		{StatusComplete, true},
+		{StatusStopped, true},
+		{StatusFaulted, true},
+		{StatusKilled, true},
+		{StatusDied, true},
+		{StatusResumeFailed, true},
+
+		// Live or rest-but-actively-claiming-the-slot states: NOT resolved.
+		{StatusActive, false},
+		{StatusRunning, false},
+		{StatusSuspended, false},
+		{StatusPaused, false},
+		{"", false},
+		{"unknown", false},
+	}
+	for _, tc := range cases {
+		if got := IsResolvedOrphan(tc.status); got != tc.want {
+			t.Errorf("IsResolvedOrphan(%q) = %v, want %v", tc.status, got, tc.want)
+		}
+	}
+}
+
+// TestStatusComplete_ConstantValue pins the on-disk string value of the
+// QUM-787 StatusComplete constant. Other packages and existing state
+// files reference the lowercase string "complete".
+func TestStatusComplete_ConstantValue(t *testing.T) {
+	if StatusComplete != "complete" {
+		t.Errorf("StatusComplete = %q, want %q", StatusComplete, "complete")
+	}
+}
+
+// TestMigrate_StoppedWithCompleteReport asserts the QUM-787 LoadAgent
+// migration: an on-disk state file with Status="stopped" AND
+// LastReportState="complete" loads as Status="complete" AND the migration
+// is persisted back to disk so subsequent loads are normalized.
+func TestMigrate_StoppedWithCompleteReport(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := AgentsDir(dir)
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	blob := `{
+  "name": "alice",
+  "type": "engineer",
+  "status": "stopped",
+  "last_report_state": "complete",
+  "schema_version": 1
+}`
+	path := filepath.Join(agentsDir, "alice.json")
+	if err := os.WriteFile(path, []byte(blob), 0o644); err != nil {
+		t.Fatalf("seed blob: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "alice")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != StatusComplete {
+		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusComplete)
+	}
+
+	// Persisted normalization: subsequent loads should see Status=complete
+	// without re-running the migration. Re-read the raw bytes off disk.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("re-read raw: %v", err)
+	}
+	if !strings.Contains(string(raw), `"status": "complete"`) {
+		t.Errorf("on-disk status not normalized to complete:\n%s", raw)
+	}
+	if strings.Contains(string(raw), `"status": "stopped"`) {
+		t.Errorf("on-disk status still contains stopped:\n%s", raw)
+	}
+}
+
+// TestMigrate_StoppedWithFailureReport asserts the QUM-787 LoadAgent
+// migration: an on-disk state file with Status="stopped" AND
+// LastReportState="failure" loads as Status="faulted" (a clean subprocess
+// exit without a complete report is treated as the unexpected-exit case).
+func TestMigrate_StoppedWithFailureReport(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := AgentsDir(dir)
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	blob := `{
+  "name": "bob",
+  "type": "engineer",
+  "status": "stopped",
+  "last_report_state": "failure",
+  "schema_version": 1
+}`
+	if err := os.WriteFile(filepath.Join(agentsDir, "bob.json"), []byte(blob), 0o644); err != nil {
+		t.Fatalf("seed blob: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "bob")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != StatusFaulted {
+		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusFaulted)
+	}
+}
+
+// TestMigrate_StoppedWithNoReport asserts the QUM-787 LoadAgent migration:
+// Status="stopped" with an empty LastReportState (no completion report ever
+// landed) loads as Status="faulted".
+func TestMigrate_StoppedWithNoReport(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := AgentsDir(dir)
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	blob := `{
+  "name": "carol",
+  "type": "engineer",
+  "status": "stopped",
+  "schema_version": 1
+}`
+	if err := os.WriteFile(filepath.Join(agentsDir, "carol.json"), []byte(blob), 0o644); err != nil {
+		t.Fatalf("seed blob: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "carol")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Status != StatusFaulted {
+		t.Errorf("loaded.Status = %q, want %q", loaded.Status, StatusFaulted)
 	}
 }

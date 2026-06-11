@@ -65,6 +65,10 @@ type Theme struct {
 	ReportDotFailure  lipgloss.Style
 	ReportDotComplete lipgloss.Style
 	ReportDotIdle     lipgloss.Style
+	// QUM-788: dormant-revivable dot — agents whose disk Status is
+	// "complete". Faint Info so the dot reads as at-rest but distinct from
+	// the gray Idle dot and the red Failure dot.
+	ReportDotDormant lipgloss.Style
 
 	// QUM-664: stub fields for visual-identity spike port. Zero-value styles
 	// until the implementer phase wires Palette.UserPrompt / Palette.InputBar
@@ -92,6 +96,10 @@ func (t *Theme) ReportDot(state string) string {
 	case "died":
 		// QUM-722: died glyph — bright X distinct from killed (☠).
 		return t.ReportDotFailure.Render("✗")
+	case "dormant":
+		// QUM-788: dormant-revivable glyph (Status=complete). Dotted circle
+		// rendered with Faint Info — distinct from idle/failure dots.
+		return t.ReportDotDormant.Render("◌")
 	default:
 		return t.ReportDotIdle.Render(dot)
 	}
@@ -142,6 +150,7 @@ func NewTheme(accentColor string) Theme {
 		ReportDotFailure:  lipgloss.NewStyle().Foreground(pal.Error),
 		ReportDotComplete: lipgloss.NewStyle().Foreground(pal.Info),
 		ReportDotIdle:     lipgloss.NewStyle().Foreground(pal.FgMostSubtle),
+		ReportDotDormant:  lipgloss.NewStyle().Foreground(pal.Info).Faint(true),
 		// QUM-664: visual-identity spike — bold bright-blue chevron + grey
 		// vertical bar gutter sourced from the semantic palette.
 		UserPromptText: lipgloss.NewStyle().Foreground(pal.UserPrompt).Bold(true),

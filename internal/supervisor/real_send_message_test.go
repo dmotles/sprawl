@@ -196,15 +196,17 @@ func TestReal_SendMessage_InterruptTrue_RequiresAncestor(t *testing.T) {
 // wake-on-traffic gate which returns a different canonical error.
 func TestReal_SendMessage_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
-	// Seed a stopped recipient. Deliberately do NOT register a runtime — the
+	// Seed a retired recipient. Deliberately do NOT register a runtime — the
 	// terminal-status gate only fires when there is no live runtime to fall
-	// back on.
+	// back on. QUM-787: StatusRetired is the canonical truly-terminal status
+	// after IsTerminal narrowed to {retired, retiring}; faulted/stopped flow
+	// through the QUM-726 wake-on-traffic gate, not TerminalAgentError.
 	saveTestAgent(t, tmpDir, &state.AgentState{
 		Name:            "alice",
 		Type:            "engineer",
 		Family:          "engineering",
 		Parent:          "weave",
-		Status:          state.StatusStopped,
+		Status:          state.StatusRetired,
 		LastReportState: "failure",
 		LastReportAt:    "2026-06-06T12:00:00Z",
 	})

@@ -73,8 +73,8 @@ func TestReport_CompleteSetsStatusDone(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "alice")
-	if st.Status != state.StatusStopped {
-		t.Errorf("Status = %q, want %q (QUM-668: complete is terminal — Status flips to stopped)", st.Status, state.StatusStopped)
+	if st.Status != state.StatusComplete {
+		t.Errorf("Status = %q, want %q (QUM-787: complete is revivable; Status flips to complete)", st.Status, state.StatusComplete)
 	}
 	if st.LastReportState != "complete" {
 		t.Errorf("LastReportState = %q, want complete", st.LastReportState)
@@ -142,8 +142,8 @@ func TestReport_NoParentStillUpdatesState(t *testing.T) {
 	}
 
 	st, _ := state.LoadAgent(root, "solo")
-	if st.Status != state.StatusStopped {
-		t.Errorf("Status = %q, want %q (QUM-668: complete is terminal)", st.Status, state.StatusStopped)
+	if st.Status != state.StatusComplete {
+		t.Errorf("Status = %q, want %q (QUM-787: complete report lands in StatusComplete)", st.Status, state.StatusComplete)
 	}
 	if st.LastReportState != "complete" {
 		t.Errorf("LastReportState = %q, want complete", st.LastReportState)
@@ -164,10 +164,10 @@ func TestReport_TerminalOutcomesFlipStatus(t *testing.T) {
 		wantStatus    string
 	}{
 		{
-			name:          "complete from active flips to stopped",
+			name:          "complete from active flips to complete",
 			initialStatus: state.StatusActive,
 			outcome:       ReportStateComplete,
-			wantStatus:    state.StatusStopped,
+			wantStatus:    state.StatusComplete,
 		},
 		{
 			name:          "failure from active flips to faulted",
@@ -188,10 +188,10 @@ func TestReport_TerminalOutcomesFlipStatus(t *testing.T) {
 			wantStatus:    state.StatusActive,
 		},
 		{
-			name:          "complete from suspended still flips to stopped",
+			name:          "complete from suspended still flips to complete",
 			initialStatus: state.StatusSuspended,
 			outcome:       ReportStateComplete,
-			wantStatus:    state.StatusStopped,
+			wantStatus:    state.StatusComplete,
 		},
 	}
 

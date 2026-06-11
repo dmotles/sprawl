@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 )
 
@@ -69,7 +70,8 @@ type TreeNode struct {
 // DeriveIconState returns the tree-row icon state for the given node,
 // derived primarily from liveness signals (InTurn, recent
 // activity) and secondarily from the agent's self-reported LastReportState.
-// Returns one of "working", "blocked", "complete", "failure", "idle".
+// Returns one of "working", "blocked", "complete", "failure", "idle",
+// "paused", "died", "dormant".
 // Pure (no time.Now); the caller supplies `now` for testability. (QUM-665)
 func DeriveIconState(n TreeNode, now time.Time) string {
 	// QUM-722: Paused / Died are surfaced by the unified liveness projection
@@ -80,6 +82,15 @@ func DeriveIconState(n TreeNode, now time.Time) string {
 		return "paused"
 	case "died":
 		return "died"
+	}
+	// QUM-788: dormant-but-revivable agents (disk Status == "complete") get
+	// a distinct dim icon so operators can tell them apart from generic
+	// Stopped/Idle (gray) and from Faulted/Failure (red). Placed after the
+	// paused/died Liveness checks (those are higher-priority operator
+	// signals) but before the ProcessAlive=false shortcut so a dormant
+	// agent does not collapse into the idle bucket.
+	if n.Status == state.StatusComplete {
+		return "dormant"
 	}
 	if n.ProcessAlive != nil && !*n.ProcessAlive {
 		return "idle"

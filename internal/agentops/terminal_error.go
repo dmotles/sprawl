@@ -7,24 +7,28 @@ import (
 )
 
 // TerminalAgentError returns a clearer error when an MCP tool targets an
-// agent whose persisted Status is terminal (stopped/faulted/retired/killed)
-// and no live runtime is registered. Callers MUST only invoke it when the
-// live runtime is absent.
+// agent whose persisted Status is truly terminal (retired/retiring) and no
+// live runtime is registered. Callers MUST only invoke it when the live
+// runtime is absent.
 //
 // Returns nil if state.LoadAgent fails (preserves the QUM-404 missing-JSON
-// path) or if the persisted Status is not terminal. QUM-680.
+// path) or if the persisted Status is not terminal. QUM-680, narrowed by
+// QUM-789 lifecycle arc #2.
+//
+// QUM-789: the set is now exactly state.IsTerminal — {retired, retiring}.
+// StatusComplete is revivable (delegate/send_message auto-wake it).
+// StatusFaulted / StatusKilled / StatusDied / StatusPaused /
+// StatusResumeFailed are revivable via the QUM-726 wake_if_offline gate and
+// must NOT short-circuit here so they remain introspectable via peek.
+// StatusStopped is retained as a parseable token but never a write target
+// post-QUM-787; LoadAgent migrates it to complete/faulted on read so we
+// won't observe it here in practice.
 func TerminalAgentError(sprawlRoot, name string) error {
 	st, err := state.LoadAgent(sprawlRoot, name)
 	if err != nil {
 		return nil
 	}
-	// Intentionally narrower than state.IsTerminal (QUM-739): `died` and
-	// `resume_failed` have their own handling on the send_message path
-	// (QUM-725 dead-routing routes up to a live ancestor; QUM-708 wake) and
-	// must NOT short-circuit here.
-	switch st.Status {
-	case state.StatusStopped, state.StatusFaulted, state.StatusRetired, state.StatusKilled:
-	default:
+	if !state.IsTerminal(st.Status) {
 		return nil
 	}
 	reportState := st.LastReportState

@@ -772,20 +772,19 @@ func (r *AgentRuntime) Wake(ctx context.Context, restartInjection string) (*Wake
 		return nil, ErrWakeNotNeeded
 	}
 
-	// QUM-724: accept-set is the union of offline-but-recoverable livenesses.
-	// Project the snapshot through liveness.From; reject anything outside the
-	// accept-set with a clear error.
+	// QUM-790: wake accepts any liveness EXCEPT {Retired, Retiring}. Retired
+	// agents have had their worktree torn down and branch removed; retiring
+	// agents are mid-teardown. Everything else — including StatusComplete
+	// (QUM-787), Faulted, ResumeFailed, Paused, Killed, Died, and even
+	// Unstarted snapshots — is revivable per the QUM-786 lifecycle arc.
 	st := liveness.From(liveness.Snapshot{
 		Lifecycle:   livenessToLifecycleString(lifecycle),
 		TerminalErr: faulted,
 		DiskStatus:  diskStatus,
 	})
 	switch st.Liveness {
-	case liveness.Faulted, liveness.ResumeFailed,
-		liveness.Paused, liveness.Killed, liveness.Died:
-		// accept — fall through to wake mechanics
-	default:
-		return nil, fmt.Errorf("supervisor: agent %q is in liveness %q, cannot wake", agentName, st)
+	case liveness.Retired, liveness.Retiring:
+		return nil, fmt.Errorf("supervisor: agent %q is %s, cannot wake (retired/retiring agents are terminal)", agentName, st.Liveness)
 	}
 	if starter == nil {
 		return nil, fmt.Errorf("supervisor: agent %q has no runtime starter, cannot wake", agentName)
@@ -1103,35 +1102,74 @@ func (r *AgentRuntime) stopWithFunc(_ context.Context, stop func(RuntimeHandle) 
 		return stopErr
 	}
 
+	// QUM-786: prefer disk LastReportState over the in-memory snapshot.
+	// Real.ReportStatus deliberately SKIPS syncRuntimeFromState on
+	// terminal reports (complete/failure) — the in-memory snapshot's
+	// LastReport.State is stale at this point but agentops.Report wrote
+	// the canonical value to disk synchronously.
+	diskLastReportStateForStop := ""
+	if snapName := func() string {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		return r.snapshot.Name
+	}(); snapName != "" {
+		if cur, lErr := state.LoadAgent(r.sprawlRoot, snapName); lErr == nil && cur != nil {
+			diskLastReportStateForStop = cur.LastReportState
+		}
+	}
+
 	emitStopped := false
 	var name string
+	var newStatus string
 	r.mu.Lock()
 	r.handle = nil
 	if r.snapshot.Liveness == liveness.Running {
 		r.snapshot.Liveness = liveness.Stopped
 		emitStopped = true
 	}
-	// QUM-625 (slice M4): a deliberate Stop is durable + distinguishable from a
-	// fault. Stamp Status=stopped (never faulted) so the projection rests at
-	// Stopped after teardown and the agent is no longer a legal recover source.
+	// QUM-787 / QUM-786: a deliberate Stop is durable + distinguishable
+	// from a fault. If the agent reported state=complete before teardown,
+	// stamp StatusComplete (revivable per QUM-786 arc); otherwise the
+	// clean exit without a completion report is treated as the unexpected
+	// case, so stamp StatusFaulted. StatusStopped is no longer a write
+	// target. Prefer disk LastReportState (see above) over the stale
+	// in-memory snapshot.
 	name = r.snapshot.Name
-	r.snapshot.Status = state.StatusStopped
+	lastReportStateForStop := diskLastReportStateForStop
+	if lastReportStateForStop == "" {
+		lastReportStateForStop = r.snapshot.LastReport.State
+	}
+	if lastReportStateForStop == "complete" {
+		newStatus = state.StatusComplete
+	} else {
+		newStatus = state.StatusFaulted
+	}
+	r.snapshot.Status = newStatus
 	r.mu.Unlock()
 
 	// Best-effort durable persist OUTSIDE r.mu. A terminal-ish disk Status
 	// (killed/retired/retiring) or a completed/faulted resting status must not
-	// be relabeled "stopped" — only an otherwise-live agent's deliberate Stop
-	// becomes a durable Stopped resting state.
+	// be relabeled — only an otherwise-live agent's deliberate Stop
+	// becomes a durable complete/faulted resting state.
 	if name != "" {
 		cur, err := state.LoadAgent(r.sprawlRoot, name)
 		if err != nil {
 			slog.Warn("supervisor: stop durable status load", "agent", name, "err", err)
 		} else {
 			switch cur.Status {
-			case state.StatusKilled, state.StatusRetired, state.StatusRetiring, state.StatusFaulted:
-				// leave terminal-ish / faulted states as-is
+			case state.StatusKilled, state.StatusRetired, state.StatusRetiring,
+				state.StatusFaulted, state.StatusComplete, state.StatusDied:
+				// QUM-787: leave terminal-ish / already-resolved resting
+				// states as-is. Complete + Died are durable resting
+				// states that mustn't be re-derived by a late Stop.
 			default:
-				cur.Status = state.StatusStopped
+				// QUM-787: re-derive from disk LastReportState in case it
+				// landed between the snapshot read above and this load.
+				if cur.LastReportState == "complete" {
+					cur.Status = state.StatusComplete
+				} else {
+					cur.Status = state.StatusFaulted
+				}
 				if sErr := state.SaveAgent(r.sprawlRoot, cur); sErr != nil {
 					slog.Warn("supervisor: stop durable status save", "agent", name, "err", sErr)
 				}
@@ -1177,8 +1215,11 @@ func (r *AgentRuntime) SyncAgentState(agentState *state.AgentState) {
 	case r.handle == nil &&
 		(updated.Status == state.StatusFaulted ||
 			updated.Status == state.StatusStopped ||
+			updated.Status == state.StatusComplete ||
 			updated.Status == state.StatusSuspended ||
 			updated.Status == state.StatusResumeFailed):
+		// QUM-787: include StatusComplete in the torn-down-but-revivable
+		// projection alongside the legacy stopped sentinel.
 		updated.Liveness = liveness.Unstarted
 	case r.snapshot.Liveness == liveness.Running:
 		updated.Liveness = liveness.Running
@@ -1211,6 +1252,24 @@ func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{
 		// An unexpected exit observes false → classify as Died.
 		expectedExit := r.expectingExit.Load()
 
+		// QUM-786: prefer disk LastReportState over the in-memory snapshot.
+		// Real.ReportStatus deliberately SKIPS syncRuntimeFromState on
+		// terminal reports (complete/failure) to avoid racing the async
+		// Stop that fires immediately after — so the in-memory snapshot's
+		// LastReport.State is stale at this point. agentops.Report wrote
+		// the canonical value to disk synchronously, so disk is the source
+		// of truth for the expected-exit classifier.
+		diskLastReportState := ""
+		if snapName := func() string {
+			r.mu.RLock()
+			defer r.mu.RUnlock()
+			return r.snapshot.Name
+		}(); snapName != "" {
+			if cur, lErr := state.LoadAgent(r.sprawlRoot, snapName); lErr == nil && cur != nil {
+				diskLastReportState = cur.LastReportState
+			}
+		}
+
 		emitStopped := false
 		matched := false
 		var name string
@@ -1221,14 +1280,30 @@ func (r *AgentRuntime) watchHandleExit(handle RuntimeHandle, done <-chan struct{
 			matched = true
 			name = r.snapshot.Name
 			r.handle = nil
-			// QUM-722: three-way classifier — faulted beats died beats stopped.
+			// QUM-722 / QUM-787 / QUM-786: four-way classifier. Faulted
+			// beats Died beats the expected-exit branch. On an expected
+			// exit we split on LastReportState: complete → StatusComplete
+			// (revivable), otherwise → StatusFaulted (clean subprocess
+			// exit without a completion report is treated as unexpected).
+			// StatusStopped is no longer a write target. The
+			// LastReportState read prefers disk (see above) over the
+			// in-memory snapshot, which can be stale by design.
+			lastReportState := diskLastReportState
+			if lastReportState == "" {
+				lastReportState = r.snapshot.LastReport.State
+			}
 			switch {
 			case wasFaulted:
 				newLiveness = liveness.Faulted
 				durableStatus = state.StatusFaulted
 			case expectedExit:
-				newLiveness = liveness.Stopped
-				durableStatus = state.StatusStopped
+				if lastReportState == "complete" {
+					newLiveness = liveness.Stopped
+					durableStatus = state.StatusComplete
+				} else {
+					newLiveness = liveness.Faulted
+					durableStatus = state.StatusFaulted
+				}
 			default:
 				newLiveness = liveness.Died
 				durableStatus = state.StatusDied

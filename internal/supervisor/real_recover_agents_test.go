@@ -35,10 +35,14 @@ func TestRealRecoverAgents_SettlePassFlipsZombieStatus(t *testing.T) {
 		wantResumed     bool
 	}{
 		{
-			name:            "complete+active settles to stopped, skipped from resume",
+			// QUM-787: settle-pass for an agent whose last report was
+			// state=complete must land in StatusComplete (not StatusStopped).
+			// StatusStopped is no longer a write target anywhere in the
+			// supervisor.
+			name:            "complete+active settles to complete, skipped from resume",
 			initialStatus:   state.StatusActive,
 			lastReportState: "complete",
-			wantStatus:      state.StatusStopped,
+			wantStatus:      state.StatusComplete,
 			wantResumed:     false,
 		},
 		{

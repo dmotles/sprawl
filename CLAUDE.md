@@ -10,6 +10,41 @@ Read `DESCRIPTION.md` for project context. This file covers how to work in this 
 
 These three are distinct. "Sub-agent" must never refer to a Claude Agent-tool spawn — use "sidechain".
 
+## Lifecycle model (QUM-786)
+
+Authoritative rules for agent Status / `IsTerminal` / wake plumbing. If you
+touch `internal/state/state.go`, `internal/supervisor/{runtime,real}.go`,
+or any MCP verb that targets an agent by name, this is the contract.
+
+- `StatusComplete` ("complete") is the **resting state after `state:complete`**
+  — runtime torn down; `session_id` / `branch` / `worktree` preserved;
+  **revivable**. It is **not terminal**.
+- `IsTerminal(status)` returns true **only for `{retired, retiring}`**.
+  Permanent termination is a deliberate parent action (`retire`/`kill`),
+  never a side effect of the agent reporting complete. Everything else
+  (`complete`, `paused`, `faulted`, `died`, `killed`, `resume_failed`) is
+  revivable in spirit and the code must treat it that way.
+- `StatusStopped` is **retired as a write target**; it is parsed only for
+  legacy state files and migrated on load (`complete` if `LastReportState=
+  complete`, else `faulted`).
+- `delegate(complete-agent, task)` **auto-wakes** with no flag —
+  `wake_if_offline` is not required and not consulted.
+- `delegate(paused|faulted|died|killed|resume_failed agent, task)` requires
+  explicit `wake_if_offline=true` and surfaces the canonical
+  `"is <state> ... wake_if_offline"` error otherwise.
+- `delegate(retired|retiring agent, task)` errors. The specific class
+  depends on whether `state.json` still exists: `TerminalAgentError`
+  (`"… no longer running"`) during the brief `retiring` window or for
+  legacy zombies; `"agent %q not found"` once `retire` has deleted the
+  state file (`internal/agent/retire.go:82`). Both are valid terminal
+  signals — the contract is "delegate fails clearly," not a specific
+  error string.
+- `send_message` mirrors `delegate` for the gate logic.
+- `wake` accepts everything **except `{retired, retiring}`**.
+
+Touched-file matrix-row mapping for these set-sites lives in the table
+under **Validating Changes** (`complete-lifecycle` row).
+
 ## Build & Test
 
 ```bash
@@ -200,6 +235,7 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
    | `internal/runtime/eventbus.go` (`Publish` Seq stamping, `CurrentSeq`, `PublishWithSeq`; terminal-event undroppable path `isTerminalEvent` / `terminalPublishDeadline` — QUM-775), `internal/runtime/unified.go` (`UnifiedRuntime.Interrupt` idle-branch synthetic `EventInterrupted` emit — QUM-775), `internal/tuiruntime/tuiadapter.go` (`lastSeq`, `pendingMsg`, gap-detect branch, `SPRAWL_DEBUG_GAP_INJECT`; `SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG` seam + `RuntimeInTurn` LivenessProbe — QUM-775), `internal/tui/replay.go`, `internal/tui/session_backend.go` (`LivenessProbe` interface — QUM-775), or `internal/tui/app.go`'s `EventDropDetectedMsg` / `ViewportResyncMsg` / `gapConfirmMsg` reducers / `gapStateNormal..gapStateRecovered` / `resyncCmd` / `kickResyncFromGap` / Ctrl+L key arm / `TurnWatchdogTickMsg` reducer + `runTurnWatchdog` + `noteBusActivityIfApplicable` / `watchdogTimeoutDefault` / `SPRAWL_TUI_WATCHDOG_TIMEOUT_MS` env override — QUM-775 | `viewport-resync` | QUM-669/QUM-775 |
    | `internal/usage/*.go`, `internal/supervisor/runtime_launcher.go` (`runUsageSubscriber`), `internal/protocol/types.go` (`AssistantMessage.ParseUsage` + `Usage` parse path), `internal/state/state.go` (AgentState cost-field removal), `internal/tui/app.go` (`persistCostCmd` removal; `ShowUsageMsg`/`DismissUsageMsg` handlers, `showUsage`/`usageModal` modal gate), `internal/tui/usagemodal.go` (new — QUM-721), `internal/tui/commands/registry.go` (`/usage` entry + `ActionShowUsage`), `internal/tui/palette.go` (`ActionShowUsage` dispatch) | `usage` | QUM-368/QUM-721 |
    | `internal/supervisor/real.go` (`Real.Kill`, `Real.Pause`), `internal/supervisor/runtime.go` (`AgentRuntime.Pause`, `watchHandleExit`), `internal/supervisor/liveness/`, `internal/sprawlmcp/server.go` (`toolPause`), `internal/state/state.go`, `cmd/enter.go` shutdown-loop | `pause-lifecycle` | QUM-722 |
+   | `internal/state/state.go` (`StatusComplete` constant, `IsTerminal` narrowed to `{retired, retiring}`, legacy-`stopped` migration in `LoadAgent`), `internal/supervisor/runtime.go` (set-sites that previously stamped `StatusStopped` now stamp `StatusComplete` on `state:complete` teardown / `StatusFaulted` on clean-exit-without-report), or `internal/supervisor/real.go` (`Real.Delegate` auto-wake on `StatusComplete` + `TerminalAgentError` gate narrowed to `{retired, retiring}`, `Real.SendMessage` mirror, `Real.Wake` accept-set, `RecoverAgents` settle-pass) | `complete-lifecycle` | QUM-786/QUM-787/QUM-789/QUM-790 |
    | `internal/supervisor/real.go` (`RecoverAgents`), `internal/supervisor/runtime.go` (`StartResume`, `RuntimeStartSpec`), `internal/supervisor/runtime_launcher.go` (`Start` initialPrompt override), `internal/agent/restart_prompt.go` (new) | `paused-persistence` | QUM-723 |
    | `internal/supervisor/real.go` (`Real.SendMessage` / `Real.ReportStatus` dead-recipient route-up), `internal/supervisor/dead_routing.go` (new), `internal/inboxprompt/dead_routing.go` (new), `internal/tui/death_toast.go` (new), `internal/tui/app.go` (`AgentDiedMsg` reducer), or `cmd/enter.go` (registry-subscriber death goroutine in `onStart`) | `death-observability` | QUM-725 |
    | `internal/supervisor/real.go` (`Real.SendMessage`, `Real.Delegate`, `Real.Wake` WakeReason), `internal/sprawlmcp/server.go` (`toolSendMessage`, `toolDelegate`), `internal/sprawlmcp/tools.go` (schemas), `internal/agent/wake_prompts.go` (new) | `wake-on-traffic` | QUM-726 |

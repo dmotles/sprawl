@@ -58,9 +58,11 @@ func TestLoadAgent_MigratesV0ProblemToFailure(t *testing.T) {
 	if got.LastReportState != "failure" {
 		t.Errorf("LastReportState = %q, want %q", got.LastReportState, "failure")
 	}
-	// No session_id => stopped.
-	if got.Status != "stopped" {
-		t.Errorf("Status = %q, want %q", got.Status, "stopped")
+	// No session_id => the v0→v1 step writes "stopped", then QUM-787's
+	// always-on stopped→{complete,faulted} re-classification rewrites it
+	// to "faulted" (LastReportState="failure" is not "complete").
+	if got.Status != StatusFaulted {
+		t.Errorf("Status = %q, want %q", got.Status, StatusFaulted)
 	}
 	if got.SchemaVersion != CurrentSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)

@@ -23,6 +23,9 @@ func TestMerge_TerminalChildrenIgnored(t *testing.T) {
 		state.StatusKilled,
 		state.StatusDied,
 		state.StatusResumeFailed,
+		// QUM-787: StatusComplete is a resolved-orphan resting state
+		// and must NOT block a parent merge.
+		state.StatusComplete,
 	}
 	for _, s := range terminalStatuses {
 		t.Run(s, func(t *testing.T) {

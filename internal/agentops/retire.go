@@ -304,9 +304,12 @@ func findChildren(sprawlRoot, parentName string) ([]*state.AgentState, error) {
 	}
 	var children []*state.AgentState
 	for _, a := range agents {
-		// QUM-739: terminal-status children are resolved orphans — they
-		// neither block parent retire nor need cascading.
-		if a.Parent == parentName && !state.IsTerminal(a.Status) {
+		// QUM-739 / QUM-787: resolved-orphan children — those whose
+		// runtime is fully torn down (complete / faulted / killed / died
+		// / resume_failed / stopped / retired / retiring) — neither
+		// block parent retire nor need cascading. Uses IsResolvedOrphan
+		// because QUM-787 narrowed IsTerminal to {retired, retiring}.
+		if a.Parent == parentName && !state.IsResolvedOrphan(a.Status) {
 			children = append(children, a)
 		}
 	}

@@ -98,7 +98,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "delegate",
-			"description": "Assign a tracked work item (task) to an existing agent. The task is queued and the agent picks it up when ready.",
+			"description": "Assign a tracked work item (task) to an existing agent. The task is queued and the agent picks it up when ready. Agents that reported `complete` are revivable — delegate AUTO-WAKES them; no flag required. Delegating to a `retired`/`retiring` agent returns a terminal-agent error.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -112,7 +112,7 @@ func baseToolDefinitions() []map[string]any {
 					},
 					"wake_if_offline": map[string]any{
 						"type":        "boolean",
-						"description": "If the target is paused/killed/died/faulted, wake it first and deliver this message/task as its first inbox item. Default false (delivery errors if target is offline).",
+						"description": "Required to revive paused/killed/died/faulted/resume_failed agents — wakes the target first and delivers this task as its first inbox item. NOT required for `complete` agents (auto-revives). Default false (delivery errors with an actionable message if target is in one of the offline fault classes and the flag is unset).",
 					},
 				},
 				"required": []string{"agent", "task"},
@@ -132,7 +132,7 @@ func baseToolDefinitions() []map[string]any {
 					},
 					"wake_if_offline": map[string]any{
 						"type":        "boolean",
-						"description": "If the target is paused/killed/died/faulted, wake it first and deliver this message/task as its first inbox item. Default false (delivery errors if target is offline).",
+						"description": "Required to revive paused/killed/died/faulted/resume_failed agents — wakes the target first and delivers this message as its first inbox item. NOT required for `complete` agents (auto-revives). Default false (delivery errors with an actionable message if target is in one of the offline fault classes and the flag is unset).",
 					},
 				},
 				"required": []string{"to", "body"},
@@ -140,7 +140,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "peek",
-			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_turn` (true when the target's backend session is mid-turn; `in_autonomous_turn` is emitted as a deprecated alias for one release — QUM-692). Use to answer \"what is this agent doing?\" before sending a message. Does NOT wake the agent.",
+			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_turn` (true when the target's backend session is mid-turn; `in_autonomous_turn` is emitted as a deprecated alias for one release — QUM-692). Use to answer \"what is this agent doing?\" before sending a message. Does NOT wake the agent. Peek is introspectable for `complete` and the offline fault classes (paused/killed/died/faulted/resume_failed); only `retired`/`retiring` short-circuit to a terminal-agent error.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -390,7 +390,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "wake",
-			"description": "Bring an offline agent (paused/killed/died/faulted/resume_failed) back online. Attempts to resume the prior claude session by session-id; falls back to a fresh session if the session cookie is rejected or no session exists. No-op success if the agent is already running. Does NOT inject any task — combine with `delegate` or `send_message` (with `wake_if_offline: true`) for wake-with-work.",
+			"description": "Bring an offline or completed agent back online. Accepts any agent that is not retired/retiring, including paused/killed/died/faulted/resume_failed and the post-report `complete` resting state. Attempts to resume the prior claude session by session-id; falls back to a fresh session if the session cookie is rejected or no session exists. No-op success if the agent is already running. Errors if the agent is retired or retiring. Does NOT inject any task — combine with `delegate` or `send_message` (with `wake_if_offline: true`) for wake-with-work.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

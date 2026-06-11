@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,29 +24,62 @@ const (
 	StatusDone         = "done"
 	StatusResumeFailed = "resume_failed"
 	StatusFaulted      = "faulted"
-	StatusStopped      = "stopped"
+	// StatusStopped is retained as a parseable string for back-compat with
+	// older state files but is NEVER a write target after QUM-787 — the
+	// LoadAgent migration rewrites any "stopped" Status on read to either
+	// StatusComplete (when LastReportState=="complete") or StatusFaulted
+	// (otherwise). Supervisor set-sites that previously stamped
+	// StatusStopped now stamp StatusComplete or StatusFaulted instead.
+	StatusStopped = "stopped"
 	// QUM-722: new lifecycle states for pause/death.
 	StatusPaused = "paused"
 	StatusDied   = "died"
+	// QUM-787: StatusComplete is the durable resting state for an agent
+	// that reported state=complete and had its runtime torn down. The
+	// agent's session_id, worktree, and branch are preserved — it is
+	// revivable via wake/delegate per the QUM-786 lifecycle arc. This
+	// state replaces the previous overload of StatusStopped, which mixed
+	// "reported complete and torn down" with "clean subprocess exit
+	// without a completion report" (now StatusFaulted).
+	StatusComplete = "complete"
 )
 
-// IsTerminal reports whether a Status value names a terminal liveness — an
-// agent in this state cannot transition back to running on its own and is
-// safe to treat as "no longer active" by callers performing cleanup
-// (retire/merge) or filtering child lists. The terminal set is:
+// IsTerminal reports whether a Status value names a terminal liveness in
+// the QUM-786 lifecycle arc sense: only PARENT-decided permanent states
+// are terminal. Everything else — including StatusComplete, StatusFaulted,
+// StatusKilled, StatusDied, StatusResumeFailed, StatusPaused — is
+// revivable by an explicit `wake` (or auto-wake for `complete`) and must
+// not be treated as terminal by liveness checks.
 //
-//	stopped, faulted, retired, killed, died, resume_failed
+// QUM-787 narrowed this from the QUM-739 wide set
+// {stopped, faulted, retired, killed, died, resume_failed} down to
+// {retired, retiring} only.
 //
-// Notably NOT terminal:
-//   - paused: wake-able (QUM-722 / QUM-708)
-//   - retiring: in-flight teardown — a concurrent retire must still see it
-//     as active to avoid racing the in-progress operation.
-//
-// Added by QUM-739 to unify the filter across agentops/merge.go,
-// agentops/retire.go, and supervisor/real.go.
+// NOTE: callers that previously used IsTerminal as a "resolved orphan"
+// predicate (children that don't block parent retire/merge cascade)
+// should use IsResolvedOrphan instead.
 func IsTerminal(status string) bool {
 	switch status {
-	case StatusStopped, StatusFaulted, StatusRetired,
+	case StatusRetired, StatusRetiring:
+		return true
+	}
+	return false
+}
+
+// IsResolvedOrphan reports whether an agent in this Status is sufficiently
+// torn down that it should NOT block a parent's retire/merge cascade. The
+// set is strictly broader than IsTerminal — it includes every revivable
+// resting state (complete, faulted, killed, died, resume_failed) AND the
+// legacy stopped sentinel (for state files that have not yet been
+// migrated). This is the predicate that callers in
+// internal/agentops/retire.go, internal/agentops/merge.go, and
+// internal/supervisor/real.go use to decide which children are "resolved
+// orphans" rather than active blockers — a role IsTerminal filled prior
+// to QUM-787, before the lifecycle arc narrowed IsTerminal.
+func IsResolvedOrphan(status string) bool {
+	switch status {
+	case StatusRetired, StatusRetiring,
+		StatusComplete, StatusStopped, StatusFaulted,
 		StatusKilled, StatusDied, StatusResumeFailed:
 		return true
 	}
@@ -92,8 +126,9 @@ func AgentsDir(sprawlRoot string) string {
 }
 
 // migrate brings a freshly-unmarshaled AgentState forward to the current
-// schema version (QUM-625 M4). It is idempotent: states already at (or beyond)
-// CurrentSchemaVersion are left untouched.
+// schema version (QUM-625 M4) and applies the QUM-787 stopped→{complete,
+// faulted} re-classification. Returns true if any field was rewritten so
+// LoadAgent can persist the normalized form back to disk.
 //
 // The v0 -> v1 migration splits the legacy combined Status axis. Pre-M4 code
 // overloaded Status with outcome tokens ("done"/"problem") that are not
@@ -102,35 +137,58 @@ func AgentsDir(sprawlRoot string) string {
 //  1. Derives LastReportState from the legacy outcome token (only when
 //     LastReportState is empty, so an explicit report value is never clobbered).
 //  2. Rewrites Status to a pure liveness when it currently holds a non-liveness
-//     value ("done"/"problem"/""): suspended if a session exists, else stopped.
-//     Any genuine liveness value (active/running/suspended/... ) is preserved.
-func migrate(a *AgentState) {
-	if a.SchemaVersion >= CurrentSchemaVersion {
-		return
-	}
+//     value ("done"/"problem"/""): suspended if a session exists, else complete/
+//     faulted depending on whether a complete report was filed.
+//
+// QUM-787 adds an additional always-on rewrite: any state file whose Status
+// is the legacy "stopped" sentinel is re-classified to StatusComplete when
+// LastReportState=="complete", else to StatusFaulted (the rare "clean exit
+// with no completion report" case is treated as unexpected). The rewrite is
+// idempotent — once Status is complete/faulted it stays.
+func migrate(a *AgentState) bool {
+	mutated := false
 
-	// (a) Derive LastReportState from the legacy outcome token, only if empty.
-	if a.LastReportState == "" {
+	if a.SchemaVersion < CurrentSchemaVersion {
+		// (a) Derive LastReportState from the legacy outcome token, only if empty.
+		if a.LastReportState == "" {
+			switch a.Status {
+			case StatusDone:
+				a.LastReportState = "complete"
+			case "problem":
+				a.LastReportState = "failure"
+			}
+		}
+
+		// (b) Rewrite Status only if it is a non-liveness value. Fall through
+		// to the QUM-787 stopped→{complete,faulted} re-classification below
+		// when no session exists.
 		switch a.Status {
-		case StatusDone:
-			a.LastReportState = "complete"
-		case "problem":
-			a.LastReportState = "failure"
+		case StatusDone, "problem", "":
+			if a.SessionID != "" {
+				a.Status = StatusSuspended
+			} else {
+				a.Status = StatusStopped
+			}
 		}
+
+		// (c) Stamp the current schema version.
+		a.SchemaVersion = CurrentSchemaVersion
+		mutated = true
 	}
 
-	// (b) Rewrite Status only if it is a non-liveness value.
-	switch a.Status {
-	case StatusDone, "problem", "":
-		if a.SessionID != "" {
-			a.Status = StatusSuspended
+	// QUM-787: re-classify any "stopped" Status (whether freshly migrated
+	// above or already on disk from older v1 writers) based on
+	// LastReportState. StatusStopped is no longer a write target.
+	if a.Status == StatusStopped {
+		if a.LastReportState == "complete" {
+			a.Status = StatusComplete
 		} else {
-			a.Status = StatusStopped
+			a.Status = StatusFaulted
 		}
+		mutated = true
 	}
 
-	// (c) Stamp the current schema version.
-	a.SchemaVersion = CurrentSchemaVersion
+	return mutated
 }
 
 // SaveAgent writes the agent state to a JSON file in the agents directory.
@@ -195,9 +253,19 @@ func LoadAgent(sprawlRoot string, name string) (*AgentState, error) {
 	if err := json.Unmarshal(data, &agent); err != nil {
 		return nil, fmt.Errorf("parsing agent state for %q: %w", name, err)
 	}
-	// Migrate older (v0) files forward on read. The migrated value is not
-	// written back here — the next SaveAgent persists it (QUM-625 M4).
-	migrate(&agent)
+	// Migrate older (v0) files forward on read. QUM-787: when migrate
+	// rewrites a field (e.g. stopped→complete/faulted) persist back to
+	// disk so subsequent loads are normalized. Best-effort — a failed
+	// save is logged but the in-memory migrated value is still returned
+	// to the caller (preserves LoadAgent's read contract). Note: this
+	// means every read-only consumer (status, peek, listing tools) will
+	// trigger a disk write on first load of a legacy file; the write is
+	// idempotent once the file is normalized.
+	if migrate(&agent) {
+		if sErr := SaveAgent(sprawlRoot, &agent); sErr != nil {
+			slog.Warn("state: migrate persist-back failed", "agent", name, "err", sErr)
+		}
+	}
 	return &agent, nil
 }
 

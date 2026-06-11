@@ -409,8 +409,8 @@ func TestReportStatus_UsesExplicitAgentName(t *testing.T) {
 	if st.LastReportState != "complete" {
 		t.Errorf("finn.LastReportState = %q, want complete", st.LastReportState)
 	}
-	if st.Status != state.StatusStopped {
-		t.Errorf("finn.Status = %q, want %q (QUM-668: complete is terminal)", st.Status, state.StatusStopped)
+	if st.Status != state.StatusComplete {
+		t.Errorf("finn.Status = %q, want %q (QUM-787: complete report lands in StatusComplete)", st.Status, state.StatusComplete)
 	}
 }
 
@@ -1253,12 +1253,15 @@ func TestSpawnDepsForCaller_ResolveBaseReturnsEmptyWhenCallerHasNoWorktree(t *te
 	}
 }
 
-// TestReal_Peek_TerminalStatus_ReturnsClearerError pins QUM-680: when an
-// agent's persisted state shows a terminal lifecycle status (faulted /
-// stopped / retired / killed) AND no live runtime is registered, Peek must
-// return a descriptive "no longer running" error referencing the last
-// reported state and timestamp rather than blandly succeeding (or returning
-// the bare state object as if the agent were still operational).
+// TestReal_Peek_TerminalStatus_ReturnsClearerError pins QUM-680, narrowed
+// by QUM-789 lifecycle arc #2: when an agent's persisted state shows a
+// truly-terminal lifecycle status (retired/retiring) AND no live runtime
+// is registered, Peek must return a descriptive "no longer running" error
+// referencing the last reported state and timestamp.
+//
+// QUM-789: the previous wider set (faulted/killed/stopped/retired) was
+// narrowed to {retired, retiring}. Fault classes are now introspectable
+// — see TestPeek_FaultClasses_Succeed in real_autowake_complete_test.go.
 func TestReal_Peek_TerminalStatus_ReturnsClearerError(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -1266,16 +1269,16 @@ func TestReal_Peek_TerminalStatus_ReturnsClearerError(t *testing.T) {
 		Type:            "engineer",
 		Family:          "engineering",
 		Parent:          "weave",
-		Status:          state.StatusFaulted,
-		LastReportState: "failure",
+		Status:          state.StatusRetired,
+		LastReportState: "complete",
 		LastReportAt:    "2026-06-06T12:00:00Z",
 	})
 
 	got, err := r.Peek(context.Background(), "alice", 10)
 	if err == nil {
-		t.Fatalf("Peek on faulted agent returned nil error; want descriptive terminal-status error (got=%+v)", got)
+		t.Fatalf("Peek on retired agent returned nil error; want descriptive terminal-status error (got=%+v)", got)
 	}
-	for _, want := range []string{"no longer running", "failure", `"alice"`} {
+	for _, want := range []string{"no longer running", "complete", `"alice"`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q missing substring %q", err.Error(), want)
 		}

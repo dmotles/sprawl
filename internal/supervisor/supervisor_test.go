@@ -367,8 +367,8 @@ func TestReportStatus_ExplicitAgentName(t *testing.T) {
 	if got.LastReportState != "complete" {
 		t.Errorf("LastReportState = %q, want complete", got.LastReportState)
 	}
-	if got.Status != state.StatusStopped {
-		t.Errorf("Status = %q, want %q (QUM-668: complete is terminal)", got.Status, state.StatusStopped)
+	if got.Status != state.StatusComplete {
+		t.Errorf("Status = %q, want %q (QUM-787: complete report lands in StatusComplete)", got.Status, state.StatusComplete)
 	}
 }
 

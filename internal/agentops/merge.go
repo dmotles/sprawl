@@ -100,9 +100,11 @@ func Merge(ctx context.Context, deps *MergeDeps, agentName, messageOverride stri
 	}
 	var childNames []string
 	for _, a := range allAgents {
-		// QUM-739: terminal-status children are resolved orphans, not
-		// blockers — skip them in the active-children check.
-		if a.Parent == agentName && !state.IsTerminal(a.Status) {
+		// QUM-739 / QUM-787: resolved-orphan children are not blockers
+		// — skip them in the active-children check. Uses
+		// IsResolvedOrphan because QUM-787 narrowed IsTerminal to
+		// {retired, retiring}.
+		if a.Parent == agentName && !state.IsResolvedOrphan(a.Status) {
 			childNames = append(childNames, a.Name)
 		}
 	}

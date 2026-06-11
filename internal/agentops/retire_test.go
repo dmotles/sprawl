@@ -246,6 +246,9 @@ func TestRetire_TerminalStatuses_Succeed(t *testing.T) {
 		state.StatusKilled,
 		state.StatusDied,
 		state.StatusResumeFailed,
+		// QUM-787: StatusComplete is a resolved-orphan resting state
+		// and must be retire-able with or without --abandon.
+		state.StatusComplete,
 	}
 	for _, status := range terminalStatuses {
 		for _, abandon := range []bool{false, true} {
@@ -315,6 +318,9 @@ func TestRetire_TerminalChildren_DoNotRequireCascade(t *testing.T) {
 		state.StatusKilled,
 		state.StatusDied,
 		state.StatusResumeFailed,
+		// QUM-787: complete children are resolved orphans and must not
+		// block parent retire (no --cascade required).
+		state.StatusComplete,
 	}
 	for i, s := range terminalStatuses {
 		childName := "child" + s
