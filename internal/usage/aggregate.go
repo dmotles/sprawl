@@ -12,6 +12,7 @@ import (
 // aggregateLine is the minimal subset of fields decoded for aggregation.
 type aggregateLine struct {
 	AgentName                string  `json:"agent_name"`
+	Timestamp                string  `json:"timestamp"`
 	InputTokens              int     `json:"input_tokens"`
 	OutputTokens             int     `json:"output_tokens"`
 	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
@@ -37,16 +38,25 @@ type Filter struct {
 }
 
 // SumByAgent treewalks .sprawl/logs/usage/* and returns total token + cost
-// counts keyed by agent name.
-func SumByAgent(sprawlRoot string) (map[string]TokenTotals, error) {
+// counts keyed by agent name (the per-agent log directory). A zero-value
+// since includes all records (current behavior); otherwise only records
+// whose RFC3339 Timestamp is at or after since are summed (QUM-798).
+func SumByAgent(sprawlRoot string, since time.Time) (map[string]TokenTotals, error) {
 	out := map[string]TokenTotals{}
 	matches, err := filepath.Glob(filepath.Join(sprawlRoot, ".sprawl", "logs", "usage", "*", "*.ndjson"))
 	if err != nil {
 		return nil, err
 	}
+	hasSince := !since.IsZero()
 	for _, path := range matches {
 		agent := filepath.Base(filepath.Dir(path))
 		if err := scanFile(path, func(line aggregateLine) {
+			if hasSince {
+				ts, err := time.Parse(time.RFC3339, line.Timestamp)
+				if err != nil || ts.Before(since) {
+					return
+				}
+			}
 			t := out[agent]
 			t.InputTokens += line.InputTokens
 			t.OutputTokens += line.OutputTokens

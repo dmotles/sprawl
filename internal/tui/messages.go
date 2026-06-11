@@ -933,6 +933,12 @@ type ShowUsageMsg struct{}
 // DismissUsageMsg requests that the /usage modal be closed (QUM-721).
 type DismissUsageMsg struct{}
 
+// SetUsageWindowMsg requests that the /usage modal's totals be recomputed
+// for the modal's currently-selected time window (QUM-798). The window
+// itself lives on UsageModalModel; the AppModel reducer reads it to derive
+// the `since` cutoff and re-aggregates.
+type SetUsageWindowMsg struct{}
+
 // IncidentSnapshotRequestedMsg requests that the configured snapshot helper
 // run to produce an incident bundle under .sprawl/incidents/. Emitted by the
 // Ctrl+\ key handler (QUM-728). The AppModel reducer surfaces a "capturing"

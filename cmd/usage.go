@@ -100,12 +100,12 @@ func init() {
 
 	usageSummaryCmd.Flags().StringVar(&usageSummaryBy, "by", "tokens", "What to display: tokens, cost, or all")
 	usageSummaryCmd.Flags().StringVar(&usageSummaryGroup, "group", "agent", "Group by: agent, model, session, day")
-	usageSummaryCmd.Flags().StringVar(&usageSummarySince, "since", "", "Only include records newer than DURATION ago (e.g. 1h, 7d)")
+	usageSummaryCmd.Flags().StringVar(&usageSummarySince, "since", "", "Only include records since: a duration ago (24h, 7d, 30d, 365d), an absolute RFC3339 time, or 'all' (default)")
 	usageSummaryCmd.Flags().StringVar(&usageSummaryUntil, "until", "", "Exclude records newer than DURATION ago (i.e. keep records with ts <= now - DURATION)")
 	usageSummaryCmd.Flags().BoolVar(&usageSummaryQuiet, "quiet", false, "Suppress footers and hints on stderr")
 
 	usageExportCmd.Flags().StringVar(&usageExportFormat, "format", "csv", "Output format: csv or json")
-	usageExportCmd.Flags().StringVar(&usageExportSince, "since", "", "Only include records newer than DURATION ago")
+	usageExportCmd.Flags().StringVar(&usageExportSince, "since", "", "Only include records since: a duration ago (24h, 7d, 30d, 365d), an absolute RFC3339 time, or 'all' (default)")
 	usageExportCmd.Flags().StringVar(&usageExportAgent, "agent", "", "Only export records for this agent")
 	usageExportCmd.Flags().BoolVar(&usageExportQuiet, "quiet", false, "Suppress next-action hint on stderr")
 
@@ -198,6 +198,25 @@ func formatTokens(n int) string {
 		return "-" + b.String()
 	}
 	return b.String()
+}
+
+// parseSince resolves a --since flag value into an absolute cutoff time.
+// Accepted forms: "" or "all" (zero time = no lower bound / all-time),
+// an absolute RFC3339 timestamp, or a relative duration ("24h", "7d",
+// "30d", "365d", any Go duration or "Nd") interpreted as now minus that
+// duration. A zero return means "include everything".
+func parseSince(s string, now time.Time) (time.Time, error) {
+	if s == "" || strings.EqualFold(s, "all") {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	d, err := parseDurationExt(s)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return now.Add(-d), nil
 }
 
 // formatCost renders a USD float as "$0.0000".
@@ -295,7 +314,7 @@ func runUsageSummary(deps *usageDeps, by, group, sinceStr, untilStr string, quie
 		return fmt.Errorf("--group must be one of: agent, model, session, day (got %q)", group)
 	}
 
-	sinceDur, err := parseDurationExt(sinceStr)
+	since, err := parseSince(sinceStr, deps.now())
 	if err != nil {
 		return err
 	}
@@ -303,10 +322,7 @@ func runUsageSummary(deps *usageDeps, by, group, sinceStr, untilStr string, quie
 	if err != nil {
 		return err
 	}
-	filter := usage.Filter{}
-	if sinceDur > 0 {
-		filter.Since = deps.now().Add(-sinceDur)
-	}
+	filter := usage.Filter{Since: since}
 	if untilDur > 0 {
 		filter.Until = deps.now().Add(-untilDur)
 	}
@@ -397,14 +413,11 @@ func runUsageExport(deps *usageDeps, format, sinceStr, agent string, quiet bool)
 	default:
 		return fmt.Errorf("--format must be one of: csv, json (got %q)", format)
 	}
-	sinceDur, err := parseDurationExt(sinceStr)
+	since, err := parseSince(sinceStr, deps.now())
 	if err != nil {
 		return err
 	}
-	filter := usage.Filter{Agent: agent}
-	if sinceDur > 0 {
-		filter.Since = deps.now().Add(-sinceDur)
-	}
+	filter := usage.Filter{Agent: agent, Since: since}
 	recs, err := usage.LoadRecords(root, filter)
 	if err != nil {
 		return err

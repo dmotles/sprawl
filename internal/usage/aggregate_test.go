@@ -48,7 +48,7 @@ func TestSumByAgent_TwoAgents(t *testing.T) {
 		{InputTokens: 9, OutputTokens: 1, CacheReadInputTokens: 0, CacheCreationInputTokens: 0, TotalCostUsd: 0.01},
 	})
 
-	got, err := SumByAgent(tmp)
+	got, err := SumByAgent(tmp, time.Time{})
 	if err != nil {
 		t.Fatalf("SumByAgent: %v", err)
 	}
@@ -69,6 +69,44 @@ func TestSumByAgent_TwoAgents(t *testing.T) {
 	bob := got["bob"]
 	if bob.InputTokens != 9 || !nearly(bob.TotalCostUsd, 0.01) {
 		t.Errorf("bob = %+v, want input=9 cost=0.01", bob)
+	}
+}
+
+func TestSumByAgent_SinceFilter(t *testing.T) {
+	tmp := t.TempDir()
+	// Anchor relative to a fixed "now" so the windows are deterministic.
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	ts := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	writeFixtureFile(t, tmp, "alice", "s1", []Record{
+		rec(ts(1*time.Hour), "alice", "s1", "sonnet", 1, 0, 0),       // within 24h
+		rec(ts(3*24*time.Hour), "alice", "s1", "sonnet", 10, 0, 0),   // within 7d, not 24h
+		rec(ts(15*24*time.Hour), "alice", "s1", "sonnet", 100, 0, 0), // within 30d, not 7d
+		rec(ts(100*24*time.Hour), "alice", "s1", "sonnet", 1000, 0, 0),
+		rec(ts(300*24*time.Hour), "alice", "s1", "sonnet", 10000, 0, 0), // within 365d, not 30d
+		rec(ts(400*24*time.Hour), "alice", "s1", "sonnet", 100000, 0, 0),
+	})
+
+	cases := []struct {
+		name  string
+		since time.Time
+		want  int
+	}{
+		{"24h", now.Add(-24 * time.Hour), 1},
+		{"7d", now.Add(-7 * 24 * time.Hour), 11},
+		{"30d", now.Add(-30 * 24 * time.Hour), 111},
+		{"365d", now.Add(-365 * 24 * time.Hour), 11111},
+		{"all", time.Time{}, 111111},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SumByAgent(tmp, tc.since)
+			if err != nil {
+				t.Fatalf("SumByAgent: %v", err)
+			}
+			if got["alice"].InputTokens != tc.want {
+				t.Errorf("window %s: alice InputTokens = %d, want %d", tc.name, got["alice"].InputTokens, tc.want)
+			}
+		})
 	}
 }
 
@@ -96,7 +134,7 @@ func TestSumForAgent_ReturnsSingleAgentTotals(t *testing.T) {
 
 func TestSumByAgent_MissingDirReturnsEmpty(t *testing.T) {
 	tmp := t.TempDir()
-	got, err := SumByAgent(tmp)
+	got, err := SumByAgent(tmp, time.Time{})
 	if err != nil {
 		t.Fatalf("SumByAgent on empty root: %v", err)
 	}

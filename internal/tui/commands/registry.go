@@ -76,7 +76,7 @@ var registry = []Command{
 	},
 	{
 		Name:        "/usage",
-		Description: "Show token & cost usage by agent",
+		Description: "Show token & cost usage by agent (1-5 select time window: 24h/week/month/year/all)",
 		Kind:        KindUI,
 		Action:      ActionShowUsage,
 	},

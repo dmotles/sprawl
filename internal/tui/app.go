@@ -908,11 +908,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.input.disabled || m.anyModalUp() {
 			return m, nil
 		}
-		totals, _ := usage.SumByAgent(m.sprawlRoot)
+		totals, _ := usage.SumByAgent(m.sprawlRoot, time.Time{})
 		m.usageModal = m.usageModal.Install(totals)
 		m.usageModal = m.usageModal.SetSize(m.width, m.height)
 		m.usageModal = m.usageModal.Show()
 		m.showUsage = true
+		return m, nil
+
+	case SetUsageWindowMsg:
+		// QUM-798: recompute totals for the modal's currently-selected
+		// time window and refresh in place (preserving view + window).
+		since := m.usageModal.WindowSince(time.Now())
+		totals, _ := usage.SumByAgent(m.sprawlRoot, since)
+		m.usageModal = m.usageModal.SetTotals(totals)
 		return m, nil
 
 	case DismissUsageMsg:

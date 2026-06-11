@@ -178,6 +178,42 @@ func TestParseDurationExt(t *testing.T) {
 	}
 }
 
+func TestParseSince(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		in      string
+		want    time.Time // zero == all time
+		wantErr bool
+	}{
+		{"", time.Time{}, false},
+		{"all", time.Time{}, false},
+		{"ALL", time.Time{}, false},
+		{"24h", now.Add(-24 * time.Hour), false},
+		{"7d", now.Add(-7 * 24 * time.Hour), false},
+		{"30d", now.Add(-30 * 24 * time.Hour), false},
+		{"365d", now.Add(-365 * 24 * time.Hour), false},
+		{"2026-05-01T10:00:00Z", time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC), false},
+		{"notaduration", time.Time{}, true},
+		{"2d12h", time.Time{}, true},
+	}
+	for _, c := range cases {
+		got, err := parseSince(c.in, now)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseSince(%q) wanted error, got %v", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("parseSince(%q) err = %v", c.in, err)
+			continue
+		}
+		if !got.Equal(c.want) {
+			t.Errorf("parseSince(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestFormatTokens(t *testing.T) {
 	cases := []struct {
 		in   int

@@ -8,6 +8,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -212,10 +213,124 @@ func TestUsageModal_EmptyDataPath(t *testing.T) {
 	}
 }
 
+// --- QUM-798: time-range window state ---
+
+func TestUsageModal_DefaultWindowIsAll(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(usageFixture())
+	if m.Window() != usageWindowAll {
+		t.Errorf("default window = %v, want usageWindowAll", m.Window())
+	}
+}
+
+func TestUsageModal_WindowKeysSetWindowAndEmitMsg(t *testing.T) {
+	cases := []struct {
+		key  rune
+		want usageWindow
+	}{
+		{'1', usageWindow24h},
+		{'2', usageWindowWeek},
+		{'3', usageWindowMonth},
+		{'4', usageWindowYear},
+		{'5', usageWindowAll},
+	}
+	for _, tc := range cases {
+		m := newTestUsageModalModel(t)
+		m = m.Install(usageFixture()).Show()
+		updated, cmd := m.Update(tea.KeyPressMsg{Code: tc.key})
+		if updated.Window() != tc.want {
+			t.Errorf("key %q: window = %v, want %v", string(tc.key), updated.Window(), tc.want)
+		}
+		if cmd == nil {
+			t.Fatalf("key %q: expected a cmd, got nil", string(tc.key))
+		}
+		if _, ok := cmd().(SetUsageWindowMsg); !ok {
+			t.Errorf("key %q: cmd returned %T, want SetUsageWindowMsg", string(tc.key), cmd())
+		}
+	}
+}
+
+func TestUsageModal_WindowKeyPreservesView(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(usageFixture()).Show()
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'c'}) // cost view
+	m, _ = m.Update(tea.KeyPressMsg{Code: '1'}) // switch window
+	if m.CurrentView() != usageViewCost {
+		t.Errorf("window change clobbered view: got %v, want usageViewCost", m.CurrentView())
+	}
+	if m.Window() != usageWindow24h {
+		t.Errorf("window = %v, want usageWindow24h", m.Window())
+	}
+}
+
+func TestUsageModal_InstallResetsWindowToAll(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(usageFixture()).Show()
+	m, _ = m.Update(tea.KeyPressMsg{Code: '1'})
+	m = m.Install(usageFixture())
+	if m.Window() != usageWindowAll {
+		t.Errorf("Install should reset window to all, got %v", m.Window())
+	}
+}
+
+func TestUsageModal_SetTotalsPreservesWindowAndView(t *testing.T) {
+	m := newTestUsageModalModel(t)
+	m = m.Install(usageFixture()).Show()
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'c'}) // cost view
+	m, _ = m.Update(tea.KeyPressMsg{Code: '2'}) // week window
+	m = m.SetTotals(usageFixture())
+	if m.CurrentView() != usageViewCost {
+		t.Errorf("SetTotals clobbered view: got %v, want usageViewCost", m.CurrentView())
+	}
+	if m.Window() != usageWindowWeek {
+		t.Errorf("SetTotals clobbered window: got %v, want usageWindowWeek", m.Window())
+	}
+}
+
+func TestUsageModal_FooterShowsWindowLabel(t *testing.T) {
+	cases := []struct {
+		key rune
+		w   usageWindow
+	}{
+		{'5', usageWindowAll},
+		{'1', usageWindow24h},
+		{'2', usageWindowWeek},
+		{'3', usageWindowMonth},
+		{'4', usageWindowYear},
+	}
+	for _, tc := range cases {
+		m := newTestUsageModalModel(t)
+		m = m.Install(usageFixture()).Show()
+		m, _ = m.Update(tea.KeyPressMsg{Code: tc.key})
+		if !strings.Contains(m.View(), tc.w.label()) {
+			t.Errorf("key %q: footer should show window label %q; view:\n%s", string(tc.key), tc.w.label(), m.View())
+		}
+	}
+}
+
+func TestUsageModal_WindowSince(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		w    usageWindow
+		want time.Time
+	}{
+		{usageWindowAll, time.Time{}},
+		{usageWindow24h, now.Add(-24 * time.Hour)},
+		{usageWindowWeek, now.Add(-7 * 24 * time.Hour)},
+		{usageWindowMonth, now.Add(-30 * 24 * time.Hour)},
+		{usageWindowYear, now.Add(-365 * 24 * time.Hour)},
+	}
+	for _, tc := range cases {
+		if got := tc.w.since(now); !got.Equal(tc.want) {
+			t.Errorf("window %v since = %v, want %v", tc.w, got, tc.want)
+		}
+	}
+}
+
 func TestUsageModal_OtherKeysReturnNoCmd(t *testing.T) {
 	m := newTestUsageModalModel(t)
 	m = m.Install(usageFixture()).Show()
-	for _, k := range []rune{'x', 'z', '1'} {
+	for _, k := range []rune{'x', 'z', '9'} {
 		before := m.CurrentView()
 		updated, cmd := m.Update(tea.KeyPressMsg{Code: k})
 		if cmd != nil {

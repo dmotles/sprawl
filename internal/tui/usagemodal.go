@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -27,6 +28,52 @@ const (
 	usageViewAll
 )
 
+// usageWindow enumerates the time-range windows the modal can scope totals
+// to (QUM-798). usageWindowAll (the zero value) is the default and means
+// "all time" — preserving the modal's original behavior.
+type usageWindow int
+
+const (
+	usageWindowAll usageWindow = iota
+	usageWindow24h
+	usageWindowWeek
+	usageWindowMonth
+	usageWindowYear
+)
+
+// label returns the human-readable footer label for the window.
+func (w usageWindow) label() string {
+	switch w {
+	case usageWindow24h:
+		return "past 24h"
+	case usageWindowWeek:
+		return "past 7d"
+	case usageWindowMonth:
+		return "past 30d"
+	case usageWindowYear:
+		return "past 365d"
+	default:
+		return "all time"
+	}
+}
+
+// since returns the lower-bound cutoff for the window relative to now. A
+// zero-value time means "no lower bound" (all time).
+func (w usageWindow) since(now time.Time) time.Time {
+	switch w {
+	case usageWindow24h:
+		return now.Add(-24 * time.Hour)
+	case usageWindowWeek:
+		return now.Add(-7 * 24 * time.Hour)
+	case usageWindowMonth:
+		return now.Add(-30 * 24 * time.Hour)
+	case usageWindowYear:
+		return now.Add(-365 * 24 * time.Hour)
+	default:
+		return time.Time{}
+	}
+}
+
 const usageCostDisclaimer = `API-reported; doesn't reflect subscription credits (Claude Max etc.)`
 
 // UsageModalModel renders a centered modal showing usage totals.
@@ -35,6 +82,7 @@ type UsageModalModel struct {
 	width, height int
 	visible       bool
 	view          usageView
+	window        usageWindow
 	totals        map[string]usage.TokenTotals
 	installed     bool
 }
@@ -51,11 +99,23 @@ func (m UsageModalModel) SetSize(w, h int) UsageModalModel {
 	return m
 }
 
-// Install replaces the modal's stored totals and resets the view to tokens.
+// Install replaces the modal's stored totals and resets the view to tokens
+// and the time window to all-time. Called on each open (QUM-798: default
+// window is all-time, preserving back-compat).
 func (m UsageModalModel) Install(totals map[string]usage.TokenTotals) UsageModalModel {
 	m.totals = totals
 	m.installed = true
 	m.view = usageViewTokens
+	m.window = usageWindowAll
+	return m
+}
+
+// SetTotals replaces the modal's stored totals in place, preserving the
+// current view and time window. Used when a window change triggers a
+// recompute (QUM-798).
+func (m UsageModalModel) SetTotals(totals map[string]usage.TokenTotals) UsageModalModel {
+	m.totals = totals
+	m.installed = true
 	return m
 }
 
@@ -79,6 +139,17 @@ func (m UsageModalModel) Visible() bool { return m.visible }
 //nolint:revive // usageView is intentionally unexported (TUI-internal enum).
 func (m UsageModalModel) CurrentView() usageView { return m.view }
 
+// Window returns the active time-range window (QUM-798).
+//
+//nolint:revive // usageWindow is intentionally unexported (TUI-internal enum).
+func (m UsageModalModel) Window() usageWindow { return m.window }
+
+// WindowSince returns the `since` cutoff for the active window relative to
+// now. A zero-value time means all-time (QUM-798).
+func (m UsageModalModel) WindowSince(now time.Time) time.Time {
+	return m.window.since(now)
+}
+
 // Update handles key events while the modal is visible. It emits a
 // DismissUsageMsg on Esc or 'q'; switches view on 't'/'c'/'a'; ignores
 // everything else.
@@ -101,9 +172,28 @@ func (m UsageModalModel) Update(msg tea.Msg) (UsageModalModel, tea.Cmd) {
 	case 'a':
 		m.view = usageViewAll
 		return m, nil
+	case '1':
+		m.window = usageWindow24h
+		return m, emitSetUsageWindow
+	case '2':
+		m.window = usageWindowWeek
+		return m, emitSetUsageWindow
+	case '3':
+		m.window = usageWindowMonth
+		return m, emitSetUsageWindow
+	case '4':
+		m.window = usageWindowYear
+		return m, emitSetUsageWindow
+	case '5':
+		m.window = usageWindowAll
+		return m, emitSetUsageWindow
 	}
 	return m, nil
 }
+
+// emitSetUsageWindow is the tea.Cmd that signals AppModel to recompute the
+// modal's totals for the newly-selected window (QUM-798).
+func emitSetUsageWindow() tea.Msg { return SetUsageWindowMsg{} }
 
 // View renders the modal centered in the available area. Returns empty when
 // the modal is not visible.
@@ -211,7 +301,9 @@ func (m UsageModalModel) renderBody() string {
 		b.WriteString(usageCostDisclaimer)
 		b.WriteString("\n")
 	}
-	b.WriteString("\n[t]okens  [c]ost  [a]ll  [esc/q] close")
+	fmt.Fprintf(&b, "\nwindow: %s\n", m.window.label())
+	b.WriteString("[1] 24h  [2] week  [3] month  [4] year  [5] all\n")
+	b.WriteString("[t]okens  [c]ost  [a]ll  [esc/q] close")
 	return b.String()
 }
 
