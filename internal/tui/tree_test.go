@@ -292,7 +292,7 @@ func TestTreeModel_OrbitalLines_ReturnsRenderedTree(t *testing.T) {
 	})
 	m.SetSelected("finn")
 
-	lines := m.OrbitalLines(100)
+	lines := m.OrbitalLines(100, 0)
 	if got, want := len(lines), 3; got != want {
 		t.Fatalf("len(lines) = %d, want %d", got, want)
 	}

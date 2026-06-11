@@ -165,47 +165,57 @@ func TestToastModel_RenderToastIsBordered(t *testing.T) {
 	}
 }
 
-// TestToastModel_OverlayCenteredBelowHeader: with SetHeaderHeight(h), the
-// toast box top row appears at index h+1 and is horizontally centered.
-func TestToastModel_OverlayCenteredBelowHeader(t *testing.T) {
+// TestToastModel_OverlayAnchorsAboveBottomReserve: a single toast anchors
+// just above the bottom-2-row reserve and is left-aligned with a 2-col left
+// margin. On a 14-row base (maxRow = 12), the box occupies rows 9,10,11.
+func TestToastModel_OverlayAnchorsAboveBottomReserve(t *testing.T) {
 	m := newToastModelForTest(t)
+	// Header height must NOT affect vertical placement anymore.
 	m.SetHeaderHeight(3)
 	m.Spawn(Toast{Text: "hello", Style: ToastInfo, DismissOn: UserOnlyDismiss()})
 	base := baseLines(14, 40)
 	out := m.Overlay(base)
 	lines := strings.Split(out, "\n")
 
-	// Anchor row = headerHeight + 1 = 4 — top border of the box.
-	if !strings.Contains(ansi.Strip(lines[4]), "╭") {
-		t.Fatalf("expected top border on row 4, got %q", ansi.Strip(lines[4]))
+	// Newest toast box bottom ends at maxRow-1 = 11; box is 3 lines → rows 9-11.
+	if !strings.Contains(ansi.Strip(lines[9]), "╭") {
+		t.Fatalf("expected top border on row 9, got %q", ansi.Strip(lines[9]))
 	}
-	// Middle row = 5 — content "hello".
-	mid := ansi.Strip(lines[5])
-	idx := strings.Index(mid, "hello")
-	if idx < 0 {
-		t.Fatalf("'hello' not found on row 5: %q", mid)
+	mid := ansi.Strip(lines[10])
+	// Left-aligned with 2-col margin: 2 base cols, then the box left border and
+	// one pad space precede the text: "..│ hello │".
+	if !strings.HasPrefix(mid, "..│ hello") {
+		t.Errorf("row 10 not left-aligned at margin 2, got %q", mid)
 	}
-	// Centered: "│ hello │" is 9 chars wide; on a 40-col base, left padding
-	// should be (40-9)/2 = 15, so 'h' lands at col ~17.
-	if idx < 12 || idx > 22 {
-		t.Errorf("'hello' at col %d on row 5, want roughly centered (12..22): %q", idx, mid)
+	// Top-left border glyph must sit at col index 2 (the left margin).
+	top := ansi.Strip(lines[9])
+	if gi := strings.Index(top, "╭"); gi != 2 {
+		t.Errorf("top-left border glyph at col %d, want 2: %q", gi, top)
 	}
-	// Bottom border on row 6.
-	if !strings.Contains(ansi.Strip(lines[6]), "╰") {
-		t.Errorf("expected bottom border on row 6, got %q", ansi.Strip(lines[6]))
+	if !strings.Contains(ansi.Strip(lines[11]), "╰") {
+		t.Errorf("expected bottom border on row 11, got %q", ansi.Strip(lines[11]))
 	}
 }
 
-// TestToastModel_OverlayNoHeaderAnchorAtTop: when headerHeight=0, anchor
-// falls back to row 0.
-func TestToastModel_OverlayNoHeaderAnchorAtTop(t *testing.T) {
-	m := newToastModelForTest(t)
-	m.Spawn(Toast{Text: "x", DismissOn: UserOnlyDismiss()})
-	base := baseLines(14, 40)
-	out := m.Overlay(base)
-	lines := strings.Split(out, "\n")
-	if !strings.Contains(ansi.Strip(lines[0]), "╭") {
-		t.Errorf("with no header, expected top border on row 0: %q", ansi.Strip(lines[0]))
+// TestToastModel_OverlayHeaderHeightInert: changing the header height does not
+// move the toast vertically — placement is keyed off the bottom reserve only.
+func TestToastModel_OverlayHeaderHeightInert(t *testing.T) {
+	render := func(h int) []string {
+		m := newToastModelForTest(t)
+		m.SetHeaderHeight(h)
+		m.Spawn(Toast{Text: "x", DismissOn: UserOnlyDismiss()})
+		return strings.Split(m.Overlay(baseLines(14, 40)), "\n")
+	}
+	a := render(0)
+	b := render(7)
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("row %d differs between headerHeight 0 and 7 (header should be inert):\n0: %q\n7: %q", i, a[i], b[i])
+		}
+	}
+	// Sanity: the single toast still lands at rows 9-11.
+	if !strings.Contains(ansi.Strip(a[9]), "╭") {
+		t.Errorf("expected top border on row 9 regardless of header: %q", ansi.Strip(a[9]))
 	}
 }
 
@@ -218,43 +228,44 @@ func TestToastModel_OverlayEmptyReturnsBase(t *testing.T) {
 	}
 }
 
-// TestToastModel_OverlayStacksVertically: two toasts → second block's top
-// border lands at headerHeight + 1 + 3 = headerHeight + 4.
-func TestToastModel_OverlayStacksVertically(t *testing.T) {
+// TestToastModel_OverlayStacksUpwardNewestNearestInput: two toasts → the
+// newest (BBB, spawned last) sits nearest the input at rows 9-11; the older
+// (AAA) stacks UPWARD above it at rows 6-8.
+func TestToastModel_OverlayStacksUpwardNewestNearestInput(t *testing.T) {
 	m := newToastModelForTest(t)
-	m.SetHeaderHeight(2)
 	m.Spawn(Toast{Text: "AAA", DismissOn: UserOnlyDismiss()})
 	m.Spawn(Toast{Text: "BBB", DismissOn: UserOnlyDismiss()})
 	base := baseLines(14, 40)
 	out := m.Overlay(base)
 	lines := strings.Split(out, "\n")
 
-	// First block: rows 3,4,5. Second block: rows 6,7,8.
-	if !strings.Contains(ansi.Strip(lines[3]), "╭") {
-		t.Errorf("first block top border expected on row 3: %q", ansi.Strip(lines[3]))
+	// Newest block (BBB) nearest input: rows 9,10,11.
+	if !strings.Contains(ansi.Strip(lines[9]), "╭") {
+		t.Errorf("newest block top border expected on row 9: %q", ansi.Strip(lines[9]))
 	}
-	if !strings.Contains(ansi.Strip(lines[4]), "AAA") {
-		t.Errorf("first block content expected on row 4: %q", ansi.Strip(lines[4]))
+	if !strings.Contains(ansi.Strip(lines[10]), "BBB") {
+		t.Errorf("newest block content (BBB) expected on row 10: %q", ansi.Strip(lines[10]))
 	}
-	if !strings.Contains(ansi.Strip(lines[5]), "╰") {
-		t.Errorf("first block bottom border expected on row 5: %q", ansi.Strip(lines[5]))
+	if !strings.Contains(ansi.Strip(lines[11]), "╰") {
+		t.Errorf("newest block bottom border expected on row 11: %q", ansi.Strip(lines[11]))
 	}
+	// Older block (AAA) stacks upward: rows 6,7,8.
 	if !strings.Contains(ansi.Strip(lines[6]), "╭") {
-		t.Errorf("second block top border expected on row 6 (headerHeight+4=6): %q", ansi.Strip(lines[6]))
+		t.Errorf("older block top border expected on row 6: %q", ansi.Strip(lines[6]))
 	}
-	if !strings.Contains(ansi.Strip(lines[7]), "BBB") {
-		t.Errorf("second block content expected on row 7: %q", ansi.Strip(lines[7]))
+	if !strings.Contains(ansi.Strip(lines[7]), "AAA") {
+		t.Errorf("older block content (AAA) expected on row 7: %q", ansi.Strip(lines[7]))
 	}
 	if !strings.Contains(ansi.Strip(lines[8]), "╰") {
-		t.Errorf("second block bottom border expected on row 8: %q", ansi.Strip(lines[8]))
+		t.Errorf("older block bottom border expected on row 8: %q", ansi.Strip(lines[8]))
 	}
 }
 
-// TestToastModel_OverlayDismissShiftsUp: after dismissing the first toast,
-// the remaining toast renders at the anchor row (upward shift).
-func TestToastModel_OverlayDismissShiftsUp(t *testing.T) {
+// TestToastModel_OverlayDismissShiftsDown: after dismissing the older toast,
+// the surviving toast (now newest+only) shifts DOWN to the input-anchored
+// position (rows 9-11) and the rows it previously occupied are restored.
+func TestToastModel_OverlayDismissShiftsDown(t *testing.T) {
 	m := newToastModelForTest(t)
-	m.SetHeaderHeight(2)
 	m.Spawn(Toast{ID: "a", Text: "AAA", DismissOn: UserOnlyDismiss()})
 	m.Spawn(Toast{ID: "b", Text: "BBB", DismissOn: UserOnlyDismiss()})
 	m.Dismiss("a")
@@ -262,38 +273,107 @@ func TestToastModel_OverlayDismissShiftsUp(t *testing.T) {
 	base := baseLines(14, 40)
 	out := m.Overlay(base)
 	lines := strings.Split(out, "\n")
-	// 'BBB' must now appear on row 4 (anchor+1 content row).
-	if !strings.Contains(ansi.Strip(lines[4]), "BBB") {
-		t.Errorf("after dismissing 'a', expected 'BBB' content on row 4 (shifted up): %q", ansi.Strip(lines[4]))
+	// 'BBB' must now appear on row 10 (content row of the input-anchored box).
+	if !strings.Contains(ansi.Strip(lines[10]), "BBB") {
+		t.Errorf("after dismissing 'a', expected 'BBB' content on row 10 (anchored above input): %q", ansi.Strip(lines[10]))
 	}
-	// Row 7 (where 'BBB' was previously) must now be base content again.
-	if ansi.Strip(lines[7]) != strings.Repeat(".", 40) {
-		t.Errorf("row 7 should be restored to base after upward shift, got %q", ansi.Strip(lines[7]))
+	// The dismissed toast ('AAA') must not survive on ANY row.
+	for i, ln := range lines {
+		if strings.Contains(ansi.Strip(ln), "AAA") {
+			t.Errorf("dismissed toast 'AAA' still present on row %d: %q", i, ansi.Strip(ln))
+		}
+	}
+	// Every row outside the survivor's box (rows 9-11) must be base content.
+	baseLine := strings.Repeat(".", 40)
+	for i, ln := range lines {
+		if i >= 9 && i <= 11 {
+			continue
+		}
+		if ansi.Strip(ln) != baseLine {
+			t.Errorf("row %d should be restored to base after downward shift, got %q", i, ansi.Strip(ln))
+		}
 	}
 }
 
-// TestToastModel_OverlayRespectsBottomReserve: a toast that wouldn't fit
-// above the bottom-2-row reserve is skipped.
-func TestToastModel_OverlayRespectsBottomReserve(t *testing.T) {
+// TestToastModel_OverlayOverflowSkipsOldestWhole: when more toasts are spawned
+// than fit, the oldest overflowing toasts are skipped ENTIRELY (not clipped
+// mid-box). A 14-row base (maxRow=12) fits exactly 4 boxes (rows 0-2, 3-5,
+// 6-8, 9-11). Spawning 5 toasts must drop the oldest (T1) whole.
+func TestToastModel_OverlayOverflowSkipsOldestWhole(t *testing.T) {
 	m := newToastModelForTest(t)
-	// Header at row 9 leaves rows 10,11 for toasts but the bottom-2-reserve
-	// (rows 12,13 in a 14-row base) means no 3-line box fits.
-	m.SetHeaderHeight(9)
-	m.Spawn(Toast{Text: "too-low", DismissOn: UserOnlyDismiss()})
+	for _, txt := range []string{"T1", "T2", "T3", "T4", "T5"} {
+		m.Spawn(Toast{Text: txt, DismissOn: UserOnlyDismiss()})
+	}
 	base := baseLines(14, 40)
 	out := m.Overlay(base)
 	lines := strings.Split(out, "\n")
+
+	// Newest 4 placed bottom-up: T5 rows 9-11, T4 6-8, T3 3-5, T2 0-2.
+	if !strings.Contains(ansi.Strip(lines[10]), "T5") {
+		t.Errorf("T5 (newest) content expected on row 10: %q", ansi.Strip(lines[10]))
+	}
+	if !strings.Contains(ansi.Strip(lines[7]), "T4") {
+		t.Errorf("T4 content expected on row 7: %q", ansi.Strip(lines[7]))
+	}
+	if !strings.Contains(ansi.Strip(lines[4]), "T3") {
+		t.Errorf("T3 content expected on row 4: %q", ansi.Strip(lines[4]))
+	}
+	if !strings.Contains(ansi.Strip(lines[1]), "T2") {
+		t.Errorf("T2 content expected on row 1: %q", ansi.Strip(lines[1]))
+	}
+	// T1 (oldest) must not appear ANYWHERE — skipped whole, not clipped.
 	for i, ln := range lines {
-		if strings.Contains(ansi.Strip(ln), "too-low") {
-			t.Errorf("toast rendered on row %d but should have been skipped (insufficient room): %q", i, ln)
+		if strings.Contains(ansi.Strip(ln), "T1") {
+			t.Errorf("T1 (oldest, overflow) rendered on row %d but should be skipped whole: %q", i, ln)
 		}
 	}
-	// Bottom 2 rows must remain unchanged.
+	// Width must be preserved on every row (no panic / corruption from overflow).
+	for i := range lines {
+		if w := ansi.StringWidth(lines[i]); w != 40 {
+			t.Errorf("row %d width %d, want 40", i, w)
+		}
+	}
+}
+
+// TestToastModel_OverlayRespectsBottomReserve: the bottom-2-row reserve is
+// never touched; the newest toast's box bottom lands at maxRow-1 (row 11).
+func TestToastModel_OverlayRespectsBottomReserve(t *testing.T) {
+	m := newToastModelForTest(t)
+	m.Spawn(Toast{Text: "hi", DismissOn: UserOnlyDismiss()})
+	base := baseLines(14, 40)
+	out := m.Overlay(base)
+	lines := strings.Split(out, "\n")
 	baseLine := strings.Repeat(".", 40)
 	for _, row := range []int{12, 13} {
 		if lines[row] != baseLine {
 			t.Errorf("bottom-reserve row %d altered: %q", row, lines[row])
 		}
+	}
+	if !strings.Contains(ansi.Strip(lines[11]), "╰") {
+		t.Errorf("newest toast bottom border expected on row 11 (maxRow-1): %q", ansi.Strip(lines[11]))
+	}
+}
+
+// TestCompositeLeft_PreservesWidthAndMargin verifies the left-aligned
+// composite keeps the base line's visible width and places the overlay at the
+// requested left margin.
+func TestCompositeLeft_PreservesWidthAndMargin(t *testing.T) {
+	line := strings.Repeat(".", 40)
+	box := "│ hi │" // visible width 6
+	got := compositeLeft(line, box, 2)
+	if w := ansi.StringWidth(got); w != 40 {
+		t.Fatalf("compositeLeft width = %d, want 40: %q", w, got)
+	}
+	stripped := ansi.Strip(got)
+	if !strings.HasPrefix(stripped, "..") {
+		t.Errorf("expected 2-col left margin of base, got %q", stripped)
+	}
+	if gi := strings.Index(stripped, "│"); gi != 2 {
+		t.Errorf("box left edge at col %d, want 2: %q", gi, stripped)
+	}
+	// Right segment must be base fill out to width 40: 2 + 6 box + 32 dots.
+	if !strings.HasSuffix(stripped, strings.Repeat(".", 32)) {
+		t.Errorf("expected right segment filled with base dots: %q", stripped)
 	}
 }
 

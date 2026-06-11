@@ -24,7 +24,7 @@ func TestRenderTreeOrbital_HorizontalPillList(t *testing.T) {
 		{Name: "finn", Type: "engineer", Depth: 1, InTurn: true},
 		{Name: "scout", Type: "researcher", Depth: 1},
 	}
-	lines := RenderTreeOrbital(nodes, "", 200)
+	lines := RenderTreeOrbital(nodes, "", 200, 0)
 	if len(lines) == 0 {
 		t.Fatal("expected non-empty output")
 	}
@@ -42,7 +42,7 @@ func TestRenderTreeOrbital_DropsOrbitalScaffolding(t *testing.T) {
 		{Name: "finn", Type: "engineer", Depth: 1},
 		{Name: "radar", Type: "engineer", Depth: 2},
 	}
-	lines := RenderTreeOrbital(nodes, "", 200)
+	lines := RenderTreeOrbital(nodes, "", 200, 0)
 	joined := stripAnsi(strings.Join(lines, "\n"))
 	for _, glyph := range []string{"──●", "↳", " → ", " · "} {
 		if strings.Contains(joined, glyph) {
@@ -60,7 +60,7 @@ func TestRenderTreeOrbital_OrderMatchesNodeSlice(t *testing.T) {
 		{Name: "bravo", Type: "engineer", Depth: 1},
 		{Name: "charlie", Type: "engineer", Depth: 1},
 	}
-	lines := RenderTreeOrbital(nodes, "", 200)
+	lines := RenderTreeOrbital(nodes, "", 200, 0)
 	stripped := stripAnsi(strings.Join(lines, " "))
 	idxs := map[string]int{}
 	for _, n := range []string{"weave", "alpha", "bravo", "charlie"} {
@@ -79,7 +79,7 @@ func TestRenderTreeOrbital_SelectionPill_RendersReverseAndCyan(t *testing.T) {
 		{Name: "weave", Type: "weave", Depth: 0},
 		{Name: "finn", Type: "engineer", Depth: 1, InTurn: true},
 	}
-	lines := RenderTreeOrbital(nodes, "finn", 200)
+	lines := RenderTreeOrbital(nodes, "finn", 200, 0)
 	out := strings.Join(lines, "\n")
 	expected := lipgloss.NewStyle().
 		Reverse(true).
@@ -98,7 +98,7 @@ func TestRenderTreeOrbital_NoSelection_NoReverseSGR(t *testing.T) {
 		{Name: "weave", Type: "weave", Depth: 0},
 		{Name: "finn", Type: "engineer", Depth: 1},
 	}
-	lines := RenderTreeOrbital(nodes, "", 200)
+	lines := RenderTreeOrbital(nodes, "", 200, 0)
 	out := strings.Join(lines, "\n")
 	reverseRe := regexp.MustCompile(`\x1b\[(?:[\d;]*;)?7[m;]`)
 	if reverseRe.MatchString(out) {
@@ -111,7 +111,7 @@ func TestRenderTreeOrbital_PillLabel_NameAndGlyph(t *testing.T) {
 		{Name: "weave", Type: "weave", Depth: 0},
 		{Name: "finn", Type: "engineer", Depth: 1, InTurn: true},
 	}
-	lines := RenderTreeOrbital(nodes, "", 200)
+	lines := RenderTreeOrbital(nodes, "", 200, 0)
 	joined := stripAnsi(strings.Join(lines, "\n"))
 	// Pill label is "<name> <glyph>" — weave gets ●, finn gets ⚙ (working).
 	if !strings.Contains(joined, "weave ●") {
@@ -127,7 +127,7 @@ func TestRenderTreeOrbital_WidthRespected(t *testing.T) {
 	for _, n := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {
 		nodes = append(nodes, TreeNode{Name: n, Type: "engineer", Depth: 1})
 	}
-	lines := RenderTreeOrbital(nodes, "", 80)
+	lines := RenderTreeOrbital(nodes, "", 80, 0)
 	for i, l := range lines {
 		if w := lipgloss.Width(l); w != 80 {
 			t.Errorf("lines[%d] width = %d, want 80; line=%q", i, w, l)
@@ -143,7 +143,7 @@ func TestRenderTreeOrbital_OverflowTruncates(t *testing.T) {
 	for _, n := range siblings {
 		nodes = append(nodes, TreeNode{Name: n, Type: "engineer", Depth: 1})
 	}
-	lines := RenderTreeOrbital(nodes, "", 60)
+	lines := RenderTreeOrbital(nodes, "", 60, 0)
 	for i, l := range lines {
 		if w := lipgloss.Width(l); w > 60 {
 			t.Errorf("lines[%d] width = %d, exceeds budget 60", i, w)
@@ -164,7 +164,7 @@ func TestRenderTreeOrbital_OverflowTruncates(t *testing.T) {
 }
 
 func TestRenderTreeOrbital_Empty(t *testing.T) {
-	lines := RenderTreeOrbital(nil, "", 80)
+	lines := RenderTreeOrbital(nil, "", 80, 0)
 	if len(lines) == 0 {
 		t.Fatal("expected blank-padded output for empty node list, got 0 lines")
 	}
@@ -184,7 +184,7 @@ func TestRenderTreeOrbital_ZeroWidth_NoPanic(t *testing.T) {
 			t.Fatalf("RenderTreeOrbital(_, _, 0) panicked: %v", r)
 		}
 	}()
-	lines := RenderTreeOrbital([]TreeNode{{Name: "weave", Type: "weave"}}, "", 0)
+	lines := RenderTreeOrbital([]TreeNode{{Name: "weave", Type: "weave"}}, "", 0, 0)
 	if len(lines) != 0 {
 		t.Errorf("expected empty slice for width=0, got %d lines", len(lines))
 	}
@@ -212,7 +212,7 @@ func TestOrbitalHeight_ParityWithRender(t *testing.T) {
 	for name, nodes := range topologies {
 		for _, w := range []int{40, 60, 90, 120, 200} {
 			got := OrbitalHeight(w, nodes)
-			rendered := len(RenderTreeOrbital(nodes, "", w))
+			rendered := len(RenderTreeOrbital(nodes, "", w, 0))
 			if got != rendered {
 				t.Errorf("topology=%s width=%d: OrbitalHeight=%d, len(RenderTreeOrbital)=%d", name, w, got, rendered)
 			}

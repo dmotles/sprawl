@@ -1,9 +1,9 @@
 // Package tui — toast subsystem (QUM-649).
 //
-// Toasts are short-lived, right-anchored overlays drawn above the chat region
-// and below any modal. They replace ad-hoc status-bar transient labels for
-// content that should be visible momentarily without competing with the
-// chat content or the modal stack.
+// Toasts are short-lived, lower-left overlays drawn just above the input box
+// (the bottom two reserved rows) and below any modal. They replace ad-hoc
+// status-bar transient labels for content that should be visible momentarily
+// without competing with the chat content or the modal stack.
 //
 // Dismiss policy is governed by a DismissContract:
 //   - DismissTimer: auto-dismisses after a duration (Spawn returns a tea.Cmd
@@ -89,7 +89,7 @@ type Toast struct {
 	DismissOn DismissContract
 }
 
-// ToastModel owns the live toast stack and renders the right-anchored
+// ToastModel owns the live toast stack and renders the lower-left
 // overlay. Embed in AppModel; route ToastSpawnMsg / ToastDismissMsg /
 // ToastConditionClearedMsg / toastTimerMsg through the reducer wrappers in
 // app.go.
@@ -116,9 +116,10 @@ func (m *ToastModel) SetSize(w, h int) {
 }
 
 // SetHeaderHeight records the height (in rows) of the SPRAWL header strip
-// that the chat region is rendered below. Toasts anchor at headerHeight+1
-// (one row below the header). When n is 0 (no header), toasts anchor at
-// row 0. Negative values are clamped to 0.
+// that the chat region is rendered below. It no longer affects toast
+// placement (toasts anchor in the lower-left, above the input box) but the
+// setter is retained for the existing call site. Negative values are clamped
+// to 0.
 func (m *ToastModel) SetHeaderHeight(n int) {
 	if n < 0 {
 		n = 0
@@ -190,62 +191,74 @@ func (m ToastModel) Toasts() []Toast {
 // Empty reports whether the toast stack is empty.
 func (m ToastModel) Empty() bool { return len(m.toasts) == 0 }
 
-// Overlay returns base with the toast stack composited on top, anchored
-// horizontally centered immediately below the header (anchor row =
-// headerHeight + 1, or row 0 when no header is set). Toasts stack
-// vertically in insertion order; each toast is a 3-line bordered box.
-// Visible line widths are preserved (cell-by-cell) and the bottom two
-// rows of base are never altered. Toasts that would land within the
-// bottom-two-row reserve are skipped.
+// Overlay returns base with the toast stack composited on top, anchored in the
+// lower-left just above the bottom-two-row reserve (input/status bar). The
+// newest toast (last in insertion order) sits closest to the input; older
+// toasts stack upward above it. Each toast is a 3-line bordered box,
+// left-aligned with a small left margin. Visible line widths are preserved
+// (cell-by-cell) and the bottom two rows of base are never altered. Toasts
+// that would overflow past the top of the chat region are skipped whole (not
+// clipped mid-box). headerHeight does not affect placement.
 func (m ToastModel) Overlay(base string) string {
 	if len(m.toasts) == 0 {
 		return base
 	}
 	lines := strings.Split(base, "\n")
-	const bottomReserve = 2
+	const (
+		bottomReserve = 2
+		leftMargin    = 2
+	)
 	maxRow := len(lines) - bottomReserve
-	anchor := m.headerHeight
-	if anchor > 0 {
-		anchor++ // one blank row of breathing room below the header
-	}
-	if anchor < 0 {
-		anchor = 0
-	}
-	for _, t := range m.toasts {
-		boxed := m.renderToast(t)
-		boxLines := strings.Split(boxed, "\n")
-		if anchor+len(boxLines) > maxRow {
+	// Walk newest→oldest so the newest box ends at maxRow-1 and older boxes
+	// stack upward, each immediately above the boxes already placed below it.
+	// usedBelow accumulates the real heights of the newer boxes so variable
+	// box heights stack without overlaps or gaps.
+	usedBelow := 0
+	for k := len(m.toasts) - 1; k >= 0; k-- {
+		boxLines := strings.Split(m.renderToast(m.toasts[k]), "\n")
+		h := len(boxLines)
+		top := maxRow - usedBelow - h
+		if top < 0 {
+			// Would overflow past the top of the chat region; skip this and
+			// every still-older toast (their tops only get smaller).
 			break
 		}
+		usedBelow += h
 		for i, bl := range boxLines {
-			row := anchor + i
+			row := top + i
 			if row < 0 || row >= len(lines) {
 				continue
 			}
-			lines[row] = compositeCentered(lines[row], bl)
+			lines[row] = compositeLeft(lines[row], bl, leftMargin)
 		}
-		anchor += len(boxLines)
 	}
 	return strings.Join(lines, "\n")
 }
 
-// compositeCentered overlays `box` horizontally centered onto `line`,
-// preserving the visible width of `line` and the left/right base segments
-// that fall outside the box footprint.
-func compositeCentered(line, box string) string {
+// compositeLeft overlays `box` onto `line` starting at leftMargin columns from
+// the left edge, preserving the visible width of `line` and the base segments
+// that fall outside the box footprint. If the box plus margin would exceed the
+// line width, the margin is dropped (then the box is truncated if still too
+// wide).
+func compositeLeft(line, box string, leftMargin int) string {
 	lineW := ansi.StringWidth(line)
 	boxW := ansi.StringWidth(box)
+	if leftMargin < 0 {
+		leftMargin = 0
+	}
+	if leftMargin+boxW > lineW {
+		leftMargin = 0
+	}
 	if boxW >= lineW {
 		return ansi.Truncate(box, lineW, "")
 	}
-	leftW := (lineW - boxW) / 2
-	rightW := lineW - boxW - leftW
 
-	leftPart := ansi.Truncate(line, leftW, "")
-	if lw := ansi.StringWidth(leftPart); lw < leftW {
-		leftPart += strings.Repeat(" ", leftW-lw)
+	leftPart := ansi.Truncate(line, leftMargin, "")
+	if lw := ansi.StringWidth(leftPart); lw < leftMargin {
+		leftPart += strings.Repeat(" ", leftMargin-lw)
 	}
-	rightPart := ansi.TruncateLeft(line, leftW+boxW, "")
+	rightW := lineW - leftMargin - boxW
+	rightPart := ansi.TruncateLeft(line, leftMargin+boxW, "")
 	if rw := ansi.StringWidth(rightPart); rw < rightW {
 		rightPart += strings.Repeat(" ", rightW-rw)
 	} else if rw > rightW {

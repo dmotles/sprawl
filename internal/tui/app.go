@@ -131,6 +131,14 @@ type AppModel struct {
 	treeModal TreeModalModel
 	showTree  bool
 
+	// treeHud is the transient corner-anchored mini-tree overlay (QUM-805).
+	// It shows on Ctrl+N/P navigation and on spawn/retire tree changes, then
+	// fades after treeHudFadeDelay. treeSeeded gates the spawn/retire diff so
+	// the first AgentTreeMsg (initial agent set) does not flash every agent as
+	// freshly spawned.
+	treeHud    treeHud
+	treeSeeded bool
+
 	bridge    SessionBackend
 	turnState TurnState
 
@@ -139,6 +147,15 @@ type AppModel struct {
 	// ChatList so advancing it never invalidates the chat render cache
 	// (QUM-769).
 	sparkleFrame int
+
+	// treePulseFrame is the shared "breathing" phase counter for header
+	// orbital working pills (QUM-806). Advanced by treePulseTickMsg, read by
+	// OrbitalLines→RenderTreeOrbital. Monotonic; the modulo wrap happens in
+	// treeWorkPulseStyle. treePulseTicking guards against double-arming the
+	// tick — it is true exactly while a tick is in flight, set on arm and
+	// cleared when the tick observes no working pill (mirrors mcpOpTickPending).
+	treePulseFrame   int
+	treePulseTicking bool
 
 	// pendingDrainIDs is populated by the InboxDrainMsg handler and consumed
 	// by UserMessageSentMsg: once the drained prompt has been successfully
@@ -374,6 +391,51 @@ type sparkleTickMsg struct{}
 func sparkleTickCmd() tea.Cmd {
 	return tea.Tick(sparkleTickInterval, func(time.Time) tea.Msg {
 		return sparkleTickMsg{}
+	})
+}
+
+// treePulseInterval is the per-step cadence of the QUM-806 working-pill
+// breathe. 4 steps × 175ms ≈ 700ms full cycle — gentler than the 100ms tool
+// spinner, in the same family as the 250ms sparkle.
+const treePulseInterval = 175 * time.Millisecond
+
+// treePulseTickMsg advances the working-pill breathe phase. QUM-806.
+type treePulseTickMsg struct{}
+
+// treePulseTickCmd schedules the next pulse step. Unlike sparkleTickCmd this
+// does NOT self-perpetuate unconditionally — the treePulseTickMsg handler
+// re-arms only while ≥1 working pill exists and falls silent otherwise, so an
+// all-idle tree costs nothing (QUM-806 / QUM-769).
+func treePulseTickCmd() tea.Cmd {
+	return tea.Tick(treePulseInterval, func(time.Time) tea.Msg {
+		return treePulseTickMsg{}
+	})
+}
+
+// armTreePulseCmd starts the working-pill breathe tick iff a working pill
+// exists and no tick is already in flight. Returns nil otherwise (so it is
+// safe to call on every tree rebuild without double-arming). QUM-806.
+func (m *AppModel) armTreePulseCmd() tea.Cmd {
+	if m.treePulseTicking || !anyWorkingPill(m.tree.nodes, time.Now()) {
+		return nil
+	}
+	m.treePulseTicking = true
+	return treePulseTickCmd()
+}
+
+// treeHudFadeDelay is how long the transient agent-tree HUD stays visible
+// after the last Ctrl+N/P navigation or spawn/retire tree change. QUM-805.
+const treeHudFadeDelay = 3 * time.Second
+
+// treeHudTickCmd returns a ONE-SHOT fade timer for the agent-tree HUD, tagged
+// with gen. Unlike sparkleTickCmd/watchdogTickCmd this does NOT self-perpetuate
+// — the handler hides the HUD on a matching generation and stops; a fresh
+// trigger arms a new tick with a higher generation. This keeps the fade tick
+// running ONLY while the HUD is visible (QUM-805 / QUM-769). Do not add a
+// reschedule in the treeHudTimerMsg handler.
+func treeHudTickCmd(gen uint64) tea.Cmd {
+	return tea.Tick(treeHudFadeDelay, func(time.Time) tea.Msg {
+		return treeHudTimerMsg{Gen: gen}
 	})
 }
 
@@ -799,7 +861,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Code == 'p' {
 				delta = -1
 			}
-			return m, m.cycleAgent(delta)
+			// QUM-805: surface the transient corner tree HUD and (re)arm its 3s
+			// fade. showTree is already gated by the modal key-return above, so
+			// the HUD can't appear while the /tree modal is open.
+			gen := m.treeHud.triggerNav()
+			return m, tea.Batch(m.cycleAgent(delta), treeHudTickCmd(gen))
 		}
 
 		// QUM-630: Esc with a queued submit is the preempt-and-send key.
@@ -972,6 +1038,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toastTimerMsg:
 		m.toasts.Dismiss(msg.ID)
+		return m, nil
+
+	case treeHudTimerMsg:
+		// QUM-805: hide the HUD only if no newer trigger bumped the generation
+		// since this fade timer was armed. Deliberately does NOT reschedule —
+		// the next trigger arms its own one-shot tick (no global ticker).
+		m.treeHud.expire(msg.Gen)
 		return m, nil
 
 	case PaletteQuitMsg:
@@ -1430,6 +1503,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case AgentTreeMsg:
+		// QUM-805: snapshot the previous child set BEFORE overwriting so the
+		// spawn/retire diff below sees what changed.
+		prevNodes := m.childNodes
 		m.childNodes = msg.Nodes
 		// QUM-311: detect out-of-process inbox arrivals (e.g. an external
 		// child process writing a maildir envelope directly, or any future
@@ -1471,10 +1547,47 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.turnState == TurnIdle && m.sprawlRoot != "" && m.bridge != nil {
 			drainCmd = peekAndDrainCmd(m.sprawlRoot, m.rootAgent, m.supervisor)
 		}
-		if m.supervisor != nil {
-			return m, tea.Batch(scheduleAgentTick(m.supervisor, m.sprawlRoot), drainCmd)
+
+		// QUM-805: flash the transient HUD + fire a toast for each spawned /
+		// retired agent. Skip the very first poll (treeSeeded=false) so the
+		// initial agent set isn't reported as a wave of spawns. The HUD flash
+		// is suppressed while the /tree modal is open (redundant), but the
+		// toast still fires as the persistent record. Known v1 limitation: an
+		// agent that spawns AND retires within one 2s poll window is missed.
+		var cmds []tea.Cmd
+		if m.treeSeeded {
+			added, removed := diffTreeNodes(prevNodes, msg.Nodes)
+			for _, n := range added {
+				cmds = append(cmds, m.toasts.Spawn(Toast{
+					Text:      fmt.Sprintf("spawned: %s (%s)", n.Name, n.Type),
+					Style:     ToastInfo,
+					DismissOn: TimerDismiss(treeHudFadeDelay),
+				}))
+				if !m.showTree {
+					cmds = append(cmds, treeHudTickCmd(m.treeHud.triggerChange(n.Name, hudChangeSpawned)))
+				}
+			}
+			for _, n := range removed {
+				cmds = append(cmds, m.toasts.Spawn(Toast{
+					Text:      fmt.Sprintf("retired: %s", n.Name),
+					Style:     ToastInfo,
+					DismissOn: TimerDismiss(treeHudFadeDelay),
+				}))
+				if !m.showTree {
+					cmds = append(cmds, treeHudTickCmd(m.treeHud.triggerChange(n.Name, hudChangeRetired)))
+				}
+			}
 		}
-		return m, drainCmd
+		m.treeSeeded = true
+
+		cmds = append(cmds, drainCmd)
+		if m.supervisor != nil {
+			cmds = append(cmds, scheduleAgentTick(m.supervisor, m.sprawlRoot))
+		}
+		// QUM-806: arm the working-pill breathe tick if this poll surfaced a
+		// working agent (no-op if already ticking or none working).
+		cmds = append(cmds, m.armTreePulseCmd())
+		return m, tea.Batch(cmds...)
 
 	case InboxArrivalMsg:
 		// QUM-465: under unified runtime the in-process notifier and the
@@ -1704,6 +1817,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// stays valid across ticks (QUM-769).
 		m.sparkleFrame++
 		return m, sparkleTickCmd()
+
+	case treePulseTickMsg:
+		// QUM-806: advance the working-pill breathe phase and re-arm — but only
+		// while ≥1 working pill remains. Once the tree goes idle, clear the
+		// in-flight flag and stop, so the ticker falls silent and idle frames
+		// cost nothing (QUM-769). This must NOT bust the body render cache: the
+		// orbital header is composed outside cachedComposed, so advancing the
+		// frame re-renders the (uncached) header for free.
+		if !anyWorkingPill(m.tree.nodes, time.Now()) {
+			m.treePulseTicking = false
+			return m, nil
+		}
+		m.treePulseFrame++
+		return m, treePulseTickCmd()
 
 	case mcpOpTickMsg:
 		// QUM-497: 1Hz re-render driver. Self-perpetuates only while ops are
@@ -2294,7 +2421,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// tree). Height is already reserved by ComputeLayout via HeaderHeight, so
 	// the composed content below fits within the terminal without clipping.
 	if layout.HeaderHeight > 0 {
-		treeLines := m.tree.OrbitalLines(layout.HeaderTreeWidth)
+		treeLines := m.tree.OrbitalLines(layout.HeaderTreeWidth, m.treePulseFrame)
 		content = RenderHeader(layout.TermWidth, treeLines) + "\n\n" + content
 	}
 
@@ -2303,6 +2430,29 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	m.toasts.SetHeaderHeight(layout.HeaderHeight)
 	if !m.toasts.Empty() {
 		content = m.toasts.Overlay(content)
+	}
+
+	// QUM-805: composite the transient corner tree HUD on top of chat/header
+	// but below all modals. Suppressed while the /tree modal is open
+	// (redundant). Applied AFTER cachedComposed so the HUD's show/hide and
+	// flash never invalidate the chat render cache (QUM-769) — the fade tick
+	// that drives this only runs while the HUD is visible.
+	if m.treeHud.visible && !m.showTree {
+		maxW := layout.TermWidth / 3
+		if maxW > 40 {
+			maxW = 40
+		}
+		if maxW < 16 {
+			maxW = 16
+		}
+		anchorRow := layout.HeaderHeight + 1
+		maxH := m.height - anchorRow - 2
+		if maxH < 3 {
+			maxH = 3
+		}
+		if hud := renderTreeHud(m.treeHud, m.tree.nodes, m.observedAgent, &m.theme, maxW, maxH); hud != "" {
+			content = overlayTopRight(content, hud, anchorRow)
+		}
 	}
 
 	// QUM-733 5b: tree modal sits ABOVE chat/toasts but BELOW the higher-

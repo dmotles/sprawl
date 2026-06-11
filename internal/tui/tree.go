@@ -283,8 +283,10 @@ func (m *TreeModel) SetSize(w, h int) {
 // width. QUM-656: this is the entry point AppModel uses when composing the
 // header. The legacy View() rendering is retained for back-compat with the
 // (now-dead) left-pane callsite and existing tree_test.go assertions.
-func (m TreeModel) OrbitalLines(width int) []string {
-	return RenderTreeOrbital(m.nodes, m.SelectedAgent(), width)
+// pulsePhase (QUM-806) drives the working-pill brightness breathe; callers
+// pass AppModel.treePulseFrame.
+func (m TreeModel) OrbitalLines(width, pulsePhase int) []string {
+	return RenderTreeOrbital(m.nodes, m.SelectedAgent(), width, pulsePhase)
 }
 
 // PrependWeaveRoot inserts a synthetic weave node at depth 0 and shifts all

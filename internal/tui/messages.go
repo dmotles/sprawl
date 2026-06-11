@@ -623,6 +623,14 @@ type AgentTreeMsg struct {
 	RootUnread int
 }
 
+// treeHudTimerMsg fires when a transient agent-tree HUD fade timer elapses.
+// Gen carries the generation the timer was armed with; the handler hides the
+// HUD only if it still matches the current generation (a newer trigger bumps
+// the generation and supersedes this timer). QUM-805.
+type treeHudTimerMsg struct {
+	Gen uint64
+}
+
 // BackendFaultMsg signals that a child runtime's backend session has fired
 // a sticky terminal error (QUM-602). The App responds by appending a
 // viewport banner and tagging the agent's tree row with a [FAULT:class]

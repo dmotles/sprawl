@@ -214,11 +214,11 @@ func pressKeyAndApply(t *testing.T, app AppModel, key tea.KeyPressMsg) AppModel 
 	t.Helper()
 	u, cmd := app.Update(key)
 	app = u.(AppModel)
-	if cmd != nil {
-		if msg := cmd(); msg != nil {
-			u2, _ := app.Update(msg)
-			app = u2.(AppModel)
-		}
+	// Unwrap tea.BatchMsg (QUM-805: Ctrl+N/P now batches the cycle cmd with the
+	// HUD fade tick) so the AgentSelectedMsg still reaches Update.
+	for _, msg := range collectBatchMsgs(t, cmd) {
+		u2, _ := app.Update(msg)
+		app = u2.(AppModel)
 	}
 	return app
 }

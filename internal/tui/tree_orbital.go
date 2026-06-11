@@ -66,6 +66,27 @@ func TreeNodeAgentState(n TreeNode, now time.Time) AgentState {
 	return StateIdle
 }
 
+// treeWorkPulseStyle returns the foreground style for a working pill at the
+// given pulse phase, cycling treeWorkPulseFrames (modulo, guarding negatives).
+// QUM-806.
+func treeWorkPulseStyle(phase int) lipgloss.Style {
+	n := len(treeWorkPulseFrames)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(treeWorkPulseFrames[((phase%n)+n)%n]))
+}
+
+// anyWorkingPill reports whether any node renders as a working pill (derived
+// state StateWorking). Used to gate the QUM-806 pulse tick: it is armed only
+// while ≥1 working pill exists and goes silent otherwise. The weave root is
+// StateRoot (never working), so the root's own turn never arms the pulse.
+func anyWorkingPill(nodes []TreeNode, now time.Time) bool {
+	for _, n := range nodes {
+		if TreeNodeAgentState(n, now) == StateWorking {
+			return true
+		}
+	}
+	return false
+}
+
 // stateGlyph returns the short status glyph for an AgentState.
 func stateGlyph(s AgentState) string {
 	switch s {
@@ -122,6 +143,21 @@ var (
 	// distinct from StateIdle gray (#71717A) and StateFailure red.
 	treeDormantStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA")).Faint(true)
 
+	// QUM-806: the "breathing" brightness ramp for working pills. A working
+	// pill cycles through these amber shades (dim → normal → bright → normal)
+	// driven by AppModel.treePulseFrame, approximating a gentle fade-in/out
+	// (terminals can't true-alpha-fade). Frame 1 and 3 are the same "normal"
+	// anchor (== treeWorkStyle's #FBBF24) so the static and animated baselines
+	// match. Cadence/vocabulary aligns with the QUM-796 sparkle (amber accent,
+	// ~700ms cycle at 175ms/step) rather than inventing a third animation
+	// language.
+	treeWorkPulseFrames = []string{
+		"#B45309", // dim
+		"#FBBF24", // normal (matches treeWorkStyle)
+		"#FDE68A", // bright
+		"#FBBF24", // normal
+	}
+
 	// selReverseStyle styles the selected agent as a reverse-video cyan pill.
 	selReverseStyle = lipgloss.NewStyle().
 			Reverse(true).
@@ -140,7 +176,7 @@ const pillSeparatorWidth = 2
 
 // OrbitalHeight reports how many rows RenderTreeOrbital will produce at the
 // given width. The renderer pads to WordmarkHeight rows at the width so the
-// invariant `OrbitalHeight(W, nodes) == len(RenderTreeOrbital(nodes, "", W))`
+// invariant `OrbitalHeight(W, nodes) == len(RenderTreeOrbital(nodes, "", W, 0))`
 // holds regardless of topology. The `nodes` parameter is retained for
 // signature stability (callers still pass it through).
 func OrbitalHeight(width int, nodes []TreeNode) int {
@@ -158,7 +194,10 @@ func OrbitalHeight(width int, nodes []TreeNode) int {
 //
 // QUM-733 5a: pills follow agentNames() order — the caller (AppModel) passes
 // in nodes already in this order (PrependWeaveRoot + DFS).
-func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
+//
+// QUM-806: pulsePhase drives the working-pill brightness "breathe". Non-working
+// and selected pills ignore it (selected pills keep their reverse-video style).
+func RenderTreeOrbital(nodes []TreeNode, selected string, width, pulsePhase int) []string {
 	if width <= 0 {
 		return nil
 	}
@@ -178,11 +217,15 @@ func RenderTreeOrbital(nodes []TreeNode, selected string, width int) []string {
 		label := n.Name + " " + stateGlyph(st)
 		var styled string
 		plainW := lipgloss.Width(label)
-		if selected != "" && n.Name == selected {
+		switch {
+		case selected != "" && n.Name == selected:
 			styled = selReverseStyle.Render(label)
 			// Padding(0,1) on either side → +2 visible cells.
 			plainW += 2
-		} else {
+		case st == StateWorking:
+			// QUM-806: working pills breathe via the shared pulse phase.
+			styled = treeWorkPulseStyle(pulsePhase).Render(label)
+		default:
 			styled = stateStyle(st).Render(label)
 		}
 		// QUM-559: surface the per-agent unread badge as a dim `(N)` suffix

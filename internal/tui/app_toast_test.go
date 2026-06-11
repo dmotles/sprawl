@@ -426,10 +426,9 @@ func TestApp_ResizeReanchorsToast(t *testing.T) {
 		t.Fatalf("'anchored' not present after resize; content:\n%s", app.View().Content)
 	}
 	stripped := ansi.Strip(lines[foundRow])
-	idx := strings.Index(stripped, "anchored")
-	// QUM-701: toasts are horizontally centered. On a 160-col terminal,
-	// the "anchored" text should land near the midpoint.
-	if idx < 60 || idx > 100 {
-		t.Errorf("after resize to width=160, 'anchored' at col %d, want roughly centered (60..100) in row: %q", idx, stripped)
+	// QUM-804: toasts are left-aligned with a 2-col left margin. On any width
+	// the box hugs the left edge: 2 base cols, then the box border + pad.
+	if !strings.HasPrefix(stripped, "  │ anchored") {
+		t.Errorf("after resize to width=160, 'anchored' not left-aligned at margin 2 in row: %q", stripped)
 	}
 }
