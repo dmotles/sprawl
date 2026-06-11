@@ -38,6 +38,12 @@ func taskNotificationFrame(taskID string) string {
 	return `{"type":"system","subtype":"task_notification","session_id":"sess-qum640","task_id":"` + taskID + `"}`
 }
 
+// taskNotificationFrameNoID builds a system/task_notification wire frame that
+// omits task_id, mirroring older harness frames that predate the field.
+func taskNotificationFrameNoID() string {
+	return `{"type":"system","subtype":"task_notification","session_id":"sess-qum640"}`
+}
+
 // countTurnStartedWithin counts EventTurnStarted events arriving on sub over a
 // bounded window. Used for negative-absence assertions ("no extra turn fired").
 func countTurnStartedWithin(sub <-chan RuntimeEvent, window time.Duration) int {
@@ -404,6 +410,143 @@ func TestTurnLoop_ContinuationTurnWithoutNotification_NoFurtherContinuation(t *t
 	select {
 	case <-transport.sendCh:
 		t.Fatal("observed an unexpected outbound Send after the continuation turn; want none")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// TestTurnLoop_TaskNotificationWithoutTaskID_StillContinues locks in the
+// QUM-807 legacy-frame fallback: a task_notification lacking a task_id is
+// never deduped (older harness frames may omit the field) and must still
+// schedule exactly one continuation, preserving the QUM-640 contract.
+func TestTurnLoop_TaskNotificationWithoutTaskID_StillContinues(t *testing.T) {
+	transport := newScriptedTransport()
+	session := backend.NewSession(transport, backend.SessionConfig{SessionID: "sess-qum640"})
+	t.Cleanup(func() { _ = session.Close() })
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(256)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "do work", EntryIDs: []string{"seq-A"}})
+
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  session,
+		Queue:    q,
+		EventBus: bus,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("Run did not return after cancel")
+		}
+	})
+
+	// Turn 1 starts: drain its user prompt.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+	transport.drainOneSend(t, 2*time.Second, "turn-1 user prompt")
+
+	// Drive turn 1 with a mid-turn task_notification that omits task_id.
+	transport.feed(t, scriptedInitFrame)
+	transport.feed(t, taskNotificationFrameNoID())
+	transport.feed(t, scriptedAssistFrame)
+	transport.feed(t, scriptedResultFrame)
+
+	// A continuation turn must auto-start — the id-less frame always continues.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+	transport.drainOneSend(t, 2*time.Second, "continuation user prompt")
+
+	// Complete the continuation turn cleanly so the loop doesn't deadlock on
+	// teardown.
+	transport.feed(t, scriptedInitFrame)
+	transport.feed(t, scriptedResultFrame)
+}
+
+// TestTurnLoop_SameTaskIDReObserved_SingleContinuation is the QUM-807
+// reproduction test: the SAME task_id task_notification observed across two
+// consecutive turns must yield EXACTLY ONE continuation. Turn 1 sees task_id X
+// and schedules a continuation; the continuation turn (turn 2) re-observes the
+// SAME X (the double-fire defect) — but because X was already serviced, turn 2
+// must NOT schedule a further continuation.
+//
+// FAILS before the fix: the per-turn `sawTaskNotification` boolean re-flips on
+// the re-observed X in turn 2 and enqueues a spurious turn 3. Passes after the
+// gate is made idempotent per task_id.
+func TestTurnLoop_SameTaskIDReObserved_SingleContinuation(t *testing.T) {
+	transport := newScriptedTransport()
+	session := backend.NewSession(transport, backend.SessionConfig{SessionID: "sess-qum640"})
+	t.Cleanup(func() { _ = session.Close() })
+
+	bus := NewEventBus()
+	sub, unsub := bus.Subscribe(256)
+	defer unsub()
+
+	q := NewMessageQueue()
+	q.Enqueue(QueueItem{Class: ClassUser, Prompt: "do work", EntryIDs: []string{"seq-A"}})
+
+	loop := NewTurnLoop(TurnLoopConfig{
+		Session:  session,
+		Queue:    q,
+		EventBus: bus,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- loop.Run(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("Run did not return after cancel")
+		}
+	})
+
+	// Turn 1 starts: drain its user prompt.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+	transport.drainOneSend(t, 2*time.Second, "turn-1 user prompt")
+
+	// Drive turn 1 with a mid-turn task_notification for task_id X → it must
+	// schedule a continuation.
+	transport.feed(t, scriptedInitFrame)
+	transport.feed(t, taskNotificationFrame("b02nztc1l"))
+	transport.feed(t, scriptedAssistFrame)
+	transport.feed(t, scriptedResultFrame)
+
+	// Continuation turn (turn 2) auto-starts: drain its prompt.
+	_, _ = waitFor(t, sub, 2*time.Second, func(ev RuntimeEvent) bool {
+		return ev.Type == EventTurnStarted
+	})
+	transport.drainOneSend(t, 2*time.Second, "continuation user prompt")
+
+	// Drive turn 2 re-observing the SAME task_id X (the double-fire defect),
+	// then clean completion.
+	transport.feed(t, scriptedInitFrame)
+	transport.feed(t, taskNotificationFrame("b02nztc1l"))
+	transport.feed(t, scriptedAssistFrame)
+	transport.feed(t, scriptedResultFrame)
+
+	// NO third turn may start — X was already serviced by turn 1's
+	// continuation, so re-observing it must not schedule another.
+	if n := countTurnStartedWithin(sub, 500*time.Millisecond); n != 0 {
+		t.Fatalf("observed %d additional EventTurnStarted after re-observing the same task_id; want 0 (continuation gate must be idempotent per task_id)", n)
+	}
+	// And no further outbound Send may land.
+	select {
+	case <-transport.sendCh:
+		t.Fatal("observed an unexpected outbound Send after re-observing the same task_id; want none")
 	case <-time.After(300 * time.Millisecond):
 	}
 }

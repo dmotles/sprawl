@@ -87,11 +87,21 @@ type TurnLoop struct {
 
 	mu          sync.Mutex
 	interruptCh chan struct{} // non-nil iff a turn is currently in flight
+
+	// servicedTaskIDs records the task_ids of background-task completions that
+	// have already driven an auto-continuation, so re-observing the same
+	// task_notification frame in a later (continuation) turn does not enqueue a
+	// duplicate continuation (QUM-807). It outlives a single turn but is
+	// per-agent (one TurnLoop). It is read and written only inside executeTurn,
+	// which runs solely on the Run goroutine, so no lock is required — do not
+	// access it from other goroutines. Growth is bounded by the number of
+	// distinct background tasks a session starts (low cardinality); no eviction.
+	servicedTaskIDs map[string]struct{}
 }
 
 // NewTurnLoop returns a TurnLoop ready to Run.
 func NewTurnLoop(cfg TurnLoopConfig) *TurnLoop {
-	return &TurnLoop{cfg: cfg}
+	return &TurnLoop{cfg: cfg, servicedTaskIDs: map[string]struct{}{}}
 }
 
 // Run drives the loop until ctx is cancelled. It executes the optional
@@ -213,7 +223,11 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 
 	delivered := false
 	interrupted := false
-	sawTaskNotification := false
+	// QUM-807: per-turn set of unserviced task_ids whose task_notification
+	// surfaced this turn. sawEmptyTaskID tracks notifications lacking a task_id
+	// (older frames may omit it): those are never deduped and always continue.
+	turnTaskIDs := map[string]struct{}{}
+	sawEmptyTaskID := false
 	terminalPublished := false
 	for {
 		select {
@@ -252,17 +266,25 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 				// synthetic continuation item so the existing
 				// queue→turnloop→StartTurn drive fires a continuation turn,
 				// which folds the stranded background result into context.
-				// Detection is per-turn (local boolean), so a continuation turn
-				// that sees no notification won't loop forever, and a
-				// notification arriving during a continuation turn schedules a
-				// further continuation. The !interrupted gate relies on the
-				// <-thisTurn arm having set interrupted on an earlier iteration:
-				// the backend delivers the terminal `result` frame before it
-				// closes `events`, so the loop keeps iterating (and drains the
-				// pending interrupt token) rather than reaching this close in
-				// the same tick the interrupt arrives.
-				if sawTaskNotification && !interrupted {
+				// Multiple distinct task_ids completing in one turn still
+				// coalesce into a single continuation. The !interrupted gate
+				// relies on the <-thisTurn arm having set interrupted on an
+				// earlier iteration: the backend delivers the terminal `result`
+				// frame before it closes `events`, so the loop keeps iterating
+				// (and drains the pending interrupt token) rather than reaching
+				// this close in the same tick the interrupt arrives.
+				//
+				// QUM-807: the gate is idempotent per task_id. Only unserviced
+				// task_ids drive a continuation; on enqueue they are marked
+				// serviced so the same task_notification re-observed in the
+				// continuation turn does not double-fire. A genuinely new
+				// task_id in a later turn still continues, and a continuation
+				// turn that sees no new notification settles (no infinite loop).
+				if (sawEmptyTaskID || len(turnTaskIDs) > 0) && !interrupted {
 					l.cfg.Queue.Enqueue(QueueItem{Class: ClassContinuation, Prompt: continuationPrompt})
+					for id := range turnTaskIDs {
+						l.servicedTaskIDs[id] = struct{}{}
+					}
 				}
 				// QUM-647: channel-close safety net. If the events channel
 				// closed without ever yielding a terminal `result` frame
@@ -284,7 +306,15 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 				return
 			}
 			if msg.Type == "system" && msg.Subtype == "task_notification" {
-				sawTaskNotification = true
+				// QUM-807: record the task_id so the continuation enqueue can be
+				// deduped. A frame lacking a task_id (or that fails to parse) is
+				// treated as always-continue, since older frames may omit it.
+				var tn protocol.TaskNotification
+				if err := protocol.ParseAs(msg, &tn); err != nil || tn.TaskID == "" {
+					sawEmptyTaskID = true
+				} else if _, serviced := l.servicedTaskIDs[tn.TaskID]; !serviced {
+					turnTaskIDs[tn.TaskID] = struct{}{}
+				}
 			}
 			// QUM-579: fire OnQueueItemDelivered on the first frame that
 			// is NOT system:init. system:init is emitted by the backend
