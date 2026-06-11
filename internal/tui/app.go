@@ -637,11 +637,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// When the command palette is open, route ALL keys to it — no
-		// panel cycling, no input typing. Palette emits ClosePaletteMsg on
-		// Esc or on command dispatch.
+		// panel cycling, no input typing. The palette hides itself
+		// synchronously on Esc and on command dispatch (QUM-793); mirror
+		// that into m.showPalette here so the action cmd's modal-gate
+		// reducer observes the closure in the same Update tick.
 		if m.showPalette {
 			var cmd tea.Cmd
 			m.palette, cmd = m.palette.Update(msg)
+			if !m.palette.Visible() {
+				m.showPalette = false
+			}
 			return m, cmd
 		}
 
@@ -849,11 +854,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.palette.SetAgents(m.agentNames())
 		m.palette.Show()
 		m.showPalette = true
-		return m, nil
-
-	case ClosePaletteMsg:
-		m.palette.Hide()
-		m.showPalette = false
 		return m, nil
 
 	case ToggleHelpMsg:

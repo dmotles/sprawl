@@ -69,20 +69,6 @@ func TestAppModel_OpenPaletteMsg_GatedWhenHelpActive(t *testing.T) {
 	}
 }
 
-func TestAppModel_ClosePaletteMsg_Closes(t *testing.T) {
-	app := readyApp(t)
-	u, _ := app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-	u, _ = app.Update(ClosePaletteMsg{})
-	app = u.(AppModel)
-	if app.showPalette {
-		t.Error("ClosePaletteMsg should clear showPalette")
-	}
-	if app.palette.Visible() {
-		t.Error("palette should be hidden after ClosePaletteMsg")
-	}
-}
-
 func TestAppModel_PaletteQuitMsg_SetsQuittingAndReturnsQuit(t *testing.T) {
 	app := readyApp(t)
 	updated, cmd := app.Update(PaletteQuitMsg{})

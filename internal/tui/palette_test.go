@@ -146,13 +146,13 @@ func TestPaletteModel_ShiftTabNavigatesBackward(t *testing.T) {
 func TestPaletteModel_EscClosesPalette(t *testing.T) {
 	p := newTestPaletteModel(t)
 	p.Show()
-	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if cmd == nil {
-		t.Fatal("Esc should emit a cmd")
+	// QUM-793: Esc now hides the palette synchronously and returns no cmd.
+	p, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if p.Visible() {
+		t.Error("Esc should hide the palette synchronously")
 	}
-	msg := cmd()
-	if _, ok := msg.(ClosePaletteMsg); !ok {
-		t.Errorf("Esc returned %T, want ClosePaletteMsg", msg)
+	if cmd != nil {
+		t.Errorf("Esc should not emit a cmd (synchronous close), got %T", cmd())
 	}
 }
 
@@ -160,17 +160,16 @@ func TestPaletteModel_EnterOnExitEmitsQuitAndClose(t *testing.T) {
 	p := newTestPaletteModel(t)
 	p.Show()
 	// /exit is index 0 (first in registry).
-	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// QUM-793: palette hides synchronously; cmd carries only the action.
+	p, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if p.Visible() {
+		t.Error("Enter on /exit should hide the palette synchronously")
+	}
 	if cmd == nil {
-		t.Fatal("Enter should emit a cmd")
+		t.Fatal("Enter should emit an action cmd")
 	}
-	msg := cmd()
-	gotClose, gotQuit := inspectBatch(msg)
-	if !gotClose {
-		t.Error("Enter on /exit should emit ClosePaletteMsg")
-	}
-	if !gotQuit {
-		t.Error("Enter on /exit should emit PaletteQuitMsg")
+	if _, ok := cmd().(PaletteQuitMsg); !ok {
+		t.Errorf("Enter on /exit returned %T, want PaletteQuitMsg", cmd())
 	}
 }
 
@@ -179,26 +178,16 @@ func TestPaletteModel_EnterOnHelpEmitsToggleHelp(t *testing.T) {
 	p.Show()
 	// Move cursor to /help (index 1).
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// QUM-793: palette hides synchronously; cmd carries only the action.
+	p, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if p.Visible() {
+		t.Error("Enter on /help should hide the palette synchronously")
+	}
 	if cmd == nil {
-		t.Fatal("Enter should emit a cmd")
+		t.Fatal("Enter should emit an action cmd")
 	}
-	msg := cmd()
-	gotClose := false
-	gotToggle := false
-	walkBatch(msg, func(m tea.Msg) {
-		switch m.(type) {
-		case ClosePaletteMsg:
-			gotClose = true
-		case ToggleHelpMsg:
-			gotToggle = true
-		}
-	})
-	if !gotClose {
-		t.Error("Enter on /help should emit ClosePaletteMsg")
-	}
-	if !gotToggle {
-		t.Error("Enter on /help should emit ToggleHelpMsg")
+	if _, ok := cmd().(ToggleHelpMsg); !ok {
+		t.Errorf("Enter on /help returned %T, want ToggleHelpMsg", cmd())
 	}
 }
 
@@ -209,27 +198,17 @@ func TestPaletteModel_EnterOnHandoffEmitsInjectPrompt(t *testing.T) {
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// QUM-793: palette hides synchronously; cmd carries only the action.
+	p, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if p.Visible() {
+		t.Error("Enter on /handoff should hide the palette synchronously")
+	}
 	if cmd == nil {
-		t.Fatal("Enter should emit a cmd")
+		t.Fatal("Enter should emit an action cmd")
 	}
-	msg := cmd()
-	gotClose := false
-	var inject *InjectPromptMsg
-	walkBatch(msg, func(m tea.Msg) {
-		switch v := m.(type) {
-		case ClosePaletteMsg:
-			gotClose = true
-		case InjectPromptMsg:
-			vv := v
-			inject = &vv
-		}
-	})
-	if !gotClose {
-		t.Error("Enter on /handoff should emit ClosePaletteMsg")
-	}
-	if inject == nil {
-		t.Fatal("Enter on /handoff should emit InjectPromptMsg")
+	inject, ok := cmd().(InjectPromptMsg)
+	if !ok {
+		t.Fatalf("Enter on /handoff returned %T, want InjectPromptMsg", cmd())
 	}
 	if inject.Template != commands.HandoffPromptTemplate {
 		t.Error("InjectPromptMsg.Template != HandoffPromptTemplate")
@@ -247,26 +226,16 @@ func TestPaletteModel_EnterOnUsageEmitsShowUsage(t *testing.T) {
 	if len(p.matches) != 1 || p.matches[0].Name != "/usage" {
 		t.Fatalf("setup: filter 'usage' matches = %v, want [/usage]", p.matches)
 	}
-	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// QUM-793: palette hides synchronously; cmd carries only the action.
+	p, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if p.Visible() {
+		t.Error("Enter on /usage should hide the palette synchronously")
+	}
 	if cmd == nil {
-		t.Fatal("Enter should emit a cmd")
+		t.Fatal("Enter should emit an action cmd")
 	}
-	msg := cmd()
-	gotClose := false
-	gotShow := false
-	walkBatch(msg, func(m tea.Msg) {
-		switch m.(type) {
-		case ClosePaletteMsg:
-			gotClose = true
-		case ShowUsageMsg:
-			gotShow = true
-		}
-	})
-	if !gotClose {
-		t.Error("Enter on /usage should emit ClosePaletteMsg")
-	}
-	if !gotShow {
-		t.Error("Enter on /usage should emit ShowUsageMsg")
+	if _, ok := cmd().(ShowUsageMsg); !ok {
+		t.Errorf("Enter on /usage returned %T, want ShowUsageMsg", cmd())
 	}
 }
 
@@ -351,14 +320,9 @@ func TestPaletteModel_EnterOnSwitchCommandTransitionsToAgentMode(t *testing.T) {
 	if !p2.Visible() {
 		t.Error("palette should remain visible after /switch transition")
 	}
-	// The cmd (if any) should NOT emit ClosePaletteMsg.
+	// /switch is a mode transition: no cmd should be emitted at all.
 	if cmd != nil {
-		msg := cmd()
-		walkBatch(msg, func(m tea.Msg) {
-			if _, ok := m.(ClosePaletteMsg); ok {
-				t.Error("Enter on /switch should not emit ClosePaletteMsg — stays open for agent selection")
-			}
-		})
+		t.Errorf("Enter on /switch should not emit a cmd (stays open for agent selection), got %T", cmd())
 	}
 }
 
@@ -386,27 +350,17 @@ func TestPaletteModel_AgentModeEnterEmitsSwitchAndClose(t *testing.T) {
 	}
 	p, _ = p.Update(tea.KeyPressMsg{Code: 'f'})
 	p, _ = p.Update(tea.KeyPressMsg{Code: 'i'})
-	_, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// QUM-793: palette hides synchronously; cmd carries only the action.
+	p, cmd := p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if p.Visible() {
+		t.Error("Enter in agent mode should hide the palette synchronously")
+	}
 	if cmd == nil {
 		t.Fatal("Enter in agent mode should emit a cmd")
 	}
-	msg := cmd()
-	gotClose := false
-	var sel *AgentSelectedMsg
-	walkBatch(msg, func(m tea.Msg) {
-		switch v := m.(type) {
-		case ClosePaletteMsg:
-			gotClose = true
-		case AgentSelectedMsg:
-			vv := v
-			sel = &vv
-		}
-	})
-	if !gotClose {
-		t.Error("Enter in agent mode should emit ClosePaletteMsg")
-	}
-	if sel == nil {
-		t.Fatal("Enter in agent mode should emit AgentSelectedMsg")
+	sel, ok := cmd().(AgentSelectedMsg)
+	if !ok {
+		t.Fatalf("Enter in agent mode returned %T, want AgentSelectedMsg", cmd())
 	}
 	if sel.Name != "finn" {
 		t.Errorf("AgentSelectedMsg.Name = %q, want %q", sel.Name, "finn")
@@ -453,18 +407,83 @@ func TestPaletteModel_AgentModeEnterWithNoMatchesNoop(t *testing.T) {
 	}
 }
 
-// inspectBatch returns (gotClose, gotQuit) for the convenience of /exit test.
-func inspectBatch(msg tea.Msg) (bool, bool) {
-	var gotClose, gotQuit bool
-	walkBatch(msg, func(m tea.Msg) {
-		switch m.(type) {
-		case ClosePaletteMsg:
-			gotClose = true
-		case PaletteQuitMsg:
-			gotQuit = true
-		}
-	})
-	return gotClose, gotQuit
+// QUM-793: palette dispatch must close the palette synchronously and emit
+// the action cmd alone — no race between ClosePaletteMsg and the action's
+// modal-gate check on m.showPalette.
+//
+// This test drives the full AppModel path: open the palette, simulate the
+// user picking /tree / /usage / /help, run the palette's returned cmd
+// through app.Update, and assert the target modal opens. With the legacy
+// tea.Batch(closeCmd, action) approach, action-first delivery would hit
+// the m.showPalette gate and silently no-op for /tree and /usage.
+func TestAppModel_PaletteDispatchOpensTargetModalSynchronously(t *testing.T) {
+	cases := []struct {
+		name   string
+		filter string // typed into palette to isolate the command
+		check  func(t *testing.T, app AppModel)
+	}{
+		{
+			name:   "/tree",
+			filter: "tree",
+			check: func(t *testing.T, app AppModel) {
+				if !app.showTree {
+					t.Error("after /tree palette dispatch, showTree must be true")
+				}
+			},
+		},
+		{
+			name:   "/usage",
+			filter: "usage",
+			check: func(t *testing.T, app AppModel) {
+				if !app.showUsage {
+					t.Error("after /usage palette dispatch, showUsage must be true")
+				}
+			},
+		},
+		{
+			name:   "/help",
+			filter: "help",
+			check: func(t *testing.T, app AppModel) {
+				if !app.showHelp {
+					t.Error("after /help palette dispatch, showHelp must be true")
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := readyApp(t)
+			u, _ := app.Update(OpenPaletteMsg{})
+			app = u.(AppModel)
+			if !app.showPalette {
+				t.Fatal("setup: palette should be open")
+			}
+			// Type the filter via the app (routes to palette).
+			for _, r := range tc.filter {
+				u, _ = app.Update(tea.KeyPressMsg{Code: r})
+				app = u.(AppModel)
+			}
+			// Enter dispatches.
+			u, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			app = u.(AppModel)
+			// Palette must be closed synchronously — before the action msg is
+			// dispatched — so the action's modal-gate sees showPalette=false.
+			if app.showPalette {
+				t.Error("palette must be closed synchronously after Enter dispatch")
+			}
+			if app.palette.Visible() {
+				t.Error("palette.Visible() must be false synchronously after Enter dispatch")
+			}
+			// Run the returned cmd's msg(s) through app.Update.
+			if cmd != nil {
+				walkBatch(cmd(), func(m tea.Msg) {
+					u, _ = app.Update(m)
+					app = u.(AppModel)
+				})
+			}
+			tc.check(t, app)
+		})
+	}
 }
 
 // walkBatch invokes fn on msg and, if msg is a tea.BatchMsg (slice of cmds),

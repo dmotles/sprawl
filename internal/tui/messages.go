@@ -695,9 +695,6 @@ type HandoffRequestedMsg struct{}
 // app gates this on input not being disabled and no other modal being active.
 type OpenPaletteMsg struct{}
 
-// ClosePaletteMsg requests that the command palette overlay be hidden.
-type ClosePaletteMsg struct{}
-
 // InjectPromptMsg carries a command's prompt template to be sent to Claude
 // via the bridge, without rendering it as a user message in the viewport.
 type InjectPromptMsg struct {

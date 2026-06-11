@@ -23,7 +23,8 @@ const (
 )
 
 // PaletteModel renders a floating centered command palette overlay. It is
-// shown/hidden by the app in response to OpenPaletteMsg/ClosePaletteMsg.
+// shown/hidden by the app: OpenPaletteMsg flips it on; the palette hides
+// itself synchronously on Esc and on command dispatch.
 // While visible, all key events route here (see app.go) — the palette owns
 // the filter input and navigation.
 type PaletteModel struct {
@@ -119,9 +120,12 @@ func (m *PaletteModel) exitAgentMode() {
 }
 
 // Update handles key events while the palette is visible. It emits:
-//   - ClosePaletteMsg on Esc
+//   - hides synchronously on Esc (no cmd) — caller observes via Visible()
 //   - navigation on Up/Down/Tab/Shift+Tab (no cmd)
-//   - ClosePaletteMsg + (PaletteQuitMsg | ToggleHelpMsg | InjectPromptMsg) on Enter
+//   - hides synchronously + (PaletteQuitMsg | ToggleHelpMsg | ShowUsageMsg |
+//     ToggleTreeMsg | InjectPromptMsg | AgentSelectedMsg) on Enter (QUM-793:
+//     synchronous close avoids the tea.Batch(closeCmd, action) race where
+//     the action's modal-gate would observe stale showPalette=true)
 //   - filter edits on printable chars and Backspace (no cmd)
 func (m PaletteModel) Update(msg tea.KeyPressMsg) (PaletteModel, tea.Cmd) {
 	if !m.visible {
@@ -130,7 +134,8 @@ func (m PaletteModel) Update(msg tea.KeyPressMsg) (PaletteModel, tea.Cmd) {
 
 	switch msg.Code {
 	case tea.KeyEscape:
-		return m, sendMsgCmd(ClosePaletteMsg{})
+		m.visible = false
+		return m, nil
 	case tea.KeyEnter:
 		return m.dispatchSelected()
 	case tea.KeyUp:
@@ -193,9 +198,8 @@ func (m PaletteModel) dispatchSelected() (PaletteModel, tea.Cmd) {
 			return m, nil
 		}
 		name := m.agentMatches[m.cursor]
-		closeCmd := sendMsgCmd(ClosePaletteMsg{})
-		selCmd := sendMsgCmd(AgentSelectedMsg{Name: name})
-		return m, tea.Batch(closeCmd, selCmd)
+		m.visible = false
+		return m, sendMsgCmd(AgentSelectedMsg{Name: name})
 	}
 
 	if len(m.matches) == 0 || m.cursor >= len(m.matches) {
@@ -225,11 +229,12 @@ func (m PaletteModel) dispatchSelected() (PaletteModel, tea.Cmd) {
 		return m, nil
 	}
 
-	closeCmd := sendMsgCmd(ClosePaletteMsg{})
-	if action == nil {
-		return m, closeCmd
-	}
-	return m, tea.Batch(closeCmd, action)
+	// QUM-793: hide synchronously so the AppModel can observe palette
+	// closure in the same Update tick that dispatches the action cmd.
+	// This avoids the tea.Batch(closeCmd, action) race where the action's
+	// modal-gate check would still see m.showPalette=true.
+	m.visible = false
+	return m, action
 }
 
 // View renders the centered palette box. Returns empty string when hidden.
