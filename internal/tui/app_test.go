@@ -911,6 +911,52 @@ func newTestAppModelWithSupervisor(t *testing.T, sup supervisor.Supervisor) AppM
 	return NewAppModel("colour212", "testrepo", "v0.1.0", nil, sup, "/tmp/test-sprawl", nil)
 }
 
+// QUM-609: Esc dismisses the PopupFailed validate-failure modal so the user
+// doesn't have to restart sprawl after a failed post-merge validate.
+func TestAppModel_EscDismissesValidateFailedPopup(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app := resized.(AppModel)
+
+	// Drive validate popup into PopupFailed state.
+	app.validatePopup.Handle(ValidateEventMsg{Step: "merge.validate-started", KV: map[string]string{"cmd": "make validate"}})
+	app.validatePopup.HandleTimer(validatePopupTimerMsg{})
+	app.validatePopup.Handle(ValidateEventMsg{Step: "merge.validate-ended", KV: map[string]string{"exit": "1", "error": "boom"}})
+	if app.validatePopup.State() != PopupFailed {
+		t.Fatalf("setup: state=%d, want PopupFailed", app.validatePopup.State())
+	}
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+	if app.validatePopup.State() != PopupHidden {
+		t.Errorf("Esc must dismiss PopupFailed; state=%d, want PopupHidden", app.validatePopup.State())
+	}
+	if app.validatePopup.Visible() {
+		t.Error("popup must be hidden after Esc dismiss")
+	}
+}
+
+// QUM-609: Esc dismiss of the failure modal must run before the queued-submit
+// preempt path, so dismissing the modal does not also fire off a queued prompt.
+func TestAppModel_EscDismissPopupTakesPrecedenceOverPendingSubmit(t *testing.T) {
+	m := newTestAppModel(t)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app := resized.(AppModel)
+	app.validatePopup.Handle(ValidateEventMsg{Step: "merge.validate-started", KV: map[string]string{"cmd": "x"}})
+	app.validatePopup.HandleTimer(validatePopupTimerMsg{})
+	app.validatePopup.Handle(ValidateEventMsg{Step: "merge.validate-ended", KV: map[string]string{"exit": "1"}})
+	app.pendingSubmit = "queued text"
+
+	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	app = updated.(AppModel)
+	if app.validatePopup.State() != PopupHidden {
+		t.Errorf("popup not dismissed; state=%d", app.validatePopup.State())
+	}
+	if app.pendingSubmit != "queued text" {
+		t.Errorf("pendingSubmit should be preserved when Esc dismisses popup; got %q", app.pendingSubmit)
+	}
+}
+
 func TestAppModel_NewAppModelWithSupervisor(t *testing.T) {
 	sup := &mockSupervisor{
 		agents: []supervisor.AgentInfo{

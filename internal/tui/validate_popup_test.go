@@ -210,6 +210,81 @@ func TestPopup_QueuedThenStartTransitionsAreClean(t *testing.T) {
 	}
 }
 
+func TestPopup_DismissFromFailedReturnsHidden(t *testing.T) {
+	m := newPopupForTest()
+	m.Handle(mkEvt("merge.validate-started", map[string]string{"cmd": "x"}))
+	m.HandleTimer(validatePopupTimerMsg{})
+	m.Handle(mkEvt("merge.validate-ended", map[string]string{"exit": "1", "error": "boom"}))
+	if m.State() != PopupFailed {
+		t.Fatalf("setup: state=%d, want PopupFailed", m.State())
+	}
+	if !m.Dismiss() {
+		t.Fatal("Dismiss() should return true in PopupFailed")
+	}
+	if m.State() != PopupHidden {
+		t.Errorf("State() = %d, want PopupHidden after Dismiss", m.State())
+	}
+	if m.Visible() {
+		t.Error("Visible() must be false after Dismiss")
+	}
+}
+
+func TestPopup_DismissNoopWhenNotFailed(t *testing.T) {
+	t.Run("hidden", func(t *testing.T) {
+		m := newPopupForTest()
+		if m.Dismiss() {
+			t.Error("Dismiss() should return false when PopupHidden")
+		}
+		if m.State() != PopupHidden {
+			t.Errorf("state changed: %d", m.State())
+		}
+	})
+	t.Run("queued", func(t *testing.T) {
+		m := newPopupForTest()
+		m.Handle(mkEvt("merge.queued", map[string]string{"behind": "a"}))
+		if m.Dismiss() {
+			t.Error("Dismiss() should return false when PopupQueued")
+		}
+		if m.State() != PopupQueued {
+			t.Errorf("state changed: %d", m.State())
+		}
+	})
+	t.Run("runningVisible", func(t *testing.T) {
+		m := newPopupForTest()
+		m.Handle(mkEvt("merge.validate-started", map[string]string{"cmd": "x"}))
+		m.HandleTimer(validatePopupTimerMsg{})
+		if m.Dismiss() {
+			t.Error("Dismiss() should return false when PopupRunningVisible")
+		}
+		if m.State() != PopupRunningVisible {
+			t.Errorf("state changed: %d", m.State())
+		}
+	})
+	t.Run("minimized", func(t *testing.T) {
+		m := newPopupForTest()
+		m.Handle(mkEvt("merge.validate-started", map[string]string{"cmd": "x"}))
+		m.HandleTimer(validatePopupTimerMsg{})
+		m.ToggleMinimize()
+		if m.Dismiss() {
+			t.Error("Dismiss() should return false when PopupMinimized")
+		}
+		if m.State() != PopupMinimized {
+			t.Errorf("state changed: %d", m.State())
+		}
+	})
+}
+
+func TestPopup_FailedFooterContainsDismissHint(t *testing.T) {
+	m := newPopupForTest()
+	m.Handle(mkEvt("merge.validate-started", map[string]string{"cmd": "x"}))
+	m.HandleTimer(validatePopupTimerMsg{})
+	m.Handle(mkEvt("merge.validate-ended", map[string]string{"exit": "1", "log_path": "/tmp/v.log", "error": "boom"}))
+	v := m.View()
+	if !strings.Contains(v, "Esc to dismiss") {
+		t.Errorf("View() in PopupFailed missing 'Esc to dismiss' hint; got:\n%s", v)
+	}
+}
+
 // itoa avoids strconv import bloat in test data builders.
 func itoa(i int) string {
 	if i == 0 {

@@ -688,6 +688,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// QUM-609: Esc dismisses the validate-failure popup. Placed after the
+		// higher-precedence modal returns (confirm/help/error/palette/question/
+		// usage/tree) and BEFORE the pendingSubmit-preempt and turn-interrupt
+		// Esc handlers below — when the failure modal is up, Esc dismisses it
+		// rather than firing a queued submit or interrupting a turn.
+		if msg.Code == tea.KeyEscape && m.validatePopup.State() == PopupFailed {
+			if m.validatePopup.Dismiss() {
+				m.statusBar.SetValidatePill(m.validatePopup.Pill())
+				return m, nil
+			}
+		}
+
 		// Ctrl+T: dismiss all toasts (QUM-649). Only consumes the keystroke
 		// when at least one toast is up — otherwise 't' falls through to the
 		// input panel so the user can type it literally.
@@ -699,9 +711,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Ctrl+V: toggle the validate-output popup between visible and
-		// minimized states (QUM-588). No-op when no validate is running or
-		// when the popup is in queued/failed sticky state.
+		// minimized states (QUM-588). When the popup is in the failed state,
+		// Ctrl+V also dismisses it (QUM-609) so the user has a second
+		// affordance beyond Esc.
 		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'v' || msg.Code == 'V') {
+			if m.validatePopup.Dismiss() {
+				m.statusBar.SetValidatePill(m.validatePopup.Pill())
+				return m, nil
+			}
 			if m.validatePopup.ToggleMinimize() {
 				return m, nil
 			}

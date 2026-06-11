@@ -208,6 +208,17 @@ func (m *ValidatePopupModel) ToggleMinimize() bool {
 	return false
 }
 
+// Dismiss clears the PopupFailed state and returns the popup to hidden so the
+// operator can resume work after a post-merge validate failure (QUM-609).
+// Returns true if the dismiss was consumed; false (no-op) in any other state.
+func (m *ValidatePopupModel) Dismiss() bool {
+	if m.state != PopupFailed {
+		return false
+	}
+	m.Reset()
+	return true
+}
+
 // Reset returns the model to hidden state (used by tests / session restart).
 func (m *ValidatePopupModel) Reset() {
 	m.state = PopupHidden
@@ -312,6 +323,7 @@ func (m ValidatePopupModel) renderFailed() string {
 	if hint == "" {
 		hint = "validate failed"
 	}
+	hint += " · Esc to dismiss"
 	return strings.Join([]string{header, "", body, hint}, "\n")
 }
 
