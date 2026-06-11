@@ -18,6 +18,12 @@ const (
 	// wordmark header and the chat viewport so the wordmark visually
 	// breathes from the body (QUM-664).
 	headerSpacerHeight = 1
+	// sparkleRowHeight reserves a single row for the activity sparkle
+	// indicator (QUM-796). The row sits directly below the viewport — above
+	// the prompt input for the root agent, and as a footer for observed child
+	// panes. It is always reserved (blank when idle) so toggling visibility
+	// never shifts the rest of the layout.
+	sparkleRowHeight = 1
 
 	// MinTermWidth is the minimum terminal width for rendering panels.
 	MinTermWidth = 40
@@ -54,7 +60,10 @@ type Layout struct {
 	// header (SPRAWL wordmark) and the chat viewport (QUM-664). Exposed as
 	// a first-class layout output so callers don't have to re-derive the
 	// "+1" implicitly.
-	HeaderSpacerHeight    int
+	HeaderSpacerHeight int
+	// SparkleHeight is the height of the activity-sparkle row reserved below
+	// the viewport (QUM-796). Always 1.
+	SparkleHeight         int
 	TermWidth, TermHeight int
 }
 
@@ -89,6 +98,7 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 	l.InputHeight = inputHeight
 	l.ShortHelpHeight = shortHelpHeight
 	l.HeaderSpacerHeight = headerSpacerHeight
+	l.SparkleHeight = sparkleRowHeight
 	l.StatusWidth = width
 	l.InputWidth = width
 	l.ShortHelpWidth = width
@@ -96,7 +106,7 @@ func ComputeLayout(width, height, inputHeight int) Layout {
 	l.HeaderHeight = HeaderHeight(width)
 	l.HeaderTreeWidth = HeaderTreeWidth(width)
 
-	mainHeight := height - l.StatusHeight - l.InputHeight - l.HeaderHeight - l.HeaderSpacerHeight
+	mainHeight := height - l.StatusHeight - l.InputHeight - l.HeaderHeight - l.HeaderSpacerHeight - l.SparkleHeight
 	if mainHeight < 0 {
 		mainHeight = 0
 	}

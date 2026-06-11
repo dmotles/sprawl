@@ -22,13 +22,13 @@ func TestFormatToolHeader(t *testing.T) {
 			name:     "Bash command only",
 			tool:     "Bash",
 			input:    `{"command":"ls -la /tmp"}`,
-			wantMain: `"ls -la /tmp"`,
+			wantMain: `ls -la /tmp`,
 		},
 		{
 			name:     "Bash with description and timeout",
 			tool:     "Bash",
 			input:    `{"command":"make test","description":"run tests","timeout":120000}`,
-			wantMain: `"make test"`,
+			wantMain: `make test`,
 			wantKV: []KVPair{
 				{Key: "description", Value: `"run tests"`},
 				{Key: "timeout", Value: "120000"},
@@ -38,7 +38,7 @@ func TestFormatToolHeader(t *testing.T) {
 			name:     "Bash multi-line command collapses newlines",
 			tool:     "Bash",
 			input:    `{"command":"a\nb\nc"}`,
-			wantMain: `"a ; b ; c"`,
+			wantMain: `a ; b ; c`,
 		},
 		{
 			name:     "Bash missing command",

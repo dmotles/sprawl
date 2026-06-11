@@ -181,26 +181,30 @@ func (m AppModel) cachedMainRow(useCache bool, tree, viewport string) string {
 // is unchanged from a prior identical state — which doesn't happen during a
 // burst since each rune mutates input — but it does hit on no-op re-renders
 // (e.g. spinner ticks where view content is the same).
-func (m AppModel) cachedComposed(useCache bool, termWidth int, mainRow, overlay, inputView, shortHelpView, statusView string, inputVisible bool) string {
+func (m AppModel) cachedComposed(useCache bool, termWidth int, mainRow, overlay, sparkleRow, inputView, shortHelpView, statusView string, inputVisible bool) string {
 	// QUM-664: shortHelpView is no longer composed into the chassis — the
 	// row was removed. The parameter is retained to keep the call-site
 	// signature stable during the spike port; it is intentionally unused.
 	_ = shortHelpView
+	// QUM-796: sparkleRow is always composed as its own row directly below the
+	// viewport (above the input for the root agent; as a footer when the input
+	// bar is hidden). Its height is reserved by ComputeLayout, so the row is
+	// present even when blank (idle).
 	if !useCache || m.cache == nil {
 		// Test oracle path: defer to lipgloss for ground-truth composition.
 		if inputVisible {
 			if overlay != "" {
-				return lipgloss.JoinVertical(lipgloss.Left, mainRow, overlay, inputView, statusView)
+				return lipgloss.JoinVertical(lipgloss.Left, mainRow, overlay, sparkleRow, inputView, statusView)
 			}
-			return lipgloss.JoinVertical(lipgloss.Left, mainRow, inputView, statusView)
+			return lipgloss.JoinVertical(lipgloss.Left, mainRow, sparkleRow, inputView, statusView)
 		}
-		return lipgloss.JoinVertical(lipgloss.Left, mainRow, statusView)
+		return lipgloss.JoinVertical(lipgloss.Left, mainRow, sparkleRow, statusView)
 	}
 	var iv byte = '0'
 	if inputVisible {
 		iv = '1'
 	}
-	composedKey := m.cache.mainRowKey + "\x00" + overlay + "\x00" + m.cache.inputKey + "\x00" + shortHelpView + "\x00" + m.cache.statusKey + "\x00" + strconv.Itoa(termWidth) + "\x00" + string(iv)
+	composedKey := m.cache.mainRowKey + "\x00" + overlay + "\x00" + sparkleRow + "\x00" + m.cache.inputKey + "\x00" + shortHelpView + "\x00" + m.cache.statusKey + "\x00" + strconv.Itoa(termWidth) + "\x00" + string(iv)
 	if composedKey == m.cache.composedKey && m.cache.composed != "" {
 		return m.cache.composed
 	}
@@ -214,18 +218,19 @@ func (m AppModel) cachedComposed(useCache bool, termWidth int, mainRow, overlay,
 	// invariant against the real-lipgloss path used by viewUncached().
 	mainRowPadded := m.cachedMainRowPadded(termWidth, mainRow)
 	statusPadded := lipgloss.PlaceHorizontal(termWidth, lipgloss.Left, statusView)
+	sparklePadded := lipgloss.PlaceHorizontal(termWidth, lipgloss.Left, sparkleRow)
 
 	var out string
 	if inputVisible {
 		inputPadded := m.cachedInputPadded(termWidth, inputView)
 		if overlay != "" {
 			overlayPadded := lipgloss.PlaceHorizontal(termWidth, lipgloss.Left, overlay)
-			out = strings.Join([]string{mainRowPadded, overlayPadded, inputPadded, statusPadded}, "\n")
+			out = strings.Join([]string{mainRowPadded, overlayPadded, sparklePadded, inputPadded, statusPadded}, "\n")
 		} else {
-			out = strings.Join([]string{mainRowPadded, inputPadded, statusPadded}, "\n")
+			out = strings.Join([]string{mainRowPadded, sparklePadded, inputPadded, statusPadded}, "\n")
 		}
 	} else {
-		out = strings.Join([]string{mainRowPadded, statusPadded}, "\n")
+		out = strings.Join([]string{mainRowPadded, sparklePadded, statusPadded}, "\n")
 	}
 
 	m.cache.composed = out

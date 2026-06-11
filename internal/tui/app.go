@@ -134,6 +134,12 @@ type AppModel struct {
 	bridge    SessionBackend
 	turnState TurnState
 
+	// sparkleFrame is the activity-indicator animation counter, advanced by an
+	// independent sparkleTickMsg (QUM-796). It is rendered as a row outside the
+	// ChatList so advancing it never invalidates the chat render cache
+	// (QUM-769).
+	sparkleFrame int
+
 	// pendingDrainIDs is populated by the InboxDrainMsg handler and consumed
 	// by UserMessageSentMsg: once the drained prompt has been successfully
 	// written to the bridge, these IDs are moved from weave's queue pending/
@@ -355,6 +361,22 @@ func watchdogTickCmd() tea.Cmd {
 	})
 }
 
+// sparkleTickInterval is the cadence of the activity-sparkle animation. It is
+// independent of the per-tool-call animation (QUM-732) and the chat render
+// path (QUM-769). QUM-796.
+const sparkleTickInterval = 250 * time.Millisecond
+
+// sparkleTickMsg drives the activity-sparkle animation frame. QUM-796.
+type sparkleTickMsg struct{}
+
+// sparkleTickCmd returns the self-perpetuating tick advancing the sparkle
+// animation frame. QUM-796.
+func sparkleTickCmd() tea.Cmd {
+	return tea.Tick(sparkleTickInterval, func(time.Time) tea.Msg {
+		return sparkleTickMsg{}
+	})
+}
+
 // NewAppModel constructs the root model with all sub-models.
 // bridge may be nil for static placeholder mode.
 // sup and sprawlRoot are optional; when provided, the tree polls agent status.
@@ -424,6 +446,10 @@ func (m AppModel) Init() tea.Cmd {
 	// bridge is attached — the watchdog has nothing to recover otherwise.
 	if m.bridge != nil {
 		cmds = append(cmds, watchdogTickCmd())
+		// QUM-796: arm the activity-sparkle animation tick. Gated on a bridge
+		// for the same reason as the watchdog — there is no agent activity to
+		// indicate without one.
+		cmds = append(cmds, sparkleTickCmd())
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -1663,6 +1689,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.runTurnWatchdog()
 		return m, tea.Batch(cmd, watchdogTickCmd())
 
+	case sparkleTickMsg:
+		// QUM-796: advance the activity-sparkle frame and re-arm. This must NOT
+		// touch the viewport / ChatList or rebuild the tree — it only mutates a
+		// frame counter rendered as a separate row, so the chat render cache
+		// stays valid across ticks (QUM-769).
+		m.sparkleFrame++
+		return m, sparkleTickCmd()
+
 	case mcpOpTickMsg:
 		// QUM-497: 1Hz re-render driver. Self-perpetuates only while ops are
 		// active; falls silent once the map drains so idle frames cost nothing.
@@ -2240,7 +2274,13 @@ func (m AppModel) renderView(useCache bool) tea.View {
 			true)
 		overlay = m.searchOverlay()
 	}
-	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, inputView, shortHelpView, statusView, inputVisible)
+
+	// QUM-796: the activity-sparkle row. For the root agent it animates above
+	// the input whenever the turn is non-idle; for an observed child pane it
+	// is a footer that animates while that child is working. The row is always
+	// reserved by ComputeLayout (SparkleHeight), so it stays blank when idle.
+	sparkleRow := m.sparkleRow(inputVisible)
+	content := m.cachedComposed(useCache, layout.TermWidth, mainRow, overlay, sparkleRow, inputView, shortHelpView, statusView, inputVisible)
 
 	// QUM-656: prepend the header strip (SPRAWL wordmark + orbital agent
 	// tree). Height is already reserved by ComputeLayout via HeaderHeight, so
@@ -2521,6 +2561,38 @@ func (m *AppModel) rootBuf() *AgentBuffer { return m.agentBufferFor(m.rootAgent)
 // observedVP returns the viewport for the currently-observed agent. Used
 // by View() and select-mode helpers.
 func (m *AppModel) observedVP() *ViewportModel { return m.viewportFor(m.observedAgent) }
+
+// sparkleRow renders the QUM-796 activity-sparkle row for the current view.
+// Returns an empty string (a blank reserved row) when there's no activity to
+// indicate. inputVisible selects between the root path (turnState-driven, with
+// a status word) and the observed-child footer path (working-driven).
+func (m *AppModel) sparkleRow(inputVisible bool) string {
+	if inputVisible {
+		if m.turnState == TurnIdle {
+			return ""
+		}
+		return renderSparkle(&m.theme, m.sparkleFrame, sparkleWordForTurn(m.turnState))
+	}
+	if !m.observedChildWorking(time.Now()) {
+		return ""
+	}
+	return renderSparkle(&m.theme, m.sparkleFrame, "working…")
+}
+
+// observedChildWorking reports whether the currently-observed agent is a
+// non-root child whose tree-derived state is "working" (QUM-796). Mirrors the
+// tree's own activity heuristic so the footer sparkle matches the tree badge.
+func (m *AppModel) observedChildWorking(now time.Time) bool {
+	if m.observedAgent == m.rootAgent {
+		return false
+	}
+	for _, n := range m.childNodes {
+		if n.Name == m.observedAgent {
+			return DeriveIconState(n, now) == "working"
+		}
+	}
+	return false
+}
 
 // chatRegionContent is the QUM-676 chat-panel string source. ChatList +
 // ChatRegion own the rendering pipeline end-to-end: ChatList caches per-Item

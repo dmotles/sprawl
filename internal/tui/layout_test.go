@@ -281,12 +281,12 @@ func TestComputeLayout_ReservesHeaderSpacerRow(t *testing.T) {
 	if l.HeaderSpacerHeight != 1 {
 		t.Errorf("HeaderSpacerHeight = %d, want 1 (QUM-664)", l.HeaderSpacerHeight)
 	}
-	// mainHeight = termH - status - input - header - headerSpacer
-	// (no shortHelp anymore).
-	want := h - l.StatusHeight - l.InputHeight - l.HeaderHeight - l.HeaderSpacerHeight
+	// mainHeight = termH - status - input - header - headerSpacer - sparkle
+	// (no shortHelp anymore; QUM-796 reserves the sparkle row).
+	want := h - l.StatusHeight - l.InputHeight - l.HeaderHeight - l.HeaderSpacerHeight - l.SparkleHeight
 	if l.ViewportHeight != want {
-		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - input(%d) - header(%d) - spacer(%d))",
-			l.ViewportHeight, want, h, l.StatusHeight, l.InputHeight, l.HeaderHeight, l.HeaderSpacerHeight)
+		t.Errorf("ViewportHeight = %d, want %d (= termH(%d) - status(%d) - input(%d) - header(%d) - spacer(%d) - sparkle(%d))",
+			l.ViewportHeight, want, h, l.StatusHeight, l.InputHeight, l.HeaderHeight, l.HeaderSpacerHeight, l.SparkleHeight)
 	}
 }
 

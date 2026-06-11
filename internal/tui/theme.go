@@ -55,6 +55,10 @@ type Theme struct {
 	// state-change pin, visually distinct from NotificationText cyan
 	// (message-async) and InterruptText amber (message-interrupt).
 	StatusChangeText lipgloss.Style
+	// ToolTrailerText is the dim-grey foreground for the `⎿  + K more lines`
+	// elision trailer under a collapsed tool-call result (QUM-796 #5). Dimmest
+	// foreground intensity so the truncation hint reads as ambient.
+	ToolTrailerText  lipgloss.Style
 	StatusBar        lipgloss.Style
 	SelectedItem     lipgloss.Style
 	PlaceholderStyle lipgloss.Style
@@ -136,6 +140,7 @@ func NewTheme(accentColor string) Theme {
 		NotificationText: lipgloss.NewStyle().Foreground(pal.Accent),
 		InterruptText:    lipgloss.NewStyle().Foreground(pal.Warning),
 		StatusChangeText: lipgloss.NewStyle().Foreground(pal.FgSubtle),
+		ToolTrailerText:  lipgloss.NewStyle().Foreground(pal.FgMostSubtle),
 		// No Padding — StatusBarModel.View manages its own left/right spacing
 		// inside `line` and sets `.Width(m.width)`. Adding Padding here makes
 		// the rendered width m.width+2 which wraps the trailing right-side

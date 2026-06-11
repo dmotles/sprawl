@@ -100,9 +100,10 @@ func TestAppView_NoShortHelpRow(t *testing.T) {
 		lines = lines[:len(lines)-1]
 	}
 	const headerSpacer = 1
-	want := layout.HeaderHeight + headerSpacer + layout.ViewportHeight + layout.InputHeight + layout.StatusHeight
+	// QUM-796: the activity-sparkle row is always reserved below the viewport.
+	want := layout.HeaderHeight + headerSpacer + layout.ViewportHeight + layout.SparkleHeight + layout.InputHeight + layout.StatusHeight
 	if len(lines) != want {
-		t.Errorf("rendered view height = %d lines, want %d (= header(%d) + spacer(%d) + viewport(%d) + input(%d) + status(%d))",
-			len(lines), want, layout.HeaderHeight, headerSpacer, layout.ViewportHeight, layout.InputHeight, layout.StatusHeight)
+		t.Errorf("rendered view height = %d lines, want %d (= header(%d) + spacer(%d) + viewport(%d) + sparkle(%d) + input(%d) + status(%d))",
+			len(lines), want, layout.HeaderHeight, headerSpacer, layout.ViewportHeight, layout.SparkleHeight, layout.InputHeight, layout.StatusHeight)
 	}
 }

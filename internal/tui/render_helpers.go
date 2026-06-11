@@ -8,9 +8,29 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
 )
+
+// sanitizeHeaderArg neutralizes control characters (newlines, tabs, carriage
+// returns, raw ESC, etc.) in a tool-call header preview, mapping each to a
+// space. The preview is no longer strconv.Quote'd (QUM-796 #2), so this is
+// the defense that keeps it a single styled line: a stray ESC would otherwise
+// leak SGR styling past the truncation cell, and a CR/tab would corrupt the
+// column layout.
+func sanitizeHeaderArg(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// toolCallTrailerPrefix is the cell width of the `"⎿  "` prefix on the
+// elision trailer line of a collapsed tool-call result (QUM-796 #5).
+const toolCallTrailerPrefix = 3
 
 // toolIndicator selects the styled indicator glyph for a tool-call row.
 // The two historical call sites use different empty-spinner fallback glyphs:
@@ -58,29 +78,47 @@ func renderResultPreviewLines(theme *Theme, result string, isError, expanded boo
 	var sb strings.Builder
 	for _, ln := range previewLines {
 		sb.WriteString("\n")
-		sb.WriteString(previewStyle.Render("│ " + ln))
+		sb.WriteString(previewStyle.Render("  " + ln))
 	}
 	if more > 0 {
+		// QUM-796 #5 — elision trailer uses the ⎿ corner glyph (no `│`
+		// gutter) in dim grey; "⎿  " is 3 cells wide.
 		trailer := fmt.Sprintf("+ %d more lines", more)
-		if width > toolCallInputPrefix {
-			trailer = ansi.Truncate(trailer, width-toolCallInputPrefix, "…")
+		if width > toolCallTrailerPrefix {
+			trailer = ansi.Truncate(trailer, width-toolCallTrailerPrefix, "…")
 		}
 		sb.WriteString("\n")
-		sb.WriteString(theme.NormalText.Render("│ " + trailer))
+		sb.WriteString(theme.ToolTrailerText.Render("⎿  " + trailer))
 	}
 	return sb.String()
 }
 
-// renderUserPromptBlock applies the QUM-664 chevron prefix to a
-// user-message body: the first content line gets "› ", continuation lines
-// get two spaces of hang indent, and the whole block renders under
-// theme.UserPromptText. The chevron and body render as separate spans so
-// the chevron's SGR sequence is independently identifiable in tests.
-func renderUserPromptBlock(theme *Theme, content string) string {
+// renderUserPromptBlock applies the QUM-664 chevron prefix to a user-message
+// body and word-wraps it to the given width (QUM-797). The very first visible
+// line of the whole block gets "› "; every continuation line — whether it is
+// a wrap of the first source line or any line of a later source line — gets
+// two spaces of hang indent, so wrapped text stays aligned under the chevron.
+// The whole block renders under theme.UserPromptText; the chevron and body
+// render as separate spans so the chevron's SGR sequence is independently
+// identifiable in tests.
+//
+// Wrapping happens per source line (split on "\n" first) so explicit newlines
+// are preserved as independent wrap units. width-2 reserves room for the
+// 2-cell prefix; when that budget is <=0 (very narrow terminals) the body
+// falls back to unwrapped to avoid a degenerate wrap.
+func renderUserPromptBlock(theme *Theme, content string, width int) string {
 	style := theme.UserPromptText
-	lines := strings.Split(content, "\n")
-	out := make([]string, len(lines))
-	for i, ln := range lines {
+	wrapBudget := width - 2
+	var visible []string
+	for _, src := range strings.Split(content, "\n") {
+		if wrapBudget <= 0 {
+			visible = append(visible, src)
+			continue
+		}
+		visible = append(visible, strings.Split(ansi.Wrap(src, wrapBudget, ""), "\n")...)
+	}
+	out := make([]string, len(visible))
+	for i, ln := range visible {
 		if i == 0 {
 			out[i] = style.Render("›") + " " + style.Render(ln)
 		} else {
@@ -100,7 +138,7 @@ func renderToolInputBody(theme *Theme, body string, width int) string {
 	var sb strings.Builder
 	for _, ln := range wrapToolInput(body, width-toolCallInputPrefix) {
 		sb.WriteString("\n")
-		sb.WriteString(theme.NormalText.Render("│ " + ln))
+		sb.WriteString(theme.NormalText.Render("  " + ln))
 	}
 	return sb.String()
 }

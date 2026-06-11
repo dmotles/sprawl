@@ -93,10 +93,10 @@ func FormatToolDisplayName(toolName string) string {
 
 func formatBash(input map[string]any) (string, []KVPair) {
 	cmd, _ := input["command"].(string)
-	// Collapse newlines so multi-line scripts read on one line.
+	// Collapse newlines so multi-line scripts read on one line. Rendered
+	// unquoted (QUM-796 #2) for the cleaner inline header look.
 	if cmd != "" {
 		cmd = strings.ReplaceAll(cmd, "\n", " ; ")
-		cmd = strconv.Quote(cmd)
 	}
 	var kv []KVPair
 	if desc, ok := input["description"].(string); ok && desc != "" {

@@ -129,7 +129,7 @@ func (i *UserItem) Render(width int) string {
 	if width <= 0 {
 		return ""
 	}
-	return renderUserPromptBlock(i.ctx.theme, i.text)
+	return renderUserPromptBlock(i.ctx.theme, i.text, width)
 }
 
 // Finished always returns true: user turns are immutable on creation.
@@ -440,6 +440,11 @@ func (i *ToolCallItem) Update(msg tea.Msg) tea.Cmd {
 	})
 }
 
+// renderBox renders the top-level (depth==0) tool-call row as a clean inline
+// header — `<glyph> <ToolName>(<command preview>)` — with no `┌ │ └` box
+// chrome (QUM-796 #1/#2). Output (expanded input + result preview) indents
+// two spaces under the header. Glyph + name keep the accent color; the
+// command preview renders in NormalText (the historical light grey).
 func (i *ToolCallItem) renderBox(width int) string {
 	var sb strings.Builder
 	displayName := FormatToolDisplayName(i.name)
@@ -447,39 +452,28 @@ func (i *ToolCallItem) renderBox(width int) string {
 	if mainArg == "" && i.headerParams == nil {
 		mainArg = i.input
 	}
-	paramsStr := RenderKVPairs(i.headerParams)
-	// Width-budget per viewport.renderToolCall.
-	const fixed = 4 // "┌ " + indicator + " "
+	// Defensive: neutralize control chars (newlines, tabs, CR, raw ESC) so
+	// the header stays a single, un-corrupted styled row.
+	mainArg = sanitizeHeaderArg(mainArg)
+	// Width-budget: indicator (1 cell) + " " before the name, plus the "()"
+	// wrapping the preview when present.
+	const fixed = 2 // indicator + " "
 	nameCells := ansi.StringWidth(displayName)
-	budget := width - fixed - nameCells
-	if budget < 1 {
-		budget = 1
+	if nameCells > width-2 {
+		displayName = ansi.Truncate(displayName, width-2, "…")
+		nameCells = ansi.StringWidth(displayName)
 	}
 	if mainArg != "" {
-		budget--
-	}
-	if paramsStr != "" {
-		remaining := budget - ansi.StringWidth(paramsStr) - 1
-		if remaining < MinMainArgCells {
-			paramsStr = ""
-		} else {
-			mainArg = ansi.Truncate(mainArg, remaining, "…")
+		budget := width - fixed - nameCells - 2 // 2 for "(" and ")"
+		if budget < 1 {
+			budget = 1
 		}
-	}
-	if paramsStr == "" && mainArg != "" {
 		mainArg = ansi.Truncate(mainArg, budget, "…")
 	}
-	if nameCells > width-3 {
-		displayName = ansi.Truncate(displayName, width-3, "…")
-	}
-	sb.WriteString(i.ctx.theme.AccentText.Render("┌ "))
 	sb.WriteString(i.indicator())
 	sb.WriteString(i.ctx.theme.AccentText.Bold(true).Render(" " + displayName))
 	if mainArg != "" {
-		sb.WriteString(i.ctx.theme.NormalText.Render(" " + mainArg))
-	}
-	if paramsStr != "" {
-		sb.WriteString(i.ctx.theme.NormalText.Render(" " + paramsStr))
+		sb.WriteString(i.ctx.theme.NormalText.Render("(" + mainArg + ")"))
 	}
 	if i.expanded {
 		body := i.inputFull
@@ -491,8 +485,6 @@ func (i *ToolCallItem) renderBox(width int) string {
 	if !i.pending && i.result != "" {
 		sb.WriteString(renderResultPreviewLines(i.ctx.theme, i.result, i.failed, i.expanded, width))
 	}
-	sb.WriteString("\n")
-	sb.WriteString(i.ctx.theme.AccentText.Render("└"))
 	return sb.String()
 }
 

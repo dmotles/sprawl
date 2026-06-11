@@ -7,6 +7,9 @@ package tui
 import (
 	"strings"
 	"testing"
+	"unicode"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // newTestCtx returns a fresh itemRenderCtx for tests; the theme is
@@ -265,6 +268,196 @@ func TestToolCallItem_NestedTickAnimates(t *testing.T) {
 	after := item.Render(80)
 	if before == after {
 		t.Errorf("nested-render tick should change output. before=%q after=%q", before, after)
+	}
+}
+
+// QUM-796 #1 — the top-level (depth==0) tool-call render drops the
+// `┌ │ └` box chrome entirely. No box-drawing characters may appear in any
+// lifecycle state (pending, success, failure).
+func TestToolCallItem_BoxChromeStripped(t *testing.T) {
+	ctx := newTestCtx()
+	for _, width := range []int{80, 40, 20} {
+		// pending
+		pend := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "ls -la"})
+		assertNoBoxChrome(t, "pending", width, pend.Render(width))
+		// success
+		ok := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "ls -la"})
+		ok.MarkResult("done\nmore", false)
+		assertNoBoxChrome(t, "success", width, ok.Render(width))
+		// failure
+		fail := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "ls -la"})
+		fail.MarkResult("boom", true)
+		assertNoBoxChrome(t, "failure", width, fail.Render(width))
+	}
+}
+
+func assertNoBoxChrome(t *testing.T, label string, width int, out string) {
+	t.Helper()
+	for _, ch := range []string{"┌", "└", "│"} {
+		if strings.Contains(out, ch) {
+			t.Errorf("%s w=%d: render leaked box-drawing char %q: %q", label, width, ch, out)
+		}
+	}
+}
+
+// QUM-796 #2 — the header renders inline as `<glyph> <ToolName>(<preview>)`.
+func TestToolCallItem_HeaderInlineFormat(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "tmux list-sessions"})
+	item.MarkResult("ok", false)
+	header := stripANSI(strings.SplitN(item.Render(80), "\n", 2)[0])
+	if !strings.HasPrefix(header, "✓ Bash(") {
+		t.Errorf("header should start with `✓ Bash(`, got %q", header)
+	}
+	if !strings.Contains(header, "tmux list-sessions)") {
+		t.Errorf("header should contain `tmux list-sessions)`, got %q", header)
+	}
+}
+
+// QUM-796 #2 — newlines inside the command preview collapse to spaces so the
+// header stays a single line.
+func TestToolCallItem_HeaderNewlinesCollapsed(t *testing.T) {
+	ctx := newTestCtx()
+	// HeaderArg is fed a raw newline directly (bypassing FormatToolHeader's
+	// ` ; ` collapse) to pin renderBox's own defensive newline→space collapse.
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Grep", ToolID: "t", HeaderArg: "line1\nline2"})
+	item.MarkResult("ok", false)
+	header := stripANSI(strings.SplitN(item.Render(80), "\n", 2)[0])
+	if strings.Contains(header, "\n") {
+		t.Errorf("header line must not contain a newline: %q", header)
+	}
+	if !strings.Contains(header, "line1 line2") {
+		t.Errorf("header should collapse newline to space (`line1 line2`), got %q", header)
+	}
+}
+
+// QUM-796 #2 — the command preview is truncated with `…` to fit one row.
+func TestToolCallItem_HeaderTruncatedToWidth(t *testing.T) {
+	ctx := newTestCtx()
+	long := strings.Repeat("abcdefghij ", 20)
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: long})
+	item.MarkResult("ok", false)
+	for _, width := range []int{20, 40, 80} {
+		header := stripANSI(strings.SplitN(item.Render(width), "\n", 2)[0])
+		if w := ansi.StringWidth(header); w > width {
+			t.Errorf("w=%d: header width %d exceeds terminal width: %q", width, w, header)
+		}
+		if !strings.Contains(header, "…") {
+			t.Errorf("w=%d: truncated header should contain ellipsis: %q", width, header)
+		}
+	}
+}
+
+// QUM-796 #2 — the `description="..."` (and any other) param suffix is no
+// longer rendered in the collapsed header.
+func TestToolCallItem_DropsParamSuffix(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{
+		Name:         "Bash",
+		ToolID:       "t",
+		HeaderArg:    "make test",
+		HeaderParams: []KVPair{{Key: "description", Value: `"run tests"`}, {Key: "timeout", Value: "120000"}},
+	})
+	item.MarkResult("ok", false)
+	out := stripANSI(item.Render(80))
+	if strings.Contains(out, "description") {
+		t.Errorf("header must not render description param: %q", out)
+	}
+	if strings.Contains(out, "timeout=") {
+		t.Errorf("header must not render timeout param: %q", out)
+	}
+}
+
+// QUM-796 #2 — a tool with no main arg renders just `<glyph> <Name>` with no
+// empty `()`.
+func TestToolCallItem_NoParensWhenNoMainArg(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "TodoWrite", ToolID: "t"})
+	item.MarkResult("ok", false)
+	header := stripANSI(strings.SplitN(item.Render(80), "\n", 2)[0])
+	if strings.Contains(header, "(") || strings.Contains(header, ")") {
+		t.Errorf("header should have no parens when main arg empty: %q", header)
+	}
+	if !strings.Contains(header, "TodoWrite") {
+		t.Errorf("header should still show the tool name: %q", header)
+	}
+}
+
+// QUM-796 #5 — multi-line output shows the first 3 lines indented under the
+// header (no `│` gutter) then a `⎿  + K more lines` elision trailer.
+func TestToolCallItem_ResultPreviewElision(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "seq 6"})
+	item.MarkResult("l1\nl2\nl3\nl4\nl5\nl6", false)
+	out := item.Render(80)
+	plain := stripANSI(out)
+	if !strings.Contains(plain, "⎿") {
+		t.Errorf("elided result should contain ⎿ trailer glyph: %q", plain)
+	}
+	if !strings.Contains(plain, "+ 3 more lines") {
+		t.Errorf("elided result should report `+ 3 more lines`: %q", plain)
+	}
+	// Body lines indent two spaces under the header (positive check).
+	if !strings.Contains(plain, "\n  l1") {
+		t.Errorf("result body lines should indent two spaces (`\\n  l1`): %q", plain)
+	}
+	// Body lines beyond the first 3 must not appear in the collapsed render.
+	if strings.Contains(plain, "l4") {
+		t.Errorf("collapsed render leaked the 4th output line: %q", plain)
+	}
+	// Result/body lines indent with two spaces, not a `│ ` gutter.
+	for _, ln := range strings.Split(plain, "\n")[1:] {
+		if strings.HasPrefix(ln, "│") {
+			t.Errorf("output line should not use `│` gutter: %q", ln)
+		}
+	}
+}
+
+// QUM-796 #3/#5 — expanding lifts the cap and shows full output with no
+// elision trailer; the QUM-732 expand behavior is preserved.
+func TestToolCallItem_ResultPreviewExpandedShowsAll(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "seq 6"})
+	item.MarkResult("l1\nl2\nl3\nl4\nl5\nl6", false)
+	item.SetExpanded(true)
+	plain := stripANSI(item.Render(80))
+	if !strings.Contains(plain, "l6") {
+		t.Errorf("expanded render should show all output lines: %q", plain)
+	}
+	if strings.Contains(plain, "more lines") {
+		t.Errorf("expanded render should have no elision trailer: %q", plain)
+	}
+}
+
+// QUM-796 #2 — since the command preview is no longer strconv.Quote'd, the
+// renderer must neutralize control chars (tab, CR, raw ESC) so they cannot
+// break single-line layout or leak SGR styling past truncation.
+func TestToolCallItem_HeaderStripsControlChars(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "a\tb\rc\x1b[31md"})
+	item.MarkResult("ok", false)
+	header := stripANSI(strings.SplitN(item.Render(80), "\n", 2)[0])
+	for _, r := range header {
+		if unicode.IsControl(r) {
+			t.Errorf("header leaked control char %q in %q", r, header)
+		}
+	}
+}
+
+// QUM-796 #3 — the ✓/✗ glyphs keep their exact styled rendering: ✗ under
+// ErrorText (red), ✓ under AccentText. Pins color, not just the rune, so a
+// correct-glyph-wrong-color regression is caught.
+func TestToolCallItem_GlyphColorsPreserved(t *testing.T) {
+	ctx := newTestCtx()
+	ok := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "ls"})
+	ok.MarkResult("done", false)
+	if want := ctx.theme.AccentText.Render("✓"); !strings.Contains(ok.Render(80), want) {
+		t.Errorf("success render should contain accent-styled ✓ (%q): %q", want, ok.Render(80))
+	}
+	fail := NewToolCallItem(ctx, ToolCallSpec{Name: "Bash", ToolID: "t", HeaderArg: "ls"})
+	fail.MarkResult("boom", true)
+	if want := ctx.theme.ErrorText.Render("✗"); !strings.Contains(fail.Render(80), want) {
+		t.Errorf("failure render should contain error-styled ✗ (%q): %q", want, fail.Render(80))
 	}
 }
 
