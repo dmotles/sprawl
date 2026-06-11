@@ -176,6 +176,24 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 
 **Read `/cli-ux-best-practices` before adding or modifying any CLI command's behavior** — it covers output design for agent consumers, the "next action hint" pattern, error message design, and idempotency. Every command must tell the calling agent what to do next.
 
+
+## Public vs Private Repo Hygiene
+
+Before any commit, merge, or PR, determine whether the current repo is public or private:
+
+- `git remote get-url origin` → if hosted on a public namespace (github.com/<user-or-org>/...) and the upstream is public (check `gh repo view --json visibility 2>/dev/null` if available), treat as PUBLIC. Default assumption: PUBLIC unless you can confirm otherwise.
+- A repo named after, owned by, or branded with a company is not by itself proof of privacy. Check the actual visibility.
+
+For PUBLIC repos:
+- Do NOT commit content that names or describes the user's employer's internal systems, products, codenames, repo names, host aliases, customer names, internal URLs, deployment topology, or operational specifics.
+- As you build context on the user across sessions, you may learn their employer or current company. Use that knowledge to filter: anything that references that employer's internal context goes in `.sprawl/agents/<name>/findings/` (gitignored), NOT in the tracked tree.
+- Forensic/debug/incident artifacts captured from real production systems (logs, paths, session IDs, tool runs against real hosts) are especially likely to contain leakable context. Default to gitignored unless explicitly sanitized.
+- When in doubt, ask the user before committing.
+
+For PRIVATE repos:
+- Less strict but still avoid mixing one employer's internal context into another's repo.
+
+This applies to all agents (engineers, researchers, QA, managers). Reviewers must flag suspected leaks during code review and refuse to merge until resolved.
 ## Linear Issue Tracking
 
 This project tracks work in Linear. See `CLAUDE.local.md` for workspace-specific configuration (team name, issue prefix).
