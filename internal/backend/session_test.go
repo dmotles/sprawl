@@ -1426,3 +1426,104 @@ func TestSession_RunReader_EOFPromoteIsStickyOnce(t *testing.T) {
 		t.Errorf("terminalErrHandler fired %d times, want exactly 1 (sticky-once)", got)
 	}
 }
+
+// TestSession_ControlCancelRequest_CancelsInflight proves an inbound
+// control_cancel_request (CLI→client) cancels the matching in-flight async
+// MCP handler, keyed by request_id. The blocking bridge returns ctx.Err()
+// when its ctx is cancelled, which surfaces as an error control_response.
+func TestSession_ControlCancelRequest_CancelsInflight(t *testing.T) {
+	transport := newMockManagedTransport()
+	bridge := newBlockingToolBridge()
+	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	initSessionWithBridge(ctx, t, session, transport, bridge)
+	events, err := session.StartTurn(ctx, "go")
+	if err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	<-transport.sendCh // drain user-prompt send
+
+	transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
+	awaitBridgeEntry(ctx, t, bridge)
+
+	// CLI cancels the control request it issued, keyed by request_id.
+	transport.feedMessage(t, `{"type":"control_cancel_request","request_id":"mcp-1"}`)
+
+	gotErrorResponse := false
+	deadline := time.After(1 * time.Second)
+	for !gotErrorResponse {
+		select {
+		case sent := <-transport.sendCh:
+			if isErrorControlResponse(t, sent, "mcp-1") {
+				gotErrorResponse = true
+			}
+		case <-deadline:
+			t.Fatal("control_cancel_request did not cancel the in-flight handler (no error control_response for mcp-1)")
+		}
+	}
+	if err := session.LastTurnError(); err != nil {
+		t.Errorf("LastTurnError = %v, want nil (cancel must not fault the session)", err)
+	}
+
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0.0}`)
+	close(transport.recvCh)
+	drainMessages(events)
+}
+
+// TestSession_ControlCancelRequest_UnknownIDNoOpAndNoFault proves a cancel
+// for an unrelated (or empty) request_id is a no-op: the live handler stays
+// parked and the session never faults. This is the zero-behavior-change
+// guard — the installed CLI does not emit this frame today.
+func TestSession_ControlCancelRequest_UnknownIDNoOpAndNoFault(t *testing.T) {
+	transport := newMockManagedTransport()
+	bridge := newBlockingToolBridge()
+	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	initSessionWithBridge(ctx, t, session, transport, bridge)
+	events, err := session.StartTurn(ctx, "go")
+	if err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	<-transport.sendCh // drain user-prompt send
+
+	transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
+	awaitBridgeEntry(ctx, t, bridge)
+
+	// A cancel for an unrelated id and a malformed (empty-id) cancel must
+	// both be no-ops.
+	transport.feedMessage(t, `{"type":"control_cancel_request","request_id":"other"}`)
+	transport.feedMessage(t, `{"type":"control_cancel_request"}`)
+
+	// No error control_response for mcp-1 should appear: the handler stays
+	// parked because its ctx was never cancelled.
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case sent := <-transport.sendCh:
+			if isErrorControlResponse(t, sent, "mcp-1") {
+				t.Fatal("non-matching control_cancel_request cancelled the in-flight handler")
+			}
+		case <-deadline:
+			goto settled
+		}
+	}
+settled:
+	if bridge.callCount() != 1 {
+		t.Errorf("bridge callCount = %d, want 1 (handler must stay parked)", bridge.callCount())
+	}
+	if err := session.LastTurnError(); err != nil {
+		t.Errorf("LastTurnError = %v, want nil after no-op cancels", err)
+	}
+
+	// Cleanup: release the still-parked handler, end the turn.
+	bridge.release("1", json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))
+	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0.0}`)
+	close(transport.recvCh)
+	drainMessages(events)
+}

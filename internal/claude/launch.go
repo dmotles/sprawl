@@ -12,12 +12,13 @@ type LaunchOpts struct {
 	Effort           string
 	PermissionMode   string
 
-	Print          bool   // -p (non-interactive print-and-exit mode)
-	InputFormat    string // --input-format
-	OutputFormat   string // --output-format
-	Verbose        bool   // --verbose
-	Resume         bool   // --resume (uses SessionID value)
-	SettingSources string // --setting-sources
+	Print              bool   // -p (non-interactive print-and-exit mode)
+	InputFormat        string // --input-format
+	OutputFormat       string // --output-format
+	Verbose            bool   // --verbose
+	ReplayUserMessages bool   // --replay-user-messages (re-emit stdin user messages on stdout)
+	Resume             bool   // --resume (uses SessionID value)
+	SettingSources     string // --setting-sources
 
 	AllowedTools    []string
 	DisallowedTools []string
@@ -44,6 +45,9 @@ func (o LaunchOpts) BuildArgs() []string {
 	}
 	if o.Verbose {
 		args = append(args, "--verbose")
+	}
+	if o.ReplayUserMessages {
+		args = append(args, "--replay-user-messages")
 	}
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)

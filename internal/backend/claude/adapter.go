@@ -99,18 +99,19 @@ func (a *Adapter) Start(_ context.Context, spec backend.SessionSpec) (backend.Se
 	}
 
 	args := claudecli.LaunchOpts{
-		Print:            true,
-		InputFormat:      "stream-json",
-		OutputFormat:     "stream-json",
-		Verbose:          true,
-		Model:            spec.Model,
-		Effort:           spec.Effort,
-		PermissionMode:   spec.PermissionMode,
-		SessionID:        spec.SessionID,
-		SystemPromptFile: spec.PromptFile,
-		AllowedTools:     spec.AllowedTools,
-		DisallowedTools:  spec.DisallowedTools,
-		Resume:           spec.Resume,
+		Print:              true,
+		InputFormat:        "stream-json",
+		OutputFormat:       "stream-json",
+		Verbose:            true,
+		Model:              spec.Model,
+		Effort:             spec.Effort,
+		PermissionMode:     spec.PermissionMode,
+		SessionID:          spec.SessionID,
+		SystemPromptFile:   spec.PromptFile,
+		AllowedTools:       spec.AllowedTools,
+		DisallowedTools:    spec.DisallowedTools,
+		Resume:             spec.Resume,
+		ReplayUserMessages: spec.ReplayUserMessages,
 	}.BuildArgs()
 
 	stderr := spec.Stderr

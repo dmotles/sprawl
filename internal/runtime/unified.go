@@ -61,6 +61,12 @@ type UnifiedRuntime struct {
 	started     bool
 	stopped     bool
 	turnRunning bool
+	// autonomousInTurn is true while the frame router (QUM-815) is observing an
+	// in-flight autonomous (CLI self-reprompt) turn. Guarded by mu and OR-ed
+	// into State().InTurn so autonomous turns flip InTurn uniformly. Mutually
+	// exclusive with a sprawl turn (an autonomous turn only opens when the
+	// session has no sprawl turn in flight).
+	autonomousInTurn bool
 	// pendingInterrupt arms an interrupt for the *next* turn the loop
 	// starts. It is set when Interrupt() is called while no turn is
 	// currently running (state Idle but the loop may be about to consume
@@ -75,6 +81,29 @@ type UnifiedRuntime struct {
 
 	done          chan struct{}
 	closeDoneOnce sync.Once
+
+	// serviced is the QUM-807 dedup set shared between the TurnLoop and the
+	// frame router (QUM-815). Created in New so it is live even before Start.
+	serviced *servicedTaskSet
+	// autoTurn holds the frame router's per-autonomous-turn observation state.
+	// Touched ONLY by routeFrame, which runs solely on the backend reader
+	// goroutine — so no lock is needed for its fields (autonomousInTurn, the
+	// cross-goroutine read surface, is guarded separately by mu).
+	autoTurn autonomousTurnState
+}
+
+// autonomousTurnState is the frame router's per-turn bookkeeping for an
+// in-flight autonomous turn (QUM-815). Reader-goroutine-only.
+type autonomousTurnState struct {
+	open           bool
+	sawEmptyTaskID bool
+	taskIDs        map[string]struct{}
+}
+
+func (a *autonomousTurnState) reset() {
+	a.open = false
+	a.sawEmptyTaskID = false
+	a.taskIDs = nil
 }
 
 // New constructs a UnifiedRuntime in the idle liveness state (Running,
@@ -87,6 +116,7 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 		eventBus: NewEventBus(),
 		liveness: livenesspkg.State{Liveness: livenesspkg.Running},
 		done:     make(chan struct{}),
+		serviced: newServicedTaskSet(),
 	}
 	// QUM-602: install the backend-fault handler on the session. We use a
 	// type assertion (rather than extending SessionHandle) so the public
@@ -136,25 +166,112 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 				}
 			})
 		}
-		// QUM-631: install the autonomous-frame handler so harness-initiated
-		// (SDK self-reprompt) turns surface on the EventBus. Same type-assertion
-		// pattern as the terminal-error handler above.
+		// QUM-815: install the single frame router so the backend reader routes
+		// every turn frame (sprawl or autonomous) through one path. Same
+		// type-assertion pattern as the terminal-error handler above.
 		if setter, ok := cfg.Session.(interface {
-			SetAutonomousFrameHandler(func(*protocol.Message))
+			SetFrameRouter(func(*protocol.Message, backend.TurnInfo))
 		}); ok {
-			setter.SetAutonomousFrameHandler(func(msg *protocol.Message) {
-				// QUM-631: surface harness-initiated (autonomous) turns to the
-				// EventBus so the TUI viewport + activity stream render them.
-				rt.eventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
-				if msg.Type == "result" {
-					var r protocol.ResultMessage
-					_ = protocol.ParseAs(msg, &r)
-					rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
-				}
-			})
+			setter.SetFrameRouter(rt.routeFrame)
 		}
 	}
 	return rt
+}
+
+// errStreamClosedNoResult is the terminal error published when an autonomous
+// turn is torn down (session close/fault) without ever seeing a `result`
+// frame. Mirrors the TurnLoop's QUM-647 channel-close safety net so any
+// turn-boundary waiter unblocks. (QUM-815)
+var errStreamClosedNoResult = errors.New("autonomous turn stream closed without terminal result")
+
+// routeFrame is the single observe-and-route callback the backend reader
+// invokes for every turn frame (QUM-815). For sprawl-initiated turns it
+// returns immediately — the TurnLoop owns their lifecycle, and emitting here
+// too would double-publish. For autonomous (CLI self-reprompt) turns it
+// derives the full lifecycle: a balanced EventTurnStarted/EventTurnCompleted,
+// an InTurn flip, and the QUM-640 auto-continuation when a background task
+// completed (the QUM-812 fix). Runs synchronously on the reader goroutine and
+// must not block (bounded EventBus.Publish / Queue.Enqueue only).
+func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInfo) {
+	if !turn.Autonomous {
+		// Sprawl turn: TurnLoop is the sole lifecycle emitter (no double-emit).
+		return
+	}
+
+	st := &rt.autoTurn
+	if st.taskIDs == nil {
+		st.taskIDs = map[string]struct{}{}
+	}
+
+	// Orphan/abort teardown: an autonomous turn ended without a `result`
+	// (session close/fault). Revert InTurn and publish a terminal turn event so
+	// any turn-boundary waiter (e.g. supervisor Pause) unblocks. Mirrors the
+	// TurnLoop's "stream closed without terminal result" semantics.
+	if turn.EndOfTurn && msg == nil {
+		if st.open {
+			rt.setAutonomousInTurn(false)
+			rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: errStreamClosedNoResult})
+			st.reset()
+		}
+		return
+	}
+
+	// Render + observe EVERY autonomous frame, including a pre-init trigger.
+	if msg != nil {
+		rt.eventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
+		if msg.Type == "system" && msg.Subtype == "task_notification" {
+			var tn protocol.TaskNotification
+			if err := protocol.ParseAs(msg, &tn); err != nil || tn.TaskID == "" {
+				st.sawEmptyTaskID = true
+			} else if !rt.serviced.has(tn.TaskID) {
+				st.taskIDs[tn.TaskID] = struct{}{}
+			}
+		}
+	}
+
+	// Open turn lifecycle (InTurn flip + EventTurnStarted) only on a real turn
+	// frame — NEVER on a pre-init trigger, which isn't guaranteed to be followed
+	// by an init (a racing StartTurn can absorb it). Otherwise InTurn would leak
+	// true and EventTurnStarted would have no matching completion (QUM-815). Any
+	// task_id observed from a stranded trigger stays buffered in st.taskIDs and
+	// is folded into the next autonomous turn's continuation (deduped).
+	if turn.PreInit {
+		return
+	}
+	if !st.open {
+		st.open = true
+		rt.setAutonomousInTurn(true)
+		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnStarted})
+	}
+
+	if turn.EndOfTurn {
+		var r protocol.ResultMessage
+		if msg != nil {
+			_ = protocol.ParseAs(msg, &r)
+		}
+		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
+		// QUM-640 continuation for the autonomous turn (the QUM-812 fix): a
+		// background-task completion observed this turn enqueues exactly one
+		// synthetic continuation, which the queue→TurnLoop→StartTurn drive turns
+		// into a sprawl continuation turn. Deduped via the shared serviced set
+		// so the continuation turn re-observing the same task_notification does
+		// not re-enqueue (would infinite-loop).
+		if st.sawEmptyTaskID || len(st.taskIDs) > 0 {
+			rt.queue.Enqueue(QueueItem{Class: ClassContinuation, Prompt: continuationPrompt})
+			for id := range st.taskIDs {
+				rt.serviced.add(id)
+			}
+		}
+		rt.setAutonomousInTurn(false)
+		st.reset()
+	}
+}
+
+// setAutonomousInTurn updates the cross-goroutine InTurn read surface under mu.
+func (rt *UnifiedRuntime) setAutonomousInTurn(v bool) {
+	rt.mu.Lock()
+	rt.autonomousInTurn = v
+	rt.mu.Unlock()
 }
 
 // ClassifyBackendFault maps a backend session terminal error to a
@@ -296,6 +413,7 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 		OnQueueItemDelivered: rt.cfg.OnQueueItemDelivered,
 		PostTurnSweep:        rt.cfg.PostTurnSweep,
 		TurnTimeout:          rt.cfg.TurnTimeout,
+		Serviced:             rt.serviced,
 	})
 
 	rt.mu.Unlock()
@@ -407,7 +525,13 @@ func (rt *UnifiedRuntime) StopWithOptions(ctx context.Context, opts StopOptions)
 func (rt *UnifiedRuntime) State() livenesspkg.State {
 	rt.mu.RLock()
 	s := rt.liveness
+	auto := rt.autonomousInTurn
 	rt.mu.RUnlock()
+	// QUM-815: an autonomous (CLI self-reprompt) turn flips InTurn too, so the
+	// TUI/supervisor see it as in-turn uniformly.
+	if auto {
+		s.InTurn = true
+	}
 	return s
 }
 

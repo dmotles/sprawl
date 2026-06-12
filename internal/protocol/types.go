@@ -143,10 +143,43 @@ type Usage struct {
 // --- Input messages (to Claude Code stdin) ---
 
 // UserMessage is sent on stdin to submit a new prompt.
+//
+// Priority, UUID, and SessionID are optional (omitempty) so the existing
+// SendUserMessage wire shape is byte-identical when they are unset.
+// Priority is the command-queue priority (now|next|later, CLI default
+// "next"); UUID is a stable per-message id the CLI echoes back on the
+// isReplay frame when launched with --replay-user-messages.
 type UserMessage struct {
 	Type            string       `json:"type"`
 	Message         MessageParam `json:"message"`
 	ParentToolUseID *string      `json:"parent_tool_use_id"`
+	Priority        string       `json:"priority,omitempty"`
+	UUID            string       `json:"uuid,omitempty"`
+	SessionID       string       `json:"session_id,omitempty"`
+}
+
+// UserFrame is an inbound (stdout) user frame. When the CLI is launched with
+// --replay-user-messages it re-emits each consumed stdin user message with
+// the original uuid and isReplay:true. The replay flag is camelCase on the
+// wire (isReplay), distinct from the snake_case session_id.
+type UserFrame struct {
+	Type      string `json:"type"`
+	UUID      string `json:"uuid,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	IsReplay  bool   `json:"isReplay,omitempty"`
+}
+
+// SystemNotification is a CLI-native toast/status frame (type=system,
+// subtype=notification). Its priority enum (low|medium|high|immediate) is
+// distinct from the command-queue priority on UserMessage.
+type SystemNotification struct {
+	Type      string `json:"type"`
+	Subtype   string `json:"subtype"`
+	Key       string `json:"key"`
+	Text      string `json:"text"`
+	Priority  string `json:"priority"`
+	Color     string `json:"color,omitempty"`
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
 }
 
 // MessageParam is the inner message content for user input messages,
@@ -167,6 +200,33 @@ type InterruptRequest struct {
 // InterruptRequestInner holds the request payload for an InterruptRequest.
 type InterruptRequestInner struct {
 	Subtype string `json:"subtype"` // always "interrupt"
+}
+
+// CancelAsyncMessageRequest is sent on stdin to drop a pending async user
+// message from the CLI command queue by uuid. Mirrors InterruptRequest.
+// The inner key is message_uuid (NOT uuid) per CLI 2.1.173 — the user
+// message and its isReplay echo key on uuid, but the cancel keys on
+// message_uuid.
+// Wire format:
+// {"type":"control_request","request_id":"<id>","request":{"subtype":"cancel_async_message","message_uuid":"<uuid>"}}
+type CancelAsyncMessageRequest struct {
+	Type      string                         `json:"type"`
+	RequestID string                         `json:"request_id"`
+	Request   CancelAsyncMessageRequestInner `json:"request"`
+}
+
+// CancelAsyncMessageRequestInner holds the request payload for a
+// CancelAsyncMessageRequest.
+type CancelAsyncMessageRequestInner struct {
+	Subtype     string `json:"subtype"` // always "cancel_async_message"
+	MessageUUID string `json:"message_uuid"`
+}
+
+// CancelAsyncMessageAck is the control_response payload for a
+// cancel_async_message request. Cancelled==false means the message was
+// already dequeued for execution (treat as gone, never "still queued").
+type CancelAsyncMessageAck struct {
+	Cancelled bool `json:"cancelled"`
 }
 
 // ControlResponse is sent on stdin to respond to a ControlRequest.

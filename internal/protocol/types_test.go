@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -97,5 +98,185 @@ func TestUsage_UnmarshalJSON_Empty(t *testing.T) {
 	}
 	if u.OutputTokens != 0 {
 		t.Errorf("OutputTokens = %d, want 0", u.OutputTokens)
+	}
+}
+
+// TestUserMessage_MarshalOmitsEmptyExtras guards zero-behavior-change: the
+// existing SendUserMessage path must serialize byte-identically, so the new
+// Priority/UUID/SessionID fields must be omitted when unset.
+func TestUserMessage_MarshalOmitsEmptyExtras(t *testing.T) {
+	msg := UserMessage{
+		Type:            "user",
+		Message:         MessageParam{Role: "user", Content: "hello"},
+		ParentToolUseID: nil,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	s := string(data)
+	for _, key := range []string{`"priority"`, `"uuid"`, `"session_id"`} {
+		if strings.Contains(s, key) {
+			t.Errorf("marshaled UserMessage should not contain %s when unset: %s", key, s)
+		}
+	}
+	// parent_tool_use_id must still be present (non-omitempty) so the wire
+	// shape of existing stdin writes is unchanged.
+	if !strings.Contains(s, `"parent_tool_use_id":null`) {
+		t.Errorf("marshaled UserMessage should retain parent_tool_use_id:null: %s", s)
+	}
+	// The core type/message keys must remain.
+	for _, key := range []string{`"type":"user"`, `"message"`} {
+		if !strings.Contains(s, key) {
+			t.Errorf("marshaled UserMessage missing core key %s: %s", key, s)
+		}
+	}
+}
+
+func TestUserMessage_MarshalWithPriorityUUIDSession(t *testing.T) {
+	msg := UserMessage{
+		Type:      "user",
+		Message:   MessageParam{Role: "user", Content: "hi"},
+		Priority:  "next",
+		UUID:      "u-1",
+		SessionID: "s-1",
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if parsed["priority"] != "next" {
+		t.Errorf("priority = %v, want next", parsed["priority"])
+	}
+	if parsed["uuid"] != "u-1" {
+		t.Errorf("uuid = %v, want u-1", parsed["uuid"])
+	}
+	if parsed["session_id"] != "s-1" {
+		t.Errorf("session_id = %v, want s-1", parsed["session_id"])
+	}
+}
+
+// TestCancelAsyncMessageRequest_Marshal verifies the wire shape, in
+// particular that the inner key is message_uuid (not uuid) per CLI 2.1.173.
+func TestCancelAsyncMessageRequest_Marshal(t *testing.T) {
+	req := CancelAsyncMessageRequest{
+		Type:      "control_request",
+		RequestID: "r-1",
+		Request: CancelAsyncMessageRequestInner{
+			Subtype:     "cancel_async_message",
+			MessageUUID: "u-1",
+		},
+	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var parsed struct {
+		Type      string `json:"type"`
+		RequestID string `json:"request_id"`
+		Request   struct {
+			Subtype     string `json:"subtype"`
+			MessageUUID string `json:"message_uuid"`
+			UUID        string `json:"uuid"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if parsed.Type != "control_request" {
+		t.Errorf("type = %q, want control_request", parsed.Type)
+	}
+	if parsed.RequestID != "r-1" {
+		t.Errorf("request_id = %q, want r-1", parsed.RequestID)
+	}
+	if parsed.Request.Subtype != "cancel_async_message" {
+		t.Errorf("subtype = %q, want cancel_async_message", parsed.Request.Subtype)
+	}
+	if parsed.Request.MessageUUID != "u-1" {
+		t.Errorf("message_uuid = %q, want u-1", parsed.Request.MessageUUID)
+	}
+	if parsed.Request.UUID != "" {
+		t.Errorf("cancel request must not carry a uuid key, got %q", parsed.Request.UUID)
+	}
+}
+
+func TestCancelAsyncMessageAck_Unmarshal(t *testing.T) {
+	var ack CancelAsyncMessageAck
+	if err := json.Unmarshal([]byte(`{"cancelled":true}`), &ack); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if !ack.Cancelled {
+		t.Error("Cancelled = false, want true")
+	}
+
+	var empty CancelAsyncMessageAck
+	if err := json.Unmarshal([]byte(`{}`), &empty); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if empty.Cancelled {
+		t.Error("Cancelled = true for empty object, want false")
+	}
+}
+
+func TestUserFrame_Unmarshal_IsReplay(t *testing.T) {
+	var frame UserFrame
+	raw := `{"type":"user","uuid":"u-1","session_id":"s-1","isReplay":true}`
+	if err := json.Unmarshal([]byte(raw), &frame); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if frame.Type != "user" {
+		t.Errorf("Type = %q, want user", frame.Type)
+	}
+	if frame.UUID != "u-1" {
+		t.Errorf("UUID = %q, want u-1", frame.UUID)
+	}
+	if frame.SessionID != "s-1" {
+		t.Errorf("SessionID = %q, want s-1", frame.SessionID)
+	}
+	if !frame.IsReplay {
+		t.Error("IsReplay = false, want true")
+	}
+
+	var plain UserFrame
+	if err := json.Unmarshal([]byte(`{"type":"user","uuid":"u-2"}`), &plain); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if plain.IsReplay {
+		t.Error("IsReplay = true for frame without isReplay, want false")
+	}
+}
+
+func TestSystemNotification_Unmarshal(t *testing.T) {
+	raw := `{"type":"system","subtype":"notification","key":"k","text":"t","priority":"high","color":"red","timeout_ms":5000}`
+	var n SystemNotification
+	if err := json.Unmarshal([]byte(raw), &n); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if n.Type != "system" || n.Subtype != "notification" {
+		t.Errorf("Type/Subtype = %q/%q, want system/notification", n.Type, n.Subtype)
+	}
+	if n.Key != "k" || n.Text != "t" {
+		t.Errorf("Key/Text = %q/%q, want k/t", n.Key, n.Text)
+	}
+	if n.Priority != "high" {
+		t.Errorf("Priority = %q, want high", n.Priority)
+	}
+	if n.Color != "red" {
+		t.Errorf("Color = %q, want red", n.Color)
+	}
+	if n.TimeoutMs != 5000 {
+		t.Errorf("TimeoutMs = %d, want 5000", n.TimeoutMs)
+	}
+
+	var minimal SystemNotification
+	if err := json.Unmarshal([]byte(`{"type":"system","subtype":"notification","key":"k","text":"t","priority":"low"}`), &minimal); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if minimal.Color != "" || minimal.TimeoutMs != 0 {
+		t.Errorf("optional fields should be zero: color=%q timeout_ms=%d", minimal.Color, minimal.TimeoutMs)
 	}
 }

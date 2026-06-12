@@ -226,6 +226,20 @@ func TestBuildArgs_ContainsExpectedFlags(t *testing.T) {
 	}
 }
 
+func TestBuildArgs_ReplayUserMessages(t *testing.T) {
+	args := LaunchOpts{ReplayUserMessages: true}.BuildArgs()
+
+	assertContainsFlag(t, args, "--replay-user-messages")
+}
+
+func TestBuildArgs_ReplayUserMessagesOmittedByDefault(t *testing.T) {
+	args := LaunchOpts{}.BuildArgs()
+
+	if slices.Contains(args, "--replay-user-messages") {
+		t.Errorf("expected no --replay-user-messages when ReplayUserMessages is false, got %v", args)
+	}
+}
+
 func assertContains(t *testing.T, args []string, flag, value string) {
 	t.Helper()
 	for i, a := range args {

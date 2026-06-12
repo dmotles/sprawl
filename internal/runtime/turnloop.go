@@ -24,6 +24,35 @@ import (
 // It is terse and neutral to avoid steering the agent.
 const continuationPrompt = "[auto-continue] A background task you started has completed. Review its output above and continue your work."
 
+// servicedTaskSet is a concurrency-safe set of background-task IDs that have
+// already driven an auto-continuation (QUM-807). It is shared between the
+// TurnLoop (Run goroutine, sprawl turns) and the UnifiedRuntime frame router
+// (reader goroutine, autonomous turns) so a task_id serviced by one path is
+// not re-serviced by the other — which would otherwise infinite-loop, since an
+// autonomous continuation spawns a sprawl turn that re-observes the same
+// task_notification frame (QUM-815).
+type servicedTaskSet struct {
+	mu sync.Mutex
+	m  map[string]struct{}
+}
+
+func newServicedTaskSet() *servicedTaskSet {
+	return &servicedTaskSet{m: map[string]struct{}{}}
+}
+
+func (s *servicedTaskSet) has(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.m[id]
+	return ok
+}
+
+func (s *servicedTaskSet) add(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[id] = struct{}{}
+}
+
 // SessionHandle is the subset of the backend Session API that the TurnLoop
 // needs. *backend.Session satisfies it structurally; tests may substitute a
 // mock. Keeping this an interface here (rather than depending on the concrete
@@ -79,6 +108,9 @@ type TurnLoopConfig struct {
 	// EventTurnFailed with an error wrapping context.DeadlineExceeded.
 	// Zero means no deadline (legacy behaviour). See QUM-581.
 	TurnTimeout time.Duration
+	// Serviced is the QUM-807 dedup set, shared with the UnifiedRuntime frame
+	// router (QUM-815). Nil means construct a private one (standalone tests).
+	Serviced *servicedTaskSet
 }
 
 // TurnLoop owns the single-goroutine drive loop for an agent runtime.
@@ -88,20 +120,29 @@ type TurnLoop struct {
 	mu          sync.Mutex
 	interruptCh chan struct{} // non-nil iff a turn is currently in flight
 
-	// servicedTaskIDs records the task_ids of background-task completions that
-	// have already driven an auto-continuation, so re-observing the same
+	// serviced records the task_ids of background-task completions that have
+	// already driven an auto-continuation, so re-observing the same
 	// task_notification frame in a later (continuation) turn does not enqueue a
-	// duplicate continuation (QUM-807). It outlives a single turn but is
-	// per-agent (one TurnLoop). It is read and written only inside executeTurn,
-	// which runs solely on the Run goroutine, so no lock is required — do not
-	// access it from other goroutines. Growth is bounded by the number of
-	// distinct background tasks a session starts (low cardinality); no eviction.
-	servicedTaskIDs map[string]struct{}
+	// duplicate continuation (QUM-807). QUM-815: it is a mutex-guarded set
+	// SHARED with the UnifiedRuntime frame router — the router (reader
+	// goroutine) services autonomous-turn task_ids, the TurnLoop (Run
+	// goroutine) services sprawl-turn ones, and an autonomous continuation
+	// spawns a sprawl turn that re-observes the same task_notification, so both
+	// paths must dedup against one set or it would infinite-loop. Growth is
+	// bounded by the number of distinct background tasks a session starts (low
+	// cardinality); no eviction.
+	serviced *servicedTaskSet
 }
 
-// NewTurnLoop returns a TurnLoop ready to Run.
+// NewTurnLoop returns a TurnLoop ready to Run. If cfg.Serviced is nil a private
+// set is created (so direct-construction tests work standalone); the
+// UnifiedRuntime injects a shared set so the router and loop dedup together.
 func NewTurnLoop(cfg TurnLoopConfig) *TurnLoop {
-	return &TurnLoop{cfg: cfg, servicedTaskIDs: map[string]struct{}{}}
+	serviced := cfg.Serviced
+	if serviced == nil {
+		serviced = newServicedTaskSet()
+	}
+	return &TurnLoop{cfg: cfg, serviced: serviced}
 }
 
 // Run drives the loop until ctx is cancelled. It executes the optional
@@ -283,7 +324,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 				if (sawEmptyTaskID || len(turnTaskIDs) > 0) && !interrupted {
 					l.cfg.Queue.Enqueue(QueueItem{Class: ClassContinuation, Prompt: continuationPrompt})
 					for id := range turnTaskIDs {
-						l.servicedTaskIDs[id] = struct{}{}
+						l.serviced.add(id)
 					}
 				}
 				// QUM-647: channel-close safety net. If the events channel
@@ -312,7 +353,7 @@ func (l *TurnLoop) executeTurn(ctx context.Context, prompt string, items []Queue
 				var tn protocol.TaskNotification
 				if err := protocol.ParseAs(msg, &tn); err != nil || tn.TaskID == "" {
 					sawEmptyTaskID = true
-				} else if _, serviced := l.servicedTaskIDs[tn.TaskID]; !serviced {
+				} else if !l.serviced.has(tn.TaskID) {
 					turnTaskIDs[tn.TaskID] = struct{}{}
 				}
 			}

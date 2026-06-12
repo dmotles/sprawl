@@ -175,6 +175,49 @@ func TestAdapter_StartBuildsStreamJSONExecSpecFromSessionSpec(t *testing.T) {
 	}
 }
 
+func TestAdapter_StartReplayUserMessagesPropagatesFlag(t *testing.T) {
+	starter := &mockStarter{transport: &mockManagedTransport{}}
+	adapter := NewAdapter(Config{
+		LookPath: func(string) (string, error) { return "/usr/bin/claude", nil },
+		Starter:  starter,
+	})
+
+	if _, err := adapter.Start(context.Background(), backendpkg.SessionSpec{
+		WorkDir:            "/repo",
+		SessionID:          "sess-1",
+		ReplayUserMessages: true,
+	}); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("starter specs = %d, want 1", len(starter.specs))
+	}
+	if !argsContain(starter.specs[0].Args, "--replay-user-messages") {
+		t.Errorf("args missing --replay-user-messages: %v", starter.specs[0].Args)
+	}
+}
+
+func TestAdapter_StartReplayUserMessagesDefaultOff(t *testing.T) {
+	starter := &mockStarter{transport: &mockManagedTransport{}}
+	adapter := NewAdapter(Config{
+		LookPath: func(string) (string, error) { return "/usr/bin/claude", nil },
+		Starter:  starter,
+	})
+
+	if _, err := adapter.Start(context.Background(), backendpkg.SessionSpec{
+		WorkDir:   "/repo",
+		SessionID: "sess-1",
+	}); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if len(starter.specs) != 1 {
+		t.Fatalf("starter specs = %d, want 1", len(starter.specs))
+	}
+	if argsContain(starter.specs[0].Args, "--replay-user-messages") {
+		t.Errorf("args should not contain --replay-user-messages by default: %v", starter.specs[0].Args)
+	}
+}
+
 func TestAdapter_StartUsesConfiguredBinaryPathWithoutLookup(t *testing.T) {
 	starter := &mockStarter{transport: &mockManagedTransport{}}
 	lookupCalled := false

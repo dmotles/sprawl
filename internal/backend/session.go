@@ -120,21 +120,22 @@ type Capabilities struct {
 // SessionSpec is the backend-neutral launch/session contract the callers build
 // and adapters interpret.
 type SessionSpec struct {
-	WorkDir         string
-	Identity        string
-	SprawlRoot      string
-	SessionID       string
-	PromptFile      string
-	Model           string
-	Effort          string
-	PermissionMode  string
-	AllowedTools    []string
-	DisallowedTools []string
-	AdditionalEnv   map[string]string
-	Resume          bool
-	Stderr          io.Writer
-	OnResumeFailure func()
-	Observer        Observer
+	WorkDir            string
+	Identity           string
+	SprawlRoot         string
+	SessionID          string
+	PromptFile         string
+	Model              string
+	Effort             string
+	PermissionMode     string
+	AllowedTools       []string
+	DisallowedTools    []string
+	AdditionalEnv      map[string]string
+	Resume             bool
+	ReplayUserMessages bool
+	Stderr             io.Writer
+	OnResumeFailure    func()
+	Observer           Observer
 }
 
 // InitSpec carries optional host-side session initialization data.
@@ -292,23 +293,35 @@ type session struct {
 	// read methods (e.g. BackendStats) without deadlock. nil clears.
 	terminalErrHandler atomic.Pointer[func(error)]
 
-	// autonomousFrameHandler, if installed by the runtime (QUM-631), is invoked
-	// for every frame routed to an autonomous (SDK/harness-initiated) turn —
-	// the turnFrame opened by a system:init while no sprawl StartTurn was
-	// pending. Lets the runtime surface harness-initiated turns to the EventBus
-	// (and thus the TUI), which would otherwise be dropped (they have a nil
-	// subscriber). Invoked synchronously from runReader; the handler MUST be
-	// non-blocking (the runtime's handler only does a bounded EventBus.Publish).
+	// frameRouter, if installed by the runtime (QUM-815), is the single
+	// observe-and-route callback invoked for every frame belonging to a turn
+	// (sprawl-initiated OR autonomous) plus a pre-init autonomous trigger
+	// (system/task_notification while idle). TurnInfo.Autonomous lets the
+	// runtime derive turn lifecycle (EventTurnStarted/Completed + InTurn) and
+	// the QUM-640 continuation UNIFORMLY for autonomous turns, while
+	// early-returning for sprawl turns (whose lifecycle the TurnLoop owns).
+	// Invoked synchronously from runReader; the handler MUST be non-blocking
+	// (the runtime's handler only does bounded EventBus.Publish / Queue.Enqueue).
 	// Distinct from Observer, which sees EVERY frame regardless of turn kind.
-	autonomousFrameHandler atomic.Pointer[func(*protocol.Message)]
+	frameRouter atomic.Pointer[func(*protocol.Message, TurnInfo)]
+}
 
-	// pendingTrigger holds a pre-init system/task_notification frame (QUM-634).
-	// It arrives ~6ms before the system/init that opens the autonomous turn, so
-	// it's stashed single-slot here and emitted to autonomousFrameHandler just
-	// before the init frame. Single-slot: a later task_notification overwrites
-	// it; the next autonomous init or any StartTurn consumes/clears it. Passive
-	// capture — never allocates a turnFrame or gates StartTurn (QUM-570).
-	pendingTrigger *protocol.Message
+// TurnInfo tags a frame routed to the runtime frame router (QUM-815).
+type TurnInfo struct {
+	// Autonomous is true for frames of a CLI-initiated (self-reprompt) turn or
+	// a pre-init autonomous trigger; false for sprawl-initiated (StartTurn) turns.
+	Autonomous bool
+	// EndOfTurn is true on the terminal frame of a turn (the `result`), or on a
+	// synthetic teardown notification when an autonomous turn is orphaned by
+	// session close/fault (in which case the routed message is nil).
+	EndOfTurn bool
+	// PreInit is true for a pre-init autonomous trigger (a system/task_notification
+	// arriving while idle, before any turnFrame is allocated). Such a frame is
+	// rendered/observed but must NOT open turn lifecycle: it is not guaranteed
+	// to be followed by a system:init (a racing StartTurn can absorb the init),
+	// so flipping InTurn / emitting EventTurnStarted on it would strand the
+	// lifecycle. The turn opens on the actual init frame instead (QUM-815).
+	PreInit bool
 }
 
 // inflightDrainTimeout bounds how long the reader waits for in-flight async
@@ -482,10 +495,6 @@ func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (
 		ctx:        ctx,
 	}
 	s.currentTurn = tf
-	// QUM-634: a sprawl turn means any stashed pre-init trigger is no longer the
-	// immediately-preceding cause of an autonomous init; clear it so it can't
-	// leak onto a later autonomous turn.
-	s.pendingTrigger = nil
 	// QUM-599: re-seed the watchdog baseline so the first tick of this
 	// turn doesn't immediately fault on a stale lastFrameAt left over
 	// from a long between-turn idle gap.
@@ -560,7 +569,8 @@ func (s *session) runReader(ctx context.Context) {
 		// test reading observer state on events-chan close sees the
 		// frames the reader produced.
 		s.mu.Lock()
-		if cur := s.currentTurn; cur != nil {
+		cur := s.currentTurn
+		if cur != nil {
 			if cur.lastErr == nil {
 				if s.fatalErr != nil {
 					cur.lastErr = s.fatalErr
@@ -575,6 +585,15 @@ func (s *session) runReader(ctx context.Context) {
 			s.currentTurn = nil
 		}
 		s.mu.Unlock()
+		// QUM-815: notify the runtime router that an orphaned autonomous turn
+		// has ended (no `result` was observed) so it can revert InTurn and
+		// unblock any turn-boundary waiter. Done outside s.mu — the router
+		// acquires the runtime lock and publishes to the EventBus.
+		if cur != nil && cur.autonomous {
+			if r := s.frameRouter.Load(); r != nil {
+				(*r)(nil, TurnInfo{Autonomous: true, EndOfTurn: true})
+			}
+		}
 	}()
 	defer s.drainInflight()
 	// F2: close observerCh so the drain goroutine exits, then wait
@@ -646,24 +665,26 @@ func (s *session) runReader(ctx context.Context) {
 			continue
 		}
 
-		// Route the frame. If a sprawl turn is active, deliver to its
-		// subscriber. Otherwise, when a `system`/`init` frame arrives with
-		// no in-flight turn, allocate an autonomous turnFrame so the next
-		// StartTurn can ctx-cancellably wait for it to close on `result`
-		// (QUM-578 explicit start/end markers). Stray non-init frames are
-		// observer-only — never allocate a frame, never block StartTurn —
-		// which avoids the QUM-570 deadlock class where the coarse
-		// classifier would gate forever on between-turn telemetry that
-		// never ended in a `result`.
-		s.mu.Lock()
-		if s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "task_notification" {
-			// QUM-634: stash the pre-init trigger. Observer already saw it (above);
-			// do NOT allocate a turnFrame (QUM-570 — stray telemetry never gates).
-			s.pendingTrigger = msg
-			s.mu.Unlock()
+		if msg.Type == "control_cancel_request" {
+			s.handleControlCancelRequest(msg)
 			continue
 		}
-		var pendingTrigger *protocol.Message
+
+		// Route the frame (QUM-815: single observe-and-route loop). When a
+		// `system`/`init` frame arrives with no in-flight turn, allocate an
+		// autonomous turnFrame so the next StartTurn can ctx-cancellably wait
+		// for it to close on `result` (QUM-578 explicit start/end markers).
+		// Stray non-init, non-trigger frames are observer-only — never allocate
+		// a frame, never block StartTurn — which avoids the QUM-570 deadlock
+		// class where the coarse classifier would gate forever on between-turn
+		// telemetry that never ended in a `result`.
+		s.mu.Lock()
+		// A pre-init system/task_notification (the QUM-634 timing crux) arrives
+		// while idle, ~6ms before the autonomous init. It is routed to the
+		// runtime IMMEDIATELY (no stash) so the router observes the trigger for
+		// the QUM-640 continuation, but — per QUM-570 — it does NOT allocate a
+		// turnFrame or gate StartTurn.
+		preInitTrigger := s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "task_notification"
 		if s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "init" {
 			s.currentTurn = &turnFrame{
 				startedAt:  time.Now(),
@@ -671,27 +692,16 @@ func (s *session) runReader(ctx context.Context) {
 				done:       make(chan struct{}),
 				autonomous: true,
 			}
-			pendingTrigger = s.pendingTrigger
-			s.pendingTrigger = nil
 		}
 		tf := s.currentTurn
 		s.mu.Unlock()
 
-		// QUM-631: surface autonomous-turn frames (harness self-reprompt) to the
-		// runtime so the TUI renders them. Autonomous turns have a nil subscriber,
-		// so without this they reach only the async Observer and are dropped from
-		// the live view. Only frames belonging to an autonomous turnFrame are
-		// forwarded; stray non-init telemetry never allocates a frame (QUM-570) and
-		// sprawl-initiated turns flow through the subscriber channel (QUM-578).
-		if tf != nil && tf.autonomous {
-			if hp := s.autonomousFrameHandler.Load(); hp != nil {
-				// QUM-634: emit the stashed trigger BEFORE the init frame so the TUI
-				// renders the auto-continue marker before the assistant response.
-				if pendingTrigger != nil {
-					(*hp)(pendingTrigger)
-				}
-				(*hp)(msg)
-			}
+		// Single route point. Frames belonging to a turn (sprawl or autonomous)
+		// and a pre-init autonomous trigger flow to the runtime frame router.
+		// Stray telemetry (tf == nil and not a trigger) is observer-only.
+		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger) {
+			autonomous := tf == nil || tf.autonomous
+			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger})
 		}
 
 		if tf != nil && tf.subscriber != nil {
@@ -915,6 +925,33 @@ func (s *session) handleInlineControlRequest(ctx context.Context, msg *protocol.
 
 	if err := s.transport.Send(ctx, resp); err != nil {
 		s.setFatalErr(fmt.Errorf("sending control response: %w", err))
+	}
+}
+
+// handleControlCancelRequest routes an inbound control_cancel_request
+// (CLI→client): the CLI is cancelling a control request it previously issued,
+// keyed by request_id. We cancel the matching in-flight async handler so a
+// ctx-respecting tool handler unwinds. No-op when the id is unknown (already
+// drained / never tracked). Mirrors the python SDK (query.py:279-285).
+//
+// Zero behavior change in normal flow: the installed CLI does not emit this
+// frame today. A malformed or empty-id cancel is ignored — it must never
+// fault the session (contrast handleInlineControlRequest, where a parse
+// failure on a required control_request is fatal).
+func (s *session) handleControlCancelRequest(msg *protocol.Message) {
+	var cr struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(msg.Raw, &cr); err != nil || cr.RequestID == "" {
+		return
+	}
+	s.mu.Lock()
+	cancel := s.inflight[cr.RequestID]
+	s.mu.Unlock()
+	if cancel != nil {
+		// Release s.mu before cancelling: the owning goroutine's deferred
+		// cleanup re-acquires s.mu to delete the entry (single delete site).
+		cancel()
 	}
 }
 
@@ -1206,15 +1243,16 @@ func (s *session) SetTerminalErrorHandler(h func(err error)) {
 	s.terminalErrHandler.Store(&h)
 }
 
-// SetAutonomousFrameHandler installs a handler invoked for each frame of an
-// autonomous (SDK/harness-initiated) turn (QUM-631). nil clears it. The
-// handler runs synchronously on the reader goroutine and MUST NOT block.
-func (s *session) SetAutonomousFrameHandler(h func(*protocol.Message)) {
+// SetFrameRouter installs the single observe-and-route callback invoked for
+// every frame belonging to a turn (sprawl or autonomous) plus a pre-init
+// autonomous trigger (QUM-815). nil clears it. The handler runs synchronously
+// on the reader goroutine and MUST NOT block.
+func (s *session) SetFrameRouter(h func(*protocol.Message, TurnInfo)) {
 	if h == nil {
-		s.autonomousFrameHandler.Store(nil)
+		s.frameRouter.Store(nil)
 		return
 	}
-	s.autonomousFrameHandler.Store(&h)
+	s.frameRouter.Store(&h)
 }
 
 // IsTerminallyFaulted reports whether the sticky terminalErr has been set
