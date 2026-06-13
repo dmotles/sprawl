@@ -979,7 +979,22 @@ func (r *Real) Wake(ctx context.Context, agentName string, reason agentpkg.WakeR
 	}
 	runtime, ok := r.runtimeRegistry.Get(agentName)
 	if !ok {
-		return nil, fmt.Errorf("agent %q not found", agentName)
+		// QUM-818: registry miss. On restart, RecoverAgents intentionally does
+		// not auto-resume (and therefore never Ensures) agents whose last
+		// report was `complete` — and never re-registers other non-auto-resumed
+		// offline classes either. Repopulate the runtime from on-disk state so
+		// a parked agent can still be revived. Ensure is idempotent and does
+		// not start a process. Terminal {retired, retiring} agents are not
+		// revivable, so keep returning "not found" for them.
+		st, lErr := state.LoadAgent(r.sprawlRoot, agentName)
+		if lErr != nil || state.IsTerminal(st.Status) {
+			return nil, fmt.Errorf("agent %q not found", agentName)
+		}
+		runtime = r.runtimeRegistry.Ensure(AgentRuntimeConfig{
+			SprawlRoot: r.sprawlRoot,
+			Agent:      st,
+			Starter:    r.runtimeStarter,
+		})
 	}
 	// QUM-726: capture the projected previous-state token BEFORE the wake
 	// path tears the runtime down, so the wake-prompt template can interpolate
