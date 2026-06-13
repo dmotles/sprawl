@@ -44,18 +44,16 @@ import (
 // terminal-error handler the UnifiedRuntime installs (via the
 // SetTerminalErrorHandler optional interface), plus a test hook to fire it.
 // It mirrors mockFaultableSession in internal/runtime/backend_fault_test.go but
-// lives in package supervisor's test scope. StartTurn returns an immediately
-// closed channel and Interrupt is a no-op — the turn loop just idles until the
-// terminal-error handler cancels its runCtx.
+// lives in package supervisor's test scope. WriteUserMessage and Interrupt are
+// no-ops — the runtime just idles until the terminal-error handler cancels its
+// runCtx (QUM-817: there is no longer a StartTurn drive path).
 type faultChainSession struct {
 	handler atomic.Value // func(error)
 	faulted atomic.Bool
 }
 
-func (s *faultChainSession) StartTurn(_ context.Context, _ string, _ ...backendpkg.TurnSpec) (<-chan *protocol.Message, error) {
-	ch := make(chan *protocol.Message)
-	close(ch)
-	return ch, nil
+func (s *faultChainSession) WriteUserMessage(context.Context, protocol.UserMessage) error {
+	return nil
 }
 
 func (s *faultChainSession) Interrupt(context.Context) error { return nil }

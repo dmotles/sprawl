@@ -97,9 +97,10 @@ func (h *WeaveRuntimeHandle) Interrupt(ctx context.Context) error {
 	return h.rt.Interrupt(ctx)
 }
 
-// Wake pokes the runtime's queue signal.
+// Wake is a no-op for weave (QUM-817). Weave has no Go-side queue to poke, and
+// per QUM-471 pending entries are left on disk for the TUI's peekAndDrainCmd to
+// drain (it writes them to stdin via TUIAdapter). There is nothing to wake.
 func (h *WeaveRuntimeHandle) Wake() error {
-	h.rt.Queue().Wake()
 	return nil
 }
 

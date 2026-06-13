@@ -2,8 +2,11 @@
 // a UnifiedRuntime and exposes its lifecycle/event stream as
 // bubbletea-friendly tea.Cmd values.
 //
-// These tests construct a real EventBus + MessageQueue + TurnLoop +
-// UnifiedRuntime; only the underlying SessionHandle is mocked.
+// These tests construct a real EventBus + UnifiedRuntime; only the underlying
+// SessionHandle is mocked. QUM-817: the Go MessageQueue/TurnLoop are deleted,
+// so turns are driven by publishing RuntimeEvents directly onto the runtime's
+// EventBus and inbound prompts are asserted against the session's
+// WriteUserMessage recorder.
 
 package tuiruntime
 
@@ -19,37 +22,27 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
-	livenesspkg "github.com/dmotles/sprawl/internal/supervisor/liveness"
 	tui "github.com/dmotles/sprawl/internal/tui"
 )
 
-// adapterMockSession is a SessionHandle test double that lets each test
-// hand-control the channel returned from StartTurn so we can drive specific
-// runtime events on demand. Independent of the package's other mocks so it
-// can evolve separately.
+// adapterMockSession is a SessionHandle test double (QUM-817). It records the
+// user messages the runtime writes to the CLI stdin (replacing the old
+// StartTurn drive path) so tests can assert prompt content + priority.
+// Independent of the package's other mocks so it can evolve separately.
 type adapterMockSession struct {
 	mu             sync.Mutex
-	starts         []string
-	onStart        func(call int) (<-chan *protocol.Message, error)
+	writes         []protocol.UserMessage
 	interruptCalls int32
 	interruptErr   error
 }
 
-func (m *adapterMockSession) StartTurn(_ context.Context, prompt string, _ ...backend.TurnSpec) (<-chan *protocol.Message, error) {
+func (m *adapterMockSession) WriteUserMessage(_ context.Context, msg protocol.UserMessage) error {
 	m.mu.Lock()
-	m.starts = append(m.starts, prompt)
-	call := len(m.starts) - 1
-	cb := m.onStart
+	m.writes = append(m.writes, msg)
 	m.mu.Unlock()
-	if cb != nil {
-		return cb(call)
-	}
-	ch := make(chan *protocol.Message)
-	close(ch)
-	return ch, nil
+	return nil
 }
 
 func (m *adapterMockSession) Interrupt(_ context.Context) error {
@@ -59,6 +52,28 @@ func (m *adapterMockSession) Interrupt(_ context.Context) error {
 
 func (m *adapterMockSession) interruptCount() int {
 	return int(atomic.LoadInt32(&m.interruptCalls))
+}
+
+func (m *adapterMockSession) lastWrite() (protocol.UserMessage, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.writes) == 0 {
+		return protocol.UserMessage{}, false
+	}
+	return m.writes[len(m.writes)-1], true
+}
+
+// writeWithContent returns the first recorded write whose content matches, used
+// by tests that don't care about ordering relative to other writes.
+func (m *adapterMockSession) writeWithContent(content string) (protocol.UserMessage, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, w := range m.writes {
+		if w.Message.Content == content {
+			return w, true
+		}
+	}
+	return protocol.UserMessage{}, false
 }
 
 // adapterMockSessionWithID adds a SessionID() method to test the
@@ -159,20 +174,14 @@ func TestTUIAdapter_Initialize_AlreadyStarted(t *testing.T) {
 }
 
 func TestTUIAdapter_WaitForEvent_AssistantText(t *testing.T) {
-	ch := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return ch, nil
-		},
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	// Drive a turn so the adapter sees an EventProtocolMessage.
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "hi"})
-	ch <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]}}`)
+	// Drive a turn frame straight onto the bus (QUM-817: no queue/StartTurn).
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]}}`),
+	})
 
 	// First WaitForEvent should produce the AssistantContentMsg (lifecycle
 	// events are skipped per spec).
@@ -194,19 +203,13 @@ func TestTUIAdapter_WaitForEvent_AssistantText(t *testing.T) {
 }
 
 func TestTUIAdapter_WaitForEvent_ToolCall(t *testing.T) {
-	ch := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return ch, nil
-		},
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
-	ch <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls"}}]}}`)
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"ls"}}]}}`),
+	})
 
 	msg := runCmd(t, a.WaitForEvent())
 	acm, ok := msg.(tui.AssistantContentMsg)
@@ -226,20 +229,14 @@ func TestTUIAdapter_WaitForEvent_ToolCall(t *testing.T) {
 }
 
 func TestTUIAdapter_WaitForEvent_ToolResult(t *testing.T) {
-	ch := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return ch, nil
-		},
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
 	// user protocol message carrying a tool_result block
-	ch <- makeAssistantMsg(t, `{"type":"user","uuid":"u-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"output","is_error":false}]}}`)
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"user","uuid":"u-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"output","is_error":false}]}}`),
+	})
 
 	msg := runCmd(t, a.WaitForEvent())
 	tr, ok := msg.(tui.ToolResultMsg)
@@ -255,24 +252,20 @@ func TestTUIAdapter_WaitForEvent_ToolResult(t *testing.T) {
 }
 
 func TestTUIAdapter_WaitForEvent_TurnCompleted_SessionResult(t *testing.T) {
-	ch := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return ch, nil
-		},
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
-	// Result message - turnLoop will emit EventProtocolMessage(result) +
-	// EventTurnCompleted. The adapter should surface the SessionResultMsg
-	// from EventTurnCompleted.
+	// QUM-817: emit EventProtocolMessage(result) + EventTurnCompleted directly,
+	// mirroring what the frame router publishes for a real turn. The adapter
+	// should surface the SessionResultMsg from EventTurnCompleted.
 	resultRaw := `{"type":"result","subtype":"success","is_error":false,"result":"done","duration_ms":42,"num_turns":1,"total_cost_usd":0.01}`
-	ch <- makeAssistantMsg(t, resultRaw)
-	close(ch)
+	resultMsg := makeAssistantMsg(t, resultRaw)
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventProtocolMessage, Message: resultMsg})
+	var pr protocol.ResultMessage
+	if err := protocol.ParseAs(resultMsg, &pr); err != nil {
+		t.Fatalf("ParseAs: %v", err)
+	}
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventTurnCompleted, Result: &pr})
 
 	// Loop until we see SessionResultMsg (we may see the protocol result
 	// message first, which also maps to SessionResultMsg). Either is fine.
@@ -297,17 +290,12 @@ func TestTUIAdapter_WaitForEvent_TurnCompleted_SessionResult(t *testing.T) {
 }
 
 func TestTUIAdapter_WaitForEvent_TurnFailed_SessionResultError(t *testing.T) {
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return nil, errors.New("boom")
-		},
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
+	// QUM-817: a failed turn is published as EventTurnFailed; the adapter maps
+	// it to SessionResultMsg{IsError:true, Result:<err>}.
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventTurnFailed, Error: errors.New("boom")})
 
 	deadline := time.After(3 * time.Second)
 	for {
@@ -342,36 +330,18 @@ func TestTUIAdapter_WaitForEvent_TurnFailed_SessionResultError(t *testing.T) {
 // docs/forensics/tui-weave-wedge-2026-05-05.md) and the terminal path is
 // invisible to the AppModel.
 func TestTUIAdapter_WaitForEvent_Interrupted_InterruptCompletedMsg(t *testing.T) {
-	ch := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return ch, nil
-		},
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
-
-	// Wait for runtime to enter TurnActive before interrupting.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
-		t.Fatalf("did not enter StateTurnActive; got %v", rt.State())
-	}
-
-	if err := rt.Interrupt(context.Background()); err != nil {
-		t.Fatalf("Interrupt: %v", err)
-	}
-
-	// Drain the turn so EventInterrupted fires with the result payload.
+	// QUM-817: EventInterrupted is published by the runtime when an in-flight
+	// turn drains after a user interrupt. Emit it directly with a result
+	// payload; the bridge adapter maps it to InterruptCompletedMsg.
 	resultRaw := `{"type":"result","subtype":"interrupted","is_error":false,"result":"stopped","duration_ms":10,"num_turns":2,"total_cost_usd":0.005}`
-	ch <- makeAssistantMsg(t, resultRaw)
-	close(ch)
+	var pr protocol.ResultMessage
+	if err := protocol.ParseAs(makeAssistantMsg(t, resultRaw), &pr); err != nil {
+		t.Fatalf("ParseAs: %v", err)
+	}
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventInterrupted, Result: &pr})
 
 	deadline2 := time.After(3 * time.Second)
 	for {
@@ -407,21 +377,26 @@ func TestTUIAdapter_WaitForEvent_SkipsLifecycleEvents(t *testing.T) {
 	// / EventStopped as TUI messages — it must loop past them. We drive a
 	// successful turn and verify the only msgs we observe are
 	// AssistantContentMsg + SessionResultMsg.
-	ch := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return ch, nil
-		},
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
-	ch <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
-	ch <- makeAssistantMsg(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`)
-	close(ch)
+	// QUM-817: publish a representative turn directly — interleaving the
+	// lifecycle-only events (TurnStarted/QueueDrained/Stopped) the adapter must
+	// skip with the content + terminal events it must surface.
+	resultRaw := `{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`
+	resultMsg := makeAssistantMsg(t, resultRaw)
+	var pr protocol.ResultMessage
+	if err := protocol.ParseAs(resultMsg, &pr); err != nil {
+		t.Fatalf("ParseAs: %v", err)
+	}
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventTurnStarted})
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`),
+	})
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventQueueDrained})
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventProtocolMessage, Message: resultMsg})
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventTurnCompleted, Result: &pr})
 
 	// Pull msgs and assert none of them are zero-valued / nil. None of
 	// SessionInitializedMsg / UserMessageSentMsg should appear (those are
@@ -457,53 +432,36 @@ func TestTUIAdapter_WaitForEvent_SkipsLifecycleEvents(t *testing.T) {
 	}
 }
 
-func TestTUIAdapter_SendMessage_EnqueuesUserClass(t *testing.T) {
+// QUM-817: SendMessage writes a kind:user prompt straight to the CLI stdin
+// with priority "next" (the CLI owns queuing/coalescing). We assert the
+// recorded stdin write rather than a Go-side queue item.
+func TestTUIAdapter_SendMessage_WritesUserPriorityNext(t *testing.T) {
 	mock := &adapterMockSession{}
-	rt, a := buildAdapter(t, mock)
-	// Note: NOT starting the runtime so the queue isn't drained — we want
-	// to inspect what got enqueued.
+	_, a := buildAdapter(t, mock)
 
 	msg := runCmd(t, a.SendMessage("hello"))
 	if _, ok := msg.(tui.UserMessageSentMsg); !ok {
 		t.Fatalf("SendMessage() = %T, want tui.UserMessageSentMsg", msg)
 	}
 
-	q := rt.Queue()
-	items := q.DrainAll()
-	if len(items) != 1 {
-		t.Fatalf("queue depth = %d, want 1", len(items))
+	um, ok := mock.lastWrite()
+	if !ok {
+		t.Fatal("SendMessage did not write a user message to stdin")
 	}
-	if items[0].Class != sprawlrt.ClassUser {
-		t.Errorf("queued item class = %q, want %q", items[0].Class, sprawlrt.ClassUser)
+	if um.Message.Content != "hello" {
+		t.Errorf("write content = %q, want %q", um.Message.Content, "hello")
 	}
-	if items[0].Prompt != "hello" {
-		t.Errorf("queued item prompt = %q, want %q", items[0].Prompt, "hello")
+	if um.Priority != "next" {
+		t.Errorf("write priority = %q, want %q", um.Priority, "next")
 	}
 }
 
 func TestTUIAdapter_Interrupt_ForwardsToRuntime(t *testing.T) {
-	turnCh := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return turnCh, nil
-		},
-	}
-	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
-
-	// Wait for an in-flight turn before triggering Interrupt.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
-		t.Fatalf("not StateTurnActive; got %v", rt.State())
-	}
-
+	// QUM-817: Interrupt() forwards unconditionally to the runtime, which
+	// forwards to the backend session (no turn-loop state required).
 	msg := runCmd(t, a.Interrupt())
 	ir, ok := msg.(tui.InterruptResultMsg)
 	if !ok {
@@ -513,44 +471,19 @@ func TestTUIAdapter_Interrupt_ForwardsToRuntime(t *testing.T) {
 		t.Errorf("InterruptResultMsg.Err = %v, want nil", ir.Err)
 	}
 
-	deadline2 := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline2) && mock.interruptCount() == 0 {
-		time.Sleep(5 * time.Millisecond)
-	}
 	if mock.interruptCount() == 0 {
 		t.Errorf("Session.Interrupt was not invoked")
 	}
-
-	// Let the turn drain so cleanup can stop.
-	turnCh <- makeAssistantMsg(t, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`)
-	close(turnCh)
 }
 
-// QUM-630: InterruptAndSend is the preempt-and-deliver path used by the TUI
-// when the user hits Esc while a msg is queued and a turn is in flight. The
-// adapter must (a) enqueue a ClassInterrupt queue item carrying the queued
-// prompt, and (b) call ForceInterruptForDelivery on the runtime so the
-// in-flight turn is preempted and the new prompt fires next. The result is
-// surfaced as tui.InterruptResultMsg.
-func TestTUIAdapter_InterruptAndSend_EnqueuesClassInterruptAndForcesInterrupt(t *testing.T) {
-	turnCh := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return turnCh, nil
-		},
-	}
-	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	// Drive the runtime into TurnActive so ForceInterruptForDelivery has
-	// something to preempt (and so Session.Interrupt is plausibly called).
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
-		time.Sleep(5 * time.Millisecond)
-	}
+// QUM-630/QUM-817: InterruptAndSend is the preempt-and-deliver path used by the
+// TUI when the user hits Esc while a msg is queued and a turn is in flight. The
+// adapter must (a) write the prompt to the CLI stdin as a `next` user message
+// FIRST (text-never-lost), and (b) issue a bare interrupt so the CLI yields and
+// processes the prompt next. The result is surfaced as tui.InterruptResultMsg.
+func TestTUIAdapter_InterruptAndSend_WritesPromptNextAndForcesInterrupt(t *testing.T) {
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
 
 	msg := runCmd(t, a.InterruptAndSend("preempt prompt"))
 	ir, ok := msg.(tui.InterruptResultMsg)
@@ -561,69 +494,31 @@ func TestTUIAdapter_InterruptAndSend_EnqueuesClassInterruptAndForcesInterrupt(t 
 		t.Errorf("InterruptResultMsg.Err = %v, want nil", ir.Err)
 	}
 
-	// Drain the active turn so we can inspect the queue without racing the
-	// turn loop dequeuing the ClassInterrupt item we just enqueued.
-	turnCh <- makeAssistantMsg(t, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`)
-	close(turnCh)
-
-	// ClassInterrupt enqueued with the supplied prompt. Either it's still
-	// in the queue (interrupt happened before next turn started) OR it was
-	// picked up as the next prompt; in both cases mock.starts records "preempt prompt".
-	q := rt.Queue()
-	items := q.DrainAll()
-	foundInQueue := false
-	for _, it := range items {
-		if it.Class == sprawlrt.ClassInterrupt && it.Prompt == "preempt prompt" {
-			foundInQueue = true
-		}
+	// (a) The prompt was written to stdin as a `next` user message.
+	um, ok := mock.writeWithContent("preempt prompt")
+	if !ok {
+		t.Fatalf("InterruptAndSend did not write %q to stdin", "preempt prompt")
+	}
+	if um.Priority != "next" {
+		t.Errorf("write priority = %q, want %q", um.Priority, "next")
 	}
 
-	mock.mu.Lock()
-	starts := append([]string(nil), mock.starts...)
-	mock.mu.Unlock()
-	foundInStarts := false
-	for _, s := range starts {
-		if s == "preempt prompt" {
-			foundInStarts = true
-		}
-	}
-	if !foundInQueue && !foundInStarts {
-		t.Errorf("ClassInterrupt{prompt=%q} not observed in queue nor session starts; queue=%+v starts=%v",
-			"preempt prompt", items, starts)
-	}
-
-	// Session.Interrupt should have been invoked at least once (preempt).
+	// (b) Session.Interrupt was invoked to preempt.
 	if mock.interruptCount() == 0 {
-		t.Errorf("Session.Interrupt was not invoked by InterruptAndSend (expected ForceInterruptForDelivery to preempt the active turn)")
+		t.Errorf("Session.Interrupt was not invoked by InterruptAndSend")
 	}
 }
 
-// QUM-630: When the preempt itself fails (Session.Interrupt returns an error
-// underneath ForceInterruptForDelivery), InterruptAndSend MUST still enqueue
-// the ClassInterrupt queue item carrying the queued prompt — that's the
-// "text never lost" contract. The failure MUST also be surfaced on the
+// QUM-630/QUM-817: When the preempt interrupt fails, InterruptAndSend MUST still
+// have written the prompt to the CLI stdin (text-never-lost), because the write
+// happens BEFORE the interrupt. The failure MUST also be surfaced on the
 // returned tui.InterruptResultMsg so the TUI can render a failure toast.
-func TestTUIAdapter_InterruptAndSend_InterruptFails_StillEnqueuesClassInterrupt(t *testing.T) {
-	turnCh := make(chan *protocol.Message, 4)
+func TestTUIAdapter_InterruptAndSend_InterruptFails_StillWritesPrompt(t *testing.T) {
 	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) {
-			return turnCh, nil
-		},
-		// Drive the preempt-time Session.Interrupt to return an error so
-		// ForceInterruptForDelivery's interrupt path observes a failure.
+		// Drive the preempt-time Session.Interrupt to return an error.
 		interruptErr: errors.New("injected session interrupt failure"),
 	}
-	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	// Drive the runtime into TurnActive so the preempt path is exercised.
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "long"})
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && rt.State() != (livenesspkg.State{Liveness: livenesspkg.Running, InTurn: true}) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	_, a := buildAdapter(t, mock)
 
 	msg := runCmd(t, a.InterruptAndSend("preempt prompt"))
 	ir, ok := msg.(tui.InterruptResultMsg)
@@ -635,34 +530,14 @@ func TestTUIAdapter_InterruptAndSend_InterruptFails_StillEnqueuesClassInterrupt(
 		t.Errorf("InterruptResultMsg.Err = nil, want non-nil so the TUI can surface a failure toast")
 	}
 
-	// Drain the active turn so we can inspect the queue without racing.
-	turnCh <- makeAssistantMsg(t, `{"type":"result","subtype":"interrupted","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0}`)
-	close(turnCh)
-
-	// (a) ClassInterrupt with the supplied prompt MUST still be enqueued —
-	// either still parked in the queue or already pulled into starts as the
-	// next turn's prompt.
-	q := rt.Queue()
-	items := q.DrainAll()
-	foundInQueue := false
-	for _, it := range items {
-		if it.Class == sprawlrt.ClassInterrupt && it.Prompt == "preempt prompt" {
-			foundInQueue = true
-		}
+	// (a) The prompt MUST still have been written to stdin despite the
+	// interrupt failure (text-never-lost contract).
+	um, ok := mock.writeWithContent("preempt prompt")
+	if !ok {
+		t.Fatalf("prompt %q not written to stdin despite interrupt failure (text-never-lost)", "preempt prompt")
 	}
-
-	mock.mu.Lock()
-	starts := append([]string(nil), mock.starts...)
-	mock.mu.Unlock()
-	foundInStarts := false
-	for _, s := range starts {
-		if s == "preempt prompt" {
-			foundInStarts = true
-		}
-	}
-	if !foundInQueue && !foundInStarts {
-		t.Errorf("ClassInterrupt{prompt=%q} not enqueued despite interrupt failure (text-never-lost contract); queue=%+v starts=%v",
-			"preempt prompt", items, starts)
+	if um.Priority != "next" {
+		t.Errorf("write priority = %q, want %q", um.Priority, "next")
 	}
 }
 
@@ -685,46 +560,38 @@ func TestTUIAdapter_InterruptAndSend_NilRuntime_ReturnsInterruptResultErr(t *tes
 }
 
 func TestTUIAdapter_Observe_SwapsSubscription(t *testing.T) {
-	chA := make(chan *protocol.Message, 4)
-	mockA := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) { return chA, nil },
-	}
+	mockA := &adapterMockSession{}
 	rtA := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "a", Session: mockA})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rtA.Stop(ctx)
 	})
-	if err := rtA.Start(context.Background()); err != nil {
-		t.Fatalf("Start A: %v", err)
-	}
 
 	a := NewTUIAdapter(rtA)
 
-	chB := make(chan *protocol.Message, 4)
-	mockB := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) { return chB, nil },
-	}
+	mockB := &adapterMockSession{}
 	rtB := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "b", Session: mockB})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rtB.Stop(ctx)
 	})
-	if err := rtB.Start(context.Background()); err != nil {
-		t.Fatalf("Start B: %v", err)
-	}
 
 	// Swap the adapter's observed runtime to B.
 	a.Observe(rtB)
 
-	// Publish on A; the adapter should NOT see it.
-	rtA.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "from-A"})
-	chA <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"alpha"}]}}`)
+	// Publish on A's bus; the adapter should NOT see it.
+	rtA.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"alpha"}]}}`),
+	})
 
-	// Publish on B; the adapter should see "beta".
-	rtB.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "from-B"})
-	chB <- makeAssistantMsg(t, `{"type":"assistant","uuid":"b-1","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}`)
+	// Publish on B's bus; the adapter should see "beta".
+	rtB.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"b-1","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}`),
+	})
 
 	// Drain msgs from the adapter; expect to see "beta" but never "alpha".
 	deadline := time.After(3 * time.Second)
@@ -819,19 +686,23 @@ func drainAdapter(t *testing.T, a *TUIAdapter, deadline time.Duration) []tea.Msg
 // where only the protocol-mapped (zero-valued) SessionResultMsg is emitted.
 
 func TestTUIAdapter_WaitForEvent_TurnCompleted_EmitsExactlyOneSessionResultMsg(t *testing.T) {
-	ch := make(chan *protocol.Message, 4)
-	mock := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) { return ch, nil },
-	}
+	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
 
-	rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "go"})
-	ch <- makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
-	ch <- makeAssistantMsg(t, `{"type":"result","subtype":"success","is_error":false,"result":"done","duration_ms":42,"num_turns":3,"total_cost_usd":0.01}`)
-	close(ch)
+	// Publish BOTH the protocol-result frame AND EventTurnCompleted so the
+	// dedupe (QUM-436 Item 1) is exercised: the protocol-result mapping is
+	// dropped and only the lifecycle SessionResultMsg survives.
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`),
+	})
+	resultMsg := makeAssistantMsg(t, `{"type":"result","subtype":"success","is_error":false,"result":"done","duration_ms":42,"num_turns":3,"total_cost_usd":0.01}`)
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventProtocolMessage, Message: resultMsg})
+	var pr protocol.ResultMessage
+	if err := protocol.ParseAs(resultMsg, &pr); err != nil {
+		t.Fatalf("ParseAs: %v", err)
+	}
+	rt.EventBus().Publish(sprawlrt.RuntimeEvent{Type: sprawlrt.EventTurnCompleted, Result: &pr})
 
 	msgs := drainAdapter(t, a, 1*time.Second)
 
@@ -900,19 +771,13 @@ func TestTUIAdapter_WaitForEvent_TurnFailed_EmitsExactlyOneSessionResultMsg(t *t
 // to rtB transparently and surface the next real event.
 
 func TestTUIAdapter_Observe_DoesNotEmitSpuriousEOF(t *testing.T) {
-	chA := make(chan *protocol.Message, 4)
-	mockA := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) { return chA, nil },
-	}
+	mockA := &adapterMockSession{}
 	rtA := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "a", Session: mockA})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rtA.Stop(ctx)
 	})
-	if err := rtA.Start(context.Background()); err != nil {
-		t.Fatalf("Start A: %v", err)
-	}
 	a := NewTUIAdapter(rtA)
 
 	// Park a goroutine on a.WaitForEvent before swapping to rtB.
@@ -927,25 +792,21 @@ func TestTUIAdapter_Observe_DoesNotEmitSpuriousEOF(t *testing.T) {
 	// meaningfully slowing the local suite.
 	time.Sleep(50 * time.Millisecond)
 
-	chB := make(chan *protocol.Message, 4)
-	mockB := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) { return chB, nil },
-	}
+	mockB := &adapterMockSession{}
 	rtB := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "b", Session: mockB})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rtB.Stop(ctx)
 	})
-	if err := rtB.Start(context.Background()); err != nil {
-		t.Fatalf("Start B: %v", err)
-	}
 
 	a.Observe(rtB)
 
-	// Drive a real event on rtB.
-	rtB.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "from-B"})
-	chB <- makeAssistantMsg(t, `{"type":"assistant","uuid":"b-1","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}`)
+	// Drive a real event on rtB's bus.
+	rtB.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"b-1","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}`),
+	})
 
 	// The parked goroutine OR a follow-up call must surface the rtB event,
 	// never a spurious SessionErrorMsg{io.EOF}.
@@ -980,42 +841,32 @@ func TestTUIAdapter_Observe_DoesNotEmitSpuriousEOF(t *testing.T) {
 // passes against current code; it's pinned here so a future refactor that
 // "remembers" cancellation across Observe() can't silently regress.
 func TestTUIAdapter_Observe_AfterCancel_ResubscribesCleanly(t *testing.T) {
-	chA := make(chan *protocol.Message, 4)
-	mockA := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) { return chA, nil },
-	}
+	mockA := &adapterMockSession{}
 	rtA := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "a", Session: mockA})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rtA.Stop(ctx)
 	})
-	if err := rtA.Start(context.Background()); err != nil {
-		t.Fatalf("Start A: %v", err)
-	}
 	a := NewTUIAdapter(rtA)
 
 	a.Cancel()
 
-	chB := make(chan *protocol.Message, 4)
-	mockB := &adapterMockSession{
-		onStart: func(_ int) (<-chan *protocol.Message, error) { return chB, nil },
-	}
+	mockB := &adapterMockSession{}
 	rtB := sprawlrt.New(sprawlrt.RuntimeConfig{Name: "b", Session: mockB})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rtB.Stop(ctx)
 	})
-	if err := rtB.Start(context.Background()); err != nil {
-		t.Fatalf("Start B: %v", err)
-	}
 
 	a.Observe(rtB)
 
-	// Drive a real event on rtB; WaitForEvent must surface it (not EOF).
-	rtB.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: "from-B"})
-	chB <- makeAssistantMsg(t, `{"type":"assistant","uuid":"b-1","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}`)
+	// Drive a real event on rtB's bus; WaitForEvent must surface it (not EOF).
+	rtB.EventBus().Publish(sprawlrt.RuntimeEvent{
+		Type:    sprawlrt.EventProtocolMessage,
+		Message: makeAssistantMsg(t, `{"type":"assistant","uuid":"b-1","message":{"role":"assistant","content":[{"type":"text","text":"beta"}]}}`),
+	})
 
 	deadline := time.After(2 * time.Second)
 	for {

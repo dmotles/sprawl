@@ -169,6 +169,11 @@ type Session interface {
 	Start(ctx context.Context) error
 	Initialize(ctx context.Context, spec InitSpec) error
 	StartTurn(ctx context.Context, prompt string, spec ...TurnSpec) (<-chan *protocol.Message, error)
+	// WriteUserMessage writes a single NDJSON user message to the CLI stdin
+	// (QUM-817). Unlike StartTurn it does NOT open a per-turn subscriber or gate
+	// on currentTurn: the CLI owns queuing/coalescing, and the single reader
+	// observes the resulting frames (including the isReplay consumption echo).
+	WriteUserMessage(ctx context.Context, msg protocol.UserMessage) error
 	Interrupt(ctx context.Context) error
 	Close() error
 	Wait() error
@@ -315,6 +320,11 @@ type TurnInfo struct {
 	// synthetic teardown notification when an autonomous turn is orphaned by
 	// session close/fault (in which case the routed message is nil).
 	EndOfTurn bool
+	// Replay is true for an inbound `user` frame carrying isReplay:true — the
+	// CLI's consumption ack for a previously-written stdin user message
+	// (QUM-817). The runtime flips the matching outstanding-map entry to
+	// consumed; it is not a turn-lifecycle frame.
+	Replay bool
 	// PreInit is true for a pre-init autonomous trigger (a system/task_notification
 	// arriving while idle, before any turnFrame is allocated). Such a frame is
 	// rendered/observed but must NOT open turn lifecycle: it is not guaranteed
@@ -446,6 +456,19 @@ func (s *session) Initialize(ctx context.Context, spec InitSpec) error {
 	case <-s.readerDone:
 		return errors.New("backend: session reader exited before initialize handshake")
 	}
+}
+
+// WriteUserMessage writes one NDJSON user message to the CLI stdin without
+// opening a turn (QUM-817). It ensures the reader is running so the resulting
+// frames (and the isReplay echo) are observed, then writes via the transport.
+func (s *session) WriteUserMessage(ctx context.Context, msg protocol.UserMessage) error {
+	if err := s.Start(ctx); err != nil {
+		return err
+	}
+	if msg.Type == "" {
+		msg.Type = "user"
+	}
+	return s.transport.Send(ctx, msg)
 }
 
 func (s *session) StartTurn(ctx context.Context, prompt string, _ ...TurnSpec) (<-chan *protocol.Message, error) {
@@ -696,12 +719,23 @@ func (s *session) runReader(ctx context.Context) {
 		tf := s.currentTurn
 		s.mu.Unlock()
 
-		// Single route point. Frames belonging to a turn (sprawl or autonomous)
-		// and a pre-init autonomous trigger flow to the runtime frame router.
-		// Stray telemetry (tf == nil and not a trigger) is observer-only.
-		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger) {
+		// QUM-817: an inbound `user` frame with isReplay:true is the consumption
+		// ack for a previously-written stdin user message. Route it to the
+		// runtime (regardless of turn state) so it can flip the outstanding map.
+		replayEcho := false
+		if msg.Type == "user" {
+			var uf protocol.UserFrame
+			if protocol.ParseAs(msg, &uf) == nil && uf.IsReplay {
+				replayEcho = true
+			}
+		}
+
+		// Single route point. Frames belonging to a turn (sprawl or autonomous),
+		// a pre-init autonomous trigger, and isReplay consumption echoes flow to
+		// the runtime frame router. Stray telemetry is observer-only.
+		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger || replayEcho) {
 			autonomous := tf == nil || tf.autonomous
-			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger})
+			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger, Replay: replayEcho})
 		}
 
 		if tf != nil && tf.subscriber != nil {

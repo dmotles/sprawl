@@ -102,16 +102,7 @@ func TestUnifiedRuntime_PublishesEventBackendFaultedOnTerminalErr(t *testing.T) 
 // EventBackendFaulted — never EventTurnFailed — so the EventTurnFailed drain
 // below times out.
 func TestUnifiedRuntime_PublishesEventTurnFailedOnTerminalErrDuringTurn(t *testing.T) {
-	// blockCh is never closed during the test: the forwarding goroutine in
-	// stateTrackingSession parks in `for msg := range ch`, keeping
-	// turnRunning=true until runCtx is cancelled by Stop.
-	blockCh := make(chan *protocol.Message)
-
 	mock := &mockFaultableSession{}
-	mock.onStart = func(_ int) (<-chan *protocol.Message, error) {
-		return blockCh, nil
-	}
-
 	rt := New(RuntimeConfig{
 		Name:    "agent-fault-turn",
 		Session: mock,
@@ -121,25 +112,22 @@ func TestUnifiedRuntime_PublishesEventTurnFailedOnTerminalErrDuringTurn(t *testi
 		t.Fatalf("Start: %v", err)
 	}
 	defer func() {
-		// blockCh never closes on its own; Stop's ctx cancel unblocks the
-		// turn loop via runCtx cancellation.
 		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = rt.Stop(stopCtx)
 	}()
 
-	// Subscribe BEFORE enqueuing so we don't miss any event.
+	// Subscribe BEFORE opening the turn so we don't miss any event.
 	ch, unsub := rt.EventBus().SubscribeNamed("turnfail-test", 16)
 	defer unsub()
 
-	// Drive the loop to call StartTurn -> turnRunning=true.
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "hi"})
-
-	// Confirm a turn actually started before we fire the fault.
+	// QUM-817: a turn is "in flight" when the frame router has observed an
+	// opening init frame (inTurn=true). Drive that directly via routeFrame.
+	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
 	deadline := time.Now().Add(2 * time.Second)
-	for mock.startCount() < 1 {
+	for !rt.State().InTurn {
 		if time.Now().After(deadline) {
-			t.Fatal("turn never started (StartTurn not invoked) before firing terminal err")
+			t.Fatal("turn never entered InTurn before firing terminal err")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -177,13 +165,7 @@ func TestUnifiedRuntime_PublishesEventTurnFailedOnTerminalErrDuringTurn(t *testi
 // turn loop exits silently on the fault-induced runCtx cancel (no competing
 // terminal event), so the TUI finalizes exactly once.
 func TestUnifiedRuntime_FaultDuringTurnEmitsExactlyOneTerminalTurnEvent(t *testing.T) {
-	blockCh := make(chan *protocol.Message)
-
 	mock := &mockFaultableSession{}
-	mock.onStart = func(_ int) (<-chan *protocol.Message, error) {
-		return blockCh, nil
-	}
-
 	rt := New(RuntimeConfig{
 		Name:    "agent-fault-once",
 		Session: mock,
@@ -201,12 +183,11 @@ func TestUnifiedRuntime_FaultDuringTurnEmitsExactlyOneTerminalTurnEvent(t *testi
 	ch, unsub := rt.EventBus().SubscribeNamed("turnfail-once-test", 32)
 	defer unsub()
 
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "hi"})
-
+	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
 	deadline := time.Now().Add(2 * time.Second)
-	for mock.startCount() < 1 {
+	for !rt.State().InTurn {
 		if time.Now().After(deadline) {
-			t.Fatal("turn never started before firing terminal err")
+			t.Fatal("turn never entered InTurn before firing terminal err")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

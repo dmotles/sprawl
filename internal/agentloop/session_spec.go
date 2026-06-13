@@ -40,6 +40,10 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 		AdditionalEnv:   additionalEnv,
 		Stderr:          stderr,
 		DisallowedTools: rootinit.ChildDisallowedTools,
+		// QUM-817: the CLI must echo each consumed stdin user message back on
+		// stdout (isReplay) so the runtime can confirm consumption — the ack
+		// that drives MarkDelivered, task completion, and no-reinjection.
+		ReplayUserMessages: true,
 	}
 }
 

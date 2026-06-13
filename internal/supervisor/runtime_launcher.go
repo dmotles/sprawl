@@ -131,22 +131,13 @@ func (s *inProcessUnifiedStarter) Start(spec RuntimeStartSpec) (RuntimeHandle, e
 		Session:       session,
 		InitialPrompt: initialPrompt,
 		Capabilities:  caps,
-		// TurnTimeout=0 DISABLES the wall-clock per-turn cap (QUM-618 verdict).
-		// The 30-min cap (QUM-578/QUM-581) was REMOVED because it false-
-		// guillotined healthy long autonomous turns (the finn M4 incident:
-		// a legitimate 30-min sidechain turn was cut 3s before its deadline,
-		// pinning the backend currentTurn and wedging the agent). The real
-		// no-progress guard is the D1 frame-based hang watchdog
-		// (defaultHangTimeout=10m, gated on currentTurn != nil per QUM-599) —
-		// it catches a wedged-open SDK stream that stops emitting frames,
-		// which is the actual failure mode a wall-clock cap cannot distinguish
-		// from healthy long work. Do NOT re-add a wall-clock cap here. Note:
-		// 0 is a DISABLED sentinel — turnloop.go guards `TurnTimeout > 0`
-		// before wrapping with context.WithTimeout (passing 0 there would
-		// yield an already-expired ctx and instantly wedge every turn).
-		TurnTimeout:          0,
-		PostTurnSweep:        coord.PostTurnSweep,
-		OnQueueItemDelivered: coord.OnQueueItemDelivered,
+		// QUM-817: no wall-clock per-turn cap (the TurnLoop that owned it is
+		// deleted). The no-progress guard is the backend D1 frame-based hang
+		// watchdog (defaultHangTimeout=10m, gated on currentTurn != nil per
+		// QUM-599). PostTurnSweep is the QUM-580 re-drain; OnDelivered fires on
+		// the isReplay consumption ack (replacing the queue-drain signal).
+		PostTurnSweep: coord.PostTurnSweep,
+		OnDelivered:   coord.OnDelivered,
 	})
 
 	// Phase 5: attach EventBus subscribers. Safe to do now — bus exists; turn
@@ -506,11 +497,12 @@ func (h *unifiedHandle) feedTasks() {
 		if tk.PromptFile != "" {
 			prompt = "You have a new task. Read it from @" + tk.PromptFile + " and begin working."
 		}
-		h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-			Class:    runtimepkg.ClassTask,
-			Prompt:   prompt,
-			EntryIDs: []string{"task:" + tk.ID},
-		})
+		// QUM-817 + Amendment 1: a delegated task is written to stdin as a
+		// `later`-priority system message wrapped in the §3.2 task tag, so it
+		// defers to AFTER the current turn (a clean task boundary) rather than
+		// splicing mid-turn.
+		_, _ = h.rt.WriteSystemMessage(context.Background(),
+			inboxprompt.BuildTaskNotification(tk.ID, prompt), "later", []string{"task:" + tk.ID})
 	}
 }
 
@@ -523,61 +515,64 @@ func (h *unifiedHandle) Interrupt(ctx context.Context) error {
 
 func (h *unifiedHandle) Wake() error {
 	h.feedTasks()
-	h.rt.Queue().Wake()
+	h.drainPendingToStdin()
 	return nil
 }
 
-// WakeForDelivery is the cooperative-wake variant. It drains pending entries
-// into the runtime queue (so the next turn boundary observes them) and then
-// calls the runtime's cooperative wake path — which never calls
-// Session.Interrupt. See QUM-549/QUM-550.
+// WakeForDelivery is the cooperative-wake variant. QUM-817: it writes pending
+// entries to the CLI stdin (priority `next`); the stdin write itself wakes the
+// CLI's command queue, so there is no separate signal to poke.
 func (h *unifiedHandle) WakeForDelivery() error {
-	h.drainPendingToQueue()
-	return h.rt.WakeForDelivery(context.Background())
+	h.drainPendingToStdin()
+	return nil
 }
 
-// ForceInterruptDelivery is the unconditional-preempt variant. Drains
-// pending entries and then forces an interrupt (even when idle). See
-// QUM-549/QUM-550.
+// ForceInterruptDelivery is the preempt variant for send_message(interrupt=
+// true). QUM-817 (Slice 2): it writes the pending entries as normal `next`
+// stdin messages then issues a bare contentless interrupt (Esc) so the CLI
+// yields and processes them on the next iteration. Cancel-and-replace `now`
+// is Slice 3.
 func (h *unifiedHandle) ForceInterruptDelivery() error {
-	h.drainPendingToQueue()
+	h.drainPendingToStdin()
 	return h.rt.ForceInterruptForDelivery(context.Background())
 }
 
-func (h *unifiedHandle) drainPendingToQueue() {
+// drainPendingToStdin reads the durable maildir + status/liveness envelopes and
+// writes each, tag-wrapped (§3.2) and priority `next`, to the CLI stdin
+// (QUM-817). The isReplay echo of each write later confirms delivery
+// (OnDelivered → MarkDelivered). Replaces the old Go-queue enqueue path.
+func (h *unifiedHandle) drainPendingToStdin() {
 	pending, err := agentloop.ListPending(h.sprawlRoot, h.name)
 	if err != nil {
 		slog.Default().Debug(
-			"unified-runtime: drainPendingToQueue ListPending failed",
+			"unified-runtime: drainPendingToStdin ListPending failed",
 			slog.String("agent", h.name),
 			slog.Any("err", err),
 		)
 	}
 	statusLines := inboxprompt.DrainStatusChangeLines(h.sprawlRoot, h.name)
 	// QUM-730: liveness_check envelopes ride the same status-class channel
-	// as status_change — drained off-band and rendered into the next-turn
-	// prompt's prologue.
+	// as status_change — drained off-band and written to stdin.
 	livenessLines := inboxprompt.DrainLivenessCheckLines(h.sprawlRoot, h.name)
 	statusLines = append(statusLines, livenessLines...)
 	if len(pending) == 0 && len(statusLines) == 0 {
 		return
 	}
 	interrupts, asyncs := inboxprompt.SplitByClass(pending)
+	// QUM-817: interrupt-class and async-class inbox messages are both written
+	// as `next` (the urgency `now` mapping is Slice 3). Each batch is one stdin
+	// message carrying its tag-wrapped lines.
 	if len(interrupts) > 0 {
 		ids := make([]string, 0, len(interrupts))
 		for _, e := range interrupts {
 			ids = append(ids, e.ID)
 		}
-		h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-			Class:    runtimepkg.ClassInterrupt,
-			Prompt:   inboxprompt.BuildInterruptFlushPrompt(interrupts),
-			EntryIDs: ids,
-		})
+		_, _ = h.rt.WriteSystemMessage(context.Background(),
+			inboxprompt.BuildInterruptFlushPrompt(interrupts), "next", ids)
 	}
-	// QUM-559: status lines ride along with the async batch, prepended
-	// so they surface before any queued maildir messages. When only
-	// status lines exist (no asyncs), emit them as their own ClassInbox
-	// item with no entry IDs (nothing to MarkDelivered).
+	// QUM-559: status lines ride along with the async batch, prepended so they
+	// surface before any queued maildir messages. When only status lines exist
+	// (no asyncs), they are written with no entry IDs (nothing to MarkDelivered).
 	if len(asyncs) > 0 || len(statusLines) > 0 {
 		ids := make([]string, 0, len(asyncs))
 		for _, e := range asyncs {
@@ -588,11 +583,7 @@ func (h *unifiedHandle) drainPendingToQueue() {
 			prompt.WriteString(line)
 		}
 		prompt.WriteString(inboxprompt.BuildQueueFlushPrompt(asyncs))
-		h.rt.Queue().Enqueue(runtimepkg.QueueItem{
-			Class:    runtimepkg.ClassInbox,
-			Prompt:   prompt.String(),
-			EntryIDs: ids,
-		})
+		_, _ = h.rt.WriteSystemMessage(context.Background(), prompt.String(), "next", ids)
 	}
 }
 

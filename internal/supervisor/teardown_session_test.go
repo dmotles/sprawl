@@ -203,7 +203,7 @@ func TestHandleStop_Contract_CloseThenKill(t *testing.T) {
 		{
 			name: "unifiedHandle",
 			build: func(t *testing.T) (handleStopper, *fakeBackendSession) {
-				uh, fs, _, _ := buildStartedUnifiedHandleForTest(t, backendpkg.Capabilities{})
+				uh, fs, _ := buildStartedUnifiedHandleForTest(t, backendpkg.Capabilities{})
 				return uh, fs
 			},
 		},

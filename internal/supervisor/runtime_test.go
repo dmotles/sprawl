@@ -38,10 +38,8 @@ type runtimeTestSession struct {
 
 func (s *runtimeTestSession) Start(context.Context) error                           { return nil }
 func (s *runtimeTestSession) Initialize(context.Context, backendpkg.InitSpec) error { return nil }
-func (s *runtimeTestSession) StartTurn(context.Context, string, ...backendpkg.TurnSpec) (<-chan *protocol.Message, error) {
-	ch := make(chan *protocol.Message)
-	close(ch)
-	return ch, nil
+func (s *runtimeTestSession) WriteUserMessage(context.Context, protocol.UserMessage) error {
+	return nil
 }
 
 func (s *runtimeTestSession) Interrupt(context.Context) error {

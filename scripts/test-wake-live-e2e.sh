@@ -207,8 +207,8 @@ _stmux new-session -d -s "$SESSION" -x 200 -y 50 \
 _stmux set-option -t "$SESSION" window-size manual >/dev/null
 _stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
 
-if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
-    pass "TUI rendered ('weave (idle)' visible)"
+if wait_for_pattern "$SESSION" "weave ●" 45; then
+    pass "TUI rendered ('weave ●' root pill visible — QUM-656/733 orbital tree)"
 else
     fail "TUI did not render within 45s"
     capture_pane "$SESSION" | tail -30 >&2
@@ -318,8 +318,12 @@ _stmux send-keys -t "$SESSION" "$RECOVER_PROMPT"
 sleep 0.5
 _stmux send-keys -t "$SESSION" Enter
 
-if wait_for_pattern_fast "$SESSION" "Woke agent $CHILD_NAME" 60; then
-    pass "mcp__sprawl__wake returned success ack"
+# The wake ack differs by path: a healthy-agent wake returns "Woke agent <name>",
+# while waking a terminally-faulted agent (this scenario: subscriber_wedged)
+# returns the marshaled WakeResult JSON ({"mode":"fresh","session_restored":...}).
+# Accept either form.
+if wait_for_pattern_fast "$SESSION" "Woke agent $CHILD_NAME|session_restored|\"mode\":\"fresh\"" 60; then
+    pass "mcp__sprawl__wake returned success ack (fresh-session recovery)"
 else
     fail "recover success ack did not appear within 60s"
     capture_pane "$SESSION" | tail -60 >&2

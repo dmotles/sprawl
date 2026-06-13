@@ -62,18 +62,19 @@ func (c *sweepCoordinator) Bind(wake func() error) {
 	c.mu.Unlock()
 }
 
-// OnQueueItemDelivered is forwarded to runtimepkg.RuntimeConfig. It increments
-// the per-turn delivered counter (once per QueueItem-with-EntryIDs, regardless
-// of how many EntryIDs the item carries) and flips each delivered entry's
-// on-disk state: task: prefixes mark the task as done; other entry IDs are
-// passed to agentloop.MarkDelivered.
-func (c *sweepCoordinator) OnQueueItemDelivered(it runtimepkg.QueueItem) {
-	if len(it.EntryIDs) > 0 {
+// OnDelivered is forwarded to runtimepkg.RuntimeConfig.OnDelivered (QUM-817).
+// It fires when a written stdin user message is confirmed consumed by its
+// isReplay echo, carrying the message's entryIDs. It increments the per-turn
+// delivered counter (once per delivered message) and flips each delivered
+// entry's on-disk state: task: prefixes mark the task as done; other entry IDs
+// are passed to agentloop.MarkDelivered.
+func (c *sweepCoordinator) OnDelivered(entryIDs []string) {
+	if len(entryIDs) > 0 {
 		c.mu.Lock()
 		c.deliveredItems++
 		c.mu.Unlock()
 	}
-	for _, id := range it.EntryIDs {
+	for _, id := range entryIDs {
 		if strings.HasPrefix(id, "task:") {
 			taskID := strings.TrimPrefix(id, "task:")
 			found, err := state.GetTask(c.sprawlRoot, c.name, taskID)

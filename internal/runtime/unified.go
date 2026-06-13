@@ -1,14 +1,16 @@
-// UnifiedRuntime wraps the per-agent runtime building blocks (MessageQueue,
-// EventBus, TurnLoop) behind a single supervised lifecycle. See
-// docs/designs/unified-runtime.md sections 3.1, 3.6, and 4.
+// UnifiedRuntime wraps the per-agent EventBus and stdin-write input path
+// behind a single supervised lifecycle (QUM-817: the Go MessageQueue and
+// TurnLoop were deleted; every turn is now router-driven from the stdout
+// stream). See docs/designs/unified-runtime.md sections 3.1, 3.6, and 4.
 
 package runtime
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
+	"fmt"
 	"sync"
-	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -26,13 +28,15 @@ type RuntimeConfig struct {
 	// via UnifiedRuntime.Capabilities(). The supervisor uses this to forward
 	// caps to its RuntimeHandle. See QUM-398.
 	Capabilities backend.Capabilities
-	// OnQueueItemDelivered is forwarded to TurnLoopConfig. See TurnLoopConfig.
-	OnQueueItemDelivered func(item QueueItem)
-	// PostTurnSweep is forwarded to TurnLoopConfig. See TurnLoopConfig.
+	// OnDelivered, if non-nil, is invoked when a written stdin user message is
+	// confirmed consumed by its isReplay echo (QUM-817), carrying the message's
+	// entryIDs (maildir ids / "task:<id>"). Replaces the QUM-579
+	// OnQueueItemDelivered queue-drain signal. Must not block.
+	OnDelivered func(entryIDs []string)
+	// PostTurnSweep, if non-nil, is invoked once per turn boundary (on
+	// EventTurnCompleted/Failed/Interrupted). The QUM-580 defense-in-depth
+	// re-drain of undelivered pending maildir entries. Must not block.
 	PostTurnSweep func()
-	// TurnTimeout is forwarded to TurnLoopConfig.TurnTimeout (0 = no deadline).
-	// See QUM-581.
-	TurnTimeout time.Duration
 }
 
 // sessionIDProvider is an optional interface a Session may satisfy to expose a
@@ -41,59 +45,115 @@ type sessionIDProvider interface {
 	SessionID() string
 }
 
-// UnifiedRuntime owns the per-agent queue, event bus, and turn loop and
-// coordinates their lifecycle.
-//
-// State updates are driven synchronously from a wrapper around the
-// SessionHandle: when StartTurn is invoked from the loop goroutine, the
-// wrapper marks the runtime as turn-active before returning the event
-// channel; when the channel closes, the wrapper transitions back to idle.
-// This means rt.State() observed from any goroutine is consistent with the
-// observable progress of the loop, without depending on a buffered
-// EventBus subscription draining in time.
+// SessionHandle is the subset of the backend Session API the UnifiedRuntime
+// drives (QUM-817). The runtime no longer opens turns via StartTurn; it writes
+// user messages straight to the CLI stdin and observes the resulting frames via
+// the installed frame router. The concrete *backend.session satisfies this
+// structurally; tests substitute a fake.
+type SessionHandle interface {
+	WriteUserMessage(ctx context.Context, msg protocol.UserMessage) error
+	Interrupt(ctx context.Context) error
+}
+
 type UnifiedRuntime struct {
 	cfg      RuntimeConfig
-	queue    *MessageQueue
 	eventBus *EventBus
 
-	mu          sync.RWMutex
-	liveness    livenesspkg.State
-	started     bool
-	stopped     bool
-	turnRunning bool
-	// autonomousInTurn is true while the frame router (QUM-815) is observing an
-	// in-flight autonomous (CLI self-reprompt) turn. Guarded by mu and OR-ed
-	// into State().InTurn so autonomous turns flip InTurn uniformly. Mutually
-	// exclusive with a sprawl turn (an autonomous turn only opens when the
-	// session has no sprawl turn in flight).
-	autonomousInTurn bool
-	// pendingInterrupt arms an interrupt for the *next* turn the loop
-	// starts. It is set when Interrupt() is called while no turn is
-	// currently running (state Idle but the loop may be about to consume
-	// queued work). The wrapper consumes the flag on the next StartTurn
-	// and routes it through TurnLoop.Interrupt so the terminal event is
-	// classified as EventInterrupted.
-	pendingInterrupt bool
+	mu       sync.RWMutex
+	liveness livenesspkg.State
+	started  bool
+	stopped  bool
+	// inTurn is true while the frame router (QUM-817) is observing an in-flight
+	// turn (every turn is now router-driven — there is no separate sprawl-turn
+	// path). Guarded by mu and OR-ed into State().InTurn.
+	inTurn bool
 
-	cancel   context.CancelFunc
-	loopWG   sync.WaitGroup
-	turnLoop *TurnLoop
-
+	cancel        context.CancelFunc
+	doneWG        sync.WaitGroup
 	done          chan struct{}
 	closeDoneOnce sync.Once
 
-	// serviced is the QUM-807 dedup set shared between the TurnLoop and the
-	// frame router (QUM-815). Created in New so it is live even before Start.
+	// serviced is the QUM-807 dedup set used by the frame router for the QUM-640
+	// continuation. Created in New so it is live even before Start.
 	serviced *servicedTaskSet
-	// autoTurn holds the frame router's per-autonomous-turn observation state.
-	// Touched ONLY by routeFrame, which runs solely on the backend reader
-	// goroutine — so no lock is needed for its fields (autonomousInTurn, the
-	// cross-goroutine read surface, is guarded separately by mu).
+	// autoTurn holds the frame router's per-turn observation state. Touched ONLY
+	// by routeFrame, which runs solely on the backend reader goroutine — so no
+	// lock is needed for its fields (inTurn, the cross-goroutine read surface,
+	// is guarded separately by mu).
 	autoTurn autonomousTurnState
+
+	// outstanding is the ONLY client-side message state (QUM-817): a map of
+	// every stdin user message we've written, keyed by uuid, flipped to consumed
+	// when its isReplay echo is observed. outMu is a leaf lock — never held
+	// while calling the session, publishing, or acquiring mu.
+	outMu       sync.Mutex
+	outstanding map[string]*OutstandingEntry
+}
+
+// outstandingKind classifies a written user message (QUM-817).
+type outstandingKind int
+
+const (
+	// kindUser is a human-typed prompt (recallable in the weave TUI — Slice 4).
+	kindUser outstandingKind = iota
+	// kindSystem is a sprawl-originated message (report_status, inbox, task,
+	// continuation, liveness) — NOT user-recallable.
+	kindSystem
+)
+
+// outstandingState tracks a written message's lifecycle (QUM-817).
+type outstandingState int
+
+const (
+	statePending outstandingState = iota
+	stateConsumed
+	stateCancelled
+)
+
+// OutstandingEntry is one tracked stdin user message.
+type OutstandingEntry struct {
+	kind     outstandingKind
+	state    outstandingState
+	text     string   // retained for recall (Slice 4); harmless in Slice 2
+	entryIDs []string // maildir entry ids / "task:<id>" for delivery tracking
+}
+
+// continuationPrompt is the synthetic, machine-originated nudge written to
+// stdin at turn-end when a run_in_background task completed (QUM-640). The
+// completed task's result is already in the CLI's context as a tool_result;
+// this prompt only grants the agent a turn to review it and continue. Terse and
+// neutral to avoid steering the agent.
+const continuationPrompt = "[auto-continue] A background task you started has completed. Review its output above and continue your work."
+
+// servicedTaskSet is a concurrency-safe set of background-task IDs that have
+// already driven an auto-continuation (QUM-807/QUM-817). The frame router
+// (reader goroutine) services autonomous-turn task_ids; the dedup prevents a
+// continuation turn that re-observes the same task_notification from re-firing
+// (infinite loop).
+type servicedTaskSet struct {
+	mu sync.Mutex
+	m  map[string]struct{}
+}
+
+func newServicedTaskSet() *servicedTaskSet {
+	return &servicedTaskSet{m: map[string]struct{}{}}
+}
+
+func (s *servicedTaskSet) has(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.m[id]
+	return ok
+}
+
+func (s *servicedTaskSet) add(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[id] = struct{}{}
 }
 
 // autonomousTurnState is the frame router's per-turn bookkeeping for an
-// in-flight autonomous turn (QUM-815). Reader-goroutine-only.
+// in-flight turn (QUM-815/QUM-817). Reader-goroutine-only.
 type autonomousTurnState struct {
 	open           bool
 	sawEmptyTaskID bool
@@ -111,12 +171,12 @@ func (a *autonomousTurnState) reset() {
 // until Start is called.
 func New(cfg RuntimeConfig) *UnifiedRuntime {
 	rt := &UnifiedRuntime{
-		cfg:      cfg,
-		queue:    NewMessageQueue(),
-		eventBus: NewEventBus(),
-		liveness: livenesspkg.State{Liveness: livenesspkg.Running},
-		done:     make(chan struct{}),
-		serviced: newServicedTaskSet(),
+		cfg:         cfg,
+		eventBus:    NewEventBus(),
+		liveness:    livenesspkg.State{Liveness: livenesspkg.Running},
+		done:        make(chan struct{}),
+		serviced:    newServicedTaskSet(),
+		outstanding: make(map[string]*OutstandingEntry),
 	}
 	// QUM-602: install the backend-fault handler on the session. We use a
 	// type assertion (rather than extending SessionHandle) so the public
@@ -146,7 +206,7 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 				// on turnRunning so a fault between turns can't spuriously
 				// finalize an idle TUI.
 				rt.mu.RLock()
-				turnRunning := rt.turnRunning
+				turnRunning := rt.inTurn
 				rt.mu.RUnlock()
 				if turnRunning {
 					rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
@@ -193,8 +253,18 @@ var errStreamClosedNoResult = errors.New("autonomous turn stream closed without 
 // completed (the QUM-812 fix). Runs synchronously on the reader goroutine and
 // must not block (bounded EventBus.Publish / Queue.Enqueue only).
 func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInfo) {
-	if !turn.Autonomous {
-		// Sprawl turn: TurnLoop is the sole lifecycle emitter (no double-emit).
+	// QUM-817: an isReplay user echo is the consumption ack for a previously
+	// written stdin user message. Render it and flip the outstanding entry to
+	// consumed; it is NOT a turn-lifecycle frame (the turn was already opened by
+	// the preceding init).
+	if turn.Replay {
+		if msg != nil {
+			rt.eventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
+			var uf protocol.UserFrame
+			if protocol.ParseAs(msg, &uf) == nil && uf.UUID != "" {
+				rt.markConsumed(uf.UUID)
+			}
+		}
 		return
 	}
 
@@ -209,7 +279,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	// TurnLoop's "stream closed without terminal result" semantics.
 	if turn.EndOfTurn && msg == nil {
 		if st.open {
-			rt.setAutonomousInTurn(false)
+			rt.setInTurn(false)
 			rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: errStreamClosedNoResult})
 			st.reset()
 		}
@@ -240,7 +310,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	}
 	if !st.open {
 		st.open = true
-		rt.setAutonomousInTurn(true)
+		rt.setInTurn(true)
 		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnStarted})
 	}
 
@@ -250,28 +320,131 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 			_ = protocol.ParseAs(msg, &r)
 		}
 		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
-		// QUM-640 continuation for the autonomous turn (the QUM-812 fix): a
-		// background-task completion observed this turn enqueues exactly one
-		// synthetic continuation, which the queue→TurnLoop→StartTurn drive turns
-		// into a sprawl continuation turn. Deduped via the shared serviced set
-		// so the continuation turn re-observing the same task_notification does
-		// not re-enqueue (would infinite-loop).
-		if st.sawEmptyTaskID || len(st.taskIDs) > 0 {
-			rt.queue.Enqueue(QueueItem{Class: ClassContinuation, Prompt: continuationPrompt})
-			for id := range st.taskIDs {
+		// QUM-640 continuation (the QUM-812 fix): a background-task completion
+		// observed this turn writes exactly one synthetic continuation user
+		// message to stdin, which the CLI processes as the next turn. Deduped
+		// via the shared serviced set so a continuation turn re-observing the
+		// same task_notification does not re-fire (would infinite-loop).
+		// QUM-817: this is a direct stdin write now, not a queue enqueue.
+		continue640 := st.sawEmptyTaskID || len(st.taskIDs) > 0
+		ids := make([]string, 0, len(st.taskIDs))
+		for id := range st.taskIDs {
+			ids = append(ids, id)
+		}
+		rt.setInTurn(false)
+		st.reset()
+		// Fire the post-turn sweep (QUM-580) and write the continuation AFTER
+		// clearing per-turn state. Both go to stdin / disk, never under a lock.
+		if rt.cfg.PostTurnSweep != nil {
+			rt.cfg.PostTurnSweep()
+		}
+		if continue640 {
+			for _, id := range ids {
 				rt.serviced.add(id)
 			}
+			_, _ = rt.writeMessage(context.Background(), continuationPrompt, "next", kindSystem, nil)
 		}
-		rt.setAutonomousInTurn(false)
-		st.reset()
 	}
 }
 
-// setAutonomousInTurn updates the cross-goroutine InTurn read surface under mu.
-func (rt *UnifiedRuntime) setAutonomousInTurn(v bool) {
+// setInTurn updates the cross-goroutine InTurn read surface under mu.
+func (rt *UnifiedRuntime) setInTurn(v bool) {
 	rt.mu.Lock()
-	rt.autonomousInTurn = v
+	rt.inTurn = v
 	rt.mu.Unlock()
+}
+
+// WriteUserPrompt writes a human-typed prompt (kind:user, recallable) to the
+// CLI stdin (QUM-817). Used by the TUI input path.
+func (rt *UnifiedRuntime) WriteUserPrompt(ctx context.Context, text, priority string) (string, error) {
+	return rt.writeMessage(ctx, text, priority, kindUser, nil)
+}
+
+// WriteSystemMessage writes a sprawl-originated message (kind:system, not
+// recallable) to the CLI stdin (QUM-817). Used by the supervisor delivery path
+// for inbox/status/task/liveness notifications and the QUM-640 continuation.
+// entryIDs link the message to durable maildir/task records for delivery
+// tracking via the isReplay consumption ack.
+func (rt *UnifiedRuntime) WriteSystemMessage(ctx context.Context, text, priority string, entryIDs []string) (string, error) {
+	return rt.writeMessage(ctx, text, priority, kindSystem, entryIDs)
+}
+
+// writeMessage writes one user message to the CLI stdin with the given priority
+// + a freshly minted uuid, records it in the outstanding map as pending, and
+// returns the uuid (QUM-817). The isReplay echo later flips the entry to
+// consumed (see markConsumed). The map entry is recorded BEFORE the stdin write
+// so the echo (observed on the reader goroutine) always finds it.
+func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority string, kind outstandingKind, entryIDs []string) (string, error) {
+	uuid := newUUID()
+	rt.outMu.Lock()
+	rt.outstanding[uuid] = &OutstandingEntry{kind: kind, state: statePending, text: text, entryIDs: entryIDs}
+	rt.outMu.Unlock()
+
+	sid := ""
+	if p, ok := rt.cfg.Session.(sessionIDProvider); ok {
+		sid = p.SessionID()
+	}
+	err := rt.cfg.Session.WriteUserMessage(ctx, protocol.UserMessage{
+		Type:      "user",
+		Message:   protocol.MessageParam{Role: "user", Content: text},
+		Priority:  priority,
+		UUID:      uuid,
+		SessionID: sid,
+	})
+	if err != nil {
+		rt.outMu.Lock()
+		delete(rt.outstanding, uuid)
+		rt.outMu.Unlock()
+		return "", err
+	}
+	return uuid, nil
+}
+
+// Outstanding returns a snapshot copy of the outstanding map (QUM-817). Used by
+// the TUI to render queued→sent and (Slice 4) recall.
+func (rt *UnifiedRuntime) Outstanding() map[string]OutstandingEntry {
+	rt.outMu.Lock()
+	defer rt.outMu.Unlock()
+	out := make(map[string]OutstandingEntry, len(rt.outstanding))
+	for k, v := range rt.outstanding {
+		out[k] = *v
+	}
+	return out
+}
+
+// newUUID mints a random UUID v4 string (QUM-817). Mirrors state.GenerateUUID
+// without importing the state package.
+func newUUID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// crypto/rand failure is fatal-ish; fall back to a time-free sentinel
+		// that is still unique enough via the counter. In practice rand.Read
+		// does not fail on supported platforms.
+		return fmt.Sprintf("uuid-fallback-%x", buf)
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
+}
+
+// markConsumed flips an outstanding entry to consumed on its isReplay echo,
+// fires the delivery callback (QUM-580/579 replacement, keyed on the protocol
+// consumption ack), and publishes EventUserMessageConsumed (QUM-817).
+func (rt *UnifiedRuntime) markConsumed(uuid string) {
+	rt.outMu.Lock()
+	e := rt.outstanding[uuid]
+	var entryIDs []string
+	if e != nil {
+		if e.state == statePending {
+			e.state = stateConsumed
+		}
+		entryIDs = e.entryIDs
+	}
+	rt.outMu.Unlock()
+	if e != nil && len(entryIDs) > 0 && rt.cfg.OnDelivered != nil {
+		rt.cfg.OnDelivered(entryIDs)
+	}
+	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageConsumed, UUID: uuid})
 }
 
 // ClassifyBackendFault maps a backend session terminal error to a
@@ -290,103 +463,8 @@ func ClassifyBackendFault(err error) (class, nextAction string) {
 	}
 }
 
-// stateTrackingSession wraps a SessionHandle so the runtime can update its
-// internal liveness state synchronously from inside the TurnLoop goroutine.
-type stateTrackingSession struct {
-	inner SessionHandle
-	rt    *UnifiedRuntime
-}
-
-func (s *stateTrackingSession) StartTurn(ctx context.Context, prompt string, spec ...backend.TurnSpec) (<-chan *protocol.Message, error) {
-	// Transition to TurnActive synchronously before delegating, so any
-	// goroutine that polls State() after the StartTurn call returns sees
-	// the updated state.
-	s.rt.mu.Lock()
-	if s.rt.liveness.Liveness == livenesspkg.Running && !s.rt.liveness.InTurn {
-		s.rt.liveness.InTurn = true
-	}
-	s.rt.turnRunning = true
-	pending := s.rt.pendingInterrupt
-	s.rt.pendingInterrupt = false
-	s.rt.mu.Unlock()
-
-	ch, err := s.inner.StartTurn(ctx, prompt, spec...)
-	if err != nil {
-		// Turn failed to start; revert state.
-		s.rt.mu.Lock()
-		s.rt.turnRunning = false
-		if (s.rt.liveness.Liveness == livenesspkg.Running && s.rt.liveness.InTurn) ||
-			s.rt.liveness.Liveness == livenesspkg.Stopping {
-			s.rt.liveness = livenesspkg.State{Liveness: livenesspkg.Running}
-		}
-		s.rt.mu.Unlock()
-		return nil, err
-	}
-
-	// If an interrupt was requested before the turn actually started, route
-	// it through the TurnLoop so it sets `interrupted=true` and ultimately
-	// publishes EventInterrupted (not EventTurnCompleted) on the bus. The
-	// loop's interruptCh is buffered and is installed before StartTurn is
-	// invoked, so this send is guaranteed to land. Falling through to a
-	// direct Session.Interrupt call would bypass the loop's bookkeeping
-	// and cause the terminal event to be misclassified.
-	if pending {
-		s.rt.mu.RLock()
-		loop := s.rt.turnLoop
-		s.rt.mu.RUnlock()
-		if loop != nil {
-			_ = loop.Interrupt(context.Background())
-		} else {
-			_ = s.inner.Interrupt(context.Background())
-		}
-	}
-
-	// Forward channel and watch for close to flip state back.
-	out := make(chan *protocol.Message)
-	go func() {
-		defer close(out)
-		// QUM-618: reset turnRunning/state in a defer so BOTH exit paths —
-		// the normal "channel closed" path and the early ctx.Done() return
-		// (per-turn deadline / parent cancel) — flip the runtime back to Idle.
-		// Previously the ctx.Done() early-return skipped the reset, leaking
-		// turnRunning=true and wedging the queue drain. Defers run LIFO, so
-		// this reset runs before close(out) — that ordering is fine.
-		defer func() {
-			s.rt.mu.Lock()
-			s.rt.turnRunning = false
-			if s.rt.liveness.Liveness != livenesspkg.Stopped {
-				s.rt.liveness = livenesspkg.State{Liveness: livenesspkg.Running}
-			}
-			s.rt.mu.Unlock()
-		}()
-		for msg := range ch {
-			select {
-			case out <- msg:
-			case <-ctx.Done():
-				// Context cancelled; drop remaining messages so the
-				// inner channel can drain. The TurnLoop will return
-				// promptly on its own select on ctx.Done.
-				return
-			}
-		}
-	}()
-	return out, nil
-}
-
-func (s *stateTrackingSession) Interrupt(ctx context.Context) error {
-	return s.inner.Interrupt(ctx)
-}
-
-// SessionID is exposed if the inner session implements sessionIDProvider.
-func (s *stateTrackingSession) SessionID() string {
-	if p, ok := s.inner.(sessionIDProvider); ok {
-		return p.SessionID()
-	}
-	return ""
-}
-
-// Start spins up the turn loop. Returns an error if the runtime has already
-// been started or has been stopped.
+// Start spins up the runtime lifecycle goroutine. Returns an error if the
+// runtime has already been started or has been stopped.
 func (rt *UnifiedRuntime) Start(_ context.Context) error {
 	rt.mu.Lock()
 	if rt.stopped {
@@ -399,35 +477,36 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 	}
 	rt.started = true
 
-	// Independent context: the turn loop must outlive the Start caller's ctx.
+	// Independent context: the runtime lifecycle must outlive the Start caller's
+	// ctx. Cancelled by Stop or by the backend-fault handler.
 	runCtx, cancel := context.WithCancel(context.Background())
 	rt.cancel = cancel
-
-	tracker := &stateTrackingSession{inner: rt.cfg.Session, rt: rt}
-
-	rt.turnLoop = NewTurnLoop(TurnLoopConfig{
-		Session:              tracker,
-		Queue:                rt.queue,
-		EventBus:             rt.eventBus,
-		InitialPrompt:        rt.cfg.InitialPrompt,
-		OnQueueItemDelivered: rt.cfg.OnQueueItemDelivered,
-		PostTurnSweep:        rt.cfg.PostTurnSweep,
-		TurnTimeout:          rt.cfg.TurnTimeout,
-		Serviced:             rt.serviced,
-	})
-
+	initialPrompt := rt.cfg.InitialPrompt
 	rt.mu.Unlock()
 
-	rt.loopWG.Add(1)
+	// QUM-817: there is no turn loop. The backend reader (started via the
+	// host-side Initialize, or by the first WriteUserMessage) observes frames
+	// and the installed frame router derives lifecycle. This goroutine just
+	// holds the runtime "running" until runCtx is cancelled, then publishes
+	// EventStopped and closes done so watchHandleExit unblocks.
+	rt.doneWG.Add(1)
 	go func() {
-		defer rt.loopWG.Done()
-		_ = rt.turnLoop.Run(runCtx)
+		defer rt.doneWG.Done()
+		<-runCtx.Done()
 	}()
-
 	go func() {
-		rt.loopWG.Wait()
+		rt.doneWG.Wait()
+		rt.eventBus.Publish(RuntimeEvent{Type: EventStopped})
 		rt.closeDoneOnce.Do(func() { close(rt.done) })
 	}()
+
+	// Seed the spawn prompt (child agents' first turn) as a stdin write. It is
+	// kind:system (machine-originated, not user-recallable).
+	if initialPrompt != "" {
+		if _, err := rt.writeMessage(runCtx, initialPrompt, "next", kindSystem, nil); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -502,7 +581,7 @@ func (rt *UnifiedRuntime) StopWithOptions(ctx context.Context, opts StopOptions)
 
 	loopDone := make(chan struct{})
 	go func() {
-		rt.loopWG.Wait()
+		rt.doneWG.Wait()
 		close(loopDone)
 	}()
 
@@ -525,11 +604,11 @@ func (rt *UnifiedRuntime) StopWithOptions(ctx context.Context, opts StopOptions)
 func (rt *UnifiedRuntime) State() livenesspkg.State {
 	rt.mu.RLock()
 	s := rt.liveness
-	auto := rt.autonomousInTurn
+	inTurn := rt.inTurn
 	rt.mu.RUnlock()
-	// QUM-815: an autonomous (CLI self-reprompt) turn flips InTurn too, so the
-	// TUI/supervisor see it as in-turn uniformly.
-	if auto {
+	// QUM-817: InTurn is derived entirely from the frame router observing the
+	// stdout stream (every turn is router-driven now).
+	if inTurn {
 		s.InTurn = true
 	}
 	return s
@@ -546,126 +625,39 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 		return nil
 	}
 	sess := rt.cfg.Session
-	loop := rt.turnLoop
-	turnRunning := rt.turnRunning
-	armedIdle := false
+	inTurn := rt.inTurn
 	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
 		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
-	} else if !turnRunning {
-		// Queue items may be pending but the wrapper hasn't entered StartTurn yet.
-		// Arm a pending-interrupt flag so the next StartTurn classifies its
-		// terminal event as EventInterrupted (not EventTurnCompleted). This
-		// preserves the QUM-510-class semantics (interrupt racing the next
-		// StartTurn from a non-TUI source).
-		rt.pendingInterrupt = true
-		armedIdle = true
 	}
 	rt.mu.Unlock()
 
-	// Always forward to the backend session so the supervisor wrapper can collapse
-	// to a single delegated call (QUM-435). Backends are required to be idempotent
-	// and to no-op when no turn is in flight.
-	_ = sess.Interrupt(ctx)
+	// Bare contentless abort (Esc). Backends are idempotent and no-op when no
+	// turn is in flight.
+	err := sess.Interrupt(ctx)
 
-	if loop != nil && turnRunning {
-		return loop.Interrupt(ctx)
-	}
-
-	// QUM-775 item 4: when an interrupt is issued against an idle runtime,
-	// emit a synthetic EventInterrupted so a downstream state reducer (TUI
-	// turnState) that is wedged in TurnStreaming after a dropped terminal
-	// event has a chance to finalize. The pendingInterrupt flag may also
-	// later trigger a real EventInterrupted from the loop when StartTurn
-	// runs — duplicate EventInterrupted events are tolerated (finalizeTurn
-	// is idempotent), and the synthetic event recovers the TUI even when
-	// no subsequent StartTurn ever arrives.
-	if armedIdle && rt.eventBus != nil {
+	// QUM-775 item 4: when an interrupt is issued against an idle runtime, emit
+	// a synthetic EventInterrupted so a TUI turnState reducer wedged in
+	// TurnStreaming after a dropped terminal event can finalize. finalizeTurn is
+	// idempotent, so a duplicate is harmless.
+	if !inTurn && rt.eventBus != nil {
 		rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted})
 	}
-	return nil
+	return err
 }
 
-// WakeForDelivery is the cooperative-wake path used by send_message(
-// interrupt=false). It NEVER calls Session.Interrupt or loop.Interrupt —
-// it only pokes the queue signal so the runtime observes newly-enqueued
-// items at the next turn boundary. This closes the QUM-549 lie where
-// send_async would stomp on the recipient's mid-turn work.
-func (rt *UnifiedRuntime) WakeForDelivery(_ context.Context) error {
-	rt.mu.Lock()
-	if rt.stopped {
-		rt.mu.Unlock()
-		return nil
-	}
-	rt.mu.Unlock()
-	rt.queue.Wake()
-	return nil
-}
+// WakeForDelivery is retained for the RuntimeHandle contract (QUM-817). Message
+// delivery is now a direct stdin write (the supervisor handle calls
+// WriteUserMessage), and a stdin write inherently wakes the CLI's command
+// queue, so there is nothing extra to poke here. No-op.
+func (rt *UnifiedRuntime) WakeForDelivery(_ context.Context) error { return nil }
 
-// ForceInterruptForDelivery is the preempt path used by
-// send_message(interrupt=true). It snapshots `turnRunning` under `rt.mu`
-// and only calls Session.Interrupt / loop.Interrupt when a turn is
-// genuinely in flight (QUM-294 mid-turn preempt). When the recipient is
-// idle, the ClassInterrupt queue item already enqueued by
-// drainPendingToQueue plus the cooperative queue.Wake below is sufficient
-// to deliver the interrupt-class prompt at the next turn boundary —
-// issuing Session.Interrupt would cancel the very turn that exists to
-// deliver this message (QUM-619).
-//
-// The QUM-462 / QUM-510 failure mode ("interrupt is silently lost") does
-// NOT recur under this gate: the cooperative wake path is preserved, so
-// even when the snapshot races with a turn that starts immediately
-// after, the brand-new turn proceeds normally and processes the
-// ClassInterrupt prompt — which is the desired outcome. See
-// docs/research/qum-619-idle-interrupt-race-2026-05-21.md.
+// ForceInterruptForDelivery is the preempt path for send_message(interrupt=
+// true). In Slice 2 the message itself is written as a normal `next` stdin
+// message by the handle (cancel-and-replace `now` is Slice 3); this only issues
+// a bare contentless interrupt (Esc-style abort of the current generation) so
+// the CLI yields and processes the queued message on the next iteration.
 func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
-	rt.mu.Lock()
-	if rt.stopped {
-		rt.mu.Unlock()
-		return nil
-	}
-	sess := rt.cfg.Session
-	loop := rt.turnLoop
-	turnRunning := rt.turnRunning
-	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
-		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
-	}
-	rt.mu.Unlock()
-
-	var interruptErr error
-	if turnRunning {
-		if sess != nil {
-			if err := sess.Interrupt(ctx); err != nil {
-				interruptErr = err
-			}
-		}
-		if loop != nil {
-			if err := loop.Interrupt(ctx); err != nil && interruptErr == nil {
-				interruptErr = err
-			}
-		}
-	}
-	rt.queue.Wake()
-	return interruptErr
-}
-
-// QUM-462 / QUM-510 (removed in QUM-550 slice 4): the legacy
-// `InterruptDelivery` / `interruptForDelivery` pair conditionally called
-// `Session.Interrupt` based on a turn-running snapshot. That gate produced
-// "interrupt is silently lost" bugs when the snapshot raced with the
-// runtime entering a new turn AND the snapshot result was used to skip the
-// cooperative wake path. The successors `WakeForDelivery` (never calls
-// Session.Interrupt) and `ForceInterruptForDelivery` (preempt only when
-// turnRunning, but ALWAYS pokes queue.Wake) avoid that failure mode:
-// regardless of the snapshot's outcome, the wake-and-deliver path always
-// runs, so a ClassInterrupt queue item is observed at the next turn
-// boundary. QUM-619 added the `if turnRunning` gate around
-// `Session.Interrupt` to stop interrupts from canceling their own delivery
-// turn against an idle recipient.
-
-// Queue returns the runtime's MessageQueue. Stable for the lifetime of the
-// UnifiedRuntime.
-func (rt *UnifiedRuntime) Queue() *MessageQueue {
-	return rt.queue
+	return rt.Interrupt(ctx)
 }
 
 // EventBus returns the runtime's EventBus. Stable for the lifetime of the

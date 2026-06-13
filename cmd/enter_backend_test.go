@@ -77,6 +77,11 @@ func TestBuildEnterSessionSpec_FreshPathUsesRootSessionData(t *testing.T) {
 	if spec.OnResumeFailure == nil {
 		t.Fatal("OnResumeFailure should be threaded through")
 	}
+	// QUM-817: weave must also be launched with --replay-user-messages so its
+	// own inbound stdin user messages are echoed back as isReplay acks.
+	if !spec.ReplayUserMessages {
+		t.Error("ReplayUserMessages = false, want true (QUM-817 consumption ack)")
+	}
 
 	spec.OnResumeFailure()
 	if !called {

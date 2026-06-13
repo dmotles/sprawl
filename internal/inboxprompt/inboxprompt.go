@@ -163,6 +163,15 @@ func BuildInterruptFlushPrompt(entries []Entry) string {
 	return b.String()
 }
 
+// BuildTaskNotification wraps a delegated task's prompt in the §3.2
+// `type="task"` system-notification tag (QUM-817). The task_id attribute lets
+// the agent/TUI associate the injection with its durable task record. The inner
+// body is the actionable prompt the agent must execute. Always ends with a
+// newline.
+func BuildTaskNotification(taskID, prompt string) string {
+	return fmt.Sprintf("<system-notification type=\"task\" task_id=\"%s\">%s</system-notification>\n", taskID, prompt)
+}
+
 // heartbeatNotificationBody is the verbatim body of the QUM-730 supervisor
 // heartbeat liveness-check nudge. Pinned by
 // TestBuildHeartbeatNotification_VerbatimBody — do NOT tweak without

@@ -77,7 +77,7 @@ test_run() {
     if ! e2e_launch_tui "$SESSION" 200 50; then
         return 1
     fi
-    pass "TUI rendered ('weave (idle)' visible in tree panel)"
+    pass "TUI rendered (weave root pill visible in header tree)"
 
     # Advance past any first-run trust prompt (QUM-310 gotcha).
     if capture_pane "$SESSION" | grep -q "trust this folder" 2>/dev/null; then

@@ -410,6 +410,9 @@ func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession
 		DisallowedTools: prepared.Disallowed,
 		Stderr:          logW,
 		OnResumeFailure: onResumeFailure,
+		// QUM-817: launch weave with --replay-user-messages so its own inbound
+		// stdin user messages are echoed back as isReplay consumption acks.
+		ReplayUserMessages: true,
 	}
 	if prepared.Resume {
 		spec.Resume = true
@@ -541,12 +544,10 @@ func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh 
 		Session:      session,
 		IsRoot:       true,
 		Capabilities: session.Capabilities(),
-		// Defends against wedged-SDK hangs (QUM-578/QUM-581). 30m is long
-		// enough for long autonomous turns but bounded so an SDK that opens
-		// system:init and never closes doesn't permanently freeze the agent.
-		TurnTimeout: 30 * time.Minute,
-		OnQueueItemDelivered: func(it runtimepkg.QueueItem) {
-			for _, id := range it.EntryIDs {
+		// QUM-817: delivery is confirmed by the isReplay consumption ack, not a
+		// Go-queue drain. OnDelivered fires with the consumed message's entryIDs.
+		OnDelivered: func(entryIDs []string) {
+			for _, id := range entryIDs {
 				if err := agentloop.MarkDelivered(sprawlRoot, rootName, id); err != nil {
 					fmt.Fprintf(logW, "[enter] mark delivered %s: %v\n", id, err)
 				}

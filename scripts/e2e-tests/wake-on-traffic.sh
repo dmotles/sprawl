@@ -361,5 +361,49 @@ test_run() {
         fi
     fi
 
+    # ---------------------------------------------------------------------
+    # Phase 5 — QUM-817 Amendment-1: idle-`later` delegate must not strand.
+    # delegate() to an IDLE (not paused) child writes the task to the child's
+    # CLI stdin with priority `later` (feedTasks). If `later` stranded an idle
+    # agent (the documented risk), the task would never be serviced; we assert
+    # it transitions queued → done. (The isReplay-ack delivery round-trip is
+    # covered end-to-end by the drain-row-inject row and unit-tested via the
+    # echoReplay fixture in TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered.)
+    # ---------------------------------------------------------------------
+    echo ""
+    echo "=== Phase 5 (QUM-817 Amendment 1): delegate priority=later to an IDLE child ==="
+    local A5
+    A5="$(spawn_idle_child "p5")" || true
+    if [ -z "$A5" ]; then
+        fail "phase 5: no child state appeared within 180s"
+    else
+        pass "phase 5 idle child spawned (name=$A5)"
+        # Let the child finish its first turn and settle into idle (not paused).
+        sleep 15
+
+        local P5_DELEG="Call mcp__sprawl__delegate with to='$A5', task='create-file-Q817-P5', wake_if_offline=false. Quote the exact tool response back to me."
+        _stmux send-keys -t "$SESSION" "$P5_DELEG"
+        sleep 0.5
+        _stmux send-keys -t "$SESSION" Enter
+
+        local task_done=0 elapsed=0 task_json status
+        while [ "$elapsed" -lt 150 ]; do
+            task_json=$(find "$SPRAWL_ROOT/.sprawl/agents/$A5/tasks" -name '*.json' 2>/dev/null | head -1)
+            if [ -n "$task_json" ]; then
+                status=$(jq -r '.status // empty' "$task_json" 2>/dev/null || true)
+                [ "$status" = "done" ] && { task_done=1; break; }
+            fi
+            sleep 5
+            elapsed=$((elapsed + 5))
+        done
+        if [ "$task_done" -eq 1 ]; then
+            pass "phase 5: delegated task reached 'done' on the IDLE child — priority 'later' did NOT strand it (Amendment 1)"
+        else
+            fail "phase 5: delegated task never reached 'done' within 150s — possible 'later'-strands-idle regression"
+            [ -n "${task_json:-}" ] && sed 's/^/    /' "$task_json" >&2
+            capture_pane "$SESSION" | tail -40 >&2
+        fi
+    fi
+
     e2e_print_results
 }

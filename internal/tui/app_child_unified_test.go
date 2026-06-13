@@ -24,7 +24,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
@@ -38,11 +37,7 @@ import (
 // its EventBus to publish synthetic events the adapter will translate.
 type noopSession struct{}
 
-func (noopSession) StartTurn(_ context.Context, _ string, _ ...backend.TurnSpec) (<-chan *protocol.Message, error) {
-	ch := make(chan *protocol.Message)
-	close(ch)
-	return ch, nil
-}
+func (noopSession) WriteUserMessage(_ context.Context, _ protocol.UserMessage) error { return nil }
 
 func (noopSession) Interrupt(_ context.Context) error { return nil }
 

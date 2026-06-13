@@ -258,9 +258,9 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 	}
 }
 
-// SendMessage enqueues a user-class queue item and returns a
-// tui.UserMessageSentMsg. The actual prompt delivery happens later when the
-// turn loop pulls from the queue.
+// SendMessage writes a human-typed user prompt to the CLI stdin (QUM-817,
+// priority next, kind user) and returns a tui.UserMessageSentMsg. The CLI owns
+// queuing/coalescing; the prompt renders "sent" when its isReplay echo arrives.
 func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 	return func() tea.Msg {
 		a.mu.Lock()
@@ -269,7 +269,9 @@ func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 		if rt == nil {
 			return tui.SessionErrorMsg{Err: ErrNoRuntime}
 		}
-		rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassUser, Prompt: text})
+		if _, err := rt.WriteUserPrompt(context.Background(), text, "next"); err != nil {
+			return tui.SessionErrorMsg{Err: err}
+		}
 		return tui.UserMessageSentMsg{}
 	}
 }
@@ -289,11 +291,11 @@ func (a *TUIAdapter) Interrupt() tea.Cmd {
 	}
 }
 
-// InterruptAndSend (QUM-630) enqueues a ClassInterrupt queue item carrying
-// `text` and then preempts the current turn via ForceInterruptForDelivery.
-// The enqueue happens FIRST so the prompt survives even if the preempt
-// returns an error (text-never-lost invariant). Wraps the result in
-// tui.InterruptResultMsg.
+// InterruptAndSend (QUM-630) writes `text` to the CLI stdin as a `next` user
+// prompt FIRST (text-never-lost invariant), then issues a bare contentless
+// interrupt (Esc) so the CLI yields and processes the prompt on the next
+// iteration. QUM-817 Slice 2: this is `next` + bare interrupt; cancel-and-
+// replace `now` is Slice 3.
 func (a *TUIAdapter) InterruptAndSend(text string) tea.Cmd {
 	return func() tea.Msg {
 		a.mu.Lock()
@@ -302,8 +304,10 @@ func (a *TUIAdapter) InterruptAndSend(text string) tea.Cmd {
 		if rt == nil {
 			return tui.InterruptResultMsg{Err: ErrNoRuntime}
 		}
-		rt.Queue().Enqueue(sprawlrt.QueueItem{Class: sprawlrt.ClassInterrupt, Prompt: text})
-		err := rt.ForceInterruptForDelivery(context.Background())
+		if _, werr := rt.WriteUserPrompt(context.Background(), text, "next"); werr != nil {
+			return tui.InterruptResultMsg{Err: werr}
+		}
+		err := rt.Interrupt(context.Background())
 		return tui.InterruptResultMsg{Err: err}
 	}
 }

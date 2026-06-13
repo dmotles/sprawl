@@ -256,10 +256,10 @@ _stmux new-session -d -s "$SESSION" -x 200 -y 50 \
 _stmux set-option -t "$SESSION" window-size manual >/dev/null
 _stmux resize-window -t "$SESSION" -x 200 -y 50 >/dev/null
 
-if wait_for_pattern "$SESSION" "weave \\(idle\\)" 45; then
-    pass "TUI rendered ('weave (idle)' visible in tree panel)"
+if wait_for_pattern "$SESSION" "weave ●" 45; then
+    pass "TUI rendered ('weave ●' root pill visible — QUM-656/733 orbital tree)"
 else
-    fail "TUI did not render 'weave (idle)' within 45s"
+    fail "TUI did not render 'weave ●' within 45s"
     echo "  pane tail:" >&2
     capture_pane "$SESSION" | tail -30 >&2
     echo "  stderr log tail:" >&2

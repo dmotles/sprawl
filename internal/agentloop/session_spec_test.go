@@ -160,3 +160,37 @@ func TestBuildAgentSessionSpec_NoAgentsArgv(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildAgentSessionSpec_EnablesReplayUserMessages pins QUM-817: every child
+// agent must be launched with --replay-user-messages so the CLI echoes each
+// consumed stdin user message back on stdout as an isReplay frame. That echo is
+// the consumption ack the runtime keys delivery confirmation (MarkDelivered),
+// task completion, and no-reinjection on. Without it, the entire Slice-2
+// input-path contract silently breaks (messages re-inject every wake; tasks
+// never mark done).
+func TestBuildAgentSessionSpec_EnablesReplayUserMessages(t *testing.T) {
+	agentState := &state.AgentState{
+		Name:      "test-agent",
+		Type:      "engineer",
+		Worktree:  "/tmp/worktrees/test",
+		SessionID: "sess-test",
+	}
+	spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
+	if !spec.ReplayUserMessages {
+		t.Fatal("SessionSpec.ReplayUserMessages = false, want true (QUM-817 consumption ack)")
+	}
+	// Round-trip to the actual claude argv.
+	args := claude.LaunchOpts{
+		InputFormat:        "stream-json",
+		ReplayUserMessages: spec.ReplayUserMessages,
+	}.BuildArgs()
+	found := false
+	for _, a := range args {
+		if a == "--replay-user-messages" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("claude argv missing --replay-user-messages: %v", args)
+	}
+}

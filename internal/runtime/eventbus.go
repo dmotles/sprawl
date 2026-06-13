@@ -111,6 +111,11 @@ const (
 	// FaultClass and FaultNextAction are populated; Error carries the sentinel.
 	// QUM-602.
 	EventBackendFaulted
+	// EventUserMessageConsumed is published when the CLI echoes a previously
+	// written stdin user message with isReplay:true — the consumption ack
+	// (QUM-817). UUID carries the consumed message's uuid; subscribers (TUI)
+	// flip the queued-prompt render to "sent".
+	EventUserMessageConsumed
 )
 
 // RuntimeEvent is the unit of fan-out on the EventBus. The set of populated
@@ -127,6 +132,9 @@ type RuntimeEvent struct {
 	// is an operator-facing next-step hint. QUM-602.
 	FaultClass      string
 	FaultNextAction string
+	// UUID is populated for EventUserMessageConsumed: the uuid of the stdin
+	// user message the CLI just acked via isReplay (QUM-817).
+	UUID string
 	// Seq is the publisher-stamped monotonic 1-indexed sequence number.
 	// Populated by EventBus.Publish before fan-out (QUM-669). Subscribers
 	// use gaps in Seq to detect dropped events.

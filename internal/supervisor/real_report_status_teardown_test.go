@@ -16,7 +16,6 @@ import (
 
 	"github.com/dmotles/sprawl/internal/agent"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
-	"github.com/dmotles/sprawl/internal/protocol"
 	runtimepkg "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor/liveness"
@@ -380,14 +379,6 @@ func (h *blockingStopHandle) StopAbandon(ctx context.Context) error {
 // any optional probe interfaces by embedding runtimeTestSession. Compile-time
 // assertion via interface guard.
 var _ RuntimeHandle = (*blockingStopHandle)(nil)
-
-// startTurn forwarder so the embedded session's StartTurn is reachable on
-// the wrapper for any internal reflection-based probing. Not strictly
-// required (Go embeds promoted methods automatically) but explicit here for
-// readability. No-op delegate.
-func (h *blockingStopHandle) StartTurn(ctx context.Context, prompt string, spec ...backendpkg.TurnSpec) (<-chan *protocol.Message, error) {
-	return h.runtimeTestSession.StartTurn(ctx, prompt, spec...)
-}
 
 // TestReportStatusCompleteDoesNotBlockOnSlowStop pins that ReportStatus
 // returns quickly even if runtime.Stop is slow — i.e. the QUM-727 fix

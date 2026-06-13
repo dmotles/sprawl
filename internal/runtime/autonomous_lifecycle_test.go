@@ -6,14 +6,13 @@ import (
 	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/protocol"
 )
 
-// QUM-815 (Slice 1): autonomous (CLI self-reprompt) turns must drive the SAME
-// lifecycle as sprawl-initiated turns — a balanced EventTurnStarted +
-// EventTurnCompleted, a flipped InTurn, and (the QUM-812 fix) the QUM-640
-// auto-continuation when a background task completed. These flow through the
-// single runtime frame router installed by New(), NOT the deleted
-// autonomousFrameHandler.
+// QUM-815/QUM-817: every turn is router-driven. The frame router installed by
+// New() derives a balanced EventTurnStarted + EventTurnCompleted, flips InTurn,
+// and (the QUM-812 fix) WRITES the QUM-640 auto-continuation to stdin when a
+// background task completed — there is no Go queue anymore.
 
 const (
 	autoInitFrame   = `{"type":"system","subtype":"init","session_id":"sess-auto"}`
@@ -24,8 +23,9 @@ const (
 )
 
 // newAutonomousRuntime wires a UnifiedRuntime over a scripted transport-backed
-// real session and starts the session reader. The turn loop is NOT started —
-// the autonomous path flows through the reader/router, not StartTurn.
+// real session and starts the session reader. rt.Start is NOT called — the
+// turn flows through the reader/router, and stdin writes (e.g. the
+// continuation) land on transport.sendCh.
 func newAutonomousRuntime(t *testing.T) (*UnifiedRuntime, *scriptedTransport) {
 	t.Helper()
 	transport := newScriptedTransport()
@@ -38,6 +38,41 @@ func newAutonomousRuntime(t *testing.T) (*UnifiedRuntime, *scriptedTransport) {
 		t.Fatalf("session.Start: %v", err)
 	}
 	return rt, transport
+}
+
+// waitUserWrite scans transport.sendCh for a user message whose content matches,
+// returning it or failing after d.
+func waitUserWrite(t *testing.T, transport *scriptedTransport, d time.Duration, content string) protocol.UserMessage {
+	t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case sent := <-transport.sendCh:
+			if um, ok := sent.(protocol.UserMessage); ok && um.Message.Content == content {
+				return um
+			}
+		case <-deadline:
+			t.Fatalf("no user-message write with content %q within %v", content, d)
+			return protocol.UserMessage{}
+		}
+	}
+}
+
+// assertNoUserWrite fails if any user message with the given content is written
+// within d (a deliberate negative-assertion wait).
+func assertNoUserWrite(t *testing.T, transport *scriptedTransport, d time.Duration, content string) {
+	t.Helper()
+	deadline := time.After(d)
+	for {
+		select {
+		case sent := <-transport.sendCh:
+			if um, ok := sent.(protocol.UserMessage); ok && um.Message.Content == content {
+				t.Fatalf("unexpected user-message write with content %q", content)
+			}
+		case <-deadline:
+			return
+		}
+	}
 }
 
 func TestUnifiedRuntime_AutonomousTurn_EmitsBalancedStartAndComplete(t *testing.T) {
@@ -75,10 +110,6 @@ func TestUnifiedRuntime_AutonomousTurn_EmitsBalancedStartAndComplete(t *testing.
 func TestUnifiedRuntime_AutonomousTurn_FlipsInTurn(t *testing.T) {
 	rt, transport := newAutonomousRuntime(t)
 
-	// Poll the SETTLED observable state rather than single-reading after an
-	// event, so the assertion is robust to the router's write/publish ordering
-	// (test-critic #1): InTurn must become true once the autonomous turn opens
-	// and revert to false once it completes.
 	transport.feed(t, autoInitFrame)
 	waitInTurn(t, rt, true, 2*time.Second)
 
@@ -86,8 +117,7 @@ func TestUnifiedRuntime_AutonomousTurn_FlipsInTurn(t *testing.T) {
 	waitInTurn(t, rt, false, 2*time.Second)
 }
 
-// waitInTurn polls rt.State().InTurn until it equals want or the deadline
-// elapses.
+// waitInTurn polls rt.State().InTurn until it equals want or the deadline.
 func waitInTurn(t *testing.T, rt *UnifiedRuntime, want bool, d time.Duration) {
 	t.Helper()
 	deadline := time.After(d)
@@ -103,42 +133,30 @@ func waitInTurn(t *testing.T, rt *UnifiedRuntime, want bool, d time.Duration) {
 	}
 }
 
-func TestUnifiedRuntime_IdleTaskNotification_EnqueuesContinuation(t *testing.T) {
-	rt, transport := newAutonomousRuntime(t)
+// TestUnifiedRuntime_IdleTaskNotification_WritesContinuation is the QUM-812 fix
+// under QUM-817: an idle bg-task completion (autonomous turn carrying a
+// task_notification) makes the router WRITE the continuation prompt to stdin
+// (no Go queue), which the CLI then processes as the next turn.
+func TestUnifiedRuntime_IdleTaskNotification_WritesContinuation(t *testing.T) {
+	_, transport := newAutonomousRuntime(t)
 
-	// Autonomous turn carrying a completed background-task notification.
 	transport.feed(t, autoTaskNotif)
 	transport.feed(t, autoInitFrame)
 	transport.feed(t, autoAssistFrame)
 	transport.feed(t, autoResultFrame)
 
-	// The router must enqueue exactly one continuation item.
-	deadline := time.After(3 * time.Second)
-	for rt.Queue().Len() < 1 {
-		select {
-		case <-deadline:
-			t.Fatal("no continuation enqueued after idle task_notification (QUM-812 not fixed)")
-		case <-time.After(5 * time.Millisecond):
-		}
+	um := waitUserWrite(t, transport, 3*time.Second, continuationPrompt)
+	if um.Priority != "next" {
+		t.Errorf("continuation priority = %q, want next", um.Priority)
 	}
-	items := rt.Queue().DrainAll()
-	if len(items) != 1 {
-		t.Fatalf("queue had %d items, want exactly 1 continuation", len(items))
-	}
-	if items[0].Class != ClassContinuation {
-		t.Errorf("item class = %v, want ClassContinuation", items[0].Class)
-	}
-	if items[0].Prompt != continuationPrompt {
-		t.Errorf("item prompt = %q, want continuationPrompt", items[0].Prompt)
+	if um.UUID == "" {
+		t.Error("continuation write has no uuid")
 	}
 }
 
-// TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn (review HIGH): a pre-init
-// task_notification trigger that is NOT followed by a system:init (e.g. a
-// racing StartTurn absorbed the init) must NOT flip InTurn or emit
-// EventTurnStarted — otherwise InTurn leaks true and the lifecycle is
-// unbalanced. The trigger is still rendered (EventProtocolMessage) and its
-// task_id buffered for the next autonomous turn.
+// TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn (QUM-815 review HIGH): a
+// pre-init task_notification trigger not followed by an init must NOT flip
+// InTurn or emit EventTurnStarted; its task_id is buffered for the next turn.
 func TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn(t *testing.T) {
 	rt, transport := newAutonomousRuntime(t)
 	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
@@ -146,7 +164,6 @@ func TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn(t *testing.T) {
 
 	transport.feed(t, autoTaskNotif) // pre-init trigger, no init follows
 
-	// Render must happen, but no turn lifecycle.
 	sawProto := false
 	deadline := time.After(2 * time.Second)
 	for !sawProto {
@@ -162,69 +179,43 @@ func TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn(t *testing.T) {
 			t.Fatal("trigger was not rendered as EventProtocolMessage")
 		}
 	}
-	// InTurn must remain false (no leak) after the trigger settles.
 	time.Sleep(200 * time.Millisecond)
 	if rt.State().InTurn {
 		t.Fatal("InTurn leaked true after a lone pre-init trigger")
 	}
 
-	// The buffered task_id must fold into the NEXT real autonomous turn's
-	// continuation (no work lost, balanced lifecycle on the real turn).
+	// The buffered task_id folds into the NEXT real autonomous turn's
+	// continuation (written to stdin); InTurn reverts after completion.
 	transport.feed(t, autoInitFrame)
 	transport.feed(t, autoResultFrame)
-	waitQueueLen(t, rt, 1, 3*time.Second)
+	waitUserWrite(t, transport, 3*time.Second, continuationPrompt)
 	if rt.State().InTurn {
 		t.Error("InTurn still true after the real autonomous turn completed")
 	}
 }
 
-// TestUnifiedRuntime_AutonomousTaskNotification_ServicedDedup relies on the
-// servicedTaskIDs dedup set being owned by the UnifiedRuntime (created in New)
-// and shared into the TurnLoop — NOT owned by the TurnLoop — so it is live even
-// though this test never calls rt.Start() (test-critic #2).
-func TestUnifiedRuntime_AutonomousTaskNotification_ServicedDedup(t *testing.T) {
-	rt, transport := newAutonomousRuntime(t)
+// TestUnifiedRuntime_TaskNotification_ServicedDedup: a second turn re-observing
+// the SAME task_id must NOT write another continuation (QUM-807 dedup, now
+// wholly within the router since the cross-boundary turnloop is gone).
+func TestUnifiedRuntime_TaskNotification_ServicedDedup(t *testing.T) {
+	_, transport := newAutonomousRuntime(t)
 
-	// First autonomous turn services task-X → one continuation.
 	transport.feed(t, autoTaskNotif)
 	transport.feed(t, autoInitFrame)
 	transport.feed(t, autoResultFrame)
+	waitUserWrite(t, transport, 3*time.Second, continuationPrompt) // first continuation
 
-	waitQueueLen(t, rt, 1, 3*time.Second)
-	_ = rt.Queue().DrainAll()
-
-	// A second autonomous turn re-observing the SAME task_id must NOT enqueue
-	// another continuation (QUM-807 dedup, shared with the turnloop).
+	// Second turn re-observing task-X (as the continuation turn would) — no
+	// new continuation.
 	transport.feed(t, autoTaskNotif)
 	transport.feed(t, autoInitFrame)
 	transport.feed(t, autoResultFrame)
-
-	// Give the reader time; assert no new item appears.
-	time.Sleep(300 * time.Millisecond)
-	if n := rt.Queue().Len(); n != 0 {
-		t.Fatalf("re-observed serviced task_id enqueued %d items, want 0", n)
-	}
+	assertNoUserWrite(t, transport, 300*time.Millisecond, continuationPrompt)
 }
 
-func waitQueueLen(t *testing.T, rt *UnifiedRuntime, n int, d time.Duration) {
-	t.Helper()
-	deadline := time.After(d)
-	for {
-		if rt.Queue().Len() >= n {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("queue len = %d, want >= %d", rt.Queue().Len(), n)
-		case <-time.After(5 * time.Millisecond):
-		}
-	}
-}
-
-// TestUnifiedRuntime_AutonomousTurn_WithReplayFrame_StillBalanced: an
-// autonomous turn whose stream includes a user+isReplay frame (QUM-814) must
-// not choke the router — the turn still emits a balanced start/complete pair
-// (Slice-1 minimal: no outstanding-map yet, just don't break routing).
+// TestUnifiedRuntime_AutonomousTurn_WithReplayFrame_StillBalanced: a turn whose
+// stream includes a user+isReplay frame (QUM-814) still emits a balanced
+// start/complete pair, and the replay echo flips the outstanding entry.
 func TestUnifiedRuntime_AutonomousTurn_WithReplayFrame_StillBalanced(t *testing.T) {
 	rt, transport := newAutonomousRuntime(t)
 	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
@@ -252,121 +243,5 @@ func TestUnifiedRuntime_AutonomousTurn_WithReplayFrame_StillBalanced(t *testing.
 	}
 	if started != 1 || completed != 1 {
 		t.Errorf("started=%d completed=%d, want 1 each (isReplay frame broke lifecycle)", started, completed)
-	}
-}
-
-// TestSharedServicedSet_AutonomousServiceThenSprawlReObserve_NoDoubleFire is
-// tower guardrail #1: the QUM-807 idempotency must hold ACROSS the
-// autonomous→sprawl boundary. When the frame router services task-X (autonomous
-// turn) it adds it to the shared set; the continuation it spawns is a sprawl
-// turn whose stream re-observes task-X's task_notification — the TurnLoop must
-// see it as serviced and NOT enqueue another continuation (else infinite loop).
-func TestSharedServicedSet_AutonomousServiceThenSprawlReObserve_NoDoubleFire(t *testing.T) {
-	transport := newScriptedTransport()
-	session := backend.NewSession(transport, backend.SessionConfig{SessionID: "sess-shared"})
-	t.Cleanup(func() { _ = session.Close() })
-
-	// Shared set, as the runtime wires it into both the router and the loop.
-	shared := newServicedTaskSet()
-	// Simulate the autonomous turn having already serviced task-X.
-	shared.add("task-X")
-
-	q := NewMessageQueue()
-	bus := NewEventBus()
-	loop := NewTurnLoop(TurnLoopConfig{Session: session, Queue: q, EventBus: bus, Serviced: shared})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { _ = loop.Run(ctx) }()
-
-	// Drive a sprawl continuation turn whose stream re-observes task-X.
-	q.Enqueue(QueueItem{Class: ClassContinuation, Prompt: continuationPrompt})
-	go func() {
-		select {
-		case <-transport.sendCh:
-		case <-time.After(2 * time.Second):
-			return
-		}
-		transport.feed(t, autoInitFrame)
-		transport.feed(t, `{"type":"system","subtype":"task_notification","task_id":"task-X","status":"completed","summary":"bg done"}`)
-		transport.feed(t, autoResultFrame)
-	}()
-
-	// Give the turn time to complete and (incorrectly) re-enqueue if buggy.
-	time.Sleep(500 * time.Millisecond)
-	if n := q.Len(); n != 0 {
-		t.Fatalf("re-observed serviced task-X enqueued %d continuation(s) on the sprawl turn, want 0 (QUM-807 cross-boundary dedup)", n)
-	}
-}
-
-// TestUnifiedRuntime_SprawlTurn_RouterDoesNotDoubleEmit drives a real
-// sprawl-initiated turn through the turn loop and asserts the bus sees EXACTLY
-// one EventTurnStarted and one EventTurnCompleted — i.e. the frame router did
-// not also emit lifecycle events for the sprawl turn (no double-emit).
-func TestUnifiedRuntime_SprawlTurn_RouterDoesNotDoubleEmit(t *testing.T) {
-	transport := newScriptedTransport()
-	session := backend.NewSession(transport, backend.SessionConfig{SessionID: "sess-auto"})
-	t.Cleanup(func() { _ = session.Close() })
-	rt := New(RuntimeConfig{Name: "agent-sprawl", Session: session})
-
-	ch, unsub := rt.EventBus().SubscribeNamed("sprawl", 64)
-	defer unsub()
-
-	if err := rt.Start(context.Background()); err != nil {
-		t.Fatalf("rt.Start: %v", err)
-	}
-	t.Cleanup(func() { _ = rt.Stop(context.Background()) })
-
-	// Feed the sprawl turn once the loop issues StartTurn (which Sends the
-	// user prompt frame on the transport).
-	go func() {
-		select {
-		case <-transport.sendCh: // user-prompt send
-		case <-time.After(2 * time.Second):
-			return
-		}
-		transport.feed(t, autoInitFrame)
-		transport.feed(t, autoAssistFrame)
-		transport.feed(t, autoResultFrame)
-	}()
-
-	rt.Queue().Enqueue(QueueItem{Class: ClassUser, Prompt: "do work", EntryIDs: []string{"seq-1"}})
-
-	var started, completed int
-	deadline := time.After(4 * time.Second)
-	for completed == 0 {
-		select {
-		case ev := <-ch:
-			switch ev.Type {
-			case EventTurnStarted:
-				started++
-			case EventTurnCompleted:
-				completed++
-			}
-		case <-deadline:
-			t.Fatalf("timeout: started=%d completed=%d", started, completed)
-		}
-	}
-	// Drain a tail to catch a stray duplicate (deliberate negative-assertion
-	// wait; 500ms one-shot to tolerate a loaded box — test-critic #5).
-	drainTail := time.After(500 * time.Millisecond)
-	for {
-		select {
-		case ev := <-ch:
-			switch ev.Type {
-			case EventTurnStarted:
-				started++
-			case EventTurnCompleted:
-				completed++
-			}
-		case <-drainTail:
-			if started != 1 {
-				t.Errorf("EventTurnStarted count = %d, want exactly 1 (double-emit?)", started)
-			}
-			if completed != 1 {
-				t.Errorf("EventTurnCompleted count = %d, want exactly 1 (double-emit?)", completed)
-			}
-			return
-		}
 	}
 }

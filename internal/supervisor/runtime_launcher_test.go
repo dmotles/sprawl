@@ -37,6 +37,8 @@ type fakeBackendSession struct {
 	startCalls  int
 	teardown    []string // ordered record of "close"/"kill"/"wait" calls (QUM-543)
 	interrupted int32
+	writes      []protocol.UserMessage                    // QUM-817: stdin user messages written
+	router      func(*protocol.Message, backend.TurnInfo) // QUM-817: captured frame router
 
 	// waitBlock, when non-nil, makes Wait() block until the channel is closed
 	// (or until the test cleanup closes it). Used by the QUM-542 bounded-wait
@@ -72,6 +74,65 @@ func (f *fakeBackendSession) StartTurn(_ context.Context, _ string, _ ...backend
 	ch <- &protocol.Message{Type: "result", Subtype: "success", Raw: raw}
 	close(ch)
 	return ch, nil
+}
+
+func (f *fakeBackendSession) WriteUserMessage(_ context.Context, msg protocol.UserMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writes = append(f.writes, msg)
+	return nil
+}
+
+// SetFrameRouter captures the runtime's frame router (QUM-815/817) so tests can
+// synthesize the CLI's isReplay consumption ack via echoReplay.
+func (f *fakeBackendSession) SetFrameRouter(h func(*protocol.Message, backend.TurnInfo)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.router = h
+}
+
+// writesSnapshot returns a copy of the stdin user messages written so far.
+func (f *fakeBackendSession) writesSnapshot() []protocol.UserMessage {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]protocol.UserMessage, len(f.writes))
+	copy(out, f.writes)
+	return out
+}
+
+// waitForWrites blocks until at least n stdin writes are recorded or timeout
+// elapses, returning a snapshot of the writes at return time.
+func (f *fakeBackendSession) waitForWrites(n int, timeout time.Duration) []protocol.UserMessage {
+	deadline := time.Now().Add(timeout)
+	for {
+		w := f.writesSnapshot()
+		if len(w) >= n || time.Now().After(deadline) {
+			return w
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// echoReplay simulates the CLI echoing a previously-written user message back as
+// an isReplay frame — the consumption ack that drives the runtime's
+// markConsumed → OnDelivered(entryIDs) path (QUM-817).
+func (f *fakeBackendSession) echoReplay(uuid string) {
+	f.mu.Lock()
+	h := f.router
+	f.mu.Unlock()
+	if h == nil {
+		return
+	}
+	raw := []byte(`{"type":"user","uuid":"` + uuid + `","isReplay":true}`)
+	h(&protocol.Message{Type: "user", UUID: uuid, Raw: raw}, backend.TurnInfo{Replay: true})
+}
+
+// echoAllReplays echoes the isReplay ack for every recorded stdin write,
+// confirming consumption of all written messages.
+func (f *fakeBackendSession) echoAllReplays() {
+	for _, w := range f.writesSnapshot() {
+		f.echoReplay(w.UUID)
+	}
 }
 
 func (f *fakeBackendSession) Interrupt(context.Context) error {
@@ -330,71 +391,14 @@ var _ backend.ToolBridge = dummyBridge{}
 // unifiedHandle behavior
 // ---------------------------------------------------------------------------
 
-// deliveredItemsCapture is a thread-safe sink for QueueItems delivered to the
-// turn loop's OnQueueItemDelivered callback. The runtime's loop goroutine
-// drains the queue before the test's goroutine can observe it, so polling
-// rt.Queue().DrainAll() races with the loop and is intermittently empty (this
-// was the QUM-445 flake). Capturing items via OnQueueItemDelivered is
-// race-free because the callback fires from inside the loop, after StartTurn
-// returns success, with the same QueueItem the test wants to inspect.
-type deliveredItemsCapture struct {
-	mu    sync.Mutex
-	items []runtimepkg.QueueItem
-	cond  *sync.Cond
-}
-
-func newDeliveredItemsCapture() *deliveredItemsCapture {
-	c := &deliveredItemsCapture{}
-	c.cond = sync.NewCond(&c.mu)
-	return c
-}
-
-func (c *deliveredItemsCapture) record(it runtimepkg.QueueItem) {
-	c.mu.Lock()
-	c.items = append(c.items, it)
-	c.cond.Broadcast()
-	c.mu.Unlock()
-}
-
-// waitFor blocks until at least n items are captured or timeout elapses.
-// Returns a copy of all captured items at return time.
-func (c *deliveredItemsCapture) waitFor(n int, timeout time.Duration) []runtimepkg.QueueItem {
-	deadline := time.Now().Add(timeout)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for len(c.items) < n {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			break
-		}
-		// sync.Cond doesn't support timeout natively; use a watchdog goroutine
-		// that broadcasts after the deadline.
-		done := make(chan struct{})
-		go func() {
-			select {
-			case <-time.After(remaining):
-				c.mu.Lock()
-				c.cond.Broadcast()
-				c.mu.Unlock()
-			case <-done:
-			}
-		}()
-		c.cond.Wait()
-		close(done)
-	}
-	out := make([]runtimepkg.QueueItem, len(c.items))
-	copy(out, c.items)
-	return out
-}
-
 // buildStartedUnifiedHandleForTest spins up an inProcessUnifiedStarter with
-// stubs and returns the resulting *unifiedHandle, the fake backend session,
-// the sprawlRoot (so tests can seed pending queue entries on disk via
-// agentloop.Enqueue before calling InterruptDelivery — see QUM-437), and a
-// deliveredItemsCapture that records every QueueItem the runtime's loop
-// hands to the backend. See deliveredItemsCapture for why direct queue
-// inspection races with the loop (QUM-445).
-func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (*unifiedHandle, *fakeBackendSession, string, *deliveredItemsCapture) {
+// stubs and returns the resulting *unifiedHandle, the fake backend session
+// (which records the stdin user messages the handle writes — QUM-817), and the
+// sprawlRoot (so tests can seed pending queue entries on disk via
+// agentloop.Enqueue before calling WakeForDelivery — see QUM-437). Tests assert
+// delivery by inspecting fakeSession.writes and drive the consumption ack via
+// fakeSession.echoReplay.
+func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (*unifiedHandle, *fakeBackendSession, string) {
 	t.Helper()
 	oldStart := unifiedAdapterStartFn
 	oldNew := unifiedRuntimeNewFn
@@ -414,17 +418,7 @@ func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (
 	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
 		return fakeSession, nil
 	}
-	captured := newDeliveredItemsCapture()
-	unifiedRuntimeNewFn = func(cfg runtimepkg.RuntimeConfig) *runtimepkg.UnifiedRuntime {
-		orig := cfg.OnQueueItemDelivered
-		cfg.OnQueueItemDelivered = func(it runtimepkg.QueueItem) {
-			captured.record(it)
-			if orig != nil {
-				orig(it)
-			}
-		}
-		return runtimepkg.New(cfg)
-	}
+	unifiedRuntimeNewFn = runtimepkg.New
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
 	handle, err := starter.Start(RuntimeStartSpec{
@@ -438,12 +432,12 @@ func buildStartedUnifiedHandleForTest(t *testing.T, caps backend.Capabilities) (
 	if !ok {
 		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
 	}
-	return uh, fakeSession, sprawlRoot, captured
+	return uh, fakeSession, sprawlRoot
 }
 
 func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 	caps := backend.Capabilities{SupportsInterrupt: true}
-	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, caps)
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, caps)
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	if got := uh.Capabilities(); got != caps {
@@ -484,7 +478,7 @@ func TestUnifiedHandle_DelegatesToRuntime(t *testing.T) {
 // to the caller. See WeaveRuntimeHandle.Stop (weave_handle.go) for the
 // already-correct pattern this mirrors.
 func TestUnifiedHandle_StopKillsSession(t *testing.T) {
-	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -525,7 +519,7 @@ func TestUnifiedHandle_StopKillsSession(t *testing.T) {
 // must NOT hang on `<-doneCh` inside stopActivity. The bounded join logs and
 // abandons after stopActivityTimeout.
 func TestUnifiedHandle_Stop_BoundsWedgedStopActivity(t *testing.T) {
-	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	block := make(chan struct{})
 	t.Cleanup(func() {
@@ -562,7 +556,7 @@ func TestUnifiedHandle_Stop_BoundsWedgedStopActivity(t *testing.T) {
 // unifiedHandle.Stop must NOT hang. The activityClose seam lets the test
 // inject a wedged closer.
 func TestUnifiedHandle_Stop_BoundsWedgedActivityClose(t *testing.T) {
-	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	block := make(chan struct{})
 	t.Cleanup(func() {
@@ -596,7 +590,7 @@ func TestUnifiedHandle_Stop_BoundsWedgedActivityClose(t *testing.T) {
 }
 
 func TestUnifiedHandle_StopClosesDone(t *testing.T) {
-	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -616,7 +610,7 @@ func TestUnifiedHandle_StopClosesDone(t *testing.T) {
 func TestUnifiedHandle_StopUnsubscribesEventBus(t *testing.T) {
 	before := runtime.NumGoroutine()
 
-	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -643,7 +637,7 @@ func TestUnifiedHandle_StopUnsubscribesEventBus(t *testing.T) {
 // pipe-drain cannot wedge retire. SIGKILL still fires (QUM-543), the OS reaps
 // the zombie eventually, and Stop returns within seconds.
 func TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges(t *testing.T) {
-	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	// Arm Wait() to block forever. Ensure cleanup unblocks it so the goroutine
 	// the handle leaves behind isn't a permanent test leak.
@@ -697,7 +691,7 @@ func TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges(t *testing.T) {
 // false-on-clean is the load-bearing default that lets call-log readers
 // distinguish "stop completed" from "stop abandoned".
 func TestUnifiedHandle_StopWaitTimedOut_FalseOnCleanStop(t *testing.T) {
-	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	if err := uh.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
@@ -715,7 +709,7 @@ func TestUnifiedHandle_StopWaitTimedOut_FalseOnCleanStop(t *testing.T) {
 // Mirrors TestUnifiedHandle_Stop_BoundedWhenSessionWaitWedges (QUM-542) for
 // the timeout-detection seam.
 func TestUnifiedHandle_StopWaitTimedOut_TrueOnTimeout(t *testing.T) {
-	uh, fakeSession, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 
 	block := make(chan struct{})
 	fakeSession.mu.Lock()
@@ -804,14 +798,16 @@ func TestActivitySubscriber_NamePropagatesToDroppedCounts(t *testing.T) {
 // QUM-437: InterruptDelivery enqueues a real inbox/interrupt prompt
 // ---------------------------------------------------------------------------
 //
-// Under the new contract InterruptDelivery reads pending/ off disk and
-// formats a real prompt via inboxprompt.Build{Queue,Interrupt}FlushPrompt
-// instead of the old "You have new messages" stub. Async entries become a
-// single ClassInbox QueueItem; interrupt entries become a single
-// ClassInterrupt QueueItem; an empty pending dir enqueues nothing.
+// QUM-817: WakeForDelivery reads pending/ off disk and writes a real prompt
+// (via inboxprompt.Build{Queue,Interrupt}FlushPrompt) straight to the CLI stdin
+// with priority `next` instead of enqueueing a Go-side QueueItem. Async and
+// interrupt entries are written as separate stdin messages; an empty pending
+// dir writes nothing. Delivery is confirmed when the CLI echoes each write back
+// as an isReplay frame (driven here via fakeSession.echoReplay), which flips
+// the on-disk entry to delivered.
 
-func TestUnifiedHandle_WakeForDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+func TestUnifiedHandle_WakeForDelivery_WritesRealAsyncPromptNext(t *testing.T) {
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	e1, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
@@ -827,15 +823,13 @@ func TestUnifiedHandle_WakeForDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
 		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
-	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
-	// polling rt.Queue().DrainAll(), which races with the runtime loop.
-	items := captured.waitFor(1, 2*time.Second)
-	if len(items) != 1 {
-		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
+	writes := fakeSession.waitForWrites(1, 2*time.Second)
+	if len(writes) != 1 {
+		t.Fatalf("stdin writes = %d, want 1; writes=%+v", len(writes), writes)
 	}
-	got := items[0]
-	if got.Class != runtimepkg.ClassInbox {
-		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassInbox)
+	got := writes[0]
+	if got.Priority != "next" {
+		t.Errorf("Priority = %q, want %q", got.Priority, "next")
 	}
 	want := inboxprompt.BuildQueueFlushPrompt([]inboxprompt.Entry{
 		{
@@ -844,16 +838,19 @@ func TestUnifiedHandle_WakeForDelivery_EnqueuesRealAsyncPrompt(t *testing.T) {
 			EnqueuedAt: e1.EnqueuedAt,
 		},
 	})
-	if got.Prompt != want {
-		t.Errorf("Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", got.Prompt, want)
+	if got.Message.Content != want {
+		t.Errorf("Content mismatch.\n--- got ---\n%s\n--- want ---\n%s", got.Message.Content, want)
 	}
-	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != e1.ID {
-		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, e1.ID)
+
+	// The isReplay echo confirms consumption and flips the entry to delivered.
+	fakeSession.echoReplay(got.UUID)
+	if pending, _ := agentloop.ListPending(sprawlRoot, "alice"); len(pending) != 0 {
+		t.Errorf("pending after replay echo = %d, want 0 (entry must be marked delivered)", len(pending))
 	}
 }
 
-func TestUnifiedHandle_WakeForDelivery_EnqueuesRealInterruptPrompt(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+func TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNext(t *testing.T) {
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	e1, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
@@ -869,15 +866,13 @@ func TestUnifiedHandle_WakeForDelivery_EnqueuesRealInterruptPrompt(t *testing.T)
 		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
-	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
-	// polling rt.Queue().DrainAll(), which races with the runtime loop.
-	items := captured.waitFor(1, 2*time.Second)
-	if len(items) != 1 {
-		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
+	writes := fakeSession.waitForWrites(1, 2*time.Second)
+	if len(writes) != 1 {
+		t.Fatalf("stdin writes = %d, want 1; writes=%+v", len(writes), writes)
 	}
-	got := items[0]
-	if got.Class != runtimepkg.ClassInterrupt {
-		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassInterrupt)
+	got := writes[0]
+	if got.Priority != "next" {
+		t.Errorf("Priority = %q, want %q", got.Priority, "next")
 	}
 	want := inboxprompt.BuildInterruptFlushPrompt([]inboxprompt.Entry{
 		{
@@ -886,30 +881,31 @@ func TestUnifiedHandle_WakeForDelivery_EnqueuesRealInterruptPrompt(t *testing.T)
 			EnqueuedAt: e1.EnqueuedAt,
 		},
 	})
-	if got.Prompt != want {
-		t.Errorf("Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", got.Prompt, want)
+	if got.Message.Content != want {
+		t.Errorf("Content mismatch.\n--- got ---\n%s\n--- want ---\n%s", got.Message.Content, want)
 	}
-	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != e1.ID {
-		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, e1.ID)
+
+	fakeSession.echoReplay(got.UUID)
+	if pending, _ := agentloop.ListPending(sprawlRoot, "alice"); len(pending) != 0 {
+		t.Errorf("pending after replay echo = %d, want 0 (entry must be marked delivered)", len(pending))
 	}
 }
 
-func TestUnifiedHandle_WakeForDelivery_EmptyPendingNoEnqueue(t *testing.T) {
-	uh, _, _, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+func TestUnifiedHandle_WakeForDelivery_EmptyPendingNoWrite(t *testing.T) {
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	if err := uh.WakeForDelivery(); err != nil {
 		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
-	items := uh.rt.Queue().DrainAll()
-	if len(items) != 0 {
-		t.Errorf("queue items = %d, want 0 (empty pending must not enqueue a stub); items=%+v", len(items), items)
+	if writes := fakeSession.writesSnapshot(); len(writes) != 0 {
+		t.Errorf("stdin writes = %d, want 0 (empty pending must not write a stub); writes=%+v", len(writes), writes)
 	}
 }
 
 func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	asyncEntry, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
@@ -931,19 +927,13 @@ func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) 
 		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
-	// QUM-445: observe via OnQueueItemDelivered (race-free) instead of
-	// polling rt.Queue().DrainAll(), which races with the runtime loop.
-	items := captured.waitFor(2, 2*time.Second)
-	if len(items) != 2 {
-		t.Fatalf("delivered items = %d, want 2 (one interrupt + one inbox); items=%+v", len(items), items)
+	writes := fakeSession.waitForWrites(2, 2*time.Second)
+	if len(writes) != 2 {
+		t.Fatalf("stdin writes = %d, want 2 (one interrupt + one async); writes=%+v", len(writes), writes)
 	}
-	// DrainAll sorts by class priority (interrupt before inbox), and the
-	// turn-loop fires OnQueueItemDelivered in that order.
-	if items[0].Class != runtimepkg.ClassInterrupt {
-		t.Errorf("items[0].Class = %q, want %q (interrupt must sort first)", items[0].Class, runtimepkg.ClassInterrupt)
-	}
-	if items[1].Class != runtimepkg.ClassInbox {
-		t.Errorf("items[1].Class = %q, want %q", items[1].Class, runtimepkg.ClassInbox)
+	// drainPendingToStdin writes interrupts before asyncs (QUM-817).
+	if writes[0].Priority != "next" || writes[1].Priority != "next" {
+		t.Errorf("priorities = [%q,%q], want both \"next\"", writes[0].Priority, writes[1].Priority)
 	}
 
 	wantInterrupt := inboxprompt.BuildInterruptFlushPrompt([]inboxprompt.Entry{
@@ -954,11 +944,8 @@ func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) 
 			EnqueuedAt: intEntry.EnqueuedAt,
 		},
 	})
-	if items[0].Prompt != wantInterrupt {
-		t.Errorf("interrupt Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", items[0].Prompt, wantInterrupt)
-	}
-	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != intEntry.ID {
-		t.Errorf("interrupt EntryIDs = %v, want [%q]", items[0].EntryIDs, intEntry.ID)
+	if writes[0].Message.Content != wantInterrupt {
+		t.Errorf("interrupt Content mismatch.\n--- got ---\n%s\n--- want ---\n%s", writes[0].Message.Content, wantInterrupt)
 	}
 
 	wantAsync := inboxprompt.BuildQueueFlushPrompt([]inboxprompt.Entry{
@@ -969,87 +956,33 @@ func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) 
 			EnqueuedAt: asyncEntry.EnqueuedAt,
 		},
 	})
-	if items[1].Prompt != wantAsync {
-		t.Errorf("async Prompt mismatch.\n--- got ---\n%s\n--- want ---\n%s", items[1].Prompt, wantAsync)
+	if writes[1].Message.Content != wantAsync {
+		t.Errorf("async Content mismatch.\n--- got ---\n%s\n--- want ---\n%s", writes[1].Message.Content, wantAsync)
 	}
-	if len(items[1].EntryIDs) != 1 || items[1].EntryIDs[0] != asyncEntry.ID {
-		t.Errorf("async EntryIDs = %v, want [%q]", items[1].EntryIDs, asyncEntry.ID)
+
+	// Both echoes confirm consumption; all pending entries flip to delivered.
+	fakeSession.echoAllReplays()
+	if pending, _ := agentloop.ListPending(sprawlRoot, "alice"); len(pending) != 0 {
+		t.Errorf("pending after replay echoes = %d, want 0", len(pending))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// QUM-441: InterruptDelivery wires post-turn MarkDelivered into the queue
-// directories. After the unified runtime drains the queue (via the synthetic
-// turn the wrapper kicks off), the seeded pending entries must be moved to
-// delivered/. On a StartTurn error, pending must remain pending.
+// QUM-441/817: WakeForDelivery wires post-consumption MarkDelivered. After the
+// CLI echoes back the isReplay ack for each written stdin message, the seeded
+// pending entries must be moved to delivered/ on disk. The write alone (before
+// the echo) must NOT mark anything delivered.
 // ---------------------------------------------------------------------------
 
-// fakeBackendSessionWithStartErr is a fakeBackendSession variant whose
-// StartTurn returns a configured error. Used to exercise the failure path
-// where the post-turn callback must NOT mark items delivered.
-type fakeBackendSessionWithStartErr struct {
-	*fakeBackendSession
-	startErr error
-}
-
-func (f *fakeBackendSessionWithStartErr) StartTurn(_ context.Context, _ string, _ ...backend.TurnSpec) (<-chan *protocol.Message, error) {
-	f.mu.Lock()
-	f.startCalls++
-	f.mu.Unlock()
-	return nil, f.startErr
-}
-
-// buildStartedUnifiedHandleWithStartErrForTest spins up an inProcessUnifiedStarter
-// backed by a fakeBackendSession whose StartTurn returns startErr. Mirrors
-// buildStartedUnifiedHandleForTest otherwise.
-func buildStartedUnifiedHandleWithStartErrForTest(t *testing.T, caps backend.Capabilities, startErr error) (*unifiedHandle, *fakeBackendSession, string) {
-	t.Helper()
-	oldStart := unifiedAdapterStartFn
-	oldNew := unifiedRuntimeNewFn
-	t.Cleanup(func() {
-		unifiedAdapterStartFn = oldStart
-		unifiedRuntimeNewFn = oldNew
-	})
-
-	sprawlRoot := t.TempDir()
-	worktree := filepath.Join(sprawlRoot, "wt")
-	_ = os.MkdirAll(worktree, 0o755)
-	writeAgentState(t, sprawlRoot, &state.AgentState{
-		Name: "alice", Type: "researcher", Worktree: worktree, SessionID: "sess-alice",
-	})
-
-	inner := newFakeBackendSession("sess-alice", caps)
-	wrapped := &fakeBackendSessionWithStartErr{fakeBackendSession: inner, startErr: startErr}
-	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
-		return wrapped, nil
-	}
-	unifiedRuntimeNewFn = runtimepkg.New
-
-	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
-	handle, err := starter.Start(RuntimeStartSpec{
-		Name: "alice", Worktree: worktree, SprawlRoot: sprawlRoot,
-		SessionID: "sess-alice", TreePath: "weave/alice",
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	uh, ok := handle.(*unifiedHandle)
-	if !ok {
-		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
-	}
-	return uh, inner, sprawlRoot
-}
-
-// TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered verifies that
-// after the runtime drains the queue items synthesized by InterruptDelivery,
-// the underlying pending/ entries are moved to delivered/ on disk. See
-// QUM-441 (closes the gap left by QUM-437).
+// TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered verifies that the
+// isReplay consumption ack (not the stdin write itself) is what flips pending
+// entries to delivered (QUM-441/817).
 func TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered(t *testing.T) {
-	uh, _, sprawlRoot, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
-	// Seed two pending entries — one async, one interrupt — so that
-	// InterruptDelivery enqueues two QueueItems (one per class).
+	// Seed two pending entries — one async, one interrupt — so WakeForDelivery
+	// writes two stdin messages (one per class).
 	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
 		ID: "id-async-1", ShortID: "sa1", Class: agentloop.ClassAsync,
 		From: "child-alpha", Subject: "status", Body: "all green",
@@ -1063,171 +996,42 @@ func TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered(t *testing.T) {
 		t.Fatalf("Enqueue interrupt: %v", err)
 	}
 
-	// Subscribe BEFORE InterruptDelivery so we don't miss the drain event.
-	sub, unsub := uh.rt.EventBus().Subscribe(64)
-	defer unsub()
-
 	if err := uh.WakeForDelivery(); err != nil {
 		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
-	// Wait for the queue to drain. The runtime kicks off a synthetic turn
-	// to consume the queue; we wait for EventQueueDrained.
-	deadline := time.After(3 * time.Second)
-	gotDrain := false
-	for !gotDrain {
-		select {
-		case ev, ok := <-sub:
-			if !ok {
-				t.Fatal("event channel closed before drain")
-			}
-			if ev.Type == runtimepkg.EventQueueDrained {
-				gotDrain = true
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for EventQueueDrained")
-		}
+	// Two stdin writes (one per class). The write alone must NOT mark anything
+	// delivered — only the consumption ack does.
+	if writes := fakeSession.waitForWrites(2, 2*time.Second); len(writes) != 2 {
+		t.Fatalf("stdin writes = %d, want 2; writes=%+v", len(writes), writes)
+	}
+	if p, _ := agentloop.ListPending(sprawlRoot, "alice"); len(p) != 2 {
+		t.Fatalf("pending before echo = %d, want 2 (writes alone must not mark delivered)", len(p))
 	}
 
-	// Poll for the on-disk transition: the post-turn MarkDelivered
-	// callback runs on the loop goroutine after the queue drain, so it
-	// may complete shortly after the EventQueueDrained publish.
-	pollDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(pollDeadline) {
-		pending, _ := agentloop.ListPending(sprawlRoot, "alice")
-		delivered, _ := agentloop.ListDelivered(sprawlRoot, "alice")
-		if len(pending) == 0 && len(delivered) == 2 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The isReplay echo of each write is the consumption ack that flips the
+	// entries to delivered.
+	fakeSession.echoAllReplays()
+
 	pending, _ := agentloop.ListPending(sprawlRoot, "alice")
 	delivered, _ := agentloop.ListDelivered(sprawlRoot, "alice")
-	t.Errorf("after drain: pending=%d (want 0), delivered=%d (want 2)", len(pending), len(delivered))
-}
-
-// TestUnifiedHandle_WakeForDelivery_KeepsPendingOnStartTurnError verifies
-// that if StartTurn fails, pending entries remain in pending/ — the
-// post-turn MarkDelivered callback must NOT fire on a failed turn. See
-// QUM-441.
-func TestUnifiedHandle_WakeForDelivery_KeepsPendingOnStartTurnError(t *testing.T) {
-	startErr := errStartTurnFakeFailure
-	uh, _, sprawlRoot := buildStartedUnifiedHandleWithStartErrForTest(t, backend.Capabilities{}, startErr)
-	defer func() { _ = uh.Stop(context.Background()) }()
-
-	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
-		ID: "id-async-1", ShortID: "sa1", Class: agentloop.ClassAsync,
-		From: "child-alpha", Subject: "status", Body: "all green",
-	}); err != nil {
-		t.Fatalf("Enqueue async: %v", err)
-	}
-
-	sub, unsub := uh.rt.EventBus().Subscribe(64)
-	defer unsub()
-
-	if err := uh.WakeForDelivery(); err != nil {
-		t.Fatalf("WakeForDelivery: %v", err)
-	}
-
-	// Wait for QueueDrained (the loop publishes it even after a failed turn,
-	// since the items were consumed from the queue).
-	deadline := time.After(3 * time.Second)
-	gotDrain := false
-	gotFail := false
-	for !gotDrain {
-		select {
-		case ev, ok := <-sub:
-			if !ok {
-				t.Fatal("event channel closed before drain")
-			}
-			if ev.Type == runtimepkg.EventTurnFailed {
-				gotFail = true
-			}
-			if ev.Type == runtimepkg.EventQueueDrained {
-				gotDrain = true
-			}
-		case <-deadline:
-			t.Fatalf("timed out waiting for EventQueueDrained (gotFail=%v)", gotFail)
-		}
-	}
-	if !gotFail {
-		t.Error("expected EventTurnFailed before EventQueueDrained")
-	}
-
-	// Allow any deferred callback to run; assert pending is preserved.
-	time.Sleep(50 * time.Millisecond)
-
-	pending, err := agentloop.ListPending(sprawlRoot, "alice")
-	if err != nil {
-		t.Fatalf("ListPending: %v", err)
-	}
-	delivered, err := agentloop.ListDelivered(sprawlRoot, "alice")
-	if err != nil {
-		t.Fatalf("ListDelivered: %v", err)
-	}
-	if len(pending) != 1 {
-		t.Errorf("pending count = %d, want 1 (failed turn must not mark delivered); pending=%+v", len(pending), pending)
-	}
-	if len(delivered) != 0 {
-		t.Errorf("delivered count = %d, want 0 (failed turn must not mark delivered); delivered=%+v", len(delivered), delivered)
+	if len(pending) != 0 || len(delivered) != 2 {
+		t.Errorf("after echo: pending=%d (want 0), delivered=%d (want 2)", len(pending), len(delivered))
 	}
 }
 
-// errStartTurnFakeFailure is the canned StartTurn error used by the
-// failure-path test above. Defined as a package-level var so the test can
-// match it without string-comparing.
-var errStartTurnFakeFailure = fakeStartTurnErr{}
-
-type fakeStartTurnErr struct{}
-
-func (fakeStartTurnErr) Error() string { return "fake StartTurn failure" }
-
-// TestE2E_QUM441_TwoMessagesOverTimeNoReinjection is the QUM-441 e2e gate:
-// seed a pending entry, drive a turn, observe pending → delivered. Then
-// (after turn 1 completes) seed a SECOND pending entry, drive another turn,
-// and assert the second turn's prompt contains only the second message —
-// the first must NOT be re-injected. Mirrors the QUM-438 e2e pattern of
-// driving real production code paths via Go tests rather than a live
-// claude TTY.
+// TestE2E_QUM441_TwoMessagesOverTimeNoReinjection is the QUM-441/817
+// no-reinjection gate: write a first message, confirm it via the isReplay echo
+// (pending → delivered). Then write a SECOND message and assert the new stdin
+// write cites only the second message — the first must NOT be re-injected.
 func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
-	uh, _, sprawlRoot, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
-	sub, unsub := uh.rt.EventBus().Subscribe(64)
-	defer unsub()
-
-	// Helper: wait for next EventTurnStarted and return its Prompt; also
-	// wait for matching EventQueueDrained so the post-turn callback has run.
-	waitTurnPrompt := func() string {
-		t.Helper()
-		var prompt string
-		gotStart, gotDrain := false, false
-		deadline := time.After(3 * time.Second)
-		for !gotStart || !gotDrain {
-			select {
-			case ev, ok := <-sub:
-				if !ok {
-					t.Fatal("event channel closed")
-				}
-				if ev.Type == runtimepkg.EventTurnStarted {
-					prompt = ev.Prompt
-					gotStart = true
-				}
-				if ev.Type == runtimepkg.EventQueueDrained {
-					gotDrain = true
-				}
-			case <-deadline:
-				t.Fatalf("timed out waiting for turn (gotStart=%v gotDrain=%v)", gotStart, gotDrain)
-			}
-		}
-		return prompt
-	}
-
-	// --- Round 1: send first message, drive turn, verify transition. ---
-	// Post-QUM-555/QUM-556 the flush prompt no longer inlines the body —
-	// assert on the entry's ShortID (which the `<system-notification>` line
-	// cites as the `id=` arg of `mcp__sprawl__messages_read(...)`) as the
-	// per-message identity token.
+	// --- Round 1: send first message, write to stdin, confirm via echo. ---
+	// Post-QUM-555/QUM-556 the flush prompt no longer inlines the body — assert
+	// on the entry's ShortID (cited as the `id=` arg of
+	// `mcp__sprawl__messages_read(...)`) as the per-message identity token.
 	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
 		ID: "msg-1", ShortID: "m1", Class: agentloop.ClassAsync,
 		From: "weave", Subject: "first", Body: "unique-token-AAA",
@@ -1237,29 +1041,23 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	if err := uh.WakeForDelivery(); err != nil {
 		t.Fatalf("WakeForDelivery 1: %v", err)
 	}
-	prompt1 := waitTurnPrompt()
-	if !strings.Contains(prompt1, "mcp__sprawl__messages_read(id=m1)") {
-		t.Fatalf("turn 1 prompt missing 'mcp__sprawl__messages_read(id=m1)' citation: %q", prompt1)
+	w1 := fakeSession.waitForWrites(1, 2*time.Second)
+	if len(w1) != 1 {
+		t.Fatalf("round 1 stdin writes = %d, want 1", len(w1))
 	}
-
-	// Wait for the on-disk transition.
-	pollDeadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(pollDeadline) {
-		p, _ := agentloop.ListPending(sprawlRoot, "alice")
-		d, _ := agentloop.ListDelivered(sprawlRoot, "alice")
-		if len(p) == 0 && len(d) == 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !strings.Contains(w1[0].Message.Content, "mcp__sprawl__messages_read(id=m1)") {
+		t.Fatalf("round 1 write missing 'mcp__sprawl__messages_read(id=m1)' citation: %q", w1[0].Message.Content)
 	}
+	// Confirm consumption — flips m1 to delivered.
+	fakeSession.echoReplay(w1[0].UUID)
 	if p, _ := agentloop.ListPending(sprawlRoot, "alice"); len(p) != 0 {
-		t.Fatalf("after turn 1: pending=%d, want 0", len(p))
+		t.Fatalf("after round 1 echo: pending=%d, want 0", len(p))
 	}
 	if d, _ := agentloop.ListDelivered(sprawlRoot, "alice"); len(d) != 1 {
-		t.Fatalf("after turn 1: delivered=%d, want 1", len(d))
+		t.Fatalf("after round 1 echo: delivered=%d, want 1", len(d))
 	}
 
-	// --- Round 2: send second message, drive turn, verify NO re-injection. ---
+	// --- Round 2: send second message; the new write must NOT re-inject m1. ---
 	if _, err := agentloop.Enqueue(sprawlRoot, "alice", agentloop.Entry{
 		ID: "msg-2", ShortID: "m2", Class: agentloop.ClassAsync,
 		From: "weave", Subject: "second", Body: "unique-token-BBB",
@@ -1269,18 +1067,20 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	if err := uh.WakeForDelivery(); err != nil {
 		t.Fatalf("WakeForDelivery 2: %v", err)
 	}
-	prompt2 := waitTurnPrompt()
-
-	// Critical assertion: second turn's prompt must cite m2 but NOT m1.
-	if !strings.Contains(prompt2, "mcp__sprawl__messages_read(id=m2)") {
-		t.Errorf("turn 2 prompt missing 'mcp__sprawl__messages_read(id=m2)' citation: %q", prompt2)
+	writes := fakeSession.waitForWrites(2, 2*time.Second)
+	if len(writes) != 2 {
+		t.Fatalf("round 2 total stdin writes = %d, want 2", len(writes))
 	}
-	if strings.Contains(prompt2, "mcp__sprawl__messages_read(id=m1)") {
-		t.Errorf("turn 2 prompt RE-INJECTED first message (id=m1 found): %q", prompt2)
+	round2 := writes[1]
+	if !strings.Contains(round2.Message.Content, "mcp__sprawl__messages_read(id=m2)") {
+		t.Errorf("round 2 write missing 'mcp__sprawl__messages_read(id=m2)' citation: %q", round2.Message.Content)
+	}
+	if strings.Contains(round2.Message.Content, "mcp__sprawl__messages_read(id=m1)") {
+		t.Errorf("round 2 write RE-INJECTED first message (id=m1 found): %q", round2.Message.Content)
 	}
 
-	// Wait for second on-disk transition.
-	pollDeadline = time.Now().Add(2 * time.Second)
+	fakeSession.echoReplay(round2.UUID)
+	pollDeadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(pollDeadline) {
 		p, _ := agentloop.ListPending(sprawlRoot, "alice")
 		d, _ := agentloop.ListDelivered(sprawlRoot, "alice")
@@ -1291,7 +1091,7 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 	}
 	p, _ := agentloop.ListPending(sprawlRoot, "alice")
 	d, _ := agentloop.ListDelivered(sprawlRoot, "alice")
-	t.Errorf("after turn 2: pending=%d (want 0), delivered=%d (want 2)", len(p), len(d))
+	t.Errorf("after round 2: pending=%d (want 0), delivered=%d (want 2)", len(p), len(d))
 }
 
 // ---------------------------------------------------------------------------
@@ -1309,7 +1109,7 @@ func TestE2E_QUM441_TwoMessagesOverTimeNoReinjection(t *testing.T) {
 // buildStartedUnifiedHandleForTest but invokes seed(sprawlRoot) AFTER the
 // agent state is written but BEFORE Start runs, so callers can pre-seed the
 // on-disk task queue and exercise the Start-time bridge sweep.
-func buildStartedUnifiedHandleForTestWithSeed(t *testing.T, caps backend.Capabilities, seed func(sprawlRoot string)) (*unifiedHandle, *fakeBackendSession, string, *deliveredItemsCapture) {
+func buildStartedUnifiedHandleForTestWithSeed(t *testing.T, caps backend.Capabilities, seed func(sprawlRoot string)) (*unifiedHandle, *fakeBackendSession, string) {
 	t.Helper()
 	oldStart := unifiedAdapterStartFn
 	oldNew := unifiedRuntimeNewFn
@@ -1333,17 +1133,7 @@ func buildStartedUnifiedHandleForTestWithSeed(t *testing.T, caps backend.Capabil
 	unifiedAdapterStartFn = func(_ context.Context, _ backend.SessionSpec) (backend.Session, error) {
 		return fakeSession, nil
 	}
-	captured := newDeliveredItemsCapture()
-	unifiedRuntimeNewFn = func(cfg runtimepkg.RuntimeConfig) *runtimepkg.UnifiedRuntime {
-		orig := cfg.OnQueueItemDelivered
-		cfg.OnQueueItemDelivered = func(it runtimepkg.QueueItem) {
-			captured.record(it)
-			if orig != nil {
-				orig(it)
-			}
-		}
-		return runtimepkg.New(cfg)
-	}
+	unifiedRuntimeNewFn = runtimepkg.New
 
 	starter := newInProcessUnifiedStarter(backend.InitSpec{}, nil)
 	handle, err := starter.Start(RuntimeStartSpec{
@@ -1357,7 +1147,7 @@ func buildStartedUnifiedHandleForTestWithSeed(t *testing.T, caps backend.Capabil
 	if !ok {
 		t.Fatalf("handle type = %T, want *unifiedHandle", handle)
 	}
-	return uh, fakeSession, sprawlRoot, captured
+	return uh, fakeSession, sprawlRoot
 }
 
 // assertTaskPromptShape verifies a delivered task prompt references the
@@ -1406,7 +1196,7 @@ func pollTaskStatus(t *testing.T, sprawlRoot, agent, id, wantStatus string, time
 // launch and ends up marked done after delivery.
 func TestUnifiedHandle_FeedTasks_PreExistingQueuedTaskBridgedAtStart(t *testing.T) {
 	var seeded *state.Task
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
 		tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the pre-start task")
 		if err != nil {
 			t.Fatalf("EnqueueTask: %v", err)
@@ -1419,20 +1209,20 @@ func TestUnifiedHandle_FeedTasks_PreExistingQueuedTaskBridgedAtStart(t *testing.
 		t.Fatal("seeded task is nil")
 	}
 
-	items := captured.waitFor(1, 2*time.Second)
-	if len(items) != 1 {
-		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
+	writes := fakeSession.waitForWrites(1, 2*time.Second)
+	if len(writes) != 1 {
+		t.Fatalf("stdin writes = %d, want 1; writes=%+v", len(writes), writes)
 	}
-	got := items[0]
-	if got.Class != runtimepkg.ClassTask {
-		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassTask)
+	got := writes[0]
+	// QUM-817 + Amendment 1: delegated tasks are written with priority `later`
+	// so they defer to a clean task boundary rather than splicing mid-turn.
+	if got.Priority != "later" {
+		t.Errorf("Priority = %q, want %q", got.Priority, "later")
 	}
-	assertTaskPromptShape(t, got.Prompt, seeded.PromptFile)
-	wantEntryID := "task:" + seeded.ID
-	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != wantEntryID {
-		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, wantEntryID)
-	}
+	assertTaskPromptShape(t, got.Message.Content, seeded.PromptFile)
 
+	// The isReplay echo confirms consumption and drives the task → done.
+	fakeSession.echoReplay(got.UUID)
 	final := pollTaskStatus(t, sprawlRoot, "alice", seeded.ID, "done", 2*time.Second)
 	if final == nil {
 		t.Fatalf("task %q not found after delivery", seeded.ID)
@@ -1449,7 +1239,7 @@ func TestUnifiedHandle_FeedTasks_PreExistingQueuedTaskBridgedAtStart(t *testing.
 // Start, followed by a Wake, gets bridged into the runtime queue and
 // delivered, with the task marked done.
 func TestUnifiedHandle_Wake_BridgesQueuedTasks(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the post-start task")
@@ -1461,20 +1251,17 @@ func TestUnifiedHandle_Wake_BridgesQueuedTasks(t *testing.T) {
 		t.Fatalf("Wake: %v", err)
 	}
 
-	items := captured.waitFor(1, 2*time.Second)
-	if len(items) != 1 {
-		t.Fatalf("delivered items = %d, want 1; items=%+v", len(items), items)
+	writes := fakeSession.waitForWrites(1, 2*time.Second)
+	if len(writes) != 1 {
+		t.Fatalf("stdin writes = %d, want 1; writes=%+v", len(writes), writes)
 	}
-	got := items[0]
-	if got.Class != runtimepkg.ClassTask {
-		t.Errorf("Class = %q, want %q", got.Class, runtimepkg.ClassTask)
+	got := writes[0]
+	if got.Priority != "later" {
+		t.Errorf("Priority = %q, want %q", got.Priority, "later")
 	}
-	assertTaskPromptShape(t, got.Prompt, tk.PromptFile)
-	wantEntryID := "task:" + tk.ID
-	if len(got.EntryIDs) != 1 || got.EntryIDs[0] != wantEntryID {
-		t.Errorf("EntryIDs = %v, want [%q]", got.EntryIDs, wantEntryID)
-	}
+	assertTaskPromptShape(t, got.Message.Content, tk.PromptFile)
 
+	fakeSession.echoReplay(got.UUID)
 	final := pollTaskStatus(t, sprawlRoot, "alice", tk.ID, "done", 2*time.Second)
 	if final == nil || final.Status != "done" {
 		t.Errorf("task status final = %+v, want status=done", final)
@@ -1487,7 +1274,7 @@ func TestUnifiedHandle_Wake_BridgesQueuedTasks(t *testing.T) {
 // single queued task surfaces exactly once regardless of how many wakes
 // arrive.
 func TestUnifiedHandle_Wake_RepeatedCallsDoNotDoubleDeliver(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	tk, err := state.EnqueueTask(sprawlRoot, "alice", "do the concurrent task")
@@ -1506,20 +1293,20 @@ func TestUnifiedHandle_Wake_RepeatedCallsDoNotDoubleDeliver(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Wait for at least one delivery, then sleep a beat to give any racing
-	// extra deliveries a chance to land.
-	if items := captured.waitFor(1, 2*time.Second); len(items) < 1 {
-		t.Fatalf("no items delivered within timeout")
+	// Wait for the one write, then sleep a beat to give any racing extra
+	// writes a chance to land. feedTasks flips the task queued→in-progress
+	// under tasksMu, so only the first Wake writes it.
+	if writes := fakeSession.waitForWrites(1, 2*time.Second); len(writes) < 1 {
+		t.Fatalf("no stdin write within timeout")
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	captured.mu.Lock()
-	count := len(captured.items)
-	captured.mu.Unlock()
-	if count != 1 {
-		t.Errorf("delivered items = %d, want exactly 1 (repeated Wakes must not double-deliver)", count)
+	writes := fakeSession.writesSnapshot()
+	if len(writes) != 1 {
+		t.Errorf("stdin writes = %d, want exactly 1 (repeated Wakes must not double-deliver)", len(writes))
 	}
 
+	fakeSession.echoReplay(writes[0].UUID)
 	final := pollTaskStatus(t, sprawlRoot, "alice", tk.ID, "done", 2*time.Second)
 	if final == nil || final.Status != "done" {
 		t.Errorf("task status final = %+v, want status=done", final)
@@ -1530,7 +1317,7 @@ func TestUnifiedHandle_Wake_RepeatedCallsDoNotDoubleDeliver(t *testing.T) {
 // Stop, a subsequent EnqueueTask + Wake does not surface any item, and the
 // task remains queued on disk.
 func TestUnifiedHandle_FeedTasks_StoppedRuntimeNoEnqueue(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	// Idempotent Stop: the test stops the runtime explicitly below; this
 	// defer guards against a leaked runtime if the test fails mid-flight.
 	defer func() { _ = uh.Stop(context.Background()) }()
@@ -1544,17 +1331,14 @@ func TestUnifiedHandle_FeedTasks_StoppedRuntimeNoEnqueue(t *testing.T) {
 		t.Fatalf("EnqueueTask: %v", err)
 	}
 
-	// Wake on a stopped handle must not panic and must not deliver.
+	// Wake on a stopped handle must not panic and must not write.
 	_ = uh.Wake()
 
-	// Poll for ~200ms; nothing should arrive.
+	// Poll for ~200ms; nothing should be written.
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		captured.mu.Lock()
-		n := len(captured.items)
-		captured.mu.Unlock()
-		if n > 0 {
-			t.Fatalf("delivered items = %d, want 0 (runtime is stopped)", n)
+		if n := len(fakeSession.writesSnapshot()); n > 0 {
+			t.Fatalf("stdin writes = %d, want 0 (runtime is stopped)", n)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1582,7 +1366,7 @@ func TestUnifiedHandle_FeedTasks_StoppedRuntimeNoEnqueue(t *testing.T) {
 // queued tasks pre-Start are both bridged in FIFO order.
 func TestUnifiedHandle_FeedTasks_MultipleQueuedTasksFIFO(t *testing.T) {
 	var t1, t2 *state.Task
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
 		var err error
 		t1, err = state.EnqueueTask(sprawlRoot, "alice", "task one")
 		if err != nil {
@@ -1597,24 +1381,20 @@ func TestUnifiedHandle_FeedTasks_MultipleQueuedTasksFIFO(t *testing.T) {
 	})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
-	items := captured.waitFor(2, 3*time.Second)
-	if len(items) != 2 {
-		t.Fatalf("delivered items = %d, want 2; items=%+v", len(items), items)
+	writes := fakeSession.waitForWrites(2, 3*time.Second)
+	if len(writes) != 2 {
+		t.Fatalf("stdin writes = %d, want 2; writes=%+v", len(writes), writes)
 	}
-	for i, it := range items {
-		if it.Class != runtimepkg.ClassTask {
-			t.Errorf("items[%d].Class = %q, want %q", i, it.Class, runtimepkg.ClassTask)
+	for i, w := range writes {
+		if w.Priority != "later" {
+			t.Errorf("writes[%d].Priority = %q, want %q", i, w.Priority, "later")
 		}
 	}
-	want1 := "task:" + t1.ID
-	want2 := "task:" + t2.ID
-	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != want1 {
-		t.Errorf("items[0].EntryIDs = %v, want [%q]", items[0].EntryIDs, want1)
-	}
-	if len(items[1].EntryIDs) != 1 || items[1].EntryIDs[0] != want2 {
-		t.Errorf("items[1].EntryIDs = %v, want [%q]", items[1].EntryIDs, want2)
-	}
+	// FIFO: the first write references t1, the second t2.
+	assertTaskPromptShape(t, writes[0].Message.Content, t1.PromptFile)
+	assertTaskPromptShape(t, writes[1].Message.Content, t2.PromptFile)
 
+	fakeSession.echoAllReplays()
 	for _, id := range []string{t1.ID, t2.ID} {
 		final := pollTaskStatus(t, sprawlRoot, "alice", id, "done", 2*time.Second)
 		if final == nil || final.Status != "done" {
@@ -1628,7 +1408,7 @@ func TestUnifiedHandle_FeedTasks_MultipleQueuedTasksFIFO(t *testing.T) {
 // marked done.
 func TestUnifiedHandle_FeedTasks_OnlyQueuedTasksAreDelivered(t *testing.T) {
 	var doneTask, queuedTask *state.Task
-	uh, _, _, captured := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
+	uh, fakeSession, _ := buildStartedUnifiedHandleForTestWithSeed(t, backend.Capabilities{}, func(sprawlRoot string) {
 		var err error
 		doneTask, err = state.EnqueueTask(sprawlRoot, "alice", "already done task")
 		if err != nil {
@@ -1647,23 +1427,18 @@ func TestUnifiedHandle_FeedTasks_OnlyQueuedTasksAreDelivered(t *testing.T) {
 	})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
-	// Wait for one delivery, then a small grace period.
-	if items := captured.waitFor(1, 2*time.Second); len(items) < 1 {
-		t.Fatalf("expected at least one delivery for queued task")
+	// Wait for one write, then a small grace period to catch any spurious extra.
+	if writes := fakeSession.waitForWrites(1, 2*time.Second); len(writes) < 1 {
+		t.Fatalf("expected at least one write for queued task")
 	}
 	time.Sleep(50 * time.Millisecond)
 
-	captured.mu.Lock()
-	items := append([]runtimepkg.QueueItem(nil), captured.items...)
-	captured.mu.Unlock()
-
-	if len(items) != 1 {
-		t.Fatalf("delivered items = %d, want exactly 1 (done task must not re-deliver); items=%+v", len(items), items)
+	writes := fakeSession.writesSnapshot()
+	if len(writes) != 1 {
+		t.Fatalf("stdin writes = %d, want exactly 1 (done task must not re-deliver); writes=%+v", len(writes), writes)
 	}
-	wantID := "task:" + queuedTask.ID
-	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != wantID {
-		t.Errorf("items[0].EntryIDs = %v, want [%q]", items[0].EntryIDs, wantID)
-	}
+	// The single write must reference the still-queued task, not the done one.
+	assertTaskPromptShape(t, writes[0].Message.Content, queuedTask.PromptFile)
 }
 
 // captureSlogHandler is a minimal in-memory slog.Handler that records every
@@ -1701,7 +1476,7 @@ func installCaptureSlog(t *testing.T) *captureSlogHandler {
 // feedTasks encounters a state.ListTasks error, the diagnostic must be
 // emitted via slog (not written directly to os.Stderr).
 func TestFeedTasks_ListErrorLogsViaSlog(t *testing.T) {
-	uh, _, sprawlRoot, _ := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, _, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	// Corrupt the tasks dir so state.ListTasks fails on JSON parse.
@@ -1738,7 +1513,7 @@ func TestFeedTasks_ListErrorLogsViaSlog(t *testing.T) {
 // regression gate: a task queued via the public state API and a Wake()
 // (mirroring what Real.Delegate does) must reach the agent's turn loop.
 func TestE2E_QUM488_DelegateThroughRealEnqueuesIntoRuntime(t *testing.T) {
-	uh, _, sprawlRoot, captured := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
+	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
 	tk, err := state.EnqueueTask(sprawlRoot, "alice", "delegated work")
@@ -1749,19 +1524,16 @@ func TestE2E_QUM488_DelegateThroughRealEnqueuesIntoRuntime(t *testing.T) {
 		t.Fatalf("Wake: %v", err)
 	}
 
-	items := captured.waitFor(1, 2*time.Second)
-	if len(items) != 1 {
-		t.Fatalf("delivered items = %d, want 1 (task queued via state API must reach runtime); items=%+v", len(items), items)
+	writes := fakeSession.waitForWrites(1, 2*time.Second)
+	if len(writes) != 1 {
+		t.Fatalf("stdin writes = %d, want 1 (task queued via state API must reach runtime); writes=%+v", len(writes), writes)
 	}
-	if items[0].Class != runtimepkg.ClassTask {
-		t.Errorf("Class = %q, want %q", items[0].Class, runtimepkg.ClassTask)
+	if writes[0].Priority != "later" {
+		t.Errorf("Priority = %q, want %q", writes[0].Priority, "later")
 	}
-	assertTaskPromptShape(t, items[0].Prompt, tk.PromptFile)
-	wantEntryID := "task:" + tk.ID
-	if len(items[0].EntryIDs) != 1 || items[0].EntryIDs[0] != wantEntryID {
-		t.Errorf("EntryIDs = %v, want [%q]", items[0].EntryIDs, wantEntryID)
-	}
+	assertTaskPromptShape(t, writes[0].Message.Content, tk.PromptFile)
 
+	fakeSession.echoReplay(writes[0].UUID)
 	final := pollTaskStatus(t, sprawlRoot, "alice", tk.ID, "done", 2*time.Second)
 	if final == nil || final.Status != "done" {
 		t.Errorf("task status final = %+v, want status=done", final)
@@ -2008,20 +1780,20 @@ func TestRunDeliveryConfirmationSubscriber_TracksToolUseAndResetsOnTurnStart(t *
 }
 
 // TestInProcessUnifiedStarter_CallbacksSafeBeforeFirstEvent is the QUM-584
-// acceptance test: the runtime config callbacks (PostTurnSweep,
-// OnQueueItemDelivered) must be safely invocable even before rt.Start has
-// returned. We exercise this by overriding unifiedRuntimeNewFn with a fake
-// that fires both callbacks synchronously from inside New(cfg) — i.e. at the
-// instant the supervisor hands them to the runtime, before any subsequent
-// wiring (subscriber attach, handle.Bind, rt.Start) has completed.
+// acceptance test: the runtime config callbacks (PostTurnSweep, OnDelivered)
+// must be safely invocable even before rt.Start has returned. We exercise this
+// by overriding unifiedRuntimeNewFn with a fake that fires both callbacks
+// synchronously from inside New(cfg) — i.e. at the instant the supervisor hands
+// them to the runtime, before any subsequent wiring (subscriber attach,
+// handle.Bind, rt.Start) has completed.
 //
 // Before the QUM-584 refactor this would panic on a nil-pointer deref through
 // the partially-built unifiedHandle (handle.rt unset → WakeForDelivery →
 // h.rt.WakeForDelivery on nil rt). After the refactor the callbacks capture
 // only the sweepCoordinator, which is fully constructed before New(cfg) is
-// called, so both callbacks are no-ops at this instant: OnQueueItemDelivered
-// increments the delivered counter cleanly; PostTurnSweep finds wake==nil
-// (Bind has not happened yet) and degrades gracefully.
+// called, so both callbacks are no-ops at this instant: OnDelivered increments
+// the delivered counter cleanly; PostTurnSweep finds wake==nil (Bind has not
+// happened yet) and degrades gracefully.
 func TestInProcessUnifiedStarter_CallbacksSafeBeforeFirstEvent(t *testing.T) {
 	oldStart := unifiedAdapterStartFn
 	oldNew := unifiedRuntimeNewFn
@@ -2051,12 +1823,8 @@ func TestInProcessUnifiedStarter_CallbacksSafeBeforeFirstEvent(t *testing.T) {
 	unifiedRuntimeNewFn = func(cfg runtimepkg.RuntimeConfig) *runtimepkg.UnifiedRuntime {
 		// Synchronous, in-line invocation of both callbacks. If they
 		// reach into a partially-built handle, this panics.
-		if cfg.OnQueueItemDelivered != nil {
-			cfg.OnQueueItemDelivered(runtimepkg.QueueItem{
-				Class:    runtimepkg.ClassInbox,
-				Prompt:   "probe",
-				EntryIDs: []string{"probe-id"},
-			})
+		if cfg.OnDelivered != nil {
+			cfg.OnDelivered([]string{"probe-id"})
 		}
 		if cfg.PostTurnSweep != nil {
 			cfg.PostTurnSweep()
