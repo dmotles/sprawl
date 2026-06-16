@@ -88,7 +88,6 @@ type faultChainHandle struct {
 func (h *faultChainHandle) Interrupt(context.Context) error            { return nil }
 func (h *faultChainHandle) Wake() error                                { return nil }
 func (h *faultChainHandle) WakeForDelivery() error                     { return nil }
-func (h *faultChainHandle) ForceInterruptDelivery() error              { return nil }
 func (h *faultChainHandle) Stop(context.Context) error                 { return nil }
 func (h *faultChainHandle) StopAbandon(context.Context) error          { return nil }
 func (h *faultChainHandle) SessionID() string                          { return h.rt.SessionID() }

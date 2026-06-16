@@ -331,9 +331,8 @@ type Supervisor interface {
 	// RegisterRootRuntime attaches a pre-built RuntimeHandle to the in-memory
 	// runtime registry under the given name, marking it Started. Used by
 	// cmd/enter.go (QUM-399) to register weave's UnifiedRuntime so children's
-	// report_status / send_message WakeForDelivery / ForceInterruptDelivery
-	// calls reach the root via the same registry mechanism that child runtimes
-	// use.
+	// report_status / send_message WakeForDelivery calls reach the root via the
+	// same registry mechanism that child runtimes use.
 	//
 	// agentState is best-effort: when nil, implementations may load from disk
 	// and fall back to a synthesized minimal state. Returns the registered

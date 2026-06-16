@@ -221,8 +221,8 @@ func TestEsc_QueuedRejectedInterrupt_AdapterStillEnqueues(t *testing.T) {
 	// Contract: even when the preempt fails, the TUI calls InterruptAndSend
 	// exactly once. The adapter is responsible for enqueuing the prompt as a
 	// ClassInterrupt queue item regardless of whether Session.Interrupt
-	// succeeds (see QUM-619 + ForceInterruptForDelivery). The TUI does NOT
-	// re-stash on its own.
+	// succeeds (see QUM-619; the now-priority delivery path landed in QUM-821).
+	// The TUI does NOT re-stash on its own.
 	mock := newFakeSessionBackend()
 	mock.interruptAndSendErr = errInjected{}
 	app := queuedStreamingApp(t, mock, "keep me")

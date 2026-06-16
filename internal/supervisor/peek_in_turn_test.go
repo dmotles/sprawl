@@ -22,7 +22,6 @@ type fakeInTurnHandle struct {
 func (h *fakeInTurnHandle) Interrupt(context.Context) error       { return nil }
 func (h *fakeInTurnHandle) Wake() error                           { return nil }
 func (h *fakeInTurnHandle) WakeForDelivery() error                { return nil }
-func (h *fakeInTurnHandle) ForceInterruptDelivery() error         { return nil }
 func (h *fakeInTurnHandle) Stop(context.Context) error            { return nil }
 func (h *fakeInTurnHandle) StopAbandon(context.Context) error     { return nil }
 func (h *fakeInTurnHandle) SessionID() string                     { return h.sessionID }

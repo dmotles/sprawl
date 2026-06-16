@@ -460,9 +460,8 @@ func (h *pauseRecordingHandle) Interrupt(context.Context) error {
 	atomic.AddInt64(&h.interruptCalls, 1)
 	return nil
 }
-func (h *pauseRecordingHandle) Wake() error                   { return nil }
-func (h *pauseRecordingHandle) WakeForDelivery() error        { return nil }
-func (h *pauseRecordingHandle) ForceInterruptDelivery() error { return nil }
+func (h *pauseRecordingHandle) Wake() error            { return nil }
+func (h *pauseRecordingHandle) WakeForDelivery() error { return nil }
 func (h *pauseRecordingHandle) Stop(context.Context) error {
 	if h.stopArrived != nil {
 		h.stopArrived.Done()

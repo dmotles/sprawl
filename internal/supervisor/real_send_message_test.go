@@ -1,19 +1,12 @@
-// Tests for QUM-550 slice 1: Real.SendMessage. These tests pin the new
-// unified send_message Supervisor method (the MCP send_async + send_interrupt
-// collapse) and the rewiring of legacy SendAsync / SendInterrupt to route
-// through the cooperative-wake / force-interrupt paths respectively.
+// Tests for QUM-550 slice 1: Real.SendMessage. These tests pin the unified
+// send_message Supervisor method (the MCP send_async + send_interrupt collapse).
 //
-// RED phase: Real.SendMessage does not exist yet, and the runtimeTestSession
-// fields wakeForDeliveryCalls / forceInterruptDeliveryCalls used below do not
-// exist on the existing fake either — both are intentional compile-fail
-// markers. When the implementation lands the missing symbols come with it and
-// the tests turn green.
-//
-// Where the new RuntimeHandle methods are referenced (WakeForDelivery,
-// ForceInterruptDelivery), the tests rely on the corresponding production
-// counters (snapshot.WakeCount / snapshot.InterruptCount) staying consistent
-// with the pre-existing wiring conventions established in real_runtime_test.go
-// (TestRealSendAsync_SignalsInterruptAfterFullPersistence et al).
+// QUM-821: send_message(interrupt=true) no longer takes a separate force-
+// interrupt path. Both interrupt=true and interrupt=false deliver via the
+// cooperative WakeForDelivery; urgency for interrupt=true is carried by the
+// enqueued ClassInterrupt entry, which drains to stdin at priority "now". The
+// bare Session.Interrupt frame is reserved for Esc-abort and is never issued for
+// message delivery — so these tests assert session.interrupts == 0.
 package supervisor
 
 import (
@@ -57,14 +50,10 @@ func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTur
 	if got := session.interrupts.Load(); got != 0 {
 		t.Errorf("session.Interrupt called %d times for interrupt=false send_message; want 0 (QUM-549)", got)
 	}
-	// Cooperative wake path MUST have signalled the new WakeForDelivery
-	// counter at least once; the existing InterruptDelivery counter must
-	// stay at zero (cooperative ≠ interrupt-delivery).
+	// Cooperative wake path MUST have signalled the WakeForDelivery counter at
+	// least once.
 	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
 		t.Errorf("session.WakeForDelivery calls = %d, want >= 1", got)
-	}
-	if got := session.forceInterruptDeliveryCalls.Load(); got != 0 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d, want 0 for interrupt=false", got)
 	}
 
 	// Persistence: the queue entry must be ClassAsync, body forwarded, subject empty.
@@ -87,10 +76,14 @@ func TestReal_SendMessage_InterruptFalse_DoesNotCallSessionInterrupt_EvenWhenTur
 	}
 }
 
-// TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenTurnRunningTrue
-// pins the force-interrupt path when a turn is in flight: send_message(
-// interrupt=true) must invoke Session.Interrupt on the recipient.
-func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenTurnRunningTrue(t *testing.T) {
+// TestReal_SendMessage_InterruptTrue_RoutesViaNowPriorityWake pins the QUM-821
+// urgency tier: send_message(interrupt=true) persists a ClassInterrupt entry and
+// cooperatively wakes the recipient (WakeForDelivery) so the entry drains to
+// stdin at priority "now". The bare Session.Interrupt frame is NO LONGER issued
+// for delivery — urgency is carried by the message priority, and the bare
+// interrupt is reserved for Esc-abort only (QUM-619 idle-interrupt-inject path
+// deleted).
+func TestReal_SendMessage_InterruptTrue_RoutesViaNowPriorityWake(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	// Caller is weave (the supervisor's default callerName) → recipient is
 	// "alice" whose Parent is weave (testAgentState default). Ancestor gate
@@ -114,14 +107,19 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenTurnRunningTru
 		t.Fatalf("SendMessage result = %+v, want non-empty MessageID", res)
 	}
 	if !res.Interrupted {
-		t.Error("res.Interrupted = false, want true for interrupt=true")
+		t.Error("res.Interrupted = false, want true for interrupt=true (API contract preserved)")
 	}
 
-	if got := session.forceInterruptDeliveryCalls.Load(); got < 1 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d, want >= 1", got)
+	// QUM-821: interrupt=true now cooperatively wakes (the now-priority drain
+	// does the preempting) and must NOT issue a bare Session.Interrupt frame.
+	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
+		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 (interrupt=true routes via now-priority wake)", got)
+	}
+	if got := session.interrupts.Load(); got != 0 {
+		t.Errorf("session.Interrupt calls = %d, want 0 (bare interrupt is Esc-only — QUM-821)", got)
 	}
 
-	// Persistence: ClassInterrupt.
+	// Persistence: ClassInterrupt (the carrier of now-priority into the drain).
 	entries, err := agentloop.ListPending(tmpDir, "alice")
 	if err != nil {
 		t.Fatalf("ListPending: %v", err)
@@ -134,10 +132,12 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenTurnRunningTru
 	}
 }
 
-// TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenIdle pins the
-// QUM-549 blind-spot fix: send_message(interrupt=true) must call
-// Session.Interrupt unconditionally — even when the recipient is idle.
-func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenIdle(t *testing.T) {
+// TestReal_SendMessage_InterruptTrue_WhenIdle_NoBareInterrupt pins that an idle
+// recipient is woken via the now-priority delivery path (a stdin write wakes the
+// CLI command queue) and is NOT bare-interrupted (QUM-821 deletes the QUM-619
+// idle-interrupt-inject content path that used to cancel the idle recipient's
+// turn).
+func TestReal_SendMessage_InterruptTrue_WhenIdle_NoBareInterrupt(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	agentState := testAgentState("alice")
 	saveTestAgent(t, tmpDir, agentState)
@@ -154,8 +154,11 @@ func TestReal_SendMessage_InterruptTrue_CallsSessionInterrupt_WhenIdle(t *testin
 		t.Fatalf("SendMessage: %v", err)
 	}
 
-	if got := session.forceInterruptDeliveryCalls.Load(); got < 1 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d, want >= 1 (idle recipient must still be interrupted — QUM-549)", got)
+	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
+		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 (idle recipient woken via now-priority delivery)", got)
+	}
+	if got := session.interrupts.Load(); got != 0 {
+		t.Errorf("session.Interrupt calls = %d, want 0 (idle recipient must NOT be bare-interrupted — QUM-821)", got)
 	}
 }
 

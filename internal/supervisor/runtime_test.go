@@ -16,15 +16,14 @@ import (
 )
 
 type runtimeTestSession struct {
-	sessionID                   string
-	caps                        backendpkg.Capabilities
-	interrupts                  atomic.Int64
-	wakes                       atomic.Int64
-	wakeForDeliveryCalls        atomic.Int64
-	forceInterruptDeliveryCalls atomic.Int64
-	stopCalls                   atomic.Int64
-	stopAbandonCalls            atomic.Int64
-	doneCh                      chan struct{}
+	sessionID            string
+	caps                 backendpkg.Capabilities
+	interrupts           atomic.Int64
+	wakes                atomic.Int64
+	wakeForDeliveryCalls atomic.Int64
+	stopCalls            atomic.Int64
+	stopAbandonCalls     atomic.Int64
+	doneCh               chan struct{}
 	// stopWaitTimedOut, when set, is what this handle reports from its
 	// StopWaitTimedOut() method (QUM-546). AgentRuntime captures the value
 	// during Stop and exposes it via AgentRuntime.StopWaitTimedOut so
@@ -54,11 +53,6 @@ func (s *runtimeTestSession) Wake() error {
 
 func (s *runtimeTestSession) WakeForDelivery() error {
 	s.wakeForDeliveryCalls.Add(1)
-	return nil
-}
-
-func (s *runtimeTestSession) ForceInterruptDelivery() error {
-	s.forceInterruptDeliveryCalls.Add(1)
 	return nil
 }
 
@@ -333,7 +327,6 @@ type fakeAttachHandle struct {
 func (h *fakeAttachHandle) Interrupt(context.Context) error       { return nil }
 func (h *fakeAttachHandle) Wake() error                           { return nil }
 func (h *fakeAttachHandle) WakeForDelivery() error                { return nil }
-func (h *fakeAttachHandle) ForceInterruptDelivery() error         { return nil }
 func (h *fakeAttachHandle) Stop(context.Context) error            { return nil }
 func (h *fakeAttachHandle) StopAbandon(context.Context) error     { return nil }
 func (h *fakeAttachHandle) SessionID() string                     { return h.sessionID }

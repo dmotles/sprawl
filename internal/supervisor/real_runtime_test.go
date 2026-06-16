@@ -402,8 +402,8 @@ func TestRealReportStatus_FailedPersistLeavesRuntimeUnchanged(t *testing.T) {
 
 // TestRealReportStatus_DoesNotInterruptParentSession pins QUM-550 slice 2:
 // report_status must route the parent-runtime notification through the
-// cooperative WakeForDelivery path — never Session.Interrupt and never
-// ForceInterruptDelivery. This mirrors the SendAsync rewire in slice 1.
+// cooperative WakeForDelivery path — never Session.Interrupt. This mirrors the
+// SendAsync rewire in slice 1.
 func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	parent := testAgentState("alice")
@@ -427,9 +427,6 @@ func TestRealReportStatus_DoesNotInterruptParentSession(t *testing.T) {
 
 	if got := session.interrupts.Load(); got != 0 {
 		t.Errorf("session.Interrupt called %d times by ReportStatus; want 0 (QUM-550 slice 2 cooperative lock-in)", got)
-	}
-	if got := session.forceInterruptDeliveryCalls.Load(); got != 0 {
-		t.Errorf("session.ForceInterruptDelivery calls = %d; want 0 (report_status must use cooperative wake)", got)
 	}
 	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
 		t.Errorf("session.WakeForDelivery calls = %d, want >= 1 after ReportStatus rewire", got)

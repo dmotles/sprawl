@@ -505,7 +505,6 @@ func (h *pauseFakeHandle) Interrupt(context.Context) error {
 }
 func (h *pauseFakeHandle) Wake() error                       { return nil }
 func (h *pauseFakeHandle) WakeForDelivery() error            { return nil }
-func (h *pauseFakeHandle) ForceInterruptDelivery() error     { return nil }
 func (h *pauseFakeHandle) Stop(context.Context) error        { h.stopCalls++; return nil }
 func (h *pauseFakeHandle) StopAbandon(context.Context) error { h.stopAbandonCalls++; return nil }
 func (h *pauseFakeHandle) SessionID() string                 { return "sess-fake" }

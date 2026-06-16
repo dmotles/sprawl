@@ -111,13 +111,11 @@ type RuntimeStartSpec struct {
 type RuntimeHandle interface {
 	Interrupt(ctx context.Context) error
 	Wake() error
-	// WakeForDelivery is the cooperative wake path used by send_message(
-	// interrupt=false). Must NEVER call Session.Interrupt. See QUM-549/QUM-550.
+	// WakeForDelivery is the delivery poke for send_message (both interrupt=
+	// false and interrupt=true). Must NEVER call Session.Interrupt: urgency for
+	// interrupt=true is carried by writing the message at priority `now`, not by
+	// a bare interrupt frame (QUM-549/QUM-550/QUM-821).
 	WakeForDelivery() error
-	// ForceInterruptDelivery is the unconditional preempt path used by
-	// send_message(interrupt=true). Calls Session.Interrupt even when the
-	// recipient is idle. See QUM-549/QUM-550.
-	ForceInterruptDelivery() error
 	Stop(ctx context.Context) error
 	// StopAbandon is the abandon-mode teardown variant: skips the polite
 	// Session.Interrupt issued by Stop and goes straight to Close + Kill
@@ -550,29 +548,6 @@ func (r *AgentRuntime) WakeForDelivery() error {
 	r.mu.Lock()
 	r.snapshot.WakeCount++
 	r.mu.Unlock()
-	return nil
-}
-
-// ForceInterruptDelivery notifies a runtime that newly-persisted work must
-// preempt any in-flight turn — unconditionally, even when idle. Updates the
-// InterruptCount snapshot counter and emits RuntimeEventInterrupted.
-// See QUM-549/QUM-550.
-func (r *AgentRuntime) ForceInterruptDelivery() error {
-	r.mu.RLock()
-	handle := r.handle
-	r.mu.RUnlock()
-
-	if handle == nil {
-		return fmt.Errorf("runtime session not started")
-	}
-	if err := handle.ForceInterruptDelivery(); err != nil {
-		return err
-	}
-
-	r.mu.Lock()
-	r.snapshot.InterruptCount++
-	r.mu.Unlock()
-	r.emit(RuntimeEventInterrupted)
 	return nil
 }
 

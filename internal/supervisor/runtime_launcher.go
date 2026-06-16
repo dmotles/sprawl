@@ -519,22 +519,15 @@ func (h *unifiedHandle) Wake() error {
 	return nil
 }
 
-// WakeForDelivery is the cooperative-wake variant. QUM-817: it writes pending
-// entries to the CLI stdin (priority `next`); the stdin write itself wakes the
-// CLI's command queue, so there is no separate signal to poke.
+// WakeForDelivery is the sole delivery poke for send_message (both interrupt=
+// false and interrupt=true). QUM-817/QUM-821: it writes pending entries to the
+// CLI stdin — async-class at priority `next`, interrupt-class at priority `now`
+// (see drainPendingToStdin). The stdin write itself wakes the CLI's command
+// queue, so there is no separate signal to poke, and urgency is carried by the
+// `now` priority rather than a bare interrupt frame.
 func (h *unifiedHandle) WakeForDelivery() error {
 	h.drainPendingToStdin()
 	return nil
-}
-
-// ForceInterruptDelivery is the preempt variant for send_message(interrupt=
-// true). QUM-817 (Slice 2): it writes the pending entries as normal `next`
-// stdin messages then issues a bare contentless interrupt (Esc) so the CLI
-// yields and processes them on the next iteration. Cancel-and-replace `now`
-// is Slice 3.
-func (h *unifiedHandle) ForceInterruptDelivery() error {
-	h.drainPendingToStdin()
-	return h.rt.ForceInterruptForDelivery(context.Background())
 }
 
 // drainPendingToStdin reads the durable maildir + status/liveness envelopes and
@@ -559,16 +552,41 @@ func (h *unifiedHandle) drainPendingToStdin() {
 		return
 	}
 	interrupts, asyncs := inboxprompt.SplitByClass(pending)
-	// QUM-817: interrupt-class and async-class inbox messages are both written
-	// as `next` (the urgency `now` mapping is Slice 3). Each batch is one stdin
-	// message carrying its tag-wrapped lines.
+	// QUM-821: interrupt-class inbox messages (send_message(interrupt=true)) are
+	// written at priority `now` (cancel-and-replace urgency); async-class stays
+	// `next`. The `now` priority itself preempts the recipient — no separate bare
+	// interrupt frame is issued (that is reserved for Esc-abort). Each batch is
+	// one stdin message carrying its tag-wrapped lines.
 	if len(interrupts) > 0 {
 		ids := make([]string, 0, len(interrupts))
 		for _, e := range interrupts {
 			ids = append(ids, e.ID)
 		}
-		_, _ = h.rt.WriteSystemMessage(context.Background(),
-			inboxprompt.BuildInterruptFlushPrompt(interrupts), "next", ids)
+		if uuid, err := h.rt.WriteSystemMessage(context.Background(),
+			inboxprompt.BuildInterruptFlushPrompt(interrupts), "now", ids); err == nil {
+			// QUM-821: a now-priority (cancel-and-replace) message is injected
+			// directly into the model turn and is NOT echoed back via
+			// --replay-user-messages, so the isReplay consumption ack that
+			// normally drives delivery confirmation (markConsumed → OnDelivered)
+			// never arrives. Confirm delivery synchronously on the successful
+			// write. Without this the entry stays in pending/ and PostTurnSweep
+			// (which re-wakes whenever pending/ is non-empty) re-drains and
+			// re-injects it after every turn — an unbounded stdin write storm
+			// against a busy recipient (empirically ~30 writes/s; QUM-821
+			// sandbox finding against real claude 2.1.173).
+			//
+			// Routing through ConfirmDeliveredWithoutReplay (not coord.OnDelivered
+			// directly) also flips the in-memory outstanding entry to consumed —
+			// otherwise a now-uuid would leak as perpetually statePending, wrong
+			// for the Slice-4 recall / queued→sent UI that reads Outstanding().
+			//
+			// Tradeoff (by design): ack-on-write means the urgent content is
+			// considered delivered before the CLI has processed it. If the CLI
+			// dies between the write and processing it is NOT redelivered on
+			// restart — a weaker guarantee than the async (ack-on-isReplay) path,
+			// accepted for the urgency tier.
+			h.rt.ConfirmDeliveredWithoutReplay(uuid)
+		}
 	}
 	// QUM-559: status lines ride along with the async batch, prepended so they
 	// surface before any queued maildir messages. When only status lines exist

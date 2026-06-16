@@ -26,7 +26,6 @@ type fakeLastActivityHandle struct {
 func (h *fakeLastActivityHandle) Interrupt(context.Context) error       { return nil }
 func (h *fakeLastActivityHandle) Wake() error                           { return nil }
 func (h *fakeLastActivityHandle) WakeForDelivery() error                { return nil }
-func (h *fakeLastActivityHandle) ForceInterruptDelivery() error         { return nil }
 func (h *fakeLastActivityHandle) Stop(context.Context) error            { return nil }
 func (h *fakeLastActivityHandle) StopAbandon(context.Context) error     { return nil }
 func (h *fakeLastActivityHandle) SessionID() string                     { return h.sessionID }

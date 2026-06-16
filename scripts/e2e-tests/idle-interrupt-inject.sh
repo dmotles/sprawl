@@ -1,27 +1,87 @@
 #!/usr/bin/env bash
-# scripts/e2e-tests/idle-interrupt-inject.sh — QUM-619 regression guard.
+# scripts/e2e-tests/idle-interrupt-inject.sh — QUM-619 + QUM-821 guard.
 #
-# Reproduces the idle-recipient interrupt race fixed in QUM-619:
+# QUM-821 rewrote send_message(interrupt=true) content delivery: it no longer
+# issues a bare Session.Interrupt for delivery. Instead the inbound message is
+# written to the CLI stdin at priority "now" (cancel-and-replace urgency) via
+# the cooperative WakeForDelivery path. The bare interrupt frame is reserved
+# for Esc-abort only and never carries content.
 #
-#   1. weave spawns a child whose initial prompt instructs it to settle
-#      idle (call report_status state="working"), and to respond to any
-#      future message containing the sentinel "IDLE-INTERRUPT-PROBE" by
-#      messages_send'ing an "IDLE-PROBE-ACK: <token>" reply to weave.
-#   2. We wait for the child to reach idle (report_status emitted).
-#   3. weave is driven to call `mcp__sprawl__send_message(..., interrupt=true)`
-#      with the sentinel body — exactly the case where the pre-QUM-619
-#      bug caused `Session.Interrupt` to cancel the just-injected
-#      notification turn, silently dropping the message.
-#   4. Primary assertion: weave's pane renders a drain-row citation for
-#      the child's ACK reply within 90s. Pre-fix, the child never wakes,
-#      so the citation never appears.
+# Two scenarios against a real claude binary:
 #
-# This complements drain-row-inject.sh (interrupt=false / cooperative
-# wake path) by exercising the interrupt=true / preempt path against an
-# idle recipient.
+#   PHASE 1 — idle recipient (QUM-619 regression):
+#     weave sends send_message(interrupt=true) to an idle child; the now-priority
+#     stdin write must wake it so it reads the message and ACKs. Pre-QUM-619 the
+#     bare interrupt cancelled the just-injected notification turn and dropped it.
+#
+#   PHASE 2 — mid-turn recipient (QUM-821 urgency + storm regression gate):
+#     The child is driven into a long single turn (foreground `sleep`). While
+#     mid-turn, weave sends an urgent send_message(interrupt=true). Assertions:
+#       (a) the child's urgent ACK reaches weave (now-priority preempts the
+#           in-flight turn — empirically it ACKs well before the sleep ends).
+#       (b) STORM REGRESSION GATE: the child's raw NDJSON shows a BOUNDED number
+#           of now-priority stdin writes for that single urgent send. QUM-821
+#           found that a now message yields no isReplay ack, so without the
+#           synchronous mark-on-write fix PostTurnSweep re-injects it every turn
+#           (~1990 writes / 1989 turns in 68s). One urgent send must produce a
+#           handful of writes, not thousands.
+#
+# Esc-abort-carries-no-content is verified at the unit layer (QUM-821:
+# TestInterrupt_CarriesNoContent + supervisor now-priority drain tests); the
+# bare interrupt frame structurally cannot carry content.
+
+# A single urgent now-send to a busy child should produce ~1 now-priority stdin
+# write (empirically exactly 1 post-fix). Keep a tight bound to catch a partial
+# re-inject regression; a storm is thousands, so even a few is suspicious.
+NOW_WRITE_STORM_BOUND=5
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1"
+}
+
+# wait_for_new_child polls .sprawl/agents for a child whose name is not already
+# seen. Echoes "name|statefile" on success; returns 1 on timeout.
+wait_for_new_child() {
+    local timeout="$1"; shift
+    local seen=" $* "
+    local elapsed=0 candidate local_name
+    while [ "$elapsed" -lt "$timeout" ]; do
+        while IFS= read -r candidate; do
+            [ -z "$candidate" ] && continue
+            local_name=$(jq -r '.name // empty' "$candidate" 2>/dev/null || true)
+            [ -z "$local_name" ] && continue
+            [ "$local_name" = "weave" ] && continue
+            case "$seen" in *" $local_name "*) continue ;; esac
+            echo "${local_name}|${candidate}"
+            return 0
+        done < <(find "$SPRAWL_ROOT/.sprawl/agents" -maxdepth 1 -name '*.json' 2>/dev/null)
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
+wait_for_child_idle() {
+    local statefile="$1" marker="$2" timeout="$3"
+    local end=$((SECONDS + timeout)) summary
+    while [ "$SECONDS" -lt "$end" ]; do
+        summary=$(jq -r '.last_report_message // empty' "$statefile" 2>/dev/null || true)
+        if [ -n "$summary" ] && printf '%s' "$summary" | grep -qF "$marker"; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+# count_now_writes counts now-priority stdin user-message frames written to a
+# child's raw NDJSON session log (the storm regression signal).
+count_now_writes() {
+    local agent="$1"
+    local f
+    f=$(ls "$SPRAWL_ROOT"/.sprawl/logs/sessions/"$agent"/*.ndjson 2>/dev/null | head -1)
+    [ -z "$f" ] && { echo "-1"; return; }
+    jq -rc 'select(.dir=="in") | .raw | fromjson | select(.type=="user" and .priority=="now") | 1' "$f" 2>/dev/null | wc -l | tr -d ' '
 }
 
 test_run() {
@@ -30,7 +90,7 @@ test_run() {
     e2e_setup_tmux_socket "sprawl-idleint-e2e"
 
     e2e_build_sprawl
-    e2e_make_sandbox_root "sprawl-qum619"
+    e2e_make_sandbox_root "sprawl-qum821"
     e2e_install_cleanup_traps
 
     git -C "$SPRAWL_ROOT" init -b main --quiet
@@ -38,21 +98,17 @@ test_run() {
         commit --allow-empty -m "init" --quiet
     mkdir -p "$SPRAWL_ROOT/.sprawl"
     echo "weave" > "$SPRAWL_ROOT/.sprawl/root-name"
-
-    if [ -f "$REPO_ROOT/.env" ]; then
-        cp -p "$REPO_ROOT/.env" "$SPRAWL_ROOT/.env"
-    fi
+    [ -f "$REPO_ROOT/.env" ] && cp -p "$REPO_ROOT/.env" "$SPRAWL_ROOT/.env"
 
     local SESSION="sprawl-idleint-e2e-$(head -c4 /dev/urandom | xxd -p)"
     local PROBE="IDLE-INTERRUPT-PROBE-$$-$(date +%s)"
-    local BRANCH_SUFFIX
-    BRANCH_SUFFIX="$(head -c4 /dev/urandom | xxd -p)"
-    local STDERR_LOG="$SPRAWL_ROOT/.sprawl/tui-stderr.log"
+    local NOW_PROBE="URGENT-NOW-PROBE-$$-$(date +%s)"
+    local SUFFIX1 SUFFIX2
+    SUFFIX1="$(head -c4 /dev/urandom | xxd -p)"
+    SUFFIX2="$(head -c4 /dev/urandom | xxd -p)"
 
-    echo "  SPRAWL_BIN=$SPRAWL_BIN"
-    echo "  SPRAWL_ROOT=$SPRAWL_ROOT"
-    echo "  SESSION=$SESSION"
-    echo "  PROBE=$PROBE"
+    echo "  SPRAWL_ROOT=$SPRAWL_ROOT  SESSION=$SESSION"
+    echo "  PROBE=$PROBE  NOW_PROBE=$NOW_PROBE"
     echo ""
 
     export SPRAWL_CLAUDE="$REPO_ROOT/scripts/run-claude"
@@ -68,119 +124,132 @@ test_run() {
         sleep 1
     fi
     sleep 3
-
-    echo ""
-    echo "=== Attaching phantom tmux client (QUM-327 workaround) ==="
     e2e_attach_phantom_client "$SESSION"
 
+    # ---------------------------------------------------------------------
+    # PHASE 1 — idle recipient (QUM-619 regression).
+    # ---------------------------------------------------------------------
     echo ""
-    echo "=== Driving weave to spawn the idle-interrupt probe child ==="
-    # The child's initial prompt is a two-phase program: phase 1 emits a
-    # report_status (so we can observe it reach idle); phase 2 reacts to
-    # the incoming interrupt-flagged message by reading it and sending
-    # back an ACK. Single-line shape (QUM-432 paste-classifier).
-    local CHILD_PROMPT
-    CHILD_PROMPT='You are an automated QUM-619 idle-interrupt probe. STEP 1: IMMEDIATELY call mcp__sprawl__report_status with state="working" and summary="idle-interrupt probe ready". STEP 2: Stop your turn and wait. STEP 3 (on the NEXT turn, triggered by an inbound system-notification): call mcp__sprawl__messages_read to retrieve the new message. If its body contains "IDLE-INTERRUPT-PROBE", extract the entire body verbatim, then call mcp__sprawl__messages_send with to="weave" and body="IDLE-PROBE-ACK: <copy the body you just read here>". Then call mcp__sprawl__report_status with state="complete" and summary="probe acked". Then stop. Do nothing else. Do not read any files, do not run any commands, do not call any other tools.'
-    local SPAWN_PROMPT
-    SPAWN_PROMPT="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum-619-idle-probe-${BRANCH_SUFFIX}', and prompt set to exactly the following text (do not modify it): '${CHILD_PROMPT}'"
-    e2e_send_user_prompt "$SESSION" "$SPAWN_PROMPT"
+    echo "=== PHASE 1: spawn idle probe child ==="
+    local P1_CHILD P1_SPAWN
+    P1_CHILD="You are an automated QUM-821 idle probe. STEP 1: IMMEDIATELY call mcp__sprawl__report_status with state=\"working\" and summary=\"phase1 probe ready\". STEP 2: Stop your turn and wait. STEP 3 (next turn, on an inbound system-notification): call mcp__sprawl__messages_read. If the body contains \"${PROBE}\", call mcp__sprawl__messages_send with to=\"weave\" and body=\"IDLE-PROBE-ACK: <copy the body you just read here>\", then call mcp__sprawl__report_status state=\"complete\" summary=\"probe acked\". Then stop. Do nothing else; do not read files; do not run commands."
+    P1_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum821-idle-${SUFFIX1}', and prompt set to exactly the following text (do not modify it): '${P1_CHILD}'"
+    e2e_send_user_prompt "$SESSION" "$P1_SPAWN"
+
+    local CHILD1 CHILD1_NAME CHILD1_STATE
+    if ! CHILD1=$(wait_for_new_child 180 weave); then
+        fail "phase-1 child did not spawn within 180s"
+        capture_pane "$SESSION" | tail -40 >&2
+        e2e_print_results; return 1
+    fi
+    CHILD1_NAME="${CHILD1%%|*}"; CHILD1_STATE="${CHILD1#*|}"
+    pass "phase-1 child spawned (name=$CHILD1_NAME)"
+
+    if wait_for_child_idle "$CHILD1_STATE" "phase1 probe ready" 120; then
+        pass "phase-1 child reached idle"
+    else
+        fail "phase-1 child never reported ready within 120s"
+        sed 's/^/    /' "$CHILD1_STATE" >&2 2>/dev/null || true
+        e2e_print_results; return 1
+    fi
+    sleep 3  # let the runtime fully park before the interrupt.
 
     echo ""
-    echo "=== Waiting for spawn to land (poll .sprawl/agents/ for new *.json) ==="
-    local ELAPSED=0
-    local SPAWN_LANDED=0
-    local CHILD_STATE=""
-    local CHILD_NAME=""
-    while [ "$ELAPSED" -lt 180 ]; do
-        local candidate local_name
-        while IFS= read -r candidate; do
-            [ -z "$candidate" ] && continue
-            local_name=$(jq -r '.name // empty' "$candidate" 2>/dev/null || true)
-            if [ -n "$local_name" ] && [ "$local_name" != "weave" ]; then
-                CHILD_STATE="$candidate"
-                CHILD_NAME="$local_name"
-                SPAWN_LANDED=1
-                break
-            fi
-        done < <(find "$SPRAWL_ROOT/.sprawl/agents" -maxdepth 1 -name '*.json' 2>/dev/null)
-        [ "$SPAWN_LANDED" -eq 1 ] && break
-        sleep 2
-        ELAPSED=$((ELAPSED + 2))
-    done
-    if [ "$SPAWN_LANDED" -eq 1 ]; then
-        pass "child spawned (name=$CHILD_NAME, state=$CHILD_STATE)"
+    echo "=== Driving weave to send interrupt=true (now-priority) to idle $CHILD1_NAME ==="
+    e2e_send_user_prompt "$SESSION" \
+        "Call mcp__sprawl__send_message with to='${CHILD1_NAME}', body='${PROBE}', and interrupt=true. Do nothing else. Do not read files, do not run commands."
+
+    local ACK1_NEEDLE="From ${CHILD1_NAME} — mcp__sprawl__messages_read(id="
+    if wait_for_substring_fast "$SESSION" "$ACK1_NEEDLE" 120; then
+        pass "idle recipient woken via now-priority delivery (ACK rendered)"
     else
-        fail "no non-weave state file appeared within 180s — weave's claude did not call spawn"
-        echo "  agents dir:" >&2
-        ls -la "$SPRAWL_ROOT/.sprawl/agents/" >&2 2>/dev/null || true
-        echo "  pane tail:" >&2
-        capture_pane "$SESSION" | tail -40 >&2
-        e2e_print_results
-        return 1
+        fail "idle child ACK '$ACK1_NEEDLE...' did NOT appear within 120s"
+        capture_pane "$SESSION" | tail -80 >&2
+        sed 's/^/    /' "$CHILD1_STATE" >&2 2>/dev/null || true
+        e2e_print_results; return 1
     fi
 
+    # ---------------------------------------------------------------------
+    # PHASE 2 — mid-turn recipient (QUM-821 urgency + storm regression gate).
+    # ---------------------------------------------------------------------
     echo ""
-    echo "=== Waiting for child to settle idle (report_status summary visible) ==="
-    # Child reaches idle once it has emitted its phase-1 report_status and
-    # claude has finished the initial turn. We poll state.json for a
-    # non-empty summary that includes the "idle-interrupt probe ready"
-    # marker we instructed it to set.
-    local SETTLED=0
-    local SETTLED_END=$((SECONDS + 120))
-    while [ "$SECONDS" -lt "$SETTLED_END" ]; do
-        local summary
-        summary=$(jq -r '.last_report_message // empty' "$CHILD_STATE" 2>/dev/null || true)
-        if [ -n "$summary" ] && printf '%s' "$summary" | grep -qF "idle-interrupt probe ready"; then
-            SETTLED=1
-            break
-        fi
-        sleep 1
-    done
-    if [ "$SETTLED" -eq 1 ]; then
-        pass "child reached idle (report_status summary='idle-interrupt probe ready')"
-    else
-        fail "child never reported 'idle-interrupt probe ready' within 120s"
-        echo "  child state:" >&2
-        sed 's/^/    /' "$CHILD_STATE" >&2 2>/dev/null || echo "    <missing>" >&2
-        echo "  pane tail:" >&2
-        capture_pane "$SESSION" | tail -40 >&2
-        e2e_print_results
-        return 1
-    fi
+    echo "=== PHASE 2: spawn mid-turn probe child ==="
+    local BUSY_SECS=40
+    local P2_CHILD P2_SPAWN
+    P2_CHILD="You are an automated QUM-821 mid-turn probe. STEP 1: IMMEDIATELY call mcp__sprawl__report_status with state=\"working\" and summary=\"phase2 probe ready\". STEP 2: stop your turn. Whenever a system-notification about a new message arrives, call mcp__sprawl__messages_read. If the body contains \"GO-BUSY\", call the Bash tool to run exactly this foreground command: sleep ${BUSY_SECS}. If the body contains \"${NOW_PROBE}\", call mcp__sprawl__messages_send with to=\"weave\" and body=\"URGENT-NOW-ACK\". Do nothing else; do not read files."
+    P2_SPAWN="Call mcp__sprawl__spawn with family='engineering', type='engineer', branch='qum821-midturn-${SUFFIX2}', and prompt set to exactly the following text (do not modify it): '${P2_CHILD}'"
+    e2e_send_user_prompt "$SESSION" "$P2_SPAWN"
 
-    # Belt-and-suspenders: give the runtime a moment to flush its
-    # post-turn bookkeeping and park on the queue signal. The QUM-619
-    # bug fires when the recipient is FULLY parked, not just mid-flush.
+    local CHILD2 CHILD2_NAME CHILD2_STATE
+    if ! CHILD2=$(wait_for_new_child 180 weave "$CHILD1_NAME"); then
+        fail "phase-2 child did not spawn within 180s"
+        capture_pane "$SESSION" | tail -40 >&2
+        e2e_print_results; return 1
+    fi
+    CHILD2_NAME="${CHILD2%%|*}"; CHILD2_STATE="${CHILD2#*|}"
+    pass "phase-2 child spawned (name=$CHILD2_NAME)"
+
+    if wait_for_child_idle "$CHILD2_STATE" "phase2 probe ready" 120; then
+        pass "phase-2 child reached idle"
+    else
+        fail "phase-2 child never reported ready within 120s"
+        sed 's/^/    /' "$CHILD2_STATE" >&2 2>/dev/null || true
+        e2e_print_results; return 1
+    fi
     sleep 3
 
     echo ""
-    echo "=== Driving weave to send interrupt-flagged message to $CHILD_NAME ==="
-    local SEND_PROMPT
-    SEND_PROMPT="Call mcp__sprawl__send_message with to='${CHILD_NAME}', body='${PROBE}', and interrupt=true. Do nothing else. Do not read files, do not run commands."
-    e2e_send_user_prompt "$SESSION" "$SEND_PROMPT"
+    echo "=== Driving $CHILD2_NAME into a long mid-turn (GO-BUSY → sleep ${BUSY_SECS}) ==="
+    e2e_send_user_prompt "$SESSION" \
+        "Call mcp__sprawl__send_message with to='${CHILD2_NAME}', body='GO-BUSY', and interrupt=false. Do nothing else."
+    echo "  waiting 14s for the child to enter its sleep turn"
+    sleep 14
+    local BUSY_START=$SECONDS
 
     echo ""
-    echo "=== Primary assertion: child's ACK drain-row appears in weave's pane ==="
-    # If QUM-619 fix is in place, the child wakes, reads the probe, and
-    # sends back an "IDLE-PROBE-ACK: ..." message. weave will then render
-    # a drain-row citation `From <child> — mcp__sprawl__messages_read(id=`
-    # for the ACK message. Pre-fix, the child's notification turn is
-    # cancelled by the interrupt and the ACK is never sent — citation
-    # never appears.
-    local ACK_NEEDLE="From ${CHILD_NAME} — mcp__sprawl__messages_read(id="
-    if wait_for_substring_fast "$SESSION" "$ACK_NEEDLE" 120; then
-        pass "child ACK drain-row '$ACK_NEEDLE...' appeared in weave's pane (QUM-619 idle+interrupt path live)"
+    echo "=== Sending urgent interrupt=true (now-priority) to mid-turn $CHILD2_NAME ==="
+    e2e_send_user_prompt "$SESSION" \
+        "Call mcp__sprawl__send_message with to='${CHILD2_NAME}', body='${NOW_PROBE}', and interrupt=true. Do nothing else. Do not read files, do not run commands."
+    local URGENT_SENT=$SECONDS
+
+    echo ""
+    echo "=== PHASE 2a: mid-turn child's urgent ACK reaches weave ==="
+    local ACK2_NEEDLE="From ${CHILD2_NAME} — mcp__sprawl__messages_read(id="
+    if wait_for_substring_fast "$SESSION" "$ACK2_NEEDLE" 120; then
+        local ACK_AT=$SECONDS
+        pass "mid-turn recipient delivered the now-priority urgent message (ACK rendered)"
+        echo "  EMPIRICAL: time-to-ACK from urgent-send=$((ACK_AT - URGENT_SENT))s, from busy-start≈$((ACK_AT - BUSY_START))s (sleep=${BUSY_SECS}s)"
+        if [ "$((ACK_AT - BUSY_START))" -lt "$((BUSY_SECS - 8))" ]; then
+            echo "  EMPIRICAL: ACK landed before the ${BUSY_SECS}s sleep would finish ⇒ 'now' PREEMPTED the in-flight turn."
+        else
+            echo "  EMPIRICAL: ACK landed at/after the ${BUSY_SECS}s sleep ⇒ 'now' reordered at the iteration boundary."
+        fi
     else
-        fail "child ACK drain-row '$ACK_NEEDLE...' did NOT appear in weave's pane within 120s"
-        echo "  QUM-619 race: interrupt likely cancelled the child's notification turn" >&2
-        echo "  pane tail (80 lines):" >&2
+        fail "mid-turn child urgent ACK '$ACK2_NEEDLE...' did NOT appear within 120s"
         capture_pane "$SESSION" | tail -80 >&2
-        echo "  child state:" >&2
-        sed 's/^/    /' "$CHILD_STATE" >&2 2>/dev/null || echo "    <missing>" >&2
-        echo "  child maildir new/:" >&2
-        ls -la "$SPRAWL_ROOT/.sprawl/messages/${CHILD_NAME}/new/" >&2 2>/dev/null || echo "    <missing>" >&2
-        echo "  child maildir cur/:" >&2
-        ls -la "$SPRAWL_ROOT/.sprawl/messages/${CHILD_NAME}/cur/" >&2 2>/dev/null || echo "    <missing>" >&2
+        sed 's/^/    /' "$CHILD2_STATE" >&2 2>/dev/null || true
+        e2e_print_results; return 1
+    fi
+
+    echo ""
+    echo "=== PHASE 2b: STORM regression gate (bounded now-priority writes) ==="
+    local NW
+    NW=$(count_now_writes "$CHILD2_NAME")
+    echo "  now-priority stdin writes to $CHILD2_NAME = $NW (bound ${NOW_WRITE_STORM_BOUND})"
+    if [ "$NW" -lt 0 ]; then
+        fail "could not read $CHILD2_NAME NDJSON to count now-writes"
+        e2e_print_results; return 1
+    elif [ "$NW" -eq 0 ]; then
+        # The urgent send was confirmed delivered above (Phase 2a ACK), so the
+        # child's NDJSON must contain at least one now-priority write; zero means
+        # a jq/parse problem reading the log, not a storm.
+        fail "0 now-priority writes counted despite a confirmed urgent delivery — NDJSON parse/read issue"
+        e2e_print_results; return 1
+    elif [ "$NW" -le "$NOW_WRITE_STORM_BOUND" ]; then
+        pass "now-priority delivery is bounded ($NW writes) — no re-inject storm (QUM-821)"
+    else
+        fail "now-priority write count $NW exceeds bound ${NOW_WRITE_STORM_BOUND} — re-inject storm regression (QUM-821)"
+        e2e_print_results; return 1
     fi
 
     e2e_print_results

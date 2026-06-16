@@ -1802,12 +1802,12 @@ func (r *Real) SendMessage(ctx context.Context, to, body string, interrupt, wake
 	if err != nil {
 		return nil, fmt.Errorf("enqueuing message: %w", err)
 	}
+	// QUM-821: both interrupt=true and interrupt=false deliver via the same
+	// cooperative wake. Urgency for interrupt=true is carried by the enqueued
+	// ClassInterrupt entry, which drainPendingToStdin writes at priority `now`
+	// (cancel-and-replace). The bare interrupt frame is reserved for Esc-abort.
 	if runtimeBacked {
-		if interrupt {
-			_ = runtime.ForceInterruptDelivery()
-		} else {
-			_ = runtime.WakeForDelivery()
-		}
+		_ = runtime.WakeForDelivery()
 	}
 
 	return &SendMessageResult{

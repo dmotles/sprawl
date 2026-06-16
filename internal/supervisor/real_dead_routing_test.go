@@ -251,8 +251,13 @@ func TestReal_SendMessage_InterruptTrue_DeadDescendant_GatePass_RoutesUp(t *test
 		t.Errorf("routed-up interrupt body mismatch\n got: %q\nwant: %q", entries[0].Body, wantBody)
 	}
 
-	// The live ancestor's session must have received the force-interrupt.
-	if got := session.forceInterruptDeliveryCalls.Load(); got < 1 {
-		t.Errorf("manager.forceInterruptDeliveryCalls = %d, want >= 1 (interrupt must follow the routed-up message)", got)
+	// QUM-821: the routed-up interrupt is delivered via the now-priority wake
+	// path (the ClassInterrupt entry drains to stdin at priority "now"); the live
+	// ancestor must be cooperatively woken and must NOT be bare-interrupted.
+	if got := session.wakeForDeliveryCalls.Load(); got < 1 {
+		t.Errorf("manager.wakeForDeliveryCalls = %d, want >= 1 (routed-up interrupt woken via now-priority delivery)", got)
+	}
+	if got := session.interrupts.Load(); got != 0 {
+		t.Errorf("manager.interrupts = %d, want 0 (routed-up interrupt must not bare-interrupt — QUM-821)", got)
 	}
 }

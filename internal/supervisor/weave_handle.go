@@ -7,8 +7,7 @@
 // calls NewWeaveRuntimeHandle to wire activity-ndjson capture, then
 // registers the resulting handle with Supervisor.RegisterRootRuntime so
 // child-agent ReportStatus / SendMessage calls trigger weave's
-// WakeForDelivery / ForceInterruptDelivery via the same registry path used by
-// child runtimes.
+// WakeForDelivery via the same registry path used by child runtimes.
 
 package supervisor
 
@@ -118,14 +117,6 @@ func (h *WeaveRuntimeHandle) Wake() error {
 // See QUM-549/QUM-550.
 func (h *WeaveRuntimeHandle) WakeForDelivery() error {
 	return h.rt.WakeForDelivery(context.Background())
-}
-
-// ForceInterruptDelivery is the unconditional-preempt variant for weave.
-// Leaves pending entries on disk (mirrors WakeForDelivery's TUI-driven
-// drain contract — QUM-471) and calls the runtime's force-interrupt path.
-// See QUM-549/QUM-550.
-func (h *WeaveRuntimeHandle) ForceInterruptDelivery() error {
-	return h.rt.ForceInterruptForDelivery(context.Background())
 }
 
 // Stop tears down the runtime, activity subscriber, session, and activity

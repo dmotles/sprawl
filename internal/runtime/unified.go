@@ -447,6 +447,19 @@ func (rt *UnifiedRuntime) markConsumed(uuid string) {
 	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageConsumed, UUID: uuid})
 }
 
+// ConfirmDeliveredWithoutReplay marks an outstanding stdin write consumed
+// WITHOUT an isReplay echo (QUM-821). now-priority (cancel-and-replace) messages
+// are injected directly and are never re-emitted via --replay-user-messages, so
+// the consumption ack that normally drives markConsumed never arrives. The
+// supervisor calls this on a confirmed successful now-priority write to keep the
+// in-memory outstanding map and the durable maildir in sync (flip → consumed +
+// OnDelivered) and to publish EventUserMessageConsumed. No-op for an unknown
+// uuid. Use ONLY for priority="now" writes; next-class writes confirm via the
+// isReplay echo.
+func (rt *UnifiedRuntime) ConfirmDeliveredWithoutReplay(uuid string) {
+	rt.markConsumed(uuid)
+}
+
 // ClassifyBackendFault maps a backend session terminal error to a
 // UX-visible class label and an operator-facing next-action hint. Known
 // sentinels (ErrHangTimeout / ErrSubscriberWedged) get tailored hints;
@@ -650,15 +663,6 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 // WriteUserMessage), and a stdin write inherently wakes the CLI's command
 // queue, so there is nothing extra to poke here. No-op.
 func (rt *UnifiedRuntime) WakeForDelivery(_ context.Context) error { return nil }
-
-// ForceInterruptForDelivery is the preempt path for send_message(interrupt=
-// true). In Slice 2 the message itself is written as a normal `next` stdin
-// message by the handle (cancel-and-replace `now` is Slice 3); this only issues
-// a bare contentless interrupt (Esc-style abort of the current generation) so
-// the CLI yields and processes the queued message on the next iteration.
-func (rt *UnifiedRuntime) ForceInterruptForDelivery(ctx context.Context) error {
-	return rt.Interrupt(ctx)
-}
 
 // EventBus returns the runtime's EventBus. Stable for the lifetime of the
 // UnifiedRuntime.

@@ -294,6 +294,30 @@ func TestInterrupt_WhenIdle_ForwardsToSessionAndEmitsSynthetic(t *testing.T) {
 	}
 }
 
+// TestInterrupt_CarriesNoContent pins the QUM-821 invariant: the bare interrupt
+// frame (Esc-abort) must NEVER carry content. rt.Interrupt forwards a contentless
+// control frame to the session and must not write any stdin user message. Urgent
+// content delivery rides priority:"now" user messages, not the interrupt frame.
+func TestInterrupt_CarriesNoContent(t *testing.T) {
+	mock := &mockUnifiedSession{}
+	rt := New(RuntimeConfig{Name: "x", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = rt.Stop(context.Background()) }()
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if got := mock.interruptCount(); got < 1 {
+		t.Errorf("Session.Interrupt count = %d, want >= 1 (interrupt frame must be forwarded)", got)
+	}
+	if got := mock.writeCount(); got != 0 {
+		last, _ := mock.lastWrite()
+		t.Errorf("stdin writes during Interrupt = %d, want 0 (bare interrupt must carry no content); last=%+v", got, last)
+	}
+}
+
 func TestInterrupt_WhenStopped_NoOp(t *testing.T) {
 	mock := &mockUnifiedSession{}
 	rt := New(RuntimeConfig{Name: "x", Session: mock})

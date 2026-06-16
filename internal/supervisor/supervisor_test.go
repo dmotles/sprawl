@@ -782,13 +782,12 @@ func TestMessagesList_RequiresCallerIdentity(t *testing.T) {
 // calls. Used by RegisterRootRuntime tests to confirm child reports route to
 // the registered weave runtime.
 type fakeRootHandle struct {
-	caps                        backendpkg.Capabilities
-	sessionID                   string
-	wakeForDeliveryCalls        int32
-	forceInterruptDeliveryCalls int32
-	stopCalls                   int32
-	stopAbandonCalls            int32
-	doneCh                      chan struct{}
+	caps                 backendpkg.Capabilities
+	sessionID            string
+	wakeForDeliveryCalls int32
+	stopCalls            int32
+	stopAbandonCalls     int32
+	doneCh               chan struct{}
 }
 
 func (h *fakeRootHandle) Interrupt(context.Context) error { return nil }
@@ -796,11 +795,6 @@ func (h *fakeRootHandle) Wake() error                     { return nil }
 
 func (h *fakeRootHandle) WakeForDelivery() error {
 	h.wakeForDeliveryCalls++
-	return nil
-}
-
-func (h *fakeRootHandle) ForceInterruptDelivery() error {
-	h.forceInterruptDeliveryCalls++
 	return nil
 }
 
@@ -995,9 +989,9 @@ func TestRegisterRootRuntime_DoesNotOverwriteDiskTypeWhenAlreadySet(t *testing.T
 
 // QUM-399 / QUM-550 slice 2: when weave is registered as a root runtime and a
 // child agent reports status, the child→parent notification path must hit the
-// registered handle via the cooperative WakeForDelivery — NOT InterruptDelivery
-// and NOT ForceInterruptDelivery. This guarantees child reports drive weave's
-// UnifiedRuntime queue without preempting an in-flight turn.
+// registered handle via the cooperative WakeForDelivery. This guarantees child
+// reports drive weave's UnifiedRuntime queue without preempting an in-flight
+// turn.
 func TestReportStatus_FromChildOfWeave_WakesRootWithoutPreempting(t *testing.T) {
 	sup, tmpDir := newTestSupervisor(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{
@@ -1023,8 +1017,5 @@ func TestReportStatus_FromChildOfWeave_WakesRootWithoutPreempting(t *testing.T) 
 
 	if h.wakeForDeliveryCalls < 1 {
 		t.Errorf("registered weave handle's WakeForDelivery calls = %d, want >= 1", h.wakeForDeliveryCalls)
-	}
-	if h.forceInterruptDeliveryCalls != 0 {
-		t.Errorf("registered weave handle's ForceInterruptDelivery calls = %d, want 0", h.forceInterruptDeliveryCalls)
 	}
 }

@@ -849,7 +849,12 @@ func TestUnifiedHandle_WakeForDelivery_WritesRealAsyncPromptNext(t *testing.T) {
 	}
 }
 
-func TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNext(t *testing.T) {
+// TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNow pins the
+// QUM-821 urgency tier: an interrupt-class inbox entry (send_message(
+// interrupt=true)) drains to stdin with priority "now" (cancel-and-replace),
+// not "next". The content still rides the message; no bare interrupt frame is
+// issued for delivery.
+func TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNow(t *testing.T) {
 	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
 
@@ -871,8 +876,8 @@ func TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNext(t *testing.
 		t.Fatalf("stdin writes = %d, want 1; writes=%+v", len(writes), writes)
 	}
 	got := writes[0]
-	if got.Priority != "next" {
-		t.Errorf("Priority = %q, want %q", got.Priority, "next")
+	if got.Priority != "now" {
+		t.Errorf("Priority = %q, want %q (QUM-821 interrupt-class urgency)", got.Priority, "now")
 	}
 	want := inboxprompt.BuildInterruptFlushPrompt([]inboxprompt.Entry{
 		{
@@ -885,9 +890,21 @@ func TestUnifiedHandle_WakeForDelivery_WritesRealInterruptPromptNext(t *testing.
 		t.Errorf("Content mismatch.\n--- got ---\n%s\n--- want ---\n%s", got.Message.Content, want)
 	}
 
-	fakeSession.echoReplay(got.UUID)
+	// QUM-821: urgency is carried entirely by priority "now" — delivery must NOT
+	// issue a bare contentless interrupt frame (that is reserved for Esc-abort).
+	if got := atomic.LoadInt32(&fakeSession.interrupted); got != 0 {
+		t.Errorf("session.Interrupt called %d times during now-priority delivery; want 0 (bare interrupt is Esc-only)", got)
+	}
+
+	// QUM-821 storm-prevention: now-priority (cancel-and-replace) writes are NOT
+	// echoed via --replay-user-messages, so the entry must be marked delivered
+	// synchronously on the write — WITHOUT an isReplay echo. Otherwise the entry
+	// stays pending and PostTurnSweep re-injects it every turn (stdin storm).
 	if pending, _ := agentloop.ListPending(sprawlRoot, "alice"); len(pending) != 0 {
-		t.Errorf("pending after replay echo = %d, want 0 (entry must be marked delivered)", len(pending))
+		t.Errorf("pending after now-priority write (no echo) = %d, want 0 (must be marked delivered on write — storm prevention)", len(pending))
+	}
+	if delivered, _ := agentloop.ListDelivered(sprawlRoot, "alice"); len(delivered) != 1 {
+		t.Errorf("delivered after now-priority write = %d, want 1", len(delivered))
 	}
 }
 
@@ -931,9 +948,13 @@ func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) 
 	if len(writes) != 2 {
 		t.Fatalf("stdin writes = %d, want 2 (one interrupt + one async); writes=%+v", len(writes), writes)
 	}
-	// drainPendingToStdin writes interrupts before asyncs (QUM-817).
-	if writes[0].Priority != "next" || writes[1].Priority != "next" {
-		t.Errorf("priorities = [%q,%q], want both \"next\"", writes[0].Priority, writes[1].Priority)
+	// drainPendingToStdin writes interrupts before asyncs (QUM-817). QUM-821:
+	// the interrupt batch drains at priority "now"; the async batch stays "next".
+	if writes[0].Priority != "now" {
+		t.Errorf("interrupt batch Priority = %q, want \"now\" (QUM-821)", writes[0].Priority)
+	}
+	if writes[1].Priority != "next" {
+		t.Errorf("async batch Priority = %q, want \"next\"", writes[1].Priority)
 	}
 
 	wantInterrupt := inboxprompt.BuildInterruptFlushPrompt([]inboxprompt.Entry{
@@ -960,23 +981,26 @@ func TestUnifiedHandle_WakeForDelivery_SeparatesInterruptAndAsync(t *testing.T) 
 		t.Errorf("async Content mismatch.\n--- got ---\n%s\n--- want ---\n%s", writes[1].Message.Content, wantAsync)
 	}
 
-	// Both echoes confirm consumption; all pending entries flip to delivered.
-	fakeSession.echoAllReplays()
+	// QUM-821: the interrupt (now) entry was delivered on write; only the async
+	// entry awaits its isReplay echo. Echo just the async write (writes[1]).
+	fakeSession.echoReplay(writes[1].UUID)
 	if pending, _ := agentloop.ListPending(sprawlRoot, "alice"); len(pending) != 0 {
-		t.Errorf("pending after replay echoes = %d, want 0", len(pending))
+		t.Errorf("pending after async replay echo = %d, want 0", len(pending))
 	}
 }
 
 // ---------------------------------------------------------------------------
-// QUM-441/817: WakeForDelivery wires post-consumption MarkDelivered. After the
-// CLI echoes back the isReplay ack for each written stdin message, the seeded
-// pending entries must be moved to delivered/ on disk. The write alone (before
-// the echo) must NOT mark anything delivered.
+// QUM-441/817/821: WakeForDelivery wires MarkDelivered. Async-class entries are
+// marked delivered on their isReplay consumption ack (the write alone must NOT
+// mark them). Interrupt-class (now-priority) entries are marked delivered on the
+// write itself, because cancel-and-replace injection yields no isReplay echo —
+// deferring to an echo that never comes would leave the entry pending forever
+// and PostTurnSweep would re-inject it every turn (QUM-821 storm).
 // ---------------------------------------------------------------------------
 
-// TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered verifies that the
-// isReplay consumption ack (not the stdin write itself) is what flips pending
-// entries to delivered (QUM-441/817).
+// TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered verifies the split:
+// the async entry waits for its isReplay ack, while the interrupt (now) entry is
+// delivered synchronously on the write (QUM-441/817/821).
 func TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered(t *testing.T) {
 	uh, fakeSession, sprawlRoot := buildStartedUnifiedHandleForTest(t, backend.Capabilities{})
 	defer func() { _ = uh.Stop(context.Background()) }()
@@ -1000,17 +1024,26 @@ func TestUnifiedHandle_WakeForDelivery_MarksPendingDelivered(t *testing.T) {
 		t.Fatalf("WakeForDelivery: %v", err)
 	}
 
-	// Two stdin writes (one per class). The write alone must NOT mark anything
-	// delivered — only the consumption ack does.
+	// Two stdin writes (one per class).
 	if writes := fakeSession.waitForWrites(2, 2*time.Second); len(writes) != 2 {
 		t.Fatalf("stdin writes = %d, want 2; writes=%+v", len(writes), writes)
 	}
-	if p, _ := agentloop.ListPending(sprawlRoot, "alice"); len(p) != 2 {
-		t.Fatalf("pending before echo = %d, want 2 (writes alone must not mark delivered)", len(p))
+
+	// QUM-821: before any echo, the interrupt (now) entry is ALREADY delivered
+	// (marked on write); the async entry is still pending awaiting its echo.
+	pendingBefore, _ := agentloop.ListPending(sprawlRoot, "alice")
+	deliveredBefore, _ := agentloop.ListDelivered(sprawlRoot, "alice")
+	if len(pendingBefore) != 1 || pendingBefore[0].ID != "id-async-1" {
+		t.Fatalf("pending before echo = %+v, want exactly [id-async-1] (interrupt delivered on write)", pendingBefore)
+	}
+	if len(deliveredBefore) != 1 || deliveredBefore[0].ID != "id-int-1" {
+		t.Fatalf("delivered before echo = %+v, want exactly [id-int-1] (now-priority delivered on write)", deliveredBefore)
 	}
 
-	// The isReplay echo of each write is the consumption ack that flips the
-	// entries to delivered.
+	// The async entry's isReplay echo flips it to delivered. (echoAllReplays also
+	// re-echoes the now/interrupt uuid; that re-fires markConsumed → OnDelivered,
+	// which tolerates the already-delivered entry — agentloop.MarkDelivered logs a
+	// warning and returns an error, which OnDelivered swallows.)
 	fakeSession.echoAllReplays()
 
 	pending, _ := agentloop.ListPending(sprawlRoot, "alice")
