@@ -61,6 +61,62 @@ scripts/smoke-test-memory.sh   # integration test for weave memory system
 scripts/sprawl-test-env.sh     # set up isolated test environment
 ```
 
+## Commit guard (QUM-808)
+
+The pre-commit hook (`scripts/pre-commit`, installed via `make hooks`) runs
+`scripts/guard-main-commit` **before** `make validate`. The guard refuses a
+`git commit` on branch `main` when the committing process is a non-root agent,
+identified via `$SPRAWL_AGENT_IDENTITY`:
+
+- `weave` (the root agent) — allowed to commit to `main`.
+- any other non-empty identity (a child agent) — **blocked** on `main`.
+- unset/empty (a human running `git` directly) — allowed.
+- any branch other than `main` — always allowed.
+
+Because git worktrees share the common `.git/hooks` directory, the guard fires
+from whichever worktree is committing — so the QUM-808 failure mode (an agent's
+Bash cwd drifting to the main repo root + absolute-path `git commit` silently
+landing on `main`) is caught regardless of cwd.
+
+**Installation.** The hook is **auto-installed on every agent worktree
+creation**: `.sprawl/config.yaml`'s `worktree.setup` idempotently symlinks
+`$SPRAWL_ROOT/scripts/pre-commit` into the shared hooks dir
+(`$(git rev-parse --git-common-dir)/hooks/pre-commit`). Since worktrees share
+one common `.git/hooks` dir, installing from any worktree covers the main
+checkout and all worktrees at once. (Note `make hooks` only works from the
+main checkout — a worktree's `.git` is a file, not a directory, so the
+`worktree.setup` snippet uses the `--git-common-dir` form instead.) **weave
+should run `make hooks` once in the main checkout** to cover the case where no
+agent worktree has been created yet — otherwise the guard stays dormant until
+the first worktree is spawned.
+
+### Safe recovery from a wrong-tree commit on `main`
+
+If a commit ever lands on `main` by mistake, **do NOT have an agent run
+`git reset --hard` on `main`** — that can clobber weave's uncommitted state or
+destroy work. Recover by re-homing the commit to the correct branch, then
+moving `main`'s ref back without touching the working tree:
+
+1. **Identify** the stray commit: `git -C <main-checkout> log --oneline -1 main`.
+2. **Re-home it** to the owning agent's branch (cherry-pick preserves the
+   commit; it does not mutate `main`):
+   ```bash
+   git -C <agent-worktree> cherry-pick <stray-sha>
+   ```
+   Verify it now exists on the agent branch.
+3. **Rewind `main`'s ref** to the prior good commit using a *soft* reset (run by
+   weave/root only, from the main checkout — keeps the working tree and index
+   intact, only moves the branch pointer):
+   ```bash
+   git -C <main-checkout> reset --soft <prior-good-sha>
+   ```
+   Use `--soft` (or `git update-ref refs/heads/main <prior-good-sha>`), never
+   `--hard`. Confirm `git -C <main-checkout> status` is clean and the stray
+   commit is no longer an ancestor of `main`.
+
+The guard makes this recovery a rare exception, not a routine: agents are
+blocked from landing on `main` in the first place.
+
 ## Install
 
 > **Warning:** Do not run `make install` unless your agent identity is `weave` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./sprawl` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.

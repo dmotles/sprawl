@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
 set -e
+
+# QUM-808: refuse non-root agent commits to shared 'main' before anything else.
+# Resolve the guard relative to this hook's own real path (this script is
+# symlinked into the shared .git/hooks dir, so readlink -f lands in the main
+# checkout's scripts/ — which always has the guard, regardless of which
+# worktree is committing). Branch detection inside the guard still uses the
+# committing worktree's HEAD via git, so this is both robust and correct.
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+"$here/guard-main-commit"
+
 echo "Running pre-commit validation..."
 make validate

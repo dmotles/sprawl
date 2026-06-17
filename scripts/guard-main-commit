@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# guard-main-commit (QUM-808)
+#
+# Refuses a `git commit` on branch `main` when the committing process is a
+# non-root sprawl agent. Identity is read from $SPRAWL_AGENT_IDENTITY:
+#   - "weave" (the root agent, see cmd/enter.go buildSessionEnv) => allowed.
+#   - any other non-empty value (a child agent)                  => BLOCKED on main.
+#   - unset/empty (a human running git directly)                 => allowed.
+# Any branch other than `main` is always allowed.
+#
+# This guards against the QUM-808 incident where an agent's Bash cwd drifted to
+# the main repo root and an absolute-path `git commit` silently landed on the
+# shared `main` branch. The hook fires from the committing worktree, so the
+# cwd/abs-path confusion is caught regardless of how git was invoked.
+#
+# Invoked first by scripts/pre-commit (before `make validate`) so it fails fast.
+set -euo pipefail
+
+identity="${SPRAWL_AGENT_IDENTITY:-}"
+
+# Read the current branch via symbolic-ref so it works even before the first
+# commit (unborn branch). Empty on detached HEAD, which is not the incident.
+branch="$(git symbolic-ref --short -q HEAD || true)"
+
+if [[ "$branch" == "main" && -n "$identity" && "$identity" != "weave" ]]; then
+	cat >&2 <<EOF
+ERROR: refusing commit to 'main' by agent '$identity' (QUM-808 guard).
+
+Agents must commit to their own worktree branch, never the shared 'main'.
+Your Bash cwd has likely drifted to the main repo root. To fix:
+
+  1. cd into your own worktree (git rev-parse --show-toplevel from there
+     must NOT be the main checkout), and confirm:
+       git rev-parse --abbrev-ref HEAD   # must be your branch, not 'main'
+  2. Re-run your commit from inside your worktree using relative paths.
+
+Only weave (the root agent) may commit to 'main'. If a wrong-tree commit
+already landed on 'main', see the safe recovery procedure in CLAUDE.md
+("Commit guard") — do NOT run 'git reset --hard' on main yourself.
+EOF
+	exit 1
+fi
+
+exit 0
