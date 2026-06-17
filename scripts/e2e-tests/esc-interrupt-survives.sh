@@ -103,17 +103,32 @@ test_run() {
         e2e_print_results
         return 1
     fi
-    # Small settle so the handler is firmly registered in the inflight map
-    # before we abort.
+    # Small settle so the handler is firmly registered in the inflight map.
     sleep 1
+
+    # QUEUE a second prompt WHILE the turn is in flight (the user's exact repro:
+    # "type from idle → message queues (⏳ N) → Esc"). A turn is in flight, so
+    # this human prompt is written to stdin and held pending — the TUI shows the
+    # "⏳ N queued" indicator. The locked interrupt contract: Esc must NOT drop
+    # this queued message; the CLI consumes it on its next iteration.
+    echo ""
+    echo "=== Queuing a second prompt while the turn is in flight ==="
+    local SURVIVE_PROMPT="Reply with EXACTLY one line: SURVIVE_${SUFFIX} and nothing else."
+    e2e_send_user_prompt "$SESSION" "$SURVIVE_PROMPT"
+    if wait_for_substring_fast "$SESSION" "queued" 10; then
+        pass "second prompt queued (⏳ indicator shown) while turn in flight"
+    else
+        # Not fatal on its own — the consumed-after-abort assertion below is the
+        # real queue-intact gate — but log it for diagnosis.
+        echo "  note: '⏳ queued' indicator not observed; proceeding to the abort gate" >&2
+    fi
 
     echo ""
     echo "=== Pressing Esc to abort the in-flight turn ==="
     _stmux send-keys -t "$SESSION" Escape
 
     # PRIMARY GATE: the backend session must survive. Under the QUM-827 bug the
-    # cancelled _test_sleep handler's error control_response crashes the CLI
-    # subprocess → the TUI surfaces the non-EOF "Session Error" dialog (or, on a
+    # interrupted turn surfaces the non-EOF "Session Error" dialog (or, on a
     # clean EOF, the "Session restarting" banner). We watch ~20s (the full
     # _test_sleep window) so a fault that fires when the handler would have
     # completed is still caught.
@@ -127,16 +142,16 @@ test_run() {
         return 1
     fi
 
-    # SECONDARY GATE: the session is still usable — a fresh prompt is answered
-    # live, with no restart in between.
+    # QUEUE-INTACT GATE: the prompt queued BEFORE the Esc must survive the abort
+    # and be consumed on the next CLI iteration — its unique token is answered
+    # live, with no restart. This proves the abort is queue-non-destructive AND
+    # the session stays alive.
     echo ""
-    echo "=== Sending a follow-up prompt to prove the session is still alive ==="
-    local SURVIVE_PROMPT="Reply with EXACTLY one line: SURVIVE_${SUFFIX} and nothing else."
-    e2e_send_user_prompt "$SESSION" "$SURVIVE_PROMPT"
+    echo "=== Asserting the pre-Esc queued prompt was consumed (queue intact) ==="
     if wait_for_pattern_fast "$SESSION" "SURVIVE_${SUFFIX}" 60; then
-        pass "post-Esc prompt answered live — session is alive (no resume churn)"
+        pass "queued prompt consumed after Esc — session alive + queue intact (no resume churn)"
     else
-        fail "post-Esc prompt 'SURVIVE_${SUFFIX}' not answered within 60s"
+        fail "queued prompt 'SURVIVE_${SUFFIX}' not answered within 60s (dropped by abort?)"
         capture_pane "$SESSION" | tail -60 >&2
         [ -f "$STDERR_LOG" ] && tail -20 "$STDERR_LOG" >&2
         e2e_print_results

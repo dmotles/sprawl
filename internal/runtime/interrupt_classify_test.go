@@ -143,6 +143,46 @@ func TestUnifiedRuntime_InTurnInterrupt_StreamClose(t *testing.T) {
 	}
 }
 
+// TestUnifiedRuntime_InterruptIsQueueNonDestructive pins the locked QUM-827 /
+// QUM-828 contract: Esc is a pure halt — UnifiedRuntime.Interrupt must NOT
+// touch the outstanding-map queue. A queued (kind:user, state:pending) entry
+// must survive the abort unchanged so the CLI consumes it on its next
+// iteration.
+func TestUnifiedRuntime_InterruptIsQueueNonDestructive(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "agent-esc-queue", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	// Queue a pending user message, then open a turn.
+	uuid, err := rt.WriteUserPrompt(context.Background(), "queued while busy", "next")
+	if err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	openTurn(t, rt)
+
+	// User Esc mid-turn.
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+
+	// The queued entry must still be present and still pending.
+	out := rt.Outstanding()
+	e, ok := out[uuid]
+	if !ok {
+		t.Fatalf("queued message %s was dropped by Interrupt; the abort must be queue-non-destructive", uuid)
+	}
+	if e.kind != kindUser || e.state != statePending {
+		t.Errorf("queued entry kind/state = %v/%v after Interrupt, want kindUser/statePending (untouched)", e.kind, e.state)
+	}
+}
+
 // TestUnifiedRuntime_InterruptFlagDoesNotLeakToNextTurn guards the stale-flag
 // race: after an interrupt is consumed by one turn-end, a SUBSEQUENT normal
 // turn completion must publish EventTurnCompleted, not EventInterrupted.
