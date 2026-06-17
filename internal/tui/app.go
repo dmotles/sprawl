@@ -974,6 +974,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-634: render a trigger marker before the autonomous turn's
 		// assistant response so the user sees WHY weave responded.
 		m.rootBuf().AppendAutoTrigger(msg.Summary)
+		// QUM-826: AutoContinueMsg is pump-delivered (translated from a
+		// task_notification protocol frame). Re-arm WaitForEvent or the pump
+		// parks here and the autonomous turn's assistant response never
+		// renders live.
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
 		return m, nil
 
 	case OpenPaletteMsg:
@@ -1174,6 +1181,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			delete(m.queuedUser, msg.UUID)
 			m.syncQueuedIndicator()
 		}
+		// QUM-826: this msg is pump-delivered (EventUserMessageConsumed) and is
+		// the first non-nil event of every typed turn. Re-arm WaitForEvent or
+		// the pump parks here and no assistant content renders live.
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
 		return m, nil
 
 	case UserMessageCancelledMsg:
@@ -1181,6 +1194,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if _, ok := m.queuedUser[msg.UUID]; ok {
 			delete(m.queuedUser, msg.UUID)
 			m.syncQueuedIndicator()
+		}
+		// QUM-826: pump-delivered (EventUserMessageCancelled) — re-arm so the
+		// event pump keeps draining.
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
 		}
 		return m, nil
 

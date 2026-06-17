@@ -3195,6 +3195,28 @@ func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
 	}
 }
 
+// QUM-826: AutoContinueMsg is pump-delivered (translated from a
+// task_notification protocol frame via MapProtocolMessage). Its reducer must
+// re-arm WaitForEvent, otherwise the pump parks after the trigger marker and
+// the autonomous turn's assistant response never renders live.
+func TestAppModel_AutoContinueMsg_RearmsPump(t *testing.T) {
+	delegate := &continuousFakeDelegate{}
+	app := readyAppWithBridge(t, delegate)
+
+	updated, cmd := app.Update(AutoContinueMsg{Summary: "task complete"})
+	_ = updated
+
+	if cmd == nil {
+		t.Fatal("AutoContinueMsg returned nil cmd; expected a WaitForEvent re-arm")
+	}
+	if !runCmdsForSentinel(t, cmd) {
+		t.Error("AutoContinueMsg cmd did not re-arm WaitForEvent (no sentinel produced)")
+	}
+	if delegate.waitCalls == 0 {
+		t.Error("AutoContinueMsg should call WaitForEvent on a continuous bridge; waitCalls = 0")
+	}
+}
+
 // QUM-475: SessionErrorMsg (non-EOF) from idle state — no dialog, viewport
 // gets the error, finalizeTurn still re-arms the continuous bridge.
 func TestAppModel_SessionErrorMsg_FromIdle_FinalizesTurn(t *testing.T) {

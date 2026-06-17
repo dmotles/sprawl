@@ -170,6 +170,66 @@ func TestQueuedIndicator_Lifecycle(t *testing.T) {
 	}
 }
 
+// QUM-826: UserMessageConsumedMsg is pump-delivered (translated from
+// EventUserMessageConsumed) and is the FIRST non-nil event of every typed
+// turn. Its reducer MUST re-issue WaitForEvent or the bubbletea event pump
+// parks before any assistant content is read, freezing live render while the
+// session still persists. This pins the re-arm.
+func TestAppModel_UserMessageConsumedMsg_RearmsPump(t *testing.T) {
+	delegate := &continuousFakeDelegate{}
+	app := readyAppWithBridge(t, delegate)
+
+	// Register a tracked prompt, then reset the wait counter so the assertion
+	// below isolates the consumed reducer's re-arm.
+	updated, _ := app.Update(UserMessageSentMsg{UUID: "u1"})
+	app = updated.(AppModel)
+	delegate.waitCalls = 0
+
+	updated, cmd := app.Update(UserMessageConsumedMsg{UUID: "u1"})
+	app = updated.(AppModel)
+
+	if cmd == nil {
+		t.Fatal("UserMessageConsumedMsg returned nil cmd; expected a WaitForEvent re-arm")
+	}
+	if !runCmdsForSentinel(t, cmd) {
+		t.Error("UserMessageConsumedMsg cmd did not re-arm WaitForEvent (no sentinel produced)")
+	}
+	if delegate.waitCalls == 0 {
+		t.Error("UserMessageConsumedMsg should call WaitForEvent on a continuous bridge; waitCalls = 0")
+	}
+	// Existing mutation must survive: the tracked prompt is cleared.
+	if got := app.queuedUserCount(); got != 0 {
+		t.Errorf("queued count = %d after consume, want 0", got)
+	}
+}
+
+// QUM-826: UserMessageCancelledMsg is pump-delivered too (translated from
+// EventUserMessageCancelled) and must re-arm the pump for the same reason.
+func TestAppModel_UserMessageCancelledMsg_RearmsPump(t *testing.T) {
+	delegate := &continuousFakeDelegate{}
+	app := readyAppWithBridge(t, delegate)
+
+	updated, _ := app.Update(UserMessageSentMsg{UUID: "u1"})
+	app = updated.(AppModel)
+	delegate.waitCalls = 0
+
+	updated, cmd := app.Update(UserMessageCancelledMsg{UUID: "u1"})
+	app = updated.(AppModel)
+
+	if cmd == nil {
+		t.Fatal("UserMessageCancelledMsg returned nil cmd; expected a WaitForEvent re-arm")
+	}
+	if !runCmdsForSentinel(t, cmd) {
+		t.Error("UserMessageCancelledMsg cmd did not re-arm WaitForEvent (no sentinel produced)")
+	}
+	if delegate.waitCalls == 0 {
+		t.Error("UserMessageCancelledMsg should call WaitForEvent on a continuous bridge; waitCalls = 0")
+	}
+	if got := app.queuedUserCount(); got != 0 {
+		t.Errorf("queued count = %d after cancel, want 0", got)
+	}
+}
+
 // TestQueuedIndicator_IgnoresSystemConsumed: a consumed event for a uuid the TUI
 // never tracked (a system message) must not underflow / affect the count.
 func TestQueuedIndicator_IgnoresSystemConsumed(t *testing.T) {
