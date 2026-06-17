@@ -278,17 +278,20 @@ func TestAsyncDispatch_ResponseOrderingOutOfOrder(t *testing.T) {
 	drainMessages(events)
 }
 
-// TestAsyncDispatch_InterruptCancelsInflightHandler proves that calling
-// Session.Interrupt cancels every in-flight async MCP handler's ctx so
-// ctx-respecting tool handlers (retire/delegate/merge/...) actually
-// unwind instead of continuing to wait. Asserts:
+// TestAsyncDispatch_InterruptDoesNotCancelInflightHandler proves the QUM-827
+// fix: calling Session.Interrupt (a user Esc-abort) sends ONLY the SDK
+// interrupt control_request and does NOT cancel in-flight async MCP handlers.
+// Cancelling them would make a ctx-respecting handler return ctx.Err(), which
+// dispatchMCPAsync turns into an `error` control_response that crashes the
+// claude subprocess (spurious "Session Error" + resume churn). Asserts:
 //
-//  1. The blocking bridge — which returns ctx.Err() when its ctx is
-//     cancelled — observes its ctx cancelled within ~1s of the
-//     Interrupt call.
-//  2. A control_response with subtype="error" carrying the cancellation
-//     error reaches the transport.
-func TestAsyncDispatch_InterruptCancelsInflightHandler(t *testing.T) {
+//  1. The interrupt frame reaches the transport.
+//  2. NO error control_response for the in-flight request is sent — the
+//     blocking handler stays parked (its ctx is not cancelled).
+//
+// In-flight handlers are cancelled only at genuine teardown (drainInflight),
+// covered by TestSession_DrainInflight_CancelsInflightHandler.
+func TestAsyncDispatch_InterruptDoesNotCancelInflightHandler(t *testing.T) {
 	transport := newMockManagedTransport()
 	bridge := newBlockingToolBridge()
 	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})
@@ -306,17 +309,18 @@ func TestAsyncDispatch_InterruptCancelsInflightHandler(t *testing.T) {
 	transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
 	awaitBridgeEntry(ctx, t, bridge)
 
-	// Fire Interrupt — should cancel the bridge ctx.
+	// Fire Interrupt — must send the interrupt frame but NOT cancel the
+	// in-flight handler.
 	if err := session.Interrupt(context.Background()); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
 
-	// Collect transport sends; expect both the interrupt frame AND an
-	// error control_response carrying the ctx cancellation.
+	// Collect transport sends for a bounded window: the interrupt frame MUST
+	// appear; an error control_response for mcp-1 must NOT (it would mean the
+	// handler was cancelled — the QUM-827 regression).
 	gotInterrupt := false
-	gotErrorResponse := false
-	deadline := time.After(1 * time.Second)
-	for !gotInterrupt || !gotErrorResponse {
+	deadline := time.After(700 * time.Millisecond)
+	for {
 		select {
 		case sent := <-transport.sendCh:
 			if isInterruptFrame(t, sent) {
@@ -324,15 +328,19 @@ func TestAsyncDispatch_InterruptCancelsInflightHandler(t *testing.T) {
 				continue
 			}
 			if isErrorControlResponse(t, sent, "mcp-1") {
-				gotErrorResponse = true
-				continue
+				t.Fatal("QUM-827: Interrupt emitted an error control_response for the in-flight handler; it must not cancel handlers")
 			}
 		case <-deadline:
-			t.Fatalf("timeout waiting for {interrupt:%v, errorResponse:%v}", gotInterrupt, gotErrorResponse)
+			if !gotInterrupt {
+				t.Fatal("interrupt frame never reached the transport")
+			}
+			goto cleanup
 		}
 	}
 
-	// Cleanup.
+cleanup:
+	// Release the still-parked handler so the session can finish, then end.
+	bridge.release("1", json.RawMessage(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"total_cost_usd":0.0}`)
 	close(transport.recvCh)
 	drainMessages(events)

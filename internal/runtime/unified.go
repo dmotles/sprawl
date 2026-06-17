@@ -73,6 +73,13 @@ type UnifiedRuntime struct {
 	// turn (every turn is now router-driven — there is no separate sprawl-turn
 	// path). Guarded by mu and OR-ed into State().InTurn.
 	inTurn bool
+	// interruptPending is set by Interrupt when a user Esc-abort lands mid-turn
+	// (QUM-827). routeFrame's EndOfTurn branches read-and-clear it to publish a
+	// clean EventInterrupted instead of EventTurnCompleted/EventTurnFailed —
+	// otherwise the interrupted turn's is_error `result` frame surfaces as a
+	// spurious "Session Error". Guarded by mu. Cleared on turn open (setInTurn
+	// true) so a stale flag can never leak into a later turn.
+	interruptPending bool
 
 	cancel        context.CancelFunc
 	doneWG        sync.WaitGroup
@@ -291,7 +298,17 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	if turn.EndOfTurn && msg == nil {
 		if st.open {
 			rt.setInTurn(false)
-			rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: errStreamClosedNoResult})
+			// QUM-827: a user interrupt that closed the stream with no terminal
+			// result is a clean abort, not a fault. A genuine backend crash that
+			// races an Esc is still surfaced independently via the
+			// SetTerminalErrorHandler path (fatalErr→terminalErr→
+			// EventBackendFaulted), so re-labelling the turn event here does not
+			// suppress the session-fault surface.
+			if rt.consumeInterruptPending() {
+				rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted})
+			} else {
+				rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: errStreamClosedNoResult})
+			}
 			st.reset()
 		}
 		return
@@ -330,7 +347,16 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		if msg != nil {
 			_ = protocol.ParseAs(msg, &r)
 		}
-		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
+		// QUM-827: a user Esc-abort that landed mid-turn re-classifies this
+		// terminal frame as a clean interrupt (EventInterrupted carries the
+		// result so the TUI shows "Interrupted (Nms)") rather than
+		// EventTurnCompleted — whose is_error interrupted result would surface
+		// as a spurious "Session Error" dialog.
+		if rt.consumeInterruptPending() {
+			rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted, Result: &r})
+		} else {
+			rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
+		}
 		// QUM-640 continuation (the QUM-812 fix): a background-task completion
 		// observed this turn writes exactly one synthetic continuation user
 		// message to stdin, which the CLI processes as the next turn. Deduped
@@ -362,7 +388,24 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 func (rt *UnifiedRuntime) setInTurn(v bool) {
 	rt.mu.Lock()
 	rt.inTurn = v
+	// QUM-827: clear any stale pending-interrupt flag on turn open so an
+	// interrupt that armed but never produced a terminal frame cannot
+	// mis-classify a later turn's completion.
+	if v {
+		rt.interruptPending = false
+	}
 	rt.mu.Unlock()
+}
+
+// consumeInterruptPending read-and-clears the QUM-827 pending-interrupt flag
+// under mu. Returns true iff a user interrupt was armed for the turn that is
+// now ending.
+func (rt *UnifiedRuntime) consumeInterruptPending() bool {
+	rt.mu.Lock()
+	ip := rt.interruptPending
+	rt.interruptPending = false
+	rt.mu.Unlock()
+	return ip
 }
 
 // WriteUserPrompt writes a human-typed prompt (kind:user, recallable) to the
@@ -764,6 +807,12 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	inTurn := rt.inTurn
 	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
 		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
+	}
+	// QUM-827: arm the pending-interrupt flag for an in-turn abort so the
+	// turn's terminal frame is re-classified as a clean interrupt by
+	// routeFrame, not surfaced as a turn error.
+	if inTurn {
+		rt.interruptPending = true
 	}
 	rt.mu.Unlock()
 

@@ -1148,32 +1148,25 @@ func (s *session) drainInflight() {
 }
 
 func (s *session) Interrupt(ctx context.Context) error {
-	// Cancel every in-flight async MCP handler ctx FIRST (QUM-552 S3 +
-	// QUM-600). This MUST run before the bounded wire-send wrapper waits
-	// on transport.Send so that, even when the stdin writer is wedged and
-	// the Send goroutine leaks, ctx-respecting tool handlers unwind
-	// immediately. The cancellation invariant is decoupled from the wire
-	// send succeeding.
+	// QUM-827: Interrupt sends ONLY the SDK interrupt control_request. It must
+	// NOT cancel in-flight async MCP handlers.
 	//
-	// Why cancel on the outgoing Interrupt (not on observed
-	// EventInterrupted from claude's stdout):
-	//   - we control this call site, so cancellation is synchronous
-	//     and atomic with the wire-level interrupt request;
-	//   - observing EventInterrupted would arrive later and race with
-	//     normal handler completion;
-	//   - ctx-respecting handlers (retire/delegate/merge/ask_user_question)
-	//     will unwind immediately. ask_user_question became ctx-respecting
-	//     after QUM-552 (see internal/supervisor/question.go ~q.ask) — the
-	//     entry's <-ctx.Done() branch fires cancelInternal and returns
-	//     OutcomeSessionEnded; the original QUM-553-era exception is gone.
-	// Entries are NOT removed here; the dispatch goroutines own
-	// their inflight-map cleanup on completion.
-	s.mu.Lock()
-	for _, cancel := range s.inflight {
-		cancel()
-	}
-	s.mu.Unlock()
-
+	// This is the bare Esc-abort path (QUM-821 made Interrupt the sole
+	// interrupt entry point). Cancelling an in-flight, ctx-respecting handler
+	// makes it return ctx.Err(); dispatchMCPAsync then writes an `error`
+	// control_response to the CLI, and the claude subprocess exits — which
+	// runReader promotes to terminalErr, surfacing a spurious "Session Error"
+	// + resume churn. A user Esc must abort the model turn only; the SDK
+	// interrupt request alone does that, and the backend session stays alive.
+	//
+	// In-flight handlers are still cancelled at genuine teardown: Close()
+	// cancels the detached reader ctx (readerCancel), which cascades to every
+	// dispatch bridge ctx, and runReader's defer runs drainInflight() — see
+	// drainInflight. (UnifiedRuntime.Stop additionally calls this Interrupt
+	// before its own cancel(), but the cancellation guarantee lives in the
+	// reader-ctx teardown, not here.) That preserves the QUM-552/QUM-600
+	// guarantee (handlers unwind on shutdown even when the stdin writer is
+	// wedged) without coupling it to a user-abort.
 	requestID := s.nextRequestID()
 	msg := protocol.InterruptRequest{
 		Type:      "control_request",

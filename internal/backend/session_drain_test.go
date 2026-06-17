@@ -193,16 +193,20 @@ func TestSession_Close_ReturnsWithinBound_WhenReaderRecvWedged(t *testing.T) {
 	close(transport.recvCh)
 }
 
-// TestSession_Interrupt_DecrementsInflightWaitGroup_OnCtxCancel proves that a
-// ctx-respecting async handler cancelled by Interrupt unwinds and decrements
-// inflightWG, so the subsequent Close completes well under inflightDrainTimeout
-// (i.e. the WaitGroup is already drained — Close does not have to wait out the
-// timeout).
+// TestSession_Close_DrainsInflightWaitGroupPromptly proves that Close cancels
+// the detached reader ctx, which cascades to every in-flight async handler's
+// bridge ctx; a ctx-respecting handler then returns ctx.Err() and decrements
+// inflightWG, so Close completes well under inflightDrainTimeout (i.e. the
+// WaitGroup is already drained — Close does not have to wait out the timeout).
 //
-// RED today: same compile failure on overrideInflightDrainTimeout.
-func TestSession_Interrupt_DecrementsInflightWaitGroup_OnCtxCancel(t *testing.T) {
+// QUM-827: in-flight cancellation on teardown is owned by Close→drainInflight,
+// NOT by session.Interrupt (a user Esc-abort no longer cancels handlers — that
+// crashed the CLI via an error control_response). This test pins the teardown
+// path directly.
+func TestSession_Close_DrainsInflightWaitGroupPromptly(t *testing.T) {
 	// Large drain timeout: a passing Close must complete FAST because the WG
-	// was already drained by Interrupt, not because the timeout elapsed.
+	// was already drained by the reader-ctx cancellation, not because the
+	// timeout elapsed.
 	overrideInflightDrainTimeout(t, 10*time.Second)
 
 	transport := newMockManagedTransport()
@@ -221,12 +225,8 @@ func TestSession_Interrupt_DecrementsInflightWaitGroup_OnCtxCancel(t *testing.T)
 	transport.feedMessage(t, mcpControlRequest)
 	awaitCtxBridgeEntry(ctx, t, bridge)
 
-	// Interrupt cancels every in-flight dispatch ctx (session.go ~1002).
-	if err := session.Interrupt(context.Background()); err != nil {
-		t.Fatalf("Interrupt: %v", err)
-	}
-
-	// With the dispatch ctx cancelled, the handler returns ctx.Err() and the
+	// Close cancels the detached reader ctx; runReader's defer drainInflight
+	// cancels the in-flight dispatch ctx, the handler returns ctx.Err() and the
 	// WaitGroup decrements. Close should complete promptly (well under the
 	// 10s drain timeout). If it takes anywhere near the timeout, the WG was
 	// not decremented on cancel.
@@ -240,6 +240,6 @@ func TestSession_Interrupt_DecrementsInflightWaitGroup_OnCtxCancel(t *testing.T)
 			t.Fatalf("Close took %v; cancelled ctx-respecting dispatch did not decrement inflightWG", elapsed)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatalf("Close did not return within 2s; inflightWG still held after Interrupt cancelled the dispatch ctx")
+		t.Fatalf("Close did not return within 2s; inflightWG still held after the reader ctx cancelled the dispatch ctx")
 	}
 }

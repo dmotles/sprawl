@@ -1,14 +1,12 @@
 // QUM-600: Session.Interrupt must be bounded so a wedged transport.Send
 // (claude stdin write that does not honor ctx) cannot stall the caller
-// indefinitely. The implementation must wrap transport.Send in a bounded
-// goroutine + timer and return ErrInterruptTimeout on expiry, while still
-// cancelling every in-flight async MCP handler ctx (the cancellation must
-// not be gated on the wire send succeeding).
+// indefinitely — it wraps transport.Send in a bounded goroutine + timer and
+// returns ErrInterruptTimeout on expiry.
 //
-// These tests are RED until the implementer adds:
-//   - const interruptSendTimeout (package-internal, this file in same package)
-//   - var ErrInterruptTimeout (exported sentinel)
-//   - the bounded Send wrapper inside session.Interrupt
+// QUM-827: Interrupt must NOT cancel in-flight async MCP handlers (a user Esc
+// aborts the model turn only; cancelling handlers crashes the CLI via an error
+// control_response). In-flight handler cancellation happens only at genuine
+// teardown (Close → drainInflight). The tests below pin both contracts.
 package backend
 
 import (
@@ -94,21 +92,17 @@ func TestSession_Interrupt_BoundedOnWedgedTransportSend(t *testing.T) {
 	}
 }
 
-// TestSession_Interrupt_CancelsInflightHandlersEvenOnTimeout pins the
-// QUM-600 invariant that the in-flight async-MCP-handler cancellation must
-// fire BEFORE the bounded Send wrapper waits on the wire — so a wedged
-// transport.Send cannot also keep a long-running tool handler alive past
-// Interrupt's return.
-func TestSession_Interrupt_CancelsInflightHandlersEvenOnTimeout(t *testing.T) {
-	// We need a session with an in-flight async MCP handler. Reuse the
-	// blockingToolBridge pattern from session_async_dispatch_test.go but
-	// swap the transport for the wedging one. Initialize uses transport.Send
-	// itself — so we must use a normal transport for init, then somehow
-	// arrange for the subsequent Interrupt to hit the wedge.
-	//
-	// Simpler approach: wire a wedging transport whose Send wedges ONLY
-	// after the initial init+startTurn+control_request handshakes have
-	// completed. We implement this by switching modes via an atomic gate.
+// TestSession_Interrupt_DoesNotCancelInflightHandler_WedgedSend pins the
+// QUM-827 fix while preserving the QUM-600 bounded-return guarantee. A user
+// Esc-abort (Session.Interrupt) must NOT cancel in-flight async MCP handlers:
+// cancelling them makes a ctx-respecting handler return ctx.Err(), which
+// dispatchMCPAsync turns into an `error` control_response that crashes the
+// claude CLI subprocess → spurious "Session Error" / resume churn. Interrupt
+// must send ONLY the SDK interrupt control_request (still bounded so a wedged
+// transport.Send cannot stall the caller). In-flight handlers are cancelled
+// only at genuine teardown (drainInflight) — see
+// TestSession_DrainInflight_CancelsInflightHandler.
+func TestSession_Interrupt_DoesNotCancelInflightHandler_WedgedSend(t *testing.T) {
 	transport := newDelayedWedgeTransport()
 	defer transport.releaseAll()
 
@@ -133,8 +127,7 @@ func TestSession_Interrupt_CancelsInflightHandlersEvenOnTimeout(t *testing.T) {
 	// without honoring ctx.
 	transport.engageWedge()
 
-	// Interrupt should return bounded with ErrInterruptTimeout AND it must
-	// cancel the in-flight bridge ctx so HandleIncoming returns ctx.Err().
+	// Interrupt must still return bounded with ErrInterruptTimeout (QUM-600).
 	start := time.Now()
 	ierr := sess.Interrupt(context.Background())
 	elapsed := time.Since(start)
@@ -146,18 +139,109 @@ func TestSession_Interrupt_CancelsInflightHandlersEvenOnTimeout(t *testing.T) {
 		t.Fatalf("Interrupt err = %v, want errors.Is(_, ErrInterruptTimeout)", ierr)
 	}
 
-	// Direct observation: cancelObservableBridge publishes on cancelledCh
-	// when its HandleIncoming ctx is cancelled (it returns ctx.Err() at
-	// that point). This is the QUM-600 invariant — even with the wire
-	// send wedged, the inflight cancel map must have been walked.
+	// QUM-827: the in-flight bridge ctx must NOT have been cancelled by the
+	// Interrupt. cancelObservableBridge publishes on cancelledCh only when its
+	// HandleIncoming ctx is cancelled.
 	select {
 	case <-bridge.cancelledCh:
-		// good
-	case <-time.After(interruptSendTimeout + 1*time.Second):
-		t.Fatalf("in-flight bridge ctx was not cancelled within Interrupt's timeout window (QUM-600: cancellation must fire even when transport.Send is wedged)")
+		t.Fatal("QUM-827: Session.Interrupt cancelled an in-flight MCP handler; a user Esc must abort the model turn only, not cancel handlers")
+	case <-time.After(300 * time.Millisecond):
+		// good — handler ctx stayed alive
 	}
 
 	_ = events // silence unused
+}
+
+// TestSession_Interrupt_DoesNotCancelInflightHandler is the QUM-827 core guard
+// on the normal (non-wedged) path: with the reader live, an Interrupt while an
+// async MCP handler is in flight aborts the turn (sends the interrupt frame)
+// but leaves the handler ctx alive and the session usable — no terminalErr.
+func TestSession_Interrupt_DoesNotCancelInflightHandler(t *testing.T) {
+	transport := newDelayedWedgeTransport()
+	defer transport.releaseAll()
+
+	bridge := newCancelObservableBridge()
+	sess := NewSession(transport, SessionConfig{SessionID: "sess-inflight-esc"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	initSessionWithDelayedTransport(ctx, t, sess, transport, bridge)
+	if _, err := sess.StartTurn(ctx, "go"); err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	transport.consumeOneSend(t) // drain the user-prompt send
+
+	transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
+	bridge.awaitEntry(ctx, t)
+
+	if err := sess.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+
+	// The interrupt control_request must be the next frame on the wire.
+	sent := transport.consumeOneSend(t)
+	data, _ := json.Marshal(sent)
+	var parsed struct {
+		Type    string `json:"type"`
+		Request struct {
+			Subtype string `json:"subtype"`
+		} `json:"request"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal interrupt frame: %v", err)
+	}
+	if parsed.Type != "control_request" || parsed.Request.Subtype != "interrupt" {
+		t.Fatalf("Interrupt sent %s/%s; want control_request/interrupt", parsed.Type, parsed.Request.Subtype)
+	}
+
+	// The in-flight handler ctx must stay alive (no spurious cancellation →
+	// no error control_response → no CLI crash).
+	select {
+	case <-bridge.cancelledCh:
+		t.Fatal("QUM-827: Session.Interrupt cancelled an in-flight MCP handler on the normal path")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// The session must not have been torn down.
+	if sess.IsTerminallyFaulted() {
+		t.Fatal("QUM-827: session faulted after a bare Esc Interrupt; it must stay alive")
+	}
+}
+
+// TestSession_DrainInflight_CancelsInflightHandler preserves the QUM-552/QUM-600
+// teardown guarantee: in-flight async MCP handlers ARE cancelled at genuine
+// session teardown (Close cancels the detached reader ctx → runReader's defer
+// drainInflight runs), independent of the now-decoupled Interrupt path.
+func TestSession_DrainInflight_CancelsInflightHandler(t *testing.T) {
+	transport := newDelayedWedgeTransport()
+	defer transport.releaseAll()
+
+	bridge := newCancelObservableBridge()
+	sess := NewSession(transport, SessionConfig{SessionID: "sess-inflight-teardown"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	initSessionWithDelayedTransport(ctx, t, sess, transport, bridge)
+	if _, err := sess.StartTurn(ctx, "go"); err != nil {
+		t.Fatalf("StartTurn: %v", err)
+	}
+	transport.consumeOneSend(t)
+
+	transport.feedMessage(t, `{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_message","server_name":"sprawl","message":{"jsonrpc":"2.0","id":1,"method":"tools/list"}}}`)
+	bridge.awaitEntry(ctx, t)
+
+	// Genuine teardown: Close cancels the detached reader ctx → runReader
+	// exits → defer drainInflight() cancels every in-flight handler.
+	go func() { _ = sess.Close() }()
+
+	select {
+	case <-bridge.cancelledCh:
+		// good — teardown cancelled the in-flight handler
+	case <-time.After(inflightDrainTimeout + 1*time.Second):
+		t.Fatal("teardown did not cancel the in-flight MCP handler (QUM-552/QUM-600 drainInflight guarantee broken)")
+	}
 }
 
 // cancelObservableBridge is a ToolBridge that blocks until ctx is cancelled

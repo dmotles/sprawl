@@ -787,13 +787,13 @@ func TestSession_D1_HangWatchdog_ReArmsAfterControlRequestCancelled(t *testing.T
 		t.Fatalf("len(inflight) = %d after dispatch, want 1", n)
 	}
 
-	// Cancel the in-flight request. Interrupt cancels every inflight handler
-	// ctx; the ctx-respecting bridge returns ctx.Err(), dispatchMCPAsync sends
-	// an error control_response, and its defer deletes the entry.
-	if err := sess.Interrupt(ctx); err != nil && !errors.Is(err, ErrInterruptTimeout) {
-		t.Fatalf("Interrupt: %v", err)
-	}
-	// Drain whatever Interrupt + the error response queued on the wire.
+	// Cancel the in-flight request via a control_cancel_request (the CLI→client
+	// per-request cancel path). The ctx-respecting bridge returns ctx.Err(),
+	// dispatchMCPAsync sends an error control_response, and its defer deletes
+	// the entry. (QUM-827: Interrupt no longer cancels in-flight handlers, so a
+	// targeted control_cancel_request — not Interrupt — is what drains one.)
+	transport.feedMessage(t, `{"type":"control_cancel_request","request_id":"mcp-1"}`)
+	// Drain whatever the error response queued on the wire.
 	go func() {
 		for {
 			select {
