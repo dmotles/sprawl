@@ -32,12 +32,17 @@ type fakeSessionBackend struct {
 	closeCalls               int
 	interruptAndSendCalls    int
 	lastInterruptAndSendText string
+	recallCalls              int
+	sendAllNowCalls          int
 
 	initErr             error
 	sendErr             error
 	interruptErr        error
 	closeErr            error
 	interruptAndSendErr error
+	recallText          string
+	recallErr           error
+	sendAllNowErr       error
 
 	sessionID    string
 	isContinuous bool
@@ -160,6 +165,23 @@ func (f *fakeSessionBackend) InterruptAndSend(text string) tea.Cmd {
 	err := f.interruptAndSendErr
 	f.mu.Unlock()
 	return func() tea.Msg { return InterruptResultMsg{Err: err} }
+}
+
+func (f *fakeSessionBackend) Recall() tea.Cmd {
+	f.mu.Lock()
+	f.recallCalls++
+	text := f.recallText
+	err := f.recallErr
+	f.mu.Unlock()
+	return func() tea.Msg { return PromptsRecalledMsg{Text: text, Err: err} }
+}
+
+func (f *fakeSessionBackend) SendAllNow() tea.Cmd {
+	f.mu.Lock()
+	f.sendAllNowCalls++
+	err := f.sendAllNowErr
+	f.mu.Unlock()
+	return func() tea.Msg { return SendAllNowResultMsg{Err: err} }
 }
 
 func (f *fakeSessionBackend) Close() error {

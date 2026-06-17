@@ -140,6 +140,10 @@ func (f *fakeBackendSession) Interrupt(context.Context) error {
 	return nil
 }
 
+func (f *fakeBackendSession) CancelAsyncMessage(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (f *fakeBackendSession) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

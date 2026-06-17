@@ -282,6 +282,15 @@ type AppModel struct {
 	// (auto-submit), the user presses Esc, or a session restart fires.
 	pendingSubmit string
 
+	// queuedUser tracks the uuids of human-typed prompts written to the CLI
+	// stdin that are still pending (not yet consumed via isReplay nor cancelled)
+	// — the outstanding-map "queued" set mirrored TUI-side for the queued/sent/
+	// cancelled indicator and the weave-only recall/send-all-now UX (QUM-824).
+	// Tracking by uuid (not a bare counter) means consumption events for
+	// sprawl-originated system messages — which the TUI never registered here —
+	// are correctly ignored.
+	queuedUser map[string]struct{}
+
 	// version is the build version string (e.g. "v0.2.0"), stored so the
 	// session banner can include it on fresh launch and after restarts.
 	version string
@@ -471,6 +480,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		sprawlRoot:          sprawlRoot,
 		observedAgent:       rootAgent,
 		rootAgent:           rootAgent,
+		queuedUser:          make(map[string]struct{}),
 		agentBuffers:        agentBuffers,
 		faults:              make(map[string]backendFault),
 		theme:               theme,
@@ -774,6 +784,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.questionModel = m.questionModel.Show()
 			}
 			return m, nil
+		}
+
+		// QUM-824: Ctrl+U recalls pending human-typed prompts (cancel + rehydrate
+		// into the input); Ctrl+G flushes them as one now-priority message.
+		// Weave-only — these act on the root agent's command queue, so they are
+		// gated to when weave (rootAgent) is the observed pane. Modal-safe via
+		// anyOtherModalUp + the higher-precedence modal returns above.
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'u' || msg.Code == 'U') &&
+			m.bridge != nil && m.observedAgent == m.rootAgent && !anyOtherModalUp(&m) {
+			return m, m.bridge.Recall()
+		}
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'g' || msg.Code == 'G') &&
+			m.bridge != nil && m.observedAgent == m.rootAgent && !anyOtherModalUp(&m) {
+			return m, m.bridge.SendAllNow()
 		}
 
 		// QUM-609: Esc dismisses the validate-failure popup. Placed after the
@@ -1123,6 +1147,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UserMessageSentMsg:
 		m.setTurnState(TurnStreaming)
+		// QUM-824: track the written prompt as "queued" until its consumption
+		// (isReplay) or cancellation event arrives. Empty uuid = a bridge that
+		// doesn't surface uuids (legacy/tests) — nothing to track.
+		if msg.UUID != "" {
+			m.queuedUser[msg.UUID] = struct{}{}
+			m.syncQueuedIndicator()
+		}
 		// QUM-323: if the user turn we just sent was a drained inbox frame,
 		// commit the drained entries to delivered/ now that the send is on
 		// the wire. Doing this AFTER SendMessage (which is synchronous in the
@@ -1136,6 +1167,57 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.bridge.WaitForEvent(), commitCmd)
 		}
 		return m, commitCmd
+
+	case UserMessageConsumedMsg:
+		// QUM-824: the CLI consumed (isReplay) a tracked prompt — it's "sent".
+		if _, ok := m.queuedUser[msg.UUID]; ok {
+			delete(m.queuedUser, msg.UUID)
+			m.syncQueuedIndicator()
+		}
+		return m, nil
+
+	case UserMessageCancelledMsg:
+		// QUM-824: a tracked prompt was recalled / superseded — drop its slot.
+		if _, ok := m.queuedUser[msg.UUID]; ok {
+			delete(m.queuedUser, msg.UUID)
+			m.syncQueuedIndicator()
+		}
+		return m, nil
+
+	case PromptsRecalledMsg:
+		// QUM-824: rehydrate the recalled prompt text into the input for editing.
+		// Only when text actually came back do we also clear the single-slot
+		// pending submit (the recalled text supersedes it) — otherwise an
+		// empty recall (nothing was pending) would silently drop a stashed
+		// pendingSubmit, losing the user's queued draft. The per-uuid cancelled
+		// events clear the queued indicator; a partial-cancel error still
+		// rehydrates whatever text came back, surfacing a toast.
+		var cmds []tea.Cmd
+		if msg.Text != "" {
+			m.input.SetValue(msg.Text)
+			m.pendingSubmit = ""
+			m.input.SetPendingPreview("")
+		}
+		if msg.Err != nil {
+			cmds = append(cmds, m.toasts.Spawn(Toast{
+				Text:      fmt.Sprintf("recall partially failed: %v", msg.Err),
+				Style:     ToastError,
+				DismissOn: TimerDismiss(4 * time.Second),
+			}))
+		}
+		return m, tea.Batch(cmds...)
+
+	case SendAllNowResultMsg:
+		// QUM-824: surface a toast on failure; success is reflected by the queued
+		// indicator clearing (cancelled events) and the now-message rendering.
+		if msg.Err != nil {
+			return m, m.toasts.Spawn(Toast{
+				Text:      fmt.Sprintf("send-all-now failed: %v", msg.Err),
+				Style:     ToastError,
+				DismissOn: TimerDismiss(4 * time.Second),
+			})
+		}
+		return m, nil
 
 	case AssistantContentMsg:
 		// QUM-386: batch of content blocks from a single assistant message.
@@ -2859,6 +2941,16 @@ func (m *AppModel) resizePanels() {
 // active. Used to gate auto-show / Ctrl-Q reopen.
 func anyOtherModalUp(m *AppModel) bool {
 	return m.showError || m.showConfirm || m.showHelp || m.showPalette || m.showUsage || m.showTree
+}
+
+// queuedUserCount returns the number of human-typed prompts currently pending
+// on the CLI command queue (written but not yet consumed/cancelled) (QUM-824).
+func (m *AppModel) queuedUserCount() int { return len(m.queuedUser) }
+
+// syncQueuedIndicator pushes the current queued-prompt count to the input so
+// its "⏳ N queued" indicator stays in step with the outstanding set (QUM-824).
+func (m *AppModel) syncQueuedIndicator() {
+	m.input.SetQueuedCount(len(m.queuedUser))
 }
 
 // anyOtherModalUpExceptTree reports whether any modal OTHER than the tree

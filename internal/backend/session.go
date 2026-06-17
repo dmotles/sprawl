@@ -175,6 +175,14 @@ type Session interface {
 	// observes the resulting frames (including the isReplay consumption echo).
 	WriteUserMessage(ctx context.Context, msg protocol.UserMessage) error
 	Interrupt(ctx context.Context) error
+	// CancelAsyncMessage sends a cancel_async_message control_request for the
+	// given stdin user-message uuid and blocks until the matching
+	// control_response ack is observed, returning its {cancelled} value
+	// (QUM-824). cancelled==false means the message was already dequeued for
+	// execution (treat as gone, never "still queued"). Bounded by ctx; returns
+	// ctx.Err() on timeout and ErrReaderExited if the reader exits before the
+	// ack arrives.
+	CancelAsyncMessage(ctx context.Context, messageUUID string) (cancelled bool, err error)
 	Close() error
 	Wait() error
 	Kill() error
@@ -206,6 +214,10 @@ type Session interface {
 // ErrTurnInProgress is returned when callers try to start a second concurrent
 // turn on the same stream-json session.
 var ErrTurnInProgress = errors.New("backend: turn already in progress")
+
+// ErrReaderExited is returned by CancelAsyncMessage when the persistent stream
+// reader exits (session close/fault) before the cancel ack is observed.
+var ErrReaderExited = errors.New("backend: session reader exited before control response")
 
 // turnFrame tracks per-turn state in the persistent stream reader.
 // Sprawl-initiated turns (created by StartTurn) have a subscriber channel;
@@ -292,6 +304,12 @@ type session struct {
 	inflight   map[string]context.CancelFunc
 	inflightWG sync.WaitGroup
 
+	// pendingControl correlates an outgoing client-initiated control_request
+	// request_id to a one-shot channel the reader delivers the matching
+	// control_response on. Used by CancelAsyncMessage (QUM-824) to await the
+	// {cancelled} ack. Guarded by s.mu.
+	pendingControl map[string]chan *protocol.Message
+
 	// terminalErrHandler is a one-shot callback installed by the runtime
 	// (QUM-602). It fires the FIRST time setTerminalErr is called on this
 	// session, OUTSIDE s.mu so the handler can call back into session-safe
@@ -345,6 +363,7 @@ func NewSession(t ManagedTransport, cfg SessionConfig) Session {
 		transport:         t,
 		config:            cfg,
 		inflight:          make(map[string]context.CancelFunc),
+		pendingControl:    make(map[string]chan *protocol.Message),
 		readerDone:        make(chan struct{}),
 		initHandshakeResp: make(chan *protocol.Message, 1),
 		observerCh:        make(chan *protocol.Message, observerQueueDepth),
@@ -679,6 +698,9 @@ func (s *session) runReader(ctx context.Context) {
 			if s.matchInitHandshake(msg) {
 				continue
 			}
+			if s.matchPendingControl(msg) {
+				continue
+			}
 			// Other control_responses are observed but not currently
 			// routed; fall through to the turn frame for visibility.
 		}
@@ -884,6 +906,37 @@ func (s *session) matchInitHandshake(msg *protocol.Message) bool {
 	s.mu.Unlock()
 	select {
 	case s.initHandshakeResp <- msg:
+	default:
+	}
+	return true
+}
+
+// matchPendingControl non-blocking-delivers a control_response to a registered
+// client-initiated control waiter (CancelAsyncMessage) keyed by request_id.
+// Returns true if the frame was consumed. (QUM-824)
+func (s *session) matchPendingControl(msg *protocol.Message) bool {
+	var cr struct {
+		Response struct {
+			RequestID string `json:"request_id"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(msg.Raw, &cr); err != nil {
+		return false
+	}
+	if cr.Response.RequestID == "" {
+		return false
+	}
+	s.mu.Lock()
+	ch, ok := s.pendingControl[cr.Response.RequestID]
+	if ok {
+		delete(s.pendingControl, cr.Response.RequestID)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- msg:
 	default:
 	}
 	return true
@@ -1146,6 +1199,76 @@ func (s *session) Interrupt(ctx context.Context) error {
 		return ErrInterruptTimeout
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// CancelAsyncMessage sends a cancel_async_message control_request for the given
+// stdin user-message uuid and blocks until the reader observes the matching
+// control_response, returning its {cancelled} value (QUM-824). The request_id is
+// registered in pendingControl BEFORE the wire send so the reader's matcher can
+// never race ahead of the waiter. The send is bounded the same way Interrupt
+// bounds its control_request (a wedged stdin pipe must not hang recall).
+func (s *session) CancelAsyncMessage(ctx context.Context, messageUUID string) (bool, error) {
+	if err := s.Start(ctx); err != nil {
+		return false, err
+	}
+
+	requestID := s.nextRequestID()
+	replyCh := make(chan *protocol.Message, 1)
+	s.mu.Lock()
+	s.pendingControl[requestID] = replyCh
+	s.mu.Unlock()
+	// On any exit path, deregister the waiter so a late/never ack can't leak the
+	// entry. Safe even if the reader already matched-and-deleted it.
+	defer func() {
+		s.mu.Lock()
+		delete(s.pendingControl, requestID)
+		s.mu.Unlock()
+	}()
+
+	msg := protocol.CancelAsyncMessageRequest{
+		Type:      "control_request",
+		RequestID: requestID,
+		Request: protocol.CancelAsyncMessageRequestInner{
+			Subtype:     "cancel_async_message",
+			MessageUUID: messageUUID,
+		},
+	}
+
+	// Bound transport.Send by interruptSendTimeout (QUM-600 precedent): a stuck
+	// claude stdin pipe blocks below the ctx-checking layer, so a plain
+	// ctx-respecting Send is not enough. The Send goroutine intentionally leaks
+	// on timeout — the session is on its way to teardown which unblocks the FD.
+	sendErrCh := make(chan error, 1)
+	go func() {
+		sendErrCh <- s.transport.Send(ctx, msg)
+	}()
+	select {
+	case err := <-sendErrCh:
+		if err != nil {
+			return false, err
+		}
+	case <-time.After(interruptSendTimeout):
+		return false, ErrInterruptTimeout
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+
+	select {
+	case resp := <-replyCh:
+		var cr struct {
+			Response struct {
+				Response protocol.CancelAsyncMessageAck `json:"response"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal(resp.Raw, &cr); err != nil {
+			return false, fmt.Errorf("backend: parsing cancel_async_message ack: %w", err)
+		}
+		return cr.Response.Response.Cancelled, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-s.readerDone:
+		return false, ErrReaderExited
 	}
 }
 

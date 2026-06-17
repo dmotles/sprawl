@@ -62,6 +62,16 @@ type SessionBackend interface {
 	// `text` as the next prompt. Emits InterruptResultMsg.
 	InterruptAndSend(text string) tea.Cmd
 
+	// Recall cancels still-pending human-typed prompts and returns their text
+	// for the input to rehydrate (QUM-824 — weave-only UX). Emits
+	// PromptsRecalledMsg.
+	Recall() tea.Cmd
+
+	// SendAllNow cancels still-pending human-typed prompts and resubmits them
+	// as one now-priority message (QUM-824 — weave-only UX). Emits
+	// SendAllNowResultMsg.
+	SendAllNow() tea.Cmd
+
 	// Close shuts down the underlying session.
 	Close() error
 

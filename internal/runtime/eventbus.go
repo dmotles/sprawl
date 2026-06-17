@@ -116,6 +116,11 @@ const (
 	// (QUM-817). UUID carries the consumed message's uuid; subscribers (TUI)
 	// flip the queued-prompt render to "sent".
 	EventUserMessageConsumed
+	// EventUserMessageCancelled is published when a pending user message is
+	// recalled/superseded via cancel_async_message (QUM-824 — Slice 4 recall /
+	// send-all-now). UUID carries the cancelled message's uuid; subscribers
+	// (TUI) drop its queued indicator.
+	EventUserMessageCancelled
 )
 
 // RuntimeEvent is the unit of fan-out on the EventBus. The set of populated

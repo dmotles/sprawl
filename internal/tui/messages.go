@@ -597,7 +597,38 @@ func parseTaskNotificationSummary(s string) (summary string, ok bool) {
 }
 
 // UserMessageSentMsg confirms that user input was dispatched to the session.
-type UserMessageSentMsg struct{}
+// UUID is the stdin user-message uuid (QUM-824), tracked as "queued" until its
+// consumption/cancellation event arrives.
+type UserMessageSentMsg struct {
+	UUID string
+}
+
+// UserMessageConsumedMsg signals that a previously-written stdin user message
+// was consumed by the CLI (its isReplay echo arrived, or a now-write was
+// confirmed). The queued indicator for UUID flips to "sent". (QUM-824)
+type UserMessageConsumedMsg struct {
+	UUID string
+}
+
+// UserMessageCancelledMsg signals that a pending user message was recalled or
+// superseded via cancel_async_message; its queued indicator is dropped.
+// (QUM-824)
+type UserMessageCancelledMsg struct {
+	UUID string
+}
+
+// PromptsRecalledMsg carries the newline-joined text of recalled (still-pending)
+// user prompts back to the TUI input for rehydration (QUM-824). Err is non-nil
+// if a cancel failed partway; any text that did recall is still delivered.
+type PromptsRecalledMsg struct {
+	Text string
+	Err  error
+}
+
+// SendAllNowResultMsg reports the outcome of a send-all-now flush (QUM-824).
+type SendAllNowResultMsg struct {
+	Err error
+}
 
 // SessionInitializedMsg signals that the Claude session is ready.
 type SessionInitializedMsg struct{}

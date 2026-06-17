@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"image/color"
 	"strings"
 	"time"
@@ -45,6 +46,12 @@ type InputModel struct {
 	// signalling that an Enter while the agent was busy stashed a message that
 	// will auto-submit when the turn finalizes.
 	pendingPreview string
+
+	// queuedCount is the number of human-typed prompts written to the CLI stdin
+	// that have not yet been consumed (isReplay) or cancelled (QUM-824). When
+	// >0 the View() renders a "⏳ N queued" indicator; weave offers recall
+	// (Ctrl+U) / send-all-now (Ctrl+G) while any are pending.
+	queuedCount int
 
 	// pendingEnter / pendingEnterSeq drive the QUM-455 post-Enter lookahead
 	// debounce. A plain Enter does not submit synchronously; instead it sets
@@ -194,6 +201,9 @@ func (m InputModel) View() string {
 	if m.pendingPreview != "" {
 		suffix := m.theme.PlaceholderStyle.Render("  " + queuedIndicator(m.pendingPreview))
 		base += suffix
+	} else if m.queuedCount > 0 {
+		suffix := m.theme.PlaceholderStyle.Render("  " + pendingQueuedIndicator(m.queuedCount))
+		base += suffix
 	}
 	// QUM-664: prepend the "▌ " gutter to every visible row of the rendered
 	// input. Rendered under InputBarStyle (grey) so the bar reads as chrome
@@ -223,6 +233,23 @@ func queuedIndicator(text string) string {
 	return "⏸ queued: " + preview
 }
 
+// pendingQueuedIndicator builds the muted "⏳ N queued" string surfaced while
+// human-typed prompts are pending consumption on the CLI command queue
+// (QUM-824).
+func pendingQueuedIndicator(n int) string {
+	return fmt.Sprintf("⏳ %d queued", n)
+}
+
+// SetQueuedCount updates the pending-prompt count shown by the queued indicator
+// and re-applies width so the textarea re-allocates room (QUM-824).
+func (m *InputModel) SetQueuedCount(n int) {
+	if n < 0 {
+		n = 0
+	}
+	m.queuedCount = n
+	m.ta.SetWidth(m.textInputWidth())
+}
+
 // SetWidth updates the input width. When a pending preview is set, the
 // textarea receives the remaining width after the indicator's space so the
 // two render side-by-side without wrapping (QUM-340).
@@ -245,6 +272,8 @@ func (m *InputModel) textInputWidth() int {
 	if m.pendingPreview != "" {
 		indicatorLen := len(queuedIndicator(m.pendingPreview)) + 2 // +2 for leading spaces
 		w -= indicatorLen
+	} else if m.queuedCount > 0 {
+		w -= lipgloss.Width(pendingQueuedIndicator(m.queuedCount)) + 2 // +2 for leading spaces
 	}
 	if m.width > 0 && w < 4 {
 		w = 4

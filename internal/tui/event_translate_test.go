@@ -144,6 +144,28 @@ func TestTranslateRuntimeEvent_Interrupted_NilResult_AsCompleted(t *testing.T) {
 	}
 }
 
+func TestTranslateRuntimeEvent_UserMessageConsumed(t *testing.T) {
+	got := TranslateRuntimeEvent(sprawlrt.RuntimeEvent{
+		Type: sprawlrt.EventUserMessageConsumed,
+		UUID: "uuid-1",
+	}, InterruptedAsResult)
+	want := UserMessageConsumedMsg{UUID: "uuid-1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestTranslateRuntimeEvent_UserMessageCancelled(t *testing.T) {
+	got := TranslateRuntimeEvent(sprawlrt.RuntimeEvent{
+		Type: sprawlrt.EventUserMessageCancelled,
+		UUID: "uuid-2",
+	}, InterruptedAsResult)
+	want := UserMessageCancelledMsg{UUID: "uuid-2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
 func TestTranslateRuntimeEvent_LifecycleEventsSkipped(t *testing.T) {
 	for _, evType := range []sprawlrt.RuntimeEventType{
 		sprawlrt.EventTurnStarted,

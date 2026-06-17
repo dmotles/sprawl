@@ -46,6 +46,10 @@ func (s *runtimeTestSession) Interrupt(context.Context) error {
 	return nil
 }
 
+func (s *runtimeTestSession) CancelAsyncMessage(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (s *runtimeTestSession) Wake() error {
 	s.wakes.Add(1)
 	return nil

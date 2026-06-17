@@ -36,6 +36,8 @@ type adapterMockSession struct {
 	writes         []protocol.UserMessage
 	interruptCalls int32
 	interruptErr   error
+	cancelResults  map[string]bool
+	cancelCalls    []string
 }
 
 func (m *adapterMockSession) WriteUserMessage(_ context.Context, msg protocol.UserMessage) error {
@@ -48,6 +50,14 @@ func (m *adapterMockSession) WriteUserMessage(_ context.Context, msg protocol.Us
 func (m *adapterMockSession) Interrupt(_ context.Context) error {
 	atomic.AddInt32(&m.interruptCalls, 1)
 	return m.interruptErr
+}
+
+func (m *adapterMockSession) CancelAsyncMessage(_ context.Context, uuid string) (bool, error) {
+	m.mu.Lock()
+	m.cancelCalls = append(m.cancelCalls, uuid)
+	res := m.cancelResults[uuid]
+	m.mu.Unlock()
+	return res, nil
 }
 
 func (m *adapterMockSession) interruptCount() int {
@@ -1233,5 +1243,90 @@ func TestTUIAdapter_DebugGapInject_TriggersSyntheticDrop(t *testing.T) {
 	msg4 := runCmd(t, a.WaitForEvent())
 	if _, ok := msg4.(tui.EventDropDetectedMsg); ok {
 		t.Fatalf("read 4: second synthetic gap fired; injectGap must be one-shot")
+	}
+}
+
+// --- QUM-824: Recall + SendAllNow bridge ---
+
+func TestTUIAdapter_Recall_NilRuntime_ReturnsSessionError(t *testing.T) {
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
+	a.Observe(nil)
+	msg := runCmd(t, a.Recall())
+	se, ok := msg.(tui.SessionErrorMsg)
+	if !ok {
+		t.Fatalf("Recall() = %T, want tui.SessionErrorMsg", msg)
+	}
+	if !errors.Is(se.Err, ErrNoRuntime) {
+		t.Errorf("Err = %v, want errors.Is(_, ErrNoRuntime)", se.Err)
+	}
+}
+
+func TestTUIAdapter_SendAllNow_NilRuntime_ReturnsSessionError(t *testing.T) {
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
+	a.Observe(nil)
+	msg := runCmd(t, a.SendAllNow())
+	se, ok := msg.(tui.SessionErrorMsg)
+	if !ok {
+		t.Fatalf("SendAllNow() = %T, want tui.SessionErrorMsg", msg)
+	}
+	if !errors.Is(se.Err, ErrNoRuntime) {
+		t.Errorf("Err = %v, want errors.Is(_, ErrNoRuntime)", se.Err)
+	}
+}
+
+func TestTUIAdapter_Recall_RehydratesPendingText(t *testing.T) {
+	mock := &adapterMockSession{cancelResults: map[string]bool{}}
+	rt, a := buildAdapter(t, mock)
+
+	uuid, err := rt.WriteUserPrompt(context.Background(), "draft text", "next")
+	if err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	mock.cancelResults[uuid] = true
+
+	msg := runCmd(t, a.Recall())
+	pr, ok := msg.(tui.PromptsRecalledMsg)
+	if !ok {
+		t.Fatalf("Recall() = %T, want tui.PromptsRecalledMsg", msg)
+	}
+	if pr.Err != nil {
+		t.Fatalf("PromptsRecalledMsg.Err = %v", pr.Err)
+	}
+	if pr.Text != "draft text" {
+		t.Errorf("Text = %q, want %q", pr.Text, "draft text")
+	}
+}
+
+func TestTUIAdapter_SendAllNow_DelegatesToRuntime(t *testing.T) {
+	mock := &adapterMockSession{cancelResults: map[string]bool{}}
+	rt, a := buildAdapter(t, mock)
+
+	uuid, err := rt.WriteUserPrompt(context.Background(), "queued one", "next")
+	if err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	mock.cancelResults[uuid] = true
+
+	msg := runCmd(t, a.SendAllNow())
+	sr, ok := msg.(tui.SendAllNowResultMsg)
+	if !ok {
+		t.Fatalf("SendAllNow() = %T, want tui.SendAllNowResultMsg", msg)
+	}
+	if sr.Err != nil {
+		t.Fatalf("SendAllNowResultMsg.Err = %v", sr.Err)
+	}
+	// The last write must be the now-priority resubmit superseding the queued
+	// prompt (the original was a separate `next` write with the same content).
+	w, ok := mock.lastWrite()
+	if !ok {
+		t.Fatal("SendAllNow did not write the concatenated now message")
+	}
+	if w.Priority != "now" {
+		t.Errorf("last write priority = %q, want now", w.Priority)
+	}
+	if w.Message.Content != "queued one" {
+		t.Errorf("last write content = %q, want %q", w.Message.Content, "queued one")
 	}
 }

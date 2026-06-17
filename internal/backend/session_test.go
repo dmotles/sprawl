@@ -23,6 +23,10 @@ type mockManagedTransport struct {
 	// Used to exercise the bounded readerDone join in session.Close (QUM-636).
 	recvIgnoresCtx bool
 
+	// sendErr, when non-nil, makes Send return it immediately without
+	// enqueuing onto sendCh — exercises wire-send failure paths.
+	sendErr error
+
 	mu          sync.Mutex
 	closeCalled bool
 	waitCalled  bool
@@ -37,6 +41,9 @@ func newMockManagedTransport() *mockManagedTransport {
 }
 
 func (m *mockManagedTransport) Send(ctx context.Context, msg any) error {
+	if m.sendErr != nil {
+		return m.sendErr
+	}
 	select {
 	case m.sendCh <- msg:
 		return nil

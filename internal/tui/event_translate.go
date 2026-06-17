@@ -57,6 +57,10 @@ func TranslateRuntimeEvent(ev sprawlrt.RuntimeEvent, interruptedFn func(sprawlrt
 		return SessionResultMsg{IsError: true, Result: errStr}
 	case sprawlrt.EventInterrupted:
 		return interruptedFn(ev)
+	case sprawlrt.EventUserMessageConsumed:
+		return UserMessageConsumedMsg{UUID: ev.UUID}
+	case sprawlrt.EventUserMessageCancelled:
+		return UserMessageCancelledMsg{UUID: ev.UUID}
 	case sprawlrt.EventTurnStarted, sprawlrt.EventQueueDrained, sprawlrt.EventStopped:
 		return nil
 	default:

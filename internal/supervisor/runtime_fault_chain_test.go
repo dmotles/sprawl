@@ -58,6 +58,10 @@ func (s *faultChainSession) WriteUserMessage(context.Context, protocol.UserMessa
 
 func (s *faultChainSession) Interrupt(context.Context) error { return nil }
 
+func (s *faultChainSession) CancelAsyncMessage(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (s *faultChainSession) SetTerminalErrorHandler(h func(error)) {
 	s.handler.Store(h)
 }

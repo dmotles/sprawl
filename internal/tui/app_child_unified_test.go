@@ -41,6 +41,10 @@ func (noopSession) WriteUserMessage(_ context.Context, _ protocol.UserMessage) e
 
 func (noopSession) Interrupt(_ context.Context) error { return nil }
 
+func (noopSession) CancelAsyncMessage(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 // supervisorWithRegistry extends mockSupervisor with a real RuntimeRegistry
 // the AppModel can consult.
 type supervisorWithRegistry struct {

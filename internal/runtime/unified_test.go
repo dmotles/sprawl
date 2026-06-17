@@ -31,6 +31,13 @@ type mockUnifiedSession struct {
 	mu             sync.Mutex
 	writes         []protocol.UserMessage
 	interruptCalls int32
+	// cancelResults maps a uuid to the {cancelled} value CancelAsyncMessage
+	// should return for it. Absent uuids return false. (QUM-824)
+	cancelResults map[string]bool
+	// cancelCalls records, in order, the uuids passed to CancelAsyncMessage.
+	cancelCalls []string
+	// cancelHook, if set, runs inside CancelAsyncMessage before recording.
+	cancelHook func(uuid string)
 }
 
 // WriteUserMessage records the written stdin user message (QUM-817 — replaces
@@ -45,6 +52,27 @@ func (m *mockUnifiedSession) WriteUserMessage(_ context.Context, msg protocol.Us
 func (m *mockUnifiedSession) Interrupt(_ context.Context) error {
 	atomic.AddInt32(&m.interruptCalls, 1)
 	return nil
+}
+
+// CancelAsyncMessage simulates the CLI cancel_async_message ack (QUM-824). It
+// returns cancelResults[uuid] (default false), records the call, and invokes the
+// optional cancelHook inside the call (used to prove Recall does not hold outMu
+// across the session call).
+func (m *mockUnifiedSession) CancelAsyncMessage(_ context.Context, uuid string) (bool, error) {
+	if m.cancelHook != nil {
+		m.cancelHook(uuid)
+	}
+	m.mu.Lock()
+	m.cancelCalls = append(m.cancelCalls, uuid)
+	res := m.cancelResults[uuid]
+	m.mu.Unlock()
+	return res, nil
+}
+
+func (m *mockUnifiedSession) cancelledUUIDs() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.cancelCalls...)
 }
 
 func (m *mockUnifiedSession) interruptCount() int {

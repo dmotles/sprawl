@@ -3506,6 +3506,15 @@ func (c *continuousFakeDelegate) InterruptAndSend(_ string) tea.Cmd {
 	return func() tea.Msg { return InterruptResultMsg{} }
 }
 
+// Recall / SendAllNow stubs so this fake satisfies SessionBackend post-QUM-824.
+func (c *continuousFakeDelegate) Recall() tea.Cmd {
+	return func() tea.Msg { return PromptsRecalledMsg{} }
+}
+
+func (c *continuousFakeDelegate) SendAllNow() tea.Cmd {
+	return func() tea.Msg { return SendAllNowResultMsg{} }
+}
+
 func (c *continuousFakeDelegate) Close() error       { c.closeCnt++; return nil }
 func (c *continuousFakeDelegate) SessionID() string  { return c.sessID }
 func (c *continuousFakeDelegate) IsContinuous() bool { return true }

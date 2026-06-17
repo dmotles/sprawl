@@ -10,6 +10,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/dmotles/sprawl/internal/backend"
@@ -53,6 +55,10 @@ type sessionIDProvider interface {
 type SessionHandle interface {
 	WriteUserMessage(ctx context.Context, msg protocol.UserMessage) error
 	Interrupt(ctx context.Context) error
+	// CancelAsyncMessage cancels a still-pending stdin user message by uuid and
+	// returns the CLI's {cancelled} ack (QUM-824). cancelled==false ⇒ already
+	// dequeued for execution (gone). Used by Recall / SendAllNow.
+	CancelAsyncMessage(ctx context.Context, messageUUID string) (bool, error)
 }
 
 type UnifiedRuntime struct {
@@ -88,6 +94,10 @@ type UnifiedRuntime struct {
 	// while calling the session, publishing, or acquiring mu.
 	outMu       sync.Mutex
 	outstanding map[string]*OutstandingEntry
+	// outSeq is a monotonic counter stamped onto each OutstandingEntry.seq in
+	// writeMessage, giving recall / send-all-now a stable submit order (the
+	// outstanding map's iteration order is random). Guarded by outMu.
+	outSeq uint64
 }
 
 // outstandingKind classifies a written user message (QUM-817).
@@ -116,6 +126,7 @@ type OutstandingEntry struct {
 	state    outstandingState
 	text     string   // retained for recall (Slice 4); harmless in Slice 2
 	entryIDs []string // maildir entry ids / "task:<id>" for delivery tracking
+	seq      uint64   // submit order, stamped in writeMessage (QUM-824)
 }
 
 // continuationPrompt is the synthetic, machine-originated nudge written to
@@ -377,7 +388,8 @@ func (rt *UnifiedRuntime) WriteSystemMessage(ctx context.Context, text, priority
 func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority string, kind outstandingKind, entryIDs []string) (string, error) {
 	uuid := newUUID()
 	rt.outMu.Lock()
-	rt.outstanding[uuid] = &OutstandingEntry{kind: kind, state: statePending, text: text, entryIDs: entryIDs}
+	rt.outSeq++
+	rt.outstanding[uuid] = &OutstandingEntry{kind: kind, state: statePending, text: text, entryIDs: entryIDs, seq: rt.outSeq}
 	rt.outMu.Unlock()
 
 	sid := ""
@@ -458,6 +470,117 @@ func (rt *UnifiedRuntime) markConsumed(uuid string) {
 // isReplay echo.
 func (rt *UnifiedRuntime) ConfirmDeliveredWithoutReplay(uuid string) {
 	rt.markConsumed(uuid)
+}
+
+// pendingUserSnapshot is one still-pending human-typed message captured for
+// recall / send-all-now, ordered by submit seq.
+type pendingUserSnapshot struct {
+	uuid string
+	text string
+	seq  uint64
+}
+
+// snapshotPendingUser returns the still-pending kind:user entries sorted by
+// submit order (QUM-824). Takes outMu briefly; the result is used to drive
+// session cancel calls with NO lock held (outMu is a leaf lock).
+func (rt *UnifiedRuntime) snapshotPendingUser() []pendingUserSnapshot {
+	rt.outMu.Lock()
+	snap := make([]pendingUserSnapshot, 0, len(rt.outstanding))
+	for uuid, e := range rt.outstanding {
+		if e.kind == kindUser && e.state == statePending {
+			snap = append(snap, pendingUserSnapshot{uuid: uuid, text: e.text, seq: e.seq})
+		}
+	}
+	rt.outMu.Unlock()
+	sort.Slice(snap, func(i, j int) bool { return snap[i].seq < snap[j].seq })
+	return snap
+}
+
+// cancelPendingUser cancels every still-pending kind:user message and returns
+// the text of the ones that ACTUALLY cancelled (cancelled:true), in submit
+// order, plus the first error encountered (QUM-824). For each uuid:
+//   - cancelled:true  → flip pending→cancelled, publish EventUserMessageCancelled,
+//     include its text.
+//   - cancelled:false → already dequeued for execution (gone); flip
+//     pending→consumed, publish EventUserMessageConsumed; exclude its text.
+//
+// State flips are guarded so a concurrent isReplay (markConsumed) that already
+// flipped the entry is never clobbered — only a still-pending entry is mutated.
+// outMu is never held across the session CancelAsyncMessage call.
+func (rt *UnifiedRuntime) cancelPendingUser(ctx context.Context) ([]string, error) {
+	snap := rt.snapshotPendingUser()
+	texts := make([]string, 0, len(snap))
+	var firstErr error
+	for _, p := range snap {
+		cancelled, err := rt.cfg.Session.CancelAsyncMessage(ctx, p.uuid)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue // leave the entry pending; best-effort
+		}
+		if cancelled {
+			if rt.flipPending(p.uuid, stateCancelled) {
+				texts = append(texts, p.text)
+				rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageCancelled, UUID: p.uuid})
+			}
+		} else {
+			// cancelled:false ⇒ already executing/consumed; treat as gone.
+			rt.markConsumed(p.uuid)
+		}
+	}
+	return texts, firstErr
+}
+
+// flipPending transitions an outstanding entry from statePending to the target
+// state, returning true if it actually transitioned. A no-op (returns false) if
+// the entry is missing or already left statePending (e.g. a racing isReplay
+// consumed it first) — this prevents clobbering a consumed/cancelled entry.
+func (rt *UnifiedRuntime) flipPending(uuid string, target outstandingState) bool {
+	rt.outMu.Lock()
+	defer rt.outMu.Unlock()
+	e := rt.outstanding[uuid]
+	if e == nil || e.state != statePending {
+		return false
+	}
+	e.state = target
+	return true
+}
+
+// Recall cancels every still-pending human-typed (kind:user) stdin message and
+// returns their text newline-joined in submit order, for the weave TUI to
+// rehydrate into the input (QUM-824). Messages that did not actually cancel
+// (cancelled:false ⇒ already dequeued for execution) are flipped to consumed and
+// NOT returned — already-consumed prompts entered the conversation and cannot be
+// pulled back (honest UX). Correct against both ack models: only still-pending
+// entries are candidates, and `next` (isReplay) + `now`
+// (ConfirmDeliveredWithoutReplay) both converge to stateConsumed, which is
+// excluded by snapshotPendingUser. On a partial cancel failure the successfully
+// recalled text is returned alongside the first error.
+func (rt *UnifiedRuntime) Recall(ctx context.Context) (string, error) {
+	texts, err := rt.cancelPendingUser(ctx)
+	return strings.Join(texts, "\n"), err
+}
+
+// SendAllNow cancels every still-pending kind:user message and resubmits the
+// ones that actually cancelled as ONE priority:"now" message (fresh uuid,
+// cancel-and-replace), then confirms that now-write delivered-without-replay
+// (QUM-821 ack asymmetry: now-writes get no isReplay echo) (QUM-824). A no-op
+// returning nil if nothing was pending / nothing cancelled.
+func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) error {
+	texts, err := rt.cancelPendingUser(ctx)
+	if err != nil {
+		return err
+	}
+	if len(texts) == 0 {
+		return nil
+	}
+	uuid, err := rt.writeMessage(ctx, strings.Join(texts, "\n"), "now", kindUser, nil)
+	if err != nil {
+		return err
+	}
+	rt.ConfirmDeliveredWithoutReplay(uuid)
+	return nil
 }
 
 // ClassifyBackendFault maps a backend session terminal error to a

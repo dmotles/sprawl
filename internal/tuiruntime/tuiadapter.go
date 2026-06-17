@@ -269,10 +269,11 @@ func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 		if rt == nil {
 			return tui.SessionErrorMsg{Err: ErrNoRuntime}
 		}
-		if _, err := rt.WriteUserPrompt(context.Background(), text, "next"); err != nil {
+		uuid, err := rt.WriteUserPrompt(context.Background(), text, "next")
+		if err != nil {
 			return tui.SessionErrorMsg{Err: err}
 		}
-		return tui.UserMessageSentMsg{}
+		return tui.UserMessageSentMsg{UUID: uuid}
 	}
 }
 
@@ -309,6 +310,40 @@ func (a *TUIAdapter) InterruptAndSend(text string) tea.Cmd {
 		}
 		err := rt.Interrupt(context.Background())
 		return tui.InterruptResultMsg{Err: err}
+	}
+}
+
+// Recall cancels every still-pending human-typed prompt and returns their text
+// (newline-joined, submit order) as a tui.PromptsRecalledMsg for the input to
+// rehydrate (QUM-824 — weave-only recall UX). cancelled:false prompts are left
+// consumed and excluded. A partial-cancel error is surfaced on the message
+// alongside whatever text did recall.
+func (a *TUIAdapter) Recall() tea.Cmd {
+	return func() tea.Msg {
+		a.mu.Lock()
+		rt := a.runtime
+		a.mu.Unlock()
+		if rt == nil {
+			return tui.SessionErrorMsg{Err: ErrNoRuntime}
+		}
+		text, err := rt.Recall(context.Background())
+		return tui.PromptsRecalledMsg{Text: text, Err: err}
+	}
+}
+
+// SendAllNow cancels every still-pending human-typed prompt and resubmits them
+// as one priority:now message that supersedes the queued ones (QUM-824 —
+// weave-only send-all-now UX). Returns a tui.SendAllNowResultMsg.
+func (a *TUIAdapter) SendAllNow() tea.Cmd {
+	return func() tea.Msg {
+		a.mu.Lock()
+		rt := a.runtime
+		a.mu.Unlock()
+		if rt == nil {
+			return tui.SessionErrorMsg{Err: ErrNoRuntime}
+		}
+		err := rt.SendAllNow(context.Background())
+		return tui.SendAllNowResultMsg{Err: err}
 	}
 }
 
