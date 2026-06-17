@@ -936,24 +936,25 @@ func TestAppModel_EscDismissesValidateFailedPopup(t *testing.T) {
 	}
 }
 
-// QUM-609: Esc dismiss of the failure modal must run before the queued-submit
-// preempt path, so dismissing the modal does not also fire off a queued prompt.
-func TestAppModel_EscDismissPopupTakesPrecedenceOverPendingSubmit(t *testing.T) {
-	m := newTestAppModel(t)
+// QUM-609/828: Esc dismiss of the failure modal must run before the turn-
+// interrupt path, so dismissing the modal does not also abort an in-flight turn.
+func TestAppModel_EscDismissPopupTakesPrecedenceOverInterrupt(t *testing.T) {
+	fake := newFakeSessionBackend()
+	m := newTestAppModelWithBridge(t, fake)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
 	app.validatePopup.Handle(ValidateEventMsg{Step: "merge.validate-started", KV: map[string]string{"cmd": "x"}})
 	app.validatePopup.HandleTimer(validatePopupTimerMsg{})
 	app.validatePopup.Handle(ValidateEventMsg{Step: "merge.validate-ended", KV: map[string]string{"exit": "1"}})
-	app.pendingSubmit = "queued text"
+	app.turnState = TurnStreaming
 
 	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	app = updated.(AppModel)
 	if app.validatePopup.State() != PopupHidden {
 		t.Errorf("popup not dismissed; state=%d", app.validatePopup.State())
 	}
-	if app.pendingSubmit != "queued text" {
-		t.Errorf("pendingSubmit should be preserved when Esc dismisses popup; got %q", app.pendingSubmit)
+	if fake.interruptCalls != 0 {
+		t.Errorf("Esc dismissing the popup must NOT also interrupt the turn; interruptCalls=%d", fake.interruptCalls)
 	}
 }
 
@@ -2595,10 +2596,10 @@ func TestAppModel_ToolCallMsg_PreservesFullInput(t *testing.T) {
 	}
 }
 
-// --- QUM-340: type-while-busy queue ---
+// --- QUM-340/828: type-while-busy queue (unified submit path) ---
 
 // busyAppWithBridge returns a ready, sized AppModel mid-turn (TurnStreaming)
-// suitable for exercising the pendingSubmit state machine.
+// suitable for exercising the unified (always-write-to-stdin) submit path.
 func busyAppWithBridge(t *testing.T) AppModel {
 	t.Helper()
 	mock := newFakeSessionBackend()
@@ -2610,81 +2611,16 @@ func busyAppWithBridge(t *testing.T) AppModel {
 	return app
 }
 
-func TestAppModel_SubmitMsg_WhileBusy_QueuesPending(t *testing.T) {
+// TestAppModel_SessionResultMsg_FaultPath_FinalizesOnce is the QUM-635 TUI
+// guard for defects 2/3. A mid-turn backend fault surfaces as EventTurnFailed
+// -> SessionResultMsg{IsError:true} (see event_translate.go). The TUI must
+// finalize the turn (TurnStreaming -> TurnIdle) and be idempotent if a second
+// terminal message somehow arrives — so a fault can never strand the TUI
+// "streaming". QUM-828: there is no Go-side auto-fire of queued submits anymore
+// (they live on the CLI stdin), so finalize returns no cmd for a non-continuous
+// bridge.
+func TestAppModel_SessionResultMsg_FaultPath_FinalizesOnce(t *testing.T) {
 	app := busyAppWithBridge(t)
-
-	updated, cmd := app.Update(SubmitMsg{Text: "next prompt"})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "next prompt" {
-		t.Errorf("pendingSubmit = %q, want %q", app.pendingSubmit, "next prompt")
-	}
-	if app.input.PendingPreview() != "next prompt" {
-		t.Errorf("input pending preview = %q, want %q", app.input.PendingPreview(), "next prompt")
-	}
-	if cmd != nil {
-		t.Errorf("queued SubmitMsg should not return a cmd, got %T", cmd())
-	}
-	for _, it := range app.viewportFor("weave").ChatList().Items() {
-		if u, ok := it.(*UserItem); ok && u.Text() == "next prompt" {
-			t.Error("queued submit must not be appended as a user message until it dispatches")
-		}
-	}
-}
-
-func TestAppModel_SubmitMsg_SecondWhileBusy_ReplacesQueued(t *testing.T) {
-	app := busyAppWithBridge(t)
-	updated, _ := app.Update(SubmitMsg{Text: "first"})
-	app = updated.(AppModel)
-	updated, _ = app.Update(SubmitMsg{Text: "second"})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "second" {
-		t.Errorf("pendingSubmit = %q, want %q (single-slot semantics)", app.pendingSubmit, "second")
-	}
-	if app.input.PendingPreview() != "second" {
-		t.Errorf("indicator preview = %q, want %q", app.input.PendingPreview(), "second")
-	}
-}
-
-func TestAppModel_SessionResultMsg_DispatchesPendingSubmit(t *testing.T) {
-	app := busyAppWithBridge(t)
-	app.pendingSubmit = "auto-fire me"
-	app.input.SetPendingPreview("auto-fire me")
-
-	updated, cmd := app.Update(SessionResultMsg{Result: "done", DurationMs: 10})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "" {
-		t.Errorf("pendingSubmit should be cleared after auto-fire, got %q", app.pendingSubmit)
-	}
-	if app.input.PendingPreview() != "" {
-		t.Errorf("indicator preview should be cleared after auto-fire, got %q", app.input.PendingPreview())
-	}
-	if cmd == nil {
-		t.Fatal("SessionResultMsg with queued submit should return a cmd dispatching the SubmitMsg")
-	}
-	resolved := cmd()
-	subMsg, ok := resolved.(SubmitMsg)
-	if !ok {
-		t.Fatalf("auto-fire cmd resolved to %T, want SubmitMsg", resolved)
-	}
-	if subMsg.Text != "auto-fire me" {
-		t.Errorf("dispatched SubmitMsg.Text = %q, want %q", subMsg.Text, "auto-fire me")
-	}
-}
-
-// TestAppModel_SessionResultMsg_FaultPath_FinalizesOnceAndUngates is the
-// QUM-635 TUI guard for defects 2/3. A mid-turn backend fault surfaces as
-// EventTurnFailed -> SessionResultMsg{IsError:true} (see
-// event_translate.go). The TUI must finalize the turn (TurnStreaming ->
-// TurnIdle), re-fire any queued submit (ungate input), and be idempotent if a
-// second terminal message somehow arrives — so a fault can never strand the
-// TUI "streaming" with input gated.
-func TestAppModel_SessionResultMsg_FaultPath_FinalizesOnceAndUngates(t *testing.T) {
-	app := busyAppWithBridge(t)
-	app.pendingSubmit = "queued after fault"
-	app.input.SetPendingPreview("queued after fault")
 
 	// The IsError SessionResultMsg is exactly what EventTurnFailed translates
 	// to when the D1 watchdog cancels a turn blocked on ask_user_question.
@@ -2697,125 +2633,72 @@ func TestAppModel_SessionResultMsg_FaultPath_FinalizesOnceAndUngates(t *testing.
 	if app.turnState != TurnIdle {
 		t.Errorf("turnState = %v, want TurnIdle after fault-path SessionResultMsg", app.turnState)
 	}
-	if app.pendingSubmit != "" {
-		t.Errorf("pendingSubmit should be cleared (ungated) after fault, got %q", app.pendingSubmit)
-	}
-	if cmd == nil {
-		t.Fatal("fault with queued submit should return a cmd re-firing the SubmitMsg (ungate)")
-	}
-	subMsg, ok := cmd().(SubmitMsg)
-	if !ok {
-		t.Fatalf("auto-fire cmd resolved to %T, want SubmitMsg", cmd())
-	}
-	if subMsg.Text != "queued after fault" {
-		t.Errorf("dispatched SubmitMsg.Text = %q, want %q", subMsg.Text, "queued after fault")
+	if cmd != nil {
+		t.Errorf("fault finalize should return no cmd (no auto-fire) for a non-continuous bridge, got %T", cmd())
 	}
 
 	// Idempotent: a second terminal message (e.g. a racing normal result) must
-	// not panic, must leave turnState Idle, and has nothing left to re-fire.
+	// not panic and must leave turnState Idle.
 	updated2, cmd2 := app.Update(SessionResultMsg{IsError: true, Result: "again"})
 	app = updated2.(AppModel)
 	if app.turnState != TurnIdle {
 		t.Errorf("turnState = %v after second terminal msg, want TurnIdle (idempotent)", app.turnState)
 	}
 	if cmd2 != nil {
-		t.Errorf("second terminal msg should have no queued submit to re-fire, got cmd %T", cmd2())
+		t.Errorf("second terminal msg should return no cmd, got %T", cmd2())
 	}
 }
 
-func TestAppModel_SessionResultMsg_NoQueuedSubmit_NoCmd(t *testing.T) {
+func TestAppModel_SessionResultMsg_FinalizesTurn_NoCmd(t *testing.T) {
 	app := busyAppWithBridge(t)
 	updated, cmd := app.Update(SessionResultMsg{Result: "done", DurationMs: 5})
 	app = updated.(AppModel)
 	if cmd != nil {
-		t.Errorf("SessionResultMsg with empty queue should not return a cmd, got %T", cmd())
+		t.Errorf("SessionResultMsg should not return a cmd for a non-continuous bridge, got %T", cmd())
 	}
 	if app.turnState != TurnIdle {
 		t.Errorf("turnState = %v, want TurnIdle", app.turnState)
 	}
 }
 
-func TestAppModel_Esc_ClearsPendingSubmit(t *testing.T) {
-	app := busyAppWithBridge(t)
-	app.pendingSubmit = "draft"
-	app.input.SetPendingPreview("draft")
-	// Make sure a partial composition in the textarea buffer survives.
-	app.input.ta.SetValue("composing more")
-
-	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "" {
-		t.Errorf("Esc should clear pendingSubmit, got %q", app.pendingSubmit)
-	}
-	if app.input.PendingPreview() != "" {
-		t.Errorf("Esc should clear indicator preview, got %q", app.input.PendingPreview())
-	}
-	if app.input.ta.Value() != "composing more" {
-		t.Errorf("Esc must not clear the textarea buffer, got %q", app.input.ta.Value())
-	}
-}
-
-func TestAppModel_PendingSubmit_PersistsAcrossAgentCycle(t *testing.T) {
+// QUM-828: the queued set (queuedUser) is a plain map field, so it persists
+// across agent cycling by construction — cycling root → child → root must not
+// lose tracked prompts.
+func TestAppModel_QueuedUser_PersistsAcrossAgentCycle(t *testing.T) {
 	sup := &mockSupervisor{}
 	mock := newFakeSessionBackend()
-	bridge := mock
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", mock, sup, "", nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
 	updated, _ := app.Update(AgentTreeMsg{Nodes: []TreeNode{{Name: "tower", Type: "manager"}}})
 	app = updated.(AppModel)
 
 	app.turnState = TurnStreaming
-	updated, _ = app.Update(SubmitMsg{Text: "stash this"})
+	updated, _ = app.Update(UserMessageSentMsg{UUID: "u1", Text: "stash this"})
 	app = updated.(AppModel)
-	if app.pendingSubmit != "stash this" {
-		t.Fatalf("setup: pendingSubmit = %q, want %q", app.pendingSubmit, "stash this")
+	if app.queuedUserCount() != 1 {
+		t.Fatalf("setup: queuedUserCount = %d, want 1", app.queuedUserCount())
 	}
 
 	updated, _ = app.Update(AgentSelectedMsg{Name: "tower"})
 	app = updated.(AppModel)
-	if app.pendingSubmit != "stash this" {
-		t.Errorf("pendingSubmit must survive cycle to child, got %q", app.pendingSubmit)
+	if app.queuedUserCount() != 1 {
+		t.Errorf("queuedUser must survive cycle to child, got count %d", app.queuedUserCount())
 	}
 	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
 	app = updated.(AppModel)
-	if app.pendingSubmit != "stash this" {
-		t.Errorf("pendingSubmit must survive cycle back to root, got %q", app.pendingSubmit)
-	}
-	if app.input.PendingPreview() != "stash this" {
-		t.Errorf("indicator preview should be restored after cycle-back, got %q", app.input.PendingPreview())
-	}
-}
-
-func TestAppModel_SessionRestartingMsg_DropsPendingSubmit(t *testing.T) {
-	app := busyAppWithBridge(t)
-	app.pendingSubmit = "won't survive restart"
-	app.input.SetPendingPreview("won't survive restart")
-
-	updated, _ := app.Update(SessionRestartingMsg{Reason: "handoff"})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "" {
-		t.Errorf("pendingSubmit should be cleared on session restart, got %q", app.pendingSubmit)
-	}
-	if app.input.PendingPreview() != "" {
-		t.Errorf("indicator preview should be cleared on session restart, got %q", app.input.PendingPreview())
-	}
-	// QUM-675 S5: the "queued message dropped" banner now lives on the
-	// statusbar transient label.
-	if !strings.Contains(stripAnsi(app.statusBar.View()), "queued message dropped") {
-		t.Error("expected a 'queued message dropped' status banner on the statusbar after session restart")
+	if app.queuedUserCount() != 1 {
+		t.Errorf("queuedUser must survive cycle back to root, got count %d", app.queuedUserCount())
 	}
 }
 
 func TestAppModel_InputAlwaysEditable_MidTurn(t *testing.T) {
 	// Regression for issue B: cycling root → child → root mid-turn must not
 	// leave the input bar in a state where SubmitMsg silently drops the input.
+	// QUM-828: "not dropped" now means the submit is written to the CLI stdin.
 	sup := &mockSupervisor{}
 	mock := newFakeSessionBackend()
-	bridge := mock
-	m := NewAppModel("colour212", "testrepo", "v0.1.0", bridge, sup, "", nil)
+	m := NewAppModel("colour212", "testrepo", "v0.1.0", mock, sup, "", nil)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
 	updated, _ := app.Update(AgentTreeMsg{Nodes: []TreeNode{{Name: "tower", Type: "manager"}}})
@@ -2828,11 +2711,14 @@ func TestAppModel_InputAlwaysEditable_MidTurn(t *testing.T) {
 	updated, _ = app.Update(AgentSelectedMsg{Name: "weave"})
 	app = updated.(AppModel)
 
-	// SubmitMsg while still streaming must queue, not be silently dropped.
+	// SubmitMsg while still streaming must write to stdin, not be dropped.
 	updated, _ = app.Update(SubmitMsg{Text: "do not drop me"})
 	app = updated.(AppModel)
-	if app.pendingSubmit != "do not drop me" {
-		t.Errorf("post-cycle SubmitMsg must queue (regression QUM-340 issue B); got pendingSubmit=%q", app.pendingSubmit)
+	if mock.sendCalls != 1 {
+		t.Errorf("post-cycle SubmitMsg must write to stdin (regression QUM-340 issue B); got sendCalls=%d", mock.sendCalls)
+	}
+	if mock.lastSent != "do not drop me" {
+		t.Errorf("SendMessage text = %q, want %q", mock.lastSent, "do not drop me")
 	}
 }
 
@@ -2913,31 +2799,11 @@ func TestAppModel_Esc_NoInterruptDuringIdle(t *testing.T) {
 
 	_, cmd := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	// When idle with no pendingSubmit, ESC should delegate to panel (no interrupt).
+	// When idle, ESC should delegate to panel (no interrupt).
 	if mock.interruptCalled {
 		t.Error("ESC during idle should NOT call Interrupt")
 	}
 	_ = cmd
-}
-
-func TestAppModel_Esc_PendingSubmitTakesPriority(t *testing.T) {
-	mock := newFakeSessionBackend()
-	bridge := mock
-	app := readyAppWithBridge(t, bridge)
-	app.turnState = TurnStreaming
-	app.pendingSubmit = "queued"
-	app.input.SetPendingPreview("queued")
-
-	updated, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	app = updated.(AppModel)
-
-	// Pending submit clear takes priority over interrupt.
-	if app.pendingSubmit != "" {
-		t.Errorf("ESC with pendingSubmit should clear it first, got %q", app.pendingSubmit)
-	}
-	if mock.interruptCalled {
-		t.Error("ESC with pendingSubmit should NOT call Interrupt (clear queue takes priority)")
-	}
 }
 
 func TestAppModel_Esc_HelpDismissTakesPriority(t *testing.T) {
@@ -3003,8 +2869,7 @@ func TestAppModel_InterruptResultMsg_Error(t *testing.T) {
 // QUM-475: InterruptCompletedMsg is the new TERMINAL message dispatched by
 // the TUIAdapter when EventInterrupted fires (i.e. the interrupted turn has
 // drained). It must drive the same finalize behavior as SessionResultMsg:
-// move turnState back to TurnIdle, finalize any pending assistant chunk, and
-// fire pendingSubmit / drain side effects.
+// move turnState back to TurnIdle and finalize any pending assistant chunk.
 func TestAppModel_InterruptCompletedMsg_ReturnsToIdle(t *testing.T) {
 	mock := newFakeSessionBackend()
 	bridge := mock
@@ -3024,55 +2889,11 @@ func TestAppModel_InterruptCompletedMsg_ReturnsToIdle(t *testing.T) {
 	}
 }
 
-func TestAppModel_InterruptCompletedMsg_DispatchesQueuedSubmit(t *testing.T) {
-	app := busyAppWithBridge(t)
-	app.pendingSubmit = "hello"
-	app.input.SetPendingPreview("hello")
-
-	updated, cmd := app.Update(InterruptCompletedMsg{})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "" {
-		t.Errorf("pendingSubmit should be cleared after auto-fire, got %q", app.pendingSubmit)
-	}
-	if app.input.PendingPreview() != "" {
-		t.Errorf("input pending preview should be cleared, got %q", app.input.PendingPreview())
-	}
-	if cmd == nil {
-		t.Fatal("InterruptCompletedMsg with queued submit should return a cmd dispatching SubmitMsg")
-	}
-	resolved := cmd()
-	// The cmd may be a tea.Batch; if so we walk it. Since SessionResultMsg's
-	// equivalent test (TestAppModel_SessionResultMsg_DispatchesPendingSubmit)
-	// asserts directly on the resolved msg, we mirror that expectation.
-	if subMsg, ok := resolved.(SubmitMsg); ok {
-		if subMsg.Text != "hello" {
-			t.Errorf("dispatched SubmitMsg.Text = %q, want %q", subMsg.Text, "hello")
-		}
-		return
-	}
-	// Fallback: a tea.BatchMsg-like aggregate. Walk it.
-	if batch, ok := resolved.(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if c == nil {
-				continue
-			}
-			if subMsg, ok := c().(SubmitMsg); ok {
-				if subMsg.Text == "hello" {
-					return
-				}
-			}
-		}
-	}
-	t.Fatalf("InterruptCompletedMsg cmd did not produce SubmitMsg{Text:hello}; got %T", resolved)
-}
-
 // QUM-475: when the interrupt completes the AppModel is back to idle, so the
 // next 2s tick (or any peekAndDrain) should see TurnIdle and be free to drain
-// queued inbox entries. Here we assert directly on the post-Update state: no
-// pendingSubmit, turnState=TurnIdle. The "drain fires next tick" coupling is
-// exercised by TestAppModel_AgentTreeMsg_*, which gates drainCmd on
-// `m.turnState == TurnIdle`.
+// queued inbox entries. Here we assert directly on the post-Update state:
+// turnState=TurnIdle. The "drain fires next tick" coupling is exercised by
+// TestAppModel_AgentTreeMsg_*, which gates drainCmd on `m.turnState == TurnIdle`.
 func TestAppModel_InterruptCompletedMsg_LeavesAppDrainable(t *testing.T) {
 	app := busyAppWithBridge(t)
 
@@ -3081,9 +2902,6 @@ func TestAppModel_InterruptCompletedMsg_LeavesAppDrainable(t *testing.T) {
 
 	if app.turnState != TurnIdle {
 		t.Fatalf("turnState = %v, want TurnIdle so the next tick can drain", app.turnState)
-	}
-	if app.pendingSubmit != "" {
-		t.Errorf("pendingSubmit = %q, want empty", app.pendingSubmit)
 	}
 }
 
@@ -3139,9 +2957,9 @@ func TestAppModel_finalizeTurn_RearmsContinuousBridge(t *testing.T) {
 	}
 }
 
-// QUM-475: SessionErrorMsg (non-EOF) is a terminal handler too. It must route
-// through finalizeTurn so a queued pendingSubmit auto-fires and the
-// continuous-bridge event pump stays armed — mirroring SessionResultMsg /
+// QUM-475/828: SessionErrorMsg (non-EOF) is a terminal handler too. It must
+// route through finalizeTurn so the turn returns to idle and the continuous-
+// bridge event pump stays armed — mirroring SessionResultMsg /
 // InterruptCompletedMsg behavior. The EOF branch is exempt: it triggers a
 // session restart, not idle, and is covered by the EOF_AutoRestarts tests.
 func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
@@ -3149,8 +2967,6 @@ func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
 	bridge := delegate
 	app := readyAppWithBridge(t, bridge)
 	app.turnState = TurnStreaming
-	app.pendingSubmit = "queued"
-	app.input.SetPendingPreview("queued")
 
 	updated, cmd := app.Update(SessionErrorMsg{Err: fmt.Errorf("non-eof failure")})
 	app = updated.(AppModel)
@@ -3158,37 +2974,11 @@ func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
 	if app.turnState != TurnIdle {
 		t.Fatalf("turnState = %v, want TurnIdle after finalizeTurn", app.turnState)
 	}
-	if app.pendingSubmit != "" {
-		t.Errorf("pendingSubmit = %q, want empty (finalizeTurn should clear it)", app.pendingSubmit)
-	}
-	if app.input.PendingPreview() != "" {
-		t.Errorf("input pending preview = %q, want empty", app.input.PendingPreview())
-	}
 	if !app.showError {
 		t.Error("streaming non-EOF error must still show the error dialog")
 	}
 	if cmd == nil {
-		t.Fatal("SessionErrorMsg with queued submit + continuous bridge should return a cmd")
-	}
-
-	// Walk the resolved cmd looking for the dispatched SubmitMsg.
-	resolved := cmd()
-	foundSubmit := false
-	if subMsg, ok := resolved.(SubmitMsg); ok && subMsg.Text == "queued" {
-		foundSubmit = true
-	} else if batch, ok := resolved.(tea.BatchMsg); ok {
-		for _, c := range batch {
-			if c == nil {
-				continue
-			}
-			if subMsg, ok := c().(SubmitMsg); ok && subMsg.Text == "queued" {
-				foundSubmit = true
-				break
-			}
-		}
-	}
-	if !foundSubmit {
-		t.Errorf("SessionErrorMsg cmd did not dispatch SubmitMsg{Text:queued}; got %T", resolved)
+		t.Fatal("SessionErrorMsg on a continuous bridge should return a cmd (WaitForEvent re-arm)")
 	}
 	if delegate.waitCalls == 0 {
 		t.Error("SessionErrorMsg should re-arm WaitForEvent on a continuous bridge")
@@ -3518,14 +3308,6 @@ func (c *continuousFakeDelegate) WaitForEvent() tea.Cmd {
 func (c *continuousFakeDelegate) Interrupt() tea.Cmd {
 	c.intCalls++
 	return func() tea.Msg { return nil }
-}
-
-// InterruptAndSend stub so this fake satisfies SessionBackend post-QUM-630.
-// Counter intentionally piggybacks on intCalls for now since no current
-// test inspects it via this delegate.
-func (c *continuousFakeDelegate) InterruptAndSend(_ string) tea.Cmd {
-	c.intCalls++
-	return func() tea.Msg { return InterruptResultMsg{} }
 }
 
 // Recall / SendAllNow stubs so this fake satisfies SessionBackend post-QUM-824.

@@ -598,9 +598,12 @@ func parseTaskNotificationSummary(s string) (summary string, ok bool) {
 
 // UserMessageSentMsg confirms that user input was dispatched to the session.
 // UUID is the stdin user-message uuid (QUM-824), tracked as "queued" until its
-// consumption/cancellation event arrives.
+// consumption/cancellation event arrives. Text is the prompt body (QUM-828),
+// cached TUI-side so render-on-consume can append the user bubble at the moment
+// the CLI consumes it (Strategy B).
 type UserMessageSentMsg struct {
 	UUID string
+	Text string
 }
 
 // UserMessageConsumedMsg signals that a previously-written stdin user message

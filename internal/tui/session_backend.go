@@ -58,10 +58,6 @@ type SessionBackend interface {
 	// in-flight turn. Emits InterruptResultMsg.
 	Interrupt() tea.Cmd
 
-	// InterruptAndSend preempts the in-flight turn (if any) AND delivers
-	// `text` as the next prompt. Emits InterruptResultMsg.
-	InterruptAndSend(text string) tea.Cmd
-
 	// Recall cancels still-pending human-typed prompts and returns their text
 	// for the input to rehydrate (QUM-824 — weave-only UX). Emits
 	// PromptsRecalledMsg.

@@ -73,19 +73,6 @@ func (m *adapterMockSession) lastWrite() (protocol.UserMessage, bool) {
 	return m.writes[len(m.writes)-1], true
 }
 
-// writeWithContent returns the first recorded write whose content matches, used
-// by tests that don't care about ordering relative to other writes.
-func (m *adapterMockSession) writeWithContent(content string) (protocol.UserMessage, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, w := range m.writes {
-		if w.Message.Content == content {
-			return w, true
-		}
-	}
-	return protocol.UserMessage{}, false
-}
-
 // adapterMockSessionWithID adds a SessionID() method to test the
 // sessionIDProvider type-assertion path.
 type adapterMockSessionWithID struct {
@@ -483,89 +470,6 @@ func TestTUIAdapter_Interrupt_ForwardsToRuntime(t *testing.T) {
 
 	if mock.interruptCount() == 0 {
 		t.Errorf("Session.Interrupt was not invoked")
-	}
-}
-
-// QUM-630/QUM-817: InterruptAndSend is the preempt-and-deliver path used by the
-// TUI when the user hits Esc while a msg is queued and a turn is in flight. The
-// adapter must (a) write the prompt to the CLI stdin as a `next` user message
-// FIRST (text-never-lost), and (b) issue a bare interrupt so the CLI yields and
-// processes the prompt next. The result is surfaced as tui.InterruptResultMsg.
-func TestTUIAdapter_InterruptAndSend_WritesPromptNextAndForcesInterrupt(t *testing.T) {
-	mock := &adapterMockSession{}
-	_, a := buildAdapter(t, mock)
-
-	msg := runCmd(t, a.InterruptAndSend("preempt prompt"))
-	ir, ok := msg.(tui.InterruptResultMsg)
-	if !ok {
-		t.Fatalf("InterruptAndSend() = %T, want tui.InterruptResultMsg", msg)
-	}
-	if ir.Err != nil {
-		t.Errorf("InterruptResultMsg.Err = %v, want nil", ir.Err)
-	}
-
-	// (a) The prompt was written to stdin as a `next` user message.
-	um, ok := mock.writeWithContent("preempt prompt")
-	if !ok {
-		t.Fatalf("InterruptAndSend did not write %q to stdin", "preempt prompt")
-	}
-	if um.Priority != "next" {
-		t.Errorf("write priority = %q, want %q", um.Priority, "next")
-	}
-
-	// (b) Session.Interrupt was invoked to preempt.
-	if mock.interruptCount() == 0 {
-		t.Errorf("Session.Interrupt was not invoked by InterruptAndSend")
-	}
-}
-
-// QUM-630/QUM-817: When the preempt interrupt fails, InterruptAndSend MUST still
-// have written the prompt to the CLI stdin (text-never-lost), because the write
-// happens BEFORE the interrupt. The failure MUST also be surfaced on the
-// returned tui.InterruptResultMsg so the TUI can render a failure toast.
-func TestTUIAdapter_InterruptAndSend_InterruptFails_StillWritesPrompt(t *testing.T) {
-	mock := &adapterMockSession{
-		// Drive the preempt-time Session.Interrupt to return an error.
-		interruptErr: errors.New("injected session interrupt failure"),
-	}
-	_, a := buildAdapter(t, mock)
-
-	msg := runCmd(t, a.InterruptAndSend("preempt prompt"))
-	ir, ok := msg.(tui.InterruptResultMsg)
-	if !ok {
-		t.Fatalf("InterruptAndSend() = %T, want tui.InterruptResultMsg", msg)
-	}
-	// (b) The TUI must see the failure so it can render a toast.
-	if ir.Err == nil {
-		t.Errorf("InterruptResultMsg.Err = nil, want non-nil so the TUI can surface a failure toast")
-	}
-
-	// (a) The prompt MUST still have been written to stdin despite the
-	// interrupt failure (text-never-lost contract).
-	um, ok := mock.writeWithContent("preempt prompt")
-	if !ok {
-		t.Fatalf("prompt %q not written to stdin despite interrupt failure (text-never-lost)", "preempt prompt")
-	}
-	if um.Priority != "next" {
-		t.Errorf("write priority = %q, want %q", um.Priority, "next")
-	}
-}
-
-// QUM-630: InterruptAndSend against a nil runtime must NOT panic; it surfaces
-// a tui.InterruptResultMsg with the ErrNoRuntime sentinel, mirroring the
-// other adapter methods' guard behavior.
-func TestTUIAdapter_InterruptAndSend_NilRuntime_ReturnsInterruptResultErr(t *testing.T) {
-	mock := &adapterMockSession{}
-	_, a := buildAdapter(t, mock)
-	a.Observe(nil)
-
-	msg := runCmd(t, a.InterruptAndSend("x"))
-	ir, ok := msg.(tui.InterruptResultMsg)
-	if !ok {
-		t.Fatalf("InterruptAndSend() with nil runtime = %T, want tui.InterruptResultMsg", msg)
-	}
-	if !errors.Is(ir.Err, ErrNoRuntime) {
-		t.Errorf("Err = %v, want errors.Is(_, ErrNoRuntime)=true", ir.Err)
 	}
 }
 

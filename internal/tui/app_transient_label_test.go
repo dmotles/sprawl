@@ -67,13 +67,13 @@ func TestSessionRestartingMsg_RoutesToTransientLabel(t *testing.T) {
 // viewport.
 func TestSessionRestartingMsg_DroppedQueuedMessage_RoutesToTransientLabel(t *testing.T) {
 	app := readyApp(t)
-	app.pendingSubmit = "abc"
-	app.input.SetPendingPreview("abc")
+	app.queuedUser["u1"] = struct{}{}
+	app.queuedText["u1"] = "abc"
 
 	updated, _ := app.Update(SessionRestartingMsg{Reason: "x"})
 	app = updated.(AppModel)
 
-	const want = "queued message dropped"
+	const want = "queued message"
 	if !statusBarContains(app, want) {
 		t.Errorf("status bar should contain %q after dropping queued submit on restart; got:\n%s", want, stripAnsi(app.statusBar.View()))
 	}

@@ -919,20 +919,20 @@ func TestInputModel_VerticalBarUsesInputBarStyle(t *testing.T) {
 	}
 }
 
-// TestInputModel_QueuedIndicatorCoexistsWithBar: when a queued submit preview
-// is set alongside a value, both the "▌" gutter and the "queued: <preview>"
-// indicator must appear in the rendered view.
+// TestInputModel_QueuedIndicatorCoexistsWithBar: when prompts are queued
+// alongside a value, both the "▌" gutter and the "⏳ N queued" indicator must
+// appear in the rendered view (QUM-824/828).
 func TestInputModel_QueuedIndicatorCoexistsWithBar(t *testing.T) {
 	m := newTestInputModel(t)
 	m.SetWidth(80)
 	m.SetValue("hi")
-	m.SetPendingPreview("draft text")
+	m.SetQueuedCount(2)
 	view := stripANSI(m.View())
 	if !strings.Contains(view, "▌") {
 		t.Errorf("View() should contain '▌' gutter, got:\n%s", view)
 	}
-	if !strings.Contains(view, "queued: draft text") {
-		t.Errorf("View() should contain 'queued: draft text', got:\n%s", view)
+	if !strings.Contains(view, "2 queued") {
+		t.Errorf("View() should contain '⏳ 2 queued', got:\n%s", view)
 	}
 }
 

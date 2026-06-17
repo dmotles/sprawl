@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
@@ -25,27 +26,31 @@ import (
 type fakeSessionBackend struct {
 	mu sync.Mutex
 
-	initCalls                int
-	sendCalls                int
-	waitCalls                int
-	interruptCalls           int
-	closeCalls               int
-	interruptAndSendCalls    int
-	lastInterruptAndSendText string
-	recallCalls              int
-	sendAllNowCalls          int
+	initCalls       int
+	sendCalls       int
+	waitCalls       int
+	interruptCalls  int
+	closeCalls      int
+	recallCalls     int
+	sendAllNowCalls int
 
-	initErr             error
-	sendErr             error
-	interruptErr        error
-	closeErr            error
-	interruptAndSendErr error
-	recallText          string
-	recallErr           error
-	sendAllNowErr       error
+	initErr       error
+	sendErr       error
+	interruptErr  error
+	closeErr      error
+	recallText    string
+	recallErr     error
+	sendAllNowErr error
 
 	sessionID    string
 	isContinuous bool
+
+	// trackSends, when true, makes SendMessage mint a distinct uuid per call
+	// (u1, u2, …) and echo the text on UserMessageSentMsg so QUM-828 tests can
+	// drive the full submit→track→consume flow. Default false preserves the
+	// legacy empty-uuid behaviour every other test relies on.
+	trackSends bool
+	lastSent   string
 
 	// queued is the FIFO of pre-staged tea.Msgs returned by WaitForEvent in
 	// order. Tests that don't need event delivery can ignore this entirely;
@@ -117,16 +122,21 @@ func (f *fakeSessionBackend) Initialize() tea.Cmd {
 	}
 }
 
-func (f *fakeSessionBackend) SendMessage(_ string) tea.Cmd {
+func (f *fakeSessionBackend) SendMessage(text string) tea.Cmd {
 	f.mu.Lock()
 	f.sendCalls++
+	f.lastSent = text
 	err := f.sendErr
+	var uuid string
+	if f.trackSends {
+		uuid = fmt.Sprintf("u%d", f.sendCalls)
+	}
 	f.mu.Unlock()
 	return func() tea.Msg {
 		if err != nil {
 			return SessionErrorMsg{Err: err}
 		}
-		return UserMessageSentMsg{}
+		return UserMessageSentMsg{UUID: uuid, Text: text}
 	}
 }
 
@@ -149,20 +159,6 @@ func (f *fakeSessionBackend) Interrupt() tea.Cmd {
 	f.interruptCalls++
 	f.interruptCalled = true
 	err := f.interruptErr
-	f.mu.Unlock()
-	return func() tea.Msg { return InterruptResultMsg{Err: err} }
-}
-
-// InterruptAndSend records the call and returns a cmd that emits an
-// InterruptResultMsg carrying the configured interruptAndSendErr. The TUI
-// expects the adapter to be responsible for enqueuing `text` as the next
-// prompt regardless of whether the preempt itself succeeded — this fake
-// mirrors that contract by recording the text unconditionally.
-func (f *fakeSessionBackend) InterruptAndSend(text string) tea.Cmd {
-	f.mu.Lock()
-	f.interruptAndSendCalls++
-	f.lastInterruptAndSendText = text
-	err := f.interruptAndSendErr
 	f.mu.Unlock()
 	return func() tea.Msg { return InterruptResultMsg{Err: err} }
 }

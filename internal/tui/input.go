@@ -41,12 +41,6 @@ type InputModel struct {
 	// background so the chrome reads identically across rows.
 	inputBg color.Color
 
-	// pendingPreview is a short preview of the queued submit (QUM-340). When
-	// non-empty the View() renders a dim indicator alongside the textarea
-	// signalling that an Enter while the agent was busy stashed a message that
-	// will auto-submit when the turn finalizes.
-	pendingPreview string
-
 	// queuedCount is the number of human-typed prompts written to the CLI stdin
 	// that have not yet been consumed (isReplay) or cancelled (QUM-824). When
 	// >0 the View() renders a "⏳ N queued" indicator; weave offers recall
@@ -192,16 +186,13 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 	return m, cmd
 }
 
-// View renders the input field. When a pending submit is queued (QUM-340),
-// a dim "⏸ queued: <preview>" suffix is appended on the first line; the
-// textarea's width is reduced via SetPendingPreview so the two co-exist
+// View renders the input field. When human-typed prompts are pending on the CLI
+// command queue (QUM-824), a dim "⏳ N queued" suffix is appended on the first
+// line; the textarea's width is reduced via SetQueuedCount so the two co-exist
 // without wrapping.
 func (m InputModel) View() string {
 	base := m.ta.View()
-	if m.pendingPreview != "" {
-		suffix := m.theme.PlaceholderStyle.Render("  " + queuedIndicator(m.pendingPreview))
-		base += suffix
-	} else if m.queuedCount > 0 {
+	if m.queuedCount > 0 {
 		suffix := m.theme.PlaceholderStyle.Render("  " + pendingQueuedIndicator(m.queuedCount))
 		base += suffix
 	}
@@ -218,19 +209,6 @@ func (m InputModel) View() string {
 		lines[i] = bar + ln
 	}
 	return strings.Join(lines, "\n")
-}
-
-// queuedPreviewMaxLen caps the indicator text so a long queued message
-// doesn't push past the input bar.
-const queuedPreviewMaxLen = 40
-
-// queuedIndicator builds the muted "⏸ queued: <preview>" string.
-func queuedIndicator(text string) string {
-	preview := text
-	if len(preview) > queuedPreviewMaxLen {
-		preview = preview[:queuedPreviewMaxLen] + "…"
-	}
-	return "⏸ queued: " + preview
 }
 
 // pendingQueuedIndicator builds the muted "⏳ N queued" string surfaced while
@@ -250,16 +228,16 @@ func (m *InputModel) SetQueuedCount(n int) {
 	m.ta.SetWidth(m.textInputWidth())
 }
 
-// SetWidth updates the input width. When a pending preview is set, the
-// textarea receives the remaining width after the indicator's space so the
-// two render side-by-side without wrapping (QUM-340).
+// SetWidth updates the input width. When prompts are queued, the textarea
+// receives the remaining width after the indicator's space so the two render
+// side-by-side without wrapping (QUM-824).
 func (m *InputModel) SetWidth(w int) {
 	m.width = w
 	m.ta.SetWidth(m.textInputWidth())
 }
 
 // textInputWidth returns the width budget the textarea should receive,
-// shrinking by the indicator's footprint when a queued preview is active.
+// shrinking by the indicator's footprint when prompts are queued.
 func (m *InputModel) textInputWidth() int {
 	// QUM-664: reserve two cells for the "▌ " gutter so wrap stays inside the
 	// bar. Width is computed from m.width only when it is positive — at
@@ -269,10 +247,7 @@ func (m *InputModel) textInputWidth() int {
 	if w > 0 {
 		w -= lipgloss.Width(inputBarGutter)
 	}
-	if m.pendingPreview != "" {
-		indicatorLen := len(queuedIndicator(m.pendingPreview)) + 2 // +2 for leading spaces
-		w -= indicatorLen
-	} else if m.queuedCount > 0 {
+	if m.queuedCount > 0 {
 		w -= lipgloss.Width(pendingQueuedIndicator(m.queuedCount)) + 2 // +2 for leading spaces
 	}
 	if m.width > 0 && w < 4 {
@@ -280,16 +255,6 @@ func (m *InputModel) textInputWidth() int {
 	}
 	return w
 }
-
-// SetPendingPreview sets the queued-submit indicator text. Empty string clears
-// it. Re-applies width so the textarea re-allocates room for the suffix.
-func (m *InputModel) SetPendingPreview(text string) {
-	m.pendingPreview = text
-	m.ta.SetWidth(m.textInputWidth())
-}
-
-// PendingPreview returns the current queued-submit indicator text.
-func (m *InputModel) PendingPreview() string { return m.pendingPreview }
 
 // Focus activates the input for typing.
 func (m *InputModel) Focus() tea.Cmd {

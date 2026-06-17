@@ -29,8 +29,14 @@ func TestAppModel_View_IdleAfterUserSubmit(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	next, _ := app.Update(SubmitMsg{Text: "ping"})
+	// QUM-828 render-on-consume: the bubble renders when the send ack arrives,
+	// so drive the returned cmd (empty-uuid fallback renders on UserMessageSentMsg).
+	next, cmd := app.Update(SubmitMsg{Text: "ping"})
 	app = next.(AppModel)
+	if cmd != nil {
+		next, _ = app.Update(cmd())
+		app = next.(AppModel)
+	}
 
 	cl := rootCL(t, app)
 	if !cl.Idle() {
@@ -97,9 +103,14 @@ func TestAppModel_View_ChatRegion_DualAppendForAllVerbs(t *testing.T) {
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	// User submit.
-	next, _ := app.Update(SubmitMsg{Text: "hello"})
+	// User submit. QUM-828 render-on-consume: drive the returned cmd so the
+	// empty-uuid fallback renders the user bubble.
+	next, cmd := app.Update(SubmitMsg{Text: "hello"})
 	app = next.(AppModel)
+	if cmd != nil {
+		next, _ = app.Update(cmd())
+		app = next.(AppModel)
+	}
 
 	// Assistant chunk (in-flight) → finalize.
 	next, _ = app.Update(AssistantTextMsg{Text: "world"})

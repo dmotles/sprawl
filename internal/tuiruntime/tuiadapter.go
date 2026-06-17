@@ -273,7 +273,7 @@ func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 		if err != nil {
 			return tui.SessionErrorMsg{Err: err}
 		}
-		return tui.UserMessageSentMsg{UUID: uuid}
+		return tui.UserMessageSentMsg{UUID: uuid, Text: text}
 	}
 }
 
@@ -286,27 +286,6 @@ func (a *TUIAdapter) Interrupt() tea.Cmd {
 		a.mu.Unlock()
 		if rt == nil {
 			return tui.InterruptResultMsg{Err: ErrNoRuntime}
-		}
-		err := rt.Interrupt(context.Background())
-		return tui.InterruptResultMsg{Err: err}
-	}
-}
-
-// InterruptAndSend (QUM-630) writes `text` to the CLI stdin as a `next` user
-// prompt FIRST (text-never-lost invariant), then issues a bare contentless
-// interrupt (Esc) so the CLI yields and processes the prompt on the next
-// iteration. QUM-817 Slice 2: this is `next` + bare interrupt; cancel-and-
-// replace `now` is Slice 3.
-func (a *TUIAdapter) InterruptAndSend(text string) tea.Cmd {
-	return func() tea.Msg {
-		a.mu.Lock()
-		rt := a.runtime
-		a.mu.Unlock()
-		if rt == nil {
-			return tui.InterruptResultMsg{Err: ErrNoRuntime}
-		}
-		if _, werr := rt.WriteUserPrompt(context.Background(), text, "next"); werr != nil {
-			return tui.InterruptResultMsg{Err: werr}
 		}
 		err := rt.Interrupt(context.Background())
 		return tui.InterruptResultMsg{Err: err}

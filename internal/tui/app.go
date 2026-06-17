@@ -276,12 +276,6 @@ type AppModel struct {
 	// counter. The animator runs only for pending items in the observed
 	// agent's pane; ✓ (success) and ✗ (failure) stay static.
 
-	// pendingSubmit holds the next user message stashed while weave is mid-turn
-	// (QUM-340). Single slot — typing a fresh message and hitting Enter again
-	// replaces the previous queued content. Cleared when the turn finalizes
-	// (auto-submit), the user presses Esc, or a session restart fires.
-	pendingSubmit string
-
 	// queuedUser tracks the uuids of human-typed prompts written to the CLI
 	// stdin that are still pending (not yet consumed via isReplay nor cancelled)
 	// — the outstanding-map "queued" set mirrored TUI-side for the queued/sent/
@@ -290,6 +284,13 @@ type AppModel struct {
 	// sprawl-originated system messages — which the TUI never registered here —
 	// are correctly ignored.
 	queuedUser map[string]struct{}
+
+	// queuedText caches the prompt body for each tracked uuid in queuedUser so
+	// the user bubble can be rendered at consume time (QUM-828 render-on-consume,
+	// Strategy B) — the moment the CLI injects the prompt into the conversation,
+	// which keeps chat ordering correct for both idle and busy submits. Cleared
+	// alongside queuedUser on consume, cancel, and session restart.
+	queuedText map[string]string
 
 	// version is the build version string (e.g. "v0.2.0"), stored so the
 	// session banner can include it on fresh launch and after restarts.
@@ -481,6 +482,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		observedAgent:       rootAgent,
 		rootAgent:           rootAgent,
 		queuedUser:          make(map[string]struct{}),
+		queuedText:          make(map[string]string),
 		agentBuffers:        agentBuffers,
 		faults:              make(map[string]backendFault),
 		theme:               theme,
@@ -672,22 +674,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// QUM-630: Ctrl+C with a queued submit recalls it into the prompt
-		// (refuse-to-clobber). Precedence above the QUM-409 clear/quit
-		// ladder so the quit-confirm invariant is reached only when nothing
-		// is queued. Second Ctrl+C (queue now empty) falls through to the
-		// existing clear-text / quit-confirm rungs unchanged.
-		if msg.Mod&tea.ModCtrl != 0 && msg.Code == 'c' && m.pendingSubmit != "" && !m.showConfirm {
-			queued := m.pendingSubmit
-			m.pendingSubmit = ""
-			m.input.SetPendingPreview("")
-			if strings.TrimSpace(m.input.Value()) == "" {
-				m.input.SetValue(queued)
-				m.input.CursorEnd()
-			}
-			return m, nil
-		}
-
 		// Ctrl+C: REPL convention (QUM-409). With non-empty input, clear the
 		// textarea and consume the event. With empty (or whitespace-only)
 		// input, fall through to the existing quit-confirm dialog.
@@ -802,9 +788,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// QUM-609: Esc dismisses the validate-failure popup. Placed after the
 		// higher-precedence modal returns (confirm/help/error/palette/question/
-		// usage/tree) and BEFORE the pendingSubmit-preempt and turn-interrupt
-		// Esc handlers below — when the failure modal is up, Esc dismisses it
-		// rather than firing a queued submit or interrupting a turn.
+		// usage/tree) and BEFORE the turn-interrupt Esc handler below — when the
+		// failure modal is up, Esc dismisses it rather than interrupting a turn.
 		if msg.Code == tea.KeyEscape && m.validatePopup.State() == PopupFailed {
 			if m.validatePopup.Dismiss() {
 				m.statusBar.SetValidatePill(m.validatePopup.Pill())
@@ -892,40 +877,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.cycleAgent(delta), treeHudTickCmd(gen))
 		}
 
-		// QUM-630: Esc with a queued submit is the preempt-and-send key.
-		// - Mid-turn: interrupt the current turn AND deliver queued as next prompt.
-		// - Idle: submit queued immediately via the standard SubmitMsg path.
-		// Either way clear pendingSubmit + preview synchronously. The QUM-576
-		// "reload draft on empty input" affordance has moved to Ctrl+C above.
-		if msg.Code == tea.KeyEscape && m.pendingSubmit != "" {
-			queued := m.pendingSubmit
-			m.pendingSubmit = ""
-			m.input.SetPendingPreview("")
-			if m.bridge == nil {
-				return m, nil
-			}
-			// Record in shell history so Up-arrow recall works regardless of
-			// whether the preempt round-trip succeeds (text-never-lost).
-			if m.history != nil {
-				m.history.Append(queued)
-				m.history.Reset()
-			}
-			if m.turnState == TurnStreaming || m.turnState == TurnThinking {
-				m.statusBar.SetTransientLabel("Interrupting...")
-				toastCmd := m.toasts.Spawn(Toast{
-					Text:      fmt.Sprintf("interrupt sent to %s", m.rootAgent),
-					Style:     ToastInfo,
-					DismissOn: TimerDismiss(2 * time.Second),
-				})
-				return m, tea.Batch(m.bridge.InterruptAndSend(queued), toastCmd)
-			}
-			// Idle: route through SubmitMsg so the standard send path runs.
-			return m, sendMsgCmd(SubmitMsg{Text: queued})
-		}
-
 		// QUM-380: Esc during an active turn sends an interrupt request to
-		// Claude. Checked after help/select/pendingSubmit so those actions
-		// take priority. The protocol confirms the interrupt asynchronously
+		// Claude. QUM-828: Esc is a pure, contentless halt — it aborts the
+		// current model turn and leaves queued messages intact (they are on the
+		// CLI stdin and run on the next iteration). The protocol confirms the
+		// interrupt asynchronously
 		// via SessionResultMsg/SessionErrorMsg; we show "Interrupting..."
 		// feedback immediately.
 		if msg.Code == tea.KeyEscape && (m.turnState == TurnStreaming || m.turnState == TurnThinking) && m.bridge != nil {
@@ -1136,30 +1092,31 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.bridge == nil {
 			return m, nil
 		}
-		// QUM-340: while a turn is in flight, stash the message in the
-		// single-slot pending queue rather than dropping it. Replaces any
-		// previously-queued content (typing replaces, single-slot semantics).
-		// The auto-submit fires from the SessionResultMsg finalize path.
-		if m.turnState != TurnIdle {
-			m.pendingSubmit = msg.Text
-			m.input.SetPendingPreview(msg.Text)
-			return m, nil
+		// QUM-828: unified submit path — every human submit is written to the
+		// CLI stdin (priority next, tracked in queuedUser by uuid) regardless of
+		// turn state. The CLI owns queuing/coalescing; the TUI "queued" state is
+		// a pure projection of the outstanding map. The user bubble renders on
+		// the consumption ack (render-on-consume, Strategy B), not here — see
+		// the UserMessageConsumedMsg reducer. The TurnThinking hint is a visual
+		// cue only and must not stomp an in-flight TurnStreaming.
+		if m.turnState == TurnIdle {
+			m.setTurnState(TurnThinking)
 		}
-		// QUM-672 dual-append: the user-typed turn lands in both the legacy
-		// viewport (live-render path) and the ChatList shadow. See
-		// docs/designs/tui-structural-rewrite-plan.md §3 S2.
-		m.agentBuffers[m.rootAgent].AppendUser(msg.Text)
-		m.setTurnState(TurnThinking)
 		return m, m.bridge.SendMessage(msg.Text)
 
 	case UserMessageSentMsg:
 		m.setTurnState(TurnStreaming)
-		// QUM-824: track the written prompt as "queued" until its consumption
-		// (isReplay) or cancellation event arrives. Empty uuid = a bridge that
-		// doesn't surface uuids (legacy/tests) — nothing to track.
+		// QUM-824/828: track the written prompt as "queued" until its consumption
+		// (isReplay) or cancellation event arrives; cache its text so the bubble
+		// renders at consume time (render-on-consume, Strategy B). Empty uuid = a
+		// bridge that doesn't surface uuids (legacy/tests) — it emits no consumed
+		// event, so render the bubble immediately and don't track.
 		if msg.UUID != "" {
 			m.queuedUser[msg.UUID] = struct{}{}
+			m.queuedText[msg.UUID] = msg.Text
 			m.syncQueuedIndicator()
+		} else {
+			m.agentBuffers[m.rootAgent].AppendUser(msg.Text)
 		}
 		// QUM-323: if the user turn we just sent was a drained inbox frame,
 		// commit the drained entries to delivered/ now that the send is on
@@ -1176,8 +1133,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, commitCmd
 
 	case UserMessageConsumedMsg:
-		// QUM-824: the CLI consumed (isReplay) a tracked prompt — it's "sent".
+		// QUM-824/828: the CLI consumed (isReplay) a tracked prompt — it's "sent".
+		// Render the user bubble now (render-on-consume, Strategy B): this is the
+		// moment the CLI injects the prompt into the conversation, so chat order
+		// is correct by construction for both idle and busy submits.
 		if _, ok := m.queuedUser[msg.UUID]; ok {
+			if txt, ok := m.queuedText[msg.UUID]; ok {
+				m.agentBuffers[m.rootAgent].AppendUser(txt)
+				delete(m.queuedText, msg.UUID)
+			}
 			delete(m.queuedUser, msg.UUID)
 			m.syncQueuedIndicator()
 		}
@@ -1190,9 +1154,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case UserMessageCancelledMsg:
-		// QUM-824: a tracked prompt was recalled / superseded — drop its slot.
+		// QUM-824/828: a tracked prompt was recalled / superseded — drop its slot
+		// and cached text so it never renders as a phantom bubble.
 		if _, ok := m.queuedUser[msg.UUID]; ok {
 			delete(m.queuedUser, msg.UUID)
+			delete(m.queuedText, msg.UUID)
 			m.syncQueuedIndicator()
 		}
 		// QUM-826: pump-delivered (EventUserMessageCancelled) — re-arm so the
@@ -1204,17 +1170,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case PromptsRecalledMsg:
 		// QUM-824: rehydrate the recalled prompt text into the input for editing.
-		// Only when text actually came back do we also clear the single-slot
-		// pending submit (the recalled text supersedes it) — otherwise an
-		// empty recall (nothing was pending) would silently drop a stashed
-		// pendingSubmit, losing the user's queued draft. The per-uuid cancelled
-		// events clear the queued indicator; a partial-cancel error still
-		// rehydrates whatever text came back, surfacing a toast.
+		// The per-uuid cancelled events clear the queued indicator; a partial-
+		// cancel error still rehydrates whatever text came back, surfacing a toast.
 		var cmds []tea.Cmd
 		if msg.Text != "" {
 			m.input.SetValue(msg.Text)
-			m.pendingSubmit = ""
-			m.input.SetPendingPreview("")
 		}
 		if msg.Err != nil {
 			cmds = append(cmds, m.toasts.Spawn(Toast{
@@ -1404,14 +1364,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.palette.Hide()
 		m.showPalette = false
 		m.statusBar.SetTransientLabel(fmt.Sprintf("Session restarting (%s)...", reason))
-		// QUM-340: a session restart wipes the conversational context the user
-		// queued their next message against. Drop the slot and surface a
-		// one-line banner so the disappearance isn't silent. The dropped
-		// message label supersedes the restart label (last-write-wins).
-		if m.pendingSubmit != "" {
-			m.pendingSubmit = ""
-			m.input.SetPendingPreview("")
-			m.statusBar.SetTransientLabel("queued message dropped due to session restart")
+		// QUM-340/828: a session restart tears down the CLI process and its
+		// command queue, so every pending outstanding entry is lost on the old
+		// side. Clear the TUI's queue projection and surface a one-line banner so
+		// the disappearance isn't silent. The dropped-message label supersedes
+		// the restart label (last-write-wins).
+		if len(m.queuedUser) > 0 {
+			m.queuedUser = make(map[string]struct{})
+			m.queuedText = make(map[string]string)
+			m.syncQueuedIndicator()
+			m.statusBar.SetTransientLabel("queued message(s) dropped due to session restart")
 		}
 		m.setTurnState(TurnIdle)
 		return m, nil
@@ -2107,9 +2069,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-340: hide the input bar entirely while observing a non-root
 		// agent. The viewport reclaims the bar's vertical space; resizePanels
 		// recomputes per-agent viewport sizes against the new layout. The
-		// pendingSubmit slot is preserved across cycles intentionally — when
-		// the user cycles back to weave the indicator reappears alongside the
-		// restored input bar.
+		// queuedUser map persists across cycles intentionally — when the user
+		// cycles back to weave the "⏳ N queued" indicator reappears alongside
+		// the restored input bar.
 		if m.ready && !m.tooSmall {
 			m.resizePanels()
 		}
@@ -2432,7 +2394,7 @@ func (m *AppModel) shortHelpState() ShortHelpState {
 	return ShortHelpState{
 		TurnState:   m.turnState,
 		InputEmpty:  strings.TrimSpace(m.input.Value()) == "",
-		HasQueued:   m.pendingSubmit != "",
+		HasQueued:   m.queuedUserCount() > 0,
 		PaletteOpen: m.showPalette,
 	}
 }
@@ -2701,15 +2663,8 @@ func (m *AppModel) finalizeTurn() tea.Cmd {
 	m.rootBuf().FinalizeAssistantMessage()
 	m.setTurnState(TurnIdle)
 	var cmds []tea.Cmd
-	// QUM-340: auto-fire any queued submit by re-dispatching a SubmitMsg
-	// through the same code path as a real Enter. Clear the slot + the
-	// indicator before dispatching so re-entry sees a clean state.
-	if m.pendingSubmit != "" {
-		queued := m.pendingSubmit
-		m.pendingSubmit = ""
-		m.input.SetPendingPreview("")
-		cmds = append(cmds, sendMsgCmd(SubmitMsg{Text: queued}))
-	}
+	// QUM-828: queued submits are already on the CLI stdin (outstanding map) —
+	// no Go-side auto-fire. The CLI consumes them on its next iteration.
 	// QUM-399: in continuous-bridge mode (UnifiedRuntime/TUIAdapter) the
 	// event stream keeps emitting after a turn ends. Keep WaitForEvent
 	// running so we don't park the event pump.

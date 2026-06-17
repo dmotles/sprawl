@@ -110,40 +110,40 @@ func TestShortHelpBindings_EditorNonEmpty(t *testing.T) {
 	}
 }
 
-// QUM-630: with a queued msg AND idle, esc now SENDS the queued message and
-// ctrl+c recalls it. The legacy "clear queue" hint is gone — Ctrl+C does
-// that.
-func TestShortHelpBindings_HasQueuedIdle_AdvertisesSendAndEdit(t *testing.T) {
+// QUM-828: with prompts queued AND idle, the weave-only recall (Ctrl+U) and
+// send-all-now (Ctrl+G) affordances are advertised; esc no longer carries a
+// queued submit.
+func TestShortHelpBindings_HasQueuedIdle_AdvertisesRecallAndSendNow(t *testing.T) {
 	b := shortHelpBindings(ShortHelpState{HasQueued: true})
-	if !containsKey(b, "esc") {
-		t.Fatalf("expected key %q when queued+idle, got keys=%v", "esc", keysOf(b))
+	if !containsKey(b, "ctrl+u") {
+		t.Fatalf("expected key ctrl+u when queued+idle, got keys=%v", keysOf(b))
 	}
-	if h := hintFor(b, "esc"); !strings.Contains(h, "send queued") {
-		t.Errorf("esc hint=%q while queued+idle, want contains %q (post-QUM-630 the queued msg is sent, not cleared)", h, "send queued")
+	if h := hintFor(b, "ctrl+u"); !strings.Contains(h, "recall") {
+		t.Errorf("ctrl+u hint=%q while queued+idle, want contains %q", h, "recall")
 	}
-	if !containsKey(b, "ctrl+c") {
-		t.Fatalf("expected key ctrl+c when queued+idle, got keys=%v", keysOf(b))
+	if !containsKey(b, "ctrl+g") {
+		t.Fatalf("expected key ctrl+g when queued+idle, got keys=%v", keysOf(b))
 	}
-	if h := hintFor(b, "ctrl+c"); !strings.Contains(h, "edit") {
-		t.Errorf("ctrl+c hint=%q while queued+idle, want contains %q (recall queued to prompt)", h, "edit")
+	if h := hintFor(b, "ctrl+g"); !strings.Contains(h, "send now") {
+		t.Errorf("ctrl+g hint=%q while queued+idle, want contains %q", h, "send now")
 	}
 }
 
-// QUM-630: with a queued msg AND active turn, esc preempts (interrupt+send)
-// and ctrl+c still recalls the queued msg.
-func TestShortHelpBindings_HasQueuedStreaming_AdvertisesInterruptAndSend(t *testing.T) {
+// QUM-828: with prompts queued AND an active turn, esc is a bare interrupt
+// (no content) and the weave-only recall (Ctrl+U) affordance is advertised.
+func TestShortHelpBindings_HasQueuedStreaming_AdvertisesInterruptAndRecall(t *testing.T) {
 	b := shortHelpBindings(ShortHelpState{TurnState: TurnStreaming, HasQueued: true})
 	if !containsKey(b, "esc") {
 		t.Fatalf("expected key %q when queued+streaming, got keys=%v", "esc", keysOf(b))
 	}
-	if h := hintFor(b, "esc"); !strings.Contains(h, "interrupt & send") {
-		t.Errorf("esc hint=%q while queued+streaming, want contains %q", h, "interrupt & send")
+	if h := hintFor(b, "esc"); !strings.Contains(h, "interrupt") || strings.Contains(h, "send") {
+		t.Errorf("esc hint=%q while queued+streaming, want a bare %q (no content)", h, "interrupt")
 	}
-	if !containsKey(b, "ctrl+c") {
-		t.Fatalf("expected key ctrl+c when queued+streaming, got keys=%v", keysOf(b))
+	if !containsKey(b, "ctrl+u") {
+		t.Fatalf("expected key ctrl+u when queued+streaming, got keys=%v", keysOf(b))
 	}
-	if h := hintFor(b, "ctrl+c"); !strings.Contains(h, "edit") {
-		t.Errorf("ctrl+c hint=%q while queued+streaming, want contains %q (recall queued to prompt)", h, "edit")
+	if h := hintFor(b, "ctrl+u"); !strings.Contains(h, "recall") {
+		t.Errorf("ctrl+u hint=%q while queued+streaming, want contains %q", h, "recall")
 	}
 }
 

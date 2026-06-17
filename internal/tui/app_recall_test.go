@@ -74,37 +74,12 @@ func TestPromptsRecalledMsg_RehydratesInput(t *testing.T) {
 	m := newTestAppModelWithBridge(t, fake)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
-	// Pre-existing single-slot pending submit must be cleared by a recall.
-	app.pendingSubmit = "stale"
-	app.input.SetPendingPreview("stale")
 
 	updated, _ := app.Update(PromptsRecalledMsg{Text: "line one\nline two"})
 	app = updated.(AppModel)
 
 	if app.input.Value() != "line one\nline two" {
 		t.Errorf("input value = %q, want rehydrated text", app.input.Value())
-	}
-	if app.pendingSubmit != "" {
-		t.Errorf("pendingSubmit = %q, want cleared after recall", app.pendingSubmit)
-	}
-}
-
-// TestPromptsRecalledMsg_EmptyPreservesPendingSubmit: an empty recall (nothing
-// was pending) must NOT clobber a stashed pendingSubmit — that would silently
-// drop the user's queued draft.
-func TestPromptsRecalledMsg_EmptyPreservesPendingSubmit(t *testing.T) {
-	fake := newFakeSessionBackend()
-	m := newTestAppModelWithBridge(t, fake)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	app := resized.(AppModel)
-	app.pendingSubmit = "stashed draft"
-	app.input.SetPendingPreview("stashed draft")
-
-	updated, _ := app.Update(PromptsRecalledMsg{Text: ""})
-	app = updated.(AppModel)
-
-	if app.pendingSubmit != "stashed draft" {
-		t.Errorf("pendingSubmit = %q, want preserved %q on empty recall", app.pendingSubmit, "stashed draft")
 	}
 }
 

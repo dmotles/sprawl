@@ -43,33 +43,24 @@ func shortHelpBindings(s ShortHelpState) []shortBinding {
 		)
 
 	case s.TurnState == TurnStreaming || s.TurnState == TurnThinking:
-		// QUM-630: queued + streaming means esc preempts (interrupt & send)
-		// and ctrl+c recalls the queued msg into the prompt.
+		// QUM-828: esc is always a bare, contentless interrupt during a turn.
+		// When prompts are queued, surface the weave-only recall / send-all-now
+		// affordances alongside it.
+		bindings = append(bindings, shortBinding{Key: "esc", Hint: "interrupt"})
 		if s.HasQueued {
 			bindings = append(bindings,
-				shortBinding{Key: "esc", Hint: "interrupt & send"},
-				shortBinding{Key: "F1", Hint: "help"},
-				shortBinding{Key: "ctrl+c", Hint: "edit"},
+				shortBinding{Key: "ctrl+u", Hint: "recall"},
+				shortBinding{Key: "ctrl+g", Hint: "send now"},
 			)
-			if len(bindings) > 5 {
-				bindings = bindings[:5]
-			}
-			return bindings
 		}
-		// Streaming/thinking precedence: esc means interrupt.
-		bindings = append(bindings, shortBinding{Key: "esc", Hint: "interrupt"})
 
 	case s.HasQueued:
-		// QUM-630: queued + idle. Esc sends the queued msg; ctrl+c recalls.
+		// QUM-828: queued + idle. Ctrl+U recalls the queued prompts into the
+		// input; Ctrl+G flushes them now.
 		bindings = append(bindings,
-			shortBinding{Key: "esc", Hint: "send queued"},
-			shortBinding{Key: "F1", Hint: "help"},
-			shortBinding{Key: "ctrl+c", Hint: "edit"},
+			shortBinding{Key: "ctrl+u", Hint: "recall"},
+			shortBinding{Key: "ctrl+g", Hint: "send now"},
 		)
-		if len(bindings) > 5 {
-			bindings = bindings[:5]
-		}
-		return bindings
 
 	default:
 		if s.InputEmpty {
