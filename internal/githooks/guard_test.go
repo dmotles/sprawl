@@ -33,9 +33,26 @@ func guardScriptPath(t *testing.T) string {
 // stripped (so the agent running `make test` can't pollute the cases) plus a
 // hermetic git author/committer identity. Extra entries are appended last and win.
 func baseEnv(extra ...string) []string {
+	// Repo-scoping GIT_* vars leaked from the caller (e.g. git exports GIT_DIR
+	// into the pre-commit hook that runs `make test`) would point the nested git
+	// in these tests at the outer repo instead of the temp repo (QUM-836). Strip
+	// them so the suite is hermetic; callers can still inject specific values via
+	// `extra`, which is appended last and wins.
+	stripPrefixes := []string{
+		"SPRAWL_AGENT_IDENTITY=",
+		"GIT_DIR=", "GIT_INDEX_FILE=", "GIT_WORK_TREE=",
+		"GIT_OBJECT_DIRECTORY=", "GIT_COMMON_DIR=", "GIT_NAMESPACE=", "GIT_PREFIX=",
+	}
 	var env []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "SPRAWL_AGENT_IDENTITY=") {
+		skip := false
+		for _, p := range stripPrefixes {
+			if strings.HasPrefix(kv, p) {
+				skip = true
+				break
+			}
+		}
+		if skip {
 			continue
 		}
 		env = append(env, kv)

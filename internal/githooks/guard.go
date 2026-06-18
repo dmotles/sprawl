@@ -14,3 +14,9 @@ import "path/filepath"
 func GuardMainCommitScript(repoRoot string) string {
 	return filepath.Join(repoRoot, "scripts", "guard-main-commit")
 }
+
+// PreCommitScript returns the path to the pre-commit hook script given the
+// repository root.
+func PreCommitScript(repoRoot string) string {
+	return filepath.Join(repoRoot, "scripts", "pre-commit")
+}

@@ -10,5 +10,13 @@ set -e
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 "$here/guard-main-commit"
 
+# QUM-836: git exports repo-scoping GIT_* vars (pointing at THIS repo's .git)
+# into the hook environment. `make validate` runs `go test`, whose integration
+# suites spawn nested `git` in throwaway temp repos; if they inherit these vars
+# they resolve to the outer repo instead of their temp repo and fail. Unset them
+# so validation runs with a clean git env. (Done AFTER the guard, which
+# intentionally relies on the committing worktree's git context.)
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_OBJECT_DIRECTORY GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX
+
 echo "Running pre-commit validation..."
 make validate
