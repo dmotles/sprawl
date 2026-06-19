@@ -98,16 +98,23 @@ func renderResultPreviewLines(theme *Theme, result string, isError, expanded boo
 // line of the whole block gets "› "; every continuation line — whether it is
 // a wrap of the first source line or any line of a later source line — gets
 // two spaces of hang indent, so wrapped text stays aligned under the chevron.
-// The whole block renders under theme.UserPromptText; the chevron and body
-// render as separate spans so the chevron's SGR sequence is independently
-// identifiable in tests.
+// The whole block renders under theme.UserPromptText (bright), or
+// theme.UserPromptPendingText (dim/faint) when pending is true (QUM-832); the
+// chevron and body render as separate spans so the chevron's SGR sequence is
+// independently identifiable in tests.
 //
 // Wrapping happens per source line (split on "\n" first) so explicit newlines
 // are preserved as independent wrap units. width-2 reserves room for the
 // 2-cell prefix; when that budget is <=0 (very narrow terminals) the body
 // falls back to unwrapped to avoid a degenerate wrap.
-func renderUserPromptBlock(theme *Theme, content string, width int) string {
+func renderUserPromptBlock(theme *Theme, content string, width int, pending bool) string {
 	style := theme.UserPromptText
+	if pending {
+		// QUM-832: a pending (queued, not-yet-echoed) bubble renders dim. The
+		// only delta is the SGR (Faint vs Bold) so the bubble brightens to the
+		// exact committed rendering on settle.
+		style = theme.UserPromptPendingText
+	}
 	wrapBudget := width - 2
 	var visible []string
 	for _, src := range strings.Split(content, "\n") {

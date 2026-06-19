@@ -78,7 +78,13 @@ type Theme struct {
 	// until the implementer phase wires Palette.UserPrompt / Palette.InputBar
 	// into NewTheme.
 	UserPromptText lipgloss.Style
-	InputBarStyle  lipgloss.Style
+	// UserPromptPendingText is the DIM variant of UserPromptText used for a
+	// pending (queued, not-yet-echoed) user prompt held in the ChatList pending
+	// zone (QUM-832). Same UserPrompt foreground as the committed bubble but
+	// Faint instead of Bold — an SGR-only delta so the dimmed bubble brightens to
+	// the exact committed rendering on settle, with no text/layout change.
+	UserPromptPendingText lipgloss.Style
+	InputBarStyle         lipgloss.Style
 }
 
 // ReportDot returns the colored "●" for the given report state. Empty or
@@ -158,7 +164,8 @@ func NewTheme(accentColor string) Theme {
 		ReportDotDormant:  lipgloss.NewStyle().Foreground(pal.Info).Faint(true),
 		// QUM-664: visual-identity spike — bold bright-blue chevron + grey
 		// vertical bar gutter sourced from the semantic palette.
-		UserPromptText: lipgloss.NewStyle().Foreground(pal.UserPrompt).Bold(true),
-		InputBarStyle:  lipgloss.NewStyle().Foreground(pal.InputBar),
+		UserPromptText:        lipgloss.NewStyle().Foreground(pal.UserPrompt).Bold(true),
+		UserPromptPendingText: lipgloss.NewStyle().Foreground(pal.UserPrompt).Faint(true),
+		InputBarStyle:         lipgloss.NewStyle().Foreground(pal.InputBar),
 	}
 }

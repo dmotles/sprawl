@@ -441,14 +441,15 @@ func (c *ChatList) AppendSystemNotification(text string) {
 }
 
 // ZoneAddUser adds an eager, uuid-keyed user prompt to the pending zone. It
-// renders as the inline transcript tail until its consume echo settles it. For
-// QUM-833 the zone user bubble uses normal styling (the dim/bright transition
-// is QUM-832). QUM-833.
+// renders DIM as the inline transcript tail until its consume echo settles it
+// and brightens it (QUM-832). QUM-833.
 func (c *ChatList) ZoneAddUser(uuid, text string) {
+	item := NewUserItem(&c.ctx, text)
+	item.SetPending(true)
 	c.zone.add(&pendingEntry{
 		uuid:  uuid,
 		kind:  pendingUser,
-		items: []*itemEnvelope{{item: NewUserItem(&c.ctx, text)}},
+		items: []*itemEnvelope{{item: item}},
 	})
 	c.invalidate()
 }
@@ -494,6 +495,18 @@ func (c *ChatList) ZoneSettle(uuid string) bool {
 		return false
 	}
 	c.dropTrailingThinkingMarker()
+	// QUM-832: brighten the settled entry. A pending user bubble rendered dim
+	// while in the zone; on settle it joins the committed transcript with normal
+	// styling. The per-envelope render cache is keyed only on (width, expanded)
+	// and UserItem.Finished() is always true, so the cached dim string would be
+	// served stale — nil every relocated envelope's cache to force a fresh
+	// (bright) render.
+	for _, env := range e.items {
+		if u, ok := env.item.(*UserItem); ok {
+			u.SetPending(false)
+		}
+		env.cache = nil
+	}
 	c.items = append(c.items, e.items...)
 	c.invalidate()
 	return true

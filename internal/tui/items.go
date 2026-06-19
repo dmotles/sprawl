@@ -110,12 +110,19 @@ const nestedToolCallItemIndent = 2
 // ---------------------------------------------------------------------------
 
 // UserItem is a single user-typed turn. Always Finished.
+//
+// QUM-832: a UserItem held in the ChatList pending zone (queued, not yet echoed)
+// carries pending=true and renders DIM; ZoneSettle flips it to false so it
+// brightens to normal styling when it settles into the committed transcript.
+// Committed bubbles (AppendUser) default to pending=false (bright).
 type UserItem struct {
-	ctx  *itemRenderCtx
-	text string
+	ctx     *itemRenderCtx
+	text    string
+	pending bool
 }
 
-// NewUserItem constructs a UserItem with the given content.
+// NewUserItem constructs a UserItem with the given content. Defaults to the
+// committed (bright) styling; the pending-zone path flips it via SetPending.
 func NewUserItem(ctx *itemRenderCtx, text string) *UserItem {
 	return &UserItem{ctx: ctx, text: text}
 }
@@ -124,12 +131,18 @@ func NewUserItem(ctx *itemRenderCtx, text string) *UserItem {
 // without re-parsing the rendered output.
 func (i *UserItem) Text() string { return i.text }
 
-// Render draws the chevron-prefixed user prompt block (QUM-664 styling).
+// SetPending toggles the dim (pending) vs bright (committed) styling. Callers
+// that flip a cached item must invalidate the owning envelope's render cache —
+// pending is not part of the (width, expanded) cache key. QUM-832.
+func (i *UserItem) SetPending(pending bool) { i.pending = pending }
+
+// Render draws the chevron-prefixed user prompt block (QUM-664 styling), dimmed
+// when pending (QUM-832).
 func (i *UserItem) Render(width int) string {
 	if width <= 0 {
 		return ""
 	}
-	return renderUserPromptBlock(i.ctx.theme, i.text, width)
+	return renderUserPromptBlock(i.ctx.theme, i.text, width, i.pending)
 }
 
 // Finished always returns true: user turns are immutable on creation.

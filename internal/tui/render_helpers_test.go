@@ -92,7 +92,7 @@ func TestRenderResultPreviewLines(t *testing.T) {
 func TestRenderUserPromptBlock(t *testing.T) {
 	theme := NewTheme(defaultAccentColor)
 	t.Run("single-line-has-chevron", func(t *testing.T) {
-		got := renderUserPromptBlock(&theme, "hello", 80)
+		got := renderUserPromptBlock(&theme, "hello", 80, false)
 		if !strings.Contains(got, "›") {
 			t.Errorf("want chevron, got %q", got)
 		}
@@ -101,7 +101,7 @@ func TestRenderUserPromptBlock(t *testing.T) {
 		}
 	})
 	t.Run("continuation-lines-hang-indent", func(t *testing.T) {
-		got := renderUserPromptBlock(&theme, "line1\nline2", 80)
+		got := renderUserPromptBlock(&theme, "line1\nline2", 80, false)
 		lines := strings.Split(got, "\n")
 		if len(lines) != 2 {
 			t.Fatalf("want 2 lines, got %d: %q", len(lines), got)
@@ -118,7 +118,7 @@ func TestRenderUserPromptBlock(t *testing.T) {
 	// (budget=width-2=14) impl must wrap it into two prefixed lines ≤16.
 	t.Run("long-line-wraps-prefix-aware-word-boundaries", func(t *testing.T) {
 		wordSet := map[string]bool{"1234567": true, "abcdefg": true}
-		got := renderUserPromptBlock(&theme, "1234567 abcdefg", 16)
+		got := renderUserPromptBlock(&theme, "1234567 abcdefg", 16, false)
 		lines := strings.Split(got, "\n")
 		if len(lines) < 2 {
 			t.Fatalf("content (15 cells) must wrap at budget width-2=14, got %q", got)
@@ -141,7 +141,7 @@ func TestRenderUserPromptBlock(t *testing.T) {
 	// hard-broken to fit the width (ansi.Wrap behavior); it must never
 	// overflow the terminal width.
 	t.Run("over-long-token-hard-breaks-to-fit", func(t *testing.T) {
-		got := renderUserPromptBlock(&theme, strings.Repeat("x", 40), 16)
+		got := renderUserPromptBlock(&theme, strings.Repeat("x", 40), 16, false)
 		for _, ln := range strings.Split(got, "\n") {
 			if w := ansi.StringWidth(stripANSI(ln)); w > 16 {
 				t.Errorf("over-long token line exceeds width 16 (got %d): %q", w, stripANSI(ln))
@@ -151,7 +151,7 @@ func TestRenderUserPromptBlock(t *testing.T) {
 	// QUM-797 (b) — wrapped continuation lines carry the 2-space hang indent
 	// under the chevron; only the first visible line gets the chevron.
 	t.Run("wrapped-continuation-has-hang-indent", func(t *testing.T) {
-		got := renderUserPromptBlock(&theme, "one two three four five six seven eight", 14)
+		got := renderUserPromptBlock(&theme, "one two three four five six seven eight", 14, false)
 		lines := strings.Split(got, "\n")
 		if len(lines) < 2 {
 			t.Fatalf("expected wrapping, got %q", got)
@@ -174,7 +174,7 @@ func TestRenderUserPromptBlock(t *testing.T) {
 		// width 2 (budget 0) and width 1 (budget -1) both fall back to
 		// unwrapped — must not panic / loop and must keep content intact.
 		for _, w := range []int{2, 1} {
-			got := renderUserPromptBlock(&theme, "hello world", w)
+			got := renderUserPromptBlock(&theme, "hello world", w, false)
 			if !strings.Contains(got, "›") {
 				t.Errorf("w=%d: narrow fallback should still emit chevron, got %q", w, got)
 			}
@@ -186,7 +186,7 @@ func TestRenderUserPromptBlock(t *testing.T) {
 	// QUM-797 — explicit newlines are preserved as separate wrap units; a
 	// long second paragraph wraps independently with hang indent.
 	t.Run("multi-paragraph-explicit-newline", func(t *testing.T) {
-		got := renderUserPromptBlock(&theme, "short\nalpha bravo charlie delta echo", 16)
+		got := renderUserPromptBlock(&theme, "short\nalpha bravo charlie delta echo", 16, false)
 		lines := strings.Split(got, "\n")
 		if len(lines) < 3 {
 			t.Fatalf("expected explicit newline + wrapped second line (>=3 visible), got %q", got)
@@ -203,7 +203,7 @@ func TestRenderUserPromptBlock(t *testing.T) {
 		}
 	})
 	t.Run("empty-body-is-chevron-alone", func(t *testing.T) {
-		got := renderUserPromptBlock(&theme, "", 80)
+		got := renderUserPromptBlock(&theme, "", 80, false)
 		if !strings.Contains(got, "›") {
 			t.Errorf("empty body should still render the chevron, got %q", got)
 		}
