@@ -67,8 +67,8 @@ func TestSessionRestartingMsg_RoutesToTransientLabel(t *testing.T) {
 // viewport.
 func TestSessionRestartingMsg_DroppedQueuedMessage_RoutesToTransientLabel(t *testing.T) {
 	app := readyApp(t)
-	app.queuedUser["u1"] = struct{}{}
-	app.queuedText["u1"] = "abc"
+	// QUM-833: a pending user prompt now lives in the root ChatList's zone.
+	app.rootBuf().ZoneAddUser("u1", "abc")
 
 	updated, _ := app.Update(SessionRestartingMsg{Reason: "x"})
 	app = updated.(AppModel)

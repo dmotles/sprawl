@@ -79,9 +79,6 @@ func TestSubmit_MultipleWhileBusy_QueueGrows(t *testing.T) {
 	if app.queuedUserCount() != 3 {
 		t.Fatalf("queuedUserCount = %d, want 3 (each busy submit queues; no replace)", app.queuedUserCount())
 	}
-	if !strings.Contains(stripAnsi(app.input.View()), "3 queued") {
-		t.Errorf("input should show the ⏳ 3 queued indicator; got:\n%s", stripAnsi(app.input.View()))
-	}
 }
 
 // 3. Strategy B: the user bubble is NOT rendered on submit; it appears only

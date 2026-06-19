@@ -271,16 +271,23 @@ func TestQueuedIndicator_IgnoresSystemConsumed(t *testing.T) {
 	}
 }
 
-func TestQueuedIndicator_RenderedInInput(t *testing.T) {
+// QUM-833: the "⏳ N queued" indicator is retired; a queued user prompt now
+// renders instantly as an inline bubble in the pending zone and is tracked by
+// ZoneUserCount (which still drives the HasQueued recall/send-all-now bindings).
+func TestQueuedPrompt_TrackedInZoneAndRendered(t *testing.T) {
 	fake := newFakeSessionBackend()
 	m := newTestAppModelWithBridge(t, fake)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := resized.(AppModel)
 
-	updated, _ := app.Update(UserMessageSentMsg{UUID: "u1"})
+	updated, _ := app.Update(UserMessageSentMsg{UUID: "u1", Text: "queued prompt"})
 	app = updated.(AppModel)
 
-	if !strings.Contains(app.input.View(), "queued") {
-		t.Errorf("input view should surface a queued indicator, got:\n%s", app.input.View())
+	if app.queuedUserCount() != 1 {
+		t.Errorf("queuedUserCount = %d, want 1 (zone tracks the un-consumed prompt)", app.queuedUserCount())
+	}
+	out := stripAnsi(app.viewportFor(app.rootAgent).ChatList().Render(80))
+	if !strings.Contains(out, "queued prompt") {
+		t.Errorf("queued prompt should render instantly as an inline bubble; got:\n%s", out)
 	}
 }

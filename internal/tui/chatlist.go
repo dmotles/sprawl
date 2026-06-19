@@ -81,6 +81,14 @@ type ChatList struct {
 	revision     uint64
 	renderCache  *renderCacheEntry
 	renderBuilds int
+
+	// zone holds uuid-keyed inbound frames that have been written to the CLI
+	// stdin but not yet acknowledged (isReplay echo). It is a separate slice —
+	// NOT part of items — so eager pending renders never disturb the
+	// assistant-chunk coalescing invariant (trailing items entry is the
+	// in-flight assistant). buildRender appends the zone after items so it reads
+	// as the inline transcript tail. QUM-833.
+	zone *pendingZone
 }
 
 // invalidate marks the outer Render cache dirty. Called by every mutator
@@ -104,6 +112,7 @@ func NewChatList(theme *Theme) *ChatList {
 			theme:    theme,
 			renderer: NewMarkdownRenderer(80),
 		},
+		zone: newPendingZone(),
 	}
 }
 
@@ -431,6 +440,93 @@ func (c *ChatList) AppendSystemNotification(text string) {
 	}
 }
 
+// ZoneAddUser adds an eager, uuid-keyed user prompt to the pending zone. It
+// renders as the inline transcript tail until its consume echo settles it. For
+// QUM-833 the zone user bubble uses normal styling (the dim/bright transition
+// is QUM-832). QUM-833.
+func (c *ChatList) ZoneAddUser(uuid, text string) {
+	c.zone.add(&pendingEntry{
+		uuid:  uuid,
+		kind:  pendingUser,
+		items: []*itemEnvelope{{item: NewUserItem(&c.ctx, text)}},
+	})
+	c.invalidate()
+}
+
+// ZoneAddSystem peels a (possibly stacked) system-notification frame into N
+// system-styled items held as one uuid-keyed zone entry. Born final-styled —
+// notifications are already-settled facts. Mirrors AppendSystemNotification's
+// peel-loop but targets the zone. QUM-833.
+func (c *ChatList) ZoneAddSystem(uuid, rawText string) {
+	var items []*itemEnvelope
+	rest := rawText
+	for {
+		stripped, notifType, isInterrupt, remaining, ok := stripSystemNotificationTag(rest)
+		if !ok {
+			break
+		}
+		items = append(items, &itemEnvelope{
+			item: NewSystemNotificationItem(&c.ctx, stripped, notifType, isInterrupt),
+		})
+		rest = remaining
+	}
+	if len(items) == 0 {
+		// QUM-833 F1: classified as system by the cheap prefix check but no
+		// envelope actually peeled (a malformed `<system-notification`-prefixed
+		// frame). Render it verbatim as a user bubble so the live path matches
+		// replay's peelNotificationEntries (which emits an unpeelable classified
+		// body as a user entry) — single-classifier convergence over the
+		// malformed boundary, with no silent drop.
+		c.ZoneAddUser(uuid, rawText)
+		return
+	}
+	c.zone.add(&pendingEntry{uuid: uuid, kind: pendingSystem, items: items})
+	c.invalidate()
+}
+
+// ZoneSettle relocates the pending entry for uuid out of the zone and into the
+// committed transcript at the current tail (consume-ordered). Returns false if
+// no entry is tracked for uuid (the restart-orphan / supervisor-write no-op,
+// ghost's C9) so the caller never blind-appends. QUM-833.
+func (c *ChatList) ZoneSettle(uuid string) bool {
+	e := c.zone.take(uuid)
+	if e == nil {
+		return false
+	}
+	c.dropTrailingThinkingMarker()
+	c.items = append(c.items, e.items...)
+	c.invalidate()
+	return true
+}
+
+// ZoneDrop removes a pending USER entry (recall / supersede). System
+// notifications are never recall-droppable (LOCKED invariant 5): a drop targeting
+// a system uuid is refused. Returns true only when a user entry was removed.
+// QUM-833.
+func (c *ChatList) ZoneDrop(uuid string) bool {
+	e, ok := c.zone.byUUID[uuid]
+	if !ok || e.kind != pendingUser {
+		return false
+	}
+	c.zone.take(uuid)
+	c.invalidate()
+	return true
+}
+
+// ZoneUserCount returns the number of pending user-submitted prompts (system
+// notifications excluded). Drives the HasQueued short-help binding. QUM-833.
+func (c *ChatList) ZoneUserCount() int { return c.zone.userCount() }
+
+// ClearZone drops every pending entry (session restart tears down the CLI
+// command queue, so its outstanding projection is gone). QUM-833.
+func (c *ChatList) ClearZone() {
+	if c.zone.len() == 0 {
+		return
+	}
+	c.zone.clear()
+	c.invalidate()
+}
+
 // AppendAutoTrigger appends a finished AutoTriggerItem.
 func (c *ChatList) AppendAutoTrigger(summary string) {
 	c.dropTrailingThinkingMarker()
@@ -472,6 +568,10 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 	c.streamingAssistant = false
 	c.activeAgents = nil
 	c.lastActiveAgent = ""
+	// QUM-833: a backfill snapshot (preload / restart / resync / child switch)
+	// replaces the committed transcript wholesale; any un-settled pending entry
+	// is stale and must not render under the fresh transcript.
+	c.zone.clear()
 	c.invalidate()
 	for _, e := range entries {
 		switch e.Type {
@@ -560,14 +660,28 @@ func (c *ChatList) buildRender(width int) string {
 	c.renderBuilds++
 	var sb strings.Builder
 	var prevType string
-	for idx, env := range c.items {
+	n := 0
+	// render walks committed items first, then the pending zone (QUM-833) so the
+	// zone reads as the inline transcript tail. The n counter spans both regions
+	// so the QUM-691 inter-type blank-line rule applies across the boundary just
+	// like any other type transition (no explicit separator).
+	render := func(env *itemEnvelope) {
 		curType := itemTypeKey(env.item)
-		if idx > 0 && curType != prevType {
+		if n > 0 && curType != prevType {
 			sb.WriteString("\n")
 		}
 		sb.WriteString(c.renderEnvelope(env, width))
 		sb.WriteString("\n")
 		prevType = curType
+		n++
+	}
+	for _, env := range c.items {
+		render(env)
+	}
+	for _, e := range c.zone.order {
+		for _, env := range e.items {
+			render(env)
+		}
 	}
 	return sb.String()
 }

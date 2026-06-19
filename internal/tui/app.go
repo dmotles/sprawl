@@ -92,6 +92,39 @@ func (b *AgentBuffer) AppendSystemNotification(text string) {
 	b.vp.ChatList().AppendSystemNotification(text)
 }
 
+// ZoneAddUser tracks an eager, uuid-keyed user prompt in the pending zone
+// (QUM-833).
+func (b *AgentBuffer) ZoneAddUser(uuid, text string) {
+	b.vp.ChatList().ZoneAddUser(uuid, text)
+}
+
+// ZoneAddSystem tracks an eager, uuid-keyed system-notification frame in the
+// pending zone, peeled into N system-styled items (QUM-833).
+func (b *AgentBuffer) ZoneAddSystem(uuid, text string) {
+	b.vp.ChatList().ZoneAddSystem(uuid, text)
+}
+
+// ZoneSettle relocates the pending entry for uuid into the committed transcript.
+// Returns false when the uuid is untracked (no-op). QUM-833.
+func (b *AgentBuffer) ZoneSettle(uuid string) bool {
+	return b.vp.ChatList().ZoneSettle(uuid)
+}
+
+// ZoneDrop removes a pending user entry (recall/supersede). QUM-833.
+func (b *AgentBuffer) ZoneDrop(uuid string) bool {
+	return b.vp.ChatList().ZoneDrop(uuid)
+}
+
+// ZoneUserCount returns the number of pending user-submitted prompts (QUM-833).
+func (b *AgentBuffer) ZoneUserCount() int {
+	return b.vp.ChatList().ZoneUserCount()
+}
+
+// ClearZone drops every pending entry (session restart). QUM-833.
+func (b *AgentBuffer) ClearZone() {
+	b.vp.ChatList().ClearZone()
+}
+
 // AppendAutoTrigger appends a QUM-634 auto-continue marker.
 func (b *AgentBuffer) AppendAutoTrigger(summary string) {
 	b.vp.ChatList().AppendAutoTrigger(summary)
@@ -276,14 +309,10 @@ type AppModel struct {
 	// counter. The animator runs only for pending items in the observed
 	// agent's pane; ✓ (success) and ✗ (failure) stay static.
 
-	// queuedUser tracks the uuids of human-typed prompts written to the CLI
-	// stdin that are still pending (not yet consumed via isReplay nor cancelled)
-	// — the outstanding-map "queued" set mirrored TUI-side for the queued/sent/
-	// cancelled indicator and the weave-only recall/send-all-now UX (QUM-824).
-	// Tracking by uuid (not a bare counter) means consumption events for
-	// sprawl-originated system messages — which the TUI never registered here —
-	// are correctly ignored.
-	queuedUser map[string]struct{}
+	// QUM-833: the former queuedUser/queuedText maps are retired. Pending
+	// outstanding frames now live as uuid-keyed entries in the root ChatList's
+	// pending zone (see pendingzone.go); the zone is the single source of truth
+	// for the queued-prompt count (ZoneUserCount) and the eager/settle render.
 
 	// sendAllNowInFlight latches between a Ctrl+G send-all-now dispatch and its
 	// SendAllNowResultMsg, so a rapid double-tap of Ctrl+G does not launch a
@@ -291,13 +320,6 @@ type AppModel struct {
 	// replace cycle / waiter map) (QUM-830). Cleared on the result, success or
 	// error, so a failed flush never wedges the keybinding.
 	sendAllNowInFlight bool
-
-	// queuedText caches the prompt body for each tracked uuid in queuedUser so
-	// the user bubble can be rendered at consume time (QUM-828 render-on-consume,
-	// Strategy B) — the moment the CLI injects the prompt into the conversation,
-	// which keeps chat ordering correct for both idle and busy submits. Cleared
-	// alongside queuedUser on consume, cancel, and session restart.
-	queuedText map[string]string
 
 	// version is the build version string (e.g. "v0.2.0"), stored so the
 	// session banner can include it on fresh launch and after restarts.
@@ -488,8 +510,6 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		sprawlRoot:          sprawlRoot,
 		observedAgent:       rootAgent,
 		rootAgent:           rootAgent,
-		queuedUser:          make(map[string]struct{}),
-		queuedText:          make(map[string]string),
 		agentBuffers:        agentBuffers,
 		faults:              make(map[string]backendFault),
 		theme:               theme,
@@ -1071,17 +1091,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Class == "interrupt" {
 			label = "interrupt"
 		}
-		// QUM-323: render the flush prompt in the viewport so the human watching
-		// the TUI can see what got drained — parity with SubmitMsg which renders
-		// user-typed input. Without this, the drained frame is invisible (only
-		// the status line hints at it) and the only way to confirm drain worked
-		// is to grep logs — which also breaks the body-in-prompt e2e assertion.
-		// QUM-338 / QUM-557 / QUM-693: AppendSystemNotification strips
-		// `<system-notification>` wrappers and emits SystemNotificationItem
-		// envelope items. Pre-QUM-555 plain inbox banners (untagged prompts)
-		// are silently dropped from ChatList; the Claude session still
-		// receives the body as a user-role turn via SendMessage.
-		m.rootBuf().AppendSystemNotification(msg.Prompt)
+		// QUM-833: do NOT eagerly render here. The drained frame is written to
+		// stdin via SendMessage below; its UserMessageSentMsg ack creates a
+		// uuid-keyed pending-zone entry (classified + peeled, system-styled), and
+		// its consume ack relocates it into the committed transcript — rendered
+		// EXACTLY ONCE. The former eager AppendSystemNotification here, combined
+		// with the blind AppendUser(raw) on consume, was the QUM-833 double-render
+		// (one system-styled, one raw user bubble).
 		m.pendingDrainIDs = append([]string(nil), msg.EntryIDs...)
 		m.setTurnState(TurnThinking)
 		// QUM-675 S5: set transient AFTER setTurnState — the Idle→Thinking
@@ -1107,7 +1123,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// QUM-828: unified submit path — every human submit is written to the
-		// CLI stdin (priority next, tracked in queuedUser by uuid) regardless of
+		// CLI stdin (priority next, tracked uuid-keyed in the pending zone) regardless of
 		// turn state. The CLI owns queuing/coalescing; the TUI "queued" state is
 		// a pure projection of the outstanding map. The user bubble renders on
 		// the consumption ack (render-on-consume, Strategy B), not here — see
@@ -1120,17 +1136,25 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UserMessageSentMsg:
 		m.setTurnState(TurnStreaming)
-		// QUM-824/828: track the written prompt as "queued" until its consumption
-		// (isReplay) or cancellation event arrives; cache its text so the bubble
-		// renders at consume time (render-on-consume, Strategy B). Empty uuid = a
-		// bridge that doesn't surface uuids (legacy/tests) — it emits no consumed
-		// event, so render the bubble immediately and don't track.
-		if msg.UUID != "" {
-			m.queuedUser[msg.UUID] = struct{}{}
-			m.queuedText[msg.UUID] = msg.Text
-			m.syncQueuedIndicator()
-		} else {
-			m.agentBuffers[m.rootAgent].AppendUser(msg.Text)
+		// QUM-833: the single eager-create + classify point. Every written frame
+		// becomes a uuid-keyed pending-zone entry — a system-notification frame
+		// peels into N system-styled items; anything else is a user bubble. The
+		// entry renders instantly (inline transcript tail) and settles into the
+		// committed transcript on its consume ack (relocate-on-consume). Empty
+		// uuid = a bridge that doesn't surface uuids (legacy/tests) — it emits no
+		// consumed event, so render directly into the committed transcript,
+		// classified through the SAME helper so live and legacy can't drift.
+		buf := m.rootBuf()
+		isSystem := classifyInboundFrame(msg.Text)
+		switch {
+		case msg.UUID != "" && isSystem:
+			buf.ZoneAddSystem(msg.UUID, msg.Text)
+		case msg.UUID != "":
+			buf.ZoneAddUser(msg.UUID, msg.Text)
+		case isSystem:
+			buf.AppendSystemNotification(msg.Text)
+		default:
+			buf.AppendUser(msg.Text)
 		}
 		// QUM-323: if the user turn we just sent was a drained inbox frame,
 		// commit the drained entries to delivered/ now that the send is on
@@ -1147,18 +1171,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, commitCmd
 
 	case UserMessageConsumedMsg:
-		// QUM-824/828: the CLI consumed (isReplay) a tracked prompt — it's "sent".
-		// Render the user bubble now (render-on-consume, Strategy B): this is the
-		// moment the CLI injects the prompt into the conversation, so chat order
-		// is correct by construction for both idle and busy submits.
-		if _, ok := m.queuedUser[msg.UUID]; ok {
-			if txt, ok := m.queuedText[msg.UUID]; ok {
-				m.agentBuffers[m.rootAgent].AppendUser(txt)
-				delete(m.queuedText, msg.UUID)
-			}
-			delete(m.queuedUser, msg.UUID)
-			m.syncQueuedIndicator()
-		}
+		// QUM-833: the CLI consumed (isReplay) a tracked frame — it's now part of
+		// the conversation in canonical order. Settle = relocate its pending-zone
+		// entry into the committed transcript at the consume-ordered tail (system
+		// items stay system-styled; user bubbles commit normally). A consume for a
+		// uuid we never tracked (restart orphan / supervisor-side write) is a
+		// no-op — never a blind raw append (the QUM-833 guard, ghost's C9).
+		m.rootBuf().ZoneSettle(msg.UUID)
 		// QUM-826: this msg is pump-delivered (EventUserMessageConsumed) and is
 		// the first non-nil event of every typed turn. Re-arm WaitForEvent or
 		// the pump parks here and no assistant content renders live.
@@ -1168,13 +1187,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case UserMessageCancelledMsg:
-		// QUM-824/828: a tracked prompt was recalled / superseded — drop its slot
-		// and cached text so it never renders as a phantom bubble.
-		if _, ok := m.queuedUser[msg.UUID]; ok {
-			delete(m.queuedUser, msg.UUID)
-			delete(m.queuedText, msg.UUID)
-			m.syncQueuedIndicator()
-		}
+		// QUM-833: a tracked user prompt was recalled / superseded — drop its
+		// pending-zone entry so it never renders as a phantom bubble. System
+		// notifications are not recall-droppable (ZoneDrop refuses them).
+		m.rootBuf().ZoneDrop(msg.UUID)
 		// QUM-826: pump-delivered (EventUserMessageCancelled) — re-arm so the
 		// event pump keeps draining.
 		if m.bridge != nil {
@@ -1381,17 +1397,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.palette.Hide()
 		m.showPalette = false
 		m.statusBar.SetTransientLabel(fmt.Sprintf("Session restarting (%s)...", reason))
-		// QUM-340/828: a session restart tears down the CLI process and its
+		// QUM-340/828/833: a session restart tears down the CLI process and its
 		// command queue, so every pending outstanding entry is lost on the old
-		// side. Clear the TUI's queue projection and surface a one-line banner so
-		// the disappearance isn't silent. The dropped-message label supersedes
-		// the restart label (last-write-wins).
-		if len(m.queuedUser) > 0 {
-			m.queuedUser = make(map[string]struct{})
-			m.queuedText = make(map[string]string)
-			m.syncQueuedIndicator()
+		// side. Clear the TUI's pending zone and surface a one-line banner so the
+		// disappearance isn't silent. The dropped-message label supersedes the
+		// restart label (last-write-wins). The banner fires only when the user had
+		// queued prompts (system notifications aren't "queued by the user").
+		if m.rootBuf().ZoneUserCount() > 0 {
 			m.statusBar.SetTransientLabel("queued message(s) dropped due to session restart")
 		}
+		m.rootBuf().ClearZone()
 		m.setTurnState(TurnIdle)
 		return m, nil
 
@@ -2085,10 +2100,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// QUM-340: hide the input bar entirely while observing a non-root
 		// agent. The viewport reclaims the bar's vertical space; resizePanels
-		// recomputes per-agent viewport sizes against the new layout. The
-		// queuedUser map persists across cycles intentionally — when the user
-		// cycles back to weave the "⏳ N queued" indicator reappears alongside
-		// the restored input bar.
+		// recomputes per-agent viewport sizes against the new layout.
 		if m.ready && !m.tooSmall {
 			m.resizePanels()
 		}
@@ -2934,14 +2946,9 @@ func anyOtherModalUp(m *AppModel) bool {
 }
 
 // queuedUserCount returns the number of human-typed prompts currently pending
-// on the CLI command queue (written but not yet consumed/cancelled) (QUM-824).
-func (m *AppModel) queuedUserCount() int { return len(m.queuedUser) }
-
-// syncQueuedIndicator pushes the current queued-prompt count to the input so
-// its "⏳ N queued" indicator stays in step with the outstanding set (QUM-824).
-func (m *AppModel) syncQueuedIndicator() {
-	m.input.SetQueuedCount(len(m.queuedUser))
-}
+// on the CLI command queue (written but not yet consumed/cancelled). QUM-833:
+// sourced from the root ChatList's pending zone (system notifications excluded).
+func (m *AppModel) queuedUserCount() int { return m.rootBuf().ZoneUserCount() }
 
 // anyOtherModalUpExceptTree reports whether any modal OTHER than the tree
 // modal is up. Used by the ToggleTreeMsg open gate so the tree modal cannot

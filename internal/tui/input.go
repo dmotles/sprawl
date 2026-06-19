@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"image/color"
 	"strings"
 	"time"
@@ -40,12 +39,6 @@ type InputModel struct {
 	// (QUM-664). Sourced from the bubbles textarea's default Focused.CursorLine
 	// background so the chrome reads identically across rows.
 	inputBg color.Color
-
-	// queuedCount is the number of human-typed prompts written to the CLI stdin
-	// that have not yet been consumed (isReplay) or cancelled (QUM-824). When
-	// >0 the View() renders a "⏳ N queued" indicator; weave offers recall
-	// (Ctrl+U) / send-all-now (Ctrl+G) while any are pending.
-	queuedCount int
 
 	// pendingEnter / pendingEnterSeq drive the QUM-455 post-Enter lookahead
 	// debounce. A plain Enter does not submit synchronously; instead it sets
@@ -186,16 +179,9 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 	return m, cmd
 }
 
-// View renders the input field. When human-typed prompts are pending on the CLI
-// command queue (QUM-824), a dim "⏳ N queued" suffix is appended on the first
-// line; the textarea's width is reduced via SetQueuedCount so the two co-exist
-// without wrapping.
+// View renders the input field.
 func (m InputModel) View() string {
 	base := m.ta.View()
-	if m.queuedCount > 0 {
-		suffix := m.theme.PlaceholderStyle.Render("  " + pendingQueuedIndicator(m.queuedCount))
-		base += suffix
-	}
 	// QUM-664: prepend the "▌ " gutter to every visible row of the rendered
 	// input. Rendered under InputBarStyle (grey) so the bar reads as chrome
 	// rather than text. The bar is two cells wide; textInputWidth() compensates
@@ -211,33 +197,13 @@ func (m InputModel) View() string {
 	return strings.Join(lines, "\n")
 }
 
-// pendingQueuedIndicator builds the muted "⏳ N queued" string surfaced while
-// human-typed prompts are pending consumption on the CLI command queue
-// (QUM-824).
-func pendingQueuedIndicator(n int) string {
-	return fmt.Sprintf("⏳ %d queued", n)
-}
-
-// SetQueuedCount updates the pending-prompt count shown by the queued indicator
-// and re-applies width so the textarea re-allocates room (QUM-824).
-func (m *InputModel) SetQueuedCount(n int) {
-	if n < 0 {
-		n = 0
-	}
-	m.queuedCount = n
-	m.ta.SetWidth(m.textInputWidth())
-}
-
-// SetWidth updates the input width. When prompts are queued, the textarea
-// receives the remaining width after the indicator's space so the two render
-// side-by-side without wrapping (QUM-824).
+// SetWidth updates the input width.
 func (m *InputModel) SetWidth(w int) {
 	m.width = w
 	m.ta.SetWidth(m.textInputWidth())
 }
 
-// textInputWidth returns the width budget the textarea should receive,
-// shrinking by the indicator's footprint when prompts are queued.
+// textInputWidth returns the width budget the textarea should receive.
 func (m *InputModel) textInputWidth() int {
 	// QUM-664: reserve two cells for the "▌ " gutter so wrap stays inside the
 	// bar. Width is computed from m.width only when it is positive — at
@@ -246,9 +212,6 @@ func (m *InputModel) textInputWidth() int {
 	w := m.width
 	if w > 0 {
 		w -= lipgloss.Width(inputBarGutter)
-	}
-	if m.queuedCount > 0 {
-		w -= lipgloss.Width(pendingQueuedIndicator(m.queuedCount)) + 2 // +2 for leading spaces
 	}
 	if m.width > 0 && w < 4 {
 		w = 4

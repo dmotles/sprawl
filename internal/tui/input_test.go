@@ -919,22 +919,9 @@ func TestInputModel_VerticalBarUsesInputBarStyle(t *testing.T) {
 	}
 }
 
-// TestInputModel_QueuedIndicatorCoexistsWithBar: when prompts are queued
-// alongside a value, both the "▌" gutter and the "⏳ N queued" indicator must
-// appear in the rendered view (QUM-824/828).
-func TestInputModel_QueuedIndicatorCoexistsWithBar(t *testing.T) {
-	m := newTestInputModel(t)
-	m.SetWidth(80)
-	m.SetValue("hi")
-	m.SetQueuedCount(2)
-	view := stripANSI(m.View())
-	if !strings.Contains(view, "▌") {
-		t.Errorf("View() should contain '▌' gutter, got:\n%s", view)
-	}
-	if !strings.Contains(view, "2 queued") {
-		t.Errorf("View() should contain '⏳ 2 queued', got:\n%s", view)
-	}
-}
+// QUM-833: the "⏳ N queued" indicator is retired (the pending zone renders
+// queued prompts inline as bubbles), so TestInputModel_QueuedIndicatorCoexistsWithBar
+// is removed with it.
 
 // TestInputModel_EnterStillSubmitsMultiLine: pre-seeded multi-line value +
 // Enter still submits via the lookahead tick path with full content.

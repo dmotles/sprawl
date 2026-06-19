@@ -2334,6 +2334,12 @@ func TestAppModel_InboxDrainMsg_SystemNotificationEmitsNotificationEntry(t *test
 		Class:    "async",
 	})
 	app = updated.(AppModel)
+	// QUM-833: InboxDrainMsg no longer eager-renders; the notification is written
+	// to stdin and renders when its write is acked. The default fake bridge emits
+	// an empty-uuid UserMessageSentMsg, which the classifier commits directly as a
+	// system-styled entry (the live tracking path renders on consume instead).
+	updated, _ = app.Update(UserMessageSentMsg{UUID: "", Text: wrapped})
+	app = updated.(AppModel)
 
 	weaveVP := app.viewportFor("weave")
 	entries := weaveVP.ChatList().Items()
@@ -2369,6 +2375,10 @@ func TestAppModel_InboxDrainMsg_SystemNotificationInterruptFlag(t *testing.T) {
 		EntryIDs: []string{"i1"},
 		Class:    "interrupt",
 	})
+	app = updated.(AppModel)
+	// QUM-833: render happens on the write ack, not eagerly (see the sibling
+	// EmitsNotificationEntry test).
+	updated, _ = app.Update(UserMessageSentMsg{UUID: "", Text: wrapped})
 	app = updated.(AppModel)
 
 	entries := app.viewportFor("weave").ChatList().Items()
