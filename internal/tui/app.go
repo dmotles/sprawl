@@ -1178,6 +1178,14 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// uuid we never tracked (restart orphan / supervisor-side write) is a
 		// no-op — never a blind raw append (the QUM-833 guard, ghost's C9).
 		m.rootBuf().ZoneSettle(msg.UUID)
+		// QUM-831: the consumed frame's turn is beginning (the CLI echoed it).
+		// Re-arm the spinner so it stays lit through the new turn's pre-content
+		// window — settle just emptied this entry from the outstanding zone, so
+		// turnState is the only thing left to carry the tail. Don't stomp an
+		// in-flight TurnStreaming.
+		if m.turnState == TurnIdle {
+			m.setTurnState(TurnThinking)
+		}
 		// QUM-826: this msg is pump-delivered (EventUserMessageConsumed) and is
 		// the first non-nil event of every typed turn. Re-arm WaitForEvent or
 		// the pump parks here and no assistant content renders live.
@@ -2609,6 +2617,7 @@ func (m *AppModel) noteBusActivityIfApplicable(msg tea.Msg) {
 		SessionInitializedMsg,
 		SessionErrorMsg,
 		UserMessageSentMsg,
+		UserMessageConsumedMsg,
 		InterruptResultMsg,
 		InterruptCompletedMsg,
 		EventDropDetectedMsg,
@@ -2660,6 +2669,10 @@ func (m *AppModel) runTurnWatchdog() tea.Cmd {
 //     path) and InboxDrainMsg (the "inbox: draining N…" path) for the
 //     load-bearing call-site ordering. QUM-690 tracks this hazard; QUM-649
 //     (toast subsystem) is the natural future resolution that will obviate it.
+//     QUM-831 added another Idle→Thinking edge in the UserMessageConsumedMsg
+//     reducer (re-arming the spinner when a queued message's turn begins); it
+//     sets no label of its own, so it relies on — but does not hazard — this
+//     rule.
 //   - Rebuilds the agent tree so the weave-root turn badge reflects the new
 //     state.
 func (m *AppModel) setTurnState(state TurnState) {
@@ -2810,10 +2823,20 @@ func (m *AppModel) observedVP() *ViewportModel { return m.viewportFor(m.observed
 // a status word) and the observed-child footer path (working-driven).
 func (m *AppModel) sparkleRow(inputVisible bool) string {
 	if inputVisible {
-		if m.turnState == TurnIdle {
+		// QUM-831: derive the spinner from outstanding work, not the result
+		// block alone — stay lit while queued messages are unconsumed and
+		// between result blocks, clearing only at true idle.
+		if !m.isBusy() {
 			return ""
 		}
-		return renderSparkle(&m.theme, m.sparkleFrame, sparkleWordForTurn(m.turnState))
+		word := sparkleWordForTurn(m.turnState)
+		if word == "" {
+			// Outstanding queued prompts but no in-flight turn yet (between a
+			// result block and the next consume) — weave is about to pick up
+			// queued work.
+			word = sparkleWordForTurn(TurnThinking)
+		}
+		return renderSparkle(&m.theme, m.sparkleFrame, word)
 	}
 	if !m.observedChildWorking(time.Now()) {
 		return ""
@@ -2949,6 +2972,22 @@ func anyOtherModalUp(m *AppModel) bool {
 // on the CLI command queue (written but not yet consumed/cancelled). QUM-833:
 // sourced from the root ChatList's pending zone (system notifications excluded).
 func (m *AppModel) queuedUserCount() int { return m.rootBuf().ZoneUserCount() }
+
+// isBusy reports whether weave has outstanding work: either an in-flight turn
+// (turnState past Idle) OR queued user prompts written-but-not-yet-consumed
+// (the pending-zone outstanding map). QUM-831: the thinking/running spinner
+// derives from this rather than the result block alone, so it stays lit while a
+// queued message is processed and between result blocks while messages remain
+// unconsumed; it clears only at true idle (no in-flight turn AND zone empty).
+//
+// The zone term depends on the QUM-833 zone-lifecycle invariant that every
+// queued frame is eventually settled (consume) or dropped (cancel). The
+// turnState term is backstopped by runTurnWatchdog; the zone term is not, so a
+// queued frame the CLI strands without an ack would keep this true until a
+// session restart clears the zone.
+func (m *AppModel) isBusy() bool {
+	return m.turnState != TurnIdle || m.queuedUserCount() > 0
+}
 
 // anyOtherModalUpExceptTree reports whether any modal OTHER than the tree
 // modal is up. Used by the ToggleTreeMsg open gate so the tree modal cannot
