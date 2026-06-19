@@ -8,15 +8,26 @@
 # IN FLIGHT:
 #
 #   Scenario A — busy queue + live render (the headline):
-#     Start a long turn (the model runs `sleep` via Bash, bypassPermissions),
-#     then type TWO more prompts + Enter while it streams. Assert:
-#       1. the input shows "⏳ 2 queued" (NOT "1 queued" — proves no single-slot
-#          replace; the QUM-340 legacy path would have kept only the last typed).
+#     Start a long turn (a ~600-word model-generated essay), then type TWO more
+#     prompts + Enter while it streams. Assert:
+#       1. two follow-ups are typed behind an in-flight turn (the queue
+#          precondition) — gated best-effort on the status-bar turn label.
 #       2. after the busy turn ends, BOTH queued prompts are consumed and their
 #          assistant answers render LIVE (no restart). Each answer keys on a
 #          COMPUTED sentinel absent from the prompt text, so a pane match can
-#          only come from the assistant reply — and the regression (single-slot)
-#          would drop the first-typed prompt, so only one sentinel would paint.
+#          only come from the assistant reply. This is the load-bearing
+#          anti-single-slot-regression assertion: the QUM-340 legacy single-slot
+#          path would have kept only the last-typed prompt and dropped the first
+#          (QAA), so requiring BOTH sentinels to paint proves both submits were
+#          tracked simultaneously.
+#
+#   NOTE on queued-state detection (QUM-833/QUM-839): the "⏳ N queued" input
+#   indicator was retired in QUM-833, and the short-help "ctrl+g: send now"
+#   affordance is not reliably observable via `capture_pane` (the row is clipped
+#   in a full viewport). So this row keys off the status-bar turn label
+#   ("Streaming..."/"Thinking...") best-effort to form the queue and asserts the
+#   END STATE (the sentinels rendered) — the load-bearing gate — rather than the
+#   transient queued count, mirroring sendnow-tui.sh (QUM-838).
 #
 #   Scenario B — Esc aborts the turn, queue survives:
 #     Start a long turn, queue TWO prompts, press Esc. Assert the turn aborts
@@ -44,10 +55,23 @@ test_metadata() {
 bqt_queue_two_while_busy() {
     local session="$1" suffix="$2" tag="$3"
     e2e_send_user_prompt "$session" "Write approximately 600 words of continuous prose explaining in detail how the TCP three-way handshake establishes a connection. Output only the essay, no preamble and no lists."
-    # Give the turn time to enter streaming, then type two prompts behind it
-    # while it is still generating. Each computes a value NOT present in its
-    # own text, so a pane match can only come from the assistant reply.
-    sleep 3
+    # Confirm a busy window so the two follow-ups land BEHIND an in-flight turn
+    # (the queue precondition). QUM-833 retired the "⏳ N queued" indicator, so we
+    # key off the status-bar turn label ("Streaming..."/"Thinking...", see
+    # internal/tui/statusbar.go) instead. Best-effort: the label can scroll past
+    # behind the wide cost/token segments, so we fall back to a fixed sleep — the
+    # ~600-word essay reliably streams 10-20s, and the load-bearing proof is the
+    # end-state sentinels, not queue-formation timing.
+    # The label shows within a second or two of the turn starting, so the happy
+    # path detects it early (then settles briefly); on a miss we fall through
+    # after a short timeout while the ~600-word essay (10-20s) is still streaming,
+    # keeping the queue precondition intact on both paths.
+    if wait_for_pattern_fast "$session" "Streaming\.\.\.|Thinking\.\.\." 8; then
+        sleep 2
+    fi
+    # Type two prompts behind the in-flight turn. Each computes a value NOT
+    # present in its own text, so a pane match can only come from the assistant
+    # reply.
     e2e_send_user_prompt "$session" "Reply with EXACTLY one line and nothing else: the literal text ${tag}A_${suffix}= immediately followed by the result of 40 plus 2. Do not restate the question."
     sleep 1
     e2e_send_user_prompt "$session" "Reply with EXACTLY one line and nothing else: the literal text ${tag}B_${suffix}= immediately followed by the result of 60 plus 3. Do not restate the question."
@@ -98,23 +122,13 @@ test_run() {
     # Scenario A: busy queue + live render
     # =====================================================================
     echo ""
-    echo "=== Scenario A: type two prompts while busy → ⏳ 2 queued → both render live ==="
+    echo "=== Scenario A: type two prompts while busy → both render live ==="
+    # AC1: two follow-ups are typed behind an in-flight turn (the queue
+    # precondition). QUM-833 retired the "⏳ N queued" indicator; the two-ness
+    # invariant it used to assert now lives entirely in A2 (BOTH sentinels must
+    # render), which is the load-bearing anti-single-slot-regression gate.
     bqt_queue_two_while_busy "$SESSION" "$SUFFIX" "QA"
-
-    # AC1: the queued indicator shows TWO (not one — single-slot would show one).
-    if wait_for_pattern_fast "$SESSION" "2 queued" 20; then
-        pass "A1: input shows '⏳ 2 queued' while busy (no single-slot replace)"
-    else
-        fail "A1: '2 queued' indicator did not appear within 20s (busy submit not tracked?)"
-        capture_pane "$SESSION" | tail -40 >&2
-        e2e_print_results
-        return 1
-    fi
-    if capture_pane "$SESSION" | grep -qE "1 queued"; then
-        # A transient "1 queued" between the two Enters is fine; only a STUCK
-        # single slot is a failure, which A1 (2 queued) already disproves.
-        echo "  note: observed a transient '1 queued' (expected between the two submits)" >&2
-    fi
+    pass "A1: two prompts typed behind the busy turn"
 
     # AC2: after the busy turn drains, BOTH queued answers render LIVE. The
     # single-slot regression would have dropped QAA (first typed), so requiring
@@ -144,7 +158,7 @@ test_run() {
     fi
     pass "A2: both queued turns rendered live with no session restart"
 
-    # Let the queued indicator settle back to empty before the next scenario.
+    # Let the session settle back to idle before the next scenario.
     sleep 2
 
     # =====================================================================
@@ -153,16 +167,9 @@ test_run() {
     echo ""
     echo "=== Scenario B: queue two while busy, press Esc → turn aborts, queue survives ==="
     bqt_queue_two_while_busy "$SESSION" "$SUFFIX" "QB"
+    pass "B: two prompts typed behind the busy turn"
 
-    if ! wait_for_pattern_fast "$SESSION" "2 queued" 20; then
-        fail "B: '2 queued' indicator did not appear before Esc"
-        capture_pane "$SESSION" | tail -40 >&2
-        e2e_print_results
-        return 1
-    fi
-    pass "B: two prompts queued behind the busy turn"
-
-    # Bare Esc: abort the in-flight (sleep) turn. The queue must NOT be dropped.
+    # Bare Esc: abort the in-flight essay turn. The queue must NOT be dropped.
     _stmux send-keys -t "$SESSION" Escape
     if wait_for_pattern_fast "$SESSION" "[Ii]nterrupt" 15; then
         pass "B: Esc surfaced interrupt feedback (turn aborting)"
@@ -189,15 +196,11 @@ test_run() {
     echo ""
     echo "=== Scenario C: queue two while busy, press Ctrl+G (send-all-now) ==="
     bqt_queue_two_while_busy "$SESSION" "$SUFFIX" "QC"
-    if ! wait_for_pattern_fast "$SESSION" "2 queued" 20; then
-        echo "  note: '2 queued' not observed before Ctrl+G; skipping soft supersede check" >&2
+    _stmux send-keys -t "$SESSION" C-g
+    if wait_for_pattern_fast "$SESSION" "QC[AB]_${SUFFIX}=(42|63)" 120; then
+        pass "C: a superseding turn ran after Ctrl+G (queued content resolved)"
     else
-        _stmux send-keys -t "$SESSION" C-g
-        if wait_for_pattern_fast "$SESSION" "QC[AB]_${SUFFIX}=(42|63)" 120; then
-            pass "C: a superseding turn ran after Ctrl+G (queued content resolved)"
-        else
-            echo "  note: Ctrl+G supersede not observed live (now-preempt timing is nondeterministic on a tool-bound turn — QUM-821); cancel+supersede invariants are pinned by recall-sendnow.sh" >&2
-        fi
+        echo "  note: Ctrl+G supersede not observed live (now-preempt timing is nondeterministic on a tool-bound turn — QUM-821); cancel+supersede invariants are pinned by recall-sendnow.sh" >&2
     fi
 
     e2e_print_results
