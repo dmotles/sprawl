@@ -855,6 +855,28 @@ func TestTUIAdapter_Interrupt_NilRuntime_ReturnsInterruptResultErr(t *testing.T)
 	}
 }
 
+// QUM-830: SendAllNow() with a nil runtime must return a SendAllNowResultMsg
+// (carrying ErrNoRuntime), NOT a SessionErrorMsg. The TUI's Ctrl+G debounce
+// latch clears ONLY on SendAllNowResultMsg; if the nil-runtime window (during a
+// session restart, before Observe(rt)) returned a SessionErrorMsg instead, the
+// latch would never clear and Ctrl+G would wedge dead for the rest of the
+// session. Mirrors the Interrupt() nil-runtime precedent (returns its own
+// result type, not SessionErrorMsg).
+func TestTUIAdapter_SendAllNow_NilRuntime_ReturnsSendAllNowResultErr(t *testing.T) {
+	mock := &adapterMockSession{}
+	_, a := buildAdapter(t, mock)
+	a.Observe(nil)
+
+	msg := runCmd(t, a.SendAllNow())
+	res, ok := msg.(tui.SendAllNowResultMsg)
+	if !ok {
+		t.Fatalf("SendAllNow() with nil runtime = %T, want tui.SendAllNowResultMsg (so the Ctrl+G latch clears)", msg)
+	}
+	if !errors.Is(res.Err, ErrNoRuntime) {
+		t.Errorf("Err = %v, want errors.Is(_, ErrNoRuntime)=true", res.Err)
+	}
+}
+
 // Invariant/regression guard: SessionID() must tolerate a nil runtime and
 // return "" rather than panic. Passes against current code (the nil check is
 // already in place); pinned here so a future refactor that drops the guard
@@ -1166,19 +1188,10 @@ func TestTUIAdapter_Recall_NilRuntime_ReturnsSessionError(t *testing.T) {
 	}
 }
 
-func TestTUIAdapter_SendAllNow_NilRuntime_ReturnsSessionError(t *testing.T) {
-	mock := &adapterMockSession{}
-	_, a := buildAdapter(t, mock)
-	a.Observe(nil)
-	msg := runCmd(t, a.SendAllNow())
-	se, ok := msg.(tui.SessionErrorMsg)
-	if !ok {
-		t.Fatalf("SendAllNow() = %T, want tui.SessionErrorMsg", msg)
-	}
-	if !errors.Is(se.Err, ErrNoRuntime) {
-		t.Errorf("Err = %v, want errors.Is(_, ErrNoRuntime)", se.Err)
-	}
-}
+// QUM-830: the former TestTUIAdapter_SendAllNow_NilRuntime_ReturnsSessionError
+// asserted the old contract (SessionErrorMsg on nil runtime), which wedged the
+// Ctrl+G debounce latch. Superseded by
+// TestTUIAdapter_SendAllNow_NilRuntime_ReturnsSendAllNowResultErr above.
 
 func TestTUIAdapter_Recall_RehydratesPendingText(t *testing.T) {
 	mock := &adapterMockSession{cancelResults: map[string]bool{}}

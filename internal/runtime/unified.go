@@ -452,6 +452,22 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 		rt.outMu.Unlock()
 		return "", err
 	}
+
+	// QUM-830: a priority:"now" write (cancel-and-replace, e.g. send-all-now)
+	// preempts the in-flight model turn. The preempted turn emits an is_error
+	// `result` terminal frame — same shape as an Esc-abort — so arm the
+	// pending-interrupt flag exactly as Interrupt does (QUM-827), letting
+	// routeFrame re-classify that terminal as a clean EventInterrupted instead
+	// of EventTurnCompleted{IsError} → the empty "Session Error" overlay. Gated
+	// on inTurn (no in-flight turn ⇒ nothing to preempt); setInTurn clears any
+	// stale flag on the next turn open, so this cannot leak forward.
+	if priority == "now" {
+		rt.mu.Lock()
+		if rt.inTurn {
+			rt.interruptPending = true
+		}
+		rt.mu.Unlock()
+	}
 	return uuid, nil
 }
 

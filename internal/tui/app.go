@@ -285,6 +285,13 @@ type AppModel struct {
 	// are correctly ignored.
 	queuedUser map[string]struct{}
 
+	// sendAllNowInFlight latches between a Ctrl+G send-all-now dispatch and its
+	// SendAllNowResultMsg, so a rapid double-tap of Ctrl+G does not launch a
+	// second concurrent SendAllNow (which would race the runtime's cancel-and-
+	// replace cycle / waiter map) (QUM-830). Cleared on the result, success or
+	// error, so a failed flush never wedges the keybinding.
+	sendAllNowInFlight bool
+
 	// queuedText caches the prompt body for each tracked uuid in queuedUser so
 	// the user bubble can be rendered at consume time (QUM-828 render-on-consume,
 	// Strategy B) — the moment the CLI injects the prompt into the conversation,
@@ -783,6 +790,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'g' || msg.Code == 'G') &&
 			m.bridge != nil && m.observedAgent == m.rootAgent && !anyOtherModalUp(&m) {
+			// QUM-830: debounce — ignore a second Ctrl+G while a send-all-now is
+			// still in flight so two concurrent cancel-and-replace cycles can't
+			// race the runtime's pending-cancel waiter map.
+			if m.sendAllNowInFlight {
+				return m, nil
+			}
+			m.sendAllNowInFlight = true
 			return m, m.bridge.SendAllNow()
 		}
 
@@ -1188,6 +1202,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SendAllNowResultMsg:
 		// QUM-824: surface a toast on failure; success is reflected by the queued
 		// indicator clearing (cancelled events) and the now-message rendering.
+		// QUM-830: clear the debounce latch on BOTH legs so a failed flush does
+		// not wedge Ctrl+G dead.
+		m.sendAllNowInFlight = false
 		if msg.Err != nil {
 			return m, m.toasts.Spawn(Toast{
 				Text:      fmt.Sprintf("send-all-now failed: %v", msg.Err),

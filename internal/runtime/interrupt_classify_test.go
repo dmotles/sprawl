@@ -72,6 +72,131 @@ func tallyTerminalEvents(ch <-chan RuntimeEvent, window time.Duration) (int, int
 	}
 }
 
+// QUM-830: send-all-now (Ctrl+G) writes one priority:"now" message that
+// PREEMPTS the in-flight model turn (cancel-and-replace). The preempted turn
+// emits an is_error `result` terminal frame — the SAME shape an Esc-abort
+// produces. Without arming the pending-interrupt flag on the now-write,
+// routeFrame publishes EventTurnCompleted{IsError} → SessionResultMsg{IsError}
+// → the empty "Session Error" overlay → session restart. QUM-827 fixed this for
+// the bare-Esc path only; the now-write preempt is a separate entry that must
+// be classified as a clean interrupt too.
+func TestSendAllNow_NowWritePreemptMidTurn_SurfacesInterruptNotError(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave-sendnow-preempt", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("sendnow-preempt-test", 32)
+	defer unsub()
+
+	// A human-typed prompt queued behind the in-flight turn.
+	writePendingUser(t, rt, mock, "send me now", "next")
+
+	// Turn in flight.
+	openTurn(t, rt)
+
+	// Ctrl+G send-all-now: cancels the pending prompt and writes one now-priority
+	// message that preempts the in-flight turn.
+	if err := rt.SendAllNow(context.Background()); err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+
+	// The preempted turn's terminal is_error result.
+	rt.routeFrame(resultFrame(t, true, 42), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, failed, lastInterrupt := tallyTerminalEventsWithResult(ch, 750*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (now-write preempt must surface as a clean interrupt)", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0 (preempted turn must not surface as a completed/error turn → Session Error)", completed)
+	}
+	if failed != 0 {
+		t.Errorf("EventTurnFailed count = %d, want 0", failed)
+	}
+	// The interrupt carries the terminal result so the TUI can render
+	// "Interrupted (Nms)" rather than an empty/error overlay.
+	if lastInterrupt == nil {
+		t.Error("EventInterrupted carried a nil Result; want the preempted turn's result (for the Interrupted-duration UX)")
+	}
+}
+
+// tallyTerminalEventsWithResult is tallyTerminalEvents plus the Result of the
+// last EventInterrupted seen (nil if none) — used to assert the preempt path
+// carries the terminal result for the "Interrupted (Nms)" UX.
+func tallyTerminalEventsWithResult(ch <-chan RuntimeEvent, window time.Duration) (int, int, int, *protocol.ResultMessage) {
+	var interrupted, completed, failed int
+	var lastInterrupt *protocol.ResultMessage
+	deadline := time.After(window)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return interrupted, completed, failed, lastInterrupt
+			}
+			switch ev.Type {
+			case EventInterrupted:
+				interrupted++
+				lastInterrupt = ev.Result
+			case EventTurnCompleted:
+				completed++
+			case EventTurnFailed:
+				failed++
+			}
+		case <-deadline:
+			return interrupted, completed, failed, lastInterrupt
+		}
+	}
+}
+
+// TestSendAllNow_NowWriteArm_DoesNotLeakToNextTurn guards the QUM-827 stale-flag
+// invariant for the new arm site: once the preempted turn consumes the pending-
+// interrupt flag, a SUBSEQUENT clean turn completion must publish
+// EventTurnCompleted, not EventInterrupted.
+func TestSendAllNow_NowWriteArm_DoesNotLeakToNextTurn(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave-sendnow-noleak", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("sendnow-noleak-test", 32)
+	defer unsub()
+
+	// Turn 1: preempted by send-all-now.
+	writePendingUser(t, rt, mock, "send me now", "next")
+	openTurn(t, rt)
+	if err := rt.SendAllNow(context.Background()); err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+	rt.routeFrame(resultFrame(t, true, 5), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	if interrupted, _, _ := tallyTerminalEvents(ch, 400*time.Millisecond); interrupted != 1 {
+		t.Fatalf("turn 1: EventInterrupted count = %d, want 1", interrupted)
+	}
+
+	// Turn 2: clean completion — must NOT inherit the consumed interrupt flag.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, false, 7), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("turn 2: EventInterrupted count = %d, want 0 (now-write arm leaked)", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("turn 2: EventTurnCompleted count = %d, want 1", completed)
+	}
+}
+
 func TestUnifiedRuntime_InTurnInterruptEmitsEventInterrupted(t *testing.T) {
 	mock := &mockFaultableSession{}
 	rt := New(RuntimeConfig{Name: "agent-esc-interrupt", Session: mock})

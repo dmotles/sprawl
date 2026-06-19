@@ -69,6 +69,57 @@ func TestCtrlG_SendAllNow_WeaveOnly(t *testing.T) {
 	}
 }
 
+// QUM-830: a rapid double-tap of Ctrl+G must NOT launch a second concurrent
+// SendAllNow. The first press marks send-all-now in-flight; a second press
+// before the SendAllNowResultMsg lands is a no-op (no second goroutine that
+// could race the runtime's cancel-and-replace cycle). The result message clears
+// the in-flight latch so a later, deliberate Ctrl+G fires again.
+func TestCtrlG_DoubleTap_Debounced(t *testing.T) {
+	fake := newFakeSessionBackend()
+	m := newTestAppModelWithBridge(t, fake)
+	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app := resized.(AppModel)
+	app.observedAgent = app.rootAgent
+
+	// First Ctrl+G fires.
+	updated, _ := app.Update(ctrlKey('g'))
+	app = updated.(AppModel)
+	if fake.sendAllNowCalls != 1 {
+		t.Fatalf("sendAllNowCalls = %d after first Ctrl+G, want 1", fake.sendAllNowCalls)
+	}
+
+	// Second Ctrl+G before the result lands is debounced.
+	updated, _ = app.Update(ctrlKey('g'))
+	app = updated.(AppModel)
+	if fake.sendAllNowCalls != 1 {
+		t.Fatalf("sendAllNowCalls = %d after rapid second Ctrl+G, want 1 (debounced)", fake.sendAllNowCalls)
+	}
+
+	// The flush completes; the latch clears. (fakeSessionBackend.SendAllNow
+	// increments sendAllNowCalls synchronously and the result msg is fed
+	// directly here, so the count is an exact proxy for "a goroutine launched".)
+	updated, _ = app.Update(SendAllNowResultMsg{})
+	app = updated.(AppModel)
+
+	// A subsequent deliberate Ctrl+G fires again.
+	updated, _ = app.Update(ctrlKey('g'))
+	app = updated.(AppModel)
+	if fake.sendAllNowCalls != 2 {
+		t.Errorf("sendAllNowCalls = %d after post-result Ctrl+G, want 2 (latch cleared)", fake.sendAllNowCalls)
+	}
+
+	// An ERRORED flush must also clear the latch — otherwise a single failed
+	// send-all-now wedges Ctrl+G dead until session restart. (The reducer
+	// early-returns on msg.Err, so the latch-clear must run on both legs.)
+	updated, _ = app.Update(SendAllNowResultMsg{Err: errors.New("now boom")})
+	app = updated.(AppModel)
+	updated, _ = app.Update(ctrlKey('g'))
+	app = updated.(AppModel)
+	if fake.sendAllNowCalls != 3 {
+		t.Errorf("sendAllNowCalls = %d after errored-result Ctrl+G, want 3 (latch must clear on error too)", fake.sendAllNowCalls)
+	}
+}
+
 func TestPromptsRecalledMsg_RehydratesInput(t *testing.T) {
 	fake := newFakeSessionBackend()
 	m := newTestAppModelWithBridge(t, fake)

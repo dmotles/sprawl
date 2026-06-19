@@ -319,7 +319,11 @@ func (a *TUIAdapter) SendAllNow() tea.Cmd {
 		rt := a.runtime
 		a.mu.Unlock()
 		if rt == nil {
-			return tui.SessionErrorMsg{Err: ErrNoRuntime}
+			// QUM-830: return a SendAllNowResultMsg (not SessionErrorMsg) so the
+			// TUI's Ctrl+G debounce latch — which clears ONLY on
+			// SendAllNowResultMsg — does not wedge during the nil-runtime window
+			// of a session restart. Mirrors Interrupt's nil-runtime precedent.
+			return tui.SendAllNowResultMsg{Err: ErrNoRuntime}
 		}
 		err := rt.SendAllNow(context.Background())
 		return tui.SendAllNowResultMsg{Err: err}
