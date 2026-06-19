@@ -57,6 +57,11 @@ func TranslateRuntimeEvent(ev sprawlrt.RuntimeEvent, interruptedFn func(sprawlrt
 		return SessionResultMsg{IsError: true, Result: errStr}
 	case sprawlrt.EventInterrupted:
 		return interruptedFn(ev)
+	case sprawlrt.EventUserMessageSent:
+		// QUM-838: a now-write (send-all-now) publishes this so the TUI tracks the
+		// coalesced message's fresh uuid in the pending zone (ZoneAddUser) before
+		// its consume settle relocates it into the committed transcript.
+		return UserMessageSentMsg{UUID: ev.UUID, Text: ev.Prompt}
 	case sprawlrt.EventUserMessageConsumed:
 		return UserMessageConsumedMsg{UUID: ev.UUID}
 	case sprawlrt.EventUserMessageCancelled:

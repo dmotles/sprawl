@@ -207,6 +207,102 @@ func TestSendAllNow_SingleNowWrite_SupersedesPending(t *testing.T) {
 	}
 }
 
+// drainEvents collects every RuntimeEvent currently buffered on ch, returning
+// once the channel goes quiet for the idle window. SendAllNow publishes
+// synchronously, so all its events are buffered by the time it returns.
+func drainEvents(ch <-chan RuntimeEvent) []RuntimeEvent {
+	var events []RuntimeEvent
+	for {
+		select {
+		case ev := <-ch:
+			events = append(events, ev)
+		case <-time.After(200 * time.Millisecond):
+			return events
+		}
+	}
+}
+
+// TestSendAllNow_PublishesUserMessageSentForNowWrite is the QUM-838 regression:
+// the coalesced now-write MUST publish EventUserMessageSent (carrying its fresh
+// uuid + text) BEFORE its EventUserMessageConsumed, so the TUI pending zone can
+// track the uuid and settle it into the committed transcript. Without the sent
+// event the consume settle is a no-op (untracked uuid) and the Ctrl+G message
+// vanishes from the transcript.
+func TestSendAllNow_PublishesUserMessageSentForNowWrite(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave", Session: mock})
+
+	ch, unsub := rt.EventBus().SubscribeNamed("sendnow-test", 32)
+	defer unsub()
+
+	a := writePendingUser(t, rt, mock, "AAA", "next")
+	b := writePendingUser(t, rt, mock, "BBB", "next")
+
+	if err := rt.SendAllNow(context.Background()); err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+
+	events := drainEvents(ch)
+
+	sentIdx, consumedIdx := -1, -1
+	var sentUUID, sentText string
+	for i, ev := range events {
+		switch ev.Type {
+		case EventUserMessageSent:
+			if sentIdx != -1 {
+				t.Fatalf("EventUserMessageSent published more than once (at idx %d and %d), want exactly 1", sentIdx, i)
+			}
+			sentIdx = i
+			sentUUID = ev.UUID
+			sentText = ev.Prompt
+		case EventUserMessageConsumed:
+			consumedIdx = i
+		}
+	}
+
+	if sentIdx == -1 {
+		t.Fatalf("SendAllNow did not publish EventUserMessageSent for the now-write (QUM-838: Ctrl+G bubble vanishes)")
+	}
+	if sentText != "AAA\nBBB" {
+		t.Errorf("EventUserMessageSent.Prompt = %q, want %q", sentText, "AAA\nBBB")
+	}
+	if sentUUID == "" || sentUUID == a || sentUUID == b {
+		t.Errorf("EventUserMessageSent.UUID = %q, want a fresh now-write uuid (not %q/%q)", sentUUID, a, b)
+	}
+	if consumedIdx == -1 {
+		t.Fatalf("SendAllNow published no EventUserMessageConsumed for the now-write")
+	}
+	if sentIdx > consumedIdx {
+		t.Errorf("EventUserMessageSent (idx %d) must precede EventUserMessageConsumed (idx %d) so the zone is populated before settle", sentIdx, consumedIdx)
+	}
+	if events[consumedIdx].UUID != sentUUID {
+		t.Errorf("consumed uuid = %q, want the now-write uuid %q", events[consumedIdx].UUID, sentUUID)
+	}
+}
+
+// TestSendAllNow_NothingPending_NoSentEvent guards against publishing an empty
+// phantom bubble: a no-op send-all-now must publish no EventUserMessageSent.
+func TestSendAllNow_NothingPending_NoSentEvent(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave", Session: mock})
+
+	ch, unsub := rt.EventBus().SubscribeNamed("sendnow-noop-test", 16)
+	defer unsub()
+
+	if err := rt.SendAllNow(context.Background()); err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+
+	for _, ev := range drainEvents(ch) {
+		if ev.Type == EventUserMessageSent {
+			t.Errorf("empty SendAllNow published EventUserMessageSent (phantom bubble), want none")
+		}
+		if ev.Type == EventUserMessageConsumed {
+			t.Errorf("empty SendAllNow published EventUserMessageConsumed (phantom settle), want none")
+		}
+	}
+}
+
 func TestSendAllNow_NothingPending_NoOp(t *testing.T) {
 	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
 	rt := New(RuntimeConfig{Name: "weave", Session: mock})

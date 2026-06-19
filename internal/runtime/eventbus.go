@@ -121,6 +121,17 @@ const (
 	// send-all-now). UUID carries the cancelled message's uuid; subscribers
 	// (TUI) drop its queued indicator.
 	EventUserMessageCancelled
+	// EventUserMessageSent is published when a now-priority (cancel-and-replace)
+	// user message is written to stdin without an isReplay echo (QUM-838 —
+	// send-all-now). A now-write gets NO isReplay echo (QUM-821), so the TUI's
+	// pending zone would never learn the coalesced message's fresh uuid and its
+	// EventUserMessageConsumed settle would be a no-op — the message vanishes
+	// from the transcript. This event lets the TUI track the now-write's uuid
+	// (zone add) before its consume ack settles it (zone relocate). UUID carries
+	// the now-write's uuid; Prompt carries its text. Appended after
+	// EventUserMessageCancelled to keep the iota values of the prior events
+	// stable.
+	EventUserMessageSent
 )
 
 // RuntimeEvent is the unit of fan-out on the EventBus. The set of populated
@@ -128,17 +139,21 @@ const (
 type RuntimeEvent struct {
 	Type    RuntimeEventType
 	Message *protocol.Message
-	Prompt  string
-	Result  *protocol.ResultMessage
-	Error   error
+	// Prompt carries the message text for EventUserMessageSent (QUM-838 — the
+	// coalesced now-write resubmitted by send-all-now).
+	Prompt string
+	Result *protocol.ResultMessage
+	Error  error
 	// FaultClass and FaultNextAction are populated only for
 	// EventBackendFaulted. FaultClass is a UX-visible classification of
 	// the underlying terminal error (e.g. "HangTimeout"); FaultNextAction
 	// is an operator-facing next-step hint. QUM-602.
 	FaultClass      string
 	FaultNextAction string
-	// UUID is populated for EventUserMessageConsumed: the uuid of the stdin
-	// user message the CLI just acked via isReplay (QUM-817).
+	// UUID is populated for EventUserMessageConsumed (the uuid of the stdin user
+	// message the CLI just acked via isReplay — QUM-817), EventUserMessageCancelled
+	// (the cancelled uuid — QUM-824), and EventUserMessageSent (the now-write's
+	// fresh uuid — QUM-838).
 	UUID string
 	// Seq is the publisher-stamped monotonic 1-indexed sequence number.
 	// Populated by EventBus.Publish before fan-out (QUM-669). Subscribers

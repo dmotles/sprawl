@@ -166,6 +166,22 @@ func TestTranslateRuntimeEvent_UserMessageCancelled(t *testing.T) {
 	}
 }
 
+// QUM-838: a now-write (send-all-now) gets no isReplay echo, so the runtime
+// publishes EventUserMessageSent (UUID + Prompt) to register its bubble in the
+// pending zone. It must translate to UserMessageSentMsg{UUID, Text} so the
+// existing zone-add reducer tracks it before its consume settle relocates it.
+func TestTranslateRuntimeEvent_UserMessageSent(t *testing.T) {
+	got := TranslateRuntimeEvent(sprawlrt.RuntimeEvent{
+		Type:   sprawlrt.EventUserMessageSent,
+		UUID:   "now-1",
+		Prompt: "AAA\nBBB",
+	}, InterruptedAsResult)
+	want := UserMessageSentMsg{UUID: "now-1", Text: "AAA\nBBB"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
 func TestTranslateRuntimeEvent_LifecycleEventsSkipped(t *testing.T) {
 	for _, evType := range []sprawlrt.RuntimeEventType{
 		sprawlrt.EventTurnStarted,

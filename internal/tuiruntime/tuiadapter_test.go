@@ -1216,6 +1216,74 @@ func TestTUIAdapter_Recall_RehydratesPendingText(t *testing.T) {
 	}
 }
 
+// TestTUIAdapter_SendAllNow_SurfacesSentBeforeConsumed is the QUM-838
+// end-to-end wiring proof: through the real runtime + bus + adapter, a
+// send-all-now must surface UserMessageSentMsg (carrying the coalesced
+// now-write's fresh uuid + text) BEFORE UserMessageConsumedMsg for the same
+// uuid. Without the sent msg the TUI pending zone never tracks the now-write
+// and its settle is a no-op → the Ctrl+G message vanishes from the transcript.
+func TestTUIAdapter_SendAllNow_SurfacesSentBeforeConsumed(t *testing.T) {
+	mock := &adapterMockSession{cancelResults: map[string]bool{}}
+	rt, a := buildAdapter(t, mock)
+
+	orig, err := rt.WriteUserPrompt(context.Background(), "queued one", "next")
+	if err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	mock.cancelResults[orig] = true
+
+	// SendAllNow publishes (cancelled, sent, consumed) synchronously onto the
+	// bus before returning the result msg.
+	if sr := runCmd(t, a.SendAllNow()).(tui.SendAllNowResultMsg); sr.Err != nil {
+		t.Fatalf("SendAllNowResultMsg.Err = %v", sr.Err)
+	}
+
+	var (
+		order      []string
+		sentMsg    tui.UserMessageSentMsg
+		sawSent    bool
+		consumeUID string
+	)
+	for !sawSent || consumeUID == "" {
+		switch m := runCmd(t, a.WaitForEvent()).(type) {
+		case tui.UserMessageCancelledMsg:
+			order = append(order, "cancelled")
+		case tui.UserMessageSentMsg:
+			order = append(order, "sent")
+			sentMsg = m
+			sawSent = true
+		case tui.UserMessageConsumedMsg:
+			order = append(order, "consumed")
+			consumeUID = m.UUID
+		default:
+			t.Fatalf("unexpected msg %T while draining SendAllNow events", m)
+		}
+	}
+
+	// sent must precede consumed.
+	sentPos, consumedPos := -1, -1
+	for i, o := range order {
+		if o == "sent" && sentPos == -1 {
+			sentPos = i
+		}
+		if o == "consumed" && consumedPos == -1 {
+			consumedPos = i
+		}
+	}
+	if sentPos == -1 || consumedPos == -1 || sentPos > consumedPos {
+		t.Fatalf("event order = %v, want a UserMessageSentMsg before UserMessageConsumedMsg", order)
+	}
+	if sentMsg.Text != "queued one" {
+		t.Errorf("sent text = %q, want %q", sentMsg.Text, "queued one")
+	}
+	if sentMsg.UUID == "" || sentMsg.UUID == orig {
+		t.Errorf("sent uuid = %q, want a fresh now-write uuid (not the original %q)", sentMsg.UUID, orig)
+	}
+	if consumeUID != sentMsg.UUID {
+		t.Errorf("consumed uuid = %q, want the sent now-write uuid %q", consumeUID, sentMsg.UUID)
+	}
+}
+
 func TestTUIAdapter_SendAllNow_DelegatesToRuntime(t *testing.T) {
 	mock := &adapterMockSession{cancelResults: map[string]bool{}}
 	rt, a := buildAdapter(t, mock)

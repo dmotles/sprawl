@@ -634,10 +634,19 @@ func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) error {
 	if len(texts) == 0 {
 		return nil
 	}
-	uuid, err := rt.writeMessage(ctx, strings.Join(texts, "\n"), "now", kindUser, nil)
+	joined := strings.Join(texts, "\n")
+	uuid, err := rt.writeMessage(ctx, joined, "now", kindUser, nil)
 	if err != nil {
 		return err
 	}
+	// QUM-838: a now-write gets NO isReplay echo (QUM-821), so the TUI pending
+	// zone never learns this fresh uuid on its own. Publish EventUserMessageSent
+	// (carrying the coalesced text) BEFORE ConfirmDeliveredWithoutReplay so the
+	// zone-add lands before the consume settle — otherwise ZoneSettle is a no-op
+	// against an untracked uuid and the Ctrl+G message vanishes from the
+	// transcript. Both publishes happen synchronously on this goroutine, so the
+	// EventBus seq-orders sent before consumed.
+	rt.eventBus.Publish(RuntimeEvent{Type: EventUserMessageSent, UUID: uuid, Prompt: joined})
 	rt.ConfirmDeliveredWithoutReplay(uuid)
 	return nil
 }
