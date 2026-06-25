@@ -107,21 +107,25 @@ test_run() {
     sleep 1
 
     # QUEUE a second prompt WHILE the turn is in flight (the user's exact repro:
-    # "type from idle → message queues (⏳ N) → Esc"). A turn is in flight, so
-    # this human prompt is written to stdin and held pending — the TUI shows the
-    # "⏳ N queued" indicator. The locked interrupt contract: Esc must NOT drop
-    # this queued message; the CLI consumes it on its next iteration.
+    # "type from idle → message queues → Esc"). A turn is in flight, so this human
+    # prompt is written to stdin and held pending. The locked interrupt contract:
+    # Esc must NOT drop this queued message; the CLI consumes it on its next
+    # iteration.
     echo ""
     echo "=== Queuing a second prompt while the turn is in flight ==="
     local SURVIVE_PROMPT="Reply with EXACTLY one line: SURVIVE_${SUFFIX} and nothing else."
-    e2e_send_user_prompt "$SESSION" "$SURVIVE_PROMPT"
-    if wait_for_substring_fast "$SESSION" "queued" 10; then
-        pass "second prompt queued (⏳ indicator shown) while turn in flight"
+    # Confirm weave is still busy (the in-flight _test_sleep turn) so this second
+    # prompt QUEUES behind it. QUM-833 retired the "⏳ N queued" indicator, so we
+    # key off the status-bar turn label (Streaming.../Thinking..., see
+    # internal/tui/statusbar.go) instead — mirroring busy-queue-typing.sh /
+    # sendnow-tui.sh. Best-effort: the consumed-after-abort assertion below is the
+    # real queue-intact gate.
+    if wait_for_pattern_fast "$SESSION" "Streaming\.\.\.|Thinking\.\.\." 10; then
+        pass "weave still busy (in-flight turn) — second prompt queues behind it"
     else
-        # Not fatal on its own — the consumed-after-abort assertion below is the
-        # real queue-intact gate — but log it for diagnosis.
-        echo "  note: '⏳ queued' indicator not observed; proceeding to the abort gate" >&2
+        echo "  note: busy turn label not observed; proceeding to queue + abort gate" >&2
     fi
+    e2e_send_user_prompt "$SESSION" "$SURVIVE_PROMPT"
 
     echo ""
     echo "=== Pressing Esc to abort the in-flight turn ==="
