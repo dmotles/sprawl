@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix
+.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test
@@ -186,6 +186,12 @@ test-wake-live-e2e:
 # cmd/enter.go.
 test-paste-coalesce-e2e: build
 	bash scripts/test-paste-coalesce-e2e.sh; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
+
+# QUM-842: CLI-level round-trip for `sprawl hooks install`/`uninstall`. Needs
+# only git + the built binary (no claude, no sandbox). Verifies install,
+# non-root --no-verify abort, root/human pass, and surgical uninstall.
+test-hooks-e2e: build
+	SPRAWL_BIN=$$PWD/sprawl bash scripts/test-hooks-e2e.sh
 
 # QUM-616 matrix-driven e2e harness foundation. Wave 1 — runs alongside
 # the per-test test-*-e2e targets. See scripts/e2e-matrix.sh.

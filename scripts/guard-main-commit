@@ -2,12 +2,19 @@
 #
 # guard-main-commit (QUM-808)
 #
-# Refuses a `git commit` on branch `main` when the committing process is a
-# non-root sprawl agent. Identity is read from $SPRAWL_AGENT_IDENTITY:
+# Refuses a `git commit` on the protected branch when the committing process is
+# a non-root sprawl agent. Identity is read from $SPRAWL_AGENT_IDENTITY:
 #   - "weave" (the root agent, see cmd/enter.go buildSessionEnv) => allowed.
-#   - any other non-empty value (a child agent)                  => BLOCKED on main.
+#   - any other non-empty value (a child agent)                  => BLOCKED.
 #   - unset/empty (a human running git directly)                 => allowed.
-# Any branch other than `main` is always allowed.
+# Any branch other than the protected branch is always allowed.
+#
+# The protected branch is the first positional arg ($1), defaulting to "main"
+# when absent (QUM-842). The dev repo symlinks this script directly as a hook
+# with no argument, so it keeps protecting "main" with byte-identical behavior;
+# `sprawl hooks install` invokes it with the target repo's detected default
+# branch. The branch is passed as an explicit arg (never a shared env var) so
+# the symlink path's protection target cannot be retargeted by the environment.
 #
 # This guards against the QUM-808 incident where an agent's Bash cwd drifted to
 # the main repo root and an absolute-path `git commit` silently landed on the
@@ -17,17 +24,18 @@
 # Invoked first by scripts/pre-commit (before `make validate`) so it fails fast.
 set -euo pipefail
 
+protected="${1:-main}"
 identity="${SPRAWL_AGENT_IDENTITY:-}"
 
 # Read the current branch via symbolic-ref so it works even before the first
 # commit (unborn branch). Empty on detached HEAD, which is not the incident.
 branch="$(git symbolic-ref --short -q HEAD || true)"
 
-if [[ "$branch" == "main" && -n "$identity" && "$identity" != "weave" ]]; then
+if [[ "$branch" == "$protected" && -n "$identity" && "$identity" != "weave" ]]; then
 	cat >&2 <<EOF
-ERROR: refusing commit to 'main' by agent '$identity' (QUM-808 guard).
+ERROR: refusing commit to '$protected' by agent '$identity' (QUM-808 guard).
 
-Agents must commit to their own worktree branch, never the shared 'main'.
+Agents must commit to their own worktree branch, never the shared '$protected'.
 Your Bash cwd has likely drifted to the main repo root. To fix:
 
   1. cd into your own worktree (git rev-parse --show-toplevel from there
@@ -35,9 +43,9 @@ Your Bash cwd has likely drifted to the main repo root. To fix:
        git rev-parse --abbrev-ref HEAD   # must be your branch, not 'main'
   2. Re-run your commit from inside your worktree using relative paths.
 
-Only weave (the root agent) may commit to 'main'. If a wrong-tree commit
-already landed on 'main', see the safe recovery procedure in CLAUDE.md
-("Commit guard") — do NOT run 'git reset --hard' on main yourself.
+Only weave (the root agent) may commit to '$protected'. If a wrong-tree commit
+already landed on '$protected', see the safe recovery procedure in CLAUDE.md
+("Commit guard") — do NOT run 'git reset --hard' on it yourself.
 EOF
 	exit 1
 fi

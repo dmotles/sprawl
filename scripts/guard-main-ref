@@ -2,26 +2,36 @@
 #
 # guard-main-ref (QUM-837)
 #
-# A git `reference-transaction` hook that REJECTS any update to refs/heads/main
-# by a non-root sprawl agent. Unlike the QUM-808 pre-commit guard, this fires on
-# the ref transaction itself, so it is NOT bypassed by `git commit --no-verify`
-# (the QUM-836 leak that defeated the pre-commit guard). Verified on git 2.34.1:
-# a non-zero exit in the `prepared` phase aborts the whole transaction
-# (`fatal: ref updates aborted by hook`), so the commit/reset/merge never lands.
+# A git `reference-transaction` hook that REJECTS any update to the protected
+# branch's ref by a non-root sprawl agent. Unlike the QUM-808 pre-commit guard,
+# this fires on the ref transaction itself, so it is NOT bypassed by `git commit
+# --no-verify` (the QUM-836 leak that defeated the pre-commit guard). Verified on
+# git 2.34.1: a non-zero exit in the `prepared` phase aborts the whole
+# transaction (`fatal: ref updates aborted by hook`), so the commit/reset/merge
+# never lands.
 #
 # Identity semantics EXACTLY match scripts/guard-main-commit ($SPRAWL_AGENT_IDENTITY):
-#   "weave" (the root agent)      => allowed (legitimately lands on main)
+#   "weave" (the root agent)      => allowed (legitimately lands on the branch)
 #   unset/empty (a human via git) => allowed
-#   any other non-empty identity  => BLOCKED, but ONLY for refs/heads/main
+#   any other non-empty identity  => BLOCKED, but ONLY for the protected ref
 #
 # git invokes a reference-transaction hook once per phase with the phase as $1
 # (one of: prepared | committed | aborted) and feeds the ref updates on stdin,
 # one "<old-oid> <new-oid> <ref-name>" line per ref. We act ONLY in the
 # `prepared` phase (rejecting there aborts the txn) and ONLY for the literal
-# ref refs/heads/main — a single commit's prepared batch also carries a `HEAD`
-# symref line and may carry feature-branch / refs/remotes/* lines, all of which
-# must pass. Acting in the `aborted` phase (which re-fires the same lines after
-# a prepared rejection) would double-report, so non-prepared phases exit 0.
+# protected ref refs/heads/<branch> — a single commit's prepared batch also
+# carries a `HEAD` symref line and may carry feature-branch / refs/remotes/*
+# lines, all of which must pass. Acting in the `aborted` phase (which re-fires
+# the same lines after a prepared rejection) would double-report, so non-prepared
+# phases exit 0.
+#
+# The protected branch is the SECOND positional arg ($2), defaulting to "main"
+# when absent (QUM-842) — git passes only the phase as $1 and never a $2, so it
+# is a safe injection slot. The dev repo symlinks this script directly as a hook
+# with no $2, so it keeps protecting "main" unchanged; `sprawl hooks install`
+# invokes it with the target repo's detected default branch. Passed as an
+# explicit arg (never a shared env var) so the symlink path cannot be retargeted
+# by the environment.
 #
 # NOTE: unlike scripts/pre-commit this hook does NOT run `make validate`, so it
 # does NOT unset GIT_* — it relies solely on git's own phase ($1) and stdin
@@ -29,6 +39,7 @@
 set -euo pipefail
 
 phase="${1:-}"
+protected="${2:-main}"
 identity="${SPRAWL_AGENT_IDENTITY:-}"
 
 # Fast path: only the prepared phase can reject, and root/human are exempt.
@@ -42,16 +53,16 @@ blocked=0
 # git always newline-terminates every ref-update line, but the `|| [[ -n "$ref" ]]`
 # tail makes the loop robust even to a final line lacking a trailing newline.
 while read -r _old _new ref || [[ -n "$ref" ]]; do
-	if [[ "$ref" == "refs/heads/main" ]]; then
+	if [[ "$ref" == "refs/heads/$protected" ]]; then
 		blocked=1
 	fi
 done
 
 if [[ "$blocked" -eq 1 ]]; then
 	cat >&2 <<EOF
-ERROR: refusing to update 'refs/heads/main' by agent '$identity' (QUM-837 guard).
+ERROR: refusing to update 'refs/heads/$protected' by agent '$identity' (QUM-837 guard).
 
-A non-root agent attempted to advance the shared 'main' ref. This is blocked
+A non-root agent attempted to advance the shared '$protected' ref. This is blocked
 regardless of how the update was attempted (commit, reset, merge — even with
 --no-verify). Agents must only mutate their own worktree branch.
 
@@ -59,9 +70,9 @@ If your Bash cwd / GIT_DIR has drifted to the main checkout, return to your
 worktree and confirm:
   git rev-parse --abbrev-ref HEAD   # must be your branch, not 'main'
 
-Only weave (the root agent) may advance 'main'. If a stray ref update already
-landed, see the safe recovery procedure in CLAUDE.md ("Commit guard") — do NOT
-run 'git reset --hard' on main yourself.
+Only weave (the root agent) may advance '$protected'. If a stray ref update
+already landed, see the safe recovery procedure in CLAUDE.md ("Commit guard") —
+do NOT run 'git reset --hard' on it yourself.
 EOF
 	exit 1
 fi
