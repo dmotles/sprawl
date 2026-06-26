@@ -47,11 +47,36 @@ func (r *RealCreator) Create(repoRoot, agentName, branchName, baseBranch string)
 		return "", "", fmt.Errorf("creating git worktree: %w", err)
 	}
 
+	// QUM-837 cheap invariant: assert the new worktree's real HEAD is the
+	// branch we asked for. `git worktree add -b` cannot silently detach or fall
+	// back to another branch (it hard-errors on a name collision), so this never
+	// fires in practice — but it guards against a future change to the add
+	// invocation reintroducing a silent-divergence path at the source.
+	if err := verifyWorktreeHEAD(worktreePath, branchName); err != nil {
+		return "", "", err
+	}
+
 	if err := SetupBeadsRedirect(repoRoot, worktreePath); err != nil {
 		return "", "", fmt.Errorf("setting up beads redirect: %w", err)
 	}
 
 	return worktreePath, branchName, nil
+}
+
+// verifyWorktreeHEAD asserts the worktree at worktreePath is checked out on
+// branchName, returning an error otherwise. Branch detection uses
+// `git symbolic-ref --short -q HEAD`, which yields empty (and a non-zero exit)
+// on a detached HEAD — both treated as a mismatch here, since a freshly created
+// agent worktree must be on its named branch. See QUM-837.
+func verifyWorktreeHEAD(worktreePath, branchName string) error {
+	cmd := exec.Command("git", "-C", worktreePath, "symbolic-ref", "--short", "-q", "HEAD") //nolint:gosec // arguments are not user-controlled
+	cmd.Stderr = io.Discard
+	out, _ := cmd.Output()
+	got := strings.TrimSpace(string(out))
+	if got != branchName {
+		return fmt.Errorf("worktree %s HEAD is %q, want branch %q (QUM-837: refusing a worktree not checked out on its intended branch)", worktreePath, got, branchName)
+	}
+	return nil
 }
 
 // SetupBeadsRedirect creates a .beads/redirect file in the worktree pointing

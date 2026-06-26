@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/dmotles/sprawl/internal/procutil"
+	"github.com/dmotles/sprawl/internal/runtimecfg"
 )
 
 // buildBashScriptCmd constructs the *exec.Cmd used by RunBashScript.
@@ -69,6 +70,38 @@ func RealBranchExists(repoRoot, branchName string) bool {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	return cmd.Run() == nil
+}
+
+// AssertNotOnMain hard-fails if a non-root agent's worktree HEAD is on branch
+// "main" (QUM-837 defense-in-depth, hook-independent). The root agent
+// (identity "weave") and a human running git directly (empty identity) are
+// exempt — mirroring the identity semantics of scripts/guard-main-commit and
+// scripts/guard-main-ref.
+//
+// Branch detection uses `git symbolic-ref --short -q HEAD`, which is empty on a
+// detached HEAD; a detached HEAD is not the incident this guards (an agent
+// operating *on* main), so it is treated as not-on-main and allowed.
+func AssertNotOnMain(worktreePath, identity string) error {
+	if identity == "" || identity == runtimecfg.DefaultRootName {
+		return nil
+	}
+	cmd := exec.Command("git", "-C", worktreePath, "symbolic-ref", "--short", "-q", "HEAD") //nolint:gosec // arguments are not user-controlled
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	if err != nil {
+		// Fail-open by design: any branch-resolution failure (detached HEAD
+		// via `-q`, a missing/broken worktree, a transient git error) is
+		// treated as not-on-main and allowed. This is a defense-in-depth layer
+		// — the reference-transaction hook (scripts/guard-main-ref) is the
+		// authoritative backstop, so a soft probe here must never wedge an
+		// agent on a benign git hiccup.
+		return nil //nolint:nilerr // branch-resolution failure is treated as not "on main"
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "main" {
+		return fmt.Errorf("agent %q worktree %s is on branch 'main'; a non-root agent must never operate on the shared 'main' branch (QUM-837). Its worktree HEAD likely drifted — confirm `git -C %s rev-parse --abbrev-ref HEAD` is the agent's own branch", identity, worktreePath, worktreePath)
+	}
+	return nil
 }
 
 // RealGitBranchDelete force-deletes a git branch using 'git branch -D'.

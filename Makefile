@@ -38,7 +38,9 @@ clean:
 hooks:
 	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 	chmod +x .git/hooks/pre-commit
-	@echo "Pre-commit hook installed."
+	ln -sf ../../scripts/guard-main-ref .git/hooks/reference-transaction
+	chmod +x .git/hooks/reference-transaction
+	@echo "Pre-commit and main-ref guard hooks installed."
 
 # Opt-in end-to-end smoke test for the TUI-mode parent-notification path
 # (QUM-312). Simulates a child agent by writing a state.json (state=complete,

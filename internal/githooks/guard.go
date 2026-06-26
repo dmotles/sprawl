@@ -20,3 +20,11 @@ func GuardMainCommitScript(repoRoot string) string {
 func PreCommitScript(repoRoot string) string {
 	return filepath.Join(repoRoot, "scripts", "pre-commit")
 }
+
+// GuardMainRefScript returns the path to the guard-main-ref reference-transaction
+// hook script given the repository root. See scripts/guard-main-ref (QUM-837):
+// it rejects any update to refs/heads/main by a non-root agent, and unlike the
+// pre-commit guard it is not bypassable by `git commit --no-verify`.
+func GuardMainRefScript(repoRoot string) string {
+	return filepath.Join(repoRoot, "scripts", "guard-main-ref")
+}

@@ -90,6 +90,39 @@ should run `make hooks` once in the main checkout** to cover the case where no
 agent worktree has been created yet — otherwise the guard stays dormant until
 the first worktree is spawned.
 
+### Reference-transaction backstop (QUM-837)
+
+The pre-commit guard above is **skippable by `git commit --no-verify`** (the
+QUM-836 leak forced agents onto `--no-verify`, which let the QUM-830 commit land
+on `main`). `scripts/guard-main-ref` closes that hole: it is a git
+`reference-transaction` hook — a class git does **not** skip under
+`--no-verify`. It rejects any update to `refs/heads/main` by a non-root agent
+**regardless of how the update was attempted** (commit, reset, merge, even
+`--no-verify`). Verified on git 2.34.1: a non-zero exit in the `prepared` phase
+aborts the whole transaction (`fatal: ref updates aborted by hook`).
+
+- **Identity semantics are identical to `guard-main-commit`**: `weave` (root)
+  allowed; unset/empty `$SPRAWL_AGENT_IDENTITY` (a human) allowed; only a
+  non-empty, non-`weave` identity is blocked.
+- **Keys strictly on `refs/heads/main`.** The hook fires for *all* ref updates
+  (fetch → `refs/remotes/*`, resets, other branches, the `HEAD` symref line);
+  only the literal `refs/heads/main` update is rejected, and only in the
+  `prepared` phase (the `aborted` phase re-fires the same lines and must stay
+  inert). Legitimate non-root work on other branches is unaffected.
+- **Auto-installed** via the same `.sprawl/config.yaml` `worktree.setup` path as
+  the pre-commit hook (idempotent `ln -sf` into
+  `$(git rev-parse --git-common-dir)/hooks/reference-transaction`), so it fires
+  from every worktree and the main checkout regardless of cwd. `make hooks`
+  installs it alongside the pre-commit hook.
+
+Sprawl also enforces a **hook-independent** defense in depth: a non-root agent
+whose worktree HEAD is on `main` is refused at resume/wake
+(`agentops.AssertNotOnMain`, wired into `Real.RecoverAgents` and `Real.Wake`),
+and `worktree.Create` asserts a freshly created worktree's HEAD is its intended
+branch. A stale advertised `AgentState.Branch` is self-healed (warn-only) from
+the worktree's real HEAD on resume/wake — never a hard error, since
+delegate-reuse legitimately diverges it and `merge.go` already untrusts it.
+
 ### Safe recovery from a wrong-tree commit on `main`
 
 If a commit ever lands on `main` by mistake, **do NOT have an agent run

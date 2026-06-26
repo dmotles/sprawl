@@ -148,6 +148,12 @@ type Real struct {
 	// nil and the package-level realGitRevParseHEAD is used. See QUM-572.
 	gitRevParseHEAD func(dir string) (string, error)
 
+	// gitCurrentBranch is an injectable seam for resolving a worktree's
+	// current branch name (empty on detached HEAD). Unit tests inject a
+	// fake; production callers leave this nil and the package-level
+	// realGitCurrentBranch is used. See QUM-837 (AgentState.Branch refresh).
+	gitCurrentBranch func(dir string) (string, error)
+
 	// heartbeat is the QUM-730 supervisor liveness-check goroutine. Started
 	// by NewReal when LivenessConfig.Enabled, stopped by Shutdown.
 	heartbeat *heartbeat
@@ -165,6 +171,44 @@ func realGitRevParseHEAD(dir string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// realGitCurrentBranch shells out to `git -C <dir> symbolic-ref --short -q HEAD`,
+// returning the worktree's current branch name (empty on a detached HEAD; the
+// `-q` exit-non-zero is swallowed by the caller). stdio is redirected to
+// io.Discard for the same TUI FD-leak reason as realGitRevParseHEAD. See
+// QUM-837.
+func realGitCurrentBranch(dir string) (string, error) {
+	cmd := exec.Command("git", "-C", dir, "symbolic-ref", "--short", "-q", "HEAD") //nolint:gosec // arguments are not user-controlled
+	cmd.Stderr = io.Discard
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// refreshAgentBranch self-heals a stale advertised AgentState.Branch by
+// resolving the worktree's real current branch and, if it differs, warning and
+// persisting the corrected value. Warn-only by design (QUM-837): delegate-reuse
+// legitimately diverges the spawn-time branch, and merge.go already untrusts
+// AgentState.Branch — so this never hard-fails. A detached HEAD (empty result)
+// or resolution error is left untouched.
+func (r *Real) refreshAgentBranch(agent *state.AgentState) {
+	resolve := r.gitCurrentBranch
+	if resolve == nil {
+		resolve = realGitCurrentBranch
+	}
+	actual, err := resolve(agent.Worktree)
+	if err != nil || actual == "" || actual == agent.Branch {
+		return
+	}
+	slog.Warn("supervisor: refreshing stale advertised branch from worktree HEAD",
+		"agent", agent.Name, "advertised", agent.Branch, "actual", actual)
+	agent.Branch = actual
+	if sErr := state.SaveAgent(r.sprawlRoot, agent); sErr != nil {
+		slog.Warn("supervisor: refreshAgentBranch save", "agent", agent.Name, "err", sErr)
+	}
 }
 
 // SetProgressEmitter installs a fan-out hook invoked for every merge/retire
@@ -996,6 +1040,15 @@ func (r *Real) Wake(ctx context.Context, agentName string, reason agentpkg.WakeR
 			Starter:    r.runtimeStarter,
 		})
 	}
+	// QUM-837: a non-root agent must never be woken onto the shared 'main'
+	// branch (defense-in-depth, hook-independent). Also self-heal a stale
+	// advertised AgentState.Branch from the worktree's real HEAD (warn-only).
+	if st, lErr := state.LoadAgent(r.sprawlRoot, agentName); lErr == nil {
+		if err := agentops.AssertNotOnMain(st.Worktree, agentName); err != nil {
+			return nil, err
+		}
+		r.refreshAgentBranch(st)
+	}
 	// QUM-726: capture the projected previous-state token BEFORE the wake
 	// path tears the runtime down, so the wake-prompt template can interpolate
 	// it. Falls back to the empty string when the projection is unavailable.
@@ -1166,6 +1219,17 @@ func (r *Real) RecoverAgents(_ context.Context) (resumed int, failed int, errs [
 	ordered := bfsByParent(eligible, r.callerName)
 	for _, a := range ordered {
 		agent := a
+		// QUM-837 defense-in-depth: a non-root agent must never resume while
+		// its worktree HEAD is on the shared 'main' branch. Hard-skip such an
+		// agent (record a failure) rather than starting a runtime on main.
+		if err := agentops.AssertNotOnMain(agent.Worktree, agent.Name); err != nil {
+			failed++
+			errs = append(errs, fmt.Errorf("resume %q: %w", agent.Name, err))
+			continue
+		}
+		// QUM-837: self-heal a stale advertised AgentState.Branch from the
+		// worktree's real HEAD (warn-only; delegate-reuse legitimately diverges).
+		r.refreshAgentBranch(agent)
 		rt := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
 			SprawlRoot: r.sprawlRoot,
 			Agent:      agent,
