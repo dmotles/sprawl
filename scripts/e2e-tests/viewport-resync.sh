@@ -98,69 +98,14 @@ test_run() {
     fi
     pass "QUM-669: no wedged turn-state chip after resync (AC #4)"
 
-    # ---------------------------------------------------------------------
-    # QUM-775 scenario: dropped-terminal-event recovery.
-    #
-    # Drop the first terminal SessionResultMsg of a fresh subscription via
-    # SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG=1 and shorten the TUI watchdog to
-    # ~3s via SPRAWL_TUI_WATCHDOG_TIMEOUT_MS=3000. Without the watchdog, the
-    # TUI would stay in TurnStreaming forever after the dropped terminal.
-    # With the watchdog, finalizeTurn fires and the status bar clears within
-    # the timeout window.
-    # ---------------------------------------------------------------------
-    echo ""
-    echo "=== QUM-775: dropped-terminal-event watchdog recovery ==="
-    # Tear down the QUM-669 session and give the parent sprawl process a
-    # moment to release its weave.lock before we re-launch into a fresh
-    # sandbox root for the next scenario.
+    # NOTE (QUM-829): a former QUM-775 dropped-terminal watchdog-recovery
+    # scenario lived here. The QUM-775 TUI liveness watchdog was removed in
+    # QUM-829 — terminal events are now undroppable on the EventBus
+    # (eventbus.isTerminalEvent / terminalPublishDeadline) and the QUM-669
+    # gap-detect resync above is the sole wedge recovery, so the watchdog and
+    # its SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG seam no longer exist.
+
     _stmux kill-session -t "$SESSION" 2>/dev/null || true
-    sleep 2
-    unset SPRAWL_DEBUG_GAP_INJECT
-    export SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG=1
-    export SPRAWL_TUI_WATCHDOG_TIMEOUT_MS=3000
-
-    # Fresh sandbox so we don't trip the previous run's weave.lock.
-    local PRIOR_ROOT="$SPRAWL_ROOT"
-    e2e_make_sandbox_root "sprawl-qum775-drop-terminal"
-    e2e_init_sandbox_repo
-    echo "  SPRAWL_ROOT=$SPRAWL_ROOT (prior=$PRIOR_ROOT)"
-
-    local SESSION775="sprawl-viewport-resync-775-$(head -c4 /dev/urandom | xxd -p)"
-    echo "  SESSION=$SESSION775"
-    echo "  SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG=$SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG"
-    echo "  SPRAWL_TUI_WATCHDOG_TIMEOUT_MS=$SPRAWL_TUI_WATCHDOG_TIMEOUT_MS"
-
-    if ! e2e_launch_tui "$SESSION775" 200 50; then
-        return 1
-    fi
-    pass "QUM-775: TUI re-launched with dropped-terminal seam"
-
-    if capture_pane "$SESSION775" | grep -q "trust this folder" 2>/dev/null; then
-        _stmux send-keys -t "$SESSION775" "1" Enter
-        sleep 1
-    fi
-    sleep 3
-    e2e_attach_phantom_client "$SESSION775"
-
-    echo ""
-    echo "=== QUM-775: sending prompt to trigger a terminal event ==="
-    e2e_send_user_prompt "$SESSION775" "Reply with exactly the word DONE and nothing else."
-
-    # Give the turn time to complete + watchdog (3s timeout + 5s tick + slop).
-    echo ""
-    echo "=== QUM-775: waiting for watchdog to recover wedged turn ==="
-    sleep 12
-
-    if capture_pane "$SESSION775" | grep -qE "Streaming\.\.\.|Thinking\.\.\."; then
-        fail "QUM-775: TUI still wedged after dropped terminal + watchdog window"
-        echo "  pane tail:" >&2
-        capture_pane "$SESSION775" | tail -40 >&2
-        e2e_print_results
-        return 1
-    fi
-    pass "QUM-775: TUI recovered from dropped terminal event (no Streaming/Thinking)"
-
-    _stmux kill-session -t "$SESSION775" 2>/dev/null || true
 
     e2e_print_results
 }

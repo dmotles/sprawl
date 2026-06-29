@@ -1,19 +1,17 @@
 package tui
 
-// QUM-671 — TUI rewrite S1 (unwired).
+// QUM-671 — chat render model.
 //
-// ChatList is the future replacement for the ViewportModel's `messages` slice
-// + renderMessages walk. S2+ wires it in via a dual-append shim alongside the
-// existing viewport; S6 deletes the old surface. See
-// docs/designs/tui-structural-rewrite-plan.md §3.
+// ChatList is the sole chat render source: it owns the item list and the
+// per-(width, expanded) render cache that ViewportModel/ChatRegion display.
+// (The pre-S6 ViewportModel `messages` slice + renderMessages walk and the
+// migration-era dual-append shim are gone — see
+// docs/designs/tui-structural-rewrite-plan.md §3.)
 //
-// Contract notes the next slice owner inherits:
-//   - No AppendStatus/AppendError/AppendBanner here. Those are S5
-//     "contract violators" routed elsewhere (status bar / overlays). Their
-//     omission is the in-code enforcement plan §3 S5 + §4.4 promise.
-//   - A future Reset([]Item) (or Reset([]MessageEntry) per
-//     qum-669-viewport-wedge-recovery.md §3) belongs in S3 alongside its
-//     wiring use-site. Adding it here without a consumer invites bit-rot.
+// Contract notes:
+//   - No AppendStatus/AppendError/AppendBanner here. Those "contract
+//     violators" are routed elsewhere (status bar / overlays) per the
+//     in-code enforcement plan §3 S5 + §4.4.
 //   - Width-0 guard (plan §5 resolved Q7): Render no-ops until SetSize is
 //     called with width > 0. SetSize is the only mutator of the width field,
 //     so a zero sentinel is sufficient.

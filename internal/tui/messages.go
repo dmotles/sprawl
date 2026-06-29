@@ -894,14 +894,6 @@ type mcpOpThresholdMsg struct {
 	CallID string
 }
 
-// TurnWatchdogTickMsg is the periodic check that recovers from a wedged
-// turnState — i.e. the TUI is stuck in TurnStreaming/TurnThinking after a
-// dropped terminal EventTurnCompleted. The reducer queries the optional
-// LivenessProbe capability on the bridge and, if the runtime is idle yet
-// the TUI thinks a turn is in flight, forces finalizeTurn(). Self-
-// perpetuating: each tick schedules the next. (QUM-775 item 2.)
-type TurnWatchdogTickMsg struct{}
-
 // EventDropDetectedMsg signals that the TUIAdapter observed a gap in the
 // EventBus sequence number stream (QUM-669). From/To bracket the gap (From
 // is the last good seq the adapter saw, To is the seq of the first event

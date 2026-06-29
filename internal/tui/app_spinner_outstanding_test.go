@@ -119,8 +119,9 @@ func TestSpinner_ClearsAfterRecallToEmpty(t *testing.T) {
 	}
 }
 
-// isBusy is the authoritative backstop: even if the watchdog force-finalizes
-// turnState to Idle while queued work remains, isBusy stays true.
+// isBusy is the authoritative backstop: even if the turn finalizes to Idle
+// (via the terminal SessionResultMsg) while queued work remains, isBusy
+// stays true.
 func TestSpinner_IsBusyTrueWhileQueuedDespiteIdleTurn(t *testing.T) {
 	app, _ := idleTrackingApp(t)
 	app = deliver(t, app, UserMessageSentMsg{UUID: "u1", Text: "alpha"})

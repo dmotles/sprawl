@@ -688,3 +688,11 @@ QUM-399 design narrative — treat those mentions as historical.
 `SendInterruptResult` types have been **deleted**. The final canonical
 messaging surface is just `send_message(to, body, interrupt)` and
 `report_status(state, summary)`.
+
+**Update (QUM-821 / QUM-829):** `ForceInterruptForDelivery` (and the
+`unifiedHandle.ForceInterruptDelivery` / `RuntimeHandle.ForceInterruptDelivery`
+plumbing) have been **deleted**. Interrupt-class traffic no longer rides a
+dedicated force-interrupt path: `UnifiedRuntime.Interrupt` is the only interrupt
+entry point (a bare Esc-abort frame, no content), and message urgency is carried
+by a `priority:"now"` stdin drain via `WakeForDelivery`, not a bare interrupt.
+The QUM-550-era references to `ForceInterruptForDelivery` above are historical.

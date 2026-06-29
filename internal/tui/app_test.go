@@ -483,6 +483,35 @@ func TestAppModel_SessionResultMsg_WithError(t *testing.T) {
 	}
 }
 
+// TestAppModel_StreamingTurnFinalizesOnTerminalEvent is the QUM-829 regression
+// guard for the QUM-775/826 wedge class after the TUI liveness watchdog was
+// removed. It proves the native finalize path is self-sufficient: a turn left
+// in TurnStreaming (as it would be after a long quiescent stretch) returns to
+// TurnIdle purely on the terminal SessionResultMsg, with no watchdog tick
+// armed. Terminal events are kept undroppable on the EventBus
+// (eventbus.isTerminalEvent / terminalPublishDeadline) and the QUM-669
+// gap-detect resync remains the recovery for genuine drops; this test pins the
+// happy-path finalize that the watchdog used to backstop.
+func TestAppModel_StreamingTurnFinalizesOnTerminalEvent(t *testing.T) {
+	// Both states the removed watchdog used to backstop ("stuck in
+	// Streaming/Thinking") must finalize on the terminal event alone.
+	for _, wedged := range []TurnState{TurnStreaming, TurnThinking} {
+		t.Run(wedged.String(), func(t *testing.T) {
+			m := newTestAppModel(t)
+			resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			app := resized.(AppModel)
+			app.setTurnState(wedged)
+
+			updated, _ := app.Update(SessionResultMsg{Result: "done", NumTurns: 1})
+			app = updated.(AppModel)
+
+			if app.turnState != TurnIdle {
+				t.Errorf("turnState = %v after terminal SessionResultMsg from %v, want TurnIdle (native finalize must not depend on the removed watchdog)", app.turnState, wedged)
+			}
+		})
+	}
+}
+
 func TestAppModel_SessionErrorMsg_SetsTurnStateIdle(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

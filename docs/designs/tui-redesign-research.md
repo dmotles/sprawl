@@ -569,12 +569,15 @@ the redesign:
     - `paste-coalesce` — covers `resolveEnterDeps.runProgram`.
       **Survives** if we keep the coalescer at the program
       construction site.
-16. **`unifiedHandle.ForceInterruptDelivery` + `drainPendingToQueue`**
-    (QUM-619, `internal/supervisor/runtime_launcher.go`). The
-    idle-recipient gate ensures interrupts only land when the
-    recipient is idle. Untouched by the redesign — it lives
-    below the TUI — but is the load-bearing assumption that
-    inbox drains never cross-talk with mid-turn streams.
+16. **Idle-recipient interrupt gate** (QUM-619,
+    `internal/supervisor/runtime_launcher.go`). The gate ensures
+    interrupts only land when the recipient is idle. Untouched by the
+    redesign — it lives below the TUI — but is the load-bearing
+    assumption that inbox drains never cross-talk with mid-turn
+    streams. (Update QUM-821/829: the original `unifiedHandle.ForceInterruptDelivery`
+    + `drainPendingToQueue` plumbing that implemented this gate was
+    deleted; urgency now rides a `priority:"now"` stdin drain via
+    `WakeForDelivery`, not a force-interrupt path.)
 
 ---
 

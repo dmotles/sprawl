@@ -32,16 +32,6 @@ import (
 // row script.
 const debugGapInjectEnv = "SPRAWL_DEBUG_GAP_INJECT"
 
-// debugDropTerminalEnv is a TEST-ONLY debug seam used by the QUM-775
-// `viewport-resync` e2e matrix row (dropped-terminal-event scenario). If
-// set to "1", the adapter swallows the FIRST translated terminal msg
-// (SessionResultMsg / InterruptCompletedMsg) of the current subscription
-// without delivering it to the AppModel — simulating a dropped terminal
-// EventBus event on the wire. The TUI's wedge-recovery watchdog (QUM-775
-// item 2) is expected to detect the resulting TurnStreaming wedge and
-// finalize. One-shot per subscription. Not user-facing.
-const debugDropTerminalEnv = "SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG"
-
 // adapterEventBufferSize is the per-subscription buffer used by the adapter.
 // Sized generously so a TUI render hiccup doesn't drop content blocks.
 const adapterEventBufferSize = 64
@@ -81,13 +71,6 @@ type TUIAdapter struct {
 	// fabricates an EventDropDetectedMsg with Missing=injectGap on the second
 	// event of the subscription, then zeros the field. See debugGapInjectEnv.
 	injectGap uint64
-	// dropNextTerminal is the TEST-ONLY one-shot toggle read from
-	// SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG at subscribe time. When true, the
-	// adapter swallows the first translated terminal msg (SessionResultMsg
-	// or InterruptCompletedMsg) of the subscription and continues to read
-	// further events; the AppModel sees no terminal and the QUM-775
-	// watchdog must recover.
-	dropNextTerminal bool
 }
 
 // NewTUIAdapter subscribes to the runtime's EventBus and returns an adapter
@@ -119,7 +102,6 @@ func (a *TUIAdapter) subscribe(rt *sprawlrt.UnifiedRuntime) {
 			a.injectGap = n
 		}
 	}
-	a.dropNextTerminal = os.Getenv(debugDropTerminalEnv) == "1"
 }
 
 // Initialize returns a tea.Cmd that starts the underlying runtime. On
@@ -231,27 +213,9 @@ func (a *TUIAdapter) WaitForEvent() tea.Cmd {
 			if ev.Seq > a.lastSeq {
 				a.lastSeq = ev.Seq
 			}
-			dropTerminal := a.dropNextTerminal
 			a.mu.Unlock()
 
 			if msg := tui.TranslateRuntimeEvent(ev, tui.InterruptedAsCompleted); msg != nil {
-				// QUM-775 e2e test seam: swallow the first terminal msg of
-				// the subscription so the AppModel watchdog has a wedge to
-				// recover from.
-				if dropTerminal {
-					if _, isResult := msg.(tui.SessionResultMsg); isResult {
-						a.mu.Lock()
-						a.dropNextTerminal = false
-						a.mu.Unlock()
-						continue
-					}
-					if _, isInterrupt := msg.(tui.InterruptCompletedMsg); isInterrupt {
-						a.mu.Lock()
-						a.dropNextTerminal = false
-						a.mu.Unlock()
-						continue
-					}
-				}
 				return msg
 			}
 		}
@@ -328,21 +292,6 @@ func (a *TUIAdapter) SendAllNow() tea.Cmd {
 		err := rt.SendAllNow(context.Background())
 		return tui.SendAllNowResultMsg{Err: err}
 	}
-}
-
-// RuntimeInTurn implements tui.LivenessProbe (QUM-775 item 2). Returns
-// true when the underlying UnifiedRuntime reports it is currently in a
-// turn. The AppModel watchdog uses this as a backstop: when turnState has
-// been stuck in Streaming/Thinking with no bus activity for >watchdogTimeout,
-// it queries this to decide whether to force-finalize a wedged turn.
-func (a *TUIAdapter) RuntimeInTurn() bool {
-	a.mu.Lock()
-	rt := a.runtime
-	a.mu.Unlock()
-	if rt == nil {
-		return false
-	}
-	return rt.State().InTurn
 }
 
 // Close cancels the adapter's EventBus subscription. Part of the
