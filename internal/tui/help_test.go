@@ -33,10 +33,28 @@ func TestHelpModel_View_ContainsAllBindings(t *testing.T) {
 		"Scroll output",
 		"Quit",
 		"Dismiss help",
+		// QUM-845: message-queueing shortcuts.
+		"Send all queued messages now (flush)",
+		"Recall queued messages into input",
+		"Queues the message",
 	}
 	for _, exp := range expected {
 		if !strings.Contains(view, exp) {
 			t.Errorf("View() should contain %q, got:\n%s", exp, view)
+		}
+	}
+}
+
+// QUM-845: the queueing shortcuts must be annotated weave-only so they aren't
+// implied to work while observing a child.
+func TestHelpModel_View_QueueingShortcutsAreWeaveOnly(t *testing.T) {
+	m := newTestHelpModel(t)
+	m.SetSize(80, 24)
+	view := stripANSI(m.View())
+
+	for _, exp := range []string{"(weave)", "(weave busy)"} {
+		if !strings.Contains(view, exp) {
+			t.Errorf("View() should annotate queueing shortcuts with %q, got:\n%s", exp, view)
 		}
 	}
 }
@@ -46,7 +64,7 @@ func TestHelpModel_View_ContainsKeyLabels(t *testing.T) {
 	m.SetSize(80, 24)
 	view := stripANSI(m.View())
 
-	keys := []string{"F1", "PgUp", "PgDn", "Ctrl+C", "Esc"}
+	keys := []string{"F1", "PgUp", "PgDn", "Ctrl+C", "Esc", "Ctrl+G", "Ctrl+U"}
 	for _, key := range keys {
 		if !strings.Contains(view, key) {
 			t.Errorf("View() should contain key label %q, got:\n%s", key, view)
