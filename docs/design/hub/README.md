@@ -31,19 +31,19 @@ configured.
 | 00 | [overview](00-overview.md) | Problem/why, solution shape, prior-art & build-vs-adopt, north-star vision (not committed) | draft |
 | 01 | [architecture](01-architecture.md) | Topology, event-log spine, connected/disconnected, identity/lease/fence, how the pieces fit | draft |
 | 02 | [components](02-components.md) | Breakdown of hub-side services and host-side agent additions | draft |
-| 03 | api-surfaces | Connect/protobuf RPCs; long-lived-connection viability under cloud LBs | todo |
-| 04 | authentication | OIDC relying-party, host→hub PATs, user allowlist | todo |
-| 05 | observability | Logging, metrics, tracing, health endpoints | todo |
-| 06 | iac | Terraform layout (`azure/` first, AWS door open); parameterization | todo |
-| 07 | storage-persistence | DB interface, migration tooling, retention/GC, conceptual schema | todo |
-| 08 | deployment | Single Go container, embedded frontend, container-cloud deploy | todo |
+| 03 | [api-surfaces](03-api-surfaces.md) | Connect/protobuf RPCs; long-lived-connection viability under cloud LBs | draft |
+| 04 | [authentication](04-authentication.md) | OIDC relying-party, host→hub PATs, user allowlist | draft |
+| 05 | [observability](05-observability.md) | Logging, metrics, tracing, health endpoints | draft |
+| 06 | [iac](06-iac.md) | Terraform layout (`azure/` first, AWS door open); parameterization | draft |
+| 07 | [storage-persistence](07-storage-persistence.md) | DB interface, migration tooling, retention/GC, conceptual schema | draft |
+| 08 | [deployment](08-deployment.md) | Single Go container, embedded frontend, container-cloud deploy | draft |
 | 09 | [synchronization](09-synchronization.md) | Version-vector reconnect, lease/fence flows, force-reclaim reconcile | draft |
-| 10 | memory | Portable per-(project,agent) memory streams, provenance, no textual merge | todo |
-| 11 | frontend-stack | SPA framework selection (open research) | todo |
-| 12 | testability-local-dev | Local hub, in-memory backends, fakes, e2e story | todo |
-| — | security-privacy | Threat model + content trust model | todo |
-| — | attachments-multimodal | Screenshot/image ingestion + Claude image-input feasibility | todo |
-| 13 | implementation-plan | MVP sprint plan (written last) | todo |
+| 10 | [memory](10-memory.md) | Portable per-(project,agent) memory streams, provenance, no textual merge | draft |
+| 11 | [frontend-stack](11-frontend-stack.md) | SPA framework selection (open research) | draft |
+| 12 | [testability-local-dev](12-testability-local-dev.md) | Local hub, in-memory backends, fakes, e2e story | draft |
+| — | [security-privacy](security-privacy.md) | Threat model + content trust model | draft |
+| — | [attachments-multimodal](attachments-multimodal.md) | Screenshot/image ingestion + Claude image-input feasibility | draft |
+| 13 | [implementation-plan](13-implementation-plan.md) | MVP sprint plan: phased build, transport reconciliation, de-risking spike, cost envelope, consolidated open questions (written last) | draft |
 
 > Leaf docs own their own files. This index is **not** meant to be edited by leaf
 > authors beyond flipping their row's status to `draft`/`done`.
