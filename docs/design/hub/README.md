@@ -30,7 +30,7 @@ configured.
 |---|-----|-------------|--------|
 | 00 | [overview](00-overview.md) | Problem/why, solution shape, prior-art & build-vs-adopt, north-star vision (not committed) | draft |
 | 01 | [architecture](01-architecture.md) | Topology, event-log spine, connected/disconnected, identity/lease/fence, how the pieces fit | draft |
-| 02 | components | Breakdown of hub-side services and host-side agent additions | todo |
+| 02 | [components](02-components.md) | Breakdown of hub-side services and host-side agent additions | draft |
 | 03 | api-surfaces | Connect/protobuf RPCs; long-lived-connection viability under cloud LBs | todo |
 | 04 | authentication | OIDC relying-party, host→hub PATs, user allowlist | todo |
 | 05 | observability | Logging, metrics, tracing, health endpoints | todo |
