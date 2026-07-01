@@ -37,7 +37,7 @@ configured.
 | 06 | iac | Terraform layout (`azure/` first, AWS door open); parameterization | todo |
 | 07 | storage-persistence | DB interface, migration tooling, retention/GC, conceptual schema | todo |
 | 08 | deployment | Single Go container, embedded frontend, container-cloud deploy | todo |
-| 09 | synchronization | Version-vector reconnect, lease/fence flows, force-reclaim reconcile | todo |
+| 09 | [synchronization](09-synchronization.md) | Version-vector reconnect, lease/fence flows, force-reclaim reconcile | draft |
 | 10 | memory | Portable per-(project,agent) memory streams, provenance, no textual merge | todo |
 | 11 | frontend-stack | SPA framework selection (open research) | todo |
 | 12 | testability-local-dev | Local hub, in-memory backends, fakes, e2e story | todo |
