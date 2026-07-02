@@ -1,13 +1,14 @@
 # 07 — Storage & Persistence
 
 *The hub's durable substrate: a `Store` interface (in-memory + Postgres), the
-migration tooling that lets the schema evolve safely, a **conceptual** entity
-sketch, and retention/GC defaults.*
+migration tooling that lets the schema evolve safely, and a **conceptual** entity
+sketch. Scoped for the **MVP: a single-user cloud companion** — relay the live
+stream and durably persist memory, transcripts, and attachments.*
 
-See also: [`01-architecture.md`](01-architecture.md) (§2 event-log spine, §4
-lease/fence, §7 stack) · [`09-synchronization`](09-synchronization.md) (retention
-floor, ack watermarks, fence durability) · [`10-memory`](10-memory.md) (versioned
-blob layout) · [`06` iac](README.md) · [index](README.md)
+See also: [`01-architecture.md`](01-architecture.md) (§2 durable stream, §4
+active-host marker, §7 stack) · [`09-synchronization`](09-synchronization.md)
+(one seq'd stream, fresh-connect vs. reconnect delta) · [`10-memory`](10-memory.md)
+(checkpoint blob layout) · [`06` iac](README.md) · [index](README.md)
 
 ---
 
@@ -20,21 +21,44 @@ does **not** try to nail down every column. The maintainer's explicit guidance:
 > know what we don't know. **Migration tooling is precisely what lets us defer
 > that.** Name the likely entities at a sketch level and stop.
 
-So the load-bearing decisions here are (1) the **`Store` interface** that isolates
-the app from the DB, and (2) the **migration tooling** that lets the schema grow.
-The entity sketch (§4) is deliberately high-level.
+### MVP framing (v2 re-scope)
 
-Two storage backends, per [`01` §7](01-architecture.md#7-stack-at-a-glance-rationale-validated-in-leaf-docs):
+The hub is a **cloud companion for a single user**. It does two durable jobs:
+
+1. **Relay** the host's live stream to connected viewers.
+2. **Persist** memory checkpoints, session transcripts, and attachments so the
+   user can pick up from anywhere and never lose history.
+
+That framing collapses a lot of earlier complexity. The load-bearing decisions
+that remain are (1) the **`Store` interface** that isolates the app from the DB,
+and (2) the **migration tooling** that lets the schema grow. The entity sketch
+(§4) is deliberately high-level.
+
+**Explicitly out of scope for v1** (deleted from this design, not merely
+deferred unless noted):
+
+| Cut | Rationale |
+|---|---|
+| **Multi-tenancy** | Single user. A `user_id` column exists and is *always the same value*; no tenant isolation, no per-tenant enforcement. |
+| **OIDC / SSO** | Auth is a **bearer token** ([`04`](README.md)). The `tokens` table stores **hashed** bearer token(s) — nothing more. |
+| **Version-vector / reconcile for memory** | Memory sync is **last-writer-wins checkpoint sync**. Provenance metadata columns are *kept*; the vector-clock/merge machinery is cut. |
+| **Fence tokens / lease epochs** | Write authority is a **trivial advisory active-host marker row** — no fence column, no lease-epoch, no lease table. |
+| **GC / retention windows** | **Keep everything indefinitely** — transcripts, attachments, memory. Revisit only if storage becomes a real problem. |
+| **Snapshots** | No snapshot bodies in v1. The durable seq'd stream is the only replay source. |
+| **Separate ephemeral event-log + snapshot layering** | There is **one** durable, append-only, seq'd stream per session (§4). It *is* the transcript and it serves both fresh-connect full-send and reconnect delta. |
+| **Client-side encryption** | Deferred. Blob bodies are stored as-is (bucket-level encryption from the cloud provider only). |
+
+Two storage substrates, per [`01` §7](01-architecture.md#7-stack-at-a-glance-rationale-validated-in-leaf-docs):
 
 | Substrate | Holds | Library |
 |---|---|---|
-| **Postgres** | Event-log segments, registry, metadata, indexes, watermarks, leases | managed Postgres |
-| **Object storage** | Blobs: attachments, snapshot bodies, memory-unit bodies, transcripts | `gocloud.dev/blob` (`memblob`/`fileblob` for tests) |
+| **Postgres** | Light **index / registry**: users, tokens, hosts, projects, the active-host marker, per-session stream index, memory-unit index, attachment index | managed Postgres |
+| **Object storage** | **Bodies**: the seq'd session stream (transcript), memory-unit bodies, attachment blobs | `gocloud.dev/blob` (`memblob`/`fileblob` for tests); secrets via `gocloud.dev/secrets` |
 
-The split is intentional: **Postgres stores the *index and the small, queryable
-truth*; blob storage stores the *large, opaque bodies*.** Snapshots, memory units,
-and transcripts have a small PG index row (seq, provenance, blob key) and a large
-body in blob storage. This keeps row sizes bounded and lets the two substrates
+The split is intentional: **Postgres stores the *small, queryable index*; blob
+storage stores the *large, opaque bodies*.** Each stream event, memory unit, and
+attachment has a small PG index row (seq/key, provenance, blob key) and its body
+lives in blob storage. This keeps row sizes bounded and lets the two substrates
 scale and be priced independently.
 
 ---
@@ -48,38 +72,37 @@ imports `database/sql` or a blob SDK directly; it depends on `Store`.
 // Package store is the hub's persistence boundary. App code depends on this
 // interface only — never on a concrete driver.
 type Store interface {
-    // Event log (per run-id append-only; §4, spine in 01 §2 / 09)
-    AppendEvents(ctx, runID RunID, events []Event) (highSeq Seq, err error)
-    ReadEvents(ctx, runID RunID, fromSeq, toSeq Seq) ([]Event, error)
-    HeadSeq(ctx, runID RunID) (Seq, error)
+    // The durable seq'd session stream (§4). ONE append-only seq'd log per
+    // session — it is the transcript. Serves both fresh-connect full send
+    // (from seq 0) and reconnect delta (from a client's last seq).
+    AppendStream(ctx, sess SessionID, events []Event) (highSeq Seq, err error)
+    ReadStream(ctx, sess SessionID, fromSeq, toSeq Seq) ([]Event, error)
+    HeadSeq(ctx, sess SessionID) (Seq, error)
 
-    // Snapshots (index in PG, body in blob; §4)
-    PutSnapshot(ctx, runID RunID, seq Seq, body BlobRef) error
-    NewestSnapshot(ctx, runID RunID, atOrBelow Seq) (*SnapshotMeta, error)
-
-    // Registry: hosts, runs, instances/leases (§4)
+    // Registry: hosts, projects, and the advisory active-host marker (§3).
     UpsertHost(ctx, HostRecord) error
-    ClaimLease(ctx, project ProjectID, holder HostID) (fence Fence, err error) // §3-fence
-    RenewLease(ctx, project ProjectID, holder HostID, fence Fence) error
-    ReadLease(ctx, project ProjectID) (*Lease, error)
+    SetActiveHost(ctx, project ProjectID, holder HostID) error // advisory only
+    ReadActiveHost(ctx, project ProjectID) (*ActiveHost, error)
 
-    // Ack watermarks (drive retention floor + outbound-buffer trim; 09 §4)
-    SetWatermark(ctx, consumer ConsumerID, runID RunID, seq Seq) error
-    RetentionFloor(ctx, runID RunID) (Seq, error)
+    // Memory: last-writer-wins checkpoint index (bodies in blob; 10).
+    // Provenance metadata is retained on each unit; no version-vector merge.
+    PutMemoryUnit(ctx, key StreamKey, unit MemoryUnitMeta) error
+    ReadMemoryUnits(ctx, key StreamKey) ([]MemoryUnitMeta, error)
 
-    // Memory stream index (bodies in blob; 10 §5)
-    AppendMemoryUnit(ctx, key StreamKey, unit MemoryUnitMeta) error
-    ReadMemoryUnits(ctx, key StreamKey, sinceSeq Seq) ([]MemoryUnitMeta, error)
-
-    // Blob handle (attachments, bodies) — thin wrapper over gocloud.dev/blob
+    // Blob handle (transcripts, memory bodies, attachments) —
+    // thin wrapper over gocloud.dev/blob.
     Blobs() BlobStore
 
     // Cross-cutting
-    GC(ctx, GCPolicy) (GCReport, error) // §5
-    Migrate(ctx) error                  // §2: apply pending migrations at boot
+    Migrate(ctx) error // §2: apply pending migrations at boot
     Close() error
 }
 ```
+
+> **No `GC` method.** v1 keeps everything (§0). If storage ever becomes a real
+> problem, retention lands as a *new* method + migration — not a v1 concern.
+> **No `PutSnapshot` / `ClaimLease` / `SetWatermark`** either — snapshots, leases,
+> and ack-watermark retention plumbing are all cut per the re-scope.
 
 Two implementations, both required from day one:
 
@@ -120,8 +143,8 @@ The schema **will** change as we learn what we don't yet know (§0). The tool mu
    with `go:embed` ([`01` §7](01-architecture.md)); migrations ship in the binary
    the same way, no sidecar files at deploy.
 3. Support **Go-based migrations**, not just SQL — some evolutions are *data*
-   transforms (e.g. backfilling provenance onto old memory-unit rows, recomputing a
-   watermark) that pure SQL can't express cleanly.
+   transforms (e.g. backfilling provenance onto old memory-unit rows) that pure SQL
+   can't express cleanly.
 
 ### Evaluation
 
@@ -172,24 +195,28 @@ run migrations.
 
 ---
 
-## 3. Fence-token durability (sync requirement → storage decision)
+## 3. Write authority — an advisory active-host marker (no fence/lease)
 
-[`09` §5](09-synchronization.md#5-fence-tokens-on-uplink-writes-stale-fence-rejection)
-flags this as a storage decision but sets a hard requirement: the fence token must
-be **monotonic across a hub DB failover**. Two options:
+The hub is a **companion**, not the source of truth: the host owns the session.
+For a single user with (typically) one active host, write authority needs only a
+**trivial advisory marker** — a single row per project recording which host is
+currently the active writer:
 
-- **Global free-running counter** — one sequence for all leases. Simplest, but a
-  restore-from-backup could *reset* it, and a reused-lower fence would let a zombie
-  writer's stale write be wrongly accepted. Blast radius = every lease.
-- **Per-lease `epoch`, bumped in the same transaction that grants/reclaims the
-  lease** — monotonic by construction, travels with the lease row, survives failover
-  with the row. Blast radius = one lease.
+```
+active_host(project_id, host_id, heartbeat_at)   -- one row per project, upsert
+```
 
-**Recommendation: per-lease `epoch`** (matching [`09`](09-synchronization.md)'s
-lean). It's a single integer column on the lease row, incremented atomically at
-claim/reclaim. Postgres row-level durability guarantees the monotonicity sync
-requires; a physical replica/failover carries the committed epoch. This localizes
-any restore anomaly to a single project's lease rather than the whole fleet.
+`SetActiveHost` upserts the row; `ReadActiveHost` reads it. That's the whole
+mechanism. It's **advisory**: it lets a viewer/UI show "host X is live" and lets a
+newly-connecting host see it's taking over, but the hub does **not** fence or
+reject writes on the strength of it.
+
+**Explicitly cut** (was §3 in the pre-MVP design): fence tokens, per-lease
+`epoch`, lease TTL/reclaim transactions, and the monotonic-across-failover
+durability requirement. Those existed to arbitrate *concurrent contending
+writers* across a multi-tenant fleet — a problem a single-user companion does not
+have. If multi-writer contention ever becomes real, fencing lands as a migration
+that adds columns to this row; nothing here forecloses it.
 
 ---
 
@@ -201,64 +228,65 @@ any restore anomaly to a single project's lease rather than the whole fleet.
 > it relates" map, not a DDL spec.
 
 ```
-                    ┌──────────┐        ┌──────────┐
-                    │  users   │        │  tokens  │  host→hub PATs (hashed),
-                    │(allowlist│◀──────▶│  (PATs)  │  user sessions — auth (04)
-                    └────┬─────┘        └──────────┘
-                         │ allowlisted principals
-             ┌───────────┼───────────────────────────────┐
-             ▼           ▼                                 ▼
-        ┌─────────┐  ┌───────────────┐              ┌──────────────┐
-        │  hosts  │  │   projects    │◀────lease────│    leases    │ 1 per project
-        │(host_id)│  │  (project_id) │   (per proj) │ holder,      │ (schema admits
-        └────┬────┘  └──────┬────────┘              │ epoch/fence, │  per-agent;
-             │              │                       │ TTL, hb)     │  enforced
-             │ origin       │ scopes                └──────────────┘  per-project — 01 §4)
-             ▼              ▼
-     ┌──────────────────────────┐        ┌───────────────────────────┐
-     │  runs / instances        │        │  memory_streams           │
-     │  (run_id per sprawl enter)│       │  key=(project, agent)      │ single writer
-     └──────────┬───────────────┘        └──────────┬────────────────┘  by name (10 §2)
-                │ emits                              │ appends
-                ▼                                    ▼
-     ┌──────────────────────────┐        ┌───────────────────────────┐
-     │  event_log_segments      │        │  memory_units (index)      │
-     │  (run_id, seq) append-   │        │  seq, provenance, blob_ref │──▶ blob body
-     │  only; the spine (01 §2) │        │  supersedes[]  (10 §3)     │
-     └──────────┬───────────────┘        └───────────────────────────┘
-                │ periodically compacted
-                ▼
-     ┌──────────────────────────┐        ┌───────────────────────────┐
-     │  snapshots (index)       │        │  attachments (index)       │
-     │  (run_id, seq, blob_ref) │──▶blob │  kind, size, blob_ref,     │──▶ blob body
-     └──────────────────────────┘  body  │  owning run/session        │  (screenshots,
-                                          └───────────────────────────┘   09 downlink)
-     ┌──────────────────────────┐
-     │  watermarks              │  per (consumer, run_id) → last_seq;
-     │  (ack cursors, 09 §4)    │  drives retention floor (§5) + buffer trim
-     └──────────────────────────┘
+        ┌──────────┐        ┌────────────────┐
+        │  users   │◀──────▶│    tokens      │  hashed bearer token(s) — auth (04)
+        │ (exactly │        │ (hashed only)  │  NO OIDC; NO plaintext
+        │  ONE row)│        └────────────────┘
+        └────┬─────┘
+             │ owns everything (user_id constant everywhere)
+     ┌───────┼───────────────────────────────┐
+     ▼       ▼                                 ▼
+ ┌─────────┐  ┌───────────────┐        ┌────────────────────┐
+ │  hosts  │  │   projects    │◀──mark─│   active_host      │ advisory only (§3)
+ │(host_id)│  │  (project_id) │        │ project→host,      │ no fence, no lease,
+ └────┬────┘  └──────┬────────┘        │ heartbeat_at       │ no epoch
+      │ origin       │ scopes          └────────────────────┘
+      │              │
+      │              ▼
+      │   ┌─────────────────────────────┐
+      │   │  sessions                   │  one per `sprawl enter`
+      │   │  (session_id)               │  owns a seq space
+      │   └──────────┬──────────────────┘
+      │              │ appends
+      │              ▼
+      │   ┌─────────────────────────────┐
+      │   │  session_stream (index)     │  THE durable seq'd log =
+      │   │  (session_id, seq)          │  the transcript. Append-only.
+      │   │  → blob body per event      │──▶ blob body
+      │   │  Serves fresh-connect full  │
+      │   │  send + reconnect delta.    │
+      │   └─────────────────────────────┘
+      │
+      ▼
+ ┌─────────────────────────────┐        ┌───────────────────────────┐
+ │  memory_units (index)       │        │  attachments (index)      │
+ │  key=(project, agent)       │        │  kind, size, blob_key,    │──▶ blob body
+ │  seq, provenance, blob_key  │──▶blob │  owning session           │  (screenshots,
+ │  last-writer-wins (10)      │  body  └───────────────────────────┘   09 downlink)
+ └─────────────────────────────┘
 ```
 
 **Likely entities, named and stopped-at:**
 
 | Entity | Grain | Body location | Notes |
 |---|---|---|---|
-| `users` | principal | PG | Auth allowlist ([`04`](README.md)) |
-| `tokens` | host→hub PAT / user session | PG (**hashed**) | Never store plaintext PATs |
+| `users` | the single principal | PG | **Exactly one row.** `user_id` is constant everywhere; no multi-tenant enforcement ([`04`](README.md)) |
+| `tokens` | bearer token(s) | PG (**hashed**) | No OIDC. Never store plaintext |
 | `hosts` | per machine/install | PG | `host_id` opaque ([`10` §3](10-memory.md)) |
-| `projects` | per repo/project | PG | Lease + memory scope |
-| `leases` | per project (v1) | PG | `epoch`/fence, TTL, heartbeat (§3) |
-| `runs` / `instances` | per `sprawl enter` | PG | `run_id`; owns a seq space ([`09` §1](09-synchronization.md)) |
-| `event_log_segments` | `(run_id, seq)` | PG (small events) | Append-only spine ([`01` §2](01-architecture.md)) |
-| `snapshots` | `(run_id, seq)` | PG index + **blob body** | Compaction ([`09` §3](09-synchronization.md)) |
-| `memory_streams` | `(project, agent)` | PG index | Single-writer ([`10`](10-memory.md)) |
-| `memory_units` | unit in a stream | PG index + **blob body** | Provenance, `supersedes` |
+| `projects` | per repo/project | PG | Active-host + memory scope |
+| `active_host` | per project | PG | Advisory marker only; no fence/lease/epoch (§3) |
+| `sessions` | per `sprawl enter` | PG | `session_id`; owns a seq space ([`09` §1](09-synchronization.md)) |
+| `session_stream` | `(session_id, seq)` | PG index + **blob body** | **THE** durable seq'd log = the transcript; append-only; serves fresh-connect + reconnect ([`01` §2](01-architecture.md), [`09`](09-synchronization.md)) |
+| `memory_units` | unit in `(project, agent)` stream | PG index + **blob body** | Last-writer-wins checkpoint; provenance metadata retained ([`10`](10-memory.md)) |
 | `attachments` | image/blob | PG index + **blob body** | Multimodal ingestion |
-| `watermarks` | `(consumer, run_id)` | PG | Ack cursors ([`09` §4](09-synchronization.md)) |
-| `transcripts` | `(project, agent, session)` | **blob body** | Write-only in v1 ([`10` §5](10-memory.md)) |
 
 That's the sketch. **We are not specifying columns, types, or indexes here** —
 those land in the first migration and evolve from there.
+
+> **What's gone vs. the pre-MVP sketch:** `leases`, `event_log_segments` +
+> `snapshots` (collapsed into the single `session_stream`), `memory_streams` as a
+> separate registry table (folded into the `memory_units` key), and `watermarks`
+> (no retention floor to drive). See §0.
 
 ### Simplest way vs. right way — schema depth up front
 
@@ -266,71 +294,54 @@ those land in the first migration and evolve from there.
   migrations. Cost: the first migration has real design work in it (that's fine —
   it's where the work *belongs*).
 - **"Right"-looking but wrong:** exhaustive normalized DDL now. Cost: we'd be
-  guessing at columns for consumers that don't exist yet (transcripts,
-  attachments), then migrating away from those guesses anyway. Pure waste.
+  guessing at columns for consumers that don't exist yet, then migrating away from
+  those guesses anyway. Pure waste.
 - **Recommendation:** **sketch now, detail in migrations.** This *is* the KISS/YAGNI
   call, and it's the maintainer's explicit direction.
 
 ---
 
-## 5. Retention & GC defaults (coordinate with IaC `06`)
+## 5. Retention: keep everything (v1)
 
-Retention is a **policy, never a correctness property** — shrinking any window only
-forces more snapshot-fallbacks, never data loss, because the one rule
-([`09`](09-synchronization.md)) always covers a trimmed gap with a snapshot. So the
-defaults below are safe to tune per-deployment (IaC-parameterized, [`06`](README.md)).
+**v1 keeps everything indefinitely** — transcripts, attachments, and memory units
+are all retained forever. There is no GC pass, no retention window, no ack-watermark
+trim, and no snapshot floor.
 
-| Data class | Default retention | Trim driver | Rationale |
-|---|---|---|---|
-| **Event-log segments** | Trim ≤ `RetentionFloor` + fixed safety margin | ack watermarks + newest snapshot ([`09` §2/§4](09-synchronization.md)) | Cache of host truth; safe to lose |
-| **Snapshots** | Keep newest N per run (small N) + newest overall | count-based | Bounds cold-start; older snapshots superseded |
-| **Memory units** | **Retain (versioned)**; GC only superseded units past a grace window | `supersedes` + age | Retain-both reconcile needs losers ([`10` §4](10-memory.md)) |
-| **Transcripts** | **Bounded retention window**, opt-in | age | Irreplaceable but bulky; privacy-gated ([`10` §5](10-memory.md)) |
-| **Attachments** | Age / orphan (unreferenced) sweep | age + refcount | Blob cost control |
-| **Tokens (revoked/expired)** | Purge past grace | expiry | Hygiene ([`04`](README.md)) |
+Rationale: this is a **single-user companion**. The volume one user generates is
+small enough that unbounded growth is not a near-term problem, and the *cost* of a
+wrong GC — silently losing irreplaceable transcript or memory history — dwarfs the
+storage savings. "Keep everything" is also the simplest possible design: no
+policy, no floor arithmetic, no orphan-sweep, nothing to get wrong.
 
-**Mechanics:** one **`Store.GC(GCPolicy)`** pass, watermark-driven, no per-consumer
-bookkeeping beyond the watermark rows ([`09` §2](09-synchronization.md) KISS lean).
-PG rows are deleted below the floor; blob bodies are deleted by a companion
-orphan-sweep (delete a blob only once no PG index row references it — index first,
-blob second, so a crash mid-GC leaves harmless orphans, never dangling refs).
+> **Revisit only if storage becomes a real problem.** If it does, retention lands
+> as a new `Store` method + a goose migration — a deliberate, measured addition,
+> not a v1 guess. Until then: no deletion path exists, by design.
 
-The **retention floor is bounded below by the newest snapshot seq** so one stuck
-consumer can't pin the whole log; past a grace window a slow consumer is cut loose
-to the snapshot path ([`09` §4](09-synchronization.md)).
-
-### Simplest way vs. right way
-
-- **Simplest:** keep everything forever. Cost: unbounded PG + blob growth; every
-  session's full history retained after everyone caught up.
-- **Right:** watermark-driven trim for the log, count/age windows for the rest, one
-  GC pass, everything IaC-parameterized.
-- **Recommendation:** **the table above as defaults, all knobs parameterized in
-  [`06`](README.md).** Ship conservative defaults (generous margins), let deployers
-  tighten. Never trim below the snapshot floor. `log()` any bulk deletion — no
-  silent purges.
+The single durable seq'd stream (§4) is never trimmed, so replay from any client's
+last-seen seq (or from seq 0 for a fresh connect) is always available directly from
+the stream — which is exactly why v1 needs **no snapshots** ([`09`](09-synchronization.md)).
 
 ---
 
 ## 6. How it fits the spine (one picture)
 
 ```
-uplink event ─▶ Store.AppendEvents(run, [..])         (PG segments, seq verbatim — 09 §1)
+uplink event ─▶ Store.AppendStream(session, [..])   (PG index row per seq + blob body — 09 §1)
                      │
-   periodic compaction ─▶ Store.PutSnapshot(run, seq, blobRef)   (PG index + blob body)
-                     │
-ack watermark ─▶ Store.SetWatermark(consumer, run, seq)
-                     │
-   GC pass ─▶ Store.GC(policy): trim segments ≤ RetentionFloor,   (09 §2/§4)
-             sweep orphan blobs, age out transcripts/attachments  (§5)
+fresh connect ─▶ Store.ReadStream(session, 0, head)          full send from seq 0
+reconnect     ─▶ Store.ReadStream(session, lastSeq+1, head)  delta from client's last seq
+                     │  (ONE stream serves both — no snapshot path)
 
-memory unit ─▶ Store.AppendMemoryUnit(key,(seq,provenance,blobRef))  (PG index + blob body — 10)
-new host    ─▶ ReadMemoryUnits(key, sinceSeq)  or NewestSnapshot → pull latest (10 §6)
+memory checkpoint ─▶ Store.PutMemoryUnit(key, (seq, provenance, blobKey))  (PG index + blob body — 10)
+new host          ─▶ ReadMemoryUnits(key) → pull latest (last-writer-wins)  (10 §6)
+
+active writer ─▶ Store.SetActiveHost(project, host)   (advisory marker; no fence — §3)
 ```
 
 Storage adds **no reconnect/catch-up logic of its own** — it is the durable buffer
-the spine's one rule reads and writes. `memStore` makes all of the above run in a
-test with no external services.
+the spine's one rule reads and writes, and the single seq'd stream is the only
+replay source. `memStore` makes all of the above run in a test with no external
+services.
 
 ---
 
@@ -338,27 +349,23 @@ test with no external services.
 
 - **`sqlc` vs. hand-written `pgx`.** Start hand-written (KISS); adopt `sqlc` if
   query code proves error-prone? Or adopt it up front for compile-checked SQL?
-- **Snapshot body format.** [`09` §3](09-synchronization.md) deferred *content*
-  here: rendered transcript vs. serialized reducer state? Affects blob size, replay
-  cost, and whether the frontend or hub materializes it. Needs a frontend
-  ([`11`](README.md)) round-trip.
-- **Event body in PG vs. blob.** Small events live in PG rows — but is there a size
-  threshold above which an event body should spill to blob (e.g. a huge tool
-  output)? Or do we cap event size upstream?
-- **Blob key scheme & multi-tenancy.** `blob://<project>/<agent>/…`
-  ([`10` §5](10-memory.md)) is the memory layout; do event snapshots/attachments
-  share a bucket with a key prefix, or separate buckets per data class for
-  independent lifecycle/retention rules in the cloud?
-- **GC scheduling.** Cron-style periodic pass, on-write incremental, or
-  watermark-triggered? And who runs it — the hub process itself or an ops
-  subcommand ([`06`](README.md))?
-- **Postgres partitioning at scale.** Does `event_log_segments` need range/hash
-  partitioning by `run_id` (or time) before it's large, or is that a
-  cross-that-bridge-later migration? (Migration tooling makes deferring safe.)
-- **Backup/restore & fence monotonicity.** §3 picks per-lease epoch; confirm the
-  chosen managed-Postgres backup/PITR strategy ([`06`](README.md)) actually
-  preserves committed epochs across a restore (the one anomaly we must rule out).
+- **Event body in PG vs. blob.** Small stream events could live inline in PG rows
+  rather than a blob body each — is there a size threshold below which inlining is
+  cheaper (fewer blob round-trips) and above which bodies spill to blob (e.g. a huge
+  tool output)? Or do we cap event size upstream and inline everything?
+- **Blob key scheme.** `blob://<project>/<agent>/…` ([`10` §5](10-memory.md)) is the
+  memory layout; do session-stream events and attachments share a bucket with a key
+  prefix, or separate buckets per data class? (Single-user, so no tenant dimension
+  in the key — one fewer thing to design.)
+- **When does "keep everything" break?** At what stored-volume or cost point should
+  retention be reconsidered (§5)? Worth a rough back-of-envelope on one user's
+  yearly transcript + attachment footprint so we know the order of magnitude before
+  it bites.
 - **De-dup key for replayed memory units** (inherited from
-  [`10` OQ](10-memory.md#open-questions)): is `(host_id, run_id, created_at)` a
-  sufficient storage-level uniqueness key, or do units need a content hash / stable
-  `unit-id` column to survive re-uploads after a buffer flush?
+  [`10` OQ](10-memory.md#open-questions)): under last-writer-wins, is
+  `(host_id, session_id, created_at)` a sufficient uniqueness key, or do units need
+  a content hash / stable `unit-id` column to survive re-uploads after a buffer
+  flush?
+- **Client-side encryption (deferred).** When it lands, does it change the index —
+  e.g. do we need per-blob key-wrapping metadata columns, and does that touch the
+  `attachments` / `memory_units` / `session_stream` index rows?
