@@ -2009,3 +2009,54 @@ func TestStartUsesRestartInjectionWhenSet(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildAgentSystemPrompt_AppendsOperatorInstructions pins QUM-851: a
+// non-empty SystemPromptAppend is concatenated onto the built-in role prompt
+// under a clearly delimited "## Operator Instructions" header — the base prompt
+// is preserved, not replaced.
+func TestBuildAgentSystemPrompt_AppendsOperatorInstructions(t *testing.T) {
+	base := buildAgentSystemPrompt(&state.AgentState{
+		Name:   "eng",
+		Type:   "engineer",
+		Parent: "mgr",
+		Branch: "feat/x",
+	})
+	appended := buildAgentSystemPrompt(&state.AgentState{
+		Name:               "eng",
+		Type:               "engineer",
+		Parent:             "mgr",
+		Branch:             "feat/x",
+		SystemPromptAppend: "You are Cerberus. Guard the merge queue.",
+	})
+
+	if !strings.Contains(appended, base) {
+		t.Errorf("appended prompt must contain the full base role prompt")
+	}
+	if !strings.Contains(appended, "## Operator Instructions") {
+		t.Errorf("appended prompt missing '## Operator Instructions' header:\n%s", appended)
+	}
+	if !strings.Contains(appended, "You are Cerberus. Guard the merge queue.") {
+		t.Errorf("appended prompt missing the custom text:\n%s", appended)
+	}
+	if strings.Count(appended, "## Operator Instructions") != 1 {
+		t.Errorf("expected exactly one '## Operator Instructions' header, got %d", strings.Count(appended, "## Operator Instructions"))
+	}
+	// The appended block must be a SUFFIX: base first, then header.
+	if strings.Index(appended, base) > strings.Index(appended, "## Operator Instructions") {
+		t.Errorf("Operator Instructions header must come AFTER the base role prompt")
+	}
+}
+
+// TestBuildAgentSystemPrompt_NoAppendWhenEmpty pins QUM-851: an empty
+// SystemPromptAppend yields exactly the per-type base prompt with no header.
+func TestBuildAgentSystemPrompt_NoAppendWhenEmpty(t *testing.T) {
+	got := buildAgentSystemPrompt(&state.AgentState{
+		Name:   "eng",
+		Type:   "engineer",
+		Parent: "mgr",
+		Branch: "feat/x",
+	})
+	if strings.Contains(got, "## Operator Instructions") {
+		t.Errorf("empty SystemPromptAppend must not add an Operator Instructions header:\n%s", got)
+	}
+}

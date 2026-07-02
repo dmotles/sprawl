@@ -1,6 +1,10 @@
 package sprawlmcp
 
-import "os"
+import (
+	"os"
+
+	"github.com/dmotles/sprawl/internal/rootinit"
+)
 
 // testToolsEnv is the environment variable that gates internal test-only MCP
 // tools (today: `_test_sleep` for the QUM-552 sandbox repro). It is checked
@@ -83,6 +87,20 @@ func baseToolDefinitions() []map[string]any {
 					"subagent": map[string]any{
 						"type":        "boolean",
 						"description": "If true, the child shares the caller's worktree and branch instead of getting its own. `branch` must be omitted. Subject to depth limit (3) and capability gate (caller must be manager/engineer/researcher/qa).",
+					},
+					"model": map[string]any{
+						"type": "string",
+						"enum": rootinit.ValidSpawnModels,
+						"description": "Optional. Model tier for the spawned agent. Omit to use the type default (manager→opus[1m], engineer/researcher/qa→opus). Guidance: " +
+							"`haiku` = cheap/fast, straightforward work only (classify, summarize; mid tool-calling); " +
+							"`sonnet` = solid, fine for easy tasks; " +
+							"`opus` = default smart general-purpose; " +
+							"`fable` = savant, only for hard research/planning needing deep thinking & analysis (expensive); " +
+							"`opus[1m]`/`sonnet[1m]` = same tiers with 1M context, use ONLY when a very large context window is genuinely needed.",
+					},
+					"system_prompt": map[string]any{
+						"type":        "string",
+						"description": "Optional. Custom instructions, identity, personality, and operating mantra for this agent. APPENDED to the agent's built-in role prompt under a delimited '## Operator Instructions' header — it does not replace it.",
 					},
 				},
 				"required": []string{"family", "type", "prompt"},

@@ -525,6 +525,78 @@ func TestServer_ToolsCall_SprawlSpawn(t *testing.T) {
 	}
 }
 
+// TestServer_ToolsCall_SprawlSpawn_RejectsInvalidModel pins QUM-851: an
+// out-of-enum model is rejected at the toolSpawn/resolver layer with a clear
+// error, and the supervisor's Spawn is never called (defense-in-depth even if
+// the JSON-schema enum is bypassed).
+func TestServer_ToolsCall_SprawlSpawn_RejectsInvalidModel(t *testing.T) {
+	mock := &mockSupervisor{
+		spawnResult: &supervisor.AgentInfo{Name: "chip", Type: "engineer"},
+	}
+	srv := New(mock)
+	ctx := withTestCallerIdentity(context.Background(), "mgr-1")
+
+	msg := makeJSONRPCRequest(42, "tools/call", map[string]any{
+		"name": "spawn",
+		"arguments": map[string]any{
+			"family": "engineering",
+			"type":   "engineer",
+			"prompt": "do X",
+			"branch": "dmotles/feature",
+			"model":  "gpt-4",
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+	if mock.spawnCalled != nil {
+		t.Error("Spawn must not be called when model is invalid")
+	}
+	parsed := parseJSONRPCResponse(t, resp)
+	result, ok := parsed["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing result: %v", parsed)
+	}
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Errorf("expected isError=true for invalid model, got result: %v", result)
+	}
+}
+
+// TestServer_ToolsCall_SprawlSpawn_AcceptsModelAndSystemPrompt pins QUM-851: a
+// valid model + system_prompt are forwarded into the SpawnRequest.
+func TestServer_ToolsCall_SprawlSpawn_AcceptsModelAndSystemPrompt(t *testing.T) {
+	mock := &mockSupervisor{
+		spawnResult: &supervisor.AgentInfo{Name: "chip", Type: "engineer"},
+	}
+	srv := New(mock)
+	ctx := withTestCallerIdentity(context.Background(), "mgr-1")
+
+	msg := makeJSONRPCRequest(43, "tools/call", map[string]any{
+		"name": "spawn",
+		"arguments": map[string]any{
+			"family":        "engineering",
+			"type":          "engineer",
+			"prompt":        "do X",
+			"branch":        "dmotles/feature",
+			"model":         "fable",
+			"system_prompt": "You are Cerberus.",
+		},
+	})
+	if _, err := srv.HandleMessage(ctx, msg); err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+	if mock.spawnCalled == nil {
+		t.Fatal("Spawn was not called")
+	}
+	if mock.spawnCalled.Model != "fable" {
+		t.Errorf("spawn model = %q, want fable", mock.spawnCalled.Model)
+	}
+	if mock.spawnCalled.SystemPromptAppend != "You are Cerberus." {
+		t.Errorf("spawn system_prompt = %q, want 'You are Cerberus.'", mock.spawnCalled.SystemPromptAppend)
+	}
+}
+
 // TestServer_ToolsCall_SprawlSpawn_AdvisoryFromWeave asserts that when the
 // root weave (empty caller identity) spawns type="engineer", the spawn
 // result string carries the QUM-710 §4 orchestration advisory. The advisory

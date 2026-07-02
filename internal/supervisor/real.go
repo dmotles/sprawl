@@ -644,6 +644,20 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 	if err != nil {
 		return nil, err
 	}
+	// QUM-851: persist the optional model / system-prompt overrides onto the
+	// agent state before the runtime starts. prepareLaunch re-loads the state
+	// from disk on every start/wake/restart, so persisting here means both
+	// fields are picked up by BuildAgentSessionSpec and buildAgentSystemPrompt
+	// and survive wake/restart. req.Model is already the resolved claude
+	// string (validated at the toolSpawn/resolver layer).
+	if req.Model != "" || req.SystemPromptAppend != "" {
+		st.Model = req.Model
+		st.SystemPromptAppend = req.SystemPromptAppend
+		if err := state.SaveAgent(r.sprawlRoot, st); err != nil {
+			r.rollbackSpawnArtifacts(st.Name)
+			return nil, fmt.Errorf("persisting model/system_prompt for %s: %w", st.Name, err)
+		}
+	}
 	runtime := r.runtimeRegistry.Ensure(AgentRuntimeConfig{
 		SprawlRoot: r.sprawlRoot,
 		Agent:      st,

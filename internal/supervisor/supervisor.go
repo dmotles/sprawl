@@ -175,6 +175,14 @@ type SpawnRequest struct {
 	Prompt   string `json:"prompt"`
 	Branch   string `json:"branch"`
 	Subagent bool   `json:"subagent,omitempty"`
+	// Model, when non-empty, is the resolved `claude --model` string the child
+	// launches with, overriding the per-type default. Validated against the
+	// strict enum at the toolSpawn/resolver layer (QUM-851).
+	Model string `json:"model,omitempty"`
+	// SystemPromptAppend, when non-empty, is custom operator instructions
+	// appended onto the child's built-in role prompt (QUM-851). The MCP param
+	// is named `system_prompt`.
+	SystemPromptAppend string `json:"system_prompt,omitempty"`
 }
 
 // WakeResult is returned by Supervisor.Wake. Mode is one of:

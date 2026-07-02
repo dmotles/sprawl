@@ -100,6 +100,12 @@ type enterDeps struct {
 	// "colour39"). Used by resolveAccentColor on first-run when no accent
 	// has been persisted yet. Injected for deterministic tests. QUM-704.
 	pickAccent func() string
+	// modelOverride, when non-empty, overrides weave's root model
+	// (rootinit.DefaultRootModel) for this launch only. Set via the
+	// `--model` flag on the enter cobra command. Passed verbatim to
+	// `claude --model`; empty means "use the default". Not persisted —
+	// a fresh `sprawl enter` without the flag reverts to the default. QUM-850.
+	modelOverride string
 }
 
 // resolveAccentColor returns the persisted accent color, seeding a randomly-
@@ -220,12 +226,16 @@ func init() {
 	// Also accepts SPRAWL_PPROF_ADDR; flag wins. Suggest a loopback bind so
 	// users don't accidentally expose pprof to other hosts.
 	enterCmd.Flags().String("pprof", "", "expose net/http/pprof on this address (e.g., 127.0.0.1:6060); also reads SPRAWL_PPROF_ADDR (QUM-678)")
+	// QUM-850: --model overrides weave's root model for this launch only.
+	// Free-form string passed verbatim to `claude --model`; empty preserves
+	// the default (opus[1m]). Not persisted across restart/handoff.
+	enterCmd.Flags().String("model", "", "override weave's root model for this launch (passed verbatim to claude --model; default opus[1m]); not persisted (QUM-850)")
 }
 
 var enterCmd = &cobra.Command{
 	Use:   "enter",
 	Short: "Launch the TUI dashboard",
-	Long:  "Launch a fullscreen terminal UI for monitoring and interacting with agents. Works in any terminal — no tmux required.\n\nFlags:\n  --no-resume     skip auto-resuming suspended child agents (QUM-372)\n  --no-coalesce   disable the stdin paste coalescer (QUM-608); pastes will animate one char at a time on tmux <3.4",
+	Long:  "Launch a fullscreen terminal UI for monitoring and interacting with agents. Works in any terminal — no tmux required.\n\nFlags:\n  --no-resume     skip auto-resuming suspended child agents (QUM-372)\n  --no-coalesce   disable the stdin paste coalescer (QUM-608); pastes will animate one char at a time on tmux <3.4\n  --model <str>   override weave's root model for this launch, passed verbatim to `claude --model` (default opus[1m]); not persisted (QUM-850)",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		deps := resolveEnterDeps()
@@ -236,6 +246,11 @@ var enterCmd = &cobra.Command{
 		}
 		if v, err := cmd.Flags().GetBool("no-coalesce"); err == nil {
 			deps.noCoalesce = v
+		}
+		// QUM-850: thread --model into the resolved deps as a per-launch
+		// override of weave's root model. Empty means "use the default".
+		if v, err := cmd.Flags().GetString("model"); err == nil {
+			deps.modelOverride = v
 		}
 		// QUM-678: resolve pprof bind addr from --pprof (wins) or env var.
 		pprofFlag, _ := cmd.Flags().GetString("pprof")
@@ -252,7 +267,6 @@ func resolveEnterDeps() *enterDeps {
 	deps := &enterDeps{
 		getenv:     os.Getenv,
 		getwd:      os.Getwd,
-		newSession: defaultNewSession,
 		pickAccent: runtimecfg.PickAccentColor,
 		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error {
 			deps := rootinit.DefaultDeps()
@@ -305,6 +319,16 @@ func resolveEnterDeps() *enterDeps {
 			)
 			return sup, mcpServer
 		},
+	}
+	// QUM-850: wire newSession as a closure (rather than a bare
+	// defaultNewSession reference) so it can forward deps.modelOverride,
+	// read at call time. RunE sets deps.modelOverride after resolveEnterDeps
+	// returns but before any session is created, mirroring the runProgram
+	// closure below. The override thus also flows through in-process handoff
+	// restarts (makeRestartFunc is handed this same closure) — acceptable
+	// per QUM-850 (per-launch scope, not persisted to disk).
+	deps.newSession = func(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error) {
+		return defaultNewSession(sprawlRoot, sup, forceFresh, onResumeFailure, deps.modelOverride)
 	}
 	deps.runProgram = func(model tea.Model, onStart func(sender func(tea.Msg))) error {
 		var opts []tea.ProgramOption
@@ -396,15 +420,22 @@ func enterAllowedTools(prepared *rootinit.PreparedSession) []string {
 	return allowed
 }
 
-func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession, logW io.Writer, onResumeFailure func()) backend.SessionSpec {
+func buildEnterSessionSpec(sprawlRoot string, prepared *rootinit.PreparedSession, logW io.Writer, onResumeFailure func(), modelOverride string) backend.SessionSpec {
 	allowed := enterAllowedTools(prepared)
+
+	// QUM-850: a non-empty --model override wins over the prepared
+	// DefaultRootModel for this launch; empty falls through to the default.
+	model := prepared.Model
+	if modelOverride != "" {
+		model = modelOverride
+	}
 
 	spec := backend.SessionSpec{
 		WorkDir:         sprawlRoot,
 		Identity:        "weave",
 		SprawlRoot:      sprawlRoot,
 		SessionID:       prepared.SessionID,
-		Model:           prepared.Model,
+		Model:           model,
 		PermissionMode:  "bypassPermissions",
 		AllowedTools:    allowed,
 		DisallowedTools: prepared.Disallowed,
@@ -478,7 +509,10 @@ func buildSessionEnv() []string {
 // Returns (backend, wasResume, error). wasResume indicates whether Prepare
 // took the resume path; callers use it to decide if a fast exit warrants a
 // force-fresh retry.
-func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func()) (tui.SessionBackend, bool, error) {
+//
+// modelOverride, when non-empty, overrides the prepared DefaultRootModel for
+// this launch (QUM-850); empty preserves the default.
+func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh bool, onResumeFailure func(), modelOverride string) (tui.SessionBackend, bool, error) {
 	rinitDeps := rootinit.DefaultDeps()
 	rinitDeps.LogPrefix = "[enter]"
 	logW := os.Stderr
@@ -523,7 +557,7 @@ func defaultNewSession(sprawlRoot string, sup supervisor.Supervisor, forceFresh 
 	mcpBridge := supervisorMCPBridge(sup)
 
 	adapter := backendclaude.NewAdapter(backendclaude.Config{})
-	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure))
+	session, err := adapter.Start(context.Background(), buildEnterSessionSpec(sprawlRoot, prepared, logW, onResumeFailure, modelOverride))
 	if err != nil {
 		return nil, false, err
 	}

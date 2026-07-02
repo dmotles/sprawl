@@ -154,6 +154,65 @@ func TestLoadAgent_MigratePreservesActiveCrashSurvivor(t *testing.T) {
 	}
 }
 
+// TestCurrentSchemaVersion_IsV2 pins QUM-851: the schema version was bumped to
+// 2 when Model + SystemPromptAppend were added to AgentState.
+func TestCurrentSchemaVersion_IsV2(t *testing.T) {
+	if CurrentSchemaVersion != 2 {
+		t.Errorf("CurrentSchemaVersion = %d, want 2 (QUM-851 bump)", CurrentSchemaVersion)
+	}
+}
+
+// TestLoadAgent_MigratesV1ToV2_EmptyModelAndAppend pins QUM-851: a genuine v1
+// state file (schema_version=1, no model/system_prompt_append keys) loads
+// cleanly, migrates forward to the current schema version, and yields the
+// legacy behavior — empty Model and empty SystemPromptAppend (i.e. type-default
+// model, no prompt append). The pre-existing liveness must be preserved.
+func TestLoadAgent_MigratesV1ToV2_EmptyModelAndAppend(t *testing.T) {
+	root := t.TempDir()
+	writeRawV0Agent(t, root, "g", `{"name":"g","status":"complete","last_report_state":"complete","schema_version":1}`)
+
+	got, err := LoadAgent(root, "g")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if got.Model != "" {
+		t.Errorf("Model = %q, want empty (legacy = type default)", got.Model)
+	}
+	if got.SystemPromptAppend != "" {
+		t.Errorf("SystemPromptAppend = %q, want empty (legacy = no append)", got.SystemPromptAppend)
+	}
+	if got.Status != "complete" {
+		t.Errorf("Status = %q, want %q (unchanged)", got.Status, "complete")
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// TestLoadAgent_MigrateV0ToV2Stepwise pins QUM-851: a genuine v0 file (no
+// schema_version key) still migrates correctly through BOTH the v0→v1 Status/
+// report re-classification and the v1→v2 step, ending at the current schema
+// version. Guards against the version bump skipping the v0→v1 body.
+func TestLoadAgent_MigrateV0ToV2Stepwise(t *testing.T) {
+	root := t.TempDir()
+	writeRawV0Agent(t, root, "h", `{"name":"h","status":"done","session_id":"s1"}`)
+
+	got, err := LoadAgent(root, "h")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	// v0→v1: done + session_id => suspended, LastReportState derived to complete.
+	if got.Status != "suspended" {
+		t.Errorf("Status = %q, want %q", got.Status, "suspended")
+	}
+	if got.LastReportState != "complete" {
+		t.Errorf("LastReportState = %q, want %q", got.LastReportState, "complete")
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
 func TestSaveAgent_StampsSchemaVersion(t *testing.T) {
 	root := t.TempDir()
 	if err := SaveAgent(root, &AgentState{Name: "d"}); err != nil {

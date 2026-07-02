@@ -2,6 +2,7 @@ package rootinit
 
 import (
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -85,6 +86,51 @@ func TestModelForAgentType(t *testing.T) {
 	for _, tt := range tests {
 		if got := ModelForAgentType(tt.agentType); got != tt.want {
 			t.Errorf("ModelForAgentType(%q) = %q, want %q", tt.agentType, got, tt.want)
+		}
+	}
+}
+
+// TestValidSpawnModels_PinnedSet pins QUM-851: the strict enum of models the
+// spawn MCP tool accepts. Additions/removals require an explicit update here so
+// the schema enum and resolver stay in lockstep.
+func TestValidSpawnModels_PinnedSet(t *testing.T) {
+	want := []string{"haiku", "sonnet", "opus", "fable", "opus[1m]", "sonnet[1m]"}
+	if len(ValidSpawnModels) != len(want) {
+		t.Fatalf("ValidSpawnModels = %v, want %v", ValidSpawnModels, want)
+	}
+	for i := range want {
+		if ValidSpawnModels[i] != want[i] {
+			t.Errorf("ValidSpawnModels[%d] = %q, want %q", i, ValidSpawnModels[i], want[i])
+		}
+	}
+}
+
+// TestResolveSpawnModel_AcceptsEnum pins QUM-851: every enum value resolves to
+// a valid claude --model string (identity today) with no error.
+func TestResolveSpawnModel_AcceptsEnum(t *testing.T) {
+	for _, m := range []string{"haiku", "sonnet", "opus", "fable", "opus[1m]", "sonnet[1m]"} {
+		got, err := ResolveSpawnModel(m)
+		if err != nil {
+			t.Errorf("ResolveSpawnModel(%q) error: %v", m, err)
+			continue
+		}
+		if got != m {
+			t.Errorf("ResolveSpawnModel(%q) = %q, want %q", m, got, m)
+		}
+	}
+}
+
+// TestResolveSpawnModel_RejectsNonEnum pins QUM-851: non-enum values (including
+// empty) are rejected with a clear, actionable error naming the bad value.
+func TestResolveSpawnModel_RejectsNonEnum(t *testing.T) {
+	for _, bad := range []string{"", "gpt-4", "opus-4", "OPUS", "claude-opus-4-8"} {
+		got, err := ResolveSpawnModel(bad)
+		if err == nil {
+			t.Errorf("ResolveSpawnModel(%q) = %q, want error", bad, got)
+			continue
+		}
+		if bad != "" && !strings.Contains(err.Error(), bad) {
+			t.Errorf("ResolveSpawnModel(%q) error %q should name the invalid value", bad, err)
 		}
 	}
 }

@@ -28,13 +28,19 @@ func BuildAgentSessionSpec(agentState *state.AgentState, promptPath, sprawlRoot 
 	if testMode := os.Getenv("SPRAWL_TEST_MODE"); testMode != "" {
 		additionalEnv["SPRAWL_TEST_MODE"] = testMode
 	}
+	// QUM-851: an explicit per-agent Model (validated at spawn time) overrides
+	// the per-type default. Empty means "use the type default".
+	model := rootinit.ModelForAgentType(agentState.Type)
+	if agentState.Model != "" {
+		model = agentState.Model
+	}
 	return backend.SessionSpec{
 		WorkDir:         agentState.Worktree,
 		Identity:        agentState.Name,
 		SprawlRoot:      sprawlRoot,
 		SessionID:       agentState.SessionID,
 		PromptFile:      promptPath,
-		Model:           rootinit.ModelForAgentType(agentState.Type),
+		Model:           model,
 		Effort:          "medium",
 		PermissionMode:  "bypassPermissions",
 		AdditionalEnv:   additionalEnv,

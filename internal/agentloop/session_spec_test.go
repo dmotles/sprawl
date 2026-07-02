@@ -131,6 +131,38 @@ func TestBuildAgentSessionSpec_ModelByAgentType(t *testing.T) {
 	}
 }
 
+// TestBuildAgentSessionSpec_ExplicitModelBeatsTypeDefault pins QUM-851: a
+// non-empty AgentState.Model overrides the per-type default; an empty Model
+// falls back to ModelForAgentType.
+func TestBuildAgentSessionSpec_ExplicitModelBeatsTypeDefault(t *testing.T) {
+	tests := []struct {
+		name      string
+		agentType string
+		model     string
+		wantModel string
+	}{
+		{"explicit model overrides engineer default", "engineer", "opus[1m]", "opus[1m]"},
+		{"explicit fable overrides manager default", "manager", "fable", "fable"},
+		{"empty model falls back to engineer default", "engineer", "", "opus"},
+		{"empty model falls back to manager default", "manager", "", "opus[1m]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agentState := &state.AgentState{
+				Name:      "test-agent",
+				Type:      tt.agentType,
+				Model:     tt.model,
+				Worktree:  "/tmp/worktrees/test",
+				SessionID: "sess-test",
+			}
+			spec := BuildAgentSessionSpec(agentState, "/tmp/prompt.md", "/tmp/root", io.Discard)
+			if spec.Model != tt.wantModel {
+				t.Errorf("Model = %q, want %q (type=%q, explicit=%q)", spec.Model, tt.wantModel, tt.agentType, tt.model)
+			}
+		})
+	}
+}
+
 // TestBuildAgentSessionSpec_NoAgentsArgv pins QUM-716 (#4.5): the `--agents`
 // plumbing has been removed end-to-end. No agent type — including engineer —
 // should produce a claude argv containing `--agents`.

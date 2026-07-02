@@ -105,6 +105,39 @@ func TestSaveAndLoadAgent_OmitemptyDefaults(t *testing.T) {
 	}
 }
 
+// TestSaveAndLoadAgent_RoundTripsModelAndSystemPrompt pins QUM-851: the new
+// Model and SystemPromptAppend fields survive a SaveAgent → LoadAgent round
+// trip and the state is stamped at the current schema version.
+func TestSaveAndLoadAgent_RoundTripsModelAndSystemPrompt(t *testing.T) {
+	dir := t.TempDir()
+	agent := &AgentState{
+		Name:               "kit",
+		Type:               "engineer",
+		Family:             "engineering",
+		Status:             "active",
+		Model:              "sonnet",
+		SystemPromptAppend: "You are a meticulous reviewer. Prefer table-driven tests.",
+	}
+
+	if err := SaveAgent(dir, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "kit")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Model != agent.Model {
+		t.Errorf("Model = %q, want %q", loaded.Model, agent.Model)
+	}
+	if loaded.SystemPromptAppend != agent.SystemPromptAppend {
+		t.Errorf("SystemPromptAppend = %q, want %q", loaded.SystemPromptAppend, agent.SystemPromptAppend)
+	}
+	if loaded.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", loaded.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
 func TestLoadAgent_NotFound(t *testing.T) {
 	dir := t.TempDir()
 	_, err := LoadAgent(dir, "nonexistent")

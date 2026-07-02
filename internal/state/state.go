@@ -87,9 +87,10 @@ func IsResolvedOrphan(status string) bool {
 }
 
 // CurrentSchemaVersion is the schema version stamped onto agent state files by
-// the current code. LoadAgent migrates older (v0) files forward on read and
-// SaveAgent stamps this value (QUM-625 M4).
-const CurrentSchemaVersion = 1
+// the current code. LoadAgent migrates older (v0/v1) files forward on read and
+// SaveAgent stamps this value (QUM-625 M4; bumped to v2 for the QUM-851
+// Model / SystemPromptAppend fields).
+const CurrentSchemaVersion = 2
 
 // AgentState holds the persistent metadata for a spawned agent.
 type AgentState struct {
@@ -105,6 +106,15 @@ type AgentState struct {
 	SessionID string `json:"session_id,omitempty"`
 	Subagent  bool   `json:"subagent,omitempty"`
 	TreePath  string `json:"tree_path,omitempty"`
+
+	// Model, when non-empty, is the resolved `claude --model` string this
+	// agent launches with, overriding rootinit.ModelForAgentType(Type). Empty
+	// means "use the type default" (QUM-851).
+	Model string `json:"model,omitempty"`
+	// SystemPromptAppend, when non-empty, is custom operator instructions
+	// appended onto the built-in role system prompt under a delimited header.
+	// Empty means "no append" (QUM-851). It never replaces the base prompt.
+	SystemPromptAppend string `json:"system_prompt_append,omitempty"`
 
 	// SchemaVersion records the persisted schema version. Files written before
 	// QUM-625 M4 lack this field and unmarshal as 0 (v0); LoadAgent migrates
@@ -145,10 +155,15 @@ func AgentsDir(sprawlRoot string) string {
 // LastReportState=="complete", else to StatusFaulted (the rare "clean exit
 // with no completion report" case is treated as unexpected). The rewrite is
 // idempotent — once Status is complete/faulted it stays.
+//
+// The v1 -> v2 migration (QUM-851) is a version-stamp only: the added Model and
+// SystemPromptAppend fields default to "" (type-default model, no append), which
+// is exactly the legacy behavior, so no field rewrite is needed. The migration
+// steps are gated independently so a v1 file only runs the v1→v2 stamp.
 func migrate(a *AgentState) bool {
 	mutated := false
 
-	if a.SchemaVersion < CurrentSchemaVersion {
+	if a.SchemaVersion < 1 {
 		// (a) Derive LastReportState from the legacy outcome token, only if empty.
 		if a.LastReportState == "" {
 			switch a.Status {
@@ -171,8 +186,17 @@ func migrate(a *AgentState) bool {
 			}
 		}
 
-		// (c) Stamp the current schema version.
-		a.SchemaVersion = CurrentSchemaVersion
+		// (c) Stamp the v1 schema version.
+		a.SchemaVersion = 1
+		mutated = true
+	}
+
+	// v1 -> v2 (QUM-851): Model and SystemPromptAppend are additive fields
+	// whose zero value ("") is exactly the correct legacy behavior — type
+	// default model, no prompt append. No field rewrite is needed; just stamp
+	// the new version so future writers/readers agree on the schema.
+	if a.SchemaVersion < 2 {
+		a.SchemaVersion = 2
 		mutated = true
 	}
 
@@ -196,7 +220,7 @@ func migrate(a *AgentState) bool {
 // first, then renamed into place. On marshal failure no disk write occurs.
 func SaveAgent(sprawlRoot string, agent *AgentState) error {
 	// Stamp the schema version on fresh (never-versioned) states so they
-	// persist as v1 (QUM-625 M4).
+	// persist at CurrentSchemaVersion (QUM-625 M4; v2 as of QUM-851).
 	if agent.SchemaVersion == 0 {
 		agent.SchemaVersion = CurrentSchemaVersion
 	}

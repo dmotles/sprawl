@@ -12,6 +12,7 @@ import (
 	agentpkg "github.com/dmotles/sprawl/internal/agent"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/config"
+	"github.com/dmotles/sprawl/internal/rootinit"
 	"github.com/dmotles/sprawl/internal/sprawlmcp/calllog"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
@@ -332,6 +333,16 @@ func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, e
 	}
 	if !req.Subagent && req.Branch == "" {
 		return "", fmt.Errorf("branch is required when subagent is false")
+	}
+	// QUM-851: validate + resolve the optional model at the resolver layer too
+	// (belt-and-suspenders alongside the JSON-schema enum). An out-of-enum
+	// value is rejected here so the supervisor is never invoked.
+	if req.Model != "" {
+		resolved, err := rootinit.ResolveSpawnModel(req.Model)
+		if err != nil {
+			return "", err
+		}
+		req.Model = resolved
 	}
 	info, err := s.sup.Spawn(ctx, req)
 	if err != nil {

@@ -5,6 +5,8 @@
 // stays consistent across launch modes.
 package rootinit
 
+import "fmt"
+
 // RootTools is the set of tools available to the root agent. It is the
 // single source of truth for both the tmux root loop and the TUI session.
 var RootTools = []string{
@@ -69,4 +71,24 @@ func ModelForAgentType(agentType string) string {
 	default:
 		return DefaultAgentModel
 	}
+}
+
+// ValidSpawnModels is the strict enum of model values accepted by the spawn
+// MCP tool's `model` param (QUM-851). It is the single source of truth for both
+// the JSON-schema enum in internal/sprawlmcp/tools.go and ResolveSpawnModel.
+// Additions/removals must be reflected in both consumers.
+var ValidSpawnModels = []string{"haiku", "sonnet", "opus", "fable", "opus[1m]", "sonnet[1m]"}
+
+// ResolveSpawnModel validates model against ValidSpawnModels and returns the
+// string to pass to `claude --model`. Every enum value is already a valid
+// Claude Code CLI model string, so the mapping is currently identity — but it
+// is defined explicitly so a future divergence has a single choke point. A
+// non-enum value (including empty) returns a clear, actionable error.
+func ResolveSpawnModel(model string) (string, error) {
+	for _, valid := range ValidSpawnModels {
+		if model == valid {
+			return model, nil
+		}
+	}
+	return "", fmt.Errorf("invalid model %q; valid models: %v", model, ValidSpawnModels)
 }

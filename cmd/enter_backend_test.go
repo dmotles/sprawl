@@ -36,7 +36,7 @@ func resumePrepared() *rootinit.PreparedSession {
 
 func TestBuildEnterSessionSpec_FreshPathUsesRootSessionData(t *testing.T) {
 	called := false
-	spec := buildEnterSessionSpec("/repo", freshPrepared(), io.Discard, func() { called = true })
+	spec := buildEnterSessionSpec("/repo", freshPrepared(), io.Discard, func() { called = true }, "")
 
 	if spec.WorkDir != "/repo" {
 		t.Errorf("WorkDir = %q, want /repo", spec.WorkDir)
@@ -91,7 +91,7 @@ func TestBuildEnterSessionSpec_FreshPathUsesRootSessionData(t *testing.T) {
 
 func TestBuildEnterSessionSpec_ResumePathPreservesResumeState(t *testing.T) {
 	called := false
-	spec := buildEnterSessionSpec("/repo", resumePrepared(), io.Discard, func() { called = true })
+	spec := buildEnterSessionSpec("/repo", resumePrepared(), io.Discard, func() { called = true }, "")
 
 	if !spec.Resume {
 		t.Fatal("Resume must be true on resume path")
@@ -129,6 +129,45 @@ func TestBuildEnterSessionSpec_ResumePathPreservesResumeState(t *testing.T) {
 	spec.OnResumeFailure()
 	if !called {
 		t.Fatal("OnResumeFailure callback did not run")
+	}
+}
+
+// QUM-850: the `--model` flag is registered on `sprawl enter` and defaults
+// to empty (meaning "use DefaultRootModel").
+func TestEnterCmd_ModelFlagRegistered(t *testing.T) {
+	f := enterCmd.Flags().Lookup("model")
+	if f == nil {
+		t.Fatal("enter command should register a --model flag")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--model default = %q, want empty", f.DefValue)
+	}
+}
+
+// QUM-850: a non-empty model override (from `sprawl enter --model <x>`)
+// replaces the prepared DefaultRootModel in the session spec, so weave's
+// claude subprocess launches with `--model <x>`.
+func TestBuildEnterSessionSpec_ModelOverrideApplied(t *testing.T) {
+	spec := buildEnterSessionSpec("/repo", freshPrepared(), io.Discard, func() {}, "sonnet[1m]")
+	if spec.Model != "sonnet[1m]" {
+		t.Errorf("Model = %q, want %q (override should win over DefaultRootModel)", spec.Model, "sonnet[1m]")
+	}
+}
+
+// QUM-850: the override also applies on the resume path.
+func TestBuildEnterSessionSpec_ModelOverrideAppliedOnResume(t *testing.T) {
+	spec := buildEnterSessionSpec("/repo", resumePrepared(), io.Discard, func() {}, "haiku")
+	if spec.Model != "haiku" {
+		t.Errorf("Model = %q, want %q on resume path", spec.Model, "haiku")
+	}
+}
+
+// QUM-850: an empty override (no --model flag) preserves the prepared
+// DefaultRootModel — the default behavior must be unchanged.
+func TestBuildEnterSessionSpec_EmptyOverridePreservesDefault(t *testing.T) {
+	spec := buildEnterSessionSpec("/repo", freshPrepared(), io.Discard, func() {}, "")
+	if spec.Model != rootinit.DefaultRootModel {
+		t.Errorf("Model = %q, want DefaultRootModel %q when override is empty", spec.Model, rootinit.DefaultRootModel)
 	}
 }
 

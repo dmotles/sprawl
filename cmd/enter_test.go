@@ -1154,7 +1154,7 @@ func TestMakeRestartFunc_ThreadsConsolidationEvents(t *testing.T) {
 // QUM-329: defaultNewSession must error when supervisor is nil — the
 // nil-sup pre-check prevents a silent two-supervisor split.
 func TestDefaultNewSession_NilSupervisorErrors(t *testing.T) {
-	if _, _, err := defaultNewSession(t.TempDir(), nil, true, nil); err == nil {
+	if _, _, err := defaultNewSession(t.TempDir(), nil, true, nil, ""); err == nil {
 		t.Error("nil sup should error")
 	}
 }

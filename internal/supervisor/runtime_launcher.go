@@ -282,8 +282,20 @@ func (s *inProcessUnifiedStarter) startBackendSession(ctx context.Context, prep 
 }
 
 // buildAgentSystemPrompt renders the system prompt for a child agent based on
-// its type.
+// its type. When the agent carries a SystemPromptAppend (QUM-851), that custom
+// text is appended onto the built-in role prompt under a clearly delimited
+// "## Operator Instructions" header — it never replaces the base prompt.
 func buildAgentSystemPrompt(a *state.AgentState) string {
+	base := buildRoleSystemPrompt(a)
+	if a.SystemPromptAppend != "" {
+		base += "\n\n## Operator Instructions\n\n" + a.SystemPromptAppend
+	}
+	return base
+}
+
+// buildRoleSystemPrompt renders the built-in role system prompt for a child
+// agent based on its type, without any operator append.
+func buildRoleSystemPrompt(a *state.AgentState) string {
 	testMode := os.Getenv("SPRAWL_TEST_MODE") == "1"
 	switch a.Type {
 	case "researcher":
