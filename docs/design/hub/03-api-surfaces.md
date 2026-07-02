@@ -5,14 +5,25 @@ risk**: does a long-lived connection survive typical cloud L7 load balancers?*
 
 See also: [`00-overview.md`](00-overview.md) · [`01-architecture.md`](01-architecture.md) · [index](README.md)
 
+> **MVP scope (v2 — single-user cloud companion).** The hub is a cloud
+> *companion* to the local binary: (1) relay a live activity stream to a browser
+> for view + input, and (2) durably persist memory + transcripts + attachments.
+> **Not multi-tenant.** Auth is a single configured bearer token — **no OIDC**.
+> Memory sync is checkpoint push/pull with **last-writer-wins** (no
+> version-vector / fence / semantic reconcile; provenance metadata is retained).
+> Write-authority is a **trivial advisory active-host marker** (no fence tokens).
+> **No snapshots in v1** and **no GC/retention** — the durable seq'd transcript
+> *is* the log; fresh connect replays the full log, reconnect replays the delta.
+
 ---
 
 ## 0. TL;DR — read this first
 
-- **Two Connect surfaces:** (1) **host↔hub** (Go↔Go, private, PAT-authed) and
-  (2) **api↔webapp** (browser↔hub, OIDC-authed). Both carry the *same event-log
-  spine* ([`01`](01-architecture.md#2-the-event-log-spine-the-strongest-idea--feature-it));
-  the reconnect contract ("replay from last seq, else snapshot, then live-tail")
+- **Two Connect surfaces:** (1) **host↔hub** (Go↔Go, private, bearer-token) and
+  (2) **api↔webapp** (browser↔hub, bearer-token → httpOnly cookie). Both carry
+  the *same event-log spine*
+  ([`01`](01-architecture.md#2-the-event-log-spine-the-strongest-idea--feature-it));
+  the reconnect contract ("replay from last seq, else full log, then live-tail")
   is written once and reused at both seams.
 - **Verdict on the "one persistent bidi stream" assumption: DO NOT BET ON IT.**
   A single long-lived **full-duplex bidi** stream is *technically* possible
@@ -27,35 +38,39 @@ See also: [`00-overview.md`](00-overview.md) · [`01-architecture.md`](01-archit
 
 ## 1. Surface (1): host ↔ hub
 
-Private, machine-to-machine. Authenticated by a host→hub PAT (hashed in PG, see
-[`04`](README.md)). The host **dials out**; no inbound host ports.
+Private, machine-to-machine. Authenticated by the single configured **bearer
+token** in an `Authorization` header (same secret the browser uses; see
+[`04`](README.md)). The host **dials out**; no inbound host ports. Every request
+carries the (always-single) `user_id` for schema-forward compatibility — there is
+**no multi-tenant enforcement** in v1.
 
 ### RPCs (conceptual — not a committed `.proto`)
 
 | RPC | Shape | Purpose |
 |---|---|---|
-| `PushEvents` | unary or client-stream | Uplink: host appends seq'd event-log entries (claude output) to the hub. Carries `{host_id, run_id, fence_token, events[], from_seq}`. |
-| `SubscribeCommands` | **server-stream** | Downlink: hub pushes commands to the host ("user typed X", "reclaim requested", "snapshot now"). Held open; this is the connection that must survive the LB. |
-| `ClaimLease` / `RenewLease` / `ReleaseLease` | unary | Write-authority: claim/renew/release the per-project write-lease; returns `fence_token`. Renew doubles as an explicit heartbeat when the stream is quiet. |
-| `SyncMemory` | unary or client-stream | Push per-`(project, agent)` memory units (provenance-tagged) up; pull deltas down. No textual merge ([`10`](README.md)). |
-| `SyncSession` | unary | Reconcile session metadata / version-vectors on (re)connect ([`09`](README.md)). |
+| `RegisterInstance` | unary | Host announces itself: `{host_id, run_id, repo_label, user_id}` → hub records/updates the instance row. Idempotent; called on connect. |
+| `AppendTranscript` | unary or client-stream | Uplink: host appends seq'd transcript/event entries (claude output) to the durable log. Carries `{host_id, run_id, entries[], from_seq}`. **The transcript IS the event log** ([`01`](01-architecture.md#2-the-event-log-spine-the-strongest-idea--feature-it)). |
+| `SubscribeCommands` | **server-stream** | Downlink: hub pushes commands to the host ("user typed X", "release requested"). Held open; this is the connection that must survive the LB. |
+| `ClaimActiveHost` / `ReleaseActiveHost` | unary | **Advisory** write-authority marker for a project: sets/clears "the currently active host." **No fence token, no epoch** — best-effort, last-writer-wins; the marker is informational (drives the "which host is live / N clients" UX), not a hard lock. |
+| `PushMemory` / `PullMemory` | unary | Memory **checkpoint** sync: push a per-`(project, agent)` memory checkpoint up (provenance-tagged), pull the latest down. **Last-writer-wins** — no version-vector, no textual/semantic merge ([`10`](README.md)). |
 | `UploadAttachment` | client-stream **or** presigned-URL unary | Screenshot/image ingestion. Prefer a unary call that returns a `gocloud.dev/blob` presigned URL the host PUTs to directly — keeps large blobs off the RPC path (attachments doc). |
 
-> **The persistent connection = the heartbeat = the lease liveness signal**
-> ([`01` §4](01-architecture.md#4-identity-lease--fencing-conceptual--detail-in-doc-10--09)).
-> Whichever streaming shape wins, an application-level heartbeat rides it (see
-> §4.3) — a dropped heartbeat is what expires a stale lease.
+> **The persistent connection = the heartbeat.** An application-level heartbeat
+> rides the downlink stream (see §4.3); it keeps the stream alive through idle
+> timeouts and refreshes the advisory active-host marker. A dropped heartbeat
+> simply lets the next host claim the advisory marker — there is no fence to
+> reconcile.
 
 ### Simplest way vs. right way (host↔hub transport)
 
-- **Simplest:** one `Chat`-style **bidi stream** carrying uplink events *and*
+- **Simplest:** one `Chat`-style **bidi stream** carrying uplink transcript *and*
   downlink commands multiplexed. Cost: relies on full-duplex HTTP/2 surviving the
   LB indefinitely; Connect itself warns against long-lived bidi (§4.1); one flaky
   frame kills both directions at once.
 - **Right:** **split the directions** — a held-open **server-stream** for
-  downlink + **unary/batched** `PushEvents` for uplink. Cost: two call types
-  instead of one; uplink events are batched rather than instantaneously
-  streamed (sub-second batching is fine for this workload).
+  downlink + **unary/batched** `AppendTranscript` for uplink. Cost: two call
+  types instead of one; uplink is batched rather than instantaneously streamed
+  (sub-second batching is fine for this workload).
 - **Recommendation:** **split directions (server-stream downlink + unary
   uplink).** It sidesteps full-duplex fragility, matches what the browser seam is
   *forced* to do anyway (§2), and lets the *one* reconnect rule cover both seams
@@ -64,19 +79,26 @@ Private, machine-to-machine. Authenticated by a host→hub PAT (hashed in PG, se
 
 ## 2. Surface (2): api ↔ webapp
 
-Public, browser-facing. Authenticated via OIDC (session cookie / bearer) — see
-[`04`](README.md). The SPA is *just another event-log consumer*.
+Public, browser-facing. **No OIDC.** Auth = the single configured **bearer
+token**: the SPA posts it once to `Login`, which sets an **httpOnly session
+cookie**; subsequent calls carry the cookie. This is the entire auth surface —
+**no relying-party flow, no user allowlist, no multi-tenant RPCs.** The SPA is
+*just another event-log consumer*.
 
 ### RPCs (conceptual)
 
 | RPC | Shape | Purpose |
 |---|---|---|
-| `Login` / `Logout` / `Session` | unary | OIDC relying-party flow bootstrap; returns current user + allowlist status. |
-| `ListInstances` | unary | Enumerate connected hosts/instances (`host_id`, repo label, lease holder, N-clients-connected, last-seen). |
-| `SubscribeInstance` | **server-stream** | Uplink→browser: live-tail an instance's event log. Carries `from_seq`; server replays delta or hands a snapshot ref, then live-tails. |
+| `Login` / `Logout` | unary | Exchange the configured bearer token for an httpOnly session cookie (`Login`); clear it (`Logout`). No IdP, no allowlist. |
+| `ListInstances` | unary | Enumerate connected instances (`host_id`, repo label, active-host marker, N-clients-connected, last-seen). |
+| `SubscribeInstance` | **server-stream** | Uplink→browser: live-tail an instance's transcript/event log. Carries `from_seq`; server replays the delta (or the full log on a fresh connect), then live-tails. |
 | `SubmitInput` | unary | Downlink: "user typed X in the browser" → hub → host's `SubscribeCommands` stream → the one turn-queue ([`01` §6](01-architecture.md#6-how-the-pieces-fit-requestresponse-paths)). |
-| `FetchSnapshot` | unary | Cold-start / gap-recovery: fetch the latest snapshot (or a blob ref) for an instance, returns its `seq`. |
-| `CreatePAT` / `ListPATs` / `RevokePAT` | unary | Host→hub PAT lifecycle (management UI). Tokens shown once; stored hashed. |
+| `FetchTranscript` | unary | Cold-start / gap-recovery: fetch the transcript log — **full** (`from_seq=0`) or **delta** (`from_seq=N`) — returns entries + head `seq`. **No snapshot in v1**; the log itself is the source. |
+
+> **No `FetchSnapshot`, no PAT-management, no OIDC endpoints in v1.** Snapshots,
+> retention/GC, and richer auth are deferred (see the scope banner and Open
+> Questions). Client-side encryption and per-project opt-out are likewise
+> deferred.
 
 ### Why the browser seam settles the debate
 
@@ -109,8 +131,9 @@ seams.** That symmetry is the KISS win.
 - **Right:** `buf breaking` gate in CI + additive-only field policy. Cost: one CI
   step + discipline (never reuse field numbers).
 - **Recommendation:** **`buf breaking` in CI from day one.** The whole point of
-  protobuf here is safe independent evolution of three deployables; skipping the
-  gate throws that away for near-zero savings.
+  protobuf here is safe independent evolution of the deployables; skipping the
+  gate throws that away for near-zero savings. It's also what keeps the deferred
+  v2 features (snapshots, richer auth) **additive** rather than breaking.
 
 ---
 
@@ -140,7 +163,7 @@ seams.** That symmetry is the KISS win.
 | Platform | Idle/request ceiling | Tunable? | Implication |
 |---|---|---|---|
 | **Container Apps** (Envoy ingress) | **240s** request/route timeout by default | Partly — "Premium Ingress" raises the request idle timeout up to **~1 hour**; request-idle-timeout also settable via CLI on the environment | A quiet stream is torn down at the ceiling unless you keep traffic flowing **and** raise the timeout. |
-| **App Service** | **~230s** idle timeout at the Azure **hardware load balancer** (TCP level) | **No — not configurable.** | Any TCP connection idle >230s is killed. Must keep bytes flowing. WebSockets are the sanctioned long-lived path here. |
+| **App Service** | **~230s** idle timeout at the hardware **load balancer** (TCP level) | **No — not configurable.** | Any TCP connection idle >230s is killed. Must keep bytes flowing. WebSockets are the sanctioned long-lived path here. |
 | **Generic managed ingress** (kube ingress-nginx etc.) | Commonly **60s** idle on gRPC streams, and known to close idle streams **even with HTTP/2 keepalive annotations set** | Varies | Assume a low default idle timeout everywhere; don't rely on defaults. |
 
 Takeaway: **plan for an idle-timeout ceiling in the 60–240s range on any managed
@@ -165,8 +188,8 @@ cleanly when cut anyway.
 
 **Consequence:** to survive managed Envoy you need **application-level heartbeat
 messages *on the stream itself*** (DATA frames — e.g. a periodic `Heartbeat`
-event / `RenewLease` well under the idle ceiling, say every 20–30s), **not just
-HTTP/2 PINGs.** This heartbeat doubles as the lease-liveness signal (§1).
+event well under the idle ceiling, say every 20–30s), **not just HTTP/2 PINGs.**
+This heartbeat doubles as the advisory active-host refresh (§1).
 
 ### 4.4 Proxy/ingress buffering of streams
 
@@ -181,19 +204,24 @@ verify **first-byte and per-event latency**, not just "the connection stays open
 ```
 DOWNLINK (hub → host, hub → browser):  held-open SERVER-STREAM
   - app-level heartbeat event every ~20-30s (beats the 60-240s ceilings)
-  - carries seq'd events; on cut, client reconnects with from_seq (the ONE rule)
+  - carries seq'd log entries; on cut, client reconnects with from_seq (the ONE rule)
 
 UPLINK (host → hub, browser → hub):    UNARY / batched
-  - PushEvents (host) and SubmitInput (browser) are short unary calls
+  - AppendTranscript (host) and SubmitInput (browser) are short unary calls
   - no long-lived upstream to keep alive; each call is LB-friendly HTTP/2 or /1.1
 
-RECONNECT:  identical at both seams — replay(from_seq) else snapshot, then tail
+RECONNECT:  identical at both seams — replay(from_seq); on fresh connect from_seq=0
+            (full log — no snapshot in v1), then tail live
 ```
 
 - This **never depends on full-duplex** and **never depends on an un-cuttable
-  long stream.** Cuts are *expected*; the seq'd log + snapshot make reconnect
-  cheap and correct. The persistent connection is "persistent" in the sense of
+  long stream.** Cuts are *expected*; the seq'd log makes reconnect cheap and
+  correct. The persistent connection is "persistent" in the sense of
   *continuously re-established*, not *never dropped*.
+- **No snapshots in v1** (scope banner): a fresh connect replays the full seq'd
+  transcript. If cold-start replay ever gets too heavy, snapshots are the
+  additive v2 optimization — the reconnect rule and wire types don't change
+  (`FetchTranscript` gains a snapshot ref; `from_seq` semantics stay identical).
 - **WebSocket fallback (kept in reserve, not v1):** if even a heartbeated
   server-stream proves flaky on a target platform (or a platform only blesses WS
   for long-lived conns, as App Service does), a WebSocket transport carries the
@@ -253,17 +281,23 @@ assumption until this spike passes.**
   stream-idle timer on HTTP/2 PING, or is an on-stream heartbeat event mandatory?
   (The Envoy `stream_idle_timeout` behavior says DATA; must confirm on the
   managed variant we can't directly configure.)
-- **Uplink batching window:** how long may `PushEvents` batch before flush
-  without the browser feeling laggy — 100ms? 250ms? Tie to the snapshot cadence
-  question in [`01`](01-architecture.md#open-questions).
+- **Full-log cold-start cost:** with **no snapshots in v1**, how large does a
+  single-project transcript get before full-log replay on fresh connect feels
+  slow on mobile — and is that the trigger to add v2 snapshots?
+- **Uplink batching window:** how long may `AppendTranscript` batch before flush
+  without the browser feeling laggy — 100ms? 250ms?
 - **Attachment path:** presigned-URL PUT (blob store direct) vs. client-stream
   through the RPC — settle in the attachments doc; affects whether
   `UploadAttachment` is unary or a stream.
+- **Advisory-marker staleness:** with no fence token, how long after a heartbeat
+  gap should the active-host marker be considered stale enough for another host
+  to claim it — and is a purely advisory marker enough to avoid confusing
+  double-driving in a single-user setup?
+- **Bearer-token rotation:** the single configured token is the whole auth
+  surface — how is it rotated without dropping every host + browser at once?
+  (Deferred detail → [`04`](README.md).)
 - **WebSocket fallback trigger:** what concrete spike metric flips us from
   server-stream to WS — an idle-survival failure, a p95 reconnect rate above some
   threshold, or platform policy (App-Service-class WS-only)?
-- **Downlink fan-out to N hosts from one hub process:** how many concurrent
-  held-open server-streams can a single Go container hold before memory/goroutine
-  pressure matters? (Sizing → [`08`](README.md).)
 - **`buf breaking` baseline:** track against `main` HEAD, or against the
   last-released hub tag so in-flight `main` churn doesn't block PRs?
