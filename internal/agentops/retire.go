@@ -39,37 +39,37 @@ type RetireDeps struct {
 // Retire fully tears down an agent after its owning runtime has already been
 // stopped by the live weave session, or during offline cleanup with no live
 // weave session present.
-func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
+func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, force, abandon, mergeFirst, yes, noValidate bool) ([]string, error) {
 	if err := agent.ValidateName(agentName); err != nil {
-		return err
+		return nil, err
 	}
 
 	if abandon && mergeFirst {
-		return fmt.Errorf("--merge and --abandon are mutually exclusive")
+		return nil, fmt.Errorf("--merge and --abandon are mutually exclusive")
 	}
 
 	sprawlRoot := deps.Getenv("SPRAWL_ROOT")
 	if sprawlRoot == "" {
-		return fmt.Errorf("SPRAWL_ROOT environment variable is not set")
+		return nil, fmt.Errorf("SPRAWL_ROOT environment variable is not set")
 	}
 
 	// Load agent state
 	agentState, err := state.LoadAgent(sprawlRoot, agentName)
 	if err != nil {
-		return fmt.Errorf("agent %q not found: %w", agentName, err)
+		return nil, fmt.Errorf("agent %q not found: %w", agentName, err)
 	}
 
 	// Merge before retire if requested (must happen before "retiring" checkpoint)
 	if mergeFirst {
 		callerName := deps.Getenv("SPRAWL_AGENT_IDENTITY")
 		if callerName == "" {
-			return fmt.Errorf("--merge requires SPRAWL_AGENT_IDENTITY to be set")
+			return nil, fmt.Errorf("--merge requires SPRAWL_AGENT_IDENTITY to be set")
 		}
 		if agentState.Subagent {
-			return fmt.Errorf("agent %q is a subagent and has no branch to merge", agentName)
+			return nil, fmt.Errorf("agent %q is a subagent and has no branch to merge", agentName)
 		}
 		if agentState.Parent != callerName {
-			return fmt.Errorf("cannot merge %q: you are not its parent (parent is %q)", agentName, agentState.Parent)
+			return nil, fmt.Errorf("cannot merge %q: you are not its parent (parent is %q)", agentName, agentState.Parent)
 		}
 		callerWorktree := sprawlRoot
 		if a, err := deps.LoadAgent(sprawlRoot, callerName); err == nil {
@@ -77,11 +77,11 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 		}
 		targetBranch, err := deps.CurrentBranch(callerWorktree)
 		if err != nil {
-			return fmt.Errorf("determining current branch: %w", err)
+			return nil, fmt.Errorf("determining current branch: %w", err)
 		}
 		sprawlCfg, err := deps.LoadConfig(sprawlRoot)
 		if err != nil {
-			return fmt.Errorf("loading config: %w", err)
+			return nil, fmt.Errorf("loading config: %w", err)
 		}
 		cfg := &merge.Config{
 			SprawlRoot:      sprawlRoot,
@@ -101,7 +101,7 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 		}
 		result, err := deps.DoMerge(ctx, cfg, mergeDeps)
 		if err != nil {
-			return fmt.Errorf("merge before retire failed: %w", err)
+			return nil, fmt.Errorf("merge before retire failed: %w", err)
 		}
 		if result.WasNoOp {
 			fmt.Fprintf(os.Stderr, "Nothing to merge: %s has no new commits\n", agentName)
@@ -115,7 +115,7 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 		runTeardownScript(deps, sprawlRoot, agentState)
 		rd := buildRetireDeps(deps)
 		if err := agent.RetireAgent(rd, sprawlRoot, agentState, force, true); err != nil {
-			return err
+			return nil, err
 		}
 		// Clean up lock and poke files
 		lockPath := filepath.Join(sprawlRoot, ".sprawl", "locks", agentState.Name+".lock")
@@ -123,21 +123,21 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 		pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".poke")
 		_ = os.Remove(pokePath)
 		printRetireSuccess(agentState, abandon, mergeFirst, deps, sprawlRoot)
-		return nil
+		return []string{agentState.Name}, nil
 	}
 
 	// Check for children
 	if !cascade && !force {
 		children, err := findChildren(sprawlRoot, agentName)
 		if err != nil {
-			return fmt.Errorf("checking children: %w", err)
+			return nil, fmt.Errorf("checking children: %w", err)
 		}
 		if len(children) > 0 {
 			names := make([]string, len(children))
 			for i, c := range children {
 				names[i] = c.Name
 			}
-			return fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
+			return nil, fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
 				agentName, len(children), strings.Join(names, ", "), agentName, agentName)
 		}
 	}
@@ -159,20 +159,31 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 		}
 
 		if len(warnings) > 0 && !yes {
-			return fmt.Errorf("retire --abandon blocked: %s detected. Re-run with --yes to confirm, or use --merge instead", strings.Join(warnings, " and "))
+			return nil, fmt.Errorf("retire --abandon blocked: %s detected. Re-run with --yes to confirm, or use --merge instead", strings.Join(warnings, " and "))
 		}
 	}
 
-	// Cascade: retire children first (depth-first, bottom-up)
+	// retired accumulates the agents actually torn down, bottom-up:
+	// descendants first, this agent appended last. Returned so callers
+	// (e.g. the MCP layer) can report what was actually retired.
+	var retired []string
+
+	// Cascade: retire children first (depth-first, bottom-up).
+	// QUM-852: enumerate ALL children needing teardown (excluding only
+	// retired/retiring, which are already gone) — NOT findChildren, which
+	// filters out resolved orphans (complete/killed/faulted/died) that a
+	// cascade must still tear down.
 	if cascade {
-		children, err := findChildren(sprawlRoot, agentName)
+		children, err := findCascadeChildren(sprawlRoot, agentName)
 		if err != nil {
-			return fmt.Errorf("checking children: %w", err)
+			return nil, fmt.Errorf("checking children: %w", err)
 		}
 		for _, child := range children {
-			if err := Retire(ctx, deps, child.Name, true, force, abandon, false, yes, noValidate); err != nil {
-				return fmt.Errorf("retiring child %s: %w", child.Name, err)
+			sub, err := Retire(ctx, deps, child.Name, true, force, abandon, false, yes, noValidate)
+			if err != nil {
+				return nil, fmt.Errorf("retiring child %s: %w", child.Name, err)
 			}
+			retired = append(retired, sub...)
 		}
 	}
 
@@ -181,7 +192,7 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 	if agentState.Worktree != "" && !agentState.Subagent && !force {
 		statusOutput, err := deps.GitStatus(agentState.Worktree)
 		if err == nil && statusOutput != "" {
-			return fmt.Errorf("agent %s has uncommitted changes in worktree; commit first or use --force to discard", agentName)
+			return nil, fmt.Errorf("agent %s has uncommitted changes in worktree; commit first or use --force to discard", agentName)
 		}
 	}
 	cpRetire(deps, "retire.preflight", "agent_name", agentName)
@@ -189,7 +200,7 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 	// Crash-safe checkpoint: mark as "retiring"
 	agentState.Status = "retiring"
 	if err := state.SaveAgent(sprawlRoot, agentState); err != nil {
-		return fmt.Errorf("updating agent state: %w", err)
+		return nil, fmt.Errorf("updating agent state: %w", err)
 	}
 	cpRetire(deps, "retire.checkpoint-saved", "agent_name", agentName)
 
@@ -198,7 +209,7 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 
 	rd := buildRetireDeps(deps)
 	if err := agent.RetireAgent(rd, sprawlRoot, agentState, force, false); err != nil {
-		return err
+		return nil, err
 	}
 	cpRetire(deps, "retire.worktree-removed", "agent_name", agentName)
 
@@ -208,7 +219,8 @@ func Retire(ctx context.Context, deps *RetireDeps, agentName string, cascade, fo
 	pokePath := filepath.Join(sprawlRoot, ".sprawl", "agents", agentState.Name+".poke")
 	_ = os.Remove(pokePath)
 	printRetireSuccess(agentState, abandon, mergeFirst, deps, sprawlRoot)
-	return nil
+	retired = append(retired, agentState.Name)
+	return retired, nil
 }
 
 // runTeardownScript runs the worktree.teardown script if configured.
@@ -310,6 +322,28 @@ func findChildren(sprawlRoot, parentName string) ([]*state.AgentState, error) {
 		// block parent retire nor need cascading. Uses IsResolvedOrphan
 		// because QUM-787 narrowed IsTerminal to {retired, retiring}.
 		if a.Parent == parentName && !state.IsResolvedOrphan(a.Status) {
+			children = append(children, a)
+		}
+	}
+	return children, nil
+}
+
+// findCascadeChildren returns all direct children that still need active
+// teardown during a cascade — everything EXCEPT {retired, retiring}
+// (state.IsTerminal), which are already gone or mid-teardown. Unlike
+// findChildren it does NOT filter resolved orphans (complete / killed /
+// faulted / died / resume_failed / stopped), because a cascade must fully
+// tear those down (state file + worktree + branch). Using findChildren here
+// was the QUM-852 bug: cascade silently skipped exactly those children,
+// leaving zombie state files, worktrees, and branches.
+func findCascadeChildren(sprawlRoot, parentName string) ([]*state.AgentState, error) {
+	agents, err := state.ListAgents(sprawlRoot)
+	if err != nil {
+		return nil, err
+	}
+	var children []*state.AgentState
+	for _, a := range agents {
+		if a.Parent == parentName && !state.IsTerminal(a.Status) {
 			children = append(children, a)
 		}
 	}

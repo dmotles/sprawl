@@ -218,7 +218,9 @@ type Supervisor interface {
 	// to the supervisor's own callerName.
 	Merge(ctx context.Context, caller, agentName, message string, noValidate bool) (*MergeOutcome, error)
 	// Retire retires agentName. `caller` semantics match Merge — see QUM-487.
-	Retire(ctx context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error
+	// Returns the set of agents actually retired (bottom-up: descendants
+	// first, agentName last) so callers can report what was torn down. QUM-852.
+	Retire(ctx context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) ([]string, error)
 	Kill(ctx context.Context, agentName string) error
 	// Pause politely stops the named agent at its next turn boundary,
 	// preserving the transcript so the agent can be `wake`d later. Escalates

@@ -36,6 +36,7 @@ type mockSupervisor struct {
 	delegateErr  error
 	mergeErr     error
 	retireErr    error
+	retireReturn []string
 	killErr      error
 	shutdownErr  error
 
@@ -214,14 +215,17 @@ func (m *mockSupervisor) Merge(_ context.Context, caller, agentName, message str
 	return &supervisor.MergeOutcome{NoOp: m.mergeNoOp}, nil
 }
 
-func (m *mockSupervisor) Retire(_ context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) error {
+func (m *mockSupervisor) Retire(_ context.Context, caller, agentName string, merge, abandon, cascade, noValidate bool) ([]string, error) {
 	m.retireCaller = caller
 	m.retireAgent = agentName
 	m.retireMerge = merge
 	m.retireAbandon = abandon
 	m.retireCascade = cascade
 	m.retireNoValidate = noValidate
-	return m.retireErr
+	if m.retireErr != nil {
+		return nil, m.retireErr
+	}
+	return m.retireReturn, nil
 }
 
 func (m *mockSupervisor) Kill(_ context.Context, agentName string) error {
@@ -898,7 +902,10 @@ func TestServer_ToolsCall_SprawlRetire(t *testing.T) {
 }
 
 func TestServer_ToolsCall_SprawlRetire_Cascade(t *testing.T) {
-	mock := &mockSupervisor{}
+	mock := &mockSupervisor{
+		// Bottom-up retired set: descendants first, target last (QUM-852).
+		retireReturn: []string{"childA", "childB", "manager-x"},
+	}
 	srv := New(mock)
 	ctx := context.Background()
 
@@ -932,8 +939,45 @@ func TestServer_ToolsCall_SprawlRetire_Cascade(t *testing.T) {
 	}
 	content := result["content"].([]any)
 	text, _ := content[0].(map[string]any)["text"].(string)
-	if text == "" || text == "Retired agent manager-x" {
-		t.Errorf("expected descendants mentioned in success text, got %q", text)
+	// Message must reflect the ACTUAL retired set: 2 descendants, named.
+	if !strings.Contains(text, "2 descendant") {
+		t.Errorf("expected actual descendant count in success text, got %q", text)
+	}
+	for _, name := range []string{"childA", "childB"} {
+		if !strings.Contains(text, name) {
+			t.Errorf("expected descendant %q named in success text, got %q", name, text)
+		}
+	}
+}
+
+// TestServer_ToolsCall_SprawlRetire_Cascade_ZeroDescendants pins the QUM-852
+// honesty fix: a cascade that retired only the target (no descendants) must NOT
+// claim "and descendants".
+func TestServer_ToolsCall_SprawlRetire_Cascade_ZeroDescendants(t *testing.T) {
+	mock := &mockSupervisor{
+		retireReturn: []string{"manager-x"},
+	}
+	srv := New(mock)
+	ctx := context.Background()
+
+	msg := makeJSONRPCRequest(801, "tools/call", map[string]any{
+		"name": "retire",
+		"arguments": map[string]any{
+			"agent":   "manager-x",
+			"cascade": true,
+			"abandon": true,
+		},
+	})
+	resp, err := srv.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Fatalf("HandleMessage() error: %v", err)
+	}
+	parsed := parseJSONRPCResponse(t, resp)
+	result := parsed["result"].(map[string]any)
+	content := result["content"].([]any)
+	text, _ := content[0].(map[string]any)["text"].(string)
+	if strings.Contains(text, "descendant") {
+		t.Errorf("cascade with zero descendants must not claim descendants, got %q", text)
 	}
 }
 

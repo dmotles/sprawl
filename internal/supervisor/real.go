@@ -70,7 +70,7 @@ type Real struct {
 
 	spawnFn  func(*agentops.SpawnDeps, string, string, string, string, bool) (*state.AgentState, error)
 	mergeFn  func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error)
-	retireFn func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error
+	retireFn func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error)
 	killFn   func(*agentops.KillDeps, string, bool) error
 
 	// Handoff seams + signal channel. The channel is buffered (size 1) and
@@ -743,7 +743,13 @@ func (r *Real) Merge(ctx context.Context, caller, agentName, message string, noV
 // QUM-487. Resolution order matches Merge; the resolved identity flows into
 // retireDeps.Getenv and is also propagated through cascade recursion so every
 // retireFn invocation in the tree runs under the caller's identity.
-func (r *Real) Retire(ctx context.Context, caller string, agentName string, mergeFirst, abandon, cascade, noValidate bool) error {
+func (r *Real) Retire(ctx context.Context, caller string, agentName string, mergeFirst, abandon, cascade, noValidate bool) ([]string, error) {
+	// Reject mutually-exclusive flags up front, BEFORE any cascade recursion —
+	// otherwise a cascade could abandon children before the self-retire's own
+	// guard surfaced the error (QUM-852 review note).
+	if abandon && mergeFirst {
+		return nil, fmt.Errorf("merge and abandon are mutually exclusive")
+	}
 	// Release any AskUserQuestion calls originating from this agent BEFORE
 	// state mutation. Cascade recursion will naturally fire this for each
 	// descendant as well. (QUM-527 slice 1.)
@@ -751,12 +757,14 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 	effective := r.effectiveCallerOr(ctx, caller)
 	retireDeps := r.retireDepsForCaller(ctx, effective)
 	if err := r.reconcileStateFromRegistry(agentName); err != nil {
-		return err
+		return nil, err
 	}
 	if runtime, ok := r.startedRuntime(agentName); ok {
+		// Blocking check keeps the resolved-orphan filter (QUM-739/787):
+		// only live children block a non-cascade retire.
 		children, err := r.listDirectChildren(agentName)
 		if err != nil {
-			return fmt.Errorf("checking children: %w", err)
+			return nil, fmt.Errorf("checking children: %w", err)
 		}
 		if len(children) > 0 && !cascade {
 			names := make([]string, len(children))
@@ -764,14 +772,23 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 				names[i] = child.Name
 			}
 			sort.Strings(names)
-			return fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
+			return nil, fmt.Errorf("agent %s has %d active children: %s; use --cascade to retire %s and all descendants, or --force to retire %s only (children become orphans)",
 				agentName, len(children), strings.Join(names, ", "), agentName, agentName)
 		}
+		var retired []string
 		if cascade {
-			for _, child := range children {
-				if err := r.Retire(ctx, effective, child.Name, false, false, true, noValidate); err != nil {
-					return err
+			// QUM-852: cascade must tear down ALL descendants including
+			// resolved orphans, and must propagate abandon/merge.
+			cascadeChildren, err := r.listCascadeChildren(agentName)
+			if err != nil {
+				return nil, fmt.Errorf("checking children: %w", err)
+			}
+			for _, child := range cascadeChildren {
+				sub, err := r.Retire(ctx, effective, child.Name, false /* mergeFirst: top-level only */, abandon, true, noValidate)
+				if err != nil {
+					return nil, err
 				}
+				retired = append(retired, sub...)
 			}
 		}
 		stopCtx, cancel := withRuntimeStopTimeout(ctx)
@@ -802,29 +819,32 @@ func (r *Real) Retire(ctx context.Context, caller string, agentName string, merg
 				"wait_timeout", runtime.StopWaitTimedOut())
 		}
 		if stopErr != nil {
-			return stopErr
+			return nil, stopErr
 		}
-		if err := r.retireFn(ctx, retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
-			return err
+		self, err := r.retireFn(ctx, retireDeps, agentName, false /* cascade already handled */, false /* force */, abandon, mergeFirst, true /* yes */, noValidate)
+		if err != nil {
+			return nil, err
 		}
+		retired = append(retired, self...)
 		r.runtimeRegistry.Remove(agentName)
-		return nil
+		return retired, nil
 	}
 	// QUM-739: retire is the legitimate cleanup path for terminal agents;
 	// the TerminalAgentError gate that used to live here trapped zombies.
 	// Keep the gate on send_message / peek (still callers of TerminalAgentError).
-	if err := r.retireFn(ctx, retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate); err != nil {
+	retired, err := r.retireFn(ctx, retireDeps, agentName, cascade, false /* force */, abandon, mergeFirst, true /* yes */, noValidate)
+	if err != nil {
 		if cascade {
 			r.reconcileRuntimeTreeFromState(agentName)
 		}
-		return err
+		return nil, err
 	}
 	if cascade {
 		r.runtimeRegistry.RemoveTree(agentName)
 	} else {
 		r.runtimeRegistry.Remove(agentName)
 	}
-	return nil
+	return retired, nil
 }
 
 // Kill is idempotent: if the agent is already gone (state file missing) or
@@ -2255,6 +2275,26 @@ func (r *Real) listDirectChildren(parentName string) ([]*state.AgentState, error
 		// retire/merge and shouldn't be cascaded. Uses IsResolvedOrphan
 		// because QUM-787 narrowed IsTerminal to {retired, retiring}.
 		if agentState.Parent == parentName && !state.IsResolvedOrphan(agentState.Status) {
+			children = append(children, agentState)
+		}
+	}
+	return children, nil
+}
+
+// listCascadeChildren returns all direct children that still need active
+// teardown during a cascade — everything EXCEPT {retired, retiring}, which
+// are already gone or mid-teardown. Unlike listDirectChildren it does NOT
+// filter resolved orphans (complete/killed/faulted/died/...), because a
+// cascade must fully tear those down (state file + worktree + branch).
+// QUM-852.
+func (r *Real) listCascadeChildren(parentName string) ([]*state.AgentState, error) {
+	agents, err := state.ListAgents(r.sprawlRoot)
+	if err != nil {
+		return nil, err
+	}
+	var children []*state.AgentState
+	for _, agentState := range agents {
+		if agentState.Parent == parentName && !state.IsTerminal(agentState.Status) {
 			children = append(children, agentState)
 		}
 	}

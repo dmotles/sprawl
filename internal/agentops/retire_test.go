@@ -77,7 +77,7 @@ func TestRetire_EmitsCheckpoints(t *testing.T) {
 		},
 	}
 
-	if err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
+	if _, err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestRetire_NilCheckpointSafe(t *testing.T) {
 			t.Errorf("nil Checkpoint panicked: %v", r)
 		}
 	}()
-	if err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
+	if _, err := Retire(context.Background(), deps, agentName, false, false, false, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 }
@@ -212,7 +212,7 @@ func TestRetire_Subagent_SkipsWorktreeAndBranchDelete(t *testing.T) {
 	}
 
 	// abandon=true, yes=true: typical sub-agent retire path.
-	if err := Retire(context.Background(), deps, agentName, false, false, true, false, true, false); err != nil {
+	if _, err := Retire(context.Background(), deps, agentName, false, false, true, false, true, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 
@@ -278,7 +278,7 @@ func TestRetire_TerminalStatuses_Succeed(t *testing.T) {
 					t.Fatalf("SaveAgent: %v", err)
 				}
 				deps := terminalRetireDeps(sprawlRoot)
-				err := Retire(context.Background(), deps, agentName,
+				_, err := Retire(context.Background(), deps, agentName,
 					false /* cascade */, false /* force */, abandon,
 					false /* mergeFirst */, true /* yes */, false /* noValidate */)
 				if err != nil {
@@ -340,7 +340,7 @@ func TestRetire_TerminalChildren_DoNotRequireCascade(t *testing.T) {
 
 	deps := terminalRetireDeps(sprawlRoot)
 	// cascade=false: must still succeed because all children are terminal.
-	if err := Retire(context.Background(), deps, parentName,
+	if _, err := Retire(context.Background(), deps, parentName,
 		false /* cascade */, false /* force */, false, /* abandon */
 		false /* mergeFirst */, false /* yes */, false /* noValidate */); err != nil {
 		t.Fatalf("Retire parent with terminal-only children: %v", err)
@@ -379,11 +379,261 @@ func TestRetire_ActiveChildBlocks(t *testing.T) {
 	}
 
 	deps := terminalRetireDeps(sprawlRoot)
-	err := Retire(context.Background(), deps, parentName,
+	_, err := Retire(context.Background(), deps, parentName,
 		false, false, false, false, false, false)
 	if err == nil {
 		t.Fatalf("Retire of parent with active child must fail without --cascade")
 	}
+}
+
+// retireRecords captures the teardown side effects observed during a retire so
+// cascade tests can assert that resolved-orphan descendants were actually torn
+// down (QUM-852).
+type retireRecords struct {
+	worktreesRemoved []string
+	branchesDeleted  []string
+}
+
+// recordingRetireDeps builds RetireDeps like terminalRetireDeps but records the
+// worktree paths passed to WorktreeRemove and the branch names passed to
+// GitBranchDelete / GitBranchSafeDelete, so a test can verify orphan children
+// had their worktrees and branches cleaned up.
+func recordingRetireDeps(sprawlRoot string) (*RetireDeps, *retireRecords) {
+	rec := &retireRecords{}
+	deps := terminalRetireDeps(sprawlRoot)
+	deps.WorktreeRemove = func(_, p string, _ bool) error {
+		rec.worktreesRemoved = append(rec.worktreesRemoved, p)
+		return os.RemoveAll(p)
+	}
+	deps.GitBranchDelete = func(_, branch string) error {
+		rec.branchesDeleted = append(rec.branchesDeleted, branch)
+		return nil
+	}
+	deps.GitBranchSafeDelete = func(_, branch string) error {
+		rec.branchesDeleted = append(rec.branchesDeleted, branch)
+		return nil
+	}
+	return deps, rec
+}
+
+// saveTestAgent persists a minimal agent state with its own worktree dir and
+// branch, returning the worktree path.
+func saveTestAgent(t *testing.T, sprawlRoot, name, parent, status string) string {
+	t.Helper()
+	wt := filepath.Join(sprawlRoot, ".sprawl", "worktrees", name)
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatalf("mkdir worktree %s: %v", name, err)
+	}
+	st := &state.AgentState{
+		Name: name, Type: "engineer", Family: "engineering",
+		Branch: "dmotles/" + name, Worktree: wt, Parent: parent, Status: status,
+	}
+	if err := state.SaveAgent(sprawlRoot, st); err != nil {
+		t.Fatalf("SaveAgent %s: %v", name, err)
+	}
+	return wt
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRetire_Cascade_TearsDownResolvedOrphanChildren is the primary QUM-852
+// repro: cascade+abandon on a parent whose children are resolved orphans
+// (complete/killed/faulted/died) must fully tear each child down — state file
+// deleted, worktree removed, branch deleted — not silently skip them.
+func TestRetire_Cascade_TearsDownResolvedOrphanChildren(t *testing.T) {
+	for _, childStatus := range []string{
+		state.StatusComplete, state.StatusKilled, state.StatusFaulted, state.StatusDied,
+	} {
+		t.Run(childStatus, func(t *testing.T) {
+			sprawlRoot := t.TempDir()
+			saveTestAgent(t, sprawlRoot, "parent", "weave", state.StatusActive)
+			childWT := saveTestAgent(t, sprawlRoot, "kid", "parent", childStatus)
+
+			deps, rec := recordingRetireDeps(sprawlRoot)
+			retired, err := Retire(context.Background(), deps, "parent",
+				true /* cascade */, false /* force */, true /* abandon */, false /* mergeFirst */, true /* yes */, false /* noValidate */)
+			if err != nil {
+				t.Fatalf("Retire cascade: %v", err)
+			}
+
+			if _, err := state.LoadAgent(sprawlRoot, "kid"); err == nil {
+				t.Errorf("child state file still loads after cascade; want deleted")
+			}
+			if _, err := os.Stat(childWT); err == nil {
+				t.Errorf("child worktree %s still exists after cascade; want removed", childWT)
+			}
+			if !contains(rec.branchesDeleted, "dmotles/kid") {
+				t.Errorf("child branch not deleted; GitBranchDelete calls = %v", rec.branchesDeleted)
+			}
+			if !contains(retired, "kid") || !contains(retired, "parent") {
+				t.Errorf("returned retired set = %v, want to include both kid and parent", retired)
+			}
+		})
+	}
+}
+
+// TestRetire_Cascade_ReturnsRetiredSet_BottomUp pins the ordering contract:
+// descendants precede ancestors, target last.
+func TestRetire_Cascade_ReturnsRetiredSet_BottomUp(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	saveTestAgent(t, sprawlRoot, "parent", "weave", state.StatusActive)
+	saveTestAgent(t, sprawlRoot, "child", "parent", state.StatusActive)
+	saveTestAgent(t, sprawlRoot, "grand", "child", state.StatusComplete)
+
+	deps, _ := recordingRetireDeps(sprawlRoot)
+	retired, err := Retire(context.Background(), deps, "parent",
+		true, false, true, false, true, false)
+	if err != nil {
+		t.Fatalf("Retire cascade: %v", err)
+	}
+	want := []string{"grand", "child", "parent"}
+	if len(retired) != len(want) {
+		t.Fatalf("retired = %v, want %v", retired, want)
+	}
+	for i, name := range want {
+		if retired[i] != name {
+			t.Errorf("retired[%d] = %q, want %q (retired=%v)", i, retired[i], name, retired)
+		}
+	}
+}
+
+// TestRetire_Cascade_Recursive_ResolvedOrphanGrandchild proves recursion reaches
+// an orphan nested under a live child, not just direct orphan children.
+func TestRetire_Cascade_Recursive_ResolvedOrphanGrandchild(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	saveTestAgent(t, sprawlRoot, "parent", "weave", state.StatusActive)
+	saveTestAgent(t, sprawlRoot, "child", "parent", state.StatusActive)
+	grandWT := saveTestAgent(t, sprawlRoot, "grand", "child", state.StatusFaulted)
+
+	deps, _ := recordingRetireDeps(sprawlRoot)
+	if _, err := Retire(context.Background(), deps, "parent",
+		true, false, true, false, true, false); err != nil {
+		t.Fatalf("Retire cascade: %v", err)
+	}
+	if _, err := state.LoadAgent(sprawlRoot, "grand"); err == nil {
+		t.Errorf("faulted grandchild state file still loads; want deleted")
+	}
+	if _, err := os.Stat(grandWT); err == nil {
+		t.Errorf("faulted grandchild worktree %s still exists; want removed", grandWT)
+	}
+}
+
+// TestRetire_Cascade_Recurses_ThroughOrphanIntermediate pins the AC phrasing
+// "deep tree with a resolved-orphan intermediate": cascade must descend INTO a
+// resolved-orphan (complete) child's own subtree and tear down its children,
+// not stop at the orphan.
+func TestRetire_Cascade_Recurses_ThroughOrphanIntermediate(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	saveTestAgent(t, sprawlRoot, "parent", "weave", state.StatusActive)
+	saveTestAgent(t, sprawlRoot, "mid", "parent", state.StatusComplete)
+	leafWT := saveTestAgent(t, sprawlRoot, "leaf", "mid", state.StatusComplete)
+
+	deps, _ := recordingRetireDeps(sprawlRoot)
+	retired, err := Retire(context.Background(), deps, "parent",
+		true, false, true, false, true, false)
+	if err != nil {
+		t.Fatalf("Retire cascade: %v", err)
+	}
+	for _, name := range []string{"leaf", "mid"} {
+		if _, err := state.LoadAgent(sprawlRoot, name); err == nil {
+			t.Errorf("%s state file still loads; want deleted (cascade must recurse through orphan intermediate)", name)
+		}
+	}
+	if _, err := os.Stat(leafWT); err == nil {
+		t.Errorf("leaf worktree %s still exists; want removed", leafWT)
+	}
+	if !contains(retired, "leaf") || !contains(retired, "mid") {
+		t.Errorf("retired set = %v, want to include leaf and mid", retired)
+	}
+}
+
+// TestRetire_Cascade_ExcludesRetiredRetiringChildren pins the filter as
+// "exclude only {retired, retiring}" — those children have nothing left to
+// clean and must not be re-torn-down.
+func TestRetire_Cascade_ExcludesRetiredRetiringChildren(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	saveTestAgent(t, sprawlRoot, "parent", "weave", state.StatusActive)
+	saveTestAgent(t, sprawlRoot, "gone", "parent", state.StatusRetired)
+	saveTestAgent(t, sprawlRoot, "leaving", "parent", state.StatusRetiring)
+
+	deps, rec := recordingRetireDeps(sprawlRoot)
+	retired, err := Retire(context.Background(), deps, "parent",
+		true, false, true, false, true, false)
+	if err != nil {
+		t.Fatalf("Retire cascade: %v", err)
+	}
+	if contains(retired, "gone") || contains(retired, "leaving") {
+		t.Errorf("retired set %v must not include retired/retiring children", retired)
+	}
+	if contains(rec.branchesDeleted, "dmotles/gone") || contains(rec.branchesDeleted, "dmotles/leaving") {
+		t.Errorf("retired/retiring children must not be re-torn-down; branch deletes = %v", rec.branchesDeleted)
+	}
+}
+
+// TestRetire_ReturnsOwnName_NonCascade pins that a leaf retire returns exactly
+// its own name.
+func TestRetire_ReturnsOwnName_NonCascade(t *testing.T) {
+	sprawlRoot := t.TempDir()
+	saveTestAgent(t, sprawlRoot, "solo", "weave", state.StatusComplete)
+
+	deps, _ := recordingRetireDeps(sprawlRoot)
+	retired, err := Retire(context.Background(), deps, "solo",
+		false, false, true, false, true, false)
+	if err != nil {
+		t.Fatalf("Retire: %v", err)
+	}
+	if len(retired) != 1 || retired[0] != "solo" {
+		t.Errorf("retired = %v, want [solo]", retired)
+	}
+}
+
+// TestRetire_Cascade_Abandon_DeletesOrphanChildBranches isolates the branch-leak
+// symptom and its negative: with abandon the orphan child's branch is deleted;
+// without abandon it is not force-deleted.
+func TestRetire_Cascade_Abandon_DeletesOrphanChildBranches(t *testing.T) {
+	t.Run("abandon deletes child branch", func(t *testing.T) {
+		sprawlRoot := t.TempDir()
+		saveTestAgent(t, sprawlRoot, "parent", "weave", state.StatusActive)
+		saveTestAgent(t, sprawlRoot, "kid", "parent", state.StatusComplete)
+
+		deps, rec := recordingRetireDeps(sprawlRoot)
+		if _, err := Retire(context.Background(), deps, "parent",
+			true, false, true /* abandon */, false, true, false); err != nil {
+			t.Fatalf("Retire cascade abandon: %v", err)
+		}
+		if !contains(rec.branchesDeleted, "dmotles/kid") {
+			t.Errorf("child branch not abandoned; GitBranchDelete calls = %v", rec.branchesDeleted)
+		}
+	})
+
+	t.Run("no abandon does not force-delete child branch", func(t *testing.T) {
+		sprawlRoot := t.TempDir()
+		saveTestAgent(t, sprawlRoot, "parent", "weave", state.StatusActive)
+		saveTestAgent(t, sprawlRoot, "kid", "parent", state.StatusComplete)
+
+		deps, rec := recordingRetireDeps(sprawlRoot)
+		// GitBranchIsMerged returns false in terminalRetireDeps, so an
+		// unmerged branch is preserved (not force-deleted) without abandon.
+		if _, err := Retire(context.Background(), deps, "parent",
+			true, false, false /* abandon */, false, true, false); err != nil {
+			t.Fatalf("Retire cascade: %v", err)
+		}
+		// The child must still be fully torn down (teardown-minus-branch),
+		// not skipped — only the branch is preserved without abandon.
+		if _, err := state.LoadAgent(sprawlRoot, "kid"); err == nil {
+			t.Errorf("child state file still loads without abandon; want deleted")
+		}
+		if contains(rec.branchesDeleted, "dmotles/kid") {
+			t.Errorf("child branch force-deleted without abandon; GitBranchDelete calls = %v", rec.branchesDeleted)
+		}
+	})
 }
 
 // terminalRetireDeps builds RetireDeps suitable for the QUM-739 tests above.

@@ -36,8 +36,8 @@ func newFakeReal(t *testing.T) (*Real, string) {
 	r.mergeFn = func(context.Context, *agentops.MergeDeps, string, string, bool, bool) (*agentops.MergeOutcome, error) {
 		return nil, errors.New("mergeFn not overridden")
 	}
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
-		return errors.New("retireFn not overridden")
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+		return nil, errors.New("retireFn not overridden")
 	}
 	r.killFn = func(*agentops.KillDeps, string, bool) error {
 		return errors.New("killFn not overridden")
@@ -164,7 +164,7 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 		name                                                 string
 		cascade, force, abandon, mergeFirst, yes, noValidate bool
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes, noValidate bool) error {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, cascade, force, abandon, mergeFirst, yes, noValidate bool) ([]string, error) {
 		got.name = name
 		got.cascade = cascade
 		got.force = force
@@ -172,10 +172,10 @@ func TestRetire_ForwardsFlags(t *testing.T) {
 		got.mergeFirst = mergeFirst
 		got.yes = yes
 		got.noValidate = noValidate
-		return nil
+		return []string{name}, nil
 	}
 
-	if err := r.Retire(context.Background(), "", "ghost", true /* mergeFirst */, false /* abandon */, false /* cascade */, false /* noValidate */); err != nil {
+	if _, err := r.Retire(context.Background(), "", "ghost", true /* mergeFirst */, false /* abandon */, false /* cascade */, false /* noValidate */); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if got.name != "ghost" {
@@ -205,11 +205,11 @@ func TestRetire_AbandonMode(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	var gotAbandon, gotMergeFirst bool
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, abandon, mergeFirst, _, _ bool) error {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, _, _, abandon, mergeFirst, _, _ bool) ([]string, error) {
 		gotAbandon, gotMergeFirst = abandon, mergeFirst
-		return nil
+		return nil, nil
 	}
-	if err := r.Retire(context.Background(), "", "ghost", false, true, false, false); err != nil {
+	if _, err := r.Retire(context.Background(), "", "ghost", false, true, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !gotAbandon || gotMergeFirst {
@@ -217,15 +217,35 @@ func TestRetire_AbandonMode(t *testing.T) {
 	}
 }
 
+// TestRetire_MergeAndAbandonRejectedBeforeCascade pins the QUM-852 review note:
+// merge+abandon must be rejected up front, before any cascade recursion can
+// abandon children.
+func TestRetire_MergeAndAbandonRejectedBeforeCascade(t *testing.T) {
+	r, tmpDir := newFakeReal(t)
+	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
+	called := false
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+		called = true
+		return nil, nil
+	}
+	_, err := r.Retire(context.Background(), "", "ghost", true /* mergeFirst */, true /* abandon */, true /* cascade */, false)
+	if err == nil {
+		t.Fatal("Retire(merge && abandon) must error")
+	}
+	if called {
+		t.Error("retireFn must not run when merge+abandon rejected up front")
+	}
+}
+
 func TestRetire_CascadeAndNoValidate(t *testing.T) {
 	r, tmpDir := newFakeReal(t)
 	saveTestAgent(t, tmpDir, &state.AgentState{Name: "ghost", Type: "researcher", Parent: "weave", Status: "active"})
 	var gotCascade, gotNoValidate bool
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, cascade, _, _, _, _, noValidate bool) error {
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, _ string, cascade, _, _, _, _, noValidate bool) ([]string, error) {
 		gotCascade, gotNoValidate = cascade, noValidate
-		return nil
+		return nil, nil
 	}
-	if err := r.Retire(context.Background(), "", "ghost", true /* merge */, false, true /* cascade */, true /* noValidate */); err != nil {
+	if _, err := r.Retire(context.Background(), "", "ghost", true /* merge */, false, true /* cascade */, true /* noValidate */); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
 	if !gotCascade {
@@ -625,7 +645,7 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 		}
 
 		var retireCalls []string
-		r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+		r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
 			// Load-bearing contract: by the time retireFn runs, the JSON
 			// must exist on disk so agentops.Retire's state.LoadAgent
 			// succeeds. Real.Retire must reconcile from the runtime
@@ -644,10 +664,10 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 				t.Errorf("synthesized state Branch = %q, want %q", loaded.Branch, "dmotles/orphan")
 			}
 			retireCalls = append(retireCalls, name)
-			return nil
+			return []string{name}, nil
 		}
 
-		err := r.Retire(context.Background(), "", "orphan",
+		_, err := r.Retire(context.Background(), "", "orphan",
 			false, /* mergeFirst */
 			true,  /* abandon */
 			false, /* cascade */
@@ -669,11 +689,11 @@ func TestRetire_FallsBackToRegistry_WhenJSONMissing(t *testing.T) {
 
 		// retireFn returns nil if invoked; with no registry entry and no JSON,
 		// Retire has nothing to fall back to and should surface an error.
-		r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
-			return nil
+		r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
+			return nil, nil
 		}
 
-		err := r.Retire(context.Background(), "", "ghost", false, true, false, false)
+		_, err := r.Retire(context.Background(), "", "ghost", false, true, false, false)
 		if err == nil {
 			t.Fatal("expected error when both JSON and registry are missing, got nil")
 		}
@@ -803,7 +823,7 @@ func TestE2E_StateDivergenceFullFlow(t *testing.T) {
 		LoadConfig:          func(string) (*config.Config, error) { return &config.Config{}, nil },
 		RunScript:           func(string, string, map[string]string) ([]byte, error) { return nil, nil },
 	}
-	if err := r.Retire(context.Background(), "", mgrName,
+	if _, err := r.Retire(context.Background(), "", mgrName,
 		false, /* mergeFirst */
 		true,  /* abandon */
 		false, /* cascade */
@@ -1027,13 +1047,13 @@ func TestRetire_PassesCallerIdentityToAgentopsGetenv(t *testing.T) {
 	})
 
 	var capturedIdentity string
-	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) ([]string, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
-		return nil
+		return nil, nil
 	}
 
 	// Manager tower invokes retire on its child finn through the MCP server.
-	if err := r.Retire(context.Background(), "tower", "finn",
+	if _, err := r.Retire(context.Background(), "tower", "finn",
 		true /* mergeFirst */, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
@@ -1050,13 +1070,13 @@ func TestRetire_FallsBackToContextCallerIdentity(t *testing.T) {
 	})
 
 	var capturedIdentity string
-	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) error {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, _ string, _, _, _, _, _, _ bool) ([]string, error) {
 		capturedIdentity = deps.Getenv("SPRAWL_AGENT_IDENTITY")
-		return nil
+		return nil, nil
 	}
 
 	ctx := backendpkg.WithCallerIdentity(context.Background(), "tower")
-	if err := r.Retire(ctx, "", "finn",
+	if _, err := r.Retire(ctx, "", "finn",
 		true /* mergeFirst */, false, false, false); err != nil {
 		t.Fatalf("Retire: %v", err)
 	}
@@ -1100,9 +1120,9 @@ func TestRetire_CascadePropagatesCallerToRecursiveRetire(t *testing.T) {
 	}
 
 	capturedIdentitiesByAgent := map[string]string{}
-	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
+	r.retireFn = func(_ context.Context, deps *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
 		capturedIdentitiesByAgent[name] = deps.Getenv("SPRAWL_AGENT_IDENTITY")
-		return nil
+		return []string{name}, nil
 	}
 
 	// Caller "operator" (NOT the supervisor's callerName "weave") cascades
@@ -1110,7 +1130,7 @@ func TestRetire_CascadePropagatesCallerToRecursiveRetire(t *testing.T) {
 	// distinguishes proper propagation from the r.callerName fallback —
 	// which would otherwise also produce "weave" and let a buggy
 	// non-propagating implementation pass.
-	if err := r.Retire(context.Background(), "operator", "tower",
+	if _, err := r.Retire(context.Background(), "operator", "tower",
 		false /* mergeFirst */, true /* abandon */, true /* cascade */, true /* noValidate */); err != nil {
 		t.Fatalf("Retire(cascade): %v", err)
 	}
@@ -1306,12 +1326,12 @@ func TestReal_Retire_TerminalStatus_DelegatesCleanup(t *testing.T) {
 	})
 
 	var retireCalls int
-	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) error {
+	r.retireFn = func(context.Context, *agentops.RetireDeps, string, bool, bool, bool, bool, bool, bool) ([]string, error) {
 		retireCalls++
-		return nil
+		return nil, nil
 	}
 
-	err := r.Retire(context.Background(), "", "alice",
+	_, err := r.Retire(context.Background(), "", "alice",
 		false, /* mergeFirst */
 		false, /* abandon */
 		false, /* cascade */

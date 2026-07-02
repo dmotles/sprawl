@@ -33,12 +33,12 @@ func TestRealRetire_AbandonTrue_CallsStopAbandonNotStop(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
-		return state.DeleteAgent(tmpDir, name)
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+		return []string{name}, state.DeleteAgent(tmpDir, name)
 	}
 
 	// abandon=true. Other flags: mergeFirst=false cascade=false noValidate=true.
-	if err := r.Retire(context.Background(), "", "alice", false, true, false, true); err != nil {
+	if _, err := r.Retire(context.Background(), "", "alice", false, true, false, true); err != nil {
 		t.Fatalf("Retire(abandon=true) error: %v", err)
 	}
 
@@ -67,12 +67,12 @@ func TestRealRetire_AbandonFalse_CallsStopNotStopAbandon(t *testing.T) {
 	if err := rt.Start(); err != nil {
 		t.Fatalf("runtime start: %v", err)
 	}
-	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) error {
-		return state.DeleteAgent(tmpDir, name)
+	r.retireFn = func(_ context.Context, _ *agentops.RetireDeps, name string, _, _, _, _, _, _ bool) ([]string, error) {
+		return []string{name}, state.DeleteAgent(tmpDir, name)
 	}
 
 	// abandon=false.
-	if err := r.Retire(context.Background(), "", "alice", false, false, false, true); err != nil {
+	if _, err := r.Retire(context.Background(), "", "alice", false, false, false, true); err != nil {
 		t.Fatalf("Retire(abandon=false) error: %v", err)
 	}
 

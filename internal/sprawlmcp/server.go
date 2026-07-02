@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -536,23 +538,52 @@ func (s *Server) toolRetire(ctx context.Context, args json.RawMessage) (string, 
 	if err != nil {
 		return "", err
 	}
-	if err := s.sup.Retire(ctx, caller, target, p.Merge, p.Abandon, p.Cascade, noValidate); err != nil {
+	retired, err := s.sup.Retire(ctx, caller, target, p.Merge, p.Abandon, p.Cascade, noValidate)
+	if err != nil {
 		return "", err
 	}
-	switch {
-	case p.Cascade && p.Abandon:
-		return fmt.Sprintf("Retired agent %s and descendants (branches abandoned)", target), nil
-	case p.Cascade && p.Merge:
-		return fmt.Sprintf("Merged and retired agent %s and descendants", target), nil
-	case p.Cascade:
-		return fmt.Sprintf("Retired agent %s and descendants", target), nil
-	case p.Abandon:
-		return fmt.Sprintf("Retired agent %s (branch abandoned)", target), nil
-	case p.Merge:
-		return fmt.Sprintf("Merged and retired agent %s", target), nil
-	default:
-		return fmt.Sprintf("Retired agent %s", target), nil
+	return retireSuccessMessage(target, retired, p.Merge, p.Abandon, p.Cascade), nil
+}
+
+// retireSuccessMessage builds an honest success string from the set of agents
+// actually retired (QUM-852). `retired` is bottom-up: descendants first, the
+// requested target last. Descendants are everything in the set other than the
+// target; the message reports the real count and names rather than blindly
+// echoing the request flags.
+func retireSuccessMessage(target string, retired []string, merge, abandon, cascade bool) string {
+	var descendants []string
+	for _, name := range retired {
+		if name != target {
+			descendants = append(descendants, name)
+		}
 	}
+	sort.Strings(descendants)
+
+	suffix := ""
+	if abandon {
+		suffix = " (branch abandoned)"
+	}
+
+	verb := "Retired"
+	if merge {
+		verb = "Merged and retired"
+	}
+	selfMsg := fmt.Sprintf("%s agent %s%s", verb, target, suffix)
+
+	if !cascade || len(descendants) == 0 {
+		// Non-cascade, or a cascade that touched no descendants: never
+		// claim "and descendants" when none were retired.
+		return selfMsg
+	}
+
+	// Descendants are always retired (never merged — merge is top-level
+	// only), so describe them separately from the target's verb.
+	descClause := fmt.Sprintf("; retired %d descendant(s) (%s)",
+		len(descendants), strings.Join(descendants, ", "))
+	if abandon {
+		descClause += " with branches abandoned"
+	}
+	return selfMsg + descClause
 }
 
 func (s *Server) toolKill(ctx context.Context, args json.RawMessage) (string, error) {

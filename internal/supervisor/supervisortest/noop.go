@@ -39,8 +39,8 @@ func (*NoopSupervisor) Merge(context.Context, string, string, string, bool) (*su
 	return nil, nil
 }
 
-func (*NoopSupervisor) Retire(context.Context, string, string, bool, bool, bool, bool) error {
-	return nil
+func (*NoopSupervisor) Retire(context.Context, string, string, bool, bool, bool, bool) ([]string, error) {
+	return nil, nil
 }
 
 func (*NoopSupervisor) Kill(context.Context, string) error { return nil }
