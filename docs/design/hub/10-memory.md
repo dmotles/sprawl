@@ -1,14 +1,35 @@
 # 10 — Portable Memory
 
 *The portable per-`(project, agent)` memory model: one single-writer stream per
-agent, provenance on every unit, curation/synthesis instead of textual merge, and
-version-vector sync over the event-log spine.*
+agent, provenance on every unit, and a **checkpoint push/pull + last-writer-wins**
+sync to the cloud companion. No merge, no synthesis engine in v1.*
 
-See also: [`01-architecture.md`](01-architecture.md) (§4 identity/lease/fence, §5
-memory) · [`09-synchronization`](09-synchronization.md) · [security-privacy](README.md) ·
+See also: [`01-architecture.md`](01-architecture.md) (§4 identity, §5 memory) ·
+[`09-synchronization`](09-synchronization.md) · [security-privacy](README.md) ·
 [index](README.md)
 
 ---
+
+## 0. MVP scope (v2 re-scope)
+
+The hub is a **single-user cloud companion**: it relays the live stream and
+**durably persists** memory, transcripts, and attachments. It is *not* a
+multi-writer coordinator. For memory that means the whole model is:
+
+> **Write local always → checkpoint PUSH on handoff → PULL on session start →
+> last-writer-wins.** That's it.
+
+Deliberately **cut from v1** (kept as future direction, not built):
+
+- version-vector reconnect / delta-replay for memory;
+- force-reclaim + provenance-based *semantic reconcile / synthesis* engine;
+- write-lease + fence tokens for memory (memory uses a trivial active-host
+  advisory marker instead — §6);
+- snapshots / compaction of the memory stream.
+
+**Kept because it's cheap and future-enabling:** the `(project, agent)` stream
+keying (§2), the **provenance metadata** on every unit (§3), and the
+**why-not-git** rationale (§4) — all still true, none of it costs anything in v1.
 
 ## 1. Problem: memory is trapped
 
@@ -25,13 +46,9 @@ Today weave's memory is **local, untracked, and single-agent**. On disk under
 ```
 
 It never leaves the machine. Switch hosts and the context is gone
-([`00-overview`](00-overview.md#problem--why)). "Combining" two machines' memory
-by hand is error-prone, and the obvious reflex — put it in git and merge — is
-actively wrong (§4).
-
-The hub makes this memory **portable** by streaming it through the same
-event-log spine + durable store as everything else, keyed so that each stream has
-exactly one writer.
+([`00-overview`](00-overview.md#problem--why)). The hub makes this memory
+**portable** by durably persisting it in the cloud and handing it back on the
+next session — a simple checkpoint round-trip, not a distributed database.
 
 ## 2. One stream per `(project, agent)`
 
@@ -52,15 +69,12 @@ Agent names are **unique across the org** (allocated from the name pool, set as
 `SPRAWL_AGENT_IDENTITY` — see [`DESCRIPTION.md`](../../../DESCRIPTION.md) "Agent
 Identity"). Because the name *is* the partition key, **each memory stream has
 exactly one writer by construction**. There is no write-contention on memory and
-therefore no need for a per-stream memory lock or merge algorithm in the common
-case.
+therefore no per-stream lock or merge algorithm in v1.
 
-> This is a different guarantee from the **project write-lease** in
-> [`01`](01-architecture.md#4-identity-lease--fencing-conceptual--detail-in-doc-10--09).
-> That lease arbitrates *which host* may write on behalf of a project when the
-> *same agent* runs from two machines. Name-uniqueness removes cross-*agent*
-> contention; the lease removes cross-*host* contention for one agent. Both are
-> needed; they solve different axes (§6).
+The only residual contention is the *same agent* (e.g. `weave`) running from two
+hosts against the same cloud stream. In a single-user companion this is a
+mistake, not a workflow — v1 handles it with a trivial **active-host advisory
+marker** plus last-writer-wins (§6), not a lease/fence protocol.
 
 ### Simplest way vs. right way — partition granularity
 
@@ -86,15 +100,15 @@ it maps onto today's artifacts:
 | `timeline_entry` | a line in `timeline.md` | Index; derivable from handoffs |
 
 The stream is **append-mostly**: new units are appended; curation *supersedes*
-prior units rather than editing them in place (§4). This is exactly the
-append-only-log-plus-snapshot shape the spine already uses
-([`01` §2](01-architecture.md#2-the-event-log-spine-the-strongest-idea--feature-it)) —
-memory units *are* events on the per-`(project, agent)` stream.
+prior units rather than editing them in place. This matches the append-only shape
+of today's on-disk memory and of the event-log spine
+([`01` §2](01-architecture.md#2-the-event-log-spine-the-strongest-idea--feature-it)).
 
 ### Provenance metadata (minimal, on every unit)
 
-Every unit carries provenance so that combining streams is a *semantic* operation,
-never a blind concatenation:
+Every unit carries provenance. In v1 **nothing consumes it as a reconcile
+engine** — it is recorded because it is cheap and future-enabling (attribution,
+a later console, a possible synthesis pass):
 
 ```yaml
 # provenance header on every memory unit
@@ -103,19 +117,18 @@ host_id:     host-7f3a        # stable per machine/install (opaque, §5)
 run_id:      run-9c21         # per `sprawl enter` process (§5)
 created_at:  2026-07-01T05:39:10Z
 source:      session          # session | injected | synthesized
-session_id:  cc004dc1-…       # originating claude session (when source=session)
+session_id:  cc004dc1-…       # optional: originating claude session (when source=session)
 supersedes:  [unit-id, …]     # optional: units this curation replaces
 ```
 
 - `source: session` — emitted from a live session handoff (the common case).
-- `source: injected` — added out-of-band (e.g. a user/browser note via the hub).
-- `source: synthesized` — produced by an agent-synthesis/consolidation pass
-  (today's `consolidate.go` / `regenerate.go` lineage), which reads many units and
-  writes a new distilled one that `supersedes` them.
+- `source: injected` — added out-of-band (e.g. a user note via the hub).
+- `source: synthesized` — produced by a consolidation pass (today's
+  `consolidate.go` / `regenerate.go` lineage). Local consolidation still runs;
+  there is no *cross-host* synthesis engine in v1.
 
-Provenance is the minimum needed to (a) attribute every unit, (b) order and
-de-duplicate across machines by `(host_id, run_id, created_at)`, and (c) drive
-semantic reconcile after a force-reclaim (§6). Keep it minimal — resist adding
+Provenance is the minimum needed to (a) attribute every unit and (b) leave the
+door open for a future console / synthesis pass. Keep it minimal — resist adding
 fields until a consumer needs them (YAGNI).
 
 > **Public-repo hygiene.** `host_id` / `run_id` are **opaque, generated
@@ -126,10 +139,15 @@ fields until a consumer needs them (YAGNI).
 
 ## 4. Combining memory = curation or synthesis, NEVER textual merge
 
-This is the load-bearing rule. **When two versions of a stream diverge, we do not
-line-merge them.** We either (a) keep both units and let a **curation/synthesis**
-pass produce a new distilled unit, or (b) pick a winner by provenance. Git-style
-three-way text merge is explicitly rejected.
+In v1 the sync model (§6) is engineered so that **memory streams never have to be
+combined**: single writer per stream, one active host at a time, last-writer-wins.
+But the rule below still governs — it is *why* we chose checkpoint+LWW over a
+git-style merge, and it is the contract any future combine must honor.
+
+> **When two versions of a stream would diverge, we do not line-merge them.**
+> A combine, if it ever happens, is **curation** (a human/agent picks which units
+> survive) or **synthesis** (an agent reads the union and writes a new distilled
+> unit that `supersedes` the inputs) — **never** a textual three-way merge.
 
 ### Why not git
 
@@ -142,67 +160,43 @@ three-way text merge is explicitly rejected.
   *rewrite*, not a hunk selection.
 - **The unit of meaning isn't the line.** A fact spans sentences and depends on
   surrounding context; git's line granularity cuts across meaning.
-- **We already synthesize.** The existing consolidation/regeneration path
+- **We already synthesize locally.** The existing consolidation/regeneration path
   (`internal/memory/{consolidate,regenerate,arc}.go`) *already* combines memory by
-  having Claude read and rewrite — that is the correct primitive, and it composes
-  naturally with provenance (`source: synthesized`, `supersedes: [...]`).
+  having Claude read and rewrite — that is the correct primitive if a cross-host
+  combine is ever built, and it composes naturally with provenance
+  (`source: synthesized`, `supersedes: [...]`).
 
-### The rule
+**v1 consequence:** because we never merge, the cost of the rare two-host race is
+bounded to "one host's un-pushed checkpoint is overwritten by a newer push" — an
+**accepted single-user limitation** (§6), not a correctness bug in a shared store.
 
-> **To combine memory, an agent reads the union of units and writes a new
-> synthesized unit** (`source: synthesized`) that supersedes the inputs — OR a
-> human/agent curates by choosing which units survive. **Never** a textual merge.
+## 5. Object-storage layout
 
-Divergence severe enough to *need* combining is only reachable via **force-reclaim**
-(§6); the normal path (single writer + push/pull) never diverges. Reconcile
-mechanics live in [`09-synchronization`](09-synchronization.md); this doc owns the *why-not-git*
-rationale and the curation/synthesis contract.
-
-### Simplest way vs. right way — divergence handling
-
-- **Simplest:** last-writer-wins on the whole stream (newest `created_at` +
-  fence wins; drop the loser). Cost: silently discards real knowledge written on
-  the other machine.
-- **Right:** retain both divergent unit-sets and enqueue a synthesis pass that
-  produces a superseding distilled unit.
-- **Recommendation:** **LWW for the pointer/head, retain-both for the losing
-  units.** The stream head advances to the fence-winner immediately (no stall),
-  but the superseded/divergent units are **kept in versioned storage** (§5) and a
-  `source: synthesized` reconcile pass folds them back in. Cheap to operate, loses
-  nothing, and defers the (rare) hard case to an async synthesis instead of a
-  blocking merge UI.
-
-## 5. Versioned object-storage layout
-
-Each `(project, agent)` stream is stored as versioned objects in the hub's blob
-store (`gocloud.dev/blob`, per [`01` §7](01-architecture.md#7-stack-at-a-glance-rationale-validated-in-leaf-docs);
+Each `(project, agent)` stream is stored as objects in the hub's blob store
+(`gocloud.dev/blob`, per [`01` §7](01-architecture.md#7-stack-at-a-glance-rationale-validated-in-leaf-docs);
 `fileblob`/`memblob` for local/tests → [`12-testability-local-dev`](README.md)).
-Postgres holds the stream **index** (heads, version vectors, provenance for query);
-blobs hold the unit bodies and snapshots. Layout is conceptual — exact keys are a
-storage-doc concern ([`07-storage-persistence`](README.md)):
+Postgres holds a small **index** (per-stream latest checkpoint id, `created_at`,
+provenance for lookup); blobs hold the unit bodies and transcripts. Exact keys are
+a storage-doc concern ([`07-storage-persistence`](README.md)):
 
 ```
 blob://<project>/<agent>/
 ├── units/<unit-id>.md            # individual memory units (immutable once written)
-├── snapshots/<seq>.md            # periodic compacted view (persistent.md-equivalent)
-├── head                          # current head seq + version vector
-└── transcripts/<session-id>/…    # FULL session transcripts, retained (see below)
+├── checkpoint/<checkpoint-id>.md # a pushed handoff snapshot of the stream head
+└── transcripts/<session-id>/…    # FULL session transcripts, retained INDEFINITELY
 ```
 
-- **Immutable units + periodic snapshots** mirror the spine's
-  append-log-plus-snapshot compaction ([`01` §2](01-architecture.md#simplest-way-vs-right-way)).
-  A snapshot is the "distilled current state" (today's `persistent.md`);
-  delta-replay from a snapshot is what makes a new host's pull cheap.
-- **Versioned** = old snapshots and superseded units are retained (subject to
-  retention/GC in [`07`](README.md)), which is what makes retain-both reconcile
-  (§4) and rollback possible.
+- **No snapshots/compaction of the memory stream in v1.** A "checkpoint" here is
+  just the pushed state at a handoff boundary (§6), not a compaction artifact.
+  Compaction is a future optimization, not needed for a single user's stream.
+- **Immutable units** keep provenance and history intact for a future console.
 
-### Full session transcripts are retained
+### Full session transcripts are retained indefinitely
 
 Beyond distilled memory, the hub retains **full session transcripts** per
-`(project, agent, session_id)`. In v1 they are *write-and-store only* — nothing
-reads them yet. They exist so these **FUTURE consumers** become possible without a
-data-model change (all explicitly *not v1*):
+`(project, agent, session_id)`, **kept indefinitely — no GC in v1**. They are
+*write-and-store only*; nothing reads them yet. They exist so these **FUTURE
+consumers** become possible without a data-model change (all explicitly *not v1*):
 
 - a **memory/session console** for browsing & curating agent memory
   ([`00` north-star](00-overview.md#north-star-vision--not-committed--future));
@@ -211,166 +205,113 @@ data-model change (all explicitly *not v1*):
 - **memory-eval** — scoring/regression-testing the distillation pipeline against
   ground-truth transcripts.
 
-Naming them as future consumers (not building them) is deliberate: it keeps the
-storage shape honest without pulling scope into the MVP.
+Naming them as future consumers (not building them) keeps the storage shape
+honest without pulling scope into the MVP.
 
 ### Simplest way vs. right way — transcript retention
 
 - **Simplest:** don't store transcripts; keep only distilled memory. Cost: the
   console/review/search/eval features are impossible later without recapturing
   data we'll never have again — the raw signal is gone.
-- **Right:** stream transcripts to blob storage from day one, gated by retention.
-- **Recommendation:** **retain transcripts, opt-in + retention-bounded.** They're
-  cheap in blob storage and irreplaceable after the fact. Gate behind a retention
-  window ([`07`](README.md)) and the privacy/redaction model
-  ([security-privacy](README.md)) so cost and exposure stay bounded. This is a
-  YAGNI-respecting exception: we don't build the *consumers*, we only avoid
-  throwing away their fuel.
+- **Right:** stream transcripts to blob storage and keep them.
+- **Recommendation:** **retain transcripts indefinitely (no GC in v1).** For a
+  single user they are cheap in blob storage and irreplaceable after the fact;
+  a retention/GC policy is a later concern ([`07`](README.md)) if volume ever
+  matters. Exposure is bounded by the single-user trust model
+  ([security-privacy](README.md)).
 
-## 6. Cross-machine identity, lease & sync
+## 6. Sync: write-local → push-on-handoff → pull-on-start → LWW
 
-### Identity
-
-Two identifiers, reused verbatim from [`01` §4](01-architecture.md#4-identity-lease--fencing-conceptual--detail-in-doc-10--09):
-
-| ID | Scope | Role in memory |
-|---|---|---|
-| `host_id` | Stable per machine/install | Which physical origin wrote a unit |
-| `run_id` | Per `sprawl enter` process | Which live session instance wrote it |
-
-Both are opaque generated values (§3 hygiene note). Together with `created_at`
-they totally order and de-duplicate units across machines.
-
-### Write-lease + fencing (per project, memory rides it)
-
-Memory writes are **guarded by the per-project write-lease + fence token** already
-defined in [`01` §4](01-architecture.md#4-identity-lease--fencing-conceptual--detail-in-doc-10--09) —
-memory does **not** invent its own lock. Every memory write carries the current
-fence token; the hub **rejects writes bearing a stale fence**, so a returning
-zombie host cannot clobber a stream:
+This is the whole v1 sync model. No version vectors, no fence tokens, no
+reconnect delta-replay for memory.
 
 ```
-host holds lease (fence=N) ──▶ memory write(fence=N)  ─▶ accepted, appended
-zombie host returns (fence<N) ─▶ memory write(fence<N) ─▶ REJECTED (stale fence)
-lease TTL expires ────────────▶ next claimant gets fence=N+1
+session start ──▶ PULL: fetch latest checkpoint for (project, agent) from hub
+                        └─▶ if hub newer than local → overwrite local .sprawl/memory
+                        └─▶ (new host / empty local → just take the hub copy)
+during session ─▶ WRITE LOCAL ALWAYS: memory lands in .sprawl/memory as today
+handoff ───────▶ PUSH: upload the current stream head as a new checkpoint
+                        └─▶ hub stores it; latest-wins by created_at
 ```
 
-Name-uniqueness (§2) means *different agents* never contend. The lease/fence
-handles the one residual case: the *same agent* (e.g. `weave`) run from two
-machines. v1 keys the lease **per-project** (schema anticipates per-agent, enforces
-per-project — matching [`01` §8](01-architecture.md#8-what-v1-deliberately-excludes-yagni)).
+- **Write local always.** The local `.sprawl/memory/` is the working copy and the
+  offline fallback — sprawl behaves exactly as today with no hub configured
+  ([`01` §3](01-architecture.md#3-connected-vs-disconnected)). A hub outage never
+  stalls a memory write; the push simply retries at the next handoff.
+- **Checkpoint PUSH on handoff.** At each handoff boundary (the natural
+  consolidation point today) the host uploads the stream head as a checkpoint.
+- **PULL on session start.** A new session fetches the latest checkpoint first, so
+  a fresh host starts with the cloud memory instead of empty. A **new host is just
+  the extreme case** — empty local, take the hub copy wholesale.
+- **Last-writer-wins.** The checkpoint with the newest `created_at` is the truth.
+  No merge, no vector compare.
 
-### Version-vector catch-up on reconnect
+### Active-host advisory marker (the only concurrency guard)
 
-On (re)connect, host and hub compare **version vectors** for the stream and follow
-the spine's one rule ([`01` §2](01-architecture.md#the-one-rule-written-once-reused-at-every-seam)) —
-replay-from-last-seq, else snapshot, then live-tail:
+The one bad case is the *same agent* pushing from two hosts. v1 does **not** use a
+lease/fence protocol for this (that was cut). Instead, on pull the host records a
+lightweight **active-host advisory marker** on the stream; if a *second* host
+starts a session for the same `(project, agent)` while a marker is fresh, sprawl
+**advises and rejects the second host** ("this stream is active on another host").
 
-```
-on (re)connect, per (project, agent) stream:
-  compare version vectors {host_vv} vs {hub_vv}
-  local ahead + host holds lease → PUSH local delta up   (units since hub_vv)
-  hub ahead                      → PULL hub delta down    (units since host_vv)
-  genuine divergence             → only via FORCE-RECLAIM → provenance reconcile (§4)
-```
+- It is **advisory**, not a hard distributed lock — good enough for one user who
+  simply shouldn't be driving the same agent from two machines at once.
+- If the marker is stale (previous host exited/crashed), the new host takes over.
+- If two pushes race anyway, **last-writer-wins** and the older push is
+  overwritten. This is an **accepted single-user limitation**, not a merge case —
+  documented here so it's a known trade-off, not a surprise.
 
-- **local ahead + holds lease → push** the missing units.
-- **hub ahead → pull** (a **new host with no local memory is just the extreme
-  case**: empty version vector → pull the latest snapshot + tail = "new host pulls
-  latest").
-- **genuine divergence** is *only* reachable after a force-reclaim (two machines
-  wrote the same stream while both believed they held authority). It is resolved by
-  **provenance-based semantic reconcile / synthesis (§4)** — never textual merge.
+### Simplest way vs. right way — concurrency
 
-Detailed vector mechanics, lease-flow diagrams, and force-reclaim reconcile live in
-[`09-synchronization`](09-synchronization.md); this doc specifies the *memory* payload those
-flows carry.
+- **Simplest (chosen for v1):** active-host advisory marker + last-writer-wins.
+  Cost: a two-host race can lose one host's un-pushed delta; no automatic recovery.
+- **Right (future):** the write-lease + fence-token + version-vector reconnect
+  from [`01` §4](01-architecture.md#4-identity-lease--fencing-conceptual--detail-in-doc-10--09)
+  / [`09`](09-synchronization.md), with provenance-based semantic reconcile (§4).
+- **Recommendation:** **advisory marker + LWW now.** For a single-user companion
+  the failure it permits (occasionally lose one machine's un-pushed handoff) is
+  rare and low-cost; the lease/fence/reconcile machinery is real complexity that
+  only pays off in the multi-user / multi-writer world that is explicitly out of
+  v1 scope. Provenance metadata (§3) is retained so the "right" path stays open.
 
-### Connected vs. disconnected
+### Auth (context only)
 
-Consistent with [`01` §3](01-architecture.md#3-connected-vs-disconnected), memory
-is **disconnected-by-default**:
+The push/pull round-trip authenticates with a **single configured bearer token**
+(no OIDC in v1) — see [`04-authentication`](README.md) for the token model. Called
+out here only because sync is the memory path that crosses the network.
 
-| Aspect | Disconnected (default) | Connected |
-|---|---|---|
-| Where memory lives | Local `.sprawl/memory/` (today) | Local **+** hub blob store |
-| Writes | Local only | Local, then uplinked (fence-guarded) |
-| New host | Starts empty (as today) | Pulls latest snapshot + tail |
-| Hub down | Keep writing locally; buffer | Buffer un-acked units, flush on reconnect |
+## 7. How it fits (one picture)
 
-A hub outage never stalls a memory write — the host writes locally and the hub
-client flushes buffered units on reconnect (bounded buffer, drop-oldest past
-high-water, per [`01` §3](01-architecture.md#simplest-way-vs-right-way-1)).
-
-### The "sync these memories?" prompt
-
-Auto-pushing local memory to a shared hub is a **content-exposure decision**, not a
-mechanical one (memory can hold sensitive context — [security-privacy](README.md)).
-So the first time a host would upload a stream — and whenever a **force-reclaim**
-would fold in divergent remote units — sprawl **prompts the user**:
+Memory portability is a checkpoint round-trip layered on the companion relay — it
+does **not** add new transport or reconnect code:
 
 ```
-Sync memory for (sprawl, weave) with the hub?
-  This uploads N local memory units (last local write: 2026-07-01).
-  [Sync]   [Keep local only]   [Review units…]
+weave session ─▶ memory unit (provenance) ─▶ .sprawl/memory (local, always)
+   handoff    ─▶ PUSH checkpoint ─▶ hub blob store  units/ + checkpoint/ + transcripts/
+ next start   ─▶ PULL latest checkpoint ─▶ overwrite local if hub newer (LWW)
 ```
 
-- Default posture is **opt-in**: no silent upload of local memory.
-- On force-reclaim divergence, the prompt surfaces *what* diverged (unit counts +
-  provenance) before any synthesis pass runs, so the user stays in control of the
-  combine.
-
-### Simplest way vs. right way — sync trigger
-
-- **Simplest:** auto-sync every stream on connect, no prompt. Cost: silent
-  exposure of possibly-sensitive local memory; surprising overwrites.
-- **Right:** explicit per-stream opt-in prompt + review affordance; remember the
-  choice per `(project, agent)`.
-- **Recommendation:** **prompt once per stream, remember the decision.** One
-  interaction, no nagging, and it keeps the exposure decision with the human — the
-  right default for a public-repo tool where content sensitivity varies by project.
-
-## 7. How it fits the spine (one picture)
-
-Memory is not a side-channel — units are events on the per-`(project, agent)`
-stream, transported by the same uplink/downlink as session events
-([`01` §6](01-architecture.md#6-how-the-pieces-fit-requestresponse-paths)):
-
-```
-weave session ─▶ memory unit (provenance, fence=N)
-              ─▶ local eventbus (seq'd) ─▶ hub client ─▶ Connect uplink
-                                                           └─▶ hub append(units/) + index(PG)
-                                                                 └─▶ snapshot compaction (periodic)
-new host connect ─▶ version-vector compare ─▶ pull snapshot + tail  ("new host pulls latest")
-```
-
-Reconnect/replay logic is **inherited** from the spine — memory adds *provenance*,
-the *no-textual-merge* reconcile rule, and the *sync prompt*; it does not add new
-transport or new reconnect code.
+Live session events still flow over the event-log spine
+([`01` §6](01-architecture.md#6-how-the-pieces-fit-requestresponse-paths)); memory
+sync is a coarser, handoff-boundary checkpoint on top of the same connection and
+the same durable store.
 
 ## Open Questions
 
-- **Snapshot cadence for memory streams** — event-count, time, or on-consolidate?
-  Distinct from session-event snapshot cadence
-  ([`01` OQ](01-architecture.md#open-questions))? Affects new-host pull latency.
-- **Version-vector granularity** — per-`(project, agent)` stream is assumed here;
-  [`01`](01-architecture.md#open-questions) leaves per-project vs per-stream open.
-  Per-stream is the natural fit for single-writer memory — confirm with
-  [`09`](README.md).
-- **Who runs the synthesis/reconcile pass** — the owning agent on next wake
-  (has context, but may be dormant), a dedicated consolidation agent, or a
-  hub-side job? Today it's in-process (`consolidate.go`); portability may argue for
-  a schedulable pass.
-- **Transcript retention window & redaction** — default retention, and how the
-  privacy model ([security-privacy](README.md)) redacts transcripts vs. distilled
-  units (different sensitivity profiles).
-- **`injected` memory authority** — when the browser injects a memory note, whose
-  `host_id`/fence does it carry (the hub's? the attached host's?), and does it need
-  the lease? Ties into "does the browser ever hold write authority"
-  ([`01` OQ](01-architecture.md#open-questions)).
-- **Cross-project memory** — user-level preferences (e.g. "dmotles prefers KISS")
-  currently live per-project in `persistent.md`. Should there be a
-  `(user, *)` / global stream, or does that over-generalize v1? (YAGNI-flagged.)
-- **De-dup key stability** — is `(host_id, run_id, created_at)` sufficient to
-  de-duplicate replayed units, or do units need their own stable content hash /
-  unit-id to survive re-uploads after a buffer flush?
+- **Checkpoint granularity** — is "whole stream head at handoff" fine, or should
+  push be per-unit-delta to reduce upload size for large `persistent.md`? (Delta
+  push edges back toward version vectors — resist unless size actually hurts.)
+- **Handoff is the only push trigger?** — do we also push on clean session exit,
+  or on a timer, to bound data loss if a session runs very long before handoff?
+- **Advisory-marker TTL** — how long before a marker is considered stale and a new
+  host may take over? Too short = false "active elsewhere"; too long = a crashed
+  host blocks the next session.
+- **Pull-overwrite safety** — if local has un-pushed writes newer than the hub
+  checkpoint (e.g. a crash before push), should pull-on-start still overwrite, or
+  detect local-newer and skip? (LWW by `created_at` should cover it, but the crash
+  window needs a decision.)
+- **Cross-project / user-level memory** — user preferences (e.g. "dmotles prefers
+  KISS") live per-project in `persistent.md` today. A `(user, *)` global stream is
+  future scope (YAGNI-flagged for v1).
+- **When (if ever) to graduate to lease/fence + reconcile** — what concrete
+  multi-writer need would justify building the "right" path cut here?
