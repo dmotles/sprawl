@@ -483,11 +483,63 @@ func TestAutoTriggerItem_Render(t *testing.T) {
 	ctx := newTestCtx()
 	item := NewAutoTriggerItem(ctx, "task notification fired")
 	out := item.Render(80)
-	if !strings.Contains(out, "↻ auto-continued") || !strings.Contains(out, "task notification fired") {
+	if !strings.Contains(out, "↻ auto-continued") {
 		t.Errorf("auto-trigger render missing marker: %q", out)
 	}
 	if !item.Finished() {
 		t.Fatalf("AutoTriggerItem.Finished() = false, want true")
+	}
+	// The marker must be styled, not raw (QUM-855: no flat unstyled dump).
+	if out == stripANSI(out) {
+		t.Errorf("expected styled (ANSI-wrapped) marker, got raw text: %q", out)
+	}
+	// Summary is still accessible for callers that need it (Summary()), but
+	// the render must NOT dump the body into the transcript (QUM-855).
+	if item.Summary() != "task notification fired" {
+		t.Errorf("Summary() = %q, want %q", item.Summary(), "task notification fired")
+	}
+}
+
+// QUM-855: a completed background sidechain's result arrives stuffed into the
+// AutoTriggerItem summary as markdown. Rather than dumping it verbatim as flat
+// purple SystemText (raw `##`/`**`/backtick walls), the item collapses to a
+// single styled indicator line — the body is suppressed from the transcript
+// (it still reaches weave's model context via the Agent tool).
+func TestAutoTriggerItem_SuppressesMarkdownBody(t *testing.T) {
+	ctx := newTestCtx()
+	summary := "## Results\n\n**bold** finding and `code` token\n\n```go\nfmt.Println(\"x\")\n```"
+	item := NewAutoTriggerItem(ctx, summary)
+	out := stripANSI(item.Render(80))
+
+	if !strings.Contains(out, "↻ auto-continued") {
+		t.Errorf("missing auto-continued marker: %q", out)
+	}
+	if strings.Contains(out, "\n") {
+		t.Errorf("render must be a single line, got multi-line: %q", out)
+	}
+	// None of the result body's markdown/heading/code-fence content may leak.
+	for _, body := range []string{"##", "**", "`", "Results", "bold", "code", "fmt.Println"} {
+		if strings.Contains(out, body) {
+			t.Errorf("result body content %q leaked into indicator line: %q", body, out)
+		}
+	}
+}
+
+// QUM-855: RawMarkdown surfaces only the marker — the suppressed body is not
+// yankable from the transcript.
+func TestAutoTriggerItem_RawMarkdownMarkerOnly(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewAutoTriggerItem(ctx, "## Results\n\n**bold**")
+	if got := item.RawMarkdown(); got != "↻ auto-continued" {
+		t.Errorf("RawMarkdown() = %q, want %q", got, "↻ auto-continued")
+	}
+}
+
+func TestAutoTriggerItem_WidthZeroNoOps(t *testing.T) {
+	ctx := newTestCtx()
+	item := NewAutoTriggerItem(ctx, "anything")
+	if got := item.Render(0); got != "" {
+		t.Errorf("Render(0) = %q, want empty", got)
 	}
 }
 

@@ -593,21 +593,27 @@ func NewAutoTriggerItem(ctx *itemRenderCtx, summary string) *AutoTriggerItem {
 // Summary returns the trigger summary text.
 func (i *AutoTriggerItem) Summary() string { return i.summary }
 
-// Render produces the single-line marker.
+// Render produces the single styled indicator line. QUM-855: the summary may
+// carry a completed background sidechain's full markdown result; dumping it
+// verbatim here bypassed the glamour pass and surfaced raw `##`/`**`/backtick
+// walls in flat SystemText purple. The body adds nothing operationally (the
+// sidechain result already reaches the model context via the Agent tool), so
+// it is suppressed — only the styled marker is shown.
 func (i *AutoTriggerItem) Render(width int) string {
 	if width <= 0 {
 		return ""
 	}
-	return i.ctx.theme.SystemText.Render("↻ auto-continued — " + i.summary)
+	return i.ctx.theme.SystemText.Render("↻ auto-continued")
 }
 
 // Finished always returns true.
 func (i *AutoTriggerItem) Finished() bool { return true }
 
 // RawMarkdown surfaces the synthetic auto-trigger marker so yanked output
-// reflects the "why this turn happened" cue the user saw on screen.
+// reflects the "why this turn happened" cue the user saw on screen. The
+// suppressed summary body is intentionally not yankable (QUM-855).
 func (i *AutoTriggerItem) RawMarkdown() string {
-	return "↻ auto-continued — " + i.summary
+	return "↻ auto-continued"
 }
 
 // ---------------------------------------------------------------------------
