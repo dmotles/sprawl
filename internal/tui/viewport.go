@@ -103,7 +103,7 @@ func (m ViewportModel) View() string {
 	if m.region == nil {
 		return ""
 	}
-	if m.region.cl == nil || m.region.cl.Len() == 0 {
+	if m.region.cl == nil || m.region.cl.Empty() {
 		return m.theme.NormalText.Render(placeholderContent)
 	}
 	return m.region.View()

@@ -166,6 +166,46 @@ func TestChatList_LenTracksAppends(t *testing.T) {
 	}
 }
 
+// QUM-854: Empty() must reflect BOTH committed items and the pending zone —
+// Len() (committed only) was the buggy emptiness gate that hid a fresh-session
+// pending prompt until its CLI echo settled it into the transcript.
+func TestChatList_Empty_TrueWhenNoItemsNoZone(t *testing.T) {
+	cl := newTestChatList()
+	if !cl.Empty() {
+		t.Errorf("Empty() = false on a fresh ChatList; want true")
+	}
+}
+
+func TestChatList_Empty_FalseWithPendingUserZone(t *testing.T) {
+	cl := newTestChatList()
+	cl.ZoneAddUser("u1", "pending hello")
+	if cl.Len() != 0 {
+		t.Fatalf("Len() = %d, want 0 (zone entry is not a committed item)", cl.Len())
+	}
+	if cl.Empty() {
+		t.Errorf("Empty() = true with a pending user zone entry; want false")
+	}
+}
+
+func TestChatList_Empty_FalseWithPendingSystemZone(t *testing.T) {
+	cl := newTestChatList()
+	cl.ZoneAddSystem("n1", notifFrameA)
+	if cl.Len() != 0 {
+		t.Fatalf("Len() = %d, want 0 (zone entry is not a committed item)", cl.Len())
+	}
+	if cl.Empty() {
+		t.Errorf("Empty() = true with a pending system zone entry; want false")
+	}
+}
+
+func TestChatList_Empty_FalseWithCommittedItem(t *testing.T) {
+	cl := newTestChatList()
+	cl.AppendUser("x")
+	if cl.Empty() {
+		t.Errorf("Empty() = true with a committed item; want false")
+	}
+}
+
 func TestChatList_CacheHitOnSecondRenderSameWidth(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)

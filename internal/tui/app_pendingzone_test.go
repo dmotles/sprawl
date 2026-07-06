@@ -73,6 +73,34 @@ func userTextsInOrder(cl *ChatList) []string {
 	return out
 }
 
+// QUM-854 — on a freshly-reset root buffer (empty committed transcript), a
+// UserMessageSentMsg must produce visible content immediately, BEFORE any
+// UserMessageConsumedMsg echo. The bug: the viewport emptiness gate keyed on
+// committed item count, so the pending-zone entry stayed invisible until the
+// CLI echo relocated it into the transcript.
+func TestUserMessageSent_FreshBuffer_PendingVisibleBeforeConsume(t *testing.T) {
+	app, _ := idleTrackingApp(t)
+
+	app = deliver(t, app, UserMessageSentMsg{UUID: "u1", Text: "first prompt"})
+
+	// Sanity: the content lives in the zone, not committed items — the exact
+	// condition under which the old Len()==0 gate hid it.
+	if got := rootChat(app).Len(); got != 0 {
+		t.Fatalf("committed Len() = %d, want 0 (prompt should be pending in the zone)", got)
+	}
+	if got := rootChat(app).ZoneUserCount(); got != 1 {
+		t.Fatalf("ZoneUserCount() = %d, want 1", got)
+	}
+
+	view := stripAnsi(app.viewportFor(app.rootAgent).View())
+	if strings.Contains(view, placeholderMarker) {
+		t.Errorf("fresh-session pending prompt showed placeholder instead of the prompt; got %q", view)
+	}
+	if !strings.Contains(view, "first prompt") {
+		t.Errorf("pending prompt not visible before consume; got %q", view)
+	}
+}
+
 // CORE REGRESSION — a live system-notification frame renders system-styled,
 // exactly once, NOT as a raw user bubble.
 func TestUserMessageConsumed_SystemNotification_SystemStyledOnce_NotRawBubble(t *testing.T) {

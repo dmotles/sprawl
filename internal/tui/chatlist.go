@@ -117,6 +117,12 @@ func NewChatList(theme *Theme) *ChatList {
 // Len returns the number of items in the list.
 func (c *ChatList) Len() int { return len(c.items) }
 
+// Empty reports whether the list has no renderable content — neither committed
+// items nor pending-zone entries. The emptiness gate for placeholder-vs-content
+// must use this, not Len(), so a fresh-session pending prompt (held in the zone
+// before its CLI echo) is not hidden behind the placeholder. QUM-854.
+func (c *ChatList) Empty() bool { return len(c.items) == 0 && c.zone.len() == 0 }
+
 // Items returns the unwrapped Item slice in append-order. The returned slice
 // is a fresh copy so callers (selection-mode yank, debug inspection) cannot
 // mutate ChatList's internal envelope ordering. Render envelopes are NOT
