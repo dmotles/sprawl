@@ -581,24 +581,21 @@ func (i *SystemNotificationItem) RawMarkdown() string { return i.content }
 // autonomous (harness-initiated) turns (QUM-634). Always Finished on
 // creation.
 type AutoTriggerItem struct {
-	ctx     *itemRenderCtx
-	summary string
+	ctx *itemRenderCtx
 }
 
 // NewAutoTriggerItem constructs a finished auto-trigger header.
-func NewAutoTriggerItem(ctx *itemRenderCtx, summary string) *AutoTriggerItem {
-	return &AutoTriggerItem{ctx: ctx, summary: summary}
+func NewAutoTriggerItem(ctx *itemRenderCtx) *AutoTriggerItem {
+	return &AutoTriggerItem{ctx: ctx}
 }
 
-// Summary returns the trigger summary text.
-func (i *AutoTriggerItem) Summary() string { return i.summary }
-
-// Render produces the single styled indicator line. QUM-855: the summary may
-// carry a completed background sidechain's full markdown result; dumping it
-// verbatim here bypassed the glamour pass and surfaced raw `##`/`**`/backtick
-// walls in flat SystemText purple. The body adds nothing operationally (the
-// sidechain result already reaches the model context via the Agent tool), so
-// it is suppressed — only the styled marker is shown.
+// Render produces the single styled indicator line. QUM-855 suppressed the
+// completed-sidechain result body that used to be stuffed into this marker
+// (dumping it verbatim bypassed the glamour pass and surfaced raw
+// `##`/`**`/backtick walls in flat SystemText purple). QUM-857 removed the
+// body-carrying state entirely — the item never held anything but this fixed
+// cue (the sidechain result reaches the model context via the Agent tool), so
+// only the styled marker is rendered.
 func (i *AutoTriggerItem) Render(width int) string {
 	if width <= 0 {
 		return ""

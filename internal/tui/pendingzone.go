@@ -89,6 +89,20 @@ func (z *pendingZone) userCount() int {
 // len returns the total number of pending entries (user + system).
 func (z *pendingZone) len() int { return len(z.order) }
 
+// itemCount returns the total number of rendered items across all pending
+// entries. A user entry holds one item; a system entry holds the N items from
+// its envelope peel. This is the content-item count (not the entry count) so it
+// is unit-consistent with ChatList.Len(), which lets the scroll indicator's
+// growth detector see a settle (zone entry → N committed items) as net-zero
+// rather than a spurious jump. QUM-856.
+func (z *pendingZone) itemCount() int {
+	n := 0
+	for _, e := range z.order {
+		n += len(e.items)
+	}
+	return n
+}
+
 // clear removes every pending entry.
 func (z *pendingZone) clear() {
 	z.order = nil

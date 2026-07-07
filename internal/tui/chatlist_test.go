@@ -378,7 +378,7 @@ func TestChatList_AppendSystemNotificationDropsRawText(t *testing.T) {
 func TestChatList_AppendAutoTriggerAndThinking(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)
-	cl.AppendAutoTrigger("inbox: 1 new")
+	cl.AppendAutoTrigger()
 	cl.AppendThinking()
 	if cl.Len() != 2 {
 		t.Fatalf("expected 2 items, got %d", cl.Len())

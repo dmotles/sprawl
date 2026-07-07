@@ -123,8 +123,8 @@ func (b *AgentBuffer) ClearZone() {
 }
 
 // AppendAutoTrigger appends a QUM-634 auto-continue marker.
-func (b *AgentBuffer) AppendAutoTrigger(summary string) {
-	b.vp.ChatList().AppendAutoTrigger(summary)
+func (b *AgentBuffer) AppendAutoTrigger() {
+	b.vp.ChatList().AppendAutoTrigger()
 }
 
 // SetToolInputsExpanded fans the QUM-335 global expand-all toggle into the
@@ -900,7 +900,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case AutoContinueMsg:
 		// QUM-634: render a trigger marker before the autonomous turn's
 		// assistant response so the user sees WHY weave responded.
-		m.rootBuf().AppendAutoTrigger(msg.Summary)
+		m.rootBuf().AppendAutoTrigger()
 		// QUM-826: AutoContinueMsg is pump-delivered (translated from a
 		// task_notification protocol frame). Re-arm WaitForEvent or the pump
 		// parks here and the autonomous turn's assistant response never

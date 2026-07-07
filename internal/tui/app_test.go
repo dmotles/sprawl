@@ -3032,7 +3032,7 @@ func TestAppModel_AutoContinueMsg_RearmsPump(t *testing.T) {
 	delegate := &continuousFakeDelegate{}
 	app := readyAppWithBridge(t, delegate)
 
-	updated, cmd := app.Update(AutoContinueMsg{Summary: "task complete"})
+	updated, cmd := app.Update(AutoContinueMsg{})
 	_ = updated
 
 	if cmd == nil {
@@ -3446,17 +3446,17 @@ func TestAppModel_SessionResultMsg_DoesNotKickWaitForEvent_OnLegacyBridge(t *tes
 	_, _ = app.Update(SessionResultMsg{IsError: false, DurationMs: 5})
 }
 
-// TestUpdate_AutoContinueMsg (QUM-634): dispatching an AutoContinueMsg through
-// the app Update must append a MessageAutoTrigger entry (carrying the summary)
-// to the root viewport, so the autonomous turn renders a visible trigger
-// marker before the assistant response.
+// TestUpdate_AutoContinueMsg (QUM-634 / QUM-857): dispatching an AutoContinueMsg
+// through the app Update must append an AutoTriggerItem to the root viewport, so
+// the autonomous turn renders a visible trigger marker before the assistant
+// response. QUM-857: the marker no longer carries a sidechain-result body — it
+// renders the fixed `↻ auto-continued` cue.
 func TestUpdate_AutoContinueMsg(t *testing.T) {
 	m := newTestAppModel(t)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	app := resized.(AppModel)
 
-	const summary = "X"
-	updated, _ := app.Update(AutoContinueMsg{Summary: summary})
+	updated, _ := app.Update(AutoContinueMsg{})
 	app = updated.(AppModel)
 
 	entries := app.rootVP().ChatList().Items()
@@ -3464,8 +3464,8 @@ func TestUpdate_AutoContinueMsg(t *testing.T) {
 	for _, it := range entries {
 		if a, ok := it.(*AutoTriggerItem); ok {
 			found = true
-			if a.Summary() != summary {
-				t.Errorf("auto-trigger summary = %q, want %q", a.Summary(), summary)
+			if got := a.Render(80); !strings.Contains(got, "↻ auto-continued") {
+				t.Errorf("auto-trigger render = %q, want it to contain the marker", got)
 			}
 		}
 	}

@@ -19,7 +19,7 @@ func itemContent(it Item) string {
 	case *SystemNotificationItem:
 		return v.Content()
 	case *AutoTriggerItem:
-		return v.Summary()
+		return v.RawMarkdown()
 	default:
 		return ""
 	}

@@ -561,11 +561,11 @@ type SessionModelMsg struct {
 }
 
 // AutoContinueMsg signals a harness auto-continue (autonomous) turn was
-// triggered by a completed background task (QUM-634). Summary is the
-// human-readable task_notification summary, rendered as a distinct marker.
-type AutoContinueMsg struct {
-	Summary string
-}
+// triggered by a completed background task (QUM-634). It carries no payload:
+// QUM-857 removed the task_notification summary body — the presence of a
+// non-empty summary is the trigger gate (see MapProtocolMessage), and the
+// rendered marker is a fixed `↻ auto-continued` cue.
+type AutoContinueMsg struct{}
 
 // taskNotification* are the literal wrapping tokens the harness records in the
 // JSONL transcript for an autonomous-turn trigger (QUM-634 resume path). The

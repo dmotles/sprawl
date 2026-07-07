@@ -308,10 +308,11 @@ func TestMapProtocolMessage_SystemInit_EmptyModel(t *testing.T) {
 	}
 }
 
-// TestMapProtocolMessage_SystemTaskNotification (QUM-634): a
-// system/task_notification frame carrying a summary maps to an
-// AutoContinueMsg so the TUI can render a trigger marker for the autonomous
-// turn the harness self-reprompted into.
+// TestMapProtocolMessage_SystemTaskNotification (QUM-634 / QUM-857): a
+// system/task_notification frame carrying a non-empty summary maps to an
+// AutoContinueMsg so the TUI renders a trigger marker for the autonomous turn
+// the harness self-reprompted into. QUM-857: the presence of a summary is the
+// gate, but the summary body is no longer propagated into the marker.
 func TestMapProtocolMessage_SystemTaskNotification(t *testing.T) {
 	raw := `{"type":"system","subtype":"task_notification","task_id":"bzgr4iuq0","status":"completed","summary":"Background command \"sleep 30\" completed (exit code 0)"}`
 	var msg protocol.Message
@@ -321,12 +322,8 @@ func TestMapProtocolMessage_SystemTaskNotification(t *testing.T) {
 	msg.Raw = json.RawMessage(raw)
 
 	result := MapProtocolMessage(&msg)
-	ac, ok := result.(AutoContinueMsg)
-	if !ok {
+	if _, ok := result.(AutoContinueMsg); !ok {
 		t.Fatalf("MapProtocolMessage for system/task_notification returned %T, want AutoContinueMsg", result)
-	}
-	if ac.Summary != `Background command "sleep 30" completed (exit code 0)` {
-		t.Errorf("AutoContinueMsg.Summary = %q, want the task_notification summary", ac.Summary)
 	}
 }
 

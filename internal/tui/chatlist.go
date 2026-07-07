@@ -117,6 +117,16 @@ func NewChatList(theme *Theme) *ChatList {
 // Len returns the number of items in the list.
 func (c *ChatList) Len() int { return len(c.items) }
 
+// ZoneLen returns the number of pending-zone content items (user + system) held
+// before their CLI echo. The new-content scroll indicator's content-detection
+// must count these too, not just committed items — otherwise a freshly
+// submitted prompt or first-frame drained notification arriving while the user
+// is scrolled up gets no "new content below" cue. It counts items (not zone
+// entries) so it is unit-consistent with Len(): a settle relocating one N-item
+// entry into N committed items nets to zero and never spuriously flips the
+// indicator. QUM-856.
+func (c *ChatList) ZoneLen() int { return c.zone.itemCount() }
+
 // Empty reports whether the list has no renderable content — neither committed
 // items nor pending-zone entries. The emptiness gate for placeholder-vs-content
 // must use this, not Len(), so a fresh-session pending prompt (held in the zone
@@ -545,9 +555,9 @@ func (c *ChatList) ClearZone() {
 }
 
 // AppendAutoTrigger appends a finished AutoTriggerItem.
-func (c *ChatList) AppendAutoTrigger(summary string) {
+func (c *ChatList) AppendAutoTrigger() {
 	c.dropTrailingThinkingMarker()
-	c.items = append(c.items, &itemEnvelope{item: NewAutoTriggerItem(&c.ctx, summary)})
+	c.items = append(c.items, &itemEnvelope{item: NewAutoTriggerItem(&c.ctx)})
 	c.invalidate()
 }
 
@@ -618,7 +628,9 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 				item: NewSystemNotificationItem(&c.ctx, e.Content, notifType, e.Interrupt),
 			})
 		case MessageAutoTrigger:
-			c.AppendAutoTrigger(e.Content)
+			// QUM-857: the parsed summary (e.Content) is intentionally not
+			// propagated — the marker renders a fixed cue, not the body.
+			c.AppendAutoTrigger()
 		default:
 			// Status / error / banner / system entries: skip per the ChatList
 			// contract — these surfaces route to the statusbar transient

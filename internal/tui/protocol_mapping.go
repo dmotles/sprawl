@@ -49,8 +49,10 @@ func MapProtocolMessage(msg *protocol.Message) tea.Msg {
 		// subtypes (task_started/task_updated) are noisy and skipped.
 		if msg.Subtype == "task_notification" {
 			var tn protocol.TaskNotification
+			// QUM-857: a non-empty summary is the trigger gate, but the body
+			// is not propagated — the marker renders a fixed cue only.
 			if err := json.Unmarshal(msg.Raw, &tn); err == nil && tn.Summary != "" {
-				return AutoContinueMsg{Summary: tn.Summary}
+				return AutoContinueMsg{}
 			}
 			return nil
 		}

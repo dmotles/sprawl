@@ -212,7 +212,7 @@ func itemFingerprints(items []Item) []string {
 		case *SystemNotificationItem:
 			out = append(out, "notif:"+v.NotificationType()+":"+v.Content())
 		case *AutoTriggerItem:
-			out = append(out, "auto:"+v.Summary())
+			out = append(out, "auto:"+v.RawMarkdown())
 		case *ThinkingItem:
 			out = append(out, "thinking")
 		default:

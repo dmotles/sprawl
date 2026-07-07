@@ -119,7 +119,7 @@ func TestAppModel_View_ChatRegion_DualAppendForAllVerbs(t *testing.T) {
 	app = next.(AppModel)
 
 	// Auto-trigger.
-	next, _ = app.Update(AutoContinueMsg{Summary: "auto"})
+	next, _ = app.Update(AutoContinueMsg{})
 	app = next.(AppModel)
 
 	// Tool call + result.

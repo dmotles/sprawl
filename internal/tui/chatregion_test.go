@@ -214,3 +214,127 @@ func TestChatRegion_Reset_AtBottom_StaysAtBottom(t *testing.T) {
 		t.Errorf("After Reset while at-bottom (with overflow content), region should remain at bottom (live-tail invariant)")
 	}
 }
+
+// TestChatRegion_HasNewContent_ZoneEntryWhileScrolledUp is the QUM-856 core
+// case: while scrolled up with ZERO committed items, a pending-zone entry (a
+// freshly-submitted user prompt held pre-echo) must flip the new-content
+// indicator. Before the fix, hasNewContent keyed on ChatList.Len() (committed
+// items only) so the zone entry was invisible.
+func TestChatRegion_HasNewContent_ZoneEntryWhileScrolledUp(t *testing.T) {
+	r := newTestChatRegion(t)
+	r.SetSize(60, 10)
+	cl := r.ChatList()
+	// Establish the lastContentLen baseline (0) with an empty paint.
+	_ = r.View()
+	// Scroll up: PageUp disables auto-scroll unconditionally.
+	r.PageUp()
+	_ = r.View()
+	if r.IsAutoScroll() {
+		t.Fatalf("precondition: PageUp should disable auto-scroll")
+	}
+	// A user prompt lands in the pending zone (held before its CLI echo).
+	cl.ZoneAddUser("uuid-1", "queued prompt held in the zone")
+	_ = r.View()
+	if cl.Len() != 0 {
+		t.Fatalf("precondition: expected zero committed items, got %d", cl.Len())
+	}
+	if !r.HasNewContent() {
+		t.Errorf("HasNewContent() should be true when a pending-zone entry arrives while scrolled up (zero committed items)")
+	}
+	view := stripAnsi(r.View())
+	if !strings.Contains(view, NewContentIndicator) {
+		t.Errorf("View() should include the new-content indicator %q for a pending-zone entry;\ngot:\n%s",
+			NewContentIndicator, view)
+	}
+}
+
+// TestChatRegion_HasNewContent_ZoneSystemNotificationWhileScrolledUp confirms
+// the fix covers system-notification zone entries (pendingSystem), not just
+// user prompts — so a first-frame drained notification flips the indicator
+// too. This is why ZoneUserCount() (user entries only) is insufficient.
+func TestChatRegion_HasNewContent_ZoneSystemNotificationWhileScrolledUp(t *testing.T) {
+	r := newTestChatRegion(t)
+	r.SetSize(60, 10)
+	cl := r.ChatList()
+	_ = r.View()
+	r.PageUp()
+	_ = r.View()
+	cl.ZoneAddSystem("sys-1", notifFrameA)
+	_ = r.View()
+	if !r.HasNewContent() {
+		t.Errorf("HasNewContent() should be true when a system-notification zone entry arrives while scrolled up")
+	}
+}
+
+// TestChatRegion_HasNewContent_ZoneEntryWhileAtBottom_NoFlip guards against a
+// spurious indicator: a zone entry arriving while auto-scroll is engaged (at
+// bottom) must NOT flip HasNewContent — the view snaps to bottom instead.
+func TestChatRegion_HasNewContent_ZoneEntryWhileAtBottom_NoFlip(t *testing.T) {
+	r := newTestChatRegion(t)
+	r.SetSize(60, 10)
+	cl := r.ChatList()
+	_ = r.View()
+	if !r.IsAutoScroll() {
+		t.Fatalf("precondition: fresh region should auto-scroll")
+	}
+	cl.ZoneAddUser("uuid-1", "queued prompt")
+	_ = r.View()
+	if r.HasNewContent() {
+		t.Errorf("HasNewContent() should stay false for a zone entry while at bottom (auto-scroll on)")
+	}
+}
+
+// TestChatRegion_HasNewContent_ZoneSettle_NoSpuriousFlip guards the settle
+// transition: a user zone entry added while at bottom (no flip), then scrolled
+// up, then settled (relocated zone→committed). Settle is net-zero for the
+// detector (ZoneLen −1 item, Len +1 item), so it must NOT spuriously flip the
+// indicator on its own. QUM-856.
+func TestChatRegion_HasNewContent_ZoneSettle_NoSpuriousFlip(t *testing.T) {
+	r := newTestChatRegion(t)
+	r.SetSize(60, 10)
+	cl := r.ChatList()
+	_ = r.View()
+	// Add while at bottom: no flip (auto-scroll snaps to bottom).
+	cl.ZoneAddUser("uuid-1", "queued prompt held in the zone")
+	_ = r.View()
+	if r.HasNewContent() {
+		t.Fatalf("precondition: zone add while at bottom should not flip")
+	}
+	// Scroll up, then settle. Settle alone must not flip.
+	r.PageUp()
+	_ = r.View()
+	if !cl.ZoneSettle("uuid-1") {
+		t.Fatalf("precondition: ZoneSettle should relocate the pending entry")
+	}
+	_ = r.View()
+	if r.HasNewContent() {
+		t.Errorf("ZoneSettle (net-zero content change) should not spuriously flip HasNewContent")
+	}
+}
+
+// TestChatRegion_HasNewContent_MultiItemZoneSettle_NoSpuriousFlip pins the
+// unit-consistency fix: a stacked system notification is ONE zone entry holding
+// N items. Because ZoneLen counts items (not entries), settling it into N
+// committed items is net-zero and does not spuriously flip the indicator. With
+// an entry-count ZoneLen this would jump curLen by (N−1) and flip. QUM-856.
+func TestChatRegion_HasNewContent_MultiItemZoneSettle_NoSpuriousFlip(t *testing.T) {
+	r := newTestChatRegion(t)
+	r.SetSize(60, 10)
+	cl := r.ChatList()
+	_ = r.View()
+	// A stacked (2-envelope) system notification: one entry, two items.
+	cl.ZoneAddSystem("sys-1", notifFrameA+notifFrameB)
+	_ = r.View()
+	if r.HasNewContent() {
+		t.Fatalf("precondition: zone add while at bottom should not flip")
+	}
+	r.PageUp()
+	_ = r.View()
+	if !cl.ZoneSettle("sys-1") {
+		t.Fatalf("precondition: ZoneSettle should relocate the pending entry")
+	}
+	_ = r.View()
+	if r.HasNewContent() {
+		t.Errorf("multi-item ZoneSettle should be net-zero and not spuriously flip HasNewContent")
+	}
+}

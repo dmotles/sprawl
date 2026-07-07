@@ -167,8 +167,10 @@ func (r *ChatRegion) View() string {
 	r.vp.SetContent(rendered)
 
 	// Flip hasNewContent if content grew while not at-bottom (i.e. the user
-	// scrolled up and new items appeared since the prior View() call).
-	curLen := r.cl.Len()
+	// scrolled up and new items appeared since the prior View() call). Count
+	// pending-zone entries too (QUM-856) so a prompt held pre-echo or a
+	// first-frame drained notification also cues the indicator.
+	curLen := r.cl.Len() + r.cl.ZoneLen()
 	if curLen > r.lastClLen && !r.autoScroll {
 		r.hasNewContent = true
 	}
