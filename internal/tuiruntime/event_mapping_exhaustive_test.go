@@ -75,7 +75,7 @@ var eventClassRegistry = map[sprawlrt.RuntimeEventType]eventClass{
 	},
 	sprawlrt.EventTurnStarted: {
 		terminal:        false,
-		expectedMsgType: "", // skipped by adapter (lifecycle-only)
+		expectedMsgType: "tui.TurnStartedMsg", // QUM-858: lights the pre-content in-turn indicator
 		expectsTurnIdle: false,
 	},
 	sprawlrt.EventTurnCompleted: {

@@ -370,10 +370,11 @@ func TestTUIAdapter_WaitForEvent_Interrupted_InterruptCompletedMsg(t *testing.T)
 }
 
 func TestTUIAdapter_WaitForEvent_SkipsLifecycleEvents(t *testing.T) {
-	// Ensure WaitForEvent does not surface EventTurnStarted / EventQueueDrained
-	// / EventStopped as TUI messages — it must loop past them. We drive a
-	// successful turn and verify the only msgs we observe are
-	// AssistantContentMsg + SessionResultMsg.
+	// Ensure WaitForEvent does not surface EventQueueDrained / EventStopped as
+	// TUI messages — it must loop past them. We drive a successful turn and
+	// verify the only msgs we observe are AssistantContentMsg + SessionResultMsg
+	// (+ the QUM-858 TurnStartedMsg, which is now surfaced deliberately to light
+	// the pre-content in-turn indicator, not skipped).
 	mock := &adapterMockSession{}
 	rt, a := buildAdapter(t, mock)
 
@@ -406,6 +407,9 @@ func TestTUIAdapter_WaitForEvent_SkipsLifecycleEvents(t *testing.T) {
 		switch m := msg.(type) {
 		case tui.AssistantContentMsg:
 			saw["assistant"]++
+		case tui.TurnStartedMsg:
+			// QUM-858: EventTurnStarted now surfaces this (formerly skipped).
+			saw["turnstarted"]++
 		case tui.SessionResultMsg:
 			saw["result"]++
 			done = true

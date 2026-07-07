@@ -14,8 +14,8 @@ import (
 
 // TranslateRuntimeEvent converts a RuntimeEvent into the tea.Msg the caller's
 // WaitForEvent loop should return. A nil result means "skip / continue to the
-// next event" — i.e. lifecycle-only events (EventTurnStarted, EventQueueDrained,
-// EventStopped), protocol messages that map to nil, and the protocol "result"
+// next event" — i.e. lifecycle-only events (EventQueueDrained, EventStopped),
+// protocol messages that map to nil, and the protocol "result"
 // envelope (which is intentionally dropped here because EventTurnCompleted
 // already drives the terminal SessionResultMsg).
 //
@@ -66,7 +66,13 @@ func TranslateRuntimeEvent(ev sprawlrt.RuntimeEvent, interruptedFn func(sprawlrt
 		return UserMessageConsumedMsg{UUID: ev.UUID}
 	case sprawlrt.EventUserMessageCancelled:
 		return UserMessageCancelledMsg{UUID: ev.UUID}
-	case sprawlrt.EventTurnStarted, sprawlrt.EventQueueDrained, sprawlrt.EventStopped:
+	case sprawlrt.EventTurnStarted:
+		// QUM-858: no longer a no-op. The turn is genuinely open while the TUI
+		// may still show Idle (send-all-now replacement, autonomous, or QUM-640
+		// continuation turns open with no submit-side flip). The reducer lights
+		// the in-turn indicator for the pre-content window, guarded on TurnIdle.
+		return TurnStartedMsg{}
+	case sprawlrt.EventQueueDrained, sprawlrt.EventStopped:
 		return nil
 	default:
 		return nil

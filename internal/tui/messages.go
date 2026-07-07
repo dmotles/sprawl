@@ -503,6 +503,13 @@ type TurnStateMsg struct {
 	State TurnState
 }
 
+// TurnStartedMsg is surfaced (QUM-858) when the runtime opens a turn
+// (EventTurnStarted). Its reducer flips a TurnIdle TUI to TurnThinking so the
+// in-turn indicator lights during the pre-content window of a freshly-opened
+// turn — the send-all-now replacement turn, an autonomous turn, or a QUM-640
+// continuation — none of which have a submit-side optimistic flip.
+type TurnStartedMsg struct{}
+
 // SessionErrorMsg carries an error from the host session or process death.
 //
 // QUM-479: `Err: io.EOF` is reserved exclusively for the session backend

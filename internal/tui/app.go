@@ -754,6 +754,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.sendAllNowInFlight = true
+			// QUM-858: optimistically light the in-turn indicator. Mirrors the
+			// SubmitMsg TurnIdle→Thinking flip. Guarded on TurnIdle so it never stomps an
+			// in-flight TurnStreaming, and on a non-empty queue so an empty-queue
+			// Ctrl+G — a documented no-op that starts no turn — doesn't wedge the
+			// spinner on with nothing in flight. Holds the indicator lit through
+			// the cancel-and-replace storm until the coalesced now-write's turn
+			// opens (EventTurnStarted / the isReplay echo).
+			if m.turnState == TurnIdle && m.queuedUserCount() > 0 {
+				m.setTurnState(TurnThinking)
+			}
 			return m, m.bridge.SendAllNow()
 		}
 
@@ -1167,11 +1177,39 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// not wedge Ctrl+G dead.
 		m.sendAllNowInFlight = false
 		if msg.Err != nil {
+			// QUM-858: the flush failed, so no turn opens and no
+			// EventInterrupted/EventTurnStarted/finalizeTurn will fire to unwind
+			// the optimistic TurnThinking flip from the Ctrl+G handler. Reset it
+			// here so the indicator doesn't stay lit and idle-gated reducers
+			// aren't blocked. Guarded on TurnThinking so a genuine in-flight
+			// TurnStreaming turn is never stomped.
+			if m.turnState == TurnThinking {
+				m.setTurnState(TurnIdle)
+			}
 			return m, m.toasts.Spawn(Toast{
 				Text:      fmt.Sprintf("send-all-now failed: %v", msg.Err),
 				Style:     ToastError,
 				DismissOn: TimerDismiss(4 * time.Second),
 			})
+		}
+		return m, nil
+
+	case TurnStartedMsg:
+		// QUM-858 durable half: the runtime opened a turn (EventTurnStarted).
+		// Light the in-turn indicator for the pre-content window — this covers
+		// the send-all-now replacement turn (whose optimistic flip is stomped
+		// back to Idle by the preceding EventInterrupted → finalizeTurn) as well
+		// as autonomous / QUM-640 continuation turns that open with no submit-
+		// side flip. Guarded on TurnIdle so it never stomps an in-flight
+		// TurnStreaming.
+		if m.turnState == TurnIdle {
+			m.setTurnState(TurnThinking)
+		}
+		// This msg is bus-delivered: TranslateRuntimeEvent now returns it
+		// (previously nil), so the WaitForEvent loop returns to the model
+		// instead of continuing. Re-arm or the event pump parks (QUM-826).
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
 		}
 		return m, nil
 

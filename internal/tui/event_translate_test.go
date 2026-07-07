@@ -184,7 +184,6 @@ func TestTranslateRuntimeEvent_UserMessageSent(t *testing.T) {
 
 func TestTranslateRuntimeEvent_LifecycleEventsSkipped(t *testing.T) {
 	for _, evType := range []sprawlrt.RuntimeEventType{
-		sprawlrt.EventTurnStarted,
 		sprawlrt.EventQueueDrained,
 		sprawlrt.EventStopped,
 	} {
@@ -192,5 +191,15 @@ func TestTranslateRuntimeEvent_LifecycleEventsSkipped(t *testing.T) {
 		if got != nil {
 			t.Errorf("event %v: expected nil (skip), got %T %+v", evType, got, got)
 		}
+	}
+}
+
+// QUM-858: EventTurnStarted is no longer a skipped lifecycle event — it maps to
+// TurnStartedMsg so the TUI can light the in-turn indicator during the
+// pre-content window of a freshly-opened turn.
+func TestTranslateRuntimeEvent_TurnStartedMapsToMsg(t *testing.T) {
+	got := TranslateRuntimeEvent(sprawlrt.RuntimeEvent{Type: sprawlrt.EventTurnStarted}, InterruptedAsResult)
+	if _, ok := got.(TurnStartedMsg); !ok {
+		t.Errorf("EventTurnStarted: got %T %+v, want TurnStartedMsg", got, got)
 	}
 }
