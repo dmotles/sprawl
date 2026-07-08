@@ -1049,3 +1049,63 @@ func TestBuildTreeNodes_ManagerStaysIdle_NoActiveDescendants(t *testing.T) {
 		t.Errorf("DeriveIconState(tower) = %q, want \"idle\"", got)
 	}
 }
+
+// TestBuildTreeNodes_SelfInTurn_NotRolledUp asserts that SelfInTurn captures a
+// node's OWN in-turn flag and is NOT clobbered by the QUM-692 subtree rollup:
+// an idle manager with an in-turn descendant gets InTurn rolled up to true (for
+// the tree row) but keeps SelfInTurn=false, so the observed-agent footer sparkle
+// (QUM-861) can distinguish own-activity from subtree-activity.
+func TestBuildTreeNodes_SelfInTurn_NotRolledUp(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+	agents := []supervisor.AgentInfo{
+		{
+			Name:           "tower",
+			Type:           "manager",
+			Family:         "tower",
+			Parent:         "",
+			Status:         "active",
+			ProcessAlive:   boolPtr(true),
+			InTurn:         false,
+			LastActivityAt: time.Time{},
+		},
+		{
+			Name:           "finn",
+			Type:           "engineer",
+			Family:         "tower",
+			Parent:         "tower",
+			Status:         "active",
+			ProcessAlive:   boolPtr(true),
+			InTurn:         true,
+			LastActivityAt: now,
+		},
+	}
+
+	nodes := buildTreeNodes(agents, nil)
+
+	var tower, finn *TreeNode
+	for i := range nodes {
+		switch nodes[i].Name {
+		case "tower":
+			tower = &nodes[i]
+		case "finn":
+			finn = &nodes[i]
+		}
+	}
+	if tower == nil || finn == nil {
+		t.Fatalf("expected tower and finn nodes, got tower=%v finn=%v", tower, finn)
+	}
+
+	// QUM-692 rollup preserved: tower's InTurn is rolled up from finn.
+	if !tower.InTurn {
+		t.Errorf("tower.InTurn = false, want true (QUM-692 rollup preserved)")
+	}
+	// QUM-861: tower's OWN in-turn state is false and must survive the rollup.
+	if tower.SelfInTurn {
+		t.Errorf("tower.SelfInTurn = true, want false (own idle state must survive rollup)")
+	}
+	// finn is a leaf that is itself in-turn: SelfInTurn mirrors its own InTurn.
+	if !finn.SelfInTurn {
+		t.Errorf("finn.SelfInTurn = false, want true (leaf's own in-turn state)")
+	}
+}

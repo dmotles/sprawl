@@ -56,8 +56,13 @@ type TreeNode struct {
 	// rebuildTree from a side map (faults). QUM-602.
 	FaultClass string
 
-	ProcessAlive   *bool
-	InTurn         bool
+	ProcessAlive *bool
+	InTurn       bool
+	// SelfInTurn is this agent's OWN in-turn flag, captured before the
+	// QUM-692 subtree rollup mutates InTurn. Observed-agent footer logic
+	// (QUM-861) keys on this so observing an idle manager whose descendant
+	// is mid-turn does not falsely show "working…".
+	SelfInTurn     bool
 	LastActivityAt time.Time
 
 	// Liveness is the QUM-722 unified projection token (e.g. "paused",
@@ -367,6 +372,7 @@ func buildTreeNodes(agents []supervisor.AgentInfo, unread map[string]int) []Tree
 			TotalCostUsd:      a.TotalCostUsd,
 			ProcessAlive:      a.ProcessAlive,
 			InTurn:            a.InTurn,
+			SelfInTurn:        a.InTurn,
 			LastActivityAt:    a.LastActivityAt,
 			Liveness:          a.Liveness,
 		})

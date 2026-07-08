@@ -86,7 +86,10 @@ func TestSparkle_ChildFooterWhenObservedChildWorking(t *testing.T) {
 	working := func(t *testing.T, inTurn bool) tea.View {
 		t.Helper()
 		m := newTestAppModel(t)
-		m.childNodes = []TreeNode{{Name: "kid", Type: "researcher", InTurn: inTurn}}
+		// SelfInTurn mirrors InTurn here: buildTreeNodes sets both for an agent
+		// that is itself in-turn, and the footer sparkle (QUM-861) keys on the
+		// observed agent's OWN state.
+		m.childNodes = []TreeNode{{Name: "kid", Type: "researcher", InTurn: inTurn, SelfInTurn: inTurn}}
 		m.observedAgent = "kid"
 		_ = m.viewportFor("kid")
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: 200, Height: 60})
@@ -216,5 +219,57 @@ func TestSparkle_ComposedEqualsUncached_WithSparkle(t *testing.T) {
 	capp := updated.(AppModel)
 	if cached, uncached := capp.View().Content, capp.viewUncached().Content; cached != uncached {
 		t.Errorf("child: cached View() != viewUncached() with sparkle present")
+	}
+}
+
+// TestObservedChildWorking_IdleManagerWithInTurnChild_ShowsIdle is the QUM-861
+// guard: observing an idle manager whose InTurn was rolled up (QUM-692) from an
+// in-turn descendant must NOT show the footer sparkle — the observed-agent
+// indicator reflects the agent's OWN state (SelfInTurn), not the subtree rollup.
+func TestObservedChildWorking_IdleManagerWithInTurnChild_ShowsIdle(t *testing.T) {
+	m := newTestAppModel(t)
+	now := time.Now()
+	m.childNodes = []TreeNode{
+		{Name: "tower", Type: "manager", InTurn: true, SelfInTurn: false},
+		{Name: "finn", Type: "engineer", InTurn: true, SelfInTurn: true},
+	}
+	m.observedAgent = "tower"
+
+	if m.observedChildWorking(now) {
+		t.Error("observedChildWorking(tower) = true, want false (idle manager, only descendant is in-turn)")
+	}
+}
+
+// TestObservedChildWorking_OwnInTurn_ShowsWorking is the inverse-regression
+// guard for QUM-861: observing an agent that is itself in-turn must still show
+// the footer sparkle, so the fix does not swing to "never shows activity".
+func TestObservedChildWorking_OwnInTurn_ShowsWorking(t *testing.T) {
+	m := newTestAppModel(t)
+	now := time.Now()
+	m.childNodes = []TreeNode{
+		{Name: "tower", Type: "manager", InTurn: true, SelfInTurn: false},
+		{Name: "finn", Type: "engineer", InTurn: true, SelfInTurn: true},
+	}
+	m.observedAgent = "finn"
+
+	if !m.observedChildWorking(now) {
+		t.Error("observedChildWorking(finn) = false, want true (agent is itself in-turn)")
+	}
+}
+
+// TestObservedChildWorking_RecentActivityFallback_Survives pins that the
+// SelfInTurn substitution (QUM-861) does not drop DeriveIconState's other
+// fallbacks: a node that is not in-turn but has recent activity still counts as
+// working for the footer sparkle.
+func TestObservedChildWorking_RecentActivityFallback_Survives(t *testing.T) {
+	m := newTestAppModel(t)
+	now := time.Now()
+	m.childNodes = []TreeNode{
+		{Name: "kid", Type: "researcher", InTurn: false, SelfInTurn: false, LastActivityAt: now},
+	}
+	m.observedAgent = "kid"
+
+	if !m.observedChildWorking(now) {
+		t.Error("observedChildWorking(kid) = false, want true (recent-activity fallback must survive)")
 	}
 }

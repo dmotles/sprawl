@@ -2763,7 +2763,13 @@ func (m *AppModel) observedChildWorking(now time.Time) bool {
 	}
 	for _, n := range m.childNodes {
 		if n.Name == m.observedAgent {
-			return DeriveIconState(n, now) == "working"
+			// QUM-861: the footer sparkle reflects the observed agent's OWN
+			// activity, not the QUM-692 subtree rollup. Substitute the
+			// self-in-turn flag for the rolled-up InTurn but keep every other
+			// DeriveIconState fallback (recent activity, report state, liveness).
+			self := n
+			self.InTurn = n.SelfInTurn
+			return DeriveIconState(self, now) == "working"
 		}
 	}
 	return false
