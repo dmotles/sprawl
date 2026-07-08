@@ -761,10 +761,6 @@ type RestartSessionMsg struct{}
 // channel event that `cmd/enter.go` converts into this msg via tea.Program.Send.
 type HandoffRequestedMsg struct{}
 
-// OpenPaletteMsg requests that the command palette overlay be shown. The
-// app gates this on input not being disabled and no other modal being active.
-type OpenPaletteMsg struct{}
-
 // InjectPromptMsg carries a command's prompt template to be sent to Claude
 // via the bridge, without rendering it as a user message in the viewport.
 type InjectPromptMsg struct {

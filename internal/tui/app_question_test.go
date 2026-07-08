@@ -63,7 +63,7 @@ func TestAppModel_QuestionsAvailable_DoesNotPreempt(t *testing.T) {
 		{"showError", func(a *AppModel) { a.showError = true }},
 		{"showConfirm", func(a *AppModel) { a.showConfirm = true }},
 		{"showHelp", func(a *AppModel) { a.showHelp = true }},
-		{"showPalette", func(a *AppModel) { a.showPalette = true }},
+		{"showUsage", func(a *AppModel) { a.showUsage = true }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -417,7 +417,10 @@ func TestAppModel_QuestionModal_ArrowKeysRouteToQuestion(t *testing.T) {
 	}
 }
 
-func TestAppModel_OpenPalette_GatedByShowQuestion(t *testing.T) {
+// QUM-864: the popover command navigation is gated on !anyModalUp(), so while
+// the question modal is up, typing '/' + ↑/↓ must not be intercepted as popover
+// navigation (keys route to the modal instead).
+func TestAppModel_Popover_SuppressedByShowQuestion(t *testing.T) {
 	sup := &mockSupervisor{}
 	app := readyAppWithSup(t, sup)
 
@@ -427,10 +430,12 @@ func TestAppModel_OpenPalette_GatedByShowQuestion(t *testing.T) {
 	if !app.showQuestion {
 		t.Fatal("setup: showQuestion must be true")
 	}
-
-	updated, _ = app.Update(OpenPaletteMsg{})
+	// Put a '/'-token in the input directly and press Down: the popover key
+	// block must NOT consume it (a modal is up), so highlight stays 0.
+	app.input.SetValue("/")
+	updated, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	app = updated.(AppModel)
-	if app.showPalette {
-		t.Error("OpenPaletteMsg should be a no-op while showQuestion is up")
+	if app.cmdPopover.highlight != 0 {
+		t.Error("popover must not intercept ↑/↓ while a modal (question) is up")
 	}
 }

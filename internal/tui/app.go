@@ -12,12 +12,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/agentloop"
+	"github.com/dmotles/sprawl/internal/attach"
 	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
+	"github.com/dmotles/sprawl/internal/tui/commands"
 	"github.com/dmotles/sprawl/internal/usage"
 )
 
@@ -164,8 +166,10 @@ type AppModel struct {
 	help     HelpModel
 	showHelp bool
 
-	palette     PaletteModel
-	showPalette bool
+	// cmdPopover is the inline `/`-triggered command suggestion popover
+	// (QUM-864). It replaced the retired full-screen palette. It is NOT a
+	// modal — composited like the treeHud, it never gates scroll/mouse/typing.
+	cmdPopover cmdPopover
 
 	// QUM-733 5b: agent-tree modal (TreeModalModel). Opened via `/tree`
 	// palette command (ToggleTreeMsg). Lowest-priority modal — suppressed
@@ -477,7 +481,7 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 		shortHelp:           NewShortHelpModel(&theme),
 		help:                NewHelpModel(&theme),
 		confirm:             NewConfirmModel(&theme),
-		palette:             NewPaletteModel(&theme),
+		cmdPopover:          cmdPopover{theme: &theme},
 		treeModal:           NewTreeModalModel(&theme),
 		bridge:              bridge,
 		turnState:           TurnIdle,
@@ -564,11 +568,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// keep rendering at their pre-grow height and the composed View
 		// overflows the terminal.
 		prevInputH := m.inputBoxHeight()
+		prevValue := m.input.Value()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		if m.ready && !m.tooSmall && m.inputBoxHeight() != prevInputH {
 			m.resizePanels()
 		}
+		m.refreshPopoverAfterInput(prevValue)
 		return m, cmd
 
 	case tea.MouseMsg:
@@ -616,6 +622,36 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.searchMatchIdx = 0
 			}
 			return m, nil
+		}
+
+		// QUM-864: inline command popover navigation. When the popover is
+		// visible (input is a `/`-token matching ≥1 command, not Esc-dismissed),
+		// intercept ONLY ↑/↓/Enter/Esc so the highlight can move and Enter can
+		// dispatch. Placed before the arrow/history block so ↑/↓ reach the
+		// popover instead of prompt-history nav, and before the Esc-interrupt
+		// path so Esc dismisses the popover rather than interrupting a turn.
+		// Every other key falls through to the textarea; the popover is not a
+		// modal, so scroll/mouse/paste are never gated.
+		if !m.anyModalUp() && m.observedAgent == m.rootAgent && !m.input.disabled &&
+			popoverVisible(m.input.Value(), m.cmdPopover.escDismissed) {
+			n := len(popoverMatches(m.input.Value()))
+			switch msg.Code {
+			case tea.KeyUp:
+				m.cmdPopover.move(-1, n)
+				return m, nil
+			case tea.KeyDown:
+				m.cmdPopover.move(1, n)
+				return m, nil
+			case tea.KeyEscape:
+				m.cmdPopover.escDismissed = true
+				return m, nil
+			case tea.KeyEnter:
+				// Only a bare Enter fires the selection; Alt+Enter / Ctrl+J stay
+				// newline keys (QUM-571) and fall through to the textarea.
+				if msg.Mod == 0 {
+					return m, m.dispatchPopoverSelection()
+				}
+			}
 		}
 
 		// QUM-653 / QUM-774: keyboard scroll bindings. PgUp/PgDn/Home/End
@@ -706,20 +742,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// When error dialog is shown, delegate all keys to it.
 		if m.showError {
 			cmd := m.errorDialog.Update(msg)
-			return m, cmd
-		}
-
-		// When the command palette is open, route ALL keys to it — no
-		// panel cycling, no input typing. The palette hides itself
-		// synchronously on Esc and on command dispatch (QUM-793); mirror
-		// that into m.showPalette here so the action cmd's modal-gate
-		// reducer observes the closure in the same Update tick.
-		if m.showPalette {
-			var cmd tea.Cmd
-			m.palette, cmd = m.palette.Update(msg)
-			if !m.palette.Visible() {
-				m.showPalette = false
-			}
 			return m, cmd
 		}
 
@@ -831,7 +853,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-669: Ctrl+L is the manual viewport-resync short-circuit. Bypasses
 		// the gap-debounce state machine and immediately rebuilds the viewport
 		// from the session JSONL. Gated by the modal precedence returns above
-		// (showConfirm/showError/showHelp/showPalette/showQuestion) and the
+		// (showConfirm/showError/showHelp/showQuestion) and the
 		// searchActive guard at the top of the KeyPressMsg switch — Ctrl+R
 		// reverse-search owns the keystroke while active.
 		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 'l' || msg.Code == 'L') {
@@ -850,7 +872,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// capture runs as a tea.Cmd (background goroutine) so the TUI stays
 		// responsive. Ctrl+G was the runner-up; \ chosen because it's analogous
 		// to SIGQUIT and is unbound elsewhere in the TUI. Gated by the modal
-		// precedence returns above (showConfirm/showError/showHelp/showPalette/
+		// precedence returns above (showConfirm/showError/showHelp/
 		// showQuestion/showTree).
 		if msg.Mod&tea.ModCtrl != 0 && msg.Code == '\\' {
 			return m, func() tea.Msg { return IncidentSnapshotRequestedMsg{} }
@@ -943,19 +965,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
-		return m, nil
-
-	case OpenPaletteMsg:
-		// Gate on modals AND observed-agent-is-root: when observing a child
-		// the input bar is hidden (QUM-340), so opening the palette would
-		// dispatch commands the user can't see typed into.
-		if m.input.disabled || m.anyModalUp() || m.observedAgent != m.rootAgent {
-			return m, nil
-		}
-		m.palette.SetSize(m.width, m.height)
-		m.palette.SetAgents(m.agentNames())
-		m.palette.Show()
-		m.showPalette = true
 		return m, nil
 
 	case ToggleHelpMsg:
@@ -1116,6 +1125,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.history != nil {
 			m.history.Append(msg.Text)
 			m.history.Reset()
+		}
+		// QUM-863: submit-time slash-command routing. If the leading token is a
+		// registered command, dispatch it locally to the SAME action the palette
+		// invokes — method-agnostic, so a pasted /command behaves identically to
+		// a typed one. Routed BEFORE the bridge-nil check so UI commands (/help,
+		// /exit, ...) work bridge-less; the bridge-backed handlers self-guard.
+		// An unregistered leading-slash prompt falls through to Claude untouched.
+		if cmd, ok := m.routeSlashCommand(msg.Text); ok {
+			return m, cmd
 		}
 		if m.bridge == nil {
 			return m, nil
@@ -1476,10 +1494,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if reason == "" {
 			reason = "session ended"
 		}
-		// Force-close the palette if open — a restart swaps out the bridge,
-		// so any pending palette dispatch would hit a stale channel.
-		m.palette.Hide()
-		m.showPalette = false
+		// QUM-864: clear any popover Esc-dismiss latch on restart so the fresh
+		// session starts clean.
+		m.cmdPopover.escDismissed = false
 		m.statusBar.SetTransientLabel(fmt.Sprintf("Session restarting (%s)...", reason))
 		// QUM-340/828/833: a session restart tears down the CLI process and its
 		// command queue, so every pending outstanding entry is lost on the old
@@ -2499,7 +2516,7 @@ func (m *AppModel) shortHelpState() ShortHelpState {
 		TurnState:   m.turnState,
 		InputEmpty:  strings.TrimSpace(m.input.Value()) == "",
 		HasQueued:   m.queuedUserCount() > 0,
-		PaletteOpen: m.showPalette,
+		PopoverOpen: popoverVisible(m.input.Value(), m.cmdPopover.escDismissed),
 	}
 }
 
@@ -2621,15 +2638,39 @@ func (m AppModel) renderView(useCache bool) tea.View {
 		}
 	}
 
-	// QUM-733 5b: tree modal sits ABOVE chat/toasts but BELOW the higher-
-	// priority modals (palette, help, question, validate popup, confirm,
-	// error) so those always override.
-	if m.showTree {
-		content = m.treeModal.View()
+	// QUM-864: composite the inline command popover just above the input bar.
+	// Applied AFTER cachedComposed (like the treeHud) so its per-keystroke
+	// show/hide never invalidates the chat render cache (QUM-769). Root-only
+	// and only when the input bar is drawn (its anchor). NOT a modal — it sits
+	// below the modal overlays below so any dialog still overrides it.
+	if inputVisible && !m.input.disabled &&
+		popoverVisible(m.input.Value(), m.cmdPopover.escDismissed) {
+		lines := strings.Split(content, "\n")
+		// Input bar top row, counting up from the bottom: status + short-help +
+		// input. The popover sits above the sparkle row and below the header.
+		inputTop := len(lines) - layout.StatusHeight - layout.ShortHelpHeight - layout.InputHeight
+		minRow := layout.HeaderHeight + layout.HeaderSpacerHeight
+		// Rows available for the box between the header and the sparkle row; the
+		// box's 2 border rows leave (avail-2) for command rows. Cap so the box
+		// never overpaints the input/status region on a short terminal.
+		avail := inputTop - layout.SparkleHeight - minRow
+		if maxRows := avail - 2; maxRows >= 1 {
+			if box := m.cmdPopover.View(m.input.Value(), maxRows); box != "" {
+				boxH := strings.Count(box, "\n") + 1
+				anchorRow := inputTop - layout.SparkleHeight - boxH
+				if anchorRow < minRow {
+					anchorRow = minRow
+				}
+				content = overlayBottomLeft(content, box, anchorRow, 2)
+			}
+		}
 	}
 
-	if m.showPalette {
-		content = m.palette.View()
+	// QUM-733 5b: tree modal sits ABOVE chat/toasts but BELOW the higher-
+	// priority modals (help, question, validate popup, confirm, error) so
+	// those always override.
+	if m.showTree {
+		content = m.treeModal.View()
 	}
 
 	if m.showHelp {
@@ -2971,7 +3012,8 @@ func (m *AppModel) resizePanels() {
 	m.help.SetSize(m.width, m.height)
 	m.confirm.SetSize(m.width, m.height)
 	m.errorDialog.SetSize(m.width, m.height)
-	m.palette.SetSize(m.width, m.height)
+	m.cmdPopover.width = m.width
+	m.cmdPopover.height = m.height
 	m.treeModal.SetSize(m.width, m.height)
 	m.questionModel.SetSize(m.width, m.height)
 	m.usageModal = m.usageModal.SetSize(m.width, m.height)
@@ -2982,7 +3024,7 @@ func (m *AppModel) resizePanels() {
 // anyOtherModalUp reports whether any modal OTHER than the question modal is
 // active. Used to gate auto-show / Ctrl-Q reopen.
 func anyOtherModalUp(m *AppModel) bool {
-	return m.showError || m.showConfirm || m.showHelp || m.showPalette || m.showUsage || m.showTree
+	return m.showError || m.showConfirm || m.showHelp || m.showUsage || m.showTree
 }
 
 // queuedUserCount returns the number of human-typed prompts currently pending
@@ -3013,18 +3055,19 @@ func (m *AppModel) isBusy() bool {
 // modal is up. Used by the ToggleTreeMsg open gate so the tree modal cannot
 // pre-empt a higher-priority overlay (QUM-733 5b).
 func anyOtherModalUpExceptTree(m *AppModel) bool {
-	return m.showError || m.showConfirm || m.showHelp || m.showPalette || m.showQuestion || m.showUsage
+	return m.showError || m.showConfirm || m.showHelp || m.showQuestion || m.showUsage
 }
 
-// anyModalUp reports whether ANY modal is currently visible. The four input-
-// gating sites in Update() (mouse handler, paste handler, input-panel
-// history-arrow handler, OpenPaletteMsg handler) call !m.anyModalUp() so a
-// modal always owns input. Convention: when adding a new modal flag, extend
-// this helper — that's it — and all gates Just Work. Distinct from
+// anyModalUp reports whether ANY modal is currently visible. The input-gating
+// sites in Update() (mouse handler, paste handler, input-panel history-arrow
+// handler) call !m.anyModalUp() so a modal always owns input. Convention: when
+// adding a new modal flag, extend this helper — that's it — and all gates Just
+// Work. The command popover (QUM-864) is deliberately NOT a modal: it composites
+// like the treeHud and must not gate scroll/mouse/typing. Distinct from
 // anyOtherModalUp, which deliberately excludes showQuestion for the
 // question-auto-show / Ctrl-Q-reopen gates.
 func (m *AppModel) anyModalUp() bool {
-	return m.showHelp || m.showConfirm || m.showError || m.showPalette || m.showQuestion || m.showUsage || m.showTree
+	return m.showHelp || m.showConfirm || m.showError || m.showQuestion || m.showUsage || m.showTree
 }
 
 // agentFromHead returns pq.Req.From if pq is non-nil, else "".
@@ -3063,12 +3106,35 @@ func (m AppModel) delegateKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// QUM-448: re-propagate panel sizes if this keystroke grew (or
 	// shrank) the textarea. See PasteMsg branch for the same pattern.
 	prevInputH := m.inputBoxHeight()
+	prevValue := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	if m.ready && !m.tooSmall && m.inputBoxHeight() != prevInputH {
 		m.resizePanels()
 	}
+	m.refreshPopoverAfterInput(prevValue)
 	return m, cmd
+}
+
+// refreshPopoverAfterInput maintains popover state when the input text changed
+// (via a keystroke or a paste). It resets the highlight to the top (the filtered
+// list shifted) and re-arms the Esc-dismiss latch once the text stops being a
+// `/`-token candidate, so a fresh `/` re-shows. QUM-864.
+func (m *AppModel) refreshPopoverAfterInput(prevValue string) {
+	if m.input.Value() == prevValue {
+		return
+	}
+	m.cmdPopover.highlight = 0
+	if !popoverCandidate(m.input.Value()) {
+		m.cmdPopover.escDismissed = false
+	}
+}
+
+// popoverCandidate reports whether text is still a `/`-prefixed, whitespace-free
+// token — i.e. the token the popover keys on, independent of whether any command
+// matches. Used to decide when to re-arm the Esc-dismiss latch.
+func popoverCandidate(text string) bool {
+	return strings.HasPrefix(text, "/") && !strings.ContainsAny(text, " \t")
 }
 
 func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
@@ -3104,6 +3170,97 @@ func tickAgentsCmd(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 // sendMsgCmd wraps a plain tea.Msg value as a tea.Cmd for use with tea.Batch.
 func sendMsgCmd(msg tea.Msg) tea.Cmd {
 	return func() tea.Msg { return msg }
+}
+
+// routeSlashCommand maps a submitted line to the local dispatch a registered
+// slash command triggers. It returns (cmd, true) when the leading token is a
+// registered command and (nil, false) otherwise (the caller then passes the
+// text through to Claude). Every registered command MUST return ok=true —
+// including a new KindUI Action via the default arm — so nothing silently leaks
+// to Claude (QUM-863 footgun guard; see TestRouteSlashCommand_CoversEveryRegisteredCommand).
+// Args-taking commands resolve their args here (QUM-864, post-palette):
+// /switch fuzzy-matches an agent name, /attach parses paths; a bare/unresolvable
+// invocation surfaces a usage toast rather than leaking. (QUM-863 / QUM-864)
+func (m *AppModel) routeSlashCommand(text string) (tea.Cmd, bool) {
+	cmd, args, ok := commands.Match(text)
+	if !ok {
+		return nil, false
+	}
+	switch cmd.Kind {
+	case commands.KindUI:
+		switch cmd.Action {
+		case commands.ActionQuit:
+			return sendMsgCmd(PaletteQuitMsg{}), true
+		case commands.ActionToggleHelp:
+			return sendMsgCmd(ToggleHelpMsg{}), true
+		case commands.ActionShowUsage:
+			return sendMsgCmd(ShowUsageMsg{}), true
+		case commands.ActionToggleTree:
+			return sendMsgCmd(ToggleTreeMsg{}), true
+		default:
+			// Unmapped KindUI Action: consume rather than leak to Claude.
+			return nil, true
+		}
+	case commands.KindPromptInjection:
+		return sendMsgCmd(InjectPromptMsg{Template: cmd.PromptTemplate}), true
+	case commands.KindAttach:
+		if paths, prompt := attach.ParseArgs(args); len(paths) > 0 {
+			return sendMsgCmd(AttachMsg{Paths: paths, Prompt: prompt}), true
+		}
+		return usageToastCmd(`usage: /attach <path...> "prompt"`), true
+	case commands.KindAgentSwitch:
+		if args == "" {
+			return usageToastCmd("usage: /switch <agent name>"), true
+		}
+		matches := commands.FuzzyMatchAgents(args, m.agentNames())
+		if len(matches) == 0 {
+			return usageToastCmd(fmt.Sprintf("no agent matches %q", args)), true
+		}
+		return sendMsgCmd(AgentSelectedMsg{Name: pickAgentMatch(args, matches)}), true
+	}
+	return nil, true
+}
+
+// pickAgentMatch prefers an exact (case-insensitive) name match, else the first
+// fuzzy match (FuzzyMatchAgents preserves input order, so this is deterministic).
+func pickAgentMatch(query string, matches []string) string {
+	for _, n := range matches {
+		if strings.EqualFold(n, query) {
+			return n
+		}
+	}
+	return matches[0]
+}
+
+// usageToastCmd emits a transient warning toast for an unresolvable slash
+// command, consuming the input instead of leaking it to Claude (QUM-864).
+func usageToastCmd(text string) tea.Cmd {
+	return sendMsgCmd(ToastSpawnMsg{Toast: Toast{
+		Text:      text,
+		Style:     ToastWarning,
+		DismissOn: TimerDismiss(4 * time.Second),
+	}})
+}
+
+// dispatchPopoverSelection handles Enter on the highlighted popover command
+// (QUM-864). Arg-taking commands are inserted as "<command> " for the user to
+// complete (no submit); no-arg commands fire immediately via routeSlashCommand.
+func (m *AppModel) dispatchPopoverSelection() tea.Cmd {
+	cmd, ok := m.cmdPopover.selected(m.input.Value())
+	if !ok {
+		return nil
+	}
+	if cmd.TakesArgs {
+		m.input.SetValue(cmd.Name + " ")
+		m.input.CursorEnd()
+		m.cmdPopover.highlight = 0
+		return nil
+	}
+	m.input.SetValue("")
+	m.cmdPopover.escDismissed = false
+	m.cmdPopover.highlight = 0
+	routed, _ := m.routeSlashCommand(cmd.Name)
+	return routed
 }
 
 // peekAndDrainCmd reads weave's harness queue and, if non-empty, returns an

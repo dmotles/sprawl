@@ -23,7 +23,7 @@ type ShortHelpState struct {
 	TurnState   TurnState
 	InputEmpty  bool
 	HasQueued   bool
-	PaletteOpen bool
+	PopoverOpen bool
 }
 
 // shortHelpBindings returns the bindings to render for the given state. The
@@ -34,10 +34,10 @@ func shortHelpBindings(s ShortHelpState) []shortBinding {
 	bindings := make([]shortBinding, 0, 5)
 
 	switch {
-	case s.PaletteOpen:
-		// Palette-open is exclusive: only palette navigation bindings show.
+	case s.PopoverOpen:
+		// Popover-open is exclusive: only popover navigation bindings show.
 		bindings = append(bindings,
-			shortBinding{Key: "↑↓/tab", Hint: "navigate"},
+			shortBinding{Key: "↑↓", Hint: "navigate"},
 			shortBinding{Key: "enter", Hint: "run"},
 			shortBinding{Key: "esc", Hint: "close"},
 		)

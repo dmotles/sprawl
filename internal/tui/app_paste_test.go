@@ -54,25 +54,6 @@ func TestAppModel_PasteMsg_MultilineInsertedVerbatim(t *testing.T) {
 	}
 }
 
-func TestAppModel_PasteMsg_IgnoredWhenPaletteOpen(t *testing.T) {
-	m := newTestAppModel(t)
-	m.showPalette = true
-	prior := m.input.Value()
-
-	updated, cmd := m.Update(tea.PasteMsg{Content: "hello\nworld"})
-	app, ok := updated.(AppModel)
-	if !ok {
-		t.Fatalf("Update returned %T, want AppModel", updated)
-	}
-
-	if app.input.Value() != prior {
-		t.Errorf("input.Value() = %q, want unchanged %q (palette open)", app.input.Value(), prior)
-	}
-	if cmd != nil {
-		t.Errorf("paste with palette open should return nil cmd, got non-nil")
-	}
-}
-
 func TestAppModel_PasteMsg_IgnoredWhenObservingChildAgent(t *testing.T) {
 	m := newTestAppModel(t)
 	m.observedAgent = "some-child"

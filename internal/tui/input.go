@@ -122,12 +122,9 @@ func (m InputModel) Update(msg tea.Msg) (InputModel, tea.Cmd) {
 		if m.disabled {
 			return m, nil
 		}
-		// Intercept `/` as the very first character of an empty input: open
-		// the command palette rather than inserting the literal slash. `/`
-		// mid-text falls through and is inserted by textarea normally.
-		if keyMsg.Code == '/' && m.ta.Value() == "" {
-			return m, func() tea.Msg { return OpenPaletteMsg{} }
-		}
+		// QUM-864: `/` is inserted literally into the textarea. The inline
+		// command popover (owned by AppModel) appears purely from the resulting
+		// text — there is no longer a `/`-opens-palette keystroke intercept.
 
 		isPlainEnter := keyMsg.Code == tea.KeyEnter && keyMsg.Mod == 0
 		// QUM-571: Alt+Enter and Ctrl+J are explicit newline-insert keys —

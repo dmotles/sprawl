@@ -4,7 +4,11 @@
 // template sent through the bridge to Claude, e.g. /handoff).
 package commands
 
-import "strings"
+import (
+	"sort"
+	"strings"
+	"unicode"
+)
 
 // Kind categorizes how the palette dispatches a command.
 type Kind int
@@ -49,6 +53,10 @@ type Command struct {
 	Kind           Kind
 	Action         Action // for KindUI
 	PromptTemplate string // for KindPromptInjection
+	// TakesArgs reports whether the command accepts a trailing argument line
+	// (e.g. /switch <name>, /attach <path...> "prompt"). Submit-time routing
+	// and the slice-B popover consult this; v1 is a binary flag (QUM-863).
+	TakesArgs bool
 }
 
 // registry holds the stable, ordered list of known commands. Order matters
@@ -88,11 +96,13 @@ var registry = []Command{
 		Name:        "/switch",
 		Description: "Switch observed agent (fuzzy match on name)",
 		Kind:        KindAgentSwitch,
+		TakesArgs:   true,
 	},
 	{
 		Name:        "/attach",
 		Description: "Attach local image(s) to a turn: <path...> \"prompt\"",
 		Kind:        KindAttach,
+		TakesArgs:   true,
 	},
 }
 
@@ -135,6 +145,40 @@ func All() []Command {
 	return out
 }
 
+// AllSorted returns a copy of the registry sorted alphabetically by Name.
+// Slice B (the popover) renders in alphabetical order; All() preserves
+// registration order for the current palette (QUM-863).
+func AllSorted() []Command {
+	out := All()
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// Match parses the leading whitespace-delimited token of input and, if it
+// exactly matches a registered command name (case-insensitively), returns that
+// command and the trimmed remainder as its args. Matching is exact on the token
+// — not prefix or fuzzy — so an unregistered leading-slash prompt (e.g.
+// "/etc/hosts is broken") returns ok=false and is passed through to Claude
+// unchanged. (QUM-863)
+func Match(input string) (cmd Command, args string, ok bool) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return Command{}, "", false
+	}
+	token := trimmed
+	rest := ""
+	if i := strings.IndexFunc(trimmed, unicode.IsSpace); i >= 0 {
+		token = trimmed[:i]
+		rest = strings.TrimSpace(trimmed[i:])
+	}
+	for _, c := range registry {
+		if strings.EqualFold(c.Name, token) {
+			return c, rest, true
+		}
+	}
+	return Command{}, "", false
+}
+
 // Filter returns commands whose name (without leading slash) starts with the
 // given prefix, case-insensitively. Empty prefix returns All(). Stable order.
 func Filter(prefix string) []Command {
@@ -149,5 +193,13 @@ func Filter(prefix string) []Command {
 			out = append(out, c)
 		}
 	}
+	return out
+}
+
+// FilterSorted is Filter with the result sorted alphabetically by Name. The
+// inline command popover (QUM-864) renders matches in alphabetical order.
+func FilterSorted(prefix string) []Command {
+	out := Filter(prefix)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }

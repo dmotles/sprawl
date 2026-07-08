@@ -236,7 +236,7 @@ func TestInput_HistoryArrow_BlockedByEachModal(t *testing.T) {
 		{"showHelp", func(a *AppModel) { a.showHelp = true }},
 		{"showConfirm", func(a *AppModel) { a.showConfirm = true }},
 		{"showError", func(a *AppModel) { a.showError = true }},
-		{"showPalette", func(a *AppModel) { a.showPalette = true }},
+		{"showUsage", func(a *AppModel) { a.showUsage = true }},
 		{"showQuestion", func(a *AppModel) { a.showQuestion = true }},
 	}
 	for _, tc := range cases {
@@ -285,7 +285,7 @@ func TestAppModel_anyModalUp(t *testing.T) {
 		{"showHelp", func(a *AppModel) { a.showHelp = true }},
 		{"showConfirm", func(a *AppModel) { a.showConfirm = true }},
 		{"showError", func(a *AppModel) { a.showError = true }},
-		{"showPalette", func(a *AppModel) { a.showPalette = true }},
+		{"showUsage", func(a *AppModel) { a.showUsage = true }},
 		{"showQuestion", func(a *AppModel) { a.showQuestion = true }},
 	}
 	for _, tc := range cases {

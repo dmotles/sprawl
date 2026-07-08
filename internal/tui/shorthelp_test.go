@@ -47,7 +47,7 @@ func TestShortHelpBindings_AlwaysOn(t *testing.T) {
 	states := []ShortHelpState{
 		{TurnState: TurnIdle, InputEmpty: true},
 		{TurnState: TurnStreaming},
-		{PaletteOpen: true},
+		{PopoverOpen: true},
 	}
 	wantSubs := map[string][]string{
 		"F1":     {"help"},
@@ -179,16 +179,16 @@ func TestShortHelpBindings_StreamingPlusQueued(t *testing.T) {
 	}
 }
 
-func TestShortHelpBindings_PaletteOpen(t *testing.T) {
-	b := shortHelpBindings(ShortHelpState{PaletteOpen: true})
+func TestShortHelpBindings_PopoverOpen(t *testing.T) {
+	b := shortHelpBindings(ShortHelpState{PopoverOpen: true})
 	if !containsKey(b, "enter") {
-		t.Errorf("palette-open: expected key %q, got keys=%v", "enter", keysOf(b))
+		t.Errorf("popover-open: expected key %q, got keys=%v", "enter", keysOf(b))
 	}
 	if !containsKey(b, "esc") {
-		t.Fatalf("palette-open: expected key esc, got keys=%v", keysOf(b))
+		t.Fatalf("popover-open: expected key esc, got keys=%v", keysOf(b))
 	}
 	if h := hintFor(b, "esc"); !strings.Contains(h, "close") {
-		t.Errorf("palette-open esc hint=%q, want contains %q", h, "close")
+		t.Errorf("popover-open esc hint=%q, want contains %q", h, "close")
 	}
 }
 
@@ -201,7 +201,7 @@ func TestShortHelpBindings_CountBounded(t *testing.T) {
 		{"input queued", ShortHelpState{HasQueued: true}},
 		{"streaming", ShortHelpState{TurnState: TurnStreaming}},
 		{"thinking", ShortHelpState{TurnState: TurnThinking}},
-		{"palette open", ShortHelpState{PaletteOpen: true}},
+		{"popover open", ShortHelpState{PopoverOpen: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -252,10 +252,10 @@ func TestShortHelpModel_ViewTransitions(t *testing.T) {
 		t.Errorf("idle View() should NOT contain palette 'close' hint, got: %q", idleOut)
 	}
 
-	m.SetState(ShortHelpState{PaletteOpen: true})
+	m.SetState(ShortHelpState{PopoverOpen: true})
 	paletteOut := m.View()
 	if !strings.Contains(paletteOut, "close") {
-		t.Errorf("palette-open View() should contain 'close' hint, got: %q", paletteOut)
+		t.Errorf("popover-open View() should contain 'close' hint, got: %q", paletteOut)
 	}
 	if idleOut == paletteOut {
 		t.Errorf("View() must change when state changes; idle and palette outputs identical")

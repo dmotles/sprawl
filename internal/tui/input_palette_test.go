@@ -6,46 +6,28 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-func TestInputModel_SlashOnEmptyEmitsOpenPaletteMsg(t *testing.T) {
+// QUM-864: the `/`-opens-palette keystroke intercept was removed. `/` is now
+// inserted literally into the textarea; the inline command popover (owned by
+// AppModel) derives purely from the resulting text. InputModel therefore has no
+// palette behaviour left — these tests cover the surviving input concerns.
+
+func TestInputModel_SlashInsertsLiterally(t *testing.T) {
 	m := newTestInputModel(t)
 	_ = m.Focus()
 
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: '/'})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
 	m = updated
 
-	if cmd == nil {
-		t.Fatal("'/' on empty input should return a cmd")
-	}
-	msg := cmd()
-	if _, ok := msg.(OpenPaletteMsg); !ok {
-		t.Fatalf("'/' on empty input returned %T, want OpenPaletteMsg", msg)
-	}
-	// Must not insert `/` into the buffer.
-	if m.ta.Value() != "" {
-		t.Errorf("input value = %q, want empty (palette-trigger '/' should not be inserted)", m.ta.Value())
-	}
-}
-
-func TestInputModel_SlashMidTextInsertsLiterally(t *testing.T) {
-	m := newTestInputModel(t)
-	_ = m.Focus()
-
-	m.ta.SetValue("hello")
-
-	updated, cmd := m.Update(tea.KeyPressMsg{Code: '/'})
-	m = updated
-
-	// No palette should be opened.
+	// '/' must not trigger a submit or any special command — it is a plain
+	// textarea edit now.
 	if cmd != nil {
-		if _, ok := cmd().(OpenPaletteMsg); ok {
-			t.Error("'/' mid-text must not emit OpenPaletteMsg")
+		if _, ok := cmd().(SubmitMsg); ok {
+			t.Error("'/' must not submit")
 		}
 	}
-	// The underlying textinput receives the '/' and appends it. We don't
-	// assert the exact resulting value here because textinput.Update may not
-	// process test KeyPressMsg for printable chars in headless mode. What
-	// matters is the absence of OpenPaletteMsg.
-	_ = m
+	if m.ta.Value() != "/" {
+		t.Errorf("input value = %q, want %q ('/' inserted literally)", m.ta.Value(), "/")
+	}
 }
 
 func TestInputModel_SlashWhileDisabledIsSwallowed(t *testing.T) {
@@ -53,11 +35,13 @@ func TestInputModel_SlashWhileDisabledIsSwallowed(t *testing.T) {
 	_ = m.Focus()
 	m.SetDisabled(true)
 
-	_, cmd := m.Update(tea.KeyPressMsg{Code: '/'})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	m = updated
 	if cmd != nil {
-		if _, ok := cmd().(OpenPaletteMsg); ok {
-			t.Error("disabled input must not emit OpenPaletteMsg on '/'")
-		}
+		t.Error("disabled input must not emit a cmd on '/'")
+	}
+	if m.ta.Value() != "" {
+		t.Errorf("disabled input value = %q, want empty (key swallowed)", m.ta.Value())
 	}
 }
 

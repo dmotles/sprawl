@@ -7,6 +7,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+// NOTE (QUM-864): the full-screen command palette was deleted and replaced by
+// the inline popover (see app_cmdpopover_test.go). The palette-specific tests
+// that lived here (OpenPaletteMsg gating, key/Tab routing to the palette,
+// agent-list population) were removed with it. The command-dispatch messages
+// they exercised (PaletteQuitMsg, ToggleHelpMsg, InjectPromptMsg, ShowUsageMsg)
+// survive and are still covered below; the shared readyApp helpers also live
+// here.
+
 func readyApp(t *testing.T) AppModel {
 	t.Helper()
 	m := newTestAppModel(t)
@@ -19,54 +27,6 @@ func readyAppWithBridge(t *testing.T, b SessionBackend) AppModel {
 	m := newTestAppModelWithBridge(t, b)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return updated.(AppModel)
-}
-
-func TestAppModel_OpenPaletteMsg_OpensWhenIdle(t *testing.T) {
-	app := readyApp(t)
-	updated, _ := app.Update(OpenPaletteMsg{})
-	app = updated.(AppModel)
-	if !app.showPalette {
-		t.Error("OpenPaletteMsg should set showPalette=true when idle")
-	}
-	if !app.palette.Visible() {
-		t.Error("palette should be visible after OpenPaletteMsg")
-	}
-}
-
-func TestAppModel_OpenPaletteMsg_GatedWhenInputDisabled(t *testing.T) {
-	app := readyApp(t)
-	app.input.SetDisabled(true)
-	updated, _ := app.Update(OpenPaletteMsg{})
-	app = updated.(AppModel)
-	if app.showPalette {
-		t.Error("OpenPaletteMsg must be no-op when input disabled")
-	}
-}
-
-func TestAppModel_OpenPaletteMsg_GatedWhenConfirmActive(t *testing.T) {
-	app := readyApp(t)
-	// Trigger confirm via Ctrl-C.
-	u, _ := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	app = u.(AppModel)
-	u, _ = app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-	if app.showPalette {
-		t.Error("OpenPaletteMsg must be no-op when showConfirm")
-	}
-}
-
-func TestAppModel_OpenPaletteMsg_GatedWhenHelpActive(t *testing.T) {
-	app := readyApp(t)
-	u, _ := app.Update(tea.KeyPressMsg{Code: tea.KeyF1})
-	app = u.(AppModel)
-	if !app.showHelp {
-		t.Fatal("setup: F1 should open help")
-	}
-	u, _ = app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-	if app.showPalette {
-		t.Error("OpenPaletteMsg must be no-op when showHelp")
-	}
 }
 
 func TestAppModel_PaletteQuitMsg_SetsQuittingAndReturnsQuit(t *testing.T) {
@@ -165,35 +125,7 @@ func TestAppModel_InjectPromptMsg_NoopWhenTurnBusy(t *testing.T) {
 	}
 }
 
-func TestAppModel_SessionRestartingMsg_ForceClosesPalette(t *testing.T) {
-	app := readyApp(t)
-	u, _ := app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-	if !app.showPalette {
-		t.Fatal("setup: palette should be open")
-	}
-	u, _ = app.Update(SessionRestartingMsg{Reason: "handoff"})
-	app = u.(AppModel)
-	if app.showPalette {
-		t.Error("SessionRestartingMsg must force-close the palette")
-	}
-}
-
-func TestAppModel_KeysRouteToPaletteWhenVisible(t *testing.T) {
-	app := readyApp(t)
-	u, _ := app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-
-	// Typing 'h' should go to palette filter, not input or panel cycling.
-	u, _ = app.Update(tea.KeyPressMsg{Code: 'h'})
-	app = u.(AppModel)
-	if app.palette.filter != "h" {
-		t.Errorf("palette filter = %q, want %q — keys should route to palette while visible",
-			app.palette.filter, "h")
-	}
-}
-
-// --- QUM-279: Agent switching via keybindings + /switch ---
+// --- QUM-279: Agent switching via keybindings ---
 
 func appWithAgents(t *testing.T) AppModel {
 	t.Helper()
@@ -264,17 +196,6 @@ func TestAppModel_CtrlN_FiresGloballyFromInputPanel(t *testing.T) {
 	}
 }
 
-func TestAppModel_CtrlN_IgnoredWhenPaletteOpen(t *testing.T) {
-	app := appWithAgents(t)
-	u, _ := app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-	u, _ = app.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
-	app = u.(AppModel)
-	if app.observedAgent != "weave" {
-		t.Errorf("Ctrl+N with palette open: observedAgent = %q, want weave (ignored)", app.observedAgent)
-	}
-}
-
 func TestAppModel_CtrlN_NoopWithOnlyOneAgent(t *testing.T) {
 	app := readyApp(t) // only weave synthesized
 	u, _ := app.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
@@ -291,26 +212,6 @@ func TestAppModel_SwitchAgentMsgSwitchesViaAgentSelected(t *testing.T) {
 	app = u.(AppModel)
 	if app.observedAgent != "finn" {
 		t.Errorf("observedAgent after AgentSelectedMsg{finn} = %q, want finn", app.observedAgent)
-	}
-}
-
-func TestAppModel_OpenPaletteMsg_PopulatesAgentsList(t *testing.T) {
-	app := appWithAgents(t)
-	u, _ := app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-	if !app.showPalette {
-		t.Fatal("setup: palette should be open")
-	}
-	// Palette must know about the current agents so /switch can filter them.
-	got := app.palette.agents
-	want := []string{"weave", "finn", "ghost"}
-	if len(got) != len(want) {
-		t.Fatalf("palette.agents = %v, want %v", got, want)
-	}
-	for i, w := range want {
-		if got[i] != w {
-			t.Errorf("palette.agents[%d] = %q, want %q", i, got[i], w)
-		}
 	}
 }
 
@@ -385,27 +286,5 @@ func TestAppModel_ShowUsageMsg_GatedWhenAnotherModalUp(t *testing.T) {
 	app = u.(AppModel)
 	if app.showUsage {
 		t.Error("ShowUsageMsg must be no-op when another modal (help) is already up")
-	}
-}
-
-// TestAppModel_TabRoutedToPaletteWhenVisible: with the palette open,
-// pressing Tab must reach the palette (which uses it for navigation)
-// instead of being intercepted as panel-cycling. QUM-695 deleted the
-// activePanel cycler; this test now asserts the keystroke is delivered to
-// the palette by observing that the input textarea is unaffected.
-func TestAppModel_TabRoutedToPaletteWhenVisible(t *testing.T) {
-	app := readyApp(t)
-	u, _ := app.Update(OpenPaletteMsg{})
-	app = u.(AppModel)
-
-	priorInput := app.input.Value()
-	u, _ = app.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	app = u.(AppModel)
-	if app.input.Value() != priorInput {
-		t.Errorf("Tab while palette visible should be consumed by palette; input changed from %q to %q",
-			priorInput, app.input.Value())
-	}
-	if !app.showPalette {
-		t.Error("palette should remain open after Tab")
 	}
 }

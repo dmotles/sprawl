@@ -230,6 +230,25 @@ func overlayTopRight(base, panel string, anchorRow int) string {
 	return strings.Join(lines, "\n")
 }
 
+// overlayBottomLeft composites panel onto base, left-anchored at column
+// `indent`, starting at anchorRow. It preserves every base line's visible width
+// and the base segments outside the panel footprint. Panel rows outside the base
+// are clipped. Used for the inline command popover (QUM-864).
+func overlayBottomLeft(base, panel string, anchorRow, indent int) string {
+	if panel == "" {
+		return base
+	}
+	lines := strings.Split(base, "\n")
+	for i, pl := range strings.Split(panel, "\n") {
+		row := anchorRow + i
+		if row < 0 || row >= len(lines) {
+			continue
+		}
+		lines[row] = compositeLeft(lines[row], pl, indent)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // compositeRight overlays box flush against the right edge of line, preserving
 // line's visible width and the left base segment outside the box footprint.
 func compositeRight(line, box string) string {
