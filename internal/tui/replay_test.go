@@ -1332,3 +1332,33 @@ func TestReplay_AutoTriggerPrecedesAssistantOnResume(t *testing.T) {
 		t.Errorf("MessageAutoTrigger at index %d must precede MessageAssistant at index %d (the marker introduces the turn it triggered)", triggerIdx, assistantIdx)
 	}
 }
+
+// TestLoadTranscript_SuppressesCompactSummary proves the giant continuation
+// summary (a type:user record flagged isCompactSummary) is NOT replayed as a
+// user bubble — the first-party compaction banner replaces it (QUM-865). The
+// surrounding real user/assistant turns still render, so this is not a blanket
+// user-suppression.
+func TestLoadTranscript_SuppressesCompactSummary(t *testing.T) {
+	lines := []string{
+		`{"type":"user","message":{"role":"user","content":"before compaction"}}`,
+		`{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation. Here is a summary..."}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"after compaction"}]}}`,
+	}
+	path := writeJSONL(t, lines)
+	entries, err := LoadTranscript(path, ReplayMaxMessages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Content, "This session is being continued") {
+			t.Fatalf("compact summary leaked as a replayed entry: %+v", e)
+		}
+	}
+	// The genuine surrounding turns must survive.
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2 (before + after, summary suppressed); entries=%+v", len(entries), entries)
+	}
+	if entries[0].Content != "before compaction" || entries[1].Content != "after compaction" {
+		t.Errorf("surrounding turns altered: %+v", entries)
+	}
+}

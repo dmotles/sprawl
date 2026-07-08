@@ -231,3 +231,42 @@ func TestSubmitMsg_UICommandRoutesWithoutBridge(t *testing.T) {
 		t.Errorf("SubmitMsg(/help) with no bridge dispatched %T, want ToggleHelpMsg", msg)
 	}
 }
+
+// TestSubmitMsg_CompactRoutesAsPassthrough proves that on a compact-capable
+// backend, submitting /compact (with guidance args) dispatches a PassthroughMsg
+// carrying the verbatim line and does NOT reach claude via SendMessage
+// (QUM-865).
+func TestSubmitMsg_CompactRoutesAsPassthrough(t *testing.T) {
+	bridge := newFakeSessionBackend()
+	bridge.supportsCompact = true
+	app := readyRoutingApp(t, bridge)
+
+	_, cmd := app.Update(SubmitMsg{Text: "/compact focus on the code changes"})
+	msg := routedMsg(t, cmd)
+	pt, ok := msg.(PassthroughMsg)
+	if !ok {
+		t.Fatalf("SubmitMsg(/compact ...) dispatched %T, want PassthroughMsg", msg)
+	}
+	if pt.Text != "/compact focus on the code changes" {
+		t.Errorf("PassthroughMsg.Text = %q, want verbatim line", pt.Text)
+	}
+	if bridge.sendCalls != 0 {
+		t.Errorf("/compact must not route via SendMessage; sendCalls = %d", bridge.sendCalls)
+	}
+}
+
+// TestSubmitMsg_CompactFallsThroughWhenUnsupported proves capability gating: on
+// a backend that does not advertise /compact, the line is NOT specially routed —
+// it falls through to claude as ordinary text (QUM-865 AC6).
+func TestSubmitMsg_CompactFallsThroughWhenUnsupported(t *testing.T) {
+	bridge := newFakeSessionBackend() // supportsCompact defaults false
+	app := readyRoutingApp(t, bridge)
+
+	app.Update(SubmitMsg{Text: "/compact"})
+	if bridge.sendCalls != 1 {
+		t.Fatalf("unsupported /compact must fall through to claude; sendCalls = %d", bridge.sendCalls)
+	}
+	if bridge.lastSent != "/compact" {
+		t.Errorf("lastSent = %q, want %q (verbatim passthrough as text)", bridge.lastSent, "/compact")
+	}
+}

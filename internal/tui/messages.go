@@ -623,6 +623,29 @@ type UserMessageSentMsg struct {
 	UUID        string
 	Text        string
 	Attachments []AttachmentChip
+	// Passthrough marks a backend-builtin passthrough command (e.g. /compact,
+	// QUM-865). The reducer creates NO pending-zone entry for it — the backend
+	// intercepts it locally and never emits an isReplay echo, so an optimistic
+	// entry would never settle and would stick as a phantom "queued" bubble.
+	Passthrough bool
+}
+
+// PassthroughMsg carries a backend-builtin passthrough command line (e.g.
+// /compact) to be forwarded to the backend verbatim via SendPassthrough,
+// without creating a pending-zone entry (QUM-865). Text is the full submitted
+// line including any guidance args.
+type PassthroughMsg struct {
+	Text string
+}
+
+// CompactBoundaryMsg signals that the backend compacted the conversation
+// (protocol system/compact_boundary frame, QUM-865). The reducer renders a
+// first-party banner with the pre→post token counts and the trigger
+// ("manual" | "auto"). Auto-compaction fires with no preceding user submission.
+type CompactBoundaryMsg struct {
+	Trigger    string
+	PreTokens  int
+	PostTokens int
 }
 
 // AttachMsg carries a parsed `/attach` command (file paths + optional prompt)

@@ -29,7 +29,7 @@ func TestPopover_SlashShowsInlineSuggestions(t *testing.T) {
 	if app.input.Value() != "/" {
 		t.Fatalf("input value = %q, want %q ('/' inserted literally, no palette)", app.input.Value(), "/")
 	}
-	if !popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if !app.cmdPopover.visible(app.input.Value()) {
 		t.Fatal("popover should be visible after typing /")
 	}
 	view := app.View().Content
@@ -45,7 +45,7 @@ func TestPopover_LiveFilterAndAutoHide(t *testing.T) {
 	app := readyRoutingApp(t, newFakeSessionBackend())
 	app = typeKey(t, app, '/')
 	app = typeKey(t, app, 'h')
-	if !popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if !app.cmdPopover.visible(app.input.Value()) {
 		t.Fatalf("popover should stay visible on /h (matches help/handoff); value=%q", app.input.Value())
 	}
 	// Filtered contents: /h shows help+handoff but not the non-matching /attach.
@@ -59,13 +59,13 @@ func TestPopover_LiveFilterAndAutoHide(t *testing.T) {
 	// Type chars that match nothing → auto-hide.
 	app = typeKey(t, app, 'z')
 	app = typeKey(t, app, 'z')
-	if popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if app.cmdPopover.visible(app.input.Value()) {
 		t.Errorf("popover should auto-hide when no command matches (%q)", app.input.Value())
 	}
 	// Backspace back to a matching prefix → reappears (pure function of text).
 	app, _ = updateApp(app, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	app, _ = updateApp(app, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	if !popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if !app.cmdPopover.visible(app.input.Value()) {
 		t.Errorf("popover should reappear after backspacing to /h; value=%q", app.input.Value())
 	}
 }
@@ -128,7 +128,7 @@ func TestPopover_EnterArgCommandInsertsWithSpace(t *testing.T) {
 		t.Errorf("inserting /attach must not reach claude; sendCalls=%d", bridge.sendCalls)
 	}
 	// Popover hidden now that the value has a trailing space.
-	if popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if app.cmdPopover.visible(app.input.Value()) {
 		t.Error("popover should hide after inserting arg-command (whitespace)")
 	}
 }
@@ -137,7 +137,7 @@ func TestPopover_NotAModal_ScrollPassesThrough(t *testing.T) {
 	// The popover must NOT gate scroll/mouse like the full-screen palette did.
 	app := readyRoutingApp(t, newFakeSessionBackend())
 	app = typeKey(t, app, '/')
-	if !popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if !app.cmdPopover.visible(app.input.Value()) {
 		t.Fatal("popover should be visible after /")
 	}
 	if app.anyModalUp() {
@@ -170,14 +170,14 @@ func TestPopover_EscThenFreshEntryReappears(t *testing.T) {
 	app = typeKey(t, app, '/')
 	app = typeKey(t, app, 'h')
 	app, _ = updateApp(app, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if app.cmdPopover.visible(app.input.Value()) {
 		t.Fatal("popover should be dismissed after Esc")
 	}
 	// Abandon the entry (backspace to empty), then a fresh / re-shows.
 	app, _ = updateApp(app, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	app, _ = updateApp(app, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	app = typeKey(t, app, '/')
-	if !popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if !app.cmdPopover.visible(app.input.Value()) {
 		t.Errorf("a fresh / after clearing the entry should re-show the popover; value=%q dismissed=%v", app.input.Value(), app.cmdPopover.escDismissed)
 	}
 }
@@ -191,12 +191,12 @@ func TestPopover_EscDismissesKeepsText(t *testing.T) {
 	if app.input.Value() != "/h" {
 		t.Errorf("Esc should preserve typed text; got %q, want /h", app.input.Value())
 	}
-	if popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if app.cmdPopover.visible(app.input.Value()) {
 		t.Error("popover should be hidden after Esc")
 	}
 	// Typing more of the same token stays dismissed (Esc is for this entry).
 	app = typeKey(t, app, 'e')
-	if popoverVisible(app.input.Value(), app.cmdPopover.escDismissed) {
+	if app.cmdPopover.visible(app.input.Value()) {
 		t.Error("popover should stay dismissed while extending the same /-token after Esc")
 	}
 }
@@ -233,11 +233,45 @@ func TestPopover_SessionRestartClearsEscDismissed(t *testing.T) {
 // TestRouteSlashCommand_CoversEveryRegisteredCommand is the QUM-863 footgun
 // guard: every registered command MUST be intercepted by routeSlashCommand so
 // none can silently leak to claude as a raw prompt (esp. a new KindUI Action).
+// The backend is made compact-capable so capability-gated commands (/compact)
+// are covered under the "capability available" assumption (QUM-865).
 func TestRouteSlashCommand_CoversEveryRegisteredCommand(t *testing.T) {
-	app := readyRoutingApp(t, newFakeSessionBackend())
+	bridge := newFakeSessionBackend()
+	bridge.supportsCompact = true
+	app := readyRoutingApp(t, bridge)
 	for _, c := range commands.All() {
 		if _, ok := app.routeSlashCommand(c.Name); !ok {
 			t.Errorf("routeSlashCommand(%q) ok=false; command would leak to claude", c.Name)
 		}
+	}
+}
+
+// TestPopover_GatesCompactByCapability proves /compact is offered in the popover
+// only when the backend advertises it (QUM-865 AC6). CapNone commands are shown
+// regardless.
+func TestPopover_GatesCompactByCapability(t *testing.T) {
+	hasCompact := func(app AppModel) bool {
+		for _, c := range app.cmdPopover.matches("/comp") {
+			if c.Name == "/compact" {
+				return true
+			}
+		}
+		return false
+	}
+
+	capable := newFakeSessionBackend()
+	capable.supportsCompact = true
+	if !hasCompact(readyRoutingApp(t, capable)) {
+		t.Error("compact-capable backend must offer /compact in the popover")
+	}
+
+	incapable := newFakeSessionBackend() // supportsCompact defaults false
+	if hasCompact(readyRoutingApp(t, incapable)) {
+		t.Error("non-capable backend must NOT offer /compact in the popover")
+	}
+	// A CapNone command is always offered.
+	app := readyRoutingApp(t, incapable)
+	if len(app.cmdPopover.matches("/help")) == 0 {
+		t.Error("CapNone command /help must be offered regardless of capability")
 	}
 }

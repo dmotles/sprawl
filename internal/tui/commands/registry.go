@@ -27,6 +27,26 @@ const (
 	// optional quoted prompt) and dispatch an AttachMsg on Enter. Handled by
 	// the palette in a dedicated attach-argument mode (QUM-860).
 	KindAttach
+	// KindPassthrough commands route the full submitted line to the backend
+	// verbatim instead of being handled locally — they are backend builtins
+	// (e.g. Claude Code's /compact). The backend intercepts them locally and
+	// does NOT emit an isReplay echo, so submit-time routing must NOT create an
+	// ack-waiting pending-zone entry for them (else it sticks as a phantom
+	// "queued" bubble). The class is trivially extensible to other builtins
+	// (/clear, /help) but only /compact is registered today (QUM-865).
+	KindPassthrough
+)
+
+// Capability tags a command that is only available when the active backend
+// advertises the corresponding feature. CapNone (the zero value) means the
+// command is always available (QUM-865).
+type Capability int
+
+const (
+	// CapNone commands are ungated — always registered, offered, and routed.
+	CapNone Capability = iota
+	// CapCompact commands require the backend's SupportsCompactCommand feature.
+	CapCompact
 )
 
 // Action enumerates the UI-level actions a KindUI command can trigger.
@@ -57,6 +77,9 @@ type Command struct {
 	// (e.g. /switch <name>, /attach <path...> "prompt"). Submit-time routing
 	// and the slice-B popover consult this; v1 is a binary flag (QUM-863).
 	TakesArgs bool
+	// Capability gates the command behind a backend feature. CapNone (zero
+	// value) is always available (QUM-865).
+	Capability Capability
 }
 
 // registry holds the stable, ordered list of known commands. Order matters
@@ -104,6 +127,49 @@ var registry = []Command{
 		Kind:        KindAttach,
 		TakesArgs:   true,
 	},
+	{
+		Name:        "/compact",
+		Description: "Compact the conversation to reclaim context (optional guidance)",
+		Kind:        KindPassthrough,
+		TakesArgs:   true,
+		Capability:  CapCompact,
+	},
+}
+
+// enabledCommand reports whether a command is available given the capability
+// predicate. CapNone is always available; a capability-tagged command requires
+// a non-nil predicate that returns true for its capability (QUM-865).
+func enabledCommand(c Command, enabled func(Capability) bool) bool {
+	if c.Capability == CapNone {
+		return true
+	}
+	return enabled != nil && enabled(c.Capability)
+}
+
+// MatchEnabled is Match gated by a backend-capability predicate: a
+// capability-tagged command matches only when enabled reports its capability
+// available. When it does not, ok=false so the caller passes the line through
+// to the backend as ordinary text (QUM-865). CapNone commands match exactly as
+// Match does, regardless of the predicate (which may be nil).
+func MatchEnabled(input string, enabled func(Capability) bool) (cmd Command, args string, ok bool) {
+	cmd, args, ok = Match(input)
+	if !ok || !enabledCommand(cmd, enabled) {
+		return Command{}, "", false
+	}
+	return cmd, args, true
+}
+
+// FilterSortedEnabled is FilterSorted with capability-gated commands dropped
+// unless enabled reports their capability available (QUM-865).
+func FilterSortedEnabled(prefix string, enabled func(Capability) bool) []Command {
+	all := FilterSorted(prefix)
+	out := all[:0]
+	for _, c := range all {
+		if enabledCommand(c, enabled) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // FuzzyMatchAgents returns names where the lowercase query appears as a

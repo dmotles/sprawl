@@ -45,6 +45,90 @@ type TaskNotification struct {
 	Summary string `json:"summary"`
 }
 
+// CompactBoundary is a context-compaction boundary frame (type=system,
+// subtype=compact_boundary) emitted by Claude Code when the conversation is
+// compacted — either manually (via the /compact builtin) or automatically when
+// the context window fills. CompactMetadata carries the pre/post token counts
+// and the trigger the TUI banner renders (QUM-865).
+//
+// Wire-shape note: the live CLI (verified 2.1.198) emits snake_case
+// (`compact_metadata` / `pre_tokens` / `post_tokens` / `duration_ms`); the
+// QUM-865 grounded findings documented camelCase (`compactMetadata` /
+// `preTokens` / ...). To be robust across CLI versions the custom unmarshalers
+// below accept BOTH spellings.
+type CompactBoundary struct {
+	Type            string
+	Subtype         string
+	Content         string
+	CompactMetadata CompactMetadata
+}
+
+// UnmarshalJSON accepts both the snake_case (`compact_metadata`) and camelCase
+// (`compactMetadata`) forms of the metadata key.
+func (c *CompactBoundary) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		Type      string          `json:"type"`
+		Subtype   string          `json:"subtype"`
+		Content   string          `json:"content"`
+		MetaSnake json.RawMessage `json:"compact_metadata"`
+		MetaCamel json.RawMessage `json:"compactMetadata"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	c.Type = aux.Type
+	c.Subtype = aux.Subtype
+	c.Content = aux.Content
+	meta := aux.MetaSnake
+	if len(meta) == 0 {
+		meta = aux.MetaCamel
+	}
+	if len(meta) > 0 {
+		return json.Unmarshal(meta, &c.CompactMetadata)
+	}
+	return nil
+}
+
+// CompactMetadata is the metadata payload of a CompactBoundary frame.
+type CompactMetadata struct {
+	Trigger    string // "manual" | "auto"
+	PreTokens  int
+	PostTokens int
+	DurationMs int
+}
+
+// UnmarshalJSON accepts both snake_case (live CLI 2.1.x) and camelCase
+// (QUM-865-documented) field spellings for the token/duration fields.
+func (m *CompactMetadata) UnmarshalJSON(data []byte) error {
+	var aux struct {
+		Trigger   string `json:"trigger"`
+		PreSnake  *int   `json:"pre_tokens"`
+		PostSnake *int   `json:"post_tokens"`
+		DurSnake  *int   `json:"duration_ms"`
+		PreCamel  *int   `json:"preTokens"`
+		PostCamel *int   `json:"postTokens"`
+		DurCamel  *int   `json:"durationMs"`
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	m.Trigger = aux.Trigger
+	m.PreTokens = firstNonNilInt(aux.PreSnake, aux.PreCamel)
+	m.PostTokens = firstNonNilInt(aux.PostSnake, aux.PostCamel)
+	m.DurationMs = firstNonNilInt(aux.DurSnake, aux.DurCamel)
+	return nil
+}
+
+// firstNonNilInt returns the first non-nil int pointer's value, else 0.
+func firstNonNilInt(ptrs ...*int) int {
+	for _, p := range ptrs {
+		if p != nil {
+			return *p
+		}
+	}
+	return 0
+}
+
 // AssistantMessage contains a complete assistant turn (type=assistant).
 // The Content field holds the Anthropic API message object as raw JSON.
 type AssistantMessage struct {

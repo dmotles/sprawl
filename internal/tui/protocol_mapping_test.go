@@ -815,3 +815,80 @@ func TestMapAssistantMessage_UsageAlongsideContent(t *testing.T) {
 		t.Error("expected SessionUsageMsg in batch")
 	}
 }
+
+// protoMsgFromRaw builds a protocol.Message with Raw populated, matching the
+// shape MapProtocolMessage consumes off the wire.
+func protoMsgFromRaw(t *testing.T, raw string) *protocol.Message {
+	t.Helper()
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	msg.Raw = json.RawMessage(raw)
+	return &msg
+}
+
+// TestMapProtocolMessage_CompactBoundaryManual proves a manual compaction
+// boundary frame maps to a first-party CompactBoundaryMsg carrying the token
+// counts and trigger the banner renders (QUM-865).
+func TestMapProtocolMessage_CompactBoundaryManual(t *testing.T) {
+	raw := `{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"manual","preTokens":236255,"postTokens":8955,"durationMs":152556}}`
+	result := MapProtocolMessage(protoMsgFromRaw(t, raw))
+	cb, ok := result.(CompactBoundaryMsg)
+	if !ok {
+		t.Fatalf("MapProtocolMessage returned %T, want CompactBoundaryMsg", result)
+	}
+	if cb.Trigger != "manual" {
+		t.Errorf("Trigger = %q, want manual", cb.Trigger)
+	}
+	if cb.PreTokens != 236255 || cb.PostTokens != 8955 {
+		t.Errorf("tokens = %d->%d, want 236255->8955", cb.PreTokens, cb.PostTokens)
+	}
+}
+
+// TestMapProtocolMessage_CompactBoundarySnakeCase covers the ACTUAL live CLI
+// wire shape (snake_case compact_metadata / pre_tokens / post_tokens), verified
+// against Claude Code 2.1.198 — the token counts must reach the banner (QUM-865).
+func TestMapProtocolMessage_CompactBoundarySnakeCase(t *testing.T) {
+	raw := `{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":28892,"post_tokens":2038,"duration_ms":32344}}`
+	result := MapProtocolMessage(protoMsgFromRaw(t, raw))
+	cb, ok := result.(CompactBoundaryMsg)
+	if !ok {
+		t.Fatalf("MapProtocolMessage returned %T, want CompactBoundaryMsg", result)
+	}
+	if cb.Trigger != "manual" {
+		t.Errorf("Trigger = %q, want manual", cb.Trigger)
+	}
+	if cb.PreTokens != 28892 || cb.PostTokens != 2038 {
+		t.Errorf("tokens = %d->%d, want 28892->2038 (snake_case must parse)", cb.PreTokens, cb.PostTokens)
+	}
+}
+
+// TestMapProtocolMessage_CompactBoundaryAuto covers auto-compaction, which
+// fires with no preceding user submission (QUM-865).
+func TestMapProtocolMessage_CompactBoundaryAuto(t *testing.T) {
+	raw := `{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":180000,"postTokens":12000}}`
+	result := MapProtocolMessage(protoMsgFromRaw(t, raw))
+	cb, ok := result.(CompactBoundaryMsg)
+	if !ok {
+		t.Fatalf("MapProtocolMessage returned %T, want CompactBoundaryMsg", result)
+	}
+	if cb.Trigger != "auto" {
+		t.Errorf("Trigger = %q, want auto", cb.Trigger)
+	}
+}
+
+// TestMapProtocolMessage_CompactBoundaryNoMetadata proves a boundary frame with
+// absent/partial compactMetadata still maps to a CompactBoundaryMsg (zero-value
+// tokens, empty trigger) rather than nil or a panic (QUM-865 robustness).
+func TestMapProtocolMessage_CompactBoundaryNoMetadata(t *testing.T) {
+	raw := `{"type":"system","subtype":"compact_boundary","content":"Conversation compacted"}`
+	result := MapProtocolMessage(protoMsgFromRaw(t, raw))
+	cb, ok := result.(CompactBoundaryMsg)
+	if !ok {
+		t.Fatalf("MapProtocolMessage returned %T, want CompactBoundaryMsg", result)
+	}
+	if cb.Trigger != "" || cb.PreTokens != 0 || cb.PostTokens != 0 {
+		t.Errorf("missing-metadata boundary = %+v, want zero-value fields", cb)
+	}
+}

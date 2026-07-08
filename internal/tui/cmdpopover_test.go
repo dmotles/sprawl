@@ -24,7 +24,7 @@ func TestPopoverVisible(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := popoverVisible(tt.text, tt.escDismissed); got != tt.want {
+			if got := (cmdPopover{escDismissed: tt.escDismissed}).visible(tt.text); got != tt.want {
 				t.Errorf("popoverVisible(%q, %v) = %v, want %v", tt.text, tt.escDismissed, got, tt.want)
 			}
 		})
@@ -33,7 +33,7 @@ func TestPopoverVisible(t *testing.T) {
 
 func TestPopoverMatches_AlphabeticalAndFiltered(t *testing.T) {
 	// Bare slash → all commands, alphabetical.
-	all := popoverMatches("/")
+	all := (cmdPopover{}).matches("/")
 	if len(all) == 0 {
 		t.Fatal("popoverMatches(/) returned no commands")
 	}
@@ -51,7 +51,7 @@ func TestPopoverMatches_AlphabeticalAndFiltered(t *testing.T) {
 		}
 	}
 	// Prefix filter.
-	h := popoverMatches("/h")
+	h := (cmdPopover{}).matches("/h")
 	for _, c := range h {
 		if !strings.HasPrefix(c.Name, "/h") {
 			t.Errorf("popoverMatches(/h) returned %q not prefixed /h", c.Name)
@@ -83,7 +83,7 @@ func TestPopoverMove_WrapsHighlight(t *testing.T) {
 
 func TestPopoverSelected(t *testing.T) {
 	var p cmdPopover
-	matches := popoverMatches("/")
+	matches := (cmdPopover{}).matches("/")
 	p.highlight = 1
 	sel, ok := p.selected("/")
 	if !ok {
@@ -110,7 +110,7 @@ func TestPopoverSelected(t *testing.T) {
 func TestPopoverView_CapsRowsAndKeepsHighlightVisible(t *testing.T) {
 	theme := NewTheme("colour212")
 	p := cmdPopover{theme: &theme, width: 120, highlight: 6}
-	all := popoverMatches("/")
+	all := (cmdPopover{}).matches("/")
 	if len(all) < 5 {
 		t.Skipf("need ≥5 commands for cap test, have %d", len(all))
 	}

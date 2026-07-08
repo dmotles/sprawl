@@ -83,6 +83,7 @@ func TestTakesArgs(t *testing.T) {
 		"/usage":   false,
 		"/switch":  true,
 		"/attach":  true,
+		"/compact": true,
 	}
 	got := make(map[string]bool)
 	for _, c := range All() {
@@ -111,7 +112,7 @@ func TestAllSorted_IsAlphabeticalAndAllUnchanged(t *testing.T) {
 		t.Errorf("AllSorted() names not alphabetical: %v", names)
 	}
 	// All() must remain in registration order (palette depends on it).
-	wantOrder := []string{"/exit", "/help", "/tree", "/handoff", "/usage", "/switch", "/attach"}
+	wantOrder := []string{"/exit", "/help", "/tree", "/handoff", "/usage", "/switch", "/attach", "/compact"}
 	got := All()
 	for i, w := range wantOrder {
 		if got[i].Name != w {

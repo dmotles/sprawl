@@ -586,6 +586,14 @@ func (c *ChatList) AppendAutoTrigger() {
 	c.invalidate()
 }
 
+// AppendCompactBanner appends a finished first-party compaction banner
+// (QUM-865). text is the pre-formatted banner line.
+func (c *ChatList) AppendCompactBanner(text string) {
+	c.dropTrailingThinkingMarker()
+	c.items = append(c.items, &itemEnvelope{item: NewCompactBannerItem(&c.ctx, text)})
+	c.invalidate()
+}
+
 // HasPendingAssistant reports whether the trailing item is an in-flight
 // AssistantTextItem (set on first chunk, cleared on Finalize).
 func (c *ChatList) HasPendingAssistant() bool { return c.streamingAssistant }

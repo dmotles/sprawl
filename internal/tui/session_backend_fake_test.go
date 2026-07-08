@@ -56,6 +56,12 @@ type fakeSessionBackend struct {
 	trackSends bool
 	lastSent   string
 
+	// supportsCompact toggles the optional CompactCapableBackend capability
+	// (QUM-865). passthroughCalls / lastPassthrough record SendPassthrough use.
+	supportsCompact  bool
+	passthroughCalls int
+	lastPassthrough  string
+
 	// queued is the FIFO of pre-staged tea.Msgs returned by WaitForEvent in
 	// order. Tests that don't need event delivery can ignore this entirely;
 	// when the queue is empty WaitForEvent returns the configured
@@ -142,6 +148,36 @@ func (f *fakeSessionBackend) SendMessage(text string) tea.Cmd {
 		}
 		return UserMessageSentMsg{UUID: uuid, Text: text}
 	}
+}
+
+// SendPassthrough forwards a passthrough-command line verbatim, returning a
+// UserMessageSentMsg flagged Passthrough (QUM-865). No pending-zone entry is
+// created by the reducer for a passthrough message.
+func (f *fakeSessionBackend) SendPassthrough(text string) tea.Cmd {
+	f.mu.Lock()
+	f.passthroughCalls++
+	f.lastPassthrough = text
+	err := f.sendErr
+	var uuid string
+	if f.trackSends {
+		f.sendCalls++
+		uuid = fmt.Sprintf("u%d", f.sendCalls)
+	}
+	f.mu.Unlock()
+	return func() tea.Msg {
+		if err != nil {
+			return SessionErrorMsg{Err: err}
+		}
+		return UserMessageSentMsg{UUID: uuid, Text: text, Passthrough: true}
+	}
+}
+
+// SupportsCompact implements the optional CompactCapableBackend capability
+// (QUM-865); default false unless a test opts in.
+func (f *fakeSessionBackend) SupportsCompact() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.supportsCompact
 }
 
 func (f *fakeSessionBackend) SendAttachment(paths []string, prompt string) tea.Cmd {

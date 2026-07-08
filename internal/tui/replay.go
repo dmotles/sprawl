@@ -154,6 +154,14 @@ func scanTranscriptWithSidechain(path string, since time.Time, includeSidechain 
 
 		switch recType {
 		case "user":
+			// QUM-865: the giant context-compaction continuation summary is
+			// recorded as a `type:user` record flagged isCompactSummary. Suppress
+			// it on replay — the first-party compaction banner replaces it. (Live
+			// mapUserMessage never renders it as a bubble; this is the replay/
+			// resync path that re-reads the transcript.)
+			if isCompactSummary, _ := rec["isCompactSummary"].(bool); isCompactSummary {
+				continue
+			}
 			switch c := msg["content"].(type) {
 			case string:
 				if c == "" {

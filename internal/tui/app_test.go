@@ -3339,6 +3339,11 @@ func (c *continuousFakeDelegate) SendMessage(_ string) tea.Cmd {
 	return func() tea.Msg { return nil }
 }
 
+func (c *continuousFakeDelegate) SendPassthrough(_ string) tea.Cmd {
+	c.sendCalls++
+	return func() tea.Msg { return nil }
+}
+
 func (c *continuousFakeDelegate) SendAttachment(_ []string, _ string) tea.Cmd {
 	c.attachCalls++
 	return func() tea.Msg { return nil }

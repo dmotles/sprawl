@@ -141,6 +141,11 @@ func (b *AgentBuffer) AppendAutoTrigger() {
 	b.vp.ChatList().AppendAutoTrigger()
 }
 
+// AppendCompactBanner appends a QUM-865 first-party compaction banner.
+func (b *AgentBuffer) AppendCompactBanner(text string) {
+	b.vp.ChatList().AppendCompactBanner(text)
+}
+
 // SetToolInputsExpanded fans the QUM-335 global expand-all toggle into the
 // ChatList.
 func (b *AgentBuffer) SetToolInputsExpanded(v bool) {
@@ -506,6 +511,8 @@ func NewAppModel(accentColor, repoName, version string, bridge SessionBackend, s
 	_ = app.history.Load()
 	app.updateFocus()
 	app.rebuildTree()
+	// QUM-865: seed the popover's capability flags from the initial bridge.
+	app.syncPopoverCapabilities()
 	return app
 }
 
@@ -633,8 +640,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Every other key falls through to the textarea; the popover is not a
 		// modal, so scroll/mouse/paste are never gated.
 		if !m.anyModalUp() && m.observedAgent == m.rootAgent && !m.input.disabled &&
-			popoverVisible(m.input.Value(), m.cmdPopover.escDismissed) {
-			n := len(popoverMatches(m.input.Value()))
+			m.cmdPopover.visible(m.input.Value()) {
+			n := len(m.cmdPopover.matches(m.input.Value()))
 			switch msg.Code {
 			case tea.KeyUp:
 				m.cmdPopover.move(-1, n)
@@ -1073,6 +1080,40 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.SetTransientLabel("/handoff dispatched — see output below")
 		return m, m.bridge.SendMessage(msg.Template)
 
+	case PassthroughMsg:
+		// QUM-865: forward a backend-builtin passthrough command line verbatim.
+		// SendPassthrough returns a UserMessageSentMsg{Passthrough:true}, whose
+		// reducer creates NO pending-zone entry (no phantom "queued /compact").
+		// The optimistic TurnThinking flip relies on the backend emitting a
+		// terminal turn frame (result / compact_boundary+result) to return to
+		// Idle — verified against Claude Code 2.1.198's /compact, which does. A
+		// hypothetical backend that intercepts a passthrough command with no
+		// terminal frame would strand the spinner; that's a backend contract, not
+		// a bug here.
+		if m.bridge == nil || msg.Text == "" {
+			return m, nil
+		}
+		if m.turnState == TurnIdle {
+			m.setTurnState(TurnThinking)
+		}
+		return m, m.bridge.SendPassthrough(msg.Text)
+
+	case CompactBoundaryMsg:
+		// QUM-865: the backend compacted the conversation. Render a first-party
+		// banner from the token counts + trigger. Do NOT touch the pending zone:
+		// passthrough /compact never creates an entry, and genuine queued
+		// follow-ups must retain their normal echo-settle lifecycle and land
+		// after the boundary. Works identically for trigger "auto" (no preceding
+		// user submission). The isCompactSummary giant bubble is suppressed
+		// elsewhere (mapUserMessage live; scanTranscript on replay).
+		m.rootBuf().AppendCompactBanner(formatCompactBanner(msg.Trigger, msg.PreTokens, msg.PostTokens))
+		// QUM-826: CompactBoundaryMsg is pump-delivered (translated from a
+		// protocol frame) — re-arm WaitForEvent or the pump parks here.
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
+		return m, nil
+
 	case AttachMsg:
 		// QUM-860: dispatch a parsed /attach command. File I/O + validation run
 		// off the UI thread inside SendAttachment's tea.Cmd; a local validation
@@ -1152,6 +1193,17 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case UserMessageSentMsg:
 		m.setTurnState(TurnStreaming)
+		// QUM-865: passthrough commands (e.g. /compact) are intercepted by the
+		// backend locally and never emit an isReplay echo, so we must NOT create
+		// a pending-zone entry — it would never settle and would stick as a
+		// phantom "queued" bubble. Forward-only; no optimistic render. Still
+		// re-arm the pump (QUM-826) so the backend's response renders live.
+		if msg.Passthrough {
+			if m.bridge != nil {
+				return m, m.bridge.WaitForEvent()
+			}
+			return m, nil
+		}
 		// QUM-833: the single eager-create + classify point. Every written frame
 		// becomes a uuid-keyed pending-zone entry — a system-notification frame
 		// peels into N system-styled items; anything else is a user bubble. The
@@ -1633,6 +1685,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.bridge = msg.Bridge
+		// QUM-865: refresh popover capability flags from the new bridge.
+		m.syncPopoverCapabilities()
 		shortID := shortSessionID(m.bridge.SessionID())
 		buf := m.rootBuf()
 		// QUM-675 S5: with status/banner text rerouted out of the viewport,
@@ -2516,7 +2570,7 @@ func (m *AppModel) shortHelpState() ShortHelpState {
 		TurnState:   m.turnState,
 		InputEmpty:  strings.TrimSpace(m.input.Value()) == "",
 		HasQueued:   m.queuedUserCount() > 0,
-		PopoverOpen: popoverVisible(m.input.Value(), m.cmdPopover.escDismissed),
+		PopoverOpen: m.cmdPopover.visible(m.input.Value()),
 	}
 }
 
@@ -2644,7 +2698,7 @@ func (m AppModel) renderView(useCache bool) tea.View {
 	// and only when the input bar is drawn (its anchor). NOT a modal — it sits
 	// below the modal overlays below so any dialog still overrides it.
 	if inputVisible && !m.input.disabled &&
-		popoverVisible(m.input.Value(), m.cmdPopover.escDismissed) {
+		m.cmdPopover.visible(m.input.Value()) {
 		lines := strings.Split(content, "\n")
 		// Input bar top row, counting up from the bottom: status + short-help +
 		// input. The popover sits above the sparkle row and below the header.
@@ -3182,11 +3236,18 @@ func sendMsgCmd(msg tea.Msg) tea.Cmd {
 // /switch fuzzy-matches an agent name, /attach parses paths; a bare/unresolvable
 // invocation surfaces a usage toast rather than leaking. (QUM-863 / QUM-864)
 func (m *AppModel) routeSlashCommand(text string) (tea.Cmd, bool) {
-	cmd, args, ok := commands.Match(text)
+	// QUM-865: capability-gated match. A capability command (e.g. /compact) on a
+	// backend that doesn't advertise it returns ok=false here and falls through
+	// to Claude as ordinary text — never routed as passthrough.
+	cmd, args, ok := commands.MatchEnabled(text, m.commandCapabilityEnabled)
 	if !ok {
 		return nil, false
 	}
 	switch cmd.Kind {
+	case commands.KindPassthrough:
+		// QUM-865: forward the FULL submitted line verbatim (incl. guidance
+		// args), not just args — the backend owns parsing.
+		return sendMsgCmd(PassthroughMsg{Text: text}), true
 	case commands.KindUI:
 		switch cmd.Action {
 		case commands.ActionQuit:
@@ -3230,6 +3291,55 @@ func pickAgentMatch(query string, matches []string) string {
 		}
 	}
 	return matches[0]
+}
+
+// backendSupportsCompact reports whether the active bridge advertises the
+// /compact builtin via the optional CompactCapableBackend capability (QUM-865).
+// A nil bridge or one that doesn't implement the interface returns false.
+func (m *AppModel) backendSupportsCompact() bool {
+	if cc, ok := m.bridge.(CompactCapableBackend); ok {
+		return cc.SupportsCompact()
+	}
+	return false
+}
+
+// commandCapabilityEnabled is the registry capability predicate for the current
+// backend (QUM-865). Only asked about capability-tagged commands (CapNone is
+// handled inside the registry as always-available).
+func (m *AppModel) commandCapabilityEnabled(c commands.Capability) bool {
+	switch c {
+	case commands.CapCompact:
+		return m.backendSupportsCompact()
+	default:
+		return false
+	}
+}
+
+// syncPopoverCapabilities refreshes the popover's cached capability flags from
+// the current bridge (QUM-865). Called at construction and whenever the bridge
+// changes (restart), so the popover offers /compact iff the backend supports it.
+func (m *AppModel) syncPopoverCapabilities() {
+	m.cmdPopover.compactEnabled = m.backendSupportsCompact()
+}
+
+// humanizeTokens renders a token count as a compact "Nk" string (rounded to the
+// nearest thousand) for counts ≥ 1000, else the bare integer (QUM-865).
+func humanizeTokens(n int) string {
+	if n >= 1000 {
+		return fmt.Sprintf("%dk", (n+500)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// formatCompactBanner builds the first-party compaction banner line (QUM-865),
+// e.g. "🗜 context compacted · 236k→9k tok · manual". An empty trigger renders
+// without the trailing trigger segment.
+func formatCompactBanner(trigger string, pre, post int) string {
+	s := fmt.Sprintf("🗜 context compacted · %s→%s tok", humanizeTokens(pre), humanizeTokens(post))
+	if trigger != "" {
+		s += " · " + trigger
+	}
+	return s
 }
 
 // usageToastCmd emits a transient warning toast for an unresolvable slash

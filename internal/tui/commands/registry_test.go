@@ -6,10 +6,10 @@ import (
 
 func TestAll_ReturnsSevenCommandsInStableOrder(t *testing.T) {
 	cmds := All()
-	if len(cmds) != 7 {
-		t.Fatalf("All() len = %d, want 7", len(cmds))
+	if len(cmds) != 8 {
+		t.Fatalf("All() len = %d, want 8", len(cmds))
 	}
-	want := []string{"/exit", "/help", "/tree", "/handoff", "/usage", "/switch", "/attach"}
+	want := []string{"/exit", "/help", "/tree", "/handoff", "/usage", "/switch", "/attach", "/compact"}
 	for i, w := range want {
 		if cmds[i].Name != w {
 			t.Errorf("All()[%d].Name = %q, want %q", i, cmds[i].Name, w)

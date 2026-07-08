@@ -336,6 +336,25 @@ func TestAdapter_StartReturnsSessionThatForwardsLifecycle(t *testing.T) {
 	}
 }
 
+// TestAdapter_AdvertisesCompactCommandCapability locks in that the Claude Code
+// backend advertises the /compact passthrough command via Capabilities so the
+// TUI can gate registration/routing on it (QUM-865).
+func TestAdapter_AdvertisesCompactCommandCapability(t *testing.T) {
+	starter := &mockStarter{transport: &mockManagedTransport{}}
+	adapter := NewAdapter(Config{
+		Path:    "/opt/bin/claude",
+		Starter: starter,
+	})
+
+	session, err := adapter.Start(context.Background(), backendpkg.SessionSpec{SessionID: "sess-1"})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if !session.Capabilities().SupportsCompactCommand {
+		t.Error("Claude adapter must advertise SupportsCompactCommand")
+	}
+}
+
 func TestAdapter_StartResolvesWireLogPath(t *testing.T) {
 	starter := &mockStarter{transport: &mockManagedTransport{}}
 	adapter := NewAdapter(Config{

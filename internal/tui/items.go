@@ -635,5 +635,38 @@ func (i *AutoTriggerItem) RawMarkdown() string {
 }
 
 // ---------------------------------------------------------------------------
+// CompactBannerItem
+// ---------------------------------------------------------------------------
+
+// CompactBannerItem renders the first-party context-compaction banner shown
+// when the backend emits a compact_boundary frame (QUM-865). The text is
+// pre-formatted by the AppModel reducer (e.g. "🗜 context compacted · 236k→9k
+// tok · manual"). Always Finished on creation — the boundary is a settled fact.
+type CompactBannerItem struct {
+	ctx  *itemRenderCtx
+	text string
+}
+
+// NewCompactBannerItem constructs a finished compaction banner item.
+func NewCompactBannerItem(ctx *itemRenderCtx, text string) *CompactBannerItem {
+	return &CompactBannerItem{ctx: ctx, text: text}
+}
+
+// Render produces the single styled banner line.
+func (i *CompactBannerItem) Render(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return i.ctx.theme.SystemText.Render(i.text)
+}
+
+// Finished always returns true.
+func (i *CompactBannerItem) Finished() bool { return true }
+
+// RawMarkdown surfaces the banner text so yanked output reflects what the user
+// saw on screen.
+func (i *CompactBannerItem) RawMarkdown() string { return i.text }
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------

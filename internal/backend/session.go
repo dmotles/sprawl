@@ -115,6 +115,10 @@ type Capabilities struct {
 	SupportsInterrupt  bool
 	SupportsResume     bool
 	SupportsToolBridge bool
+	// SupportsCompactCommand reports whether the backend understands the
+	// /compact builtin slash command (Claude Code). The TUI gates registration,
+	// popover offering, and passthrough routing of /compact on this (QUM-865).
+	SupportsCompactCommand bool
 }
 
 // SessionSpec is the backend-neutral launch/session contract the callers build

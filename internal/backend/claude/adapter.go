@@ -153,9 +153,10 @@ func (a *Adapter) Start(_ context.Context, spec backend.SessionSpec) (backend.Se
 		SessionID: spec.SessionID,
 		Identity:  spec.Identity,
 		Capabilities: backend.Capabilities{
-			SupportsInterrupt:  true,
-			SupportsResume:     true,
-			SupportsToolBridge: true,
+			SupportsInterrupt:      true,
+			SupportsResume:         true,
+			SupportsToolBridge:     true,
+			SupportsCompactCommand: true,
 		},
 		Observer: spec.Observer,
 	}

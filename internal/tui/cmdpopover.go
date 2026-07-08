@@ -29,15 +29,32 @@ type cmdPopover struct {
 	width, height int
 	highlight     int
 	escDismissed  bool
+	// compactEnabled gates the capability-tagged /compact command (QUM-865).
+	// It is a plain bool (not a closure over the AppModel) so it survives the
+	// value-copies bubbletea makes of the model; refreshed whenever the bridge
+	// changes (see AppModel.syncPopoverCapabilities).
+	compactEnabled bool
 }
 
-// popoverVisible reports whether the popover should show for the given input
-// text. It is the single source of truth for visibility: the text must start
-// with '/', still be a single whitespace-free token (once a space is typed the
-// user is entering args, so the popover hides), match ≥1 registered command,
-// and not be Esc-dismissed for the current entry.
-func popoverVisible(text string, escDismissed bool) bool {
-	if escDismissed {
+// capEnabled builds the registry capability predicate from the popover's stored
+// capability flags (QUM-865).
+func (p cmdPopover) capEnabled(c commands.Capability) bool {
+	switch c {
+	case commands.CapCompact:
+		return p.compactEnabled
+	default:
+		return false
+	}
+}
+
+// visible reports whether the popover should show for the given input text. It
+// is the single source of truth for visibility: the text must start with '/',
+// still be a single whitespace-free token (once a space is typed the user is
+// entering args, so the popover hides), match ≥1 registered command available
+// under the current backend capabilities, and not be Esc-dismissed for the
+// current entry.
+func (p cmdPopover) visible(text string) bool {
+	if p.escDismissed {
 		return false
 	}
 	if !strings.HasPrefix(text, "/") {
@@ -46,16 +63,17 @@ func popoverVisible(text string, escDismissed bool) bool {
 	if strings.ContainsAny(text, " \t") {
 		return false
 	}
-	return len(popoverMatches(text)) > 0
+	return len(p.matches(text)) > 0
 }
 
-// popoverMatches returns the alphabetical command matches for the leading
-// `/`-token of text. Returns nil when text is not a `/`-prefixed token.
-func popoverMatches(text string) []commands.Command {
+// matches returns the alphabetical command matches for the leading `/`-token of
+// text, with capability-gated commands filtered out unless their capability is
+// available (QUM-865). Returns nil when text is not a `/`-prefixed token.
+func (p cmdPopover) matches(text string) []commands.Command {
 	if !strings.HasPrefix(text, "/") {
 		return nil
 	}
-	return commands.FilterSorted(strings.TrimPrefix(text, "/"))
+	return commands.FilterSortedEnabled(strings.TrimPrefix(text, "/"), p.capEnabled)
 }
 
 // move adjusts the highlight by delta with wrap-around over n matches.
@@ -71,7 +89,7 @@ func (p *cmdPopover) move(delta, n int) {
 // defensively reset to the top if out of range. Returns ok=false when nothing
 // matches.
 func (p *cmdPopover) selected(text string) (commands.Command, bool) {
-	matches := popoverMatches(text)
+	matches := p.matches(text)
 	if len(matches) == 0 {
 		return commands.Command{}, false
 	}
@@ -89,13 +107,13 @@ func (p *cmdPopover) selected(text string) (commands.Command, bool) {
 // The box lists each matching command (`name  description`) with the
 // highlighted row marked by a `›` cursor, bounded to popoverMaxWidth columns.
 func (p cmdPopover) View(text string, maxRows int) string {
-	if !popoverVisible(text, p.escDismissed) || p.theme == nil {
+	if !p.visible(text) || p.theme == nil {
 		return ""
 	}
 	if maxRows < 0 {
 		return ""
 	}
-	matches := popoverMatches(text)
+	matches := p.matches(text)
 
 	boxWidth := popoverMaxWidth
 	if p.width > 0 && p.width-4 < boxWidth {

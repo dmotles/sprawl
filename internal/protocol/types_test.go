@@ -456,3 +456,68 @@ func TestSystemNotification_Unmarshal(t *testing.T) {
 		t.Errorf("optional fields should be zero: color=%q timeout_ms=%d", minimal.Color, minimal.TimeoutMs)
 	}
 }
+
+// TestCompactBoundary_UnmarshalSnakeCase locks in the ACTUAL live CLI wire shape
+// (verified against Claude Code 2.1.198): snake_case compact_metadata /
+// pre_tokens / post_tokens / duration_ms (QUM-865).
+func TestCompactBoundary_UnmarshalSnakeCase(t *testing.T) {
+	raw := `{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":28892,"post_tokens":2038,"cumulative_dropped_tokens":26854,"duration_ms":32344}}`
+	var cb CompactBoundary
+	if err := json.Unmarshal([]byte(raw), &cb); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cb.Subtype != "compact_boundary" {
+		t.Errorf("Subtype = %q, want compact_boundary", cb.Subtype)
+	}
+	if cb.CompactMetadata.Trigger != "manual" {
+		t.Errorf("Trigger = %q, want manual", cb.CompactMetadata.Trigger)
+	}
+	if cb.CompactMetadata.PreTokens != 28892 || cb.CompactMetadata.PostTokens != 2038 {
+		t.Errorf("tokens = %d->%d, want 28892->2038", cb.CompactMetadata.PreTokens, cb.CompactMetadata.PostTokens)
+	}
+	if cb.CompactMetadata.DurationMs != 32344 {
+		t.Errorf("DurationMs = %d, want 32344", cb.CompactMetadata.DurationMs)
+	}
+}
+
+// TestCompactBoundary_Unmarshal locks in the camelCase wire shape (as documented
+// in the QUM-865 grounded findings). The unmarshaler accepts both spellings so a
+// CLI version emitting either form parses correctly.
+func TestCompactBoundary_Unmarshal(t *testing.T) {
+	raw := `{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"manual","preTokens":236255,"postTokens":8955,"durationMs":152556}}`
+	var cb CompactBoundary
+	if err := json.Unmarshal([]byte(raw), &cb); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cb.Type != "system" || cb.Subtype != "compact_boundary" {
+		t.Errorf("Type/Subtype = %q/%q, want system/compact_boundary", cb.Type, cb.Subtype)
+	}
+	if cb.CompactMetadata.Trigger != "manual" {
+		t.Errorf("Trigger = %q, want manual", cb.CompactMetadata.Trigger)
+	}
+	if cb.CompactMetadata.PreTokens != 236255 {
+		t.Errorf("PreTokens = %d, want 236255", cb.CompactMetadata.PreTokens)
+	}
+	if cb.CompactMetadata.PostTokens != 8955 {
+		t.Errorf("PostTokens = %d, want 8955", cb.CompactMetadata.PostTokens)
+	}
+	if cb.CompactMetadata.DurationMs != 152556 {
+		t.Errorf("DurationMs = %d, want 152556", cb.CompactMetadata.DurationMs)
+	}
+}
+
+// TestCompactBoundary_UnmarshalAuto covers the auto-compaction trigger, which
+// fires with no preceding user submission (QUM-865).
+func TestCompactBoundary_UnmarshalAuto(t *testing.T) {
+	raw := `{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":180000,"postTokens":12000}}`
+	var cb CompactBoundary
+	if err := json.Unmarshal([]byte(raw), &cb); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cb.CompactMetadata.Trigger != "auto" {
+		t.Errorf("Trigger = %q, want auto", cb.CompactMetadata.Trigger)
+	}
+	if cb.CompactMetadata.PreTokens != 180000 || cb.CompactMetadata.PostTokens != 12000 {
+		t.Errorf("tokens = %d->%d, want 180000->12000", cb.CompactMetadata.PreTokens, cb.CompactMetadata.PostTokens)
+	}
+}

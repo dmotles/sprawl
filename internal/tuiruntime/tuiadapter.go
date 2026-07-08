@@ -247,6 +247,36 @@ func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 	}
 }
 
+// SendPassthrough writes a backend-builtin passthrough command line (e.g.
+// /compact) to the CLI stdin verbatim (QUM-817, priority next, kind user) and
+// returns a tui.UserMessageSentMsg flagged Passthrough so the reducer creates
+// no pending-zone entry (QUM-865). The wire write is identical to SendMessage;
+// only the returned msg's Passthrough flag differs.
+func (a *TUIAdapter) SendPassthrough(text string) tea.Cmd {
+	return func() tea.Msg {
+		a.mu.Lock()
+		rt := a.runtime
+		a.mu.Unlock()
+		if rt == nil {
+			return tui.SessionErrorMsg{Err: ErrNoRuntime}
+		}
+		uuid, err := rt.WriteUserPrompt(context.Background(), text, "next")
+		if err != nil {
+			return tui.SessionErrorMsg{Err: err}
+		}
+		return tui.UserMessageSentMsg{UUID: uuid, Text: text, Passthrough: true}
+	}
+}
+
+// SupportsCompact reports whether the active runtime advertises the /compact
+// builtin (QUM-865). Implements tui.CompactCapableBackend.
+func (a *TUIAdapter) SupportsCompact() bool {
+	a.mu.Lock()
+	rt := a.runtime
+	a.mu.Unlock()
+	return rt != nil && rt.Capabilities().SupportsCompactCommand
+}
+
 // SendAttachment validates local image files, assembles an image-before-text
 // multimodal turn (priority next, kind user), and writes it to the CLI stdin
 // (QUM-860). A local validation failure (missing/unreadable/unsupported/too

@@ -56,6 +56,30 @@ func MapProtocolMessage(msg *protocol.Message) tea.Msg {
 			}
 			return nil
 		}
+		// QUM-865: system/compact_boundary marks a context-compaction event
+		// (manual /compact or automatic). Map it to a first-party banner msg
+		// carrying the token counts + trigger; the giant isCompactSummary user
+		// frame that follows is suppressed separately (live: mapUserMessage
+		// never renders it as a bubble; replay: scanTranscript skips it).
+		//
+		// Session-id assumption (QUM-865 deferred guard): sprawl captures the
+		// session id ONCE at launch and does not detect a mid-stream session-id
+		// change. Our runtime provably does not fork the session id on
+		// compaction (the compact_boundary frame carries the same session_id),
+		// so exit/re-enter resumes the compacted session correctly. If a future
+		// backend forks the session id mid-stream, a follow-up must add a guard
+		// (repoint wire log + persist new id + notify the TUI).
+		if msg.Subtype == "compact_boundary" {
+			var cb protocol.CompactBoundary
+			if err := json.Unmarshal(msg.Raw, &cb); err != nil {
+				return nil
+			}
+			return CompactBoundaryMsg{
+				Trigger:    cb.CompactMetadata.Trigger,
+				PreTokens:  cb.CompactMetadata.PreTokens,
+				PostTokens: cb.CompactMetadata.PostTokens,
+			}
+		}
 		// QUM-385: system/init carries the model name, from which we derive the
 		// context window limit. Other system subtypes are still skipped.
 		if msg.Subtype == "init" {

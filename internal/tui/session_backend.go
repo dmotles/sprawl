@@ -13,6 +13,14 @@ type DropTelemetrySource interface {
 	DropTelemetry() map[string]EventDropSnapshot
 }
 
+// CompactCapableBackend is an optional capability a backend may implement to
+// advertise support for the /compact builtin (QUM-865). Backends that don't
+// implement it are treated as not supporting /compact — the command is neither
+// offered in the popover nor routed as passthrough.
+type CompactCapableBackend interface {
+	SupportsCompact() bool
+}
+
 // EventDropSnapshot mirrors runtime.DropTelemetry on the TUI side so the
 // tui package doesn't need to import internal/runtime (QUM-681).
 type EventDropSnapshot struct {
@@ -36,6 +44,13 @@ type SessionBackend interface {
 	// session. Emits UserMessageSentMsg on success or SessionErrorMsg on
 	// failure.
 	SendMessage(text string) tea.Cmd
+
+	// SendPassthrough delivers a backend-builtin passthrough command line
+	// (e.g. /compact) verbatim, emitting UserMessageSentMsg{Passthrough:true}
+	// on success (QUM-865). The Passthrough flag tells the reducer to skip the
+	// pending-zone entry — the backend intercepts the command locally and never
+	// emits an isReplay echo, so a tracked entry would never settle.
+	SendPassthrough(text string) tea.Cmd
 
 	// SendAttachment returns a tea.Cmd that validates local image files,
 	// assembles an image-before-text multimodal turn, and delivers it
