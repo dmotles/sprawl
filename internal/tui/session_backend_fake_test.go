@@ -33,6 +33,10 @@ type fakeSessionBackend struct {
 	closeCalls      int
 	recallCalls     int
 	sendAllNowCalls int
+	attachCalls     int
+
+	lastAttachPaths  []string
+	lastAttachPrompt string
 
 	initErr       error
 	sendErr       error
@@ -137,6 +141,26 @@ func (f *fakeSessionBackend) SendMessage(text string) tea.Cmd {
 			return SessionErrorMsg{Err: err}
 		}
 		return UserMessageSentMsg{UUID: uuid, Text: text}
+	}
+}
+
+func (f *fakeSessionBackend) SendAttachment(paths []string, prompt string) tea.Cmd {
+	f.mu.Lock()
+	f.attachCalls++
+	f.lastAttachPaths = append([]string(nil), paths...)
+	f.lastAttachPrompt = prompt
+	err := f.sendErr
+	var uuid string
+	if f.trackSends {
+		f.sendCalls++
+		uuid = fmt.Sprintf("u%d", f.sendCalls)
+	}
+	f.mu.Unlock()
+	return func() tea.Msg {
+		if err != nil {
+			return SessionErrorMsg{Err: err}
+		}
+		return UserMessageSentMsg{UUID: uuid, Text: prompt, Attachments: []AttachmentChip{{Name: "att", MediaType: "image/png", Size: "1 KB"}}}
 	}
 }
 

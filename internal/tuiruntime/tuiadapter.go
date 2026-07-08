@@ -15,12 +15,18 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/dmotles/sprawl/internal/attach"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	tui "github.com/dmotles/sprawl/internal/tui"
 )
+
+// attachErrorToastTTL is how long a `/attach` local-validation error toast
+// stays visible before auto-dismissing (QUM-860).
+const attachErrorToastTTL = 6 * time.Second
 
 // debugGapInjectEnv is a TEST-ONLY debug seam used by the QUM-669
 // `viewport-resync` e2e matrix row. If set to a positive uint64 N, the
@@ -238,6 +244,43 @@ func (a *TUIAdapter) SendMessage(text string) tea.Cmd {
 			return tui.SessionErrorMsg{Err: err}
 		}
 		return tui.UserMessageSentMsg{UUID: uuid, Text: text}
+	}
+}
+
+// SendAttachment validates local image files, assembles an image-before-text
+// multimodal turn (priority next, kind user), and writes it to the CLI stdin
+// (QUM-860). A local validation failure (missing/unreadable/unsupported/too
+// large) returns an AttachRejectedMsg (ToastError) and writes NO turn; success
+// returns a tui.UserMessageSentMsg carrying the prompt text and per-file chip
+// metadata so the pending bubble renders and settles on its isReplay echo.
+func (a *TUIAdapter) SendAttachment(paths []string, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		a.mu.Lock()
+		rt := a.runtime
+		a.mu.Unlock()
+		if rt == nil {
+			return tui.SessionErrorMsg{Err: ErrNoRuntime}
+		}
+		blocks, chips, err := attach.Build(paths, prompt)
+		if err != nil {
+			// QUM-860: AttachRejectedMsg (not a bare ToastSpawnMsg) so the reducer
+			// can unwind AttachMsg's optimistic Idle→Thinking flip — no turn is
+			// written, so nothing else clears the phantom spinner.
+			return tui.AttachRejectedMsg{Toast: tui.Toast{
+				Text:      err.Error(),
+				Style:     tui.ToastError,
+				DismissOn: tui.TimerDismiss(attachErrorToastTTL),
+			}}
+		}
+		uuid, err := rt.WriteUserBlocks(context.Background(), prompt, blocks, "next")
+		if err != nil {
+			return tui.SessionErrorMsg{Err: err}
+		}
+		tchips := make([]tui.AttachmentChip, len(chips))
+		for i, c := range chips {
+			tchips[i] = tui.AttachmentChip{Name: c.Name, MediaType: c.MediaType, Size: c.HumanSize}
+		}
+		return tui.UserMessageSentMsg{UUID: uuid, Text: prompt, Attachments: tchips}
 	}
 }
 

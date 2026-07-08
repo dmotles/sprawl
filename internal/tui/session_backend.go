@@ -37,6 +37,13 @@ type SessionBackend interface {
 	// failure.
 	SendMessage(text string) tea.Cmd
 
+	// SendAttachment returns a tea.Cmd that validates local image files,
+	// assembles an image-before-text multimodal turn, and delivers it
+	// (QUM-860). Emits UserMessageSentMsg (with attachment chips) on success,
+	// AttachRejectedMsg (ToastError) on a local validation failure with no turn
+	// sent, or SessionErrorMsg if the backend has no runtime.
+	SendAttachment(paths []string, prompt string) tea.Cmd
+
 	// WaitForEvent returns a tea.Cmd that blocks on the next session event
 	// and maps it to the appropriate tea.Msg.
 	WaitForEvent() tea.Cmd

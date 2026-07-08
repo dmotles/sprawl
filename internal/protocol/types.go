@@ -183,10 +183,53 @@ type SystemNotification struct {
 }
 
 // MessageParam is the inner message content for user input messages,
-// following the Anthropic API MessageParam format.
+// following the Anthropic API MessageParam format. Content is a union on the
+// wire: a bare string (the text fast-path used by every existing caller) or an
+// array of typed content blocks (multimodal — set Blocks instead of Content).
+//
+// Content keeps its json:"content" tag so default unmarshaling still populates
+// it from the bare-string wire form (the only shape any inbound path parses
+// into a MessageParam). Marshaling is fully owned by MarshalJSON below, which
+// emits the array form when Blocks is non-empty and the bare string otherwise.
 type MessageParam struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string         `json:"role"`
+	Content string         `json:"content"` // text fast-path (existing callers)
+	Blocks  []ContentBlock `json:"-"`       // set when multimodal; wins over Content
+}
+
+// ContentBlock mirrors the Anthropic content-block union (text | image).
+type ContentBlock struct {
+	Type   string       `json:"type"`             // "text" | "image"
+	Text   string       `json:"text,omitempty"`   // type=="text"
+	Source *ImageSource `json:"source,omitempty"` // type=="image"
+}
+
+// ImageSource mirrors the Anthropic image source union. Only the base64
+// variant is used by QUM-860; url/file_id are declared with omitempty per the
+// design sketch but are unused (and never emitted for a base64 source).
+type ImageSource struct {
+	Type      string `json:"type"`                 // "base64" | "url" | "file"
+	MediaType string `json:"media_type,omitempty"` // base64 only
+	Data      string `json:"data,omitempty"`       // base64 only
+	URL       string `json:"url,omitempty"`        // url only
+	FileID    string `json:"file_id,omitempty"`    // file only
+}
+
+// MarshalJSON emits the Anthropic content union: an array of blocks when Blocks
+// is set, otherwise the bare-string content fast-path. The alias struct (a
+// distinct type, not MessageParam) is required to avoid infinite recursion.
+func (m MessageParam) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	}
+	a := alias{Role: m.Role}
+	if len(m.Blocks) > 0 {
+		a.Content = m.Blocks
+	} else {
+		a.Content = m.Content
+	}
+	return json.Marshal(a)
 }
 
 // InterruptRequest is sent on stdin to cancel the current turn.

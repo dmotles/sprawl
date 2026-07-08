@@ -250,6 +250,182 @@ func TestUserFrame_Unmarshal_IsReplay(t *testing.T) {
 	}
 }
 
+// --- QUM-860: MessageParam string-or-content-blocks union ---
+
+// TestMessageParam_Marshal_TextOnly_BareString guards the byte-identical text
+// fast-path: a MessageParam with only Content set must serialize to a bare
+// string content field, exactly as before the Blocks union was added.
+func TestMessageParam_Marshal_TextOnly_BareString(t *testing.T) {
+	m := MessageParam{Role: "user", Content: "hello"}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if string(data) != `{"role":"user","content":"hello"}` {
+		t.Errorf("marshaled = %s, want {\"role\":\"user\",\"content\":\"hello\"}", data)
+	}
+	// content must be a JSON string, not an array.
+	var probe struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if len(probe.Content) == 0 || probe.Content[0] != '"' {
+		t.Errorf("content should be a JSON string, got %s", probe.Content)
+	}
+}
+
+// TestMessageParam_Marshal_EmptyContent_EmitsEmptyString guards against an
+// omitempty regression: an empty text turn must still emit "content":"".
+func TestMessageParam_Marshal_EmptyContent_EmitsEmptyString(t *testing.T) {
+	m := MessageParam{Role: "user", Content: ""}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if !strings.Contains(string(data), `"content":""`) {
+		t.Errorf("marshaled = %s, want it to contain \"content\":\"\"", data)
+	}
+}
+
+// TestMessageParam_Marshal_Blocks_ImageThenText proves the array form and that
+// image-then-text ordering is preserved on the wire.
+func TestMessageParam_Marshal_Blocks_ImageThenText(t *testing.T) {
+	m := MessageParam{
+		Role: "user",
+		Blocks: []ContentBlock{
+			{Type: "image", Source: &ImageSource{Type: "base64", MediaType: "image/png", Data: "AAAA"}},
+			{Type: "text", Text: "what is this"},
+		},
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var parsed struct {
+		Role    string            `json:"role"`
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Unmarshal failed (content should be an array): %v; data=%s", err, data)
+	}
+	if parsed.Role != "user" {
+		t.Errorf("role = %q, want user", parsed.Role)
+	}
+	if len(parsed.Content) != 2 {
+		t.Fatalf("content len = %d, want 2; data=%s", len(parsed.Content), data)
+	}
+	var b0 struct {
+		Type   string `json:"type"`
+		Source struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(parsed.Content[0], &b0); err != nil {
+		t.Fatalf("Unmarshal block 0: %v", err)
+	}
+	if b0.Type != "image" {
+		t.Errorf("block[0].type = %q, want image (image-then-text ordering)", b0.Type)
+	}
+	if b0.Source.Type != "base64" || b0.Source.MediaType != "image/png" || b0.Source.Data != "AAAA" {
+		t.Errorf("block[0].source = %+v, want base64/image/png/AAAA", b0.Source)
+	}
+	var b1 struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(parsed.Content[1], &b1); err != nil {
+		t.Fatalf("Unmarshal block 1: %v", err)
+	}
+	if b1.Type != "text" || b1.Text != "what is this" {
+		t.Errorf("block[1] = %+v, want text/what is this", b1)
+	}
+}
+
+// TestMessageParam_Marshal_Blocks_OmitsEmptyFields guards the omitempty tags:
+// a base64 image block must not emit url/file_id, and a text block must not
+// emit a source.
+func TestMessageParam_Marshal_Blocks_OmitsEmptyFields(t *testing.T) {
+	m := MessageParam{
+		Role: "user",
+		Blocks: []ContentBlock{
+			{Type: "image", Source: &ImageSource{Type: "base64", MediaType: "image/jpeg", Data: "ZZZZ"}},
+			{Type: "text", Text: "label"},
+		},
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	s := string(data)
+	for _, key := range []string{`"url"`, `"file_id"`} {
+		if strings.Contains(s, key) {
+			t.Errorf("marshaled should not contain %s for a base64 image: %s", key, s)
+		}
+	}
+	// The text block must not carry a source key.
+	if strings.Count(s, `"source"`) != 1 {
+		t.Errorf("expected exactly one source (on the image block), got: %s", s)
+	}
+	// The image block must not emit a spurious empty text field (forces
+	// omitempty on ContentBlock.Text — an image block with "text":"" is a
+	// malformed block the API can reject).
+	var wrap struct {
+		Content []json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &wrap); err != nil {
+		t.Fatalf("Unmarshal content array: %v", err)
+	}
+	blocks := wrap.Content
+	if len(blocks) != 2 {
+		t.Fatalf("content len = %d, want 2", len(blocks))
+	}
+	if strings.Contains(string(blocks[0]), `"text"`) {
+		t.Errorf("image block must not emit a text field, got: %s", blocks[0])
+	}
+}
+
+// TestMessageParam_Unmarshal_BareString_PopulatesContent is the invariant that
+// keeps writer_test green: default unmarshal of the bare-string wire form must
+// populate Content (no custom UnmarshalJSON is provided).
+func TestMessageParam_Unmarshal_BareString_PopulatesContent(t *testing.T) {
+	var m MessageParam
+	if err := json.Unmarshal([]byte(`{"role":"user","content":"hi"}`), &m); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if m.Content != "hi" {
+		t.Errorf("Content = %q, want hi", m.Content)
+	}
+	if m.Blocks != nil {
+		t.Errorf("Blocks = %v, want nil", m.Blocks)
+	}
+}
+
+// TestUserMessage_RoundTrip_TextContent mirrors writer_test at the MessageParam
+// layer: a full UserMessage with a text turn round-trips through JSON with
+// Content intact.
+func TestUserMessage_RoundTrip_TextContent(t *testing.T) {
+	msg := UserMessage{
+		Type:            "user",
+		Message:         MessageParam{Role: "user", Content: "hello"},
+		ParentToolUseID: nil,
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	var back UserMessage
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if back.Message.Content != "hello" {
+		t.Errorf("round-tripped Content = %q, want hello", back.Message.Content)
+	}
+}
+
 func TestSystemNotification_Unmarshal(t *testing.T) {
 	raw := `{"type":"system","subtype":"notification","key":"k","text":"t","priority":"high","color":"red","timeout_ms":5000}`
 	var n SystemNotification

@@ -198,6 +198,15 @@ func (c *ChatList) AppendUser(text string) {
 	c.invalidate()
 }
 
+// AppendUserWithAttachments appends a committed UserItem carrying attachment
+// chips (QUM-860). Used by the uuid-less bridge path (legacy/tests) that emits
+// no consume ack, so there is no pending-zone settle to relocate.
+func (c *ChatList) AppendUserWithAttachments(text string, chips []AttachmentChip) {
+	c.dropTrailingThinkingMarker()
+	c.items = append(c.items, &itemEnvelope{item: NewUserItemWithAttachments(&c.ctx, text, chips)})
+	c.invalidate()
+}
+
 // AppendAssistantChunk appends a streaming chunk to the trailing
 // AssistantTextItem if it exists and is in flight; otherwise it starts a new
 // in-flight assistant item. Mirrors viewport.AppendAssistantChunk's mutate-
@@ -459,6 +468,22 @@ func (c *ChatList) AppendSystemNotification(text string) {
 // and brightens it (QUM-832). QUM-833.
 func (c *ChatList) ZoneAddUser(uuid, text string) {
 	item := NewUserItem(&c.ctx, text)
+	item.SetPending(true)
+	c.zone.add(&pendingEntry{
+		uuid:  uuid,
+		kind:  pendingUser,
+		items: []*itemEnvelope{{item: item}},
+	})
+	c.invalidate()
+}
+
+// ZoneAddUserWithAttachments adds an eager, uuid-keyed user prompt carrying
+// attachment chip lines to the pending zone (QUM-860). Like ZoneAddUser it
+// renders DIM until its consume echo settles + brightens it; the chip metadata
+// lives on the UserItem so ZoneSettle's cache-nil + pending flip brightens the
+// chip alongside the bubble.
+func (c *ChatList) ZoneAddUserWithAttachments(uuid, text string, chips []AttachmentChip) {
+	item := NewUserItemWithAttachments(&c.ctx, text, chips)
 	item.SetPending(true)
 	c.zone.add(&pendingEntry{
 		uuid:  uuid,

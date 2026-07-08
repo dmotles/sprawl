@@ -4,12 +4,12 @@ import (
 	"testing"
 )
 
-func TestAll_ReturnsSixCommandsInStableOrder(t *testing.T) {
+func TestAll_ReturnsSevenCommandsInStableOrder(t *testing.T) {
 	cmds := All()
-	if len(cmds) != 6 {
-		t.Fatalf("All() len = %d, want 6", len(cmds))
+	if len(cmds) != 7 {
+		t.Fatalf("All() len = %d, want 7", len(cmds))
 	}
-	want := []string{"/exit", "/help", "/tree", "/handoff", "/usage", "/switch"}
+	want := []string{"/exit", "/help", "/tree", "/handoff", "/usage", "/switch", "/attach"}
 	for i, w := range want {
 		if cmds[i].Name != w {
 			t.Errorf("All()[%d].Name = %q, want %q", i, cmds[i].Name, w)

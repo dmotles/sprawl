@@ -119,12 +119,22 @@ type UserItem struct {
 	ctx     *itemRenderCtx
 	text    string
 	pending bool
+	// attachments, when non-empty, renders one 📎 chip line per file ABOVE the
+	// prompt text (QUM-860). Presentation only — the image bytes travel in the
+	// wire MessageParam.Blocks, never here.
+	attachments []AttachmentChip
 }
 
 // NewUserItem constructs a UserItem with the given content. Defaults to the
 // committed (bright) styling; the pending-zone path flips it via SetPending.
 func NewUserItem(ctx *itemRenderCtx, text string) *UserItem {
 	return &UserItem{ctx: ctx, text: text}
+}
+
+// NewUserItemWithAttachments constructs a UserItem that renders attachment chip
+// lines above the prompt text (QUM-860). Defaults to committed (bright) styling.
+func NewUserItemWithAttachments(ctx *itemRenderCtx, text string, chips []AttachmentChip) *UserItem {
+	return &UserItem{ctx: ctx, text: text, attachments: chips}
 }
 
 // Text returns the user-typed text body. Used by tests to assert content
@@ -137,12 +147,23 @@ func (i *UserItem) Text() string { return i.text }
 func (i *UserItem) SetPending(pending bool) { i.pending = pending }
 
 // Render draws the chevron-prefixed user prompt block (QUM-664 styling), dimmed
-// when pending (QUM-832).
+// when pending (QUM-832). When the turn carries attachments (QUM-860), one 📎
+// chip line per file is drawn above the prompt body, sharing the same
+// pending/bright style so it dims and brightens with the bubble.
 func (i *UserItem) Render(width int) string {
 	if width <= 0 {
 		return ""
 	}
-	return renderUserPromptBlock(i.ctx.theme, i.text, width, i.pending)
+	var parts []string
+	if len(i.attachments) > 0 {
+		parts = append(parts, renderAttachmentChips(i.ctx.theme, i.attachments, width, i.pending))
+	}
+	// Suppress the prompt block entirely when the text is empty and there is at
+	// least one chip, so an attach-only turn doesn't render a dangling chevron.
+	if i.text != "" || len(i.attachments) == 0 {
+		parts = append(parts, renderUserPromptBlock(i.ctx.theme, i.text, width, i.pending))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // Finished always returns true: user turns are immutable on creation.

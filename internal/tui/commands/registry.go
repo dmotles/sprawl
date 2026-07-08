@@ -19,6 +19,10 @@ const (
 	// dispatch an agent-switch on selection. Handled by the palette in a
 	// dedicated agent-selection mode.
 	KindAgentSwitch
+	// KindAttach commands prompt for a free-form argument line (file paths +
+	// optional quoted prompt) and dispatch an AttachMsg on Enter. Handled by
+	// the palette in a dedicated attach-argument mode (QUM-860).
+	KindAttach
 )
 
 // Action enumerates the UI-level actions a KindUI command can trigger.
@@ -84,6 +88,11 @@ var registry = []Command{
 		Name:        "/switch",
 		Description: "Switch observed agent (fuzzy match on name)",
 		Kind:        KindAgentSwitch,
+	},
+	{
+		Name:        "/attach",
+		Description: "Attach local image(s) to a turn: <path...> \"prompt\"",
+		Kind:        KindAttach,
 	},
 }
 

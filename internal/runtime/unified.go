@@ -379,7 +379,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 			for _, id := range ids {
 				rt.serviced.add(id)
 			}
-			_, _ = rt.writeMessage(context.Background(), continuationPrompt, "next", kindSystem, nil)
+			_, _ = rt.writeMessage(context.Background(), continuationPrompt, "next", kindSystem, nil, nil)
 		}
 	}
 }
@@ -411,7 +411,18 @@ func (rt *UnifiedRuntime) consumeInterruptPending() bool {
 // WriteUserPrompt writes a human-typed prompt (kind:user, recallable) to the
 // CLI stdin (QUM-817). Used by the TUI input path.
 func (rt *UnifiedRuntime) WriteUserPrompt(ctx context.Context, text, priority string) (string, error) {
-	return rt.writeMessage(ctx, text, priority, kindUser, nil)
+	return rt.writeMessage(ctx, text, priority, kindUser, nil, nil)
+}
+
+// WriteUserBlocks writes a multimodal human turn (kind:user, recallable) whose
+// MessageParam carries an array of content blocks (image + text) instead of a
+// bare string (QUM-860). text is the prompt body, retained in the outstanding
+// map for recall and for the render-on-consume bubble; blocks is the assembled
+// image-before-text payload actually sent on the wire. All uuid-mint,
+// outstanding-tracking, and priority semantics match WriteUserPrompt so the
+// isReplay echo settles the pending bubble identically.
+func (rt *UnifiedRuntime) WriteUserBlocks(ctx context.Context, text string, blocks []protocol.ContentBlock, priority string) (string, error) {
+	return rt.writeMessage(ctx, text, priority, kindUser, nil, blocks)
 }
 
 // WriteSystemMessage writes a sprawl-originated message (kind:system, not
@@ -420,7 +431,7 @@ func (rt *UnifiedRuntime) WriteUserPrompt(ctx context.Context, text, priority st
 // entryIDs link the message to durable maildir/task records for delivery
 // tracking via the isReplay consumption ack.
 func (rt *UnifiedRuntime) WriteSystemMessage(ctx context.Context, text, priority string, entryIDs []string) (string, error) {
-	return rt.writeMessage(ctx, text, priority, kindSystem, entryIDs)
+	return rt.writeMessage(ctx, text, priority, kindSystem, entryIDs, nil)
 }
 
 // writeMessage writes one user message to the CLI stdin with the given priority
@@ -428,7 +439,7 @@ func (rt *UnifiedRuntime) WriteSystemMessage(ctx context.Context, text, priority
 // returns the uuid (QUM-817). The isReplay echo later flips the entry to
 // consumed (see markConsumed). The map entry is recorded BEFORE the stdin write
 // so the echo (observed on the reader goroutine) always finds it.
-func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority string, kind outstandingKind, entryIDs []string) (string, error) {
+func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority string, kind outstandingKind, entryIDs []string, blocks []protocol.ContentBlock) (string, error) {
 	uuid := newUUID()
 	rt.outMu.Lock()
 	rt.outSeq++
@@ -439,9 +450,17 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 	if p, ok := rt.cfg.Session.(sessionIDProvider); ok {
 		sid = p.SessionID()
 	}
+	// A multimodal turn sets Blocks (MessageParam.MarshalJSON emits the array
+	// form); a plain turn sets Content (bare-string fast-path). Never both.
+	mp := protocol.MessageParam{Role: "user"}
+	if len(blocks) > 0 {
+		mp.Blocks = blocks
+	} else {
+		mp.Content = text
+	}
 	err := rt.cfg.Session.WriteUserMessage(ctx, protocol.UserMessage{
 		Type:      "user",
-		Message:   protocol.MessageParam{Role: "user", Content: text},
+		Message:   mp,
 		Priority:  priority,
 		UUID:      uuid,
 		SessionID: sid,
@@ -635,7 +654,7 @@ func (rt *UnifiedRuntime) SendAllNow(ctx context.Context) error {
 		return nil
 	}
 	joined := strings.Join(texts, "\n")
-	uuid, err := rt.writeMessage(ctx, joined, "now", kindUser, nil)
+	uuid, err := rt.writeMessage(ctx, joined, "now", kindUser, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -707,7 +726,7 @@ func (rt *UnifiedRuntime) Start(_ context.Context) error {
 	// Seed the spawn prompt (child agents' first turn) as a stdin write. It is
 	// kind:system (machine-originated, not user-recallable).
 	if initialPrompt != "" {
-		if _, err := rt.writeMessage(runCtx, initialPrompt, "next", kindSystem, nil); err != nil {
+		if _, err := rt.writeMessage(runCtx, initialPrompt, "next", kindSystem, nil, nil); err != nil {
 			return err
 		}
 	}

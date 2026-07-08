@@ -54,6 +54,12 @@ func (b *AgentBuffer) AppendUser(text string) {
 	b.vp.ChatList().AppendUser(text)
 }
 
+// AppendUserWithAttachments appends a committed user turn carrying attachment
+// chips (QUM-860).
+func (b *AgentBuffer) AppendUserWithAttachments(text string, chips []AttachmentChip) {
+	b.vp.ChatList().AppendUserWithAttachments(text, chips)
+}
+
 // AppendAssistantChunk appends a streaming assistant chunk.
 func (b *AgentBuffer) AppendAssistantChunk(text string) {
 	b.vp.ChatList().AppendAssistantChunk(text)
@@ -93,6 +99,12 @@ func (b *AgentBuffer) AppendSystemNotification(text string) {
 // (QUM-833).
 func (b *AgentBuffer) ZoneAddUser(uuid, text string) {
 	b.vp.ChatList().ZoneAddUser(uuid, text)
+}
+
+// ZoneAddUserWithAttachments tracks an eager, uuid-keyed user prompt carrying
+// attachment chips in the pending zone (QUM-860).
+func (b *AgentBuffer) ZoneAddUserWithAttachments(uuid, text string, chips []AttachmentChip) {
+	b.vp.ChatList().ZoneAddUserWithAttachments(uuid, text, chips)
 }
 
 // ZoneAddSystem tracks an eager, uuid-keyed system-notification frame in the
@@ -193,6 +205,19 @@ type AppModel struct {
 	// to delivered/. Stored on the model so the commit happens strictly AFTER
 	// the send succeeds (crash-safety per QUM-323 §5).
 	pendingDrainIDs []string
+
+	// attachTurnInFlight is true while an attachment turn is executing — armed
+	// when the turn is CONSUMED (its isReplay echo, i.e. the turn actually
+	// started) and cleared on the next terminal result/interrupt (QUM-860). It
+	// lets the error path frame an is_error result as an attachment-rejected
+	// error and guarantee a non-empty message instead of a blank "Session Error"
+	// dialog. Keyed on consume (not send) so a still-queued attach turn cannot
+	// mislabel an earlier in-flight turn's error (reviewer Finding 1).
+	attachTurnInFlight bool
+	// attachUUIDs holds the uuids of attachment turns written but not yet
+	// consumed. On the consume ack the uuid arms attachTurnInFlight and is
+	// removed. QUM-860.
+	attachUUIDs map[string]struct{}
 
 	supervisor    supervisor.Supervisor
 	sprawlRoot    string
@@ -986,6 +1011,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.toasts.Spawn(msg.Toast)
 		return m, cmd
 
+	case AttachRejectedMsg:
+		// QUM-860: a /attach that failed LOCAL validation wrote no turn, so
+		// AttachMsg's optimistic Idle→Thinking flip would strand a phantom
+		// spinner. Unwind it here alongside spawning the error toast. Guarded on
+		// TurnThinking so a rejected /attach dispatched while a prior turn is
+		// still streaming never stomps that genuine in-flight TurnStreaming.
+		if m.turnState == TurnThinking {
+			m.setTurnState(TurnIdle)
+		}
+		cmd := m.toasts.Spawn(msg.Toast)
+		return m, cmd
+
 	case AgentDiedMsg:
 		// QUM-725: surface a persistent (user-only-dismiss) error toast when
 		// a child runtime transitions to Died.
@@ -1026,6 +1063,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setTurnState(TurnThinking)
 		m.statusBar.SetTransientLabel("/handoff dispatched — see output below")
 		return m, m.bridge.SendMessage(msg.Template)
+
+	case AttachMsg:
+		// QUM-860: dispatch a parsed /attach command. File I/O + validation run
+		// off the UI thread inside SendAttachment's tea.Cmd; a local validation
+		// failure returns an AttachRejectedMsg (no turn) which unwinds the
+		// optimistic Thinking flip below, success an image-before-text turn whose
+		// UserMessageSentMsg renders the chip bubble.
+		if m.bridge == nil || len(msg.Paths) == 0 {
+			return m, nil
+		}
+		if m.turnState == TurnIdle {
+			m.setTurnState(TurnThinking)
+		}
+		return m, m.bridge.SendAttachment(msg.Paths, msg.Prompt)
 
 	case InboxDrainMsg:
 		// QUM-323: drain weave's harness queue into Claude's next prompt.
@@ -1093,7 +1144,29 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// classified through the SAME helper so live and legacy can't drift.
 		buf := m.rootBuf()
 		isSystem := classifyInboundFrame(msg.Text)
+		// QUM-860: an attachment turn always renders a user bubble with chip
+		// line(s) — never the system-notification path (chips are a user frame).
+		hasAttachments := len(msg.Attachments) > 0
+		if hasAttachments {
+			if msg.UUID != "" {
+				// Track by uuid; the marker arms when this turn is consumed, so a
+				// still-queued attach turn can't mislabel an earlier turn's error.
+				if m.attachUUIDs == nil {
+					m.attachUUIDs = make(map[string]struct{})
+				}
+				m.attachUUIDs[msg.UUID] = struct{}{}
+			} else {
+				// Legacy/no-uuid bridge: the turn executes immediately with no
+				// consume echo, so arm the marker now.
+				m.attachTurnInFlight = true
+			}
+		}
 		switch {
+		case msg.UUID != "" && hasAttachments:
+			buf.ZoneAddUserWithAttachments(msg.UUID, msg.Text, msg.Attachments)
+		case hasAttachments:
+			// No uuid (legacy/tests): render directly into the committed transcript.
+			buf.AppendUserWithAttachments(msg.Text, msg.Attachments)
 		case msg.UUID != "" && isSystem:
 			buf.ZoneAddSystem(msg.UUID, msg.Text)
 		case msg.UUID != "":
@@ -1125,6 +1198,13 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// uuid we never tracked (restart orphan / supervisor-side write) is a
 		// no-op — never a blind raw append (the QUM-833 guard, ghost's C9).
 		m.rootBuf().ZoneSettle(msg.UUID)
+		// QUM-860: if this consumed turn is an attachment turn, arm the in-flight
+		// marker now — the turn has started executing, so the next terminal result
+		// is this turn's and an is_error can be framed as an attachment rejection.
+		if _, ok := m.attachUUIDs[msg.UUID]; ok {
+			m.attachTurnInFlight = true
+			delete(m.attachUUIDs, msg.UUID)
+		}
 		// QUM-831: the consumed frame's turn is beginning (the CLI echoed it).
 		// Re-arm the spinner so it stays lit through the new turn's pre-content
 		// window — settle just emptied this entry from the outstanding zone, so
@@ -1146,6 +1226,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// pending-zone entry so it never renders as a phantom bubble. System
 		// notifications are not recall-droppable (ZoneDrop refuses them).
 		m.rootBuf().ZoneDrop(msg.UUID)
+		// QUM-860: a recalled/superseded attach turn never executes — forget its
+		// uuid so a later consume can't spuriously arm the marker.
+		delete(m.attachUUIDs, msg.UUID)
 		// QUM-826: pump-delivered (EventUserMessageCancelled) — re-arm so the
 		// event pump keeps draining.
 		if m.bridge != nil {
@@ -1307,10 +1390,25 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// last-entry probe in FinalizeAssistantMessage still sees an
 		// assistant entry.
 		finalizeCmd := m.finalizeTurn()
+		// QUM-860: an attachment turn just terminated — clear the in-flight flag
+		// and, if the API rejected it, frame the error clearly. Capture the flag
+		// before clearing so the error branch can consult it.
+		attachTurn := m.attachTurnInFlight
+		m.attachTurnInFlight = false
 		if msg.IsError {
 			// QUM-675 S5: session-level errors escalate to the γ overlay
 			// instead of being buried as a viewport error banner.
-			m.errorDialog = NewErrorDialog(&m.theme, errors.New(msg.Result))
+			reason := msg.Result
+			if attachTurn && strings.TrimSpace(reason) == "" {
+				// QUM-860: never surface a blank/dead "Session Error" for a
+				// rejected attachment — the API returns a descriptive string in
+				// the common case, but guarantee a non-empty attachment-framed
+				// message here.
+				reason = "attachment rejected (no reason returned by the API)"
+			} else if attachTurn {
+				reason = "attachment rejected: " + strings.TrimSpace(reason)
+			}
+			m.errorDialog = NewErrorDialog(&m.theme, errors.New(reason))
 			m.errorDialog.SetSize(m.width, m.height)
 			m.showError = true
 		} else {
@@ -1332,6 +1430,9 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Finalize before status append (see SessionResultMsg comment).
 		finalizeCmd := m.finalizeTurn()
+		// QUM-860: an interrupted attach turn clears the in-flight marker so it
+		// cannot mislabel the following turn's error.
+		m.attachTurnInFlight = false
 		m.statusBar.SetTransientLabel(fmt.Sprintf("Interrupted (%dms)", msg.DurationMs))
 		if msg.TotalCostUsd > 0 {
 			m.statusBar.SetTurnCost(msg.TotalCostUsd)

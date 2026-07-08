@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/dmotles/sprawl/internal/attach"
 	"github.com/dmotles/sprawl/internal/tui/commands"
 )
 
@@ -20,6 +21,10 @@ type paletteMode int
 const (
 	modeCommand paletteMode = iota
 	modeAgent
+	// modeAttach captures a free-form `/attach` argument line (file paths +
+	// optional quoted prompt). Unlike modeCommand/modeAgent it accepts a broad
+	// charset (spaces, slashes, dots, quotes) into attachArgs. QUM-860.
+	modeAttach
 )
 
 // PaletteModel renders a floating centered command palette overlay. It is
@@ -42,6 +47,9 @@ type PaletteModel struct {
 	// SetAgents(); agentMatches is derived from filter.
 	agents       []string
 	agentMatches []string
+
+	// attachArgs is the free-form argument buffer in modeAttach (QUM-860).
+	attachArgs string
 }
 
 // NewPaletteModel constructs a hidden palette model.
@@ -69,6 +77,10 @@ func (m *PaletteModel) SetAgents(names []string) {
 // InAgentMode reports whether the palette is currently in the agent-selection
 // sub-mode triggered by /switch.
 func (m PaletteModel) InAgentMode() bool { return m.mode == modeAgent }
+
+// InAttachMode reports whether the palette is currently in the attach-argument
+// sub-mode triggered by /attach (QUM-860).
+func (m PaletteModel) InAttachMode() bool { return m.mode == modeAttach }
 
 // Hide hides the palette.
 func (m *PaletteModel) Hide() { m.visible = false }
@@ -119,6 +131,23 @@ func (m *PaletteModel) exitAgentMode() {
 	m.refreshMatches()
 }
 
+// enterAttachMode switches the palette into attach-argument mode, clearing the
+// argument buffer (QUM-860).
+func (m *PaletteModel) enterAttachMode() {
+	m.mode = modeAttach
+	m.attachArgs = ""
+	m.cursor = 0
+}
+
+// exitAttachMode returns to command mode, clearing the argument buffer.
+func (m *PaletteModel) exitAttachMode() {
+	m.mode = modeCommand
+	m.attachArgs = ""
+	m.filter = ""
+	m.cursor = 0
+	m.refreshMatches()
+}
+
 // Update handles key events while the palette is visible. It emits:
 //   - hides synchronously on Esc (no cmd) — caller observes via Visible()
 //   - navigation on Up/Down/Tab/Shift+Tab (no cmd)
@@ -152,6 +181,16 @@ func (m PaletteModel) Update(msg tea.KeyPressMsg) (PaletteModel, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyBackspace:
+		if m.mode == modeAttach {
+			if len(m.attachArgs) > 0 {
+				r := []rune(m.attachArgs)
+				m.attachArgs = string(r[:len(r)-1])
+			} else {
+				// Backspace at empty arg buffer returns to command mode.
+				m.exitAttachMode()
+			}
+			return m, nil
+		}
 		if len(m.filter) > 0 {
 			r := []rune(m.filter)
 			m.filter = string(r[:len(r)-1])
@@ -159,6 +198,16 @@ func (m PaletteModel) Update(msg tea.KeyPressMsg) (PaletteModel, tea.Cmd) {
 		} else if m.mode == modeAgent {
 			// Backspace at empty filter in agent mode returns to command mode.
 			m.exitAgentMode()
+		}
+		return m, nil
+	}
+
+	// modeAttach accepts a broad charset (paths, spaces, dots, slashes, quotes)
+	// into the free-form argument buffer — distinct from the restricted command/
+	// agent filter charset below. QUM-860.
+	if m.mode == modeAttach {
+		if r := msg.Code; r > 0 && r < 0x10FFFF && unicode.IsGraphic(r) {
+			m.attachArgs += string(r)
 		}
 		return m, nil
 	}
@@ -193,6 +242,16 @@ func (m *PaletteModel) moveCursor(delta int) {
 }
 
 func (m PaletteModel) dispatchSelected() (PaletteModel, tea.Cmd) {
+	if m.mode == modeAttach {
+		paths, prompt := attach.ParseArgs(m.attachArgs)
+		m.visible = false
+		if len(paths) == 0 {
+			// Nothing actionable typed; just close.
+			return m, nil
+		}
+		return m, sendMsgCmd(AttachMsg{Paths: paths, Prompt: prompt})
+	}
+
 	if m.mode == modeAgent {
 		if len(m.agentMatches) == 0 || m.cursor >= len(m.agentMatches) {
 			return m, nil
@@ -227,6 +286,10 @@ func (m PaletteModel) dispatchSelected() (PaletteModel, tea.Cmd) {
 		// Transition to agent-selection mode; do NOT close the palette.
 		m.enterAgentMode()
 		return m, nil
+	case commands.KindAttach:
+		// Transition to attach-argument mode; do NOT close the palette (QUM-860).
+		m.enterAttachMode()
+		return m, nil
 	}
 
 	// QUM-793: hide synchronously so the AppModel can observe palette
@@ -249,6 +312,11 @@ func (m PaletteModel) View() string {
 	}
 	if boxWidth < 40 {
 		boxWidth = 40
+	}
+
+	// Attach-mode: render a dedicated prompt-line box for the free-form arg line.
+	if m.mode == modeAttach {
+		return m.viewAttach(boxWidth)
 	}
 
 	var sb strings.Builder
@@ -338,6 +406,32 @@ func (m PaletteModel) View() string {
 	hint := m.theme.NormalText.Render("↑↓/Tab navigate • Enter run • Esc close")
 	full := box + "\n" + hint
 
+	if m.width > 0 && m.height > 0 {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, full)
+	}
+	return full
+}
+
+// viewAttach renders the attach-argument prompt box (QUM-860). The user types a
+// free-form `<path...> "prompt"` line; Enter dispatches AttachMsg.
+func (m PaletteModel) viewAttach(boxWidth int) string {
+	var sb strings.Builder
+	sb.WriteString(m.theme.AccentText.Render("> /attach "))
+	sb.WriteString(m.attachArgs)
+	sb.WriteString("\n")
+	sb.WriteString(strings.Repeat("─", boxWidth-4))
+	sb.WriteString("\n")
+	sb.WriteString(m.theme.NormalText.Render(`  <path...> "prompt" — local image(s): jpeg/png/gif/webp, ≤10 MB each`))
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(m.theme.Palette.Primary).
+		Background(m.theme.Palette.BgBase).
+		Padding(0, 1).
+		Width(boxWidth).
+		Render(sb.String())
+	hint := m.theme.NormalText.Render("Enter attach • ⌫ back • Esc close")
+	full := box + "\n" + hint
 	if m.width > 0 && m.height > 0 {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, full)
 	}

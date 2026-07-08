@@ -135,6 +135,28 @@ func renderUserPromptBlock(theme *Theme, content string, width int, pending bool
 	return strings.Join(out, "\n")
 }
 
+// renderAttachmentChips renders one line per attachment in the form
+// `📎 name · media_type · size` (QUM-860). All lines share the user-prompt
+// style (bright), or its faint variant when pending, so the chips dim and
+// brighten in lock-step with the QUM-832 pending→committed bubble transition.
+// Each line is truncated to the content width so a long filename can't escape
+// the viewport.
+func renderAttachmentChips(theme *Theme, chips []AttachmentChip, width int, pending bool) string {
+	style := theme.UserPromptText
+	if pending {
+		style = theme.UserPromptPendingText
+	}
+	lines := make([]string, len(chips))
+	for i, c := range chips {
+		text := fmt.Sprintf("📎 %s · %s · %s", c.Name, c.MediaType, c.Size)
+		if width > 0 {
+			text = ansi.Truncate(text, width, "…")
+		}
+		lines[i] = style.Render(text)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // renderToolInputBody emits the ` │ ` gutter lines for the expanded tool
 // input body. Returns a leading-newline-then-body string so callers can
 // append it directly. Returns "" if the body is empty.

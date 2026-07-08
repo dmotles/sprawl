@@ -3320,12 +3320,13 @@ func TestAppModel_ConsolidationCompleteMsg_Error_AppendsFailureBanner(t *testing
 // detect whether the AppModel kicked off the event pump on the
 // continuous-bridge code paths.
 type continuousFakeDelegate struct {
-	waitCalls int
-	initCalls int
-	sendCalls int
-	intCalls  int
-	closeCnt  int
-	sessID    string
+	waitCalls   int
+	initCalls   int
+	sendCalls   int
+	attachCalls int
+	intCalls    int
+	closeCnt    int
+	sessID      string
 }
 
 func (c *continuousFakeDelegate) Initialize() tea.Cmd {
@@ -3335,6 +3336,11 @@ func (c *continuousFakeDelegate) Initialize() tea.Cmd {
 
 func (c *continuousFakeDelegate) SendMessage(_ string) tea.Cmd {
 	c.sendCalls++
+	return func() tea.Msg { return nil }
+}
+
+func (c *continuousFakeDelegate) SendAttachment(_ []string, _ string) tea.Cmd {
+	c.attachCalls++
 	return func() tea.Msg { return nil }
 }
 

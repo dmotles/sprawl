@@ -603,14 +603,35 @@ func parseTaskNotificationSummary(s string) (summary string, ok bool) {
 	return s[start : start+end], true
 }
 
+// AttachmentChip is per-file display metadata for a `/attach` turn, rendered as
+// a text chip line (`📎 name · media_type · size`) in the user prompt block.
+// Mirrors attach.Chip on the TUI side so the tui package needn't import
+// internal/attach (same decoupling pattern as EventDropSnapshot). QUM-860.
+type AttachmentChip struct {
+	Name      string
+	MediaType string
+	Size      string
+}
+
 // UserMessageSentMsg confirms that user input was dispatched to the session.
 // UUID is the stdin user-message uuid (QUM-824), tracked as "queued" until its
 // consumption/cancellation event arrives. Text is the prompt body (QUM-828),
 // cached TUI-side so render-on-consume can append the user bubble at the moment
-// the CLI consumes it (Strategy B).
+// the CLI consumes it (Strategy B). Attachments carries the chip metadata for a
+// `/attach` turn (QUM-860); nil for a plain text turn.
 type UserMessageSentMsg struct {
-	UUID string
-	Text string
+	UUID        string
+	Text        string
+	Attachments []AttachmentChip
+}
+
+// AttachMsg carries a parsed `/attach` command (file paths + optional prompt)
+// from the palette to the AppModel, which dispatches it to the bridge's
+// SendAttachment. File I/O and validation happen off the UI thread inside the
+// returned tea.Cmd. QUM-860.
+type AttachMsg struct {
+	Paths  []string
+	Prompt string
 }
 
 // UserMessageConsumedMsg signals that a previously-written stdin user message
@@ -940,6 +961,13 @@ type gapConfirmMsg struct {
 
 // ToastSpawnMsg requests that a toast notification be rendered (QUM-649).
 type ToastSpawnMsg struct{ Toast Toast }
+
+// AttachRejectedMsg is emitted when a /attach fails LOCAL validation
+// (unsupported/missing/unreadable/too-large) — no turn is written (QUM-860).
+// Distinct from ToastSpawnMsg so its reducer can unwind AttachMsg's optimistic
+// Idle→Thinking flip (which would otherwise strand a phantom spinner) without
+// coupling turn-state semantics to every toast.
+type AttachRejectedMsg struct{ Toast Toast }
 
 // ToastDismissMsg requests removal of a specific toast (by ID) or all toasts
 // (All=true). (QUM-649)
