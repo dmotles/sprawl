@@ -685,6 +685,90 @@ func (r *AgentRuntime) Pause(ctx context.Context, timeout time.Duration) (clean 
 	return false, nil
 }
 
+// StopAfterTurn defers the runtime teardown until the agent's current turn
+// actually yields, instead of tearing down immediately. It is the reusable
+// "defer self-teardown to turn-end" primitive (QUM-866): a mid-turn caller
+// (e.g. report_status(complete/failure)) can finish emitting a follow-on
+// send_message or trailing text before the subprocess + EventBus subscribers
+// are released. drainInflight (invoked by Stop) cancels in-flight async MCP
+// handlers, so stopping mid-turn silently drops anything the agent does after
+// the triggering tool call — deferring to the genuine EndOfTurn closes that
+// race.
+//
+// It is intentionally generic (no report_status coupling, no disk-Status
+// writes, no RuntimeEvent emission of its own — teardown semantics all come
+// from Stop/stopWithFunc) so a later issue can reuse it for handoff.
+//
+// Behavior:
+//   - No UnifiedRuntime (test/non-unified handle) → Stop immediately. This
+//     preserves the existing teardown unit tests whose fake session exposes no
+//     EventBus / InTurn.
+//   - Otherwise SUBSCRIBE to the EventBus FIRST, THEN check InTurn(). The
+//     subscribe-before-check ordering closes the race where the turn ends
+//     between the check and the subscribe (Pause has the opposite order — that
+//     ordering is a latent bug and is deliberately NOT copied here).
+//   - Not in-turn → Stop immediately (today's behavior, no regression).
+//   - In-turn → wait for one of {EventTurnCompleted, EventInterrupted,
+//     EventTurnFailed, EventBackendFaulted} on the bus (all derived from the
+//     genuine EndOfTurn frame in unified.go routeFrame), or ctx cancellation,
+//     or the timeout runaway guard — whichever first — then Stop. The timeout
+//     guarantees RSS stays bounded even if the model keeps emitting past its
+//     own terminal report and the turn never ends.
+//
+// ctx bounds only the turn-wait (external cancellation, e.g. process
+// shutdown). timeout is the runaway guard on the turn-wait — the sole bound
+// when ctx has no deadline (e.g. a unit test passing context.Background()).
+// The final Stop always gets its OWN fresh runtimeStopTimeout budget: reusing
+// a turn-wait ctx that has already expired (runaway path, or a turn ending
+// near the deadline) would make UnifiedRuntime.Stop bail on ctx.Done() before
+// draining, propagating an error that skips stopWithFunc's snapshot
+// bookkeeping — i.e. the runaway guard, whose whole job is a reliable
+// teardown, would degrade. (QUM-866)
+func (r *AgentRuntime) StopAfterTurn(ctx context.Context, timeout time.Duration) error {
+	stop := func() error {
+		stopCtx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)
+		defer cancel()
+		return r.Stop(stopCtx)
+	}
+
+	urt := r.UnifiedRuntime()
+	if urt == nil {
+		return stop()
+	}
+
+	// Subscribe BEFORE probing InTurn so a turn-end that fires between the
+	// probe and the subscribe cannot be missed.
+	ch, unsub := urt.EventBus().SubscribeNamed("stop-after-turn", 8)
+	defer unsub()
+
+	if !r.InTurn() {
+		return stop()
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				// Bus closed → treat as terminal; tear down.
+				return stop()
+			}
+			switch ev.Type {
+			case runtimepkg.EventTurnCompleted,
+				runtimepkg.EventInterrupted,
+				runtimepkg.EventTurnFailed,
+				runtimepkg.EventBackendFaulted:
+				return stop()
+			}
+		case <-timer.C:
+			return stop()
+		case <-ctx.Done():
+			return stop()
+		}
+	}
+}
+
 // Wake brings an offline backend session back online. Expanded from the
 // QUM-601 in-place recover verb (QUM-724) — the accept-set is now the union
 // of liveness states that present as "offline-but-recoverable":

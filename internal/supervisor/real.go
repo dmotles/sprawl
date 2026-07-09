@@ -2089,10 +2089,17 @@ func (r *Real) ReportStatus(ctx context.Context, agentName, reportState, summary
 	if teardown {
 		if runtime, ok := r.startedRuntime(agentName); ok {
 			go func(rt *AgentRuntime) {
-				stopCtx, cancel := context.WithTimeout(context.Background(), runtimeStopTimeout)
-				defer cancel()
-				if err := rt.Stop(stopCtx); err != nil {
-					slog.Default().Warn("supervisor: ReportStatus runtime.Stop failed",
+				// QUM-866: defer the actual teardown to the genuine turn-end
+				// (or the runtimeStopTimeout runaway guard) so a follow-on
+				// send_message / trailing text the agent emits AFTER this
+				// terminal report — in the SAME turn — is not silently cut off
+				// by drainInflight. When the agent is already idle (the report
+				// was its last action), StopAfterTurn tears down immediately.
+				// The wait is bounded by runtimeStopTimeout; StopAfterTurn gives
+				// the final Stop its own fresh budget, so background ctx here
+				// carries no deadline of its own.
+				if err := rt.StopAfterTurn(context.Background(), runtimeStopTimeout); err != nil {
+					slog.Default().Warn("supervisor: ReportStatus runtime.StopAfterTurn failed",
 						slog.String("agent", agentName),
 						slog.String("state", reportState),
 						slog.Any("err", err))
