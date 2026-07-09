@@ -80,6 +80,26 @@ func MapProtocolMessage(msg *protocol.Message) tea.Msg {
 				PostTokens: cb.CompactMetadata.PostTokens,
 			}
 		}
+		// QUM-867: system/status frames report the compaction lifecycle around a
+		// /compact command. compact_result:"failed" surfaces a transient error
+		// toast; status:"compacting" surfaces a transient in-progress label;
+		// compact_result:"success" is ignored (the QUM-865 compact_boundary banner
+		// already covers the success path — no duplicate noise). Naturally inert on
+		// backends that never emit the frame, mirroring the compact_boundary branch
+		// (SupportsCompactCommand gating happens at command-availability time).
+		if msg.Subtype == "status" {
+			var cs protocol.CompactStatus
+			if err := json.Unmarshal(msg.Raw, &cs); err != nil {
+				return nil
+			}
+			if cs.CompactResult == "failed" {
+				return CompactFailedMsg{Error: cs.CompactError}
+			}
+			if cs.Status == "compacting" {
+				return CompactingStatusMsg{}
+			}
+			return nil
+		}
 		// QUM-385: system/init carries the model name, from which we derive the
 		// context window limit. Other system subtypes are still skipped.
 		if msg.Subtype == "init" {

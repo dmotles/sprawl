@@ -648,6 +648,21 @@ type CompactBoundaryMsg struct {
 	PostTokens int
 }
 
+// CompactingStatusMsg signals that the backend is compacting the conversation
+// (protocol system/status frame with status:"compacting", QUM-867). The reducer
+// shows a transient "compacting…" status-bar label so the in-progress window is
+// visible. Pump-delivered — the reducer must re-arm WaitForEvent (QUM-826).
+type CompactingStatusMsg struct{}
+
+// CompactFailedMsg signals that a /compact request failed (protocol
+// system/status frame with compact_result:"failed", QUM-867). Error is the
+// backend's compact_error string (may be empty). The reducer surfaces a
+// transient error toast. Pump-delivered — the reducer must re-arm WaitForEvent
+// (QUM-826).
+type CompactFailedMsg struct {
+	Error string
+}
+
 // AttachMsg carries a parsed `/attach` command (file paths + optional prompt)
 // from the palette to the AppModel, which dispatches it to the bridge's
 // SendAttachment. File I/O and validation happen off the UI thread inside the

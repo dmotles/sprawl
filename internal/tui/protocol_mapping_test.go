@@ -273,6 +273,73 @@ func TestMapProtocolMessage_UnknownType(t *testing.T) {
 	}
 }
 
+// TestMapProtocolMessage_SystemStatus_Compacting proves the in-progress
+// status frame maps to CompactingStatusMsg (QUM-867).
+func TestMapProtocolMessage_SystemStatus_Compacting(t *testing.T) {
+	raw := `{"type":"system","subtype":"status","status":"compacting","session_id":"s1"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := MapProtocolMessage(&msg)
+	if _, ok := result.(CompactingStatusMsg); !ok {
+		t.Fatalf("system/status compacting returned %T, want CompactingStatusMsg", result)
+	}
+}
+
+// TestMapProtocolMessage_SystemStatus_Failed proves the failure status frame
+// maps to CompactFailedMsg carrying the compact_error (QUM-867).
+func TestMapProtocolMessage_SystemStatus_Failed(t *testing.T) {
+	raw := `{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Not enough messages to compact.","session_id":"s1"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := MapProtocolMessage(&msg)
+	failed, ok := result.(CompactFailedMsg)
+	if !ok {
+		t.Fatalf("system/status failed returned %T, want CompactFailedMsg", result)
+	}
+	if failed.Error != "Not enough messages to compact." {
+		t.Errorf("Error = %q, want %q", failed.Error, "Not enough messages to compact.")
+	}
+}
+
+// TestMapProtocolMessage_SystemStatus_Success proves the success status frame
+// is ignored — the QUM-865 compact_boundary banner already covers success, so
+// no duplicate toast/label noise (QUM-867).
+func TestMapProtocolMessage_SystemStatus_Success(t *testing.T) {
+	raw := `{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s1"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	if result := MapProtocolMessage(&msg); result != nil {
+		t.Errorf("system/status success returned %T, want nil", result)
+	}
+}
+
+// TestMapProtocolMessage_SystemStatus_EmptyDefensive proves a status frame with
+// neither compact_result nor status:"compacting" is ignored (QUM-867).
+func TestMapProtocolMessage_SystemStatus_EmptyDefensive(t *testing.T) {
+	raw := `{"type":"system","subtype":"status","status":null,"session_id":"s1"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	if result := MapProtocolMessage(&msg); result != nil {
+		t.Errorf("system/status empty returned %T, want nil", result)
+	}
+}
+
 func TestMapProtocolMessage_SystemInit_EmitsModel(t *testing.T) {
 	// QUM-385: system/init now emits SessionModelMsg so the TUI can derive
 	// the context window limit from the model name.

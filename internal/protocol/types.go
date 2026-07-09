@@ -129,6 +129,24 @@ func firstNonNilInt(ptrs ...*int) int {
 	return 0
 }
 
+// CompactStatus is a compaction lifecycle status frame (type=system,
+// subtype=status) emitted by Claude Code around a /compact command (QUM-867).
+// The live CLI (verified 2.1.198) emits an in-progress frame
+// (`status:"compacting"`) followed by a terminal frame carrying
+// `compact_result` ("success" | "failed"); on failure `compact_error` holds the
+// reason (e.g. "Not enough messages to compact."). A success frame precedes the
+// compact_boundary banner (handled in QUM-865) and is ignored by the TUI. All
+// fields are snake_case on the wire; `status` is JSON null on the terminal
+// frame, which unmarshals to the empty string.
+type CompactStatus struct {
+	Type          string `json:"type"`
+	Subtype       string `json:"subtype"`
+	Status        string `json:"status"`
+	CompactResult string `json:"compact_result"`
+	CompactError  string `json:"compact_error"`
+	SessionID     string `json:"session_id,omitempty"`
+}
+
 // AssistantMessage contains a complete assistant turn (type=assistant).
 // The Content field holds the Anthropic API message object as raw JSON.
 type AssistantMessage struct {

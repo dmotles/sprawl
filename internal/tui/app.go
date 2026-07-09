@@ -1114,6 +1114,43 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case CompactingStatusMsg:
+		// QUM-867: the backend is compacting. Show a transient "compacting…"
+		// status-bar label so the in-progress window is visible (compaction can
+		// take seconds to minutes on a large context). The label is transient:
+		// the terminal SessionResultMsg that ends the /compact turn overwrites it
+		// with the "Completed in …" label, and CompactFailedMsg clears it on the
+		// failure path — so it does not linger past the compaction turn.
+		// Pump-delivered — re-arm WaitForEvent (QUM-826).
+		m.statusBar.SetTransientLabel("compacting…")
+		if m.bridge != nil {
+			return m, m.bridge.WaitForEvent()
+		}
+		return m, nil
+
+	case CompactFailedMsg:
+		// QUM-867: /compact failed (e.g. "Not enough messages to compact.") —
+		// surface a transient error toast instead of the silent no-op the user
+		// used to get. Fall back to a bare "compaction failed" when the backend
+		// omits compact_error. Clear any in-progress "compacting…" label so the
+		// status bar and the toast don't assert contradictory state. Pump-delivered
+		// — batch the toast's auto-dismiss cmd with the WaitForEvent re-arm
+		// (QUM-826) so neither is dropped.
+		text := "compaction failed"
+		if msg.Error != "" {
+			text = fmt.Sprintf("compaction failed: %s", msg.Error)
+		}
+		m.statusBar.SetTransientLabel("")
+		cmd := m.toasts.Spawn(Toast{
+			Text:      text,
+			Style:     ToastError,
+			DismissOn: TimerDismiss(6 * time.Second),
+		})
+		if m.bridge != nil {
+			return m, tea.Batch(cmd, m.bridge.WaitForEvent())
+		}
+		return m, cmd
+
 	case AttachMsg:
 		// QUM-860: dispatch a parsed /attach command. File I/O + validation run
 		// off the UI thread inside SendAttachment's tea.Cmd; a local validation

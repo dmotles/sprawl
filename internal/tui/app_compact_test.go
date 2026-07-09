@@ -114,6 +114,101 @@ func TestUpdate_CompactBoundaryMsg_KeepsQueuedFollowups(t *testing.T) {
 	}
 }
 
+// TestUpdate_CompactingStatusMsg_SetsTransientLabel proves an in-progress
+// compaction status frame surfaces a transient "compacting…" status-bar label
+// and re-arms the pump (QUM-867).
+func TestUpdate_CompactingStatusMsg_SetsTransientLabel(t *testing.T) {
+	bridge := newFakeSessionBackend()
+	bridge.SetContinuous(true)
+	app := readyRoutingApp(t, bridge)
+
+	updated, cmd := app.Update(CompactingStatusMsg{})
+	app = updated.(AppModel)
+
+	if got := app.statusBar.TransientLabel(); !strings.Contains(got, "compacting") {
+		t.Errorf("TransientLabel = %q, want it to contain %q", got, "compacting")
+	}
+	if cmd == nil {
+		t.Fatal("CompactingStatusMsg returned nil cmd; expected a WaitForEvent re-arm")
+	}
+	if bridge.waitCalls != 1 {
+		t.Errorf("CompactingStatusMsg waitCalls = %d, want 1 (re-arm pump)", bridge.waitCalls)
+	}
+}
+
+// TestUpdate_CompactFailedMsg_SpawnsErrorToast proves a failed compaction
+// status frame surfaces a transient error toast "compaction failed: <error>"
+// and re-arms the pump (QUM-867).
+func TestUpdate_CompactFailedMsg_SpawnsErrorToast(t *testing.T) {
+	bridge := newFakeSessionBackend()
+	bridge.SetContinuous(true)
+	app := readyRoutingApp(t, bridge)
+
+	updated, cmd := app.Update(CompactFailedMsg{Error: "Not enough messages to compact."})
+	app = updated.(AppModel)
+
+	toasts := app.toasts.Toasts()
+	if len(toasts) != 1 {
+		t.Fatalf("expected 1 toast after CompactFailedMsg, got %d", len(toasts))
+	}
+	got := toasts[0]
+	if got.Text != "compaction failed: Not enough messages to compact." {
+		t.Errorf("toast.Text = %q, want %q", got.Text, "compaction failed: Not enough messages to compact.")
+	}
+	if got.Style != ToastError {
+		t.Errorf("toast.Style = %v, want ToastError", got.Style)
+	}
+	if cmd == nil {
+		t.Fatal("CompactFailedMsg returned nil cmd; expected a WaitForEvent re-arm")
+	}
+	if bridge.waitCalls != 1 {
+		t.Errorf("CompactFailedMsg waitCalls = %d, want 1 (re-arm pump)", bridge.waitCalls)
+	}
+}
+
+// TestUpdate_CompactFailedMsg_ClearsCompactingLabel proves the failure reducer
+// clears a lingering "compacting…" transient label so the status bar and the
+// error toast never assert contradictory state (QUM-867).
+func TestUpdate_CompactFailedMsg_ClearsCompactingLabel(t *testing.T) {
+	bridge := newFakeSessionBackend()
+	bridge.SetContinuous(true)
+	app := readyRoutingApp(t, bridge)
+
+	// The in-progress frame sets the "compacting…" label first.
+	updated, _ := app.Update(CompactingStatusMsg{})
+	app = updated.(AppModel)
+	if got := app.statusBar.TransientLabel(); !strings.Contains(got, "compacting") {
+		t.Fatalf("precondition: TransientLabel = %q, want it to contain %q", got, "compacting")
+	}
+
+	updated, _ = app.Update(CompactFailedMsg{Error: "Not enough messages to compact."})
+	app = updated.(AppModel)
+
+	if got := app.statusBar.TransientLabel(); got != "" {
+		t.Errorf("TransientLabel = %q after CompactFailedMsg, want cleared", got)
+	}
+}
+
+// TestUpdate_CompactFailedMsg_EmptyError_GenericMessage proves a failed
+// compaction frame with no compact_error renders a bare "compaction failed"
+// (no trailing ": ") rather than a dangling prefix (QUM-867).
+func TestUpdate_CompactFailedMsg_EmptyError_GenericMessage(t *testing.T) {
+	bridge := newFakeSessionBackend()
+	bridge.SetContinuous(true)
+	app := readyRoutingApp(t, bridge)
+
+	updated, _ := app.Update(CompactFailedMsg{Error: ""})
+	app = updated.(AppModel)
+
+	toasts := app.toasts.Toasts()
+	if len(toasts) != 1 {
+		t.Fatalf("expected 1 toast after CompactFailedMsg, got %d", len(toasts))
+	}
+	if got := toasts[0].Text; got != "compaction failed" {
+		t.Errorf("toast.Text = %q, want %q", got, "compaction failed")
+	}
+}
+
 // TestUpdate_PassthroughMsg_ForwardsVerbatimNoPending proves a PassthroughMsg
 // forwards the full line to the backend via SendPassthrough and creates NO
 // pending-zone entry (the phantom-queued fix, QUM-865).

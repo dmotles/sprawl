@@ -756,12 +756,29 @@ func (s *session) runReader(ctx context.Context) {
 			}
 		}
 
+		// QUM-867: the manual /compact wire order emits the compaction status
+		// frames (status:"compacting", then compact_result) BEFORE the autonomous
+		// system/init, so tf==nil and they would otherwise be dropped as stray
+		// telemetry — making the failure toast / in-progress label dead on the live
+		// path. Route them like the task_notification pre-init trigger: deliver
+		// immediately (PreInit → publish-only in routeFrame) WITHOUT allocating a
+		// turnFrame or gating StartTurn (no QUM-570 deadlock). Narrowed to the
+		// compaction frames only (compact_result set, or status:"compacting") so the
+		// gate is not broadened to all pre-init system/status telemetry.
+		preInitCompactStatus := false
+		if tf == nil && msg.Type == "system" && msg.Subtype == "status" {
+			var cs protocol.CompactStatus
+			if protocol.ParseAs(msg, &cs) == nil && (cs.CompactResult != "" || cs.Status == "compacting") {
+				preInitCompactStatus = true
+			}
+		}
+
 		// Single route point. Frames belonging to a turn (sprawl or autonomous),
 		// a pre-init autonomous trigger, and isReplay consumption echoes flow to
 		// the runtime frame router. Stray telemetry is observer-only.
-		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger || replayEcho) {
+		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger || preInitCompactStatus || replayEcho) {
 			autonomous := tf == nil || tf.autonomous
-			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger, Replay: replayEcho})
+			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger || preInitCompactStatus, Replay: replayEcho})
 		}
 
 		if tf != nil && tf.subscriber != nil {

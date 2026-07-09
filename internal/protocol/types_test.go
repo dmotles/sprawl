@@ -506,6 +506,66 @@ func TestCompactBoundary_Unmarshal(t *testing.T) {
 	}
 }
 
+// TestCompactStatus_UnmarshalCompacting locks in the in-progress status frame
+// emitted while /compact runs (live CLI 2.1.198, QUM-867). status:"compacting",
+// no compact_result yet.
+func TestCompactStatus_UnmarshalCompacting(t *testing.T) {
+	raw := `{"type":"system","subtype":"status","status":"compacting","session_id":"s1"}`
+	var cs CompactStatus
+	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cs.Type != "system" || cs.Subtype != "status" {
+		t.Errorf("Type/Subtype = %q/%q, want system/status", cs.Type, cs.Subtype)
+	}
+	if cs.Status != "compacting" {
+		t.Errorf("Status = %q, want compacting", cs.Status)
+	}
+	if cs.CompactResult != "" {
+		t.Errorf("CompactResult = %q, want empty", cs.CompactResult)
+	}
+}
+
+// TestCompactStatus_UnmarshalFailed locks in the failure status frame
+// (QUM-867). status is JSON null (→ "") and compact_result:"failed" carries a
+// compact_error message. Proves the null status parses defensively.
+func TestCompactStatus_UnmarshalFailed(t *testing.T) {
+	raw := `{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Not enough messages to compact.","session_id":"s1"}`
+	var cs CompactStatus
+	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cs.Status != "" {
+		t.Errorf("Status = %q, want empty (null)", cs.Status)
+	}
+	if cs.CompactResult != "failed" {
+		t.Errorf("CompactResult = %q, want failed", cs.CompactResult)
+	}
+	if cs.CompactError != "Not enough messages to compact." {
+		t.Errorf("CompactError = %q, want %q", cs.CompactError, "Not enough messages to compact.")
+	}
+}
+
+// TestCompactStatus_UnmarshalSuccess locks in the success status frame, which
+// precedes the compact_boundary banner and is intentionally ignored by the TUI
+// mapping (QUM-867).
+func TestCompactStatus_UnmarshalSuccess(t *testing.T) {
+	raw := `{"type":"system","subtype":"status","status":null,"compact_result":"success","session_id":"s1"}`
+	var cs CompactStatus
+	if err := json.Unmarshal([]byte(raw), &cs); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if cs.CompactResult != "success" {
+		t.Errorf("CompactResult = %q, want success", cs.CompactResult)
+	}
+	if cs.Status != "" {
+		t.Errorf("Status = %q, want empty (null)", cs.Status)
+	}
+	if cs.CompactError != "" {
+		t.Errorf("CompactError = %q, want empty", cs.CompactError)
+	}
+}
+
 // TestCompactBoundary_UnmarshalAuto covers the auto-compaction trigger, which
 // fires with no preceding user submission (QUM-865).
 func TestCompactBoundary_UnmarshalAuto(t *testing.T) {

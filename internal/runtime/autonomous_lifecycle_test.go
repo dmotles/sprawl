@@ -194,6 +194,48 @@ func TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn(t *testing.T) {
 	}
 }
 
+// TestUnifiedRuntime_PreInitCompactStatus_PublishedNoTurn (QUM-867): the
+// compaction status frames (status:"compacting" / compact_result:"failed")
+// arrive BEFORE system/init on the manual /compact path. They must be published
+// as EventProtocolMessage (so the TUI's MapProtocolMessage can surface the
+// "compacting…" label / "compaction failed" toast) but must NOT open a turn —
+// they route via the PreInit publish-only path, exactly like a lone
+// task_notification trigger.
+func TestUnifiedRuntime_PreInitCompactStatus_PublishedNoTurn(t *testing.T) {
+	const (
+		compacting    = `{"type":"system","subtype":"status","status":"compacting","session_id":"sess-auto"}`
+		compactFailed = `{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Not enough messages to compact.","session_id":"sess-auto"}`
+	)
+	rt, transport := newAutonomousRuntime(t)
+	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
+	defer unsub()
+
+	transport.feed(t, compacting)
+	transport.feed(t, compactFailed)
+
+	var statusFrames int
+	deadline := time.After(2 * time.Second)
+	for statusFrames < 2 {
+		select {
+		case ev := <-ch:
+			switch ev.Type {
+			case EventProtocolMessage:
+				if ev.Message != nil && ev.Message.Type == "system" && ev.Message.Subtype == "status" {
+					statusFrames++
+				}
+			case EventTurnStarted:
+				t.Fatal("pre-init compaction status frame emitted EventTurnStarted (turn opened spuriously)")
+			}
+		case <-deadline:
+			t.Fatalf("compaction status frames were not published as EventProtocolMessage (saw %d/2)", statusFrames)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	if rt.State().InTurn {
+		t.Fatal("InTurn leaked true after pre-init compaction status frames")
+	}
+}
+
 // TestUnifiedRuntime_TaskNotification_ServicedDedup: a second turn re-observing
 // the SAME task_id must NOT write another continuation (QUM-807 dedup, now
 // wholly within the router since the cross-boundary turnloop is gone).
