@@ -1,6 +1,6 @@
 # Tab Panel-Cycling Audit (QUM-694)
 
-> **SUPERSEDED by [QUM-695](https://linear.app/qumulo-dmotles/issue/QUM-695) — 2026-06-05.**
+> **SUPERSEDED by QUM-695 — 2026-06-05.**
 > The audit landed on option (b) "drop the hint, keep cycling"; dmotles
 > immediately escalated to option (c) "delete cycling outright" since
 > viewport yank-mode (the sole behavior cycling unlocked) was never used.

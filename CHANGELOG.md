@@ -10,33 +10,33 @@ not strictly semver while we are pre-1.0.
 
 ### Added
 
-- **Toast notification subsystem** ([QUM-649], [QUM-651], [QUM-701]) — bordered floating overlays for transient TUI events. Three wired consumers: recovery (post-resume "recovered N agents"), interrupt (Esc during streaming), and terminal-fault (agent-side error). Ctrl+T dismisses all toasts.
-- **`sprawl debug colors`** ([QUM-698]) — palette × visual-treatment grid viewer. First child under a new `sprawl debug` parent command group reserved for future diagnostics.
-- **Live pprof endpoint** ([QUM-678]) — `--pprof` flag and `SPRAWL_PPROF_ADDR` env on `sprawl enter` expose net/http/pprof at /debug/pprof for live perf inspection.
-- **Keyboard scroll in chat** ([QUM-653]) — PgUp / PgDn / Home / End and Up / Down (when input is empty) scroll the chat region. Mouse capture removed so terminal-native text selection (Cmd+C, tmux copy-mode, Shift+drag) now works without a modal toggle.
+- **Toast notification subsystem** (QUM-649, QUM-651, QUM-701) — bordered floating overlays for transient TUI events. Three wired consumers: recovery (post-resume "recovered N agents"), interrupt (Esc during streaming), and terminal-fault (agent-side error). Ctrl+T dismisses all toasts.
+- **`sprawl debug colors`** (QUM-698) — palette × visual-treatment grid viewer. First child under a new `sprawl debug` parent command group reserved for future diagnostics.
+- **Live pprof endpoint** (QUM-678) — `--pprof` flag and `SPRAWL_PPROF_ADDR` env on `sprawl enter` expose net/http/pprof at /debug/pprof for live perf inspection.
+- **Keyboard scroll in chat** (QUM-653) — PgUp / PgDn / Home / End and Up / Down (when input is empty) scroll the chat region. Mouse capture removed so terminal-native text selection (Cmd+C, tmux copy-mode, Shift+drag) now works without a modal toggle.
 
 ### Changed
 
-- **Toast positioning and styling** ([QUM-701]) — toasts now render as rounded-border boxes, horizontally centered below the SPRAWL header (previously top-right text strips). Stack vertically; remaining toasts shift up when one dismisses. Info toasts track the configured accent (`Palette.Primary`); warning/error toasts keep their respective palette colors.
-- **Palette swap** ([QUM-700]) — `Palette.Accent` moved from ANSI 39 → 51 (cyan); `Palette.Info` moved 51 → 39 (cyan-blue). Keeps `Accent` visually distinct from a user-customized `Primary`.
-- **Header strip** ([QUM-656], [QUM-657], [QUM-689], [QUM-694], [QUM-695]) — SPRAWL wordmark + orbital agent tree port. Activity pane removed; tree column gone from main row; `?`-as-help dropped (F1 canonical). Anchor `──●` hidden when the root has no children.
-- **ChatList sole render path** ([QUM-673], [QUM-676], [QUM-677], [QUM-693]) — `internal/tui/viewport.go` (3453 LOC) and the `ViewportModel` facade (340 LOC) deleted. Yank-mode, `activePanel`, and Tab cycling all removed. Single-responsibility chat rendering.
-- **Error surfaces** ([QUM-680]) — `agentops.TerminalAgentError` produces clearer Peek / SendMessage / Retire error messages.
-- **`Real.Status` disk fallback** ([QUM-682]) — uses streaming `ReadActivityTail` instead of slurping the whole activity log.
+- **Toast positioning and styling** (QUM-701) — toasts now render as rounded-border boxes, horizontally centered below the SPRAWL header (previously top-right text strips). Stack vertically; remaining toasts shift up when one dismisses. Info toasts track the configured accent (`Palette.Primary`); warning/error toasts keep their respective palette colors.
+- **Palette swap** (QUM-700) — `Palette.Accent` moved from ANSI 39 → 51 (cyan); `Palette.Info` moved 51 → 39 (cyan-blue). Keeps `Accent` visually distinct from a user-customized `Primary`.
+- **Header strip** (QUM-656, QUM-657, QUM-689, QUM-694, QUM-695) — SPRAWL wordmark + orbital agent tree port. Activity pane removed; tree column gone from main row; `?`-as-help dropped (F1 canonical). Anchor `──●` hidden when the root has no children.
+- **ChatList sole render path** (QUM-673, QUM-676, QUM-677, QUM-693) — `internal/tui/viewport.go` (3453 LOC) and the `ViewportModel` facade (340 LOC) deleted. Yank-mode, `activePanel`, and Tab cycling all removed. Single-responsibility chat rendering.
+- **Error surfaces** (QUM-680) — `agentops.TerminalAgentError` produces clearer Peek / SendMessage / Retire error messages.
+- **`Real.Status` disk fallback** (QUM-682) — uses streaming `ReadActivityTail` instead of slurping the whole activity log.
 
 ### Fixed
 
-- **Interrupt toast race-with-self** ([QUM-697]) — `ConditionDismiss` cleared the interrupt toast in the same event-loop pass it was spawned, so it never rendered. Switched to `TimerDismiss(2s)`.
-- **Tree pivot for empty roots** ([QUM-686]) — root with no children no longer renders a dangling anchor.
-- **Transient-label clear rules documented** ([QUM-690]) — long-standing comment debt resolved.
+- **Interrupt toast race-with-self** (QUM-697) — `ConditionDismiss` cleared the interrupt toast in the same event-loop pass it was spawned, so it never rendered. Switched to `TimerDismiss(2s)`.
+- **Tree pivot for empty roots** (QUM-686) — root with no children no longer renders a dangling anchor.
+- **Transient-label clear rules documented** (QUM-690) — long-standing comment debt resolved.
 
 ### Removed
 
-- **`sprawl input-debug`** ([QUM-699]) — QUM-608-era hidden paste-coalesce diagnostic deleted. `Coalescer.Done()` removed (no other consumers). Helper `isStdinTTY` inlined into `cmd/enter.go`.
+- **`sprawl input-debug`** (QUM-699) — QUM-608-era hidden paste-coalesce diagnostic deleted. `Coalescer.Done()` removed (no other consumers). Helper `isStdinTTY` inlined into `cmd/enter.go`.
 
 ### Deprecated
 
-- **Legacy CLI commands now emit deprecation warnings** ([QUM-337]). Phase 2.1
+- **Legacy CLI commands now emit deprecation warnings** (QUM-337). Phase 2.1
   of the M13 TUI cutover begins steering humans and agents toward the
   `sprawl_*` MCP tool surface that has matured to cover the full
   agent-callable workflow. Every invocation of the following CLI forms now
@@ -77,26 +77,3 @@ not strictly semver while we are pre-1.0.
   the `handoff` MCP tool to stop self-inflicted warning noise from
   agent-prompted CLI calls.
 
-[QUM-337]: https://linear.app/qumulo-dmotles/issue/QUM-337
-[QUM-649]: https://linear.app/qumulo-dmotles/issue/QUM-649
-[QUM-651]: https://linear.app/qumulo-dmotles/issue/QUM-651
-[QUM-653]: https://linear.app/qumulo-dmotles/issue/QUM-653
-[QUM-656]: https://linear.app/qumulo-dmotles/issue/QUM-656
-[QUM-657]: https://linear.app/qumulo-dmotles/issue/QUM-657
-[QUM-673]: https://linear.app/qumulo-dmotles/issue/QUM-673
-[QUM-676]: https://linear.app/qumulo-dmotles/issue/QUM-676
-[QUM-677]: https://linear.app/qumulo-dmotles/issue/QUM-677
-[QUM-678]: https://linear.app/qumulo-dmotles/issue/QUM-678
-[QUM-680]: https://linear.app/qumulo-dmotles/issue/QUM-680
-[QUM-682]: https://linear.app/qumulo-dmotles/issue/QUM-682
-[QUM-686]: https://linear.app/qumulo-dmotles/issue/QUM-686
-[QUM-689]: https://linear.app/qumulo-dmotles/issue/QUM-689
-[QUM-690]: https://linear.app/qumulo-dmotles/issue/QUM-690
-[QUM-693]: https://linear.app/qumulo-dmotles/issue/QUM-693
-[QUM-694]: https://linear.app/qumulo-dmotles/issue/QUM-694
-[QUM-695]: https://linear.app/qumulo-dmotles/issue/QUM-695
-[QUM-697]: https://linear.app/qumulo-dmotles/issue/QUM-697
-[QUM-698]: https://linear.app/qumulo-dmotles/issue/QUM-698
-[QUM-699]: https://linear.app/qumulo-dmotles/issue/QUM-699
-[QUM-700]: https://linear.app/qumulo-dmotles/issue/QUM-700
-[QUM-701]: https://linear.app/qumulo-dmotles/issue/QUM-701

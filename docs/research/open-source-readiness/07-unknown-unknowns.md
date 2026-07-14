@@ -48,7 +48,7 @@ The root `CLAUDE.md` (read by Claude Code on startup) contains:
 2. **Repo layout** — `cmd/`, `internal/agent/`, `internal/state/`, etc.
 3. **Code patterns** — Dependency injection via `deps` struct, test requirements
 4. **Skill references** — `/testing-practices`, `/go-cli-best-practices`, `/cli-ux-best-practices`, `/e2e-testing-sandboxing`
-5. **Linear issue tracking** — Team "Qumulo-dmotles", prefix "QUM"
+5. **Linear issue tracking** — an employer-named team slug, prefix "QUM"
 6. **Agent spawning conventions** — Example commands, branch naming
 7. **Session handoff** — `/handoff` skill usage
 8. **Migration notes** — M12 merge/retire workflow changes
@@ -57,11 +57,11 @@ The root `CLAUDE.md` (read by Claude Code on startup) contains:
 
 **Low risk, but needs review.** CLAUDE.md is a legitimate file for Claude Code users. However:
 
-- References to "Qumulo-dmotles" team and "QUM" prefix are internal identifiers
+- The employer-named team slug and "QUM" prefix are internal identifiers
 - Skill references (e.g., `/linear-issues`) assume a specific Claude Code configuration
 - The `.claude/settings.json` and `.claude/skills/` directories are committed to the repo
 
-**Recommendation:** CLAUDE.md can stay as-is — it's genuinely useful for any Claude Code user working on the project. The Linear team name could be updated post-rename. Skills are additive and harmless.
+**Recommendation:** CLAUDE.md can stay as-is — it's genuinely useful for any Claude Code user working on the project. **Resolved:** the employer name has since been moved to the gitignored `CLAUDE.local.md` and scrubbed from the entire tracked tree (QUM-873); the QUM-872 guard (`scripts/guard-employer-leak`) blocks re-introduction. The opaque "QUM" prefix is retained. Skills are additive and harmless.
 
 ## 3. .sprawl/ Runtime State
 
@@ -144,7 +144,7 @@ I compared sprawl's community files against three well-known Go CLI projects:
 | Location | Reference | Issue |
 |---|---|---|
 | `go.mod` | `github.com/dmotles/sprawl` | Module path — must match actual GitHub org/repo |
-| `CLAUDE.md` | "Qumulo-dmotles" team | Internal team name in Linear |
+| `CLAUDE.local.md` (gitignored) | employer-named team slug | Internal team name in Linear — scrubbed from tracked tree (QUM-873) |
 | `CLAUDE.md` | "QUM" issue prefix | Internal Linear project prefix |
 | `.mcp.json` | `https://mcp.linear.app/mcp` | Linear MCP server — internal workflow |
 | `.claude/settings.json` | Linear tool permissions | Internal workflow config |

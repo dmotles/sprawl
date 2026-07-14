@@ -5,7 +5,7 @@
 **Author:** ghost
 **Date:** 2026-06-03
 **Branch:** `dmotles/qum-669-design`
-**Tracks:** [QUM-669](https://linear.app/qumulo-dmotles/issue/QUM-669)
+**Tracks:** QUM-669
 
 ---
 

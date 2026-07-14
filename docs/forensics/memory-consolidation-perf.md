@@ -1,6 +1,6 @@
 # Forensics: Why is "consolidating timeline" + "updating persistent knowledge" slow?
 
-**Issue:** [QUM-278](https://linear.app/qumulo-dmotles/issue/QUM-278) — investigation of the two slow, opaque steps that run during handoff finalization (and any root-loop restart that triggers the consolidation pipeline).
+**Issue:** QUM-278 — investigation of the two slow, opaque steps that run during handoff finalization (and any root-loop restart that triggers the consolidation pipeline).
 
 **Branch:** `dmotles/qum-278-memory-perf`
 **Scope:** research only — produces this doc, not code changes.

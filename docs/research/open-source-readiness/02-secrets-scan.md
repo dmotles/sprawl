@@ -21,20 +21,22 @@ Full scan of codebase and git history (181 commits at time of validation). **No 
 
 ### Items Requiring Attention
 
-#### 1. "Qumulo-dmotles" Linear team name
+#### 1. Employer name in the Linear team slug
 
-References internal/personal Linear workspace. Found in:
+The maintainer's employer name appeared as the Linear team slug (`<employer>-dmotles`), referencing an internal/personal Linear workspace. Originally found in:
 
 | File | Line | Content |
 |------|------|---------|
-| `CLAUDE.md` | 49 | `team **Qumulo-dmotles** (prefix: QUM)` |
+| `CLAUDE.md` | 49 | `team **<employer>-dmotles** (prefix: QUM)` |
 | `CLAUDE.md` | 64 | `--branch "dmotles/qum-42-broadcast-partial-failure"` |
-| `.claude/skills/linear-issues/SKILL.md` | 12 | `Team: Qumulo-dmotles (prefix: QUM)` |
-| `.claude/skills/linear-issues/SKILL.md` | 137 | `team: "Qumulo-dmotles"` |
+| `.claude/skills/linear-issues/SKILL.md` | 12 | `Team: <employer>-dmotles (prefix: QUM)` |
+| `.claude/skills/linear-issues/SKILL.md` | 137 | `team: "<employer>-dmotles"` |
 | `.claude/skills/go-cli-best-practices/SKILL.md` | 350 | `github.com/dmotles/sprawl` |
 | `.claude/skills/cli-ux-best-practices/SKILL.md` | 111 | `branch dmotles/qum-42 preserved` |
 
-**Decision:** Move to `CLAUDE.local.md` and `.gitignore` it. The Linear integration config (`.claude/skills/linear-issues/`) should also be excluded or parameterized.
+**Decision:** Employer-specific Linear config was moved to the gitignored `CLAUDE.local.md`.
+
+**Status (resolved):** The employer name has been scrubbed from the entire tracked tree (QUM-873) — `git grep -i` for it now returns zero. New occurrences are blocked going forward by the QUM-872 leak guard (`scripts/guard-employer-leak`: a pre-commit staged-diff scan plus a whole-tree CI scan against a gitignored forbidden-terms list). The opaque `QUM` issue prefix is retained (it does not reveal the employer name).
 
 #### 2. Personal email in git metadata
 
@@ -86,7 +88,7 @@ Lines 51–52 contain commented-out references to `linear.url` and `linear.api-k
 
 ## Action Items
 
-- [ ] Move Qumulo/Linear-specific config to `CLAUDE.local.md`
+- [x] Move employer/Linear-specific config to `CLAUDE.local.md` (done; tracked-tree employer-name scrub completed in QUM-873, enforced by the QUM-872 guard)
 - [ ] Add `CLAUDE.local.md` to `.gitignore`
 - [ ] Decide on public email/identity before first public push
 - [ ] Scrub git history with `git filter-repo` to replace personal email

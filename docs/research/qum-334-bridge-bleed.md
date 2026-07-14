@@ -3,7 +3,7 @@
 **Status:** Design / research — not yet committed to an implementation.
 **Author:** ghost (research agent)
 **Date:** 2026-04-27
-**Linear:** [QUM-334](https://linear.app/qumulo-dmotles/issue/QUM-334)
+**Linear:** QUM-334
 **Related:** QUM-279 (multi-agent observation), QUM-323 (drain-commit), QUM-331 (respawn pollution), QUM-332 (child transcript tail)
 
 ---

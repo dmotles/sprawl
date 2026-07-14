@@ -6,7 +6,7 @@ the next session's system prompt. It replaces the earlier
 LLM-driven-distillation pipeline (see `docs/forensics/memory-consolidation-perf.md`)
 that proved unstable as session count grew.
 
-Tracked under umbrella issue [QUM-513]; cutover landed in [QUM-517].
+Tracked under umbrella issue QUM-513; cutover landed in QUM-517.
 
 ## Tiers
 
@@ -146,16 +146,11 @@ The script is intentionally non-destructive: it never overwrites the live
 
 ## See also
 
-- [QUM-513] — umbrella issue (re-architecture rationale).
-- [QUM-514] — slice 1: `regenerate-timeline` command.
-- [QUM-515] — slice 2: `AppendSession` production path.
-- [QUM-516] — slice 3: arc summarizer + hidden CLIs.
-- [QUM-517] — slice 4: cutover (this document).
+- QUM-513 — umbrella issue (re-architecture rationale).
+- QUM-514 — slice 1: `regenerate-timeline` command.
+- QUM-515 — slice 2: `AppendSession` production path.
+- QUM-516 — slice 3: arc summarizer + hidden CLIs.
+- QUM-517 — slice 4: cutover (this document).
 - `docs/forensics/memory-consolidation-perf.md` — historical analysis of why
   the old pipeline failed.
 
-[QUM-513]: https://linear.app/qumulo-dmotles/issue/QUM-513
-[QUM-514]: https://linear.app/qumulo-dmotles/issue/QUM-514
-[QUM-515]: https://linear.app/qumulo-dmotles/issue/QUM-515
-[QUM-516]: https://linear.app/qumulo-dmotles/issue/QUM-516
-[QUM-517]: https://linear.app/qumulo-dmotles/issue/QUM-517

@@ -4,7 +4,7 @@
 
 **Status:** Implemented (post-MCP migration)
 **Author:** ghost (researcher agent)
-**Tracking issue:** [QUM-277](https://linear.app/qumulo-dmotles/issue/QUM-277/design-messaging-notification-overhaul-mcp-based-async-interrupt)
+**Tracking issue:** QUM-277
 **Date:** 2026-04-21
 **Related punchlist items:** `docs/todo/punchlist.md` #1 (messaging overhaul) and #2 (sidechain visibility)
 

@@ -5,7 +5,7 @@
 > historical.
 
 **Status:** research only (no code change). **Author:** ghost. **Date:** 2026-05-21.
-**Linear:** [QUM-617](https://linear.app/qumulo-dmotles/issue/QUM-617/tui-cannot-select-copy-text-from-viewport-mouse-capture-blocks-native).
+**Linear:** QUM-617.
 **HEAD verified:** `cb4dabb` (descendant of `6d108eb` on main).
 
 ---

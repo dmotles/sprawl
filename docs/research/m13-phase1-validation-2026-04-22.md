@@ -4,7 +4,7 @@
 
 Author: tower (manager agent)
 Integration branch: `dmotles/m13-tui-cutover`
-Milestone: [M13: TUI Cutover](https://linear.app/qumulo-dmotles/project/sprawl-e95da5e90751)
+Milestone: M13: TUI Cutover
 
 Phase 1 makes `sprawl enter` ready for daily-driver use. This doc captures the
 live evidence that every Phase 1 exit criterion is met.
@@ -13,12 +13,12 @@ live evidence that every Phase 1 exit criterion is met.
 
 | Issue | Title | Status | Squash |
 |---|---|---|---|
-| [QUM-311](https://linear.app/qumulo-dmotles/issue/QUM-311) | TUI inbox notifier | Done | 37f6a38 |
-| [QUM-205](https://linear.app/qumulo-dmotles/issue/QUM-205) | Weave root unread count | Done | 37f6a38 |
-| [QUM-235](https://linear.app/qumulo-dmotles/issue/QUM-235) | TUI identity + MCP-first prompt rewrite | Done | 116be1d |
-| [QUM-312](https://linear.app/qumulo-dmotles/issue/QUM-312) | TUI notify e2e test | Done | 7c6fd87 |
-| [QUM-313](https://linear.app/qumulo-dmotles/issue/QUM-313) | MCP surface audit (research) | Done | 0d63acf |
-| [QUM-260](https://linear.app/qumulo-dmotles/issue/QUM-260) | FinalizeHandoff off main goroutine | Done | a1e9005 |
+| QUM-311 | TUI inbox notifier | Done | 37f6a38 |
+| QUM-205 | Weave root unread count | Done | 37f6a38 |
+| QUM-235 | TUI identity + MCP-first prompt rewrite | Done | 116be1d |
+| QUM-312 | TUI notify e2e test | Done | 7c6fd87 |
+| QUM-313 | MCP surface audit (research) | Done | 0d63acf |
+| QUM-260 | FinalizeHandoff off main goroutine | Done | a1e9005 |
 
 All six are merged into `dmotles/m13-tui-cutover` and Linear-closed with
 evidence. `make validate` is green; `make test-notify-tui-e2e` reports
@@ -228,7 +228,7 @@ server. Two leak paths identified:
   notifier.
 
 No code shipped (Phase 2.5 deletes the whole legacy-notifier path anyway).
-Linear issue filed: [QUM-315](https://linear.app/qumulo-dmotles/issue/QUM-315)
+Linear issue filed: QUM-315
 as a subtask of QUM-195.
 
 This validation harness avoids the leak by writing `$SPRAWL_NAMESPACE` into

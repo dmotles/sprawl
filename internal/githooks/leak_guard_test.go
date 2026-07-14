@@ -1,12 +1,15 @@
 package githooks
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // leakGuardPath resolves the absolute path to the real scripts/guard-employer-leak
@@ -180,6 +183,84 @@ func TestLeakGuard_WholeTreeMode(t *testing.T) {
 	// Staged scan (nothing staged) passes — proves staged vs whole-tree split.
 	if out, err := runGuard(t, repo, list); err != nil {
 		t.Fatalf("expected staged scan with nothing staged to pass; output: %s", out)
+	}
+}
+
+// TestLeakGuard_WholeTreeReportsCategoryPerTerm proves the --all scan maps each
+// match back to the correct category (not just the first term's), reports the
+// right file:line, and never prints the term — even when a matching line itself
+// contains a ':' (the NUL-delimited git-grep parse must not misattribute the
+// path/lineno).
+func TestLeakGuard_WholeTreeReportsCategoryPerTerm(t *testing.T) {
+	repo := initRepoOnBranch(t, "feature", true)
+	list := writeList(t, "emp:ci:"+synthName, "id:exact:"+synthID)
+	// synthID lives on line 2, synthName on line 3; line 1 has an unrelated colon.
+	stageFile(t, repo, "doc.txt", "key: value\nident "+synthID+"\nname "+synthName+"\n")
+	if out, err := gitRun(t, repo, baseEnv(), "commit", "-m", "seed"); err != nil {
+		t.Fatalf("commit: %s: %v", out, err)
+	}
+
+	out, err := runGuard(t, repo, list, "--all")
+	if err == nil {
+		t.Fatalf("expected --all to catch committed terms; output: %s", out)
+	}
+	if !strings.Contains(out, "doc.txt:2: id") {
+		t.Errorf("expected exact-term match reported as %q; got: %s", "doc.txt:2: id", out)
+	}
+	if !strings.Contains(out, "doc.txt:3: emp") {
+		t.Errorf("expected ci-term match reported as %q; got: %s", "doc.txt:3: emp", out)
+	}
+	if strings.Contains(out, synthName) || strings.Contains(out, synthID) {
+		t.Errorf("guard leaked a forbidden term into --all output: %s", out)
+	}
+}
+
+// TestLeakGuard_WholeTreeScalesToLargeTree is the QUM-873 performance regression
+// guard: the original --all scan read every tracked file line-by-line in bash,
+// forking a subshell per line (O(files×lines×terms)), and timed out (>2min) over
+// the real tree. This builds a large CLEAN tree (no forbidden term, so every line
+// is scanned) and asserts the scan finishes well within a generous deadline. The
+// pure-bash implementation blows past it; a git-grep-based scan finishes in ~1s.
+func TestLeakGuard_WholeTreeScalesToLargeTree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping large-tree perf test in -short mode")
+	}
+	repo := initRepoOnBranch(t, "feature", true)
+	list := writeList(t, "emp:ci:"+synthName, "id:exact:"+synthID)
+
+	const files, lines = 300, 200
+	var body strings.Builder
+	for l := 0; l < lines; l++ {
+		fmt.Fprintf(&body, "clean line %d with no forbidden content here\n", l)
+	}
+	content := body.String()
+	for f := 0; f < files; f++ {
+		full := filepath.Join(repo, "gen", fmt.Sprintf("file_%03d.txt", f))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if out, err := gitRun(t, repo, baseEnv(), "add", "gen"); err != nil {
+		t.Fatalf("git add: %s: %v", out, err)
+	}
+	if out, err := gitRun(t, repo, baseEnv(), "commit", "-m", "large tree"); err != nil {
+		t.Fatalf("commit: %s: %v", out, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, leakGuardPath(t), "--all")
+	cmd.Dir = repo
+	cmd.Env = baseEnv("SPRAWL_FORBIDDEN_TERMS_FILE=" + list)
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		t.Fatalf("--all scan did not finish within deadline over a %dx%d clean tree (perf regression); output: %s", files, lines, out)
+	}
+	if err != nil {
+		t.Fatalf("expected clean large tree to pass --all; got error %v; output: %s", err, out)
 	}
 }
 

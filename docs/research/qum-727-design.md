@@ -3,7 +3,7 @@
 **Author:** scout (researcher)
 **Date:** 2026-06-09
 **Status:** design — implementation not started
-**Linear:** [QUM-727](https://linear.app/qumulo-dmotles/issue/QUM-727)
+**Linear:** QUM-727
 **Related:** QUM-606 (recover-live), QUM-625 (liveness/Status axis split), QUM-668 (terminal-outcome Status), QUM-638 (SIGTERM grace), QUM-669 (viewport resync)
 
 ---

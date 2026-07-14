@@ -3,7 +3,7 @@
 # QUM-386 regression investigation — 2026-05-21
 
 **Researcher**: ghost
-**Tracker**: [QUM-386](https://linear.app/qumulo-dmotles/issue/QUM-386/fix-parallel-agent-sub-agent-rendering-in-tui-viewport) — reopened by dmotles 2026-05-21
+**Tracker**: QUM-386 — reopened by dmotles 2026-05-21
 **Branch under analysis**: `main` @ HEAD (post-QUM-577, post-QUM-481, post-QUM-419)
 
 ## TL;DR

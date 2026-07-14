@@ -35,17 +35,13 @@ install:
 clean:
 	rm -f sprawl
 
-# QUM-872: whole-tree employer/cloud-leak scan. GATED OFF by default so it does
-# not break `make validate` while the tree still contains occurrences scrubbed
-# by QUM-873. Flip on by exporting SPRAWL_LEAK_SCAN_WHOLE_TREE=1 once the tree is
-# clean. The per-commit staged scan runs independently via scripts/pre-commit.
+# QUM-872: whole-tree employer/cloud-leak scan. Enabled by default now that the
+# tree has been scrubbed (QUM-873). The scan is a no-op when the gitignored
+# forbidden-terms list is absent, so it is safe in any checkout. The per-commit
+# staged scan runs independently via scripts/pre-commit.
 leak-scan:
-	@if [ -n "$$SPRAWL_LEAK_SCAN_WHOLE_TREE" ]; then \
-		echo "leak-scan (whole-tree): scanning tracked tree..."; \
-		scripts/guard-employer-leak --all; \
-	else \
-		echo "leak-scan (whole-tree): SKIPPED — export SPRAWL_LEAK_SCAN_WHOLE_TREE=1 to enable (QUM-873)"; \
-	fi
+	@echo "leak-scan (whole-tree): scanning tracked tree..."
+	@scripts/guard-employer-leak --all
 
 hooks:
 	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit

@@ -17,7 +17,7 @@ package tui
 //     deleted; a few are retained as documentation via the helper stubs.
 //
 // Reference: docs/designs/tui-structural-rewrite-plan.md §3 S5 + the
-// display-policy comment on https://linear.app/qumulo-dmotles/issue/QUM-675.
+// display-policy comment on QUM-675.
 
 import (
 	"errors"

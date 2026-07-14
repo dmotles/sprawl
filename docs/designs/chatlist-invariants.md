@@ -4,7 +4,7 @@
 **Author:** ghost (QUM-683)
 **Date:** 2026-06-04
 **Branch:** `dmotles/qum-683-chatlist-invariants-doc`
-**Tracks:** [QUM-683](https://linear.app/qumulo-dmotles/issue/QUM-683)
+**Tracks:** QUM-683
 **Companion to:** `docs/designs/tui-structural-rewrite-plan.md` (the arc plan)
 and `docs/designs/qum-669-viewport-wedge-recovery.md` (the portable seam).
 

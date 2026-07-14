@@ -2,7 +2,7 @@
 
 Date: 2026-05-20
 Author: ghost (Researcher)
-Tracking: [QUM-606](https://linear.app/qumulo-dmotles/issue/QUM-606)
+Tracking: QUM-606
 Related: QUM-601 (introduced `recover`), QUM-605 (pending-queue not drained),
 QUM-602 (fault banner does not re-fire).
 

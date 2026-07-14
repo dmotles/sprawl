@@ -4,8 +4,8 @@
 
 **Author:** ghost (researcher)
 **Date:** 2026-04-22
-**Linear:** [QUM-313](https://linear.app/qumulo-dmotles/issue/QUM-313)
-**Parent:** [QUM-195](https://linear.app/qumulo-dmotles/issue/QUM-195) / M13 (TUI Cutover)
+**Linear:** QUM-313
+**Parent:** QUM-195 / M13 (TUI Cutover)
 **Related:** `docs/research/tui-parity-audit-2026-04-22.md`
 
 ## Purpose
@@ -87,7 +87,7 @@ equivalent, and the delta. CLI surface extracted from `cmd/*.go`.
 
 **Consumers of CLI:** `internal/agent/prompt_mode.go` (5 refs) + golden testdata
   — the manager/root prompt still tells agents to run `sprawl spawn agent …`.
-  Prompt rewrite is already tracked in [QUM-235](https://linear.app/qumulo-dmotles/issue/QUM-235).
+  Prompt rewrite is already tracked in QUM-235.
 
 ### 2.2 `sprawl status` → `status` + `peek`
 
@@ -233,7 +233,7 @@ e2e test adaptation already contemplated under M13 Phase 2 items.
 
 **Delta / gap:** **LOW** (post-QUM-317).
 
-Resolved by [QUM-317](https://linear.app/qumulo-dmotles/issue/QUM-317):
+Resolved by QUM-317:
 - `cascade?: bool` now retires the agent and all descendants bottom-up
   (same semantics as `sprawl retire --cascade`).
 - `validate?: bool` (default true) inverts to `--no-validate` — only
@@ -333,7 +333,7 @@ Ordered by how much they block Phase 2 cutover.
    cascade they can't cleanly tear down subtrees. See §2.7.
 4. **Rewrite `internal/agent/prompt_mode.go` + golden testdata** to reference
    MCP tools instead of the outgoing CLIs. This is tracked as
-   [QUM-235](https://linear.app/qumulo-dmotles/issue/QUM-235) already — surface
+   QUM-235 already — surface
    here for visibility. Prompts currently advertise `sprawl spawn`, `sprawl
    delegate`, `sprawl messages`, `sprawl report`, `sprawl retire`, `sprawl
    kill`, `sprawl status`, `sprawl tree` to agents.
@@ -396,7 +396,7 @@ content that references each command.
 
 | Surface | Commands it references | Notes |
 | --- | --- | --- |
-| `internal/agent/prompt_mode.go` + `prompt_child_sections.go` + golden testdata | spawn, delegate, messages, report, retire, kill, status, tree | **Largest rewrite.** Golden test files under `internal/agent/testdata/*_tmux.golden` will be obsolete; `*_tui.golden` variants should become the only variant. Covered by [QUM-235](https://linear.app/qumulo-dmotles/issue/QUM-235). |
+| `internal/agent/prompt_mode.go` + `prompt_child_sections.go` + golden testdata | spawn, delegate, messages, report, retire, kill, status, tree | **Largest rewrite.** Golden test files under `internal/agent/testdata/*_tmux.golden` will be obsolete; `*_tui.golden` variants should become the only variant. Covered by QUM-235. |
 | `CLAUDE.md` (root) | init, report, messages | Validation section (§ "Validating Changes") hard-codes `make test-init-e2e` and `make test-notify-e2e`; both scripts go away in Phase 2. Rewrite to point at TUI-mode e2e equivalents. |
 | `DESCRIPTION.md` | init, messages, report, spawn, kill | User-facing overview. Needs a pass. |
 | `README.md` | init, handoff | Entry-point docs. |
@@ -452,9 +452,9 @@ content that references each command.
 - Phase 2 deprecation list: M13 milestone description (see issue QUM-313).
 - MCP tool source of truth: `internal/sprawlmcp/tools.go`.
 - Parent parity audit: `docs/research/tui-parity-audit-2026-04-22.md`.
-- Related Linear issues: [QUM-262](https://linear.app/qumulo-dmotles/issue/QUM-262)
-  (initial MCP tool implementation), [QUM-292](https://linear.app/qumulo-dmotles/issue/QUM-292)
-  (async messaging MCP tools), [QUM-235](https://linear.app/qumulo-dmotles/issue/QUM-235)
-  (prompt rewrite), [QUM-305](https://linear.app/qumulo-dmotles/issue/QUM-305)
-  / [QUM-309](https://linear.app/qumulo-dmotles/issue/QUM-309)
-  / [QUM-310](https://linear.app/qumulo-dmotles/issue/QUM-310) (legacy messaging).
+- Related Linear issues: QUM-262
+  (initial MCP tool implementation), QUM-292
+  (async messaging MCP tools), QUM-235
+  (prompt rewrite), QUM-305
+  / QUM-309
+  / QUM-310 (legacy messaging).

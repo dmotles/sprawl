@@ -144,14 +144,26 @@ if [[ "$mode" == "staged" ]]; then
 		# lines (a fail-open leak).
 	done < <(git -c core.quotePath=false diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/)
 else
-	while IFS= read -r -d '' f; do
-		n=0
-		while IFS= read -r cl || [[ -n "$cl" ]]; do
-			n=$((n + 1))
-			m="$(match_line "$cl")"
-			[[ -n "$m" ]] && violations+="  $f:$n: $m"$'\n'
-		done <"$f"
-	done < <(git ls-files -z)
+	# Whole-tree scan. Run one `git grep` per term (C-fast) instead of the old
+	# bash loop that read every tracked file line-by-line and forked a subshell
+	# per line (O(files×lines×terms)) — that timed out over the full tree
+	# (QUM-873). `git grep` searches the same set (tracked files), and:
+	#   -F  fixed string (term is literal, may contain regex metachars or ':')
+	#   -I  skip binary files (their NULs would break the field split anyway)
+	#   -n  line numbers
+	#   -z  NUL-delimit the filename and line-number fields, so a path or a
+	#       matching line containing ':' can't be misparsed — and we read only
+	#       the filename + line number, never the content (the term is never
+	#       printed). Record layout per match: filename\0lineno\0content\n
+	# Only an explicit "exact" is case-sensitive; anything else falls back to the
+	# broader case-insensitive (-i) match, mirroring match_line's fail-safe.
+	for i in "${!terms[@]}"; do
+		gopts=(--no-color -I -n -z -F)
+		[[ "${types[$i]}" != "exact" ]] && gopts+=(-i)
+		while IFS= read -r -d '' f && IFS= read -r -d '' n && IFS= read -r _; do
+			violations+="  $f:$n: ${cats[$i]}"$'\n'
+		done < <(git grep "${gopts[@]}" -e "${terms[$i]}" || true)
+	done
 fi
 
 if [[ -n "$violations" ]]; then
