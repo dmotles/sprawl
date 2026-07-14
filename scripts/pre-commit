@@ -10,6 +10,11 @@ set -e
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 "$here/guard-main-commit"
 
+# QUM-872: block a commit that introduces a forbidden employer/cloud term into
+# the staged diff. Runs BEFORE the GIT_* unset below so it sees the committing
+# worktree's git context (it scans `git diff --cached`).
+"$here/guard-employer-leak"
+
 # QUM-836: git exports repo-scoping GIT_* vars (pointing at THIS repo's .git)
 # into the hook environment. `make validate` runs `go test`, whose integration
 # suites spawn nested `git` in throwaway temp repos; if they inherit these vars

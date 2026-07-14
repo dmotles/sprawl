@@ -1,7 +1,7 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e
 
 # Default target — full quality gauntlet
-validate: build fmt-check lint test
+validate: build fmt-check lint test leak-scan
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
@@ -34,6 +34,18 @@ install:
 
 clean:
 	rm -f sprawl
+
+# QUM-872: whole-tree employer/cloud-leak scan. GATED OFF by default so it does
+# not break `make validate` while the tree still contains occurrences scrubbed
+# by QUM-873. Flip on by exporting SPRAWL_LEAK_SCAN_WHOLE_TREE=1 once the tree is
+# clean. The per-commit staged scan runs independently via scripts/pre-commit.
+leak-scan:
+	@if [ -n "$$SPRAWL_LEAK_SCAN_WHOLE_TREE" ]; then \
+		echo "leak-scan (whole-tree): scanning tracked tree..."; \
+		scripts/guard-employer-leak --all; \
+	else \
+		echo "leak-scan (whole-tree): SKIPPED — export SPRAWL_LEAK_SCAN_WHOLE_TREE=1 to enable (QUM-873)"; \
+	fi
 
 hooks:
 	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit

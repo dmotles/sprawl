@@ -1,10 +1,12 @@
-// Package hooks installs and removes the Sprawl main-pollution guard git hooks
-// (the QUM-808 pre-commit commit guard and the QUM-837 reference-transaction
-// guard) into an arbitrary repository's shared hooks directory.
+// Package hooks installs and removes the Sprawl guard git hooks (the QUM-808
+// pre-commit commit guard, the QUM-837 reference-transaction guard, and the
+// QUM-872 employer-leak guard chained into the pre-commit hook) into an
+// arbitrary repository's shared hooks directory.
 //
 // The guard logic is carried in the sprawl binary via go:embed (the canonical
-// scripts/guard-main-commit and scripts/guard-main-ref) and injected here as an
-// Assets value, so a target repo needs no scripts/ directory of its own.
+// scripts/guard-main-commit, scripts/guard-main-ref, and
+// scripts/guard-employer-leak) and injected here as an Assets value, so a target
+// repo needs no scripts/ directory of its own.
 package hooks
 
 import (
@@ -33,6 +35,7 @@ const (
 	// Helper script filenames written into the hooks dir (created outright).
 	HelperCommitGuard = "sprawl-guard-main-commit"
 	HelperRefGuard    = "sprawl-guard-main-ref"
+	HelperLeakGuard   = "sprawl-guard-employer-leak"
 
 	// ManifestVersion is the current on-disk manifest schema version.
 	ManifestVersion = 1
@@ -46,6 +49,7 @@ const (
 type Assets struct {
 	CommitGuard []byte // canonical scripts/guard-main-commit body
 	RefGuard    []byte // canonical scripts/guard-main-ref body
+	LeakGuard   []byte // canonical scripts/guard-employer-leak body (QUM-872)
 }
 
 // Deps is the dependency-injection surface for install/uninstall. Every
@@ -106,11 +110,16 @@ var hookPoints = []hookPoint{
 	{
 		file:   "pre-commit",
 		helper: HelperCommitGuard,
-		// `|| exit $?` propagates a guard rejection immediately, so the guard
-		// runs fail-fast even when chained ahead of user content that lacks
-		// `set -e` and ends in `exit 0` (which would otherwise swallow it).
+		// The pre-commit block chains two guards: the QUM-808 main-commit guard
+		// and the QUM-872 employer-leak guard (staged scan). `|| exit $?`
+		// propagates a rejection immediately, so each runs fail-fast even when
+		// chained ahead of user content that lacks `set -e` and ends in `exit 0`
+		// (which would otherwise swallow it). The leak guard no-ops when no
+		// forbidden-terms list is present, so it is safe in any repo.
 		invoke: func(branch string) string {
-			return fmt.Sprintf("%q/%s %q || exit $?", "$SPRAWL_HOOKS_DIR", HelperCommitGuard, branch)
+			return fmt.Sprintf("%q/%s %q || exit $?\n%q/%s || exit $?",
+				"$SPRAWL_HOOKS_DIR", HelperCommitGuard, branch,
+				"$SPRAWL_HOOKS_DIR", HelperLeakGuard)
 		},
 	},
 	{
@@ -238,7 +247,7 @@ func removeIfExists(deps *Deps, path string) error {
 // hooks dir and records a manifest. branchOverride, when non-empty, sets the
 // protected branch; otherwise it is auto-detected. Idempotent.
 func Install(deps *Deps, assets Assets, branchOverride string) error {
-	if len(assets.CommitGuard) == 0 || len(assets.RefGuard) == 0 {
+	if len(assets.CommitGuard) == 0 || len(assets.RefGuard) == 0 || len(assets.LeakGuard) == 0 {
 		return fmt.Errorf("hook guard assets are not embedded in this binary")
 	}
 
@@ -279,6 +288,7 @@ func Install(deps *Deps, assets Assets, branchOverride string) error {
 	}{
 		{HelperCommitGuard, assets.CommitGuard},
 		{HelperRefGuard, assets.RefGuard},
+		{HelperLeakGuard, assets.LeakGuard},
 	} {
 		if err := deps.WriteFile(filepath.Join(hooksDir, h.name), h.body, 0o755); err != nil {
 			return fmt.Errorf("writing helper %s: %w", h.name, err)
@@ -434,7 +444,7 @@ func uninstallFallback(deps *Deps, hooksDir string) error {
 		}
 		removed = append(removed, "stripped managed block from "+hp.file)
 	}
-	for _, h := range []string{HelperCommitGuard, HelperRefGuard} {
+	for _, h := range []string{HelperCommitGuard, HelperRefGuard, HelperLeakGuard} {
 		path := filepath.Join(hooksDir, h)
 		if _, err := deps.ReadFile(path); err != nil {
 			continue

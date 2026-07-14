@@ -14,10 +14,11 @@ import (
 var (
 	testCommitGuard = []byte("#!/usr/bin/env bash\n# canonical commit guard\nexit 0\n")
 	testRefGuard    = []byte("#!/usr/bin/env bash\n# canonical ref guard\nexit 0\n")
+	testLeakGuard   = []byte("#!/usr/bin/env bash\n# canonical leak guard\nexit 0\n")
 )
 
 func testAssets() Assets {
-	return Assets{CommitGuard: testCommitGuard, RefGuard: testRefGuard}
+	return Assets{CommitGuard: testCommitGuard, RefGuard: testRefGuard, LeakGuard: testLeakGuard}
 }
 
 // newTestDeps returns a Deps backed by a real temp hooks dir plus the temp dir
@@ -151,14 +152,18 @@ func TestInstall_EmptyDir_CreatesHooksAndHelpers(t *testing.T) {
 	// Helpers written verbatim and executable.
 	commitHelper := filepath.Join(hooksDir, HelperCommitGuard)
 	refHelper := filepath.Join(hooksDir, HelperRefGuard)
+	leakHelper := filepath.Join(hooksDir, HelperLeakGuard)
 	if got := readFile(t, commitHelper); got != string(testCommitGuard) {
 		t.Errorf("commit helper body = %q, want verbatim embed", got)
 	}
 	if got := readFile(t, refHelper); got != string(testRefGuard) {
 		t.Errorf("ref helper body = %q, want verbatim embed", got)
 	}
-	if mode(t, commitHelper) != 0o755 || mode(t, refHelper) != 0o755 {
-		t.Errorf("helpers must be mode 0755, got %v / %v", mode(t, commitHelper), mode(t, refHelper))
+	if got := readFile(t, leakHelper); got != string(testLeakGuard) {
+		t.Errorf("leak helper body = %q, want verbatim embed", got)
+	}
+	if mode(t, commitHelper) != 0o755 || mode(t, refHelper) != 0o755 || mode(t, leakHelper) != 0o755 {
+		t.Errorf("helpers must be mode 0755, got %v / %v / %v", mode(t, commitHelper), mode(t, refHelper), mode(t, leakHelper))
 	}
 
 	// Hook points created with shebang + exactly one managed block, executable.
@@ -177,9 +182,14 @@ func TestInstall_EmptyDir_CreatesHooksAndHelpers(t *testing.T) {
 		}
 	}
 
-	// pre-commit block invokes the commit-guard helper; ref invokes ref helper.
-	if !strings.Contains(readFile(t, filepath.Join(hooksDir, "pre-commit")), HelperCommitGuard) {
+	// pre-commit block invokes BOTH the commit-guard and leak-guard helpers;
+	// ref invokes ref helper.
+	preCommitBody := readFile(t, filepath.Join(hooksDir, "pre-commit"))
+	if !strings.Contains(preCommitBody, HelperCommitGuard) {
 		t.Error("pre-commit block must invoke the commit-guard helper")
+	}
+	if !strings.Contains(preCommitBody, HelperLeakGuard) {
+		t.Error("pre-commit block must invoke the leak-guard helper")
 	}
 	if !strings.Contains(readFile(t, filepath.Join(hooksDir, "reference-transaction")), HelperRefGuard) {
 		t.Error("reference-transaction block must invoke the ref-guard helper")
@@ -202,7 +212,7 @@ func TestInstall_ManifestRecordsCreated(t *testing.T) {
 	if m.InstalledAt != "1970-01-01T00:00:00Z" {
 		t.Errorf("installedAt = %q, want it populated from Now()", m.InstalledAt)
 	}
-	for _, p := range []string{HelperCommitGuard, HelperRefGuard, "pre-commit", "reference-transaction"} {
+	for _, p := range []string{HelperCommitGuard, HelperRefGuard, HelperLeakGuard, "pre-commit", "reference-transaction"} {
 		typ, ok := entryType(m, p)
 		if !ok {
 			t.Errorf("manifest missing entry for %q", p)
@@ -279,9 +289,12 @@ func TestInstall_Idempotent_NoDuplicateBlocks(t *testing.T) {
 	if got := readFile(t, filepath.Join(hooksDir, HelperRefGuard)); got != string(testRefGuard) {
 		t.Errorf("ref helper body changed after re-install: %q", got)
 	}
+	if got := readFile(t, filepath.Join(hooksDir, HelperLeakGuard)); got != string(testLeakGuard) {
+		t.Errorf("leak helper body changed after re-install: %q", got)
+	}
 	m := loadManifest(t, hooksDir)
-	if len(m.Entries) != 4 {
-		t.Errorf("manifest has %d entries after re-install, want 4", len(m.Entries))
+	if len(m.Entries) != 5 {
+		t.Errorf("manifest has %d entries after re-install, want 5", len(m.Entries))
 	}
 }
 
@@ -400,7 +413,7 @@ func TestInstall_RejectsUnsafeBranchName(t *testing.T) {
 			t.Errorf("expected error for unsafe branch %q", name)
 		}
 		// Rejection must be atomic: no Sprawl artifacts left behind.
-		for _, p := range []string{HelperCommitGuard, HelperRefGuard, "pre-commit", "reference-transaction", ManifestName} {
+		for _, p := range []string{HelperCommitGuard, HelperRefGuard, HelperLeakGuard, "pre-commit", "reference-transaction", ManifestName} {
 			if _, err := os.Stat(filepath.Join(hooksDir, p)); !os.IsNotExist(err) {
 				t.Errorf("branch %q: %s written despite validation failure", name, p)
 			}
@@ -424,7 +437,7 @@ func TestUninstall_Created_DeletesFilesAndManifest(t *testing.T) {
 	if err := Uninstall(deps); err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}
-	for _, p := range []string{HelperCommitGuard, HelperRefGuard, "pre-commit", "reference-transaction", ManifestName} {
+	for _, p := range []string{HelperCommitGuard, HelperRefGuard, HelperLeakGuard, "pre-commit", "reference-transaction", ManifestName} {
 		if _, err := os.Stat(filepath.Join(hooksDir, p)); !os.IsNotExist(err) {
 			t.Errorf("%s should have been removed, stat err = %v", p, err)
 		}
@@ -525,7 +538,7 @@ func TestUninstall_ManifestMissing_MarkerFallback(t *testing.T) {
 		t.Error("fallback must strip the managed block from reference-transaction")
 	}
 	// The unambiguously Sprawl-named helpers are deleted outright.
-	for _, h := range []string{HelperCommitGuard, HelperRefGuard} {
+	for _, h := range []string{HelperCommitGuard, HelperRefGuard, HelperLeakGuard} {
 		if _, err := os.Stat(filepath.Join(hooksDir, h)); !os.IsNotExist(err) {
 			t.Errorf("fallback should delete helper %q", h)
 		}

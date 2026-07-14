@@ -12,7 +12,7 @@ import (
 // directory contains scripts/ as a subdirectory). The same scripts/ files are
 // the single source of truth shared with the QUM-837 repo-local hook install.
 //
-//go:embed scripts/guard-main-commit scripts/guard-main-ref
+//go:embed scripts/guard-main-commit scripts/guard-main-ref scripts/guard-employer-leak
 var hookScriptsFS embed.FS
 
 // embeddedHookAssets reads the embedded guard bodies. The files are guaranteed
@@ -26,5 +26,9 @@ func embeddedHookAssets() hooks.Assets {
 	if err != nil {
 		panic("embed: scripts/guard-main-ref: " + err.Error())
 	}
-	return hooks.Assets{CommitGuard: commit, RefGuard: ref}
+	leak, err := hookScriptsFS.ReadFile("scripts/guard-employer-leak")
+	if err != nil {
+		panic("embed: scripts/guard-employer-leak: " + err.Error())
+	}
+	return hooks.Assets{CommitGuard: commit, RefGuard: ref, LeakGuard: leak}
 }

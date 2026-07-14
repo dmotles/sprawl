@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+#
+# guard-employer-leak (QUM-872)
+#
+# Scans for forbidden employer/cloud content and blocks a commit that introduces
+# it. The repo is PUBLIC: the employer name and corporate cloud identifiers
+# (subscription/tenant IDs, resource-group/storage-account names, tag values)
+# must never land in the tracked tree.
+#
+# Two modes:
+#   (default) staged  — scans only ADDED lines in the staged diff. This is the
+#                       phased "new-additions-only" guard: it runs on every
+#                       commit via scripts/pre-commit and does NOT re-flag terms
+#                       already present in the tree (removed by QUM-873).
+#   --all             — scans the whole tracked tree. Wired into the CI/validate
+#                       path but GATED OFF (see Makefile `leak-scan`) until the
+#                       existing occurrences are scrubbed; flip it on afterward.
+#
+# The forbidden terms live in a GITIGNORED list — the public repo must never
+# contain the list of things it is hiding. A committed scripts/forbidden-terms.example
+# documents the format with placeholders only. This guard itself contains NO
+# forbidden term.
+#
+# List resolution (first match wins):
+#   1. $SPRAWL_FORBIDDEN_TERMS_FILE  (explicit override; the test/CI seam)
+#   2. <main-checkout>/.sprawl/hygiene/forbidden-terms, located via
+#      `git rev-parse --git-common-dir` so it resolves to the single canonical
+#      list from ANY worktree, regardless of how this guard was installed.
+# When the list is ABSENT the guard is a no-op (exit 0), so it is safe to install
+# in any repository — a foreign repo simply has nothing to scan.
+#
+# List format, one term per line:  category:matchtype:term
+#   matchtype ci    = case-insensitive substring (use for the employer name)
+#   matchtype exact = case-sensitive substring   (use for GUIDs / IDs / names)
+# Lines that are blank or start with '#' (after optional leading whitespace) are
+# skipped. Violation messages report the category + file:line ONLY — never the
+# term itself, so the guard's own output can never leak a secret.
+#
+# Invoked by scripts/pre-commit right after guard-main-commit and BEFORE the
+# GIT_* unset, so it runs in the committing worktree's git context.
+set -euo pipefail
+
+mode="staged"
+if [[ "${1:-}" == "--all" ]]; then
+	mode="all"
+elif [[ -n "${1:-}" ]]; then
+	echo "usage: guard-employer-leak [--all]" >&2
+	exit 2
+fi
+
+list="${SPRAWL_FORBIDDEN_TERMS_FILE:-}"
+if [[ -z "$list" ]]; then
+	# `--git-common-dir` (git 2.5+) resolves to the MAIN checkout's .git from any
+	# worktree. Avoid `--path-format=absolute` (git 2.31+) — on older git it
+	# would fail and leave the list empty, silently no-op'ing the guard even when
+	# a list exists (a fail-open). Absolutize in the shell instead: the value may
+	# be relative to the current dir (a commit can run from a worktree subdir).
+	common="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+	if [[ -n "$common" ]] && common="$(cd "$common" 2>/dev/null && pwd)"; then
+		list="$common/../.sprawl/hygiene/forbidden-terms"
+	fi
+fi
+
+# No list => nothing to hide here => no-op pass (safe to install anywhere).
+[[ -n "$list" && -f "$list" ]] || exit 0
+
+cats=()
+types=()
+terms=()
+while IFS= read -r raw || [[ -n "$raw" ]]; do
+	line="${raw%$'\r'}" # tolerate CRLF list files
+	# Skip blank / whitespace-only and comment lines.
+	[[ "$line" =~ ^[[:space:]]*$ ]] && continue
+	[[ "$line" =~ ^[[:space:]]*# ]] && continue
+	cat="${line%%:*}"
+	rest="${line#*:}"
+	mtype="${rest%%:*}"
+	mtype="${mtype,,}" # normalize: EXACT/Ci/… → lowercase (fail-safe below)
+	term="${rest#*:}"
+	# Require a well-formed category:matchtype:term with a non-empty term.
+	[[ "$line" == "$cat" || "$rest" == "$mtype" || -z "$term" ]] && continue
+	cats+=("$cat")
+	types+=("$mtype")
+	terms+=("$term")
+done <"$list"
+
+[[ ${#terms[@]} -eq 0 ]] && exit 0
+
+# match_line <content> — echoes the matching category (empty if none matched).
+match_line() {
+	local content="$1" lc i
+	lc="${content,,}"
+	for i in "${!terms[@]}"; do
+		# Only an explicit "exact" is case-sensitive; anything else (ci, a typo,
+		# a miscased value) falls back to the BROADER case-insensitive match so a
+		# malformed list entry cannot silently let a lowercase leak slip through.
+		if [[ "${types[$i]}" == "exact" ]]; then
+			[[ "$content" == *"${terms[$i]}"* ]] && {
+				printf '%s' "${cats[$i]}"
+				return 0
+			}
+		else
+			[[ "$lc" == *"${terms[$i],,}"* ]] && {
+				printf '%s' "${cats[$i]}"
+				return 0
+			}
+		fi
+	done
+	return 0
+}
+
+violations=""
+
+if [[ "$mode" == "staged" ]]; then
+	file=""
+	lineno=0
+	while IFS= read -r dl; do
+		case "$dl" in
+		"+++ b/"*)
+			file="${dl#+++ b/}"
+			;;
+		"+++ "*)
+			file="" # e.g. +++ /dev/null (deletion)
+			;;
+		"@@ "*)
+			# @@ -a,b +c,d @@ -> new-file start line is c.
+			hs="${dl#*+}"
+			hs="${hs%% *}"
+			lineno="${hs%%,*}"
+			;;
+		"+"*)
+			if [[ -n "$file" ]]; then
+				m="$(match_line "${dl#+}")"
+				[[ -n "$m" ]] && violations+="  $file:$lineno: $m"$'\n'
+			fi
+			lineno=$((lineno + 1))
+			;;
+		*) ;; # context/removed/header lines don't advance the new-file counter
+		esac
+		# core.quotePath=false keeps non-ASCII paths literal (an unquoted "b/…"
+		# header), and the explicit a/ b/ prefixes override a user's
+		# diff.mnemonicPrefix / diff.noprefix config — without these a header the
+		# `+++ b/` arm doesn't recognize would silently skip that file's added
+		# lines (a fail-open leak).
+	done < <(git -c core.quotePath=false diff --cached --unified=0 --no-color --src-prefix=a/ --dst-prefix=b/)
+else
+	while IFS= read -r -d '' f; do
+		n=0
+		while IFS= read -r cl || [[ -n "$cl" ]]; do
+			n=$((n + 1))
+			m="$(match_line "$cl")"
+			[[ -n "$m" ]] && violations+="  $f:$n: $m"$'\n'
+		done <"$f"
+	done < <(git ls-files -z)
+fi
+
+if [[ -n "$violations" ]]; then
+	cat >&2 <<EOF
+ERROR: forbidden employer/cloud content detected ($mode scan) — QUM-872 guard.
+
+The locations below match a category in the gitignored forbidden-terms list
+(the matching term is withheld from this message on purpose):
+
+$violations
+Public-repo hygiene: employer names and corporate cloud identifiers must never
+be committed. Move real values to a gitignored path (e.g.
+.sprawl/agents/<name>/findings/) and reference them indirectly. See CLAUDE.md
+"Public vs Private Repo Hygiene".
+
+Forbidden-terms list: $list
+EOF
+	exit 1
+fi
+
+exit 0

@@ -29,8 +29,8 @@ func TestSetHookAssets_Injects(t *testing.T) {
 	orig := hookAssets
 	t.Cleanup(func() { hookAssets = orig })
 
-	SetHookAssets(hooks.Assets{CommitGuard: []byte("c"), RefGuard: []byte("r")})
-	if string(hookAssets.CommitGuard) != "c" || string(hookAssets.RefGuard) != "r" {
+	SetHookAssets(hooks.Assets{CommitGuard: []byte("c"), RefGuard: []byte("r"), LeakGuard: []byte("l")})
+	if string(hookAssets.CommitGuard) != "c" || string(hookAssets.RefGuard) != "r" || string(hookAssets.LeakGuard) != "l" {
 		t.Error("SetHookAssets did not inject the assets")
 	}
 }

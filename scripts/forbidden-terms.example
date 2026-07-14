@@ -1,0 +1,32 @@
+# forbidden-terms.example (QUM-872) — COMMITTED TEMPLATE, placeholders only.
+#
+# Copy this to .sprawl/hygiene/forbidden-terms (which is GITIGNORED) and replace
+# the placeholders with the real values you must keep out of this PUBLIC repo.
+# NEVER commit the real list — the public repo must not contain the list of
+# things it is hiding. This .example must itself stay free of any real term.
+#
+# scripts/guard-employer-leak reads the real list and blocks a commit (staged
+# scan) or a CI run (whole-tree scan, `--all`) that introduces a forbidden term.
+#
+# Format — one term per line:
+#
+#   category:matchtype:term
+#
+#   category  = a short label reported in the violation message (the term is
+#               NEVER printed; only the category + file:line is shown).
+#   matchtype = ci     -> case-insensitive substring (use for the employer name)
+#               exact  -> case-sensitive substring   (use for GUIDs / IDs / names)
+#   term      = the literal string to forbid (may itself contain ':').
+#
+# Blank lines and lines beginning with '#' (after optional leading whitespace)
+# are ignored. A Linear-style issue prefix such as QUM-123 does NOT match the
+# full employer name and is therefore always allowed.
+#
+# Example entries (REPLACE the placeholders; do not commit real values):
+#
+# employer-name:ci:REPLACE_WITH_EMPLOYER_NAME
+# cloud-subscription-id:exact:REPLACE_WITH_SUBSCRIPTION_GUID
+# cloud-tenant-id:exact:REPLACE_WITH_TENANT_GUID
+# resource-group:exact:REPLACE_WITH_RESOURCE_GROUP_NAME
+# storage-account:exact:REPLACE_WITH_STORAGE_ACCOUNT_NAME
+# tag-value:exact:REPLACE_WITH_TAG_VALUE

@@ -21,6 +21,15 @@ func PreCommitScript(repoRoot string) string {
 	return filepath.Join(repoRoot, "scripts", "pre-commit")
 }
 
+// GuardEmployerLeakScript returns the path to the guard-employer-leak script
+// given the repository root. See scripts/guard-employer-leak (QUM-872): it scans
+// the staged diff (default) or the whole tracked tree (--all) for forbidden
+// employer/cloud terms loaded from a gitignored list, and blocks a commit that
+// introduces one.
+func GuardEmployerLeakScript(repoRoot string) string {
+	return filepath.Join(repoRoot, "scripts", "guard-employer-leak")
+}
+
 // GuardMainRefScript returns the path to the guard-main-ref reference-transaction
 // hook script given the repository root. See scripts/guard-main-ref (QUM-837):
 // it rejects any update to refs/heads/main by a non-root agent, and unlike the
