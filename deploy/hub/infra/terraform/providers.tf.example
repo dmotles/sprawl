@@ -1,0 +1,23 @@
+# providers.tf.example (QUM-870) — TEMPLATE for future Terraform roots (QUM-871+).
+#
+# Copy to `providers.tf` in a real root that declares azurerm resources. The
+# _backend-smoke root intentionally has NO provider (it declares no resources),
+# so this template is not wired there — it's the pattern the first real root
+# inherits.
+#
+# HARD RULE: pin the subscription EXPLICITLY. Never hardcode the id here (public
+# repo). The value comes from gitignored config: a *.tfvars file, TF_VAR_
+# subscription_id, or ARM_SUBSCRIPTION_ID (exported by bootstrap.sh).
+
+provider "azurerm" {
+  features {}
+
+  # Explicit subscription pin. If omitted, azurerm falls back to the Azure CLI's
+  # active subscription — the QUM-870 wrong-subscription failure mode.
+  subscription_id = var.subscription_id
+}
+
+variable "subscription_id" {
+  type        = string
+  description = "Azure subscription id to pin all resources to. Sourced from gitignored *.tfvars, TF_VAR_subscription_id, or ARM_SUBSCRIPTION_ID — never committed."
+}

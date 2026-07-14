@@ -1,0 +1,27 @@
+# backend-config.hcl.example (QUM-870) — TEMPLATE, placeholders only.
+#
+# Shared azurerm remote-state backend config consumed by every Terraform root
+# under deploy/hub/infra/terraform/ (via `terraform init -backend-config=...`).
+#
+# Copy to `backend-config.hcl` (GITIGNORED), fill in the values you used in the
+# bootstrap (deploy/hub/bootstrap/bootstrap.env), then from a root dir:
+#
+#   terraform init -backend-config=../backend-config.hcl
+#
+# NEVER commit backend-config.hcl or put real values in this .example file.
+# The `key` is per-root (e.g. "spike.tfstate", "hub.tfstate") so roots don't
+# clobber each other's state in the shared container.
+
+# use_azuread_auth = true → Terraform authenticates to the state blob via the
+# Azure CLI identity (AAD). NO account keys anywhere (corporate policy). The
+# identity needs the "Storage Blob Data Contributor" role on the account (the
+# bootstrap script assigns it).
+# subscription_id pins the state backend to a specific subscription. Optional
+# here IF ARM_SUBSCRIPTION_ID is exported (bootstrap.env / bootstrap.sh does
+# this), but set explicitly for a self-documenting pin. Gitignored value only.
+subscription_id      = "<azure-subscription-id>"
+resource_group_name  = "<state-backend-resource-group>"
+storage_account_name = "<state-backend-storage-account>"
+container_name       = "tfstate"
+key                  = "<root-name>.tfstate"
+use_azuread_auth     = true

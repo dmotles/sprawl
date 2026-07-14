@@ -1,4 +1,4 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e
+.PHONY: validate build fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap
 
 # Default target — full quality gauntlet
 validate: build fmt-check lint test leak-scan
@@ -200,6 +200,12 @@ test-paste-coalesce-e2e: build
 # non-root --no-verify abort, root/human pass, and surgical uninstall.
 test-hooks-e2e: build
 	SPRAWL_BIN=$$PWD/sprawl bash scripts/test-hooks-e2e.sh
+
+# QUM-870: exercises deploy/hub/bootstrap/bootstrap.sh against a fake `az` shim
+# (no cloud, no binary). Verifies config refusal, hardening flags, mandatory
+# tags, create/converge idempotency, no-leak grep, and gitignore coverage.
+test-hub-bootstrap:
+	bash scripts/test-hub-bootstrap.sh
 
 # QUM-616 matrix-driven e2e harness foundation. Wave 1 — runs alongside
 # the per-test test-*-e2e targets. See scripts/e2e-matrix.sh.

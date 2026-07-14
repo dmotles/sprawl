@@ -26,3 +26,21 @@ CLAUDE.local.md
 
 # Local secrets (CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, etc.) — see CLAUDE.md
 .env
+
+# Terraform / IaC (QUM-870) — nothing instance-specific or stateful enters the tree.
+# Real values live ONLY in gitignored tfvars / backend-config / .env; committed IaC
+# is fully parameterized. .terraform.lock.hcl is intentionally NOT ignored (tracked).
+*.tfvars
+*.tfvars.json
+*.tfstate
+*.tfstate.*
+.terraform/
+backend-config*.hcl
+
+# az / credential scratch produced during bootstrap
+*.azcreds
+az-scratch/
+bootstrap.env
+# Operator runbooks that may reference corporate specifics — gitignored.
+# Committed docs are the sanitized README.md; *.local.md stays out of the tree.
+deploy/hub/**/*.local.md
