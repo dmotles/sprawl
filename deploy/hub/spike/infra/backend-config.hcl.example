@@ -1,0 +1,16 @@
+# backend-config.hcl.example (QUM-871) — TEMPLATE, placeholders only.
+#
+# Copy to `backend-config.hcl` (GITIGNORED), fill in the SAME state-backend
+# values used in QUM-870 (deploy/hub/bootstrap/bootstrap.env), then:
+#
+#   terraform init -backend-config=backend-config.hcl
+#
+# NEVER commit backend-config.hcl or put real values in this .example file. The
+# key is per-root so the spike state doesn't collide with other roots.
+
+subscription_id      = "<azure-subscription-id>"
+resource_group_name  = "<state-backend-resource-group>"
+storage_account_name = "<state-backend-storage-account>"
+container_name       = "tfstate"
+key                  = "spike.tfstate"
+use_azuread_auth     = true

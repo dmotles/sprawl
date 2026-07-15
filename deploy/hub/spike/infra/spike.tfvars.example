@@ -1,0 +1,36 @@
+# spike.tfvars.example (QUM-871) — TEMPLATE, placeholders only.
+#
+# Copy to `spike.tfvars` (GITIGNORED) and fill in real values. NEVER commit
+# spike.tfvars or put real values here — this repo is PUBLIC.
+#
+#   cp spike.tfvars.example spike.tfvars
+#   $EDITOR spike.tfvars
+#   terraform plan -var-file=spike.tfvars
+
+subscription_id = "<azure-subscription-id>"
+location        = "<your-region>"
+
+# Dedicated, DISPOSABLE spike resource group — net-new, NOT the state-backend RG.
+resource_group_name = "<disposable-spike-resource-group>"
+
+log_analytics_name = "<log-analytics-workspace-name>"
+environment_name   = "<container-apps-environment-name>"
+container_app_name = "<container-app-name>"
+
+# Globally-unique registry name (5-50 lowercase alphanumerics).
+acr_name = "<throwaway-acr-name>"
+
+# Mandatory policy tags — real values are gitignored-config-only.
+tags = {
+  owner        = "<owner>"
+  long_running = "<true|false>"
+  department   = "<department>"
+  purpose      = "<purpose>"
+}
+
+# Heartbeat interval under test (start ~20s; also try another value).
+heartbeat_interval_seconds = 20
+
+# container_image defaults to a public placeholder so `terraform plan` works
+# before the ACR image exists. At apply time, override with the real image:
+#   terraform apply -var-file=spike.tfvars -var container_image=<acr>.azurecr.io/hubspike:<tag>

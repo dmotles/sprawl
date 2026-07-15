@@ -1,0 +1,13 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # The streamed message is intentionally named Frame (the downlink domain
+    # concept), not HeartbeatServiceSubscribeResponse. Spike-local choice.
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

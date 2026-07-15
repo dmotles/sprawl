@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+// QUM-871 transport spike. Throwaway service used ONLY to prove a heartbeated
+// Connect server-stream survives a managed L7 (Envoy) ingress idle timeout and
+// that from_seq reconnect resumes with zero gaps/dupes. Not part of the product.
+package hubspike.v1;
+
+option go_package = "github.com/dmotles/sprawl/hubspike/gen/hubspike/v1;hubspikev1";
+
+// FrameKind distinguishes a keep-alive heartbeat from an application DATA frame.
+// The idle-timeout test uses HEARTBEAT-only; DATA exercises real event delivery.
+enum FrameKind {
+  FRAME_KIND_UNSPECIFIED = 0;
+  FRAME_KIND_HEARTBEAT = 1;
+  FRAME_KIND_DATA = 2;
+}
+
+// Frame is one seq'd entry on the downlink stream. seq is a per-stream-source
+// monotonic counter; reconnect replays every frame with seq > from_seq.
+message Frame {
+  uint64 seq = 1;
+  FrameKind kind = 2;
+  string payload = 3;
+  int64 ts_unix_ms = 4;
+}
+
+// SubscribeRequest opens the downlink. from_seq = 0 means "from the beginning";
+// on reconnect the client passes the last seq it saw so the server resumes at
+// from_seq + 1 (the "one rule" — zero gaps, zero dupes).
+message SubscribeRequest {
+  uint64 from_seq = 1;
+}
+
+// HeartbeatService is the minimal downlink: one held-open server-stream.
+service HeartbeatService {
+  rpc Subscribe(SubscribeRequest) returns (stream Frame) {}
+}
