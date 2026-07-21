@@ -8,6 +8,7 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/hub"
+	"github.com/dmotles/sprawl/internal/hub/store"
 )
 
 // spaFS is the embedded SPA seam. It is an empty placeholder this slice (the
@@ -28,6 +30,23 @@ var spaFS embed.FS
 
 // serveFn is indirected so tests can drive run() without binding a socket.
 var serveFn = hub.Serve
+
+// buildStoreFn is indirected so tests can drive DSN plumbing without a real
+// database. It opens a pgStore and applies pending migrations at boot.
+var buildStoreFn = defaultBuildStore
+
+// defaultBuildStore opens a Postgres-backed Store and migrates it to head.
+func defaultBuildStore(ctx context.Context, dsn string) (store.Store, error) {
+	st, err := store.NewPGStore(ctx, store.PGConfig{DSN: dsn})
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	if err := st.Migrate(ctx); err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("apply migrations: %w", err)
+	}
+	return st, nil
+}
 
 func main() {
 	if err := main1(); err != nil {
@@ -50,6 +69,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 	fs.SetOutput(w)
 	addr := fs.String("addr", hub.DefaultAddr, "listen address")
 	hubURLFlag := fs.String("hub-url", "", "hub uplink endpoint (default empty; no baked-in endpoint)")
+	dsnFlag := fs.String("dsn", "", "Postgres DSN (or set SPRAWL_HUB_DSN). Empty uses an in-memory store.")
 	grace := fs.Duration("grace", hub.DefaultGrace, "graceful shutdown drain window")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -73,6 +93,26 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		"configured", hubURL != "",
 	)
 
+	// DSN comes from --dsn (highest precedence) or SPRAWL_HUB_DSN. When set, we
+	// open a Postgres store and apply migrations at boot; otherwise the server
+	// falls back to an in-memory memStore (dev default).
+	dsn := *dsnFlag
+	if dsn == "" {
+		dsn = getenv("SPRAWL_HUB_DSN")
+	}
+	var st store.Store
+	if dsn != "" {
+		var err error
+		st, err = buildStoreFn(ctx, dsn)
+		if err != nil {
+			return fmt.Errorf("hubd: initialize store: %w", err)
+		}
+		defer func() { _ = st.Close() }()
+		logger.Info("store initialized", "component", "hubd", "backend", "postgres", "migrated", true)
+	} else {
+		logger.Info("store initialized", "component", "hubd", "backend", "memory")
+	}
+
 	return serveFn(ctx, hub.HubConfig{
 		Addr:          *addr,
 		HubURL:        hubURL,
@@ -80,6 +120,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		DebugEndpoint: truthy(getenv("SPRAWL_HUB_DEBUG_ENDPOINT")),
 		Logger:        logger,
 		SPA:           spaAssets(),
+		Store:         st,
 	})
 }
 

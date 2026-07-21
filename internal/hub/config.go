@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"log/slog"
 	"time"
+
+	"github.com/dmotles/sprawl/internal/hub/store"
 )
 
 // DefaultGrace is the graceful-shutdown drain window if none is configured.
@@ -31,6 +33,11 @@ type HubConfig struct {
 	// SPA is the embedded SPA asset filesystem served under /app/. May be nil
 	// or empty this slice; the real SPA lands later.
 	SPA fs.FS
+	// Store is the persistence backend. If nil, NewServer builds an in-memory
+	// memStore (the dev default), so tests and local runs need no database. The
+	// boot path (cmd/hubd) opens and migrates a pgStore when a DSN is
+	// configured, then injects it here.
+	Store store.Store
 }
 
 // logger returns the configured logger or a discard logger.

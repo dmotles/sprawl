@@ -12,6 +12,7 @@ import (
 
 	hubv1 "github.com/dmotles/sprawl/internal/hub/gen/hub/v1"
 	"github.com/dmotles/sprawl/internal/hub/gen/hub/v1/hubv1connect"
+	"github.com/dmotles/sprawl/internal/hub/store"
 )
 
 // startedAt records process start for the /debug/state uptime field.
@@ -24,16 +25,39 @@ type Server struct {
 	health *Health
 	debug  bool
 	spa    fs.FS // embedded SPA assets; may be nil/empty this slice
+	store  store.Store
 }
 
 // NewServer builds a Server from cfg. The readiness flag starts false; the
-// serve loop flips it true once the listener is up.
+// serve loop flips it true once the listener is up. The Store is taken from
+// cfg.Store, or defaults to an in-memory memStore when absent so dev and tests
+// need no database. /readyz is gated on Store.Ping so it reflects backend
+// reachability (memStore.Ping is always nil → dev stays ready).
 func NewServer(cfg HubConfig) *Server {
+	log := cfg.logger().With("component", "registry")
+	st := cfg.Store
+	if st == nil {
+		mem, err := store.NewMemStore()
+		if err != nil {
+			// NewMemStore only fails if the OS RNG fails, which is effectively
+			// never. Log and proceed with readiness gated on the flag alone.
+			log.Error("memstore init failed; readiness gated on flag only", "error", err)
+		} else {
+			st = mem
+		}
+	}
+
+	health := &Health{}
+	if st != nil {
+		health.SetDBCheck(st.Ping)
+	}
+
 	return &Server{
-		log:    cfg.logger().With("component", "registry"),
-		health: &Health{},
+		log:    log,
+		health: health,
 		debug:  cfg.DebugEndpoint,
 		spa:    cfg.SPA,
+		store:  st,
 	}
 }
 

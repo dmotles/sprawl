@@ -1,13 +1,55 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestReadiness_DBCheckGates(t *testing.T) {
+	h := &Health{}
+	h.SetReady(true)
+	h.SetDBCheck(func(context.Context) error { return errors.New("connection refused") })
+
+	rec := httptest.NewRecorder()
+	h.ReadinessHandler()(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness with failing DB check: want 503, got %d", rec.Code)
+	}
+}
+
+func TestReadiness_DBCheckPass(t *testing.T) {
+	h := &Health{}
+	h.SetReady(true)
+	h.SetDBCheck(func(context.Context) error { return nil })
+
+	rec := httptest.NewRecorder()
+	h.ReadinessHandler()(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("readiness with passing DB check: want 200, got %d", rec.Code)
+	}
+}
+
+func TestReadiness_DBCheckSkippedWhenNotReady(t *testing.T) {
+	h := &Health{}
+	// ready flag false: the DB check must not even be consulted.
+	called := false
+	h.SetDBCheck(func(context.Context) error { called = true; return nil })
+
+	rec := httptest.NewRecorder()
+	h.ReadinessHandler()(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readiness when not ready: want 503, got %d", rec.Code)
+	}
+	if called {
+		t.Error("DB check should not be consulted while the ready flag is false")
+	}
+}
 
 func TestLiveness_Always200(t *testing.T) {
 	h := &Health{}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/dmotles/sprawl/internal/hub"
+	hubstore "github.com/dmotles/sprawl/internal/hub/store"
 )
 
 // captureServe swaps serveFn for the duration of a test, capturing the config
@@ -85,6 +86,74 @@ func TestRun_LogsResolvedEndpointHostOnly(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no JSON log line with component=hubd and host-only hub_url: %s", out)
+	}
+}
+
+// fakeStore is a no-op Store for exercising DSN plumbing without a database.
+type fakeStore struct{ hubstore.Store }
+
+func (fakeStore) Migrate(context.Context) error { return nil }
+func (fakeStore) Ping(context.Context) error    { return nil }
+func (fakeStore) Close() error                  { return nil }
+
+func captureBuildStore(t *testing.T) *string {
+	t.Helper()
+	var gotDSN string
+	orig := buildStoreFn
+	buildStoreFn = func(_ context.Context, dsn string) (hubstore.Store, error) {
+		gotDSN = dsn
+		return fakeStore{}, nil
+	}
+	t.Cleanup(func() { buildStoreFn = orig })
+	return &gotDSN
+}
+
+func TestRun_NoDSN_NoStoreInjected(t *testing.T) {
+	captured := captureServe(t)
+	captureBuildStore(t)
+	if err := run(context.Background(), nil, func(string) string { return "" }, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if captured.Store != nil {
+		t.Fatal("no DSN: expected nil Store (NewServer defaults to memStore)")
+	}
+}
+
+func TestRun_DSNFromEnv_BuildsAndInjectsStore(t *testing.T) {
+	captured := captureServe(t)
+	gotDSN := captureBuildStore(t)
+	env := func(k string) string {
+		if k == "SPRAWL_HUB_DSN" {
+			return "postgres://localhost/hub"
+		}
+		return ""
+	}
+	if err := run(context.Background(), nil, env, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if *gotDSN != "postgres://localhost/hub" {
+		t.Fatalf("buildStore DSN = %q, want env value", *gotDSN)
+	}
+	if captured.Store == nil {
+		t.Fatal("DSN set: expected an injected Store")
+	}
+}
+
+func TestRun_DSNFlagBeatsEnv(t *testing.T) {
+	captureServe(t)
+	gotDSN := captureBuildStore(t)
+	env := func(k string) string {
+		if k == "SPRAWL_HUB_DSN" {
+			return "postgres://env/hub"
+		}
+		return ""
+	}
+	args := []string{"--dsn", "postgres://flag/hub"}
+	if err := run(context.Background(), args, env, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if *gotDSN != "postgres://flag/hub" {
+		t.Fatalf("buildStore DSN = %q, want flag value", *gotDSN)
 	}
 }
 
