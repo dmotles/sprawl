@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+// Package hub.v1 is the host<->hub + api<->webapp Connect wire contract for the
+// sprawl hub (see docs/design/hub/03-api-surfaces.md).
+//
+// ADDITIVE-ONLY FIELD POLICY (see proto/README.md): fields may only be ADDED
+// with new numbers. NEVER renumber a field, NEVER change a field's type, and
+// NEVER reuse a retired field number — `reserve` it instead. The `buf breaking`
+// gate in `make validate` (baseline: main HEAD) enforces this so an old host or
+// a stale browser tab keeps talking to a new hub.
+package hub.v1;
+
+option go_package = "github.com/dmotles/sprawl/internal/hub/gen/hub/v1;hubv1";
+
+// RegisterInstanceRequest announces a host to the hub. Idempotent upsert of the
+// instance row, keyed by host_id. Called on connect.
+message RegisterInstanceRequest {
+  string host_id = 1;
+  string run_id = 2;
+  string repo_label = 3;
+  string user_id = 4;
+}
+
+// RegisterInstanceResponse is intentionally minimal this slice; fields are added
+// additively as the registry gains meaning (P0-3).
+message RegisterInstanceResponse {}
+
+// ListInstancesRequest enumerates connected instances. No filters this slice.
+message ListInstancesRequest {}
+
+// Instance is one connected host as seen by the hub.
+message Instance {
+  string host_id = 1;
+  string repo_label = 2;
+  // active marks the advisory active-host for its project (docs 01 §4).
+  bool active = 3;
+  int32 clients_connected = 4;
+  int64 last_seen_unix_ms = 5;
+}
+
+// ListInstancesResponse returns the current set of connected instances.
+message ListInstancesResponse {
+  repeated Instance instances = 1;
+}
+
+// HubService is the minimal RPC surface for P0-1. Both RPCs return
+// codes.Unimplemented this slice; real implementations land in P0-3/P0-4.
+service HubService {
+  rpc RegisterInstance(RegisterInstanceRequest) returns (RegisterInstanceResponse) {}
+  rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse) {}
+}

@@ -1,7 +1,46 @@
-.PHONY: validate build fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap
+.PHONY: validate build proto-check proto-gen proto-gen-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap
 
 # Default target — full quality gauntlet
-validate: build fmt-check lint test leak-scan
+validate: build proto-check fmt-check lint test leak-scan
+
+BUF ?= buf
+
+# proto-check gates the wire contract: lint, format (check-only, no writes), and
+# breaking-change detection against the main HEAD baseline (QUM-875; see
+# proto/README.md for the baseline rationale). Additive-only field policy.
+proto-check:
+	@# Whole recipe runs in ONE shell so the buf-absent guard can early-exit. buf
+	@# gates the wire contract but is NOT installed by worktree.setup, and the
+	@# pre-commit hook runs `make validate` on every worktree — so if buf is
+	@# absent, skip with a loud notice rather than hard-breaking every commit
+	@# (install buf to re-enable: https://buf.build/docs/installation).
+	@# buf breaking additionally needs a baseline carrying the root buf.yaml so
+	@# module scoping matches (else buf's config-less default scan of the baseline
+	@# reaches into deploy/hub/spike). Until this slice lands on main there is no
+	@# product-proto baseline, so that step self-skips; it self-heals on merge.
+	@set -e; \
+	if ! command -v $(BUF) >/dev/null 2>&1; then \
+		echo "proto-check: SKIPPED — '$(BUF)' not on PATH. Install buf to lint/format/breaking-check the hub proto contract."; \
+		exit 0; \
+	fi; \
+	$(BUF) lint; \
+	$(BUF) format --diff --exit-code; \
+	if git cat-file -e main:buf.yaml 2>/dev/null; then \
+		echo "buf breaking: against .git#branch=main"; \
+		$(BUF) breaking --against '.git#branch=main'; \
+	else \
+		echo "buf breaking: SKIPPED — no proto baseline on main yet (first landing; see proto/README.md). Self-heals once merged to main."; \
+	fi
+
+# proto-gen regenerates the committed Go (connect-go) bindings.
+proto-gen:
+	$(BUF) generate
+
+# proto-gen-web regenerates the TypeScript (connect-es) SPA bindings. Opt-in:
+# requires the npm protoc-gen-es / protoc-gen-connect-es tools on PATH. NOT part
+# of validate so the build never depends on a node toolchain.
+proto-gen-web:
+	$(BUF) generate --template buf.gen.web.yaml
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)
@@ -13,6 +52,7 @@ LDFLAGS := -s -w \
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o sprawl .
+	go build ./cmd/hubd
 
 fmt:
 	golangci-lint fmt ./...

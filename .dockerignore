@@ -1,0 +1,26 @@
+# Build-context excludes for `docker build -f deploy/hub/Dockerfile .` (context =
+# repo root). The hubd Dockerfile does `COPY . .` in its build stage; without
+# this, secrets and huge state trees would be sent to the daemon and baked into
+# the intermediate build layer (the final distroless image only copies /hubd, but
+# the build layer is still leakable if cached/pushed). Keep this tight.
+
+# Secrets — MUST never enter the build context (public-repo hygiene).
+.env
+.env.*
+**/*.local.md
+
+# Sprawl agent state + worktrees (can be very large; may contain secrets/logs).
+.sprawl/
+
+# VCS + build artifacts.
+.git/
+.gitignore
+sprawl
+hubd
+
+# Node / SPA build inputs (the embedded SPA seam is empty this slice).
+**/node_modules/
+
+# Editor/OS cruft.
+*.swp
+.DS_Store

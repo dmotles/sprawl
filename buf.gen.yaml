@@ -1,0 +1,19 @@
+version: v2
+clean: true
+plugins:
+  # Go message + Connect bindings. protoc-gen-go and protoc-gen-connect-go are
+  # standard Go tools (go install ...); both are expected on PATH.
+  - local: protoc-gen-go
+    out: internal/hub/gen
+    opt: paths=source_relative
+  - local: protoc-gen-connect-go
+    out: internal/hub/gen
+    opt: paths=source_relative
+  # TypeScript (connect-es) bindings for the SPA are generated via the opt-in
+  # `buf.gen.web.yaml` template (make proto-gen-web), because protoc-gen-es /
+  # protoc-gen-connect-es are npm tools that are not guaranteed on PATH. Keeping
+  # them out of the default template means `buf generate` / `make validate`
+  # never hard-depend on a node toolchain. A committed stub lives under
+  # web/gen/ (see web/gen/hub/v1/hub_pb.stub.ts) as the SPA seam until the real
+  # SPA lands. TODO(hub-spa): move TS generation into the default flow once the
+  # frontend build owns the node toolchain.

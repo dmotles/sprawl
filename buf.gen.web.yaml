@@ -1,0 +1,15 @@
+version: v2
+# clean is intentionally left off (default false): web/gen holds a committed
+# stub seam (hub_pb.stub.ts) and clean:true would delete it before regenerating.
+# Opt-in TypeScript (connect-es) generation for the SPA. Requires the npm tools
+# protoc-gen-es and protoc-gen-connect-es on PATH (they are NOT installed by
+# default). Run via `make proto-gen-web`. This template is intentionally kept
+# out of the default `buf generate` flow (buf.gen.yaml) so `make validate` never
+# depends on a node toolchain being present.
+plugins:
+  - local: protoc-gen-es
+    out: web/gen
+    opt: target=ts
+  - local: protoc-gen-connect-es
+    out: web/gen
+    opt: target=ts

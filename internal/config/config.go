@@ -21,8 +21,12 @@ type Config struct {
 	// the `pause` MCP tool. QUM-722. Defaults to DefaultPauseTimeoutSeconds
 	// when not present or non-positive.
 	PauseTimeoutSeconds int `yaml:"pause_timeout_seconds"`
-	sprawlRoot          string
-	values              map[string]string
+	// HubURL is the lowest-precedence source for the hub endpoint resolver
+	// (flag > env > this). Default empty: there is NO baked-in hub endpoint
+	// (public-repo hygiene). QUM-875.
+	HubURL     string `yaml:"hub_url"`
+	sprawlRoot string
+	values     map[string]string
 }
 
 // DefaultPauseTimeoutSeconds is the fallback pause-escalation budget. QUM-722.
