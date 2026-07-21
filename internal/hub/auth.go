@@ -34,11 +34,19 @@ var errStoreUnavailable = connect.NewError(
 // `Authorization: Bearer sprawl_hub_<tokenid>_<secret>` header on every
 // HubService call: parse → O(n) linear lookup by tokenid over the single
 // user's tokens → reject if revoked → argon2id constant-time verify of the
-// secret against the sealed hash. The client always sees a uniform
-// Unauthenticated on rejection; infra failures (store/keeper outage) are
-// logged server-side via log so operators can tell them apart. A nil log uses
-// a discard logger.
-func NewAuthInterceptor(st store.Store, uid store.UserID, log *slog.Logger) connect.UnaryInterceptorFunc {
+// secret against the sealed hash.
+//
+// If cookie is non-nil (browser login enabled), read RPCs (see cookieEligible)
+// additionally accept a valid browser session cookie as an ALTERNATIVE to the
+// bearer header — so a logged-in browser can call ListInstances with only its
+// cookie. Write/host RPCs (RegisterInstance) stay bearer-only regardless. The
+// bearer path is tried first and is entirely unchanged; the cookie is a pure
+// additive fallback.
+//
+// The client always sees a uniform Unauthenticated on rejection; infra failures
+// (store/keeper outage) are logged server-side via log so operators can tell
+// them apart. A nil log uses a discard logger.
+func NewAuthInterceptor(st store.Store, uid store.UserID, cookie *BrowserAuth, log *slog.Logger) connect.UnaryInterceptorFunc {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -49,10 +57,18 @@ func NewAuthInterceptor(st store.Store, uid store.UserID, log *slog.Logger) conn
 				log.Error("auth: no store configured; rejecting request")
 				return nil, errStoreUnavailable
 			}
-			if err := authenticate(ctx, st, uid, req.Header().Get("Authorization"), log); err != nil {
-				return nil, err
+			// Bearer first — host auth path, unchanged.
+			bearerErr := authenticate(ctx, st, uid, req.Header().Get("Authorization"), log)
+			if bearerErr == nil {
+				return next(ctx, req)
 			}
-			return next(ctx, req)
+			// Cookie fallback for eligible (read) RPCs when browser login is on.
+			if cookie != nil && cookieEligible(req.Spec().Procedure) {
+				if cookie.authenticateCookie(ctx, req.Header()) == nil {
+					return next(ctx, req)
+				}
+			}
+			return nil, errUnauthenticated
 		}
 	}
 }

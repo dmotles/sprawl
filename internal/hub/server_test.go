@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -36,6 +38,130 @@ func registerReq(hostID, runID, repo, userID, plaintext string) *connect.Request
 		req.Header().Set("Authorization", "Bearer "+plaintext)
 	}
 	return req
+}
+
+// newCookieAuthedHubServer builds a server with BOTH host bearer auth and
+// browser cookie login enabled over a shared memStore. It returns the client,
+// a valid bearer plaintext, a helper to mint a live cookie value (backed by a
+// login_sessions record), the store, and closeFn.
+func newCookieAuthedHubServer(t *testing.T) (
+	client hubv1connect.HubServiceClient,
+	bearer string,
+	mintCookie func(t *testing.T, expires time.Time) (value, id string),
+	st store.Store,
+	closeFn func(),
+) {
+	t.Helper()
+	st = newMemStore(t)
+	bearer = seedToken(t, st) // also EnsureUser(MVPUserID)
+	ba := NewBrowserAuth(st, MVPUserID, testLoginToken, testCookieKey(), DefaultSessionTTL, nil)
+	srv := NewServer(HubConfig{Store: st, Login: ba})
+	ts := httptest.NewServer(srv.Handler())
+	client = hubv1connect.NewHubServiceClient(ts.Client(), ts.URL)
+	mintCookie = func(t *testing.T, expires time.Time) (string, string) {
+		t.Helper()
+		id, err := newSessionID()
+		if err != nil {
+			t.Fatalf("newSessionID: %v", err)
+		}
+		if err := st.CreateLoginSession(context.Background(), store.LoginSessionRecord{
+			SessionID: store.LoginSessionID(id), UserID: MVPUserID, ExpiresAt: expires,
+		}); err != nil {
+			t.Fatalf("CreateLoginSession: %v", err)
+		}
+		return signSession(testCookieKey(), id), id
+	}
+	return client, bearer, mintCookie, st, ts.Close
+}
+
+func withCookie[T any](req *connect.Request[T], value string) *connect.Request[T] {
+	req.Header().Set("Cookie", cookieName+"="+value)
+	return req
+}
+
+func TestListInstances_CookieAuthPasses(t *testing.T) {
+	client, bearer, mintCookie, _, closeFn := newCookieAuthedHubServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	// Register an instance via the bearer path (a host action).
+	if _, err := client.RegisterInstance(ctx, registerReq("host-c", "run", "repo", "", bearer)); err != nil {
+		t.Fatalf("RegisterInstance: %v", err)
+	}
+	// List it authenticated by the COOKIE ONLY (no bearer header).
+	cookie, _ := mintCookie(t, time.Now().Add(time.Hour))
+	resp, err := client.ListInstances(ctx, withCookie(connect.NewRequest(&hubv1.ListInstancesRequest{}), cookie))
+	if err != nil {
+		t.Fatalf("ListInstances via cookie: %v", err)
+	}
+	if len(resp.Msg.Instances) != 1 || resp.Msg.Instances[0].HostId != "host-c" {
+		t.Fatalf("cookie-authed list = %+v, want [host-c]", resp.Msg.Instances)
+	}
+}
+
+func TestRegisterInstance_CookieRejected(t *testing.T) {
+	client, _, mintCookie, _, closeFn := newCookieAuthedHubServer(t)
+	defer closeFn()
+	// A browser (cookie only, no bearer) must NOT be able to register a host.
+	cookie, _ := mintCookie(t, time.Now().Add(time.Hour))
+	_, err := client.RegisterInstance(context.Background(),
+		withCookie(connect.NewRequest(&hubv1.RegisterInstanceRequest{HostId: "h"}), cookie))
+	if err == nil {
+		t.Fatal("RegisterInstance accepted a cookie — must be bearer-only")
+	}
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated", connect.CodeOf(err))
+	}
+}
+
+func TestListInstances_ExpiredCookieRejected(t *testing.T) {
+	client, _, mintCookie, _, closeFn := newCookieAuthedHubServer(t)
+	defer closeFn()
+	cookie, _ := mintCookie(t, time.Now().Add(-time.Minute)) // already expired
+	_, err := client.ListInstances(context.Background(),
+		withCookie(connect.NewRequest(&hubv1.ListInstancesRequest{}), cookie))
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated for an expired cookie", connect.CodeOf(err))
+	}
+}
+
+func TestListInstances_DeletedSessionRejected(t *testing.T) {
+	client, _, mintCookie, st, closeFn := newCookieAuthedHubServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	cookie, id := mintCookie(t, time.Now().Add(time.Hour))
+
+	// Valid before deletion.
+	if _, err := client.ListInstances(ctx,
+		withCookie(connect.NewRequest(&hubv1.ListInstancesRequest{}), cookie)); err != nil {
+		t.Fatalf("pre-delete ListInstances: %v", err)
+	}
+	// Revoke server-side.
+	if err := st.DeleteLoginSession(ctx, store.LoginSessionID(id)); err != nil {
+		t.Fatalf("DeleteLoginSession: %v", err)
+	}
+	// The same cookie is now dead.
+	_, err := client.ListInstances(ctx, withCookie(connect.NewRequest(&hubv1.ListInstancesRequest{}), cookie))
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated after session delete", connect.CodeOf(err))
+	}
+}
+
+func TestListInstances_TamperedCookieRejected(t *testing.T) {
+	client, _, mintCookie, _, closeFn := newCookieAuthedHubServer(t)
+	defer closeFn()
+	cookie, _ := mintCookie(t, time.Now().Add(time.Hour))
+	// Corrupt the first MAC char (right after the '.'): those are all data bits,
+	// so the flip reliably changes the decoded MAC (the trailing base64 char
+	// carries pad bits and can decode unchanged — see cookie_test).
+	dot := strings.IndexByte(cookie, '.')
+	b := []byte(cookie)
+	b[dot+1] ^= 0x01
+	_, err := client.ListInstances(context.Background(),
+		withCookie(connect.NewRequest(&hubv1.ListInstancesRequest{}), string(b)))
+	if connect.CodeOf(err) != connect.CodeUnauthenticated {
+		t.Fatalf("code = %v, want Unauthenticated for a tampered cookie", connect.CodeOf(err))
+	}
 }
 
 func TestRegisterInstance_RoundTripThroughList(t *testing.T) {

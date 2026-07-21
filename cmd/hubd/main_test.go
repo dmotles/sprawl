@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -198,6 +199,44 @@ func TestRun_DSNFlagBeatsEnv(t *testing.T) {
 	}
 	if *gotDSN != "postgres://flag/hub" {
 		t.Fatalf("buildStore DSN = %q, want flag value", *gotDSN)
+	}
+}
+
+func TestRun_BrowserLoginDisabledWhenUnset(t *testing.T) {
+	captured := captureServe(t)
+	captureBuildStore(t)
+	// Neither SPRAWL_HUB_LOGIN_TOKEN nor SPRAWL_HUB_COOKIE_KEY set.
+	if err := run(context.Background(), nil, func(string) string { return "" }, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if captured.Login != nil {
+		t.Fatal("browser login should be disabled (nil) when its env vars are unset")
+	}
+	// Host bearer auth is unaffected: a store is still injected and usable.
+	if captured.Store == nil {
+		t.Fatal("store must still be injected when browser login is disabled")
+	}
+}
+
+func TestRun_BrowserLoginEnabledWhenConfigured(t *testing.T) {
+	captured := captureServe(t)
+	captureBuildStore(t)
+	// 32-byte base64 key + a login token enable browser login.
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	env := func(k string) string {
+		switch k {
+		case hub.EnvHubLoginToken:
+			return "a-login-token"
+		case hub.EnvHubCookieKey:
+			return key
+		}
+		return ""
+	}
+	if err := run(context.Background(), nil, env, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if captured.Login == nil {
+		t.Fatal("browser login should be enabled when both env vars are set")
 	}
 }
 

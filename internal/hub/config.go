@@ -38,6 +38,11 @@ type HubConfig struct {
 	// boot path (cmd/hubd) opens and migrates a pgStore when a DSN is
 	// configured, then injects it here.
 	Store store.Store
+	// Login is the browser-auth component (login page + cookie session, docs 04
+	// §1/§6). Nil disables browser login cleanly — /login and /logout return
+	// 503 while host bearer auth is entirely unaffected. It is built at boot
+	// from SPRAWL_HUB_LOGIN_TOKEN + SPRAWL_HUB_COOKIE_KEY (see ResolveBrowserAuth).
+	Login *BrowserAuth
 }
 
 // logger returns the configured logger or a discard logger.

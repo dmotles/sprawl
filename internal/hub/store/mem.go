@@ -24,6 +24,7 @@ type memStore struct {
 	projects  map[ProjectID]ProjectRecord
 	active    map[ProjectID]ActiveHost
 	sessions  map[SessionID]SessionRecord
+	logins    map[LoginSessionID]LoginSessionRecord
 	streams   map[SessionID][]Event
 	blobStore BlobStore
 	secrets   SecretResolver
@@ -42,6 +43,7 @@ func NewMemStore() (Store, error) {
 		projects:  make(map[ProjectID]ProjectRecord),
 		active:    make(map[ProjectID]ActiveHost),
 		sessions:  make(map[SessionID]SessionRecord),
+		logins:    make(map[LoginSessionID]LoginSessionRecord),
 		streams:   make(map[SessionID][]Event),
 		blobStore: &gocloudBlob{bucket: memblob.OpenBucket(nil)},
 		secrets:   keeper,
@@ -269,6 +271,42 @@ func (m *memStore) GetSession(_ context.Context, id SessionID) (*SessionRecord, 
 		return nil, fmt.Errorf("memstore: session %q: %w", id, ErrNotFound)
 	}
 	return &s, nil
+}
+
+func (m *memStore) CreateLoginSession(_ context.Context, s LoginSessionRecord) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.requireUser(s.UserID); err != nil {
+		return err
+	}
+	if _, ok := m.logins[s.SessionID]; ok {
+		return fmt.Errorf("memstore: login session %q already exists", s.SessionID)
+	}
+	if s.CreatedAt.IsZero() {
+		s.CreatedAt = time.Now().UTC()
+	}
+	m.logins[s.SessionID] = s
+	return nil
+}
+
+func (m *memStore) GetLoginSession(_ context.Context, id LoginSessionID) (*LoginSessionRecord, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.logins[id]
+	if !ok {
+		return nil, fmt.Errorf("memstore: login session %q: %w", id, ErrNotFound)
+	}
+	return &s, nil
+}
+
+func (m *memStore) DeleteLoginSession(_ context.Context, id LoginSessionID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.logins[id]; !ok {
+		return fmt.Errorf("memstore: delete login session %q: %w", id, ErrNotFound)
+	}
+	delete(m.logins, id)
+	return nil
 }
 
 func (m *memStore) AppendStream(_ context.Context, sess SessionID, events []Event) (Seq, error) {

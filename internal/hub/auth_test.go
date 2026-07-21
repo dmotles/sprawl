@@ -51,7 +51,7 @@ func newMemStore(t *testing.T) store.Store {
 // next was reached and the resulting error.
 func callWithAuth(t *testing.T, st store.Store, authHeader string) (reached bool, err error) {
 	t.Helper()
-	interceptor := NewAuthInterceptor(st, MVPUserID, nil)
+	interceptor := NewAuthInterceptor(st, MVPUserID, nil, nil)
 	next := func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 		reached = true
 		return connect.NewResponse(&hubv1.RegisterInstanceResponse{}), nil
@@ -90,7 +90,7 @@ func assertUnauth(t *testing.T, reached bool, err error) {
 }
 
 func TestAuthInterceptor_NilStoreFailsClosed(t *testing.T) {
-	interceptor := NewAuthInterceptor(nil, MVPUserID, nil)
+	interceptor := NewAuthInterceptor(nil, MVPUserID, nil, nil)
 	reached := false
 	next := func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
 		reached = true

@@ -62,6 +62,20 @@ type Store interface {
 	// GetSession returns the session, or ErrNotFound.
 	GetSession(ctx context.Context, id SessionID) (*SessionRecord, error)
 
+	// --- login sessions (browser auth, docs 04 §6) ---
+	// A DEDICATED table (QUM-878 Decision 1): a browser login has no host, so
+	// it must not use the host-bound enter `sessions` table above.
+
+	// CreateLoginSession inserts a browser login-session row. A duplicate
+	// SessionID returns an error; an unknown UserID violates the users FK.
+	// CreatedAt is stamped by the store if the caller leaves it zero.
+	CreateLoginSession(ctx context.Context, s LoginSessionRecord) error
+	// GetLoginSession returns the login session, or ErrNotFound.
+	GetLoginSession(ctx context.Context, id LoginSessionID) (*LoginSessionRecord, error)
+	// DeleteLoginSession removes a login session (logout / revocation). An
+	// unknown SessionID returns ErrNotFound (parity with RevokeToken).
+	DeleteLoginSession(ctx context.Context, id LoginSessionID) error
+
 	// --- durable seq'd stream (docs 07 §4) — SHAPE ONLY this slice ---
 	// The session_stream table and blob-body plumbing land in P0-4. memStore
 	// implements these over a map; pgStore returns a not-implemented error.

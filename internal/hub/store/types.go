@@ -13,12 +13,13 @@ import (
 // Identifier types. All are opaque strings; the single-user MVP keeps UserID
 // constant everywhere (docs/design/hub/07-storage-persistence.md §0).
 type (
-	UserID    string
-	HostID    string
-	ProjectID string
-	SessionID string
-	TokenID   string
-	Seq       int64
+	UserID         string
+	HostID         string
+	ProjectID      string
+	SessionID      string
+	LoginSessionID string
+	TokenID        string
+	Seq            int64
 )
 
 // ErrNotFound is returned when a requested row/blob does not exist. Both impls
@@ -95,6 +96,20 @@ type SessionRecord struct {
 	HeadSeq   Seq
 	CreatedAt time.Time
 	EndedAt   *time.Time // nil == open
+}
+
+// LoginSessionRecord is one row of the login_sessions table — a browser login
+// session minted by /login (docs 04 §6). It is DELIBERATELY distinct from
+// SessionRecord (the `sprawl enter` session, which carries a mandatory host FK):
+// a browser login has no host, so QUM-878 Decision 1 gives it a dedicated table
+// with no fake host reference. ExpiresAt is persisted verbatim; expiry
+// enforcement lives in the auth layer, not the store. Deleting the row revokes
+// the cookie on its next use.
+type LoginSessionRecord struct {
+	SessionID LoginSessionID
+	UserID    UserID
+	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // Event is one row of the durable seq'd session stream (docs 07 §4). The shape

@@ -137,6 +137,11 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		return fmt.Errorf("hubd: ensure singleton user: %w", err)
 	}
 
+	// Browser login (docs 04 §1/§6) resolves from SPRAWL_HUB_LOGIN_TOKEN +
+	// SPRAWL_HUB_COOKIE_KEY at boot. When unset, login is nil — browser login is
+	// cleanly disabled and host bearer auth is unaffected. Never logs the secret.
+	login := hub.ResolveBrowserAuth(getenv, st, hub.MVPUserID, logger)
+
 	return serveFn(ctx, hub.HubConfig{
 		Addr:          *addr,
 		HubURL:        hubURL,
@@ -145,6 +150,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		Logger:        logger,
 		SPA:           spaAssets(),
 		Store:         st,
+		Login:         login,
 	})
 }
 

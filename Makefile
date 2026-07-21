@@ -1,4 +1,4 @@
-.PHONY: validate build proto-check proto-gen proto-gen-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap
+.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap
 
 # Default target — full quality gauntlet
 validate: build proto-check fmt-check lint test leak-scan
@@ -41,6 +41,18 @@ proto-gen:
 # of validate so the build never depends on a node toolchain.
 proto-gen-web:
 	$(BUF) generate --template buf.gen.web.yaml
+
+# hub-web rebuilds the browser SPA end to end: regenerate the connect-es TS
+# bindings into web/gen (via the local protoc-gen-es / protoc-gen-connect-es
+# from web/node_modules), then vite-build into the go:embed target
+# cmd/hubd/web/dist. Requires a node toolchain (node + npm) and buf. It is
+# DELIBERATELY NOT part of `make validate`/`make build` so the default flow
+# stays node-free — the built web/dist is committed to the tree. See
+# web/README.md for the full pipeline.
+hub-web:
+	cd web && npm ci
+	PATH="$(CURDIR)/web/node_modules/.bin:$$PATH" $(BUF) generate --template buf.gen.web.yaml
+	cd web && npm run build
 
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo none)

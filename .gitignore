@@ -18,6 +18,12 @@ hosttest
 *.swp
 *.swo
 
+# Hub SPA node deps (QUM-878). The generated web/gen bindings and the built
+# cmd/hubd/web/dist ARE committed (so `make validate`/`go build` stay node-free);
+# only the installed node_modules is ignored.
+web/node_modules/
+web/*.tsbuildinfo
+
 # Sprawl runtime state (config.yaml is tracked, everything else is ignored)
 .sprawl/*
 !.sprawl/config.yaml

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // storeFactory produces a freshly-migrated, isolated Store for one subtest.
@@ -33,6 +34,7 @@ func TestStoreSuite(t *testing.T) {
 			t.Run("InstanceRegList", func(t *testing.T) { testInstances(t, f.new) })
 			t.Run("ActiveHostAdvisory", func(t *testing.T) { testActiveHost(t, f.new) })
 			t.Run("Sessions", func(t *testing.T) { testSessions(t, f.new) })
+			t.Run("LoginSessions", func(t *testing.T) { testLoginSessions(t, f.new) })
 			t.Run("ForeignKeys", func(t *testing.T) { testForeignKeys(t, f.new) })
 			t.Run("MigrateIdempotent", func(t *testing.T) { testMigrateIdempotent(t, f.new) })
 			t.Run("BlobRoundTrip", func(t *testing.T) { testBlobRoundTrip(t, f.new) })
@@ -306,6 +308,76 @@ func testSessions(t *testing.T, newStore func(t *testing.T) Store) {
 	}
 }
 
+// testLoginSessions exercises the browser login-session CRUD (docs 04 §6):
+// create / lookup / delete-as-revoke, on the dedicated login_sessions table.
+func testLoginSessions(t *testing.T, newStore func(t *testing.T) Store) {
+	st, ctx := seeded(t, newStore)
+
+	// A browser login session (docs 04 §6) — dedicated table, no host FK
+	// (QUM-878 Decision 1). expires_at is persisted verbatim; expiry
+	// enforcement lives in the auth layer, not the store.
+	expires := time.Now().Add(time.Hour).UTC()
+	rec := LoginSessionRecord{
+		SessionID: "ls-1",
+		UserID:    testUser,
+		ExpiresAt: expires,
+	}
+	if err := st.CreateLoginSession(ctx, rec); err != nil {
+		t.Fatalf("CreateLoginSession: %v", err)
+	}
+
+	got, err := st.GetLoginSession(ctx, "ls-1")
+	if err != nil {
+		t.Fatalf("GetLoginSession: %v", err)
+	}
+	if got.SessionID != "ls-1" {
+		t.Errorf("SessionID = %q, want ls-1", got.SessionID)
+	}
+	if got.UserID != testUser {
+		t.Errorf("UserID = %q, want %q", got.UserID, testUser)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("CreatedAt is zero, want set")
+	}
+	// ExpiresAt round-trips (allow driver time-zone/precision drift within a sec).
+	if diff := got.ExpiresAt.Sub(expires); diff > time.Second || diff < -time.Second {
+		t.Errorf("ExpiresAt = %v, want ~%v (diff %v)", got.ExpiresAt, expires, diff)
+	}
+
+	// Unknown id → ErrNotFound.
+	if _, err := st.GetLoginSession(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetLoginSession(missing) err = %v, want ErrNotFound", err)
+	}
+
+	// Duplicate session id is rejected.
+	if err := st.CreateLoginSession(ctx, rec); err == nil {
+		t.Error("CreateLoginSession(duplicate): want error, got nil")
+	}
+
+	// A second concurrent session (multiple devices/browsers is realistic).
+	if err := st.CreateLoginSession(ctx, LoginSessionRecord{
+		SessionID: "ls-2", UserID: testUser, ExpiresAt: expires,
+	}); err != nil {
+		t.Fatalf("CreateLoginSession ls-2: %v", err)
+	}
+
+	// Delete revokes exactly one session: the row is gone and its cookie is dead
+	// on next use, but a sibling session for the same user is untouched. A second
+	// delete reports ErrNotFound (parity with RevokeToken).
+	if err := st.DeleteLoginSession(ctx, "ls-1"); err != nil {
+		t.Fatalf("DeleteLoginSession: %v", err)
+	}
+	if _, err := st.GetLoginSession(ctx, "ls-1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetLoginSession after delete err = %v, want ErrNotFound", err)
+	}
+	if _, err := st.GetLoginSession(ctx, "ls-2"); err != nil {
+		t.Errorf("GetLoginSession(ls-2) after deleting ls-1: %v — delete must isolate by session id", err)
+	}
+	if err := st.DeleteLoginSession(ctx, "ls-1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("DeleteLoginSession(absent) err = %v, want ErrNotFound", err)
+	}
+}
+
 // testForeignKeys pins the referential-integrity + uniqueness parity that pg
 // gets structurally from the schema and memStore must replicate by hand.
 func testForeignKeys(t *testing.T, newStore func(t *testing.T) Store) {
@@ -323,6 +395,9 @@ func testForeignKeys(t *testing.T, newStore func(t *testing.T) Store) {
 	}
 	if err := st.UpsertProject(ctx, ProjectRecord{ProjectID: "p", UserID: "ghost"}); err == nil {
 		t.Error("UpsertProject(unknown user): want error, got nil")
+	}
+	if err := st.CreateLoginSession(ctx, LoginSessionRecord{SessionID: "ls", UserID: "ghost", ExpiresAt: time.Now().Add(time.Hour)}); err == nil {
+		t.Error("CreateLoginSession(unknown user): want error, got nil")
 	}
 
 	// Duplicate token hash is rejected (tokens_hash_uq).

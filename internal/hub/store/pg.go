@@ -342,6 +342,45 @@ func (s *pgStore) GetSession(ctx context.Context, id SessionID) (*SessionRecord,
 	return &sess, nil
 }
 
+func (s *pgStore) CreateLoginSession(ctx context.Context, sess LoginSessionRecord) error {
+	// created_at defaults in the schema when the caller leaves it zero.
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO login_sessions (session_id, user_id, expires_at)
+		 VALUES ($1, $2, $3)`,
+		string(sess.SessionID), string(sess.UserID), sess.ExpiresAt)
+	if err != nil {
+		return fmt.Errorf("store: create login session: %w", err)
+	}
+	return nil
+}
+
+func (s *pgStore) GetLoginSession(ctx context.Context, id LoginSessionID) (*LoginSessionRecord, error) {
+	var rec LoginSessionRecord
+	err := s.pool.QueryRow(ctx,
+		`SELECT session_id, user_id, created_at, expires_at
+		 FROM login_sessions WHERE session_id = $1`,
+		string(id)).Scan(&rec.SessionID, &rec.UserID, &rec.CreatedAt, &rec.ExpiresAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("store: login session %q: %w", id, ErrNotFound)
+		}
+		return nil, fmt.Errorf("store: get login session: %w", err)
+	}
+	return &rec, nil
+}
+
+func (s *pgStore) DeleteLoginSession(ctx context.Context, id LoginSessionID) error {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM login_sessions WHERE session_id = $1`, string(id))
+	if err != nil {
+		return fmt.Errorf("store: delete login session: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: delete login session %q: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
 // AppendStream/ReadStream/HeadSeq: SHAPE ONLY this slice. The session_stream
 // table + blob-body plumbing land in P0-4 (docs 07 §4).
 var errStreamNotImpl = errors.New("store: session stream not implemented (P0-4)")

@@ -27,6 +27,7 @@ type Server struct {
 	debug  bool
 	spa    fs.FS // embedded SPA assets; may be nil/empty this slice
 	store  store.Store
+	login  *BrowserAuth // browser login; nil disables it (host auth unaffected)
 }
 
 // NewServer builds a Server from cfg. The readiness flag starts false; the
@@ -65,6 +66,7 @@ func NewServer(cfg HubConfig) *Server {
 		debug:  cfg.DebugEndpoint,
 		spa:    cfg.SPA,
 		store:  st,
+		login:  cfg.Login,
 	}
 }
 
@@ -163,16 +165,28 @@ func (s *Server) debugSnapshot() any {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Auth is always on for the HubService route: every RPC must present a
-	// valid bearer token. Health/readiness/debug are separate mux routes and
+	// Auth is always on for the HubService route: every RPC must present a valid
+	// bearer token (hosts) or, for read RPCs, a valid browser session cookie
+	// (s.login, when enabled). Health/readiness/debug are separate mux routes and
 	// intentionally stay open.
 	path, handler := hubv1connect.NewHubServiceHandler(s,
-		connect.WithInterceptors(NewAuthInterceptor(s.store, MVPUserID, s.log)))
+		connect.WithInterceptors(NewAuthInterceptor(s.store, MVPUserID, s.login, s.log)))
 	mux.Handle(path, handler)
 
 	mux.Handle("/healthz", s.health.LivenessHandler())
 	mux.Handle("/readyz", s.health.ReadinessHandler())
 	mux.Handle("/debug/state", DebugStateHandler(s.debug, s.debugSnapshot))
+
+	// Browser login (docs 04 §1/§6). Routes are mounted unconditionally so a
+	// build without browser login configured returns a clear 503 rather than a
+	// confusing 404. When enabled, POST /login trades the login token for a
+	// signed session cookie and /logout revokes it.
+	mux.Handle("/login", s.browserLoginRoute(func(login *BrowserAuth) http.Handler {
+		return login.LoginHandler(s.spa)
+	}))
+	mux.Handle("/logout", s.browserLoginRoute(func(login *BrowserAuth) http.Handler {
+		return login.LogoutHandler()
+	}))
 
 	// SPA seam: serve embedded assets under /app/ when present. An empty embed
 	// is fine this slice (the real SPA lands later); the path stays reserved and
@@ -182,4 +196,17 @@ func (s *Server) Handler() http.Handler {
 	}
 
 	return mux
+}
+
+// browserLoginRoute returns the given browser-login handler when browser login
+// is enabled, or a handler that returns 503 "browser login not configured"
+// when it is disabled (s.login == nil). This keeps /login and /logout mounted
+// in both modes so a disabled deploy gives a clear signal, not a 404.
+func (s *Server) browserLoginRoute(build func(*BrowserAuth) http.Handler) http.Handler {
+	if s.login == nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "browser login not configured", http.StatusServiceUnavailable)
+		})
+	}
+	return build(s.login)
 }
