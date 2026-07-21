@@ -1,0 +1,20 @@
+# backend-config.hcl.example (QUM-879) — TEMPLATE, placeholders only.
+#
+# Copy to `backend-config.hcl` (GITIGNORED), fill in the SAME state-backend
+# values used in QUM-870 (deploy/hub/bootstrap/bootstrap.env), then:
+#
+#   terraform init -backend-config=backend-config.hcl
+#
+# NEVER commit backend-config.hcl or put real values in this .example file. The
+# key is per-root ("hub.tfstate") so this state doesn't collide with the spike
+# or other roots in the shared container.
+#
+# use_azuread_auth = true → Terraform authenticates to the state blob via the
+# Azure CLI identity (AAD). NO account keys anywhere (corporate policy).
+
+subscription_id      = "<azure-subscription-id>"
+resource_group_name  = "<state-backend-resource-group>"
+storage_account_name = "<state-backend-storage-account>"
+container_name       = "tfstate"
+key                  = "hub.tfstate"
+use_azuread_auth     = true

@@ -39,16 +39,26 @@ var buildStoreFn = defaultBuildStore
 // the in-memory dev store.
 var memStoreFn = store.NewMemStore
 
+// pgConfig assembles the PGConfig from the environment, keeping the SecretURL /
+// BlobURL env reads in one testable place. Empty values are passed through
+// verbatim so NewPGStore applies its own defaults (a per-process random keeper
+// for SecretURL, "mem://" for BlobURL).
+func pgConfig(dsn string) store.PGConfig {
+	return store.PGConfig{
+		DSN:       dsn,
+		SecretURL: os.Getenv(hub.EnvHubSecretURL),
+		BlobURL:   os.Getenv(hub.EnvHubBlobURL),
+	}
+}
+
 // defaultBuildStore opens a Postgres-backed Store and migrates it to head.
 // The token-sealing keeper (per-deploy pepper) is resolved from
 // SPRAWL_HUB_SECRET_URL — it MUST match the one `sprawl hub token create`
 // used, or hubd cannot verify minted tokens (and a restart would invalidate
-// every token). It is resolved from the secrets path, never compiled in.
+// every token). The blob bucket is resolved from SPRAWL_HUB_BLOB_URL (empty →
+// "mem://"). Both come from the secrets/config path, never compiled in.
 func defaultBuildStore(ctx context.Context, dsn string) (store.Store, error) {
-	st, err := store.NewPGStore(ctx, store.PGConfig{
-		DSN:       dsn,
-		SecretURL: os.Getenv(hub.EnvHubSecretURL),
-	})
+	st, err := store.NewPGStore(ctx, pgConfig(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}

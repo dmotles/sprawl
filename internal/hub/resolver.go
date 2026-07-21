@@ -15,6 +15,12 @@ const EnvHubURL = "SPRAWL_HUB_URL"
 // cloud KMS ref in prod) — never compiled in (public-repo hygiene).
 const EnvHubSecretURL = "SPRAWL_HUB_SECRET_URL" //nolint:gosec // env var NAME, not a credential value
 
+// EnvHubBlobURL names the gocloud.dev/blob bucket URL backing snapshots and
+// attachments (e.g. "azblob://bucket" in a real deploy, "file://..." locally).
+// It is resolved at runtime from config, never compiled in. When unset the store
+// falls back to an in-memory bucket ("mem://") — see internal/hub/store/pg.go.
+const EnvHubBlobURL = "SPRAWL_HUB_BLOB_URL"
+
 // ResolveHubURL resolves the hub endpoint from three sources in precedence
 // order (highest first): an explicit --hub-url flag, the SPRAWL_HUB_URL
 // environment variable, then the .sprawl/config.yaml value.

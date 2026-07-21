@@ -240,6 +240,38 @@ func TestRun_BrowserLoginEnabledWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestPGConfig_BlobURLFromEnv(t *testing.T) {
+	// Unset SPRAWL_HUB_BLOB_URL must yield an empty BlobURL so NewPGStore keeps
+	// its mem:// default (see internal/hub/store/pg.go). t.Setenv("") isolates
+	// the test from any ambient shell value.
+	t.Run("unset yields empty (mem:// default preserved)", func(t *testing.T) {
+		t.Setenv(hub.EnvHubBlobURL, "")
+		cfg := pgConfig("postgres://localhost/hub")
+		if cfg.BlobURL != "" {
+			t.Fatalf("BlobURL: want empty when env unset, got %q", cfg.BlobURL)
+		}
+		if cfg.DSN != "postgres://localhost/hub" {
+			t.Fatalf("DSN passthrough: got %q", cfg.DSN)
+		}
+	})
+
+	t.Run("set flows into BlobURL", func(t *testing.T) {
+		t.Setenv(hub.EnvHubBlobURL, "file:///var/lib/hub/blobs")
+		cfg := pgConfig("postgres://localhost/hub")
+		if cfg.BlobURL != "file:///var/lib/hub/blobs" {
+			t.Fatalf("BlobURL: want env value, got %q", cfg.BlobURL)
+		}
+	})
+
+	t.Run("secret url still flows", func(t *testing.T) {
+		t.Setenv(hub.EnvHubSecretURL, "base64key://YWJjZA==")
+		cfg := pgConfig("postgres://localhost/hub")
+		if cfg.SecretURL != "base64key://YWJjZA==" {
+			t.Fatalf("SecretURL: want env value, got %q", cfg.SecretURL)
+		}
+	})
+}
+
 func TestRun_DebugEndpointFromEnv(t *testing.T) {
 	captured := captureServe(t)
 	env := func(k string) string {
