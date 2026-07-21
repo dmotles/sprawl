@@ -106,6 +106,11 @@ type enterDeps struct {
 	// `claude --model`; empty means "use the default". Not persisted —
 	// a fresh `sprawl enter` without the flag reverts to the default. QUM-850.
 	modelOverride string
+	// hubDialOut, when non-nil, is invoked once at startup (in a goroutine) to
+	// register this host with the hub. It MUST be non-fatal and non-blocking:
+	// a missing hub config is a clean no-op (sprawl stays fully offline), and
+	// any dial/auth failure is logged and swallowed. QUM-877.
+	hubDialOut func(sprawlRoot string)
 }
 
 // resolveAccentColor returns the persisted accent color, seeding a randomly-
@@ -268,6 +273,7 @@ func resolveEnterDeps() *enterDeps {
 		getenv:     os.Getenv,
 		getwd:      os.Getwd,
 		pickAccent: runtimecfg.PickAccentColor,
+		hubDialOut: func(sprawlRoot string) { defaultHubDialOut(os.Getenv, os.Stderr, sprawlRoot) },
 		finalizeHandoff: func(ctx context.Context, sprawlRoot string, stdout io.Writer, events chan<- rootinit.ConsolidationEvent) error {
 			deps := rootinit.DefaultDeps()
 			deps.LogPrefix = "[enter]"
@@ -642,6 +648,13 @@ func runEnter(deps *enterDeps) error {
 	// active for the lifetime of `sprawl enter` regardless of TUI mode.
 	stopSigDump := sigdump.Install(context.Background(), sprawlRoot, log.New(os.Stderr, "[sigdump] ", log.LstdFlags))
 	defer stopSigDump()
+
+	// QUM-877: best-effort host registration with the hub. Fire-and-forget in
+	// a goroutine so a slow/unreachable hub can never block or fail startup.
+	// A no-op when no hub is configured (the common offline path).
+	if deps.hubDialOut != nil {
+		go deps.hubDialOut(sprawlRoot)
+	}
 
 	pickAccent := deps.pickAccent
 	if pickAccent == nil {

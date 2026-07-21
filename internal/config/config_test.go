@@ -38,6 +38,26 @@ func TestLoad_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoad_HubTokenFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configDir := filepath.Join(tmpDir, ".sprawl")
+	os.MkdirAll(configDir, 0o755)
+
+	content := "hub_url: \"http://localhost:8080\"\nhub_token_file: \".sprawl/secrets/hub-token\"\n"
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(content), 0o644)
+
+	cfg, err := Load(tmpDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.HubTokenFile != ".sprawl/secrets/hub-token" {
+		t.Errorf("HubTokenFile = %q, want %q", cfg.HubTokenFile, ".sprawl/secrets/hub-token")
+	}
+	if cfg.HubURL != "http://localhost:8080" {
+		t.Errorf("HubURL = %q, want %q", cfg.HubURL, "http://localhost:8080")
+	}
+}
+
 func TestLoad_EmptyValidate(t *testing.T) {
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, ".sprawl")

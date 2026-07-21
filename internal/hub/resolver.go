@@ -8,6 +8,13 @@ import (
 // EnvHubURL is the environment variable consulted by ResolveHubURL.
 const EnvHubURL = "SPRAWL_HUB_URL"
 
+// EnvHubSecretURL names the gocloud.dev/secrets keeper URL used as the
+// per-deploy token pepper. It MUST resolve to the same keeper for both hubd
+// and `sprawl hub token create`, or the hub cannot verify minted tokens. It is
+// resolved at runtime from the secrets path (e.g. base64key://... in dev, a
+// cloud KMS ref in prod) — never compiled in (public-repo hygiene).
+const EnvHubSecretURL = "SPRAWL_HUB_SECRET_URL" //nolint:gosec // env var NAME, not a credential value
+
 // ResolveHubURL resolves the hub endpoint from three sources in precedence
 // order (highest first): an explicit --hub-url flag, the SPRAWL_HUB_URL
 // environment variable, then the .sprawl/config.yaml value.

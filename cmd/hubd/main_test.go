@@ -92,9 +92,10 @@ func TestRun_LogsResolvedEndpointHostOnly(t *testing.T) {
 // fakeStore is a no-op Store for exercising DSN plumbing without a database.
 type fakeStore struct{ hubstore.Store }
 
-func (fakeStore) Migrate(context.Context) error { return nil }
-func (fakeStore) Ping(context.Context) error    { return nil }
-func (fakeStore) Close() error                  { return nil }
+func (fakeStore) Migrate(context.Context) error                     { return nil }
+func (fakeStore) Ping(context.Context) error                        { return nil }
+func (fakeStore) Close() error                                      { return nil }
+func (fakeStore) EnsureUser(context.Context, hubstore.UserID) error { return nil }
 
 func captureBuildStore(t *testing.T) *string {
 	t.Helper()
@@ -108,16 +109,59 @@ func captureBuildStore(t *testing.T) *string {
 	return &gotDSN
 }
 
-func TestRun_NoDSN_NoStoreInjected(t *testing.T) {
+func TestRun_NoDSN_BuildsAndInjectsMemStore(t *testing.T) {
 	captured := captureServe(t)
 	captureBuildStore(t)
 	if err := run(context.Background(), nil, func(string) string { return "" }, &bytes.Buffer{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if captured.Store != nil {
-		t.Fatal("no DSN: expected nil Store (NewServer defaults to memStore)")
+	// Boot now owns store creation for the no-DSN path so it can EnsureUser
+	// the singleton; the built memStore is injected into HubConfig.
+	if captured.Store == nil {
+		t.Fatal("no DSN: expected an injected memStore")
+	}
+	// EnsureUser must have run at boot: a register against MVPUserID succeeds
+	// rather than hitting the users FK (ErrNotFound).
+	if err := captured.Store.RegisterInstance(context.Background(), hubstore.InstanceRegistration{
+		HostID: "h", RunID: "r", RepoLabel: "repo", UserID: hub.MVPUserID,
+	}); err != nil {
+		t.Fatalf("EnsureUser not run at boot: RegisterInstance failed: %v", err)
 	}
 }
+
+func TestRun_DSN_EnsuresUserAtBoot(t *testing.T) {
+	captureServe(t)
+	var ensured bool
+	orig := buildStoreFn
+	buildStoreFn = func(_ context.Context, _ string) (hubstore.Store, error) {
+		return ensureRecordingStore{onEnsure: func() { ensured = true }}, nil
+	}
+	t.Cleanup(func() { buildStoreFn = orig })
+	env := func(k string) string {
+		if k == "SPRAWL_HUB_DSN" {
+			return "postgres://localhost/hub"
+		}
+		return ""
+	}
+	if err := run(context.Background(), nil, env, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !ensured {
+		t.Fatal("EnsureUser was not called at boot for the DSN path")
+	}
+}
+
+// ensureRecordingStore records whether EnsureUser was invoked.
+type ensureRecordingStore struct {
+	hubstore.Store
+	onEnsure func()
+}
+
+func (s ensureRecordingStore) EnsureUser(context.Context, hubstore.UserID) error {
+	s.onEnsure()
+	return nil
+}
+func (ensureRecordingStore) Close() error { return nil }
 
 func TestRun_DSNFromEnv_BuildsAndInjectsStore(t *testing.T) {
 	captured := captureServe(t)

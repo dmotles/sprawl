@@ -24,9 +24,13 @@ type Config struct {
 	// HubURL is the lowest-precedence source for the hub endpoint resolver
 	// (flag > env > this). Default empty: there is NO baked-in hub endpoint
 	// (public-repo hygiene). QUM-875.
-	HubURL     string `yaml:"hub_url"`
-	sprawlRoot string
-	values     map[string]string
+	HubURL string `yaml:"hub_url"`
+	// HubTokenFile is the lowest-precedence source for the host bearer token
+	// (env SPRAWL_HUB_TOKEN wins). Path to a 0600 file holding the token; the
+	// token is NEVER placed on a CLI flag or in a URL. QUM-877.
+	HubTokenFile string `yaml:"hub_token_file"`
+	sprawlRoot   string
+	values       map[string]string
 }
 
 // DefaultPauseTimeoutSeconds is the fallback pause-escalation budget. QUM-722.

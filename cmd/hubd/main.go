@@ -35,9 +35,20 @@ var serveFn = hub.Serve
 // database. It opens a pgStore and applies pending migrations at boot.
 var buildStoreFn = defaultBuildStore
 
+// memStoreFn is indirected so tests can substitute the no-DSN store. It builds
+// the in-memory dev store.
+var memStoreFn = store.NewMemStore
+
 // defaultBuildStore opens a Postgres-backed Store and migrates it to head.
+// The token-sealing keeper (per-deploy pepper) is resolved from
+// SPRAWL_HUB_SECRET_URL — it MUST match the one `sprawl hub token create`
+// used, or hubd cannot verify minted tokens (and a restart would invalidate
+// every token). It is resolved from the secrets path, never compiled in.
 func defaultBuildStore(ctx context.Context, dsn string) (store.Store, error) {
-	st, err := store.NewPGStore(ctx, store.PGConfig{DSN: dsn})
+	st, err := store.NewPGStore(ctx, store.PGConfig{
+		DSN:       dsn,
+		SecretURL: os.Getenv(hub.EnvHubSecretURL),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
@@ -94,8 +105,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 	)
 
 	// DSN comes from --dsn (highest precedence) or SPRAWL_HUB_DSN. When set, we
-	// open a Postgres store and apply migrations at boot; otherwise the server
-	// falls back to an in-memory memStore (dev default).
+	// open a Postgres store and apply migrations at boot; otherwise we build an
+	// in-memory memStore (dev default). Either way boot OWNS store creation so
+	// it can EnsureUser the singleton before any FK-dependent write.
 	dsn := *dsnFlag
 	if dsn == "" {
 		dsn = getenv("SPRAWL_HUB_DSN")
@@ -110,7 +122,19 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		defer func() { _ = st.Close() }()
 		logger.Info("store initialized", "component", "hubd", "backend", "postgres", "migrated", true)
 	} else {
+		var err error
+		st, err = memStoreFn()
+		if err != nil {
+			return fmt.Errorf("hubd: initialize memstore: %w", err)
+		}
+		defer func() { _ = st.Close() }()
 		logger.Info("store initialized", "component", "hubd", "backend", "memory")
+	}
+
+	// EnsureUser the single MVP principal before serving so the first
+	// RegisterInstance does not fail the users FK (docs 04 §3).
+	if err := st.EnsureUser(ctx, hub.MVPUserID); err != nil {
+		return fmt.Errorf("hubd: ensure singleton user: %w", err)
 	}
 
 	return serveFn(ctx, hub.HubConfig{

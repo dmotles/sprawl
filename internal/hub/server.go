@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -43,6 +44,12 @@ func NewServer(cfg HubConfig) *Server {
 			// never. Log and proceed with readiness gated on the flag alone.
 			log.Error("memstore init failed; readiness gated on flag only", "error", err)
 		} else {
+			// Ensure the singleton user so the zero-config dev server can
+			// accept registrations without a separate boot step. Idempotent;
+			// memStore.EnsureUser ignores ctx.
+			if err := mem.EnsureUser(context.Background(), MVPUserID); err != nil {
+				log.Error("memstore ensure-user failed", "error", err)
+			}
 			st = mem
 		}
 	}
@@ -61,26 +68,62 @@ func NewServer(cfg HubConfig) *Server {
 	}
 }
 
-// RegisterInstance is stubbed this slice; the real registry lands in P0-3.
+// RegisterInstance records a host's presence (idempotent upsert keyed by
+// host_id). The caller is already authenticated by the auth interceptor. The
+// client-supplied user_id is NOT trusted — the server always stamps MVPUserID.
 func (s *Server) RegisterInstance(
-	context.Context, *connect.Request[hubv1.RegisterInstanceRequest],
+	ctx context.Context, req *connect.Request[hubv1.RegisterInstanceRequest],
 ) (*connect.Response[hubv1.RegisterInstanceResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented,
-		errors.New("RegisterInstance not implemented (QUM-875 spine)"))
+	if req.Msg.GetHostId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("host_id is required"))
+	}
+	if err := s.store.RegisterInstance(ctx, store.InstanceRegistration{
+		HostID:    store.HostID(req.Msg.GetHostId()),
+		RunID:     req.Msg.GetRunId(),
+		RepoLabel: req.Msg.GetRepoLabel(),
+		UserID:    MVPUserID,
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("register instance: %w", err))
+	}
+	return connect.NewResponse(&hubv1.RegisterInstanceResponse{}), nil
 }
 
-// ListInstances is stubbed this slice; the real registry lands in P0-3.
+// ListInstances returns the registered instances as metadata only — no secret
+// material is ever included.
 func (s *Server) ListInstances(
-	context.Context, *connect.Request[hubv1.ListInstancesRequest],
+	ctx context.Context, _ *connect.Request[hubv1.ListInstancesRequest],
 ) (*connect.Response[hubv1.ListInstancesResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented,
-		errors.New("ListInstances not implemented (QUM-875 spine)"))
+	recs, err := s.store.ListInstances(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			fmt.Errorf("list instances: %w", err))
+	}
+	out := make([]*hubv1.Instance, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, instanceToProto(r))
+	}
+	return connect.NewResponse(&hubv1.ListInstancesResponse{Instances: out}), nil
+}
+
+// instanceToProto maps a store InstanceRecord to the wire Instance shape.
+func instanceToProto(r store.InstanceRecord) *hubv1.Instance {
+	return &hubv1.Instance{
+		HostId:           string(r.HostID),
+		RepoLabel:        r.RepoLabel,
+		Active:           r.Active,
+		ClientsConnected: r.ClientsConnected,
+		LastSeenUnixMs:   r.LastSeenUnixMs,
+	}
 }
 
 // debugSnapshot returns the read-only state snapshot served at /debug/state.
-// It reflects only state the server already holds; near-empty this slice.
+// It reflects only state the server already holds: process health plus the
+// instance registry and the advisory active-host markers (the host ids that
+// currently hold a marker for any project — advisory only, no fence/lease).
 func (s *Server) debugSnapshot() any {
-	return map[string]any{
+	snap := map[string]any{
 		"component":   "hubd",
 		"now":         time.Now().UTC().Format(time.RFC3339),
 		"uptime_ms":   time.Since(startedAt).Milliseconds(),
@@ -88,6 +131,31 @@ func (s *Server) debugSnapshot() any {
 		"streams":     []any{},
 		"connections": []any{},
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	recs, err := s.store.ListInstances(ctx)
+	if err != nil {
+		snap["instances_error"] = err.Error()
+		return snap
+	}
+	instances := make([]map[string]any, 0, len(recs))
+	activeHosts := make([]string, 0)
+	for _, r := range recs {
+		instances = append(instances, map[string]any{
+			"host_id":           string(r.HostID),
+			"repo_label":        r.RepoLabel,
+			"active":            r.Active,
+			"clients_connected": r.ClientsConnected,
+			"last_seen_unix_ms": r.LastSeenUnixMs,
+		})
+		if r.Active {
+			activeHosts = append(activeHosts, string(r.HostID))
+		}
+	}
+	snap["instances"] = instances
+	snap["active_hosts"] = activeHosts
+	return snap
 }
 
 // Handler builds the mux: the Connect HubService route, health/readiness
@@ -95,7 +163,11 @@ func (s *Server) debugSnapshot() any {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	path, handler := hubv1connect.NewHubServiceHandler(s)
+	// Auth is always on for the HubService route: every RPC must present a
+	// valid bearer token. Health/readiness/debug are separate mux routes and
+	// intentionally stay open.
+	path, handler := hubv1connect.NewHubServiceHandler(s,
+		connect.WithInterceptors(NewAuthInterceptor(s.store, MVPUserID, s.log)))
 	mux.Handle(path, handler)
 
 	mux.Handle("/healthz", s.health.LivenessHandler())
