@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -270,6 +271,35 @@ func TestPGConfig_BlobURLFromEnv(t *testing.T) {
 			t.Fatalf("SecretURL: want env value, got %q", cfg.SecretURL)
 		}
 	})
+}
+
+// TestMain1_LogsBootErrorToStderr guards against the crashloop-undiagnosable
+// regression: a boot failure returned by run() must be written to stderr (w)
+// before main() calls os.Exit(1), instead of being silently discarded.
+func TestMain1_LogsBootErrorToStderr(t *testing.T) {
+	captureServe(t) // guard: the error path returns before serveFn, but avoid a real listen
+
+	orig := buildStoreFn
+	buildStoreFn = func(context.Context, string) (hubstore.Store, error) {
+		return nil, errors.New("boom-store-init")
+	}
+	t.Cleanup(func() { buildStoreFn = orig })
+
+	env := func(k string) string {
+		if k == "SPRAWL_HUB_DSN" {
+			return "postgres://localhost/hub"
+		}
+		return ""
+	}
+
+	var buf bytes.Buffer
+	err := main1(nil, env, &buf)
+	if err == nil {
+		t.Fatal("main1: expected boot error, got nil")
+	}
+	if !strings.Contains(buf.String(), "boom-store-init") {
+		t.Fatalf("main1 did not log boot error to stderr; buf=%q", buf.String())
+	}
 }
 
 func TestRun_DebugEndpointFromEnv(t *testing.T) {

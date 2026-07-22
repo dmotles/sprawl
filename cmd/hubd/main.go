@@ -70,17 +70,22 @@ func defaultBuildStore(ctx context.Context, dsn string) (store.Store, error) {
 }
 
 func main() {
-	if err := main1(); err != nil {
+	if err := main1(os.Args[1:], os.Getenv, os.Stderr); err != nil {
 		os.Exit(1)
 	}
 }
 
 // main1 runs the server with signal wiring, returning an error instead of
-// calling os.Exit so deferred cleanup (signal.stop) always runs.
-func main1() error {
+// calling os.Exit so deferred cleanup (signal.stop) always runs. Args/getenv/w
+// are injected so the boot-error-logging path is testable.
+func main1(args []string, getenv func(string) string, w io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	return run(ctx, os.Args[1:], os.Getenv, os.Stderr)
+	if err := run(ctx, args, getenv, w); err != nil {
+		fmt.Fprintln(w, err)
+		return err
+	}
+	return nil
 }
 
 // run parses flags, resolves configuration, and serves until ctx is cancelled.
