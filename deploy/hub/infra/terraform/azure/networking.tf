@@ -18,15 +18,24 @@ resource "azurerm_virtual_network" "hub" {
   tags                = var.tags
 }
 
-# ACA infrastructure subnet. The Container App Environment is CONSUMPTION-ONLY
-# (no workload_profile block), so this subnet MUST be >= /23 and MUST NOT be
-# delegated to any service (Azure rejects a delegated infra subnet for a
-# consumption-only env). azurerm_subnet has no tags argument.
+# ACA infrastructure subnet. The Container App Environment uses the Consumption
+# workload profile (see main.tf), so this subnet MUST be delegated to
+# Microsoft.App/environments and may be as small as /27 (Azure REJECTS an
+# undelegated infra subnet for a workload-profile env). azurerm_subnet has no
+# tags argument.
 resource "azurerm_subnet" "aca_infra" {
   name                 = var.aca_infra_subnet_name
   resource_group_name  = azurerm_resource_group.hub.name
   virtual_network_name = azurerm_virtual_network.hub.name
   address_prefixes     = [var.aca_infra_subnet_prefix]
+
+  delegation {
+    name = "aca"
+    service_delegation {
+      name    = "Microsoft.App/environments"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
+    }
+  }
 }
 
 # Delegated subnet for the flexible server's private VNet injection. Delegation

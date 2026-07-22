@@ -152,14 +152,14 @@ variable "vnet_address_space" {
 
 variable "aca_infra_subnet_name" {
   type        = string
-  description = "ACA infrastructure subnet name. Consumption-only env: /23 minimum, undelegated."
+  description = "ACA infrastructure subnet name. Workload-profile env: /27 minimum, delegated to Microsoft.App/environments."
   default     = "hub-aca-infra"
 }
 
 variable "aca_infra_subnet_prefix" {
   type        = string
-  description = "ACA infra subnet CIDR (>= /23 for a consumption-only ACA environment)."
-  default     = "10.100.0.0/23"
+  description = "ACA infra subnet CIDR (>= /27 for a workload-profile ACA environment, delegated to Microsoft.App/environments)."
+  default     = "10.100.0.0/27"
 }
 
 variable "postgres_subnet_name" {
@@ -170,7 +170,7 @@ variable "postgres_subnet_name" {
 
 variable "postgres_subnet_prefix" {
   type        = string
-  description = "Postgres delegated subnet CIDR. Must not overlap the ACA /23."
+  description = "Postgres delegated subnet CIDR. Must not overlap the ACA /27."
   default     = "10.100.2.0/24"
 }
 

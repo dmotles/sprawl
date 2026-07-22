@@ -33,13 +33,13 @@ postgres_server_name = "<postgres-flexible-server-name>"
 # backup_retention_days  = 7
 
 # Networking (private Postgres; ACA keeps PUBLIC ingress). Defaults are verified
-# non-overlapping — VNet 10.100.0.0/16, ACA infra /23 = 10.100.0.0/23 (consumption
-# -only minimum, undelegated), PG delegated subnet 10.100.2.0/24. Override only on
-# a CIDR collision or naming preference.
+# non-overlapping — VNet 10.100.0.0/16, ACA infra /27 = 10.100.0.0/27 (workload-
+# profile minimum, delegated to Microsoft.App/environments), PG delegated subnet
+# 10.100.2.0/24. Override only on a CIDR collision or naming preference.
 # vnet_name               = "hub-vnet"
 # vnet_address_space      = ["10.100.0.0/16"]
 # aca_infra_subnet_name   = "hub-aca-infra"
-# aca_infra_subnet_prefix = "10.100.0.0/23"
+# aca_infra_subnet_prefix = "10.100.0.0/27"
 # postgres_subnet_name    = "hub-postgres"
 # postgres_subnet_prefix  = "10.100.2.0/24"
 # postgres_dns_zone_label = "hub"

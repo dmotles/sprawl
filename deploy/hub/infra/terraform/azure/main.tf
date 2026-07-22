@@ -29,7 +29,9 @@ resource "azurerm_log_analytics_workspace" "hub" {
 # infrastructure subnet so the app can reach the private Postgres server over the
 # VNet. internal_load_balancer_enabled = false keeps PUBLIC HTTPS ingress — only
 # the DB is private; the browser + host dial-out still reach the hub from the
-# internet. (Consumption-only env: the infra subnet is >= /23 and undelegated.)
+# internet. The Consumption workload_profile pins the env to the workload-profiles
+# platform, which REQUIRES the infra subnet be delegated to Microsoft.App/
+# environments and allows a /27 minimum (see networking.tf).
 resource "azurerm_container_app_environment" "hub" {
   name                           = var.environment_name
   resource_group_name            = azurerm_resource_group.hub.name
@@ -38,6 +40,11 @@ resource "azurerm_container_app_environment" "hub" {
   infrastructure_subnet_id       = azurerm_subnet.aca_infra.id
   internal_load_balancer_enabled = false
   tags                           = var.tags
+
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+  }
 }
 
 # Registry for the hubd image. AAD-only (admin user disabled); the app pulls via

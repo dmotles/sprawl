@@ -41,7 +41,8 @@ role on the ACR for the UAMI · `Storage Blob Data Contributor` role on the
 storage account for the UAMI.
 
 Networking glue (root, [`networking.tf`](./networking.tf)): virtual network ·
-ACA infrastructure subnet (undelegated) · Postgres delegated subnet ·
+ACA infrastructure subnet (delegated to `Microsoft.App/environments`) ·
+Postgres delegated subnet ·
 private DNS zone (`*.postgres.database.azure.com`) · zone→VNet link. This is
 root-level rather than a `modules/` capability because a VNet is a cross-cutting
 substrate shared by two capabilities (ACA + DB) and is Azure-specific glue — a
@@ -61,9 +62,10 @@ VNet integration is immutable at creation and needs the link to exist first).
 ### Networking topology
 
 - VNet address space (default `10.100.0.0/16`, parameterized).
-- ACA infra subnet (default `10.100.0.0/23`): the env is **consumption-only**
-  (no `workload_profile`), which requires a `/23` minimum and forbids subnet
-  delegation. Set as the env's `infrastructure_subnet_id`.
+- ACA infra subnet (default `10.100.0.0/27`): the env uses a Consumption
+  `workload_profile`, which requires a `/27` minimum and **requires** the subnet
+  be delegated to `Microsoft.App/environments`. Set as the env's
+  `infrastructure_subnet_id`.
 - Postgres delegated subnet (default `10.100.2.0/24`, non-overlapping):
   delegated to `Microsoft.DBforPostgreSQL/flexibleServers`, used exclusively by
   the DB server.
