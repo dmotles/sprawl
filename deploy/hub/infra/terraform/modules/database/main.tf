@@ -32,6 +32,14 @@ resource "azurerm_postgresql_flexible_server" "this" {
   delegated_subnet_id           = var.delegated_subnet_id
   private_dns_zone_id           = var.private_dns_zone_id
   tags                          = var.tags
+
+  # Azure auto-assigns an availability zone at creation (observed: zone "1").
+  # Our config intentionally pins no zone, so a re-plan shows zone "1" -> null
+  # and would fight Azure's assignment on every apply. Ignore the attribute so
+  # we accept whatever zone Azure placed the server in.
+  lifecycle {
+    ignore_changes = [zone]
+  }
 }
 
 resource "azurerm_postgresql_flexible_server_database" "this" {

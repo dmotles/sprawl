@@ -47,6 +47,11 @@ resource "azurerm_subnet" "postgres" {
   virtual_network_name = azurerm_virtual_network.hub.name
   address_prefixes     = [var.postgres_subnet_prefix]
 
+  # Azure auto-adds the Microsoft.Storage service endpoint to the delegated
+  # subnet as part of flexible-server storage integration. Declare it explicitly
+  # to match reality so a re-plan does not try to remove it.
+  service_endpoints = ["Microsoft.Storage"]
+
   delegation {
     name = "fs"
     service_delegation {
