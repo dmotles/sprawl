@@ -83,7 +83,10 @@ Public, browser-facing. **No OIDC.** Auth = the single configured **bearer
 token**: the SPA posts it once to `Login`, which sets an **httpOnly session
 cookie**; subsequent calls carry the cookie. This is the entire auth surface —
 **no relying-party flow, no user allowlist, no multi-tenant RPCs.** The SPA is
-*just another event-log consumer*.
+primarily an event-log consumer; it additionally serves the single-user
+**host-token management screen** (the `CreateHostToken` / `ListHostTokens` /
+`RevokeHostToken` RPCs below, backing [`04` §4](04-authentication.md)) — still
+single-user admin, not a multi-tenant surface.
 
 ### RPCs (conceptual)
 
@@ -94,11 +97,17 @@ cookie**; subsequent calls carry the cookie. This is the entire auth surface —
 | `SubscribeInstance` | **server-stream** | Uplink→browser: live-tail an instance's transcript/event log. Carries `from_seq`; server replays the delta (or the full log on a fresh connect), then live-tails. |
 | `SubmitInput` | unary | Downlink: "user typed X in the browser" → hub → host's `SubscribeCommands` stream → the one turn-queue ([`01` §6](01-architecture.md#6-how-the-pieces-fit-requestresponse-paths)). |
 | `FetchTranscript` | unary | Cold-start / gap-recovery: fetch the transcript log — **full** (`from_seq=0`) or **delta** (`from_seq=N`) — returns entries + head `seq`. **No snapshot in v1**; the log itself is the source. |
+| `CreateHostToken` | unary | Host-token **vending**: a logged-in browser mints a new host token `{label}` → hub generates a CSPRNG secret, stores `argon2id(secret, pepper) + label + user_id`, and returns the **full token once** in this response only ([`04` §4.1](04-authentication.md)). |
+| `ListHostTokens` | unary | Enumerate host tokens — **metadata only** (`id`, `label`, `created_at`, `last_used_at`, `expires_at`, `revoked_at`); **never** the secret — for the management screen ([`04` §4](04-authentication.md)). |
+| `RevokeHostToken` | unary | Set `revoked_at` on a token `{id}`; verification rejects it on the **next** call/reconnect ([`04` §4.3](04-authentication.md)). |
 
-> **No `FetchSnapshot`, no PAT-management, no OIDC endpoints in v1.** Snapshots,
-> retention/GC, and richer auth are deferred (see the scope banner and Open
-> Questions). Client-side encryption and per-project opt-out are likewise
-> deferred.
+> **No `FetchSnapshot` and no OIDC endpoints in v1.** Snapshots, retention/GC, and
+> richer (multi-user / OIDC) auth are deferred (see the scope banner and Open
+> Questions). Client-side encryption and per-project opt-out are likewise deferred.
+> **Host-token management, by contrast, *is* in v1** — the `CreateHostToken` /
+> `ListHostTokens` / `RevokeHostToken` RPCs above are served to the logged-in
+> browser (the **web UI vends host tokens**; there is **no DB-direct CLI** for
+> token admin — [`04` §4](04-authentication.md)).
 
 ### Why the browser seam settles the debate
 

@@ -260,9 +260,20 @@ other host secrets, and **never** from a value passed on the command line.
   `.sprawl/secrets/hub-token` or a `gocloud.dev/secrets` reference), mode `0600`,
   owned by the operator. **Never committed** — the path is gitignored, mirroring
   the existing `.env` handling in `CLAUDE.md`.
-- **Resolution precedence** (highest first), matching [`02` §2.6](02-components.md):
-  the secrets-path reference, then env (`SPRAWL_HUB_TOKEN`), then config. Absent ⇒
-  the hub client stays inert (disconnected default).
+- **Resolution precedence** (highest first), extending [`02` §2.6](02-components.md)
+  by splitting its single config tier into a user- then project-level layer:
+  1. **Flag** — a `--hub-token-file` **path** (a secrets-path reference, never the
+     value itself; see below).
+  2. **Env** — `SPRAWL_HUB_TOKEN`.
+  3. **User config** — `~/.config/sprawl/config.yaml` (the operator's machine-wide
+     default, shared across all repos on that host).
+  4. **Project config** — `.sprawl/config.yaml` (per-repo; lowest).
+
+  User config intentionally **outranks** project config: `.sprawl/config.yaml` is
+  checked into the repo, so a project must not be able to override the operator's
+  machine-wide token reference (the token itself is never committed — see below;
+  these tiers name a `0600` file / secrets-path *reference*, never the value).
+  Absent from all four ⇒ the hub client stays inert (disconnected default).
 - **NEVER a value on a CLI flag.** A token passed as `--hub-token=sprawl_hub_…`
   leaks into the **process table** (`ps auxf`), shell history, and — critically
   in this codebase — the **incident snapshot** bundle (`Ctrl+\`, `ps auxf` +

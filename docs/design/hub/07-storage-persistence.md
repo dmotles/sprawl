@@ -173,10 +173,12 @@ axes that matter to *this* project:
   container that migrates itself on boot" shape exactly.
 
 Migrations live in-repo (e.g. `internal/hub/store/migrations/*.sql` + optional
-`*.go`), embedded via `embed.FS`, applied by `pgStore.Migrate` at startup and
-runnable via a `sprawl hub migrate` subcommand for ops. `memStore` builds its
-schema implicitly (it's just maps) and treats `Migrate` as a no-op — so tests never
-run migrations.
+`*.go`), embedded via `embed.FS` and **applied automatically by `hubd` on boot**
+(`pgStore.Migrate` at startup). There is **no standalone `sprawl hub migrate`
+CLI** — the local `sprawl` binary is DB-free; the hub owns Postgres and migrates
+itself (the "single self-contained container that migrates itself on boot" shape
+above). `memStore` builds its schema implicitly (it's just maps) and treats
+`Migrate` as a no-op — so tests never run migrations.
 
 ### Simplest way vs. right way
 

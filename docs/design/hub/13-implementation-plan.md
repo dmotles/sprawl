@@ -179,8 +179,9 @@ phases assume single-user throughout: a `user_id` column rides durable rows
   [`05` §4](05-observability.md)).
 - **`Store` interface + two impls** (`memStore`, `pgStore`) behind
   dependency-injection, from the start; **goose** migrations embedded via
-  `embed.FS`, applied by `pgStore.Migrate` at boot; `sprawl hub migrate`
-  subcommand ([`07`](07-storage-persistence.md)). Phase-0 tables (sketch, columns
+  `embed.FS`, **applied automatically by `hubd` on boot** (`pgStore.Migrate`) —
+  **no standalone `sprawl hub migrate` CLI**; the hub owns Postgres and migrates
+  itself ([`07`](07-storage-persistence.md)). Phase-0 tables (sketch, columns
   land in migrations — [`07` §4](07-storage-persistence.md)):
   `users` (**exactly one row**), `tokens` (**hashed** bearer token(s)), `hosts`,
   `projects`, `active_host` (advisory marker), `sessions`. **No `leases` table**
@@ -202,9 +203,14 @@ phases assume single-user throughout: a `user_id` column rides durable rows
     (`sprawl_hub_<tokenid>_<secret>`, stored argon2id + per-deploy pepper from the
     secrets path) in the `Authorization` header; O(1) indexed lookup by
     `<tokenid>`; per-host `create(show-once)/revoke/rotate` lifecycle
-    (`CreateHostToken`/`ListHostTokens`/`RevokeHostToken`). **Token never on a CLI
-    flag / URL / log** — resolved from a `0600` file / env / secrets ref only
-    (dodges the QUM-728 snapshot-leak vector; hard rule —
+    (`CreateHostToken`/`ListHostTokens`/`RevokeHostToken`). Host tokens are
+    **vended and managed only from the logged-in browser** via those RPCs (the
+    web UI is the token-admin surface — [`04` §4](04-authentication.md)); the
+    **local `sprawl` binary is DB-free** — there is **no `sprawl hub token` /
+    `sprawl hub instances` / `sprawl hub migrate` DB-direct CLI**; the hub owns
+    Postgres and auto-migrates on boot (above). **Token never on a CLI flag / URL
+    / log** — resolved from a `0600` file / env / user or project config /
+    secrets ref only (dodges the QUM-728 snapshot-leak vector; hard rule —
     [`04` §5](04-authentication.md), [`security-privacy` §5.2](security-privacy.md)).
 - **Instance registration** RPC (`RegisterInstance`): `sprawl enter` dials out
   with its bearer token, the hub records `{host_id, run_id, repo_label, user_id}`
