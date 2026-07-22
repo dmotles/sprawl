@@ -40,16 +40,21 @@ func DeriveHostID(sprawlRoot, machineHint string) string {
 	return "host_" + hex.EncodeToString(sum[:])[:16]
 }
 
-// ResolveHostToken resolves the host bearer token from the secrets path only:
-// the SPRAWL_HUB_TOKEN env var wins, else a 0600 token file. An empty result
-// means "no token configured" and is returned as ("", nil) so the caller can
-// treat the hub as disabled. A present-but-unreadable or wrong-mode file is an
-// error.
-func ResolveHostToken(getenv func(string) string, tokenFile string) (string, error) {
+// ResolveHostToken resolves the host bearer token in precedence order (highest
+// first): the SPRAWL_HUB_TOKEN env var, the user-level config token VALUE
+// (~/.config/sprawl/config.yaml hub_token), then a 0600 project token file.
+// An empty result means "no token configured" and is returned as ("", nil) so
+// the caller can treat the hub as disabled. A present-but-unreadable or
+// wrong-mode file is an error — but only reached when no higher source is set,
+// so a user token short-circuits before the file is ever stat'd.
+func ResolveHostToken(getenv func(string) string, userToken, tokenFile string) (string, error) {
 	if getenv != nil {
 		if v := strings.TrimSpace(getenv(EnvHubToken)); v != "" {
 			return v, nil
 		}
+	}
+	if v := strings.TrimSpace(userToken); v != "" {
+		return v, nil
 	}
 	if tokenFile == "" {
 		return "", nil // nothing configured → hub disabled

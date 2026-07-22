@@ -26,13 +26,19 @@ const hubDialTimeout = 10 * time.Second
 // host-only, token never) and swallowed. It must never return an error to the
 // caller — the TUI starts regardless.
 func defaultHubDialOut(getenv func(string) string, logW io.Writer, sprawlRoot string) {
-	var configURL, tokenFile string
+	var projectURL, tokenFile string
 	if cfg, err := config.Load(sprawlRoot); err == nil && cfg != nil {
-		configURL = cfg.HubURL
+		projectURL = cfg.HubURL
 		tokenFile = cfg.HubTokenFile
 	}
+	// User-level config sits between env and project config in precedence.
+	var userURL, userToken string
+	if uc, err := config.LoadUserConfig(os.UserConfigDir); err == nil {
+		userURL = uc.HubURL
+		userToken = uc.HubToken
+	}
 
-	hubURL := hub.ResolveHubURL("", getenv, configURL)
+	hubURL := hub.ResolveHubURL("", getenv, userURL, projectURL)
 	if hubURL == "" {
 		return // no hub configured → offline no-op
 	}
@@ -46,14 +52,15 @@ func defaultHubDialOut(getenv func(string) string, logW io.Writer, sprawlRoot st
 	if tokenFile != "" && !filepath.IsAbs(tokenFile) {
 		tokenFile = filepath.Join(sprawlRoot, tokenFile)
 	}
-	token, err := hub.ResolveHostToken(getenv, tokenFile)
+	token, err := hub.ResolveHostToken(getenv, userToken, tokenFile)
 	if err != nil {
 		fmt.Fprintf(logW, "[enter] hub: token resolution failed: %v (not registering)\n", err)
 		return
 	}
 	if token == "" {
 		fmt.Fprintf(logW, "[enter] hub: %s configured but no token found "+
-			"(set %s or hub_token_file); not registering\n", redacted, hub.EnvHubToken)
+			"(set %s, run `sprawl hub token set`, or set hub_token_file); not registering\n",
+			redacted, hub.EnvHubToken)
 		return
 	}
 

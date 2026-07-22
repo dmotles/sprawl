@@ -53,8 +53,8 @@ func pgConfig(dsn string) store.PGConfig {
 
 // defaultBuildStore opens a Postgres-backed Store and migrates it to head.
 // The token-sealing keeper (per-deploy pepper) is resolved from
-// SPRAWL_HUB_SECRET_URL — it MUST match the one `sprawl hub token create`
-// used, or hubd cannot verify minted tokens (and a restart would invalidate
+// SPRAWL_HUB_SECRET_URL — it MUST stay stable across restarts, or hubd cannot
+// verify previously minted tokens (and a restart would invalidate
 // every token). The blob bucket is resolved from SPRAWL_HUB_BLOB_URL (empty →
 // "mem://"). Both come from the secrets/config path, never compiled in.
 func defaultBuildStore(ctx context.Context, dsn string) (store.Store, error) {
@@ -112,7 +112,9 @@ func run(ctx context.Context, args []string, getenv func(string) string, w io.Wr
 		}
 	}
 
-	hubURL := hub.ResolveHubURL(*hubURLFlag, getenv, configHubURL)
+	// hubd is the server: no user-level client config applies, so the user
+	// slot is empty and resolution is flag > env > project config.
+	hubURL := hub.ResolveHubURL(*hubURLFlag, getenv, "", configHubURL)
 	logger.Info("hub endpoint resolved",
 		"component", "hubd",
 		"hub_url", hub.RedactHubURL(hubURL),

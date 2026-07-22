@@ -6,7 +6,7 @@ func TestResolveHubURL_EmptyDefault(t *testing.T) {
 	// With no flag, no env, no config value, the resolver must return the
 	// empty string — the hub endpoint has NO baked-in default (public-repo
 	// hygiene: the host connects only when explicitly told to).
-	got := ResolveHubURL("", func(string) string { return "" }, "")
+	got := ResolveHubURL("", func(string) string { return "" }, "", "")
 	if got != "" {
 		t.Fatalf("empty default: want %q, got %q", "", got)
 	}
@@ -17,76 +17,97 @@ func TestResolveHubURL_Precedence(t *testing.T) {
 		return func(k string) string { return m[k] }
 	}
 	tests := []struct {
-		name      string
-		flag      string
-		env       map[string]string
-		configVal string
-		want      string
+		name       string
+		flag       string
+		env        map[string]string
+		userVal    string
+		projectVal string
+		want       string
 	}{
 		{
-			name:      "flag beats env and config",
-			flag:      "https://flag.example:443",
-			env:       map[string]string{"SPRAWL_HUB_URL": "https://env.example:443"},
-			configVal: "https://config.example:443",
-			want:      "https://flag.example:443",
+			name:       "flag beats env, user, and project",
+			flag:       "https://flag.example:443",
+			env:        map[string]string{"SPRAWL_HUB_URL": "https://env.example:443"},
+			userVal:    "https://user.example:443",
+			projectVal: "https://project.example:443",
+			want:       "https://flag.example:443",
 		},
 		{
-			name:      "env beats config when flag empty",
-			flag:      "",
-			env:       map[string]string{"SPRAWL_HUB_URL": "https://env.example:443"},
-			configVal: "https://config.example:443",
-			want:      "https://env.example:443",
+			name:       "env beats user and project when flag empty",
+			flag:       "",
+			env:        map[string]string{"SPRAWL_HUB_URL": "https://env.example:443"},
+			userVal:    "https://user.example:443",
+			projectVal: "https://project.example:443",
+			want:       "https://env.example:443",
 		},
 		{
-			name:      "config used when flag and env empty",
-			flag:      "",
-			env:       map[string]string{},
-			configVal: "https://config.example:443",
-			want:      "https://config.example:443",
+			name:       "user config beats project when flag and env empty",
+			flag:       "",
+			env:        map[string]string{},
+			userVal:    "https://user.example:443",
+			projectVal: "https://project.example:443",
+			want:       "https://user.example:443",
 		},
 		{
-			name:      "whitespace-only flag is treated as empty, falls through to env",
-			flag:      "   ",
-			env:       map[string]string{"SPRAWL_HUB_URL": "https://env.example:443"},
-			configVal: "https://config.example:443",
-			want:      "https://env.example:443",
+			name:       "project used when flag, env, and user empty",
+			flag:       "",
+			env:        map[string]string{},
+			userVal:    "",
+			projectVal: "https://project.example:443",
+			want:       "https://project.example:443",
 		},
 		{
-			name:      "whitespace-only env is treated as empty, falls through to config",
-			flag:      "",
-			env:       map[string]string{"SPRAWL_HUB_URL": "  \t "},
-			configVal: "https://config.example:443",
-			want:      "https://config.example:443",
+			name:       "whitespace-only flag is treated as empty, falls through to env",
+			flag:       "   ",
+			env:        map[string]string{"SPRAWL_HUB_URL": "https://env.example:443"},
+			projectVal: "https://project.example:443",
+			want:       "https://env.example:443",
 		},
 		{
-			name:      "whitespace-only config yields empty",
-			flag:      "",
-			env:       map[string]string{},
-			configVal: "   ",
-			want:      "",
+			name:       "whitespace-only env falls through to user config",
+			flag:       "",
+			env:        map[string]string{"SPRAWL_HUB_URL": "  \t "},
+			userVal:    "https://user.example:443",
+			projectVal: "https://project.example:443",
+			want:       "https://user.example:443",
 		},
 		{
-			name:      "all empty yields empty",
-			flag:      "",
-			env:       map[string]string{},
-			configVal: "",
-			want:      "",
+			name:       "whitespace-only user config falls through to project",
+			flag:       "",
+			env:        map[string]string{},
+			userVal:    "  \t ",
+			projectVal: "https://project.example:443",
+			want:       "https://project.example:443",
+		},
+		{
+			name:       "whitespace-only project yields empty",
+			flag:       "",
+			env:        map[string]string{},
+			projectVal: "   ",
+			want:       "",
+		},
+		{
+			name: "all empty yields empty",
+			flag: "",
+			env:  map[string]string{},
+			want: "",
 		},
 		{
 			// The teeth of the empty-default public-repo AC: a stray-whitespace
 			// value from ANY source must not resolve to a non-empty endpoint.
-			name:      "all whitespace across every source yields empty",
-			flag:      "  ",
-			env:       map[string]string{"SPRAWL_HUB_URL": "\t"},
-			configVal: " \n ",
-			want:      "",
+			name:       "all whitespace across every source yields empty",
+			flag:       "  ",
+			env:        map[string]string{"SPRAWL_HUB_URL": "\t"},
+			userVal:    " \r ",
+			projectVal: " \n ",
+			want:       "",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ResolveHubURL(tc.flag, env(tc.env), tc.configVal)
+			got := ResolveHubURL(tc.flag, env(tc.env), tc.userVal, tc.projectVal)
 			if got != tc.want {
-				t.Fatalf("ResolveHubURL(%q, env, %q): want %q, got %q", tc.flag, tc.configVal, tc.want, got)
+				t.Fatalf("ResolveHubURL(%q, env, %q, %q): want %q, got %q", tc.flag, tc.userVal, tc.projectVal, tc.want, got)
 			}
 		})
 	}

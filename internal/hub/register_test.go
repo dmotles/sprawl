@@ -47,12 +47,44 @@ func TestResolveHostToken_EnvWins(t *testing.T) {
 		}
 		return ""
 	}
-	got, err := ResolveHostToken(getenv, file)
+	got, err := ResolveHostToken(getenv, "from-user", file)
 	if err != nil {
 		t.Fatalf("ResolveHostToken: %v", err)
 	}
 	if got != "from-env" {
-		t.Errorf("token = %q, want from-env (env wins over file)", got)
+		t.Errorf("token = %q, want from-env (env wins over user config and file)", got)
+	}
+}
+
+func TestResolveHostToken_UserTokenBeatsFileAndFileNeverRead(t *testing.T) {
+	// A user-config token value must win before the file is even stat'd, so a
+	// present-but-bad-mode file must NOT produce an error.
+	dir := t.TempDir()
+	badFile := filepath.Join(dir, "tok")
+	if err := os.WriteFile(badFile, []byte("from-file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveHostToken(func(string) string { return "" }, "  from-user  ", badFile)
+	if err != nil {
+		t.Fatalf("ResolveHostToken should short-circuit on user token: %v", err)
+	}
+	if got != "from-user" {
+		t.Errorf("token = %q, want trimmed from-user (user config beats file)", got)
+	}
+}
+
+func TestResolveHostToken_EmptyUserTokenFallsThroughToFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "tok")
+	if err := os.WriteFile(file, []byte("from-file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveHostToken(func(string) string { return "" }, "   ", file)
+	if err != nil {
+		t.Fatalf("ResolveHostToken: %v", err)
+	}
+	if got != "from-file" {
+		t.Errorf("token = %q, want from-file (whitespace user token falls through)", got)
 	}
 }
 
@@ -62,7 +94,7 @@ func TestResolveHostToken_ReadsFileWhenEnvEmpty(t *testing.T) {
 	if err := os.WriteFile(file, []byte("  file-token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ResolveHostToken(func(string) string { return "" }, file)
+	got, err := ResolveHostToken(func(string) string { return "" }, "", file)
 	if err != nil {
 		t.Fatalf("ResolveHostToken: %v", err)
 	}
@@ -77,7 +109,7 @@ func TestResolveHostToken_RejectsWrongFileMode(t *testing.T) {
 	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ResolveHostToken(func(string) string { return "" }, file)
+	_, err := ResolveHostToken(func(string) string { return "" }, "", file)
 	if err == nil {
 		t.Fatal("expected an error for a non-0600 token file")
 	}
@@ -87,14 +119,14 @@ func TestResolveHostToken_RejectsWrongFileMode(t *testing.T) {
 }
 
 func TestResolveHostToken_MissingFileIsError(t *testing.T) {
-	_, err := ResolveHostToken(func(string) string { return "" }, "/no/such/file")
+	_, err := ResolveHostToken(func(string) string { return "" }, "", "/no/such/file")
 	if err == nil {
 		t.Fatal("expected an error for a missing token file")
 	}
 }
 
 func TestResolveHostToken_NothingConfiguredIsEmptyNoError(t *testing.T) {
-	got, err := ResolveHostToken(func(string) string { return "" }, "")
+	got, err := ResolveHostToken(func(string) string { return "" }, "", "")
 	if err != nil {
 		t.Fatalf("no config should not error: %v", err)
 	}

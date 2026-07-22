@@ -98,9 +98,10 @@ so an operator can't fat-finger it):
   (gocloud localsecrets uses `base64.URLEncoding`): a standard-base64 key with
   `+`/`/` silently decodes to the WRONG 32 bytes (a `/` truncates the URL host),
   so minted host tokens won't verify. TF translates `+/ => -_`. If minting by
-  hand: `openssl rand -base64 32 | tr '+/' '-_'`. **Must be identical between
-  `hubd` and `sprawl hub token create`.** In prod, point this at a cloud
-  KMS/Key Vault keeper instead of `base64key://`.
+  hand: `openssl rand -base64 32 | tr '+/' '-_'`. **Must stay identical across
+  `hubd` restarts** (host tokens are minted server-side by `hubd`, so the same
+  keeper both mints and verifies). In prod, point this at a cloud KMS/Key Vault
+  keeper instead of `base64key://`.
 - **`SPRAWL_HUB_COOKIE_KEY`** — OPPOSITE: **standard** base64
   (`base64.StdEncoding` in `login.go`), ≥32 decoded bytes. A URL-safe value
   silently disables browser login. By hand: `openssl rand -base64 32`.

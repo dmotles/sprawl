@@ -112,9 +112,9 @@ func (s *Server) ListInstances(
 
 // CreateHostToken mints a new host bearer token. This is a browser-only,
 // cookie-authenticated operator action (the auth interceptor rejects host
-// bearer callers). It reuses the same mint → seal → persist path as the
-// `sprawl hub token create` CLI: the sealed hash is stored under MVPUserID and
-// the plaintext is returned EXACTLY ONCE (never persisted, never logged).
+// bearer callers). It mints via the mint → seal → persist path: the sealed
+// hash is stored under MVPUserID and the plaintext is returned EXACTLY ONCE
+// (never persisted, never logged).
 func (s *Server) CreateHostToken(
 	ctx context.Context, req *connect.Request[hubv1.CreateHostTokenRequest],
 ) (*connect.Response[hubv1.CreateHostTokenResponse], error) {

@@ -7,12 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/hub"
 )
 
 // TestDefaultHubDialOut_OfflineNoOp: with no hub URL configured anywhere, the
 // dial-out is a silent no-op — no registration attempt, no log noise.
 func TestDefaultHubDialOut_OfflineNoOp(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate from the dev's real user config
 	var buf bytes.Buffer
 	defaultHubDialOut(func(string) string { return "" }, &buf, t.TempDir())
 	if buf.Len() != 0 {
@@ -24,6 +26,7 @@ func TestDefaultHubDialOut_OfflineNoOp(t *testing.T) {
 // logs a skip and does NOT attempt to dial (which would surface a connection
 // error instead of the "no token" message).
 func TestDefaultHubDialOut_URLButNoTokenSkips(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate from the dev's real user config
 	var buf bytes.Buffer
 	getenv := func(k string) string {
 		if k == hub.EnvHubURL {
@@ -45,6 +48,7 @@ func TestDefaultHubDialOut_URLButNoTokenSkips(t *testing.T) {
 // TestDefaultHubDialOut_BadTokenFileModeSkips: a token file with the wrong
 // permissions is refused and the dial-out bails (non-fatal).
 func TestDefaultHubDialOut_BadTokenFileModeSkips(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate from the dev's real user config
 	root := t.TempDir()
 	tokFile := filepath.Join(root, "tok")
 	if err := os.WriteFile(tokFile, []byte("sprawl_hub_x_y"), 0o644); err != nil {
@@ -64,6 +68,23 @@ func TestDefaultHubDialOut_BadTokenFileModeSkips(t *testing.T) {
 	defaultHubDialOut(getenv, &buf, root)
 	if !strings.Contains(buf.String(), "0600") {
 		t.Fatalf("expected a 0600 mode rejection, got: %q", buf.String())
+	}
+}
+
+// TestDefaultHubDialOut_UserConfigURLWiredIn: a hub_url set ONLY in the
+// user-level config (no env, no flag, no project config) is resolved and
+// drives the dial-out to the no-token skip path — proving the user-config
+// layer is wired into defaultHubDialOut.
+func TestDefaultHubDialOut_UserConfigURLWiredIn(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	if err := config.SaveUserConfig(os.UserConfigDir, config.UserConfig{HubURL: "http://127.0.0.1:0"}); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	defaultHubDialOut(func(string) string { return "" }, &buf, t.TempDir())
+	if !strings.Contains(buf.String(), "no token") {
+		t.Fatalf("expected user-config URL to reach the no-token skip path, got: %q", buf.String())
 	}
 }
 
