@@ -196,6 +196,7 @@ locals {
       SPRAWL_HUB_LOG_FORMAT     = "json"
       SPRAWL_HUB_BLOB_URL       = "azblob://${module.object_store.bucket_ref}"
       AZURE_STORAGE_ACCOUNT     = module.object_store.account_name
+      AZURE_CLIENT_ID           = azurerm_user_assigned_identity.hub.client_id
       SPRAWL_HUB_DEBUG_ENDPOINT = var.debug_endpoint ? "1" : "0"
     },
     var.hub_url == "" ? {} : { SPRAWL_HUB_URL = var.hub_url },
