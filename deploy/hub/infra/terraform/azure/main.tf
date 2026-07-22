@@ -131,9 +131,9 @@ module "secrets" {
   resource_group_name = azurerm_resource_group.hub.name
   location            = azurerm_resource_group.hub.location
   tenant_id           = data.azurerm_client_config.current.tenant_id
-  # SPRAWL_HUB_LOGIN_TOKEN is a shared string injected purely out-of-band (any
-  # non-empty value enables browser login) — an empty placeholder slot.
-  names               = ["hub-login-token"]
+  # No out-of-band secret slots — every hub secret is now generated in-TF and
+  # written into the vault directly by the root (see below).
+  names               = []
   reader_principal_id = azurerm_user_assigned_identity.hub.principal_id
   officer_object_id   = data.azurerm_client_config.current.object_id
   tags                = var.tags
@@ -160,6 +160,15 @@ resource "random_bytes" "cookie_key" {
   length = 32
 }
 
+# Browser login token (SPRAWL_HUB_LOGIN_TOKEN). Unlike the pepper/cookie keys
+# this is an OPAQUE shared string compared verbatim by hubd (any non-empty value
+# enables browser login), so its encoding is unconstrained — no base64-alphabet
+# foot-gun. .hex is chosen so an operator can copy it out of Key Vault and paste
+# it into `sprawl enter` / the browser without shell- or URL-quoting hazards.
+resource "random_bytes" "login_token" {
+  length = 32
+}
+
 resource "azurerm_key_vault_secret" "dsn" {
   name         = "hub-dsn"
   value        = module.database.conn_ref
@@ -179,6 +188,14 @@ resource "azurerm_key_vault_secret" "secret_url" {
 resource "azurerm_key_vault_secret" "cookie_key" {
   name         = "hub-cookie-key"
   value        = random_bytes.cookie_key.base64
+  key_vault_id = module.secrets.store_id
+  tags         = var.tags
+  depends_on   = [module.secrets]
+}
+
+resource "azurerm_key_vault_secret" "login_token" {
+  name         = "hub-login-token"
+  value        = random_bytes.login_token.hex
   key_vault_id = module.secrets.store_id
   tags         = var.tags
   depends_on   = [module.secrets]
@@ -215,7 +232,7 @@ locals {
     { name = "hub-dsn", key_vault_secret_id = azurerm_key_vault_secret.dsn.versionless_id },
     { name = "hub-secret-url", key_vault_secret_id = azurerm_key_vault_secret.secret_url.versionless_id },
     { name = "hub-cookie-key", key_vault_secret_id = azurerm_key_vault_secret.cookie_key.versionless_id },
-    { name = "hub-login-token", key_vault_secret_id = module.secrets.secret_refs["hub-login-token"] },
+    { name = "hub-login-token", key_vault_secret_id = azurerm_key_vault_secret.login_token.versionless_id },
   ]
 }
 

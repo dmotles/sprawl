@@ -38,7 +38,7 @@ output "secret_store_ref" {
 }
 
 output "secret_refs" {
-  description = "Out-of-band Key Vault secret references (name => versionless id)."
+  description = "Out-of-band Key Vault secret references (name => versionless id). Empty now that every hub secret is generated in-TF; retained for the stable module output contract."
   value       = module.secrets.secret_refs
 }
 
