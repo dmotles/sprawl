@@ -14,7 +14,9 @@ resource "random_password" "admin" {
 }
 
 # Smallest burstable managed Postgres. Backups on (parameterized window),
-# storage auto-grow on, public access parameterized (docs 06 §5.2).
+# storage auto-grow on. FULLY PRIVATE: no public network access — the server is
+# VNet-injected into a delegated subnet and reached only over the VNet, with its
+# private FQDN resolved via the linked private DNS zone (docs 06 §5.2).
 resource "azurerm_postgresql_flexible_server" "this" {
   name                          = var.name
   resource_group_name           = var.resource_group_name
@@ -26,7 +28,9 @@ resource "azurerm_postgresql_flexible_server" "this" {
   storage_mb                    = var.storage_mb
   auto_grow_enabled             = true
   backup_retention_days         = var.retention_days
-  public_network_access_enabled = var.public_network_access_enabled
+  public_network_access_enabled = false
+  delegated_subnet_id           = var.delegated_subnet_id
+  private_dns_zone_id           = var.private_dns_zone_id
   tags                          = var.tags
 }
 
@@ -35,15 +39,4 @@ resource "azurerm_postgresql_flexible_server_database" "this" {
   server_id = azurerm_postgresql_flexible_server.this.id
   collation = "en_US.utf8"
   charset   = "UTF8"
-}
-
-# When public access is on, allow other Azure services (the Container App) to
-# reach the server. 0.0.0.0-0.0.0.0 is Azure's "allow internal Azure traffic"
-# sentinel, NOT the public internet. Skipped entirely when public access is off.
-resource "azurerm_postgresql_flexible_server_firewall_rule" "azure_services" {
-  count            = var.public_network_access_enabled ? 1 : 0
-  name             = "AllowAzureServices"
-  server_id        = azurerm_postgresql_flexible_server.this.id
-  start_ip_address = "0.0.0.0"
-  end_ip_address   = "0.0.0.0"
 }

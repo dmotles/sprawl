@@ -61,10 +61,14 @@ variable "database_name" {
   default     = "hub"
 }
 
-variable "public_network_access_enabled" {
-  type        = bool
-  description = "Whether the server accepts public network connections. Phase-0 default true (with an Azure-services firewall rule); private VNet integration is a future hardening (docs 06 §5.2)."
-  default     = true
+variable "delegated_subnet_id" {
+  type        = string
+  description = "Resource ID of the VNet subnet delegated to Microsoft.DBforPostgreSQL/flexibleServers. Enables private VNet integration; public network access is always disabled."
+}
+
+variable "private_dns_zone_id" {
+  type        = string
+  description = "Resource ID of the private DNS zone (*.postgres.database.azure.com) the server registers its private FQDN in."
 }
 
 variable "tags" {

@@ -25,13 +25,19 @@ resource "azurerm_log_analytics_workspace" "hub" {
   tags                = var.tags
 }
 
-# Container App Environment (managed Envoy ingress).
+# Container App Environment (managed Envoy ingress). VNet-injected via the
+# infrastructure subnet so the app can reach the private Postgres server over the
+# VNet. internal_load_balancer_enabled = false keeps PUBLIC HTTPS ingress — only
+# the DB is private; the browser + host dial-out still reach the hub from the
+# internet. (Consumption-only env: the infra subnet is >= /23 and undelegated.)
 resource "azurerm_container_app_environment" "hub" {
-  name                       = var.environment_name
-  resource_group_name        = azurerm_resource_group.hub.name
-  location                   = azurerm_resource_group.hub.location
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.hub.id
-  tags                       = var.tags
+  name                           = var.environment_name
+  resource_group_name            = azurerm_resource_group.hub.name
+  location                       = azurerm_resource_group.hub.location
+  log_analytics_workspace_id     = azurerm_log_analytics_workspace.hub.id
+  infrastructure_subnet_id       = azurerm_subnet.aca_infra.id
+  internal_load_balancer_enabled = false
+  tags                           = var.tags
 }
 
 # Registry for the hubd image. AAD-only (admin user disabled); the app pulls via
@@ -78,17 +84,24 @@ resource "azurerm_role_assignment" "blob_contributor" {
 module "database" {
   source = "../modules/database"
 
-  name                          = var.postgres_server_name
-  resource_group_name           = azurerm_resource_group.hub.name
-  location                      = azurerm_resource_group.hub.location
-  engine_version                = var.postgres_version
-  size                          = var.postgres_size
-  storage_mb                    = var.postgres_storage_mb
-  retention_days                = var.backup_retention_days
-  administrator_login           = var.postgres_admin_login
-  database_name                 = var.postgres_database_name
-  public_network_access_enabled = var.postgres_public_network_access_enabled
-  tags                          = var.tags
+  name                = var.postgres_server_name
+  resource_group_name = azurerm_resource_group.hub.name
+  location            = azurerm_resource_group.hub.location
+  engine_version      = var.postgres_version
+  size                = var.postgres_size
+  storage_mb          = var.postgres_storage_mb
+  retention_days      = var.backup_retention_days
+  administrator_login = var.postgres_admin_login
+  database_name       = var.postgres_database_name
+  delegated_subnet_id = azurerm_subnet.postgres.id
+  private_dns_zone_id = azurerm_private_dns_zone.postgres.id
+  tags                = var.tags
+
+  # Flexible-server VNet integration is immutable at creation; the zone→VNet link
+  # must exist before the server. delegated_subnet_id/private_dns_zone_id create
+  # implicit deps on the subnet + zone, but the LINK is a separate resource, so
+  # its ordering needs an explicit depends_on.
+  depends_on = [azurerm_private_dns_zone_virtual_network_link.postgres]
 }
 
 module "object_store" {

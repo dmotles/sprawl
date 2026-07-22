@@ -131,10 +131,53 @@ variable "postgres_database_name" {
   default     = "hub"
 }
 
-variable "postgres_public_network_access_enabled" {
-  type        = bool
-  description = "Whether Postgres accepts public network connections (Phase-0 default true; private VNet integration is future hardening)."
-  default     = true
+# ---------------------------------------------------------------------------
+# Networking (private Postgres VNet integration; public ACA ingress preserved)
+# ---------------------------------------------------------------------------
+# The DB is fully private (VNet-injected, no public access); the app keeps public
+# HTTPS ingress and reaches the DB over the VNet. Names default (RG-scoped, not
+# globally unique). CIDR defaults are verified non-overlapping.
+
+variable "vnet_name" {
+  type        = string
+  description = "Virtual network name backing private Postgres + ACA VNet integration."
+  default     = "hub-vnet"
+}
+
+variable "vnet_address_space" {
+  type        = list(string)
+  description = "VNet address space. Must contain both subnet prefixes without overlap."
+  default     = ["10.100.0.0/16"]
+}
+
+variable "aca_infra_subnet_name" {
+  type        = string
+  description = "ACA infrastructure subnet name. Consumption-only env: /23 minimum, undelegated."
+  default     = "hub-aca-infra"
+}
+
+variable "aca_infra_subnet_prefix" {
+  type        = string
+  description = "ACA infra subnet CIDR (>= /23 for a consumption-only ACA environment)."
+  default     = "10.100.0.0/23"
+}
+
+variable "postgres_subnet_name" {
+  type        = string
+  description = "Postgres delegated subnet name (delegated to Microsoft.DBforPostgreSQL/flexibleServers)."
+  default     = "hub-postgres"
+}
+
+variable "postgres_subnet_prefix" {
+  type        = string
+  description = "Postgres delegated subnet CIDR. Must not overlap the ACA /23."
+  default     = "10.100.2.0/24"
+}
+
+variable "postgres_dns_zone_label" {
+  type        = string
+  description = "Leftmost label of the private DNS zone <label>.private.postgres.database.azure.com."
+  default     = "hub"
 }
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,14 @@ modules in [`../modules/`](../modules/README.md) into a real ACA deployment of
 Postgres, a private blob container, and a Key Vault, all reached via a
 user-assigned managed identity (AAD end-to-end — no account keys).
 
+**The app has PUBLIC HTTPS ingress; the database is PRIVATE.** Postgres is a
+VNet-injected Flexible Server with `public_network_access_enabled = false`,
+reachable only over a dedicated VNet; there is no public firewall rule. The
+Container App Environment is VNet-injected too (`internal_load_balancer_enabled
+= false`, so ingress stays public) and reaches the DB privately over the VNet,
+resolving its private FQDN via a private DNS zone. Only the DB is private — the
+browser and host dial-out still reach the hub from the internet.
+
 See [`docs/design/hub/06-iac.md`](../../../../../docs/design/hub/06-iac.md) and
 [`08-deployment.md`](../../../../../docs/design/hub/08-deployment.md).
 
@@ -27,18 +35,41 @@ See [`docs/design/hub/06-iac.md`](../../../../../docs/design/hub/06-iac.md) and
 ## What it provisions
 
 Glue (root): resource group · Log Analytics workspace · Container App
-Environment · Azure Container Registry (`admin_enabled = false`) ·
-user-assigned managed identity (UAMI) · `AcrPull` role on the ACR for the UAMI ·
-`Storage Blob Data Contributor` role on the storage account for the UAMI.
+Environment (VNet-injected, public ingress) · Azure Container Registry
+(`admin_enabled = false`) · user-assigned managed identity (UAMI) · `AcrPull`
+role on the ACR for the UAMI · `Storage Blob Data Contributor` role on the
+storage account for the UAMI.
 
-Capabilities (modules): `database` (Postgres Flexible Server) · `object-store`
-(storage account + private blob container) · `secrets` (Key Vault + grants) ·
-`container-host` (the `hubd` Container App, single revision / single replica,
-liveness `/healthz` + readiness `/readyz`).
+Networking glue (root, [`networking.tf`](./networking.tf)): virtual network ·
+ACA infrastructure subnet (undelegated) · Postgres delegated subnet ·
+private DNS zone (`*.postgres.database.azure.com`) · zone→VNet link. This is
+root-level rather than a `modules/` capability because a VNet is a cross-cutting
+substrate shared by two capabilities (ACA + DB) and is Azure-specific glue — a
+future `aws/` root would model VPC/security-group topology entirely differently.
+
+Capabilities (modules): `database` (**private** Postgres Flexible Server —
+VNet-injected, no public access) · `object-store` (storage account + private
+blob container) · `secrets` (Key Vault + grants) · `container-host` (the `hubd`
+Container App, single revision / single replica, liveness `/healthz` +
+readiness `/readyz`).
 
 The UAMI + `AcrPull` are created **before** the Container App (`depends_on`) so
 the first apply can pull the real image without a system-identity
-chicken-and-egg.
+chicken-and-egg. The Postgres server `depends_on` the zone→VNet link (its
+VNet integration is immutable at creation and needs the link to exist first).
+
+### Networking topology
+
+- VNet address space (default `10.100.0.0/16`, parameterized).
+- ACA infra subnet (default `10.100.0.0/23`): the env is **consumption-only**
+  (no `workload_profile`), which requires a `/23` minimum and forbids subnet
+  delegation. Set as the env's `infrastructure_subnet_id`.
+- Postgres delegated subnet (default `10.100.2.0/24`, non-overlapping):
+  delegated to `Microsoft.DBforPostgreSQL/flexibleServers`, used exclusively by
+  the DB server.
+- Private DNS zone `<label>.private.postgres.database.azure.com` (leftmost label
+  parameterized), linked to the VNet so in-VNet clients resolve the DB's
+  private FQDN.
 
 ## Container env inventory (all read by `hubd` at boot; listens on 8080)
 

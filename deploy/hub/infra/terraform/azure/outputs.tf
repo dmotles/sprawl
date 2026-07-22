@@ -13,8 +13,13 @@ output "hub_fqdn" {
 }
 
 output "db_host" {
-  description = "Postgres server FQDN (the DSN itself is stored only in Key Vault)."
+  description = "Postgres server private FQDN — resolvable only inside the VNet via the linked private DNS zone (the DSN itself is stored only in Key Vault)."
   value       = module.database.host
+}
+
+output "vnet_id" {
+  description = "Resource ID of the VNet backing private Postgres + ACA VNet integration."
+  value       = azurerm_virtual_network.hub.id
 }
 
 output "bucket_ref" {

@@ -25,10 +25,24 @@ container_app_name = "<container-app-name>"
 uami_name          = "<user-assigned-identity-name>"
 
 # Managed Postgres (smallest burstable by default; override sizes as needed).
+# The server is FULLY PRIVATE (VNet-injected, no public network access); the app
+# reaches it over the VNet and resolves its private FQDN via the private DNS zone.
 postgres_server_name = "<postgres-flexible-server-name>"
 # postgres_size          = "B_Standard_B1ms"
 # postgres_version       = "16"
 # backup_retention_days  = 7
+
+# Networking (private Postgres; ACA keeps PUBLIC ingress). Defaults are verified
+# non-overlapping — VNet 10.100.0.0/16, ACA infra /23 = 10.100.0.0/23 (consumption
+# -only minimum, undelegated), PG delegated subnet 10.100.2.0/24. Override only on
+# a CIDR collision or naming preference.
+# vnet_name               = "hub-vnet"
+# vnet_address_space      = ["10.100.0.0/16"]
+# aca_infra_subnet_name   = "hub-aca-infra"
+# aca_infra_subnet_prefix = "10.100.0.0/23"
+# postgres_subnet_name    = "hub-postgres"
+# postgres_subnet_prefix  = "10.100.2.0/24"
+# postgres_dns_zone_label = "hub"
 
 # Blob object store.
 storage_account_name = "<storage-account-3-24-lowercase-alnum>"

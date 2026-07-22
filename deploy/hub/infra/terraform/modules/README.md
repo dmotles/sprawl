@@ -36,6 +36,14 @@ Modules also expose a few azure-specific helper outputs (e.g. `object-store`'s
 that the azure root wires internally. Those are NOT part of the cross-cloud
 contract — only the names in the table above are load-bearing across clouds.
 
+Likewise, the azure `database` implementation takes azure-specific
+private-networking inputs (`delegated_subnet_id`, `private_dns_zone_id`) and is
+**fully private** — VNet-injected with `public_network_access_enabled = false`,
+no public firewall rule. The VNet/subnet/DNS substrate itself is root-level glue
+(`../azure/networking.tf`), not a capability module. A future `aws/` database
+would achieve the equivalent private posture with its own provider constructs
+while preserving the same `conn_ref`/`host` outputs.
+
 ## Secret hygiene (HARD)
 
 The `secrets` module takes only secret **names**, never **values**. Empty
