@@ -12,7 +12,19 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"gocloud.dev/blob"
 )
+
+// TestAzureBlobSchemeRegistered asserts that importing the store package
+// registers the "azblob" bucket scheme on the gocloud default mux. hubd sets
+// SPRAWL_HUB_BLOB_URL=azblob://... in production, so a missing driver import
+// crashes hubd at boot with `no driver registered for "azblob"`. This is
+// hermetic — no Docker, network, or Azure env required — so it always runs.
+func TestAzureBlobSchemeRegistered(t *testing.T) {
+	if !blob.DefaultURLMux().ValidBucketScheme("azblob") {
+		t.Fatalf("azblob scheme not registered; BucketSchemes = %v", blob.DefaultURLMux().BucketSchemes())
+	}
+}
 
 // One Postgres container is shared across the whole package's pg-arm subtests;
 // each subtest gets an isolated, freshly-migrated schema (far cheaper than a

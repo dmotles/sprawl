@@ -12,8 +12,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for goose
 
 	"gocloud.dev/blob"
-	_ "gocloud.dev/blob/fileblob" // register file:// bucket scheme
-	_ "gocloud.dev/blob/memblob"  // register mem:// bucket scheme
+	_ "gocloud.dev/blob/azureblob" // register azblob:// bucket scheme
+	_ "gocloud.dev/blob/fileblob"  // register file:// bucket scheme
+	_ "gocloud.dev/blob/memblob"   // register mem:// bucket scheme
 	"gocloud.dev/secrets"
 	_ "gocloud.dev/secrets/localsecrets" // register base64key:// keeper scheme
 )
