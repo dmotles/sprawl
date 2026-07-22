@@ -12,12 +12,14 @@
 // gate in `make validate` (baseline: main HEAD) enforces this so an old host or
 // a stale browser tab keeps talking to a new hub.
 
-import { ListInstancesRequest, ListInstancesResponse, RegisterInstanceRequest, RegisterInstanceResponse } from "./hub_pb.js";
+import { CreateHostTokenRequest, CreateHostTokenResponse, ListHostTokensRequest, ListHostTokensResponse, ListInstancesRequest, ListInstancesResponse, RegisterInstanceRequest, RegisterInstanceResponse, RevokeHostTokenRequest, RevokeHostTokenResponse } from "./hub_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
- * HubService is the minimal RPC surface for P0-1. Both RPCs return
- * codes.Unimplemented this slice; real implementations land in P0-3/P0-4.
+ * HubService is the RPC surface for the hub. RegisterInstance/ListInstances are
+ * the host<->hub registry RPCs; the CreateHostToken/ListHostTokens/
+ * RevokeHostToken RPCs are browser-only (cookie-authenticated) token
+ * administration (docs/design/hub/04-authentication.md §4).
  *
  * @generated from service hub.v1.HubService
  */
@@ -40,6 +42,33 @@ export const HubService = {
       name: "ListInstances",
       I: ListInstancesRequest,
       O: ListInstancesResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc hub.v1.HubService.CreateHostToken
+     */
+    createHostToken: {
+      name: "CreateHostToken",
+      I: CreateHostTokenRequest,
+      O: CreateHostTokenResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc hub.v1.HubService.ListHostTokens
+     */
+    listHostTokens: {
+      name: "ListHostTokens",
+      I: ListHostTokensRequest,
+      O: ListHostTokensResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc hub.v1.HubService.RevokeHostToken
+     */
+    revokeHostToken: {
+      name: "RevokeHostToken",
+      I: RevokeHostTokenRequest,
+      O: RevokeHostTokenResponse,
       kind: MethodKind.Unary,
     },
   }

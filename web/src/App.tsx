@@ -1,10 +1,8 @@
 import { useEffect, useState } from "react";
-import { Code, ConnectError, createPromiseClient } from "@connectrpc/connect";
-import { HubService } from "../gen/hub/v1/hub_connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import type { Instance } from "../gen/hub/v1/hub_pb";
-import { transport } from "./transport";
-
-const client = createPromiseClient(HubService, transport);
+import { defaultClient, type HubClient } from "./client";
+import { TokensView } from "./TokensView";
 
 type State =
   | { kind: "loading" }
@@ -12,8 +10,11 @@ type State =
   | { kind: "unauthed" }
   | { kind: "error"; message: string };
 
-export function App() {
+type View = "instances" | "tokens";
+
+export function App({ client = defaultClient }: { client?: HubClient }) {
   const [state, setState] = useState<State>({ kind: "loading" });
+  const [view, setView] = useState<View>("instances");
 
   useEffect(() => {
     let cancelled = false;
@@ -34,7 +35,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [client]);
 
   if (state.kind === "loading") return <main>Loading…</main>;
   if (state.kind === "unauthed") return <LoginForm />;
@@ -46,7 +47,38 @@ export function App() {
       </main>
     );
   }
-  return <InstanceList instances={state.instances} />;
+
+  return (
+    <main>
+      <header>
+        <h1>sprawl hub</h1>
+        <nav>
+          <button
+            type="button"
+            aria-current={view === "instances" ? "page" : undefined}
+            onClick={() => setView("instances")}
+          >
+            Instances
+          </button>{" "}
+          <button
+            type="button"
+            aria-current={view === "tokens" ? "page" : undefined}
+            onClick={() => setView("tokens")}
+          >
+            Tokens
+          </button>
+        </nav>
+        <form method="post" action="/logout">
+          <button type="submit">Log out</button>
+        </form>
+      </header>
+      {view === "instances" ? (
+        <InstanceList instances={state.instances} />
+      ) : (
+        <TokensView client={client} />
+      )}
+    </main>
+  );
 }
 
 // LoginForm posts the token in the request BODY (never the URL) to /login. The
@@ -69,17 +101,12 @@ function LoginForm() {
 
 function InstanceList({ instances }: { instances: Instance[] }) {
   return (
-    <main>
-      <header>
-        <h1>sprawl hub — instances</h1>
-        <form method="post" action="/logout">
-          <button type="submit">Log out</button>
-        </form>
-      </header>
+    <section>
+      <h2>Instances</h2>
       {instances.length === 0 ? (
         <p>No instances registered.</p>
       ) : (
-        <ul>
+        <ul aria-label="instances">
           {instances.map((i) => (
             <li key={i.hostId}>
               <code>{i.hostId}</code> — {i.repoLabel || "(no repo)"}
@@ -88,6 +115,6 @@ function InstanceList({ instances }: { instances: Instance[] }) {
           ))}
         </ul>
       )}
-    </main>
+    </section>
   );
 }

@@ -1,11 +1,45 @@
 # hub SPA (`web/`)
 
-The hub's browser single-page app. **Minimal by design** (QUM-878 / Hub P0-4):
-a login form plus an authenticated view that lists instances via
-`ListInstances`. No router, no state libraries, no live-tail — those are Phase 1
+The hub's browser single-page app. **Minimal by design**: a login form plus an
+authenticated shell with two views — **Instances** (lists instances via
+`ListInstances`, QUM-878 / Hub P0-4) and **Tokens** (host-token administration
+over the `CreateHostToken`/`ListHostTokens`/`RevokeHostToken` RPCs, QUM-889 /
+QUM-885). No router, no state libraries, no live-tail — those are Phase 1
 (see [`docs/design/hub/11-frontend-stack.md`](../docs/design/hub/11-frontend-stack.md)).
 
 Stack: **React 19 + Vite + `@connectrpc/connect-web`** (connect-es v1).
+
+## Token management (docs 04 §4)
+
+The **Tokens** view is a logged-in-operator, cookie-authenticated screen:
+
+- **Create** — enter a label → `CreateHostToken` returns the full plaintext
+  token, shown **exactly once** with a copy-to-clipboard button and a "will not
+  be shown again" warning. The plaintext lives **only in React state**: it is
+  never written to `localStorage`/`sessionStorage`/cookies and never appears in
+  the URL, so it disappears on Dismiss, on navigation (the view unmounts), and
+  on refresh. The server stores only a sealed hash and cannot re-derive it.
+- **List** — `ListHostTokens` renders each token's id / label / created
+  timestamp / status (Active, or Revoked + timestamp). Metadata only — never the
+  secret or hash.
+- **Revoke** — a per-row Revoke button opens an inline confirm; only on Confirm
+  does `RevokeHostToken` fire, after which the list refreshes and the row shows
+  Revoked. Cancel makes no RPC call.
+
+Copy-to-clipboard uses `navigator.clipboard`, which browsers only expose in a
+**secure context** (HTTPS). Over plain `http://` the copy button reports failure
+and the operator can select the shown token manually (same HTTPS caveat as the
+session cookie — see below).
+
+## Component tests
+
+`cd web && npm test` runs the Vitest component suite (vitest +
+`@testing-library/react` + jsdom) covering the token screens (plaintext-once +
+copy + no persistence, list active/revoked, confirm-gated revoke, error
+resilience) and the App auth gate / nav / plaintext-drop-on-navigation. Tests
+inject a `createRouterTransport`-backed fake `client`, so no running hubd is
+needed. **Vitest is deliberately NOT part of `make validate`** — that pipeline
+stays node-free (Go only). Run `npm test` manually when changing the SPA.
 
 ## How auth works (docs 04 §1/§6)
 

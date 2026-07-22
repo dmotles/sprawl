@@ -244,3 +244,296 @@ export class ListInstancesResponse extends Message<ListInstancesResponse> {
   }
 }
 
+/**
+ * CreateHostTokenRequest mints a new host bearer token. This is a browser-only
+ * (cookie-authenticated) operator action; hosts must not mint tokens.
+ *
+ * @generated from message hub.v1.CreateHostTokenRequest
+ */
+export class CreateHostTokenRequest extends Message<CreateHostTokenRequest> {
+  /**
+   * @generated from field: string label = 1;
+   */
+  label = "";
+
+  constructor(data?: PartialMessage<CreateHostTokenRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.CreateHostTokenRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateHostTokenRequest {
+    return new CreateHostTokenRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateHostTokenRequest {
+    return new CreateHostTokenRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateHostTokenRequest {
+    return new CreateHostTokenRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateHostTokenRequest | PlainMessage<CreateHostTokenRequest> | undefined, b: CreateHostTokenRequest | PlainMessage<CreateHostTokenRequest> | undefined): boolean {
+    return proto3.util.equals(CreateHostTokenRequest, a, b);
+  }
+}
+
+/**
+ * CreateHostTokenResponse returns the plaintext token EXACTLY ONCE plus its id.
+ * The plaintext is never persisted and cannot be re-derived; the server stores
+ * only a sealed hash.
+ *
+ * @generated from message hub.v1.CreateHostTokenResponse
+ */
+export class CreateHostTokenResponse extends Message<CreateHostTokenResponse> {
+  /**
+   * full plaintext sprawl_hub_<id>_<secret>; shown once
+   *
+   * @generated from field: string token = 1;
+   */
+  token = "";
+
+  /**
+   * @generated from field: string token_id = 2;
+   */
+  tokenId = "";
+
+  constructor(data?: PartialMessage<CreateHostTokenResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.CreateHostTokenResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "token", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "token_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateHostTokenResponse {
+    return new CreateHostTokenResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): CreateHostTokenResponse {
+    return new CreateHostTokenResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): CreateHostTokenResponse {
+    return new CreateHostTokenResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: CreateHostTokenResponse | PlainMessage<CreateHostTokenResponse> | undefined, b: CreateHostTokenResponse | PlainMessage<CreateHostTokenResponse> | undefined): boolean {
+    return proto3.util.equals(CreateHostTokenResponse, a, b);
+  }
+}
+
+/**
+ * ListHostTokensRequest enumerates the caller's host tokens. No filters.
+ *
+ * @generated from message hub.v1.ListHostTokensRequest
+ */
+export class ListHostTokensRequest extends Message<ListHostTokensRequest> {
+  constructor(data?: PartialMessage<ListHostTokensRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.ListHostTokensRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListHostTokensRequest {
+    return new ListHostTokensRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListHostTokensRequest {
+    return new ListHostTokensRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListHostTokensRequest {
+    return new ListHostTokensRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListHostTokensRequest | PlainMessage<ListHostTokensRequest> | undefined, b: ListHostTokensRequest | PlainMessage<ListHostTokensRequest> | undefined): boolean {
+    return proto3.util.equals(ListHostTokensRequest, a, b);
+  }
+}
+
+/**
+ * HostToken is one token row as metadata ONLY — never the secret, hash, or
+ * plaintext.
+ *
+ * @generated from message hub.v1.HostToken
+ */
+export class HostToken extends Message<HostToken> {
+  /**
+   * @generated from field: string token_id = 1;
+   */
+  tokenId = "";
+
+  /**
+   * @generated from field: string label = 2;
+   */
+  label = "";
+
+  /**
+   * @generated from field: int64 created_at_unix_ms = 3;
+   */
+  createdAtUnixMs = protoInt64.zero;
+
+  /**
+   * 0 == active
+   *
+   * @generated from field: int64 revoked_at_unix_ms = 4;
+   */
+  revokedAtUnixMs = protoInt64.zero;
+
+  constructor(data?: PartialMessage<HostToken>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.HostToken";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "token_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "label", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "created_at_unix_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 4, name: "revoked_at_unix_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): HostToken {
+    return new HostToken().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): HostToken {
+    return new HostToken().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): HostToken {
+    return new HostToken().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: HostToken | PlainMessage<HostToken> | undefined, b: HostToken | PlainMessage<HostToken> | undefined): boolean {
+    return proto3.util.equals(HostToken, a, b);
+  }
+}
+
+/**
+ * ListHostTokensResponse returns the caller's tokens (active and revoked).
+ *
+ * @generated from message hub.v1.ListHostTokensResponse
+ */
+export class ListHostTokensResponse extends Message<ListHostTokensResponse> {
+  /**
+   * @generated from field: repeated hub.v1.HostToken tokens = 1;
+   */
+  tokens: HostToken[] = [];
+
+  constructor(data?: PartialMessage<ListHostTokensResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.ListHostTokensResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "tokens", kind: "message", T: HostToken, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListHostTokensResponse {
+    return new ListHostTokensResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListHostTokensResponse {
+    return new ListHostTokensResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListHostTokensResponse {
+    return new ListHostTokensResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListHostTokensResponse | PlainMessage<ListHostTokensResponse> | undefined, b: ListHostTokensResponse | PlainMessage<ListHostTokensResponse> | undefined): boolean {
+    return proto3.util.equals(ListHostTokensResponse, a, b);
+  }
+}
+
+/**
+ * RevokeHostTokenRequest revokes a token by its non-secret token id.
+ *
+ * @generated from message hub.v1.RevokeHostTokenRequest
+ */
+export class RevokeHostTokenRequest extends Message<RevokeHostTokenRequest> {
+  /**
+   * @generated from field: string token_id = 1;
+   */
+  tokenId = "";
+
+  constructor(data?: PartialMessage<RevokeHostTokenRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.RevokeHostTokenRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "token_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokeHostTokenRequest {
+    return new RevokeHostTokenRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokeHostTokenRequest {
+    return new RevokeHostTokenRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokeHostTokenRequest {
+    return new RevokeHostTokenRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokeHostTokenRequest | PlainMessage<RevokeHostTokenRequest> | undefined, b: RevokeHostTokenRequest | PlainMessage<RevokeHostTokenRequest> | undefined): boolean {
+    return proto3.util.equals(RevokeHostTokenRequest, a, b);
+  }
+}
+
+/**
+ * RevokeHostTokenResponse is intentionally empty.
+ *
+ * @generated from message hub.v1.RevokeHostTokenResponse
+ */
+export class RevokeHostTokenResponse extends Message<RevokeHostTokenResponse> {
+  constructor(data?: PartialMessage<RevokeHostTokenResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.RevokeHostTokenResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): RevokeHostTokenResponse {
+    return new RevokeHostTokenResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): RevokeHostTokenResponse {
+    return new RevokeHostTokenResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): RevokeHostTokenResponse {
+    return new RevokeHostTokenResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: RevokeHostTokenResponse | PlainMessage<RevokeHostTokenResponse> | undefined, b: RevokeHostTokenResponse | PlainMessage<RevokeHostTokenResponse> | undefined): boolean {
+    return proto3.util.equals(RevokeHostTokenResponse, a, b);
+  }
+}
+
