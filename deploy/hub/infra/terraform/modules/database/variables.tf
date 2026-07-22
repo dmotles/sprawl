@@ -71,6 +71,11 @@ variable "private_dns_zone_id" {
   description = "Resource ID of the private DNS zone (*.postgres.database.azure.com) the server registers its private FQDN in."
 }
 
+variable "private_dns_zone_name" {
+  type        = string
+  description = "Name of the private DNS zone (e.g. the module builds <server>.<zone> as the resolvable DSN host)."
+}
+
 variable "tags" {
   type        = map(string)
   description = "Mandatory policy tags (owner/long_running/department/purpose)."

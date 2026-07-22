@@ -48,3 +48,31 @@ resource "azurerm_postgresql_flexible_server_database" "this" {
   collation = "en_US.utf8"
   charset   = "UTF8"
 }
+
+# The server's <name>.postgres.database.azure.com FQDN is only a PUBLIC CNAME
+# pointing at a server-managed HASH-named A record in the private zone. The ACA
+# subnet can't chase that public CNAME, so the DB is unreachable. Discover the
+# hash A record dynamically (no IP/hash literal committed) and alias a stable
+# module-owned name (<server>.<zone>) to it so the DSN host resolves in-VNet.
+data "azapi_resource_list" "private_zone_a_records" {
+  type                   = "Microsoft.Network/privateDnsZones/A@2024-06-01"
+  parent_id              = var.private_dns_zone_id
+  response_export_values = { names = "value[].name" }
+  depends_on             = [azurerm_postgresql_flexible_server.this]
+}
+
+resource "azurerm_private_dns_cname_record" "server_alias" {
+  name                = azurerm_postgresql_flexible_server.this.name
+  zone_name           = var.private_dns_zone_name
+  resource_group_name = var.resource_group_name
+  ttl                 = 30
+  record              = "${data.azapi_resource_list.private_zone_a_records.output.names[0]}.${var.private_dns_zone_name}"
+  tags                = var.tags
+
+  lifecycle {
+    precondition {
+      condition     = length(data.azapi_resource_list.private_zone_a_records.output.names) == 1
+      error_message = "Expected exactly one server-managed A record in the dedicated private DNS zone."
+    }
+  }
+}

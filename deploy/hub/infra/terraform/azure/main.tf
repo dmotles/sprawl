@@ -91,18 +91,19 @@ resource "azurerm_role_assignment" "blob_contributor" {
 module "database" {
   source = "../modules/database"
 
-  name                = var.postgres_server_name
-  resource_group_name = azurerm_resource_group.hub.name
-  location            = azurerm_resource_group.hub.location
-  engine_version      = var.postgres_version
-  size                = var.postgres_size
-  storage_mb          = var.postgres_storage_mb
-  retention_days      = var.backup_retention_days
-  administrator_login = var.postgres_admin_login
-  database_name       = var.postgres_database_name
-  delegated_subnet_id = azurerm_subnet.postgres.id
-  private_dns_zone_id = azurerm_private_dns_zone.postgres.id
-  tags                = var.tags
+  name                  = var.postgres_server_name
+  resource_group_name   = azurerm_resource_group.hub.name
+  location              = azurerm_resource_group.hub.location
+  engine_version        = var.postgres_version
+  size                  = var.postgres_size
+  storage_mb            = var.postgres_storage_mb
+  retention_days        = var.backup_retention_days
+  administrator_login   = var.postgres_admin_login
+  database_name         = var.postgres_database_name
+  delegated_subnet_id   = azurerm_subnet.postgres.id
+  private_dns_zone_id   = azurerm_private_dns_zone.postgres.id
+  private_dns_zone_name = azurerm_private_dns_zone.postgres.name
+  tags                  = var.tags
 
   # Flexible-server VNet integration is immutable at creation; the zone→VNet link
   # must exist before the server. delegated_subnet_id/private_dns_zone_id create

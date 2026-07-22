@@ -11,3 +11,7 @@ provider "azurerm" {
   subscription_id     = var.subscription_id
   storage_use_azuread = true
 }
+
+# The azapi provider is used only to discover the server-managed hash-named A
+# record in the private DNS zone (module "database"); no extra config needed.
+provider "azapi" {}
