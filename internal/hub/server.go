@@ -14,6 +14,7 @@ import (
 	hubv1 "github.com/dmotles/sprawl/internal/hub/gen/hub/v1"
 	"github.com/dmotles/sprawl/internal/hub/gen/hub/v1/hubv1connect"
 	"github.com/dmotles/sprawl/internal/hub/store"
+	"github.com/dmotles/sprawl/internal/hub/token"
 )
 
 // startedAt records process start for the /debug/state uptime field.
@@ -107,6 +108,86 @@ func (s *Server) ListInstances(
 		out = append(out, instanceToProto(r))
 	}
 	return connect.NewResponse(&hubv1.ListInstancesResponse{Instances: out}), nil
+}
+
+// CreateHostToken mints a new host bearer token. This is a browser-only,
+// cookie-authenticated operator action (the auth interceptor rejects host
+// bearer callers). It reuses the same mint → seal → persist path as the
+// `sprawl hub token create` CLI: the sealed hash is stored under MVPUserID and
+// the plaintext is returned EXACTLY ONCE (never persisted, never logged).
+func (s *Server) CreateHostToken(
+	ctx context.Context, req *connect.Request[hubv1.CreateHostTokenRequest],
+) (*connect.Response[hubv1.CreateHostTokenResponse], error) {
+	m, err := token.Mint()
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("mint token: %w", err))
+	}
+	sealed, err := token.SealedHash(ctx, s.store.Secrets(), m.Secret)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("seal token hash: %w", err))
+	}
+	if err := s.store.CreateToken(ctx, store.TokenRecord{
+		TokenID: store.TokenID(m.TokenID),
+		UserID:  MVPUserID,
+		Hash:    sealed,
+		Label:   req.Msg.GetLabel(),
+	}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("persist token: %w", err))
+	}
+	return connect.NewResponse(&hubv1.CreateHostTokenResponse{
+		Token:   m.Plaintext,
+		TokenId: m.TokenID,
+	}), nil
+}
+
+// ListHostTokens returns the caller's host tokens as metadata only — never the
+// secret, hash, or plaintext. Browser-only (cookie-authenticated).
+func (s *Server) ListHostTokens(
+	ctx context.Context, _ *connect.Request[hubv1.ListHostTokensRequest],
+) (*connect.Response[hubv1.ListHostTokensResponse], error) {
+	recs, err := s.store.ListTokens(ctx, MVPUserID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list tokens: %w", err))
+	}
+	out := make([]*hubv1.HostToken, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, hostTokenToProto(r))
+	}
+	return connect.NewResponse(&hubv1.ListHostTokensResponse{Tokens: out}), nil
+}
+
+// RevokeHostToken revokes a token by its non-secret token id. Browser-only
+// (cookie-authenticated). An unknown id maps to NotFound.
+func (s *Server) RevokeHostToken(
+	ctx context.Context, req *connect.Request[hubv1.RevokeHostTokenRequest],
+) (*connect.Response[hubv1.RevokeHostTokenResponse], error) {
+	id := req.Msg.GetTokenId()
+	if id == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("token_id is required"))
+	}
+	if err := s.store.RevokeToken(ctx, store.TokenID(id)); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound,
+				fmt.Errorf("no token with id %q", id))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("revoke token: %w", err))
+	}
+	return connect.NewResponse(&hubv1.RevokeHostTokenResponse{}), nil
+}
+
+// hostTokenToProto maps a store TokenRecord to the wire HostToken (metadata
+// only — no secret material). A nil RevokedAt maps to the 0 sentinel (active).
+func hostTokenToProto(r store.TokenRecord) *hubv1.HostToken {
+	ht := &hubv1.HostToken{
+		TokenId:         string(r.TokenID),
+		Label:           r.Label,
+		CreatedAtUnixMs: r.CreatedAt.UnixMilli(),
+	}
+	if r.RevokedAt != nil {
+		ht.RevokedAtUnixMs = r.RevokedAt.UnixMilli()
+	}
+	return ht
 }
 
 // instanceToProto maps a store InstanceRecord to the wire Instance shape.

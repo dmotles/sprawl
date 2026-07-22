@@ -47,12 +47,24 @@ const (
 	// HubServiceListInstancesProcedure is the fully-qualified name of the HubService's ListInstances
 	// RPC.
 	HubServiceListInstancesProcedure = "/hub.v1.HubService/ListInstances"
+	// HubServiceCreateHostTokenProcedure is the fully-qualified name of the HubService's
+	// CreateHostToken RPC.
+	HubServiceCreateHostTokenProcedure = "/hub.v1.HubService/CreateHostToken"
+	// HubServiceListHostTokensProcedure is the fully-qualified name of the HubService's ListHostTokens
+	// RPC.
+	HubServiceListHostTokensProcedure = "/hub.v1.HubService/ListHostTokens"
+	// HubServiceRevokeHostTokenProcedure is the fully-qualified name of the HubService's
+	// RevokeHostToken RPC.
+	HubServiceRevokeHostTokenProcedure = "/hub.v1.HubService/RevokeHostToken"
 )
 
 // HubServiceClient is a client for the hub.v1.HubService service.
 type HubServiceClient interface {
 	RegisterInstance(context.Context, *connect.Request[v1.RegisterInstanceRequest]) (*connect.Response[v1.RegisterInstanceResponse], error)
 	ListInstances(context.Context, *connect.Request[v1.ListInstancesRequest]) (*connect.Response[v1.ListInstancesResponse], error)
+	CreateHostToken(context.Context, *connect.Request[v1.CreateHostTokenRequest]) (*connect.Response[v1.CreateHostTokenResponse], error)
+	ListHostTokens(context.Context, *connect.Request[v1.ListHostTokensRequest]) (*connect.Response[v1.ListHostTokensResponse], error)
+	RevokeHostToken(context.Context, *connect.Request[v1.RevokeHostTokenRequest]) (*connect.Response[v1.RevokeHostTokenResponse], error)
 }
 
 // NewHubServiceClient constructs a client for the hub.v1.HubService service. By default, it uses
@@ -78,6 +90,24 @@ func NewHubServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(hubServiceMethods.ByName("ListInstances")),
 			connect.WithClientOptions(opts...),
 		),
+		createHostToken: connect.NewClient[v1.CreateHostTokenRequest, v1.CreateHostTokenResponse](
+			httpClient,
+			baseURL+HubServiceCreateHostTokenProcedure,
+			connect.WithSchema(hubServiceMethods.ByName("CreateHostToken")),
+			connect.WithClientOptions(opts...),
+		),
+		listHostTokens: connect.NewClient[v1.ListHostTokensRequest, v1.ListHostTokensResponse](
+			httpClient,
+			baseURL+HubServiceListHostTokensProcedure,
+			connect.WithSchema(hubServiceMethods.ByName("ListHostTokens")),
+			connect.WithClientOptions(opts...),
+		),
+		revokeHostToken: connect.NewClient[v1.RevokeHostTokenRequest, v1.RevokeHostTokenResponse](
+			httpClient,
+			baseURL+HubServiceRevokeHostTokenProcedure,
+			connect.WithSchema(hubServiceMethods.ByName("RevokeHostToken")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -85,6 +115,9 @@ func NewHubServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...
 type hubServiceClient struct {
 	registerInstance *connect.Client[v1.RegisterInstanceRequest, v1.RegisterInstanceResponse]
 	listInstances    *connect.Client[v1.ListInstancesRequest, v1.ListInstancesResponse]
+	createHostToken  *connect.Client[v1.CreateHostTokenRequest, v1.CreateHostTokenResponse]
+	listHostTokens   *connect.Client[v1.ListHostTokensRequest, v1.ListHostTokensResponse]
+	revokeHostToken  *connect.Client[v1.RevokeHostTokenRequest, v1.RevokeHostTokenResponse]
 }
 
 // RegisterInstance calls hub.v1.HubService.RegisterInstance.
@@ -97,10 +130,28 @@ func (c *hubServiceClient) ListInstances(ctx context.Context, req *connect.Reque
 	return c.listInstances.CallUnary(ctx, req)
 }
 
+// CreateHostToken calls hub.v1.HubService.CreateHostToken.
+func (c *hubServiceClient) CreateHostToken(ctx context.Context, req *connect.Request[v1.CreateHostTokenRequest]) (*connect.Response[v1.CreateHostTokenResponse], error) {
+	return c.createHostToken.CallUnary(ctx, req)
+}
+
+// ListHostTokens calls hub.v1.HubService.ListHostTokens.
+func (c *hubServiceClient) ListHostTokens(ctx context.Context, req *connect.Request[v1.ListHostTokensRequest]) (*connect.Response[v1.ListHostTokensResponse], error) {
+	return c.listHostTokens.CallUnary(ctx, req)
+}
+
+// RevokeHostToken calls hub.v1.HubService.RevokeHostToken.
+func (c *hubServiceClient) RevokeHostToken(ctx context.Context, req *connect.Request[v1.RevokeHostTokenRequest]) (*connect.Response[v1.RevokeHostTokenResponse], error) {
+	return c.revokeHostToken.CallUnary(ctx, req)
+}
+
 // HubServiceHandler is an implementation of the hub.v1.HubService service.
 type HubServiceHandler interface {
 	RegisterInstance(context.Context, *connect.Request[v1.RegisterInstanceRequest]) (*connect.Response[v1.RegisterInstanceResponse], error)
 	ListInstances(context.Context, *connect.Request[v1.ListInstancesRequest]) (*connect.Response[v1.ListInstancesResponse], error)
+	CreateHostToken(context.Context, *connect.Request[v1.CreateHostTokenRequest]) (*connect.Response[v1.CreateHostTokenResponse], error)
+	ListHostTokens(context.Context, *connect.Request[v1.ListHostTokensRequest]) (*connect.Response[v1.ListHostTokensResponse], error)
+	RevokeHostToken(context.Context, *connect.Request[v1.RevokeHostTokenRequest]) (*connect.Response[v1.RevokeHostTokenResponse], error)
 }
 
 // NewHubServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -122,12 +173,36 @@ func NewHubServiceHandler(svc HubServiceHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(hubServiceMethods.ByName("ListInstances")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hubServiceCreateHostTokenHandler := connect.NewUnaryHandler(
+		HubServiceCreateHostTokenProcedure,
+		svc.CreateHostToken,
+		connect.WithSchema(hubServiceMethods.ByName("CreateHostToken")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hubServiceListHostTokensHandler := connect.NewUnaryHandler(
+		HubServiceListHostTokensProcedure,
+		svc.ListHostTokens,
+		connect.WithSchema(hubServiceMethods.ByName("ListHostTokens")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hubServiceRevokeHostTokenHandler := connect.NewUnaryHandler(
+		HubServiceRevokeHostTokenProcedure,
+		svc.RevokeHostToken,
+		connect.WithSchema(hubServiceMethods.ByName("RevokeHostToken")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/hub.v1.HubService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HubServiceRegisterInstanceProcedure:
 			hubServiceRegisterInstanceHandler.ServeHTTP(w, r)
 		case HubServiceListInstancesProcedure:
 			hubServiceListInstancesHandler.ServeHTTP(w, r)
+		case HubServiceCreateHostTokenProcedure:
+			hubServiceCreateHostTokenHandler.ServeHTTP(w, r)
+		case HubServiceListHostTokensProcedure:
+			hubServiceListHostTokensHandler.ServeHTTP(w, r)
+		case HubServiceRevokeHostTokenProcedure:
+			hubServiceRevokeHostTokenHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -143,4 +218,16 @@ func (UnimplementedHubServiceHandler) RegisterInstance(context.Context, *connect
 
 func (UnimplementedHubServiceHandler) ListInstances(context.Context, *connect.Request[v1.ListInstancesRequest]) (*connect.Response[v1.ListInstancesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("hub.v1.HubService.ListInstances is not implemented"))
+}
+
+func (UnimplementedHubServiceHandler) CreateHostToken(context.Context, *connect.Request[v1.CreateHostTokenRequest]) (*connect.Response[v1.CreateHostTokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("hub.v1.HubService.CreateHostToken is not implemented"))
+}
+
+func (UnimplementedHubServiceHandler) ListHostTokens(context.Context, *connect.Request[v1.ListHostTokensRequest]) (*connect.Response[v1.ListHostTokensResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("hub.v1.HubService.ListHostTokens is not implemented"))
+}
+
+func (UnimplementedHubServiceHandler) RevokeHostToken(context.Context, *connect.Request[v1.RevokeHostTokenRequest]) (*connect.Response[v1.RevokeHostTokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("hub.v1.HubService.RevokeHostToken is not implemented"))
 }

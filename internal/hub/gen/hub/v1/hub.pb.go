@@ -298,6 +298,341 @@ func (x *ListInstancesResponse) GetInstances() []*Instance {
 	return nil
 }
 
+// CreateHostTokenRequest mints a new host bearer token. This is a browser-only
+// (cookie-authenticated) operator action; hosts must not mint tokens.
+type CreateHostTokenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Label         string                 `protobuf:"bytes,1,opt,name=label,proto3" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateHostTokenRequest) Reset() {
+	*x = CreateHostTokenRequest{}
+	mi := &file_hub_v1_hub_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateHostTokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateHostTokenRequest) ProtoMessage() {}
+
+func (x *CreateHostTokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateHostTokenRequest.ProtoReflect.Descriptor instead.
+func (*CreateHostTokenRequest) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CreateHostTokenRequest) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+// CreateHostTokenResponse returns the plaintext token EXACTLY ONCE plus its id.
+// The plaintext is never persisted and cannot be re-derived; the server stores
+// only a sealed hash.
+type CreateHostTokenResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Token         string                 `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"` // full plaintext sprawl_hub_<id>_<secret>; shown once
+	TokenId       string                 `protobuf:"bytes,2,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CreateHostTokenResponse) Reset() {
+	*x = CreateHostTokenResponse{}
+	mi := &file_hub_v1_hub_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CreateHostTokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CreateHostTokenResponse) ProtoMessage() {}
+
+func (x *CreateHostTokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CreateHostTokenResponse.ProtoReflect.Descriptor instead.
+func (*CreateHostTokenResponse) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CreateHostTokenResponse) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *CreateHostTokenResponse) GetTokenId() string {
+	if x != nil {
+		return x.TokenId
+	}
+	return ""
+}
+
+// ListHostTokensRequest enumerates the caller's host tokens. No filters.
+type ListHostTokensRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHostTokensRequest) Reset() {
+	*x = ListHostTokensRequest{}
+	mi := &file_hub_v1_hub_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHostTokensRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHostTokensRequest) ProtoMessage() {}
+
+func (x *ListHostTokensRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHostTokensRequest.ProtoReflect.Descriptor instead.
+func (*ListHostTokensRequest) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{7}
+}
+
+// HostToken is one token row as metadata ONLY — never the secret, hash, or
+// plaintext.
+type HostToken struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	TokenId         string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
+	Label           string                 `protobuf:"bytes,2,opt,name=label,proto3" json:"label,omitempty"`
+	CreatedAtUnixMs int64                  `protobuf:"varint,3,opt,name=created_at_unix_ms,json=createdAtUnixMs,proto3" json:"created_at_unix_ms,omitempty"`
+	RevokedAtUnixMs int64                  `protobuf:"varint,4,opt,name=revoked_at_unix_ms,json=revokedAtUnixMs,proto3" json:"revoked_at_unix_ms,omitempty"` // 0 == active
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *HostToken) Reset() {
+	*x = HostToken{}
+	mi := &file_hub_v1_hub_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostToken) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostToken) ProtoMessage() {}
+
+func (x *HostToken) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostToken.ProtoReflect.Descriptor instead.
+func (*HostToken) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *HostToken) GetTokenId() string {
+	if x != nil {
+		return x.TokenId
+	}
+	return ""
+}
+
+func (x *HostToken) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
+func (x *HostToken) GetCreatedAtUnixMs() int64 {
+	if x != nil {
+		return x.CreatedAtUnixMs
+	}
+	return 0
+}
+
+func (x *HostToken) GetRevokedAtUnixMs() int64 {
+	if x != nil {
+		return x.RevokedAtUnixMs
+	}
+	return 0
+}
+
+// ListHostTokensResponse returns the caller's tokens (active and revoked).
+type ListHostTokensResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tokens        []*HostToken           `protobuf:"bytes,1,rep,name=tokens,proto3" json:"tokens,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListHostTokensResponse) Reset() {
+	*x = ListHostTokensResponse{}
+	mi := &file_hub_v1_hub_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListHostTokensResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListHostTokensResponse) ProtoMessage() {}
+
+func (x *ListHostTokensResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListHostTokensResponse.ProtoReflect.Descriptor instead.
+func (*ListHostTokensResponse) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ListHostTokensResponse) GetTokens() []*HostToken {
+	if x != nil {
+		return x.Tokens
+	}
+	return nil
+}
+
+// RevokeHostTokenRequest revokes a token by its non-secret token id.
+type RevokeHostTokenRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TokenId       string                 `protobuf:"bytes,1,opt,name=token_id,json=tokenId,proto3" json:"token_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeHostTokenRequest) Reset() {
+	*x = RevokeHostTokenRequest{}
+	mi := &file_hub_v1_hub_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeHostTokenRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeHostTokenRequest) ProtoMessage() {}
+
+func (x *RevokeHostTokenRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeHostTokenRequest.ProtoReflect.Descriptor instead.
+func (*RevokeHostTokenRequest) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *RevokeHostTokenRequest) GetTokenId() string {
+	if x != nil {
+		return x.TokenId
+	}
+	return ""
+}
+
+// RevokeHostTokenResponse is intentionally empty.
+type RevokeHostTokenResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RevokeHostTokenResponse) Reset() {
+	*x = RevokeHostTokenResponse{}
+	mi := &file_hub_v1_hub_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RevokeHostTokenResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RevokeHostTokenResponse) ProtoMessage() {}
+
+func (x *RevokeHostTokenResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RevokeHostTokenResponse.ProtoReflect.Descriptor instead.
+func (*RevokeHostTokenResponse) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{11}
+}
+
 var File_hub_v1_hub_proto protoreflect.FileDescriptor
 
 const file_hub_v1_hub_proto_rawDesc = "" +
@@ -319,11 +654,30 @@ const file_hub_v1_hub_proto_rawDesc = "" +
 	"\x11clients_connected\x18\x04 \x01(\x05R\x10clientsConnected\x12)\n" +
 	"\x11last_seen_unix_ms\x18\x05 \x01(\x03R\x0elastSeenUnixMs\"G\n" +
 	"\x15ListInstancesResponse\x12.\n" +
-	"\tinstances\x18\x01 \x03(\v2\x10.hub.v1.InstanceR\tinstances2\xb5\x01\n" +
+	"\tinstances\x18\x01 \x03(\v2\x10.hub.v1.InstanceR\tinstances\".\n" +
+	"\x16CreateHostTokenRequest\x12\x14\n" +
+	"\x05label\x18\x01 \x01(\tR\x05label\"J\n" +
+	"\x17CreateHostTokenResponse\x12\x14\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\x12\x19\n" +
+	"\btoken_id\x18\x02 \x01(\tR\atokenId\"\x17\n" +
+	"\x15ListHostTokensRequest\"\x96\x01\n" +
+	"\tHostToken\x12\x19\n" +
+	"\btoken_id\x18\x01 \x01(\tR\atokenId\x12\x14\n" +
+	"\x05label\x18\x02 \x01(\tR\x05label\x12+\n" +
+	"\x12created_at_unix_ms\x18\x03 \x01(\x03R\x0fcreatedAtUnixMs\x12+\n" +
+	"\x12revoked_at_unix_ms\x18\x04 \x01(\x03R\x0frevokedAtUnixMs\"C\n" +
+	"\x16ListHostTokensResponse\x12)\n" +
+	"\x06tokens\x18\x01 \x03(\v2\x11.hub.v1.HostTokenR\x06tokens\"3\n" +
+	"\x16RevokeHostTokenRequest\x12\x19\n" +
+	"\btoken_id\x18\x01 \x01(\tR\atokenId\"\x19\n" +
+	"\x17RevokeHostTokenResponse2\xb4\x03\n" +
 	"\n" +
 	"HubService\x12W\n" +
 	"\x10RegisterInstance\x12\x1f.hub.v1.RegisterInstanceRequest\x1a .hub.v1.RegisterInstanceResponse\"\x00\x12N\n" +
-	"\rListInstances\x12\x1c.hub.v1.ListInstancesRequest\x1a\x1d.hub.v1.ListInstancesResponse\"\x00B9Z7github.com/dmotles/sprawl/internal/hub/gen/hub/v1;hubv1b\x06proto3"
+	"\rListInstances\x12\x1c.hub.v1.ListInstancesRequest\x1a\x1d.hub.v1.ListInstancesResponse\"\x00\x12T\n" +
+	"\x0fCreateHostToken\x12\x1e.hub.v1.CreateHostTokenRequest\x1a\x1f.hub.v1.CreateHostTokenResponse\"\x00\x12Q\n" +
+	"\x0eListHostTokens\x12\x1d.hub.v1.ListHostTokensRequest\x1a\x1e.hub.v1.ListHostTokensResponse\"\x00\x12T\n" +
+	"\x0fRevokeHostToken\x12\x1e.hub.v1.RevokeHostTokenRequest\x1a\x1f.hub.v1.RevokeHostTokenResponse\"\x00B9Z7github.com/dmotles/sprawl/internal/hub/gen/hub/v1;hubv1b\x06proto3"
 
 var (
 	file_hub_v1_hub_proto_rawDescOnce sync.Once
@@ -337,25 +691,39 @@ func file_hub_v1_hub_proto_rawDescGZIP() []byte {
 	return file_hub_v1_hub_proto_rawDescData
 }
 
-var file_hub_v1_hub_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_hub_v1_hub_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_hub_v1_hub_proto_goTypes = []any{
 	(*RegisterInstanceRequest)(nil),  // 0: hub.v1.RegisterInstanceRequest
 	(*RegisterInstanceResponse)(nil), // 1: hub.v1.RegisterInstanceResponse
 	(*ListInstancesRequest)(nil),     // 2: hub.v1.ListInstancesRequest
 	(*Instance)(nil),                 // 3: hub.v1.Instance
 	(*ListInstancesResponse)(nil),    // 4: hub.v1.ListInstancesResponse
+	(*CreateHostTokenRequest)(nil),   // 5: hub.v1.CreateHostTokenRequest
+	(*CreateHostTokenResponse)(nil),  // 6: hub.v1.CreateHostTokenResponse
+	(*ListHostTokensRequest)(nil),    // 7: hub.v1.ListHostTokensRequest
+	(*HostToken)(nil),                // 8: hub.v1.HostToken
+	(*ListHostTokensResponse)(nil),   // 9: hub.v1.ListHostTokensResponse
+	(*RevokeHostTokenRequest)(nil),   // 10: hub.v1.RevokeHostTokenRequest
+	(*RevokeHostTokenResponse)(nil),  // 11: hub.v1.RevokeHostTokenResponse
 }
 var file_hub_v1_hub_proto_depIdxs = []int32{
-	3, // 0: hub.v1.ListInstancesResponse.instances:type_name -> hub.v1.Instance
-	0, // 1: hub.v1.HubService.RegisterInstance:input_type -> hub.v1.RegisterInstanceRequest
-	2, // 2: hub.v1.HubService.ListInstances:input_type -> hub.v1.ListInstancesRequest
-	1, // 3: hub.v1.HubService.RegisterInstance:output_type -> hub.v1.RegisterInstanceResponse
-	4, // 4: hub.v1.HubService.ListInstances:output_type -> hub.v1.ListInstancesResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	3,  // 0: hub.v1.ListInstancesResponse.instances:type_name -> hub.v1.Instance
+	8,  // 1: hub.v1.ListHostTokensResponse.tokens:type_name -> hub.v1.HostToken
+	0,  // 2: hub.v1.HubService.RegisterInstance:input_type -> hub.v1.RegisterInstanceRequest
+	2,  // 3: hub.v1.HubService.ListInstances:input_type -> hub.v1.ListInstancesRequest
+	5,  // 4: hub.v1.HubService.CreateHostToken:input_type -> hub.v1.CreateHostTokenRequest
+	7,  // 5: hub.v1.HubService.ListHostTokens:input_type -> hub.v1.ListHostTokensRequest
+	10, // 6: hub.v1.HubService.RevokeHostToken:input_type -> hub.v1.RevokeHostTokenRequest
+	1,  // 7: hub.v1.HubService.RegisterInstance:output_type -> hub.v1.RegisterInstanceResponse
+	4,  // 8: hub.v1.HubService.ListInstances:output_type -> hub.v1.ListInstancesResponse
+	6,  // 9: hub.v1.HubService.CreateHostToken:output_type -> hub.v1.CreateHostTokenResponse
+	9,  // 10: hub.v1.HubService.ListHostTokens:output_type -> hub.v1.ListHostTokensResponse
+	11, // 11: hub.v1.HubService.RevokeHostToken:output_type -> hub.v1.RevokeHostTokenResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_hub_v1_hub_proto_init() }
@@ -369,7 +737,7 @@ func file_hub_v1_hub_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hub_v1_hub_proto_rawDesc), len(file_hub_v1_hub_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -236,10 +236,34 @@ func (b *BrowserAuth) authenticateCookie(ctx context.Context, header http.Header
 }
 
 // cookieEligible reports whether a procedure may be authenticated by a browser
-// session cookie. Only read RPCs are eligible; RegisterInstance is a host action
-// and stays bearer-only (a browser must not register a host).
+// session cookie. Eligible procedures are the logged-in-operator RPCs:
+// ListInstances (also bearer-eligible) plus the browser-only token-management
+// RPCs (see browserOnly). RegisterInstance is a host action and stays
+// bearer-only (a browser must not register a host).
 func cookieEligible(procedure string) bool {
-	return procedure == hubv1connect.HubServiceListInstancesProcedure
+	switch procedure {
+	case hubv1connect.HubServiceListInstancesProcedure,
+		hubv1connect.HubServiceCreateHostTokenProcedure,
+		hubv1connect.HubServiceListHostTokensProcedure,
+		hubv1connect.HubServiceRevokeHostTokenProcedure:
+		return true
+	}
+	return false
+}
+
+// browserOnly reports whether a procedure is restricted to browser (cookie)
+// callers and must reject host bearer tokens. Token administration
+// (create/list/revoke) is a logged-in-operator action: a host bearer lives on a
+// possibly-compromised host, so letting it mint/list/revoke tokens would be a
+// privilege escalation. These RPCs are cookie-authenticated only.
+func browserOnly(procedure string) bool {
+	switch procedure {
+	case hubv1connect.HubServiceCreateHostTokenProcedure,
+		hubv1connect.HubServiceListHostTokensProcedure,
+		hubv1connect.HubServiceRevokeHostTokenProcedure:
+		return true
+	}
+	return false
 }
 
 // loginFallbackHTML is the minimal login page served when no SPA is embedded

@@ -43,9 +43,53 @@ message ListInstancesResponse {
   repeated Instance instances = 1;
 }
 
-// HubService is the minimal RPC surface for P0-1. Both RPCs return
-// codes.Unimplemented this slice; real implementations land in P0-3/P0-4.
+// CreateHostTokenRequest mints a new host bearer token. This is a browser-only
+// (cookie-authenticated) operator action; hosts must not mint tokens.
+message CreateHostTokenRequest {
+  string label = 1;
+}
+
+// CreateHostTokenResponse returns the plaintext token EXACTLY ONCE plus its id.
+// The plaintext is never persisted and cannot be re-derived; the server stores
+// only a sealed hash.
+message CreateHostTokenResponse {
+  string token = 1; // full plaintext sprawl_hub_<id>_<secret>; shown once
+  string token_id = 2;
+}
+
+// ListHostTokensRequest enumerates the caller's host tokens. No filters.
+message ListHostTokensRequest {}
+
+// HostToken is one token row as metadata ONLY — never the secret, hash, or
+// plaintext.
+message HostToken {
+  string token_id = 1;
+  string label = 2;
+  int64 created_at_unix_ms = 3;
+  int64 revoked_at_unix_ms = 4; // 0 == active
+}
+
+// ListHostTokensResponse returns the caller's tokens (active and revoked).
+message ListHostTokensResponse {
+  repeated HostToken tokens = 1;
+}
+
+// RevokeHostTokenRequest revokes a token by its non-secret token id.
+message RevokeHostTokenRequest {
+  string token_id = 1;
+}
+
+// RevokeHostTokenResponse is intentionally empty.
+message RevokeHostTokenResponse {}
+
+// HubService is the RPC surface for the hub. RegisterInstance/ListInstances are
+// the host<->hub registry RPCs; the CreateHostToken/ListHostTokens/
+// RevokeHostToken RPCs are browser-only (cookie-authenticated) token
+// administration (docs/design/hub/04-authentication.md §4).
 service HubService {
   rpc RegisterInstance(RegisterInstanceRequest) returns (RegisterInstanceResponse) {}
   rpc ListInstances(ListInstancesRequest) returns (ListInstancesResponse) {}
+  rpc CreateHostToken(CreateHostTokenRequest) returns (CreateHostTokenResponse) {}
+  rpc ListHostTokens(ListHostTokensRequest) returns (ListHostTokensResponse) {}
+  rpc RevokeHostToken(RevokeHostTokenRequest) returns (RevokeHostTokenResponse) {}
 }

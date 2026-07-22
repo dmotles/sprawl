@@ -36,12 +36,12 @@ var errStoreUnavailable = connect.NewError(
 // user's tokens → reject if revoked → argon2id constant-time verify of the
 // secret against the sealed hash.
 //
-// If cookie is non-nil (browser login enabled), read RPCs (see cookieEligible)
-// additionally accept a valid browser session cookie as an ALTERNATIVE to the
-// bearer header — so a logged-in browser can call ListInstances with only its
-// cookie. Write/host RPCs (RegisterInstance) stay bearer-only regardless. The
-// bearer path is tried first and is entirely unchanged; the cookie is a pure
-// additive fallback.
+// If cookie is non-nil (browser login enabled), cookie-eligible RPCs (see
+// cookieEligible) additionally accept a valid browser session cookie as an
+// ALTERNATIVE to the bearer header — so a logged-in browser can call
+// ListInstances with only its cookie. Host RPCs (RegisterInstance) stay
+// bearer-only. Token-management RPCs (see browserOnly) are the inverse:
+// cookie-ONLY, and a host bearer is rejected for them regardless of validity.
 //
 // The client always sees a uniform Unauthenticated on rejection; infra failures
 // (store/keeper outage) are logged server-side via log so operators can tell
@@ -57,13 +57,18 @@ func NewAuthInterceptor(st store.Store, uid store.UserID, cookie *BrowserAuth, l
 				log.Error("auth: no store configured; rejecting request")
 				return nil, errStoreUnavailable
 			}
-			// Bearer first — host auth path, unchanged.
-			bearerErr := authenticate(ctx, st, uid, req.Header().Get("Authorization"), log)
-			if bearerErr == nil {
-				return next(ctx, req)
+			procedure := req.Spec().Procedure
+			// Bearer first — host auth path, unchanged — EXCEPT for browser-only
+			// procedures (token administration), where a host bearer must never
+			// pass regardless of validity.
+			if !browserOnly(procedure) {
+				if authenticate(ctx, st, uid, req.Header().Get("Authorization"), log) == nil {
+					return next(ctx, req)
+				}
 			}
-			// Cookie fallback for eligible (read) RPCs when browser login is on.
-			if cookie != nil && cookieEligible(req.Spec().Procedure) {
+			// Cookie path for eligible (logged-in-operator) RPCs when browser
+			// login is on.
+			if cookie != nil && cookieEligible(procedure) {
 				if cookie.authenticateCookie(ctx, req.Header()) == nil {
 					return next(ctx, req)
 				}
