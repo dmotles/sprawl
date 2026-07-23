@@ -254,9 +254,9 @@ that adds columns to this row; nothing here forecloses it.
       │   ┌─────────────────────────────┐
       │   │  session_stream (index)     │  THE durable seq'd log =
       │   │  (session_id, seq)          │  the transcript. Append-only.
-      │   │  → blob body per event      │──▶ blob body
-      │   │  Serves fresh-connect full  │
-      │   │  send + reconnect delta.    │
+      │   │  → blob body per event      │──▶ blob body   seq = host wire-log
+      │   │  Serves fresh-connect full  │                frame seq, stored
+      │   │  send + reconnect delta.    │                verbatim (not re-numbered)
       │   └─────────────────────────────┘
       │
       ▼
@@ -278,7 +278,7 @@ that adds columns to this row; nothing here forecloses it.
 | `projects` | per repo/project | PG | Active-host + memory scope |
 | `active_host` | per project | PG | Advisory marker only; no fence/lease/epoch (§3) |
 | `sessions` | per `sprawl enter` | PG | `session_id`; owns a seq space ([`09` §1](09-synchronization.md)) |
-| `session_stream` | `(session_id, seq)` | PG index + **blob body** | **THE** durable seq'd log = the transcript; append-only; serves fresh-connect + reconnect ([`01` §2](01-architecture.md), [`09`](09-synchronization.md)) |
+| `session_stream` | `(session_id, seq)` | PG index + **blob body** | **THE** durable seq'd log = the transcript; append-only; serves fresh-connect + reconnect. Fed by frames the host uplink **tails from its durable wire log**; `seq` = the host's wire-log frame seq, stored **verbatim** (hub does not re-number) ([`01` §2](01-architecture.md), [`03` §1](03-api-surfaces.md), [`09` §1](09-synchronization.md)) |
 | `memory_units` | unit in `(project, agent)` stream | PG index + **blob body** | Last-writer-wins checkpoint; provenance metadata retained ([`10`](10-memory.md)) |
 | `attachments` | image/blob | PG index + **blob body** | Multimodal ingestion |
 

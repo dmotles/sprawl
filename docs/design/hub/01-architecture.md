@@ -59,20 +59,32 @@ details and LB viability live in [`03-api-surfaces`](README.md).
 
 ## 2. The seq'd-stream spine (the strongest idea — feature it)
 
-Everything rides **one durable, seq'd session stream**. The durable session
-**transcript IS the seq'd log** — there is no separate ephemeral event-log plus
-snapshot layer. Sprawl already has the hard part locally: the eventbus is
-seq-stamped, gap-detecting, and marks terminal events undroppable (QUM-775,
-`internal/runtime/eventbus.go`; TUI resync in QUM-669/QUM-775).
+Everything rides **one durable, seq'd session stream**, and that stream is the
+host's **wire log** — a byte-level `io.TeeReader` tap on Claude's stdout, upstream
+of all sprawl logic. The durable session **transcript IS the seq'd wire log** —
+there is no separate ephemeral event-log plus snapshot layer.
+
+**Two seq spaces, two jobs** (do not conflate them):
+
+- **Eventbus seq** (QUM-775, `internal/runtime/eventbus.go`): in-process,
+  per-runtime, gap-detecting, terminal-undroppable. It drives **live local
+  delivery** to the running TUI (viewport, activity ring) and local gap-resync.
+  Unchanged by the hub.
+- **Wire-log frame seq** (the durable authoritative transcript): the target
+  wire-log writer is **frame-oriented — one envelope per Claude protocol frame —
+  with a persistent monotonic seq continuous across resumes**. This is the
+  **single source of record**: the hub uplink tails it, the hub stores it verbatim,
+  and the browser keys its cursor on it. It is also the TUI resume/replay source
+  (retiring the prior Claude-JSONL read path, `internal/tui/replay.go`).
 
 ```
 claude stream
     │
     ▼
-local eventbus  ──(seq 1,2,3,…, gap-detect, terminal-undroppable)──┐
-    │                                                              │
-    ├──▶ local TUI      (consumer)                                 │
-    └──▶ hub client ──uplink──▶ HUB appends to durable seq'd log ──▶ browser (consumer)
+wire-log tap  ──(frame-oriented, persistent monotonic seq 1,2,3,… across resumes — the durable source of record)──┐
+    │                                                                                                              │
+    ├──▶ local eventbus ──(per-runtime seq, gap-detect, terminal-undroppable)──▶ local TUI   (live delivery)       │
+    └──▶ hub client TAILS the wire log ──uplink──▶ HUB appends to durable seq'd log ──▶ browser (cold-join + live-tail)
 ```
 
 ### The one rule (written once, reused at every seam)
@@ -91,10 +103,11 @@ on connect:
 ```
 
 This is the single most important property of the design: **reconnect logic
-exists once** and is reused at each seam (claude→bus, bus→hub, hub→browser). Each
-seam is "just another consumer following the one rule." Gap detection and
-terminal-event guarantees are inherited from the existing local eventbus rather
-than reinvented per seam.
+exists once** and is reused at each durable seam (claude→wire-log, wire-log→hub,
+hub→browser). Each seam is "just another consumer following the one rule." Gap
+detection and terminal-event guarantees for the *live* local path are inherited
+from the existing eventbus rather than reinvented per seam; the *durable* cursor
+every seam keys on is the wire-log frame seq.
 
 New events tail live over a Connect **server-stream**, with a **WebSocket
 fallback** where L7 infrastructure doesn't hold server-streams open (see
@@ -107,6 +120,21 @@ fallback** where L7 infrastructure doesn't hold server-streams open (see
   end-to-end.
 - New consumer types (a future org-chart watcher, a metrics tap) attach without
   new plumbing.
+
+### Why the wire log (and not Claude's JSONL)
+
+- **Complete by construction.** The tap sits upstream of every piece of
+  sprawl-side logic, so no downstream bug can make it miss a byte Claude emitted. A
+  forensic audit confirmed the wire log is a **faithful superset** of Claude's
+  canonical JSONL — 0 real model content lost across 195 session pairs; every
+  assistant message, tool call, user message, and even the compaction summary text
+  + boundary metadata cross the wire. **No Claude-JSONL reconciliation is required**
+  for model-visible content; the only JSONL-exclusive residue (a synthetic
+  `"No response requested."` placeholder; the `isCompactSummary` flag / uuid map) is
+  non-essential.
+- **More durable than the JSONL.** The wire log lives under sprawl's own control
+  and outlived Claude's transcript in 387 of 582 observed cases (Claude had GC'd its
+  JSONL while the wire log survived).
 
 ### No snapshots in v1 (KISS)
 
@@ -211,8 +239,9 @@ user reclaims   ─▶ hub: {active_host_id=B, …}      # deliberate, human-dri
 
 **Uplink (host → hub → browser):**
 ```
-claude event ─▶ eventbus(seq) ─▶ hub client ─▶ Connect unary uplink ─▶ hub append(log)
-                                                                        └─▶ fan-out ─▶ browser
+claude frame ─▶ wire-log tap(frame seq) ─┬▶ eventbus ─▶ local TUI (live delivery)
+                                         └▶ hub client TAILS ─▶ Connect unary uplink ─▶ hub append(log)
+                                                                                        └─▶ fan-out ─▶ browser
 ```
 
 **Downlink (browser → hub → host):** "user typed X in the browser"

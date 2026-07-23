@@ -33,6 +33,13 @@ See also: [`00-overview.md`](00-overview.md) · [`01-architecture.md`](01-archit
   both seams. It is more robust, simpler to reason about, and reuses one reconnect
   pattern everywhere.
 - **De-risk with a small spike** (§5) *before* committing any streaming shape.
+- **Transcript source of record = the host's durable, frame-oriented wire log**
+  (one envelope per Claude protocol frame; a persistent monotonic seq continuous
+  across resumes). The uplink **tails and ships** it; the hub stores that wire-log
+  frame seq **verbatim**, and the browser cold-joins + live-tails keyed by it. The
+  wire log is an `io.TeeReader` tap upstream of all sprawl logic, so it is a proven
+  **superset** of Claude's JSONL — **no Claude-JSONL reconciliation is required**
+  for model-visible content (see §1, "Transcript source").
 
 ---
 
@@ -49,7 +56,7 @@ carries the (always-single) `user_id` for schema-forward compatibility — there
 | RPC | Shape | Purpose |
 |---|---|---|
 | `RegisterInstance` | unary | Host announces itself: `{host_id, run_id, repo_label, user_id}` → hub records/updates the instance row. Idempotent; called on connect. |
-| `AppendTranscript` | unary or client-stream | Uplink: host appends seq'd transcript/event entries (claude output) to the durable log. Carries `{host_id, run_id, entries[], from_seq}`. **The transcript IS the event log** ([`01`](01-architecture.md#2-the-event-log-spine-the-strongest-idea--feature-it)). |
+| `AppendTranscript` | unary or client-stream | Uplink: host **tails its durable seq'd wire log** and ships those frames to the hub's durable log. Carries `{host_id, run_id, entries[], from_seq}` with the **wire-log frame seq carried verbatim**. **The wire log IS the transcript / event log** ([`01`](01-architecture.md#2-the-event-log-spine-the-strongest-idea--feature-it); "Transcript source" below). |
 | `SubscribeCommands` | **server-stream** | Downlink: hub pushes commands to the host ("user typed X", "release requested"). Held open; this is the connection that must survive the LB. |
 | `ClaimActiveHost` / `ReleaseActiveHost` | unary | **Advisory** write-authority marker for a project: sets/clears "the currently active host." **No fence token, no epoch** — best-effort, last-writer-wins; the marker is informational (drives the "which host is live / N clients" UX), not a hard lock. |
 | `PushMemory` / `PullMemory` | unary | Memory **checkpoint** sync: push a per-`(project, agent)` memory checkpoint up (provenance-tagged), pull the latest down. **Last-writer-wins** — no version-vector, no textual/semantic merge ([`10`](README.md)). |
@@ -60,6 +67,49 @@ carries the (always-single) `user_id` for schema-forward compatibility — there
 > timeouts and refreshes the advisory active-host marker. A dropped heartbeat
 > simply lets the next host claim the advisory marker — there is no fence to
 > reconcile.
+
+### Transcript source = the durable wire log (tail-and-ship)
+
+The `AppendTranscript` uplink does **not** subscribe to the ephemeral in-process
+eventbus; it **tails the host's durable, seq'd wire log** and ships frames. This is
+the target architecture; the writer evolution it assumes is a code follow-up (see
+below).
+
+- **Frame-oriented writer, persistent monotonic seq.** The wire log is a
+  byte-level `io.TeeReader` tap on Claude's stdout, **upstream of every piece of
+  sprawl-side logic** (protocol parse, turn classification, interrupt handling, the
+  eventbus, the TUI). The target writer emits **one envelope per Claude protocol
+  frame** and stamps a **persistent monotonic `seq`** that is **continuous across
+  resumes** (the file is already append-cumulative under a stable sessionID). That
+  seq is the **single source of truth** and the stable cursor every downstream
+  consumer keys on. *(Today's writer is chunk-oriented — lossless but not
+  per-frame; the frame-oriented + seq change is additive and tracked as a code
+  follow-up, not existing behavior.)*
+- **No Claude-JSONL reconciliation required.** Because the tap is upstream of all
+  sprawl logic, no downstream bug can make the wire log miss a byte Claude emitted.
+  A forensic audit confirmed the wire log is a **faithful superset** of Claude's
+  canonical JSONL — **0 real model content lost across 195 session pairs**; every
+  assistant message, tool call, user message, and even the compaction **summary
+  text + boundary metadata** cross the wire. The only JSONL-exclusive residue is
+  **non-essential**: a synthetic `"No response requested."` placeholder and the
+  `isCompactSummary` flag / uuid-preservation map. So the uplink ships the wire log
+  as-is; there is nothing to reconcile against Claude's JSONL.
+- **Tail-and-ship, then cold-join + live-tail.** The host uplink tails the durable
+  seq'd wire log — a **host-local** append log (`.sprawl/logs/sessions/…`) whose
+  durable backing in a hosted deployment is a **network-attached append-log store**
+  (product-specific backing config lives only in gitignored deploy config, never in
+  the tracked tree) — and ships frames to the hub, which persists them in its own
+  durable store ([`07`](07-storage-persistence.md), a distinct hub-side substrate).
+  The browser **cold-joins** (`FetchTranscript` `from_seq=0` = the full log) and
+  **live-tails** the delta, both keyed by the durable wire-log frame seq. The same
+  seq flows verbatim across every durable seam:
+  `claude → host wire-log tap → uplink → hub store → browser`.
+- **Same source rehydrates the local TUI.** The wire log is also the TUI
+  resume/replay source; the prior Claude-JSONL read path
+  (`internal/tui/replay.go`) is retired in the target architecture. The eventbus
+  remains the **live local delivery** path (seq-stamped, gap-detecting,
+  terminal-undroppable, QUM-775) for the running TUI — a distinct, per-runtime seq
+  space, not the durable one the hub stores.
 
 ### Simplest way vs. right way (host↔hub transport)
 
@@ -221,6 +271,7 @@ UPLINK (host → hub, browser → hub):    UNARY / batched
 
 RECONNECT:  identical at both seams — replay(from_seq); on fresh connect from_seq=0
             (full log — no snapshot in v1), then tail live
+            (from_seq = the durable wire-log frame seq, carried verbatim end to end)
 ```
 
 - This **never depends on full-duplex** and **never depends on an un-cuttable

@@ -32,9 +32,10 @@ else.
 **The load-bearing spine (the one thing that must be right):**
 
 ```
-claude → local eventbus (seq'd) → uplink → HUB (durable seq'd log + fan-out) → browser
-                                                    ▲
-browser input → downlink → host turn-queue ─────────┘   (result re-enters uplink)
+claude ─▶ wire-log tap (durable, frame-oriented, persistent monotonic seq) ─┬▶ local eventbus ─▶ local TUI (live delivery)
+                                                                            └▶ hub client TAILS ─▶ uplink ─▶ HUB (durable seq'd log + fan-out) ─▶ browser
+                                                                                                   ▲
+browser input ─▶ downlink ─▶ host turn-queue ──────────────────────────────────────────────────────┘   (result re-enters uplink)
 ```
 
 The single load-bearing property is **one durable, seq'd, resumable stream with
@@ -43,12 +44,22 @@ the one rule**:
 > **Fresh connect → full seq'd log. Reconnect → send my last seq, get the delta.
 > Then live-tail.**
 
-Implemented **once** and reused at every seam (claude→bus, bus→hub, hub→browser —
-[`01` §2](01-architecture.md), [`09` §0](09-synchronization.md)). This is the one
-piece painful to retrofit, and it's justified purely by *connections dropping*
-(mobile, NAT, L7 idle timeouts), which is real even for one user. The durable
-**transcript IS the seq'd log** — there is no separate ephemeral event-log +
-snapshot layering ([`07` §0](07-storage-persistence.md)).
+Implemented **once** and reused at every durable seam (claude→wire-log,
+wire-log→hub, hub→browser — [`01` §2](01-architecture.md),
+[`09` §0](09-synchronization.md)). This is the one piece painful to retrofit, and
+it's justified purely by *connections dropping* (mobile, NAT, L7 idle timeouts),
+which is real even for one user. The **authoritative transcript IS the host's
+durable, frame-oriented wire log** — a byte-level `io.TeeReader` tap on Claude's
+stdout, upstream of all sprawl logic, with one envelope per Claude frame and a
+persistent monotonic seq continuous across resumes. The hub uplink **tails and
+ships** that wire log (it does not subscribe to the ephemeral eventbus, which stays
+the *live local delivery* path for the TUI). There is **no separate ephemeral
+event-log + snapshot layering** ([`07` §0](07-storage-persistence.md)). Because the
+tap is upstream of every downstream bug, the wire log is a proven **superset** of
+Claude's JSONL (audit: 0 real model content lost across 195 session pairs; the only
+JSONL-exclusive residue — a synthetic `"No response requested."` placeholder and
+the `isCompactSummary` flag / uuid map — is non-essential), so **no Claude-JSONL
+reconciliation is required** for model-visible content.
 
 Everything that used to be a *second* load-bearing correctness guarantee —
 write-authority via TTL leases + fence tokens — is **gone**. In v2 write authority
@@ -250,22 +261,27 @@ This alone kills window-juggling and gives remote/mobile *view*.
 
 **Scope:**
 
-- **Host-side hub client**: subscribe to the existing local seq'd eventbus
-  (reuse the subscriber API unchanged; honor its drop telemetry —
-  [`02` §2.1](02-components.md)); **bounded local outbound buffer**, drop-oldest
+- **Host-side hub client**: **tail the host's durable seq'd wire log**
+  (frame-oriented, persistent monotonic seq continuous across resumes) and ship
+  frames — the eventbus continues to drive live local TUI delivery, but the
+  authoritative durable source the uplink reads is the wire log
+  ([`02` §2.1](02-components.md)); **bounded local outbound buffer**, drop-oldest
   past high-water, **one log per truncation** + a `truncated-from` marker
   ([`01` §3](01-architecture.md), [`09` §2](09-synchronization.md)).
 - **Uplink**: `AppendTranscript` **unary/batched** carrying
-  `{host_id, run_id, entries[], from_seq}`. The hub **stores the host's seq
-  verbatim** (does not re-number) and appends **idempotently by seq** per session
-  — any event with `seq ≤ last_seq` is a no-op ([`09` §1](09-synchronization.md),
-  [`03` §1](03-api-surfaces.md)).
-- **Durable seq'd stream = the transcript**: **one** append-only per-session log
-  in the `Store` (PG index row per `(session, seq)` + blob body per event). There
-  is **no snapshot tier and no separate event-log layer** — the transcript *is*
-  the log and serves both fresh-connect full-send (from seq 0) and reconnect delta
-  (from a client's last seq) ([`01` §2](01-architecture.md),
-  [`07` §4](07-storage-persistence.md), [`09` §1](09-synchronization.md)).
+  `{host_id, run_id, entries[], from_seq}`. The hub **stores the host's wire-log
+  frame seq verbatim** (does not re-number) and appends **idempotently by seq** per
+  session — any event with `seq ≤ last_seq` is a no-op
+  ([`09` §1](09-synchronization.md), [`03` §1](03-api-surfaces.md)).
+- **Durable seq'd stream = the transcript = the shipped wire log**: **one**
+  append-only per-session log in the `Store` (PG index row per `(session, seq)` +
+  blob body per event), fed by frames tailed from the host's durable wire log.
+  There is **no snapshot tier and no separate event-log layer** — the transcript
+  *is* the log and serves both fresh-connect full-send (from seq 0) and reconnect
+  delta (from a client's last seq) ([`01` §2](01-architecture.md),
+  [`07` §4](07-storage-persistence.md), [`09` §1](09-synchronization.md)). Because
+  the wire log is an upstream tee, it is a proven **superset** of Claude's JSONL —
+  **no Claude-JSONL reconciliation** is needed for model-visible content (audit).
 - **Downlink fan-out**: `SubscribeInstance` **held-open server-stream** with an
   **on-stream heartbeat every ~20–30s** (beats the 60–240s ceilings; doubles as
   advisory-marker refresh). Browsers follow the **one rule** too — same code path
@@ -458,7 +474,7 @@ Rows marked **▸ v2 cut** reflect where the re-scope simplified the earlier cal
 
 | Choice | Simplest | **Recommendation (right-sized for single-user v2)** | Source |
 |---|---|---|---|
-| Event delivery | latest-state-only, full reload | **one durable append-only seq'd log + delta replay; NO snapshot tier** ▸ v2 cut | [`01`](01-architecture.md)/[`07`](07-storage-persistence.md)/[`09`](09-synchronization.md) |
+| Event delivery | latest-state-only, full reload | **one durable append-only seq'd log + delta replay; NO snapshot tier; source of record = the host's durable frame-oriented wire log (uplink tails-and-ships it); NO Claude-JSONL reconciliation** ▸ v2 cut | [`01`](01-architecture.md)/[`03`](03-api-surfaces.md)/[`07`](07-storage-persistence.md)/[`09`](09-synchronization.md) |
 | Host↔hub transport | one bidi stream forever | **server-stream downlink + unary uplink, expect disconnects** (already reconciled in `01`/`03`) | [`03`](03-api-surfaces.md) |
 | Write authority | global lock, last-conn-wins | **trivial advisory active-host marker; NO fence/lease/epoch** ▸ v2 cut | [`01`](01-architecture.md)/[`09`](09-synchronization.md) |
 | Host auth | shared secret | **per-host hashed bearer tokens (argon2id+pepper), revocable** | [`04`](04-authentication.md)/[`security-privacy`](security-privacy.md) |
@@ -518,6 +534,14 @@ revision, not the v1 build (their build triggers live in
 - **A8. Buffer high-water policy** — how much local outbound history before drop-
   oldest, per-session or global? v1 is memory-only (host restart ⇒ new session +
   fresh full-log), so disk-spill is out. *(`01`, `09`)*
+- **A9. Wire-log writer prerequisite (code, not yet built)** — the tail-and-ship
+  and TUI-rehydrate design assumes the wire-log writer becomes **frame-oriented
+  with a persistent monotonic seq continuous across resumes** (today's writer is
+  chunk-oriented — lossless but not per-frame). This is an **additive** change to
+  `internal/backend/claude/wirelog.go` and a code prerequisite for Phase 1's uplink
+  tailer; file it as a tracked follow-up before Phase 1 commits. Retiring the
+  Claude-JSONL TUI read path (`internal/tui/replay.go`) is the paired follow-up.
+  *(`01`, `03`)*
 
 ### B. Write-authority (advisory marker)
 - **B1. Active-host TTL / staleness** — how long after a dropped heartbeat before

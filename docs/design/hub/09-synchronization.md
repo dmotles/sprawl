@@ -38,14 +38,17 @@ That is the **entire** reconnect rule in v1. **No snapshot tier** — the delta
 properly, and it's now much smaller than it was.
 
 ```
-claude ─▶ local eventbus ─▶ hub client ─uplink─▶ HUB (durable log) ─stream─▶ browser
-         └── seam 1 ──┘    └──── seam 2 ────┘                       └── seam 3 ──┘
-             (local)         (host→hub, WAN)                          (hub→browser, WAN)
+claude ─▶ wire-log tap ─▶ hub client TAILS ─uplink─▶ HUB (durable log) ─stream─▶ browser
+         └── seam 1 ──┘   └────── seam 2 ──────┘                        └── seam 3 ──┘
+      (durable frame seq)     (host→hub, WAN)                            (hub→browser, WAN)
 ```
 
-The rule is written **once** and reused at each seam. Seam 1 already exists
-(`internal/runtime/eventbus.go`: seq-stamped, gap-detecting, terminal-undroppable
-— QUM-669/QUM-775). Seams 2 and 3 are the same "replay-then-tail" consumer
+The rule is written **once** and reused at each seam. Seam 1's durable source is
+the host's **wire log** — a byte-level `io.TeeReader` tap on Claude's stdout, with
+a persistent monotonic frame seq (§1). (The in-process eventbus —
+`internal/runtime/eventbus.go`: seq-stamped, gap-detecting, terminal-undroppable,
+QUM-669/QUM-775 — remains the *live local delivery* path for the TUI, a separate
+per-runtime seq space.) Seams 2 and 3 are the same "replay-then-tail" consumer
 pointed at the hub's durable log instead of an in-process channel.
 
 ---
@@ -58,14 +61,27 @@ pointed at the hub's durable log instead of an in-process channel.
 correctness: the live claude session is still the source of truth and re-streams
 from its current state.
 
-### Seq stamping — reused, not reinvented
+### Seq stamping — the durable seq is the wire log's frame seq
 
-The local eventbus already stamps a **monotonic, 1-indexed `Seq`** on every
-`RuntimeEvent` under `publishMu`, so subscribers see strictly ascending seqs
-(`EventBus.Publish`, `eventbus.go:364`), with gap detection and terminal-event
-undroppability already solved. The hub **stores the host's seq verbatim** — it
-does not re-number.
+The durable identity is the **wire-log frame seq**: the target wire-log writer is
+frame-oriented (one envelope per Claude protocol frame) and stamps a **persistent,
+monotonic seq continuous across resumes** (the file is append-cumulative under a
+stable sessionID). The hub **stores that wire-log frame seq verbatim** — it does
+not re-number.
 
+> The in-process eventbus also stamps a monotonic, 1-indexed `Seq` on every
+> `RuntimeEvent` (`EventBus.Publish`, `eventbus.go:364`) with gap detection and
+> terminal-event undroppability — but that is the **live local delivery** cursor
+> (per-runtime, resets each resume), *not* the durable seq the hub stores. The two
+> seq spaces are distinct; don't conflate them ([`01` §2](01-architecture.md)).
+
+- **No Claude-JSONL reconciliation.** Because the wire-log tap is upstream of all
+  sprawl logic, the wire log is a proven **superset** of Claude's JSONL (audit: 0
+  real model content lost across 195 session pairs; the summary text + boundary
+  metadata of a compaction also cross the wire). The hub ships and stores the wire
+  log as-is; the only JSONL-exclusive residue is non-essential. The wire log is
+  also **more durable** than the JSONL (it survived in 387 of 582 observed cases
+  where Claude had GC'd its transcript).
 - **`(session, seq)` is the event identity.** A session maps to one
   `sprawl enter` run (`run-id`, [`01` §4](01-architecture.md)); its seq space is
   1..head. Because v1 is single-user and (see §4) only one host is active per

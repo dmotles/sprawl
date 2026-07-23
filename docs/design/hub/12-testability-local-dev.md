@@ -54,10 +54,10 @@ the local eventbus (`internal/runtime/eventbus.go`) already produces.
 This is not a new idea in the codebase — it is the *generalization* of the
 existing pattern. Sprawl's own e2e rows already inject deterministic behavior via
 diagnostic seams (`SPRAWL_BACKEND_HANG_TIMEOUT`, `SPRAWL_DEBUG_DROP_NEXT_TERMINAL_MSG`,
-`SPRAWL_DEBUG_GAP_INJECT`; see `CLAUDE.md`'s matrix). The hub client subscribes
-to the eventbus as *just another consumer* ([`02`
-§2.1](02-components.md#21-eventbus-subscriber-another-consumer)), so a fixture
-that **publishes a scripted seq'd stream onto a real eventbus** exercises the
+`SPRAWL_DEBUG_GAP_INJECT`; see `CLAUDE.md`'s matrix). The hub client is *just
+another consumer* of the host's durable seq'd wire log ([`02`
+§2.1](02-components.md#21-wire-log-tailer-another-consumer)), so a fixture
+that **feeds a scripted seq'd stream** into that path exercises the
 entire uplink path with zero LLM involvement.
 
 ### What the fixture is
@@ -422,7 +422,7 @@ when a dependency is absent (mirror `SPRAWL_E2E_SKIP_NO_CLAUDE`).
 
 | files touched | matrix row | proves (seam §4) |
 |---|---|---|
-| host hub-client: eventbus subscriber, uplink sender, downlink receiver, lease claim, outbound buffer, `--hub-url`/config plumbing ([`02` §2](02-components.md#2-host-side-additions-to-sprawl-enter-the-hub-client)) | `hub-client` | seam 1: uplink/append/fence/ack/reconnect against in-mem store + scripted stream |
+| host hub-client: wire-log tailer, uplink sender, downlink receiver, lease claim, outbound buffer, `--hub-url`/config plumbing ([`02` §2](02-components.md#2-host-side-additions-to-sprawl-enter-the-hub-client)) | `hub-client` | seam 1: uplink/append/fence/ack/reconnect against in-mem store + scripted stream |
 | hub: Connect server, uplink ingest, downlink dispatch/fan-out, lease/fence registry, event-log store, auth ([`02` §1](02-components.md#1-hub-side-components-inside-the-one-container)) | `hub-api` | seam 2: OIDC (test issuer) + fan-out to a Go browser-client + `SubmitInput` → turn-queue |
 | `docker-compose` stack, embedded SPA (`go:embed`), the SPA↔api transport, or the full round-trip wiring | `hub-fullstack` | seam 3: real browser via Playwright on the compose stack (headless variant for logic) |
 | the `.proto` sources, `buf.gen.yaml`/`buf.yaml`, generated Go/TS clients, or the SPA's reducer/transport code | `web-contract` | seam 4: golden protobuf fixtures (Go+TS) + `buf breaking` + fixture-replay SPA reconnect/render |

@@ -242,34 +242,37 @@ The hub client is one cohesive unit inside `sprawl enter`, made of the parts
 below. It reuses existing host machinery wherever possible rather than adding
 parallel plumbing.
 
-### 2.1 Eventbus subscriber (another consumer)
+### 2.1 Wire-log tailer (another consumer)
 
-**Responsibility.** Subscribe to the **existing** per-runtime `EventBus`
-(`internal/runtime/eventbus.go`) as *one more consumer* alongside the TUI
-viewport, activity ring, and log writers. Receive seq-stamped `RuntimeEvent`s
-and feed them to the uplink sender (§2.2).
+**Responsibility.** **Tail the host's durable seq'd wire log** — the frame-oriented
+`io.TeeReader` capture of Claude's stdout, with a persistent monotonic frame seq
+continuous across resumes ([`01` §2](01-architecture.md)) — as *one more consumer*
+alongside the local TUI and log writers. Read frames in seq order and feed them to
+the uplink sender (§2.2). It does **not** subscribe to the ephemeral in-process
+`EventBus` (`internal/runtime/eventbus.go`), which remains the *live local
+delivery* path for the TUI (a separate, per-runtime seq space).
 
-**Boundary.** A read-only tap on the local spine. It adds a subscriber; it does
-**not** change how the bus publishes, and it inherits the bus's existing
-guarantees for free: seq stamping, gap detection, terminal-event
-undroppability, and the per-subscriber backpressure/drop telemetry described in
-the eventbus package doc. Being "just another subscriber" is exactly why the
-uplink seam obeys the same one-rule contract as the TUI.
+**Boundary.** A read-only follower of the durable source of record. It reads the
+wire log; it does **not** change how the log is written, and it inherits the wire
+log's guarantees for free: a stable per-frame seq and completeness by construction
+(the tap is upstream of all sprawl logic, so the wire log is a proven superset of
+Claude's JSONL — no reconciliation needed, [`01` §2](01-architecture.md)). Because
+the durable seq is stable across resumes, the uplink seam obeys the same one-rule
+contract as every other consumer.
 
-**Simplest vs. right.** Simplest: reuse the existing subscriber mechanism as-is.
-Right: same, plus honoring the bus's drop telemetry so an over-slow uplink is
-observable (not silently lossy). **Recommendation:** reuse the subscriber API
-unchanged and surface uplink drops via the existing telemetry — no new bus
-concepts, and lossiness stays visible.
+**Simplest vs. right.** Simplest: tail the wire log and ship frames. Right: same,
+plus surfacing tailer/uplink lag so an over-slow uplink is observable (not silently
+lossy). **Recommendation:** tail the durable wire log and surface uplink lag — the
+durable seq keeps the seam resumable and lossiness stays visible.
 
 ### 2.2 Uplink sender
 
-**Responsibility.** Push events received from §2.1 up the persistent connection
-to the hub's ingest (§1.2), tracking the last hub-acked seq and advancing the
-outbound buffer (§2.5) as acks arrive.
+**Responsibility.** Push wire-log frames received from §2.1 up the persistent
+connection to the hub's ingest (§1.2), tracking the last hub-acked seq and
+advancing the outbound buffer (§2.5) as acks arrive.
 
 **Boundary.** The host end of the append path. It frames + sends + tracks acks;
-it does not decide *what* is an event (the bus did) and does not retry-forever in
+it does not decide *what* is an event (the wire log did) and does not retry-forever in
 a way that blocks the turn — unsendable events go to the bounded buffer and the
 connection layer reconnects. Attaches the current fence token to each frame so
 the hub can enforce write authority.
@@ -348,8 +351,8 @@ endpoint (host only, token redacted) so operators can see what's on.
 ## 3. Frontend SPA (just an event-log consumer)
 
 **Responsibility.** Render a live view of one or more sessions and let the user
-type input back. It **replays from its last seq, else loads a snapshot, then
-live-tails** — the identical one-rule contract every other consumer follows
+type input back. It **replays from its last seq, else loads the full log, then
+live-tails** (no snapshot tier) — the identical one-rule contract every other consumer follows
 ([`01` §2](01-architecture.md)). Input it collects is sent to the hub and
 transported down to the host's turn-queue (§1.3 → §2.3).
 
@@ -379,7 +382,7 @@ resume — same contract as the TUI and hub, and it's what makes mobile usable.
 | Event-log store | hub | replay/snap | append | — | — | in-mem impl |
 | Blob/secrets | hub | — | — | — | — | memblob/fileblob |
 | Embedded SPA | hub | — | — | — | — | serve from disk |
-| Eventbus subscriber | host | tap | — | — | — | fake bus |
+| Wire-log tailer | host | tail | — | — | — | fake wire log |
 | Uplink sender | host | — | send | carries PAT/fence | — | fake conn |
 | Downlink receiver | host | — | → turn-queue | — | — | fake conn |
 | Lease claim/heartbeat | host | — | — | — | holds fence | fake registry |
@@ -404,7 +407,7 @@ backends + fakes) lives in [`12-testability-local-dev`](README.md).
 - **Snapshot production ownership.** Does the host produce snapshots and upload
   them, or does the hub compact the log into snapshots server-side? Affects
   whether §2 grows a snapshotter or it stays entirely hub-side ([`07`](README.md)).
-- **Does the eventbus subscriber (§2.1) need its own backpressure policy** distinct
+- **Does the wire-log tailer (§2.1) need its own backpressure policy** distinct
   from the TUI's, given the uplink can be far slower than a local consumer? Or is
   the existing per-subscriber drop+telemetry sufficient?
 - **Multi-session fan-out in one browser.** The single-pane-of-glass goal implies

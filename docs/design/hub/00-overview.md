@@ -55,9 +55,10 @@ Key properties:
   **bidirectional** connection *to* the hub: uplink (events, memory, logs) and
   downlink (commands, "the user typed X in the browser") over the same
   connection. No inbound ports on the host.
-- **One event-log spine.** A single seq'd, resumable event log is the backbone
-  (detailed in [`01`](01-architecture.md)). Every consumer — TUI, hub,
-  browser — replays from its last seq, else loads a snapshot, then live-tails.
+- **One event-log spine.** A single seq'd, resumable event log — the host's
+  durable, frame-oriented **wire log** — is the backbone (detailed in
+  [`01`](01-architecture.md)). Every consumer — TUI, hub, browser — replays from
+  its last seq, else loads the full log (no snapshot tier), then live-tails.
 - **Read fan-out, not multiplayer.** Viewers all see the *same* claude output
   stream. Multiple people typing just enqueue into the one turn-queue. No
   presence/typing indicators, no hard driver-lock in v1 — only lightweight
