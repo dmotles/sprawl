@@ -160,10 +160,16 @@ type heartbeatDeps struct {
 	ReadActivityTail  func(string, int) ([]agentloop.ActivityEntry, error)
 	ActivityPath      func(sprawlRoot, name string) string
 	WakeForDelivery   func(*AgentRuntime) error
-	NowFn             func() time.Time
-	NewTicker         func(d time.Duration) (<-chan time.Time, func())
-	ToastFn           func(format string, args ...any)
-	Logger            *slog.Logger
+	// RefreshBlurb, when non-nil, is invoked once per tick per named agent with
+	// the runtime-derived last-activity time so the supervisor can decide
+	// (dirty-check + 15-min floor) whether to regenerate the agent's capability
+	// blurb (QUM-899). Called outside the heartbeat mutex; the seam itself is
+	// non-blocking (dispatches a background goroutine).
+	RefreshBlurb func(name string, lastActivityAt time.Time)
+	NowFn        func() time.Time
+	NewTicker    func(d time.Duration) (<-chan time.Time, func())
+	ToastFn      func(format string, args ...any)
+	Logger       *slog.Logger
 }
 
 // agentState is the heartbeat's per-agent bookkeeping. Owned exclusively
@@ -304,6 +310,14 @@ func (h *heartbeat) tickAgent(ctx context.Context, probe runtimeProbe, now time.
 	// Snapshot once per tick to avoid racing inconsistent reads.
 	snap := probe.Snapshot()
 	lastAct := probe.LastActivityAt()
+
+	// QUM-899: give the blurb refresher a chance every tick, independent of the
+	// liveness-nudge gates below (a healthy, actively-working agent still wants
+	// its blurb refreshed). The seam applies its own dirty-check + 15-min floor
+	// and is non-blocking.
+	if h.deps.RefreshBlurb != nil {
+		h.deps.RefreshBlurb(name, lastAct)
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()

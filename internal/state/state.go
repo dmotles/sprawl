@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Agent status string constants (QUM-372). These enumerate the universe of
@@ -90,7 +91,7 @@ func IsResolvedOrphan(status string) bool {
 // the current code. LoadAgent migrates older (v0/v1) files forward on read and
 // SaveAgent stamps this value (QUM-625 M4; bumped to v2 for the QUM-851
 // Model / SystemPromptAppend fields).
-const CurrentSchemaVersion = 2
+const CurrentSchemaVersion = 3
 
 // AgentState holds the persistent metadata for a spawned agent.
 type AgentState struct {
@@ -120,6 +121,16 @@ type AgentState struct {
 	// QUM-625 M4 lack this field and unmarshal as 0 (v0); LoadAgent migrates
 	// them forward and stamps CurrentSchemaVersion.
 	SchemaVersion int `json:"schema_version,omitempty"`
+
+	// Blurb is a short (2-3 sentence) auto-generated capability summary
+	// answering "what does this agent know / what was it working on last?".
+	// Maintained in the background by internal/blurb and displayed in the
+	// status/peek tools (QUM-899). Empty until the first generation completes.
+	Blurb string `json:"blurb,omitempty"`
+	// BlurbAt is the generation watermark for Blurb: the RFC3339 time the
+	// current Blurb was produced. Used as the dirty-check baseline (refresh
+	// only when new activity postdates it). Zero until first generation.
+	BlurbAt time.Time `json:"blurb_at,omitempty"`
 
 	// Report fields — populated by the report_status MCP tool. See
 	// docs/designs/messaging-overhaul.md §4.2.3.
@@ -160,6 +171,10 @@ func AgentsDir(sprawlRoot string) string {
 // SystemPromptAppend fields default to "" (type-default model, no append), which
 // is exactly the legacy behavior, so no field rewrite is needed. The migration
 // steps are gated independently so a v1 file only runs the v1→v2 stamp.
+//
+// The v2 -> v3 migration (QUM-899) is likewise a version-stamp only: the added
+// Blurb and BlurbAt fields default to "" / zero time (no blurb yet), the correct
+// legacy behavior.
 func migrate(a *AgentState) bool {
 	mutated := false
 
@@ -197,6 +212,14 @@ func migrate(a *AgentState) bool {
 	// the new version so future writers/readers agree on the schema.
 	if a.SchemaVersion < 2 {
 		a.SchemaVersion = 2
+		mutated = true
+	}
+
+	// v2 -> v3 (QUM-899): Blurb and BlurbAt are additive fields whose zero
+	// values ("" / zero time) are exactly the correct legacy behavior — no
+	// blurb yet. Stamp-only, mirroring the v1→v2 step above.
+	if a.SchemaVersion < 3 {
+		a.SchemaVersion = 3
 		mutated = true
 	}
 

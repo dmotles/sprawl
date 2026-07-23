@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSaveAndLoadAgent(t *testing.T) {
@@ -135,6 +136,58 @@ func TestSaveAndLoadAgent_RoundTripsModelAndSystemPrompt(t *testing.T) {
 	}
 	if loaded.SchemaVersion != CurrentSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", loaded.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// TestSaveAndLoadAgent_RoundTripsBlurb pins QUM-899: the new Blurb and BlurbAt
+// fields survive a SaveAgent → LoadAgent round trip and the state is stamped at
+// the current schema version.
+func TestSaveAndLoadAgent_RoundTripsBlurb(t *testing.T) {
+	dir := t.TempDir()
+	blurbAt := time.Now().UTC().Truncate(time.Second)
+	agent := &AgentState{
+		Name:    "sage",
+		Type:    "researcher",
+		Family:  "engineering",
+		Status:  "active",
+		Blurb:   "Investigated the heartbeat escalation path; knows the liveness projection well.",
+		BlurbAt: blurbAt,
+	}
+
+	if err := SaveAgent(dir, agent); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+
+	loaded, err := LoadAgent(dir, "sage")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if loaded.Blurb != agent.Blurb {
+		t.Errorf("Blurb = %q, want %q", loaded.Blurb, agent.Blurb)
+	}
+	if !loaded.BlurbAt.Equal(blurbAt) {
+		t.Errorf("BlurbAt = %v, want %v", loaded.BlurbAt, blurbAt)
+	}
+	if loaded.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", loaded.SchemaVersion, CurrentSchemaVersion)
+	}
+}
+
+// TestSaveAgent_OmitsEmptyBlurb pins QUM-899: an agent with no blurb must not
+// emit the (string) blurb key. blurb_at, like the pre-existing LastActivityAt
+// time.Time field, cannot be omitted by encoding/json's omitempty and is left
+// as the zero-time sentinel — consistent with the established convention.
+func TestSaveAgent_OmitsEmptyBlurb(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveAgent(dir, &AgentState{Name: "nb"}); err != nil {
+		t.Fatalf("SaveAgent: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(AgentsDir(dir), "nb.json"))
+	if err != nil {
+		t.Fatalf("read raw: %v", err)
+	}
+	if strings.Contains(string(raw), `"blurb":`) {
+		t.Errorf("expected no blurb string key in %s", string(raw))
 	}
 }
 

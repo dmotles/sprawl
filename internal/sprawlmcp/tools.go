@@ -108,7 +108,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "status",
-			"description": "List all agents with their current state, type, family, and branch. Each entry includes `subprocess_alive` (whether a live claude handle is attached) and `eventbus_subscribed` (whether the agent's per-runtime EventBus has any live subscribers); both are false in steady state for terminal-Status agents (stopped/faulted/killed/retired). `eventbus_sub_count` reports the exact subscriber count when nonzero. Does NOT wake the agent.",
+			"description": "List all agents. Each entry headlines a short auto-generated `blurb` (what the agent knows / was last working on) plus name, type, family, parent/tree_path, status, a single collapsed `liveness` token, branch, in_turn, last_activity_at, and cost. Internal debugging fields (`process_alive`, `subprocess_alive`, `eventbus_subscribed`, `eventbus_sub_count`) are NOT included here — use `peek` for those. Does NOT wake the agent.",
 			"inputSchema": map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -158,7 +158,7 @@ func baseToolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "peek",
-			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its last report, the last N protocol events (tool calls, text, results), and `in_turn` (true when the target's backend session is mid-turn; `in_autonomous_turn` is emitted as a deprecated alias for one release — QUM-692). Use to answer \"what is this agent doing?\" before sending a message. Does NOT wake the agent. Peek is introspectable for `complete` and the offline fault classes (paused/killed/died/faulted/resume_failed); only `retired`/`retiring` short-circuit to a terminal-agent error.",
+			"description": "Inspect a child or peer agent's recent activity. Returns the agent's status, its `blurb`, its last report, the last N protocol events (tool calls, text, results), `in_turn` (true when the target's backend session is mid-turn; `in_autonomous_turn` is emitted as a deprecated alias for one release — QUM-692), and the internal debugging fields dropped from `status` (`process_alive`, `subprocess_alive`, `eventbus_subscribed`, `eventbus_sub_count`). Use to answer \"what is this agent doing?\" before sending a message. Does NOT wake the agent. Peek is introspectable for `complete` and the offline fault classes (paused/killed/died/faulted/resume_failed); only `retired`/`retiring` short-circuit to a terminal-agent error.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

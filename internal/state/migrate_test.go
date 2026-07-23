@@ -154,11 +154,40 @@ func TestLoadAgent_MigratePreservesActiveCrashSurvivor(t *testing.T) {
 	}
 }
 
-// TestCurrentSchemaVersion_IsV2 pins QUM-851: the schema version was bumped to
-// 2 when Model + SystemPromptAppend were added to AgentState.
-func TestCurrentSchemaVersion_IsV2(t *testing.T) {
-	if CurrentSchemaVersion != 2 {
-		t.Errorf("CurrentSchemaVersion = %d, want 2 (QUM-851 bump)", CurrentSchemaVersion)
+// TestCurrentSchemaVersion_IsV3 pins QUM-899: the schema version was bumped to
+// 3 when Blurb + BlurbAt were added to AgentState.
+func TestCurrentSchemaVersion_IsV3(t *testing.T) {
+	if CurrentSchemaVersion != 3 {
+		t.Errorf("CurrentSchemaVersion = %d, want 3 (QUM-899 bump)", CurrentSchemaVersion)
+	}
+}
+
+// TestLoadAgent_MigratesV2ToV3_EmptyBlurb pins QUM-899: a genuine v2 state file
+// (schema_version=2, no blurb/blurb_at keys) loads cleanly, migrates forward to
+// the current schema version, and yields the legacy behavior — empty Blurb and
+// zero BlurbAt. Other fields must be preserved.
+func TestLoadAgent_MigratesV2ToV3_EmptyBlurb(t *testing.T) {
+	root := t.TempDir()
+	writeRawV0Agent(t, root, "b3", `{"name":"b3","status":"running","model":"opus","schema_version":2}`)
+
+	got, err := LoadAgent(root, "b3")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+	if got.Blurb != "" {
+		t.Errorf("Blurb = %q, want empty (legacy)", got.Blurb)
+	}
+	if !got.BlurbAt.IsZero() {
+		t.Errorf("BlurbAt = %v, want zero (legacy)", got.BlurbAt)
+	}
+	if got.Status != "running" {
+		t.Errorf("Status = %q, want %q (unchanged)", got.Status, "running")
+	}
+	if got.Model != "opus" {
+		t.Errorf("Model = %q, want %q (unchanged)", got.Model, "opus")
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", got.SchemaVersion, CurrentSchemaVersion)
 	}
 }
 

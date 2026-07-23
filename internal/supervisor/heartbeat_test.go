@@ -481,6 +481,47 @@ func TestHeartbeat_Tier2_CleanIdleNudgesOnNthConsecutiveTick(t *testing.T) {
 
 // --- negative gates ----------------------------------------------------------
 
+// TestHeartbeat_RefreshBlurb_FiresEveryTick pins QUM-899: the RefreshBlurb seam
+// is invoked once per tick per named agent with the runtime-derived last
+// activity time, independent of the liveness-nudge gates (an in-turn, actively
+// working agent still gets its blurb considered for refresh).
+func TestHeartbeat_RefreshBlurb_FiresEveryTick(t *testing.T) {
+	t.Parallel()
+	cfg := defaultLivenessConfigForTests()
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	clk := &clock{now: now}
+	lastAct := now.Add(-2 * time.Minute)
+	probe := &fakeProbe{name: "alice"}
+	probe.setLiveness(liveness.Running)
+	probe.setLastActivity(lastAct)
+	probe.setInTurn(true) // in-turn would suppress nudges, but not blurb refresh
+	probe.snapshot.Name = "alice"
+
+	lister := &fakeLister{probes: []*fakeProbe{probe}}
+	type call struct {
+		name    string
+		lastAct time.Time
+	}
+	var calls []call
+	hb := newHeartbeat(heartbeatDeps{
+		Cfg:      cfg,
+		Registry: lister,
+		RefreshBlurb: func(name string, la time.Time) {
+			calls = append(calls, call{name, la})
+		},
+		NowFn: clk.Now,
+	})
+
+	runOneTick(t, hb, clk.Now())
+
+	if len(calls) != 1 {
+		t.Fatalf("RefreshBlurb calls = %d, want 1", len(calls))
+	}
+	if calls[0].name != "alice" || !calls[0].lastAct.Equal(lastAct) {
+		t.Errorf("RefreshBlurb got (%q, %v), want (alice, %v)", calls[0].name, calls[0].lastAct, lastAct)
+	}
+}
+
 func TestHeartbeat_InTurn_SuppressesAllNudges(t *testing.T) {
 	t.Parallel()
 	cfg := defaultLivenessConfigForTests()

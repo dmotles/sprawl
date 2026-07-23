@@ -18,6 +18,7 @@ import (
 	"github.com/dmotles/sprawl/internal/agentloop"
 	"github.com/dmotles/sprawl/internal/agentops"
 	backendpkg "github.com/dmotles/sprawl/internal/backend"
+	"github.com/dmotles/sprawl/internal/blurb"
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/inboxprompt"
 	"github.com/dmotles/sprawl/internal/memory"
@@ -157,6 +158,23 @@ type Real struct {
 	// heartbeat is the QUM-730 supervisor liveness-check goroutine. Started
 	// by NewReal when LivenessConfig.Enabled, stopped by Shutdown.
 	heartbeat *heartbeat
+
+	// --- QUM-899 capability blurb seams ---
+	// blurbInvoker runs the cheap background Claude call that produces a
+	// blurb. Defaults to memory.NewCLIInvoker() in NewReal; tests inject a
+	// fake so no subprocess runs.
+	blurbInvoker memory.ClaudeInvoker
+	// blurbModel overrides blurb.DefaultModel when non-empty (cost lever).
+	blurbModel string
+	// gitDiffStat resolves the `git diff --stat` signal for a worktree.
+	// Injectable; production leaves nil and realGitDiffStat is used.
+	gitDiffStat func(worktree string) (string, error)
+	// dispatchBlurb fires a (background) blurb generation for the named agent
+	// with the given trigger. Defaults to r.asyncGenerateBlurb; tests inject a
+	// synchronous recorder to assert the spawn/completion/refresh wiring.
+	dispatchBlurb func(name string, kind blurb.TriggerKind)
+	// blurbNow is the clock used to stamp BlurbAt. Defaults to time.Now.
+	blurbNow func() time.Time
 }
 
 // realGitRevParseHEAD shells out to `git -C <dir> rev-parse HEAD`. stdio is
@@ -370,6 +388,14 @@ func NewReal(cfg Config) (*Real, error) {
 	}
 	r.runtimeStarter = starter
 
+	// QUM-899: blurb generator seams. NewCLIInvoker constructs lazily (no
+	// subprocess until Invoke), so this is cheap and safe even without a claude
+	// binary on PATH.
+	r.blurbInvoker = memory.NewCLIInvoker()
+	r.gitDiffStat = realGitDiffStat
+	r.blurbNow = time.Now
+	r.dispatchBlurb = r.asyncGenerateBlurb
+
 	// QUM-730: install the heartbeat goroutine. Defaults enable it; the
 	// project config can disable or tune via the `liveness:` YAML block.
 	livenessCfg := ResolveLivenessConfig(loadRawLiveness(cfg.SprawlRoot))
@@ -393,7 +419,8 @@ func NewReal(cfg Config) (*Real, error) {
 			}
 			return rt.WakeForDelivery()
 		},
-		Logger: slog.Default(),
+		RefreshBlurb: r.maybeRefreshBlurb,
+		Logger:       slog.Default(),
 	})
 	r.heartbeat.Start()
 	return r, nil
@@ -568,6 +595,7 @@ func (r *Real) Status(_ context.Context) ([]AgentInfo, error) {
 			LastReportState:    a.LastReportState,
 			LastReportMessage:  a.LastReportMessage,
 			LastReportDetail:   a.LastReportDetail,
+			Blurb:              a.Blurb,
 			TotalCostUsd:       sumUsageCostForAgent(r.sprawlRoot, a.Name),
 			ProcessAlive:       processAliveByName[a.Name],
 			SubprocessAlive:    subprocessAliveByName[a.Name],
@@ -666,6 +694,11 @@ func (r *Real) Spawn(ctx context.Context, req SpawnRequest) (*AgentInfo, error) 
 	if err := runtime.Start(); err != nil {
 		r.rollbackSpawnArtifacts(st.Name)
 		return nil, fmt.Errorf("starting runtime for %s: %w", st.Name, err)
+	}
+	// QUM-899: fire the fast initial blurb generation in the background so the
+	// agent is findable (shoppable for reuse) within seconds of spawn.
+	if r.dispatchBlurb != nil {
+		r.dispatchBlurb(st.Name, blurb.TriggerInitial)
 	}
 	info := &AgentInfo{
 		Name:   st.Name,
@@ -2009,15 +2042,26 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 	// runtime is registered.
 	inAutonomousTurn := false
 	var livenessTok string
+	var processAlive *bool
+	var subprocessAlive, eventbusSubscribed bool
+	var eventbusSubCount int
 	if rt, ok := r.runtimeRegistry.Get(agentName); ok {
 		inAutonomousTurn = rt.InTurn()
 		snap := rt.Snapshot()
-		livenessTok = liveness.From(liveness.Snapshot{
+		st2 := liveness.From(liveness.Snapshot{
 			Lifecycle:   livenessToLifecycleString(snap.Liveness),
 			TerminalErr: rt.IsTerminallyFaulted(),
 			InTurn:      rt.InTurn(),
 			DiskStatus:  st.Status,
-		}).String()
+		})
+		livenessTok = st2.String()
+		subprocessAlive = rt.SubprocessAlive()
+		eventbusSubCount = rt.EventBusSubscriberCount()
+		eventbusSubscribed = eventbusSubCount > 0
+		if st2.Liveness != liveness.Unstarted {
+			alive := liveness.ProcessAlive(st2)
+			processAlive = &alive
+		}
 	} else {
 		// QUM-722: disk-only — project from durable Status.
 		livenessTok = liveness.From(liveness.Snapshot{DiskStatus: st.Status}).String()
@@ -2025,6 +2069,7 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 
 	pr := &PeekResult{
 		Status: st.Status,
+		Blurb:  st.Blurb,
 		LastReport: LastReport{
 			Type:    st.LastReportType,
 			Message: st.LastReportMessage,
@@ -2032,9 +2077,13 @@ func (r *Real) Peek(ctx context.Context, agentName string, tail int) (*PeekResul
 			State:   st.LastReportState,
 			Detail:  st.LastReportDetail,
 		},
-		Activity: activity,
-		InTurn:   inAutonomousTurn,
-		Liveness: livenessTok,
+		Activity:           activity,
+		InTurn:             inAutonomousTurn,
+		Liveness:           livenessTok,
+		ProcessAlive:       processAlive,
+		SubprocessAlive:    subprocessAlive,
+		EventbusSubscribed: eventbusSubscribed,
+		EventbusSubCount:   eventbusSubCount,
 	}
 	if st.Subagent {
 		pr.Subagent = true
@@ -2085,6 +2134,14 @@ func (r *Real) ReportStatus(ctx context.Context, agentName, reportState, summary
 	// before the subprocess transport closes (design §7). Use a fresh
 	// background ctx because the original MCP-request ctx is cancelled when
 	// the request returns — the goroutine outlives the request.
+	// QUM-899: regenerate the blurb once when an agent transitions to
+	// complete — the highest-value moment for the reuse use-case, since the
+	// resting blurb should describe finished expertise. Fired in the
+	// background so the report reply path is not blocked.
+	if reportState == agentops.ReportStateComplete && r.dispatchBlurb != nil {
+		r.dispatchBlurb(agentName, blurb.TriggerCompletion)
+	}
+
 	teardown := reportState == agentops.ReportStateComplete || reportState == agentops.ReportStateFailure
 	if teardown {
 		if runtime, ok := r.startedRuntime(agentName); ok {

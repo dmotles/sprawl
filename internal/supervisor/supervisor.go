@@ -18,13 +18,16 @@ type MergeOutcome = agentops.MergeOutcome
 
 // AgentInfo describes an agent's current state as seen by the supervisor.
 type AgentInfo struct {
-	Name              string  `json:"name"`
-	Type              string  `json:"type"`
-	Family            string  `json:"family"`
-	Parent            string  `json:"parent"`
-	Status            string  `json:"status"`
-	Branch            string  `json:"branch"`
-	TreePath          string  `json:"tree_path,omitempty"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Family   string `json:"family"`
+	Parent   string `json:"parent"`
+	Status   string `json:"status"`
+	Branch   string `json:"branch"`
+	TreePath string `json:"tree_path,omitempty"`
+	// Blurb is the short auto-generated capability summary (QUM-899). Shown as
+	// the headline line per agent in the status tool.
+	Blurb             string  `json:"blurb,omitempty"`
 	LastReportType    string  `json:"last_report_type,omitempty"`
 	LastReportState   string  `json:"last_report_state,omitempty"`
 	LastReportMessage string  `json:"last_report_message,omitempty"`
@@ -98,7 +101,9 @@ type ReportStatusResult struct {
 // PeekResult is returned by Supervisor.Peek. See
 // docs/designs/messaging-overhaul.md §4.2.4.
 type PeekResult struct {
-	Status     string                    `json:"status"`
+	Status string `json:"status"`
+	// Blurb is the short auto-generated capability summary (QUM-899).
+	Blurb      string                    `json:"blurb,omitempty"`
 	LastReport LastReport                `json:"last_report"`
 	Activity   []agentloop.ActivityEntry `json:"activity"`
 	// InTurn reflects backend.Session.InTurn() for the
@@ -107,6 +112,12 @@ type PeekResult struct {
 	InTurn bool `json:"in_turn"`
 	// Liveness is the unified-projection token (QUM-722).
 	Liveness string `json:"liveness"`
+	// The internal debugging fields below (QUM-899) were dropped from the
+	// status payload but remain here so peek still exposes them.
+	ProcessAlive       *bool `json:"process_alive"`
+	SubprocessAlive    bool  `json:"subprocess_alive"`
+	EventbusSubscribed bool  `json:"eventbus_subscribed"`
+	EventbusSubCount   int   `json:"eventbus_sub_count,omitempty"`
 	// Subagent indicates the agent shares its parent's worktree/branch. QUM-709.
 	Subagent bool `json:"subagent,omitempty"`
 	// SharedWorktreeWith is the parent agent name when Subagent is true. QUM-709.

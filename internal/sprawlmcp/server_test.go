@@ -475,8 +475,108 @@ func TestServer_ToolsCall_SprawlStatus(t *testing.T) {
 	if len(text) == 0 {
 		t.Error("status text is empty")
 	}
-	if !strings.Contains(text, "process_alive") {
-		t.Errorf("status text should include process_alive when the supervisor returns it, got:\n%s", text)
+	// QUM-899: process_alive is dropped from the status payload (available via peek).
+	if strings.Contains(text, "process_alive") {
+		t.Errorf("status text should NOT include process_alive (QUM-899), got:\n%s", text)
+	}
+	if !strings.Contains(text, "ratz") {
+		t.Errorf("status text missing agent name, got:\n%s", text)
+	}
+}
+
+// TestToolStatus_ShapeDropsInternalFieldsKeepsBlurb pins QUM-899: the status
+// payload headlines the blurb, keeps the operator-facing fields, drops the
+// noisy internal debugging fields, and collapses liveness into one field.
+func TestToolStatus_ShapeDropsInternalFieldsKeepsBlurb(t *testing.T) {
+	alive := true
+	mock := &mockSupervisor{
+		statusResult: []supervisor.AgentInfo{
+			{
+				Name: "ratz", Type: "engineer", Family: "engineering",
+				Parent: "forge", TreePath: "weave/forge/ratz",
+				Status: "active", Branch: "dmotles/qum-899",
+				Blurb:              "Built the QUM-899 blurb pipeline; knows state migration.",
+				LastReportMessage:  "wiring the heartbeat refresh",
+				LastReportState:    "working",
+				TotalCostUsd:       1.23,
+				InTurn:             true,
+				Liveness:           "running",
+				ProcessAlive:       &alive,
+				SubprocessAlive:    true,
+				EventbusSubscribed: true,
+				EventbusSubCount:   2,
+			},
+		},
+	}
+	srv := New(mock)
+	out, err := srv.toolStatus(context.Background())
+	if err != nil {
+		t.Fatalf("toolStatus: %v", err)
+	}
+
+	var views []map[string]any
+	if err := json.Unmarshal([]byte(out), &views); err != nil {
+		t.Fatalf("unmarshal status: %v\n%s", err, out)
+	}
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want 1", len(views))
+	}
+	v := views[0]
+
+	// Dropped internal fields.
+	for _, k := range []string{"process_alive", "subprocess_alive", "eventbus_subscribed", "eventbus_sub_count"} {
+		if _, ok := v[k]; ok {
+			t.Errorf("status view should drop %q", k)
+		}
+	}
+	// Collapsed single liveness field.
+	if v["liveness"] != "running" {
+		t.Errorf("liveness = %v, want running", v["liveness"])
+	}
+	// Kept operator-facing fields incl. the headline blurb.
+	for _, k := range []string{"name", "type", "family", "parent", "tree_path", "status", "branch", "blurb", "in_turn", "total_cost_usd"} {
+		if _, ok := v[k]; !ok {
+			t.Errorf("status view missing kept field %q\n%s", k, out)
+		}
+	}
+	if v["blurb"] != "Built the QUM-899 blurb pipeline; knows state migration." {
+		t.Errorf("blurb = %v", v["blurb"])
+	}
+	// last_report_message demoted but still present.
+	if v["last_report_message"] != "wiring the heartbeat refresh" {
+		t.Errorf("last_report_message = %v", v["last_report_message"])
+	}
+}
+
+// TestToolPeek_ExposesInternalFields pins QUM-899: peek retains the internal
+// debugging fields that status dropped.
+func TestToolPeek_ExposesInternalFields(t *testing.T) {
+	alive := true
+	mock := &mockSupervisor{
+		peekResult: &supervisor.PeekResult{
+			Status:             "active",
+			Blurb:              "knows the peek path",
+			Liveness:           "running",
+			InTurn:             true,
+			ProcessAlive:       &alive,
+			SubprocessAlive:    true,
+			EventbusSubscribed: true,
+			EventbusSubCount:   3,
+		},
+	}
+	srv := New(mock)
+	out, err := srv.toolPeek(context.Background(), json.RawMessage(`{"agent":"ratz"}`))
+	if err != nil {
+		t.Fatalf("toolPeek: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(out), &m); err != nil {
+		t.Fatalf("unmarshal peek: %v\n%s", err, out)
+	}
+	for _, k := range []string{"process_alive", "subprocess_alive", "eventbus_subscribed", "eventbus_sub_count", "blurb"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("peek output missing internal field %q\n%s", k, out)
+		}
 	}
 }
 

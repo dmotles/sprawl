@@ -448,6 +448,53 @@ func (s *Server) toolSpawn(ctx context.Context, args json.RawMessage) (string, e
 	return result, nil
 }
 
+// statusView is the trimmed, operator-facing projection of supervisor.AgentInfo
+// emitted by the status tool (QUM-899). The blurb is the headline; the internal
+// debugging fields (process_alive, eventbus_*) are dropped (they remain
+// available via peek) and subprocess_alive is collapsed into the single
+// liveness token. last_report_message is retained but demoted below the blurb.
+// Field order here is the emitted JSON order.
+type statusView struct {
+	Name               string    `json:"name"`
+	Type               string    `json:"type"`
+	Family             string    `json:"family"`
+	Parent             string    `json:"parent"`
+	TreePath           string    `json:"tree_path,omitempty"`
+	Status             string    `json:"status"`
+	Liveness           string    `json:"liveness"`
+	Blurb              string    `json:"blurb,omitempty"`
+	Branch             string    `json:"branch"`
+	InTurn             bool      `json:"in_turn"`
+	LastActivityAt     time.Time `json:"last_activity_at,omitempty"`
+	TotalCostUsd       float64   `json:"total_cost_usd,omitempty"`
+	Subagent           bool      `json:"subagent,omitempty"`
+	SharedWorktreeWith string    `json:"shared_worktree_with,omitempty"`
+	// Demoted secondary fields.
+	LastReportState   string `json:"last_report_state,omitempty"`
+	LastReportMessage string `json:"last_report_message,omitempty"`
+}
+
+func toStatusView(a supervisor.AgentInfo) statusView {
+	return statusView{
+		Name:               a.Name,
+		Type:               a.Type,
+		Family:             a.Family,
+		Parent:             a.Parent,
+		TreePath:           a.TreePath,
+		Status:             a.Status,
+		Liveness:           a.Liveness,
+		Blurb:              a.Blurb,
+		Branch:             a.Branch,
+		InTurn:             a.InTurn,
+		LastActivityAt:     a.LastActivityAt,
+		TotalCostUsd:       a.TotalCostUsd,
+		Subagent:           a.Subagent,
+		SharedWorktreeWith: a.SharedWorktreeWith,
+		LastReportState:    a.LastReportState,
+		LastReportMessage:  a.LastReportMessage,
+	}
+}
+
 func (s *Server) toolStatus(ctx context.Context) (string, error) {
 	agents, err := s.sup.Status(ctx)
 	if err != nil {
@@ -456,7 +503,11 @@ func (s *Server) toolStatus(ctx context.Context) (string, error) {
 	if len(agents) == 0 {
 		return "No agents currently registered.", nil
 	}
-	data, _ := json.MarshalIndent(agents, "", "  ")
+	views := make([]statusView, 0, len(agents))
+	for _, a := range agents {
+		views = append(views, toStatusView(a))
+	}
+	data, _ := json.MarshalIndent(views, "", "  ")
 	return string(data), nil
 }
 

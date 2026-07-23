@@ -3,8 +3,9 @@
 #
 # Spec: docs/research/qum-615-agent-liveness-spec-2026-05-26.md §4. Drives the
 # AgentLiveness transition classes against the observable projections (disk
-# Status + process_alive via the `mcp__sprawl__status` tool). Phases map 1:1
-# onto spec §2.2 / §4.
+# Status + process_alive via the `mcp__sprawl__peek` tool — QUM-899 moved
+# process_alive off the status payload into peek). Phases map 1:1 onto spec
+# §2.2 / §4.
 #
 # Build tag: needs_build_tags=sprawl_test so the build-tag-gated
 # `mcp__sprawl___test_induce_wedge` MCP tool is compiled in (same as
@@ -27,10 +28,11 @@
 #   P4  re-fault re-fires banner (QUM-602), P7 stop→Stopped (T7/T8),
 #   P8  suspend/resume (T12/T13/T14), P9 resume-failed (T15).
 #
-# process_alive is not persisted to disk — it is computed in Real.Status and
-# surfaced via the `mcp__sprawl__status` MCP tool. To read it deterministically
-# we prompt weave to call status and echo a single-line sentinel keyed by a
-# per-phase token (so stale scrollback from an earlier phase can't false-match).
+# process_alive is not persisted to disk — it is computed in Real.Peek and
+# surfaced via the `mcp__sprawl__peek` MCP tool (QUM-899). To read it
+# deterministically we prompt weave to call peek and echo a single-line sentinel
+# keyed by a per-phase token (so stale scrollback from an earlier phase can't
+# false-match).
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1 needs_jq=1 needs_build_tags=sprawl_test"
@@ -442,7 +444,9 @@ test_run() {
 # value. TOKEN must be unique per call so stale scrollback can't false-match.
 liveness_assert_process_alive() {
     local session="$1" child="$2" token="$3" expected="$4"
-    local prompt="Call mcp__sprawl__status. In the JSON result, find the agent whose name is '$child' and read its process_alive field. Then reply with EXACTLY one line and nothing else: '${token} process_alive=<value>' where <value> is true, false, or null — exactly as it appears in the JSON for that agent."
+    # QUM-899: process_alive was moved off the status payload and is now exposed
+    # via the peek tool (status keeps only the collapsed `liveness` token).
+    local prompt="Call mcp__sprawl__peek with agent='$child'. In the JSON result, read the process_alive field. Then reply with EXACTLY one line and nothing else: '${token} process_alive=<value>' where <value> is true, false, or null — exactly as it appears in the JSON."
     _stmux send-keys -t "$session" "$prompt"
     sleep 0.5
     _stmux send-keys -t "$session" Enter
