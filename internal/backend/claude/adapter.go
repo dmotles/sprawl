@@ -13,6 +13,7 @@ import (
 
 	backend "github.com/dmotles/sprawl/internal/backend"
 	claudecli "github.com/dmotles/sprawl/internal/claude"
+	"github.com/dmotles/sprawl/internal/procutil"
 	"github.com/dmotles/sprawl/internal/protocol"
 )
 
@@ -241,14 +242,10 @@ func terminateProcess(p *os.Process, exited <-chan struct{}, grace time.Duration
 		return nil
 	case <-timer.C:
 	}
-	// Escalate.
-	if err := p.Kill(); err != nil {
-		if errors.Is(err, os.ErrProcessDone) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	// Escalate. QUM-896: reap the whole process group (negative-PID) so
+	// claude's descendants (MCP servers, bash-tool subshells) go with it,
+	// not just the leader PID. KillProcessGroup swallows ESRCH/already-gone.
+	return procutil.KillProcessGroup(p)
 }
 
 func buildEnv(spec backend.SessionSpec) []string {
@@ -268,20 +265,35 @@ func buildEnv(spec backend.SessionSpec) []string {
 
 type realStarter struct{}
 
-func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
-	// QUM-612: Subprocess lifetime MUST outlive any request-scoped ctx. The
-	// QUM-606 bug class — where a short-lived MCP request ctx (e.g.
-	// `toolRecover`'s) SIGKILLed the freshly-spawned claude the moment the
-	// MCP call returned — flowed entirely through exec.CommandContext. By
-	// deriving context.Background() internally (and refusing a ctx parameter
-	// at the type boundary) we make the bug impossible to reintroduce.
-	// Teardown is owned by the returned ManagedTransport's Kill/Close path.
+// newStartCommand builds the *exec.Cmd that realStarter.Start launches.
+// Extracted as a seam (QUM-896) so tests can assert the SysProcAttr
+// parent-death fields without spawning a real subprocess.
+//
+// QUM-612: Subprocess lifetime MUST outlive any request-scoped ctx. The
+// QUM-606 bug class — where a short-lived MCP request ctx (e.g.
+// `toolRecover`'s) SIGKILLed the freshly-spawned claude the moment the
+// MCP call returned — flowed entirely through exec.CommandContext. By
+// deriving context.Background() internally (and refusing a ctx parameter
+// at the type boundary) we make the bug impossible to reintroduce.
+// Teardown is owned by the returned ManagedTransport's Kill/Close path.
+//
+// QUM-896: SetPdeathsig (Pdeathsig=SIGKILL + Setpgid=true) must be applied
+// before cmd.Start() so the child dies with its sprawl host and leads its
+// own process group for KillProcessGroup teardown. Restores the QUM-458
+// Layer-2 protection lost in refactor commit 6683edf.
+func newStartCommand(spec ExecSpec) *exec.Cmd {
 	cmd := exec.CommandContext(context.Background(), spec.Path, spec.Args...) //nolint:gosec // spec.Path/spec.Args are constructed from trusted session policy and LookPath/config
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
 	if spec.Stderr != nil {
 		cmd.Stderr = spec.Stderr
 	}
+	procutil.SetPdeathsig(cmd)
+	return cmd
+}
+
+func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
+	cmd := newStartCommand(spec)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -345,10 +357,9 @@ func (s *realStarter) Start(spec ExecSpec) (backend.ManagedTransport, error) {
 			return terminateProcess(proc, exited, grace)
 		},
 		kill: func() error {
-			if proc != nil {
-				return proc.Kill()
-			}
-			return nil
+			// QUM-896: reap claude's whole process group, not just the
+			// leader PID. KillProcessGroup no-ops on a nil process.
+			return procutil.KillProcessGroup(proc)
 		},
 		pid: pid,
 	}, nil
