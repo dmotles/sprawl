@@ -36,7 +36,8 @@ func TestApp_ToastSpawnMsg_AppearsInView(t *testing.T) {
 	}
 }
 
-func TestApp_CtrlT_DismissesAllToasts(t *testing.T) {
+// QUM-895: toast dismiss-all moved from Ctrl+T (now the tree hotkey) to Esc.
+func TestApp_Esc_DismissesAllToasts(t *testing.T) {
 	m := newTestAppModel(t)
 	app := applyResize(t, m)
 	app = sendMsg(t, app, ToastSpawnMsg{
@@ -46,15 +47,15 @@ func TestApp_CtrlT_DismissesAllToasts(t *testing.T) {
 		Toast: Toast{Text: "toast-BBB", DismissOn: UserOnlyDismiss()},
 	})
 
-	app = sendMsg(t, app, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	app = sendMsg(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
 
 	if !app.toasts.Empty() {
-		t.Errorf("Ctrl+T should clear all toasts; Toasts()=%d", len(app.toasts.Toasts()))
+		t.Errorf("Esc should clear all toasts; Toasts()=%d", len(app.toasts.Toasts()))
 	}
 	v := app.View()
 	stripped := ansi.Strip(v.Content)
 	if strings.Contains(stripped, "toast-AAA") || strings.Contains(stripped, "toast-BBB") {
-		t.Errorf("toasts remain in view after Ctrl+T; content:\n%s", v.Content)
+		t.Errorf("toasts remain in view after Esc; content:\n%s", v.Content)
 	}
 }
 
@@ -138,13 +139,13 @@ func TestApp_TwoToastsCoexistAndDismissIndependently(t *testing.T) {
 		t.Errorf("survivor-XYZ should still be present; got:\n%s", stripped)
 	}
 
-	app = sendMsg(t, app, tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	app = sendMsg(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
 	stripped = ansi.Strip(app.View().Content)
 	if strings.Contains(stripped, "survivor-XYZ") {
-		t.Errorf("Ctrl+T should have removed survivor-XYZ; got:\n%s", stripped)
+		t.Errorf("Esc should have removed survivor-XYZ; got:\n%s", stripped)
 	}
 	if !app.toasts.Empty() {
-		t.Errorf("toasts list should be empty after Ctrl+T; got %d", len(app.toasts.Toasts()))
+		t.Errorf("toasts list should be empty after Esc; got %d", len(app.toasts.Toasts()))
 	}
 }
 

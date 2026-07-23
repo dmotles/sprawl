@@ -387,6 +387,7 @@ func TestServer_ToolsList(t *testing.T) {
 		"messages_archive",
 		"messages_peek",
 		"ask_user_question",
+		"toast",
 	}
 	// QUM-606: under the sprawl_test build tag, `_test_induce_wedge`
 	// is appended by the inject seam. injectExpectedToolNames is empty

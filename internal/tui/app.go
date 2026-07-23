@@ -768,6 +768,20 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// QUM-895: Ctrl+T toggles the agent-tree modal (mnemonic: T = tree).
+		// Emits ToggleTreeMsg — the same message the /tree palette command
+		// sends — so the open-gate (anyOtherModalUpExceptTree) and the
+		// toggle-closed logic live in one place (the ToggleTreeMsg reducer).
+		// Placed ABOVE the showTree route-all block below so a second Ctrl+T
+		// reaches this handler and toggles an open tree closed, rather than
+		// being swallowed by the tree modal's own key routing. The
+		// higher-priority modal gates (confirm/help/error/question/usage)
+		// return above, so Ctrl+T can never open the tree over them.
+		// (Ctrl+S was rejected — terminal XOFF/flow-control swallows it.)
+		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 't' || msg.Code == 'T') {
+			return m, sendMsgCmd(ToggleTreeMsg{})
+		}
+
 		// QUM-733 5b: while the tree modal is up, all key events route to
 		// it. Placed after the higher-priority modal gates (confirm, error,
 		// palette, question, help, usage) so those always take precedence.
@@ -832,14 +846,18 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Ctrl+T: dismiss all toasts (QUM-649). Only consumes the keystroke
-		// when at least one toast is up — otherwise 't' falls through to the
-		// input panel so the user can type it literally.
-		if msg.Mod&tea.ModCtrl != 0 && (msg.Code == 't' || msg.Code == 'T') {
-			if !m.toasts.Empty() {
-				m.toasts.DismissAll()
-				return m, nil
-			}
+		// QUM-895: Esc clears all active toasts (ordering ii). Sits BELOW
+		// modal-dismiss (the modal route-all blocks above + the validate-popup
+		// Esc handler just above all return first when a modal is up, so a
+		// modal-dismiss Esc never reaches here and the toast survives) and
+		// ABOVE the queue-reload / turn-interrupt Esc handlers below. Only
+		// consumes the key when a toast is actually up, so with no toast Esc
+		// behaves byte-for-byte as before (QUM-649 moved from Ctrl+T, now the
+		// tree hotkey). A toast up during a running turn → first Esc clears the
+		// toast, second Esc interrupts.
+		if msg.Code == tea.KeyEscape && !m.toasts.Empty() {
+			m.toasts.DismissAll()
+			return m, nil
 		}
 
 		// Ctrl+V: toggle the validate-output popup between visible and

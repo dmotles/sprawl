@@ -270,6 +270,8 @@ func (s *Server) dispatchTool(ctx context.Context, name string, args json.RawMes
 		return s.toolMessagesPeek(ctx)
 	case "ask_user_question":
 		return s.toolAskUserQuestion(ctx, args)
+	case "toast":
+		return s.toolToast(ctx, args)
 	case "_test_sleep":
 		if !testToolsEnabled() {
 			return "", &unknownToolError{name: name}
@@ -314,6 +316,91 @@ func (s *Server) toolTestSleep(ctx context.Context, args json.RawMessage) (strin
 	case <-time.After(d):
 	}
 	return fmt.Sprintf("slept %s", time.Since(start).Round(time.Millisecond)), nil
+}
+
+// toast tuning constants (QUM-898).
+const (
+	toastTextMaxRunes      = 120 // single-line display cap; over-length is truncated
+	toastDefaultTimeoutSec = 5   // auto-dismiss default when timeout_secs omitted/<=0
+	toastMaxTimeoutSec     = 60  // upper clamp so an agent can't pin a near-permanent toast
+)
+
+// toastStyleFromSeverity maps a severity string to a tui.ToastStyle. The
+// second return is false for any unrecognized severity — the code choke point
+// that backstops the JSON-schema enum (QUM-898).
+func toastStyleFromSeverity(severity string) (tui.ToastStyle, bool) {
+	switch severity {
+	case "info":
+		return tui.ToastInfo, true
+	case "warning":
+		return tui.ToastWarning, true
+	case "error":
+		return tui.ToastError, true
+	default:
+		return 0, false
+	}
+}
+
+// toolToast dispatches the `toast` MCP tool (QUM-898). Any agent may call it
+// to surface a short, single-line toast in weave's live TUI. Delivery reuses
+// the MsgSender path the MCP call-indicators use (emitMsg → weave's
+// tea.Program), so a child agent's toast crosses the process boundary and
+// renders in weave's TUI rather than in the caller's own context. When no TUI
+// is attached (headless / tests without SetMsgSender) emitMsg no-ops and the
+// call still succeeds.
+//
+// Text is normalized to a single line and truncated to toastTextMaxRunes;
+// severity maps to a ToastStyle (invalid rejected); timeout_secs defaults to
+// toastDefaultTimeoutSec and is clamped to (0, toastMaxTimeoutSec]. This tool
+// only SPAWNS toasts — dismiss behavior is out of scope (QUM-895).
+func (s *Server) toolToast(_ context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Text       string `json:"text"`
+		Severity   string `json:"severity"`
+		TimeoutSec *int   `json:"timeout_secs"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", fmt.Errorf("invalid arguments: %w", err)
+	}
+
+	style, ok := toastStyleFromSeverity(p.Severity)
+	if !ok {
+		return "", fmt.Errorf("invalid severity %q: must be one of info, warning, error", p.Severity)
+	}
+
+	// Normalize to a single line: any run of whitespace (including embedded
+	// newlines/tabs) collapses to one space; leading/trailing trimmed. The
+	// toast renderer draws a fixed 3-line box and does no wrapping, so a raw
+	// newline would corrupt the overlay's line accounting.
+	text := strings.Join(strings.Fields(p.Text), " ")
+	if text == "" {
+		return "", fmt.Errorf("text must not be empty")
+	}
+	// Over-length text is truncated (not rejected), measured in runes so
+	// multibyte text isn't mangled. The ellipsis makes truncation visible and
+	// keeps the total at exactly the cap.
+	if r := []rune(text); len(r) > toastTextMaxRunes {
+		text = string(r[:toastTextMaxRunes-1]) + "…"
+	}
+
+	secs := toastDefaultTimeoutSec
+	if p.TimeoutSec != nil {
+		secs = *p.TimeoutSec
+	}
+	if secs <= 0 {
+		secs = toastDefaultTimeoutSec
+	}
+	if secs > toastMaxTimeoutSec {
+		secs = toastMaxTimeoutSec
+	}
+
+	s.emitMsg(tui.ToastSpawnMsg{Toast: tui.Toast{
+		Text:      text,
+		Style:     style,
+		DismissOn: tui.TimerDismiss(time.Duration(secs) * time.Second),
+	}})
+
+	return fmt.Sprintf("toast surfaced: %q (%s, %ds)", text, p.Severity, secs), nil
 }
 
 // weaveEngineerAdvisory is the non-blocking orchestration advisory appended

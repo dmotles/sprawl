@@ -32,7 +32,7 @@ func TestHelpModel_View_ContainsAllBindings(t *testing.T) {
 		"Cycle observed agent",
 		"Scroll output",
 		"Quit",
-		"Dismiss help",
+		"Dismiss modal",
 		// QUM-845: message-queueing shortcuts.
 		"Send all queued messages now (flush)",
 		"Recall queued messages into input",
@@ -69,6 +69,23 @@ func TestHelpModel_View_ContainsKeyLabels(t *testing.T) {
 		if !strings.Contains(view, key) {
 			t.Errorf("View() should contain key label %q, got:\n%s", key, view)
 		}
+	}
+}
+
+// QUM-895: Ctrl+T toggles the agent tree; Esc also clears toasts.
+func TestHelpModel_View_ContainsCtrlTAndEscToast(t *testing.T) {
+	m := newTestHelpModel(t)
+	m.SetSize(80, 24)
+	view := stripANSI(m.View())
+
+	if !strings.Contains(view, "Ctrl+T") {
+		t.Errorf("View() should contain the Ctrl+T key label, got:\n%s", view)
+	}
+	if !strings.Contains(view, "Toggle agent tree") {
+		t.Errorf("View() should describe Ctrl+T as toggling the agent tree, got:\n%s", view)
+	}
+	if !strings.Contains(view, "toast") {
+		t.Errorf("View() Esc line should mention clearing toasts, got:\n%s", view)
 	}
 }
 

@@ -383,14 +383,19 @@ func TestAppModel_TreeModal_EscDismissesWithoutSelection(t *testing.T) {
 	}
 }
 
-// QUM-733 5b: Ctrl+T must NOT open the tree modal — that binding stays on
-// toast dismiss-all (QUM-649).
-func TestAppModel_CtrlT_DoesNotOpenTreeModal(t *testing.T) {
+// QUM-895: Ctrl+T now opens the tree modal (emits ToggleTreeMsg, same as the
+// /tree palette command). Toast dismiss-all moved to Esc.
+func TestAppModel_CtrlT_OpensTreeModal(t *testing.T) {
 	app := readyApp(t)
-	u, _ := app.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
+	u, cmd := app.Update(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 	app = u.(AppModel)
-	if app.showTree {
-		t.Error("Ctrl+T must not open the tree modal (reserved for toast dismiss-all)")
+	if cmd == nil {
+		t.Fatal("Ctrl+T should emit a ToggleTreeMsg cmd")
+	}
+	u, _ = app.Update(cmd())
+	app = u.(AppModel)
+	if !app.showTree {
+		t.Error("Ctrl+T must open the tree modal")
 	}
 }
 

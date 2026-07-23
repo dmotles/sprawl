@@ -50,8 +50,7 @@ const (
 	// DismissCondition is keyed by a string ID and dismissed via
 	// ClearCondition.
 	DismissCondition
-	// DismissUserOnly persists until the user dismisses it (Ctrl+T clears
-	// all).
+	// DismissUserOnly persists until the user dismisses it (Esc clears all).
 	DismissUserOnly
 )
 
@@ -74,7 +73,7 @@ func ConditionDismiss(id string) DismissContract {
 }
 
 // UserOnlyDismiss returns a DismissContract that requires explicit user
-// dismissal (Ctrl+T DismissAll).
+// dismissal (Esc DismissAll).
 func UserOnlyDismiss() DismissContract {
 	return DismissContract{Kind: DismissUserOnly}
 }

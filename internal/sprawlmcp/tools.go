@@ -371,6 +371,29 @@ func baseToolDefinitions() []map[string]any {
 			},
 		},
 		{
+			"name":        "toast",
+			"description": "Surface a short, single-line toast in weave's live TUI. Callable by ANY agent — it's a heads-up channel to the operator's TUI, not weave-only. The toast renders in weave's TUI regardless of which agent called it (it does NOT appear in the calling agent's own context). Auto-dismisses after `timeout_secs` (default 5s). This only spawns the toast; there is no dismiss/acknowledge API.",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"text": map[string]any{
+						"type":        "string",
+						"description": "Single-line toast text. Newlines/whitespace runs are collapsed to single spaces; text longer than 120 characters is truncated with an ellipsis.",
+					},
+					"severity": map[string]any{
+						"type":        "string",
+						"description": "Toast style: info (neutral/accent), warning (amber), error (red).",
+						"enum":        []string{"info", "warning", "error"},
+					},
+					"timeout_secs": map[string]any{
+						"type":        "integer",
+						"description": "Seconds before the toast auto-dismisses. Optional; defaults to 5. Values <= 0 fall back to the default; clamped to a 60s maximum.",
+					},
+				},
+				"required": []string{"text", "severity"},
+			},
+		},
+		{
 			"name":        "kill",
 			"description": "Emergency stop an agent process. Preserves state and worktree for inspection.",
 			"inputSchema": map[string]any{

@@ -29,6 +29,7 @@ func (m *HelpModel) SetSize(w, h int) {
 func (m HelpModel) View() string {
 	bindings := [][2]string{
 		{"F1", "Toggle help"},
+		{"Ctrl+T", "Toggle agent tree"},
 		{"Ctrl+N / Ctrl+P", "Cycle observed agent"},
 		{"Ctrl+O", "Toggle expand tool-call inputs and outputs"},
 		{"Ctrl+V", "Toggle validate-output popup (while merge validate running)"},
@@ -45,7 +46,7 @@ func (m HelpModel) View() string {
 		{"Up / Down", "Navigate input history (or scroll output when input empty)"},
 		{"Ctrl+R", "Reverse-search input history"},
 		{"Esc (search)", "Cancel reverse search"},
-		{"Esc", "Dismiss help / clear queue / interrupt turn"},
+		{"Esc", "Dismiss modal / clear toasts / clear queue / interrupt turn"},
 	}
 
 	// Find max key width for alignment.
