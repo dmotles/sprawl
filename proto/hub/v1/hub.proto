@@ -82,6 +82,69 @@ message RevokeHostTokenRequest {
 // RevokeHostTokenResponse is intentionally empty.
 message RevokeHostTokenResponse {}
 
+// WireDirection is the transport direction of a captured wire-log frame,
+// carried verbatim from the QUM-902 envelope `dir` field: IN = host -> claude
+// stdin, OUT = claude stdout -> host.
+enum WireDirection {
+  WIRE_DIRECTION_UNSPECIFIED = 0;
+  WIRE_DIRECTION_IN = 1;
+  WIRE_DIRECTION_OUT = 2;
+}
+
+// WireFrameKind distinguishes a real captured DATA frame from a server-injected
+// keep-alive HEARTBEAT on the subscribe stream. Heartbeats carry no raw payload
+// and a zero seq; they exist only to hold the L7 connection open (QUM-871).
+enum WireFrameKind {
+  WIRE_FRAME_KIND_UNSPECIFIED = 0;
+  WIRE_FRAME_KIND_DATA = 1;
+  WIRE_FRAME_KIND_HEARTBEAT = 2;
+}
+
+// WireFrame is one seq'd wire-log entry. seq is the QUM-902 monotonic counter,
+// carried VERBATIM end to end and NEVER renumbered by the hub. raw is the
+// captured protocol frame exactly as written to the wire log.
+message WireFrame {
+  int64 seq = 1;
+  WireDirection direction = 2;
+  WireFrameKind kind = 3;
+  string raw = 4;
+  int64 ts_unix_ms = 5;
+}
+
+// PushWireLogRequest is the host->hub uplink: a batch of captured frames for one
+// (host_id, run_id, session_id). from_seq is the resume hint — the seq this
+// batch continues from, so a contiguous batch has frames[0].seq == from_seq + 1
+// and the hub can detect a gap. On a fresh run from_seq = 0.
+message PushWireLogRequest {
+  string host_id = 1;
+  string run_id = 2;
+  string session_id = 3;
+  repeated WireFrame frames = 4;
+  int64 from_seq = 5;
+}
+
+// PushWireLogResponse acks ingest. Intentionally minimal this slice; fields are
+// added additively (e.g. an accepted-through seq) as ingest gains meaning.
+message PushWireLogResponse {}
+
+// SubscribeWireLogRequest opens the browser->hub downlink for one instance's
+// wire log. from_seq = 0 => full replay from the beginning; on reconnect the
+// client passes the last seq it saw and the server resumes at from_seq + 1
+// (zero gaps, zero dupes), then live-tails with periodic heartbeat frames.
+message SubscribeWireLogRequest {
+  string host_id = 1;
+  string run_id = 2;
+  string session_id = 3;
+  int64 from_seq = 4;
+}
+
+// SubscribeWireLogResponse is one item on the server stream: exactly one frame
+// (DATA or HEARTBEAT). Wrapping the frame satisfies buf's response-naming rule
+// and leaves room for additive stream-level metadata later.
+message SubscribeWireLogResponse {
+  WireFrame frame = 1;
+}
+
 // HubService is the RPC surface for the hub. RegisterInstance/ListInstances are
 // the host<->hub registry RPCs; the CreateHostToken/ListHostTokens/
 // RevokeHostToken RPCs are browser-only (cookie-authenticated) token
@@ -92,4 +155,9 @@ service HubService {
   rpc CreateHostToken(CreateHostTokenRequest) returns (CreateHostTokenResponse) {}
   rpc ListHostTokens(ListHostTokensRequest) returns (ListHostTokensResponse) {}
   rpc RevokeHostToken(RevokeHostTokenRequest) returns (RevokeHostTokenResponse) {}
+  // PushWireLog is the host->hub uplink for batches of seq'd wire-log frames.
+  rpc PushWireLog(PushWireLogRequest) returns (PushWireLogResponse) {}
+  // SubscribeWireLog is the browser->hub server-stream downlink: full replay
+  // from from_seq then live-tail, with heartbeat frames on-stream.
+  rpc SubscribeWireLog(SubscribeWireLogRequest) returns (stream SubscribeWireLogResponse) {}
 }

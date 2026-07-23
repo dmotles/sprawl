@@ -12,7 +12,7 @@
 // gate in `make validate` (baseline: main HEAD) enforces this so an old host or
 // a stale browser tab keeps talking to a new hub.
 
-import { CreateHostTokenRequest, CreateHostTokenResponse, ListHostTokensRequest, ListHostTokensResponse, ListInstancesRequest, ListInstancesResponse, RegisterInstanceRequest, RegisterInstanceResponse, RevokeHostTokenRequest, RevokeHostTokenResponse } from "./hub_pb.js";
+import { CreateHostTokenRequest, CreateHostTokenResponse, ListHostTokensRequest, ListHostTokensResponse, ListInstancesRequest, ListInstancesResponse, PushWireLogRequest, PushWireLogResponse, RegisterInstanceRequest, RegisterInstanceResponse, RevokeHostTokenRequest, RevokeHostTokenResponse, SubscribeWireLogRequest, SubscribeWireLogResponse } from "./hub_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -70,6 +70,29 @@ export const HubService = {
       I: RevokeHostTokenRequest,
       O: RevokeHostTokenResponse,
       kind: MethodKind.Unary,
+    },
+    /**
+     * PushWireLog is the host->hub uplink for batches of seq'd wire-log frames.
+     *
+     * @generated from rpc hub.v1.HubService.PushWireLog
+     */
+    pushWireLog: {
+      name: "PushWireLog",
+      I: PushWireLogRequest,
+      O: PushWireLogResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * SubscribeWireLog is the browser->hub server-stream downlink: full replay
+     * from from_seq then live-tail, with heartbeat frames on-stream.
+     *
+     * @generated from rpc hub.v1.HubService.SubscribeWireLog
+     */
+    subscribeWireLog: {
+      name: "SubscribeWireLog",
+      I: SubscribeWireLogRequest,
+      O: SubscribeWireLogResponse,
+      kind: MethodKind.ServerStreaming,
     },
   }
 } as const;

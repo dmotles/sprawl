@@ -23,6 +23,12 @@ var startedAt = time.Now()
 // Server holds the hub's HTTP surface: the Connect HubService handlers (stubbed
 // this slice), health/readiness probes, and the gated /debug/state endpoint.
 type Server struct {
+	// The wire-log RPCs (PushWireLog/SubscribeWireLog) are defined in the proto
+	// contract (QUM-907) but not yet implemented; embedding the generated stub
+	// keeps *Server satisfying HubServiceHandler and returns CodeUnimplemented
+	// until the ingest/subscribe handlers land (QUM-908/909/910).
+	hubv1connect.UnimplementedHubServiceHandler
+
 	log    *slog.Logger
 	health *Health
 	debug  bool

@@ -56,6 +56,11 @@ const (
 	// HubServiceRevokeHostTokenProcedure is the fully-qualified name of the HubService's
 	// RevokeHostToken RPC.
 	HubServiceRevokeHostTokenProcedure = "/hub.v1.HubService/RevokeHostToken"
+	// HubServicePushWireLogProcedure is the fully-qualified name of the HubService's PushWireLog RPC.
+	HubServicePushWireLogProcedure = "/hub.v1.HubService/PushWireLog"
+	// HubServiceSubscribeWireLogProcedure is the fully-qualified name of the HubService's
+	// SubscribeWireLog RPC.
+	HubServiceSubscribeWireLogProcedure = "/hub.v1.HubService/SubscribeWireLog"
 )
 
 // HubServiceClient is a client for the hub.v1.HubService service.
@@ -65,6 +70,11 @@ type HubServiceClient interface {
 	CreateHostToken(context.Context, *connect.Request[v1.CreateHostTokenRequest]) (*connect.Response[v1.CreateHostTokenResponse], error)
 	ListHostTokens(context.Context, *connect.Request[v1.ListHostTokensRequest]) (*connect.Response[v1.ListHostTokensResponse], error)
 	RevokeHostToken(context.Context, *connect.Request[v1.RevokeHostTokenRequest]) (*connect.Response[v1.RevokeHostTokenResponse], error)
+	// PushWireLog is the host->hub uplink for batches of seq'd wire-log frames.
+	PushWireLog(context.Context, *connect.Request[v1.PushWireLogRequest]) (*connect.Response[v1.PushWireLogResponse], error)
+	// SubscribeWireLog is the browser->hub server-stream downlink: full replay
+	// from from_seq then live-tail, with heartbeat frames on-stream.
+	SubscribeWireLog(context.Context, *connect.Request[v1.SubscribeWireLogRequest]) (*connect.ServerStreamForClient[v1.SubscribeWireLogResponse], error)
 }
 
 // NewHubServiceClient constructs a client for the hub.v1.HubService service. By default, it uses
@@ -108,6 +118,18 @@ func NewHubServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...
 			connect.WithSchema(hubServiceMethods.ByName("RevokeHostToken")),
 			connect.WithClientOptions(opts...),
 		),
+		pushWireLog: connect.NewClient[v1.PushWireLogRequest, v1.PushWireLogResponse](
+			httpClient,
+			baseURL+HubServicePushWireLogProcedure,
+			connect.WithSchema(hubServiceMethods.ByName("PushWireLog")),
+			connect.WithClientOptions(opts...),
+		),
+		subscribeWireLog: connect.NewClient[v1.SubscribeWireLogRequest, v1.SubscribeWireLogResponse](
+			httpClient,
+			baseURL+HubServiceSubscribeWireLogProcedure,
+			connect.WithSchema(hubServiceMethods.ByName("SubscribeWireLog")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -118,6 +140,8 @@ type hubServiceClient struct {
 	createHostToken  *connect.Client[v1.CreateHostTokenRequest, v1.CreateHostTokenResponse]
 	listHostTokens   *connect.Client[v1.ListHostTokensRequest, v1.ListHostTokensResponse]
 	revokeHostToken  *connect.Client[v1.RevokeHostTokenRequest, v1.RevokeHostTokenResponse]
+	pushWireLog      *connect.Client[v1.PushWireLogRequest, v1.PushWireLogResponse]
+	subscribeWireLog *connect.Client[v1.SubscribeWireLogRequest, v1.SubscribeWireLogResponse]
 }
 
 // RegisterInstance calls hub.v1.HubService.RegisterInstance.
@@ -145,6 +169,16 @@ func (c *hubServiceClient) RevokeHostToken(ctx context.Context, req *connect.Req
 	return c.revokeHostToken.CallUnary(ctx, req)
 }
 
+// PushWireLog calls hub.v1.HubService.PushWireLog.
+func (c *hubServiceClient) PushWireLog(ctx context.Context, req *connect.Request[v1.PushWireLogRequest]) (*connect.Response[v1.PushWireLogResponse], error) {
+	return c.pushWireLog.CallUnary(ctx, req)
+}
+
+// SubscribeWireLog calls hub.v1.HubService.SubscribeWireLog.
+func (c *hubServiceClient) SubscribeWireLog(ctx context.Context, req *connect.Request[v1.SubscribeWireLogRequest]) (*connect.ServerStreamForClient[v1.SubscribeWireLogResponse], error) {
+	return c.subscribeWireLog.CallServerStream(ctx, req)
+}
+
 // HubServiceHandler is an implementation of the hub.v1.HubService service.
 type HubServiceHandler interface {
 	RegisterInstance(context.Context, *connect.Request[v1.RegisterInstanceRequest]) (*connect.Response[v1.RegisterInstanceResponse], error)
@@ -152,6 +186,11 @@ type HubServiceHandler interface {
 	CreateHostToken(context.Context, *connect.Request[v1.CreateHostTokenRequest]) (*connect.Response[v1.CreateHostTokenResponse], error)
 	ListHostTokens(context.Context, *connect.Request[v1.ListHostTokensRequest]) (*connect.Response[v1.ListHostTokensResponse], error)
 	RevokeHostToken(context.Context, *connect.Request[v1.RevokeHostTokenRequest]) (*connect.Response[v1.RevokeHostTokenResponse], error)
+	// PushWireLog is the host->hub uplink for batches of seq'd wire-log frames.
+	PushWireLog(context.Context, *connect.Request[v1.PushWireLogRequest]) (*connect.Response[v1.PushWireLogResponse], error)
+	// SubscribeWireLog is the browser->hub server-stream downlink: full replay
+	// from from_seq then live-tail, with heartbeat frames on-stream.
+	SubscribeWireLog(context.Context, *connect.Request[v1.SubscribeWireLogRequest], *connect.ServerStream[v1.SubscribeWireLogResponse]) error
 }
 
 // NewHubServiceHandler builds an HTTP handler from the service implementation. It returns the path
@@ -191,6 +230,18 @@ func NewHubServiceHandler(svc HubServiceHandler, opts ...connect.HandlerOption) 
 		connect.WithSchema(hubServiceMethods.ByName("RevokeHostToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	hubServicePushWireLogHandler := connect.NewUnaryHandler(
+		HubServicePushWireLogProcedure,
+		svc.PushWireLog,
+		connect.WithSchema(hubServiceMethods.ByName("PushWireLog")),
+		connect.WithHandlerOptions(opts...),
+	)
+	hubServiceSubscribeWireLogHandler := connect.NewServerStreamHandler(
+		HubServiceSubscribeWireLogProcedure,
+		svc.SubscribeWireLog,
+		connect.WithSchema(hubServiceMethods.ByName("SubscribeWireLog")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/hub.v1.HubService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case HubServiceRegisterInstanceProcedure:
@@ -203,6 +254,10 @@ func NewHubServiceHandler(svc HubServiceHandler, opts ...connect.HandlerOption) 
 			hubServiceListHostTokensHandler.ServeHTTP(w, r)
 		case HubServiceRevokeHostTokenProcedure:
 			hubServiceRevokeHostTokenHandler.ServeHTTP(w, r)
+		case HubServicePushWireLogProcedure:
+			hubServicePushWireLogHandler.ServeHTTP(w, r)
+		case HubServiceSubscribeWireLogProcedure:
+			hubServiceSubscribeWireLogHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -230,4 +285,12 @@ func (UnimplementedHubServiceHandler) ListHostTokens(context.Context, *connect.R
 
 func (UnimplementedHubServiceHandler) RevokeHostToken(context.Context, *connect.Request[v1.RevokeHostTokenRequest]) (*connect.Response[v1.RevokeHostTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("hub.v1.HubService.RevokeHostToken is not implemented"))
+}
+
+func (UnimplementedHubServiceHandler) PushWireLog(context.Context, *connect.Request[v1.PushWireLogRequest]) (*connect.Response[v1.PushWireLogResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("hub.v1.HubService.PushWireLog is not implemented"))
+}
+
+func (UnimplementedHubServiceHandler) SubscribeWireLog(context.Context, *connect.Request[v1.SubscribeWireLogRequest], *connect.ServerStream[v1.SubscribeWireLogResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("hub.v1.HubService.SubscribeWireLog is not implemented"))
 }

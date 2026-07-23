@@ -30,6 +30,110 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// WireDirection is the transport direction of a captured wire-log frame,
+// carried verbatim from the QUM-902 envelope `dir` field: IN = host -> claude
+// stdin, OUT = claude stdout -> host.
+type WireDirection int32
+
+const (
+	WireDirection_WIRE_DIRECTION_UNSPECIFIED WireDirection = 0
+	WireDirection_WIRE_DIRECTION_IN          WireDirection = 1
+	WireDirection_WIRE_DIRECTION_OUT         WireDirection = 2
+)
+
+// Enum value maps for WireDirection.
+var (
+	WireDirection_name = map[int32]string{
+		0: "WIRE_DIRECTION_UNSPECIFIED",
+		1: "WIRE_DIRECTION_IN",
+		2: "WIRE_DIRECTION_OUT",
+	}
+	WireDirection_value = map[string]int32{
+		"WIRE_DIRECTION_UNSPECIFIED": 0,
+		"WIRE_DIRECTION_IN":          1,
+		"WIRE_DIRECTION_OUT":         2,
+	}
+)
+
+func (x WireDirection) Enum() *WireDirection {
+	p := new(WireDirection)
+	*p = x
+	return p
+}
+
+func (x WireDirection) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WireDirection) Descriptor() protoreflect.EnumDescriptor {
+	return file_hub_v1_hub_proto_enumTypes[0].Descriptor()
+}
+
+func (WireDirection) Type() protoreflect.EnumType {
+	return &file_hub_v1_hub_proto_enumTypes[0]
+}
+
+func (x WireDirection) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WireDirection.Descriptor instead.
+func (WireDirection) EnumDescriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{0}
+}
+
+// WireFrameKind distinguishes a real captured DATA frame from a server-injected
+// keep-alive HEARTBEAT on the subscribe stream. Heartbeats carry no raw payload
+// and a zero seq; they exist only to hold the L7 connection open (QUM-871).
+type WireFrameKind int32
+
+const (
+	WireFrameKind_WIRE_FRAME_KIND_UNSPECIFIED WireFrameKind = 0
+	WireFrameKind_WIRE_FRAME_KIND_DATA        WireFrameKind = 1
+	WireFrameKind_WIRE_FRAME_KIND_HEARTBEAT   WireFrameKind = 2
+)
+
+// Enum value maps for WireFrameKind.
+var (
+	WireFrameKind_name = map[int32]string{
+		0: "WIRE_FRAME_KIND_UNSPECIFIED",
+		1: "WIRE_FRAME_KIND_DATA",
+		2: "WIRE_FRAME_KIND_HEARTBEAT",
+	}
+	WireFrameKind_value = map[string]int32{
+		"WIRE_FRAME_KIND_UNSPECIFIED": 0,
+		"WIRE_FRAME_KIND_DATA":        1,
+		"WIRE_FRAME_KIND_HEARTBEAT":   2,
+	}
+)
+
+func (x WireFrameKind) Enum() *WireFrameKind {
+	p := new(WireFrameKind)
+	*p = x
+	return p
+}
+
+func (x WireFrameKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (WireFrameKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_hub_v1_hub_proto_enumTypes[1].Descriptor()
+}
+
+func (WireFrameKind) Type() protoreflect.EnumType {
+	return &file_hub_v1_hub_proto_enumTypes[1]
+}
+
+func (x WireFrameKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use WireFrameKind.Descriptor instead.
+func (WireFrameKind) EnumDescriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{1}
+}
+
 // RegisterInstanceRequest announces a host to the hub. Idempotent upsert of the
 // instance row, keyed by host_id. Called on connect.
 type RegisterInstanceRequest struct {
@@ -633,6 +737,322 @@ func (*RevokeHostTokenResponse) Descriptor() ([]byte, []int) {
 	return file_hub_v1_hub_proto_rawDescGZIP(), []int{11}
 }
 
+// WireFrame is one seq'd wire-log entry. seq is the QUM-902 monotonic counter,
+// carried VERBATIM end to end and NEVER renumbered by the hub. raw is the
+// captured protocol frame exactly as written to the wire log.
+type WireFrame struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Seq           int64                  `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	Direction     WireDirection          `protobuf:"varint,2,opt,name=direction,proto3,enum=hub.v1.WireDirection" json:"direction,omitempty"`
+	Kind          WireFrameKind          `protobuf:"varint,3,opt,name=kind,proto3,enum=hub.v1.WireFrameKind" json:"kind,omitempty"`
+	Raw           string                 `protobuf:"bytes,4,opt,name=raw,proto3" json:"raw,omitempty"`
+	TsUnixMs      int64                  `protobuf:"varint,5,opt,name=ts_unix_ms,json=tsUnixMs,proto3" json:"ts_unix_ms,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WireFrame) Reset() {
+	*x = WireFrame{}
+	mi := &file_hub_v1_hub_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WireFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WireFrame) ProtoMessage() {}
+
+func (x *WireFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WireFrame.ProtoReflect.Descriptor instead.
+func (*WireFrame) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *WireFrame) GetSeq() int64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *WireFrame) GetDirection() WireDirection {
+	if x != nil {
+		return x.Direction
+	}
+	return WireDirection_WIRE_DIRECTION_UNSPECIFIED
+}
+
+func (x *WireFrame) GetKind() WireFrameKind {
+	if x != nil {
+		return x.Kind
+	}
+	return WireFrameKind_WIRE_FRAME_KIND_UNSPECIFIED
+}
+
+func (x *WireFrame) GetRaw() string {
+	if x != nil {
+		return x.Raw
+	}
+	return ""
+}
+
+func (x *WireFrame) GetTsUnixMs() int64 {
+	if x != nil {
+		return x.TsUnixMs
+	}
+	return 0
+}
+
+// PushWireLogRequest is the host->hub uplink: a batch of captured frames for one
+// (host_id, run_id, session_id). from_seq is the resume hint — the seq this
+// batch continues from, so a contiguous batch has frames[0].seq == from_seq + 1
+// and the hub can detect a gap. On a fresh run from_seq = 0.
+type PushWireLogRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HostId        string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	SessionId     string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Frames        []*WireFrame           `protobuf:"bytes,4,rep,name=frames,proto3" json:"frames,omitempty"`
+	FromSeq       int64                  `protobuf:"varint,5,opt,name=from_seq,json=fromSeq,proto3" json:"from_seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PushWireLogRequest) Reset() {
+	*x = PushWireLogRequest{}
+	mi := &file_hub_v1_hub_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PushWireLogRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PushWireLogRequest) ProtoMessage() {}
+
+func (x *PushWireLogRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PushWireLogRequest.ProtoReflect.Descriptor instead.
+func (*PushWireLogRequest) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *PushWireLogRequest) GetHostId() string {
+	if x != nil {
+		return x.HostId
+	}
+	return ""
+}
+
+func (x *PushWireLogRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *PushWireLogRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *PushWireLogRequest) GetFrames() []*WireFrame {
+	if x != nil {
+		return x.Frames
+	}
+	return nil
+}
+
+func (x *PushWireLogRequest) GetFromSeq() int64 {
+	if x != nil {
+		return x.FromSeq
+	}
+	return 0
+}
+
+// PushWireLogResponse acks ingest. Intentionally minimal this slice; fields are
+// added additively (e.g. an accepted-through seq) as ingest gains meaning.
+type PushWireLogResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PushWireLogResponse) Reset() {
+	*x = PushWireLogResponse{}
+	mi := &file_hub_v1_hub_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PushWireLogResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PushWireLogResponse) ProtoMessage() {}
+
+func (x *PushWireLogResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PushWireLogResponse.ProtoReflect.Descriptor instead.
+func (*PushWireLogResponse) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{14}
+}
+
+// SubscribeWireLogRequest opens the browser->hub downlink for one instance's
+// wire log. from_seq = 0 => full replay from the beginning; on reconnect the
+// client passes the last seq it saw and the server resumes at from_seq + 1
+// (zero gaps, zero dupes), then live-tails with periodic heartbeat frames.
+type SubscribeWireLogRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HostId        string                 `protobuf:"bytes,1,opt,name=host_id,json=hostId,proto3" json:"host_id,omitempty"`
+	RunId         string                 `protobuf:"bytes,2,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	SessionId     string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	FromSeq       int64                  `protobuf:"varint,4,opt,name=from_seq,json=fromSeq,proto3" json:"from_seq,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeWireLogRequest) Reset() {
+	*x = SubscribeWireLogRequest{}
+	mi := &file_hub_v1_hub_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeWireLogRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeWireLogRequest) ProtoMessage() {}
+
+func (x *SubscribeWireLogRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeWireLogRequest.ProtoReflect.Descriptor instead.
+func (*SubscribeWireLogRequest) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *SubscribeWireLogRequest) GetHostId() string {
+	if x != nil {
+		return x.HostId
+	}
+	return ""
+}
+
+func (x *SubscribeWireLogRequest) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *SubscribeWireLogRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *SubscribeWireLogRequest) GetFromSeq() int64 {
+	if x != nil {
+		return x.FromSeq
+	}
+	return 0
+}
+
+// SubscribeWireLogResponse is one item on the server stream: exactly one frame
+// (DATA or HEARTBEAT). Wrapping the frame satisfies buf's response-naming rule
+// and leaves room for additive stream-level metadata later.
+type SubscribeWireLogResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Frame         *WireFrame             `protobuf:"bytes,1,opt,name=frame,proto3" json:"frame,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SubscribeWireLogResponse) Reset() {
+	*x = SubscribeWireLogResponse{}
+	mi := &file_hub_v1_hub_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SubscribeWireLogResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SubscribeWireLogResponse) ProtoMessage() {}
+
+func (x *SubscribeWireLogResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_hub_v1_hub_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SubscribeWireLogResponse.ProtoReflect.Descriptor instead.
+func (*SubscribeWireLogResponse) Descriptor() ([]byte, []int) {
+	return file_hub_v1_hub_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *SubscribeWireLogResponse) GetFrame() *WireFrame {
+	if x != nil {
+		return x.Frame
+	}
+	return nil
+}
+
 var File_hub_v1_hub_proto protoreflect.FileDescriptor
 
 const file_hub_v1_hub_proto_rawDesc = "" +
@@ -670,14 +1090,47 @@ const file_hub_v1_hub_proto_rawDesc = "" +
 	"\x06tokens\x18\x01 \x03(\v2\x11.hub.v1.HostTokenR\x06tokens\"3\n" +
 	"\x16RevokeHostTokenRequest\x12\x19\n" +
 	"\btoken_id\x18\x01 \x01(\tR\atokenId\"\x19\n" +
-	"\x17RevokeHostTokenResponse2\xb4\x03\n" +
+	"\x17RevokeHostTokenResponse\"\xad\x01\n" +
+	"\tWireFrame\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x03R\x03seq\x123\n" +
+	"\tdirection\x18\x02 \x01(\x0e2\x15.hub.v1.WireDirectionR\tdirection\x12)\n" +
+	"\x04kind\x18\x03 \x01(\x0e2\x15.hub.v1.WireFrameKindR\x04kind\x12\x10\n" +
+	"\x03raw\x18\x04 \x01(\tR\x03raw\x12\x1c\n" +
+	"\n" +
+	"ts_unix_ms\x18\x05 \x01(\x03R\btsUnixMs\"\xa9\x01\n" +
+	"\x12PushWireLogRequest\x12\x17\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\x12)\n" +
+	"\x06frames\x18\x04 \x03(\v2\x11.hub.v1.WireFrameR\x06frames\x12\x19\n" +
+	"\bfrom_seq\x18\x05 \x01(\x03R\afromSeq\"\x15\n" +
+	"\x13PushWireLogResponse\"\x83\x01\n" +
+	"\x17SubscribeWireLogRequest\x12\x17\n" +
+	"\ahost_id\x18\x01 \x01(\tR\x06hostId\x12\x15\n" +
+	"\x06run_id\x18\x02 \x01(\tR\x05runId\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\x12\x19\n" +
+	"\bfrom_seq\x18\x04 \x01(\x03R\afromSeq\"C\n" +
+	"\x18SubscribeWireLogResponse\x12'\n" +
+	"\x05frame\x18\x01 \x01(\v2\x11.hub.v1.WireFrameR\x05frame*^\n" +
+	"\rWireDirection\x12\x1e\n" +
+	"\x1aWIRE_DIRECTION_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11WIRE_DIRECTION_IN\x10\x01\x12\x16\n" +
+	"\x12WIRE_DIRECTION_OUT\x10\x02*i\n" +
+	"\rWireFrameKind\x12\x1f\n" +
+	"\x1bWIRE_FRAME_KIND_UNSPECIFIED\x10\x00\x12\x18\n" +
+	"\x14WIRE_FRAME_KIND_DATA\x10\x01\x12\x1d\n" +
+	"\x19WIRE_FRAME_KIND_HEARTBEAT\x10\x022\xd9\x04\n" +
 	"\n" +
 	"HubService\x12W\n" +
 	"\x10RegisterInstance\x12\x1f.hub.v1.RegisterInstanceRequest\x1a .hub.v1.RegisterInstanceResponse\"\x00\x12N\n" +
 	"\rListInstances\x12\x1c.hub.v1.ListInstancesRequest\x1a\x1d.hub.v1.ListInstancesResponse\"\x00\x12T\n" +
 	"\x0fCreateHostToken\x12\x1e.hub.v1.CreateHostTokenRequest\x1a\x1f.hub.v1.CreateHostTokenResponse\"\x00\x12Q\n" +
 	"\x0eListHostTokens\x12\x1d.hub.v1.ListHostTokensRequest\x1a\x1e.hub.v1.ListHostTokensResponse\"\x00\x12T\n" +
-	"\x0fRevokeHostToken\x12\x1e.hub.v1.RevokeHostTokenRequest\x1a\x1f.hub.v1.RevokeHostTokenResponse\"\x00B9Z7github.com/dmotles/sprawl/internal/hub/gen/hub/v1;hubv1b\x06proto3"
+	"\x0fRevokeHostToken\x12\x1e.hub.v1.RevokeHostTokenRequest\x1a\x1f.hub.v1.RevokeHostTokenResponse\"\x00\x12H\n" +
+	"\vPushWireLog\x12\x1a.hub.v1.PushWireLogRequest\x1a\x1b.hub.v1.PushWireLogResponse\"\x00\x12Y\n" +
+	"\x10SubscribeWireLog\x12\x1f.hub.v1.SubscribeWireLogRequest\x1a .hub.v1.SubscribeWireLogResponse\"\x000\x01B9Z7github.com/dmotles/sprawl/internal/hub/gen/hub/v1;hubv1b\x06proto3"
 
 var (
 	file_hub_v1_hub_proto_rawDescOnce sync.Once
@@ -691,39 +1144,55 @@ func file_hub_v1_hub_proto_rawDescGZIP() []byte {
 	return file_hub_v1_hub_proto_rawDescData
 }
 
-var file_hub_v1_hub_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_hub_v1_hub_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_hub_v1_hub_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_hub_v1_hub_proto_goTypes = []any{
-	(*RegisterInstanceRequest)(nil),  // 0: hub.v1.RegisterInstanceRequest
-	(*RegisterInstanceResponse)(nil), // 1: hub.v1.RegisterInstanceResponse
-	(*ListInstancesRequest)(nil),     // 2: hub.v1.ListInstancesRequest
-	(*Instance)(nil),                 // 3: hub.v1.Instance
-	(*ListInstancesResponse)(nil),    // 4: hub.v1.ListInstancesResponse
-	(*CreateHostTokenRequest)(nil),   // 5: hub.v1.CreateHostTokenRequest
-	(*CreateHostTokenResponse)(nil),  // 6: hub.v1.CreateHostTokenResponse
-	(*ListHostTokensRequest)(nil),    // 7: hub.v1.ListHostTokensRequest
-	(*HostToken)(nil),                // 8: hub.v1.HostToken
-	(*ListHostTokensResponse)(nil),   // 9: hub.v1.ListHostTokensResponse
-	(*RevokeHostTokenRequest)(nil),   // 10: hub.v1.RevokeHostTokenRequest
-	(*RevokeHostTokenResponse)(nil),  // 11: hub.v1.RevokeHostTokenResponse
+	(WireDirection)(0),               // 0: hub.v1.WireDirection
+	(WireFrameKind)(0),               // 1: hub.v1.WireFrameKind
+	(*RegisterInstanceRequest)(nil),  // 2: hub.v1.RegisterInstanceRequest
+	(*RegisterInstanceResponse)(nil), // 3: hub.v1.RegisterInstanceResponse
+	(*ListInstancesRequest)(nil),     // 4: hub.v1.ListInstancesRequest
+	(*Instance)(nil),                 // 5: hub.v1.Instance
+	(*ListInstancesResponse)(nil),    // 6: hub.v1.ListInstancesResponse
+	(*CreateHostTokenRequest)(nil),   // 7: hub.v1.CreateHostTokenRequest
+	(*CreateHostTokenResponse)(nil),  // 8: hub.v1.CreateHostTokenResponse
+	(*ListHostTokensRequest)(nil),    // 9: hub.v1.ListHostTokensRequest
+	(*HostToken)(nil),                // 10: hub.v1.HostToken
+	(*ListHostTokensResponse)(nil),   // 11: hub.v1.ListHostTokensResponse
+	(*RevokeHostTokenRequest)(nil),   // 12: hub.v1.RevokeHostTokenRequest
+	(*RevokeHostTokenResponse)(nil),  // 13: hub.v1.RevokeHostTokenResponse
+	(*WireFrame)(nil),                // 14: hub.v1.WireFrame
+	(*PushWireLogRequest)(nil),       // 15: hub.v1.PushWireLogRequest
+	(*PushWireLogResponse)(nil),      // 16: hub.v1.PushWireLogResponse
+	(*SubscribeWireLogRequest)(nil),  // 17: hub.v1.SubscribeWireLogRequest
+	(*SubscribeWireLogResponse)(nil), // 18: hub.v1.SubscribeWireLogResponse
 }
 var file_hub_v1_hub_proto_depIdxs = []int32{
-	3,  // 0: hub.v1.ListInstancesResponse.instances:type_name -> hub.v1.Instance
-	8,  // 1: hub.v1.ListHostTokensResponse.tokens:type_name -> hub.v1.HostToken
-	0,  // 2: hub.v1.HubService.RegisterInstance:input_type -> hub.v1.RegisterInstanceRequest
-	2,  // 3: hub.v1.HubService.ListInstances:input_type -> hub.v1.ListInstancesRequest
-	5,  // 4: hub.v1.HubService.CreateHostToken:input_type -> hub.v1.CreateHostTokenRequest
-	7,  // 5: hub.v1.HubService.ListHostTokens:input_type -> hub.v1.ListHostTokensRequest
-	10, // 6: hub.v1.HubService.RevokeHostToken:input_type -> hub.v1.RevokeHostTokenRequest
-	1,  // 7: hub.v1.HubService.RegisterInstance:output_type -> hub.v1.RegisterInstanceResponse
-	4,  // 8: hub.v1.HubService.ListInstances:output_type -> hub.v1.ListInstancesResponse
-	6,  // 9: hub.v1.HubService.CreateHostToken:output_type -> hub.v1.CreateHostTokenResponse
-	9,  // 10: hub.v1.HubService.ListHostTokens:output_type -> hub.v1.ListHostTokensResponse
-	11, // 11: hub.v1.HubService.RevokeHostToken:output_type -> hub.v1.RevokeHostTokenResponse
-	7,  // [7:12] is the sub-list for method output_type
-	2,  // [2:7] is the sub-list for method input_type
-	2,  // [2:2] is the sub-list for extension type_name
-	2,  // [2:2] is the sub-list for extension extendee
-	0,  // [0:2] is the sub-list for field type_name
+	5,  // 0: hub.v1.ListInstancesResponse.instances:type_name -> hub.v1.Instance
+	10, // 1: hub.v1.ListHostTokensResponse.tokens:type_name -> hub.v1.HostToken
+	0,  // 2: hub.v1.WireFrame.direction:type_name -> hub.v1.WireDirection
+	1,  // 3: hub.v1.WireFrame.kind:type_name -> hub.v1.WireFrameKind
+	14, // 4: hub.v1.PushWireLogRequest.frames:type_name -> hub.v1.WireFrame
+	14, // 5: hub.v1.SubscribeWireLogResponse.frame:type_name -> hub.v1.WireFrame
+	2,  // 6: hub.v1.HubService.RegisterInstance:input_type -> hub.v1.RegisterInstanceRequest
+	4,  // 7: hub.v1.HubService.ListInstances:input_type -> hub.v1.ListInstancesRequest
+	7,  // 8: hub.v1.HubService.CreateHostToken:input_type -> hub.v1.CreateHostTokenRequest
+	9,  // 9: hub.v1.HubService.ListHostTokens:input_type -> hub.v1.ListHostTokensRequest
+	12, // 10: hub.v1.HubService.RevokeHostToken:input_type -> hub.v1.RevokeHostTokenRequest
+	15, // 11: hub.v1.HubService.PushWireLog:input_type -> hub.v1.PushWireLogRequest
+	17, // 12: hub.v1.HubService.SubscribeWireLog:input_type -> hub.v1.SubscribeWireLogRequest
+	3,  // 13: hub.v1.HubService.RegisterInstance:output_type -> hub.v1.RegisterInstanceResponse
+	6,  // 14: hub.v1.HubService.ListInstances:output_type -> hub.v1.ListInstancesResponse
+	8,  // 15: hub.v1.HubService.CreateHostToken:output_type -> hub.v1.CreateHostTokenResponse
+	11, // 16: hub.v1.HubService.ListHostTokens:output_type -> hub.v1.ListHostTokensResponse
+	13, // 17: hub.v1.HubService.RevokeHostToken:output_type -> hub.v1.RevokeHostTokenResponse
+	16, // 18: hub.v1.HubService.PushWireLog:output_type -> hub.v1.PushWireLogResponse
+	18, // 19: hub.v1.HubService.SubscribeWireLog:output_type -> hub.v1.SubscribeWireLogResponse
+	13, // [13:20] is the sub-list for method output_type
+	6,  // [6:13] is the sub-list for method input_type
+	6,  // [6:6] is the sub-list for extension type_name
+	6,  // [6:6] is the sub-list for extension extendee
+	0,  // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_hub_v1_hub_proto_init() }
@@ -736,13 +1205,14 @@ func file_hub_v1_hub_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_hub_v1_hub_proto_rawDesc), len(file_hub_v1_hub_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   12,
+			NumEnums:      2,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_hub_v1_hub_proto_goTypes,
 		DependencyIndexes: file_hub_v1_hub_proto_depIdxs,
+		EnumInfos:         file_hub_v1_hub_proto_enumTypes,
 		MessageInfos:      file_hub_v1_hub_proto_msgTypes,
 	}.Build()
 	File_hub_v1_hub_proto = out.File

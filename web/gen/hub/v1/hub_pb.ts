@@ -16,6 +16,66 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
 
 /**
+ * WireDirection is the transport direction of a captured wire-log frame,
+ * carried verbatim from the QUM-902 envelope `dir` field: IN = host -> claude
+ * stdin, OUT = claude stdout -> host.
+ *
+ * @generated from enum hub.v1.WireDirection
+ */
+export enum WireDirection {
+  /**
+   * @generated from enum value: WIRE_DIRECTION_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: WIRE_DIRECTION_IN = 1;
+   */
+  IN = 1,
+
+  /**
+   * @generated from enum value: WIRE_DIRECTION_OUT = 2;
+   */
+  OUT = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(WireDirection)
+proto3.util.setEnumType(WireDirection, "hub.v1.WireDirection", [
+  { no: 0, name: "WIRE_DIRECTION_UNSPECIFIED" },
+  { no: 1, name: "WIRE_DIRECTION_IN" },
+  { no: 2, name: "WIRE_DIRECTION_OUT" },
+]);
+
+/**
+ * WireFrameKind distinguishes a real captured DATA frame from a server-injected
+ * keep-alive HEARTBEAT on the subscribe stream. Heartbeats carry no raw payload
+ * and a zero seq; they exist only to hold the L7 connection open (QUM-871).
+ *
+ * @generated from enum hub.v1.WireFrameKind
+ */
+export enum WireFrameKind {
+  /**
+   * @generated from enum value: WIRE_FRAME_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: WIRE_FRAME_KIND_DATA = 1;
+   */
+  DATA = 1,
+
+  /**
+   * @generated from enum value: WIRE_FRAME_KIND_HEARTBEAT = 2;
+   */
+  HEARTBEAT = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(WireFrameKind)
+proto3.util.setEnumType(WireFrameKind, "hub.v1.WireFrameKind", [
+  { no: 0, name: "WIRE_FRAME_KIND_UNSPECIFIED" },
+  { no: 1, name: "WIRE_FRAME_KIND_DATA" },
+  { no: 2, name: "WIRE_FRAME_KIND_HEARTBEAT" },
+]);
+
+/**
  * RegisterInstanceRequest announces a host to the hub. Idempotent upsert of the
  * instance row, keyed by host_id. Called on connect.
  *
@@ -534,6 +594,272 @@ export class RevokeHostTokenResponse extends Message<RevokeHostTokenResponse> {
 
   static equals(a: RevokeHostTokenResponse | PlainMessage<RevokeHostTokenResponse> | undefined, b: RevokeHostTokenResponse | PlainMessage<RevokeHostTokenResponse> | undefined): boolean {
     return proto3.util.equals(RevokeHostTokenResponse, a, b);
+  }
+}
+
+/**
+ * WireFrame is one seq'd wire-log entry. seq is the QUM-902 monotonic counter,
+ * carried VERBATIM end to end and NEVER renumbered by the hub. raw is the
+ * captured protocol frame exactly as written to the wire log.
+ *
+ * @generated from message hub.v1.WireFrame
+ */
+export class WireFrame extends Message<WireFrame> {
+  /**
+   * @generated from field: int64 seq = 1;
+   */
+  seq = protoInt64.zero;
+
+  /**
+   * @generated from field: hub.v1.WireDirection direction = 2;
+   */
+  direction = WireDirection.UNSPECIFIED;
+
+  /**
+   * @generated from field: hub.v1.WireFrameKind kind = 3;
+   */
+  kind = WireFrameKind.UNSPECIFIED;
+
+  /**
+   * @generated from field: string raw = 4;
+   */
+  raw = "";
+
+  /**
+   * @generated from field: int64 ts_unix_ms = 5;
+   */
+  tsUnixMs = protoInt64.zero;
+
+  constructor(data?: PartialMessage<WireFrame>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.WireFrame";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "seq", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 2, name: "direction", kind: "enum", T: proto3.getEnumType(WireDirection) },
+    { no: 3, name: "kind", kind: "enum", T: proto3.getEnumType(WireFrameKind) },
+    { no: 4, name: "raw", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "ts_unix_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WireFrame {
+    return new WireFrame().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): WireFrame {
+    return new WireFrame().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): WireFrame {
+    return new WireFrame().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: WireFrame | PlainMessage<WireFrame> | undefined, b: WireFrame | PlainMessage<WireFrame> | undefined): boolean {
+    return proto3.util.equals(WireFrame, a, b);
+  }
+}
+
+/**
+ * PushWireLogRequest is the host->hub uplink: a batch of captured frames for one
+ * (host_id, run_id, session_id). from_seq is the resume hint — the seq this
+ * batch continues from, so a contiguous batch has frames[0].seq == from_seq + 1
+ * and the hub can detect a gap. On a fresh run from_seq = 0.
+ *
+ * @generated from message hub.v1.PushWireLogRequest
+ */
+export class PushWireLogRequest extends Message<PushWireLogRequest> {
+  /**
+   * @generated from field: string host_id = 1;
+   */
+  hostId = "";
+
+  /**
+   * @generated from field: string run_id = 2;
+   */
+  runId = "";
+
+  /**
+   * @generated from field: string session_id = 3;
+   */
+  sessionId = "";
+
+  /**
+   * @generated from field: repeated hub.v1.WireFrame frames = 4;
+   */
+  frames: WireFrame[] = [];
+
+  /**
+   * @generated from field: int64 from_seq = 5;
+   */
+  fromSeq = protoInt64.zero;
+
+  constructor(data?: PartialMessage<PushWireLogRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.PushWireLogRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "host_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "frames", kind: "message", T: WireFrame, repeated: true },
+    { no: 5, name: "from_seq", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PushWireLogRequest {
+    return new PushWireLogRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PushWireLogRequest {
+    return new PushWireLogRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PushWireLogRequest {
+    return new PushWireLogRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PushWireLogRequest | PlainMessage<PushWireLogRequest> | undefined, b: PushWireLogRequest | PlainMessage<PushWireLogRequest> | undefined): boolean {
+    return proto3.util.equals(PushWireLogRequest, a, b);
+  }
+}
+
+/**
+ * PushWireLogResponse acks ingest. Intentionally minimal this slice; fields are
+ * added additively (e.g. an accepted-through seq) as ingest gains meaning.
+ *
+ * @generated from message hub.v1.PushWireLogResponse
+ */
+export class PushWireLogResponse extends Message<PushWireLogResponse> {
+  constructor(data?: PartialMessage<PushWireLogResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.PushWireLogResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PushWireLogResponse {
+    return new PushWireLogResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PushWireLogResponse {
+    return new PushWireLogResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PushWireLogResponse {
+    return new PushWireLogResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PushWireLogResponse | PlainMessage<PushWireLogResponse> | undefined, b: PushWireLogResponse | PlainMessage<PushWireLogResponse> | undefined): boolean {
+    return proto3.util.equals(PushWireLogResponse, a, b);
+  }
+}
+
+/**
+ * SubscribeWireLogRequest opens the browser->hub downlink for one instance's
+ * wire log. from_seq = 0 => full replay from the beginning; on reconnect the
+ * client passes the last seq it saw and the server resumes at from_seq + 1
+ * (zero gaps, zero dupes), then live-tails with periodic heartbeat frames.
+ *
+ * @generated from message hub.v1.SubscribeWireLogRequest
+ */
+export class SubscribeWireLogRequest extends Message<SubscribeWireLogRequest> {
+  /**
+   * @generated from field: string host_id = 1;
+   */
+  hostId = "";
+
+  /**
+   * @generated from field: string run_id = 2;
+   */
+  runId = "";
+
+  /**
+   * @generated from field: string session_id = 3;
+   */
+  sessionId = "";
+
+  /**
+   * @generated from field: int64 from_seq = 4;
+   */
+  fromSeq = protoInt64.zero;
+
+  constructor(data?: PartialMessage<SubscribeWireLogRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.SubscribeWireLogRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "host_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "from_seq", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SubscribeWireLogRequest {
+    return new SubscribeWireLogRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SubscribeWireLogRequest {
+    return new SubscribeWireLogRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SubscribeWireLogRequest {
+    return new SubscribeWireLogRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SubscribeWireLogRequest | PlainMessage<SubscribeWireLogRequest> | undefined, b: SubscribeWireLogRequest | PlainMessage<SubscribeWireLogRequest> | undefined): boolean {
+    return proto3.util.equals(SubscribeWireLogRequest, a, b);
+  }
+}
+
+/**
+ * SubscribeWireLogResponse is one item on the server stream: exactly one frame
+ * (DATA or HEARTBEAT). Wrapping the frame satisfies buf's response-naming rule
+ * and leaves room for additive stream-level metadata later.
+ *
+ * @generated from message hub.v1.SubscribeWireLogResponse
+ */
+export class SubscribeWireLogResponse extends Message<SubscribeWireLogResponse> {
+  /**
+   * @generated from field: hub.v1.WireFrame frame = 1;
+   */
+  frame?: WireFrame;
+
+  constructor(data?: PartialMessage<SubscribeWireLogResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "hub.v1.SubscribeWireLogResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "frame", kind: "message", T: WireFrame },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SubscribeWireLogResponse {
+    return new SubscribeWireLogResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): SubscribeWireLogResponse {
+    return new SubscribeWireLogResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): SubscribeWireLogResponse {
+    return new SubscribeWireLogResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: SubscribeWireLogResponse | PlainMessage<SubscribeWireLogResponse> | undefined, b: SubscribeWireLogResponse | PlainMessage<SubscribeWireLogResponse> | undefined): boolean {
+    return proto3.util.equals(SubscribeWireLogResponse, a, b);
   }
 }
 
