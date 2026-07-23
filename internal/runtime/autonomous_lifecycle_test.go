@@ -10,16 +10,19 @@ import (
 )
 
 // QUM-815/QUM-817: every turn is router-driven. The frame router installed by
-// New() derives a balanced EventTurnStarted + EventTurnCompleted, flips InTurn,
-// and (the QUM-812 fix) WRITES the QUM-640 auto-continuation to stdin when a
-// background task completed — there is no Go queue anymore.
+// New() derives a balanced EventTurnStarted + EventTurnCompleted and (the
+// QUM-812 fix) WRITES the QUM-640 auto-continuation to stdin when a background
+// task completed — there is no Go queue anymore. QUM-903: in_turn is no longer
+// flipped by the opening init frame — it is driven by the session_state_changed
+// wire signal (+ submit-from-idle), with terminal/teardown guards.
 
 const (
-	autoInitFrame   = `{"type":"system","subtype":"init","session_id":"sess-auto"}`
-	autoAssistFrame = `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"auto-reply"}]}}`
-	autoResultFrame = `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`
-	autoTaskNotif   = `{"type":"system","subtype":"task_notification","task_id":"task-X","status":"completed","summary":"bg done"}`
-	autoReplayUser  = `{"type":"user","uuid":"u-replay-1","session_id":"sess-auto","isReplay":true,"message":{"role":"user","content":"queued prompt"}}`
+	autoInitFrame    = `{"type":"system","subtype":"init","session_id":"sess-auto"}`
+	autoRunningFrame = `{"type":"system","subtype":"session_state_changed","state":"running","session_id":"sess-auto"}`
+	autoAssistFrame  = `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"auto-reply"}]}}`
+	autoResultFrame  = `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`
+	autoTaskNotif    = `{"type":"system","subtype":"task_notification","task_id":"task-X","status":"completed","summary":"bg done"}`
+	autoReplayUser   = `{"type":"user","uuid":"u-replay-1","session_id":"sess-auto","isReplay":true,"message":{"role":"user","content":"queued prompt"}}`
 )
 
 // newAutonomousRuntime wires a UnifiedRuntime over a scripted transport-backed
@@ -110,7 +113,11 @@ func TestUnifiedRuntime_AutonomousTurn_EmitsBalancedStartAndComplete(t *testing.
 func TestUnifiedRuntime_AutonomousTurn_FlipsInTurn(t *testing.T) {
 	rt, transport := newAutonomousRuntime(t)
 
+	// QUM-903: init opens the frame lifecycle but no longer sets in_turn; the
+	// wire `running` signal is the authority. The terminal result clears it
+	// (running-side teardown guard, no idle wire required).
 	transport.feed(t, autoInitFrame)
+	transport.feed(t, autoRunningFrame)
 	waitInTurn(t, rt, true, 2*time.Second)
 
 	transport.feed(t, autoResultFrame)

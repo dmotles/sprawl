@@ -37,7 +37,11 @@ func resultFrame(t *testing.T, isError bool, durationMs int) *protocol.Message {
 
 func openTurn(t *testing.T, rt *UnifiedRuntime) {
 	t.Helper()
+	// QUM-903: a bare init opens the frame lifecycle but no longer sets in_turn;
+	// the authoritative wire `running` signal does. Drive both so the turn is
+	// genuinely in flight (InTurn=true) before the test arms its interrupt.
 	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
+	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "session_state_changed"}, backend.TurnInfo{Autonomous: true, StateChange: "running"})
 	deadline := time.Now().Add(2 * time.Second)
 	for !rt.State().InTurn {
 		if time.Now().After(deadline) {

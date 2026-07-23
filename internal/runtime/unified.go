@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dmotles/sprawl/internal/backend"
 	"github.com/dmotles/sprawl/internal/protocol"
@@ -69,10 +70,16 @@ type UnifiedRuntime struct {
 	liveness livenesspkg.State
 	started  bool
 	stopped  bool
-	// inTurn is true while the frame router (QUM-817) is observing an in-flight
-	// turn (every turn is now router-driven — there is no separate sprawl-turn
-	// path). Guarded by mu and OR-ed into State().InTurn.
-	inTurn bool
+	// phase is the QUM-903 3-state in_turn machine (idle / submitted / running)
+	// and the sole in_turn authority: State().InTurn == (phase != phaseIdle).
+	// Driven by an optimistic submit-from-idle set (human prompts only) and the
+	// CLI's authoritative session_state_changed wire signal, with terminal /
+	// teardown / timeout guards. Guarded by mu.
+	phase turnPhase
+	// submittedGen is bumped each time the runtime (re)enters phaseSubmitted, so a
+	// stale submitted-timeout guard goroutine is a no-op once its synthetic state
+	// has been superseded by a wire event or a newer submit. Guarded by mu.
+	submittedGen uint64
 	// interruptPending is set by Interrupt when a user Esc-abort lands mid-turn
 	// (QUM-827). routeFrame's EndOfTurn branches read-and-clear it to publish a
 	// clean EventInterrupted instead of EventTurnCompleted/EventTurnFailed —
@@ -106,6 +113,28 @@ type UnifiedRuntime struct {
 	// outstanding map's iteration order is random). Guarded by outMu.
 	outSeq uint64
 }
+
+// turnPhase is the QUM-903 3-state in_turn machine.
+type turnPhase int
+
+const (
+	// phaseIdle: no turn in flight. State().InTurn == false.
+	phaseIdle turnPhase = iota
+	// phaseSubmitted: a human prompt was optimistically submitted from idle and
+	// the authoritative wire `running` ack has not yet arrived. Synthetic /
+	// speculative — the only phase sprawl asserts on its own. State().InTurn == true.
+	phaseSubmitted
+	// phaseRunning: the CLI's session_state_changed:running has confirmed a live
+	// turn. State().InTurn == true.
+	phaseRunning
+)
+
+// submittedPhaseTimeout bounds how long the synthetic phaseSubmitted state may
+// persist without a wire `running` ack before it defensively clears to idle
+// (backend died / hung after a successful write). Set well above the audit
+// corpus's max submit→running latency (291ms). Package var so tests can shorten
+// it; the terminal / teardown guards clear far sooner in the common case.
+var submittedPhaseTimeout = 2 * time.Second
 
 // outstandingKind classifies a written user message (QUM-817).
 type outstandingKind int
@@ -224,7 +253,7 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 				// on turnRunning so a fault between turns can't spuriously
 				// finalize an idle TUI.
 				rt.mu.RLock()
-				turnRunning := rt.inTurn
+				turnRunning := rt.inTurnLocked()
 				rt.mu.RUnlock()
 				if turnRunning {
 					rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
@@ -286,9 +315,39 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		return
 	}
 
+	// QUM-903: a session_state_changed frame is the CLI's authoritative in_turn
+	// signal. It drives ONLY the phase machine — never a frame-lifecycle event
+	// or a render publish (the TUI ignores this subtype; activity logging reads
+	// it off the independent Observer path). `running` confirms; `idle` clears;
+	// `requires_action` is tolerated (keep the current phase — best-effort, never
+	// depended on). Early-return so it can never open a turn.
+	if turn.StateChange != "" {
+		switch turn.StateChange {
+		case protocol.SessionStateRunning:
+			rt.setPhase(phaseRunning)
+		case protocol.SessionStateIdle:
+			rt.setPhase(phaseIdle)
+		}
+		return
+	}
+
 	st := &rt.autoTurn
 	if st.taskIDs == nil {
 		st.taskIDs = map[string]struct{}{}
+	}
+
+	// QUM-903: a system/init marks a resume/turn boundary. If a speculative
+	// submitted state is still outstanding across it, re-arm its guard for a
+	// fresh window (a pre-boundary timer must not fire against the post-boundary
+	// turn); otherwise init is a no-op for the phase machine (phase is left to
+	// the wire / teardown authorities, and the per-turn autoTurn task-fold state
+	// must survive init so a pre-init trigger's task_id still folds in).
+	if msg != nil && msg.Type == "system" && msg.Subtype == "init" {
+		rt.mu.Lock()
+		if rt.phase == phaseSubmitted {
+			rt.setPhaseLocked(phaseSubmitted)
+		}
+		rt.mu.Unlock()
 	}
 
 	// Orphan/abort teardown: an autonomous turn ended without a `result`
@@ -297,7 +356,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	// TurnLoop's "stream closed without terminal result" semantics.
 	if turn.EndOfTurn && msg == nil {
 		if st.open {
-			rt.setInTurn(false)
+			rt.setPhase(phaseIdle)
 			// QUM-827: a user interrupt that closed the stream with no terminal
 			// result is a clean abort, not a fault. A genuine backend crash that
 			// races an Esc is still surfaced independently via the
@@ -338,7 +397,11 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	}
 	if !st.open {
 		st.open = true
-		rt.setInTurn(true)
+		// QUM-903: turn-open no longer sets the in_turn authority (that is now
+		// wire/submit-driven, so a bare autonomous init can't leak a false
+		// "thinking" state). It still clears any stale pending-interrupt flag
+		// (QUM-827 clear-on-open) and fires the frame-lifecycle EventTurnStarted.
+		rt.clearInterruptPending()
 		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnStarted})
 	}
 
@@ -368,7 +431,9 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		for id := range st.taskIDs {
 			ids = append(ids, id)
 		}
-		rt.setInTurn(false)
+		// QUM-903 running-side teardown guard: a terminal `result` clears in_turn
+		// even when no wire `idle` follows (the 36 no-idle teardown cases).
+		rt.setPhase(phaseIdle)
 		st.reset()
 		// Fire the post-turn sweep (QUM-580) and write the continuation AFTER
 		// clearing per-turn state. Both go to stdin / disk, never under a lock.
@@ -384,16 +449,61 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	}
 }
 
-// setInTurn updates the cross-goroutine InTurn read surface under mu.
-func (rt *UnifiedRuntime) setInTurn(v bool) {
+// setPhase transitions the QUM-903 in_turn phase machine under mu. It is the
+// sole phase mutator outside setPhaseLocked's own callers.
+func (rt *UnifiedRuntime) setPhase(p turnPhase) {
 	rt.mu.Lock()
-	rt.inTurn = v
-	// QUM-827: clear any stale pending-interrupt flag on turn open so an
-	// interrupt that armed but never produced a terminal frame cannot
-	// mis-classify a later turn's completion.
-	if v {
+	rt.setPhaseLocked(p)
+	rt.mu.Unlock()
+}
+
+// setPhaseLocked transitions the phase with mu held. Entering any non-idle phase
+// from idle clears a stale pending-interrupt flag (QUM-827 clear-on-open).
+// Entering phaseSubmitted arms a generation-tagged timeout guard so a synthetic
+// "thinking" state cannot leak if the wire `running` ack never arrives.
+func (rt *UnifiedRuntime) setPhaseLocked(p turnPhase) {
+	if rt.phase == phaseIdle && p != phaseIdle {
 		rt.interruptPending = false
 	}
+	rt.phase = p
+	if p == phaseSubmitted {
+		rt.submittedGen++
+		gen := rt.submittedGen
+		timeout := submittedPhaseTimeout
+		go rt.guardSubmitted(gen, timeout)
+	}
+}
+
+// inTurnLocked reports whether a turn is in flight (submitted or running). The
+// caller must hold mu (read or write).
+func (rt *UnifiedRuntime) inTurnLocked() bool { return rt.phase != phaseIdle }
+
+// guardSubmitted is the QUM-903 submitted-side defensive clear: if the synthetic
+// phaseSubmitted is still current (same generation, not superseded by a wire
+// event or a newer submit) after the timeout, clear it to idle so a dead / hung
+// backend can never leak a false "thinking" state. A stale timer (its generation
+// bumped, or the phase already moved) is a no-op.
+func (rt *UnifiedRuntime) guardSubmitted(gen uint64, timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-rt.done:
+		return
+	}
+	rt.mu.Lock()
+	if !rt.stopped && rt.phase == phaseSubmitted && rt.submittedGen == gen {
+		rt.phase = phaseIdle
+	}
+	rt.mu.Unlock()
+}
+
+// clearInterruptPending clears the QUM-827 pending-interrupt flag under mu. Used
+// at frame turn-open so a stale flag from an aborted prior turn cannot
+// mis-classify this turn's completion.
+func (rt *UnifiedRuntime) clearInterruptPending() {
+	rt.mu.Lock()
+	rt.interruptPending = false
 	rt.mu.Unlock()
 }
 
@@ -472,21 +582,29 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 		return "", err
 	}
 
+	rt.mu.Lock()
 	// QUM-830: a priority:"now" write (cancel-and-replace, e.g. send-all-now)
 	// preempts the in-flight model turn. The preempted turn emits an is_error
 	// `result` terminal frame — same shape as an Esc-abort — so arm the
 	// pending-interrupt flag exactly as Interrupt does (QUM-827), letting
 	// routeFrame re-classify that terminal as a clean EventInterrupted instead
 	// of EventTurnCompleted{IsError} → the empty "Session Error" overlay. Gated
-	// on inTurn (no in-flight turn ⇒ nothing to preempt); setInTurn clears any
-	// stale flag on the next turn open, so this cannot leak forward.
-	if priority == "now" {
-		rt.mu.Lock()
-		if rt.inTurn {
-			rt.interruptPending = true
-		}
-		rt.mu.Unlock()
+	// on in-turn (no in-flight turn ⇒ nothing to preempt); the next turn open
+	// clears any stale flag, so this cannot leak forward.
+	if priority == "now" && rt.inTurnLocked() {
+		rt.interruptPending = true
 	}
+	// QUM-903: optimistically enter the synthetic submitted state on a
+	// human-typed prompt (kind:user — the watched weave input path) submitted
+	// FROM idle, hiding the ~2–10ms submit→running wire latency. Only from idle:
+	// a submit while already submitted/running just queues (no new synthetic).
+	// kind:system deliveries (spawn prompt, inbox, task, the QUM-640
+	// continuation) never synthesize — passively-observed agents are driven
+	// purely by their wire.
+	if kind == kindUser && rt.phase == phaseIdle {
+		rt.setPhaseLocked(phaseSubmitted)
+	}
+	rt.mu.Unlock()
 	return uuid, nil
 }
 
@@ -827,10 +945,10 @@ func (rt *UnifiedRuntime) StopWithOptions(ctx context.Context, opts StopOptions)
 func (rt *UnifiedRuntime) State() livenesspkg.State {
 	rt.mu.RLock()
 	s := rt.liveness
-	inTurn := rt.inTurn
+	inTurn := rt.inTurnLocked()
 	rt.mu.RUnlock()
-	// QUM-817: InTurn is derived entirely from the frame router observing the
-	// stdout stream (every turn is router-driven now).
+	// QUM-903: InTurn is the 3-state phase machine — true for submitted (synthetic
+	// optimistic) or running (wire-confirmed), false for idle.
 	if inTurn {
 		s.InTurn = true
 	}
@@ -848,7 +966,7 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 		return nil
 	}
 	sess := rt.cfg.Session
-	inTurn := rt.inTurn
+	inTurn := rt.inTurnLocked()
 	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
 		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	}

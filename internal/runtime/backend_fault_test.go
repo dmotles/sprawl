@@ -121,9 +121,10 @@ func TestUnifiedRuntime_PublishesEventTurnFailedOnTerminalErrDuringTurn(t *testi
 	ch, unsub := rt.EventBus().SubscribeNamed("turnfail-test", 16)
 	defer unsub()
 
-	// QUM-817: a turn is "in flight" when the frame router has observed an
-	// opening init frame (inTurn=true). Drive that directly via routeFrame.
+	// QUM-903: a turn is "in flight" (InTurn=true) once the wire signals running.
+	// The opening init frame alone no longer sets in_turn.
 	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
+	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "session_state_changed"}, backend.TurnInfo{Autonomous: true, StateChange: "running"})
 	deadline := time.Now().Add(2 * time.Second)
 	for !rt.State().InTurn {
 		if time.Now().After(deadline) {
@@ -184,6 +185,7 @@ func TestUnifiedRuntime_FaultDuringTurnEmitsExactlyOneTerminalTurnEvent(t *testi
 	defer unsub()
 
 	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
+	rt.routeFrame(&protocol.Message{Type: "system", Subtype: "session_state_changed"}, backend.TurnInfo{Autonomous: true, StateChange: "running"})
 	deadline := time.Now().Add(2 * time.Second)
 	for !rt.State().InTurn {
 		if time.Now().After(deadline) {

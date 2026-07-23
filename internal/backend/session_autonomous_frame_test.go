@@ -165,11 +165,11 @@ func TestSession_FrameRouter_PreInitTaskNotification_RoutedInOrder(t *testing.T)
 	}
 }
 
-// TestSession_FrameRouter_StrayFrameNotRouted: a stray system frame while idle
-// that is neither init nor task_notification (e.g. session_state_changed) must
-// NOT be routed and must NOT open a turn (QUM-570 — stray telemetry never
-// gates).
-func TestSession_FrameRouter_StrayFrameNotRouted(t *testing.T) {
+// TestSession_FrameRouter_SessionStateChangedRouted (QUM-903): a
+// session_state_changed frame while idle IS routed to the frame router as the
+// authoritative in_turn signal (carrying TurnInfo.StateChange), but must NOT
+// allocate a turnFrame / open a turn (it never gates StartTurn — QUM-570).
+func TestSession_FrameRouter_SessionStateChangedRouted(t *testing.T) {
 	transport := newMockManagedTransport()
 	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})
 	rec := &frameRouterRecorder{}
@@ -182,6 +182,36 @@ func TestSession_FrameRouter_StrayFrameNotRouted(t *testing.T) {
 	}
 
 	transport.feedMessage(t, `{"type":"system","subtype":"session_state_changed","state":"idle","session_id":"sess-1"}`)
+	rec.waitForCount(t, 1, 2*time.Second)
+	frames := rec.snapshot()
+	if len(frames) != 1 {
+		t.Fatalf("router saw %d frames, want 1", len(frames))
+	}
+	if frames[0].turn.StateChange != "idle" {
+		t.Errorf("routed StateChange = %q, want %q", frames[0].turn.StateChange, "idle")
+	}
+	if session.InTurn() {
+		t.Error("session_state_changed frame opened a turn (InTurn=true), want false")
+	}
+}
+
+// TestSession_FrameRouter_TrulyStrayFrameNotRouted: a stray system frame while
+// idle that is neither init, task_notification, session_state_changed, nor a
+// compaction status frame must NOT be routed and must NOT open a turn (QUM-570 —
+// stray telemetry never gates).
+func TestSession_FrameRouter_TrulyStrayFrameNotRouted(t *testing.T) {
+	transport := newMockManagedTransport()
+	session := NewSession(transport, SessionConfig{SessionID: "sess-1"})
+	rec := &frameRouterRecorder{}
+	installFrameRouter(t, session, rec.handler())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := session.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	transport.feedMessage(t, `{"type":"system","subtype":"some_unhandled_telemetry","session_id":"sess-1"}`)
 	// Give the reader time to process; the router must not be invoked.
 	time.Sleep(200 * time.Millisecond)
 	if n := rec.count(); n != 0 {

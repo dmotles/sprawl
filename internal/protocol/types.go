@@ -182,6 +182,15 @@ type SessionStateChanged struct {
 	State     string `json:"state"`
 }
 
+// Session state values carried by SessionStateChanged.State (QUM-903). The CLI
+// emits running/idle reliably; requires_action is best-effort (0 events in the
+// audit corpus — tolerate, never depend on it).
+const (
+	SessionStateRunning        = "running"
+	SessionStateIdle           = "idle"
+	SessionStateRequiresAction = "requires_action"
+)
+
 // ControlRequest is a permission or hook callback request from Claude Code
 // (type=control_request). The Request field holds the request payload as raw JSON.
 type ControlRequest struct {

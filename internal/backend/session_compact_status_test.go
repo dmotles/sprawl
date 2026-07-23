@@ -54,14 +54,15 @@ func TestSession_FrameRouter_PreInitCompactStatus_Routed(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Faithful pre-init sequence: a stray state-change + a non-replay user submit
-	// (both observer-only), then the two compaction status frames.
+	// Faithful pre-init sequence: a session_state_changed authority frame
+	// (QUM-903 — now routed, but opens no turn), then the two compaction status
+	// frames.
 	transport.feedMessage(t, `{"type":"system","subtype":"session_state_changed","state":"running","session_id":"sess-1"}`)
 	transport.feedMessage(t, `{"type":"system","subtype":"status","status":"compacting","session_id":"sess-1"}`)
 	transport.feedMessage(t, `{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Not enough messages to compact.","session_id":"sess-1"}`)
 
-	// Both status frames must reach the router pre-init.
-	rec.waitForCount(t, 2, 3*time.Second)
+	// All three pre-init frames must reach the router (state-change + 2 status).
+	rec.waitForCount(t, 3, 3*time.Second)
 
 	// Pre-init: the status frames must NOT have opened a turn.
 	if session.InTurn() {
@@ -94,17 +95,23 @@ func TestSession_FrameRouter_PreInitCompactStatus_Routed(t *testing.T) {
 		t.Error("failed status frame routed with PreInit=false; want true")
 	}
 
-	// The stray session_state_changed frame must still be observer-only.
-	if stray := findRouted(frames, func(f routedFrame) bool {
+	// QUM-903: the session_state_changed frame IS now routed as the in_turn
+	// authority, carrying TurnInfo.StateChange, but it must not carry PreInit and
+	// must not have opened a turn (asserted above via session.InTurn()).
+	stateChange := findRouted(frames, func(f routedFrame) bool {
 		return f.msg.Subtype == "session_state_changed"
-	}); stray != nil {
-		t.Error("session_state_changed was routed; it must remain observer-only")
+	})
+	if stateChange == nil {
+		t.Fatal("session_state_changed frame was NOT routed; QUM-903 makes it the in_turn authority")
+	}
+	if stateChange.turn.StateChange != "running" {
+		t.Errorf("session_state_changed routed with StateChange=%q, want %q", stateChange.turn.StateChange, "running")
 	}
 
 	// The subsequent init opens the turn and the result closes it — normal path.
 	transport.feedMessage(t, `{"type":"system","subtype":"init","session_id":"sess-1"}`)
 	transport.feedMessage(t, `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`)
-	rec.waitForCount(t, 4, 3*time.Second)
+	rec.waitForCount(t, 5, 3*time.Second)
 }
 
 // TestSession_FrameRouter_PreInitUnrelatedStatusNotRouted proves the carve-out

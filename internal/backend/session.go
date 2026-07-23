@@ -354,6 +354,12 @@ type TurnInfo struct {
 	// so flipping InTurn / emitting EventTurnStarted on it would strand the
 	// lifecycle. The turn opens on the actual init frame instead (QUM-815).
 	PreInit bool
+	// StateChange carries the parsed session_state_changed value
+	// ("running"/"idle"/"requires_action") when the routed frame is the CLI's
+	// authoritative turn-state signal (QUM-903). Empty for every other frame.
+	// The runtime's frame router consumes it as the in_turn authority; these
+	// frames never allocate a turnFrame or gate StartTurn.
+	StateChange string
 }
 
 // inflightDrainTimeout bounds how long the reader waits for in-flight async
@@ -773,12 +779,27 @@ func (s *session) runReader(ctx context.Context) {
 			}
 		}
 
+		// QUM-903: a session_state_changed frame is the CLI's authoritative
+		// turn-state signal (running/idle/requires_action). It is routed to the
+		// runtime frame router as the in_turn authority regardless of turn state
+		// (it arrives while idle, tf==nil, ~ms around a turn boundary), but never
+		// allocates a turnFrame or gates StartTurn. Was previously dropped as
+		// stray observer-only telemetry.
+		stateChange := ""
+		if msg.Type == "system" && msg.Subtype == "session_state_changed" {
+			var ssc protocol.SessionStateChanged
+			if protocol.ParseAs(msg, &ssc) == nil {
+				stateChange = ssc.State
+			}
+		}
+
 		// Single route point. Frames belonging to a turn (sprawl or autonomous),
-		// a pre-init autonomous trigger, and isReplay consumption echoes flow to
-		// the runtime frame router. Stray telemetry is observer-only.
-		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger || preInitCompactStatus || replayEcho) {
+		// a pre-init autonomous trigger, isReplay consumption echoes, and
+		// session_state_changed authority frames flow to the runtime frame router.
+		// Stray telemetry is observer-only.
+		if r := s.frameRouter.Load(); r != nil && (tf != nil || preInitTrigger || preInitCompactStatus || replayEcho || stateChange != "") {
 			autonomous := tf == nil || tf.autonomous
-			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger || preInitCompactStatus, Replay: replayEcho})
+			(*r)(msg, TurnInfo{Autonomous: autonomous, EndOfTurn: msg.Type == "result" && tf != nil, PreInit: preInitTrigger || preInitCompactStatus, Replay: replayEcho, StateChange: stateChange})
 		}
 
 		if tf != nil && tf.subscriber != nil {
