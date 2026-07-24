@@ -16,9 +16,9 @@ import (
 //
 // The synthetic submitted state is entered ONLY for a human-typed prompt
 // (kind:user, the weave-window watched input path) submitted from idle;
-// sprawl-originated (kind:system) deliveries — spawn prompt, inbox, task, the
-// QUM-640 continuation — never synthesize it, so passively-observed children
-// expose only idle/running off their wire.
+// sprawl-originated (kind:system) deliveries — spawn prompt, inbox, task — never
+// synthesize it, so passively-observed children expose only idle/running off their
+// wire.
 //
 // These tests direct-drive rt.routeFrame (the reader-goroutine frame router) and
 // the WriteUser*/WriteSystemMessage stdin-write paths, mirroring the existing
@@ -117,7 +117,7 @@ func TestPhase_InitAloneDoesNotSetInTurn(t *testing.T) {
 // a sprawl-originated (kind:system) delivery from idle must NOT synthesize the
 // submitted state — only the wire drives a passively-delivered turn. This is the
 // scope boundary that keeps children off the synthetic path and prevents the
-// QUM-640 continuation / inbox writes from re-leaking false "thinking".
+// kind:system inbox/task writes from re-leaking false "thinking".
 func TestPhase_SystemMessageFromIdleDoesNotSetInTurn(t *testing.T) {
 	withShortSubmittedTimeout(t, 40*time.Millisecond)
 	rt := newPhaseRuntime()

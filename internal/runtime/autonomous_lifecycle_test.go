@@ -10,25 +10,29 @@ import (
 )
 
 // QUM-815/QUM-817: every turn is router-driven. The frame router installed by
-// New() derives a balanced EventTurnStarted + EventTurnCompleted and (the
-// QUM-812 fix) WRITES the QUM-640 auto-continuation to stdin when a background
-// task completed — there is no Go queue anymore. QUM-903: in_turn is no longer
-// flipped by the opening init frame — it is driven by the session_state_changed
-// wire signal (+ submit-from-idle), with terminal/teardown guards.
+// New() derives a balanced EventTurnStarted + EventTurnCompleted from the frame
+// stream. QUM-929: it writes NOTHING to stdin in response to a background task's
+// task_notification — the CLI self-resumes on its own, so the QUM-640
+// [auto-continue] injection is deleted; the router only OBSERVES the
+// notification (publishing it as EventProtocolMessage for TUI/telemetry).
+// QUM-903: in_turn is no longer flipped by the opening init frame — it is driven
+// by the session_state_changed wire signal (+ submit-from-idle), with
+// terminal/teardown guards.
 
 const (
-	autoInitFrame    = `{"type":"system","subtype":"init","session_id":"sess-auto"}`
-	autoRunningFrame = `{"type":"system","subtype":"session_state_changed","state":"running","session_id":"sess-auto"}`
-	autoAssistFrame  = `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"auto-reply"}]}}`
-	autoResultFrame  = `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`
-	autoTaskNotif    = `{"type":"system","subtype":"task_notification","task_id":"task-X","status":"completed","summary":"bg done"}`
-	autoReplayUser   = `{"type":"user","uuid":"u-replay-1","session_id":"sess-auto","isReplay":true,"message":{"role":"user","content":"queued prompt"}}`
+	autoInitFrame     = `{"type":"system","subtype":"init","session_id":"sess-auto"}`
+	autoRunningFrame  = `{"type":"system","subtype":"session_state_changed","state":"running","session_id":"sess-auto"}`
+	autoAssistFrame   = `{"type":"assistant","uuid":"a-1","message":{"role":"assistant","content":[{"type":"text","text":"auto-reply"}]}}`
+	autoResultFrame   = `{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"total_cost_usd":0.01}`
+	autoTaskNotif     = `{"type":"system","subtype":"task_notification","task_id":"task-X","status":"completed","summary":"bg done"}`
+	autoTaskNotifNoID = `{"type":"system","subtype":"task_notification","status":"completed","summary":"bg done"}`
+	autoReplayUser    = `{"type":"user","uuid":"u-replay-1","session_id":"sess-auto","isReplay":true,"message":{"role":"user","content":"queued prompt"}}`
 )
 
 // newAutonomousRuntime wires a UnifiedRuntime over a scripted transport-backed
 // real session and starts the session reader. rt.Start is NOT called — the
-// turn flows through the reader/router, and stdin writes (e.g. the
-// continuation) land on transport.sendCh.
+// turn flows through the reader/router, and any stdin write would land on
+// transport.sendCh.
 func newAutonomousRuntime(t *testing.T) (*UnifiedRuntime, *scriptedTransport) {
 	t.Helper()
 	transport := newScriptedTransport()
@@ -43,37 +47,73 @@ func newAutonomousRuntime(t *testing.T) (*UnifiedRuntime, *scriptedTransport) {
 	return rt, transport
 }
 
-// waitUserWrite scans transport.sendCh for a user message whose content matches,
-// returning it or failing after d.
-func waitUserWrite(t *testing.T, transport *scriptedTransport, d time.Duration, content string) protocol.UserMessage {
+// assertNoUserWrite fails if ANY user message is written to stdin within d (a
+// deliberate negative-assertion wait). QUM-929: matching on "any user message"
+// rather than on the deleted continuation's exact wording is what stops a
+// re-added, re-worded nudge from sneaking past this gate. Safe because
+// newAutonomousRuntime does not call rt.Start and session.Start's initialize is
+// a control_request, not a protocol.UserMessage.
+func assertNoUserWrite(t *testing.T, transport *scriptedTransport, d time.Duration) {
 	t.Helper()
 	deadline := time.After(d)
 	for {
 		select {
 		case sent := <-transport.sendCh:
-			if um, ok := sent.(protocol.UserMessage); ok && um.Message.Content == content {
-				return um
+			// Match both value and pointer forms so the gate cannot go dead if a
+			// future write path sends *protocol.UserMessage.
+			switch um := sent.(type) {
+			case protocol.UserMessage:
+				t.Fatalf("unexpected stdin user-message write: content=%q priority=%q", um.Message.Content, um.Priority)
+			case *protocol.UserMessage:
+				t.Fatalf("unexpected stdin user-message write: content=%q priority=%q", um.Message.Content, um.Priority)
 			}
 		case <-deadline:
-			t.Fatalf("no user-message write with content %q within %v", content, d)
-			return protocol.UserMessage{}
+			return
 		}
 	}
 }
 
-// assertNoUserWrite fails if any user message with the given content is written
-// within d (a deliberate negative-assertion wait).
-func assertNoUserWrite(t *testing.T, transport *scriptedTransport, d time.Duration, content string) {
+// TestScriptedTransport_CapturesUserWrites is the POSITIVE CONTROL for every
+// assertNoUserWrite negative in this file. Those negatives are now the whole
+// unit-level defense against the [auto-continue] injection coming back (QUM-929),
+// and they would go permanently and silently vacuous if a refactor moved
+// writeMessage off the session-transport path. This test fails first in that case.
+func TestScriptedTransport_CapturesUserWrites(t *testing.T) {
+	rt, transport := newAutonomousRuntime(t)
+
+	if _, err := rt.WriteUserPrompt(context.Background(), "probe", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case sent := <-transport.sendCh:
+			if um, ok := sent.(protocol.UserMessage); ok && um.Message.Content == "probe" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("a stdin user write did NOT reach transport.sendCh — assertNoUserWrite is watching the wrong channel, so every zero-write assertion in this file is vacuous")
+		}
+	}
+}
+
+// waitTurnCompleted blocks until a terminal turn event arrives, so a following
+// assertNoUserWrite is a real negative and not a race against a router that never
+// consumed the terminal frame (the deleted write lived in routeFrame's EndOfTurn
+// arm — without this sync the zero-write assertions would pass vacuously).
+func waitTurnCompleted(t *testing.T, ch <-chan RuntimeEvent, d time.Duration) {
 	t.Helper()
 	deadline := time.After(d)
 	for {
 		select {
-		case sent := <-transport.sendCh:
-			if um, ok := sent.(protocol.UserMessage); ok && um.Message.Content == content {
-				t.Fatalf("unexpected user-message write with content %q", content)
+		case ev := <-ch:
+			switch ev.Type {
+			case EventTurnCompleted, EventInterrupted, EventTurnFailed:
+				return
 			}
 		case <-deadline:
-			return
+			t.Fatalf("no terminal turn event within %v — the router never consumed the turn", d)
 		}
 	}
 }
@@ -140,30 +180,104 @@ func waitInTurn(t *testing.T, rt *UnifiedRuntime, want bool, d time.Duration) {
 	}
 }
 
-// TestUnifiedRuntime_IdleTaskNotification_WritesContinuation is the QUM-812 fix
-// under QUM-817: an idle bg-task completion (autonomous turn carrying a
-// task_notification) makes the router WRITE the continuation prompt to stdin
-// (no Go queue), which the CLI then processes as the next turn.
-func TestUnifiedRuntime_IdleTaskNotification_WritesContinuation(t *testing.T) {
-	_, transport := newAutonomousRuntime(t)
+// TestUnifiedRuntime_IdleTaskNotification_WritesNothing is the QUM-929 headline:
+// an idle bg-task completion (autonomous turn carrying a task_notification) must
+// produce NO stdin write. The CLI self-resumes on background-task completion in
+// every timing case, so the QUM-640 [auto-continue] nudge was pure redundancy
+// that structurally landed one turn late (the spurious-continuation class).
+func TestUnifiedRuntime_IdleTaskNotification_WritesNothing(t *testing.T) {
+	rt, transport := newAutonomousRuntime(t)
+	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
+	defer unsub()
 
 	transport.feed(t, autoTaskNotif)
 	transport.feed(t, autoInitFrame)
 	transport.feed(t, autoAssistFrame)
 	transport.feed(t, autoResultFrame)
 
-	um := waitUserWrite(t, transport, 3*time.Second, continuationPrompt)
-	if um.Priority != "next" {
-		t.Errorf("continuation priority = %q, want next", um.Priority)
+	waitTurnCompleted(t, ch, 3*time.Second)
+	assertNoUserWrite(t, transport, 200*time.Millisecond)
+}
+
+// TestUnifiedRuntime_MidTurnTaskNotification_WritesNothing covers the OTHER
+// arrival shape (QUM-929): a task_notification observed AFTER init, i.e. during a
+// live turn. The deleted gate folded any observed task_id — pre-init or mid-turn —
+// into a turn-end write, so this path needs its own negative.
+func TestUnifiedRuntime_MidTurnTaskNotification_WritesNothing(t *testing.T) {
+	rt, transport := newAutonomousRuntime(t)
+	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
+	defer unsub()
+
+	transport.feed(t, autoInitFrame)
+	transport.feed(t, autoRunningFrame)
+	transport.feed(t, autoTaskNotif)
+	transport.feed(t, autoAssistFrame)
+	transport.feed(t, autoResultFrame)
+
+	waitTurnCompleted(t, ch, 3*time.Second)
+	assertNoUserWrite(t, transport, 200*time.Millisecond)
+}
+
+// TestUnifiedRuntime_EmptyTaskIDNotification_WritesNothing covers the deleted
+// `sawEmptyTaskID` arm: a task_notification whose task_id is absent/empty used to
+// force-fire a continuation independently of the dedup set. It must now write
+// nothing either.
+func TestUnifiedRuntime_EmptyTaskIDNotification_WritesNothing(t *testing.T) {
+	rt, transport := newAutonomousRuntime(t)
+	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
+	defer unsub()
+
+	transport.feed(t, autoTaskNotifNoID)
+	transport.feed(t, autoInitFrame)
+	transport.feed(t, autoResultFrame)
+
+	waitTurnCompleted(t, ch, 3*time.Second)
+	assertNoUserWrite(t, transport, 200*time.Millisecond)
+}
+
+// TestUnifiedRuntime_IdleTaskNotification_StillPublishesProtocolMessage locks the
+// QUM-929 KEEP side: deleting the injection must NOT delete the OBSERVATION. The
+// task_notification's EventProtocolMessage publish is the sole source of the live
+// "↻ auto-continued" marker (internal/tui/protocol_mapping.go maps
+// system/task_notification → AutoContinueMsg) and of task telemetry.
+func TestUnifiedRuntime_IdleTaskNotification_StillPublishesProtocolMessage(t *testing.T) {
+	rt, transport := newAutonomousRuntime(t)
+	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
+	defer unsub()
+
+	transport.feed(t, autoTaskNotif)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == EventProtocolMessage && ev.Message != nil &&
+				ev.Message.Type == "system" && ev.Message.Subtype == "task_notification" {
+				return
+			}
+			if ev.Type == EventTurnStarted {
+				t.Fatal("lone task_notification opened a turn")
+			}
+		case <-deadline:
+			t.Fatal("task_notification was not published as EventProtocolMessage (↻ marker + telemetry source deleted)")
+		}
 	}
-	if um.UUID == "" {
-		t.Error("continuation write has no uuid")
+}
+
+// TestAutoContinuePrefix_StableLiteral pins the exact sentinel. QUM-929 stopped
+// PRODUCING [auto-continue] frames, but six weeks of historical wire logs still
+// contain them and internal/tui/replay.go classifies on this literal to rehydrate
+// them as the "↻ auto-continued" marker (QUM-924). Changing the string silently
+// breaks replay of every existing session log.
+func TestAutoContinuePrefix_StableLiteral(t *testing.T) {
+	if AutoContinuePrefix != "[auto-continue]" {
+		t.Errorf("AutoContinuePrefix = %q, want %q (historical wire-log replay classifies on this exact literal)", AutoContinuePrefix, "[auto-continue]")
 	}
 }
 
 // TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn (QUM-815 review HIGH): a
 // pre-init task_notification trigger not followed by an init must NOT flip
-// InTurn or emit EventTurnStarted; its task_id is buffered for the next turn.
+// InTurn or emit EventTurnStarted — it is publish-only.
 func TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn(t *testing.T) {
 	rt, transport := newAutonomousRuntime(t)
 	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
@@ -191,11 +305,12 @@ func TestUnifiedRuntime_LoneTrigger_DoesNotOpenTurn(t *testing.T) {
 		t.Fatal("InTurn leaked true after a lone pre-init trigger")
 	}
 
-	// The buffered task_id folds into the NEXT real autonomous turn's
-	// continuation (written to stdin); InTurn reverts after completion.
+	// A following real autonomous turn runs its lifecycle and reverts InTurn —
+	// and (QUM-929) still writes nothing to stdin for the earlier trigger.
 	transport.feed(t, autoInitFrame)
 	transport.feed(t, autoResultFrame)
-	waitUserWrite(t, transport, 3*time.Second, continuationPrompt)
+	waitTurnCompleted(t, ch, 3*time.Second)
+	assertNoUserWrite(t, transport, 200*time.Millisecond)
 	if rt.State().InTurn {
 		t.Error("InTurn still true after the real autonomous turn completed")
 	}
@@ -243,23 +358,23 @@ func TestUnifiedRuntime_PreInitCompactStatus_PublishedNoTurn(t *testing.T) {
 	}
 }
 
-// TestUnifiedRuntime_TaskNotification_ServicedDedup: a second turn re-observing
-// the SAME task_id must NOT write another continuation (QUM-807 dedup, now
-// wholly within the router since the cross-boundary turnloop is gone).
-func TestUnifiedRuntime_TaskNotification_ServicedDedup(t *testing.T) {
-	_, transport := newAutonomousRuntime(t)
+// TestUnifiedRuntime_RepeatedTaskNotifications_NeverWrite replaces the QUM-807
+// serviced-set dedup test: with the injection gone there is nothing to dedup, so
+// the invariant it protected (a turn re-observing the same task_notification must
+// not drive another turn — the old infinite-loop risk) now holds by construction.
+// Pinned so a future re-introduction can't restore the loop either.
+func TestUnifiedRuntime_RepeatedTaskNotifications_NeverWrite(t *testing.T) {
+	rt, transport := newAutonomousRuntime(t)
+	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)
+	defer unsub()
 
-	transport.feed(t, autoTaskNotif)
-	transport.feed(t, autoInitFrame)
-	transport.feed(t, autoResultFrame)
-	waitUserWrite(t, transport, 3*time.Second, continuationPrompt) // first continuation
-
-	// Second turn re-observing task-X (as the continuation turn would) — no
-	// new continuation.
-	transport.feed(t, autoTaskNotif)
-	transport.feed(t, autoInitFrame)
-	transport.feed(t, autoResultFrame)
-	assertNoUserWrite(t, transport, 300*time.Millisecond, continuationPrompt)
+	for range 2 {
+		transport.feed(t, autoTaskNotif)
+		transport.feed(t, autoInitFrame)
+		transport.feed(t, autoResultFrame)
+		waitTurnCompleted(t, ch, 3*time.Second)
+		assertNoUserWrite(t, transport, 200*time.Millisecond)
+	}
 }
 
 // TestUnifiedRuntime_AutonomousTurn_WithReplayFrame_StillBalanced: a turn whose

@@ -1287,6 +1287,37 @@ func TestReplay_AutoContinueRendersAutoTrigger(t *testing.T) {
 	}
 }
 
+// TestReplay_HistoricalAutoContinueLiteralRendersAutoTrigger (QUM-929): sprawl no
+// longer PRODUCES [auto-continue] frames, but six weeks of on-disk wire logs still
+// contain them and must keep rehydrating as the ↻ marker. Unlike the test above,
+// this one hardcodes the literal exactly as it appears in those historical logs
+// instead of interpolating the shared const — so a rename of the const (or of the
+// prompt text) can no longer silently pass while breaking replay of every existing
+// session log.
+func TestReplay_HistoricalAutoContinueLiteralRendersAutoTrigger(t *testing.T) {
+	const historical = "[auto-continue] A background task you started has completed. Review its output above and continue your work."
+	rec := map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": historical},
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeWireLog(t, []string{string(b)})
+
+	entries, err := scanWireTranscript(path, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageAutoTrigger {
+		t.Errorf("entries[0].Type = %v, want MessageAutoTrigger — a historical on-disk [auto-continue] frame no longer rehydrates as the ↻ marker", entries[0].Type)
+	}
+}
+
 // TestReplay_AutoContinuePrefixMidStringStaysUser (QUM-924): the classifier
 // keys on a PREFIX match, not a substring. A genuine user message that merely
 // mentions the sentinel mid-text must still render as a plain user bubble — this

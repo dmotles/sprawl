@@ -102,9 +102,6 @@ type UnifiedRuntime struct {
 	done          chan struct{}
 	closeDoneOnce sync.Once
 
-	// serviced is the QUM-807 dedup set used by the frame router for the QUM-640
-	// continuation. Created in New so it is live even before Start.
-	serviced *servicedTaskSet
 	// autoTurn holds the frame router's per-turn observation state. Touched ONLY
 	// by routeFrame, which runs solely on the backend reader goroutine — so no
 	// lock is needed for its fields (inTurn, the cross-goroutine read surface,
@@ -152,7 +149,7 @@ const (
 	// kindUser is a human-typed prompt (recallable in the weave TUI — Slice 4).
 	kindUser outstandingKind = iota
 	// kindSystem is a sprawl-originated message (report_status, inbox, task,
-	// continuation, liveness) — NOT user-recallable.
+	// liveness) — NOT user-recallable.
 	kindSystem
 )
 
@@ -174,61 +171,25 @@ type OutstandingEntry struct {
 	seq      uint64   // submit order, stamped in writeMessage (QUM-824)
 }
 
-// AutoContinuePrefix is the machine sentinel that opens the auto-continue
-// continuation prompt. It is the SINGLE shared discriminator used by the TUI
-// replay classifier (internal/tui/replay.go) to reconstruct the
-// "↻ auto-continued" marker on session reload — the bare continuation frame
-// carries no wrapper or synthetic flag on the wire, so the prefix is the only
-// stable signal. Exported so the literal is defined once and the two packages
-// cannot drift (QUM-924).
+// AutoContinuePrefix is the machine sentinel that opened the historical
+// auto-continue continuation prompt. QUM-929 deleted the injection — sprawl no
+// longer PRODUCES such frames — but the constant is retained because six weeks of
+// on-disk wire logs still contain them and it is the SINGLE shared discriminator
+// the TUI replay classifier (internal/tui/replay.go) uses to reconstruct the
+// "↻ auto-continued" marker when reloading those sessions. The frame carried no
+// wrapper or synthetic flag on the wire, so the prefix is the only stable signal.
+// Exported so the literal is defined once and the two packages cannot drift
+// (QUM-924).
 const AutoContinuePrefix = "[auto-continue]"
-
-// continuationPrompt is the synthetic, machine-originated nudge written to
-// stdin at turn-end when a run_in_background task completed (QUM-640). The
-// completed task's result is already in the CLI's context as a tool_result;
-// this prompt only grants the agent a turn to review it and continue. Terse and
-// neutral to avoid steering the agent.
-const continuationPrompt = AutoContinuePrefix + " A background task you started has completed. Review its output above and continue your work."
-
-// servicedTaskSet is a concurrency-safe set of background-task IDs that have
-// already driven an auto-continuation (QUM-807/QUM-817). The frame router
-// (reader goroutine) services autonomous-turn task_ids; the dedup prevents a
-// continuation turn that re-observes the same task_notification from re-firing
-// (infinite loop).
-type servicedTaskSet struct {
-	mu sync.Mutex
-	m  map[string]struct{}
-}
-
-func newServicedTaskSet() *servicedTaskSet {
-	return &servicedTaskSet{m: map[string]struct{}{}}
-}
-
-func (s *servicedTaskSet) has(id string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.m[id]
-	return ok
-}
-
-func (s *servicedTaskSet) add(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.m[id] = struct{}{}
-}
 
 // autonomousTurnState is the frame router's per-turn bookkeeping for an
 // in-flight turn (QUM-815/QUM-817). Reader-goroutine-only.
 type autonomousTurnState struct {
-	open           bool
-	sawEmptyTaskID bool
-	taskIDs        map[string]struct{}
+	open bool
 }
 
 func (a *autonomousTurnState) reset() {
 	a.open = false
-	a.sawEmptyTaskID = false
-	a.taskIDs = nil
 }
 
 // New constructs a UnifiedRuntime in the idle liveness state (Running,
@@ -240,7 +201,6 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 		eventBus:    NewEventBus(),
 		liveness:    livenesspkg.State{Liveness: livenesspkg.Running},
 		done:        make(chan struct{}),
-		serviced:    newServicedTaskSet(),
 		outstanding: make(map[string]*OutstandingEntry),
 	}
 	// QUM-602: install the backend-fault handler on the session. We use a
@@ -313,10 +273,14 @@ var errStreamClosedNoResult = errors.New("autonomous turn stream closed without 
 // invokes for every turn frame (QUM-815). For sprawl-initiated turns it
 // returns immediately — the TurnLoop owns their lifecycle, and emitting here
 // too would double-publish. For autonomous (CLI self-reprompt) turns it
-// derives the full lifecycle: a balanced EventTurnStarted/EventTurnCompleted,
-// an InTurn flip, and the QUM-640 auto-continuation when a background task
-// completed (the QUM-812 fix). Runs synchronously on the reader goroutine and
-// must not block (bounded EventBus.Publish / Queue.Enqueue only).
+// derives the full lifecycle: a balanced EventTurnStarted/EventTurnCompleted and
+// an InTurn flip. Every frame is also published as EventProtocolMessage for the
+// TUI / telemetry — including a background task's task_notification, which is
+// OBSERVED only: QUM-929 deleted the synthetic [auto-continue] stdin nudge the
+// router used to write at turn-end, because the CLI self-resumes on background-task
+// completion in every timing case (so the nudge was redundant and structurally one
+// turn late). Runs synchronously on the reader goroutine and must not block
+// (bounded EventBus.Publish only).
 func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInfo) {
 	// QUM-817: an isReplay user echo is the consumption ack for a previously
 	// written stdin user message. Render it and flip the outstanding entry to
@@ -350,16 +314,13 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	}
 
 	st := &rt.autoTurn
-	if st.taskIDs == nil {
-		st.taskIDs = map[string]struct{}{}
-	}
 
 	// QUM-903: a system/init marks a resume/turn boundary. If a speculative
 	// submitted state is still outstanding across it, re-arm its guard for a
 	// fresh window (a pre-boundary timer must not fire against the post-boundary
 	// turn); otherwise init is a no-op for the phase machine (phase is left to
-	// the wire / teardown authorities, and the per-turn autoTurn task-fold state
-	// must survive init so a pre-init trigger's task_id still folds in).
+	// the wire / teardown authorities, and autoTurn.open must survive init so an
+	// already-open frame turn is not silently reopened).
 	if msg != nil && msg.Type == "system" && msg.Subtype == "init" {
 		rt.mu.Lock()
 		if rt.phase == phaseSubmitted {
@@ -406,25 +367,20 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		return
 	}
 
-	// Render + observe EVERY autonomous frame, including a pre-init trigger.
+	// Render + observe EVERY autonomous frame, including a pre-init trigger. A
+	// background task's task_notification rides this same publish — that is the
+	// sole source of the TUI's "↻ auto-continued" marker and of task telemetry, and
+	// is all sprawl does with it since QUM-929 (no stdin nudge).
 	if msg != nil {
 		rt.eventBus.Publish(RuntimeEvent{Type: EventProtocolMessage, Message: msg})
-		if msg.Type == "system" && msg.Subtype == "task_notification" {
-			var tn protocol.TaskNotification
-			if err := protocol.ParseAs(msg, &tn); err != nil || tn.TaskID == "" {
-				st.sawEmptyTaskID = true
-			} else if !rt.serviced.has(tn.TaskID) {
-				st.taskIDs[tn.TaskID] = struct{}{}
-			}
-		}
 	}
 
 	// Open turn lifecycle (InTurn flip + EventTurnStarted) only on a real turn
 	// frame — NEVER on a pre-init trigger, which isn't guaranteed to be followed
 	// by an init (a racing StartTurn can absorb it). Otherwise InTurn would leak
-	// true and EventTurnStarted would have no matching completion (QUM-815). Any
-	// task_id observed from a stranded trigger stays buffered in st.taskIDs and
-	// is folded into the next autonomous turn's continuation (deduped).
+	// true and EventTurnStarted would have no matching completion (QUM-815). A
+	// stranded trigger is publish-only — it needs no further bookkeeping now that
+	// nothing is folded into a turn-end continuation (QUM-929).
 	if turn.PreInit {
 		return
 	}
@@ -453,32 +409,15 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		} else {
 			rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
 		}
-		// QUM-640 continuation (the QUM-812 fix): a background-task completion
-		// observed this turn writes exactly one synthetic continuation user
-		// message to stdin, which the CLI processes as the next turn. Deduped
-		// via the shared serviced set so a continuation turn re-observing the
-		// same task_notification does not re-fire (would infinite-loop).
-		// QUM-817: this is a direct stdin write now, not a queue enqueue.
-		continue640 := st.sawEmptyTaskID || len(st.taskIDs) > 0
-		ids := make([]string, 0, len(st.taskIDs))
-		for id := range st.taskIDs {
-			ids = append(ids, id)
-		}
 		// QUM-903 running-side teardown guard: a terminal `result` clears in_turn
 		// even when no wire `idle` follows (the 36 no-idle teardown cases).
 		rt.setPhase(phaseIdle)
 		rt.closeFrameTurn()
 		st.reset()
-		// Fire the post-turn sweep (QUM-580) and write the continuation AFTER
-		// clearing per-turn state. Both go to stdin / disk, never under a lock.
+		// Fire the post-turn sweep (QUM-580) AFTER clearing per-turn state — it
+		// goes to stdin / disk, never under a lock.
 		if rt.cfg.PostTurnSweep != nil {
 			rt.cfg.PostTurnSweep()
-		}
-		if continue640 {
-			for _, id := range ids {
-				rt.serviced.add(id)
-			}
-			_, _ = rt.writeMessage(context.Background(), continuationPrompt, "next", kindSystem, nil, nil)
 		}
 	}
 }
@@ -587,7 +526,7 @@ func (rt *UnifiedRuntime) WriteUserBlocks(ctx context.Context, text string, bloc
 
 // WriteSystemMessage writes a sprawl-originated message (kind:system, not
 // recallable) to the CLI stdin (QUM-817). Used by the supervisor delivery path
-// for inbox/status/task/liveness notifications and the QUM-640 continuation.
+// for inbox/status/task/liveness notifications.
 // entryIDs link the message to durable maildir/task records for delivery
 // tracking via the isReplay consumption ack.
 func (rt *UnifiedRuntime) WriteSystemMessage(ctx context.Context, text, priority string, entryIDs []string) (string, error) {
@@ -650,9 +589,8 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 	// human-typed prompt (kind:user — the watched weave input path) submitted
 	// FROM idle, hiding the ~2–10ms submit→running wire latency. Only from idle:
 	// a submit while already submitted/running just queues (no new synthetic).
-	// kind:system deliveries (spawn prompt, inbox, task, the QUM-640
-	// continuation) never synthesize — passively-observed agents are driven
-	// purely by their wire.
+	// kind:system deliveries (spawn prompt, inbox, task) never synthesize —
+	// passively-observed agents are driven purely by their wire.
 	if kind == kindUser && rt.phase == phaseIdle {
 		rt.setPhaseLocked(phaseSubmitted)
 	}

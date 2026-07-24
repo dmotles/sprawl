@@ -324,9 +324,9 @@ type session struct {
 	// observe-and-route callback invoked for every frame belonging to a turn
 	// (sprawl-initiated OR autonomous) plus a pre-init autonomous trigger
 	// (system/task_notification while idle). TurnInfo.Autonomous lets the
-	// runtime derive turn lifecycle (EventTurnStarted/Completed + InTurn) and
-	// the QUM-640 continuation UNIFORMLY for autonomous turns, while
-	// early-returning for sprawl turns (whose lifecycle the TurnLoop owns).
+	// runtime derive turn lifecycle (EventTurnStarted/Completed + InTurn)
+	// UNIFORMLY for autonomous turns, while early-returning for sprawl turns
+	// (whose lifecycle the TurnLoop owns).
 	// Invoked synchronously from runReader; the handler MUST be non-blocking
 	// (the runtime's handler only does bounded EventBus.Publish / Queue.Enqueue).
 	// Distinct from Observer, which sees EVERY frame regardless of turn kind.
@@ -736,9 +736,9 @@ func (s *session) runReader(ctx context.Context) {
 		s.mu.Lock()
 		// A pre-init system/task_notification (the QUM-634 timing crux) arrives
 		// while idle, ~6ms before the autonomous init. It is routed to the
-		// runtime IMMEDIATELY (no stash) so the router observes the trigger for
-		// the QUM-640 continuation, but — per QUM-570 — it does NOT allocate a
-		// turnFrame or gate StartTurn.
+		// runtime IMMEDIATELY (no stash) so the router observes and publishes the
+		// trigger (the TUI's ↻ marker + task telemetry), but — per QUM-570 — it does
+		// NOT allocate a turnFrame or gate StartTurn.
 		preInitTrigger := s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "task_notification"
 		if s.currentTurn == nil && msg.Type == "system" && msg.Subtype == "init" {
 			s.currentTurn = &turnFrame{
