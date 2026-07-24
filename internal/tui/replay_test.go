@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 )
 
 func TestLoadTranscript_ReplayMaxMessagesConstant(t *testing.T) {
@@ -1241,5 +1243,76 @@ func TestLoadTranscript_SuppressesCompactContinuationSurroundedByRealTurns(t *te
 	}
 	if entries[0].Content != "before compaction" || entries[1].Content != "after compaction" {
 		t.Errorf("surrounding turns altered: %+v", entries)
+	}
+}
+
+// TestReplay_AutoContinueRendersAutoTrigger (QUM-924): the auto-continue
+// continuation nudge is injected on the wire as a BARE `type:user` string (the
+// AutoContinuePrefix sentinel, no <system-notification>/<task-notification>
+// wrapper and no isSynthetic flag). Live rendering draws the "↻ auto-continued"
+// marker from a separate task_notification system frame, which the reload path
+// drops — so on replay the bare user echo is the only surviving trace. It must
+// classify as a MessageAutoTrigger marker, NOT a plain MessageUser bubble.
+func TestReplay_AutoContinueRendersAutoTrigger(t *testing.T) {
+	// Build the wire content from the SHARED exported prefix so this test
+	// pins the single-constant contract across internal/runtime and internal/tui.
+	content := sprawlrt.AutoContinuePrefix + " A background task you started has completed. Review its output above and continue your work."
+	rec := map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": content,
+		},
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeWireLog(t, []string{string(b)})
+
+	entries, err := scanWireTranscript(path, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageAutoTrigger {
+		t.Errorf("entries[0].Type = %v, want MessageAutoTrigger", entries[0].Type)
+	}
+	for _, e := range entries {
+		if e.Type == MessageUser {
+			t.Errorf("a bare [auto-continue] user echo must NOT replay as a MessageUser bubble, got: %+v", e)
+		}
+	}
+}
+
+// TestReplay_AutoContinuePrefixMidStringStaysUser (QUM-924): the classifier
+// keys on a PREFIX match, not a substring. A genuine user message that merely
+// mentions the sentinel mid-text must still render as a plain user bubble — this
+// pins HasPrefix semantics (not Contains) so the accepted false-positive window
+// stays as narrow as possible. (The array-content arm is intentionally out of
+// scope: the continuation is always string-form on the wire.)
+func TestReplay_AutoContinuePrefixMidStringStaysUser(t *testing.T) {
+	content := "please explain what " + sprawlrt.AutoContinuePrefix + " means"
+	rec := map[string]any{
+		"type":    "user",
+		"message": map[string]any{"role": "user", "content": content},
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeWireLog(t, []string{string(b)})
+
+	entries, err := scanWireTranscript(path, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
+	}
+	if entries[0].Type != MessageUser {
+		t.Errorf("entries[0].Type = %v, want MessageUser (sentinel mid-string is not an auto-continue)", entries[0].Type)
 	}
 }

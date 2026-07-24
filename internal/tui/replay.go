@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
 	"github.com/dmotles/sprawl/internal/transcript"
 )
 
@@ -218,6 +219,26 @@ func appendRecordEntries(entries []MessageEntry, agentStack []string, rec map[st
 			// cannot drift.
 			if notifEntries, ok := peelNotificationEntries(c); ok {
 				entries = append(entries, notifEntries...)
+				return entries, agentStack
+			}
+			// QUM-924: the auto-continue continuation nudge is injected on the
+			// wire as a BARE user string (the shared runtime.AutoContinuePrefix
+			// sentinel, no wrapper and no isSynthetic flag). Live rendering draws
+			// the "↻ auto-continued" marker from a SEPARATE task_notification
+			// system frame, which the reload path drops (:166) — so on replay this
+			// user echo is the only surviving trace and must reconstruct the
+			// marker as a MessageAutoTrigger (Content is ignored by the renderer,
+			// which emits a fixed cue). Prefix-matched, not isSynthetic-gated
+			// (the bare frame carries no flag) — a user who literally opens a
+			// message with the sentinel is mis-classified on replay only; that is
+			// an accepted, cosmetic false-positive window kept narrow via HasPrefix
+			// (not Contains).
+			if strings.HasPrefix(c, sprawlrt.AutoContinuePrefix) {
+				entries = append(entries, MessageEntry{
+					Type:     MessageAutoTrigger,
+					Content:  "",
+					Complete: true,
+				})
 				return entries, agentStack
 			}
 			entries = append(entries, MessageEntry{

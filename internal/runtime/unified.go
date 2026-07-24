@@ -165,12 +165,21 @@ type OutstandingEntry struct {
 	seq      uint64   // submit order, stamped in writeMessage (QUM-824)
 }
 
+// AutoContinuePrefix is the machine sentinel that opens the auto-continue
+// continuation prompt. It is the SINGLE shared discriminator used by the TUI
+// replay classifier (internal/tui/replay.go) to reconstruct the
+// "↻ auto-continued" marker on session reload — the bare continuation frame
+// carries no wrapper or synthetic flag on the wire, so the prefix is the only
+// stable signal. Exported so the literal is defined once and the two packages
+// cannot drift (QUM-924).
+const AutoContinuePrefix = "[auto-continue]"
+
 // continuationPrompt is the synthetic, machine-originated nudge written to
 // stdin at turn-end when a run_in_background task completed (QUM-640). The
 // completed task's result is already in the CLI's context as a tool_result;
 // this prompt only grants the agent a turn to review it and continue. Terse and
 // neutral to avoid steering the agent.
-const continuationPrompt = "[auto-continue] A background task you started has completed. Review its output above and continue your work."
+const continuationPrompt = AutoContinuePrefix + " A background task you started has completed. Review its output above and continue your work."
 
 // servicedTaskSet is a concurrency-safe set of background-task IDs that have
 // already driven an auto-continuation (QUM-807/QUM-817). The frame router
