@@ -1,0 +1,12 @@
+# QUM-911 hub-e2e — DISCRIMINATING RED (assertion has teeth)
+# Mutation: network_blip reconnects with fromSeq=0 instead of lastSeq (would replay already-seen frames).
+# Expected: checkContiguous flags the dupe/wrong-resume; subtest FAILS. Restored to green afterward.
+
+=== RUN   TestHubLocalE2E
+=== RUN   TestHubLocalE2E/network_blip
+    local_e2e_test.go:139: blip resume not contiguous (zero-gap/dupe violated): first seq = 1, want 6 (resume floor 5 + 1) (seqs=[1 2])
+--- FAIL: TestHubLocalE2E (1.86s)
+    --- FAIL: TestHubLocalE2E/network_blip (0.14s)
+FAIL
+FAIL	github.com/dmotles/sprawl/internal/hub/e2e	1.871s
+FAIL

@@ -1,4 +1,4 @@
-.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap
+.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap test-hub-e2e
 
 # Default target — full quality gauntlet
 validate: build proto-check fmt-check lint test leak-scan
@@ -258,6 +258,13 @@ test-hooks-e2e: build
 # tags, create/converge idempotency, no-leak grep, and gitignore coverage.
 test-hub-bootstrap:
 	bash scripts/test-hub-bootstrap.sh
+
+# QUM-911: Hub Phase 1 capstone e2e — a local hubd process, the real host
+# tailer, and a Connect subscriber (browser stand-in) proving live-tail plus
+# zero-gap/zero-dupe reconnect across a subscriber blip and a hubd restart.
+# Needs only the Go toolchain (behind the hub_e2e build tag; no claude/tmux).
+test-hub-e2e:
+	go test -tags hub_e2e -count=1 -v ./internal/hub/e2e/
 
 # QUM-616 matrix-driven e2e harness foundation. Wave 1 — runs alongside
 # the per-test test-*-e2e targets. See scripts/e2e-matrix.sh.

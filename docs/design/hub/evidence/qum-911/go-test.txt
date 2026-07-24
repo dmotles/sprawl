@@ -1,0 +1,34 @@
+# QUM-911 hub-e2e capstone — automated gate transcript
+# Command: make test-hub-e2e   (go test -tags hub_e2e -count=1 -v ./internal/hub/e2e/)
+# Captured on branch dmotles/qum-911-hub-p1-e2e. Synthetic fixture only (public-repo hygiene).
+
+=== RUN   TestCheckContiguous_DetectsGap
+=== RUN   TestCheckContiguous_DetectsGap/clean_run_from_zero
+=== RUN   TestCheckContiguous_DetectsGap/clean_delta_after_resume
+=== RUN   TestCheckContiguous_DetectsGap/empty_is_vacuously_ok
+=== RUN   TestCheckContiguous_DetectsGap/forward_gap
+=== RUN   TestCheckContiguous_DetectsGap/duplicate_seq
+=== RUN   TestCheckContiguous_DetectsGap/non-monotonic
+=== RUN   TestCheckContiguous_DetectsGap/wrong_resume_floor
+=== RUN   TestCheckContiguous_DetectsGap/resume_off_by_one
+--- PASS: TestCheckContiguous_DetectsGap (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/clean_run_from_zero (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/clean_delta_after_resume (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/empty_is_vacuously_ok (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/forward_gap (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/duplicate_seq (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/non-monotonic (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/wrong_resume_floor (0.00s)
+    --- PASS: TestCheckContiguous_DetectsGap/resume_off_by_one (0.00s)
+=== RUN   TestHubLocalE2E
+=== RUN   TestHubLocalE2E/live_output
+=== RUN   TestHubLocalE2E/pill_state
+=== RUN   TestHubLocalE2E/network_blip
+=== RUN   TestHubLocalE2E/hubd_restart
+--- PASS: TestHubLocalE2E (2.23s)
+    --- PASS: TestHubLocalE2E/live_output (0.05s)
+    --- PASS: TestHubLocalE2E/pill_state (0.05s)
+    --- PASS: TestHubLocalE2E/network_blip (0.13s)
+    --- PASS: TestHubLocalE2E/hubd_restart (0.31s)
+PASS
+ok  	github.com/dmotles/sprawl/internal/hub/e2e	2.232s
