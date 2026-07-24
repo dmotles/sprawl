@@ -12,13 +12,14 @@ import (
 	"github.com/dmotles/sprawl/internal/state"
 )
 
-// writeChildSessionFixture creates a temp sprawlRoot + homeDir, writes an
-// AgentState JSON for `name`, and writes a JSONL session log at the path
-// LoadChildTranscript would resolve. Returns (sprawlRoot, homeDir, sessionID).
-func writeChildSessionFixture(t *testing.T, name string, jsonlLines []string) (string, string, string) {
+// writeChildSessionFixture creates a temp sprawlRoot, writes an AgentState JSON
+// for `name`, and writes a wire-log session file at the path LoadChildTranscript
+// would resolve (QUM-904: the child's identity is its agent name, under
+// sprawlRoot). The given conversation records are wrapped as "out" wire
+// envelopes. Returns (sprawlRoot, sessionID).
+func writeChildSessionFixture(t *testing.T, name string, records []string) (string, string) {
 	t.Helper()
 	sprawlRoot := t.TempDir()
-	homeDir := t.TempDir()
 	worktree := filepath.Join(sprawlRoot, "worktree-"+name)
 	sessionID := "11111111-2222-3333-4444-555555555555"
 
@@ -36,26 +37,21 @@ func writeChildSessionFixture(t *testing.T, name string, jsonlLines []string) (s
 	if err := state.SaveAgent(sprawlRoot, agent); err != nil {
 		t.Fatalf("SaveAgent: %v", err)
 	}
-	if jsonlLines != nil {
-		path := memory.SessionLogPath(homeDir, worktree, sessionID)
+	if records != nil {
+		path := memory.WireLogPath(sprawlRoot, name, sessionID)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
 		}
-		content := strings.Join(jsonlLines, "\n")
-		if len(jsonlLines) > 0 {
-			content += "\n"
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(path, wireEnvelopeBytes(t, records), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
-	return sprawlRoot, homeDir, sessionID
+	return sprawlRoot, sessionID
 }
 
-func newAppForChildTranscript(t *testing.T, sprawlRoot, homeDir string) AppModel {
+func newAppForChildTranscript(t *testing.T, sprawlRoot string) AppModel {
 	t.Helper()
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, sprawlRoot, nil)
-	m.SetHomeDir(homeDir)
 	resized, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	return resized.(AppModel)
 }
@@ -74,8 +70,8 @@ func TestAgentSelectedMsg_NonRoot_DispatchesChildTranscriptMsg(t *testing.T) {
 		`{"type":"user","timestamp":"2026-04-25T10:00:00Z","message":{"role":"user","content":"hello finn"}}`,
 		`{"type":"assistant","timestamp":"2026-04-25T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"working"}]}}`,
 	}
-	sprawlRoot, homeDir, sessionID := writeChildSessionFixture(t, "finn", lines)
-	app := newAppForChildTranscript(t, sprawlRoot, homeDir)
+	sprawlRoot, sessionID := writeChildSessionFixture(t, "finn", lines)
+	app := newAppForChildTranscript(t, sprawlRoot)
 
 	_, cmd := app.Update(AgentSelectedMsg{Name: "finn"})
 	if cmd == nil {
@@ -105,7 +101,6 @@ func TestAgentSelectedMsg_NonRoot_DispatchesChildTranscriptMsg(t *testing.T) {
 
 func TestAgentSelectedMsg_NonRoot_NoSessionID_EmitsEmptyTranscriptMsg(t *testing.T) {
 	sprawlRoot := t.TempDir()
-	homeDir := t.TempDir()
 	agent := &state.AgentState{
 		Name:      "finn",
 		Type:      "engineer",
@@ -119,7 +114,7 @@ func TestAgentSelectedMsg_NonRoot_NoSessionID_EmitsEmptyTranscriptMsg(t *testing
 	if err := state.SaveAgent(sprawlRoot, agent); err != nil {
 		t.Fatalf("SaveAgent: %v", err)
 	}
-	app := newAppForChildTranscript(t, sprawlRoot, homeDir)
+	app := newAppForChildTranscript(t, sprawlRoot)
 
 	_, cmd := app.Update(AgentSelectedMsg{Name: "finn"})
 	msgs := collectBatchMsgs(t, cmd)
@@ -136,7 +131,7 @@ func TestAgentSelectedMsg_NonRoot_NoSessionID_EmitsEmptyTranscriptMsg(t *testing
 }
 
 func TestChildTranscriptMsg_PopulatesViewport(t *testing.T) {
-	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
+	app := newAppForChildTranscript(t, t.TempDir())
 	// Switch observed to finn so the msg is not dropped as stale.
 	app.observedAgent = "finn"
 	entries := []MessageEntry{
@@ -163,7 +158,7 @@ func TestChildTranscriptMsg_PopulatesViewport(t *testing.T) {
 func TestChildTranscriptMsg_EmptyEntries_ShowsWaitingBanner(t *testing.T) {
 	// QUM-676: the "Waiting for X to start" banner now lives on the
 	// status-bar transient label, not in the agent's viewport.
-	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
+	app := newAppForChildTranscript(t, t.TempDir())
 	app.observedAgent = "finn"
 	updated, _ := app.Update(ChildTranscriptMsg{Agent: "finn", Entries: nil})
 	app = updated.(AppModel)
@@ -177,7 +172,7 @@ func TestChildTranscriptMsg_EmptyEntries_Idempotent(t *testing.T) {
 	// QUM-676: repeated empty-arm ticks must keep showing the same banner
 	// once (the transient label is naturally idempotent — setting the same
 	// value repeatedly is a no-op).
-	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
+	app := newAppForChildTranscript(t, t.TempDir())
 	app.observedAgent = "finn"
 	for i := 0; i < 3; i++ {
 		updated, _ := app.Update(ChildTranscriptMsg{Agent: "finn", Entries: nil})
@@ -189,7 +184,7 @@ func TestChildTranscriptMsg_EmptyEntries_Idempotent(t *testing.T) {
 }
 
 func TestChildTranscriptMsg_StaleAgent_NoViewportMutation(t *testing.T) {
-	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
+	app := newAppForChildTranscript(t, t.TempDir())
 	// observedAgent stays as default "weave".
 	before := app.viewportFor("weave").ChatList().Items()
 	updated, _ := app.Update(ChildTranscriptMsg{
@@ -214,8 +209,8 @@ func TestAgentSelectedMsg_NonRoot_PopulatesAgentBuffer(t *testing.T) {
 	lines := []string{
 		`{"type":"user","timestamp":"2026-04-25T10:00:00Z","message":{"role":"user","content":"q"}}`,
 	}
-	sprawlRoot, homeDir, sessionID := writeChildSessionFixture(t, "finn", lines)
-	app := newAppForChildTranscript(t, sprawlRoot, homeDir)
+	sprawlRoot, sessionID := writeChildSessionFixture(t, "finn", lines)
+	app := newAppForChildTranscript(t, sprawlRoot)
 
 	updated, cmd := app.Update(AgentSelectedMsg{Name: "finn"})
 	app = updated.(AppModel)
@@ -244,7 +239,7 @@ func TestAgentSelectedMsg_NonRoot_PopulatesAgentBuffer(t *testing.T) {
 }
 
 func TestAgentSelectedMsg_BackToRoot_RestoresBufferNoTranscriptCmd(t *testing.T) {
-	app := newAppForChildTranscript(t, t.TempDir(), t.TempDir())
+	app := newAppForChildTranscript(t, t.TempDir())
 	// Seed a weave buffer.
 	app.viewportFor("weave").ChatList().AppendUser("weave-msg")
 	app.observedAgent = "finn"

@@ -20,11 +20,8 @@ package tui
 //    the same text (no double-rendering / no contract violator residue).
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -37,16 +34,12 @@ import (
 // signal is delivered via a side-channel (status-bar transient text installed
 // by the caller of LoadTranscript), not woven into the MessageEntry slice.
 func TestLoadTranscript_TruncatedMarker_NotInEntries(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
 	// Write more entries than the cap so truncation kicks in.
 	var lines []string
 	for i := 0; i < 10; i++ {
 		lines = append(lines, `{"type":"user","message":{"content":"u"}}`)
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	path := writeWireLog(t, lines)
 
 	entries, err := LoadTranscript(path, 3)
 	if err != nil {
@@ -62,12 +55,7 @@ func TestLoadTranscript_TruncatedMarker_NotInEntries(t *testing.T) {
 // TestLoadTranscript_ResumedMarker_NotInEntries asserts the same for the
 // trailing "Resumed from prior session" status marker.
 func TestLoadTranscript_ResumedMarker_NotInEntries(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-	body := `{"type":"user","message":{"content":"u"}}` + "\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
+	path := writeWireLog(t, []string{`{"type":"user","message":{"content":"u"}}`})
 	entries, err := LoadTranscript(path, 0)
 	if err != nil {
 		t.Fatalf("LoadTranscript: %v", err)
@@ -82,16 +70,12 @@ func TestLoadTranscript_ResumedMarker_NotInEntries(t *testing.T) {
 // TestLoadChildTranscript_TruncatedMarker_NotInEntries asserts the sibling
 // reroute applies to LoadChildTranscript's truncation marker too.
 func TestLoadChildTranscript_TruncatedMarker_NotInEntries(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "child.jsonl")
 	var lines []string
 	for i := 0; i < 10; i++ {
 		lines = append(lines, `{"type":"user","message":{"content":"u"}}`)
 	}
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	entries, err := LoadChildTranscript(path, time.Time{}, 3)
+	path := writeWireLog(t, lines)
+	entries, err := LoadChildTranscript(path, 3)
 	if err != nil {
 		t.Fatalf("LoadChildTranscript: %v", err)
 	}

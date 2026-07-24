@@ -2,26 +2,10 @@ package tui
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
-
-func writeJSONL(t *testing.T, lines []string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "session.jsonl")
-	content := strings.Join(lines, "\n")
-	if len(lines) > 0 {
-		content += "\n"
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	return path
-}
 
 func TestLoadTranscript_ReplayMaxMessagesConstant(t *testing.T) {
 	if ReplayMaxMessages != 500 {
@@ -40,7 +24,7 @@ func TestLoadTranscript_MissingFile(t *testing.T) {
 }
 
 func TestLoadTranscript_EmptyFile(t *testing.T) {
-	path := writeJSONL(t, nil)
+	path := writeWireLog(t, nil)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -55,7 +39,7 @@ func TestLoadTranscript_BasicUserAssistantText(t *testing.T) {
 		`{"type":"user","message":{"role":"user","content":"hello"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi there"}]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -79,7 +63,7 @@ func TestLoadTranscript_AssistantMultipleBlocks(t *testing.T) {
 		`{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}},` +
 		`{"type":"text","text":"after"}` +
 		`]}}`
-	path := writeJSONL(t, []string{line})
+	path := writeWireLog(t, []string{line})
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -113,7 +97,7 @@ func TestLoadTranscript_SkipsThinkingBlocks(t *testing.T) {
 		`{"type":"thinking","thinking":"hmm"},` +
 		`{"type":"text","text":"visible"}` +
 		`]}}`
-	path := writeJSONL(t, []string{line})
+	path := writeWireLog(t, []string{line})
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -132,7 +116,7 @@ func TestLoadTranscript_UserContentArray(t *testing.T) {
 		`{"type":"text","text":"hello"},` +
 		`{"type":"tool_result","tool_use_id":"t1","content":"ignored"}` +
 		`]}}`
-	path := writeJSONL(t, []string{line})
+	path := writeWireLog(t, []string{line})
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -156,7 +140,7 @@ func TestLoadTranscript_SkipsMetadataTypes(t *testing.T) {
 		`{"type":"attachment","path":"/x"}`,
 		`{"type":"user","message":{"role":"user","content":"real"}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -169,24 +153,6 @@ func TestLoadTranscript_SkipsMetadataTypes(t *testing.T) {
 	}
 }
 
-func TestLoadTranscript_SkipsSidechain(t *testing.T) {
-	lines := []string{
-		`{"type":"user","isSidechain":true,"message":{"role":"user","content":"sub-agent chatter"}}`,
-		`{"type":"user","message":{"role":"user","content":"main"}}`,
-	}
-	path := writeJSONL(t, lines)
-	entries, err := LoadTranscript(path, ReplayMaxMessages)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("len(entries) = %d, want 1; entries=%+v", len(entries), entries)
-	}
-	if entries[0].Content != "main" {
-		t.Errorf("entries[0].Content = %q, want 'main'", entries[0].Content)
-	}
-}
-
 func TestLoadTranscript_MalformedLinesIgnored(t *testing.T) {
 	lines := []string{
 		`not json at all`,
@@ -194,7 +160,7 @@ func TestLoadTranscript_MalformedLinesIgnored(t *testing.T) {
 		`{broken json`,
 		`{"type":"user","message":{"role":"user","content":"two"}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -212,7 +178,7 @@ func TestLoadTranscript_TruncationMarker(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		lines = append(lines, `{"type":"user","message":{"role":"user","content":"msg`+string(rune('0'+i))+`"}}`)
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -235,7 +201,7 @@ func TestLoadTranscript_NoCapWhenMaxZero(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		lines = append(lines, `{"type":"user","message":{"role":"user","content":"msg`+string(rune('0'+i))+`"}}`)
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -254,8 +220,8 @@ func TestLoadChildTranscript_NoTrailingResumedMarker(t *testing.T) {
 		`{"type":"user","timestamp":"2026-04-25T10:00:00Z","message":{"role":"user","content":"hello"}}`,
 		`{"type":"assistant","timestamp":"2026-04-25T10:00:01Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`,
 	}
-	path := writeJSONL(t, lines)
-	entries, err := LoadChildTranscript(path, time.Time{}, ReplayMaxMessages)
+	path := writeWireLog(t, lines)
+	entries, err := LoadChildTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -275,42 +241,8 @@ func TestLoadChildTranscript_NoTrailingResumedMarker(t *testing.T) {
 	}
 }
 
-func TestLoadChildTranscript_FiltersBySince(t *testing.T) {
-	lines := []string{
-		`{"type":"user","timestamp":"2026-04-25T09:00:00Z","message":{"role":"user","content":"old"}}`,
-		`{"type":"user","timestamp":"2026-04-25T11:00:00Z","message":{"role":"user","content":"new"}}`,
-	}
-	path := writeJSONL(t, lines)
-	cutoff, _ := time.Parse(time.RFC3339, "2026-04-25T10:00:00Z")
-	entries, err := LoadChildTranscript(path, cutoff, ReplayMaxMessages)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("len(entries) = %d, want 1 (filtered); entries=%+v", len(entries), entries)
-	}
-	if entries[0].Content != "new" {
-		t.Errorf("entries[0].Content = %q, want 'new' (older record should be filtered)", entries[0].Content)
-	}
-}
-
-func TestLoadChildTranscript_ZeroSinceNoFilter(t *testing.T) {
-	lines := []string{
-		`{"type":"user","timestamp":"2026-04-25T09:00:00Z","message":{"role":"user","content":"a"}}`,
-		`{"type":"user","timestamp":"2026-04-25T11:00:00Z","message":{"role":"user","content":"b"}}`,
-	}
-	path := writeJSONL(t, lines)
-	entries, err := LoadChildTranscript(path, time.Time{}, ReplayMaxMessages)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("len(entries) = %d, want 2; entries=%+v", len(entries), entries)
-	}
-}
-
 func TestLoadChildTranscript_MissingFile(t *testing.T) {
-	entries, err := LoadChildTranscript(filepath.Join(t.TempDir(), "nope.jsonl"), time.Time{}, ReplayMaxMessages)
+	entries, err := LoadChildTranscript(filepath.Join(t.TempDir(), "nope.ndjson"), ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -324,8 +256,8 @@ func TestLoadChildTranscript_TruncationMarker(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		lines = append(lines, `{"type":"user","timestamp":"2026-04-25T10:00:00Z","message":{"role":"user","content":"msg`+string(rune('0'+i))+`"}}`)
 	}
-	path := writeJSONL(t, lines)
-	entries, err := LoadChildTranscript(path, time.Time{}, 5)
+	path := writeWireLog(t, lines)
+	entries, err := LoadChildTranscript(path, 5)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -347,7 +279,7 @@ func TestLoadTranscript_NoEntriesSkipsMarkers(t *testing.T) {
 		`{"type":"custom-title","title":"x"}`,
 		`{"type":"system","subtype":"init"}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -378,7 +310,7 @@ func TestLoadTranscript_AgentNestingSetsDepth(t *testing.T) {
 			`{"type":"tool_use","id":"r1","name":"Read","input":{"path":"/tmp/x"}}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -427,7 +359,7 @@ func TestLoadTranscript_AgentNestingSetsParentToolID(t *testing.T) {
 			`{"type":"tool_use","id":"r1","name":"Read","input":{"path":"/tmp/x"}}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -479,7 +411,7 @@ func TestLoadTranscript_NestedAgentDepth2ParentToolID(t *testing.T) {
 			`{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -513,7 +445,7 @@ func TestLoadTranscript_NestedAgentDepth2(t *testing.T) {
 			`{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -545,7 +477,7 @@ func TestLoadTranscript_ToolResultPatchesStringContent(t *testing.T) {
 			`{"type":"tool_result","tool_use_id":"t1","content":"hello world"}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -577,7 +509,7 @@ func TestLoadTranscript_ToolResultPatchesArrayContent(t *testing.T) {
 			`{"type":"tool_result","tool_use_id":"t1","content":[{"type":"text","text":"line1"},{"type":"text","text":"line2"}]}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -607,7 +539,7 @@ func TestLoadTranscript_ToolResultIsError(t *testing.T) {
 			`{"type":"tool_result","tool_use_id":"t1","content":"command failed","is_error":true}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -636,7 +568,7 @@ func TestLoadTranscript_OrphanToolResultNoPanic(t *testing.T) {
 			`{"type":"tool_result","tool_use_id":"orphan","content":"whatever"}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -660,7 +592,7 @@ func TestLoadTranscript_MultipleToolCallsInterleavedResults(t *testing.T) {
 			`{"type":"tool_result","tool_use_id":"t2","content":"result2"}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -701,8 +633,8 @@ func TestLoadTranscript_MultipleToolCallsInterleavedResults(t *testing.T) {
 func TestScanTranscript_SystemNotification_LegacyUntypedAsyncStringContent(t *testing.T) {
 	// Back-compat: pre-QUM-562 transcripts persisted without the type attribute.
 	line := `{"type":"user","message":{"role":"user","content":"<system-notification>From finn — msg id=9v6</system-notification>"}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -725,8 +657,8 @@ func TestScanTranscript_SystemNotification_LegacyUntypedAsyncStringContent(t *te
 
 func TestScanTranscript_SystemNotification_LegacyUntypedInterruptStringContent(t *testing.T) {
 	line := `{"type":"user","message":{"role":"user","content":"<system-notification>[interrupt] From finn — msg id=9v6</system-notification>"}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -749,8 +681,8 @@ func TestScanTranscript_SystemNotification_LegacyUntypedInterruptStringContent(t
 
 func TestScanTranscript_SystemNotification_TypedMessageStringContent(t *testing.T) {
 	line := `{"type":"user","message":{"role":"user","content":"<system-notification type=\"message\">From finn — msg id=9v6</system-notification>"}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -767,8 +699,8 @@ func TestScanTranscript_SystemNotification_TypedMessageStringContent(t *testing.
 
 func TestScanTranscript_SystemNotification_TypedMessageInterruptStringContent(t *testing.T) {
 	line := `{"type":"user","message":{"role":"user","content":"<system-notification type=\"message\" interrupt=\"true\">[interrupt] From finn — msg id=9v6</system-notification>"}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -785,8 +717,8 @@ func TestScanTranscript_SystemNotification_TypedMessageInterruptStringContent(t 
 
 func TestScanTranscript_SystemNotification_TypedStatusChangeStringContent(t *testing.T) {
 	line := `{"type":"user","message":{"role":"user","content":"<system-notification type=\"status_change\">finn changed status to working: doing X</system-notification>"}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -811,8 +743,8 @@ func TestScanTranscript_SystemNotification_LegacyUntypedArrayBlockContent(t *tes
 	line := `{"type":"user","message":{"role":"user","content":[` +
 		`{"type":"text","text":"<system-notification>x</system-notification>"}` +
 		`]}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -841,8 +773,8 @@ func TestScanTranscript_SystemNotification_TypedStatusChangeArrayBlockContent(t 
 	line := `{"type":"user","message":{"role":"user","content":[` +
 		`{"type":"text","text":"<system-notification type=\"status_change\">finn changed status to working: doing X</system-notification>"}` +
 		`]}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -863,8 +795,8 @@ func TestScanTranscript_SystemNotification_TypedMessageInterruptArrayBlockConten
 	line := `{"type":"user","message":{"role":"user","content":[` +
 		`{"type":"text","text":"<system-notification type=\"message\" interrupt=\"true\">[interrupt] body</system-notification>"}` +
 		`]}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -889,8 +821,8 @@ func TestScanTranscript_SystemNotification_BackToBackTwoEnvelopesStringContent(t
 	inner := `<system-notification type=\"status_change\">tower changed status to complete: phase 2 done</system-notification>` +
 		`<system-notification type=\"message\">From tower — hello</system-notification>`
 	line := `{"type":"user","message":{"role":"user","content":"` + inner + `"}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -925,8 +857,8 @@ func TestScanTranscript_SystemNotification_BackToBackTwoEnvelopesArrayBlockConte
 	line := `{"type":"user","message":{"role":"user","content":[` +
 		`{"type":"text","text":"` + innerText + `"}` +
 		`]}}`
-	path := writeJSONL(t, []string{line})
-	entries, err := scanTranscript(path, time.Time{})
+	path := writeWireLog(t, []string{line})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -974,20 +906,20 @@ func TestExtractToolResultContent(t *testing.T) {
 	}
 }
 
-// --- QUM-577: sidechain (sub-agent) records must be replayed for child viewport ---
+// --- QUM-577 / QUM-904: sidechain (sub-agent) frames must be replayed for the
+//     child viewport ---
 //
 // Claude Code emits inner Agent-tool activity (the Read/Bash/etc calls a
-// sub-agent makes) as JSONL records with isSidechain=true and
-// parent_tool_use_id pointing at the outer Agent tool_use. The current
-// scanTranscript filter at internal/tui/replay.go:136-138 strips all such
-// records, so Ctrl+N hydration of a child viewport shows the outer Agent
-// entry but no inner activity. These tests assert the new behavior: sidechain
-// records nested under an outer Agent are surfaced as MessageToolCall entries
-// with Depth=1 and the correct ParentToolID, ordering is preserved, and the
-// existing QUM-331 timestamp filter still discards stale records.
+// sub-agent makes) as frames carrying parent_tool_use_id pointing at the outer
+// Agent tool_use. On the wire there is NO top-level isSidechain field —
+// sidechain-ness is derived from parent_tool_use_id (QUM-904). The child-tail
+// path (LoadChildTranscript / includeSidechain=true) surfaces these as
+// MessageToolCall entries with Depth>=1 and the correct ParentToolID, ordering
+// preserved. (The legacy isSidechain fields left in these fixtures are inert —
+// the new path keys purely on parent_tool_use_id.)
 
 // TestLoadChildTranscript_IncludesSidechainSubAgentActivity verifies that
-// inner sub-agent tool_use + tool_result records (isSidechain=true) are
+// inner sub-agent tool_use + tool_result frames (parent_tool_use_id set) are
 // included in the replayed entries, nested under the outer Agent call.
 func TestLoadChildTranscript_IncludesSidechainSubAgentActivity(t *testing.T) {
 	lines := []string{
@@ -1008,8 +940,8 @@ func TestLoadChildTranscript_IncludesSidechainSubAgentActivity(t *testing.T) {
 			`{"type":"tool_result","tool_use_id":"A1","content":"agent done","is_error":false}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
-	entries, err := LoadChildTranscript(path, time.Time{}, 0)
+	path := writeWireLog(t, lines)
+	entries, err := LoadChildTranscript(path, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1061,8 +993,8 @@ func TestLoadChildTranscript_SidechainNestedUnderAgent_PreservesOrdering(t *test
 			`{"type":"tool_result","tool_use_id":"R1","content":"contents","is_error":false}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
-	entries, err := LoadChildTranscript(path, time.Time{}, 0)
+	path := writeWireLog(t, lines)
+	entries, err := LoadChildTranscript(path, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1087,63 +1019,6 @@ func TestLoadChildTranscript_SidechainNestedUnderAgent_PreservesOrdering(t *test
 	}
 	if agentIdx >= readIdx {
 		t.Errorf("ordering wrong: agentIdx=%d readIdx=%d, want agent before read", agentIdx, readIdx)
-	}
-}
-
-// TestLoadChildTranscript_SidechainSinceFilterStillApplies verifies that the
-// QUM-331 timestamp guard still filters out sidechain records whose
-// timestamp predates `since` — the new sidechain inclusion must not regress
-// the prior-incarnation pollution guard.
-func TestLoadChildTranscript_SidechainSinceFilterStillApplies(t *testing.T) {
-	lines := []string{
-		// Outer Agent before cutoff — should be filtered too.
-		`{"type":"assistant","timestamp":"2026-04-25T09:00:00Z","message":{"role":"assistant","content":[` +
-			`{"type":"tool_use","id":"A0","name":"Agent","input":{"subagent_type":"Explore"}}` +
-			`]}}`,
-		// Stale sidechain record predates the cutoff — must be dropped.
-		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A0","timestamp":"2026-04-25T09:00:01Z","message":{"role":"assistant","content":[` +
-			`{"type":"tool_use","id":"R0","name":"Read","input":{"file_path":"/tmp/stale"}}` +
-			`]}}`,
-		// Fresh outer Agent after cutoff.
-		`{"type":"assistant","timestamp":"2026-04-25T11:00:00Z","message":{"role":"assistant","content":[` +
-			`{"type":"tool_use","id":"A1","name":"Agent","input":{"subagent_type":"Explore"}}` +
-			`]}}`,
-		// Fresh sidechain Read after cutoff — must be included.
-		`{"type":"assistant","isSidechain":true,"parent_tool_use_id":"A1","timestamp":"2026-04-25T11:00:01Z","message":{"role":"assistant","content":[` +
-			`{"type":"tool_use","id":"R1","name":"Read","input":{"file_path":"/tmp/fresh"}}` +
-			`]}}`,
-	}
-	path := writeJSONL(t, lines)
-	cutoff, _ := time.Parse(time.RFC3339, "2026-04-25T10:00:00Z")
-	entries, err := LoadChildTranscript(path, cutoff, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, e := range entries {
-		if e.Type != MessageToolCall {
-			continue
-		}
-		if e.ToolID == "R0" || e.ToolID == "A0" {
-			t.Errorf("stale pre-cutoff entry %q leaked through since-filter: %+v", e.ToolID, e)
-		}
-	}
-
-	// Sanity: fresh sidechain Read entry must be present and depth-nested
-	// under its outer Agent (the fresh A1 frame).
-	var freshRead *MessageEntry
-	for i := range entries {
-		if entries[i].Type == MessageToolCall && entries[i].ToolID == "R1" {
-			freshRead = &entries[i]
-			break
-		}
-	}
-	if freshRead == nil {
-		t.Errorf("fresh sidechain Read (R1) not found in entries=%+v; sidechain inclusion may not be working", entries)
-		return
-	}
-	if freshRead.Depth != 1 {
-		t.Errorf("freshRead.Depth = %d, want 1 (nested under outer Agent A1)", freshRead.Depth)
 	}
 }
 
@@ -1180,8 +1055,8 @@ func TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire(t *tes
 			`{"type":"tool_result","tool_use_id":"B2","content":"b2","is_error":false}` +
 			`]}}`,
 	}
-	path := writeJSONL(t, lines)
-	entries, err := LoadChildTranscript(path, time.Time{}, 0)
+	path := writeWireLog(t, lines)
+	entries, err := LoadChildTranscript(path, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1239,9 +1114,9 @@ func TestReplay_TaskNotificationRendersAutoTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := writeJSONL(t, []string{string(b)})
+	path := writeWireLog(t, []string{string(b)})
 
-	entries, err := scanTranscript(path, time.Time{})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1296,9 +1171,9 @@ func TestReplay_AutoTriggerPrecedesAssistantOnResume(t *testing.T) {
 	assistantLine := `{"type":"assistant","message":{"role":"assistant","content":[` +
 		`{"type":"text","text":"` + assistantText + `"}]}}`
 
-	path := writeJSONL(t, []string{string(ub), assistantLine})
+	path := writeWireLog(t, []string{string(ub), assistantLine})
 
-	entries, err := scanTranscript(path, time.Time{})
+	entries, err := scanWireTranscript(path, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1333,24 +1208,30 @@ func TestReplay_AutoTriggerPrecedesAssistantOnResume(t *testing.T) {
 	}
 }
 
-// TestLoadTranscript_SuppressesCompactSummary proves the giant continuation
-// summary (a type:user record flagged isCompactSummary) is NOT replayed as a
-// user bubble — the first-party compaction banner replaces it (QUM-865). The
-// surrounding real user/assistant turns still render, so this is not a blanket
-// user-suppression.
-func TestLoadTranscript_SuppressesCompactSummary(t *testing.T) {
+// TestLoadTranscript_SuppressesCompactContinuationSurroundedByRealTurns proves
+// the giant continuation summary is suppressed while the genuine surrounding
+// user/assistant turns still render — i.e. suppression is not a blanket
+// user-suppression. QUM-904: on the wire the summary is a synthetic user frame
+// whose content begins with compactContinuationPreamble (no isCompactSummary
+// flag exists on the wire).
+func TestLoadTranscript_SuppressesCompactContinuationSurroundedByRealTurns(t *testing.T) {
+	summaryRec, _ := json.Marshal(map[string]any{
+		"type":        "user",
+		"isSynthetic": true,
+		"message":     map[string]any{"role": "user", "content": compactContinuationPreamble + " Here is a summary..."},
+	})
 	lines := []string{
 		`{"type":"user","message":{"role":"user","content":"before compaction"}}`,
-		`{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation. Here is a summary..."}}`,
+		string(summaryRec),
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"after compaction"}]}}`,
 	}
-	path := writeJSONL(t, lines)
+	path := writeWireLog(t, lines)
 	entries, err := LoadTranscript(path, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, e := range entries {
-		if strings.Contains(e.Content, "This session is being continued") {
+		if strings.Contains(e.Content, compactContinuationPreamble) {
 			t.Fatalf("compact summary leaked as a replayed entry: %+v", e)
 		}
 	}

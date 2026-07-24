@@ -752,11 +752,6 @@ func runEnter(deps *enterDeps) error {
 	if cfg, cErr := config.Load(sprawlRoot); cErr == nil && cfg != nil {
 		model.SetValidatePopupAfter(cfg.ValidatePopupAfter())
 	}
-	if homeDir, hErr := os.UserHomeDir(); hErr == nil {
-		// QUM-332: child-agent transcript tailing resolves Claude session
-		// log paths via memory.SessionLogPath(homeDir, worktree, sessionID).
-		model.SetHomeDir(homeDir)
-	}
 
 	// QUM-728: wire the incident-snapshot producer used by Ctrl+\.
 	if sup != nil {
@@ -784,19 +779,21 @@ func runEnter(deps *enterDeps) error {
 
 	if bridge != nil && state.lastWasResume {
 		if sessionID, sErr := memory.ReadLastSessionID(sprawlRoot); sErr == nil && sessionID != "" {
-			if homeDir, hErr := os.UserHomeDir(); hErr == nil {
-				path := memory.SessionLogPath(homeDir, sprawlRoot, sessionID)
-				entries, lErr := tui.LoadTranscript(path, tui.ReplayMaxMessages)
-				if lErr != nil {
-					fmt.Fprintf(os.Stderr, "[enter] transcript replay failed: %v (continuing with empty viewport)\n", lErr)
-				} else if len(entries) > 0 {
-					// QUM-676: the legacy "Resumed from prior session" + "earlier
-					// messages truncated" MessageStatus markers are gone with the
-					// ChatList contract-violator routing. Surface the resume hint
-					// via the status-bar transient label instead.
-					model.PreloadTranscript(entries)
-					model.SetTransientStatus("Resumed from prior session")
-				}
+			// QUM-904: rehydrate from sprawl's authoritative wire log (root
+			// identity "weave"), which lives under sprawlRoot — not from
+			// Claude's JSONL under $HOME. This bypasses both live render-drop
+			// seams, so content dropped on the live seam reappears on resume.
+			path := memory.WireLogPath(sprawlRoot, runtimecfg.DefaultRootName, sessionID)
+			entries, lErr := tui.LoadTranscript(path, tui.ReplayMaxMessages)
+			if lErr != nil {
+				fmt.Fprintf(os.Stderr, "[enter] transcript replay failed: %v (continuing with empty viewport)\n", lErr)
+			} else if len(entries) > 0 {
+				// QUM-676: the legacy "Resumed from prior session" + "earlier
+				// messages truncated" MessageStatus markers are gone with the
+				// ChatList contract-violator routing. Surface the resume hint
+				// via the status-bar transient label instead.
+				model.PreloadTranscript(entries)
+				model.SetTransientStatus("Resumed from prior session")
 			}
 		}
 	}

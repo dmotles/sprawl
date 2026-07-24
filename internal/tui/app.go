@@ -17,6 +17,7 @@ import (
 	"github.com/dmotles/sprawl/internal/memory"
 	"github.com/dmotles/sprawl/internal/messages"
 	sprawlrt "github.com/dmotles/sprawl/internal/runtime"
+	"github.com/dmotles/sprawl/internal/runtimecfg"
 	"github.com/dmotles/sprawl/internal/state"
 	"github.com/dmotles/sprawl/internal/supervisor"
 	"github.com/dmotles/sprawl/internal/tui/commands"
@@ -292,13 +293,6 @@ type AppModel struct {
 	// should clear the status-bar phase label so the label survives across
 	// the restart boundary when consolidation outlives it.
 	consolidating bool
-
-	// homeDir is the user's home directory, used to resolve Claude session
-	// log paths for child-agent transcript tailing (QUM-332). Set via
-	// SetHomeDir after construction. When empty, child transcripts can't be
-	// loaded and the viewport falls back to the legacy "Observing X..."
-	// banner.
-	homeDir string
 
 	// snapshotCmd is the injected incident-bundle producer triggered by
 	// Ctrl+\ (QUM-728). When nil the key handler still fires the request
@@ -2347,7 +2341,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.childBackfillPending = true
 				m.childPendingEvents = nil
 				cmds = append(cmds,
-					loadChildTranscriptCmd(m.sprawlRoot, m.homeDir, msg.Name),
+					loadChildTranscriptCmd(m.sprawlRoot, msg.Name),
 					childStreamWaitCmd(m.childAdapter, msg.Name, m.childAdapterEpoch),
 				)
 				unifiedAttached = true
@@ -2367,7 +2361,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.childPendingEvents = nil
 			// Non-root agents: kick off legacy transcript hydration + tick (QUM-332).
 			if msg.Name != m.rootAgent {
-				cmds = append(cmds, loadChildTranscriptCmd(m.sprawlRoot, m.homeDir, msg.Name))
+				cmds = append(cmds, loadChildTranscriptCmd(m.sprawlRoot, msg.Name))
 			}
 		}
 
@@ -3613,13 +3607,6 @@ func scheduleAgentTick(sup supervisor.Supervisor, sprawlRoot string) tea.Cmd {
 	}
 }
 
-// SetHomeDir injects the user's home directory used to resolve Claude session
-// log paths for child-agent transcript tailing (QUM-332). Wired by cmd/enter.go
-// after model construction.
-func (m *AppModel) SetHomeDir(homeDir string) {
-	m.homeDir = homeDir
-}
-
 // SetSnapshotCmd installs the incident-snapshot producer used by Ctrl+\
 // (QUM-728). Wired by cmd/enter.go to internal/observe/incident.Snapshotter.
 func (m *AppModel) SetSnapshotCmd(fn func() tea.Msg) {
@@ -3765,19 +3752,19 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 }
 
 // loadChildTranscriptCmd returns a Cmd that reads .sprawl/agents/<name>.json
-// for the child's session_id + worktree, resolves the Claude session log path,
-// and parses entries up to ReplayMaxMessages. Returns a ChildTranscriptMsg
+// for the child's session_id, resolves the sprawl wire-log path (QUM-904), and
+// parses entries up to ReplayMaxMessages. Returns a ChildTranscriptMsg
 // regardless of outcome — empty Entries with no error signal "no session yet"
 // or "log not on disk yet" so the AppModel can render the "Waiting for X..."
 // placeholder. QUM-332.
-func loadChildTranscriptCmd(sprawlRoot, homeDir, name string) tea.Cmd {
+func loadChildTranscriptCmd(sprawlRoot, name string) tea.Cmd {
 	return func() tea.Msg {
-		return readChildTranscript(sprawlRoot, homeDir, name)
+		return readChildTranscript(sprawlRoot, name)
 	}
 }
 
-func readChildTranscript(sprawlRoot, homeDir, name string) ChildTranscriptMsg {
-	if sprawlRoot == "" || homeDir == "" {
+func readChildTranscript(sprawlRoot, name string) ChildTranscriptMsg {
+	if sprawlRoot == "" {
 		return ChildTranscriptMsg{Agent: name}
 	}
 	agent, err := state.LoadAgent(sprawlRoot, name)
@@ -3789,14 +3776,10 @@ func readChildTranscript(sprawlRoot, homeDir, name string) ChildTranscriptMsg {
 	if agent.SessionID == "" {
 		return ChildTranscriptMsg{Agent: name}
 	}
-	var since time.Time
-	if agent.CreatedAt != "" {
-		if ts, perr := time.Parse(time.RFC3339, agent.CreatedAt); perr == nil {
-			since = ts
-		}
-	}
-	logPath := memory.SessionLogPath(homeDir, agent.Worktree, agent.SessionID)
-	entries, err := LoadChildTranscript(logPath, since, ReplayMaxMessages)
+	// QUM-904: a child's wire-log identity is its agent name; the log lives
+	// under sprawlRoot, not the child's worktree.
+	logPath := memory.WireLogPath(sprawlRoot, name, agent.SessionID)
+	entries, err := LoadChildTranscript(logPath, ReplayMaxMessages)
 	if err != nil {
 		return ChildTranscriptMsg{Agent: name, SessionID: agent.SessionID, Err: err}
 	}
@@ -3910,16 +3893,18 @@ func (m *AppModel) resyncCmd(missing uint64) tea.Cmd {
 	if m.bridge == nil {
 		return func() tea.Msg { return ViewportResyncMsg{MissingCount: missing, Err: errors.New("no bridge")} }
 	}
-	if m.homeDir == "" || m.sprawlRoot == "" {
+	if m.sprawlRoot == "" {
 		return func() tea.Msg {
-			return ViewportResyncMsg{MissingCount: missing, Err: errors.New("home/sprawlRoot unset")}
+			return ViewportResyncMsg{MissingCount: missing, Err: errors.New("sprawlRoot unset")}
 		}
 	}
 	sessionID := m.bridge.SessionID()
 	if sessionID == "" {
 		return func() tea.Msg { return ViewportResyncMsg{MissingCount: missing, Err: errors.New("no session id")} }
 	}
-	path := memory.SessionLogPath(m.homeDir, m.sprawlRoot, sessionID)
+	// QUM-904: resync re-reads sprawl's authoritative wire log (root identity
+	// "weave"), bypassing both live render-drop seams.
+	path := memory.WireLogPath(m.sprawlRoot, runtimecfg.DefaultRootName, sessionID)
 	return func() tea.Msg {
 		entries, err := LoadTranscript(path, ReplayMaxMessages)
 		return ViewportResyncMsg{Entries: entries, MissingCount: missing, Err: err}

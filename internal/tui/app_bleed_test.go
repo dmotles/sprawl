@@ -26,7 +26,7 @@ import (
 // for in-memory bleed assertions (no on-disk transcript fixtures needed).
 func newBleedApp(t *testing.T) AppModel {
 	t.Helper()
-	return newAppForChildTranscript(t, t.TempDir(), t.TempDir())
+	return newAppForChildTranscript(t, t.TempDir())
 }
 
 // cycleTo applies an AgentSelectedMsg and discards any returned cmd. The
@@ -150,9 +150,8 @@ func TestInbox_ArrivalWhileObservingChild_TargetsWeaveViewport(t *testing.T) {
 	// QUM-465: handler reconciles against disk-truth — seed an unread
 	// maildir entry so the rise check fires.
 	sprawlRoot := t.TempDir()
-	homeDir := t.TempDir()
 	seedUnreadForWeave(t, sprawlRoot, 1)
-	app := newAppForChildTranscript(t, sprawlRoot, homeDir)
+	app := newAppForChildTranscript(t, sprawlRoot)
 	app = cycleTo(t, app, "finn")
 
 	updated, _ := app.Update(InboxArrivalMsg{From: "alice"})

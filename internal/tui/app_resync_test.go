@@ -20,34 +20,33 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/dmotles/sprawl/internal/memory"
+	"github.com/dmotles/sprawl/internal/runtimecfg"
 )
 
-// writeRootSessionFixture stages a Claude session JSONL for the *root* agent
-// (weave) at the path memory.SessionLogPath(homeDir, sprawlRoot, sessionID).
-// Mirrors writeChildSessionFixture but skips the AgentState scaffolding —
-// the root resync path keys off the bridge.SessionID() + sprawlRoot rather
-// than a state file.
-func writeRootSessionFixture(t *testing.T, sessionID string, jsonlLines []string) (sprawlRoot, homeDir string) {
+// writeRootSessionFixture stages a sprawl wire log for the *root* agent
+// (identity "weave") at the path memory.WireLogPath(sprawlRoot, "weave",
+// sessionID). The given conversation records are wrapped as "out" wire
+// envelopes. Mirrors writeChildSessionFixture but skips the AgentState
+// scaffolding — the root resync path keys off bridge.SessionID() + sprawlRoot
+// rather than a state file.
+func writeRootSessionFixture(t *testing.T, sessionID string, records []string) (sprawlRoot, homeDir string) {
 	t.Helper()
 	sprawlRoot = t.TempDir()
 	homeDir = t.TempDir()
-	path := memory.SessionLogPath(homeDir, sprawlRoot, sessionID)
+	path := memory.WireLogPath(sprawlRoot, runtimecfg.DefaultRootName, sessionID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	content := strings.Join(jsonlLines, "\n")
-	if len(jsonlLines) > 0 {
-		content += "\n"
-	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, wireEnvelopeBytes(t, records), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return sprawlRoot, homeDir
 }
 
 // copyFixtureToSessionLog writes the canonical QUM-669 resync fixture
-// (testdata/qum669-resync-fixture.jsonl) to the canonical session log path
-// for the given session ID. Returns the staged sprawlRoot + homeDir.
+// (testdata/qum669-resync-fixture.jsonl — Claude-JSONL record lines) to the
+// root wire-log path for the given session ID, wrapping each record line as an
+// "out" wire envelope. Returns the staged sprawlRoot + homeDir.
 func copyFixtureToSessionLog(t *testing.T, sessionID string) (sprawlRoot, homeDir string) {
 	t.Helper()
 	src := filepath.Join("testdata", "qum669-resync-fixture.jsonl")
@@ -55,13 +54,19 @@ func copyFixtureToSessionLog(t *testing.T, sessionID string) (sprawlRoot, homeDi
 	if err != nil {
 		t.Fatalf("ReadFile fixture: %v", err)
 	}
+	var records []string
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			records = append(records, line)
+		}
+	}
 	sprawlRoot = t.TempDir()
 	homeDir = t.TempDir()
-	dst := memory.SessionLogPath(homeDir, sprawlRoot, sessionID)
+	dst := memory.WireLogPath(sprawlRoot, runtimecfg.DefaultRootName, sessionID)
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if err := os.WriteFile(dst, data, 0o644); err != nil {
+	if err := os.WriteFile(dst, wireEnvelopeBytes(t, records), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	return sprawlRoot, homeDir
@@ -140,11 +145,11 @@ func TestAppModel_ViewportResyncMsg_FailurePathKeepsDroppedState(t *testing.T) {
 // resync).
 func TestAppModel_ResyncFromSessionLog_MatchesNonDroppedRender(t *testing.T) {
 	const sessionID = "sid-gold"
-	sprawlRoot, homeDir := copyFixtureToSessionLog(t, sessionID)
+	sprawlRoot, _ := copyFixtureToSessionLog(t, sessionID)
 
 	// Path A — resume-replay gold. LoadTranscript over the fixture, then
 	// PreloadTranscript into a fresh AppModel.
-	logPath := memory.SessionLogPath(homeDir, sprawlRoot, sessionID)
+	logPath := memory.WireLogPath(sprawlRoot, runtimecfg.DefaultRootName, sessionID)
 	goldEntries, err := LoadTranscript(logPath, ReplayMaxMessages)
 	if err != nil {
 		t.Fatalf("LoadTranscript: %v", err)
@@ -153,7 +158,6 @@ func TestAppModel_ResyncFromSessionLog_MatchesNonDroppedRender(t *testing.T) {
 		t.Fatalf("LoadTranscript returned no entries; fixture not staged correctly at %s", logPath)
 	}
 	mGold := NewAppModel("colour212", "testrepo", "v0.1.0", nil, nil, sprawlRoot, nil)
-	mGold.SetHomeDir(homeDir)
 	uGold, _ := mGold.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	mGold = uGold.(AppModel)
 	mGold.PreloadTranscript(goldEntries)
@@ -165,7 +169,6 @@ func TestAppModel_ResyncFromSessionLog_MatchesNonDroppedRender(t *testing.T) {
 	fake.SetContinuous(true)
 	fake.SetSessionID(sessionID)
 	mResync := NewAppModel("colour212", "testrepo", "v0.1.0", fake, nil, sprawlRoot, nil)
-	mResync.SetHomeDir(homeDir)
 	uResync, _ := mResync.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	mResync = uResync.(AppModel)
 	mResync.setTurnState(TurnStreaming)
@@ -224,13 +227,12 @@ func itemFingerprints(items []Item) []string {
 
 func TestAppModel_CtrlL_TriggersImmediateResync(t *testing.T) {
 	const sessionID = "sid-ctrl-l"
-	sprawlRoot, homeDir := copyFixtureToSessionLog(t, sessionID)
+	sprawlRoot, _ := copyFixtureToSessionLog(t, sessionID)
 
 	fake := newFakeSessionBackend()
 	fake.SetContinuous(true)
 	fake.SetSessionID(sessionID)
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", fake, nil, sprawlRoot, nil)
-	m.SetHomeDir(homeDir)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := updated.(AppModel)
 

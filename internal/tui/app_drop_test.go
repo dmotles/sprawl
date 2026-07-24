@@ -131,13 +131,12 @@ func TestAppModel_GapAboveBurstThreshold_TriggersImmediateResync(t *testing.T) {
 	fake.SetContinuous(true)
 	fake.SetSessionID("sid")
 
-	sprawlRoot, homeDir := writeRootSessionFixture(t, "sid", []string{
+	sprawlRoot, _ := writeRootSessionFixture(t, "sid", []string{
 		`{"type":"user","message":{"role":"user","content":"hi"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}`,
 	})
 
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", fake, nil, sprawlRoot, nil)
-	m.SetHomeDir(homeDir)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := updated.(AppModel)
 	app.setTurnState(TurnStreaming)
@@ -180,12 +179,11 @@ func TestAppModel_TwoSubThresholdDrops_CoalesceIntoSingleResync(t *testing.T) {
 	fake.SetContinuous(true)
 	fake.SetSessionID("sid")
 
-	sprawlRoot, homeDir := writeRootSessionFixture(t, "sid", []string{
+	sprawlRoot, _ := writeRootSessionFixture(t, "sid", []string{
 		`{"type":"user","message":{"role":"user","content":"hi"}}`,
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}`,
 	})
 	m := NewAppModel("colour212", "testrepo", "v0.1.0", fake, nil, sprawlRoot, nil)
-	m.SetHomeDir(homeDir)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	app := updated.(AppModel)
 

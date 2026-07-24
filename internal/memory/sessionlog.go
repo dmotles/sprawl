@@ -37,6 +37,15 @@ func SessionLogPath(homeDir, cwd, sessionID string) string {
 	return filepath.Join(homeDir, ".claude", "projects", EncodeCWDForClaude(cwd), sessionID+".jsonl")
 }
 
+// WireLogPath returns the path to sprawl's seq'd wire-log NDJSON file for the
+// given agent identity + session. This is the authoritative transcript source
+// for TUI rehydration (QUM-904); it mirrors the writer's layout in
+// internal/backend/claude/adapter.go. Root identity is "weave"; a child's
+// identity is its agent name.
+func WireLogPath(sprawlRoot, identity, sessionID string) string {
+	return filepath.Join(sprawlRoot, ".sprawl", "logs", "sessions", identity, sessionID+".ndjson")
+}
+
 // ReadSessionLog reads a Claude session JSONL file and returns a formatted transcript.
 // It keeps only the last maxMessages messages and truncates the result to maxBytes.
 func ReadSessionLog(path string, maxMessages int, maxBytes int) (string, error) {
