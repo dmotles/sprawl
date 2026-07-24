@@ -84,9 +84,18 @@ type UnifiedRuntime struct {
 	// (QUM-827). routeFrame's EndOfTurn branches read-and-clear it to publish a
 	// clean EventInterrupted instead of EventTurnCompleted/EventTurnFailed —
 	// otherwise the interrupted turn's is_error `result` frame surfaces as a
-	// spurious "Session Error". Guarded by mu. Cleared on turn open (setInTurn
-	// true) so a stale flag can never leak into a later turn.
+	// spurious "Session Error". Guarded by mu. Three paths retire it, so a stale
+	// flag can never leak into a later turn: consumed by its own turn's terminal;
+	// an idle→non-idle phase transition while NO frame turn is open; or the next
+	// system/init (QUM-927).
 	interruptPending bool
+	// frameTurnOpen mirrors the frame router's autoTurn.open under mu (QUM-927).
+	// autoTurn itself is reader-goroutine-only, but Interrupt (TUI goroutine) must
+	// know whether a terminal `result` may still be inbound: at a turn boundary the
+	// CLI reports session_state_changed:idle while async Agent sidechains resolve,
+	// so phase reads idle even though the frame-level turn is still open and its
+	// is_error terminal is still coming. Guarded by mu.
+	frameTurnOpen bool
 
 	cancel        context.CancelFunc
 	doneWG        sync.WaitGroup
@@ -356,6 +365,20 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		if rt.phase == phaseSubmitted {
 			rt.setPhaseLocked(phaseSubmitted)
 		}
+		// QUM-927: init is a fresh turn/resume boundary, so retire any pending
+		// interrupt arm that its own turn's terminal never consumed. The clear-on-open
+		// below is gated on !st.open and so does not fire when init lands while the
+		// frame turn is already open — without this a boundary arm could survive and
+		// swallow a later turn's genuine is_error.
+		//
+		// Premise: an armed turn's terminal `result` always precedes the NEXT turn's
+		// init, so this only ever retires an arm whose turn produced no terminal. That
+		// holds structurally in the backend — session.go allocates the turnFrame on
+		// init and clears it on `result`, and EndOfTurn requires a live turnFrame — and
+		// is exercised live by the QUM-830 cancel-and-replace path (the sendnow-tui row
+		// preempts a turn 8× per run; an init-before-result there would clear the
+		// now-write arm and resurrect the empty "Session Error").
+		rt.interruptPending = false
 		rt.mu.Unlock()
 	}
 
@@ -377,6 +400,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 			} else {
 				rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: errStreamClosedNoResult})
 			}
+			rt.closeFrameTurn()
 			st.reset()
 		}
 		return
@@ -410,7 +434,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		// wire/submit-driven, so a bare autonomous init can't leak a false
 		// "thinking" state). It still clears any stale pending-interrupt flag
 		// (QUM-827 clear-on-open) and fires the frame-lifecycle EventTurnStarted.
-		rt.clearInterruptPending()
+		rt.openFrameTurn()
 		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnStarted})
 	}
 
@@ -443,6 +467,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		// QUM-903 running-side teardown guard: a terminal `result` clears in_turn
 		// even when no wire `idle` follows (the 36 no-idle teardown cases).
 		rt.setPhase(phaseIdle)
+		rt.closeFrameTurn()
 		st.reset()
 		// Fire the post-turn sweep (QUM-580) and write the continuation AFTER
 		// clearing per-turn state. Both go to stdin / disk, never under a lock.
@@ -467,11 +492,19 @@ func (rt *UnifiedRuntime) setPhase(p turnPhase) {
 }
 
 // setPhaseLocked transitions the phase with mu held. Entering any non-idle phase
-// from idle clears a stale pending-interrupt flag (QUM-827 clear-on-open).
+// from idle clears a stale pending-interrupt flag (QUM-827 clear-on-open) —
+// unless a frame turn is open, in which case the arm belongs to that still-open
+// turn and is retired by its terminal or the next init instead (QUM-927).
 // Entering phaseSubmitted arms a generation-tagged timeout guard so a synthetic
 // "thinking" state cannot leak if the wire `running` ack never arrives.
 func (rt *UnifiedRuntime) setPhaseLocked(p turnPhase) {
-	if rt.phase == phaseIdle && p != phaseIdle {
+	// QUM-927: only clear when no frame-level turn is open. At a turn boundary the
+	// arm belongs to the still-open turn whose terminal has not arrived yet, and a
+	// following wire `running` (or a user prompt's optimistic submit) is an
+	// idle→non-idle transition that would otherwise clobber it. With a frame turn
+	// open the arm is instead retired by that turn's terminal (consume), its
+	// teardown, or the next init.
+	if rt.phase == phaseIdle && p != phaseIdle && !rt.frameTurnOpen {
 		rt.interruptPending = false
 	}
 	rt.phase = p
@@ -507,12 +540,20 @@ func (rt *UnifiedRuntime) guardSubmitted(gen uint64, timeout time.Duration) {
 	rt.mu.Unlock()
 }
 
-// clearInterruptPending clears the QUM-827 pending-interrupt flag under mu. Used
-// at frame turn-open so a stale flag from an aborted prior turn cannot
-// mis-classify this turn's completion.
-func (rt *UnifiedRuntime) clearInterruptPending() {
+// openFrameTurn records that the frame router opened a turn (QUM-927 mirror) and
+// clears any stale pending-interrupt flag (QUM-827 clear-on-open).
+func (rt *UnifiedRuntime) openFrameTurn() {
 	rt.mu.Lock()
+	rt.frameTurnOpen = true
 	rt.interruptPending = false
+	rt.mu.Unlock()
+}
+
+// closeFrameTurn records that the frame router's turn ended — a terminal
+// `result` or an orphan teardown. Paired with autoTurn.reset().
+func (rt *UnifiedRuntime) closeFrameTurn() {
+	rt.mu.Lock()
+	rt.frameTurnOpen = false
 	rt.mu.Unlock()
 }
 
@@ -600,7 +641,9 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 	// of EventTurnCompleted{IsError} → the empty "Session Error" overlay. Gated
 	// on in-turn (no in-flight turn ⇒ nothing to preempt); the next turn open
 	// clears any stale flag, so this cannot leak forward.
-	if priority == "now" && rt.inTurnLocked() {
+	// QUM-927: gated on the frame turn too, for the turn-boundary case (same
+	// reasoning as Interrupt's arm).
+	if priority == "now" && (rt.inTurnLocked() || rt.frameTurnOpen) {
 		rt.interruptPending = true
 	}
 	// QUM-903: optimistically enter the synthetic submitted state on a
@@ -982,7 +1025,15 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	// QUM-827: arm the pending-interrupt flag for an in-turn abort so the
 	// turn's terminal frame is re-classified as a clean interrupt by
 	// routeFrame, not surfaced as a turn error.
-	if inTurn {
+	//
+	// QUM-927: also arm when the frame-level turn is still open even though the
+	// phase machine reads idle — the turn-boundary case, where the CLI already
+	// reported session_state_changed:idle after end_turn while async Agent
+	// sidechains resolve. Its is_error `result` terminal is still inbound, and
+	// without the arm it classifies as EventTurnCompleted{IsError} → the spurious
+	// fatal "Session Error" quit/restart modal.
+	armed := inTurn || rt.frameTurnOpen
+	if armed {
 		rt.interruptPending = true
 	}
 	rt.mu.Unlock()
@@ -991,11 +1042,20 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	// turn is in flight.
 	err := sess.Interrupt(ctx)
 
-	// QUM-775 item 4: when an interrupt is issued against an idle runtime, emit
-	// a synthetic EventInterrupted so a TUI turnState reducer wedged in
-	// TurnStreaming after a dropped terminal event can finalize. finalizeTurn is
-	// idempotent, so a duplicate is harmless.
-	if !inTurn && rt.eventBus != nil {
+	// QUM-775 item 4: when an interrupt is issued against a genuinely idle runtime,
+	// emit a synthetic EventInterrupted so a TUI turnState reducer wedged in
+	// TurnStreaming after a dropped terminal event can finalize.
+	//
+	// QUM-927: gated on `armed`, not `inTurn`. When the arm was set, a real terminal
+	// frame is still inbound and will publish the authoritative EventInterrupted
+	// (carrying the result, for "Interrupted (Nms)"), so the synthetic would be a
+	// duplicate — and a duplicate is NOT harmless: EventInterrupted is a
+	// turn-boundary signal that StopAfterTurn (QUM-866) and the pause waiter select
+	// on, so a synthetic emitted while the frame turn is still open can unblock
+	// teardown mid-turn. The QUM-775 wedge case is unaffected: a dropped terminal
+	// EVENT still means routeFrame processed the terminal FRAME and closed the frame
+	// turn, so frameTurnOpen is false there and the synthetic still fires.
+	if !armed && rt.eventBus != nil {
 		rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted})
 	}
 	return err

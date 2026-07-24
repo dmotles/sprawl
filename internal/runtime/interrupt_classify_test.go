@@ -51,29 +51,506 @@ func openTurn(t *testing.T, rt *UnifiedRuntime) {
 	}
 }
 
-// tallyTerminalEvents drains ch for `window` and counts the terminal turn
-// events. Returns (interrupted, completed, failed).
-func tallyTerminalEvents(ch <-chan RuntimeEvent, window time.Duration) (int, int, int) {
-	var interrupted, completed, failed int
+// openTurnBoundary drives the QUM-927 wire shape: a frame-level turn is open
+// (init routed) but the CLI has already reported session_state_changed:idle
+// after the model's end_turn while async Agent sidechains are still resolving.
+// So State().InTurn is FALSE even though a terminal `result` for that turn is
+// still inbound.
+func openTurnBoundary(t *testing.T, rt *UnifiedRuntime) {
+	t.Helper()
+	openTurn(t, rt)
+	rt.routeFrame(stateFrame(protocol.SessionStateIdle))
+	if rt.State().InTurn {
+		t.Fatal("turn-boundary setup: State().InTurn is still true after wire idle; the test would exercise the mid-turn path instead")
+	}
+	// The whole point of the shape: the FRAME turn is still open, so its terminal
+	// `result` is still inbound even though the phase machine reads idle.
+	if !frameTurnOpenFlag(rt) {
+		t.Fatal("turn-boundary setup: frame turn is not open; there would be no inbound terminal to re-classify")
+	}
+}
+
+// interruptPendingFlag reads the pending-interrupt flag under mu.
+func interruptPendingFlag(rt *UnifiedRuntime) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.interruptPending
+}
+
+// frameTurnOpenFlag reads the frame-turn-open mirror under mu.
+func frameTurnOpenFlag(rt *UnifiedRuntime) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.frameTurnOpen
+}
+
+// assertNoTerminalYet drains a window after Interrupt and before the terminal
+// frame is routed, asserting NOTHING terminal has been published. Two things
+// ride on this: the QUM-775 synthetic must be suppressed while a real terminal is
+// inbound (QUM-927 — a spurious turn-boundary signal can unblock StopAfterTurn
+// mid-turn), and it keeps the post-terminal window's `interrupted == 1` strictly
+// about the re-classification.
+func assertNoTerminalYet(t *testing.T, ch <-chan RuntimeEvent) {
+	t.Helper()
+	interrupted, completed, failed := tallyTerminalEvents(ch, 150*time.Millisecond)
+	if interrupted != 0 || completed != 0 || failed != 0 {
+		t.Fatalf("pre-terminal window: interrupted=%d completed=%d failed=%d, want 0/0/0 (a real terminal is inbound; no event may be published before it)", interrupted, completed, failed)
+	}
+}
+
+// waitForBackendFaulted drains ch for `window`, reporting whether an
+// EventBackendFaulted was published.
+func waitForBackendFaulted(ch <-chan RuntimeEvent, window time.Duration) bool {
 	deadline := time.After(window)
 	for {
 		select {
 		case ev, ok := <-ch:
 			if !ok {
-				return interrupted, completed, failed
+				return false
 			}
-			switch ev.Type {
-			case EventInterrupted:
-				interrupted++
-			case EventTurnCompleted:
-				completed++
-			case EventTurnFailed:
-				failed++
+			if ev.Type == EventBackendFaulted {
+				return true
 			}
 		case <-deadline:
-			return interrupted, completed, failed
+			return false
 		}
 	}
+}
+
+// QUM-927: Esc pressed at a TURN BOUNDARY — after the model's end_turn (wire
+// state already `idle`) but while async Agent sidechains are still resolving and
+// the frame-level turn is still open. The backend still emits an is_error
+// `result` terminal for the interrupt; without arming the pending-interrupt flag
+// on this path routeFrame publishes EventTurnCompleted{IsError} → the spurious
+// "Session Error" quit/restart modal.
+func TestInterrupt_AtTurnBoundary_TrailingIsErrorSurfacesInterrupt(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-esc", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("boundary-esc-test", 32)
+	defer unsub()
+
+	openTurnBoundary(t, rt)
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+
+	// seq 1163 in the QUM-927 wire capture.
+	rt.routeFrame(resultFrame(t, true, 42), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, failed, lastInterrupt := tallyTerminalEventsWithResult(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (the terminal frame must be re-classified as a clean interrupt)", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0 (interrupted turn must not surface as a completed/error turn → Session Error)", completed)
+	}
+	if failed != 0 {
+		t.Errorf("EventTurnFailed count = %d, want 0", failed)
+	}
+	if lastInterrupt == nil {
+		t.Error("EventInterrupted carried a nil Result; want the interrupted turn's result (for the Interrupted-duration UX)")
+	}
+}
+
+// QUM-927: same boundary shape, but the interrupt closes the stream with no
+// terminal `result` (EndOfTurn && msg==nil) — must still be a clean interrupt,
+// not EventTurnFailed{stream-closed}.
+func TestInterrupt_AtTurnBoundary_StreamCloseSurfacesInterrupt(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-streamclose", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("boundary-streamclose-test", 32)
+	defer unsub()
+
+	openTurnBoundary(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+	rt.routeFrame(nil, backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, failed := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (the stream-close terminal must be re-classified as a clean interrupt)", interrupted)
+	}
+	if completed != 0 || failed != 0 {
+		t.Errorf("completed=%d failed=%d, want 0/0", completed, failed)
+	}
+}
+
+// QUM-927: the arm must survive an intervening wire `running` state change. At a
+// turn boundary the CLI commonly reports running again as it processes the
+// interrupt / next sidechain frame; setPhaseLocked's idle→non-idle clear would
+// otherwise clobber the arm before the terminal is routed, re-opening the bug.
+func TestInterrupt_AtTurnBoundary_WireRunningDoesNotClearArm(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-running", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("boundary-running-test", 32)
+	defer unsub()
+
+	openTurnBoundary(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+	rt.routeFrame(stateFrame(protocol.SessionStateRunning))
+	rt.routeFrame(resultFrame(t, true, 42), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, failed, lastInterrupt := tallyTerminalEventsWithResult(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (an intervening wire `running` must not clear the boundary arm)", interrupted)
+	}
+	if lastInterrupt == nil {
+		t.Error("EventInterrupted carried a nil Result; want the re-classified terminal's result")
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0", completed)
+	}
+	if failed != 0 {
+		t.Errorf("EventTurnFailed count = %d, want 0", failed)
+	}
+}
+
+// QUM-927: with NO frame-level turn open there is no terminal inbound to
+// re-classify, so Interrupt must not arm the flag at all — otherwise it sits
+// armed and could mis-classify an unrelated later error.
+func TestInterrupt_TrulyIdle_NoFrameTurn_DoesNotArm(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-truly-idle", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if interruptPendingFlag(rt) {
+		t.Error("interruptPending armed by an interrupt with no frame turn open; want false (no terminal inbound to re-classify)")
+	}
+}
+
+// QUM-927 must not regress QUM-775 item 4: with no frame turn open, no real
+// terminal is inbound, so Interrupt still emits the synthetic EventInterrupted
+// that unwedges a TUI turnState reducer stuck in TurnStreaming after a dropped
+// terminal event. Conversely, at a boundary (a real terminal IS inbound) the
+// synthetic is suppressed — a duplicate turn-boundary signal can unblock
+// StopAfterTurn (QUM-866) / the pause waiter while the frame turn is still open.
+// Both halves are asserted here so the pair of semantics is explicit.
+func TestInterrupt_SyntheticFiresOnlyWhenNoTerminalInbound(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-synthetic-gate", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("synthetic-gate-test", 32)
+	defer unsub()
+
+	// (a) Genuinely idle, no frame turn: the QUM-775 synthetic still fires.
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	interrupted, _, _, lastInterrupt := tallyTerminalEventsWithResult(ch, 250*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("idle interrupt: EventInterrupted count = %d, want 1 (QUM-775 synthetic)", interrupted)
+	}
+	if lastInterrupt != nil {
+		t.Error("idle interrupt: synthetic EventInterrupted carried a Result; want nil (there is no terminal)")
+	}
+
+	// (b) At a boundary a real terminal is inbound, so the synthetic is suppressed
+	// and only the re-classified terminal publishes.
+	openTurnBoundary(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if interrupted, _, _ := tallyTerminalEvents(ch, 250*time.Millisecond); interrupted != 0 {
+		t.Errorf("boundary interrupt: EventInterrupted count = %d before the terminal, want 0 (synthetic must be suppressed)", interrupted)
+	}
+}
+
+// QUM-927: once the boundary-armed flag is consumed by its own turn's terminal,
+// a SUBSEQUENT turn's genuine is_error result must still surface as
+// EventTurnCompleted{IsError} — the arm must not leak forward and swallow it.
+func TestInterrupt_AtTurnBoundary_ArmDoesNotLeakToNextTurn(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-noleak", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("boundary-noleak-test", 32)
+	defer unsub()
+
+	// Turn 1: interrupted at the boundary.
+	openTurnBoundary(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+	rt.routeFrame(resultFrame(t, true, 5), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 || completed != 0 {
+		t.Fatalf("turn 1: interrupted=%d completed=%d, want 1/0 (the arm must have been armed AND consumed here)", interrupted, completed)
+	}
+
+	// Turn 2: a genuine error result, no interrupt. Must NOT be re-classified.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, true, 7), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	interrupted, completed, _ = tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("turn 2: EventInterrupted count = %d, want 0 (boundary arm leaked and swallowed a real error)", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("turn 2: EventTurnCompleted count = %d, want 1", completed)
+	}
+}
+
+// QUM-927: the boundary arm must not survive a fresh turn/resume boundary that
+// arrives WITHOUT a terminal `result` for the armed turn. A `system/init` with
+// the frame turn already open is exactly that case (routeFrame's clear-on-open
+// is gated on !st.open, so it does not fire) — if the arm survived it, the next
+// turn's genuine is_error result would be swallowed as a clean interrupt.
+func TestInterrupt_AtTurnBoundary_ArmDoesNotSurviveInit(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-init", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("boundary-init-test", 32)
+	defer unsub()
+
+	openTurnBoundary(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+
+	// A fresh turn/resume boundary lands with no terminal for the armed turn.
+	feedInit(rt)
+	if interruptPendingFlag(rt) {
+		t.Error("interruptPending survived a system/init turn boundary; a stale arm can swallow the next turn's real error")
+	}
+
+	// The next turn's genuine error must surface as a real error.
+	rt.routeFrame(resultFrame(t, true, 9), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("EventInterrupted count = %d, want 0 (stale arm swallowed a real error across init)", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("EventTurnCompleted count = %d, want 1", completed)
+	}
+}
+
+// QUM-927: a boundary interrupt whose turn terminates CLEANLY (is_error=false)
+// is still classified as an interrupt — the user did press Esc, and the
+// classification deliberately does not depend on is_error (same contract as the
+// QUM-827 mid-turn path). Pinned so the semantic is explicit, not accidental.
+func TestInterrupt_AtTurnBoundary_CleanTerminalStillInterrupt(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-clean", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("boundary-clean-test", 32)
+	defer unsub()
+
+	openTurnBoundary(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+	rt.routeFrame(resultFrame(t, false, 12), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, failed, lastInterrupt := tallyTerminalEventsWithResult(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (classification does not depend on is_error)", interrupted)
+	}
+	if lastInterrupt == nil {
+		t.Error("EventInterrupted carried a nil Result; want the re-classified terminal's result")
+	}
+	if completed != 0 || failed != 0 {
+		t.Errorf("completed=%d failed=%d, want 0/0", completed, failed)
+	}
+}
+
+// QUM-927 AC: a genuine backend fault at a turn boundary with NO preceding
+// interrupt still surfaces EventBackendFaulted AND an EventTurnFailed terminal.
+func TestGenuineFault_NoPrecedingInterrupt_StillFaultsAtBoundary(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-fault", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	faultCh, unsubFault := rt.EventBus().SubscribeNamed("boundary-fault-fault", 32)
+	defer unsubFault()
+	turnCh, unsubTurn := rt.EventBus().SubscribeNamed("boundary-fault-turn", 32)
+	defer unsubTurn()
+
+	openTurnBoundary(t, rt)
+	mock.fireTerminalErr(backend.ErrSubprocessExited)
+	rt.routeFrame(nil, backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	if !waitForBackendFaulted(faultCh, time.Second) {
+		t.Error("EventBackendFaulted was not published for a genuine subprocess-exit fault")
+	}
+	interrupted, _, failed := tallyTerminalEvents(turnCh, 400*time.Millisecond)
+	if failed != 1 {
+		t.Errorf("EventTurnFailed count = %d, want 1 (a real fault with no interrupt must still fail the turn)", failed)
+	}
+	if interrupted != 0 {
+		t.Errorf("EventInterrupted count = %d, want 0", interrupted)
+	}
+}
+
+// QUM-927 AC: even when a boundary interrupt DID precede a genuine fault, the
+// session-fault surface is independent — EventBackendFaulted must still fire
+// (only the turn event is re-labelled).
+func TestGenuineFault_AfterBoundaryInterrupt_StillPublishesBackendFaulted(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-boundary-fault-esc", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	// Two subscriptions so draining for the fault event cannot consume the turn
+	// event (their relative order is not guaranteed).
+	faultCh, unsubFault := rt.EventBus().SubscribeNamed("boundary-fault-esc-fault", 32)
+	defer unsubFault()
+	ch, unsub := rt.EventBus().SubscribeNamed("boundary-fault-esc-turn", 32)
+	defer unsub()
+
+	openTurnBoundary(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+	mock.fireTerminalErr(backend.ErrSubprocessExited)
+	rt.routeFrame(nil, backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	if !waitForBackendFaulted(faultCh, time.Second) {
+		t.Error("EventBackendFaulted was suppressed by the interrupt re-classification; real faults must not be swallowed")
+	}
+	// The documented trade-off: the TURN event is re-labelled as an interrupt
+	// while the independent session-fault surface above still fires.
+	interrupted, completed, failed := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (the interrupted turn is re-labelled, exactly once)", interrupted)
+	}
+	if completed != 0 || failed != 0 {
+		t.Errorf("completed=%d failed=%d, want 0/0", completed, failed)
+	}
+}
+
+// QUM-927 / QUM-830: a Ctrl+G send-all-now priority:"now" write at a turn
+// boundary preempts the still-open turn the same way, producing the identical
+// is_error terminal — it must classify as a clean interrupt too.
+func TestSendAllNow_NowWriteAtTurnBoundary_SurfacesInterrupt(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave-sendnow-boundary", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("sendnow-boundary-test", 32)
+	defer unsub()
+
+	writePendingUser(t, rt, mock, "send me now", "next")
+	openTurnBoundary(t, rt)
+	if err := rt.SendAllNow(context.Background()); err != nil {
+		t.Fatalf("SendAllNow: %v", err)
+	}
+	rt.routeFrame(resultFrame(t, true, 42), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, failed := tallyTerminalEvents(ch, 750*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (boundary now-write preempt must surface as a clean interrupt)", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0", completed)
+	}
+	if failed != 0 {
+		t.Errorf("EventTurnFailed count = %d, want 0", failed)
+	}
+}
+
+// tallyTerminalEvents drains ch for `window` and counts the terminal turn
+// events. Returns (interrupted, completed, failed).
+func tallyTerminalEvents(ch <-chan RuntimeEvent, window time.Duration) (int, int, int) {
+	interrupted, completed, failed, _ := tallyTerminalEventsWithResult(ch, window)
+	return interrupted, completed, failed
 }
 
 // QUM-830: send-all-now (Ctrl+G) writes one priority:"now" message that
