@@ -1,8 +1,9 @@
 // Package incident produces forensic incident-bundle directories from a
 // running Sprawl process. Invoked from the TUI (QUM-728) via Ctrl+\ to
-// dump goroutine stacks, fd snapshots, supervisor status, /proc state,
-// recent MCP calls, per-agent activity rates, and host memory/load into
-// `<SprawlRoot>/.sprawl/incidents/<ISO8601>-tui-snapshot/`.
+// dump goroutine stacks, fd snapshots, CPU and heap pprof profiles
+// (QUM-934), the executable's path/version for symbolization, supervisor
+// status, /proc state, recent MCP calls, per-agent activity rates, and host
+// memory/load into `<SprawlRoot>/.sprawl/incidents/<ISO8601>-tui-snapshot/`.
 //
 // Capture is best-effort: per-artifact errors are recorded into the
 // bundle's README.md instead of aborting the run, so a partial bundle is
@@ -16,8 +17,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"runtime/pprof"
 	"strings"
 	"time"
 
@@ -27,6 +32,19 @@ import (
 
 // defaultTailLines caps the mcp-calls.jsonl excerpt.
 const defaultTailLines = 10000
+
+// DefaultProfileDuration is the CPU-profile sampling window used when
+// Snapshotter.ProfileDuration is zero. Long enough to catch a hot loop or a
+// spin, short enough to fit inside the 30s Capture budget at the Ctrl+\ call
+// site alongside every other artifact.
+const DefaultProfileDuration = 5 * time.Second
+
+// profileFileFlags opens a profile artifact. O_EXCL matters: the bundle dir is
+// second-granular, so two captures in the same wall second share it. Failing
+// rather than truncating means a concurrent capture can never clobber a
+// profile the other one is still writing, and it guarantees that a path we
+// clean up after a failure is a path we created.
+const profileFileFlags = os.O_CREATE | os.O_EXCL | os.O_WRONLY
 
 // Snapshotter captures an incident bundle. All fields are injected so the
 // helper is unit-testable without touching the host process or filesystem.
@@ -54,6 +72,29 @@ type Snapshotter struct {
 	ActivityRoot string
 	// TailLines caps the mcp-calls.jsonl excerpt. 0 means defaultTailLines.
 	TailLines int
+	// ProfileDuration is the CPU-profile sampling window. 0 means
+	// DefaultProfileDuration; a negative value disables CPU profiling
+	// entirely. The window is opened before the other collectors run and
+	// closed after them, so it samples the capture itself for free.
+	//
+	// runtime/pprof permits one active CPU profile per process, so a second
+	// Ctrl+\ during a live window — or a concurrent --pprof scrape
+	// (QUM-678) — degrades to a recorded error and a bundle without a CPU
+	// profile.
+	ProfileDuration time.Duration
+	// StartCPUProfile begins CPU profiling into w. nil means
+	// pprof.StartCPUProfile.
+	StartCPUProfile func(w io.Writer) error
+	// StopCPUProfile ends the window opened by StartCPUProfile. nil means
+	// pprof.StopCPUProfile. Injected alongside StartCPUProfile so a fake
+	// start never lets the real stop reach a genuinely active profile.
+	StopCPUProfile func()
+	// WriteHeapProfile writes a heap profile to w. nil means
+	// pprof.WriteHeapProfile.
+	WriteHeapProfile func(w io.Writer) error
+	// Version is the sprawl version stamped into binary.txt. Empty means
+	// derive it from runtime/debug build info.
+	Version string
 }
 
 // Capture writes a bundle and returns its absolute path. Per-artifact
@@ -82,6 +123,83 @@ func (s *Snapshotter) Capture(ctx context.Context) (string, error) {
 			return
 		}
 		capErrs = append(capErrs, fmt.Sprintf("%s: %v", label, err))
+	}
+
+	// cpu-<ts>.pprof — opened first so the window overlaps every other
+	// collector; closed just before the README is written.
+	//
+	// cpuStarted uses the real clock, not nowFn: nowFn is a frozen fake in
+	// tests and would make the remaining-window math meaningless.
+	var cpuFile *os.File
+	var cpuStarted time.Time
+	profDur := s.ProfileDuration
+	if profDur == 0 {
+		profDur = DefaultProfileDuration
+	}
+	if profDur > 0 {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			record("cpu profile", ctxErr)
+		} else {
+			path := filepath.Join(dir, "cpu-"+ts+".pprof")
+			f, err := os.OpenFile(path, profileFileFlags, 0o600)
+			if err != nil {
+				record("cpu profile create", err)
+			} else if sErr := s.startCPUProfile(f); sErr != nil {
+				record("cpu profile start", sErr)
+				_ = f.Close()
+				// Leave no empty artifact behind.
+				_ = os.Remove(path)
+			} else {
+				cpuFile = f
+				cpuStarted = time.Now()
+			}
+		}
+	}
+	// Panic safety net: any collector below could panic — this is a forensic
+	// tool pointed at an already-sick process. Without this, the
+	// process-global CPU profile would stay active forever, permanently
+	// breaking every later Ctrl+\ and any --pprof scrape (QUM-678). The
+	// normal path clears cpuFile after stopping, making this a no-op.
+	defer func() {
+		if cpuFile != nil {
+			s.stopCPUProfile()
+			_ = cpuFile.Close()
+		}
+	}()
+
+	// heap-<ts>.pprof — instantaneous, so taken as close to the incident as
+	// possible. No runtime.GC() first: forcing a collection perturbs a
+	// possibly-wedged process, so the numbers are inuse as of the last GC.
+	{
+		path := filepath.Join(dir, "heap-"+ts+".pprof")
+		f, err := os.OpenFile(path, profileFileFlags, 0o600)
+		if err != nil {
+			record("heap profile create", err)
+		} else {
+			wErr := s.writeHeapProfile(f)
+			cErr := f.Close()
+			switch {
+			case wErr != nil:
+				record("heap profile", wErr)
+				_ = os.Remove(path)
+			case cErr != nil:
+				record("heap profile close", cErr)
+			}
+		}
+	}
+
+	// binary.txt — the executable path and version, so the profiles above
+	// can be symbolized later.
+	{
+		exe, err := os.Executable()
+		if err != nil {
+			record("executable path", err)
+			exe = "(unknown)"
+		}
+		info := buildBinaryInfo(exe, s.Version)
+		if wErr := os.WriteFile(filepath.Join(dir, "binary.txt"), []byte(info), 0o600); wErr != nil {
+			record("binary info write", wErr)
+		}
 	}
 
 	// sprawl-status.json
@@ -187,6 +305,27 @@ func (s *Snapshotter) Capture(ctx context.Context) (string, error) {
 		}
 	}
 
+	// Close the CPU window last, so it covers all of the above.
+	if cpuFile != nil {
+		if remaining := profDur - time.Since(cpuStarted); remaining > 0 {
+			timer := time.NewTimer(remaining)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				// A short profile is still valid and useful — record the
+				// truncation but keep the file.
+				record("cpu profile window", ctx.Err())
+			}
+		}
+		s.stopCPUProfile()
+		cErr := cpuFile.Close()
+		cpuFile = nil // disarm the panic-safety defer above
+		if cErr != nil {
+			record("cpu profile close", cErr)
+		}
+	}
+
 	// README.md
 	readme := buildReadme(ts, capErrs)
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o600); err != nil {
@@ -194,6 +333,58 @@ func (s *Snapshotter) Capture(ctx context.Context) (string, error) {
 	}
 
 	return dir, nil
+}
+
+// startCPUProfile / stopCPUProfile / writeHeapProfile resolve the injectable
+// profiler hooks to their runtime/pprof defaults.
+func (s *Snapshotter) startCPUProfile(w io.Writer) error {
+	if s.StartCPUProfile != nil {
+		return s.StartCPUProfile(w)
+	}
+	return pprof.StartCPUProfile(w)
+}
+
+func (s *Snapshotter) stopCPUProfile() {
+	if s.StopCPUProfile != nil {
+		s.StopCPUProfile()
+		return
+	}
+	pprof.StopCPUProfile()
+}
+
+func (s *Snapshotter) writeHeapProfile(w io.Writer) error {
+	if s.WriteHeapProfile != nil {
+		return s.WriteHeapProfile(w)
+	}
+	return pprof.WriteHeapProfile(w)
+}
+
+// buildBinaryInfo renders binary.txt: everything needed to symbolize the
+// bundle's profiles after the running process is gone.
+func buildBinaryInfo(execPath, version string) string {
+	info, haveInfo := debug.ReadBuildInfo()
+	if version == "" && haveInfo {
+		version = info.Main.Version
+	}
+	if version == "" {
+		version = "(unknown)"
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "executable: %s\n", execPath)
+	fmt.Fprintf(&b, "version: %s\n", version)
+	fmt.Fprintf(&b, "go: %s\n", runtime.Version())
+	fmt.Fprintf(&b, "platform: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	if haveInfo {
+		fmt.Fprintf(&b, "module: %s\n", info.Main.Path)
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision", "vcs.time", "vcs.modified":
+				fmt.Fprintf(&b, "%s: %s\n", setting.Key, setting.Value)
+			}
+		}
+	}
+	return b.String()
 }
 
 func writeMCPTail(dst, src string, tailCap int) error {
@@ -274,11 +465,22 @@ func buildReadme(ts string, capErrs []string) string {
 	b.WriteString("| sprawl-status.json | mcp__sprawl__status payload |\n")
 	b.WriteString("| goroutines-*.txt | in-process goroutine dump |\n")
 	b.WriteString("| fds-*.txt | open fd snapshot |\n")
+	b.WriteString("| cpu-*.pprof | CPU profile, sampled across the capture (runtime/pprof) |\n")
+	b.WriteString("| heap-*.pprof | heap profile, inuse as of the last GC (runtime/pprof) |\n")
+	b.WriteString("| binary.txt | executable path, version, build info (for symbolization) |\n")
 	b.WriteString("| ps-auxf.txt | `ps auxf` |\n")
 	b.WriteString("| proc-status-<pid>.txt | /proc/<pid>/status + fd_count |\n")
 	b.WriteString("| mcp-calls-tail.jsonl | last N lines of .sprawl/logs/mcp-calls.jsonl |\n")
 	b.WriteString("| activity-rates.txt | per-agent activity.ndjson 60s-window counts |\n")
 	b.WriteString("| mem-load.txt | `free -h` + /proc/loadavg |\n")
+	b.WriteString("\nThe table is a fixed legend of what a bundle can hold; a given\n")
+	b.WriteString("capture may omit artifacts whose collector failed (see Errors below).\n")
+	b.WriteString("\n## How to read the profiles\n\n")
+	b.WriteString("    go tool pprof <binary> cpu-*.pprof\n")
+	b.WriteString("    go tool pprof <binary> heap-*.pprof\n\n")
+	b.WriteString("`<binary>` is the `executable:` path from binary.txt. If that binary has\n")
+	b.WriteString("since been rebuilt or removed, rebuild at the revision recorded in\n")
+	b.WriteString("binary.txt — symbolization needs the matching binary.\n")
 	b.WriteString("\n## Errors\n\n")
 	if len(capErrs) == 0 {
 		b.WriteString("none\n")
