@@ -3,6 +3,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import type { Instance } from "../gen/hub/v1/hub_pb";
 import { defaultClient, type HubClient } from "./client";
 import { TokensView } from "./TokensView";
+import { LiveTailView } from "./wire/LiveTailView";
 
 type State =
   | { kind: "loading" }
@@ -10,7 +11,7 @@ type State =
   | { kind: "unauthed" }
   | { kind: "error"; message: string };
 
-type View = "instances" | "tokens";
+type View = "instances" | "livetail" | "tokens";
 
 export function App({ client = defaultClient }: { client?: HubClient }) {
   const [state, setState] = useState<State>({ kind: "loading" });
@@ -62,6 +63,13 @@ export function App({ client = defaultClient }: { client?: HubClient }) {
           </button>{" "}
           <button
             type="button"
+            aria-current={view === "livetail" ? "page" : undefined}
+            onClick={() => setView("livetail")}
+          >
+            Live tail
+          </button>{" "}
+          <button
+            type="button"
             aria-current={view === "tokens" ? "page" : undefined}
             onClick={() => setView("tokens")}
           >
@@ -72,11 +80,9 @@ export function App({ client = defaultClient }: { client?: HubClient }) {
           <button type="submit">Log out</button>
         </form>
       </header>
-      {view === "instances" ? (
-        <InstanceList instances={state.instances} />
-      ) : (
-        <TokensView client={client} />
-      )}
+      {view === "instances" && <InstanceList instances={state.instances} />}
+      {view === "livetail" && <LiveTailView client={client} />}
+      {view === "tokens" && <TokensView client={client} />}
     </main>
   );
 }

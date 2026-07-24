@@ -13,6 +13,7 @@
     "@bufbuild/protobuf": "^1.10.0",
     "@connectrpc/connect": "^1.6.1",
     "@connectrpc/connect-web": "^1.6.1",
+    "@tanstack/react-virtual": "^3.14.8",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
