@@ -41,8 +41,14 @@ type TaskNotification struct {
 	Type    string `json:"type"`
 	Subtype string `json:"subtype"`
 	TaskID  string `json:"task_id"`
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
+	// ToolUseID links a sidechain (Agent-tool) completion back to the
+	// spawning Agent tool_use id. Present ONLY on sidechain notifications;
+	// background-task (run_in_background) notifications omit it. This is the
+	// discriminator the TUI uses to finish the right Agent group vs. fire an
+	// auto-continue marker (QUM-914).
+	ToolUseID string `json:"tool_use_id"`
+	Status    string `json:"status"`
+	Summary   string `json:"summary"`
 }
 
 // CompactBoundary is a context-compaction boundary frame (type=system,

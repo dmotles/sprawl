@@ -49,9 +49,22 @@ func MapProtocolMessage(msg *protocol.Message) tea.Msg {
 		// subtypes (task_started/task_updated) are noisy and skipped.
 		if msg.Subtype == "task_notification" {
 			var tn protocol.TaskNotification
-			// QUM-857: a non-empty summary is the trigger gate, but the body
-			// is not propagated — the marker renders a fixed cue only.
-			if err := json.Unmarshal(msg.Raw, &tn); err == nil && tn.Summary != "" {
+			if err := json.Unmarshal(msg.Raw, &tn); err != nil {
+				return nil
+			}
+			// QUM-914: a task_notification carrying a tool_use_id is a
+			// SIDECHAIN (Agent-tool) completion — the real end delimiter for
+			// the async Agent whose tool_result was only a "launched" ack.
+			// Route it to TaskCompletedMsg so the reducer finishes that Agent
+			// group (regardless of summary — a sidechain can complete with an
+			// empty summary and must never be stranded pending).
+			if tn.ToolUseID != "" {
+				return TaskCompletedMsg{ToolUseID: tn.ToolUseID, Summary: tn.Summary}
+			}
+			// Background-task (run_in_background) notification. QUM-857: a
+			// non-empty summary is the auto-continue trigger gate, but the
+			// body is not propagated — the marker renders a fixed cue only.
+			if tn.Summary != "" {
 				return AutoContinueMsg{}
 			}
 			return nil

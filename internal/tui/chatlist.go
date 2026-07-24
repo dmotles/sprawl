@@ -64,12 +64,16 @@ type ChatList struct {
 	// Idle() so the S3 View() switch falls back to vp.View() mid-stream.
 	streamingAssistant bool
 
-	// activeAgents / lastActiveAgent mirror ViewportModel's depth/parent
-	// inference for live-path tool calls without an explicit parent_tool_use_id
-	// (QUM-386 heuristic fallback). Replicated here so AppendToolCallWithHeader
-	// produces identical Depth + ParentToolID values to the legacy path.
-	activeAgents    map[string]bool
-	lastActiveAgent string
+	// activeAgents is the set of OPEN sidechain (Agent-tool) groups keyed by
+	// their tool_use id. An entry is added when the Agent tool_use is appended
+	// and removed when the sidechain actually completes (MarkSidechainComplete,
+	// driven by the task_* channel) or its launch fails. Since the Agent tool
+	// is async, its tool_result is only a "launched" ack — MarkToolResult uses
+	// this set to ignore that ack instead of closing the group early (QUM-914).
+	// The pre-QUM-914 lastActiveAgent single-slot fallback is gone: with ≥2
+	// concurrent sidechains it misattributed children; every child now carries
+	// an explicit parent_tool_use_id.
+	activeAgents map[string]bool
 
 	// QUM-769 outer Render cache. revision is bumped by invalidate() on every
 	// observable state change; renderCache hits while revision and width are
@@ -292,28 +296,24 @@ func (c *ChatList) AppendToolCall(spec ToolCallSpec) {
 			c.activeAgents = make(map[string]bool)
 		}
 		c.activeAgents[spec.ToolID] = true
-		c.lastActiveAgent = spec.ToolID
 	}
 }
 
 // AppendToolCallWithHeader matches viewport.AppendToolCallWithHeader's
-// signature so AgentBuffer can fan out without per-call translation. Replicates
-// the QUM-386 depth/parent inference: an explicit parent_tool_use_id is
-// authoritative; otherwise a non-Agent call inside any in-flight Agent gets
-// Depth=1 attributed to the most recent Agent.
+// signature so AgentBuffer can fan out without per-call translation. Nesting is
+// driven solely by an explicit parent_tool_use_id: sidechain child frames all
+// carry one, so a call with a parent nests at Depth=1 and any parent-less call
+// stays top-level. (QUM-914 removed the lastActiveAgent single-slot fallback,
+// which misattributed children with ≥2 concurrent sidechains in flight.)
 func (c *ChatList) AppendToolCallWithHeader(name, toolID string, approved bool,
 	input, fullInput, headerArg string, headerParams []KVPair,
 	parentToolUseID string,
 ) {
 	depth := 0
 	parentID := ""
-	switch {
-	case parentToolUseID != "":
+	if parentToolUseID != "" {
 		parentID = parentToolUseID
 		depth = 1
-	case len(c.activeAgents) > 0 && name != "Agent":
-		depth = 1
-		parentID = c.lastActiveAgent
 	}
 	c.AppendToolCall(ToolCallSpec{
 		Name:         name,
@@ -336,6 +336,15 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 	if toolID == "" {
 		return false
 	}
+	// QUM-914: the Agent tool is async — a successful tool_result is only a
+	// "launched" ack, NOT a completion, so it must not close the group, evict
+	// the parent, or decrement pendingTools. Real completion arrives on the
+	// task_* channel (MarkSidechainComplete). The exception is a FAILED launch
+	// (isError): no task_started/task_notification will follow, so finish the
+	// row now rather than leave it spinning forever.
+	if c.activeAgents[toolID] && !isError {
+		return false
+	}
 	for n := len(c.items) - 1; n >= 0; n-- {
 		t, ok := c.items[n].item.(*ToolCallItem)
 		if !ok {
@@ -351,16 +360,38 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 			c.pendingTools--
 		}
 		c.invalidate()
-		// QUM-386 mirror: remove completed Agent from active set.
-		if c.activeAgents[toolID] {
-			delete(c.activeAgents, toolID)
-			if c.lastActiveAgent == toolID {
-				c.lastActiveAgent = ""
-				for id := range c.activeAgents {
-					c.lastActiveAgent = id
-					break
-				}
+		// A failed Agent launch resolves the group here; drop it from the
+		// open-sidechain set so no later task_* frame double-finishes it.
+		delete(c.activeAgents, toolID)
+		return true
+	}
+	return false
+}
+
+// MarkSidechainComplete finishes the OPEN sidechain (Agent-tool) group
+// identified by toolID. This is the authoritative completion signal, driven by
+// the task_* channel (task_notification) rather than the async Agent
+// tool_result "launched" ack, which MarkToolResult deliberately ignores
+// (QUM-914). Returns true if a matching item was found (whether it was still
+// pending and got finished, or was already settled — e.g. a failed launch);
+// false only when no item with that id exists.
+func (c *ChatList) MarkSidechainComplete(toolID string) bool {
+	if toolID == "" {
+		return false
+	}
+	delete(c.activeAgents, toolID)
+	for n := len(c.items) - 1; n >= 0; n-- {
+		t, ok := c.items[n].item.(*ToolCallItem)
+		if !ok || t.ToolID() != toolID {
+			continue
+		}
+		if !t.Finished() {
+			t.MarkResult("", false)
+			c.items[n].cache = nil
+			if c.pendingTools > 0 {
+				c.pendingTools--
 			}
+			c.invalidate()
 		}
 		return true
 	}
@@ -627,7 +658,6 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 	c.pendingTools = 0
 	c.streamingAssistant = false
 	c.activeAgents = nil
-	c.lastActiveAgent = ""
 	// QUM-833: a backfill snapshot (preload / restart / resync / child switch)
 	// replaces the committed transcript wholesale; any un-settled pending entry
 	// is stale and must not render under the fresh transcript.

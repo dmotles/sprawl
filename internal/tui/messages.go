@@ -477,11 +477,13 @@ type ToolCallMsg struct {
 	HeaderParams []KVPair
 	// ParentToolUseID is the wire-level parent_tool_use_id from the assistant
 	// envelope (protocol.AssistantMessage.ParentToolUseID). Non-empty when the
-	// emitting assistant turn ran inside a sidechain. The viewport
-	// uses it verbatim to attribute the tool call to the correct outer Agent
-	// container, taking precedence over the lastActiveAgent heuristic for
-	// parallel-Agent scenarios. Empty for top-level assistant turns. (QUM-386 live-path fix —
-	// sibling to replay path's wire-field plumbing in scanTranscriptWithSidechain.)
+	// emitting assistant turn ran inside a sidechain. The viewport uses it
+	// verbatim to attribute the tool call to the correct outer Agent container.
+	// QUM-914: it is now the SOLE live-path attribution key — the
+	// lastActiveAgent single-slot heuristic (which misattributed children with
+	// ≥2 concurrent sidechains) was removed. Empty for top-level assistant
+	// turns. (QUM-386 live-path fix — sibling to replay path's wire-field
+	// plumbing in scanTranscriptWithSidechain.)
 	ParentToolUseID string
 }
 
@@ -573,6 +575,18 @@ type SessionModelMsg struct {
 // non-empty summary is the trigger gate (see MapProtocolMessage), and the
 // rendered marker is a fixed `↻ auto-continued` cue.
 type AutoContinueMsg struct{}
+
+// TaskCompletedMsg signals that a sidechain (Agent-tool spawn) completed. It
+// is mapped from a system/task_notification frame that carries a tool_use_id
+// (the discriminator from a background-task notification, which stays an
+// AutoContinueMsg). The reducer finishes the matching Agent group via
+// ChatList.MarkSidechainComplete — the async Agent tool_result is only a
+// "launched" ack and never closes the group (QUM-914). Summary is retained
+// for potential display but is not currently rendered into the row body.
+type TaskCompletedMsg struct {
+	ToolUseID string
+	Summary   string
+}
 
 // taskNotification* are the literal wrapping tokens the harness records in the
 // JSONL transcript for an autonomous-turn trigger (QUM-634 resume path). The

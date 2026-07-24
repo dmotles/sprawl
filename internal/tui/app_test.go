@@ -3485,6 +3485,40 @@ func TestUpdate_AutoContinueMsg(t *testing.T) {
 	}
 }
 
+// QUM-914: a TaskCompletedMsg (mapped from a sidechain task_notification)
+// must finish the matching Agent group and re-arm the pump. The async launch
+// ack that precedes it must NOT have closed the group.
+func TestAppModel_TaskCompletedMsg_FinishesSidechain_AndRearms(t *testing.T) {
+	delegate := &continuousFakeDelegate{}
+	app := readyAppWithBridge(t, delegate)
+
+	// Spawn an Agent sidechain, then deliver its async "launched" ack.
+	updated, _ := app.Update(ToolCallMsg{ToolName: "Agent", ToolID: "a1", Approved: true})
+	app = updated.(AppModel)
+	updated, _ = app.Update(ToolResultMsg{ToolID: "a1", Content: "Async agent launched successfully.", IsError: false})
+	app = updated.(AppModel)
+
+	if app.rootVP().ChatList().Idle() {
+		t.Fatal("root ChatList Idle() after async launch ack; the sidechain group must stay in-progress")
+	}
+
+	updated, cmd := app.Update(TaskCompletedMsg{ToolUseID: "a1", Summary: "done"})
+	app = updated.(AppModel)
+
+	if !app.rootVP().ChatList().Idle() {
+		t.Error("root ChatList not Idle() after TaskCompletedMsg finished the sidechain")
+	}
+	if cmd == nil {
+		t.Fatal("TaskCompletedMsg returned nil cmd; expected a WaitForEvent re-arm")
+	}
+	if !runCmdsForSentinel(t, cmd) {
+		t.Error("TaskCompletedMsg cmd did not re-arm WaitForEvent")
+	}
+	if delegate.waitCalls == 0 {
+		t.Error("TaskCompletedMsg should call WaitForEvent on a continuous bridge; waitCalls = 0")
+	}
+}
+
 // QUM-774: when input is empty, KeyDown walks forward through history that
 // was previously recalled by KeyUp. After KeyUp loaded the newest entry,
 // KeyDown past the newest restores the (empty) live buffer. Viewport must

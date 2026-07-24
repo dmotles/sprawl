@@ -682,6 +682,39 @@ func TestChildStream_FirstToolCall_LandsInBothStores(t *testing.T) {
 	}
 }
 
+// QUM-914: an Agent sidechain observed in a CHILD pane must behave like the
+// root pane — the async launch ack keeps the group pending, and a
+// TaskCompletedMsg delivered on the child stream finishes it. Without the
+// child-path reducer the ack early-return would leave the row spinning forever.
+func TestChildStream_SidechainLifecycle_TaskCompletedFinishes(t *testing.T) {
+	app, epoch := setupChildAgentSelected(t)
+
+	updated, _ := app.Update(ChildStreamMsg{
+		Agent: "alice", Epoch: epoch,
+		Inner: ToolCallMsg{ToolName: "Agent", ToolID: "a1", Approved: true, Input: "Explore"},
+	})
+	app = updated.(AppModel)
+	updated, _ = app.Update(ChildStreamMsg{
+		Agent: "alice", Epoch: epoch,
+		Inner: ToolResultMsg{ToolID: "a1", Content: "Async agent launched successfully."},
+	})
+	app = updated.(AppModel)
+
+	if buf := app.agentBuffers["alice"]; buf == nil || buf.cl.Idle() {
+		t.Fatal("alice cl Idle() after async launch ack; sidechain group must stay pending")
+	}
+
+	updated, _ = app.Update(ChildStreamMsg{
+		Agent: "alice", Epoch: epoch,
+		Inner: TaskCompletedMsg{ToolUseID: "a1", Summary: "done"},
+	})
+	app = updated.(AppModel)
+
+	if buf := app.agentBuffers["alice"]; buf == nil || !buf.cl.Idle() {
+		t.Error("alice cl not Idle after TaskCompletedMsg finished the sidechain")
+	}
+}
+
 func TestChildStream_ToolResult_ClearsBothStores(t *testing.T) {
 	app, epoch := setupChildAgentSelected(t)
 

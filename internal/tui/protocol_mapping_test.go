@@ -430,6 +430,59 @@ func TestMapProtocolMessage_SystemTaskOtherSubtypes(t *testing.T) {
 	}
 }
 
+// TestMapProtocolMessage_SidechainTaskNotification (QUM-914): a
+// task_notification carrying a tool_use_id is a SIDECHAIN (Agent tool)
+// completion — distinct from a background-task notification (no tool_use_id,
+// which stays an AutoContinueMsg). It maps to TaskCompletedMsg so the reducer
+// can finish the matching Agent group rather than firing an auto-continue
+// marker.
+func TestMapProtocolMessage_SidechainTaskNotification(t *testing.T) {
+	raw := `{"type":"system","subtype":"task_notification","task_id":"ae1a1b04610a5e5af","tool_use_id":"toolu_01ESGLBGCZiYS62sEWFnDTjS","status":"completed","summary":"file list"}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := MapProtocolMessage(&msg)
+	tc, ok := result.(TaskCompletedMsg)
+	if !ok {
+		t.Fatalf("MapProtocolMessage for a sidechain task_notification returned %T, want TaskCompletedMsg", result)
+	}
+	if tc.ToolUseID != "toolu_01ESGLBGCZiYS62sEWFnDTjS" {
+		t.Errorf("TaskCompletedMsg.ToolUseID = %q, want the Agent tool_use id", tc.ToolUseID)
+	}
+	if tc.Summary != "file list" {
+		t.Errorf("TaskCompletedMsg.Summary = %q, want %q", tc.Summary, "file list")
+	}
+	if _, isAuto := result.(AutoContinueMsg); isAuto {
+		t.Error("a tool_use_id-bearing task_notification must NOT map to AutoContinueMsg")
+	}
+}
+
+// TestMapProtocolMessage_SidechainTaskNotification_EmptySummary (QUM-914): a
+// sidechain completion can legitimately carry an empty summary. The completion
+// must still map to TaskCompletedMsg (keyed on tool_use_id) — NOT nil — so the
+// Agent group is never stranded pending. This is the trap the summary-gate on
+// the background path must not swallow.
+func TestMapProtocolMessage_SidechainTaskNotification_EmptySummary(t *testing.T) {
+	raw := `{"type":"system","subtype":"task_notification","task_id":"ae1a1b04610a5e5af","tool_use_id":"toolu_01ESGLBGCZiYS62sEWFnDTjS","status":"completed","summary":""}`
+	var msg protocol.Message
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatal(err)
+	}
+	msg.Raw = json.RawMessage(raw)
+
+	result := MapProtocolMessage(&msg)
+	tc, ok := result.(TaskCompletedMsg)
+	if !ok {
+		t.Fatalf("empty-summary sidechain task_notification returned %T, want TaskCompletedMsg", result)
+	}
+	if tc.ToolUseID != "toolu_01ESGLBGCZiYS62sEWFnDTjS" {
+		t.Errorf("TaskCompletedMsg.ToolUseID = %q, want the Agent tool_use id", tc.ToolUseID)
+	}
+}
+
 func TestMapProtocolMessage_SystemNonInit(t *testing.T) {
 	// Non-init system messages should still return nil.
 	raw := `{"type":"system","subtype":"session_state_changed","state":"idle"}`

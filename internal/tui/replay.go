@@ -162,6 +162,15 @@ func scanWireTranscript(path string, includeSidechain bool) ([]MessageEntry, err
 // field, so a frame belongs to a sidechain iff it carries a non-empty
 // parent_tool_use_id (QUM-904). That same id supplies the wire-level parent
 // tool id for nesting (QUM-577).
+//
+// QUM-914 Breakage B (DEFERRED to QUM-904): the async Agent tool relocated
+// sidechain inner frames OUT of the main Claude transcript into per-subagent
+// files, so on replay/resync from that transcript sidechain work is MISSING
+// entirely (parent_tool_use_id is absent there). Restoring replay fidelity
+// requires rehydrating from the sprawl wire log (which DOES retain the
+// interleaved sidechain frames + parent_tool_use_id) — the direction QUM-904
+// is already headed. This function's sidechain logic is intentionally left
+// unchanged here; QUM-914 only fixes the live TUI path.
 func appendRecordEntries(entries []MessageEntry, agentStack []string, rec map[string]any, includeSidechain bool) ([]MessageEntry, []string) {
 	recType, _ := rec["type"].(string)
 	if recType != "user" && recType != "assistant" {
