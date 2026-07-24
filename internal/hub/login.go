@@ -245,7 +245,8 @@ func cookieEligible(procedure string) bool {
 	case hubv1connect.HubServiceListInstancesProcedure,
 		hubv1connect.HubServiceCreateHostTokenProcedure,
 		hubv1connect.HubServiceListHostTokensProcedure,
-		hubv1connect.HubServiceRevokeHostTokenProcedure:
+		hubv1connect.HubServiceRevokeHostTokenProcedure,
+		hubv1connect.HubServiceSubscribeWireLogProcedure:
 		return true
 	}
 	return false

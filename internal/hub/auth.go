@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -30,52 +31,90 @@ var errUnauthenticated = connect.NewError(
 var errStoreUnavailable = connect.NewError(
 	connect.CodeUnavailable, errors.New("hub store unavailable"))
 
-// NewAuthInterceptor returns a connect unary interceptor that authenticates the
+// NewAuthInterceptor returns a connect interceptor that authenticates the
 // `Authorization: Bearer sprawl_hub_<tokenid>_<secret>` header on every
-// HubService call: parse → O(n) linear lookup by tokenid over the single
-// user's tokens → reject if revoked → argon2id constant-time verify of the
-// secret against the sealed hash.
+// HubService call — UNARY and SERVER-STREAM alike: parse → O(n) linear lookup
+// by tokenid over the single user's tokens → reject if revoked → argon2id
+// constant-time verify of the secret against the sealed hash.
 //
 // If cookie is non-nil (browser login enabled), cookie-eligible RPCs (see
 // cookieEligible) additionally accept a valid browser session cookie as an
 // ALTERNATIVE to the bearer header — so a logged-in browser can call
-// ListInstances with only its cookie. Host RPCs (RegisterInstance) stay
-// bearer-only. Token-management RPCs (see browserOnly) are the inverse:
-// cookie-ONLY, and a host bearer is rejected for them regardless of validity.
+// ListInstances or SubscribeWireLog with only its cookie. Host RPCs
+// (RegisterInstance, PushWireLog) stay bearer-only. Token-management RPCs (see
+// browserOnly) are the inverse: cookie-ONLY, and a host bearer is rejected for
+// them regardless of validity.
+//
+// Streaming handlers are authenticated too: a plain UnaryInterceptorFunc leaves
+// WrapStreamingHandler a no-op, which would let any caller subscribe to the
+// wire log unauthenticated. This full Interceptor closes that gap by
+// authenticating off the stream's request header before the handler runs.
 //
 // The client always sees a uniform Unauthenticated on rejection; infra failures
 // (store/keeper outage) are logged server-side via log so operators can tell
 // them apart. A nil log uses a discard logger.
-func NewAuthInterceptor(st store.Store, uid store.UserID, cookie *BrowserAuth, log *slog.Logger) connect.UnaryInterceptorFunc {
+func NewAuthInterceptor(st store.Store, uid store.UserID, cookie *BrowserAuth, log *slog.Logger) connect.Interceptor {
 	if log == nil {
 		log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			if st == nil {
-				// Fail closed: never serve an RPC without a store to auth against.
-				log.Error("auth: no store configured; rejecting request")
-				return nil, errStoreUnavailable
-			}
-			procedure := req.Spec().Procedure
-			// Bearer first — host auth path, unchanged — EXCEPT for browser-only
-			// procedures (token administration), where a host bearer must never
-			// pass regardless of validity.
-			if !browserOnly(procedure) {
-				if authenticate(ctx, st, uid, req.Header().Get("Authorization"), log) == nil {
-					return next(ctx, req)
-				}
-			}
-			// Cookie path for eligible (logged-in-operator) RPCs when browser
-			// login is on.
-			if cookie != nil && cookieEligible(procedure) {
-				if cookie.authenticateCookie(ctx, req.Header()) == nil {
-					return next(ctx, req)
-				}
-			}
-			return nil, errUnauthenticated
+	return &authInterceptor{st: st, uid: uid, cookie: cookie, log: log}
+}
+
+// authInterceptor implements connect.Interceptor. The unary and streaming paths
+// share one authorize decision so bearer/cookie rules can never drift apart.
+type authInterceptor struct {
+	st     store.Store
+	uid    store.UserID
+	cookie *BrowserAuth
+	log    *slog.Logger
+}
+
+func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
+	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+		if err := a.authorize(ctx, req.Spec().Procedure, req.Header()); err != nil {
+			return nil, err
+		}
+		return next(ctx, req)
+	}
+}
+
+// WrapStreamingClient is a no-op: this interceptor only guards the server side.
+func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
+	return next
+}
+
+func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
+	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
+		if err := a.authorize(ctx, conn.Spec().Procedure, conn.RequestHeader()); err != nil {
+			return err
+		}
+		return next(ctx, conn)
+	}
+}
+
+// authorize applies the bearer-then-cookie decision for a procedure. It returns
+// nil to admit the call, errStoreUnavailable when no store is configured (fail
+// closed), or the uniform errUnauthenticated otherwise.
+func (a *authInterceptor) authorize(ctx context.Context, procedure string, header http.Header) error {
+	if a.st == nil {
+		// Fail closed: never serve an RPC without a store to auth against.
+		a.log.Error("auth: no store configured; rejecting request")
+		return errStoreUnavailable
+	}
+	// Bearer first — host auth path — EXCEPT for browser-only procedures (token
+	// administration), where a host bearer must never pass regardless of validity.
+	if !browserOnly(procedure) {
+		if authenticate(ctx, a.st, a.uid, header.Get("Authorization"), a.log) == nil {
+			return nil
 		}
 	}
+	// Cookie path for eligible (logged-in-operator) RPCs when browser login is on.
+	if a.cookie != nil && cookieEligible(procedure) {
+		if a.cookie.authenticateCookie(ctx, header) == nil {
+			return nil
+		}
+	}
+	return errUnauthenticated
 }
 
 // authenticate verifies a raw Authorization header value. It returns nil on

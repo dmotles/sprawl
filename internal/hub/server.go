@@ -23,18 +23,13 @@ var startedAt = time.Now()
 // Server holds the hub's HTTP surface: the Connect HubService handlers (stubbed
 // this slice), health/readiness probes, and the gated /debug/state endpoint.
 type Server struct {
-	// The wire-log RPCs (PushWireLog/SubscribeWireLog) are defined in the proto
-	// contract (QUM-907) but not yet implemented; embedding the generated stub
-	// keeps *Server satisfying HubServiceHandler and returns CodeUnimplemented
-	// until the ingest/subscribe handlers land (QUM-908/909/910).
-	hubv1connect.UnimplementedHubServiceHandler
-
 	log    *slog.Logger
 	health *Health
 	debug  bool
 	spa    fs.FS // embedded SPA assets; may be nil/empty this slice
 	store  store.Store
 	login  *BrowserAuth // browser login; nil disables it (host auth unaffected)
+	fanout *Fanout      // in-memory wire-log backlog + browser fan-out (QUM-909)
 }
 
 // NewServer builds a Server from cfg. The readiness flag starts false; the
@@ -67,6 +62,9 @@ func NewServer(cfg HubConfig) *Server {
 		health.SetDBCheck(st.Ping)
 	}
 
+	fanout := NewFanout()
+	fanout.log = log
+
 	return &Server{
 		log:    log,
 		health: health,
@@ -74,6 +72,7 @@ func NewServer(cfg HubConfig) *Server {
 		spa:    cfg.SPA,
 		store:  st,
 		login:  cfg.Login,
+		fanout: fanout,
 	}
 }
 
@@ -182,6 +181,55 @@ func (s *Server) RevokeHostToken(
 	return connect.NewResponse(&hubv1.RevokeHostTokenResponse{}), nil
 }
 
+// PushWireLog is the host->hub uplink for batches of seq'd wire-log frames. It
+// stores frames in the in-memory per-session backlog, idempotent by seq (a
+// frame whose seq is <= the highest already stored is dropped, so a re-uplink
+// after a browser reconnect is a no-op). The durable audit sink is deferred
+// (QUM-909): nothing is written to the store here.
+func (s *Server) PushWireLog(
+	_ context.Context, req *connect.Request[hubv1.PushWireLogRequest],
+) (*connect.Response[hubv1.PushWireLogResponse], error) {
+	key, err := wireSessionKey(req.Msg.GetHostId(), req.Msg.GetRunId(), req.Msg.GetSessionId())
+	if err != nil {
+		return nil, err
+	}
+	s.fanout.Push(key, req.Msg.GetFrames())
+	return connect.NewResponse(&hubv1.PushWireLogResponse{}), nil
+}
+
+// SubscribeWireLog is the browser->hub server-stream downlink. It replays the
+// in-memory backlog (full when from_seq=0, delta for from_seq>0), then
+// live-tails new frames and emits a periodic on-stream HEARTBEAT frame to keep
+// the connection alive across L7 idle timeouts. It returns when the client
+// disconnects (ctx cancelled) or a send fails.
+//
+// Restart behavior (QUM-909, in-mem only): a hubd restart drops all streams and
+// clears the backlog. Browsers reconnect and pass the last seq they saw as
+// from_seq; the backlog is rebuilt as the host re-uplinks, so replay resumes
+// from the earliest re-uplinked seq.
+func (s *Server) SubscribeWireLog(
+	ctx context.Context,
+	req *connect.Request[hubv1.SubscribeWireLogRequest],
+	stream *connect.ServerStream[hubv1.SubscribeWireLogResponse],
+) error {
+	key, err := wireSessionKey(req.Msg.GetHostId(), req.Msg.GetRunId(), req.Msg.GetSessionId())
+	if err != nil {
+		return err
+	}
+	return s.fanout.Subscribe(ctx, key, req.Msg.GetFromSeq(), stream)
+}
+
+// wireSessionKey validates and builds a sessionKey from the wire-log request
+// triple. All three components are required; a session is uniquely identified
+// by (host_id, run_id, session_id).
+func wireSessionKey(hostID, runID, sessionID string) (sessionKey, error) {
+	if hostID == "" || runID == "" || sessionID == "" {
+		return sessionKey{}, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("host_id, run_id, and session_id are all required"))
+	}
+	return sessionKey{hostID: hostID, runID: runID, sessionID: sessionID}, nil
+}
+
 // hostTokenToProto maps a store TokenRecord to the wire HostToken (metadata
 // only — no secret material). A nil RevokedAt maps to the 0 sentinel (active).
 func hostTokenToProto(r store.TokenRecord) *hubv1.HostToken {
@@ -212,13 +260,14 @@ func instanceToProto(r store.InstanceRecord) *hubv1.Instance {
 // instance registry and the advisory active-host markers (the host ids that
 // currently hold a marker for any project — advisory only, no fence/lease).
 func (s *Server) debugSnapshot() any {
+	streams, connections := s.fanout.DebugSnapshot()
 	snap := map[string]any{
 		"component":   "hubd",
 		"now":         time.Now().UTC().Format(time.RFC3339),
 		"uptime_ms":   time.Since(startedAt).Milliseconds(),
 		"ready":       s.health.Ready(),
-		"streams":     []any{},
-		"connections": []any{},
+		"streams":     streams,
+		"connections": connections,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
