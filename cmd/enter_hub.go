@@ -14,11 +14,24 @@ import (
 
 	"github.com/dmotles/sprawl/internal/config"
 	"github.com/dmotles/sprawl/internal/hub"
+	hubv1connect "github.com/dmotles/sprawl/internal/hub/gen/hub/v1/hubv1connect"
+	"github.com/dmotles/sprawl/internal/hubtail"
+	"github.com/dmotles/sprawl/internal/memory"
 )
 
 // hubDialTimeout bounds the startup registration RPC so an unreachable hub
 // cannot linger.
 const hubDialTimeout = 10 * time.Second
+
+// hubTailPushTimeout bounds each PushWireLog RPC so a hung hub connection stalls
+// only the tailer's own goroutine (never the live session) and lets the next
+// poll retry.
+const hubTailPushTimeout = 30 * time.Second
+
+// hubTailIdentity is the fixed agent identity of the root `sprawl enter`
+// session, matching the wire-log path built in
+// internal/backend/claude/adapter.go.
+const hubTailIdentity = "weave"
 
 // defaultHubDialOut registers this host with the hub, if one is configured.
 // It is intentionally best-effort: a missing hub URL is a clean no-op (sprawl
@@ -78,6 +91,39 @@ func defaultHubDialOut(getenv func(string) string, logW io.Writer, sprawlRoot st
 		return
 	}
 	fmt.Fprintf(logW, "[enter] hub: registered with %s as %s\n", redacted, id.HostID)
+
+	// Registration succeeded: follow the durable wire log and ship frames to the
+	// hub. This blocks the dial-out goroutine for the lifetime of the process
+	// (it is already fire-and-forget); it degrades silently on any hub trouble
+	// and never touches the live session.
+	runHostTailer(context.Background(), logW, sprawlRoot, hubURL, token, id)
+}
+
+// runHostTailer builds the PushWireLog client and tails the root session's wire
+// log, shipping frames to the hub with verbatim seq. Best-effort: it resolves
+// the live session id every poll (re-targeting across a fresh-session flip) and
+// swallows all errors. Returns when ctx is canceled.
+func runHostTailer(ctx context.Context, logW io.Writer, sprawlRoot, hubURL, token string, id hub.HostIdentity) {
+	// A bounded per-RPC HTTP timeout so a hung connection cannot wedge the
+	// tailer's poll loop; PushWireLog is unary, so plain HTTP/1.1 is fine.
+	httpClient := &http.Client{Timeout: hubTailPushTimeout}
+	client := hubv1connect.NewHubServiceClient(httpClient, hubURL)
+
+	tailer := hubtail.New(client, hubtail.Config{
+		HostID: id.HostID,
+		RunID:  id.RunID,
+		Bearer: token,
+		Log:    logW,
+	})
+	resolve := func() (string, error) { return memory.ReadLastSessionID(sprawlRoot) }
+	pathFor := func(sessionID string) string { return hostTailWireLogPath(sprawlRoot, sessionID) }
+	tailer.Run(ctx, resolve, pathFor)
+}
+
+// hostTailWireLogPath returns the durable wire-log path for the root session,
+// matching internal/backend/claude/adapter.go's construction exactly.
+func hostTailWireLogPath(sprawlRoot, sessionID string) string {
+	return filepath.Join(sprawlRoot, ".sprawl", "logs", "sessions", hubTailIdentity, sessionID+".ndjson")
 }
 
 // genRunID returns a short random hex id identifying this `sprawl enter` run.

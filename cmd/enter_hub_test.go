@@ -88,6 +88,18 @@ func TestDefaultHubDialOut_UserConfigURLWiredIn(t *testing.T) {
 	}
 }
 
+// TestHostTailWireLogPath: the tailer's wire-log path must match the writer's
+// path in internal/backend/claude/adapter.go
+// (.sprawl/logs/sessions/weave/<sessionID>.ndjson) or the tailer would follow a
+// nonexistent file.
+func TestHostTailWireLogPath(t *testing.T) {
+	got := hostTailWireLogPath("/srv/proj", "sess-abc")
+	want := filepath.Join("/srv/proj", ".sprawl", "logs", "sessions", "weave", "sess-abc.ndjson")
+	if got != want {
+		t.Fatalf("hostTailWireLogPath = %q, want %q", got, want)
+	}
+}
+
 func writeHubConfig(t *testing.T, root, hubURL, tokenFile string) {
 	t.Helper()
 	dir := filepath.Join(root, ".sprawl")
