@@ -1527,6 +1527,18 @@ else
 		fi
 		_unit_assert_ran "$MSK" _unit_fixture_m1 no "15q: the row after an un-writable sentinel never executed"
 		_unit_assert_no_summary "$_OUT" "15q: no summary when the sentinel cannot be written"
+		# Attribute the abort to the SECOND row, or an exit 4 raised anywhere
+		# before the first row would satisfy the three assertions above.
+		if printf '%s\n' "$_ERR" | grep -q "internal error.*before row '_unit_fixture_m1'"; then
+			pass "15q: the failed write is reported against the row about to run"
+		else
+			fail "15q: the failed write is not attributed to the next row err=$_ERR"
+		fi
+		if printf '%s\n' "$_OUT" | grep -q '^PASS _unit_fixture_lockempty$'; then
+			pass "15q: the row that made the sentinel un-writable ran and was classified"
+		else
+			fail "15q: the first row did not run, so nothing made the sentinel un-writable out=$_OUT"
+		fi
 
 		# --- 15s: a stale reason that survives the reset must abort, not launder -
 		# 15q induces a reset that FAILS. This induces the other fault the same

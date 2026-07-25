@@ -283,7 +283,8 @@ for name in "${selected[@]}"; do
     # itself, so `2>/dev/null` does not silence it; the explicit message below
     # is what says *why* the run is aborting.
     if ! reset_skip_sentinel || [ -s "$E2E_SKIP_FILE" ]; then
-        echo "internal error: cannot reset the skip sentinel $E2E_SKIP_FILE before row '$name';" >&2
+        echo "internal error: cannot reset the skip sentinel $E2E_SKIP_FILE before row '$name'" >&2
+        echo "               (the write failed, or its content survived the reset);" >&2
         echo "               stale content would misclassify this row, so refusing to continue" >&2
         exit 4
     fi
