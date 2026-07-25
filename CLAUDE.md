@@ -389,7 +389,7 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 
    > **Reading older transcripts:** before QUM-947 the driver silently discarded every argument after the first and printed `Matrix: 1/1 passed`. Any historical multi-row invocation that "passed" proved only that its *first* row ran. Do not trust such a claim.
 
-   The driver's own arg parsing, fail-fast validation, and summary arithmetic are unit-tested by `make test-e2e-matrix-unit` (`scripts/test-e2e-matrix-unit.sh`) — pure shell, ~0.4s, no `claude` or `tmux` needed. It runs as part of `make validate`, because a regression test guarding a false-green is worthless if it only runs when someone remembers.
+   The driver's own arg parsing, fail-fast validation, and summary arithmetic are unit-tested by `make test-e2e-matrix-unit` (`scripts/test-e2e-matrix-unit.sh`) — pure shell, no `claude` or `tmux` needed. It runs as part of `make validate`, because a regression test guarding a false-green is worthless if it only runs when someone remembers. Runtime is ~8s, most of it section `[16]`, which re-runs the whole suite once per driver debug seam with that seam exported and demands an identical verdict — the suite's own verdict must not depend on the environment that invoked it. If you export `SPRAWL_E2E_MATRIX_DEBUG_*` or `UNIT_NESTED_SEAM_CHECK` in your shell, `[16]` will tell you rather than quietly changing what the suite asserts.
 
    All rows require a real, **authenticated** `claude` binary on PATH. `SPRAWL_E2E_SKIP_NO_CLAUDE=1` turns a missing `claude` from a hard `FATAL` into a **skip** — and a skip is accounted separately from a pass (QUM-952).
 

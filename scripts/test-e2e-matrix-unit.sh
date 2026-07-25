@@ -39,6 +39,38 @@ fi
 export TMPDIR=/tmp
 UNIT_TMP_ROOT=${TMPDIR%/}
 
+# The variables this suite must never inherit, and the single place they are
+# registered. Every entry either makes the driver misbehave on purpose (the
+# debug seams) or redirects state the driver owns (the skip sentinel), so an
+# inherited value flips this suite's negative controls green for a reason that
+# has nothing to do with the code under test.
+#
+# They are removed from THIS process's environment rather than scrubbed per
+# call site, because the suite invokes the driver from four places and three of
+# them cannot route through _unit_run_env: [7] and [8] run the real $DRIVER (so
+# TMPDIR must not be a fixture dir) and [10] uses PATH=/nonexistent with an
+# absolute bash and its own fixture tree. A per-site scrub is a rule the next
+# call site has to remember; unsetting is a rule it cannot forget.
+#
+# Adding a debug seam to scripts/e2e-matrix.sh? Register it here — [16a] reads
+# the seam names out of the driver and fails if one is missing.
+UNIT_SCRUBBED_VARS=(
+	SPRAWL_E2E_SKIP_NO_CLAUDE
+	E2E_SKIP_FILE
+	SPRAWL_E2E_MATRIX_DEBUG_TALLY_SKEW
+	SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL
+)
+UNIT_SCRUB_ARGS=()
+for _v in "${UNIT_SCRUBBED_VARS[@]}"; do
+	UNIT_SCRUB_ARGS+=(-u "$_v")
+done
+unset "${UNIT_SCRUBBED_VARS[@]}"
+
+# This file's own path, for the nested self-check in [16b]. Derived from
+# BASH_SOURCE, not $0: the Makefile invokes the suite by a relative path and
+# the cd above has already moved, so $0 resolves only by coincidence of cwd.
+UNIT_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+
 pass() {
 	PASS=$((PASS + 1))
 	echo "  PASS: $1"
@@ -575,11 +607,11 @@ _unit_run() {
 # run can scrub PATH or set SPRAWL_E2E_SKIP_NO_CLAUDE for the driver process
 # only. bash is resolved absolutely so a scrubbed PATH cannot break the exec.
 #
-# `env -u` is load-bearing (QUM-952): CLAUDE.md instructs agents to export
-# SPRAWL_E2E_SKIP_NO_CLAUDE, and this suite runs inside `make validate` inside
-# the pre-commit hook. An inherited value would invert the negative controls
-# below — turning them green for the wrong reason — and an inherited
-# E2E_SKIP_FILE would point rows at a sentinel the driver does not own.
+# The `env -u` prefix is built from UNIT_SCRUBBED_VARS (the registry at the top
+# of this file), so there is one authority rather than two lists that can drift.
+# The registry is already unset process-wide, which is what actually protects
+# the call sites that cannot route through here; this prefix additionally covers
+# anything inside the suite that exports one of those names mid-run.
 _unit_run_env() {
 	local fix=${1:?} mdir=$2 envs=$3
 	shift 3
@@ -596,9 +628,7 @@ _unit_run_env() {
 	# split into separate VAR=VAL words for `env`, and mdir must vanish entirely
 	# when empty. Do not "fix" this by quoting them.
 	# shellcheck disable=SC2086
-	env -u SPRAWL_E2E_SKIP_NO_CLAUDE -u E2E_SKIP_FILE \
-		-u SPRAWL_E2E_MATRIX_DEBUG_TALLY_SKEW \
-		-u SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL "TMPDIR=$fix" \
+	env "${UNIT_SCRUB_ARGS[@]}" "TMPDIR=$fix" \
 		$envs ${mdir:+UNIT_MARKER_DIR=$mdir} \
 		"$bash_abs" "$fix/e2e-matrix.sh" "$@" >"$of" 2>"$ef"
 	_RC=$?
@@ -1652,6 +1682,151 @@ else
 			esac
 		done
 	fi
+fi
+
+# ----------------------------------------------------------------------------
+# 16. This suite's verdict must not depend on the environment that ran it.
+#
+#     Same idea as [11]'s Makefile self-wiring check and [15p]'s CLAUDE.md
+#     check, pointed at this file: a gate whose result the caller can flip is
+#     not a gate. A driver debug seam exported in the invoking shell reaches
+#     every driver child that did not scrub it, and the assertions fed by those
+#     children then pass or fail for reasons unrelated to the code under test.
+#
+#     16a is static and derived from the driver, so a seam added later and left
+#     unregistered fails here rather than quietly joining the inherited-env
+#     surface. 16b is the behavioural proof: it re-runs this whole suite once
+#     per seam, with that seam exported, and demands the same verdict. Only 16b
+#     would have caught the measured failure, because the [10] call sites are
+#     invisible to any list of scrubbed names.
+# ----------------------------------------------------------------------------
+echo "[16] suite environment hygiene"
+
+# The recursion guard is a NONCE PATH, not a boolean, and the nonce is created
+# by the parent for one run. A caller who exports UNIT_NESTED_SEAM_CHECK=1
+# would otherwise silently disable this whole section and still see a green
+# suite — which is precisely the fault [16] exists to detect, so an unbacked
+# guard value has to fail loudly instead.
+if [ -n "${UNIT_NESTED_SEAM_CHECK:-}" ]; then
+	if [ -r "$UNIT_NESTED_SEAM_CHECK" ] &&
+		grep -q '^nested-seam-check$' "$UNIT_NESTED_SEAM_CHECK" 2>/dev/null; then
+		# A 16b child. Recursing would fork-bomb, and a `pass` here would
+		# corrupt the coverage comparison below, so this branch counts nothing.
+		# The floor is emitted at the SAME point the parent reads its own, so
+		# adding a section after [16] cannot skew the comparison.
+		note "16: nested child — [16] intentionally not re-run"
+		echo "NESTED-FLOOR: $PASS"
+	else
+		fail "16: UNIT_NESTED_SEAM_CHECK is set in the invoking environment without a live nonce — [16] would have been disabled by the caller"
+	fi
+else
+	_nested_floor=$PASS
+	_parent_fail_on_entry=$FAIL
+
+	# --- 16a: every seam the driver reads is registered for scrubbing --------
+	_seams=$(grep -ohE 'SPRAWL_E2E_MATRIX_DEBUG_[A-Z0-9_]+' "$DRIVER" "$LIB" 2>/dev/null | sort -u)
+	if [ -z "$_seams" ]; then
+		# No hits means the probe broke, not that the driver has no seams: the
+		# loop below would then be vacuous and report all-green.
+		fail "16a: no SPRAWL_E2E_MATRIX_DEBUG_* seams found in the driver — the probe broke"
+	fi
+	for _s in $_seams; do
+		_found=0
+		for _r in "${UNIT_SCRUBBED_VARS[@]}"; do
+			[ "$_r" = "$_s" ] && _found=1
+		done
+		if [ "$_found" -eq 1 ]; then
+			pass "16a: an exported $_s cannot invert this suite's negative controls"
+		else
+			fail "16a: driver seam $_s is unregistered — an exported value would invert this suite's negative controls"
+		fi
+	done
+	# The registry is only a single authority if the one call site that still
+	# scrubs per-invocation is built from it. Without this, that prefix becomes
+	# unobservable once the process-wide unset lands, and the two lists it was
+	# meant to merge can drift again with nothing to notice.
+	if grep -q '"\${UNIT_SCRUB_ARGS\[@\]}"' "$UNIT_SELF"; then
+		pass "16a: _unit_run_env's scrub is built from the registry, not a second list"
+	else
+		fail "16a: a hand-written scrub list has reappeared — the registry is no longer the only authority"
+	fi
+
+	# --- 16b: an exported seam cannot change this suite's verdict ------------
+	# One child per seam, never both at once: each seam aborts the driver with
+	# rc 4 by a different route, so a combined child could not say which caused
+	# it. The value is passed on the child's command line rather than inherited,
+	# so the section stages its own hostile input instead of waiting for an
+	# operator to supply one.
+	#
+	# The list is the DRIVER's seams, not the whole registry: the other two
+	# registry entries cannot reach a driver child (e2e-matrix.sh assigns
+	# E2E_SKIP_FILE from mktemp unconditionally, and every site that needs
+	# SPRAWL_E2E_SKIP_NO_CLAUDE sets it on the child's own command line), so a
+	# child for either would cost 1.1s to assert a property nothing can break.
+	# 16a covers them statically for free.
+	_nonce=$(mktemp 2>/dev/null)
+	_timeout=$(command -v timeout)
+	if [ -z "$_nonce" ] || ! printf 'nested-seam-check\n' >"$_nonce" 2>/dev/null; then
+		fail "16b: cannot stage the recursion nonce — nested check not run"
+	elif [ ! -r "$UNIT_SELF" ]; then
+		fail "16b: cannot locate this suite at '$UNIT_SELF' — nested check not run"
+	else
+		for _s in $_seams; do
+			_clog=$(mktemp) || {
+				fail "16b: cannot mktemp child log for $_s — neither claim was checked for it"
+				continue
+			}
+			# timeout is insurance: a regression in the recursion guard above
+			# would otherwise hang `make validate` inside the pre-commit hook.
+			# shellcheck disable=SC2086
+			env "UNIT_NESTED_SEAM_CHECK=$_nonce" "$_s=1" \
+				${_timeout:+"$_timeout" 120} bash "$UNIT_SELF" >"$_clog" 2>&1
+			_crc=$?
+			_cres=$(grep -E '^=== unit results: [0-9]+ passed / [0-9]+ failed ===$' "$_clog" | tail -1)
+			_cfloor=$(sed -n 's/^NESTED-FLOOR: \([0-9]*\)$/\1/p' "$_clog" | tail -1)
+			# When the parent is already failing, the child inherits those
+			# failures and the label below would misattribute them.
+			_caveat=""
+			if [ "$_parent_fail_on_entry" -gt 0 ]; then
+				_caveat=" (NOTE: the parent already had $_parent_fail_on_entry failures — this may be pre-existing rather than an env-hygiene regression)"
+			fi
+			if [ "$_crc" -eq 0 ] && [ -n "$_cres" ]; then
+				pass "16b: an exported $_s cannot reach the driver from any call site"
+			else
+				fail "16b: exporting $_s changed this suite's verdict$_caveat (child rc=$_crc, '$_cres'); child failures: $(grep '^  FAIL' "$_clog" | tr '\n' '|')"
+			fi
+			# A child that exited 0 having skipped whole sections satisfies the
+			# check above, so its coverage must match the parent's exactly —
+			# `-ge` would tolerate coverage shrinking.
+			if [ -n "$_cfloor" ] && [ "$_cfloor" -eq "$_nested_floor" ]; then
+				pass "16b: the child run with $_s exported asserted the same $_nested_floor things"
+			else
+				fail "16b: child with $_s exported asserted ${_cfloor:-<no floor reported>}, want exactly $_nested_floor"
+			fi
+			rm -f "$_clog"
+		done
+
+		# --- 16c: the section cannot be switched off from outside -------------
+		# 16b's recursion guard is itself an inherited variable, so a caller who
+		# exports it would skip all of [16] and still see green — this section's
+		# own defect, one level up. A guard value with no live nonce behind it
+		# must therefore fail the run, and this is the only assertion that
+		# notices if the guard is ever relaxed back to a truthiness test.
+		_clog=$(mktemp) || fail "16c: cannot mktemp child log — the guard was not checked"
+		if [ -n "$_clog" ]; then
+			# shellcheck disable=SC2086
+			env "UNIT_NESTED_SEAM_CHECK=$_nonce.not-a-real-nonce" \
+				${_timeout:+"$_timeout" 120} bash "$UNIT_SELF" >"$_clog" 2>&1
+			_crc=$?
+			if [ "$_crc" -ne 0 ] && grep -q 'disabled by the caller' "$_clog"; then
+				pass "16c: a caller-supplied recursion guard fails the run instead of skipping [16]"
+			else
+				fail "16c: an unbacked recursion guard silently disabled [16] (child rc=$_crc)"
+			fi
+			rm -f "$_clog"
+		fi
+	fi
+	rm -f "$_nonce"
 fi
 
 # Summary
