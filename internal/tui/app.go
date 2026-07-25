@@ -1591,6 +1591,23 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetTransientLabel("queued message(s) dropped due to session restart")
 		}
 		m.rootBuf().ClearZone()
+		// QUM-986: this reducer is the chokepoint for every restart entry
+		// (SessionErrorMsg{io.EOF}, HandoffRequestedMsg, and cmd/enter.go's
+		// resume-failure), and it already asserts the turn is over below — so
+		// the item state must agree with that flag, or a streaming assistant is
+		// stranded unfinished — uncacheable, plus a stray ▍ cursor in a
+		// transcript whose session is not running (same class as QUM-933/975).
+		// The strand lasts the whole restart window (RestartCompleteMsg's
+		// SetMessages(nil) erases it on success, but that is ~120s of
+		// FinalizeHandoff consolidation on the /handoff path), and is permanent
+		// if the restart itself fails — that leg returns before SetMessages.
+		//
+		// Deliberately the narrow ChatList call, NOT m.finalizeTurn(): that also
+		// appends m.bridge.WaitForEvent(), and this path is tearing the bridge
+		// down for RestartSessionMsg to rebuild. Re-arming the pump on a doomed
+		// bridge is the QUM-826 freeze class. Do not "tidy" this into
+		// finalizeTurn — TestSessionRestarting_DoesNotRearmThePump will fail.
+		m.rootBuf().FinalizeAssistantMessage()
 		m.setTurnState(TurnIdle)
 		return m, nil
 
