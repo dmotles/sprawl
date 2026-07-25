@@ -1728,7 +1728,7 @@ else
 	if [ -z "$_seams" ]; then
 		# No hits means the probe broke, not that the driver has no seams: the
 		# loop below would then be vacuous and report all-green.
-		fail "16a: no SPRAWL_E2E_MATRIX_DEBUG_* seams found in the driver — the probe broke"
+		fail "16a: no SPRAWL_E2E_MATRIX_DEBUG_* seams found in the driver or lib — the probe broke, and every 16b assertion below silently disappears with it"
 	fi
 	for _s in $_seams; do
 		_found=0
@@ -1764,7 +1764,7 @@ else
 	# SPRAWL_E2E_SKIP_NO_CLAUDE sets it on the child's own command line), so a
 	# child for either would cost 1.1s to assert a property nothing can break.
 	# 16a covers them statically for free.
-	_nonce=$(mktemp 2>/dev/null)
+	_nonce=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-nonce.XXXXXX" 2>/dev/null)
 	_timeout=$(command -v timeout)
 	if [ -z "$_nonce" ] || ! printf 'nested-seam-check\n' >"$_nonce" 2>/dev/null; then
 		fail "16b: cannot stage the recursion nonce — nested check not run"
@@ -1772,15 +1772,19 @@ else
 		fail "16b: cannot locate this suite at '$UNIT_SELF' — nested check not run"
 	else
 		for _s in $_seams; do
-			_clog=$(mktemp) || {
+			_clog=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-child.XXXXXX") || {
 				fail "16b: cannot mktemp child log for $_s — neither claim was checked for it"
 				continue
 			}
 			# timeout is insurance: a regression in the recursion guard above
-			# would otherwise hang `make validate` inside the pre-commit hook.
+			# would otherwise hang `make validate` inside the pre-commit hook. 30s
+			# is a 25x margin on a ~1.2s child, and caps the worst case across all
+			# children at well under a minute. rc 124 lands in the failure branch
+			# below, whose text names a verdict change — see the rc in the message
+			# before believing that attribution.
 			# shellcheck disable=SC2086
 			env "UNIT_NESTED_SEAM_CHECK=$_nonce" "$_s=1" \
-				${_timeout:+"$_timeout" 120} bash "$UNIT_SELF" >"$_clog" 2>&1
+				${_timeout:+"$_timeout" -k 5 30} bash "$UNIT_SELF" >"$_clog" 2>&1
 			_crc=$?
 			_cres=$(grep -E '^=== unit results: [0-9]+ passed / [0-9]+ failed ===$' "$_clog" | tail -1)
 			_cfloor=$(sed -n 's/^NESTED-FLOOR: \([0-9]*\)$/\1/p' "$_clog" | tail -1)
@@ -1791,7 +1795,7 @@ else
 				_caveat=" (NOTE: the parent already had $_parent_fail_on_entry failures — this may be pre-existing rather than an env-hygiene regression)"
 			fi
 			if [ "$_crc" -eq 0 ] && [ -n "$_cres" ]; then
-				pass "16b: an exported $_s cannot reach the driver from any call site"
+				pass "16b: an exported $_s cannot change this suite's verdict or coverage from any call site"
 			else
 				fail "16b: exporting $_s changed this suite's verdict$_caveat (child rc=$_crc, '$_cres'); child failures: $(grep '^  FAIL' "$_clog" | tr '\n' '|')"
 			fi
@@ -1806,20 +1810,24 @@ else
 			rm -f "$_clog"
 		done
 
-		# --- 16c: the section cannot be switched off from outside -------------
+		# --- 16c: a naive guard value fails loudly instead of skipping [16] ---
 		# 16b's recursion guard is itself an inherited variable, so a caller who
 		# exports it would skip all of [16] and still see green — this section's
-		# own defect, one level up. A guard value with no live nonce behind it
-		# must therefore fail the run, and this is the only assertion that
-		# notices if the guard is ever relaxed back to a truthiness test.
-		_clog=$(mktemp) || fail "16c: cannot mktemp child log — the guard was not checked"
+		# own defect, one level up. What is provable is bounded: the guard is a
+		# path whose contents the child checks, and a caller can write that same
+		# literal, so a DELIBERATE bypass remains possible and no inheritable
+		# token can fix that (the caller is the parent, from the child's point of
+		# view). What 16c asserts is the accident that actually happens — a bare
+		# `1`, a stale path, a leftover export — and it is the only assertion
+		# that notices if the guard is relaxed back to a truthiness test.
+		_clog=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-child.XXXXXX") || fail "16c: cannot mktemp child log — the guard was not checked"
 		if [ -n "$_clog" ]; then
 			# shellcheck disable=SC2086
 			env "UNIT_NESTED_SEAM_CHECK=$_nonce.not-a-real-nonce" \
-				${_timeout:+"$_timeout" 120} bash "$UNIT_SELF" >"$_clog" 2>&1
+				${_timeout:+"$_timeout" -k 5 30} bash "$UNIT_SELF" >"$_clog" 2>&1
 			_crc=$?
 			if [ "$_crc" -ne 0 ] && grep -q 'disabled by the caller' "$_clog"; then
-				pass "16c: a caller-supplied recursion guard fails the run instead of skipping [16]"
+				pass "16c: an unbacked recursion guard value fails the run instead of skipping [16]"
 			else
 				fail "16c: an unbacked recursion guard silently disabled [16] (child rc=$_crc)"
 			fi
