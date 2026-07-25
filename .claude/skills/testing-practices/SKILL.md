@@ -442,14 +442,26 @@ The converse, from the same exchange, and the sharper of the two:
 > negative-assertion problem in reverse — you are asserting a *presence* that is
 > the wrong presence.
 
-Worked instance, live: a report that a harness "has no assertion-count floor" was
-challenged as already-fixed, on the evidence that the file had grown by 287 lines
-and gained 7 matches for `floor`. Every match was real. None was the mechanism:
-they belonged to a `NESTED-FLOOR` check that compares a *child* run's assertion
-count to the *parent's* for **equality** — a parity check, satisfied perfectly by
-`0 == 0`. The top-level summary block was **byte-identical** to the base, and
-still prints a green `0 passed / 0 failed` with exit 0. Settled in one command by
-diffing the block rather than counting keyword hits.
+Worked instance, live: a **manager** told an **engineer** to close a report that a
+harness "has no assertion-count floor" as already-fixed, on the evidence that the
+file had grown by 287 lines and gained 7 matches for `floor`. Every match was
+real. None was the mechanism: they belonged to a `NESTED-FLOOR` check that
+compares a *child* run's assertion count to the *parent's* for **equality** — a
+parity check, satisfied perfectly by `0 == 0`. The top-level summary block was
+**byte-identical** to the base, and still prints a green `0 passed / 0 failed`
+with exit 0. Settled in one command by diffing the block rather than counting
+keyword hits.
+
+Record the direction, because it is the lesson: the engineer **refused the
+manager's instruction** and checked the mechanism anyway. The instruction carried
+authority *plus* plausible quantitative evidence — the two things that most
+reliably substitute for a check — and the manager's own follow-up verification
+first appeared to refute the engineer, an artifact of a sloppy `grep -B2 -A6`
+extraction pulling in unrelated context. Had the engineer complied, a live defect
+would have been closed on a manager's say-so. This is *concurrence is not
+evidence* (instance 17) inverted: rank is not evidence either, and it is the
+subordinate's job to check the mechanism regardless of who asserted the
+conclusion.
 
 > **A suite-size figure is branch-relative and rots within hours. Quote it with
 > the SHA it was measured on, or don't quote it.** One suite in this repo was
