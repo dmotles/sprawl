@@ -3024,28 +3024,6 @@ func TestAppModel_SessionErrorMsg_FinalizesTurn(t *testing.T) {
 	}
 }
 
-// QUM-826: AutoContinueMsg is pump-delivered (translated from a
-// task_notification protocol frame via MapProtocolMessage). Its reducer must
-// re-arm WaitForEvent, otherwise the pump parks after the trigger marker and
-// the autonomous turn's assistant response never renders live.
-func TestAppModel_AutoContinueMsg_RearmsPump(t *testing.T) {
-	delegate := &continuousFakeDelegate{}
-	app := readyAppWithBridge(t, delegate)
-
-	updated, cmd := app.Update(AutoContinueMsg{})
-	_ = updated
-
-	if cmd == nil {
-		t.Fatal("AutoContinueMsg returned nil cmd; expected a WaitForEvent re-arm")
-	}
-	if !runCmdsForSentinel(t, cmd) {
-		t.Error("AutoContinueMsg cmd did not re-arm WaitForEvent (no sentinel produced)")
-	}
-	if delegate.waitCalls == 0 {
-		t.Error("AutoContinueMsg should call WaitForEvent on a continuous bridge; waitCalls = 0")
-	}
-}
-
 // QUM-475: SessionErrorMsg (non-EOF) from idle state — no dialog, viewport
 // gets the error, finalizeTurn still re-arms the continuous bridge.
 func TestAppModel_SessionErrorMsg_FromIdle_FinalizesTurn(t *testing.T) {
@@ -3455,68 +3433,6 @@ func TestAppModel_SessionResultMsg_DoesNotKickWaitForEvent_OnLegacyBridge(t *tes
 	app := resized.(AppModel)
 	// Just ensure it does not panic and returns a non-nil cmd (cost cmd).
 	_, _ = app.Update(SessionResultMsg{IsError: false, DurationMs: 5})
-}
-
-// TestUpdate_AutoContinueMsg (QUM-634 / QUM-857): dispatching an AutoContinueMsg
-// through the app Update must append an AutoTriggerItem to the root viewport, so
-// the autonomous turn renders a visible trigger marker before the assistant
-// response. QUM-857: the marker no longer carries a sidechain-result body — it
-// renders the fixed `↻ auto-continued` cue.
-func TestUpdate_AutoContinueMsg(t *testing.T) {
-	m := newTestAppModel(t)
-	resized, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	app := resized.(AppModel)
-
-	updated, _ := app.Update(AutoContinueMsg{})
-	app = updated.(AppModel)
-
-	entries := app.rootVP().ChatList().Items()
-	var found bool
-	for _, it := range entries {
-		if a, ok := it.(*AutoTriggerItem); ok {
-			found = true
-			if got := a.Render(80); !strings.Contains(got, "↻ auto-continued") {
-				t.Errorf("auto-trigger render = %q, want it to contain the marker", got)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected an AutoTriggerItem in the root viewport after AutoContinueMsg; got entries: %+v", entries)
-	}
-}
-
-// QUM-914: a TaskCompletedMsg (mapped from a sidechain task_notification)
-// must finish the matching Agent group and re-arm the pump. The async launch
-// ack that precedes it must NOT have closed the group.
-func TestAppModel_TaskCompletedMsg_FinishesSidechain_AndRearms(t *testing.T) {
-	delegate := &continuousFakeDelegate{}
-	app := readyAppWithBridge(t, delegate)
-
-	// Spawn an Agent sidechain, then deliver its async "launched" ack.
-	updated, _ := app.Update(ToolCallMsg{ToolName: "Agent", ToolID: "a1", Approved: true})
-	app = updated.(AppModel)
-	updated, _ = app.Update(ToolResultMsg{ToolID: "a1", Content: "Async agent launched successfully.", IsError: false})
-	app = updated.(AppModel)
-
-	if app.rootVP().ChatList().Idle() {
-		t.Fatal("root ChatList Idle() after async launch ack; the sidechain group must stay in-progress")
-	}
-
-	updated, cmd := app.Update(TaskCompletedMsg{ToolUseID: "a1", Summary: "done"})
-	app = updated.(AppModel)
-
-	if !app.rootVP().ChatList().Idle() {
-		t.Error("root ChatList not Idle() after TaskCompletedMsg finished the sidechain")
-	}
-	if cmd == nil {
-		t.Fatal("TaskCompletedMsg returned nil cmd; expected a WaitForEvent re-arm")
-	}
-	if !runCmdsForSentinel(t, cmd) {
-		t.Error("TaskCompletedMsg cmd did not re-arm WaitForEvent")
-	}
-	if delegate.waitCalls == 0 {
-		t.Error("TaskCompletedMsg should call WaitForEvent on a continuous bridge; waitCalls = 0")
-	}
 }
 
 // QUM-774: when input is empty, KeyDown walks forward through history that

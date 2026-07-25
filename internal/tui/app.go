@@ -93,12 +93,6 @@ func (b *AgentBuffer) MarkToolResult(toolID, content string, isError bool) bool 
 	return b.vp.ChatList().MarkToolResult(toolID, content, isError)
 }
 
-// MarkSidechainComplete finishes the open Agent sidechain group for toolID
-// (QUM-914). Returns true on match.
-func (b *AgentBuffer) MarkSidechainComplete(toolID string) bool {
-	return b.vp.ChatList().MarkSidechainComplete(toolID)
-}
-
 // AppendSystemNotification appends notification envelope(s).
 func (b *AgentBuffer) AppendSystemNotification(text string) {
 	b.vp.ChatList().AppendSystemNotification(text)
@@ -141,11 +135,6 @@ func (b *AgentBuffer) ZoneUserCount() int {
 // ClearZone drops every pending entry (session restart). QUM-833.
 func (b *AgentBuffer) ClearZone() {
 	b.vp.ChatList().ClearZone()
-}
-
-// AppendAutoTrigger appends a QUM-634 auto-continue marker.
-func (b *AgentBuffer) AppendAutoTrigger() {
-	b.vp.ChatList().AppendAutoTrigger()
 }
 
 // AppendCompactBanner appends a QUM-865 first-party compaction banner.
@@ -979,19 +968,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case AutoContinueMsg:
-		// QUM-634: render a trigger marker before the autonomous turn's
-		// assistant response so the user sees WHY weave responded.
-		m.rootBuf().AppendAutoTrigger()
-		// QUM-826: AutoContinueMsg is pump-delivered (translated from a
-		// task_notification protocol frame). Re-arm WaitForEvent or the pump
-		// parks here and the autonomous turn's assistant response never
-		// renders live.
-		if m.bridge != nil {
-			return m, m.bridge.WaitForEvent()
-		}
-		return m, nil
-
 	case ToggleHelpMsg:
 		m.showHelp = !m.showHelp
 		return m, nil
@@ -1498,18 +1474,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// QUM-334's gating). QUM-674 S4: the global spinner counter was
 		// removed; MarkToolResult's return is purely advisory now.
 		_ = m.rootBuf().MarkToolResult(msg.ToolID, msg.Content, msg.IsError)
-		if m.bridge != nil {
-			return m, m.bridge.WaitForEvent()
-		}
-		return m, nil
-
-	case TaskCompletedMsg:
-		// QUM-914: a sidechain (Agent-tool) completion, mapped from a
-		// task_notification carrying a tool_use_id. Finish the matching Agent
-		// group — the async Agent tool_result was only a "launched" ack and
-		// left the group open. QUM-826: this msg is pump-delivered, so re-arm
-		// WaitForEvent or the pump parks after the sidechain closes.
-		_ = m.rootBuf().MarkSidechainComplete(msg.ToolUseID)
 		if m.bridge != nil {
 			return m, m.bridge.WaitForEvent()
 		}
@@ -3756,17 +3720,6 @@ func (m *AppModel) applyChildStreamInner(agent string, inner tea.Msg) tea.Cmd {
 			_ = buf.MarkToolResult(im.ToolID, im.Content, im.IsError)
 		} else {
 			_ = vp.ChatList().MarkToolResult(im.ToolID, im.Content, im.IsError)
-		}
-		return nil
-	case TaskCompletedMsg:
-		// QUM-914: a sidechain completed inside an observed child pane. Mirror
-		// the root TaskCompletedMsg reducer so the child's Agent group finishes
-		// — otherwise the async-ack early-return would leave it spinning. The
-		// child adapter loop re-arms itself, so no WaitForEvent here.
-		if buf != nil {
-			_ = buf.MarkSidechainComplete(im.ToolUseID)
-		} else {
-			_ = vp.ChatList().MarkSidechainComplete(im.ToolUseID)
 		}
 		return nil
 	case SessionResultMsg:

@@ -530,3 +530,87 @@ func TestChatList_ResetFullTranscriptHasNoOrphans(t *testing.T) {
 		t.Errorf("Idle() = false after full-transcript Reset, want true")
 	}
 }
+
+// TestChatList_FinalizeAfterThinkingLeavesNoOrphan closes the one residual hole
+// left by the settle chokepoint (QUM-975).
+//
+// AppendThinking is the single c.items append that deliberately bypasses
+// beginContentAppend, on the argument that the marker is transient: the next
+// CONTENT append drops it and then settles, re-exposing the assistant. That
+// argument holds for content appends — but FinalizeAssistantMessage is not a
+// content append and did not drop the marker, so settleTrailingAssistant saw a
+// *ThinkingItem, no-oped, and the flag was cleared anyway:
+//
+//	AppendAssistantChunk("body")   // [assistant(unfinished)]
+//	AppendThinking()               // [assistant(unfinished), thinking]
+//	FinalizeAssistantMessage()     // settle sees *ThinkingItem -> no-op
+//
+// Idle() is then TRUE with a permanently unfinished non-tail item: the turn is
+// over, a stray ▍ renders in a settled transcript, and the item stays
+// uncacheable until some later content append happens to heal it — unbounded
+// across an idle gap, and forever if the session ends there.
+//
+// Reachable through all three terminal handlers via finalizeTurn, most plainly
+// by pressing Esc during a thinking block that follows streamed text. The
+// !HasPendingAssistant() gate makes the bad case exactly the one that occurs:
+// text streamed means the flag is set, so no result text is appended and
+// nothing heals it.
+//
+// Note UncacheableCount() is 0 here (the tail is the finished marker) — only the
+// OrphanCount walk detects this, which is why the two accessors are not
+// redundant.
+func TestChatList_FinalizeAfterThinkingLeavesNoOrphan(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendAssistantChunk("body")
+	cl.AppendThinking()
+	cl.FinalizeAssistantMessage()
+
+	if got := cl.OrphanCount(); got != 0 {
+		t.Errorf("OrphanCount() = %d after finalize-over-thinking, want 0 (stranded item)", got)
+	}
+	a := assistantAt(t, cl, 0)
+	if !a.Finished() {
+		t.Errorf("assistant item Finished() = false; the turn is over, it must be settled")
+	}
+	if got := a.Text(); got != "body" {
+		t.Errorf("Text() = %q, want %q (content must be preserved)", got, "body")
+	}
+	if got := cursorCount(cl, 80); got != 0 {
+		t.Errorf("settled transcript renders %d stray %q cursors, want 0", got, itemsStreamingCursor)
+	}
+	// The transient marker's turn is over, so it is discarded rather than kept.
+	if got := cl.Len(); got != 1 {
+		t.Errorf("Len() = %d, want 1 (the transient thinking marker is dropped)", got)
+	}
+
+	// Bookkeeping: finalize legitimately clears streamingAssistant (unlike the
+	// settle helper), and that must still hold on this path.
+	if cl.HasPendingAssistant() {
+		t.Errorf("HasPendingAssistant() = true after finalize, want false")
+	}
+	if !cl.Idle() {
+		t.Errorf("Idle() = false after finalize, want true")
+	}
+}
+
+// TestChatList_FinalizeAfterThinkingWithNoAssistant guards the adjacent case: a
+// thinking marker with no preceding assistant text must not crash or strand,
+// and finalize must still clear the flag.
+func TestChatList_FinalizeAfterThinkingWithNoAssistant(t *testing.T) {
+	cl := newTestChatList()
+	cl.SetSize(80)
+	cl.AppendUser("hi")
+	cl.AppendThinking()
+	cl.FinalizeAssistantMessage()
+
+	if got := cl.OrphanCount(); got != 0 {
+		t.Errorf("OrphanCount() = %d, want 0", got)
+	}
+	if !cl.Idle() {
+		t.Errorf("Idle() = false, want true")
+	}
+	if got := cursorCount(cl, 80); got != 0 {
+		t.Errorf("%d stray cursors, want 0", got)
+	}
+}

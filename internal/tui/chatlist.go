@@ -69,17 +69,6 @@ type ChatList struct {
 	// double-render the turn's last block.
 	streamingAssistant bool
 
-	// activeAgents is the set of OPEN sidechain (Agent-tool) groups keyed by
-	// their tool_use id. An entry is added when the Agent tool_use is appended
-	// and removed when the sidechain actually completes (MarkSidechainComplete,
-	// driven by the task_* channel) or its launch fails. Since the Agent tool
-	// is async, its tool_result is only a "launched" ack — MarkToolResult uses
-	// this set to ignore that ack instead of closing the group early (QUM-914).
-	// The pre-QUM-914 lastActiveAgent single-slot fallback is gone: with ≥2
-	// concurrent sidechains it misattributed children; every child now carries
-	// an explicit parent_tool_use_id.
-	activeAgents map[string]bool
-
 	// QUM-769 outer Render cache. revision is bumped by invalidate() on every
 	// observable state change; renderCache hits while revision and width are
 	// unchanged AND the list is Idle (streaming bypasses so chunk-by-chunk
@@ -242,6 +231,19 @@ func (c *ChatList) AppendAssistantChunk(text string) {
 // finished, allowing its render to be cached on next Render.
 func (c *ChatList) FinalizeAssistantMessage() {
 	wasStreaming := c.streamingAssistant
+	// QUM-975: drop the transient thinking marker BEFORE settling, mirroring
+	// beginContentAppend's ordering. AppendThinking is the one c.items append
+	// that deliberately skips the settle chokepoint, on the grounds that the
+	// marker is transient and the next CONTENT append drops it and then settles.
+	// Finalize is not a content append, so without this the sequence
+	// chunk -> AppendThinking -> Finalize left the assistant stranded at n-2
+	// (settle saw a *ThinkingItem and no-oped) while the flag was cleared
+	// anyway — Idle() true with a permanently unfinished, uncacheable item
+	// rendering a stray cursor in a settled transcript. Reachable via every
+	// terminal handler through finalizeTurn, most plainly by pressing Esc during
+	// a thinking block that follows streamed text. The marker's turn is over, so
+	// discarding it is correct.
+	c.dropTrailingThinkingMarker()
 	c.settleTrailingAssistant()
 	c.streamingAssistant = false
 	if wasStreaming {
@@ -349,12 +351,6 @@ func (c *ChatList) AppendToolCall(spec ToolCallSpec) {
 	c.items = append(c.items, &itemEnvelope{item: item})
 	c.pendingTools++
 	c.invalidate()
-	if spec.Name == "Agent" && spec.ToolID != "" {
-		if c.activeAgents == nil {
-			c.activeAgents = make(map[string]bool)
-		}
-		c.activeAgents[spec.ToolID] = true
-	}
 }
 
 // AppendToolCallWithHeader matches viewport.AppendToolCallWithHeader's
@@ -394,15 +390,12 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 	if toolID == "" {
 		return false
 	}
-	// QUM-914: the Agent tool is async — a successful tool_result is only a
-	// "launched" ack, NOT a completion, so it must not close the group, evict
-	// the parent, or decrement pendingTools. Real completion arrives on the
-	// task_* channel (MarkSidechainComplete). The exception is a FAILED launch
-	// (isError): no task_started/task_notification will follow, so finish the
-	// row now rather than leave it spinning forever.
-	if c.activeAgents[toolID] && !isError {
-		return false
-	}
+	// QUM-928: the Agent tool is async and its tool_result is only a "launched"
+	// ack — but that ack IS what the tool call did, so it closes the row like any
+	// other tool result. This reverses QUM-914's carve-out, which kept the row
+	// spinning until a task_notification and could strand it forever if none
+	// arrived (QUM-926). There is now exactly ONE lifecycle path for every tool:
+	// one append, one decrement, no per-tool special case.
 	for n := len(c.items) - 1; n >= 0; n-- {
 		t, ok := c.items[n].item.(*ToolCallItem)
 		if !ok {
@@ -418,39 +411,6 @@ func (c *ChatList) MarkToolResult(toolID, content string, isError bool) bool {
 			c.pendingTools--
 		}
 		c.invalidate()
-		// A failed Agent launch resolves the group here; drop it from the
-		// open-sidechain set so no later task_* frame double-finishes it.
-		delete(c.activeAgents, toolID)
-		return true
-	}
-	return false
-}
-
-// MarkSidechainComplete finishes the OPEN sidechain (Agent-tool) group
-// identified by toolID. This is the authoritative completion signal, driven by
-// the task_* channel (task_notification) rather than the async Agent
-// tool_result "launched" ack, which MarkToolResult deliberately ignores
-// (QUM-914). Returns true if a matching item was found (whether it was still
-// pending and got finished, or was already settled — e.g. a failed launch);
-// false only when no item with that id exists.
-func (c *ChatList) MarkSidechainComplete(toolID string) bool {
-	if toolID == "" {
-		return false
-	}
-	delete(c.activeAgents, toolID)
-	for n := len(c.items) - 1; n >= 0; n-- {
-		t, ok := c.items[n].item.(*ToolCallItem)
-		if !ok || t.ToolID() != toolID {
-			continue
-		}
-		if !t.Finished() {
-			t.MarkResult("", false)
-			c.items[n].cache = nil
-			if c.pendingTools > 0 {
-				c.pendingTools--
-			}
-			c.invalidate()
-		}
 		return true
 	}
 	return false
@@ -701,6 +661,64 @@ func (c *ChatList) Idle() bool {
 	return c.pendingTools == 0 && !c.streamingAssistant
 }
 
+// OrphanCount reports the number of INVARIANT VIOLATIONS of the QUM-933 settle
+// contract: unfinished *AssistantTextItem entries anywhere other than the tail.
+//
+// The contract is that this is ALWAYS 0. See settleTrailingAssistant's
+// "WHY TRAILING-ONLY IS SUFFICIENT" comment: because the settle fires on the
+// append that would bury an in-flight text block, the state "an unfinished
+// assistant that is not the tail" is never constructed. A non-zero result means
+// an append path bypassed the beginContentAppend chokepoint, which silently
+// restores the pegged-CPU / stray-cursor bug and breaks UncacheableCount's O(1)
+// assumption.
+//
+// Tool calls are deliberately EXCLUDED. A pending non-tail ToolCallItem is
+// routine and legitimate — parallel tool calls in one assistant message, and
+// async Agent rows that stay pending for minutes — so counting them would build
+// a violation detector that fires continuously on healthy sessions and would
+// therefore be switched off. Uncacheable is not the same as invariant-violating;
+// UncacheableCount is the accessor that counts the former.
+//
+// O(n), for debug and test use only — not on any render path. Consumer:
+// assertNoOrphans in chatlist_settle_test.go.
+func (c *ChatList) OrphanCount() int {
+	n := 0
+	for i := 0; i < len(c.items)-1; i++ {
+		if a, ok := c.items[i].item.(*AssistantTextItem); ok && !a.Finished() {
+			n++
+		}
+	}
+	return n
+}
+
+// UncacheableCount reports how many items renderEnvelope cannot serve from
+// cache, i.e. how many will re-run their full render on the next frame.
+//
+// Range is 0..1 and the check is O(1) — a bare tail inspection — because of the
+// inductive invariant documented in settleTrailingAssistant's
+// "WHY TRAILING-ONLY IS SUFFICIENT" comment: at most one unfinished item can
+// exist and it is always the tail. Two changes would silently invalidate that
+// and make this UNDER-report: turning the trailing-only settle into a sweep, or
+// adding an append path that bypasses the beginContentAppend chokepoint.
+// OrphanCount is what would notice; keep its contract-zero assertions passing.
+//
+// This DOES include a pending tool call at the tail, which is uncacheable but
+// perfectly legitimate — uncacheable is not the same as invariant-violating.
+//
+// Deliberately NOT derived from pendingTools + (streamingAssistant ? 1 : 0):
+// that formula OVER-counts mid-turn (after MarkToolResult, pendingTools is 0 and
+// streamingAssistant is still true while every item is finished — see
+// TestChatList_MidTurnSettleKeepsTurnBookkeeping) and UNDER-counts after Reset,
+// which force-finalizes items and desyncs the flags from item state. The zone
+// contributes nothing: its item kinds are always Finished().
+func (c *ChatList) UncacheableCount() int {
+	n := len(c.items)
+	if n == 0 || c.items[n-1].item.Finished() {
+		return 0
+	}
+	return 1
+}
+
 // Reset replaces the items slice from a transcript-backfill snapshot
 // (ChildTranscriptMsg / PreloadTranscript path). Translates each
 // MessageEntry into the matching Append* so the resulting items list is
@@ -717,7 +735,6 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 	c.items = nil
 	c.pendingTools = 0
 	c.streamingAssistant = false
-	c.activeAgents = nil
 	// QUM-833: a backfill snapshot (preload / restart / resync / child switch)
 	// replaces the committed transcript wholesale; any un-settled pending entry
 	// is stale and must not render under the fresh transcript.

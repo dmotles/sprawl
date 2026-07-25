@@ -375,41 +375,6 @@ func TestMapProtocolMessage_SystemInit_EmptyModel(t *testing.T) {
 	}
 }
 
-// TestMapProtocolMessage_SystemTaskNotification (QUM-634 / QUM-857): a
-// system/task_notification frame carrying a non-empty summary maps to an
-// AutoContinueMsg so the TUI renders a trigger marker for the autonomous turn
-// the harness self-reprompted into. QUM-857: the presence of a summary is the
-// gate, but the summary body is no longer propagated into the marker.
-func TestMapProtocolMessage_SystemTaskNotification(t *testing.T) {
-	raw := `{"type":"system","subtype":"task_notification","task_id":"bzgr4iuq0","status":"completed","summary":"Background command \"sleep 30\" completed (exit code 0)"}`
-	var msg protocol.Message
-	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-		t.Fatal(err)
-	}
-	msg.Raw = json.RawMessage(raw)
-
-	result := MapProtocolMessage(&msg)
-	if _, ok := result.(AutoContinueMsg); !ok {
-		t.Fatalf("MapProtocolMessage for system/task_notification returned %T, want AutoContinueMsg", result)
-	}
-}
-
-// TestMapProtocolMessage_SystemTaskNotification_EmptySummary (QUM-634): a
-// task_notification with no summary carries nothing renderable, so it maps to
-// nil (no marker emitted).
-func TestMapProtocolMessage_SystemTaskNotification_EmptySummary(t *testing.T) {
-	raw := `{"type":"system","subtype":"task_notification","task_id":"bzgr4iuq0","status":"completed","summary":""}`
-	var msg protocol.Message
-	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-		t.Fatal(err)
-	}
-	msg.Raw = json.RawMessage(raw)
-
-	if result := MapProtocolMessage(&msg); result != nil {
-		t.Errorf("MapProtocolMessage for task_notification with empty summary returned %T, want nil", result)
-	}
-}
-
 // TestMapProtocolMessage_SystemTaskOtherSubtypes (QUM-634): sibling task_*
 // subtypes (task_updated, task_started) are noisy and must NOT map to an
 // AutoContinueMsg — only task_notification triggers a marker.
@@ -427,59 +392,6 @@ func TestMapProtocolMessage_SystemTaskOtherSubtypes(t *testing.T) {
 				t.Errorf("MapProtocolMessage for system/%s returned %T, want nil (only task_notification renders a marker)", sub, result)
 			}
 		})
-	}
-}
-
-// TestMapProtocolMessage_SidechainTaskNotification (QUM-914): a
-// task_notification carrying a tool_use_id is a SIDECHAIN (Agent tool)
-// completion — distinct from a background-task notification (no tool_use_id,
-// which stays an AutoContinueMsg). It maps to TaskCompletedMsg so the reducer
-// can finish the matching Agent group rather than firing an auto-continue
-// marker.
-func TestMapProtocolMessage_SidechainTaskNotification(t *testing.T) {
-	raw := `{"type":"system","subtype":"task_notification","task_id":"ae1a1b04610a5e5af","tool_use_id":"toolu_01ESGLBGCZiYS62sEWFnDTjS","status":"completed","summary":"file list"}`
-	var msg protocol.Message
-	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-		t.Fatal(err)
-	}
-	msg.Raw = json.RawMessage(raw)
-
-	result := MapProtocolMessage(&msg)
-	tc, ok := result.(TaskCompletedMsg)
-	if !ok {
-		t.Fatalf("MapProtocolMessage for a sidechain task_notification returned %T, want TaskCompletedMsg", result)
-	}
-	if tc.ToolUseID != "toolu_01ESGLBGCZiYS62sEWFnDTjS" {
-		t.Errorf("TaskCompletedMsg.ToolUseID = %q, want the Agent tool_use id", tc.ToolUseID)
-	}
-	if tc.Summary != "file list" {
-		t.Errorf("TaskCompletedMsg.Summary = %q, want %q", tc.Summary, "file list")
-	}
-	if _, isAuto := result.(AutoContinueMsg); isAuto {
-		t.Error("a tool_use_id-bearing task_notification must NOT map to AutoContinueMsg")
-	}
-}
-
-// TestMapProtocolMessage_SidechainTaskNotification_EmptySummary (QUM-914): a
-// sidechain completion can legitimately carry an empty summary. The completion
-// must still map to TaskCompletedMsg (keyed on tool_use_id) — NOT nil — so the
-// Agent group is never stranded pending. This is the trap the summary-gate on
-// the background path must not swallow.
-func TestMapProtocolMessage_SidechainTaskNotification_EmptySummary(t *testing.T) {
-	raw := `{"type":"system","subtype":"task_notification","task_id":"ae1a1b04610a5e5af","tool_use_id":"toolu_01ESGLBGCZiYS62sEWFnDTjS","status":"completed","summary":""}`
-	var msg protocol.Message
-	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
-		t.Fatal(err)
-	}
-	msg.Raw = json.RawMessage(raw)
-
-	result := MapProtocolMessage(&msg)
-	tc, ok := result.(TaskCompletedMsg)
-	if !ok {
-		t.Fatalf("empty-summary sidechain task_notification returned %T, want TaskCompletedMsg", result)
-	}
-	if tc.ToolUseID != "toolu_01ESGLBGCZiYS62sEWFnDTjS" {
-		t.Errorf("TaskCompletedMsg.ToolUseID = %q, want the Agent tool_use id", tc.ToolUseID)
 	}
 }
 
@@ -837,6 +749,11 @@ func TestMapAssistantMessage_NoUsage(t *testing.T) {
 // references below are an intentional compile-time failure — the implementer
 // must add the field as the first step of the fix.
 func TestMapAssistantMessage_ParallelSidechain_ParentToolIDFromWire(t *testing.T) {
+	// QUM-928: sidechain frames are suppressed by default, so this
+	// invariant (explicit parent_tool_use_id attribution with concurrent
+	// sidechains — never a last-agent fallback) is now reachable only via
+	// the debug hatch. Retained because that code path still ships.
+	withSidechainVisible(t, true)
 	cases := []struct {
 		name             string
 		raw              string

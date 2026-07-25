@@ -569,25 +569,6 @@ type SessionModelMsg struct {
 	Model string
 }
 
-// AutoContinueMsg signals a harness auto-continue (autonomous) turn was
-// triggered by a completed background task (QUM-634). It carries no payload:
-// QUM-857 removed the task_notification summary body — the presence of a
-// non-empty summary is the trigger gate (see MapProtocolMessage), and the
-// rendered marker is a fixed `↻ auto-continued` cue.
-type AutoContinueMsg struct{}
-
-// TaskCompletedMsg signals that a sidechain (Agent-tool spawn) completed. It
-// is mapped from a system/task_notification frame that carries a tool_use_id
-// (the discriminator from a background-task notification, which stays an
-// AutoContinueMsg). The reducer finishes the matching Agent group via
-// ChatList.MarkSidechainComplete — the async Agent tool_result is only a
-// "launched" ack and never closes the group (QUM-914). Summary is retained
-// for potential display but is not currently rendered into the row body.
-type TaskCompletedMsg struct {
-	ToolUseID string
-	Summary   string
-}
-
 // taskNotification* are the literal wrapping tokens the harness records in the
 // JSONL transcript for an autonomous-turn trigger (QUM-634 resume path). The
 // trigger is a `type:user` record whose string content is a

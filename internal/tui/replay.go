@@ -45,7 +45,7 @@ const compactContinuationPreamble = "This session is being continued from a prev
 // status-bar transient label after Preload. See cmd/enter.go's
 // PreloadTranscript site.
 func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
-	entries, err := scanWireTranscript(path, false)
+	entries, err := scanWireTranscript(path, sidechainVisible)
 	if err != nil || len(entries) == 0 {
 		return nil, err
 	}
@@ -58,8 +58,10 @@ func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
 // LoadChildTranscript reads a sprawl wire-log NDJSON file and converts it into
 // a flat slice of MessageEntry values for live observation of a child agent.
 //
-// Differs from LoadTranscript only in that sidechain sub-agent activity is
-// included (nested under its parent Agent tool call) rather than skipped.
+// QUM-928: no longer differs from LoadTranscript. Sidechain internals are
+// suppressed in child panes too — the issue applies to all agent windows — so
+// both legs pass the same sidechainVisible gate as the live mapping and cannot
+// drift. Retained as the named child-observe entry point (readChildTranscript).
 //
 // QUM-904: the QUM-331 `since` timestamp filter is gone. Wire logs are keyed by
 // a unique sessionID per incarnation, so a reused agent name gets a brand-new
@@ -70,7 +72,7 @@ func LoadTranscript(path string, maxMessages int) ([]MessageEntry, error) {
 //
 // Missing file → (nil, nil) (no error).
 func LoadChildTranscript(path string, maxMessages int) ([]MessageEntry, error) {
-	entries, err := scanWireTranscript(path, true)
+	entries, err := scanWireTranscript(path, sidechainVisible)
 	if err != nil || len(entries) == 0 {
 		return nil, err
 	}

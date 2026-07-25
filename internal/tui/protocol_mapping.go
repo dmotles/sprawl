@@ -2,11 +2,51 @@ package tui
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/dmotles/sprawl/internal/protocol"
 )
+
+// sidechainVisibleEnv re-enables rendering of sidechain-internal frames.
+// DEBUG ONLY — suppression is the default and the shipped behavior (QUM-928).
+const sidechainVisibleEnv = "SPRAWL_SHOW_SIDECHAIN"
+
+// sidechainVisible is read ONCE at package init, since the environment is fixed
+// for the life of the process. Consequence for tests: t.Setenv does NOT affect
+// it — flip this var directly (see withSidechainVisible in the test helpers).
+//
+// It gates both the live mapping and the replay rehydrate path so the two can
+// never drift: whatever renders live must also render on reload.
+var sidechainVisible = sidechainVisibleFromEnv(os.Getenv(sidechainVisibleEnv))
+
+// sidechainVisibleFromEnv is the parsing rule, split out so it can be tested
+// without depending on the ambient environment. Exactly "1" enables the hatch;
+// everything else (unset, "0", "true", "yes") leaves suppression on, because the
+// default must be suppressed and a typo must not silently un-suppress.
+func sidechainVisibleFromEnv(v string) bool { return v == "1" }
+
+// isSidechainFrame reports whether a frame originated inside a sidechain (a
+// Claude in-process Agent-tool spawn: Explore, Plan, oracle, …) and must
+// therefore be kept out of the chat stream.
+//
+// Attribution is SOLELY a non-empty parent_tool_use_id. isSidechain is never set
+// on the stream-json wire and session_id is identical to the main thread, so
+// this is the only usable discriminator. The parent Agent tool_use itself
+// carries no parent_tool_use_id, which is what makes suppression a clean single
+// predicate — the Agent row survives while all of its internals vanish.
+//
+// !! DO NOT hoist this check to the MapProtocolMessage switch head !!
+// A future reader will want to tidy it into one top-level early-return. That
+// would be a BUG: tool_progress frames reuse parent_tool_use_id with unrelated
+// semantics — they are MCP heartbeats, where tool_use_id is "<id>-heartbeat-0"
+// and parent_tool_use_id is the tool's OWN id (measured: 1,011 such frames
+// across 660 wire logs). Suppressing by frame type, inside the assistant and
+// user mappers only, is deliberate.
+func isSidechainFrame(parentToolUseID string) bool {
+	return parentToolUseID != "" && !sidechainVisible
+}
 
 // contentBlock represents a single content block in an assistant or user
 // message. tool_use blocks (assistant) carry Name + ID + Input; tool_result
@@ -44,31 +84,26 @@ func MapProtocolMessage(msg *protocol.Message) tea.Msg {
 	case "result":
 		return mapResultMessage(msg)
 	case "system":
-		// QUM-634: a task_notification frame carries a ready-made human-readable
-		// summary used to render the auto-continue trigger marker. Sibling task_*
-		// subtypes (task_started/task_updated) are noisy and skipped.
-		if msg.Subtype == "task_notification" {
-			var tn protocol.TaskNotification
-			if err := json.Unmarshal(msg.Raw, &tn); err != nil {
-				return nil
-			}
-			// QUM-914: a task_notification carrying a tool_use_id is a
-			// SIDECHAIN (Agent-tool) completion — the real end delimiter for
-			// the async Agent whose tool_result was only a "launched" ack.
-			// Route it to TaskCompletedMsg so the reducer finishes that Agent
-			// group (regardless of summary — a sidechain can complete with an
-			// empty summary and must never be stranded pending).
-			if tn.ToolUseID != "" {
-				return TaskCompletedMsg{ToolUseID: tn.ToolUseID, Summary: tn.Summary}
-			}
-			// Background-task (run_in_background) notification. QUM-857: a
-			// non-empty summary is the auto-continue trigger gate, but the
-			// body is not propagated — the marker renders a fixed cue only.
-			if tn.Summary != "" {
-				return AutoContinueMsg{}
-			}
-			return nil
-		}
+		// QUM-928: task_notification is deliberately NOT mapped.
+		//
+		// It used to drive the live "↻ auto-continued" marker. Two measured facts
+		// retired that. (1) QUM-914 routed any notification carrying a tool_use_id
+		// to a sidechain-completion msg, on the premise that tool_use_id marks a
+		// sidechain — but across 660 wire logs ALL 4,014 notifications carry one and
+		// only 8% come from Agent (79% are FOREGROUND Bash), so that premise is
+		// false and the branch swallowed every notification. (2) Decisively,
+		// QUM-929 deleted sprawl's [auto-continue] injection: sprawl no longer
+		// auto-continues anything, so a marker reading "auto-continued" on a
+		// foreground Bash completion would assert something that never happened —
+		// worse than no marker, since dead code renders nothing while that renders a
+		// falsehood. The wire offers no field to scope it to background tasks, so a
+		// narrower live variant is not implementable.
+		//
+		// The REPLAY marker stays: historical logs contain real injections, and
+		// replay.go classifies runtime.AutoContinuePrefix into MessageAutoTrigger.
+		// That asymmetry is intentional — old sessions have injections, new ones
+		// cannot. Task telemetry is unaffected (it observes the frame in
+		// internal/runtime, not here).
 		// QUM-865: system/compact_boundary marks a context-compaction event
 		// (manual /compact or automatic). Map it to a first-party banner msg
 		// carrying the token counts + trigger; the giant isCompactSummary user
@@ -136,6 +171,15 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 	parentToolUseID := ""
 	if am.ParentToolUseID != nil {
 		parentToolUseID = *am.ParentToolUseID
+	}
+
+	// QUM-928: drop the whole frame if it came from a sidechain. This also
+	// discards its SessionUsageMsg, deliberately: the status-bar gauge measures
+	// the MAIN thread's context window, and a sidechain runs in a separate
+	// context, so folding its usage in inflated the gauge. Cost/usage telemetry
+	// is unaffected — that rides a separate subscriber (internal/usage).
+	if isSidechainFrame(parentToolUseID) {
+		return nil
 	}
 
 	var content assistantContent
@@ -279,6 +323,9 @@ type userMessageEnvelope struct {
 	Message struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
+	// ParentToolUseID is non-nil on a sidechain's inner tool_result frames.
+	// protocol.UserFrame does not carry it, so it is parsed here (QUM-928).
+	ParentToolUseID *string `json:"parent_tool_use_id"`
 }
 
 // mapUserMessage extracts the first tool_result content block from a `user`
@@ -287,6 +334,11 @@ type userMessageEnvelope struct {
 func mapUserMessage(msg *protocol.Message) tea.Msg {
 	var env userMessageEnvelope
 	if err := json.Unmarshal(msg.Raw, &env); err != nil {
+		return nil
+	}
+	// QUM-928: a sidechain's inner tool_result frames carry parent_tool_use_id.
+	// Checked ahead of both the plain-string and tool_result arms.
+	if env.ParentToolUseID != nil && isSidechainFrame(*env.ParentToolUseID) {
 		return nil
 	}
 	if len(env.Message.Content) == 0 {

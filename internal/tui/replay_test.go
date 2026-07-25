@@ -924,6 +924,11 @@ func TestExtractToolResultContent(t *testing.T) {
 // inner sub-agent tool_use + tool_result frames (parent_tool_use_id set) are
 // included in the replayed entries, nested under the outer Agent call.
 func TestLoadChildTranscript_IncludesSidechainSubAgentActivity(t *testing.T) {
+	// QUM-928: sidechain frames are suppressed by default, so this
+	// invariant (explicit parent_tool_use_id attribution with concurrent
+	// sidechains — never a last-agent fallback) is now reachable only via
+	// the debug hatch. Retained because that code path still ships.
+	withSidechainVisible(t, true)
 	lines := []string{
 		// Outer Agent tool_use (top-level, not sidechain).
 		`{"type":"assistant","timestamp":"2026-04-25T10:00:00Z","message":{"role":"assistant","content":[` +
@@ -984,6 +989,11 @@ func TestLoadChildTranscript_IncludesSidechainSubAgentActivity(t *testing.T) {
 // verifies that when sidechain inner activity is included, it appears AFTER
 // the outer Agent entry in the returned slice (JSONL order preserved).
 func TestLoadChildTranscript_SidechainNestedUnderAgent_PreservesOrdering(t *testing.T) {
+	// QUM-928: sidechain frames are suppressed by default, so this
+	// invariant (explicit parent_tool_use_id attribution with concurrent
+	// sidechains — never a last-agent fallback) is now reachable only via
+	// the debug hatch. Retained because that code path still ships.
+	withSidechainVisible(t, true)
 	lines := []string{
 		`{"type":"assistant","timestamp":"2026-04-25T10:00:00Z","message":{"role":"assistant","content":[` +
 			`{"type":"tool_use","id":"A1","name":"Agent","input":{"subagent_type":"Explore"}}` +
@@ -1033,6 +1043,11 @@ func TestLoadChildTranscript_SidechainNestedUnderAgent_PreservesOrdering(t *test
 // recent agent pushed); this test forces the implementation to read
 // parent_tool_use_id from the JSONL record itself.
 func TestLoadChildTranscript_SidechainParallelAgents_ParentToolIDFromWire(t *testing.T) {
+	// QUM-928: sidechain frames are suppressed by default, so this
+	// invariant (explicit parent_tool_use_id attribution with concurrent
+	// sidechains — never a last-agent fallback) is now reachable only via
+	// the debug hatch. Retained because that code path still ships.
+	withSidechainVisible(t, true)
 	lines := []string{
 		// Two outer Agent tool_uses queued before either child arrives.
 		`{"type":"assistant","timestamp":"2026-04-25T10:00:00Z","message":{"role":"assistant","content":[` +

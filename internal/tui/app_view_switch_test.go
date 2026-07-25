@@ -118,9 +118,9 @@ func TestAppModel_View_ChatRegion_DualAppendForAllVerbs(t *testing.T) {
 	next, _ = app.Update(SessionResultMsg{Result: "", DurationMs: 1})
 	app = next.(AppModel)
 
-	// Auto-trigger.
-	next, _ = app.Update(AutoContinueMsg{})
-	app = next.(AppModel)
+	// QUM-928: the live auto-trigger marker path is gone (sprawl no longer
+	// injects continuations), so this sequence no longer includes one. The
+	// marker still exists on the replay path only.
 
 	// Tool call + result.
 	next, _ = app.Update(ToolCallMsg{ToolName: "Bash", ToolID: "tu1", Input: "ls"})
@@ -129,9 +129,9 @@ func TestAppModel_View_ChatRegion_DualAppendForAllVerbs(t *testing.T) {
 	app = next.(AppModel)
 
 	cl := rootCL(t, app)
-	// Expected items: user + assistant + autotrigger + toolcall = 4.
-	if cl.Len() != 4 {
-		t.Errorf("cl.Len() = %d, want 4 (user+assistant+autotrigger+tool)", cl.Len())
+	// Expected items: user + assistant + toolcall = 3.
+	if cl.Len() != 3 {
+		t.Errorf("cl.Len() = %d, want 3 (user+assistant+tool)", cl.Len())
 	}
 	if !cl.Idle() {
 		t.Errorf("ChatList must be Idle after all turns settle")

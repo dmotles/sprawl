@@ -260,6 +260,11 @@ func TestLoadTranscriptFromWire_SkipsSidechain(t *testing.T) {
 // parent_tool_use_id that must drive ParentToolID/Depth — NOT the agentStack
 // heuristic, which would misattribute parallel sidechains.
 func TestLoadChildTranscriptFromWire_SidechainLinkageFromParentToolID(t *testing.T) {
+	// QUM-928: sidechain frames are suppressed by default, so this
+	// invariant (explicit parent_tool_use_id attribution with concurrent
+	// sidechains — never a last-agent fallback) is now reachable only via
+	// the debug hatch. Retained because that code path still ships.
+	withSidechainVisible(t, true)
 	path := writeWireLog(t, []string{
 		// Two Agent tool calls in the main conversation.
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"agentA","name":"Agent","input":{}}]},"parent_tool_use_id":null}`,
