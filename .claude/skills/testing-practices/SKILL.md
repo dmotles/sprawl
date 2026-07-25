@@ -49,13 +49,35 @@ requirement rather than a convention, and `CLAUDE.md` states its binding form.
 > Record *which* demonstration you used and *what it printed*. An assertion
 > nobody has watched fail is a claim, not a check.
 
+### The same breath
+
+> **A green test written in the same breath as the mechanism is the highest-risk
+> test in a diff, because nothing about it can disagree with the author.**
+
+This is why red-first works, and it is worth stating before the mechanics: it is
+the test's **independence**, not its **colour**, that carries the evidence. A
+green run only tells you the code and the assertion agree, and they were written
+by the same person from the same model of the problem an hour apart.
+
+It also names the hole in TDD-as-practiced: **writing the test first does not
+make it independent if you write it *from* the mechanism you are about to
+build.** Test-first buys you a watched failure; it does not buy you a second
+opinion. Those are different goods and only the first is procedural.
+
+Practical default: **treat any new green test in a diff that also introduces the
+thing it tests as suspect until something independent constrains it** — a
+mutation, a control from a tree that predates the mechanism, or a reviewer who
+derives the expected value without reading the implementation.
+
 ### Why — this is a selection effect, not bad luck
 
-Over one session (2026-07-24/25) **21 independent instances** of "a check that
-reports green while measuring nothing" were found across four agents and two
-manager subtrees. That is not an anomaly, and the reasoning matters more than
-the rule, because **the rule without the "why" reads as ceremony and gets
-skipped**:
+Over one session (2026-07-24/25) **more than twenty independent instances** of "a
+check that reports green while measuring nothing" were found across four agents
+and two manager subtrees — stated as **a floor, not a tally**: the corpus only
+grows (this document has added to it since), and a bare count would rot inside
+the very document that forbids bare counts. That is not an anomaly, and the
+reasoning matters more than the rule, because **the rule without the "why" reads
+as ceremony and gets skipped**:
 
 **Every one of those instances failed toward green.** Nobody ships a check that
 spuriously *fails* — it blocks someone, produces an immediate symptom, and is
@@ -128,8 +150,10 @@ bash "$DEMO" >/dev/null; echo "exit=$?"
 exit=1
 ```
 
-**2. A negative control against the pre-fix commit.** The two helper fixes landed
-in `82e0535`. Run today's assertions against the *parent's* helpers:
+**2. A negative control against the pre-fix commit.** `82e0535` changed three
+things in these helpers: the `last_seq_of` integer sentinel, `count_now_writes`'
+newest-by-mtime file pick, and a `fromjson? // empty` torn-line tolerance. Run
+today's assertions against the *parent's* helpers:
 
 ```bash
 CTRL=$(mktemp -d /tmp/wirelog-ctl.XXXXXX)
@@ -141,12 +165,22 @@ bash "$CTRL/scripts/test-wirelog-helpers-unit.sh"   # => 46 passed / 8 failed
 rm -rf "$CTRL"
 ```
 
-**3. Failure sets attributed per fix, and disjoint.** Of those 8 failures, 7 name
-the `last_seq_of` integer-sentinel fix and 1 names the `count_now_writes`
-newest-by-mtime fix — so each fix is independently covered, rather than one
-fixture answering for both. **Report the attribution, not the count:** a single
-fixture that happens to exercise two properties produces the same total while
-proving neither.
+**3. Failure sets attributed per change, and disjoint — for two of the three
+changes.** Of those 8 failures, 7 name the `last_seq_of` integer-sentinel fix and
+1 names the `count_now_writes` newest-by-mtime fix. Two disjoint sets, so neither
+is one fixture answering for the other — and that is the whole claim. **The third
+change, `count_now_writes`' `fromjson? // empty` torn-line tolerance, has no
+red-first evidence.** The suite does carry torn-inner-frame assertions, and they
+pass against the *pre-fix* helper too: `jq` reports the bad input and keeps
+reading, so the counts agree with and without the guard. Measured on jq-1.6 over a
+3-frame log with a torn middle frame: both forms print 2 and **both exit 0** — the
+only difference is a single `jq: error (at <file>:N): Unfinished string at EOF`
+line on stderr, which the helper discards with `2>/dev/null`. By the
+surviving-mutant rule below, that makes the tolerance **equivalent for the
+property asserted**, not covered. Say which;
+otherwise a 7+1 attribution reads as three-for-three. **Report the attribution,
+not the count:** a single fixture that happens to exercise two properties produces
+the same total while proving neither.
 
 ### How to demonstrate a red
 
@@ -226,8 +260,9 @@ Two rules that make a mutation trustworthy:
   beats a high number.
 
 This applies to ad-hoc tooling you write in the moment, not just to committed
-tests — 5 of the 21 instances were in throwaway agent orchestration. The cheapest
-example, and one that will be stepped on again:
+tests — **throwaway agent orchestration is one of the four strata** the instances
+fall into (§ *The honest limit*), not a footnote to them. The cheapest example,
+and one that will be stepped on again:
 
 > **A `pgrep -f` / `ps | grep` liveness guard must exclude itself and its own
 > supervisor.** Any predicate keyed on a process's *command line* is matched by
@@ -311,6 +346,46 @@ future reader restore a vacuous implementation believing it an optimisation. And
 check a comment's **semantics**, not just its stated bounds — *"Range is 0..1"*
 was numerically true while its meaning (`0` ⇒ nothing uncacheable) was false. **A
 true statement adjacent to a false one makes the false one harder to see.**
+
+### A precondition that never holds makes the guard a no-op
+
+The failure mode above is *silent*. This one is **loud and misfiled**, which is
+worse, and it needs a different remedy: when a harness fails in **setup**, the
+assertions it exists for never run, and the report looks like an intermittent
+fault rather than a hole in coverage.
+
+> **A row must distinguish "the scenario ran and passed" from "the scenario never
+> started."** Report setup failures in a **separate class from assertion
+> failures**, so a **setup precondition** that never holds cannot masquerade as
+> flakiness. When a row fails in setup, the
+> correct reading is *"this guard is currently a **no-op**,"* not *"this row is
+> **flaky**."*
+
+Live instance, verified with a control build in an isolated worktree (auth ruled
+out — `Not logged in` and `claude binary not found` both zero): the `sendnow-tui`
+row fails at `FAIL: iter 2: weave never entered a tool-bound turn` on both an
+engineer's HEAD and the control. `scripts/e2e-tests/sendnow-tui.sh:241` shows that
+assertion is a **setup precondition** guarding the busy turn the repro needs, and
+it aborts the row — so the 8-iteration Ctrl+G double-tap repro the row exists for
+**never ran to completion on either build**, and the row has never certified the
+path. (Iteration 1 apparently did complete; a single unrepeated pass then a setup
+abort is not the 8-iteration gate anyone reads the row as, and nothing in the
+report distinguishes the two.)
+
+State the consequence at the width you measured, which is narrower than the first
+telling of it. The handed-down version was *"QUM-830 has no coverage on `main`"*;
+checked against the tree, `main` does carry
+`TestSendAllNow_NowWritePreemptMidTurn_SurfacesInterruptNotError`
+(`internal/runtime`) and `TestCtrlG_DoubleTap_Debounced` (`internal/tui`), and
+both pass. What is unguarded is the **live keystroke path the row alone
+exercises** — reducer-level classification is covered. Same discipline as
+*a rationale you were given is a claim about intent*: verify the blast radius
+before you write it down, including when the claim arrives with the defect.
+
+Note what did *not* go wrong. Nobody ignored a failure; the signal was present,
+visible, and read carefully — and filed as "flaky row" rather than "the thing this
+guards is unguarded." A vacuous assertion hides; this one announces itself in the
+wrong vocabulary, and the vocabulary is the whole defect.
 
 ### Provenance: emit what you actually ran
 
@@ -494,6 +569,22 @@ what the user should see. It was written during a *previous* fix to the same
 flag — so this is the **second** time a test at that site ratified the behaviour
 it was meant to constrain.
 
+This is *the same breath* at mechanism level, and the instance count is what makes
+it a pattern rather than a slip: **three self-pinning tests on one flag**, all
+named for what `interruptPending` does rather than for what the user sees —
+`TestInterrupt_AtTurnBoundary_WireRunningDoesNotClearArm`,
+`…_ArmDoesNotSurviveInit`, and `…_ArmDoesNotLeakToNextTurn`. **All three pass**,
+which is exactly what makes them dangerous: a failing self-pinned test gets argued
+with, a passing one gets banked as coverage. (Counts scoped separately, because
+they are two different measurements: *three* tests keyed to the flag, and the
+`…_ArmDoesNotSurviveInit` site specifically ratified twice — the QUM-931 symbol
+landed at `6d13e6a` and again at `0ab763c`.)
+
+Sub-lesson, which surfaced only in-process: a retire keyed on **entry to a phase**
+looked equivalent to one keyed on **a real new submit**, and was not — a guard
+re-arm re-enters that phase for the arm's *own* turn. **"Looks equivalent" is not
+equivalent** when the signal you key on is a phase rather than an identity.
+
 The remedy that worked: **supersede it with a test keyed on the property, not the
 detail.** Assert that the armed turn *closes* — the outcome — rather than that a
 particular `init` frame does or does not clear a particular flag. A mechanism
@@ -529,9 +620,12 @@ it and stop looking.
 
 ### The honest limit
 
-Distribution of those 21 instances: **6 in committed harness code, 5 in committed
-product code, 5 in ad-hoc agent tooling, 5 at the coordination/claim layer.** The
-last group has grown fastest and is the one **no mechanism catches**. Everything
+Those instances are spread **near-evenly across four strata — committed harness
+code, committed product code, ad-hoc agent tooling, and the coordination/claim
+layer**; none of the four is a rounding error. No denominator is quoted on
+purpose: a proportion rots the same way the count did, only slower, and the last
+group has **grown fastest** — so any fraction stated today is drifting as you read
+it. That last group is also the one **no mechanism catches**. Everything
 above the "Claims about code" heading can be mechanised; that section cannot, and
 the document says so rather than implying the mechanisms are sufficient.
 
