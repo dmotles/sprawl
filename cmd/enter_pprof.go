@@ -18,6 +18,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -29,11 +30,41 @@ import (
 // exposure.
 const defaultPprofAddr = "127.0.0.1:6060"
 
+// pprofEphemeralAddr is the fallback bind target when our OWN default is
+// occupied. Loopback with port 0: the kernel picks a free port, and the host
+// half must never widen (see pprofTarget for why this fallback exists at all).
+const pprofEphemeralAddr = "127.0.0.1:0"
+
+// pprofAddrFileName is where the live listener advertises its bound address,
+// relative to the sprawl root. The toggle's log line only reaches
+// .sprawl/logs/tui-stderr-*.log in TUI mode (stderr is redirected before the
+// toggle can fire), so an operator who sends SIGUSR2 has no other way to learn
+// the address — and once the bind can land on an ephemeral port, an
+// undiscoverable address is useless. Sits beside the SIGUSR1 dumps in
+// .sprawl/runtime/ for the same reason: it is a live-process artifact.
+//
+// Advisory only: a SIGKILLed session leaves the file behind. That is
+// self-diagnosing (a consumer connects and fails), so there is deliberately no
+// pid/mtime staleness protocol — Start overwrites it unconditionally.
+//
+// A const, not a var: it is only ever read (pprofAddrFilePath joins it onto the
+// sprawl root), and a mutable package-level path would be exactly the kind of
+// shared global that makes tests observe each other. Slash-separated is fine —
+// this file is Unix-only by construction (it references syscall.SIGUSR2).
+const pprofAddrFileName = ".sprawl/runtime/pprof-addr"
+
 // errPprofStopping is returned by Start while a previous listener is still
 // draining. Stop clears the running state before the socket is actually
 // released, so without this a concurrent Start would re-bind the same address
 // and fail with a bare "address already in use".
 var errPprofStopping = errors.New("pprof listener is shutting down")
+
+// errPprofDrainIncomplete marks a stop whose graceful drain outlasted its
+// deadline. The listener IS down — Stop closed it abruptly — so this is a
+// successful stop with a degraded drain, not a failed stop. Reporting it as a
+// failure would tell the user something false, which matters most exactly when
+// it fires: mid-`/debug/pprof/profile?seconds=30`.
+var errPprofDrainIncomplete = errors.New("graceful drain did not complete; listener closed abruptly")
 
 // pprofToggleSignal toggles the listener on a running session. SIGUSR2 is the
 // only free signal: SIGUSR1 is the sigdump goroutine/fd dump (QUM-495),
@@ -46,6 +77,7 @@ var (
 	pprofListen       = net.Listen
 	pprofSignalNotify = signal.Notify
 	pprofSignalStop   = signal.Stop
+	pprofShutdown     = func(ctx context.Context, srv *http.Server) error { return srv.Shutdown(ctx) }
 )
 
 // pprofReadHeaderTimeout bounds header reads so a stuck client cannot pin the
@@ -54,6 +86,47 @@ const pprofReadHeaderTimeout = 10 * time.Second
 
 // pprofStopTimeout bounds the graceful drain when the session exits.
 const pprofStopTimeout = 2 * time.Second
+
+// pprofTarget is a bind target plus the provenance of the address, which is
+// what decides the bind-failure policy. The two policies MUST NOT be merged:
+//
+//   - An address the operator named (--pprof, SPRAWL_PPROF_ADDR, or an explicit
+//     Start/Toggle argument) is a promise. They will curl that port, so a
+//     silent relocation leaves them worse off than a loud failure.
+//     allowEphemeralFallback is false — bind it or fail.
+//   - defaultPprofAddr is OUR choice, not theirs. Nobody asked for 6060, so
+//     dead-ending because some unrelated process holds it defeats the whole
+//     point of a runtime toggle ("this live session wasn't launched with
+//     --pprof and I need to profile it now"). allowEphemeralFallback is true.
+//
+// Provenance, not the address value, decides this: naming defaultPprofAddr
+// explicitly is still explicit.
+type pprofTarget struct {
+	addr                   string
+	allowEphemeralFallback bool
+}
+
+// pprofOptions are the controller's write-once settings. They are set at
+// construction and never mutated, which is what makes them safe to read without
+// the mutex from the signal-toggle goroutine; adding a setter would turn those
+// reads into data races.
+type pprofOptions struct {
+	// Preferred is the launch-configured address (--pprof / SPRAWL_PPROF_ADDR).
+	// A toggle with no explicit address returns here, so re-enabling never
+	// relocates the endpoint away from what the operator asked for.
+	Preferred string
+	// AddrFile is where the bound address is advertised. Empty ⇒ disabled.
+	AddrFile string
+	// DefaultAddrForTest overrides defaultPprofAddr. It keeps the default a
+	// const (a mutable global would race the toggle goroutine) while letting a
+	// test occupy a real port and observe the fallback.
+	//
+	// INVARIANT: any operator-sourced address MUST go in Preferred. Whatever
+	// lands here inherits relocate-on-EADDRINUSE semantics, so wiring a flag,
+	// env var, or config key into this field would silently give away the
+	// never-relocate guarantee that Preferred exists to keep.
+	DefaultAddrForTest string
+}
 
 // pprofStatus is a snapshot of the listener state. Addr is the ACTUAL bound
 // address, so a `:0` request reports the port the kernel assigned.
@@ -75,37 +148,78 @@ type pprofRun struct {
 // at any point in the session. Safe for concurrent use.
 type pprofController struct {
 	logW io.Writer
-	// preferred is the launch-configured address (--pprof / SPRAWL_PPROF_ADDR).
-	// A toggle with no explicit address returns here, so re-enabling never
-	// relocates the endpoint away from what the operator asked for. Empty ⇒
-	// defaultPprofAddr. Set once at construction and never mutated, which is
-	// why resolveAddr reads it without the mutex — adding a setter would make
-	// that read a data race.
-	preferred string
+	// Write-once; see pprofOptions for why these are read without the mutex.
+	preferred   string
+	addrFile    string
+	defaultAddr string
 
 	mu       sync.Mutex
 	run      *pprofRun
 	stopping bool
 }
 
-func newPprofController(logW io.Writer, preferred string) *pprofController {
-	return &pprofController{logW: logW, preferred: preferred}
+func newPprofController(logW io.Writer, opts pprofOptions) *pprofController {
+	return &pprofController{
+		logW:        logW,
+		preferred:   opts.Preferred,
+		addrFile:    opts.AddrFile,
+		defaultAddr: opts.DefaultAddrForTest,
+	}
 }
 
-// resolveAddr picks the address to bind: an explicit request wins, then the
-// launch-configured address, then the loopback default. A configured address
-// that is occupied is reported as a bind failure and the listener stays down —
-// silently falling back to a random port would leave an operator who asked for
-// a specific port worse off than one who was told it failed.
-func (c *pprofController) resolveAddr(addr string) string {
+// resolveTarget picks the address to bind and the provenance that governs a
+// bind failure: an explicit request wins, then the launch-configured address,
+// then our own default. Only the last is relocatable — see pprofTarget.
+func (c *pprofController) resolveTarget(addr string) pprofTarget {
 	switch {
 	case addr != "":
-		return addr
+		return pprofTarget{addr: addr}
 	case c.preferred != "":
-		return c.preferred
+		return pprofTarget{addr: c.preferred}
 	default:
-		return defaultPprofAddr
+		def := c.defaultAddr
+		if def == "" {
+			def = defaultPprofAddr
+		}
+		return pprofTarget{addr: def, allowEphemeralFallback: true}
 	}
+}
+
+// writeAddrFile advertises the bound address. Best-effort by design: a
+// diagnostic endpoint must never fail to come up because it could not announce
+// itself, so failures are logged and swallowed. No error return — an
+// always-ignored one would just invite a caller to pretend it matters.
+func (c *pprofController) writeAddrFile(addr string) {
+	if c.addrFile == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(c.addrFile), 0o750); err != nil {
+		fmt.Fprintf(c.logW, "[enter] cannot advertise pprof addr in %s: %v\n", c.addrFile, err)
+		return
+	}
+	// Unconditional overwrite: a stale file from a killed session must not
+	// outlive it. Bare "addr\n" so `curl http://$(cat <file>)/debug/pprof/`
+	// works — never a URL or JSON.
+	if err := os.WriteFile(c.addrFile, []byte(addr+"\n"), 0o600); err != nil {
+		fmt.Fprintf(c.logW, "[enter] cannot advertise pprof addr in %s: %v\n", c.addrFile, err)
+	}
+}
+
+// removeAddrFile withdraws the advertisement. Absence is the expected case when
+// the file was never written, so it is not worth a log line.
+func (c *pprofController) removeAddrFile() {
+	if c.addrFile == "" {
+		return
+	}
+	if err := os.Remove(c.addrFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(c.logW, "[enter] removing pprof addr file %s: %v\n", c.addrFile, err)
+	}
+}
+
+// pprofAddrFilePath is where a session rooted at sprawlRoot advertises its
+// live pprof address.
+func pprofAddrFilePath(sprawlRoot string) string {
+	return filepath.Join(sprawlRoot, pprofAddrFileName)
 }
 
 // pprofMux builds a dedicated mux carrying only the pprof handlers. Serving
@@ -131,8 +245,13 @@ func pprofMux() *http.ServeMux {
 // alone: already is true and boundAddr is the running address, so a second
 // Start never relocates the endpoint out from under whoever is scraping it.
 // Returns errPprofStopping while a previous listener is still draining.
+//
+// A bind failure on a relocatable target (our own default — see pprofTarget)
+// retries once on an ephemeral loopback port; anything the operator named fails
+// loudly instead. Only EADDRINUSE is relocatable: EACCES/EADDRNOTAVAIL mean the
+// configuration or environment is wrong, and relocating would hide that.
 func (c *pprofController) Start(addr string) (boundAddr string, already bool, err error) {
-	addr = c.resolveAddr(addr)
+	target := c.resolveTarget(addr)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -143,9 +262,29 @@ func (c *pprofController) Start(addr string) (boundAddr string, already bool, er
 		return "", false, errPprofStopping
 	}
 
-	ln, err := pprofListen("tcp", addr)
-	if err != nil {
-		return "", false, fmt.Errorf("binding pprof listener on %s: %w", addr, err)
+	// Everything below runs under c.mu: up to two binds plus the addr-file
+	// write. Holding the lock across the file I/O is load-bearing, not
+	// incidental — it is what makes the advertisement's lifetime exactly one
+	// pprofRun's lifetime, so it can never interleave with a concurrent Stop's
+	// removal. The cost is that Status(), documented as the cheap TUI read,
+	// contends with a small write on a stalled filesystem; that is the accepted
+	// trade. Don't "fix" it by moving the write out of the lock.
+	// A local, not the named `err` return: after a successful fallback the
+	// named return would still hold the first bind's error, so a future naked
+	// return in this block would report a spurious failure.
+	ln, bindErr := pprofListen("tcp", target.addr)
+	if bindErr != nil {
+		if !target.allowEphemeralFallback || !errors.Is(bindErr, syscall.EADDRINUSE) {
+			return "", false, fmt.Errorf("binding pprof listener on %s: %w", target.addr, bindErr)
+		}
+		var fallbackErr error
+		ln, fallbackErr = pprofListen("tcp", pprofEphemeralAddr)
+		if fallbackErr != nil {
+			// Name the original target too: an error mentioning only the
+			// ephemeral address hides what was actually requested.
+			return "", false, fmt.Errorf("binding pprof listener on %s (occupied) then on fallback %s: %w",
+				target.addr, pprofEphemeralAddr, fallbackErr)
+		}
 	}
 	run := &pprofRun{
 		srv:  &http.Server{Handler: pprofMux(), ReadHeaderTimeout: pprofReadHeaderTimeout},
@@ -153,6 +292,9 @@ func (c *pprofController) Start(addr string) (boundAddr string, already bool, er
 		done: make(chan struct{}),
 	}
 	c.run = run
+	// Only a fresh bind advertises: the already-running path returned above, so
+	// a second Start never rewrites a live listener's address.
+	c.writeAddrFile(run.addr)
 
 	go func() {
 		defer close(run.done)
@@ -182,6 +324,11 @@ func (c *pprofController) Stop(ctx context.Context) (was bool, err error) {
 	// open for many seconds and Status must stay cheap for a TUI reader.
 	c.run = nil
 	c.stopping = true
+	// Withdraw the advertisement here, not after the drain: from this point
+	// Status() reads not-running and a concurrent Start gets errPprofStopping,
+	// so a file still naming the address would be a lie for up to the whole
+	// drain window.
+	c.removeAddrFile()
 	c.mu.Unlock()
 
 	defer func() {
@@ -191,12 +338,17 @@ func (c *pprofController) Stop(ctx context.Context) (was bool, err error) {
 	}()
 
 	// Shutdown closes the listener itself; never close it separately.
-	shutdownErr := run.srv.Shutdown(ctx)
+	shutdownErr := pprofShutdown(ctx, run.srv)
 	if shutdownErr != nil {
 		// Intentional: a cancelled/expired ctx (session teardown) downgrades
-		// the graceful drain to an abrupt close rather than hanging.
+		// the graceful drain to an abrupt close rather than hanging. Close is
+		// unconditional here, so "the listener is down" always holds — hence
+		// the errPprofDrainIncomplete tag, which lets callers report this as a
+		// degraded stop instead of a failed one. The cause is wrapped
+		// alongside so it stays available for the log line.
 		_ = run.srv.Close()
-		shutdownErr = fmt.Errorf("draining pprof listener on %s: %w", run.addr, shutdownErr)
+		shutdownErr = fmt.Errorf("draining pprof listener on %s: %w: %w",
+			run.addr, errPprofDrainIncomplete, shutdownErr)
 	}
 	<-run.done
 	return true, shutdownErr
@@ -302,7 +454,8 @@ func pprofSignalLoop(ctx context.Context, ch <-chan os.Signal, c *pprofControlle
 		case <-ch:
 			// Note: in TUI mode stderr is redirected to
 			// .sprawl/logs/tui-stderr-*.log, so this line lands there
-			// rather than on the terminal. Surfacing the address in the
+			// rather than on the terminal — which is why Start also writes
+			// the bound address to pprofAddrFilePath. Surfacing it in the
 			// TUI itself is a follow-on wave.
 			//
 			// WithoutCancel: a toggle that lands as the session tears down
@@ -311,17 +464,32 @@ func pprofSignalLoop(ctx context.Context, ch <-chan os.Signal, c *pprofControlle
 			toggleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pprofStopTimeout)
 			st, err := c.Toggle(toggleCtx, "")
 			cancel()
-			switch {
-			case err != nil:
-				fmt.Fprintf(c.logW, "[enter] pprof toggle failed: %v\n", err)
-			case st.Running:
-				fmt.Fprintf(c.logW, "[enter] pprof toggled ON — http://%s/debug/pprof/\n", st.Addr)
-			default:
-				fmt.Fprintf(c.logW, "[enter] pprof toggled OFF\n")
-			}
+			fmt.Fprintln(c.logW, pprofToggleLogLine(st, err))
 			if onToggle != nil {
 				onToggle(st)
 			}
 		}
+	}
+}
+
+// pprofToggleLogLine renders what a toggle did. Split out from the signal loop
+// so the classification is testable without driving a real drain to its
+// deadline.
+//
+// The drain-incomplete arm comes first and is checked against st.Running: the
+// listener is genuinely down in that case, so calling it a failed toggle would
+// be false. Toggle surfaces errors from both its stop and start legs, and only
+// the stop leg can be drain-incomplete.
+func pprofToggleLogLine(st pprofStatus, err error) string {
+	switch {
+	case !st.Running && errors.Is(err, errPprofDrainIncomplete):
+		return fmt.Sprintf("[enter] pprof toggled OFF — an in-flight request outlasted the %s drain, so it was cut short: %v",
+			pprofStopTimeout, err)
+	case err != nil:
+		return fmt.Sprintf("[enter] pprof toggle failed: %v", err)
+	case st.Running:
+		return fmt.Sprintf("[enter] pprof toggled ON — http://%s/debug/pprof/", st.Addr)
+	default:
+		return "[enter] pprof toggled OFF"
 	}
 }

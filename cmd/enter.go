@@ -235,7 +235,10 @@ func init() {
 	// QUM-678: --pprof <addr> exposes net/http/pprof on the given address.
 	// Also accepts SPRAWL_PPROF_ADDR; flag wins. Suggest a loopback bind so
 	// users don't accidentally expose pprof to other hosts.
-	enterCmd.Flags().String("pprof", "", "expose net/http/pprof on this address (e.g., 127.0.0.1:6060); also reads SPRAWL_PPROF_ADDR. Send SIGUSR2 to toggle it on a running session (QUM-678, QUM-934)")
+	enterCmd.Flags().String("pprof", "", "expose net/http/pprof on this address (e.g., 127.0.0.1:6060); also reads SPRAWL_PPROF_ADDR. "+
+		"An address given here is bound as-is or fails loudly. Send SIGUSR2 to toggle it on a running session; an unconfigured "+
+		"toggle tries "+defaultPprofAddr+" and falls back to an ephemeral loopback port if that is taken. The live address is "+
+		"written to "+pprofAddrFileName+" under the sprawl root while the listener is up (QUM-678, QUM-934)")
 	// QUM-850: --model overrides weave's root model for this launch only.
 	// Free-form string passed verbatim to `claude --model`; empty preserves
 	// the default (opus[1m]). Not persisted across restart/handoff.
@@ -628,13 +631,39 @@ func runEnter(deps *enterDeps) error {
 		fmt.Fprintf(os.Stderr, "SPRAWL_ROOT not set — defaulting to %s\n", sprawlRoot)
 	}
 
-	// QUM-678: start the opt-in pprof listener as early as possible so it's
-	// up before heavy init in case the operator wants to profile startup.
-	// No-op when neither --pprof nor SPRAWL_PPROF_ADDR is set. QUM-934: the
-	// listener lives on a controller so SIGUSR2 (or a future TUI surface) can
-	// toggle it mid-session without a relaunch.
-	pprofCtl := newPprofController(os.Stderr, deps.pprofAddr)
+	// Single-weave invariant: acquire the flock before any init work, and
+	// hold it for the lifetime of the sprawl enter process (including
+	// across TUI-driven session restarts). Released on return.
+	lock, err := rootinit.AcquireWeaveLock(sprawlRoot)
+	if err != nil {
+		printWeaveLockError(os.Stderr, err, sprawlRoot)
+		return err
+	}
+	defer func() { _ = lock.Release() }()
+
+	// QUM-678: start the opt-in pprof listener before any heavy init, so it's
+	// up in time to profile startup. No-op when neither --pprof nor
+	// SPRAWL_PPROF_ADDR is set. QUM-934: the listener lives on a controller so
+	// SIGUSR2 (or a future TUI surface) can toggle it mid-session without a
+	// relaunch, and AddrFile makes the bound address discoverable without
+	// reading the TUI's stderr log — mandatory now that an unconfigured toggle
+	// can land on an ephemeral port.
+	//
+	// Deliberately AFTER the weave flock, cheap as the flock is: the addr file
+	// is shared per sprawl root, so a second enter that loses the flock would
+	// otherwise overwrite the live session's advertisement and then delete it
+	// on its way out, leaving the survivor serving unadvertised.
+	pprofCtl := newPprofController(os.Stderr, pprofOptions{
+		Preferred: deps.pprofAddr,
+		AddrFile:  pprofAddrFilePath(sprawlRoot),
+	})
 	deps.pprofCtl = pprofCtl
+	// Clear an advertisement orphaned by a crashed/SIGKILLed prior weave.
+	// Safe here for the same reason as JanitorStaleLock below: we hold the
+	// flock, so no other session owns the file. A stale entry is NOT
+	// self-diagnosing — a dead 127.0.0.1:6060 may connect to whatever
+	// unrelated process now holds that port and return confusing garbage.
+	pprofCtl.removeAddrFile()
 	startPprof(deps.pprofAddr, pprofCtl)
 	// Defers are LIFO and the order here matters: disarm the signal handler
 	// FIRST (it joins the toggle goroutine), then stop the listener. The
@@ -647,16 +676,6 @@ func runEnter(deps *enterDeps) error {
 	}()
 	stopPprofToggle := installPprofSignalToggle(context.Background(), pprofCtl)
 	defer stopPprofToggle()
-
-	// Single-weave invariant: acquire the flock before any init work, and
-	// hold it for the lifetime of the sprawl enter process (including
-	// across TUI-driven session restarts). Released on return.
-	lock, err := rootinit.AcquireWeaveLock(sprawlRoot)
-	if err != nil {
-		printWeaveLockError(os.Stderr, err, sprawlRoot)
-		return err
-	}
-	defer func() { _ = lock.Release() }()
 
 	// QUM-522: best-effort cleanup of a stale .consolidating lockfile
 	// orphaned by a crashed/SIGKILLed prior weave. Runs after the weave

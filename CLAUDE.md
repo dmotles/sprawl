@@ -235,6 +235,32 @@ memory + loadavg. Non-blocking — TUI stays interactive. Status bar shows
 `snapshot saved → <path>` on completion (or `snapshot failed` + an error
 toast on failure).
 
+### Runtime pprof toggle (QUM-678 / QUM-934)
+
+`--pprof <addr>` (or `SPRAWL_PPROF_ADDR`) exposes `net/http/pprof` at launch.
+**`SIGUSR2` toggles the listener on a running session** — no relaunch, which is
+the point: restarting resolves some session-scoped perf bugs and so destroys
+the evidence. (`SIGUSR1` is the separate sigdump goroutine/fd dump.)
+
+Bind-failure policy differs by **provenance**, deliberately — don't merge the
+two branches:
+
+* **Explicitly configured** (`--pprof` / `SPRAWL_PPROF_ADDR` / an explicit arg):
+  bound as-is or fails loudly. Never silently relocated — an operator who named
+  a port will curl that port.
+* **Unconfigured** (our own `127.0.0.1:6060` default, which nobody asked for):
+  tries the default, then falls back to an ephemeral `127.0.0.1:0` on
+  `EADDRINUSE`. Loopback only, and only `EADDRINUSE` relocates.
+
+While the listener is up, its **bound address is written to
+`<SPRAWL_ROOT>/.sprawl/runtime/pprof-addr`** and removed on stop, so
+`curl http://$(cat .sprawl/runtime/pprof-addr)/debug/pprof/` works even when the
+fallback picked an ephemeral port. The toggle's log line only reaches
+`.sprawl/logs/tui-stderr-*.log` (the TUI redirects stderr), so this file is the
+discoverable surface; an in-TUI surface is still deferred. The file is advisory
+— written only after the weave flock is held, and cleared at launch, so a
+SIGKILLed session's stale entry cannot mislead the next one.
+
 ## Project Configuration
 
 Sprawl reads `.sprawl/config.yaml` for project-level settings:

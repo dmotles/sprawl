@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/dmotles/sprawl/internal/rootinit"
 )
 
 // syncBuffer is a mutex-guarded log sink: the controller's serve goroutine
@@ -50,14 +53,132 @@ func newTestPprofController(t *testing.T) (*pprofController, *syncBuffer) {
 // runEnter does from the resolved --pprof/SPRAWL_PPROF_ADDR value.
 func newTestPprofControllerFor(t *testing.T, preferred string) (*pprofController, *syncBuffer) {
 	t.Helper()
+	return newTestPprofControllerWith(t, pprofOptions{Preferred: preferred})
+}
+
+// newTestPprofControllerWith builds a controller from full options, with
+// unconditional teardown so no serve goroutine or bound socket outlives the
+// test.
+func newTestPprofControllerWith(t *testing.T, opts pprofOptions) (*pprofController, *syncBuffer) {
+	t.Helper()
 	buf := &syncBuffer{}
-	c := newPprofController(buf, preferred)
+	c := newPprofController(buf, opts)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_, _ = c.Stop(ctx)
 	})
 	return c, buf
+}
+
+// occupyAddr binds a real ephemeral loopback socket and holds it for the whole
+// test, returning the address it occupies. Tests use this instead of assuming a
+// fixed port is taken: the occupancy is real, so the EADDRINUSE the controller
+// sees comes from the kernel rather than from a fabricated error.
+//
+// It deliberately never closes-then-reuses the port number, which would race
+// anything else on the host for it.
+func occupyAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("occupying a loopback port: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	return ln.Addr().String()
+}
+
+// pprofListenFunc is the shape of the pprofListen seam.
+type pprofListenFunc = func(network, addr string) (net.Listener, error)
+
+// swapPprofListen installs a pprofListen seam built from the real one for the
+// duration of the test. Every listen helper in this file is built on it so the
+// save/restore discipline lives in exactly one place.
+func swapPprofListen(t *testing.T, build func(orig pprofListenFunc) pprofListenFunc) {
+	t.Helper()
+	orig := pprofListen
+	pprofListen = build(orig)
+	t.Cleanup(func() { pprofListen = orig })
+}
+
+// flakyPprofListen installs a pprofListen seam that fails the first bind with
+// firstErr and delegates every later bind to a real ephemeral loopback socket,
+// so a test can pin exactly which addresses a retry asks for.
+func flakyPprofListen(t *testing.T, firstErr error) *pprofListenRecorder {
+	t.Helper()
+	rec := &pprofListenRecorder{}
+	swapPprofListen(t, func(orig pprofListenFunc) pprofListenFunc {
+		return func(network, addr string) (net.Listener, error) {
+			rec.record(addr)
+			if rec.count() == 1 {
+				return nil, firstErr
+			}
+			return orig(network, "127.0.0.1:0")
+		}
+	})
+	return rec
+}
+
+// recordingPprofListen records every requested address and performs the REAL
+// bind on that exact address. Unlike fakePprofListen it does not rewrite the
+// address to an ephemeral port, so a test can prove both what was attempted and
+// that a genuine kernel error came back.
+func recordingPprofListen(t *testing.T) *pprofListenRecorder {
+	t.Helper()
+	rec := &pprofListenRecorder{}
+	swapPprofListen(t, func(orig pprofListenFunc) pprofListenFunc {
+		return func(network, addr string) (net.Listener, error) {
+			rec.record(addr)
+			return orig(network, addr)
+		}
+	})
+	return rec
+}
+
+// stallPprofShutdown makes the graceful drain report err without draining, so a
+// drain-timeout test is deterministic. A real http.Server.Shutdown cannot be
+// driven to a timeout by a slow listener: listenerGroup.Wait() is not
+// ctx-aware, and with no in-flight connections closeIdleConns() succeeds on the
+// first loop iteration, so Shutdown returns nil however short the deadline is.
+// Stop still closes the server and joins the serve goroutine on this path, so
+// nothing leaks.
+func stallPprofShutdown(t *testing.T, err error) {
+	t.Helper()
+	orig := pprofShutdown
+	pprofShutdown = func(context.Context, *http.Server) error { return err }
+	t.Cleanup(func() { pprofShutdown = orig })
+}
+
+// eaddrinuseErr builds the error shape net.Listen actually returns for an
+// occupied port, so a test of the non-fallback path cannot pass by accident on
+// a bare syscall.Errno the production code would never see.
+func eaddrinuseErr() error {
+	return &net.OpError{Op: "listen", Net: "tcp", Err: &os.SyscallError{Syscall: "bind", Err: syscall.EADDRINUSE}}
+}
+
+// addrFileUnderNewDir returns a pprof-addr path whose parent directory does not
+// exist yet, proving the controller creates it.
+func addrFileUnderNewDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "runtime", "pprof-addr")
+}
+
+// readAddrFile returns the file's contents, failing the test if it is absent.
+func readAddrFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path) //nolint:gosec // test-controlled temp path
+	if err != nil {
+		t.Fatalf("reading pprof addr file %s: %v", path, err)
+	}
+	return string(b)
+}
+
+// requireNoAddrFile asserts the addr file is absent.
+func requireNoAddrFile(t *testing.T, path, when string) {
+	t.Helper()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("pprof addr file %s still exists %s (stat err = %v), want removed", path, when, err)
+	}
 }
 
 // pprofListenRecorder records what addresses the controller asked to bind.
@@ -91,12 +212,12 @@ func (r *pprofListenRecorder) record(addr string) {
 func fakePprofListen(t *testing.T) *pprofListenRecorder {
 	t.Helper()
 	rec := &pprofListenRecorder{}
-	orig := pprofListen
-	pprofListen = func(network, addr string) (net.Listener, error) {
-		rec.record(addr)
-		return orig(network, "127.0.0.1:0")
-	}
-	t.Cleanup(func() { pprofListen = orig })
+	swapPprofListen(t, func(orig pprofListenFunc) pprofListenFunc {
+		return func(network, addr string) (net.Listener, error) {
+			rec.record(addr)
+			return orig(network, "127.0.0.1:0")
+		}
+	})
 	return rec
 }
 
@@ -104,12 +225,12 @@ func fakePprofListen(t *testing.T) *pprofListenRecorder {
 func failingPprofListen(t *testing.T, err error) *pprofListenRecorder {
 	t.Helper()
 	rec := &pprofListenRecorder{}
-	orig := pprofListen
-	pprofListen = func(_, addr string) (net.Listener, error) {
-		rec.record(addr)
-		return nil, err
-	}
-	t.Cleanup(func() { pprofListen = orig })
+	swapPprofListen(t, func(pprofListenFunc) pprofListenFunc {
+		return func(_, addr string) (net.Listener, error) {
+			rec.record(addr)
+			return nil, err
+		}
+	})
 	return rec
 }
 
@@ -163,19 +284,19 @@ func installSlowUnwindListen(t *testing.T) (waitAccepting func()) {
 		mu  sync.Mutex
 		cur *slowUnwindListener
 	)
-	orig := pprofListen
-	pprofListen = func(network, _ string) (net.Listener, error) {
-		ln, err := orig(network, "127.0.0.1:0")
-		if err != nil {
-			return nil, err
+	swapPprofListen(t, func(orig pprofListenFunc) pprofListenFunc {
+		return func(network, _ string) (net.Listener, error) {
+			ln, err := orig(network, "127.0.0.1:0")
+			if err != nil {
+				return nil, err
+			}
+			slow := newSlowUnwindListener(ln)
+			mu.Lock()
+			cur = slow
+			mu.Unlock()
+			return slow, nil
 		}
-		slow := newSlowUnwindListener(ln)
-		mu.Lock()
-		cur = slow
-		mu.Unlock()
-		return slow, nil
-	}
-	t.Cleanup(func() { pprofListen = orig })
+	})
 	return func() {
 		t.Helper()
 		mu.Lock()
@@ -526,6 +647,623 @@ func TestPprofController_DefaultsToLoopbackWhenAddrEmpty(t *testing.T) {
 	}
 	if host != "127.0.0.1" {
 		t.Errorf("defaultPprofAddr host = %q, want loopback 127.0.0.1", host)
+	}
+}
+
+// --- QUM-934 follow-up: explicit-vs-default address provenance ---------------
+
+// TestPprofController_ResolveTargetProvenance pins the whole point of the
+// pprofTarget type: an ephemeral fallback is permitted ONLY when nobody named an
+// address and the controller fell back to its own default. Every other row is a
+// promise to an operator who named a port.
+func TestPprofController_ResolveTargetProvenance(t *testing.T) {
+	tests := []struct {
+		name         string
+		explicit     string
+		preferred    string
+		wantAddr     string
+		wantFallback bool
+	}{
+		{
+			name:     "explicit only",
+			explicit: "127.0.0.1:7001",
+			wantAddr: "127.0.0.1:7001",
+		},
+		{
+			name:      "preferred only",
+			preferred: "127.0.0.1:7002",
+			wantAddr:  "127.0.0.1:7002",
+		},
+		{
+			name:      "explicit beats preferred",
+			explicit:  "127.0.0.1:7003",
+			preferred: "127.0.0.1:7004",
+			wantAddr:  "127.0.0.1:7003",
+		},
+		{
+			// The default addr is the one printed in --pprof's own help text,
+			// so an operator naming it explicitly is the likeliest collision.
+			// Provenance, not the address value, decides the policy.
+			name:     "explicitly naming our default is still explicit",
+			explicit: defaultPprofAddr,
+			wantAddr: defaultPprofAddr,
+		},
+		{
+			name:      "configuring our default is still explicit",
+			preferred: defaultPprofAddr,
+			wantAddr:  defaultPprofAddr,
+		},
+		{
+			name:         "neither configured falls back to our own default",
+			wantAddr:     defaultPprofAddr,
+			wantFallback: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestPprofControllerFor(t, tc.preferred)
+			got := c.resolveTarget(tc.explicit)
+			if got.addr != tc.wantAddr {
+				t.Errorf("resolveTarget(%q).addr = %q, want %q", tc.explicit, got.addr, tc.wantAddr)
+			}
+			if got.allowEphemeralFallback != tc.wantFallback {
+				t.Errorf("resolveTarget(%q).allowEphemeralFallback = %v, want %v",
+					tc.explicit, got.allowEphemeralFallback, tc.wantFallback)
+			}
+		})
+	}
+}
+
+// TestPprofController_DefaultAddrOccupiedFallsBackToEphemeral is the scenario
+// QUM-934 B exists for: a live session that was NOT launched with --pprof, on a
+// host where our own default port is already taken by something unrelated.
+// Nobody asked for that port, so a bind failure must relocate rather than
+// dead-end. Uses a really-held socket and a real kernel EADDRINUSE.
+func TestPprofController_DefaultAddrOccupiedFallsBackToEphemeral(t *testing.T) {
+	occupied := occupyAddr(t)
+	c, _ := newTestPprofControllerWith(t, pprofOptions{DefaultAddrForTest: occupied})
+
+	bound, already, err := c.Start("")
+	if err != nil {
+		t.Fatalf("Start(\"\") with an occupied default: %v, want a fallback bind", err)
+	}
+	if already {
+		t.Error("Start reported already-running on a fresh controller")
+	}
+	if bound == occupied {
+		t.Fatalf("Start bound the occupied address %q", bound)
+	}
+	host, port, err := net.SplitHostPort(bound)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", bound, err)
+	}
+	if host != "127.0.0.1" {
+		t.Errorf("fallback bound host = %q, want loopback only", host)
+	}
+	if p, convErr := strconv.Atoi(port); convErr != nil || p == 0 {
+		t.Errorf("fallback bound port = %q, want a real kernel-assigned port", port)
+	}
+	if got := c.Status(); !got.Running || got.Addr != bound {
+		t.Errorf("Status() = %+v, want running on the fallback addr %q", got, bound)
+	}
+	// Reporting a port is worthless if nothing is served there.
+	if code := mustGet(t, bound, "/debug/pprof/"); code != http.StatusOK {
+		t.Errorf("GET /debug/pprof/ on the fallback addr = %d, want 200", code)
+	}
+}
+
+// TestPprofController_ExplicitAddrOccupiedFailsAndDoesNotFallBack is the key
+// regression guard. An operator who passed an address will curl that address, so
+// a silent relocation is worse than a loud failure. This must never become a
+// fallback.
+func TestPprofController_ExplicitAddrOccupiedFailsAndDoesNotFallBack(t *testing.T) {
+	occupied := occupyAddr(t)
+	rec := recordingPprofListen(t)
+	c, _ := newTestPprofController(t)
+
+	bound, already, err := c.Start(occupied)
+	if err == nil {
+		t.Fatalf("Start(%q) on an occupied explicit address succeeded (bound %q), want a loud failure", occupied, bound)
+	}
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("Start error = %v, want it to wrap syscall.EADDRINUSE", err)
+	}
+	if already {
+		t.Error("Start reported already-running after a bind failure")
+	}
+	if got := c.Status(); got.Running {
+		t.Errorf("Status() after a failed explicit bind = %+v, want not running", got)
+	}
+	if c.serveDone() != nil {
+		t.Error("a failed explicit bind left a run behind")
+	}
+	// The point of the test: exactly one attempt, on the named address. A
+	// second attempt would mean a silent relocation.
+	if got := rec.requested(); len(got) != 1 || got[0] != occupied {
+		t.Errorf("bind requests = %v, want exactly [%s] with no fallback attempt", got, occupied)
+	}
+}
+
+// TestPprofController_PreferredAddrOccupiedFailsAndDoesNotFallBack covers the
+// other half of "explicitly configured": the launch flag. Without this test an
+// implementation keyed only on `addr == ""` passes the explicit-arg guard above
+// and still silently relocates a --pprof/SPRAWL_PPROF_ADDR session.
+func TestPprofController_PreferredAddrOccupiedFailsAndDoesNotFallBack(t *testing.T) {
+	occupied := occupyAddr(t)
+	rec := recordingPprofListen(t)
+	c, _ := newTestPprofControllerFor(t, occupied)
+
+	bound, _, err := c.Start("")
+	if err == nil {
+		t.Fatalf("Start(\"\") with an occupied configured addr succeeded (bound %q), want a loud failure", bound)
+	}
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		t.Errorf("Start error = %v, want it to wrap syscall.EADDRINUSE", err)
+	}
+	if got := c.Status(); got.Running {
+		t.Errorf("Status() = %+v, want not running", got)
+	}
+	if got := rec.requested(); len(got) != 1 || got[0] != occupied {
+		t.Errorf("bind requests = %v, want exactly [%s] with no fallback attempt", got, occupied)
+	}
+}
+
+// TestPprofController_ExplicitDefaultAddrOccupiedFailsAndDoesNotFallBack: the
+// policy keys on PROVENANCE, not on the address value. Naming our own default
+// explicitly is still a promise, so it must fail loudly even though the very
+// same address would have been relocated had nobody named it. This is the pair
+// to TestPprofController_DefaultAddrOccupiedFallsBackToEphemeral: same occupied
+// address, opposite outcome, and explicitness is the only differing input.
+func TestPprofController_ExplicitDefaultAddrOccupiedFailsAndDoesNotFallBack(t *testing.T) {
+	occupied := occupyAddr(t)
+	rec := recordingPprofListen(t)
+	c, _ := newTestPprofControllerWith(t, pprofOptions{DefaultAddrForTest: occupied})
+
+	if _, _, err := c.Start(occupied); !errors.Is(err, syscall.EADDRINUSE) {
+		t.Fatalf("Start(%q) = %v, want a loud EADDRINUSE failure", occupied, err)
+	}
+	if got := c.Status(); got.Running {
+		t.Errorf("Status() = %+v, want not running", got)
+	}
+	if got := rec.requested(); len(got) != 1 || got[0] != occupied {
+		t.Errorf("bind requests = %v, want exactly [%s]", got, occupied)
+	}
+}
+
+// TestPprofController_NonEADDRINUSEBindErrorDoesNotFallBack: only an occupied
+// port is a relocatable condition. EACCES/EADDRNOTAVAIL mean the configuration
+// or the environment is wrong, and relocating would hide the diagnosis.
+func TestPprofController_NonEADDRINUSEBindErrorDoesNotFallBack(t *testing.T) {
+	permErr := &net.OpError{Op: "listen", Net: "tcp", Err: &os.SyscallError{Syscall: "bind", Err: syscall.EACCES}}
+	rec := failingPprofListen(t, permErr)
+	c, _ := newTestPprofController(t)
+
+	if _, _, err := c.Start(""); err == nil {
+		t.Fatal("Start(\"\") succeeded despite a permission error")
+	}
+	if got := rec.count(); got != 1 {
+		t.Errorf("bind attempts = %d, want exactly 1 (no retry on a non-EADDRINUSE error)", got)
+	}
+}
+
+// TestPprofController_EphemeralFallbackTargetsLoopbackZero pins the retry target
+// itself: the fallback must be loopback port 0, never a wildcard host.
+func TestPprofController_EphemeralFallbackTargetsLoopbackZero(t *testing.T) {
+	rec := flakyPprofListen(t, eaddrinuseErr())
+	c, _ := newTestPprofControllerWith(t, pprofOptions{DefaultAddrForTest: "127.0.0.1:7005"})
+
+	if _, _, err := c.Start(""); err != nil {
+		t.Fatalf("Start(\"\"): %v", err)
+	}
+	want := []string{"127.0.0.1:7005", pprofEphemeralAddr}
+	got := rec.requested()
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("bind requests = %v, want %v", got, want)
+	}
+	host, port, err := net.SplitHostPort(pprofEphemeralAddr)
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q): %v", pprofEphemeralAddr, err)
+	}
+	if host != "127.0.0.1" || port != "0" {
+		t.Errorf("pprofEphemeralAddr = %q, want loopback with port 0", pprofEphemeralAddr)
+	}
+}
+
+// TestPprofController_FallbackFailureStillNamesRequestedAddr: when the default
+// is occupied AND the ephemeral fallback also fails, the operator must still be
+// able to tell what was originally attempted. Reporting only "127.0.0.1:0" hides
+// the real request.
+func TestPprofController_FallbackFailureStillNamesRequestedAddr(t *testing.T) {
+	const wanted = "127.0.0.1:7006"
+	rec := failingPprofListen(t, eaddrinuseErr())
+	c, _ := newTestPprofControllerWith(t, pprofOptions{DefaultAddrForTest: wanted})
+
+	_, _, err := c.Start("")
+	if err == nil {
+		t.Fatal("Start(\"\") succeeded although every bind failed")
+	}
+	if !strings.Contains(err.Error(), wanted) {
+		t.Errorf("error = %q, want it to name the originally requested %q", err, wanted)
+	}
+	if got := rec.count(); got != 2 {
+		t.Errorf("bind attempts = %d, want 2 (default then ephemeral fallback)", got)
+	}
+}
+
+// --- QUM-934 follow-up: addr-file discoverability ----------------------------
+
+// TestPprofController_WritesAddrFileOnStartRemovesOnStop: the toggle's log line
+// only reaches .sprawl/logs/tui-stderr-*.log, so the bound address must also
+// land somewhere an operator (or a future TUI reader) can find without knowing
+// the log exists.
+func TestPprofController_WritesAddrFileOnStartRemovesOnStop(t *testing.T) {
+	path := addrFileUnderNewDir(t)
+	c, buf := newTestPprofControllerWith(t, pprofOptions{AddrFile: path})
+
+	requireNoAddrFile(t, path, "before Start")
+	bound, _, err := c.Start("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got, want := readAddrFile(t, path), bound+"\n"; got != want {
+		t.Errorf("addr file = %q, want %q", got, want)
+	}
+
+	if _, err := c.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	requireNoAddrFile(t, path, "after Stop")
+	// A successful start/stop advertises via the file, not via chatter — and a
+	// silent happy path is what gives the failure-path log assertions meaning.
+	if got := buf.String(); got != "" {
+		t.Errorf("log output = %q, want empty on a clean start/stop", got)
+	}
+}
+
+// TestPprofController_StartOverwritesStaleAddrFile: a SIGKILLed session leaves
+// the file behind holding a dead port. Because the write is deliberately
+// best-effort, an implementation that refuses to clobber it (O_EXCL, or treating
+// the file as "already advertised") would fail SILENTLY and send the operator to
+// last session's port.
+func TestPprofController_StartOverwritesStaleAddrFile(t *testing.T) {
+	path := addrFileUnderNewDir(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("seeding stale addr dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("127.0.0.1:9999\n"), 0o600); err != nil {
+		t.Fatalf("seeding stale addr file: %v", err)
+	}
+	c, _ := newTestPprofControllerWith(t, pprofOptions{AddrFile: path})
+
+	bound, _, err := c.Start("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if got, want := readAddrFile(t, path), bound+"\n"; got != want {
+		t.Errorf("addr file = %q, want the stale contents replaced by %q", got, want)
+	}
+}
+
+// TestPprofController_AddrFileUsesRestrictivePerms pins the perms called out as
+// the security property; without this a widening to 0o644/0o777 is invisible.
+func TestPprofController_AddrFileUsesRestrictivePerms(t *testing.T) {
+	path := addrFileUnderNewDir(t)
+	c, _ := newTestPprofControllerWith(t, pprofOptions{AddrFile: path})
+
+	if _, _, err := c.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat addr file: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("addr file mode = %#o, want 0600", got)
+	}
+	di, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat addr dir: %v", err)
+	}
+	if got := di.Mode().Perm(); got != 0o750 {
+		t.Errorf("addr dir mode = %#o, want 0750", got)
+	}
+}
+
+// TestPprofController_AlreadyRunningStartDoesNotRewriteAddrFile pins the
+// invariant Start's own comment claims: the file's lifetime is exactly one
+// pprofRun's lifetime, so a second Start must leave the advertisement of the
+// listener that is actually running alone.
+func TestPprofController_AlreadyRunningStartDoesNotRewriteAddrFile(t *testing.T) {
+	path := addrFileUnderNewDir(t)
+	c, _ := newTestPprofControllerWith(t, pprofOptions{AddrFile: path})
+
+	bound, _, err := c.Start("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, already, err := c.Start("127.0.0.1:65000"); err != nil || !already {
+		t.Fatalf("second Start = (already=%v, err=%v), want already with no error", already, err)
+	}
+	if got, want := readAddrFile(t, path), bound+"\n"; got != want {
+		t.Errorf("addr file = %q, want the running listener's addr %q", got, want)
+	}
+}
+
+// TestPprofController_AddrFileHoldsEphemeralFallbackPort is why the two fixes
+// are coupled: once a bind can relocate to a kernel-assigned port, an
+// undiscoverable address is useless. The file must hold the ACTUAL port.
+func TestPprofController_AddrFileHoldsEphemeralFallbackPort(t *testing.T) {
+	occupied := occupyAddr(t)
+	path := addrFileUnderNewDir(t)
+	c, _ := newTestPprofControllerWith(t, pprofOptions{DefaultAddrForTest: occupied, AddrFile: path})
+
+	bound, _, err := c.Start("")
+	if err != nil {
+		t.Fatalf("Start(\"\") with an occupied default: %v", err)
+	}
+	got := strings.TrimSpace(readAddrFile(t, path))
+	if got == occupied {
+		t.Fatalf("addr file holds the occupied default %q, not the port actually bound", got)
+	}
+	if got != bound {
+		t.Errorf("addr file = %q, want the real bound fallback addr %q", got, bound)
+	}
+	// The file is only useful if it can be used directly.
+	if code := mustGet(t, got, "/debug/pprof/"); code != http.StatusOK {
+		t.Errorf("GET /debug/pprof/ at the advertised addr = %d, want 200", code)
+	}
+}
+
+// TestPprofController_AddrFileDisabledWhenPathEmpty keeps the controller usable
+// with no sprawl root, and silent when it has nowhere to write.
+func TestPprofController_AddrFileDisabledWhenPathEmpty(t *testing.T) {
+	// Chdir so a relative-path write would land somewhere observable rather
+	// than polluting the repo during `make test`.
+	dir := t.TempDir()
+	t.Chdir(dir)
+	c, buf := newTestPprofControllerWith(t, pprofOptions{})
+
+	if _, _, err := c.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := c.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := buf.String(); got != "" {
+		t.Errorf("log output = %q, want empty when no addr file is configured", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading cwd: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("cwd contains %d entries, want none written when no addr file is configured", len(entries))
+	}
+}
+
+// TestPprofController_AddrFileWriteFailureIsNotFatal: the addr file is a
+// convenience. A diagnostic endpoint must never fail to come up because it could
+// not advertise itself.
+func TestPprofController_AddrFileWriteFailureIsNotFatal(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("seeding blocker file: %v", err)
+	}
+	// Parent is a regular file, so MkdirAll fails deterministically.
+	path := filepath.Join(blocker, "pprof-addr")
+	c, buf := newTestPprofControllerWith(t, pprofOptions{AddrFile: path})
+
+	bound, _, err := c.Start("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Start must succeed even when the addr file cannot be written: %v", err)
+	}
+	if code := mustGet(t, bound, "/debug/pprof/"); code != http.StatusOK {
+		t.Errorf("GET /debug/pprof/ = %d, want 200", code)
+	}
+	// "pprof" alone would match every line this component can emit; the path
+	// and the cause are what make the log actionable.
+	logged := buf.String()
+	if !strings.Contains(logged, path) {
+		t.Errorf("log = %q, want it to name the addr file path %q", logged, path)
+	}
+	if !strings.Contains(logged, "not a directory") {
+		t.Errorf("log = %q, want it to carry the underlying cause", logged)
+	}
+	if _, err := c.Stop(context.Background()); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
+}
+
+// TestPprofController_StopRemovesAddrFileEvenWhenDrainFails: the file must
+// mirror Status(). Once Stop has published "not running", an addr file still
+// advertising the endpoint is a lie.
+func TestPprofController_StopRemovesAddrFileEvenWhenDrainFails(t *testing.T) {
+	stallPprofShutdown(t, context.DeadlineExceeded)
+	path := addrFileUnderNewDir(t)
+	c, _ := newTestPprofControllerWith(t, pprofOptions{AddrFile: path})
+
+	if _, _, err := c.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	readAddrFile(t, path) // present while running
+
+	was, err := c.Stop(context.Background())
+	if !was {
+		t.Error("Stop reported nothing was running")
+	}
+	if err == nil {
+		t.Error("Stop should report the degraded drain")
+	}
+	requireNoAddrFile(t, path, "after a failed drain")
+}
+
+// TestPprofController_StopRemovesAddrFileBeforeDraining: the file must mirror
+// Status() throughout, including the up-to-2s draining window in which Status()
+// already reads not-running and a concurrent Start gets errPprofStopping. A file
+// removed only after the drain would advertise a called-down endpoint.
+func TestPprofController_StopRemovesAddrFileBeforeDraining(t *testing.T) {
+	waitAccepting := installSlowUnwindListen(t)
+	path := addrFileUnderNewDir(t)
+	c, _ := newTestPprofControllerWith(t, pprofOptions{AddrFile: path})
+
+	if _, _, err := c.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitAccepting()
+	readAddrFile(t, path) // present while running
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = c.Stop(ctx)
+	}()
+
+	// The slow listener holds Stop on the serve goroutine, so the window where
+	// the run is cleared but the socket is still held is observable.
+	waitFor(t, "Stop to clear the running state", func() bool {
+		return c.serveDone() == nil
+	})
+	requireNoAddrFile(t, path, "during the draining window")
+	<-stopped
+}
+
+// --- QUM-934 follow-up: honest drain-timeout reporting ----------------------
+
+// TestPprofController_StopDrainTimeoutReportsDrainIncomplete: a drain that
+// outlasts the timeout is a successful stop with a degraded drain, not a failed
+// stop. The cause must survive alongside the sentinel so the log line can name
+// it.
+func TestPprofController_StopDrainTimeoutReportsDrainIncomplete(t *testing.T) {
+	stallPprofShutdown(t, context.DeadlineExceeded)
+	c, _ := newTestPprofController(t)
+
+	if _, _, err := c.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	was, err := c.Stop(context.Background())
+	if !was {
+		t.Error("Stop reported nothing was running")
+	}
+	if !errors.Is(err, errPprofDrainIncomplete) {
+		t.Errorf("Stop error = %v, want it to wrap errPprofDrainIncomplete", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Stop error = %v, want the underlying cause preserved", err)
+	}
+	if got := c.Status(); got.Running {
+		t.Errorf("Status() after a timed-out drain = %+v, want stopped (the listener IS down)", got)
+	}
+}
+
+// TestPprofToggleLogLine covers the four things a SIGUSR2 toggle can report.
+// The drain-timeout row is the fix: the listener did stop, so telling the user
+// the toggle "failed" is false.
+func TestPprofToggleLogLine(t *testing.T) {
+	drainErr := fmt.Errorf("draining pprof listener on 127.0.0.1:6060: %w: %w",
+		errPprofDrainIncomplete, context.DeadlineExceeded)
+
+	// The rows are non-vacuous as a SET: rows 1-2 forbid "failed" while row 4
+	// requires it, so no single constant string can satisfy all four. Row 3
+	// forbids only the specific phrase "toggle failed" rather than "failed",
+	// because it may legitimately say the drain failed to complete — what it
+	// must not claim is that the TOGGLE failed. Row 2 forbids "drain" so a
+	// degraded stop cannot render identically to a clean one.
+	tests := []struct {
+		name       string
+		st         pprofStatus
+		err        error
+		wantSubstr []string
+		wantAbsent []string
+	}{
+		{
+			name:       "toggled on reports the bound address",
+			st:         pprofStatus{Addr: "127.0.0.1:6061", Running: true},
+			wantSubstr: []string{"ON", "127.0.0.1:6061"},
+			wantAbsent: []string{"failed", "drain"},
+		},
+		{
+			name:       "toggled off",
+			wantSubstr: []string{"OFF"},
+			wantAbsent: []string{"failed", "drain"},
+		},
+		{
+			name:       "drain timeout is an off, not a failure",
+			err:        drainErr,
+			wantSubstr: []string{"OFF", "drain"},
+			wantAbsent: []string{"toggle failed"},
+		},
+		{
+			name: "a real failure still reports failure with its cause",
+			err:  fmt.Errorf("binding pprof listener on 127.0.0.1:6060: %w", eaddrinuseErr()),
+			// The cause is the whole diagnostic value; "pprof toggle failed"
+			// on its own leaves the operator nothing to act on.
+			wantSubstr: []string{"failed", "address already in use"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := pprofToggleLogLine(tc.st, tc.err)
+			if strings.Contains(got, "\n") {
+				t.Errorf("pprofToggleLogLine = %q, want a single line with no newline", got)
+			}
+			for _, want := range tc.wantSubstr {
+				if !strings.Contains(got, want) {
+					t.Errorf("pprofToggleLogLine = %q, want it to contain %q", got, want)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(got, absent) {
+					t.Errorf("pprofToggleLogLine = %q, want it NOT to contain %q", got, absent)
+				}
+			}
+		})
+	}
+}
+
+// TestPprofSignalLoop_DrainTimeoutReportsOffNotFailure closes the gap between
+// pprofToggleLogLine and its only caller: an implementation that adds the
+// classifier but leaves the loop's own `err != nil -> "toggle failed"` branch in
+// place would pass every unit test while the operator still reads "toggle
+// failed" on a drain that did in fact stop the listener.
+func TestPprofSignalLoop_DrainTimeoutReportsOffNotFailure(t *testing.T) {
+	stallPprofShutdown(t, context.DeadlineExceeded)
+	c, buf := newTestPprofController(t)
+	if _, _, err := c.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := make(chan os.Signal, 1)
+	toggled := make(chan pprofStatus, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pprofSignalLoop(ctx, ch, c, func(st pprofStatus) { toggled <- st })
+	}()
+
+	ch <- pprofToggleSignal
+	select {
+	case st := <-toggled:
+		if st.Running {
+			t.Errorf("status after the toggle = %+v, want stopped", st)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the signal loop never processed the toggle")
+	}
+	cancel()
+	<-done
+
+	logged := buf.String()
+	if strings.Contains(logged, "toggle failed") {
+		t.Errorf("log = %q, want a degraded-drain OFF rather than a claimed toggle failure", logged)
+	}
+	if !strings.Contains(logged, "OFF") {
+		t.Errorf("log = %q, want it to report the listener went OFF", logged)
 	}
 }
 
@@ -922,6 +1660,118 @@ func TestEnter_AutoStartsPprofWhenAddrSet(t *testing.T) {
 	}
 }
 
+// TestEnter_WritesPprofAddrFileUnderSprawlRoot pins the one production
+// construction site: the controller must be pointed at a path derived from the
+// sprawl root, and the file's lifetime must match the listener's.
+func TestEnter_WritesPprofAddrFileUnderSprawlRoot(t *testing.T) {
+	fakePprofListen(t)
+	fakePprofSignalNotify(t)
+
+	tmpDir := t.TempDir()
+	path := pprofAddrFilePath(tmpDir)
+	if want := filepath.Join(tmpDir, ".sprawl", "runtime", "pprof-addr"); path != want {
+		t.Errorf("pprofAddrFilePath = %q, want %q", path, want)
+	}
+
+	deps := &enterDeps{
+		getenv:    func(string) string { return "" },
+		getwd:     func() (string, error) { return tmpDir, nil },
+		pprofAddr: "127.0.0.1:0",
+	}
+	stopPprofOnCleanup(t, deps)
+	deps.runProgram = func(tea.Model, func(func(tea.Msg))) error {
+		bound := deps.pprofCtl.Status().Addr
+		if bound == "" {
+			t.Fatal("pprof listener is not running inside the session")
+		}
+		if got, want := strings.TrimSpace(readAddrFile(t, path)), bound; got != want {
+			t.Errorf("addr file = %q, want the bound addr %q", got, want)
+		}
+		return nil
+	}
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+	requireNoAddrFile(t, path, "after runEnter returned")
+}
+
+// TestEnter_LosingTheWeaveLockLeavesAnotherSessionsAddrFileAlone: the addr file
+// is shared per sprawl root, so a second `sprawl enter` that loses the
+// single-weave flock must not touch the live session's advertisement. Binding
+// (and therefore advertising) before the flock is held would let the loser
+// overwrite the file and then delete it on its way out, leaving the surviving
+// session serving with no advertisement at all.
+func TestEnter_LosingTheWeaveLockLeavesAnotherSessionsAddrFileAlone(t *testing.T) {
+	rec := fakePprofListen(t)
+	fakePprofSignalNotify(t)
+
+	tmpDir := t.TempDir()
+	// Stand in for the session that already holds the root.
+	held, err := rootinit.AcquireWeaveLock(tmpDir)
+	if err != nil {
+		t.Fatalf("acquiring the weave lock: %v", err)
+	}
+	defer func() { _ = held.Release() }()
+
+	path := pprofAddrFilePath(tmpDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("seeding addr dir: %v", err)
+	}
+	const incumbent = "127.0.0.1:41234\n"
+	if err := os.WriteFile(path, []byte(incumbent), 0o600); err != nil {
+		t.Fatalf("seeding incumbent addr file: %v", err)
+	}
+
+	deps := &enterDeps{
+		getenv:     func(string) string { return "" },
+		getwd:      func() (string, error) { return tmpDir, nil },
+		runProgram: func(tea.Model, func(func(tea.Msg))) error { return nil },
+		pprofAddr:  "127.0.0.1:0",
+	}
+	stopPprofOnCleanup(t, deps)
+	if err := runEnter(deps); err == nil {
+		t.Fatal("runEnter should fail when another session holds the weave lock")
+	}
+	if got := readAddrFile(t, path); got != incumbent {
+		t.Errorf("addr file = %q, want the incumbent %q untouched", got, incumbent)
+	}
+	if got := rec.count(); got != 0 {
+		t.Errorf("bind attempts = %d, want 0 — a session that cannot hold the root must not open a listener", got)
+	}
+}
+
+// TestEnter_ClearsStaleAddrFileAtLaunch: a SIGKILLed session leaves the file
+// behind. It is NOT self-diagnosing — a stale 127.0.0.1:6060 may well connect to
+// whatever unrelated process now holds that port and return confusing garbage
+// rather than refusing — so the launch that owns the root clears it.
+func TestEnter_ClearsStaleAddrFileAtLaunch(t *testing.T) {
+	fakePprofListen(t)
+	fakePprofSignalNotify(t)
+
+	tmpDir := t.TempDir()
+	path := pprofAddrFilePath(tmpDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("seeding addr dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(defaultPprofAddr+"\n"), 0o600); err != nil {
+		t.Fatalf("seeding stale addr file: %v", err)
+	}
+
+	deps := &enterDeps{
+		getenv: func(string) string { return "" },
+		getwd:  func() (string, error) { return tmpDir, nil },
+		// No pprof addr: nothing should be advertised at all.
+	}
+	stopPprofOnCleanup(t, deps)
+	deps.runProgram = func(tea.Model, func(func(tea.Msg))) error {
+		requireNoAddrFile(t, path, "inside a session with no pprof listener")
+		return nil
+	}
+	if err := runEnter(deps); err != nil {
+		t.Fatalf("runEnter: %v", err)
+	}
+}
+
 // TestEnter_ToggleReusesLaunchConfiguredAddr: toggling off and back on during
 // a session launched with --pprof/SPRAWL_PPROF_ADDR must return to the
 // configured address. Relocating to the well-known default would break
@@ -995,8 +1845,15 @@ func TestEnter_TogglesPprofOnSignalDuringSession(t *testing.T) {
 		waitFor(t, "the toggle signal to start the pprof listener", func() bool {
 			return deps.pprofCtl != nil && deps.pprofCtl.Status().Running
 		})
-		if code := mustGet(t, deps.pprofCtl.Status().Addr, "/debug/pprof/"); code != http.StatusOK {
+		bound := deps.pprofCtl.Status().Addr
+		if code := mustGet(t, bound, "/debug/pprof/"); code != http.StatusOK {
 			t.Errorf("GET /debug/pprof/ after the toggle signal = %d, want 200", code)
+		}
+		// The toggle path must advertise the address too, not just the launch
+		// path: this is the only way an operator who pressed SIGUSR2 can learn
+		// where the listener came up.
+		if got, want := strings.TrimSpace(readAddrFile(t, pprofAddrFilePath(tmpDir))), bound; got != want {
+			t.Errorf("addr file after the toggle = %q, want the bound addr %q", got, want)
 		}
 		return nil
 	}
@@ -1019,4 +1876,5 @@ func TestEnter_TogglesPprofOnSignalDuringSession(t *testing.T) {
 	if got := deps.pprofCtl.Status(); got.Running {
 		t.Errorf("Status() after runEnter returned = %+v, want stopped", got)
 	}
+	requireNoAddrFile(t, pprofAddrFilePath(tmpDir), "after runEnter returned")
 }
