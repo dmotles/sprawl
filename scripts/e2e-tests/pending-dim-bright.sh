@@ -134,12 +134,26 @@ test_run() {
     fi
 
     # AC3: rendered EXACTLY ONCE — no duplicate bubble from a double-enqueue.
+    #
+    # QUM-950: count only USER-BUBBLE occurrences. $PENDING is submitted as a
+    # genuine user message, so the model replies to it and ~25% of the time
+    # quotes the token back ("that message came through as just a placeholder
+    # token ( PENDINGMSGxxx )"). An unscoped whole-pane count reads that
+    # assistant prose as a second bubble and fails the row for a reason
+    # unrelated to the code under test. Keying on the `›` prefix is correct by
+    # construction, not probabilistically: renderUserPromptBlock
+    # (internal/tui/render_helpers.go:130) applies that glyph to the first line
+    # of a user prompt block and to nothing else. The sentinel is short and
+    # never wraps, so it always lands on the glyph line — revisit if $PENDING
+    # is ever lengthened, since continuation lines carry no glyph.
     local count
-    count="$(capture_pane "$SESSION" | grep -oF "$PENDING" | wc -l | tr -d ' ')"
+    count="$(capture_pane "$SESSION" | grep -cE "^[[:space:]]*› ${PENDING}([[:space:]]|$)")"
     if [ "$count" = "1" ]; then
         pass "follow-up bubble rendered exactly once (no double-enqueue)"
     else
-        fail "follow-up '$PENDING' rendered $count times on screen, want exactly 1"
+        fail "follow-up '$PENDING' rendered $count times as a user bubble, want exactly 1"
+        echo "  (pane lines containing the sentinel, for triage:)" >&2
+        capture_pane "$SESSION" | grep -n -F "$PENDING" >&2 || true
         capture_pane "$SESSION" | tail -30 >&2
         e2e_print_results
         return 1

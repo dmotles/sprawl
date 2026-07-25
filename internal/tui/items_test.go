@@ -77,6 +77,27 @@ func TestAssistantTextItem_AppendAfterFinalizeNoOp(t *testing.T) {
 	}
 }
 
+// TestAssistantTextItem_SettledMatchesNeverStreamed pins that a streamed-then-
+// finalized item renders byte-identically to one that was finalized before it
+// ever rendered. QUM-933 settles intermediate items much earlier than turn end,
+// so any finalize-time or streaming-time state that leaked into the output
+// would make a settled transcript diverge from a rehydrated one.
+func TestAssistantTextItem_SettledMatchesNeverStreamed(t *testing.T) {
+	const text = "## h\n\nbody with `x` and a\n\n- bullet\n"
+	ctx := newTestCtx()
+
+	streamed := NewAssistantTextItem(ctx, text)
+	streamed.Render(80) // render while in flight, as the live path does
+	streamed.Finalize()
+
+	ref := NewAssistantTextItem(ctx, text)
+	ref.Finalize()
+
+	if got, want := streamed.Render(80), ref.Render(80); got != want {
+		t.Errorf("settled item diverges from a never-streamed one:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestThinkingItem_RenderCount(t *testing.T) {
 	// QUM-677 S7 pivot: ThinkingItem is a transient count marker. Render
 	// uses "block" (singular) for count=1 and "blocks" otherwise.

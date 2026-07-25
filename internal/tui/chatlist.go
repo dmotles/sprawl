@@ -59,9 +59,14 @@ type ChatList struct {
 	// Drives Idle() so the S3 View() switch can fall back to vp.View() while
 	// any tool is mid-flight. QUM-673.
 	pendingTools int
-	// streamingAssistant tracks whether the trailing item is an in-flight
-	// AssistantTextItem (set on first chunk, cleared on Finalize). Drives
-	// Idle() so the S3 View() switch falls back to vp.View() mid-stream.
+	// streamingAssistant is TURN-scoped, not tail-scoped: it is set on the
+	// first assistant chunk of a turn and cleared only by
+	// FinalizeAssistantMessage at turn end. Drives Idle() so the S3 View()
+	// switch falls back to vp.View() mid-stream. QUM-933 settles intermediate
+	// assistant items mid-turn without clearing this — app.go's
+	// SessionResultMsg / InterruptCompletedMsg handlers gate their
+	// "append the final result text" step on it, so clearing it early would
+	// double-render the turn's last block.
 	streamingAssistant bool
 
 	// activeAgents is the set of OPEN sidechain (Agent-tool) groups keyed by
@@ -197,7 +202,7 @@ func (c *ChatList) SetToolInputsExpanded(expanded bool) {
 
 // AppendUser appends a new UserItem.
 func (c *ChatList) AppendUser(text string) {
-	c.dropTrailingThinkingMarker()
+	c.beginContentAppend()
 	c.items = append(c.items, &itemEnvelope{item: NewUserItem(&c.ctx, text)})
 	c.invalidate()
 }
@@ -206,7 +211,7 @@ func (c *ChatList) AppendUser(text string) {
 // chips (QUM-860). Used by the uuid-less bridge path (legacy/tests) that emits
 // no consume ack, so there is no pending-zone settle to relocate.
 func (c *ChatList) AppendUserWithAttachments(text string, chips []AttachmentChip) {
-	c.dropTrailingThinkingMarker()
+	c.beginContentAppend()
 	c.items = append(c.items, &itemEnvelope{item: NewUserItemWithAttachments(&c.ctx, text, chips)})
 	c.invalidate()
 }
@@ -227,7 +232,7 @@ func (c *ChatList) AppendAssistantChunk(text string) {
 			return
 		}
 	}
-	c.dropTrailingThinkingMarker()
+	c.beginContentAppend()
 	c.items = append(c.items, &itemEnvelope{item: NewAssistantTextItem(&c.ctx, text)})
 	c.streamingAssistant = true
 	c.invalidate()
@@ -237,12 +242,7 @@ func (c *ChatList) AppendAssistantChunk(text string) {
 // finished, allowing its render to be cached on next Render.
 func (c *ChatList) FinalizeAssistantMessage() {
 	wasStreaming := c.streamingAssistant
-	if n := len(c.items); n > 0 {
-		if a, ok := c.items[n-1].item.(*AssistantTextItem); ok && !a.Finished() {
-			a.Finalize()
-			c.items[n-1].cache = nil
-		}
-	}
+	c.settleTrailingAssistant()
 	c.streamingAssistant = false
 	if wasStreaming {
 		c.invalidate()
@@ -269,8 +269,8 @@ func (c *ChatList) AppendThinking() {
 }
 
 // dropTrailingThinkingMarker removes a trailing ThinkingItem if one is
-// present. Called by every non-thinking Append* verb — once real content
-// arrives, the transient marker has served its purpose.
+// present. Once real content arrives, the transient marker has served its
+// purpose. Reached via beginContentAppend.
 func (c *ChatList) dropTrailingThinkingMarker() {
 	if n := len(c.items); n > 0 {
 		if _, ok := c.items[n-1].item.(*ThinkingItem); ok {
@@ -280,12 +280,70 @@ func (c *ChatList) dropTrailingThinkingMarker() {
 	}
 }
 
+// settleTrailingAssistant finalizes a trailing in-flight AssistantTextItem.
+// Idempotent and a no-op for any other item kind.
+//
+// QUM-933: once an item of a different kind lands after a text block, that
+// block is definitionally complete — no further chunk can coalesce into it
+// (AppendAssistantChunk only mutates an *unfinished* trailing item). Leaving
+// it unfinished made it permanently uncacheable in renderEnvelope, so every
+// frame re-ran the full markdown pipeline over the whole backlog, and it
+// permanently rendered a stray streaming cursor.
+//
+// WHY TRAILING-ONLY IS SUFFICIENT — do not "fix" this into a sweep over all
+// items. This is scoped exactly like FinalizeAssistantMessage, the function
+// whose positional finalize (items[n-1]) plus global streamingAssistant clear
+// created the bug. What makes it sufficient is *when* it runs: on the append
+// that would bury the item, so the state "an unfinished assistant that is not
+// the tail" is never constructed. The invariant is inductive — at most one
+// unfinished assistant can exist, and it is always the tail — which is why the
+// chokepoint must stay wired into EVERY such append path
+// (TestChatList_EveryContentAppendSettlesTrailingAssistant guards that).
+// Sweeping N items on every finalize would instead paper over the leak while
+// leaving the bad state reachable.
+//
+// Deliberately does NOT touch streamingAssistant — see its field comment.
+func (c *ChatList) settleTrailingAssistant() {
+	n := len(c.items)
+	if n == 0 {
+		return
+	}
+	a, ok := c.items[n-1].item.(*AssistantTextItem)
+	if !ok || a.Finished() {
+		return
+	}
+	a.Finalize()
+	// Belt-and-braces: renderEnvelope already guarantees an unfinished item
+	// holds no cache entry. Kept so the invariant still holds if in-flight
+	// items ever become cacheable.
+	c.items[n-1].cache = nil
+	c.invalidate()
+}
+
+// beginContentAppend is the shared prologue for every append path that pushes
+// an item the next assistant chunk cannot coalesce into. Order matters: drop
+// the transient thinking marker first so the settle sees the assistant item it
+// was hiding.
+//
+// Note this includes AppendAssistantChunk's own append branch: reaching it
+// means the trailing item is not an unfinished assistant, so whatever text
+// block preceded it is already a dead end for coalescing.
+//
+// Intentionally NOT called from AppendThinking (the marker is transient and is
+// dropped by the next content append), from AppendAssistantChunk's coalesce
+// fast-path (chunks of one block must keep merging), or from the ZoneAdd*
+// verbs (those push to c.zone, not c.items).
+func (c *ChatList) beginContentAppend() {
+	c.dropTrailingThinkingMarker()
+	c.settleTrailingAssistant()
+}
+
 // AppendToolCall appends a pending ToolCallItem. The item inherits the
 // current global expand state so it renders with the right body shape on
 // its first paint. Bumps the pendingTools counter so Idle() reports false
 // until MarkToolResult lands.
 func (c *ChatList) AppendToolCall(spec ToolCallSpec) {
-	c.dropTrailingThinkingMarker()
+	c.beginContentAppend()
 	item := NewToolCallItem(&c.ctx, spec)
 	item.SetExpanded(c.toolsExpanded)
 	c.items = append(c.items, &itemEnvelope{item: item})
@@ -481,7 +539,7 @@ func (c *ChatList) AppendSystemNotification(text string) {
 			break
 		}
 		if !appended {
-			c.dropTrailingThinkingMarker()
+			c.beginContentAppend()
 			appended = true
 		}
 		c.items = append(c.items, &itemEnvelope{
@@ -564,7 +622,7 @@ func (c *ChatList) ZoneSettle(uuid string) bool {
 	if e == nil {
 		return false
 	}
-	c.dropTrailingThinkingMarker()
+	c.beginContentAppend()
 	// QUM-832: brighten the settled entry. A pending user bubble rendered dim
 	// while in the zone; on settle it joins the committed transcript with normal
 	// styling. The per-envelope render cache is keyed only on (width, expanded)
@@ -612,7 +670,7 @@ func (c *ChatList) ClearZone() {
 
 // AppendAutoTrigger appends a finished AutoTriggerItem.
 func (c *ChatList) AppendAutoTrigger() {
-	c.dropTrailingThinkingMarker()
+	c.beginContentAppend()
 	c.items = append(c.items, &itemEnvelope{item: NewAutoTriggerItem(&c.ctx)})
 	c.invalidate()
 }
@@ -620,13 +678,15 @@ func (c *ChatList) AppendAutoTrigger() {
 // AppendCompactBanner appends a finished first-party compaction banner
 // (QUM-865). text is the pre-formatted banner line.
 func (c *ChatList) AppendCompactBanner(text string) {
-	c.dropTrailingThinkingMarker()
+	c.beginContentAppend()
 	c.items = append(c.items, &itemEnvelope{item: NewCompactBannerItem(&c.ctx, text)})
 	c.invalidate()
 }
 
-// HasPendingAssistant reports whether the trailing item is an in-flight
-// AssistantTextItem (set on first chunk, cleared on Finalize).
+// HasPendingAssistant reports whether the current turn has produced assistant
+// text that has not been finalized yet (set on first chunk, cleared on
+// FinalizeAssistantMessage). Turn-scoped, not tail-scoped: an intermediate
+// block settled mid-turn by QUM-933 keeps this true.
 func (c *ChatList) HasPendingAssistant() bool { return c.streamingAssistant }
 
 // HasPendingToolCall reports whether at least one ToolCallItem is still in
@@ -687,6 +747,7 @@ func (c *ChatList) Reset(entries []MessageEntry) {
 			if notifType == "" {
 				notifType = NotificationKindMessage
 			}
+			c.beginContentAppend()
 			c.items = append(c.items, &itemEnvelope{
 				item: NewSystemNotificationItem(&c.ctx, e.Content, notifType, e.Interrupt),
 			})
