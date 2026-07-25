@@ -96,6 +96,7 @@ echo "[2] expected helper functions are defined"
 EXPECTED_FUNCS=(
 	e2e_recover_oauth_token
 	e2e_setup_tmux_socket
+	e2e_skip_row
 	e2e_require_claude_or_skip
 	e2e_require_tmux
 	e2e_require_jq
@@ -152,9 +153,19 @@ case $? in
 esac
 
 # ----------------------------------------------------------------------------
-# 4. e2e_require_claude_or_skip honors SPRAWL_E2E_SKIP_NO_CLAUDE=1
+# 4. e2e_require_claude_or_skip signals a skip DISTINGUISHABLY (QUM-952).
+#
+#    This section used to assert `rc == 0`, which pinned the QUM-952 bug: exit 0
+#    cannot mean both "passed" and "skipped", so the driver counted every skipped
+#    row as a pass. The contract is now rc 77 (autotools SKIP convention) PLUS a
+#    non-empty sentinel file at $E2E_SKIP_FILE — double-keyed so a row that
+#    merely happens to exit 77 cannot forge a skip.
 # ----------------------------------------------------------------------------
-echo "[4] e2e_require_claude_or_skip honors skip env var"
+echo "[4] e2e_require_claude_or_skip signals skip via rc 77 + sentinel"
+# mktemp, not a predictable name: /tmp is world-writable, and a pre-existing or
+# symlinked entry would either break `: >` confusingly or truncate someone
+# else's file.
+sentinel=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-sentinel.XXXXXX")
 out=$(
 	set +e
 	# Use a subshell rather than re-execing bash, since PATH=/nonexistent
@@ -163,17 +174,116 @@ out=$(
 	(
 		export PATH=/nonexistent
 		export SPRAWL_E2E_SKIP_NO_CLAUDE=1
+		export E2E_SKIP_FILE="$sentinel"
 		# shellcheck disable=SC1090
 		. "$LIB" >/dev/null 2>&1 || exit 99
 		e2e_require_claude_or_skip "fixture"
 	) 2>&1
 )
 rc=$?
-if [ $rc -eq 0 ] && echo "$out" | grep -qi "SKIP"; then
-	pass "skip path returns 0 with SKIP in output"
+if [ $rc -eq 77 ]; then
+	pass "skip path exits 77, not 0"
 else
-	fail "skip path rc=$rc out=$out"
+	fail "skip path want rc=77, got rc=$rc out=$out"
 fi
+# Anchored: the FATAL branch's hint text also contains the word "skip", so an
+# unanchored case-insensitive match cannot tell the two branches apart.
+if echo "$out" | grep -q '^SKIP'; then
+	pass "skip path prints an anchored SKIP line"
+else
+	fail "skip path printed no SKIP marker out=$out"
+fi
+if [ -s "$sentinel" ] && grep -q "fixture" "$sentinel"; then
+	pass "skip path writes a non-empty sentinel naming the caller"
+else
+	fail "skip sentinel empty or missing caller name: '$(cat "$sentinel" 2>/dev/null)'"
+fi
+
+# 4b. NEGATIVE CONTROL / H4: the FATAL branch (no SPRAWL_E2E_SKIP_NO_CLAUDE)
+#     must NOT write the sentinel. Otherwise a hard failure could be laundered
+#     into a skip by any stale-read bug in the driver.
+: >"$sentinel"
+out=$(
+	set +e
+	(
+		export PATH=/nonexistent
+		unset SPRAWL_E2E_SKIP_NO_CLAUDE
+		export E2E_SKIP_FILE="$sentinel"
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_require_claude_or_skip "fixture"
+	) 2>&1
+)
+rc=$?
+if [ $rc -eq 1 ] && echo "$out" | grep -q "FATAL"; then
+	pass "4b: without the skip env var the gate is still a hard FATAL (rc 1)"
+else
+	fail "4b: want rc=1 with FATAL, got rc=$rc out=$out"
+fi
+if [ -s "$sentinel" ]; then
+	fail "4b: FATAL branch wrote the skip sentinel: '$(cat "$sentinel")'"
+else
+	pass "4b: FATAL branch leaves the skip sentinel empty"
+fi
+
+# 4c. With E2E_SKIP_FILE unset (lib sourced outside the driver) the helper must
+#     still exit 77 and must not trip `set -u`. A `set -u` abort would surface as
+#     rc 1, so the rc check alone discriminates; stderr is left visible so a
+#     failure here is diagnosable rather than a bare rc.
+out=$(
+	set +e
+	(
+		set -u
+		export PATH=/nonexistent
+		export SPRAWL_E2E_SKIP_NO_CLAUDE=1
+		unset E2E_SKIP_FILE
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null || exit 99
+		e2e_require_claude_or_skip "fixture"
+	) 2>&1
+)
+rc=$?
+if [ $rc -eq 77 ]; then
+	pass "4c: skip still exits 77 with E2E_SKIP_FILE unset under set -u"
+else
+	fail "4c: want rc=77, got rc=$rc out=$out"
+fi
+
+# 4d. THIRD LEG OF THE TRUTH TABLE: when claude IS present the helper must
+#     return 0 and leave the sentinel untouched. Without this, an implementation
+#     that unconditionally writes the sentinel and exits 77 would satisfy every
+#     other assertion in this file — the gate would then skip everything forever,
+#     which is a worse version of the bug being fixed. A stub on a private PATH
+#     keeps this hermetic instead of depending on the host having claude.
+stub_bin=$(mktemp -d "$UNIT_TMP_ROOT/e2e-matrix-unit-stubbin.XXXXXX")
+printf '#!/bin/sh\nexit 0\n' >"$stub_bin/claude"
+chmod +x "$stub_bin/claude"
+: >"$sentinel"
+out=$(
+	set +e
+	(
+		export PATH="$stub_bin"
+		export SPRAWL_E2E_SKIP_NO_CLAUDE=1
+		export E2E_SKIP_FILE="$sentinel"
+		# shellcheck disable=SC1090
+		. "$LIB" >/dev/null 2>&1 || exit 99
+		e2e_require_claude_or_skip "fixture"
+		echo "REACHED"
+	) 2>&1
+)
+rc=$?
+if [ $rc -eq 0 ] && echo "$out" | grep -q "REACHED"; then
+	pass "4d: with claude present the gate returns 0 and execution continues"
+else
+	fail "4d: want rc=0 and continued execution, got rc=$rc out=$out"
+fi
+if [ -s "$sentinel" ]; then
+	fail "4d: sentinel written even though claude is present: '$(cat "$sentinel")'"
+else
+	pass "4d: sentinel untouched when claude is present"
+fi
+rm -f "$sentinel"
+rm -rf "$stub_bin"
 
 # ----------------------------------------------------------------------------
 # 5. PASS_COUNT and FAIL_COUNT initialized to 0
@@ -263,20 +373,36 @@ test_metadata() { echo ""; }
 test_run() { echo "RAN"; }
 EOF
 
-		# Test 10a: claude-required fixture skipped.
+		# Test 10a: claude-required fixture skipped — and NOT counted as a pass.
 		# Resolve bash by absolute path so the PATH=/nonexistent prefix can
 		# scope the modified PATH to the driver process without breaking
 		# the `bash` lookup itself (see comment on test 4 above).
+		# QUM-952: this used to assert rc == 0, i.e. it pinned the bug.
+		# TMPDIR is scoped to the fixture dir so the driver's skip sentinel is
+		# reaped with it: cleanup uses `rm`, which this scrubbed PATH removes.
 		BASH_ABS=$(command -v bash)
 		out=$(
 			set +e
-			PATH=/nonexistent SPRAWL_E2E_SKIP_NO_CLAUDE=1 "$BASH_ABS" "$FIXDIR/e2e-matrix.sh" _unit_fixture_claude 2>&1
+			PATH=/nonexistent TMPDIR="$FIXDIR" SPRAWL_E2E_SKIP_NO_CLAUDE=1 \
+				"$BASH_ABS" "$FIXDIR/e2e-matrix.sh" _unit_fixture_claude 2>&1
 		)
 		rc=$?
-		if [ $rc -eq 0 ] && echo "$out" | grep -qi "SKIP" && ! echo "$out" | grep -q "SHOULD NOT RUN"; then
-			pass "needs_claude=1 fixture skipped under SPRAWL_E2E_SKIP_NO_CLAUDE=1"
+		# rc 3 exactly, not merely nonzero: rc 1 would mean the driver counted
+		# the skip as a failure, which is a different (also wrong) behavior.
+		if [ $rc -eq 3 ] && ! echo "$out" | grep -q "SHOULD NOT RUN"; then
+			pass "needs_claude=1 fixture skipped under SPRAWL_E2E_SKIP_NO_CLAUDE=1 (exit 3)"
 		else
-			fail "needs_claude fixture rc=$rc out=$out"
+			fail "needs_claude fixture want rc=3, got rc=$rc out=$out"
+		fi
+		if echo "$out" | grep -q '^SKIP _unit_fixture_claude$'; then
+			pass "10a: the skipped row gets its own SKIP verdict line"
+		else
+			fail "10a: no 'SKIP _unit_fixture_claude' verdict line out=$out"
+		fi
+		if echo "$out" | grep -q '^PASS _unit_fixture_claude$'; then
+			fail "10a: a skipped row was reported as PASS"
+		else
+			pass "10a: a skipped row is not reported as PASS"
 		fi
 
 		# Test 10b: no-flags fixture actually runs
@@ -442,13 +568,37 @@ _unit_reset_markers() {
 _unit_run() {
 	local fix=${1:?} mdir=$2
 	shift 2
-	local of ef
+	_unit_run_env "$fix" "$mdir" "" "$@"
+}
+
+# As _unit_run, but with an extra env prefix ($3, space-separated VAR=VAL) so a
+# run can scrub PATH or set SPRAWL_E2E_SKIP_NO_CLAUDE for the driver process
+# only. bash is resolved absolutely so a scrubbed PATH cannot break the exec.
+#
+# `env -u` is load-bearing (QUM-952): CLAUDE.md instructs agents to export
+# SPRAWL_E2E_SKIP_NO_CLAUDE, and this suite runs inside `make validate` inside
+# the pre-commit hook. An inherited value would invert the negative controls
+# below — turning them green for the wrong reason — and an inherited
+# E2E_SKIP_FILE would point rows at a sentinel the driver does not own.
+_unit_run_env() {
+	local fix=${1:?} mdir=$2 envs=$3
+	shift 3
+	local of ef bash_abs
 	of=$(mktemp) && ef=$(mktemp) || return 1
-	if [ -n "$mdir" ]; then
-		UNIT_MARKER_DIR="$mdir" bash "$fix/e2e-matrix.sh" "$@" >"$of" 2>"$ef"
-	else
-		bash "$fix/e2e-matrix.sh" "$@" >"$of" 2>"$ef"
-	fi
+	bash_abs=$(command -v bash)
+	# TMPDIR is pointed at the fixture dir so the driver's skip sentinel lands
+	# there: its EXIT-trap cleanup uses `rm`, which is absent on the
+	# PATH-scrubbed runs below, and without this the sentinel would leak into
+	# the shared /tmp on every such run. The fixture dir is removed by the
+	# prefix-guarded teardown, so the sentinel goes with it.
+	#
+	# $envs and the ${mdir:+...} expansion are deliberately UNQUOTED: each must
+	# split into separate VAR=VAL words for `env`, and mdir must vanish entirely
+	# when empty. Do not "fix" this by quoting them.
+	# shellcheck disable=SC2086
+	env -u SPRAWL_E2E_SKIP_NO_CLAUDE -u E2E_SKIP_FILE "TMPDIR=$fix" \
+		$envs ${mdir:+UNIT_MARKER_DIR=$mdir} \
+		"$bash_abs" "$fix/e2e-matrix.sh" "$@" >"$of" 2>"$ef"
 	_RC=$?
 	_OUT=$(cat "$of")
 	_ERR=$(cat "$ef")
@@ -751,6 +901,647 @@ else
 		# Teardown. Each path is asserted to live under the mktemp root before
 		# removal, so an unset/garbled variable can never name a parent dir.
 		for _d in "$FIXOK" "$FIXFAIL" "$FIXEMPTY"; do
+			case "$_d" in
+				"$UNIT_TMP_ROOT"/*) rm -rf "$_d" ;;
+				*) note "refusing to remove fixture dir '$_d' (not under $UNIT_TMP_ROOT/)" ;;
+			esac
+		done
+	fi
+fi
+
+# ----------------------------------------------------------------------------
+# 15. QUM-952: a SKIPPED row must never be indistinguishable from a passed one.
+#
+#     Pre-fix, `e2e_require_claude_or_skip` did `exit 0`, so a row that asserted
+#     NOTHING landed in pass_count: `SPRAWL_E2E_SKIP_NO_CLAUDE=1` with no claude
+#     on PATH printed a fully green `Matrix: 33/33 passed` and exited 0. CLAUDE.md
+#     *instructs* agents to set that variable, so the mandatory-gate harness was
+#     permanently green while validating nothing.
+#
+#     Contract asserted here:
+#       * skip is signalled by rc 77 AND a non-empty $E2E_SKIP_FILE sentinel
+#         (double-keyed: a row that merely exits 77 cannot forge a skip);
+#       * passed / failed / skipped are three separate buckets that sum to
+#         `requested` (the QUM-947 denominator);
+#       * any skip forces a nonzero exit (3 when there are no outright failures,
+#         1 when there are) — a mandatory gate that ran nothing is not satisfied;
+#       * the skip is loud: a `SKIP <row>` verdict line plus a stderr banner.
+#
+#     Every positive assertion below is paired with a negative control, because a
+#     suite that only ever observes the fixed behavior cannot detect a harness
+#     that always reports success.
+# ----------------------------------------------------------------------------
+echo "[15] QUM-952 skip accounting: skipped is not passed"
+
+# Write a fixture row with explicit metadata and an explicit body. $1=e2e-tests
+# dir, $2=row name, $3=test_metadata output, $4=body of test_run (raw shell).
+# Bodies must use bash builtins only: several runs below scrub PATH.
+_unit_mk_row() {
+	cat >"$1/$2.sh" <<EOF
+test_metadata() { echo "$3"; }
+test_run() {
+$4
+}
+EOF
+}
+
+# Marker-touching body for row $1, used by the fixtures below.
+_unit_marker_body() {
+	printf '\t: >"${UNIT_MARKER_DIR:?UNIT_MARKER_DIR unset}/%s"\n\techo "RAN %s"\n' "$1" "$1"
+}
+
+# Assert the exact breakdown line. $1=out $2=passed $3=failed $4=skipped
+# $5=requested $6=desc. The literal is the contract: it is the only place
+# skip_count surfaces, so coupling to it is deliberate.
+_unit_assert_breakdown() {
+	local want="=== Matrix breakdown: $2 passed, $3 failed, $4 skipped / $5 requested ==="
+	if printf '%s\n' "$1" | grep -qF "$want"; then
+		pass "$6"
+	else
+		fail "$6 (want '$want') out=$1"
+	fi
+}
+
+# _unit_assert_no_summary greps only for the canonical line; the breakdown line
+# would slip past it. rc-2 and rc-4 paths must print neither.
+_unit_assert_no_breakdown() {
+	if printf '%s\n' "$1" | grep -q 'Matrix breakdown'; then
+		fail "$2 (a breakdown line was printed) out=$1"
+	else
+		pass "$2"
+	fi
+}
+
+# Count verdict lines INCLUDING skips. Deliberately a separate helper:
+# relaxing _unit_assert_verdict_lines to accept SKIP would weaken the QUM-947
+# assertions in 14a/14d, which would then be satisfied by three skips.
+_unit_assert_verdict_lines_any() {
+	local n
+	n=$(printf '%s\n' "$1" | grep -cE '^(PASS|FAIL|SKIP) [A-Za-z0-9_-]+$')
+	if [ "$n" -eq "$2" ]; then
+		pass "$3"
+	else
+		fail "$3 (want $2 verdict lines, got $n) out=$1"
+	fi
+}
+
+# Count per-row SKIP verdict lines. Anchored to a whole row name so the lib's
+# own `SKIP: <reason>` diagnostic can never be miscounted as a verdict.
+_unit_assert_skip_lines() {
+	local n
+	n=$(printf '%s\n' "$1" | grep -cE '^SKIP [A-Za-z0-9_-]+$')
+	if [ "$n" -eq "$2" ]; then
+		pass "$3"
+	else
+		fail "$3 (want $2 SKIP verdict lines, got $n) out=$1"
+	fi
+}
+
+# The banner is the "loud" half of the requirement: present on stderr, naming
+# the row, and stating that a skip asserts nothing. The row name must appear on
+# a banner line WITH its reason — matching the name anywhere in stderr would
+# also be satisfied by the `=== Matrix: skipped rows:` line, which proves
+# nothing about the banner.
+_unit_assert_skip_banner() {
+	if printf '%s\n' "$1" | grep -q 'SKIPPED' &&
+		printf '%s\n' "$1" | grep -qE "^!!! +$2: .+"; then
+		pass "$3"
+	else
+		fail "$3 (no banner line '!!!   $2: <reason>') err=$1"
+	fi
+}
+
+_unit_assert_no_skip_banner() {
+	if printf '%s\n' "$1" | grep -q 'SKIPPED'; then
+		fail "$2 (a SKIPPED banner was printed) text=$1"
+	else
+		pass "$2"
+	fi
+}
+
+if [ ! -r "$LIB" ] || [ ! -r "$DRIVER" ]; then
+	fail "QUM-952 skip-accounting tests skipped (lib or driver missing)"
+else
+	FIXSKIP=$(mktemp -d 2>/dev/null)
+	if [ -z "$FIXSKIP" ] || [ ! -d "$FIXSKIP" ]; then
+		fail "could not mktemp QUM-952 fixture dir"
+	else
+		skip_setup_ok=1
+		_unit_mk_fixture_tree "$FIXSKIP" || skip_setup_ok=0
+		RD="$FIXSKIP/e2e-tests"
+		MSK="$FIXSKIP/markers"
+
+		# needs_claude=1: the driver's preflight must skip it before test_run.
+		_unit_mk_row "$RD" _unit_fixture_skip "needs_claude=1" \
+			"$(_unit_marker_body _unit_fixture_skip)
+	echo \"SHOULD NOT RUN\"
+	return 1" || skip_setup_ok=0
+		_unit_mk_marker_row "$RD" _unit_fixture_m1 0 || skip_setup_ok=0
+		_unit_mk_marker_row "$RD" _unit_fixture_m2 0 || skip_setup_ok=0
+		_unit_mk_marker_row "$RD" _unit_fixture_fail 1 || skip_setup_ok=0
+		# Exits 77 without writing the sentinel: a crash must not forge a skip.
+		_unit_mk_marker_row "$RD" _unit_fixture_bare77 77 || skip_setup_ok=0
+		# Writes the sentinel but returns 0 — unreachable in correct code, so it
+		# must be an internal error, never a PASS.
+		_unit_mk_row "$RD" _unit_fixture_sneak "" \
+			"$(_unit_marker_body _unit_fixture_sneak)
+	printf 'sneaky\n' >\"\${E2E_SKIP_FILE:?}\"
+	return 0" || skip_setup_ok=0
+		# Writes the sentinel and returns 1 — rc must win over the sentinel.
+		_unit_mk_row "$RD" _unit_fixture_skipfail "" \
+			"$(_unit_marker_body _unit_fixture_skipfail)
+	printf 'claimed-skip\n' >\"\${E2E_SKIP_FILE:?}\"
+	return 1" || skip_setup_ok=0
+		# Records the sentinel path the driver exported, to pin the contract.
+		_unit_mk_row "$RD" _unit_fixture_probe "" \
+			"	printf '%s\n' \"\${E2E_SKIP_FILE:?}\" >\"\${UNIT_MARKER_DIR:?}/_unit_fixture_probe\"
+	return 0" || skip_setup_ok=0
+		# needs_claude=1 but PASSES — used with a claude stub on PATH to prove the
+		# preflight lets a row through when claude is present.
+		_unit_mk_row "$RD" _unit_fixture_needsclaude_ok "needs_claude=1" \
+			"$(_unit_marker_body _unit_fixture_needsclaude_ok)
+	return 0" || skip_setup_ok=0
+		# Calls the skip protocol DIRECTLY, independent of claude absence: this is
+		# the hermetic pin on e2e_skip_row's own contract (and on a row's ability
+		# to declare a mid-body skip through the sanctioned helper).
+		_unit_mk_row "$RD" _unit_fixture_libskip "" \
+			"	e2e_skip_row \"fixture-declared-reason\"
+	$(_unit_marker_body _unit_fixture_libskip)
+	return 0" || skip_setup_ok=0
+
+		# Declares a skip and then makes the sentinel un-truncatable, so the NEXT
+		# row's classification would run on stale content. Uses chmod (real PATH
+		# on this case) — the driver must refuse rather than trust the file.
+		# Writes a sentinel that satisfies `[ -s ]` but carries no reason.
+		_unit_mk_row "$RD" _unit_fixture_blankskip "" \
+			"	printf '\n   \n' >\"\${E2E_SKIP_FILE:?}\"
+	return 77" || skip_setup_ok=0
+		# ...and one whose reason is not on the first line.
+		_unit_mk_row "$RD" _unit_fixture_lateskip "" \
+			"	printf '\nlate-reason\n' >\"\${E2E_SKIP_FILE:?}\"
+	return 77" || skip_setup_ok=0
+
+		# (e2e_skip_row cannot be used here: it exits immediately, so the chmod
+		# would never run. This writes the same sentinel shape by hand.)
+		_unit_mk_row "$RD" _unit_fixture_lockskip "" \
+			"	printf 'stale-reason\n' >\"\${E2E_SKIP_FILE:?}\"
+	chmod 0444 \"\${E2E_SKIP_FILE:?}\"
+	return 77" || skip_setup_ok=0
+
+		# A claude stub on a private PATH: hermetic "claude is present" without
+		# depending on the host, and without letting a real claude be invoked.
+		STUBBIN="$FIXSKIP/stubbin"
+		mkdir -p "$STUBBIN" && printf '#!/bin/sh\nexit 0\n' >"$STUBBIN/claude" &&
+			chmod +x "$STUBBIN/claude" || skip_setup_ok=0
+
+		# Separate tree for `all`-mode: exactly one skipping row + one passing row,
+		# so `all` (whose `requested` comes from discover_rows, a different code
+		# path) is exactly assertable as 1/2.
+		FIXALL=$(mktemp -d 2>/dev/null)
+		if [ -z "$FIXALL" ] || [ ! -d "$FIXALL" ]; then
+			skip_setup_ok=0
+		else
+			_unit_mk_fixture_tree "$FIXALL" || skip_setup_ok=0
+			_unit_mk_row "$FIXALL/e2e-tests" _unit_fixture_askip "needs_claude=1" \
+				"	echo \"SHOULD NOT RUN\"
+	return 1" || skip_setup_ok=0
+			_unit_mk_marker_row "$FIXALL/e2e-tests" _unit_fixture_aok 0 || skip_setup_ok=0
+		fi
+
+		if [ "$skip_setup_ok" -ne 1 ]; then
+			fail "QUM-952 fixture setup failed — assertions below are not meaningful"
+		fi
+
+		NOCLAUDE="PATH=/nonexistent SPRAWL_E2E_SKIP_NO_CLAUDE=1"
+
+		# --- 15a: the headline bug --------------------------------------------
+		# Pre-fix: `PASS _unit_fixture_skip`, `Matrix: 1/1 passed`, exit 0.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "$NOCLAUDE" _unit_fixture_skip
+		if [ "$_RC" -eq 3 ]; then
+			pass "15a: wholly-skipped run exits 3 (nonzero)"
+		else
+			fail "15a: want rc=3, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_summary "$_OUT" 0 1 "15a: canonical summary reports 0/1, not 1/1"
+		_unit_assert_breakdown "$_OUT" 0 0 1 1 "15a: breakdown reports the skip"
+		_unit_assert_skip_lines "$_OUT" 1 "15a: exactly one SKIP verdict line"
+		_unit_assert_skip_banner "$_ERR" _unit_fixture_skip "15a: stderr banner names the skipped row"
+		if printf '%s\n' "$_ERR" | grep -qi 'asserts nothing'; then
+			pass "15a: banner states that a skip asserts nothing"
+		else
+			fail "15a: banner lacks the 'asserts nothing' statement err=$_ERR"
+		fi
+		# The gate keys on claude being ABSENT and never probes auth, so an
+		# installed-but-unauthenticated claude does not skip — it runs and fails
+		# with "Not logged in", which reads as a product regression. The banner is
+		# where a reader lands, so it must say the flag is not that remedy and
+		# that hiding claude from PATH to force a skip is not a substitute.
+		if printf '%s\n' "$_ERR" | grep -qi 'unauthenticated' &&
+			printf '%s\n' "$_ERR" | grep -q 'PATH'; then
+			pass "15a: banner warns the flag does not cover an unauthenticated claude"
+		else
+			fail "15a: banner lacks the unauthenticated-claude caveat err=$_ERR"
+		fi
+		if printf '%s\n' "$_OUT" | grep -q '^PASS '; then
+			fail "15a: a PASS verdict line was printed for a skipped row out=$_OUT"
+		else
+			pass "15a: no PASS verdict line for a skipped row"
+		fi
+		_unit_assert_ran "$MSK" _unit_fixture_skip no "15a: the skipped row's body never ran"
+
+		# --- 15b: NEGATIVE CONTROL — skip bucket keys on the operator ack -----
+		# Same fixture, same missing claude, but no SPRAWL_E2E_SKIP_NO_CLAUDE:
+		# must be a FAIL, not a skip. Proves the suite can tell the two apart.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "PATH=/nonexistent" _unit_fixture_skip
+		if [ "$_RC" -eq 1 ]; then
+			pass "15b: without the skip env var the row FAILs (rc 1)"
+		else
+			fail "15b: want rc=1, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 1 0 1 "15b: breakdown counts it as failed, not skipped"
+		_unit_assert_no_skip_banner "$_ERR" "15b: no skip banner on the FATAL path"
+
+		# --- 15c: composes with the QUM-947 denominator contract --------------
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "$NOCLAUDE" \
+			_unit_fixture_m1 _unit_fixture_skip _unit_fixture_m2
+		if [ "$_RC" -eq 3 ]; then
+			pass "15c: partial skip exits 3"
+		else
+			fail "15c: want rc=3, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_summary "$_OUT" 2 3 "15c: canonical summary reports 2/3 (skip not counted as pass)"
+		_unit_assert_breakdown "$_OUT" 2 0 1 3 "15c: breakdown sums to the 3 requested rows"
+		_unit_assert_verdict_lines_any "$_OUT" 3 "15c: one verdict line per requested row"
+		_unit_assert_skip_lines "$_OUT" 1 "15c: exactly one of the three is a SKIP"
+		# The canonical summary must stay uniquely identifiable. Several lines
+		# share the `=== Matrix: ` prefix (the QUM-947 selection banner, the
+		# failed-rows and skipped-rows lines), so that prefix alone is NOT a
+		# usable anchor — the full `N/M passed ===` shape is, and there must be
+		# exactly one of it per run. Guards against a future line colliding.
+		canon=$(printf '%s\n' "$_OUT" | grep -cE '^=== Matrix: [0-9]+/[0-9]+ passed ===$')
+		if [ "$canon" -eq 1 ]; then
+			pass "15c: exactly one canonical 'N/M passed' summary line per run"
+		else
+			fail "15c: want 1 canonical summary line, got $canon out=$_OUT"
+		fi
+		_unit_assert_ran "$MSK" _unit_fixture_m1 yes "15c: row before the skip executed"
+		_unit_assert_ran "$MSK" _unit_fixture_m2 yes "15c: row after the skip still executed"
+		_unit_assert_ran "$MSK" _unit_fixture_skip no "15c: the skipped row's body never ran"
+
+		# --- 15d: failure dominates a skip in the exit code -------------------
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "$NOCLAUDE" _unit_fixture_fail _unit_fixture_skip
+		if [ "$_RC" -eq 1 ]; then
+			pass "15d: a failure alongside a skip exits 1, not 3"
+		else
+			fail "15d: want rc=1, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 1 1 2 "15d: breakdown reports 1 failed + 1 skipped of 2"
+		if printf '%s\n' "$_ERR" | grep -q 'failed rows:'; then
+			pass "15d: failed-rows line still printed"
+		else
+			fail "15d: failed-rows line missing err=$_ERR"
+		fi
+		_unit_assert_skip_banner "$_ERR" _unit_fixture_skip "15d: skip banner printed alongside the failure"
+
+		# --- 15e: NEGATIVE CONTROL — bare rc 77 cannot forge a skip -----------
+		# Without this, "rc 77 => skip" lets any row that happens to exit 77
+		# launder itself into the skip bucket.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_bare77
+		if [ "$_RC" -eq 1 ]; then
+			pass "15e: rc 77 without a sentinel is a FAIL (rc 1)"
+		else
+			fail "15e: want rc=1, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 1 0 1 "15e: bare rc 77 counts as failed, skip count 0"
+		_unit_assert_no_skip_banner "$_ERR" "15e: no skip banner for bare rc 77"
+
+		# --- 15f: NEGATIVE CONTROL — sentinel written but rc 0 ----------------
+		# Unreachable in correct code, hence the ideal loud assertion: it is
+		# QUM-952 one level up ("the row thought it skipped; driver said pass").
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_sneak
+		if [ "$_RC" -eq 4 ]; then
+			pass "15f: sentinel-with-rc-0 is an internal error (rc 4)"
+		else
+			fail "15f: want rc=4, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		if printf '%s\n' "$_OUT" | grep -q '^PASS _unit_fixture_sneak$'; then
+			fail "15f: sentinel-with-rc-0 was reported as PASS out=$_OUT"
+		else
+			pass "15f: sentinel-with-rc-0 is not reported as PASS"
+		fi
+		# Grep the specific wording: `[ -n "$_ERR" ]` would be satisfied by the
+		# fixture's own noise or by the ordinary failed-rows line.
+		if printf '%s\n' "$_ERR" | grep -qi 'internal error'; then
+			pass "15f: internal inconsistency named as an internal error on stderr"
+		else
+			fail "15f: no 'internal error' on stderr err=$_ERR"
+		fi
+		_unit_assert_no_summary "$_OUT" "15f: no canonical summary on the internal-error path"
+		_unit_assert_no_breakdown "$_OUT" "15f: no breakdown line on the internal-error path"
+
+		# --- 15g: NEGATIVE CONTROL — rc wins over the sentinel ----------------
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_skipfail
+		if [ "$_RC" -eq 1 ]; then
+			pass "15g: a failing row that writes the sentinel still FAILs"
+		else
+			fail "15g: want rc=1, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 1 0 1 "15g: sentinel+rc1 counts as failed, skip count 0"
+
+		# --- 15h: the sentinel must be reset PER ROW --------------------------
+		# A skip followed by a bare-77 row: if the driver does not truncate, the
+		# stale sentinel launders the second row's failure into a skip. Invisible
+		# in single-row testing, which is why it gets its own case.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "$NOCLAUDE" _unit_fixture_skip _unit_fixture_bare77
+		_unit_assert_breakdown "$_OUT" 0 1 1 2 \
+			"15h: stale sentinel does not launder the following row into a skip"
+		if printf '%s\n' "$_OUT" | grep -q '^FAIL _unit_fixture_bare77$'; then
+			pass "15h: the bare-77 row after a skip is reported FAIL"
+		else
+			fail "15h: bare-77 row after a skip not reported FAIL out=$_OUT"
+		fi
+		if [ "$_RC" -eq 1 ]; then
+			pass "15h: failure after a skip still dominates the exit code"
+		else
+			fail "15h: want rc=1, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+
+		# --- 15i: the driver exports a usable sentinel path -------------------
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_probe
+		probe_path=$(cat "$MSK/_unit_fixture_probe" 2>/dev/null)
+		# Asserted against the fixture-scoped TMPDIR, not a bare "/tmp/*": the
+		# latter is the driver's default and so could not fail. Honoring TMPDIR
+		# is what lets a caller confine the sentinel to a directory it reaps.
+		case "$probe_path" in
+			"$FIXSKIP"/*)
+				pass "15i: driver puts E2E_SKIP_FILE under the caller's TMPDIR"
+				;;
+			*)
+				fail "15i: E2E_SKIP_FILE outside the caller's TMPDIR: '$probe_path' rc=$_RC err=$_ERR"
+				;;
+		esac
+		# The sentinel is driver-owned scratch: it must not survive the run.
+		# An empty probe_path is an explicit failure, not a free pass — otherwise
+		# this assertion would report success precisely when the probe broke.
+		if [ -z "$probe_path" ]; then
+			fail "15i: no sentinel path recorded, so removal is unverifiable"
+		elif [ -e "$probe_path" ]; then
+			fail "15i: sentinel $probe_path leaked after the driver exited"
+		else
+			pass "15i: sentinel removed when the driver exits"
+		fi
+
+		# --- 15j: the pass+fail+skip == requested identity is enforced --------
+		# Exercised through a debug seam, because an invariant with no way to
+		# violate it is decorative rather than tested.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "SPRAWL_E2E_MATRIX_DEBUG_TALLY_SKEW=1" _unit_fixture_m1
+		if [ "$_RC" -eq 4 ]; then
+			pass "15j: a skewed tally is an internal error (rc 4)"
+		else
+			fail "15j: want rc=4, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_no_summary "$_OUT" "15j: no green summary line printed on a skewed tally"
+		_unit_assert_no_breakdown "$_OUT" "15j: no breakdown line printed on a skewed tally"
+		if printf '%s\n' "$_ERR" | grep -qi 'internal error'; then
+			pass "15j: skewed tally reported as an internal error on stderr"
+		else
+			fail "15j: skewed tally not reported as an internal error err=$_ERR"
+		fi
+		# The seam must skew the tally AFTER the loop, not short-circuit before it:
+		# otherwise rc 4 could be produced without the invariant ever being
+		# evaluated, and the check would be decorative.
+		if printf '%s\n' "$_OUT" | grep -q '^PASS _unit_fixture_m1$'; then
+			pass "15j: the row still ran — the invariant is checked post-loop"
+		else
+			fail "15j: no per-row verdict, so the seam short-circuited the run out=$_OUT"
+		fi
+		_unit_assert_ran "$MSK" _unit_fixture_m1 yes "15j: the row's body still executed under the seam"
+		# NEGATIVE CONTROL for the seam itself: without the env var, same
+		# invocation is a clean pass. Proves 15j's rc 4 came from the skew.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_m1
+		if [ "$_RC" -eq 0 ]; then
+			pass "15j: without the debug seam the same run is a clean pass"
+		else
+			fail "15j: control run rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 1 0 0 1 "15j: control run breakdown is 1 passed of 1"
+
+		# --- 15k: arg-error paths print neither summary nor breakdown ----------
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" definitely-not-a-row
+		if [ "$_RC" -eq 2 ]; then
+			pass "15k: unknown row still exits 2 (arg errors outrank skip accounting)"
+		else
+			fail "15k: want rc=2, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_no_summary "$_OUT" "15k: no canonical summary on the arg-error path"
+		_unit_assert_no_breakdown "$_OUT" "15k: no breakdown line on the arg-error path"
+
+		# --- 15l: EVERY skipped row is named, not just the first or last -------
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "$NOCLAUDE" _unit_fixture_skip _unit_fixture_libskip
+		if [ "$_RC" -eq 3 ]; then
+			pass "15l: two skipped rows exit 3"
+		else
+			fail "15l: want rc=3, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_summary "$_OUT" 0 2 "15l: canonical summary reports 0/2"
+		_unit_assert_breakdown "$_OUT" 0 0 2 2 "15l: breakdown reports 2 skipped of 2"
+		_unit_assert_skip_lines "$_OUT" 2 "15l: two SKIP verdict lines"
+		_unit_assert_skip_banner "$_ERR" _unit_fixture_skip "15l: banner names the first skipped row"
+		_unit_assert_skip_banner "$_ERR" _unit_fixture_libskip "15l: banner names the second skipped row"
+
+		# The same row twice: skips must not be deduplicated either, or the
+		# denominator shrinks below the request (the QUM-947 bug class).
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "$NOCLAUDE" _unit_fixture_skip _unit_fixture_skip
+		if [ "$_RC" -eq 3 ]; then
+			pass "15l: a duplicated skipping row exits 3"
+		else
+			fail "15l: duplicate skip want rc=3, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_summary "$_OUT" 0 2 "15l: duplicated skip reports 0/2, not 0/1"
+		_unit_assert_breakdown "$_OUT" 0 0 2 2 "15l: duplicated skip counts twice"
+		_unit_assert_skip_lines "$_OUT" 2 "15l: two SKIP verdict lines for the duplicated row"
+
+		# --- 15m: e2e_skip_row is the sanctioned protocol, usable directly -----
+		# No PATH scrub: this pins the skip protocol itself, decoupled from the
+		# claude-absence simulation, and proves a row body can declare its own
+		# skip. The reason string must reach the operator.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_libskip
+		if [ "$_RC" -eq 3 ]; then
+			pass "15m: a row calling e2e_skip_row is skipped (rc 3)"
+		else
+			fail "15m: want rc=3, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 0 1 1 "15m: e2e_skip_row lands in the skip bucket"
+		_unit_assert_ran "$MSK" _unit_fixture_libskip no "15m: e2e_skip_row aborts the row body"
+		# Row name AND reason on the SAME stderr line: a lib-level `echo >&2` from
+		# the row subshell would satisfy a bare reason grep without the driver's
+		# banner ever attributing the reason to a row.
+		if printf '%s\n' "$_ERR" | grep -q '_unit_fixture_libskip.*fixture-declared-reason'; then
+			pass "15m: the banner attributes the reason to the skipped row on one line"
+		else
+			fail "15m: no single stderr line carries both row and reason err=$_ERR"
+		fi
+
+		# --- 15n: claude PRESENT must be a PASS, never a skip ------------------
+		# THIRD LEG OF THE TRUTH TABLE. Without it, an implementation that always
+		# skips satisfies every other assertion here — a strictly worse bug than
+		# the one being fixed, and one this suite must be able to see.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "PATH=$STUBBIN" _unit_fixture_needsclaude_ok
+		if [ "$_RC" -eq 0 ]; then
+			pass "15n: needs_claude row with claude present exits 0"
+		else
+			fail "15n: want rc=0, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 1 0 0 1 "15n: breakdown reports 1 passed, 0 skipped"
+		_unit_assert_skip_lines "$_OUT" 0 "15n: no SKIP verdict line when claude is present"
+		_unit_assert_no_skip_banner "$_ERR" "15n: no skip banner when claude is present"
+		_unit_assert_ran "$MSK" _unit_fixture_needsclaude_ok yes "15n: the row's body actually ran"
+
+		# --- 15o: `all` mode accounts skips too --------------------------------
+		# On the `all` branch `requested` comes from discover_rows, a different
+		# code path feeding the same sum invariant.
+		MALL="$FIXALL/markers"
+		_unit_reset_markers "$MALL"
+		_unit_run_env "$FIXALL" "$MALL" "$NOCLAUDE" all
+		if [ "$_RC" -eq 3 ]; then
+			pass "15o: 'all' with one skipping row exits 3"
+		else
+			fail "15o: want rc=3, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_summary "$_OUT" 1 2 "15o: 'all' reports 1/2 passed"
+		_unit_assert_breakdown "$_OUT" 1 0 1 2 "15o: 'all' breakdown sums to the 2 discovered rows"
+		_unit_assert_skip_lines "$_OUT" 1 "15o: 'all' emits one SKIP verdict line"
+		_unit_assert_skip_banner "$_ERR" _unit_fixture_askip "15o: 'all' banner names the skipped row"
+		_unit_assert_ran "$MALL" _unit_fixture_aok yes "15o: 'all' still ran the non-skipping row"
+		if printf '%s\n' "$_OUT" | grep -q 'SHOULD NOT RUN'; then
+			fail "15o: 'all' executed the skipped row's body out=$_OUT"
+		else
+			pass "15o: 'all' did not execute the skipped row's body"
+		fi
+
+		# --- 15r: a sentinel with no readable REASON is no corroboration --------
+		# `[ -s ]` is a byte-count test, so a bare newline satisfies it. A skip
+		# whose reason is blank (or a synthesized "unspecified") is a row nobody
+		# can triage — an entry that looks accounted-for and isn't, which is a
+		# small instance of exactly what QUM-952 exists to prevent. The rule is
+		# therefore about corroboration, not bytes: rc 77 is the row's *claim*,
+		# and a sentinel carrying no reason corroborates nothing, so it is
+		# treated identically to an absent sentinel — FAIL.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_blankskip
+		if [ "$_RC" -eq 1 ]; then
+			pass "15r: rc 77 with a reason-less sentinel FAILs (rc 1)"
+		else
+			fail "15r: want rc=1, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 1 0 1 "15r: reason-less sentinel is not counted as a skip"
+		if printf '%s\n' "$_OUT" | grep -q '^SKIP '; then
+			fail "15r: a reason-less sentinel produced a SKIP verdict out=$_OUT"
+		else
+			pass "15r: no SKIP verdict for a reason-less sentinel"
+		fi
+		if printf '%s\n' "$_ERR" | grep -qi 'unspecified'; then
+			fail "15r: a placeholder reason was synthesized instead of failing err=$_ERR"
+		else
+			pass "15r: no placeholder reason invented"
+		fi
+		_unit_assert_no_skip_banner "$_ERR" "15r: no skip banner for a reason-less sentinel"
+
+		# Control for 15r: a blank FIRST line followed by a real reason is still a
+		# genuine skip. Pins that the discriminator is "has a readable reason",
+		# not "byte 0 is not a newline" — and that the fix did not simply move the
+		# brittleness from `[ -s ]` onto the first line.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_lateskip
+		if [ "$_RC" -eq 3 ]; then
+			pass "15r: a reason on a later sentinel line is still a skip (rc 3)"
+		else
+			fail "15r: want rc=3, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 0 1 1 "15r: later-line reason lands in the skip bucket"
+		_unit_assert_skip_banner "$_ERR" _unit_fixture_lateskip "15r: banner carries the later-line reason"
+		if printf '%s\n' "$_ERR" | grep -qF 'late-reason'; then
+			pass "15r: the actual reason text is reported"
+		else
+			fail "15r: reason text missing err=$_ERR"
+		fi
+
+		# --- 15q: a sentinel that cannot be RESET must fail fast, not launder ---
+		# The per-row truncation is what stops a stale sentinel from turning the
+		# next row's genuine crash into a skip. If that truncation fails and the
+		# driver carries on, the stale reason is reused and a real failure is
+		# reported as a skip (exit 3 instead of 1) — the QUM-952 bug wearing a
+		# different hat. The driver already refuses to run when it cannot CREATE
+		# the sentinel; being unable to RESET it is the same untrustworthy state.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_lockskip _unit_fixture_bare77
+		if [ "$_RC" -eq 4 ]; then
+			pass "15q: an un-resettable sentinel is an internal error (rc 4)"
+		else
+			fail "15q: want rc=4, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		if printf '%s\n' "$_OUT" | grep -q '^SKIP _unit_fixture_bare77$'; then
+			fail "15q: a crashing row was laundered into a SKIP by a stale sentinel out=$_OUT"
+		else
+			pass "15q: the following row was not laundered into a SKIP"
+		fi
+		_unit_assert_no_summary "$_OUT" "15q: no summary once sentinel state is untrustworthy"
+		if printf '%s\n' "$_ERR" | grep -qi 'internal error'; then
+			pass "15q: the un-resettable sentinel is reported as an internal error"
+		else
+			fail "15q: un-resettable sentinel not reported as an internal error err=$_ERR"
+		fi
+
+		# --- 15p: CLAUDE.md must not still document the old false-green -------
+		# Same philosophy as [11]'s self-wiring check: a fix that leaves the
+		# agent-facing instructions lying has not landed. Assert the NEW contract
+		# wording, not the issue key — grepping 'QUM-952' would already pass
+		# against the text that documents the bug.
+		if grep -q 'skipped row is currently reported as' "$REPO_ROOT/CLAUDE.md"; then
+			fail "15p: CLAUDE.md still says a skipped row is reported as PASS"
+		else
+			pass "15p: CLAUDE.md no longer documents skip-as-PASS"
+		fi
+		if grep -q 'Matrix breakdown' "$REPO_ROOT/CLAUDE.md" &&
+			grep -q 'exit 3' "$REPO_ROOT/CLAUDE.md"; then
+			pass "15p: CLAUDE.md documents the breakdown line and the exit-3 skip contract"
+		else
+			fail "15p: CLAUDE.md does not document the new skip contract (breakdown line + exit 3)"
+		fi
+		# The gate keys on presence, never on auth. That leaves a third state —
+		# installed but unauthenticated — where the flag is inert and the row
+		# fails with "Not logged in", trivially misread as a product regression.
+		# The docs must name that state and forbid the obvious workaround
+		# (hiding claude from PATH), which converts it into the all-skip vacuum.
+		if grep -qi 'unauthenticated' "$REPO_ROOT/CLAUDE.md" &&
+			grep -qi 'Not logged in' "$REPO_ROOT/CLAUDE.md"; then
+			pass "15p: CLAUDE.md names the installed-but-unauthenticated state"
+		else
+			fail "15p: CLAUDE.md does not document the unauthenticated-claude state"
+		fi
+		if grep -qi 'never hide' "$REPO_ROOT/CLAUDE.md"; then
+			pass "15p: CLAUDE.md forbids hiding claude from PATH to force a skip"
+		else
+			fail "15p: CLAUDE.md does not forbid hiding claude from PATH to force a skip"
+		fi
+
+		for _d in "$FIXSKIP" "$FIXALL"; do
 			case "$_d" in
 				"$UNIT_TMP_ROOT"/*) rm -rf "$_d" ;;
 				*) note "refusing to remove fixture dir '$_d' (not under $UNIT_TMP_ROOT/)" ;;

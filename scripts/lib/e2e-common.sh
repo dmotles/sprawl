@@ -77,17 +77,47 @@ _stmux() {
     tmux ${SPRAWL_TMUX_SOCKET:+-L "$SPRAWL_TMUX_SOCKET"} "$@"
 }
 
+# QUM-952: a skipped row must never be indistinguishable from a passed one.
+# `exit 0` cannot mean both, so a skip exits 77 (the autotools/`make check` SKIP
+# convention) AND records its reason in the driver-owned sentinel named by
+# $E2E_SKIP_FILE. The driver requires BOTH before it will believe a skip, so a
+# row that merely happens to exit 77 cannot forge one.
+E2E_SKIP_EXIT=77
+
+# Declare the current row skipped and abort it. UNCONDITIONAL by design: the
+# decision of *whether* a missing dependency is skippable belongs to the caller
+# (e.g. e2e_require_claude_or_skip consults SPRAWL_E2E_SKIP_NO_CLAUDE); this
+# function only signals the outcome. Do not gate it on that variable.
+e2e_skip_row() {
+    local reason=${1:-unspecified}
+    # $E2E_SKIP_FILE is unset when the lib is sourced outside the driver; a skip
+    # must still be signalled. The `|| true` matters under `set -e`: a failed
+    # redirect would exit 1 before `exit 77`, turning a skip into a failure.
+    if [ -n "${E2E_SKIP_FILE:-}" ]; then
+        { printf '%s\n' "$reason" >>"$E2E_SKIP_FILE"; } 2>/dev/null || true
+    fi
+    echo "SKIP: $reason"
+    exit "$E2E_SKIP_EXIT"
+}
+
 e2e_require_claude_or_skip() {
     local name=${1:-test}
     if command -v claude >/dev/null 2>&1; then
         return 0
     fi
     if [ "${SPRAWL_E2E_SKIP_NO_CLAUDE:-}" = "1" ]; then
-        echo "SKIP: claude binary not found on PATH (SPRAWL_E2E_SKIP_NO_CLAUDE=1 set)"
-        exit 0
+        e2e_skip_row "claude binary not found on PATH (required by $name; SPRAWL_E2E_SKIP_NO_CLAUDE=1 set)"
     fi
+    # The FATAL branch must NOT touch the sentinel: a hard failure that also
+    # wrote it could be laundered into a skip by any stale-read bug upstream.
     echo "FATAL: claude binary not found on PATH (required by $name)" >&2
-    echo "       Set SPRAWL_E2E_SKIP_NO_CLAUDE=1 to skip this test instead." >&2
+    echo "       Set SPRAWL_E2E_SKIP_NO_CLAUDE=1 to skip this test instead (the skip is" >&2
+    echo "       reported as a skip, not a pass, and exits nonzero -- it does not" >&2
+    echo "       discharge a mandatory-gate obligation)." >&2
+    echo "       This gate keys on ABSENCE only and never probes auth: if claude is" >&2
+    echo "       installed but unauthenticated the gate does not fire, the row runs, and" >&2
+    echo "       it fails with 'Not logged in'. The flag is not the remedy for that, and" >&2
+    echo "       never hide claude from PATH to force a skip." >&2
     exit 1
 }
 
