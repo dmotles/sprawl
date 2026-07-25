@@ -19,6 +19,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/viewport"
 )
@@ -44,6 +45,21 @@ type ChatRegion struct {
 	viewCache        *chatRegionViewCache
 	viewBuilds       int
 	disableViewCache bool
+
+	// QUM-934 frame timing. lastRenderDur is the wall time of the most recent
+	// View() that actually painted — cache hit or rebuild, but never the
+	// width-0 no-op. The /perf overlay samples it out of band.
+	//
+	// The CHAT REGION is the right thing to time: it is the surface the render
+	// cache protects, and it is where the QUM-933 pathology showed up. Do not
+	// "improve" this by wrapping the whole AppModel.renderView — that would
+	// average the measurement across unrelated chrome and stop describing the
+	// cache under test.
+	//
+	// nowFn is injected so tests can assert an exact span. A timing test that
+	// only asserts "> 0" passes against a stopwatch measuring the wrong thing.
+	lastRenderDur time.Duration
+	nowFn         func() time.Time
 }
 
 // chatRegionViewCache stores the post-vp.View() string keyed on every input
@@ -141,8 +157,14 @@ func (r *ChatRegion) PageDown() {
 func (r *ChatRegion) View() string {
 	w := r.cl.Width()
 	if w <= 0 {
+		// Not a painted frame: returning early WITHOUT recording a sample is
+		// deliberate. A width-0 View() does no work, so timing it would feed a
+		// fabricated near-zero into the frame percentiles for a frame that never
+		// rendered.
 		return ""
 	}
+	start := r.now()
+	defer func() { r.lastRenderDur = r.now().Sub(start) }()
 	// QUM-769 fast-path: when nothing observable to View() output has changed
 	// since the last paint, return the cached string. Skips ChatList.Render
 	// (already cached) + vp.SetContent (re-soft-wraps the full content) +
@@ -201,4 +223,17 @@ func (r *ChatRegion) View() string {
 		}
 	}
 	return view
+}
+
+// LastRenderDur reports the wall time of the most recent painting View(), or
+// zero if none has happened yet. Read out of band by the /perf sampler
+// (QUM-934); it is never consulted on the render path.
+func (r *ChatRegion) LastRenderDur() time.Duration { return r.lastRenderDur }
+
+// now reads the injected clock, defaulting to time.Now.
+func (r *ChatRegion) now() time.Time {
+	if r.nowFn != nil {
+		return r.nowFn()
+	}
+	return time.Now()
 }

@@ -79,16 +79,19 @@ func TestCollector_ZeroFrameAtUsesConfiguredClock(t *testing.T) {
 func TestCollector_ClockReachesReport(t *testing.T) {
 	cfg := enabledCfg()
 	c := New(Config{Detector: cfg, Now: fixedClock()})
-	cache := CacheStats{Items: 10, Uncacheable: cfg.UncacheableLimit + 1, Revision: 4}
+	cache := CacheStats{Items: 10, Uncacheable: 1, Revision: 4}
 	var rep Report
-	for range cfg.DefectStreak {
+	// Idle misses with the revision pinned: the frame path's only trip. The
+	// first frame just establishes the baseline, so drive one extra.
+	for range cfg.DefectStreak + 1 {
+		cache.Misses++
 		rep, _ = c.ObserveFrame(FrameSample{Dur: time.Millisecond, Cache: cache})
 	}
 	if rep.Zero() {
 		t.Fatal("expected a trip report")
 	}
 	want := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC).
-		Add(time.Duration(cfg.DefectStreak) * 16 * time.Millisecond)
+		Add(time.Duration(cfg.DefectStreak+1) * 16 * time.Millisecond)
 	if !rep.At.Equal(want) {
 		t.Errorf("Report.At = %v, want the injected clock's %v", rep.At, want)
 	}
@@ -111,7 +114,10 @@ func TestCollector_ForwardsTripReport(t *testing.T) {
 	c := New(Config{Detector: cfg, Now: fixedClock()})
 	cache := CacheStats{Items: 40, Uncacheable: 9, Revision: 5, Width: 100}
 	var reports int
+	// Idle misses with the revision pinned. Uncacheable rides along as report
+	// context — it is asserted below, but it is not what trips.
 	for range cfg.DefectStreak + 1 {
+		cache.Misses++
 		if _, ok := c.ObserveFrame(FrameSample{Dur: 40 * time.Millisecond, Cache: cache}); ok {
 			reports++
 		}

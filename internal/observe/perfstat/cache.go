@@ -12,11 +12,20 @@ package perfstat
 // cache keyed on anything else — for example a per-item cache that also keys on
 // an expand/collapse flag — would make an unrelated key change look like a
 // rebuild with the revision pinned, i.e. a false positive.
+// Items and Uncacheable must span the SAME walk — for the current TUI caller
+// that is committed chat items AND the pending zone, i.e. Items is
+// ChatList.Len() + ChatList.ZoneLen() and Uncacheable is
+// ChatList.UncacheableCount(), which walks both. Diagnosis() renders them as
+// "%d of %d items"; feeding a numerator that walks the zone and a denominator
+// that does not lets the ratio exceed 1 and makes the report self-contradicting.
+// The zone contributes no unfinished items today, so this costs nothing now —
+// which is the argument for doing it now rather than after some zone item kind
+// starts reporting Finished() == false and turns it into a bug report.
 type CacheStats struct {
 	Hits        uint64 // whole-chat render-cache hits
 	Misses      uint64 // whole-chat render-cache rebuilds
-	Items       int    // total chat items
-	Uncacheable int    // items that cannot be cached because they never finished
+	Items       int    // total renderable entries: committed items + pending zone
+	Uncacheable int    // entries that cannot be cached because they never finished
 	Revision    uint64 // cache-invalidation fingerprint at sample time
 	Width       int    // render width the sample was taken at
 }

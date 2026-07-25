@@ -128,10 +128,6 @@ func (d *Detector) ObserveInvariant(at time.Time, s InvariantSample, c CacheStat
 // buildOrphanReport labels the report with the orphan path's own episode and
 // carries whatever frame context exists.
 //
-// Limit is deliberately NOT set: UncacheableLimit governs nothing in a
-// directional check, and carrying it would imply to anyone reading a structured
-// dump that a threshold was applied to the orphan count.
-//
 // HaveFrameContext records whether any frame has been observed yet. Without it
 // a report rendered before the first frame would present the zero CacheStats as
 // measurements — "22 of 0 items", revision 0, width 0, hit rate 0.0% — which

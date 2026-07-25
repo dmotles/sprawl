@@ -39,8 +39,18 @@ type Config struct {
 }
 
 // Collector owns all render-health state. The per-frame path takes an
-// uncontended mutex so an off-goroutine reader — the incident-bundle capture —
-// can call Snapshot without racing the render loop.
+// uncontended mutex.
+//
+// PROVENANCE OF THE LOCK, so nobody has to guess whether it is doing anything:
+// as of this commit the only wired caller is the TUI, and internal/tui has no
+// goroutines in non-test code — Update and View both run on the single
+// bubbletea loop, so there is exactly one writer and one reader and the lock
+// guards nothing yet. It is here for the reader that is planned but NOT built:
+// an off-goroutine Snapshot from the incident-bundle capture. Keep it, because
+// adding that caller must not require also noticing that this type was never
+// safe; but do not read this comment as evidence that a second goroutine exists
+// today. If you are here because you added one, this is the sentence that
+// becomes true.
 type Collector struct {
 	mu        sync.Mutex
 	timer     FrameTimer
@@ -84,11 +94,13 @@ func (c *Collector) ObserveFrame(f FrameSample) (Report, bool) {
 // is off the walk is pure waste, so a disabled collector must tell the caller
 // not to bother rather than silently discard the result.
 //
-// The mutex is NOT redundant despite cfg being conceptually immutable:
-// Detector.Reset does `*d = Detector{cfg: d.cfg}`, which writes cfg's memory.
-// Reading it unlocked would race with a concurrent Reset. Do not "optimize" the
-// lock away — this is on the render path only when the check is off, so the
-// uncontended lock is the cheap side of that trade.
+// The mutex here is not redundant despite cfg being conceptually immutable:
+// Detector.Reset does `*d = Detector{cfg: d.cfg}`, which writes cfg's memory,
+// so an unlocked read would race a concurrent Reset. That race needs a second
+// goroutine to exist, which today it does not (see the Collector doc) — so the
+// honest statement is conditional: this lock is what makes adding one safe, and
+// removing it as "obvious overhead on the render path" would make the first
+// off-goroutine Snapshot racy in a way that is invisible from this read site.
 func (c *Collector) InvariantEnabled() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

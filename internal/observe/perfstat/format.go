@@ -3,7 +3,9 @@ package perfstat
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // noValue is rendered for inputs that carry no measurement.
@@ -57,4 +59,29 @@ func significant3(v float64) string {
 	default:
 		return fmt.Sprintf("%.2f", v)
 	}
+}
+
+// FormatDurationCol renders d right-aligned in a fixed-width column.
+//
+// The alignment is the whole point: across the boundary this package exists to
+// detect, a healthy frame reads "490µs" and a pathological one "51.3ms". Those
+// differ by two orders of magnitude, but in a ragged column the eye compares
+// the digits — 490 against 51.3 — and reads the pathology as smaller. Fixed
+// width puts the unit in the same place every row, so the flip is what moves.
+//
+// Padded in RUNES, never bytes. "µ" (U+00B5) is two bytes and one display
+// column, and the no-measurement "—" is three bytes and one column, so a
+// len()-based pad silently under-pads exactly the µs and no-value rows —
+// mis-aligning the two readings the operator is comparing. Guarded by the
+// byte-vs-rune leg of TestFormatDurationCol_UnitFlipStaysAligned.
+//
+// A width narrower than the content returns the unpadded rendering rather than
+// truncating: a clipped measurement is a wrong measurement, and a column too
+// narrow to hold its data should look wrong rather than read plausibly.
+func FormatDurationCol(d time.Duration, width int) string {
+	s := FormatDuration(d)
+	if pad := width - utf8.RuneCountInString(s); pad > 0 {
+		return strings.Repeat(" ", pad) + s
+	}
+	return s
 }

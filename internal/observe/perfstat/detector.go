@@ -10,31 +10,28 @@ import (
 // Environment keys that gate and tune the detector. They are read once, at
 // construction, via DetectorConfigFromEnv — never on the per-frame path.
 const (
-	envInvariant        = "SPRAWL_PERF_INVARIANT"
-	envDefectStreak     = "SPRAWL_PERF_INVARIANT_STREAK"
-	envUncacheableLimit = "SPRAWL_PERF_UNCACHEABLE_LIMIT"
+	envInvariant    = "SPRAWL_PERF_INVARIANT"
+	envDefectStreak = "SPRAWL_PERF_INVARIANT_STREAK"
 )
 
 // DefectKind is a bitmask of the signals that make up a defect.
 //
 // The two report paths produce DISJOINT Kinds by construction: the frame path
-// sets only DefectIdleMisses and/or DefectUncacheable, the invariant path sets
-// only DefectOrphans. A Kind mixing them is unreachable — the bitmask exists so
-// the frame path's two bits can combine, and so String() can name any
-// combination, not because a mixed report is produced anywhere.
+// sets only DefectIdleMisses, the invariant path sets only DefectOrphans. A Kind
+// mixing them is unreachable. The bitmask survives the retirement of the third
+// signal so String() can still name any combination rather than assuming the
+// set it happens to see today.
 type DefectKind uint8
 
 const (
 	// DefectIdleMisses means the render cache was rebuilt on an idle frame even
 	// though nothing had changed (same revision, same width) — definitionally a
-	// defeated cache.
+	// defeated cache. It is the frame path's ONLY trip; see Observe for what
+	// that path is and is not able to see.
 	DefectIdleMisses DefectKind = 1 << iota
-	// DefectUncacheable means too many items never reached a finished state, so
-	// they can never be cached. This is the QUM-933 tell.
-	DefectUncacheable
 	// DefectOrphans means items are stranded unfinished somewhere other than the
 	// tail, so they re-render through the full markdown pipeline on every rebuild
-	// forever. Unlike the other two this is not a threshold heuristic but a
+	// forever. Unlike the frame signal this is not a threshold heuristic but a
 	// direct violation of the chat model's cacheability invariant, so it reports
 	// on a short confirmation run of observations rather than a long
 	// consecutive-frame streak. See ObserveInvariant.
@@ -45,9 +42,6 @@ func (k DefectKind) String() string {
 	var names []string
 	if k&DefectIdleMisses != 0 {
 		names = append(names, "idle-misses")
-	}
-	if k&DefectUncacheable != 0 {
-		names = append(names, "uncacheable")
 	}
 	if k&DefectOrphans != 0 {
 		names = append(names, "orphans")
@@ -62,10 +56,9 @@ func (k DefectKind) String() string {
 // normalized to the defaults by NewDetector, so a spuriously zeroed threshold
 // can never mean "trip on the first suspicious frame".
 type DetectorConfig struct {
-	Enabled          bool // when false, every hook is a no-op
-	UncacheableLimit int  // trip when the unfinished-item count exceeds this
-	DefectStreak     int  // consecutive defective idle frames before tripping
-	RecoveryStreak   int  // consecutive healthy idle frames before re-arming
+	Enabled        bool // when false, every hook is a no-op
+	DefectStreak   int  // consecutive defective idle frames before tripping
+	RecoveryStreak int  // consecutive healthy idle frames before re-arming
 
 	// InvariantConfirmations and InvariantRecovery are counted in invariant
 	// OBSERVATIONS, not frames — the caller may sample only one frame in N, and
@@ -86,10 +79,9 @@ type DetectorConfig struct {
 // DefaultDetectorConfig returns the tuned thresholds, with the detector left
 // disabled: it is opt-in, and DetectorConfigFromEnv is what turns it on.
 //
-// At most one item should legitimately be in flight, so a limit of 2 leaves
-// slack. Tripping is cheap to enter (30 frames, ~0.5s at 60fps) and expensive to
-// leave (60 consecutive clean frames), which is the hysteresis that keeps a
-// flapping condition down to one report. The recovery length is deliberately not
+// Tripping is cheap to enter (30 frames, ~0.5s at 60fps) and expensive to leave
+// (60 consecutive clean frames), which is the hysteresis that keeps a flapping
+// condition down to one report. The recovery length is deliberately not
 // tunable: shortening it only makes the detector noisier, which is the failure
 // mode worth avoiding.
 //
@@ -100,7 +92,6 @@ type DetectorConfig struct {
 // reports once rather than once per flicker.
 func DefaultDetectorConfig() DetectorConfig {
 	return DetectorConfig{
-		UncacheableLimit:       2,
 		DefectStreak:           30,
 		RecoveryStreak:         60,
 		InvariantConfirmations: 2,
@@ -124,11 +115,6 @@ func DetectorConfigFromEnv(lookup func(string) (string, bool)) DetectorConfig {
 			cfg.DefectStreak = n
 		}
 	}
-	if raw, ok := lookup(envUncacheableLimit); ok {
-		if n, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && n > 0 {
-			cfg.UncacheableLimit = n
-		}
-	}
 	return cfg
 }
 
@@ -141,7 +127,6 @@ type Report struct {
 	IdleMisses  uint64 // rebuilds accumulated across those frames
 	Items       int
 	Uncacheable int
-	Limit       int
 	HitRate     float64
 	Revision    uint64
 	Width       int
@@ -175,9 +160,9 @@ func (r Report) Diagnosis() string {
 	head := fmt.Sprintf("render-cache defeat suspected (episode %d, %s)", r.Episode, r.Kind)
 	if r.Kind&DefectOrphans == 0 {
 		return head + fmt.Sprintf(
-			": %d consecutive idle frames rebuilt the chat render with revision %d pinned at width %d (%d rebuilds, hit rate %s); %d of %d items are unfinished/uncacheable (limit %d)",
+			": %d consecutive idle frames rebuilt the chat render with revision %d pinned at width %d (%d rebuilds, hit rate %s); %d of %d items are unfinished/uncacheable",
 			r.IdleFrames, r.Revision, r.Width, r.IdleMisses,
-			FormatPercent(r.HitRate), r.Uncacheable, r.Items, r.Limit,
+			FormatPercent(r.HitRate), r.Uncacheable, r.Items,
 		)
 	}
 	// An invariant violation is not a suspicion, so it says "violated".
@@ -261,9 +246,6 @@ type Detector struct {
 // NewDetector returns a detector with cfg normalized.
 func NewDetector(cfg DetectorConfig) *Detector {
 	def := DefaultDetectorConfig()
-	if cfg.UncacheableLimit <= 0 {
-		cfg.UncacheableLimit = def.UncacheableLimit
-	}
 	if cfg.DefectStreak <= 0 {
 		cfg.DefectStreak = def.DefectStreak
 	}
@@ -290,8 +272,26 @@ func NewDetector(cfg DetectorConfig) *Detector {
 //     evidence of health, so it neither clears suspicion nor credits recovery.
 //   - idle with a rebuild while the revision and width are unchanged: a defect.
 //     A rebuild after a revision or width change is legitimate invalidation.
-//   - unfinished items above the limit: a defect regardless of lookups, since
-//     it is a state rather than an event.
+//
+// WHAT THIS PATH CANNOT SEE. DefectIdleMisses is its only trip, and the scope is
+// narrower than "the render path is healthy". Two limits, both by construction:
+//
+//   - The stranded-item class is INVISIBLE here. A strand leaves the caller's
+//     item-derived idle flag stale-true, so its render short-circuits into a
+//     bypass that consults no cache — which moves neither counter, so this path
+//     sees a quiet frame. That is the intended reading of a bypass (counting one
+//     as a miss would report every streaming frame as a defeat, a false positive
+//     on the most common state in the system), but it means a quiet frame half
+//     is NOT evidence of health. ObserveInvariant / Orphans is the authority for
+//     that class, and any surface displaying this path must say so rather than
+//     let a reader infer health from silence.
+//
+//     QUM-990 is a filed instance rather than a hypothetical: a tool row left
+//     in flight when the session ends can never be resolved, so the caller's
+//     pending count never drains and every subsequent frame takes the bypass.
+//     This path stays silent for the whole window.
+//
+//   - An unfinished-item count is not a trip; see CacheStats.Uncacheable.
 func (d *Detector) Observe(at time.Time, streaming bool, c CacheStats) (Report, bool) {
 	if !d.cfg.Enabled {
 		return Report{}, false
@@ -319,9 +319,6 @@ func (d *Detector) Observe(at time.Time, streaming bool, c CacheStats) (Report, 
 	var kind DefectKind
 	if missDelta > 0 && pinned {
 		kind |= DefectIdleMisses
-	}
-	if c.Uncacheable > d.cfg.UncacheableLimit {
-		kind |= DefectUncacheable
 	}
 
 	if kind != 0 {
@@ -413,7 +410,6 @@ func (d *Detector) buildReport(at time.Time, c CacheStats) Report {
 		IdleMisses:  d.episodeMisses,
 		Items:       c.Items,
 		Uncacheable: c.Uncacheable,
-		Limit:       d.cfg.UncacheableLimit,
 		HitRate:     c.HitRate(),
 		Revision:    c.Revision,
 		Width:       c.Width,

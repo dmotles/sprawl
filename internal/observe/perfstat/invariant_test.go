@@ -136,10 +136,12 @@ func TestDetector_StrandedOrphansTrip(t *testing.T) {
 // TestDetector_SingleOrphanTrips pins that the orphan check is DIRECTIONAL and
 // exact — the invariant is orphans == 0, so one orphan is a defect.
 //
-// This is the guard against implementing the orphan signal as
-// `Orphans > cfg.UncacheableLimit`, which is a tempting shortcut (that field is
-// in the same struct and defaults to 2) and which every other test in this file
-// would pass, since they all use counts well above it.
+// This is the guard against implementing the orphan signal as a threshold
+// comparison rather than a zero check. Every other test in this file uses
+// counts well above any plausible threshold, so they would all pass against a
+// thresholded implementation; only this one fails. (The retired
+// UncacheableLimit was the specific tempting operand — same struct, defaulted
+// to 2 — but the trap outlives the field it named.)
 func TestDetector_SingleOrphanTrips(t *testing.T) {
 	cfg := orphanCfg()
 	f := newFeeder(t, cfg)
@@ -835,23 +837,6 @@ func TestDetector_EpisodeLabelsSurviveTheOtherPathTripping(t *testing.T) {
 				"with the frame episode's number", got.Episode)
 		}
 	})
-}
-
-// TestDetector_OrphanReportOmitsUncacheableLimit pins that a directional check
-// does not carry a threshold it never applied. In a structured dump, a Limit
-// sitting next to Kind: orphans implies the orphan count was compared against
-// it.
-func TestDetector_OrphanReportOmitsUncacheableLimit(t *testing.T) {
-	cfg := orphanCfg()
-	f := newFeeder(t, cfg)
-	f.warmCache(200)
-	f.invariants(cfg.InvariantConfirmations, false, 22)
-	if len(f.reports) != 1 {
-		t.Fatalf("got %d reports, want 1", len(f.reports))
-	}
-	if got := f.reports[0].Limit; got != 0 {
-		t.Errorf("Limit = %d on an orphan report, want 0 (no threshold was applied)", got)
-	}
 }
 
 // --- Collector surface ---
