@@ -96,6 +96,11 @@ type enterDeps struct {
 	// listener on the given address in a background goroutine. Set via
 	// the `--pprof` flag (wins) or the SPRAWL_PPROF_ADDR env var. QUM-678.
 	pprofAddr string
+	// pprofCtl owns the runtime-togglable pprof listener (QUM-934). Written
+	// by runEnter as an output param — deliberately, so tests and a future
+	// TUI surface can reach Start/Stop/Status on the live controller. Do not
+	// "clean up" the mutation; it is the exposure mechanism.
+	pprofCtl *pprofController
 	// pickAccent returns a randomly-picked accent color name (e.g.
 	// "colour39"). Used by resolveAccentColor on first-run when no accent
 	// has been persisted yet. Injected for deterministic tests. QUM-704.
@@ -230,7 +235,7 @@ func init() {
 	// QUM-678: --pprof <addr> exposes net/http/pprof on the given address.
 	// Also accepts SPRAWL_PPROF_ADDR; flag wins. Suggest a loopback bind so
 	// users don't accidentally expose pprof to other hosts.
-	enterCmd.Flags().String("pprof", "", "expose net/http/pprof on this address (e.g., 127.0.0.1:6060); also reads SPRAWL_PPROF_ADDR (QUM-678)")
+	enterCmd.Flags().String("pprof", "", "expose net/http/pprof on this address (e.g., 127.0.0.1:6060); also reads SPRAWL_PPROF_ADDR. Send SIGUSR2 to toggle it on a running session (QUM-678, QUM-934)")
 	// QUM-850: --model overrides weave's root model for this launch only.
 	// Free-form string passed verbatim to `claude --model`; empty preserves
 	// the default (opus[1m]). Not persisted across restart/handoff.
@@ -625,8 +630,23 @@ func runEnter(deps *enterDeps) error {
 
 	// QUM-678: start the opt-in pprof listener as early as possible so it's
 	// up before heavy init in case the operator wants to profile startup.
-	// No-op when neither --pprof nor SPRAWL_PPROF_ADDR is set.
-	startPprof(deps.pprofAddr, os.Stderr)
+	// No-op when neither --pprof nor SPRAWL_PPROF_ADDR is set. QUM-934: the
+	// listener lives on a controller so SIGUSR2 (or a future TUI surface) can
+	// toggle it mid-session without a relaunch.
+	pprofCtl := newPprofController(os.Stderr, deps.pprofAddr)
+	deps.pprofCtl = pprofCtl
+	startPprof(deps.pprofAddr, pprofCtl)
+	// Defers are LIFO and the order here matters: disarm the signal handler
+	// FIRST (it joins the toggle goroutine), then stop the listener. The
+	// reverse order lets a SIGUSR2 buffered during teardown start a fresh
+	// listener after the final Stop, leaking a socket and a goroutine.
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), pprofStopTimeout)
+		defer cancel()
+		_, _ = pprofCtl.Stop(ctx)
+	}()
+	stopPprofToggle := installPprofSignalToggle(context.Background(), pprofCtl)
+	defer stopPprofToggle()
 
 	// Single-weave invariant: acquire the flock before any init work, and
 	// hold it for the lifetime of the sprawl enter process (including
