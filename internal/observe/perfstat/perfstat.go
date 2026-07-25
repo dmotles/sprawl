@@ -49,6 +49,8 @@ type Collector struct {
 	at        time.Time
 	det       *Detector
 	now       func() time.Time
+
+	invariant InvariantStatus
 }
 
 // New returns a Collector. The detector is disabled unless cfg says otherwise.
@@ -77,6 +79,54 @@ func (c *Collector) ObserveFrame(f FrameSample) (Report, bool) {
 	return c.det.Observe(at, f.Streaming, f.Cache)
 }
 
+// InvariantEnabled reports whether the invariant check is on. The caller needs
+// this to decide whether to perform the O(n) orphan walk at all: when the check
+// is off the walk is pure waste, so a disabled collector must tell the caller
+// not to bother rather than silently discard the result.
+//
+// The mutex is NOT redundant despite cfg being conceptually immutable:
+// Detector.Reset does `*d = Detector{cfg: d.cfg}`, which writes cfg's memory.
+// Reading it unlocked would race with a concurrent Reset. Do not "optimize" the
+// lock away — this is on the render path only when the check is off, so the
+// uncontended lock is the cheap side of that trade.
+func (c *Collector) InvariantEnabled() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.det.cfg.Enabled
+}
+
+// ObserveInvariant records one out-of-band invariant observation and feeds the
+// detector. It returns a Report with ok true only on the first confirmed
+// violation of an episode.
+//
+// Call it BEFORE or AFTER the caller's timed render region, never inside it:
+// the orphan count comes from an O(n) walk, and timing that walk as part of a
+// frame would make the reported percentiles describe this diagnostic rather
+// than the app. That is why this is a separate call from ObserveFrame and not a
+// field on FrameSample — do not "tidy" it back into the frame path.
+func (c *Collector) ObserveInvariant(s InvariantSample) (Report, bool) {
+	at := s.At
+	if at.IsZero() {
+		at = c.now()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.det.cfg.Enabled {
+		// Leave Checked false: a disabled check has measured nothing, and
+		// recording it as a measurement would let an overlay display a
+		// reassuring zero.
+		return Report{}, false
+	}
+	c.invariant = InvariantStatus{
+		Enabled:   true,
+		Checked:   true,
+		Orphans:   s.Orphans,
+		Streaming: s.Streaming,
+		At:        at,
+	}
+	return c.det.ObserveInvariant(at, s, c.cache)
+}
+
 // Snapshot returns everything a diagnostics view displays. The result is a pure
 // value with no aliasing back into the collector.
 func (c *Collector) Snapshot() Snapshot {
@@ -86,12 +136,15 @@ func (c *Collector) Snapshot() Snapshot {
 	if at.IsZero() {
 		at = c.now()
 	}
+	inv := c.invariant
+	inv.Enabled = c.det.cfg.Enabled
 	return Snapshot{
 		At:        at,
 		Frame:     c.timer.Stats(),
 		Cache:     c.cache,
 		Streaming: c.streaming,
 		Detector:  c.det.Status(),
+		Invariant: inv,
 	}
 }
 
@@ -104,6 +157,7 @@ func (c *Collector) Reset() {
 	c.cache = CacheStats{}
 	c.streaming = false
 	c.at = time.Time{}
+	c.invariant = InvariantStatus{}
 	c.det.Reset()
 }
 
@@ -116,4 +170,5 @@ type Snapshot struct {
 	Cache     CacheStats
 	Streaming bool
 	Detector  DetectorStatus
+	Invariant InvariantStatus
 }

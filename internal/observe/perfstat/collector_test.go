@@ -179,6 +179,17 @@ func TestCollector_ConcurrentObserveAndSnapshot(t *testing.T) {
 			}
 		}()
 	}
+	// The invariant path mutates collector state from the render goroutine too,
+	// so it belongs under the same race gate.
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 500 {
+				c.ObserveInvariant(InvariantSample{Orphans: i % 3})
+			}
+		}()
+	}
 	for range 2 {
 		wg.Add(1)
 		go func() {

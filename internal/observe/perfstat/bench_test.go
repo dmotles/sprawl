@@ -38,6 +38,25 @@ func BenchmarkCollector_ObserveFrame(b *testing.B) {
 	}
 }
 
+func BenchmarkCollector_ObserveInvariant(b *testing.B) {
+	for _, tt := range []struct {
+		name string
+		cfg  DetectorConfig
+	}{
+		{"detector-off", DetectorConfig{}},
+		{"detector-on", enabledCfg()},
+	} {
+		b.Run(tt.name, func(b *testing.B) {
+			c := New(Config{Detector: tt.cfg})
+			at := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+			b.ReportAllocs()
+			for b.Loop() {
+				c.ObserveInvariant(InvariantSample{At: at})
+			}
+		})
+	}
+}
+
 func BenchmarkFrameTimer_Stats(b *testing.B) {
 	var tm FrameTimer
 	for i := range FrameRingCapacity {

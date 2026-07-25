@@ -6,9 +6,15 @@ import (
 	"time"
 )
 
-// FrameRingCapacity is the fixed sample window. 256 frames is roughly 4s at
-// 60fps — long enough for p95 to mean something, short enough that it reflects
-// current health rather than a session-long average.
+// FrameRingCapacity is the sample window, measured in frames rather than in
+// wall-clock time. Frames are driven by spinner ticks, keystrokes, and scroll
+// events — not by a fixed refresh rate — so the window's wall-clock span is
+// variable: long at rest (few rebuilds), and shorter the slower rendering gets
+// (256 frames at 51ms/frame is ~13s). That self-shortening is deliberate. It
+// makes p95 more responsive exactly when frames are expensive, which is when
+// the number is worth reading. Do not "fix" this into a fixed-duration window;
+// that would trade the responsiveness away. 256 keeps p95 meaningful while
+// still reflecting current health rather than a session-long average.
 const FrameRingCapacity = 256
 
 // FrameTimer is a fixed-size ring of frame render durations. Observe is O(1)

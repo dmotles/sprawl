@@ -16,6 +16,12 @@ const (
 )
 
 // DefectKind is a bitmask of the signals that make up a defect.
+//
+// The two report paths produce DISJOINT Kinds by construction: the frame path
+// sets only DefectIdleMisses and/or DefectUncacheable, the invariant path sets
+// only DefectOrphans. A Kind mixing them is unreachable — the bitmask exists so
+// the frame path's two bits can combine, and so String() can name any
+// combination, not because a mixed report is produced anywhere.
 type DefectKind uint8
 
 const (
@@ -26,6 +32,13 @@ const (
 	// DefectUncacheable means too many items never reached a finished state, so
 	// they can never be cached. This is the QUM-933 tell.
 	DefectUncacheable
+	// DefectOrphans means items are stranded unfinished somewhere other than the
+	// tail, so they re-render through the full markdown pipeline on every rebuild
+	// forever. Unlike the other two this is not a threshold heuristic but a
+	// direct violation of the chat model's cacheability invariant, so it reports
+	// on a short confirmation run of observations rather than a long
+	// consecutive-frame streak. See ObserveInvariant.
+	DefectOrphans
 )
 
 func (k DefectKind) String() string {
@@ -35,6 +48,9 @@ func (k DefectKind) String() string {
 	}
 	if k&DefectUncacheable != 0 {
 		names = append(names, "uncacheable")
+	}
+	if k&DefectOrphans != 0 {
+		names = append(names, "orphans")
 	}
 	if len(names) == 0 {
 		return "none"
@@ -50,6 +66,21 @@ type DetectorConfig struct {
 	UncacheableLimit int  // trip when the unfinished-item count exceeds this
 	DefectStreak     int  // consecutive defective idle frames before tripping
 	RecoveryStreak   int  // consecutive healthy idle frames before re-arming
+
+	// InvariantConfirmations and InvariantRecovery are counted in invariant
+	// OBSERVATIONS, not frames — the caller may sample only one frame in N, and
+	// a frame-counted threshold could never be reached by such a signal.
+	//
+	// "Consecutive" means consecutive among observations that carry evidence:
+	// streaming observations are skipped rather than counted or reset, so a
+	// recovery run spans turns. This mirrors the frame path, where a streaming
+	// frame clears suspicion without touching the clean streak.
+	//
+	// Neither is env-tunable, for the same reason RecoveryStreak is not:
+	// shortening either only makes the detector noisier, which is the failure
+	// mode worth avoiding.
+	InvariantConfirmations int // consecutive violating observations before reporting
+	InvariantRecovery      int // consecutive clean observations before re-arming
 }
 
 // DefaultDetectorConfig returns the tuned thresholds, with the detector left
@@ -61,11 +92,19 @@ type DetectorConfig struct {
 // flapping condition down to one report. The recovery length is deliberately not
 // tunable: shortening it only makes the detector noisier, which is the failure
 // mode worth avoiding.
+//
+// The invariant thresholds are far shorter because the signal is categorically
+// different: a violation is not a heuristic that needs corroborating, it is a
+// broken invariant. Two confirmations only guard against a caller sampling a
+// transient mid-mutation state; re-arming takes ten so a flickering condition
+// reports once rather than once per flicker.
 func DefaultDetectorConfig() DetectorConfig {
 	return DetectorConfig{
-		UncacheableLimit: 2,
-		DefectStreak:     30,
-		RecoveryStreak:   60,
+		UncacheableLimit:       2,
+		DefectStreak:           30,
+		RecoveryStreak:         60,
+		InvariantConfirmations: 2,
+		InvariantRecovery:      10,
 	}
 }
 
@@ -106,30 +145,71 @@ type Report struct {
 	HitRate     float64
 	Revision    uint64
 	Width       int
+
+	Orphans            int // invariant-violating items at observation time
+	OrphanObservations int // consecutive violating observations so far
+
+	// HaveFrameContext reports whether the cache fields above carry a real
+	// measurement. An orphan observation can arrive before any frame — nothing
+	// orders the two calls, and Collector.Reset clears the frame context — in
+	// which case Items/Revision/Width/HitRate are zero values, not readings.
+	HaveFrameContext bool
 }
 
-// Zero reports whether r carries no diagnosis.
-func (r Report) Zero() bool { return r.Kind == 0 && r.IdleFrames == 0 }
+// Zero reports whether r carries no diagnosis. Every constructed report sets at
+// least one Kind bit, so an unset Kind is the whole test — the previous
+// IdleFrames conjunct was unreachable and invited readers to hunt for a
+// Kind-less-but-populated report that cannot exist.
+func (r Report) Zero() bool { return r.Kind == 0 }
 
 // Diagnosis renders a single-line, human-readable summary naming every count.
+//
+// The two paths report different evidence, so the body is chosen rather than
+// concatenated — an orphan report must not claim that rebuilds were observed
+// when none were. The paths' Kinds are disjoint (see DefectKind), so this is an
+// either/or, not an accumulation.
 func (r Report) Diagnosis() string {
 	if r.Zero() {
 		return ""
 	}
-	return fmt.Sprintf(
-		"render-cache defeat suspected (episode %d, %s): %d consecutive idle frames rebuilt the chat render with revision %d pinned at width %d (%d rebuilds, hit rate %s); %d of %d items are unfinished/uncacheable (limit %d)",
-		r.Episode, r.Kind, r.IdleFrames, r.Revision, r.Width, r.IdleMisses,
-		FormatPercent(r.HitRate), r.Uncacheable, r.Items, r.Limit,
+	head := fmt.Sprintf("render-cache defeat suspected (episode %d, %s)", r.Episode, r.Kind)
+	if r.Kind&DefectOrphans == 0 {
+		return head + fmt.Sprintf(
+			": %d consecutive idle frames rebuilt the chat render with revision %d pinned at width %d (%d rebuilds, hit rate %s); %d of %d items are unfinished/uncacheable (limit %d)",
+			r.IdleFrames, r.Revision, r.Width, r.IdleMisses,
+			FormatPercent(r.HitRate), r.Uncacheable, r.Items, r.Limit,
+		)
+	}
+	// An invariant violation is not a suspicion, so it says "violated".
+	head += fmt.Sprintf(": cacheability invariant violated on %d consecutive observations; ",
+		r.OrphanObservations)
+	if !r.HaveFrameContext {
+		// No frame observed yet: the cache fields are zero values, not
+		// measurements, so naming them would fabricate a reading — including
+		// the item total, which would render as "22 of 0".
+		return head + fmt.Sprintf(
+			"%d items are stranded unfinished away from the tail, so every rebuild re-renders them (no frame observed yet, so no cache context)",
+			r.Orphans,
+		)
+	}
+	return head + fmt.Sprintf(
+		"%d of %d items are stranded unfinished away from the tail, so every rebuild re-renders them (revision %d, width %d, hit rate %s)",
+		r.Orphans, r.Items, r.Revision, r.Width, FormatPercent(r.HitRate),
 	)
 }
 
 // DetectorStatus is the detector's state for display.
 type DetectorStatus struct {
-	Enabled    bool
-	Tripped    bool // an episode is currently latched
-	Episodes   int
-	HasReport  bool
-	LastReport Report
+	Enabled bool
+	Tripped bool // a frame-path episode is currently latched
+	// OrphanTripped is a separate latch from Tripped. The two signals are
+	// independent evidence, so neither may suppress the other's report: on a
+	// machine with the bug, forced rebuilds and stranded items co-occur, and
+	// sharing one latch would silently swallow whichever arrived second.
+	OrphanTripped bool
+	Episodes      int
+	HasReport     bool
+	LastReport    Report
 }
 
 // Detector watches per-frame cache accounting for the pathological steady
@@ -155,7 +235,24 @@ type Detector struct {
 	kind          DefectKind
 	episodeMisses uint64
 
-	tripped   bool
+	tripped bool
+	// frameEpisode is the episode number the frame path's latched episode owns.
+	// It must NOT be re-read from the shared episodes counter when refreshing a
+	// latched report: the other path may have opened an episode since, and the
+	// refresh would relabel this defect with that episode's number.
+	frameEpisode int
+
+	// Orphan-path state. Counted in observations, not frames — see
+	// DetectorConfig.InvariantConfirmations.
+	orphanObservations int // consecutive violating observations
+	orphanClean        int // consecutive clean observations since the trip
+	orphanTripped      bool
+	orphanEpisode      int // as frameEpisode, for the orphan path
+
+	// episodes, hasReport and last are shared by both paths: an overlay wants
+	// one "most recent diagnosis" and one monotonic episode number, regardless
+	// of which signal produced it. Only the latches and the per-path episode
+	// labels are per-path.
 	episodes  int
 	hasReport bool
 	last      Report
@@ -172,6 +269,12 @@ func NewDetector(cfg DetectorConfig) *Detector {
 	}
 	if cfg.RecoveryStreak <= 0 {
 		cfg.RecoveryStreak = def.RecoveryStreak
+	}
+	if cfg.InvariantConfirmations <= 0 {
+		cfg.InvariantConfirmations = def.InvariantConfirmations
+	}
+	if cfg.InvariantRecovery <= 0 {
+		cfg.InvariantRecovery = def.InvariantRecovery
 	}
 	return &Detector{cfg: cfg}
 }
@@ -233,18 +336,22 @@ func (d *Detector) Observe(at time.Time, streaming bool, c CacheStats) (Report, 
 		if d.defectStreak < d.cfg.DefectStreak {
 			return Report{}, false
 		}
-		report := d.buildReport(at, c)
-		if d.tripped {
-			// Already reported this episode; keep the latched report current so
-			// a diagnostics overlay shows live counts.
-			d.last = report
-			return Report{}, false
+		firstOfEpisode := !d.tripped
+		if firstOfEpisode {
+			d.tripped = true
+			d.episodes++
+			d.frameEpisode = d.episodes
 		}
-		d.tripped = true
-		d.episodes++
-		report.Episode = d.episodes
+		// Labeled with the episode this path owns, not the shared counter: the
+		// other path may have opened an episode since this one latched.
+		report := d.buildReport(at, c)
 		d.last = report
 		d.hasReport = true
+		if !firstOfEpisode {
+			// Already reported this episode. The latched report was refreshed
+			// above so an overlay shows live counts, but the caller is told once.
+			return Report{}, false
+		}
 		return report, true
 	}
 
@@ -276,11 +383,12 @@ func (d *Detector) abandonSuspicion() {
 // Status returns the detector's current state.
 func (d *Detector) Status() DetectorStatus {
 	return DetectorStatus{
-		Enabled:    d.cfg.Enabled,
-		Tripped:    d.tripped,
-		Episodes:   d.episodes,
-		HasReport:  d.hasReport,
-		LastReport: d.last,
+		Enabled:       d.cfg.Enabled,
+		Tripped:       d.tripped,
+		OrphanTripped: d.orphanTripped,
+		Episodes:      d.episodes,
+		HasReport:     d.hasReport,
+		LastReport:    d.last,
 	}
 }
 
@@ -300,7 +408,7 @@ func (d *Detector) buildReport(at time.Time, c CacheStats) Report {
 	return Report{
 		At:          at,
 		Kind:        d.kind,
-		Episode:     d.episodes,
+		Episode:     d.frameEpisode,
 		IdleFrames:  d.defectStreak,
 		IdleMisses:  d.episodeMisses,
 		Items:       c.Items,

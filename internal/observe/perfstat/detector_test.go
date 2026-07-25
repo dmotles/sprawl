@@ -689,56 +689,66 @@ func TestDetector_Reset(t *testing.T) {
 	}
 }
 
+// TestDetectorConfigFromEnv pins the env surface. Each case states its expected
+// config as a delta from DefaultDetectorConfig() rather than as a full literal,
+// so a newly added config field does not silently fail all seven cases with a
+// zero-vs-default mismatch that reads like an implementation bug.
+//
+// Stating them as deltas also pins the negative: any field NOT named by a case
+// must come back at its default, which is what makes the thresholds that are
+// deliberately not env-tunable (RecoveryStreak, InvariantConfirmations,
+// InvariantRecovery) actually tested as such.
 func TestDetectorConfigFromEnv(t *testing.T) {
-	def := enabledCfg()
 	tests := []struct {
-		name string
-		env  map[string]string
-		want DetectorConfig
+		name  string
+		env   map[string]string
+		want  func(*DetectorConfig)
+		about string
 	}{
-		{"unset is disabled", nil, DetectorConfig{
-			Enabled: false, UncacheableLimit: def.UncacheableLimit,
-			DefectStreak: def.DefectStreak, RecoveryStreak: def.RecoveryStreak,
-		}},
-		{"1 enables", map[string]string{envInvariant: "1"}, DetectorConfig{
-			Enabled: true, UncacheableLimit: def.UncacheableLimit,
-			DefectStreak: def.DefectStreak, RecoveryStreak: def.RecoveryStreak,
-		}},
-		{"true enables", map[string]string{envInvariant: "true"}, DetectorConfig{
-			Enabled: true, UncacheableLimit: def.UncacheableLimit,
-			DefectStreak: def.DefectStreak, RecoveryStreak: def.RecoveryStreak,
-		}},
-		{"0 stays disabled", map[string]string{envInvariant: "0"}, DetectorConfig{
-			Enabled: false, UncacheableLimit: def.UncacheableLimit,
-			DefectStreak: def.DefectStreak, RecoveryStreak: def.RecoveryStreak,
-		}},
-		{"overrides applied", map[string]string{
-			envInvariant: "1", envDefectStreak: "5", envUncacheableLimit: "9",
-		}, DetectorConfig{
-			Enabled: true, UncacheableLimit: 9,
-			DefectStreak: 5, RecoveryStreak: def.RecoveryStreak,
-		}},
-		{"malformed overrides fall back", map[string]string{
-			envInvariant: "1", envDefectStreak: "abc", envUncacheableLimit: "-3",
-		}, DetectorConfig{
-			Enabled: true, UncacheableLimit: def.UncacheableLimit,
-			DefectStreak: def.DefectStreak, RecoveryStreak: def.RecoveryStreak,
-		}},
-		{"zero streak falls back", map[string]string{
-			envInvariant: "1", envDefectStreak: "0",
-		}, DetectorConfig{
-			Enabled: true, UncacheableLimit: def.UncacheableLimit,
-			DefectStreak: def.DefectStreak, RecoveryStreak: def.RecoveryStreak,
-		}},
+		{name: "unset is disabled", env: nil},
+		{
+			name: "1 enables", env: map[string]string{envInvariant: "1"},
+			want: func(c *DetectorConfig) { c.Enabled = true },
+		},
+		{
+			name: "true enables", env: map[string]string{envInvariant: "true"},
+			want: func(c *DetectorConfig) { c.Enabled = true },
+		},
+		{name: "0 stays disabled", env: map[string]string{envInvariant: "0"}},
+		{
+			name: "overrides applied",
+			env: map[string]string{
+				envInvariant: "1", envDefectStreak: "5", envUncacheableLimit: "9",
+			},
+			want: func(c *DetectorConfig) {
+				c.Enabled, c.DefectStreak, c.UncacheableLimit = true, 5, 9
+			},
+		},
+		{
+			name: "malformed overrides fall back",
+			env: map[string]string{
+				envInvariant: "1", envDefectStreak: "abc", envUncacheableLimit: "-3",
+			},
+			want: func(c *DetectorConfig) { c.Enabled = true },
+		},
+		{
+			name: "zero streak falls back",
+			env:  map[string]string{envInvariant: "1", envDefectStreak: "0"},
+			want: func(c *DetectorConfig) { c.Enabled = true },
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			want := DefaultDetectorConfig()
+			if tt.want != nil {
+				tt.want(&want)
+			}
 			lookup := func(k string) (string, bool) {
 				v, ok := tt.env[k]
 				return v, ok
 			}
-			if got := DetectorConfigFromEnv(lookup); got != tt.want {
-				t.Errorf("DetectorConfigFromEnv() = %+v, want %+v", got, tt.want)
+			if got := DetectorConfigFromEnv(lookup); got != want {
+				t.Errorf("DetectorConfigFromEnv() = %+v, want %+v", got, want)
 			}
 		})
 	}
