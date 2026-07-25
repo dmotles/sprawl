@@ -596,7 +596,9 @@ _unit_run_env() {
 	# split into separate VAR=VAL words for `env`, and mdir must vanish entirely
 	# when empty. Do not "fix" this by quoting them.
 	# shellcheck disable=SC2086
-	env -u SPRAWL_E2E_SKIP_NO_CLAUDE -u E2E_SKIP_FILE "TMPDIR=$fix" \
+	env -u SPRAWL_E2E_SKIP_NO_CLAUDE -u E2E_SKIP_FILE \
+		-u SPRAWL_E2E_MATRIX_DEBUG_TALLY_SKEW \
+		-u SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL "TMPDIR=$fix" \
 		$envs ${mdir:+UNIT_MARKER_DIR=$mdir} \
 		"$bash_abs" "$fix/e2e-matrix.sh" "$@" >"$of" 2>"$ef"
 	_RC=$?
@@ -1087,6 +1089,11 @@ else
 			"	printf 'stale-reason\n' >\"\${E2E_SKIP_FILE:?}\"
 	chmod 0444 \"\${E2E_SKIP_FILE:?}\"
 	return 77" || skip_setup_ok=0
+		# Un-truncatable but EMPTY: isolates the un-writable fault from the
+		# stale-content one, which lockskip above triggers simultaneously.
+		_unit_mk_row "$RD" _unit_fixture_lockempty "" \
+			"	chmod 0444 \"\${E2E_SKIP_FILE:?}\"
+	return 0" || skip_setup_ok=0
 
 		# A claude stub on a private PATH: hermetic "claude is present" without
 		# depending on the host, and without letting a real claude be invoked.
@@ -1507,6 +1514,91 @@ else
 		else
 			fail "15q: un-resettable sentinel not reported as an internal error err=$_ERR"
 		fi
+		# The row above makes the sentinel un-writable AND leaves content, so it
+		# is caught whichever half of the guard is intact. This one makes it
+		# un-writable while leaving it EMPTY, so only the failed write can be
+		# what notices — otherwise 15q would keep passing with that half removed.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_lockempty _unit_fixture_m1
+		if [ "$_RC" -eq 4 ]; then
+			pass "15q: an un-writable but empty sentinel is an internal error (rc 4)"
+		else
+			fail "15q: want rc=4 for an empty un-writable sentinel, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_ran "$MSK" _unit_fixture_m1 no "15q: the row after an un-writable sentinel never executed"
+		_unit_assert_no_summary "$_OUT" "15q: no summary when the sentinel cannot be written"
+
+		# --- 15s: a stale reason that survives the reset must abort, not launder -
+		# 15q induces a reset that FAILS. This induces the other fault the same
+		# guard exists for: a reset that reports success and leaves the previous
+		# row's reason in place anyway (the file, or something writing to it,
+		# outlived the truncate). Left unnoticed, the next row's rc 77 crash is
+		# corroborated by a reason it never wrote and is laundered into a skip —
+		# QUM-952 again, one row over. Not stageable without privileges
+		# (append-only attrs, a directory, a procfs or FIFO sentinel all make the
+		# truncate itself fail, i.e. 15q's arm), so it is induced through a debug
+		# seam, exactly as 15j induces a skewed tally.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL=1" \
+			_unit_fixture_libskip _unit_fixture_bare77
+		if [ "$_RC" -eq 4 ]; then
+			pass "15s: a reason surviving the reset is an internal error (rc 4)"
+		else
+			fail "15s: want rc=4, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		# The laundering itself, asserted directly: bare77 exits 77 having
+		# written nothing, so the only reason available to it is the stale one.
+		if printf '%s\n' "$_OUT" | grep -q '^SKIP _unit_fixture_bare77$'; then
+			fail "15s: a crashing row was laundered into a SKIP by a stale reason out=$_OUT"
+		else
+			pass "15s: the row after the stale reason is not laundered into a SKIP"
+		fi
+		# The seam must leave the reason for the guard to read, not manufacture
+		# the abort ahead of the loop: the first row still ran and was classified.
+		if printf '%s\n' "$_OUT" | grep -q '^SKIP _unit_fixture_libskip$'; then
+			pass "15s: the row that wrote the reason ran and was classified normally"
+		else
+			fail "15s: the first row did not run, so no reason was left to survive out=$_OUT"
+		fi
+		_unit_assert_verdict_lines_any "$_OUT" 1 "15s: the row facing a dirty sentinel gets no verdict at all"
+		_unit_assert_ran "$MSK" _unit_fixture_bare77 no "15s: the row facing a dirty sentinel never executed"
+		_unit_assert_no_summary "$_OUT" "15s: no summary once a reason of unknown provenance is in play"
+		_unit_assert_no_breakdown "$_OUT" "15s: no breakdown line printed on a surviving reason"
+		# Same line, not merely both present: the stale reason must be reported
+		# against the row that was about to run, which is what tells a reader
+		# whose reason it is not.
+		if printf '%s\n' "$_ERR" | grep -q "internal error.*before row '_unit_fixture_bare77'"; then
+			pass "15s: the surviving reason is reported against the row about to run"
+		else
+			fail "15s: the surviving reason is not attributed to the next row err=$_ERR"
+		fi
+		# Control: with the reason cleared as normal, bare77's uncorroborated rc
+		# 77 is a plain failure — so the rc 4 above is the induced fault, not a
+		# guard that fires unconditionally. The overlap with 15h is deliberate:
+		# the value here is being 15s's own invocation MINUS the seam, which is
+		# what attributes the abort to the seam. Do not de-duplicate it away.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_libskip _unit_fixture_bare77
+		if [ "$_RC" -eq 1 ]; then
+			pass "15s: with the reason cleared, the next row's rc 77 is a failure (rc 1)"
+		else
+			fail "15s: control run rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 1 1 2 "15s: control run breakdown is 1 failed + 1 skipped of 2"
+		# Second control, with the reset suppressed but NO reason left behind by
+		# either row: the abort must be attributable to the surviving content and
+		# nothing else. Without this, an abort keyed on "not the first row"
+		# rather than on the sentinel's contents satisfies every assertion above.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL=1" \
+			_unit_fixture_m1 _unit_fixture_m2
+		if [ "$_RC" -eq 0 ]; then
+			pass "15s: a suppressed reset with nothing to survive is a clean run (rc 0)"
+		else
+			fail "15s: nothing-to-survive control rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 2 0 0 2 "15s: nothing-to-survive control breakdown is 2 passed of 2"
+		_unit_assert_ran "$MSK" _unit_fixture_m2 yes "15s: both rows ran when no reason survived"
 
 		# --- 15p: CLAUDE.md must not still document the old false-green -------
 		# Same philosophy as [11]'s self-wiring check: a fix that leaves the

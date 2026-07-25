@@ -255,6 +255,24 @@ trap 'rm -f "$E2E_SKIP_FILE" 2>/dev/null || true' EXIT INT TERM HUP
 # selection is visible without having to reverse-engineer it from the summary.
 echo "=== Matrix: running $requested row(s): ${selected[*]} ==="
 
+# The per-row truncate, factored out ONLY so the debug seam below can suppress
+# it: without a way to leave a previous row's reason in place, the emptiness
+# post-condition on the guard in the loop is unexercisable, and an unexercised
+# guard is decoration (same argument as SPRAWL_E2E_MATRIX_DEBUG_TALLY_SKEW).
+# Redirection order is load-bearing: `>` is applied before `2>/dev/null`, so
+# bash's own diagnostic still reaches real stderr when the write fails.
+# Deliberately NOT used for the create/writability preflight above — that one
+# is a different fault with a different exit status (2) and no post-condition.
+reset_skip_sentinel() {
+    if [ "${SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL:-}" = "1" ]; then
+        # Debug seam: report success without clearing anything, so whatever the
+        # previous row wrote survives into the next row's classification.
+        return 0
+    fi
+    : >"$E2E_SKIP_FILE" 2>/dev/null || return 1
+    return 0
+}
+
 for name in "${selected[@]}"; do
     # Truncate PER ROW, and REFUSE TO CONTINUE if that fails. A stale sentinel
     # would launder the next row's failure into a skip (exit 3 instead of 1),
@@ -264,7 +282,7 @@ for name in "${selected[@]}"; do
     # QUM-952 wearing a different hat. Note bash reports a failed redirection
     # itself, so `2>/dev/null` does not silence it; the explicit message below
     # is what says *why* the run is aborting.
-    if ! : >"$E2E_SKIP_FILE" 2>/dev/null || [ -s "$E2E_SKIP_FILE" ]; then
+    if ! reset_skip_sentinel || [ -s "$E2E_SKIP_FILE" ]; then
         echo "internal error: cannot reset the skip sentinel $E2E_SKIP_FILE before row '$name';" >&2
         echo "               stale content would misclassify this row, so refusing to continue" >&2
         exit 4
