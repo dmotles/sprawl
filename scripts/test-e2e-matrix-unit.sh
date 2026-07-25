@@ -39,6 +39,38 @@ fi
 export TMPDIR=/tmp
 UNIT_TMP_ROOT=${TMPDIR%/}
 
+# The variables this suite must never inherit, and the single place they are
+# registered. Every entry either makes the driver misbehave on purpose (the
+# debug seams) or redirects state the driver owns (the skip sentinel), so an
+# inherited value flips this suite's negative controls green for a reason that
+# has nothing to do with the code under test.
+#
+# They are removed from THIS process's environment rather than scrubbed per
+# call site, because the suite invokes the driver from four places and three of
+# them cannot route through _unit_run_env: [7] and [8] run the real $DRIVER (so
+# TMPDIR must not be a fixture dir) and [10] uses PATH=/nonexistent with an
+# absolute bash and its own fixture tree. A per-site scrub is a rule the next
+# call site has to remember; unsetting is a rule it cannot forget.
+#
+# Adding a debug seam to scripts/e2e-matrix.sh? Register it here — [16a] reads
+# the seam names out of the driver and fails if one is missing.
+UNIT_SCRUBBED_VARS=(
+	SPRAWL_E2E_SKIP_NO_CLAUDE
+	E2E_SKIP_FILE
+	SPRAWL_E2E_MATRIX_DEBUG_TALLY_SKEW
+	SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL
+)
+UNIT_SCRUB_ARGS=()
+for _v in "${UNIT_SCRUBBED_VARS[@]}"; do
+	UNIT_SCRUB_ARGS+=(-u "$_v")
+done
+unset "${UNIT_SCRUBBED_VARS[@]}"
+
+# This file's own path, for the nested self-check in [16b]. Derived from
+# BASH_SOURCE, not $0: the Makefile invokes the suite by a relative path and
+# the cd above has already moved, so $0 resolves only by coincidence of cwd.
+UNIT_SELF="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+
 pass() {
 	PASS=$((PASS + 1))
 	echo "  PASS: $1"
@@ -575,11 +607,11 @@ _unit_run() {
 # run can scrub PATH or set SPRAWL_E2E_SKIP_NO_CLAUDE for the driver process
 # only. bash is resolved absolutely so a scrubbed PATH cannot break the exec.
 #
-# `env -u` is load-bearing (QUM-952): CLAUDE.md instructs agents to export
-# SPRAWL_E2E_SKIP_NO_CLAUDE, and this suite runs inside `make validate` inside
-# the pre-commit hook. An inherited value would invert the negative controls
-# below — turning them green for the wrong reason — and an inherited
-# E2E_SKIP_FILE would point rows at a sentinel the driver does not own.
+# The `env -u` prefix is built from UNIT_SCRUBBED_VARS (the registry at the top
+# of this file), so there is one authority rather than two lists that can drift.
+# The registry is already unset process-wide, which is what actually protects
+# the call sites that cannot route through here; this prefix additionally covers
+# anything inside the suite that exports one of those names mid-run.
 _unit_run_env() {
 	local fix=${1:?} mdir=$2 envs=$3
 	shift 3
@@ -596,7 +628,7 @@ _unit_run_env() {
 	# split into separate VAR=VAL words for `env`, and mdir must vanish entirely
 	# when empty. Do not "fix" this by quoting them.
 	# shellcheck disable=SC2086
-	env -u SPRAWL_E2E_SKIP_NO_CLAUDE -u E2E_SKIP_FILE "TMPDIR=$fix" \
+	env "${UNIT_SCRUB_ARGS[@]}" "TMPDIR=$fix" \
 		$envs ${mdir:+UNIT_MARKER_DIR=$mdir} \
 		"$bash_abs" "$fix/e2e-matrix.sh" "$@" >"$of" 2>"$ef"
 	_RC=$?
@@ -1087,6 +1119,11 @@ else
 			"	printf 'stale-reason\n' >\"\${E2E_SKIP_FILE:?}\"
 	chmod 0444 \"\${E2E_SKIP_FILE:?}\"
 	return 77" || skip_setup_ok=0
+		# Un-truncatable but EMPTY: isolates the un-writable fault from the
+		# stale-content one, which lockskip above triggers simultaneously.
+		_unit_mk_row "$RD" _unit_fixture_lockempty "" \
+			"	chmod 0444 \"\${E2E_SKIP_FILE:?}\"
+	return 0" || skip_setup_ok=0
 
 		# A claude stub on a private PATH: hermetic "claude is present" without
 		# depending on the host, and without letting a real claude be invoked.
@@ -1507,6 +1544,103 @@ else
 		else
 			fail "15q: un-resettable sentinel not reported as an internal error err=$_ERR"
 		fi
+		# The row above makes the sentinel un-writable AND leaves content, so it
+		# is caught whichever half of the guard is intact. This one makes it
+		# un-writable while leaving it EMPTY, so only the failed write can be
+		# what notices — otherwise 15q would keep passing with that half removed.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_lockempty _unit_fixture_m1
+		if [ "$_RC" -eq 4 ]; then
+			pass "15q: an un-writable but empty sentinel is an internal error (rc 4)"
+		else
+			fail "15q: want rc=4 for an empty un-writable sentinel, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_ran "$MSK" _unit_fixture_m1 no "15q: the row after an un-writable sentinel never executed"
+		_unit_assert_no_summary "$_OUT" "15q: no summary when the sentinel cannot be written"
+		# Attribute the abort to the SECOND row, or an exit 4 raised anywhere
+		# before the first row would satisfy the three assertions above.
+		if printf '%s\n' "$_ERR" | grep -q "internal error.*before row '_unit_fixture_m1'"; then
+			pass "15q: the failed write is reported against the row about to run"
+		else
+			fail "15q: the failed write is not attributed to the next row err=$_ERR"
+		fi
+		if printf '%s\n' "$_OUT" | grep -q '^PASS _unit_fixture_lockempty$'; then
+			pass "15q: the row that made the sentinel un-writable ran and was classified"
+		else
+			fail "15q: the first row did not run, so nothing made the sentinel un-writable out=$_OUT"
+		fi
+
+		# --- 15s: a stale reason that survives the reset must abort, not launder -
+		# 15q induces a reset that FAILS. This induces the other fault the same
+		# guard exists for: a reset that reports success and leaves the previous
+		# row's reason in place anyway (the file, or something writing to it,
+		# outlived the truncate). Left unnoticed, the next row's rc 77 crash is
+		# corroborated by a reason it never wrote and is laundered into a skip —
+		# QUM-952 again, one row over. Not stageable without privileges
+		# (append-only attrs, a directory, a procfs or FIFO sentinel all make the
+		# truncate itself fail, i.e. 15q's arm), so it is induced through a debug
+		# seam, exactly as 15j induces a skewed tally.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL=1" \
+			_unit_fixture_libskip _unit_fixture_bare77
+		if [ "$_RC" -eq 4 ]; then
+			pass "15s: a reason surviving the reset is an internal error (rc 4)"
+		else
+			fail "15s: want rc=4, got rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		# The laundering itself, asserted directly: bare77 exits 77 having
+		# written nothing, so the only reason available to it is the stale one.
+		if printf '%s\n' "$_OUT" | grep -q '^SKIP _unit_fixture_bare77$'; then
+			fail "15s: a crashing row was laundered into a SKIP by a stale reason out=$_OUT"
+		else
+			pass "15s: the row after the stale reason is not laundered into a SKIP"
+		fi
+		# The seam must leave the reason for the guard to read, not manufacture
+		# the abort ahead of the loop: the first row still ran and was classified.
+		if printf '%s\n' "$_OUT" | grep -q '^SKIP _unit_fixture_libskip$'; then
+			pass "15s: the row that wrote the reason ran and was classified normally"
+		else
+			fail "15s: the first row did not run, so no reason was left to survive out=$_OUT"
+		fi
+		_unit_assert_verdict_lines_any "$_OUT" 1 "15s: the row facing a dirty sentinel gets no verdict at all"
+		_unit_assert_ran "$MSK" _unit_fixture_bare77 no "15s: the row facing a dirty sentinel never executed"
+		_unit_assert_no_summary "$_OUT" "15s: no summary once a reason of unknown provenance is in play"
+		_unit_assert_no_breakdown "$_OUT" "15s: no breakdown line printed on a surviving reason"
+		# Same line, not merely both present: the stale reason must be reported
+		# against the row that was about to run, which is what tells a reader
+		# whose reason it is not.
+		if printf '%s\n' "$_ERR" | grep -q "internal error.*before row '_unit_fixture_bare77'"; then
+			pass "15s: the surviving reason is reported against the row about to run"
+		else
+			fail "15s: the surviving reason is not attributed to the next row err=$_ERR"
+		fi
+		# Control: with the reason cleared as normal, bare77's uncorroborated rc
+		# 77 is a plain failure — so the rc 4 above is the induced fault, not a
+		# guard that fires unconditionally. The overlap with 15h is deliberate:
+		# the value here is being 15s's own invocation MINUS the seam, which is
+		# what attributes the abort to the seam. Do not de-duplicate it away.
+		_unit_reset_markers "$MSK"
+		_unit_run "$FIXSKIP" "$MSK" _unit_fixture_libskip _unit_fixture_bare77
+		if [ "$_RC" -eq 1 ]; then
+			pass "15s: with the reason cleared, the next row's rc 77 is a failure (rc 1)"
+		else
+			fail "15s: control run rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 0 1 1 2 "15s: control run breakdown is 1 failed + 1 skipped of 2"
+		# Second control, with the reset suppressed but NO reason left behind by
+		# either row: the abort must be attributable to the surviving content and
+		# nothing else. Without this, an abort keyed on "not the first row"
+		# rather than on the sentinel's contents satisfies every assertion above.
+		_unit_reset_markers "$MSK"
+		_unit_run_env "$FIXSKIP" "$MSK" "SPRAWL_E2E_MATRIX_DEBUG_STALE_SENTINEL=1" \
+			_unit_fixture_m1 _unit_fixture_m2
+		if [ "$_RC" -eq 0 ]; then
+			pass "15s: a suppressed reset with nothing to survive is a clean run (rc 0)"
+		else
+			fail "15s: nothing-to-survive control rc=$_RC out=$_OUT err=$_ERR"
+		fi
+		_unit_assert_breakdown "$_OUT" 2 0 0 2 "15s: nothing-to-survive control breakdown is 2 passed of 2"
+		_unit_assert_ran "$MSK" _unit_fixture_m2 yes "15s: both rows ran when no reason survived"
 
 		# --- 15p: CLAUDE.md must not still document the old false-green -------
 		# Same philosophy as [11]'s self-wiring check: a fix that leaves the
@@ -1548,6 +1682,159 @@ else
 			esac
 		done
 	fi
+fi
+
+# ----------------------------------------------------------------------------
+# 16. This suite's verdict must not depend on the environment that ran it.
+#
+#     Same idea as [11]'s Makefile self-wiring check and [15p]'s CLAUDE.md
+#     check, pointed at this file: a gate whose result the caller can flip is
+#     not a gate. A driver debug seam exported in the invoking shell reaches
+#     every driver child that did not scrub it, and the assertions fed by those
+#     children then pass or fail for reasons unrelated to the code under test.
+#
+#     16a is static and derived from the driver, so a seam added later and left
+#     unregistered fails here rather than quietly joining the inherited-env
+#     surface. 16b is the behavioural proof: it re-runs this whole suite once
+#     per seam, with that seam exported, and demands the same verdict. Only 16b
+#     would have caught the measured failure, because the [10] call sites are
+#     invisible to any list of scrubbed names.
+# ----------------------------------------------------------------------------
+echo "[16] suite environment hygiene"
+
+# The recursion guard is a NONCE PATH, not a boolean, and the nonce is created
+# by the parent for one run. A caller who exports UNIT_NESTED_SEAM_CHECK=1
+# would otherwise silently disable this whole section and still see a green
+# suite — which is precisely the fault [16] exists to detect, so an unbacked
+# guard value has to fail loudly instead.
+if [ -n "${UNIT_NESTED_SEAM_CHECK:-}" ]; then
+	if [ -r "$UNIT_NESTED_SEAM_CHECK" ] &&
+		grep -q '^nested-seam-check$' "$UNIT_NESTED_SEAM_CHECK" 2>/dev/null; then
+		# A 16b child. Recursing would fork-bomb, and a `pass` here would
+		# corrupt the coverage comparison below, so this branch counts nothing.
+		# The floor is emitted at the SAME point the parent reads its own, so
+		# adding a section after [16] cannot skew the comparison.
+		note "16: nested child — [16] intentionally not re-run"
+		echo "NESTED-FLOOR: $PASS"
+	else
+		fail "16: UNIT_NESTED_SEAM_CHECK is set in the invoking environment without a live nonce — [16] would have been disabled by the caller"
+	fi
+else
+	_nested_floor=$PASS
+	_parent_fail_on_entry=$FAIL
+
+	# --- 16a: every seam the driver reads is registered for scrubbing --------
+	_seams=$(grep -ohE 'SPRAWL_E2E_MATRIX_DEBUG_[A-Z0-9_]+' "$DRIVER" "$LIB" 2>/dev/null | sort -u)
+	if [ -z "$_seams" ]; then
+		# No hits means the probe broke, not that the driver has no seams: the
+		# loop below would then be vacuous and report all-green.
+		fail "16a: no SPRAWL_E2E_MATRIX_DEBUG_* seams found in the driver or lib — the probe broke, and every 16b assertion below silently disappears with it"
+	fi
+	for _s in $_seams; do
+		_found=0
+		for _r in "${UNIT_SCRUBBED_VARS[@]}"; do
+			[ "$_r" = "$_s" ] && _found=1
+		done
+		if [ "$_found" -eq 1 ]; then
+			pass "16a: an exported $_s cannot invert this suite's negative controls"
+		else
+			fail "16a: driver seam $_s is unregistered — an exported value would invert this suite's negative controls"
+		fi
+	done
+	# The registry is only a single authority if the one call site that still
+	# scrubs per-invocation is built from it. Without this, that prefix becomes
+	# unobservable once the process-wide unset lands, and the two lists it was
+	# meant to merge can drift again with nothing to notice.
+	if grep -q '"\${UNIT_SCRUB_ARGS\[@\]}"' "$UNIT_SELF"; then
+		pass "16a: _unit_run_env's scrub is built from the registry, not a second list"
+	else
+		fail "16a: a hand-written scrub list has reappeared — the registry is no longer the only authority"
+	fi
+
+	# --- 16b: an exported seam cannot change this suite's verdict ------------
+	# One child per seam, never both at once: each seam aborts the driver with
+	# rc 4 by a different route, so a combined child could not say which caused
+	# it. The value is passed on the child's command line rather than inherited,
+	# so the section stages its own hostile input instead of waiting for an
+	# operator to supply one.
+	#
+	# The list is the DRIVER's seams, not the whole registry: the other two
+	# registry entries cannot reach a driver child (e2e-matrix.sh assigns
+	# E2E_SKIP_FILE from mktemp unconditionally, and every site that needs
+	# SPRAWL_E2E_SKIP_NO_CLAUDE sets it on the child's own command line), so a
+	# child for either would cost 1.1s to assert a property nothing can break.
+	# 16a covers them statically for free.
+	_nonce=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-nonce.XXXXXX" 2>/dev/null)
+	_timeout=$(command -v timeout)
+	if [ -z "$_nonce" ] || ! printf 'nested-seam-check\n' >"$_nonce" 2>/dev/null; then
+		fail "16b: cannot stage the recursion nonce — nested check not run"
+	elif [ ! -r "$UNIT_SELF" ]; then
+		fail "16b: cannot locate this suite at '$UNIT_SELF' — nested check not run"
+	else
+		for _s in $_seams; do
+			_clog=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-child.XXXXXX") || {
+				fail "16b: cannot mktemp child log for $_s — neither claim was checked for it"
+				continue
+			}
+			# timeout is insurance: a regression in the recursion guard above
+			# would otherwise hang `make validate` inside the pre-commit hook. 30s
+			# is a 25x margin on a ~1.2s child, and caps the worst case across all
+			# children at well under a minute. rc 124 lands in the failure branch
+			# below, whose text names a verdict change — see the rc in the message
+			# before believing that attribution.
+			# shellcheck disable=SC2086
+			env "UNIT_NESTED_SEAM_CHECK=$_nonce" "$_s=1" \
+				${_timeout:+"$_timeout" -k 5 30} bash "$UNIT_SELF" >"$_clog" 2>&1
+			_crc=$?
+			_cres=$(grep -E '^=== unit results: [0-9]+ passed / [0-9]+ failed ===$' "$_clog" | tail -1)
+			_cfloor=$(sed -n 's/^NESTED-FLOOR: \([0-9]*\)$/\1/p' "$_clog" | tail -1)
+			# When the parent is already failing, the child inherits those
+			# failures and the label below would misattribute them.
+			_caveat=""
+			if [ "$_parent_fail_on_entry" -gt 0 ]; then
+				_caveat=" (NOTE: the parent already had $_parent_fail_on_entry failures — this may be pre-existing rather than an env-hygiene regression)"
+			fi
+			if [ "$_crc" -eq 0 ] && [ -n "$_cres" ]; then
+				pass "16b: an exported $_s cannot change this suite's verdict or coverage from any call site"
+			else
+				fail "16b: exporting $_s changed this suite's verdict$_caveat (child rc=$_crc, '$_cres'); child failures: $(grep '^  FAIL' "$_clog" | tr '\n' '|')"
+			fi
+			# A child that exited 0 having skipped whole sections satisfies the
+			# check above, so its coverage must match the parent's exactly —
+			# `-ge` would tolerate coverage shrinking.
+			if [ -n "$_cfloor" ] && [ "$_cfloor" -eq "$_nested_floor" ]; then
+				pass "16b: the child run with $_s exported asserted the same $_nested_floor things"
+			else
+				fail "16b: child with $_s exported asserted ${_cfloor:-<no floor reported>}, want exactly $_nested_floor"
+			fi
+			rm -f "$_clog"
+		done
+
+		# --- 16c: a naive guard value fails loudly instead of skipping [16] ---
+		# 16b's recursion guard is itself an inherited variable, so a caller who
+		# exports it would skip all of [16] and still see green — this section's
+		# own defect, one level up. What is provable is bounded: the guard is a
+		# path whose contents the child checks, and a caller can write that same
+		# literal, so a DELIBERATE bypass remains possible and no inheritable
+		# token can fix that (the caller is the parent, from the child's point of
+		# view). What 16c asserts is the accident that actually happens — a bare
+		# `1`, a stale path, a leftover export — and it is the only assertion
+		# that notices if the guard is relaxed back to a truthiness test.
+		_clog=$(mktemp "$UNIT_TMP_ROOT/e2e-matrix-unit-child.XXXXXX") || fail "16c: cannot mktemp child log — the guard was not checked"
+		if [ -n "$_clog" ]; then
+			# shellcheck disable=SC2086
+			env "UNIT_NESTED_SEAM_CHECK=$_nonce.not-a-real-nonce" \
+				${_timeout:+"$_timeout" -k 5 30} bash "$UNIT_SELF" >"$_clog" 2>&1
+			_crc=$?
+			if [ "$_crc" -ne 0 ] && grep -q 'disabled by the caller' "$_clog"; then
+				pass "16c: an unbacked recursion guard value fails the run instead of skipping [16]"
+			else
+				fail "16c: an unbacked recursion guard silently disabled [16] (child rc=$_crc)"
+			fi
+			rm -f "$_clog"
+		fi
+	fi
+	rm -f "$_nonce"
 fi
 
 # Summary
