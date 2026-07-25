@@ -311,6 +311,8 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 
 **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way. **Read `/testing-practices` before writing any tests for the first time** — it covers the dependency injection pattern, mock conventions, and common pitfalls.
 
+**Every new assertion must demonstrate it CAN fail** — a negative control, a mutation, or a red-first run — and you must record which one and what it printed; an assertion nobody has watched fail is a claim, not a check. Any harness that aggregates its own results needs an **assertion-count floor**, so a run reporting `0 passed / 0 failed` exits non-zero instead of green (worked example: `scripts/test-wirelog-helpers-unit.sh`). A **parent-commit** control proves a failure is *pre-existing*, never that it is *acceptable*; read `/testing-practices` § **Assertion Rigor** before writing or reviewing any assertion.
+
 **Read `/go-cli-best-practices` before writing or modifying Go code** — it covers cobra patterns, error handling conventions, and dependency injection structure used throughout this codebase.
 
 **Read `/cli-ux-best-practices` before adding or modifying any CLI command's behavior** — it covers output design for agent consumers, the "next action hint" pattern, error message design, and idempotency. Every command must tell the calling agent what to do next.
