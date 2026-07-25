@@ -1,7 +1,7 @@
-.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit
+.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit
 
 # Default target — full quality gauntlet
-validate: build proto-check fmt-check lint test test-wirelog-helpers-unit leak-scan
+validate: build proto-check fmt-check lint test test-wirelog-helpers-unit test-e2e-matrix-unit leak-scan
 
 BUF ?= buf
 
@@ -278,6 +278,17 @@ test-hub-e2e:
 test-e2e-matrix: build
 	bash scripts/e2e-matrix.sh all; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc
 
+# QUM-947: unit tests for the driver itself — arg parsing, fail-fast row-name
+# validation, and the summary's passed/requested arithmetic. Pure shell, ~0.4s,
+# no claude and no tmux, so it runs inside `make validate`: a regression test
+# guarding a false-green is worthless if it only runs when someone remembers.
+# This explicit rule takes precedence over the test-e2e-matrix-% pattern rule
+# below, so `unit` is never mistaken for a row name.
+test-e2e-matrix-unit:
+	bash scripts/test-e2e-matrix-unit.sh
+
 # Pattern target: `make test-e2e-matrix-merge-reuse` runs only that row.
+# For several rows in one driver invocation (with an honest denominator), call
+# the driver directly: `bash scripts/e2e-matrix.sh row-a row-b row-c`.
 test-e2e-matrix-%: build
 	bash scripts/e2e-matrix.sh $*; rc=$$?; ./sprawl sandbox-gc --max-age=10m || true; exit $$rc

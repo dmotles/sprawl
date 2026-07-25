@@ -48,13 +48,14 @@ under **Validating Changes** (`complete-lifecycle` row).
 ## Build & Test
 
 ```bash
-make              # runs full validation (build + fmt-check + lint + test)
+make              # runs full validation (build + proto-check + fmt-check + lint + test + e2e-matrix-unit + leak-scan)
 make validate     # same as above — the default target
 make build        # builds ./sprawl binary
 make fmt          # auto-fix formatting
 make fmt-check    # check formatting without fixing (used in CI/hooks)
 make lint         # run golangci-lint
 make test         # run all unit tests
+make test-e2e-matrix-unit  # shell unit tests for the e2e matrix driver (fast, no claude)
 make hooks        # install pre-commit hook
 
 make test-wirelog-helpers-unit   # bash+jq unit tests for the e2e rows' wire-log
@@ -330,7 +331,23 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 2. Manual smoke test: run the built `./sprawl` binary with relevant commands
 3. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
 4. For TUI changes, read `/tui-testing` for the E2E validation harness and manual testing workflow. TUI validation is mandatory for all TUI-related changes.
-5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows). All rows require a real `claude` binary on PATH; set `SPRAWL_E2E_SKIP_NO_CLAUDE=1` to skip. The `wake-live` row requires the `sprawl_test` build tag — the driver (`scripts/e2e-matrix.sh`) handles this automatically via `needs_build_tags=sprawl_test`. The original per-test Makefile targets (`make test-notify-tui-e2e`, `make test-handoff-e2e`, `make test-merge-reuse-e2e`, `make test-ask-user-question-e2e`, `make test-drain-row-inject-e2e`, `make test-paste-coalesce-e2e`, `make test-wake-live-e2e`) and their underlying `scripts/test-*-e2e.sh` scripts remain available as a fallback during the soak period; they will be removed in a follow-up issue once the matrix rows have proven flake-free for a few days.
+5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows).
+
+   **Multi-row invocation is supported (QUM-947).** Several rows in the table below instruct you to re-run additional rows; run them in one shot by calling the driver directly with N row names:
+
+   ```bash
+   bash scripts/e2e-matrix.sh recall-sendnow tui-live-render drain-row-inject
+   ```
+
+   The summary reports `passed/requested`, where the denominator is **the number of rows you named on the command line** — it can never be smaller than what you asked for. The driver also echoes `=== Matrix: running N row(s): ... ===` before starting, so a wrong selection is visible immediately. Rules: an unknown or malformed row name is rejected with exit 2 **before any row runs** (fail fast, and every bad name is reported, so one re-run fixes them all); `all` and `--list` must each be the only argument; duplicate names run twice by design, because deduplicating would shrink the denominator below the request. Note `make test-e2e-matrix-<row>` takes exactly one row — `make` parses `make test-e2e-matrix-a b c` as three separate goals — so use the direct `bash scripts/e2e-matrix.sh` form for multi-row runs.
+
+   > **Reading older transcripts:** before QUM-947 the driver silently discarded every argument after the first and printed `Matrix: 1/1 passed`. Any historical multi-row invocation that "passed" proved only that its *first* row ran. Do not trust such a claim.
+
+   The driver's own arg parsing, fail-fast validation, and summary arithmetic are unit-tested by `make test-e2e-matrix-unit` (`scripts/test-e2e-matrix-unit.sh`) — pure shell, ~0.4s, no `claude` or `tmux` needed. It runs as part of `make validate`, because a regression test guarding a false-green is worthless if it only runs when someone remembers.
+
+   All rows require a real `claude` binary on PATH; set `SPRAWL_E2E_SKIP_NO_CLAUDE=1` to skip.
+
+   > **A skipped row is currently reported as `PASS` and exits 0 (QUM-952).** There is no "skipped" bucket in the summary, so `SPRAWL_E2E_SKIP_NO_CLAUDE=1` with no `claude` on PATH prints a fully green `Matrix: N/N passed` while asserting nothing. **A skip proves nothing — never cite a skipped run as evidence a row passed.** Until QUM-952 lands, check the output for `SKIP:` lines before trusting a green summary. The `wake-live` row requires the `sprawl_test` build tag — the driver (`scripts/e2e-matrix.sh`) handles this automatically via `needs_build_tags=sprawl_test`. The original per-test Makefile targets (`make test-notify-tui-e2e`, `make test-handoff-e2e`, `make test-merge-reuse-e2e`, `make test-ask-user-question-e2e`, `make test-drain-row-inject-e2e`, `make test-paste-coalesce-e2e`, `make test-wake-live-e2e`) and their underlying `scripts/test-*-e2e.sh` scripts remain available as a fallback during the soak period; they will be removed in a follow-up issue once the matrix rows have proven flake-free for a few days.
 
    | files touched | matrix row | guards |
    |---|---|---|
