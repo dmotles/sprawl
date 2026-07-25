@@ -237,9 +237,10 @@ func TestUnifiedRuntime_EmptyTaskIDNotification_WritesNothing(t *testing.T) {
 
 // TestUnifiedRuntime_IdleTaskNotification_StillPublishesProtocolMessage locks the
 // QUM-929 KEEP side: deleting the injection must NOT delete the OBSERVATION. The
-// task_notification's EventProtocolMessage publish is the sole source of the live
-// "↻ auto-continued" marker (internal/tui/protocol_mapping.go maps
-// system/task_notification → AutoContinueMsg) and of task telemetry.
+// task_notification's EventProtocolMessage publish is task telemetry. (It used to
+// be described as the source of the live "↻ auto-continued" marker; QUM-928
+// deleted that marker's live path — protocol_mapping.go now maps
+// system/task_notification to nil — so the telemetry is the whole KEEP side.)
 func TestUnifiedRuntime_IdleTaskNotification_StillPublishesProtocolMessage(t *testing.T) {
 	rt, transport := newAutonomousRuntime(t)
 	ch, unsub := rt.EventBus().SubscribeNamed("auto", 32)

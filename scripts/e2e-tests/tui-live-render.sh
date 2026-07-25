@@ -7,7 +7,8 @@
 # prompt AND the streamed assistant response render LIVE — with NO restart.
 #
 # Why this catches the QUM-826 bug specifically: the pump-delivered reducers
-# (UserMessageConsumedMsg / UserMessageCancelledMsg / AutoContinueMsg) returned
+# (UserMessageConsumedMsg / UserMessageCancelledMsg / the since-deleted
+# AutoContinueMsg — those exact three, per feba4ad) returned
 # `m, nil` without re-issuing m.bridge.WaitForEvent(). UserMessageConsumedMsg
 # is the FIRST non-nil pump event of every typed turn, so the bubbletea event
 # pump parked before any assistant content was read — assistant output never

@@ -376,8 +376,9 @@ func TestMapProtocolMessage_SystemInit_EmptyModel(t *testing.T) {
 }
 
 // TestMapProtocolMessage_SystemTaskOtherSubtypes (QUM-634): sibling task_*
-// subtypes (task_updated, task_started) are noisy and must NOT map to an
-// AutoContinueMsg — only task_notification triggers a marker.
+// subtypes (task_updated, task_started) are noisy and must map to nil. Post
+// QUM-928 no task_* subtype maps to anything — task_notification is nil too —
+// so this pins the noisy siblings against a future re-mapping.
 func TestMapProtocolMessage_SystemTaskOtherSubtypes(t *testing.T) {
 	for _, sub := range []string{"task_updated", "task_started"} {
 		t.Run(sub, func(t *testing.T) {
@@ -389,7 +390,7 @@ func TestMapProtocolMessage_SystemTaskOtherSubtypes(t *testing.T) {
 			msg.Raw = json.RawMessage(raw)
 
 			if result := MapProtocolMessage(&msg); result != nil {
-				t.Errorf("MapProtocolMessage for system/%s returned %T, want nil (only task_notification renders a marker)", sub, result)
+				t.Errorf("MapProtocolMessage for system/%s returned %T, want nil (no task_* subtype maps post-QUM-928)", sub, result)
 			}
 		})
 	}

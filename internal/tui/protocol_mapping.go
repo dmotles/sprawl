@@ -27,9 +27,14 @@ var sidechainVisible = sidechainVisibleFromEnv(os.Getenv(sidechainVisibleEnv))
 // default must be suppressed and a typo must not silently un-suppress.
 func sidechainVisibleFromEnv(v string) bool { return v == "1" }
 
-// isSidechainFrame reports whether a frame originated inside a sidechain (a
-// Claude in-process Agent-tool spawn: Explore, Plan, oracle, …) and must
-// therefore be kept out of the chat stream.
+// shouldSuppressSidechainFrame reports whether a frame must be kept out of the
+// chat stream because it originated inside a sidechain (a Claude in-process
+// Agent-tool spawn: Explore, Plan, oracle, …).
+//
+// This is a SUPPRESSION DECISION, not attribution: it ANDs in !sidechainVisible,
+// so with the SPRAWL_SHOW_SIDECHAIN hatch on it returns false for a frame that
+// genuinely IS a sidechain frame. Do not reuse it to answer "did this come from a
+// sidechain?" — for that, test parentToolUseID != "" directly.
 //
 // Attribution is SOLELY a non-empty parent_tool_use_id. isSidechain is never set
 // on the stream-json wire and session_id is identical to the main thread, so
@@ -44,7 +49,7 @@ func sidechainVisibleFromEnv(v string) bool { return v == "1" }
 // and parent_tool_use_id is the tool's OWN id (measured: 1,011 such frames
 // across 660 wire logs). Suppressing by frame type, inside the assistant and
 // user mappers only, is deliberate.
-func isSidechainFrame(parentToolUseID string) bool {
+func shouldSuppressSidechainFrame(parentToolUseID string) bool {
 	return parentToolUseID != "" && !sidechainVisible
 }
 
@@ -178,7 +183,7 @@ func mapAssistantMessage(msg *protocol.Message) tea.Msg {
 	// the MAIN thread's context window, and a sidechain runs in a separate
 	// context, so folding its usage in inflated the gauge. Cost/usage telemetry
 	// is unaffected — that rides a separate subscriber (internal/usage).
-	if isSidechainFrame(parentToolUseID) {
+	if shouldSuppressSidechainFrame(parentToolUseID) {
 		return nil
 	}
 
@@ -338,7 +343,7 @@ func mapUserMessage(msg *protocol.Message) tea.Msg {
 	}
 	// QUM-928: a sidechain's inner tool_result frames carry parent_tool_use_id.
 	// Checked ahead of both the plain-string and tool_result arms.
-	if env.ParentToolUseID != nil && isSidechainFrame(*env.ParentToolUseID) {
+	if env.ParentToolUseID != nil && shouldSuppressSidechainFrame(*env.ParentToolUseID) {
 		return nil
 	}
 	if len(env.Message.Content) == 0 {
