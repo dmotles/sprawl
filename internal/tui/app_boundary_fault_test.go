@@ -153,7 +153,7 @@ func openTurnBoundaryVia(t *testing.T, rt *sprawlrt.UnifiedRuntime, sess *faulta
 	if rt.State().InTurn {
 		t.Fatal("turn-boundary setup: State().InTurn is still true after wire idle; the test would exercise the mid-turn path instead")
 	}
-	// NOTE: frameTurnOpen is unobservable from outside internal/runtime, so this
+	// NOTE: the open frame turn's id is unobservable from outside internal/runtime (QUM-931), so this
 	// helper can only prove phase==idle. The tests below therefore assert on the
 	// INTERRUPT path having run (transient label) in addition to the fault
 	// surface — without that, a regression of the QUM-927 arm would make the
@@ -245,7 +245,7 @@ func TestAppModel_GenuineFaultAtTurnBoundaryWithArm_SurfacesSessionErrorInRootPa
 	defer unsub()
 
 	openTurnBoundaryVia(t, rt, sess)
-	// Esc at the boundary arms interruptPending (QUM-927).
+	// Esc at the boundary arms the still-open frame turn (QUM-927/QUM-931).
 	if err := rt.Interrupt(context.Background()); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
@@ -352,6 +352,82 @@ func TestAppModel_GenuineFaultMidTurn_SurfacesExactlyOneError(t *testing.T) {
 	app := applyAll(t, applyResize(t, newTestAppModel(t)), msgs)
 	if !app.showError {
 		t.Error("a mid-turn backend fault surfaced no Session Error dialog")
+	}
+}
+
+// QUM-931/QUM-935 (T5) — the Esc-burst-from-submit shape at the REDUCER layer:
+// what the user actually sees. Wire order:
+//
+//	user (optimistic submit) → interrupt → system/init → result{is_error}
+//
+// The arm precedes its OWN turn's init, so a mechanism that can only name "the
+// currently open turn" (or that retires arms on init) surfaces the empty,
+// fatal-looking "Session Error" modal on a session whose backend never died.
+// Asserted here rather than only on the bus because the bus cannot see what the
+// TUI renders — the mistake this file exists to correct.
+func TestAppModel_OptimisticSubmitEscThenInitThenIsError_StaysCleanInRootPane(t *testing.T) {
+	rt, sess := newBoundaryRuntime(t, "weave")
+	ch, unsub := rt.EventBus().SubscribeNamed("submit-esc-reducer", 64)
+	defer unsub()
+
+	// Submit from idle: InTurn is true optimistically, with NO frame turn open yet.
+	if _, err := rt.WriteUserPrompt(context.Background(), "hi", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	if !rt.State().InTurn {
+		t.Fatal("setup: State().InTurn is false after an optimistic submit")
+	}
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	// The arm's own turn opens here, then terminates with the interrupt's is_error.
+	sess.routeFrame(t, &protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
+	sess.routeFrame(t, resultFrameForTest(t, true), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	msgs := drainTranslated(t, ch, InterruptedAsCompleted)
+	app := applyAll(t, applyResize(t, newTestAppModel(t)), msgs)
+
+	if got := countErrorSurfaces(msgs); got != 0 {
+		t.Errorf("an Esc burst from submit produced %d error surfaces, want 0; msgs=%#v", got, msgs)
+	}
+	if app.showError {
+		t.Errorf("an Esc burst from submit raised the fatal \"Session Error\" dialog on a live session (QUM-935); dialog=%q",
+			ansi.Strip(app.View().Content))
+	}
+	if label := app.statusBar.TransientLabel(); !strings.Contains(label, "Interrupted") {
+		t.Errorf("transient label = %q, want it to contain %q", label, "Interrupted")
+	}
+}
+
+// The fault-sensitive twin of T5, and the reason T5 alone is not enough: the
+// crude fix "classify every is_error terminal as an interrupt" satisfies T5 while
+// silently swallowing genuine crashes. A REAL backend fault in the same wire
+// shape must still surface exactly one Session Error.
+func TestAppModel_OptimisticSubmitEscWithGenuineFault_StillSurfacesSessionError(t *testing.T) {
+	rt, sess := newBoundaryRuntime(t, "weave")
+	ch, unsub := rt.EventBus().SubscribeNamed("submit-esc-fault-reducer", 64)
+	defer unsub()
+
+	if _, err := rt.WriteUserPrompt(context.Background(), "hi", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	sess.routeFrame(t, &protocol.Message{Type: "system", Subtype: "init"}, backend.TurnInfo{Autonomous: true})
+	// The subprocess genuinely dies while the interrupt is armed.
+	sess.fireTerminalErr(t, backend.ErrSubprocessExited)
+	sess.routeFrame(t, nil, backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	msgs := drainTranslated(t, ch, InterruptedAsCompleted)
+	app := applyAll(t, applyResize(t, newTestAppModel(t)), msgs)
+
+	if !app.showError {
+		t.Fatalf("a genuine backend fault was swallowed by the interrupt arm; the user is left with a dead subprocess and only %q",
+			app.statusBar.TransientLabel())
+	}
+	if content := ansi.Strip(app.View().Content); !strings.Contains(content, "subprocess exited") {
+		t.Errorf("Session Error does not name the real fault; want %q, got:\n%s", "subprocess exited", content)
 	}
 }
 

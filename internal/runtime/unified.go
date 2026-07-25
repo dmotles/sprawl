@@ -80,37 +80,75 @@ type UnifiedRuntime struct {
 	// stale submitted-timeout guard goroutine is a no-op once its synthetic state
 	// has been superseded by a wire event or a newer submit. Guarded by mu.
 	submittedGen uint64
-	// interruptPending is set by Interrupt when a user Esc-abort lands mid-turn
-	// (QUM-827). routeFrame's EndOfTurn branches read-and-clear it to publish a
-	// clean EventInterrupted instead of EventTurnCompleted/EventTurnFailed —
-	// otherwise the interrupted turn's is_error `result` frame surfaces as a
-	// spurious "Session Error". Guarded by mu. Three paths retire it: consumed by
-	// its own turn's terminal; an idle→non-idle phase transition while NO frame
-	// turn is open; or the next system/init (QUM-927). Retirement is fail-safe by
-	// DIRECTION rather than by an ordering guarantee — see the system/init
-	// arm-retire in routeFrame for the exact invariant and its known race
-	// (QUM-935). A stale flag is not known to leak into a later turn in any
-	// observed shape, but that is a consequence of the retire sites, not an
-	// absolute the code may assume.
-	interruptPending bool
-	// frameTurnOpen mirrors the frame router's autoTurn.open under mu (QUM-927).
-	// autoTurn itself is reader-goroutine-only, but Interrupt (TUI goroutine) must
-	// know whether a terminal `result` may still be inbound: at a turn boundary the
-	// CLI reports session_state_changed:idle while async Agent sidechains resolve,
-	// so phase reads idle even though the frame-level turn is still open and its
-	// is_error terminal is still coming. Guarded by mu.
-	frameTurnOpen bool
+	// --- frame-turn identity + interrupt classification (QUM-931) -------------
+	//
+	// These three replace the QUM-827 `interruptPending bool`, its QUM-927
+	// mu-guarded mirror `frameTurnOpen bool`, and the reader-goroutine-only
+	// `autoTurn.open` — net zero fields, one source of truth.
+	//
+	// turnSeq mints a fresh id on every frame-turn OPEN. openTurnID is the id of
+	// the frame turn open right now, or 0 when none is (so "is a frame turn open"
+	// is DERIVED, not mirrored — no hand-maintained lockstep). interruptedTurnID
+	// is the id of the frame turn a user abort is aborting, or 0.
+	//
+	// A terminal frame re-classifies as EventInterrupted IFF its own turn's id
+	// equals interruptedTurnID. That is the entire invariant.
+	//
+	// WHY THREE IDS BEAT ONE FLAG. A bare boolean cannot express *which* turn an
+	// arm belongs to, and all four fake-crash bugs in this series (QUM-827,
+	// QUM-830, QUM-927, QUM-935) were one defect wearing four hats: the arm
+	// outlived its turn, or was cleared before its turn's terminal arrived. The
+	// old predicate `inTurn || frameTurnOpen` was ALREADY the three-way
+	// discriminator this mechanism needs (turn open / in flight but not yet open /
+	// neither) — collapsed onto one bit. That collapse was the bug class. See
+	// armInterruptLocked for the resulting three-way rule.
+	//
+	// Because a mismatched id is inherently a no-op, the three pre-QUM-931 clear
+	// paths are DELETED, not ported: openFrameTurn's clear-on-open, the
+	// conditional clear in setPhaseLocked, and the system/init retire. Each was a
+	// hand-maintained guess at "this arm is stale" and each was wrong at least
+	// once (QUM-927, QUM-935). The single remaining retire is narrow, sound and
+	// id-based: an unresolved NEXT-turn arm is dropped on return to idle (see
+	// setPhaseLocked) so it cannot claim an unrelated later turn.
+	//
+	// WRITER DISCIPLINE — the one rule a future change must not break: turnSeq and
+	// openTurnID are written ONLY by openFrameTurn / closeFrameTurn, which are
+	// called ONLY from routeFrame, i.e. only on the backend reader goroutine, and
+	// always under mu (the lock is for readers on OTHER goroutines). Because there
+	// is exactly one writer, a single routeFrame call may snapshot openTurnID once
+	// at the top and trust that snapshot for the rest of the call.
+	//
+	// That single-writer premise is NOT local to this package: it holds because the
+	// frame router is invoked synchronously on the reader goroutine — see
+	// SetFrameRouter's contract in internal/backend/session.go (the reader loop plus
+	// its own orphan-teardown defer, same goroutine). If that contract changes, the
+	// snapshot below is the first thing that breaks.
+	//
+	// interruptedTurnID has THREE writer sites, all under mu: the arm sites
+	// (armInterruptLocked, on the TUI goroutine), the consume site
+	// (consumeInterrupt, reader goroutine), and the retire
+	// (retireUnclaimedNextArmLocked — reached both from writeMessage on the TUI
+	// goroutine AND from guardSubmitted's timer goroutine). All access goes through
+	// the methods below; nothing else touches these fields.
+	//
+	// Do NOT reinstate a separate reader-goroutine-only "open" flag to avoid taking
+	// mu per frame. The cost was measured on the wire logs under
+	// .sprawl/logs/sessions/ (4,367 frames / 147 turns and 2,869 / 7 in two real
+	// sessions; peak 25 frames/sec over any 1-second bucket). currentFrameTurn adds
+	// one uncontended RLock per FRAME (~25ns), i.e. ~0.6µs per second of wall clock
+	// at that peak, against the 2-4 mu acquisitions per turn routeFrame already
+	// makes. Worse, under this design a split is a CORRECTNESS bug, not just
+	// duplication: the two arm branches select DIFFERENT targets, so store-drift
+	// between the two "open" values turns a previously harmless race into a silent
+	// misclassification.
+	turnSeq           uint64
+	openTurnID        uint64
+	interruptedTurnID uint64
 
 	cancel        context.CancelFunc
 	doneWG        sync.WaitGroup
 	done          chan struct{}
 	closeDoneOnce sync.Once
-
-	// autoTurn holds the frame router's per-turn observation state. Touched ONLY
-	// by routeFrame, which runs solely on the backend reader goroutine — so no
-	// lock is needed for its fields (inTurn, the cross-goroutine read surface,
-	// is guarded separately by mu).
-	autoTurn autonomousTurnState
 
 	// outstanding is the ONLY client-side message state (QUM-817): a map of
 	// every stdin user message we've written, keyed by uuid, flipped to consumed
@@ -186,16 +224,6 @@ type OutstandingEntry struct {
 // (QUM-924).
 const AutoContinuePrefix = "[auto-continue]"
 
-// autonomousTurnState is the frame router's per-turn bookkeeping for an
-// in-flight turn (QUM-815/QUM-817). Reader-goroutine-only.
-type autonomousTurnState struct {
-	open bool
-}
-
-func (a *autonomousTurnState) reset() {
-	a.open = false
-}
-
 // New constructs a UnifiedRuntime in the idle liveness state (Running,
 // non-autonomous) with a fresh queue and event bus. No goroutines are started
 // until Start is called.
@@ -252,7 +280,7 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 				// and makes the boundary path behave identically to the mid-turn
 				// path (which already publishes both this EventTurnFailed and the
 				// orphan branch's).
-				turnRunning := rt.inTurnLocked() || rt.frameTurnOpen
+				turnRunning := rt.inTurnLocked() || rt.frameTurnOpenLocked()
 				rt.mu.RUnlock()
 				if turnRunning {
 					rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
@@ -290,12 +318,13 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 // turn-boundary waiter unblocks. (QUM-815)
 var errStreamClosedNoResult = errors.New("autonomous turn stream closed without terminal result")
 
-// routeFrame is the single observe-and-route callback the backend reader
-// invokes for every turn frame (QUM-815). For sprawl-initiated turns it
-// returns immediately — the TurnLoop owns their lifecycle, and emitting here
-// too would double-publish. For autonomous (CLI self-reprompt) turns it
-// derives the full lifecycle: a balanced EventTurnStarted/EventTurnCompleted and
-// an InTurn flip. Every frame is also published as EventProtocolMessage for the
+// routeFrame is the single observe-and-route callback the backend reader invokes
+// for every turn frame (QUM-815). It derives the full lifecycle for EVERY turn: a
+// balanced EventTurnStarted/EventTurnCompleted and the frame-turn id bookkeeping.
+// (It does not branch on TurnInfo.Autonomous — an older version of this comment
+// claimed sprawl-initiated turns returned early because "the TurnLoop owns their
+// lifecycle"; QUM-817 deleted the TurnLoop and made this the only turn driver, so
+// sprawl-initiated turns mint and close frame-turn ids here like any other.) Every frame is also published as EventProtocolMessage for the
 // TUI / telemetry — including a background task's task_notification, which is
 // OBSERVED only: QUM-929 deleted the synthetic [auto-continue] stdin nudge the
 // router used to write at turn-end, because the CLI self-resumes on background-task
@@ -334,48 +363,28 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		return
 	}
 
-	st := &rt.autoTurn
+	// Snapshot the open frame turn once (QUM-931 writer discipline: routeFrame is
+	// the only writer of openTurnID, so this cannot go stale under us).
+	turnID := rt.currentFrameTurn()
 
 	// QUM-903: a system/init marks a resume/turn boundary. If a speculative
 	// submitted state is still outstanding across it, re-arm its guard for a
 	// fresh window (a pre-boundary timer must not fire against the post-boundary
 	// turn); otherwise init is a no-op for the phase machine (phase is left to
-	// the wire / teardown authorities, and autoTurn.open must survive init so an
-	// already-open frame turn is not silently reopened).
+	// the wire / teardown authorities, and an already-open frame turn must survive
+	// init so it is not silently reopened — see the turnID == 0 gate below).
 	if msg != nil && msg.Type == "system" && msg.Subtype == "init" {
 		rt.mu.Lock()
 		if rt.phase == phaseSubmitted {
 			rt.setPhaseLocked(phaseSubmitted)
 		}
-		// QUM-927: init is a fresh turn/resume boundary, so retire any pending
-		// interrupt arm that its own turn's terminal never consumed. The clear-on-open
-		// below is gated on !st.open and so does not fire when init lands while the
-		// frame turn is already open — without this a boundary arm could survive and
-		// swallow a later turn's genuine is_error.
-		//
-		// The invariant this rests on is DIRECTIONAL, not an ordering guarantee.
-		// Retiring an arm can only ever cause a real terminal to classify as
-		// EventTurnFailed / EventTurnCompleted{IsError} — i.e. degrade to
-		// pre-QUM-827 behavior — and can NEVER cause a turn that was not
-		// interrupted to be reported as EventInterrupted. That direction is what
-		// AC4 pins: a stale arm cannot swallow a LATER turn's genuine error. The
-		// retire is fail-safe in the direction that matters, which is why it is
-		// unconditional here.
-		//
-		// Do NOT read this as "an armed turn's terminal `result` always precedes
-		// the NEXT turn's init". That stronger premise is FALSE and the code does
-		// not rely on it: an arm can precede its OWN turn's init, because
-		// writeMessage arms on inTurnLocked(), which is true in the purely
-		// synthetic phaseSubmitted state (set optimistically, with no CLI turn
-		// behind it) — and at a turn boundary the arm rides frameTurnOpen while the
-		// CLI may already be opening the replacement turn. In those races this
-		// clear retires an arm whose is_error terminal was legitimately inbound,
-		// and that terminal then surfaces as a spurious "Session Error". Tracked as
-		// QUM-935 and deliberately NOT fixed here: the obvious alternative
-		// (carrying the arm across init) trades a rare spurious error for a rare
-		// false "Interrupted", which is strictly worse — it hides real errors and
-		// can unblock StopAfterTurn (QUM-866) and the pause waiter mid-turn.
-		rt.interruptPending = false
+		// QUM-931: init deliberately does NOT retire a pending arm. It used to
+		// (QUM-927), on the premise that an armed turn's terminal always precedes the
+		// NEXT turn's init. That premise is false — an arm can precede its OWN turn's
+		// init (the optimistic phaseSubmitted case), which IS QUM-935 — and the wire
+		// cannot disambiguate the two readings of init-while-armed. Turn identity can:
+		// the arm names a turn id, so an init that opens no new turn cannot affect it,
+		// and one that does open a turn mints an id a stale arm will never match.
 		rt.mu.Unlock()
 	}
 
@@ -384,7 +393,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	// any turn-boundary waiter (e.g. supervisor Pause) unblocks. Mirrors the
 	// TurnLoop's "stream closed without terminal result" semantics.
 	if turn.EndOfTurn && msg == nil {
-		if st.open {
+		if turnID != 0 {
 			rt.setPhase(phaseIdle)
 			// QUM-827: a user interrupt that closed the stream with no terminal
 			// result is a clean abort, not a fault. A genuine backend crash that
@@ -392,13 +401,12 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 			// SetTerminalErrorHandler path (fatalErr→terminalErr→
 			// EventBackendFaulted), so re-labelling the turn event here does not
 			// suppress the session-fault surface.
-			if rt.consumeInterruptPending() {
+			if rt.consumeInterrupt(turnID) {
 				rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted})
 			} else {
 				rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: errStreamClosedNoResult})
 			}
 			rt.closeFrameTurn()
-			st.reset()
 		}
 		return
 	}
@@ -420,13 +428,13 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 	if turn.PreInit {
 		return
 	}
-	if !st.open {
-		st.open = true
-		// QUM-903: turn-open no longer sets the in_turn authority (that is now
+	if turnID == 0 {
+		// QUM-903: turn-open does not set the in_turn authority (that is
 		// wire/submit-driven, so a bare autonomous init can't leak a false
-		// "thinking" state). It still clears any stale pending-interrupt flag
-		// (QUM-827 clear-on-open) and fires the frame-lifecycle EventTurnStarted.
-		rt.openFrameTurn()
+		// "thinking" state). QUM-931: it mints this turn's id and, unlike the old
+		// QUM-827 clear-on-open, does NOT touch any pending arm — a next-turn arm
+		// is waiting for exactly this id.
+		turnID = rt.openFrameTurn()
 		rt.eventBus.Publish(RuntimeEvent{Type: EventTurnStarted})
 	}
 
@@ -440,7 +448,7 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		// result so the TUI shows "Interrupted (Nms)") rather than
 		// EventTurnCompleted — whose is_error interrupted result would surface
 		// as a spurious "Session Error" dialog.
-		if rt.consumeInterruptPending() {
+		if rt.consumeInterrupt(turnID) {
 			rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted, Result: &r})
 		} else {
 			rt.eventBus.Publish(RuntimeEvent{Type: EventTurnCompleted, Result: &r})
@@ -449,7 +457,6 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		// even when no wire `idle` follows (the 36 no-idle teardown cases).
 		rt.setPhase(phaseIdle)
 		rt.closeFrameTurn()
-		st.reset()
 		// Fire the post-turn sweep (QUM-580) AFTER clearing per-turn state — it
 		// goes to stdin / disk, never under a lock.
 		if rt.cfg.PostTurnSweep != nil {
@@ -466,28 +473,64 @@ func (rt *UnifiedRuntime) setPhase(p turnPhase) {
 	rt.mu.Unlock()
 }
 
-// setPhaseLocked transitions the phase with mu held. Entering any non-idle phase
-// from idle clears a stale pending-interrupt flag (QUM-827 clear-on-open) —
-// unless a frame turn is open, in which case the arm belongs to that still-open
-// turn and is retired by its terminal or the next init instead (QUM-927).
-// Entering phaseSubmitted arms a generation-tagged timeout guard so a synthetic
-// "thinking" state cannot leak if the wire `running` ack never arrives.
+// setPhaseLocked transitions the phase with mu held. Entering phaseSubmitted arms
+// a generation-tagged timeout guard so a synthetic "thinking" state cannot leak if
+// the wire `running` ack never arrives.
+//
+// QUM-931: it does NOT touch the interrupt arm on any transition. Both the QUM-827
+// clear-on-open and the QUM-927 conditional clear it used to carry are deleted, and
+// the remaining retire deliberately does not live here — this function is also
+// called to RE-ARM the guard for a still-outstanding submit at a system/init
+// (routeFrame), which is the same turn the arm belongs to, not a new one.
 func (rt *UnifiedRuntime) setPhaseLocked(p turnPhase) {
-	// QUM-927: only clear when no frame-level turn is open. At a turn boundary the
-	// arm belongs to the still-open turn whose terminal has not arrived yet, and a
-	// following wire `running` (or a user prompt's optimistic submit) is an
-	// idle→non-idle transition that would otherwise clobber it. With a frame turn
-	// open the arm is instead retired by that turn's terminal (consume), its
-	// teardown, or the next init.
-	if rt.phase == phaseIdle && p != phaseIdle && !rt.frameTurnOpen {
-		rt.interruptPending = false
-	}
 	rt.phase = p
 	if p == phaseSubmitted {
 		rt.submittedGen++
 		gen := rt.submittedGen
 		timeout := submittedPhaseTimeout
 		go rt.guardSubmitted(gen, timeout)
+	}
+}
+
+// retireUnclaimedNextArmLocked drops a NEXT-turn arm whose turn never opened
+// (interruptedTurnID > turnSeq — a current-turn arm is always <= turnSeq). Caller
+// holds mu for writing.
+//
+// This is the ONE remaining arm retire, and the trigger is what makes it sound:
+// it is ordered against the ARM, not against the wire. It fires only on the two
+// events that are statements about the submit the arm belongs to:
+//
+//  1. a SUPERSEDING SUBMIT — a new user prompt from idle (writeMessage) means the
+//     aborted prompt's turn is never opening, so its arm must not claim the new
+//     one. NOT "entry to phaseSubmitted": the QUM-903 guard re-arm at system/init
+//     re-enters that phase for the arm's OWN turn;
+//  2. that submit's own SUBMITTED-TIMEOUT expiring (guardSubmitted) — the backend
+//     never acked it, so no turn is coming.
+//
+// It must NOT be triggered by the phase merely returning to idle. An earlier
+// draft did exactly that and it was WRONG: a trailing session_state_changed:idle
+// from the PREVIOUS turn routinely lands after a new prompt is submitted (the
+// normal `result` -> `idle` order), and an Esc burst lives precisely at that
+// boundary — so the phase-triggered retire killed a live arm and resurrected the
+// QUM-935 empty "Session Error". `p == phaseIdle` is a phase signal, not an
+// identity signal: it cannot distinguish "abandoned before opening" from "not
+// opened yet". Reaching for it was the same premise class that produced QUM-927
+// and QUM-935. Pinned by TestInterrupt_NextTurnArm_SurvivesResidualWireIdle.
+//
+// Accepted residual: between an abandoned submit and the next submit/timeout, an
+// AUTONOMOUS turn could open and claim the arm, mislabelling its terminal
+// "Interrupted". Narrow, and the cost is one soft error mislabelled rather than a
+// spurious fatal "Session Error". A genuine crash still surfaces independently
+// via EventBackendFaulted plus the EventTurnFailed fault-surface gate.
+// Strictly `>`, not `>=`: `== turnSeq` means the arm's turn HAS opened. That is
+// currently unreachable-with-a-live-arm, but for two DIFFERENT reasons at the two
+// consume sites — the result branch has already consumed the arm by then, while
+// the orphan branch still has the frame turn open — so the equivalence is an
+// accident of ordering, not a property. `>` keeps this correct if anyone reorders
+// closeFrameTurn ahead of setPhase(phaseIdle).
+func (rt *UnifiedRuntime) retireUnclaimedNextArmLocked() {
+	if rt.interruptedTurnID > rt.turnSeq {
+		rt.interruptedTurnID = 0
 	}
 }
 
@@ -510,37 +553,127 @@ func (rt *UnifiedRuntime) guardSubmitted(gen uint64, timeout time.Duration) {
 	}
 	rt.mu.Lock()
 	if !rt.stopped && rt.phase == phaseSubmitted && rt.submittedGen == gen {
+		// QUM-931: this submit was never acked, so no turn is coming for it —
+		// retire its unclaimed arm here. This is trigger (2) in
+		// retireUnclaimedNextArmLocked, and it is arm-ordered: the gen check above
+		// means we only ever retire the arm of the submit that just timed out.
+		// Deliberately NOT routed through setPhaseLocked — a phaseIdle transition
+		// must never retire an arm (see the residual-idle note on the helper).
+		rt.retireUnclaimedNextArmLocked()
 		rt.phase = phaseIdle
 	}
 	rt.mu.Unlock()
 }
 
-// openFrameTurn records that the frame router opened a turn (QUM-927 mirror) and
-// clears any stale pending-interrupt flag (QUM-827 clear-on-open).
-func (rt *UnifiedRuntime) openFrameTurn() {
+// frameTurnOpenLocked reports whether a frame-level turn is open. The caller
+// holds mu (read or write). Successor to the QUM-927 frameTurnOpen field.
+func (rt *UnifiedRuntime) frameTurnOpenLocked() bool { return rt.openTurnID != 0 }
+
+// currentFrameTurn returns the open frame turn's id, or 0 when none is open.
+// routeFrame's once-per-call snapshot (see the writer-discipline note on the
+// fields: routeFrame is the only writer, so its snapshot cannot go stale).
+func (rt *UnifiedRuntime) currentFrameTurn() uint64 {
+	rt.mu.RLock()
+	defer rt.mu.RUnlock()
+	return rt.openTurnID
+}
+
+// openFrameTurn opens a frame-level turn with a fresh id and returns it. Reader
+// goroutine only. Note it deliberately does NOT touch interruptedTurnID: the
+// QUM-827 clear-on-open is exactly the "cleared too early" failure mode QUM-935
+// is made of.
+func (rt *UnifiedRuntime) openFrameTurn() uint64 {
 	rt.mu.Lock()
-	rt.frameTurnOpen = true
-	rt.interruptPending = false
-	rt.mu.Unlock()
+	defer rt.mu.Unlock()
+	rt.turnSeq++
+	rt.openTurnID = rt.turnSeq
+	return rt.openTurnID
 }
 
 // closeFrameTurn records that the frame router's turn ended — a terminal
-// `result` or an orphan teardown. Paired with autoTurn.reset().
+// `result` or an orphan teardown. Reader goroutine only.
 func (rt *UnifiedRuntime) closeFrameTurn() {
 	rt.mu.Lock()
-	rt.frameTurnOpen = false
+	rt.openTurnID = 0
 	rt.mu.Unlock()
 }
 
-// consumeInterruptPending read-and-clears the QUM-827 pending-interrupt flag
-// under mu. Returns true iff a user interrupt was armed for the turn that is
-// now ending.
-func (rt *UnifiedRuntime) consumeInterruptPending() bool {
+// armInterruptLocked marks the frame turn that a user abort (Esc, or a
+// priority:"now" cancel-and-replace preempt) is aborting, so that turn's
+// is_error `result` terminal classifies as EventInterrupted instead of
+// EventTurnCompleted{IsError} — which renders the empty, fatal-looking "Session
+// Error" quit/restart modal on a live session. Reports whether it armed. The
+// caller holds mu for writing.
+//
+// WHICH turn is armed IS the design (QUM-931). The abort's own turn may not exist
+// on the wire yet, so "the current turn" is not always the answer:
+//
+//   - a frame turn is open -> THAT turn (openTurnID).
+//     QUM-827 mid-turn Esc; QUM-830 mid-turn now-write preempt; QUM-927
+//     turn-boundary Esc (phase reads idle, frame turn still open).
+//   - no frame turn open, but the phase machine says a turn is in flight (the
+//     optimistic synthetic phaseSubmitted, or wire-running before its init) ->
+//     the NEXT turn to open, turnSeq+1. The CLI answers an interrupt issued in
+//     this window with system/init FIRST and the is_error `result` only after, so
+//     the terminal to re-classify belongs to a turn that opens AFTER the arm
+//     (QUM-935). Robust even if no init arrives: a bare terminal frame opens a
+//     turn itself, and that turn is still turnSeq+1.
+//   - neither -> DO NOT ARM. No terminal is inbound, so there is nothing to
+//     re-classify, and Interrupt emits the QUM-775 synthetic EventInterrupted
+//     instead (its !armed branch).
+//
+// Arming "current" unconditionally breaks QUM-935; arming "next"
+// unconditionally breaks QUM-827/830/927 AND swallows the following turn's
+// genuine error. This three-way rule is the only correct one.
+// The switch ORDER is load-bearing. Both interleavings against the reader
+// goroutine are safe, for DIFFERENT reasons: arm-then-open records turnSeq+1 and
+// openFrameTurn then mints exactly that id; open-then-arm finds
+// frameTurnOpenLocked() already true, so the first case arms the now-open id
+// directly. Reversing the cases would break the second interleaving.
+func (rt *UnifiedRuntime) armInterruptLocked() bool {
+	switch {
+	case rt.frameTurnOpenLocked():
+		rt.interruptedTurnID = rt.openTurnID
+	case rt.inTurnLocked():
+		rt.interruptedTurnID = rt.turnSeq + 1
+	default:
+		return false
+	}
+	return true
+}
+
+// consumeInterrupt reports whether turnID is the turn a user abort aborted,
+// clearing the arm. The ONLY reader of interruptedTurnID.
+//
+// The only site that MATCHES on interruptedTurnID (retireUnclaimedNextArmLocked
+// also reads it, to decide whether an unclaimed arm is stale; the arm sites read it
+// implicitly by overwriting it).
+//
+// A mismatch is a no-op — that is the property that lets the old clear paths go.
+// Note that with the current frame router a mismatch is UNREACHABLE in practice
+// (a turn cannot open while one is open; both consume sites run before
+// closeFrameTurn zeroes openTurnID; a next-arm of turnSeq+1 is by construction
+// the next turn to open), so the id check is defence in depth against a future
+// router change rather than a live discriminator. It is pinned by a white-box
+// test that stuffs a stale id, because "unreachable by construction" is exactly
+// the kind of reasoning that produced the last four bugs when left untested.
+//
+// The zeroing below is deliberately REDUNDANT, and honestly so: mutation-testing
+// shows that removing it breaks no test, because turnSeq is monotonic so a
+// consumed id can never recur and a non-zeroed arm can never match again. It is
+// kept as defence in depth against a future change to id allocation, and so
+// interruptedTurnID reads cleanly when inspected — not because anything currently
+// depends on it. (Conversely, id uniqueness and this zeroing used to MASK each
+// other's absence: either mutation alone passed the suite while both together
+// were a forward leak. TestFrameTurn_IdsAreUniquePerTurn breaks that masking.)
+func (rt *UnifiedRuntime) consumeInterrupt(turnID uint64) bool {
 	rt.mu.Lock()
-	ip := rt.interruptPending
-	rt.interruptPending = false
-	rt.mu.Unlock()
-	return ip
+	defer rt.mu.Unlock()
+	if rt.interruptedTurnID != 0 && rt.interruptedTurnID == turnID {
+		rt.interruptedTurnID = 0
+		return true
+	}
+	return false
 }
 
 // WriteUserPrompt writes a human-typed prompt (kind:user, recallable) to the
@@ -618,8 +751,12 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 	// clears any stale flag, so this cannot leak forward.
 	// QUM-927: gated on the frame turn too, for the turn-boundary case (same
 	// reasoning as Interrupt's arm).
-	if priority == "now" && (rt.inTurnLocked() || rt.frameTurnOpen) {
-		rt.interruptPending = true
+	// ORDERING: this MUST stay BEFORE the optimistic setPhaseLocked(phaseSubmitted)
+	// below. Move it after and an idle now-write sees inTurn==true, arms the NEXT
+	// turn, and hides that turn's genuine error (pinned by
+	// TestSendAllNow_NowWriteWhileIdle_DoesNotArm).
+	if priority == "now" {
+		rt.armInterruptLocked()
 	}
 	// QUM-903: optimistically enter the synthetic submitted state on a
 	// human-typed prompt (kind:user — the watched weave input path) submitted
@@ -628,6 +765,11 @@ func (rt *UnifiedRuntime) writeMessage(ctx context.Context, text, priority strin
 	// kind:system deliveries (spawn prompt, inbox, task) never synthesize —
 	// passively-observed agents are driven purely by their wire.
 	if kind == kindUser && rt.phase == phaseIdle {
+		// Trigger (1): a genuinely NEW user turn (from idle) supersedes an aborted
+		// prompt's unclaimed arm. Deliberately keyed on a real new submit rather than
+		// on entry to phaseSubmitted, because the QUM-903 guard re-arm at system/init
+		// also enters phaseSubmitted for the SAME turn the arm belongs to.
+		rt.retireUnclaimedNextArmLocked()
 		rt.setPhaseLocked(phaseSubmitted)
 	}
 	rt.mu.Unlock()
@@ -992,24 +1134,16 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 		return nil
 	}
 	sess := rt.cfg.Session
-	inTurn := rt.inTurnLocked()
 	if rt.liveness.Liveness == livenesspkg.Running && rt.liveness.InTurn {
 		rt.liveness = livenesspkg.State{Liveness: livenesspkg.Stopping}
 	}
-	// QUM-827: arm the pending-interrupt flag for an in-turn abort so the
-	// turn's terminal frame is re-classified as a clean interrupt by
-	// routeFrame, not surfaced as a turn error.
-	//
-	// QUM-927: also arm when the frame-level turn is still open even though the
-	// phase machine reads idle — the turn-boundary case, where the CLI already
-	// reported session_state_changed:idle after end_turn while async Agent
-	// sidechains resolve. Its is_error `result` terminal is still inbound, and
-	// without the arm it classifies as EventTurnCompleted{IsError} → the spurious
-	// fatal "Session Error" quit/restart modal.
-	armed := inTurn || rt.frameTurnOpen
-	if armed {
-		rt.interruptPending = true
-	}
+	// Arm the interrupt for the turn this abort is aborting, so that turn's
+	// terminal frame is re-classified as a clean interrupt by routeFrame instead of
+	// surfacing as a turn error. armInterruptLocked owns the three-way
+	// current/next/none rule (QUM-931) — including the QUM-927 turn-boundary case
+	// (phase idle, frame turn still open) and the QUM-935 submit case (no frame turn
+	// open yet, so the terminal belongs to a turn that opens after this arm).
+	armed := rt.armInterruptLocked()
 	rt.mu.Unlock()
 
 	// Bare contentless abort (Esc). Backends are idempotent and no-op when no
@@ -1020,15 +1154,16 @@ func (rt *UnifiedRuntime) Interrupt(ctx context.Context) error {
 	// emit a synthetic EventInterrupted so a TUI turnState reducer wedged in
 	// TurnStreaming after a dropped terminal event can finalize.
 	//
-	// QUM-927: gated on `armed`, not `inTurn`. When the arm was set, a real terminal
-	// frame is still inbound and will publish the authoritative EventInterrupted
-	// (carrying the result, for "Interrupted (Nms)"), so the synthetic would be a
-	// duplicate — and a duplicate is NOT harmless: EventInterrupted is a
-	// turn-boundary signal that StopAfterTurn (QUM-866) and the pause waiter select
-	// on, so a synthetic emitted while the frame turn is still open can unblock
+	// Gated on `armed`, not on in-turn. When an arm was recorded a real terminal is
+	// inbound and will publish the authoritative EventInterrupted (carrying the
+	// result, for "Interrupted (Nms)"), so the synthetic would be a duplicate — and
+	// a duplicate is NOT harmless. This gate is the load-bearing part of the
+	// StopAfterTurn (QUM-866) / pause-waiter contract: both wait on the SET
+	// {TurnCompleted, Interrupted, TurnFailed, BackendFaulted}, so re-classifying
+	// among those four is invisible to them, but an EXTRA event can unblock
 	// teardown mid-turn. The QUM-775 wedge case is unaffected: a dropped terminal
-	// EVENT still means routeFrame processed the terminal FRAME and closed the frame
-	// turn, so frameTurnOpen is false there and the synthetic still fires.
+	// EVENT still means routeFrame processed the terminal FRAME and closed the
+	// frame turn, so nothing is armed there and the synthetic still fires.
 	if !armed && rt.eventBus != nil {
 		rt.eventBus.Publish(RuntimeEvent{Type: EventInterrupted})
 	}

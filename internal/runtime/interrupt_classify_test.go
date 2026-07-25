@@ -71,18 +71,34 @@ func openTurnBoundary(t *testing.T, rt *UnifiedRuntime) {
 	}
 }
 
-// interruptPendingFlag reads the pending-interrupt flag under mu.
-func interruptPendingFlag(rt *UnifiedRuntime) bool {
+// armedTurnID reads the interrupt arm's target turn id under mu (0 = nothing
+// armed). Successor to the QUM-927 interruptPendingFlag.
+func armedTurnID(rt *UnifiedRuntime) uint64 {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	return rt.interruptPending
+	return rt.interruptedTurnID
 }
 
-// frameTurnOpenFlag reads the frame-turn-open mirror under mu.
+// assertPhaseSubmitted pins the precondition to the exact phase, not merely to
+// InTurn. `InTurn && !frameTurnOpen` under-specifies the QUM-935 shape: a future
+// change that made a submit land as phaseRunning would keep a test green while
+// quietly exercising a different shape.
+func assertPhaseSubmitted(t *testing.T, rt *UnifiedRuntime) {
+	t.Helper()
+	rt.mu.RLock()
+	p := rt.phase
+	rt.mu.RUnlock()
+	if p != phaseSubmitted {
+		t.Fatalf("setup: phase = %v, want phaseSubmitted (the optimistic submit-from-idle state)", p)
+	}
+}
+
+// frameTurnOpenFlag reports whether a frame turn is open, under mu. QUM-931: now
+// derived from the open turn's id rather than a hand-maintained mirror.
 func frameTurnOpenFlag(rt *UnifiedRuntime) bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	return rt.frameTurnOpen
+	return rt.openTurnID != 0
 }
 
 // assertNoTerminalYet drains a window after Interrupt and before the terminal
@@ -101,6 +117,13 @@ func assertNoTerminalYet(t *testing.T, ch <-chan RuntimeEvent) {
 
 // waitForBackendFaulted drains ch for `window`, reporting whether an
 // EventBackendFaulted was published.
+//
+// HAZARD — this is destructive-until-match: it discards EVERY event it sees
+// before the fault, including EventTurnFailed / EventInterrupted / TurnCompleted.
+// A tally* call on the SAME subscription afterwards is therefore dead — it can
+// only ever return zero. The two fault tests below survive only because each
+// opens a SECOND, independent subscription for its terminal-event tally. If you
+// reuse this helper, do the same.
 func waitForBackendFaulted(ch <-chan RuntimeEvent, window time.Duration) bool {
 	deadline := time.After(window)
 	for {
@@ -258,8 +281,8 @@ func TestInterrupt_TrulyIdle_NoFrameTurn_DoesNotArm(t *testing.T) {
 	if err := rt.Interrupt(context.Background()); err != nil {
 		t.Fatalf("Interrupt: %v", err)
 	}
-	if interruptPendingFlag(rt) {
-		t.Error("interruptPending armed by an interrupt with no frame turn open; want false (no terminal inbound to re-classify)")
+	if got := armedTurnID(rt); got != 0 {
+		t.Errorf("interrupt armed turn %d with no frame turn open and nothing in flight; want 0 (no terminal inbound to re-classify)", got)
 	}
 }
 
@@ -350,14 +373,120 @@ func TestInterrupt_AtTurnBoundary_ArmDoesNotLeakToNextTurn(t *testing.T) {
 	}
 }
 
-// QUM-927: the boundary arm must not survive a fresh turn/resume boundary that
-// arrives WITHOUT a terminal `result` for the armed turn. A `system/init` with
-// the frame turn already open is exactly that case (routeFrame's clear-on-open
-// is gated on !st.open, so it does not fire) — if the arm survived it, the next
-// turn's genuine is_error result would be swallowed as a clean interrupt.
-func TestInterrupt_AtTurnBoundary_ArmDoesNotSurviveInit(t *testing.T) {
+// QUM-931 (T3) — SUPERSEDES TestInterrupt_AtTurnBoundary_ArmDoesNotSurviveInit.
+//
+// The no-forward-leak property is real and must be kept, but the OLD test keyed
+// it on the wrong event: it asserted that a `system/init` arriving while the
+// armed frame turn is still open retires the arm, i.e. `completed == 1` for the
+// wire order `interrupt → init → result{is_error}`. That is precisely the
+// QUM-935 signature — a user who pressed Esc gets the empty, fatal-looking
+// "Session Error" modal on a live session. The old assertion encoded a defect as
+// desired behavior (I wrote it during QUM-927, reasoning from mechanism —
+// "clear-on-open is gated on !st.open" — rather than from what the user sees).
+//
+// `init`-while-a-frame-turn-is-open is genuinely AMBIGUOUS on the wire: it can
+// mean "the armed turn was abandoned, a new turn's terminal is coming" or "the
+// interrupt's own turn is re-initializing and its is_error terminal is still
+// coming" (QUM-935). Nothing on the wire disambiguates, so the tiebreak is a
+// POLICY choice, and the directions are not symmetric:
+//   - retire (old): spurious fatal Session Error on a healthy session. QUM-935
+//     reproduced this 2/2. Not rare.
+//   - carry (now):  at worst a FOLLOWING turn's genuine soft error reads
+//     "Interrupted" instead of "Session Error", and only if the user pressed Esc
+//     moments earlier. A genuine crash still surfaces independently via
+//     EventBackendFaulted + the EventTurnFailed fault-surface gate.
+//
+// So forward-leak protection is now keyed on the armed turn CLOSING (its
+// terminal, or its orphan teardown) rather than on an ambiguous init. That is
+// stronger on turn identity (unambiguous where the init is not) and adds the
+// orphan-teardown close case the old test lacked — but on its own it is WEAKER
+// on wire-shape coverage, because nothing else in the suite routes an `init`
+// while an armed frame turn is open. Deleting that wire shape outright would
+// leave "re-add the retire, gated on frameTurnOpen" (i.e. exactly today's
+// semantics, which is QUM-935) passing the whole suite. So the deleted test is
+// INVERTED, not dropped: see
+// TestInterrupt_AtTurnBoundary_InitWhileArmed_TerminalStillSurfacesInterrupt.
+func TestInterrupt_AtTurnBoundary_ArmDoesNotSurviveItsTurnClosing(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		close func(t *testing.T, rt *UnifiedRuntime)
+	}{
+		{
+			name: "armed turn closes via its terminal result",
+			close: func(t *testing.T, rt *UnifiedRuntime) {
+				rt.routeFrame(resultFrame(t, true, 42), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+			},
+		},
+		{
+			name: "armed turn closes via orphan teardown",
+			close: func(t *testing.T, rt *UnifiedRuntime) {
+				rt.routeFrame(nil, backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockFaultableSession{}
+			rt := New(RuntimeConfig{Name: "weave-arm-turn-close", Session: mock})
+			if err := rt.Start(context.Background()); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = rt.Stop(stopCtx)
+			}()
+
+			ch, unsub := rt.EventBus().SubscribeNamed("arm-turn-close-test", 32)
+			defer unsub()
+
+			openTurnBoundary(t, rt)
+			if err := rt.Interrupt(context.Background()); err != nil {
+				t.Fatalf("Interrupt: %v", err)
+			}
+			assertNoTerminalYet(t, ch)
+
+			// The armed turn ends: the arm is consumed exactly here.
+			tc.close(t, rt)
+			interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+			if interrupted != 1 {
+				t.Errorf("armed turn closing: EventInterrupted count = %d, want 1 (the user's abort must classify as a clean interrupt)", interrupted)
+			}
+			if completed != 0 {
+				t.Errorf("armed turn closing: EventTurnCompleted count = %d, want 0", completed)
+			}
+
+			// A genuinely NEW turn's genuine error must surface as a real error —
+			// the consumed arm cannot leak forward.
+			openTurn(t, rt)
+			rt.routeFrame(resultFrame(t, true, 9), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+			interrupted, completed, _ = tallyTerminalEvents(ch, 400*time.Millisecond)
+			if interrupted != 0 {
+				t.Errorf("next turn: EventInterrupted count = %d, want 0 (a consumed arm leaked forward and swallowed a real error)", interrupted)
+			}
+			if completed != 1 {
+				t.Errorf("next turn: EventTurnCompleted count = %d, want 1", completed)
+			}
+		})
+	}
+}
+
+// QUM-931/QUM-935 — the INVERSION of the deleted
+// TestInterrupt_AtTurnBoundary_ArmDoesNotSurviveInit. Same wire shape the old
+// test drove; opposite expectation.
+//
+//	openTurnBoundary → Interrupt (arms the open turn) → system/init → result{is_error}
+//
+// The old test asserted `completed == 1` here, which is the QUM-935 empty
+// "Session Error" on a live session. The user pressed Esc and the frame turn was
+// never closed, so its terminal belongs to the armed turn and must read
+// "Interrupted".
+//
+// This test exists specifically because its wire shape is the ONLY thing that
+// can catch a retire re-added under a `frameTurnOpen` gate — which is today's
+// shipping semantics. Without it, that mutation passes the entire suite.
+func TestInterrupt_AtTurnBoundary_InitWhileArmed_TerminalStillSurfacesInterrupt(t *testing.T) {
 	mock := &mockFaultableSession{}
-	rt := New(RuntimeConfig{Name: "weave-boundary-init", Session: mock})
+	rt := New(RuntimeConfig{Name: "weave-init-while-armed", Session: mock})
 	if err := rt.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -367,7 +496,7 @@ func TestInterrupt_AtTurnBoundary_ArmDoesNotSurviveInit(t *testing.T) {
 		_ = rt.Stop(stopCtx)
 	}()
 
-	ch, unsub := rt.EventBus().SubscribeNamed("boundary-init-test", 32)
+	ch, unsub := rt.EventBus().SubscribeNamed("init-while-armed-test", 32)
 	defer unsub()
 
 	openTurnBoundary(t, rt)
@@ -376,17 +505,588 @@ func TestInterrupt_AtTurnBoundary_ArmDoesNotSurviveInit(t *testing.T) {
 	}
 	assertNoTerminalYet(t, ch)
 
-	// A fresh turn/resume boundary lands with no terminal for the armed turn.
+	// An init lands while the armed frame turn is still open. It does NOT open a
+	// new turn (routeFrame's open is gated on no turn being open), so the terminal
+	// below is still the armed turn's.
 	feedInit(rt)
-	if interruptPendingFlag(rt) {
-		t.Error("interruptPending survived a system/init turn boundary; a stale arm can swallow the next turn's real error")
+	if !frameTurnOpenFlag(rt) {
+		t.Fatal("setup: the frame turn closed across the init; this test no longer covers init-while-armed")
+	}
+	rt.routeFrame(resultFrame(t, true, 9), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (the armed turn's own terminal, after an intervening init)", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0 — an init must not retire an arm belonging to the still-open turn (QUM-935)", completed)
+	}
+}
+
+// QUM-931/QUM-935 (T1) — the Esc-burst-from-submit ordering, which is the whole
+// reason a bare boolean cannot work.
+//
+// Wire (from the QUM-935 repro, reproduced 2/2 and also on the pre-927 control):
+//
+//	26  user                              ← submit (optimistic phaseSubmitted)
+//	27  control_request subtype:interrupt  ← Esc
+//	28  system/init                        ← the arm's OWN turn opens HERE
+//	32  result is_error=true               ← the armed turn's terminal
+//
+// The arm precedes its own turn's init, so an arm that records "the currently
+// open turn" records nothing (none is open) and an `armed == current` check
+// cannot fire. The correct rule is current-if-open-ELSE-NEXT: with no frame turn
+// open but a turn in flight per the phase machine, the terminal to re-classify
+// belongs to the turn that opens AFTER the arm.
+func TestInterrupt_AfterOptimisticSubmit_InitThenIsErrorSurfacesInterrupt(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-submit-esc-init", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("submit-esc-init-test", 32)
+	defer unsub()
+
+	// Submit from idle: the QUM-903 optimistic synthetic makes InTurn true while
+	// NO frame turn exists on the wire yet.
+	if _, err := rt.WriteUserPrompt(context.Background(), "hi", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	// Assert the precondition explicitly, or this test can silently drift into the
+	// QUM-927 boundary shape (frame turn open) and stop covering QUM-935 at all.
+	if !rt.State().InTurn {
+		t.Fatal("setup: State().InTurn is false after an optimistic submit; the phase machine did not enter phaseSubmitted")
+	}
+	assertPhaseSubmitted(t, rt)
+	if frameTurnOpenFlag(rt) {
+		t.Fatal("setup: a frame turn is already open; this test would exercise the QUM-927 boundary path instead of the QUM-935 submit path")
 	}
 
-	// The next turn's genuine error must surface as a real error.
-	rt.routeFrame(resultFrame(t, true, 9), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	// Nothing terminal yet — and in particular the QUM-775 synthetic must be
+	// suppressed, because a real terminal IS inbound for the armed turn.
+	assertNoTerminalYet(t, ch)
+
+	// The arm's OWN turn opens here, then terminates with the interrupt's is_error.
+	feedInit(rt)
+	rt.routeFrame(resultFrame(t, true, 5), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (an Esc burst from submit must read \"Interrupted\")", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0 — this is the QUM-935 empty \"Session Error\" modal on a session whose backend never died", completed)
+	}
+}
+
+// QUM-931/QUM-935 (T1b) — the same shape with NO init frame at all. A bare
+// `result` opens a frame turn itself (routeFrame's open-on-any-turn-frame path),
+// so the fix must not depend on observing the init.
+func TestInterrupt_AfterOptimisticSubmit_BareIsErrorSurfacesInterrupt(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-submit-esc-bare", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("submit-esc-bare-test", 32)
+	defer unsub()
+
+	if _, err := rt.WriteUserPrompt(context.Background(), "hi", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	if !rt.State().InTurn {
+		t.Fatal("setup: State().InTurn is false after an optimistic submit")
+	}
+	assertPhaseSubmitted(t, rt)
+	if frameTurnOpenFlag(rt) {
+		t.Fatal("setup: a frame turn is already open; wrong shape for this test")
+	}
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+
+	rt.routeFrame(resultFrame(t, true, 5), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1 (the fix must not depend on seeing the init frame)", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0", completed)
+	}
+}
+
+// QUM-931 (T2) — the fix-CONSTRAINING half of T1, and the reason T1 alone is not
+// enough. "Arm the next turn unconditionally" (i.e. drop the do-not-arm branch)
+// satisfies T1 while silently swallowing the genuine error of a turn the user
+// never interrupted. A truly idle Esc must arm NOTHING.
+func TestInterrupt_TrulyIdle_ThenUnrelatedTurnErrors_StillSurfacesError(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-idle-esc-then-error", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("idle-esc-then-error-test", 32)
+	defer unsub()
+
+	// Genuinely idle: no submit, no frame turn.
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	// Nothing was armed, so the QUM-775 synthetic fires (it is what unwedges a TUI
+	// stuck after a dropped terminal event). One drain per phase, with a routeFrame
+	// between: a single drain covering both phases would consume this synthetic and
+	// leave the second assertion structurally unable to fail.
+	interrupted, completed, _ := tallyTerminalEvents(ch, 300*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("idle Esc: EventInterrupted count = %d, want 1 (the QUM-775 synthetic must fire when nothing is armed)", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("idle Esc: EventTurnCompleted count = %d, want 0", completed)
+	}
+
+	// A LATER, unrelated turn errors. The user never interrupted it.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, true, 11), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ = tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("unrelated turn: EventInterrupted count = %d, want 0 (an idle Esc must not arm a future turn and hide its real error)", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("unrelated turn: EventTurnCompleted count = %d, want 1", completed)
+	}
+}
+
+// QUM-931 (T4) — pins the semantics of a next-turn arm: it is ONE-SHOT and it
+// DOES claim the next turn to open, whatever that turn's terminal looks like:
+//   - classification does not depend on is_error. The existing pin for that is
+//     TestInterrupt_AtTurnBoundary_CleanTerminalStillInterrupt (the QUM-927
+//     BOUNDARY path — not the QUM-827 mid-turn path, which never routes
+//     is_error=false). Kept uniform here so one rule covers all arm targets.
+//   - the arm is spent, so a SECOND turn's genuine error surfaces normally.
+//
+// A next-arm IS bounded — see
+// TestInterrupt_NextTurnArm_NeverOpened_RetiredOnReturnToIdle. An earlier draft
+// of this comment claimed a clock-free bound would re-break QUM-935; that was
+// wrong, and it was disproved by implementing it. The bound cannot fire in the
+// QUM-935 shape because there the armed turn HAS opened by then
+// (turnSeq >= interruptedTurnID) and the arm is already consumed.
+func TestInterrupt_NextTurnArmResolvesExactlyOnce(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-next-arm-once", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("next-arm-once-test", 32)
+	defer unsub()
+
+	if _, err := rt.WriteUserPrompt(context.Background(), "hi", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	assertNoTerminalYet(t, ch)
+
+	// The claimed turn terminates CLEANLY — still an interrupt.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, false, 21), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("claimed turn: EventInterrupted count = %d, want 1 (classification does not depend on is_error)", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("claimed turn: EventTurnCompleted count = %d, want 0", completed)
+	}
+
+	// The arm is spent: a second turn's genuine error surfaces.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, true, 22), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	interrupted, completed, _ = tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("second turn: EventInterrupted count = %d, want 0 (a next-turn arm must be one-shot)", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("second turn: EventTurnCompleted count = %d, want 1", completed)
+	}
+}
+
+// QUM-931 — an unclaimed next-arm is retired when its own submit's
+// SUBMITTED-TIMEOUT expires: the backend never acked that submit, so no turn is
+// coming for it. Trigger (2) of retireUnclaimedNextArmLocked.
+//
+// SUPERSEDES an earlier TestInterrupt_NextTurnArm_NeverOpened_RetiredOnReturnToIdle,
+// which asserted the retire fired on any return to idle. That test PASSED and was
+// still wrong — it pinned a phase-triggered mechanism that drops a live arm on the
+// previous turn's residual idle (QUM-935 resurrected; see
+// TestInterrupt_NextTurnArm_SurvivesResidualWireIdle). Third time in this series a
+// test of mine ratified the mechanism instead of the outcome, so: assert the
+// property (an arm whose submit is provably dead is retired) via a signal that is
+// about the arm, not a wire event that merely correlates with it.
+func TestInterrupt_NextTurnArm_RetiredBySubmittedTimeout(t *testing.T) {
+	withShortSubmittedTimeout(t, 40*time.Millisecond)
+
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-arm-submitted-timeout", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("arm-submitted-timeout-test", 32)
+	defer unsub()
+
+	if _, err := rt.WriteUserPrompt(context.Background(), "hi", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	assertPhaseSubmitted(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if armedTurnID(rt) == 0 {
+		t.Fatal("setup: the Esc did not arm anything")
+	}
+
+	// The backend never opens a turn; the submitted-timeout guard fires for THIS
+	// submit. Wait for it rather than sleeping blind.
+	deadline := time.Now().Add(2 * time.Second)
+	for rt.State().InTurn {
+		if time.Now().After(deadline) {
+			t.Fatal("submitted-timeout guard never returned the phase to idle")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := armedTurnID(rt); got != 0 {
+		t.Errorf("armed turn id = %d after this submit's timeout expired; want 0 (no turn is coming for it)", got)
+	}
+
+	// A LATER, unrelated turn errors genuinely.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, true, 17), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
 	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
 	if interrupted != 0 {
-		t.Errorf("EventInterrupted count = %d, want 0 (stale arm swallowed a real error across init)", interrupted)
+		t.Errorf("EventInterrupted count = %d, want 0 (a stale next-arm swallowed a real error)", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("EventTurnCompleted count = %d, want 1", completed)
+	}
+}
+
+// QUM-931 — a RESIDUAL wire `idle` must NOT retire a live next-arm.
+//
+// This is the counter-test to the retire, and it is why the retire cannot be
+// triggered by the phase returning to idle. A trailing
+// session_state_changed:idle from the PREVIOUS turn routinely lands after a new
+// prompt has already been submitted — the normal `result` → `idle` wire order
+// (see TestInterrupt_AfterTurnCompleted_TreatedAsIdle) means an Esc burst lives
+// exactly at that boundary. A phase-triggered retire kills the arm there and the
+// turn's own is_error terminal then surfaces as the QUM-935 empty "Session
+// Error".
+//
+// `p == phaseIdle` is a PHASE signal, not an identity signal: it cannot
+// distinguish "the CLI abandoned the turn before opening it" from "the turn has
+// not opened YET". Reaching for it was the same premise class that produced
+// QUM-927 and QUM-935 — a hand-maintained wire-ordering guess. The retire is
+// therefore ordered against the ARM instead (a superseding submit), see
+// TestInterrupt_NextTurnArm_RetiredByASupersedingSubmit.
+func TestInterrupt_NextTurnArm_SurvivesResidualWireIdle(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-residual-idle", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("residual-idle-test", 32)
+	defer unsub()
+
+	// A previous turn ends. Its trailing wire `idle` has not arrived yet.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, false, 1), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+	tallyTerminalEvents(ch, 200*time.Millisecond)
+
+	// The user submits again and immediately bursts Esc.
+	if _, err := rt.WriteUserPrompt(context.Background(), "hi", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	assertPhaseSubmitted(t, rt)
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	armed := armedTurnID(rt)
+	if armed == 0 {
+		t.Fatal("setup: the Esc did not arm anything")
+	}
+
+	// NOW the previous turn's residual idle lands. It says nothing about the arm.
+	rt.routeFrame(stateFrame(protocol.SessionStateIdle))
+	if got := armedTurnID(rt); got != armed {
+		t.Errorf("armed turn id = %d after a residual wire idle, want %d retained — a previous turn's trailing idle must not retire a live arm", got, armed)
+	}
+
+	// The armed turn then opens and terminates with the interrupt's is_error.
+	feedInit(rt)
+	rt.routeFrame(resultFrame(t, true, 7), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 1 {
+		t.Errorf("EventInterrupted count = %d, want 1", interrupted)
+	}
+	if completed != 0 {
+		t.Errorf("EventTurnCompleted count = %d, want 0 — the residual idle dropped the arm and resurrected the QUM-935 empty \"Session Error\"", completed)
+	}
+}
+
+// QUM-931 — an unclaimed next-arm IS retired, by a SUPERSEDING SUBMIT: a new
+// user turn means the aborted prompt's turn is never opening, so its arm must not
+// sit waiting to claim the new one.
+//
+// This is the arm-ordered replacement for the phase-triggered bound (see
+// TestInterrupt_NextTurnArm_SurvivesResidualWireIdle for why the phase cannot be
+// the trigger). It fires on a signal that is genuinely ABOUT the arm — a fresh
+// submit — rather than on a wire event that merely correlates with one.
+//
+// Residual risk, accepted and documented rather than papered over: between an
+// abandoned submit and the next submit, an AUTONOMOUS turn could open and claim
+// the arm, mislabelling its terminal "Interrupted". That window is narrow and the
+// cost is one soft error mislabelled, whereas the phase-triggered alternative
+// costs a spurious fatal "Session Error" — the exact bug class this whole series
+// is about. A genuine crash still surfaces either way, independently, via
+// EventBackendFaulted plus the EventTurnFailed fault-surface gate.
+func TestInterrupt_NextTurnArm_RetiredByASupersedingSubmit(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-superseding-submit", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("superseding-submit-test", 32)
+	defer unsub()
+
+	// Submit + Esc, and the CLI never opens a turn for it.
+	if _, err := rt.WriteUserPrompt(context.Background(), "first", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	if err := rt.Interrupt(context.Background()); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+	if armedTurnID(rt) == 0 {
+		t.Fatal("setup: the Esc did not arm anything")
+	}
+	// Return to idle (the abort landed) — this alone must NOT retire the arm.
+	rt.routeFrame(stateFrame(protocol.SessionStateIdle))
+
+	// A genuinely NEW user turn supersedes the aborted one.
+	if _, err := rt.WriteUserPrompt(context.Background(), "second", "next"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+	if got := armedTurnID(rt); got != 0 {
+		t.Errorf("armed turn id = %d after a superseding submit; want 0 (the aborted prompt's arm must not claim the new turn)", got)
+	}
+
+	// The new turn genuinely errors. The user never interrupted it.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, true, 17), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("EventInterrupted count = %d, want 0 (a stale next-arm swallowed the new turn's real error)", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("EventTurnCompleted count = %d, want 1", completed)
+	}
+}
+
+// QUM-931 — WHITE-BOX: a terminal must consume ONLY an arm bearing its own turn
+// id. This is the property the whole refactor rests on ("a mismatched id is
+// inherently a no-op, so nothing needs to clear"), and with the current frame
+// router it is UNREACHABLE through the wire: a turn cannot open while one is
+// open, both consume sites run before closeFrameTurn zeroes the id, and a
+// next-arm of turnSeq+1 is by construction the next turn to open.
+//
+// So it is asserted by stuffing a stale id directly. That is deliberate: an
+// id-IGNORING consume passes every black-box test in this package, which means
+// without this test the id would be decoration and the "nothing needs to clear"
+// rationale would be load-bearing reasoning that no test confirms. That exact
+// shape — an invariant held only in the author's head — produced all four bugs in
+// this series.
+func TestConsumeInterrupt_StaleTurnID_DoesNotConsume(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-stale-id", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("stale-id-test", 32)
+	defer unsub()
+
+	openTurn(t, rt)
+	open := openFrameTurnID(t, rt)
+
+	// An arm for some OTHER turn (as a future router change, or a bug, might leave
+	// behind). The open turn's terminal must ignore it.
+	stuffArmedTurnID(rt, open+7)
+
+	rt.routeFrame(resultFrame(t, true, 3), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("EventInterrupted count = %d, want 0 — a terminal consumed an arm belonging to a DIFFERENT turn; turn identity is not being checked", interrupted)
+	}
+	if completed != 1 {
+		t.Errorf("EventTurnCompleted count = %d, want 1", completed)
+	}
+	if got := armedTurnID(rt); got != open+7 {
+		t.Errorf("armed turn id = %d, want %d left intact (a non-matching consume must not clear another turn's arm)", got, open+7)
+	}
+}
+
+// QUM-931 — WHITE-BOX: every frame turn must get a DISTINCT id, and a closed turn
+// must leave no turn open. Each was found individually UNTESTED by mutation:
+//
+//   - "openFrameTurn does not bump turnSeq" (every turn reusing one id) survived
+//     the whole suite, because consumeInterrupt's zeroing masked the resulting
+//     forward leak;
+//   - "consumeInterrupt does not zero the arm" also survived, because distinct ids
+//     masked it.
+//
+// Each mechanism hid the other's failure, so the suite tolerated either mutation
+// alone while BOTH together are a forward leak — a stale arm swallowing a later
+// turn's genuine error, which is bug #1 of this series. Asserting id uniqueness
+// directly is what breaks the mutual masking.
+func TestFrameTurn_IdsAreUniquePerTurn(t *testing.T) {
+	mock := &mockFaultableSession{}
+	rt := New(RuntimeConfig{Name: "weave-turn-ids", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	seen := map[uint64]bool{}
+	for i := 0; i < 3; i++ {
+		openTurn(t, rt)
+		id := openFrameTurnID(t, rt)
+		if seen[id] {
+			t.Fatalf("turn %d reused frame-turn id %d; ids must be unique or a stale arm can match a later turn", i+1, id)
+		}
+		seen[id] = true
+
+		rt.routeFrame(resultFrame(t, false, 1), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+		if frameTurnOpenFlag(rt) {
+			t.Fatalf("turn %d: a frame turn is still open after its terminal `result`", i+1)
+		}
+	}
+}
+
+// openFrameTurnID returns the currently-open frame turn's id, failing if none is
+// open.
+func openFrameTurnID(t *testing.T, rt *UnifiedRuntime) uint64 {
+	t.Helper()
+	rt.mu.RLock()
+	id := rt.openTurnID
+	rt.mu.RUnlock()
+	if id == 0 {
+		t.Fatal("no frame turn is open")
+	}
+	return id
+}
+
+// stuffArmedTurnID plants an arm for an arbitrary turn id. Test-only: the wire
+// cannot produce this state (see TestConsumeInterrupt_StaleTurnID_DoesNotConsume).
+func stuffArmedTurnID(rt *UnifiedRuntime, id uint64) {
+	rt.mu.Lock()
+	rt.interruptedTurnID = id
+	rt.mu.Unlock()
+}
+
+// QUM-931 (T6) — closes a mutation with NO coverage today: the now-write arm in
+// writeMessage must be evaluated BEFORE the optimistic setPhaseLocked(submitted)
+// in the same critical section. Move it after and an idle now-write starts
+// arming the next turn, hiding that turn's genuine error — and the entire
+// existing suite stays green. A now-write while genuinely idle preempts nothing,
+// so it must arm nothing.
+func TestSendAllNow_NowWriteWhileIdle_DoesNotArm(t *testing.T) {
+	mock := &mockUnifiedSession{cancelResults: map[string]bool{}}
+	rt := New(RuntimeConfig{Name: "weave-nowwrite-idle", Session: mock})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = rt.Stop(stopCtx)
+	}()
+
+	ch, unsub := rt.EventBus().SubscribeNamed("nowwrite-idle-test", 32)
+	defer unsub()
+
+	// Genuinely idle: phase idle, no frame turn open.
+	if rt.State().InTurn {
+		t.Fatal("setup: InTurn is true before any submit")
+	}
+	if _, err := rt.WriteUserPrompt(context.Background(), "urgent", "now"); err != nil {
+		t.Fatalf("WriteUserPrompt: %v", err)
+	}
+
+	// A turn then runs and genuinely errors. Nothing preempted it.
+	openTurn(t, rt)
+	rt.routeFrame(resultFrame(t, true, 13), backend.TurnInfo{Autonomous: true, EndOfTurn: true})
+
+	interrupted, completed, _ := tallyTerminalEvents(ch, 400*time.Millisecond)
+	if interrupted != 0 {
+		t.Errorf("EventInterrupted count = %d, want 0 (an idle now-write preempts nothing, so it must not arm)", interrupted)
 	}
 	if completed != 1 {
 		t.Errorf("EventTurnCompleted count = %d, want 1", completed)
