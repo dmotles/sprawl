@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -456,18 +457,60 @@ func TestGenuineFault_NoPrecedingInterrupt_StillFaultsAtBoundary(t *testing.T) {
 	if !waitForBackendFaulted(faultCh, time.Second) {
 		t.Error("EventBackendFaulted was not published for a genuine subprocess-exit fault")
 	}
-	interrupted, _, failed := tallyTerminalEvents(turnCh, 400*time.Millisecond)
-	if failed != 1 {
-		t.Errorf("EventTurnFailed count = %d, want 1 (a real fault with no interrupt must still fail the turn)", failed)
+	// TWO EventTurnFailed publishes are expected, from two distinct publishers:
+	// the SetTerminalErrorHandler closure (carrying the REAL fault) and the
+	// orphan-teardown branch in routeFrame (carrying the generic
+	// errStreamClosedNoResult, because the stream closed with no terminal
+	// `result`). This is the same shape the mid-turn path has always had; the
+	// QUM-927 rework widened the handler's gate to include frameTurnOpen so the
+	// boundary path matches it.
+	//
+	// The double publish is NOT harmless, which is why QUM-967 tracks it: both
+	// translate to SessionResultMsg{IsError} and the second one CLOBBERS the
+	// first's text (app.go rebuilds errorDialog from msg.Result), so on the no-arm
+	// fault path the user reads the generic "autonomous turn stream closed without
+	// terminal result" instead of the real "claude subprocess exited unexpectedly".
+	// The assertion below is what keeps the REAL fault present at all.
+	//
+	// ONE drain feeds every assertion below. Splitting it would silently kill the
+	// misclassification guard: a second drain over the same subscription reads an
+	// already-empty channel, so `interrupted` could only ever be 0 and the "a real
+	// fault must not surface as a clean interrupt" check — the exact property
+	// QUM-927 regressed — would pass unconditionally.
+	interrupted, _, failures := tallyTerminalEventsWithErrors(turnCh, 400*time.Millisecond)
+	if len(failures) != 2 {
+		t.Errorf("EventTurnFailed count = %d, want 2 (the terminal-error handler AND the orphan teardown); errs=%v", len(failures), failures)
+	}
+	// The load-bearing assertion: one of them must name the REAL fault. Without
+	// this, the widened gate could regress and the count could still be met by
+	// the orphan branch alone plus any other generic failure.
+	var sawRealFault bool
+	for _, err := range failures {
+		if errors.Is(err, backend.ErrSubprocessExited) {
+			sawRealFault = true
+		}
+	}
+	if !sawRealFault {
+		t.Errorf("no EventTurnFailed carried the real fault (%v); the fault-surface gate is suppressing it at the turn boundary, so the TUI cannot name the failure; errs=%v",
+			backend.ErrSubprocessExited, failures)
 	}
 	if interrupted != 0 {
-		t.Errorf("EventInterrupted count = %d, want 0", interrupted)
+		t.Errorf("EventInterrupted count = %d, want 0 (a genuine fault with no preceding interrupt must never be misclassified as a clean interrupt)", interrupted)
 	}
 }
 
 // QUM-927 AC: even when a boundary interrupt DID precede a genuine fault, the
-// session-fault surface is independent — EventBackendFaulted must still fire
-// (only the turn event is re-labelled).
+// session-fault surface is independent — EventBackendFaulted must still fire,
+// AND a real EventTurnFailed naming the fault must still be published.
+//
+// The rework corrected what this test asserts. It previously demanded failed==0
+// on the theory that the arm's re-label of the TEARDOWN event was the whole
+// story. It isn't: EventBackendFaulted has no root-session consumer
+// (runFaultSubscriber is children-only) and TranslateRuntimeEvent maps it to
+// nil, so "only the turn event is re-labelled" meant the TUI surfaced NOTHING
+// for a dead subprocess. Asserting failed==0 here actively codified that gap —
+// a bus-level test cannot see an event the TUI never consumes. The reducer-level
+// counterpart lives in internal/tui/app_boundary_fault_test.go.
 func TestGenuineFault_AfterBoundaryInterrupt_StillPublishesBackendFaulted(t *testing.T) {
 	mock := &mockFaultableSession{}
 	rt := New(RuntimeConfig{Name: "weave-boundary-fault-esc", Session: mock})
@@ -498,14 +541,20 @@ func TestGenuineFault_AfterBoundaryInterrupt_StillPublishesBackendFaulted(t *tes
 	if !waitForBackendFaulted(faultCh, time.Second) {
 		t.Error("EventBackendFaulted was suppressed by the interrupt re-classification; real faults must not be swallowed")
 	}
-	// The documented trade-off: the TURN event is re-labelled as an interrupt
-	// while the independent session-fault surface above still fires.
-	interrupted, completed, failed := tallyTerminalEvents(ch, 400*time.Millisecond)
+	// The arm re-labels the TEARDOWN event as a clean interrupt, but the fault
+	// must ALSO surface as a real EventTurnFailed naming it — that is the event
+	// the root TUI actually consumes (→ SessionResultMsg{IsError} → the "Session
+	// Error" dialog with [r] restart).
+	interrupted, completed, failed, _ := tallyTerminalEventsWithResult(ch, 400*time.Millisecond)
 	if interrupted != 1 {
 		t.Errorf("EventInterrupted count = %d, want 1 (the interrupted turn is re-labelled, exactly once)", interrupted)
 	}
-	if completed != 0 || failed != 0 {
-		t.Errorf("completed=%d failed=%d, want 0/0", completed, failed)
+	if failed != 1 {
+		t.Errorf("EventTurnFailed count = %d, want 1 (the genuine fault must still fail the turn so the TUI can surface it); "+
+			"0 here means a dead subprocess renders as a clean \"Interrupted\"", failed)
+	}
+	if completed != 0 {
+		t.Errorf("completed=%d, want 0", completed)
 	}
 }
 
@@ -551,6 +600,38 @@ func TestSendAllNow_NowWriteAtTurnBoundary_SurfacesInterrupt(t *testing.T) {
 func tallyTerminalEvents(ch <-chan RuntimeEvent, window time.Duration) (int, int, int) {
 	interrupted, completed, failed, _ := tallyTerminalEventsWithResult(ch, window)
 	return interrupted, completed, failed
+}
+
+// tallyTerminalEventsWithErrors is tallyTerminalEvents plus the actual
+// EventTurnFailed errors, so a test can assert WHICH fault surfaced and not
+// merely that one did — "some turn-failed event fired" is satisfied by the
+// orphan branch's generic errStreamClosedNoResult, which would hide a
+// regression of the real fault surface.
+//
+// It returns everything from ONE drain on purpose. A channel drain is
+// destructive, so two sequential drains over the same subscription cannot both
+// see the same events: the first consumes the window and any assertion built on
+// the second is dead — it can only ever observe zero. (QUM-927 rework)
+func tallyTerminalEventsWithErrors(ch <-chan RuntimeEvent, window time.Duration) (interrupted, completed int, failures []error) {
+	deadline := time.After(window)
+	for {
+		select {
+		case ev, ok := <-ch:
+			if !ok {
+				return interrupted, completed, failures
+			}
+			switch ev.Type {
+			case EventInterrupted:
+				interrupted++
+			case EventTurnCompleted:
+				completed++
+			case EventTurnFailed:
+				failures = append(failures, ev.Error)
+			}
+		case <-deadline:
+			return interrupted, completed, failures
+		}
+	}
 }
 
 // QUM-830: send-all-now (Ctrl+G) writes one priority:"now" message that

@@ -79,9 +79,11 @@ wait_for_child_idle() {
 count_now_writes() {
     local agent="$1"
     local f
-    f=$(ls "$SPRAWL_ROOT"/.sprawl/logs/sessions/"$agent"/*.ndjson 2>/dev/null | head -1)
+    # Newest-by-mtime, not alphabetical: a mid-run session restart would
+    # otherwise pin a pre-restart UUID and silently zero the storm gate.
+    f=$(ls -t "$SPRAWL_ROOT"/.sprawl/logs/sessions/"$agent"/*.ndjson 2>/dev/null | head -1)
     [ -z "$f" ] && { echo "-1"; return; }
-    jq -rc 'select(.dir=="in") | .raw | fromjson | select(.type=="user" and .priority=="now") | 1' "$f" 2>/dev/null | wc -l | tr -d ' '
+    jq -rc 'select(.dir=="in") | .raw | (fromjson? // empty) | select(.type=="user" and .priority=="now") | 1' "$f" 2>/dev/null | wc -l | tr -d ' '
 }
 
 test_run() {

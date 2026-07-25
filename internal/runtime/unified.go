@@ -84,10 +84,14 @@ type UnifiedRuntime struct {
 	// (QUM-827). routeFrame's EndOfTurn branches read-and-clear it to publish a
 	// clean EventInterrupted instead of EventTurnCompleted/EventTurnFailed —
 	// otherwise the interrupted turn's is_error `result` frame surfaces as a
-	// spurious "Session Error". Guarded by mu. Three paths retire it, so a stale
-	// flag can never leak into a later turn: consumed by its own turn's terminal;
-	// an idle→non-idle phase transition while NO frame turn is open; or the next
-	// system/init (QUM-927).
+	// spurious "Session Error". Guarded by mu. Three paths retire it: consumed by
+	// its own turn's terminal; an idle→non-idle phase transition while NO frame
+	// turn is open; or the next system/init (QUM-927). Retirement is fail-safe by
+	// DIRECTION rather than by an ordering guarantee — see the system/init
+	// arm-retire in routeFrame for the exact invariant and its known race
+	// (QUM-935). A stale flag is not known to leak into a later turn in any
+	// observed shape, but that is a consequence of the retire sites, not an
+	// absolute the code may assume.
 	interruptPending bool
 	// frameTurnOpen mirrors the frame router's autoTurn.open under mu (QUM-927).
 	// autoTurn itself is reader-goroutine-only, but Interrupt (TUI goroutine) must
@@ -231,7 +235,24 @@ func New(cfg RuntimeConfig) *UnifiedRuntime {
 				// on turnRunning so a fault between turns can't spuriously
 				// finalize an idle TUI.
 				rt.mu.RLock()
-				turnRunning := rt.inTurnLocked()
+				//
+				// QUM-927: "a turn is in flight" must include the FRAME-level
+				// turn, not just the phase machine. At a turn boundary the CLI
+				// has already reported session_state_changed:idle after end_turn
+				// (so phase reads idle) while the turn's terminal `result` is
+				// still inbound and frameTurnOpen is still true. With the narrow
+				// phase-only gate, a genuine transport EOF / subprocess death in
+				// that window published EventBackendFaulted but NO EventTurnFailed
+				// — and since EventBackendFaulted has no root consumer
+				// (runFaultSubscriber is children-only), the orphan teardown in
+				// routeFrame then consumed the pending interrupt arm and published
+				// EventInterrupted instead. Net user-visible result: "Interrupted"
+				// for a DEAD subprocess — no Session Error, no restart modal, no
+				// fault surface at all. Widening restores the pre-QUM-927 surface
+				// and makes the boundary path behave identically to the mid-turn
+				// path (which already publishes both this EventTurnFailed and the
+				// orphan branch's).
+				turnRunning := rt.inTurnLocked() || rt.frameTurnOpen
 				rt.mu.RUnlock()
 				if turnRunning {
 					rt.eventBus.Publish(RuntimeEvent{Type: EventTurnFailed, Error: err})
@@ -332,13 +353,28 @@ func (rt *UnifiedRuntime) routeFrame(msg *protocol.Message, turn backend.TurnInf
 		// frame turn is already open — without this a boundary arm could survive and
 		// swallow a later turn's genuine is_error.
 		//
-		// Premise: an armed turn's terminal `result` always precedes the NEXT turn's
-		// init, so this only ever retires an arm whose turn produced no terminal. That
-		// holds structurally in the backend — session.go allocates the turnFrame on
-		// init and clears it on `result`, and EndOfTurn requires a live turnFrame — and
-		// is exercised live by the QUM-830 cancel-and-replace path (the sendnow-tui row
-		// preempts a turn 8× per run; an init-before-result there would clear the
-		// now-write arm and resurrect the empty "Session Error").
+		// The invariant this rests on is DIRECTIONAL, not an ordering guarantee.
+		// Retiring an arm can only ever cause a real terminal to classify as
+		// EventTurnFailed / EventTurnCompleted{IsError} — i.e. degrade to
+		// pre-QUM-827 behavior — and can NEVER cause a turn that was not
+		// interrupted to be reported as EventInterrupted. That direction is what
+		// AC4 pins: a stale arm cannot swallow a LATER turn's genuine error. The
+		// retire is fail-safe in the direction that matters, which is why it is
+		// unconditional here.
+		//
+		// Do NOT read this as "an armed turn's terminal `result` always precedes
+		// the NEXT turn's init". That stronger premise is FALSE and the code does
+		// not rely on it: an arm can precede its OWN turn's init, because
+		// writeMessage arms on inTurnLocked(), which is true in the purely
+		// synthetic phaseSubmitted state (set optimistically, with no CLI turn
+		// behind it) — and at a turn boundary the arm rides frameTurnOpen while the
+		// CLI may already be opening the replacement turn. In those races this
+		// clear retires an arm whose is_error terminal was legitimately inbound,
+		// and that terminal then surfaces as a spurious "Session Error". Tracked as
+		// QUM-935 and deliberately NOT fixed here: the obvious alternative
+		// (carrying the arm across init) trades a rare spurious error for a rare
+		// false "Interrupted", which is strictly worse — it hides real errors and
+		// can unblock StopAfterTurn (QUM-866) and the pause waiter mid-turn.
 		rt.interruptPending = false
 		rt.mu.Unlock()
 	}

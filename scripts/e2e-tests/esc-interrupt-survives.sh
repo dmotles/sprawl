@@ -17,6 +17,29 @@
 #
 # Requires SPRAWL_ENABLE_TEST_TOOLS=1 so `_test_sleep` is exposed (gated, see
 # internal/sprawlmcp/tools.go).
+#
+# QUM-927 scope note for whoever touches this next. This row guards TWO distinct
+# things in internal/runtime/unified.go, not one:
+#   a. the Interrupt arm (`armed := inTurn || rt.frameTurnOpen`), which classifies
+#      a turn-boundary Esc as a clean interrupt; and
+#   b. the fault-surface gate in the SetTerminalErrorHandler closure
+#      (`rt.inTurnLocked() || rt.frameTurnOpen`), which keeps a GENUINE backend
+#      fault at that same boundary surfacing as EventTurnFailed instead of being
+#      reclassified as a clean interrupt.
+# (a) and (b) push in opposite directions — (a) suppresses an error surface, (b)
+# preserves one — so a change to either needs this row AND the reducer-level
+# tests in internal/tui/app_boundary_fault_test.go.
+#
+# FALSIFIABILITY WARNING (QUM-958): both gates below are weak, so a PASS here is
+# not strong evidence.
+#   * The queue-intact gate greps the pane for SURVIVE_${SUFFIX} — a string this
+#     script itself types at e2e_send_user_prompt. The echoed prompt renders in
+#     the pane, so the grep can match its own input rather than the model's reply.
+#   * assert_no_session_fault is a NEGATIVE assertion: it passes when nothing
+#     renders, which is also what a silently-dead session looks like. It
+#     therefore cannot detect the QUM-927 regression class at all — "fault
+#     surfaces nothing" is indistinguishable from "session survived" here.
+# Treat a failure as informative and a pass as inconclusive until QUM-958 lands.
 
 test_metadata() {
     echo "needs_claude=1 needs_tmux=1"

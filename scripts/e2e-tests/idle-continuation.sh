@@ -87,7 +87,8 @@ count_autocontinue_in() {
 
 # last_seq_of TYPE [SUBTYPE] — the wire-log `seq` (single monotonic counter over
 # the whole file) of the LAST CLI→sprawl frame of the given type/subtype; -1 if
-# none. Used to order the turn-1 terminal against the task_notification, which is
+# none, or if the log carries no usable `seq` (legacy/regressed writer). Used to
+# order the turn-1 terminal against the task_notification, which is
 # how the "the completion landed while idle" precondition is proven — the pane's
 # idle glyph is not reliably visible in a captured pane.
 last_seq_of() {
@@ -97,7 +98,13 @@ last_seq_of() {
         'select(.dir=="out") | {seq:.seq, m:(.raw | (fromjson? // empty))}
          | select(.m.type==$t) | select($sub=="" or .m.subtype==$sub) | .seq' \
         "$f" 2>/dev/null | tail -1)
-    [ -z "$s" ] && s=-1
+    # jq prints the literal "null" for an envelope with no `seq` key (older
+    # writers omitted it and transcript.go still reads those logs). "null"
+    # sails past a -z test, and every downstream `[ -lt ]` then ERRORS and
+    # evaluates FALSE — silently skipping the non-vacuity aborts that keep this
+    # row from passing while measuring nothing. Force the abort sentinel unless
+    # the value is genuinely an integer.
+    [[ "$s" =~ ^[0-9]+$ ]] || s=-1
     echo "$s"
 }
 

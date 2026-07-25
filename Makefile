@@ -1,7 +1,7 @@
-.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap test-hub-e2e
+.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit
 
 # Default target — full quality gauntlet
-validate: build proto-check fmt-check lint test leak-scan
+validate: build proto-check fmt-check lint test test-wirelog-helpers-unit leak-scan
 
 BUF ?= buf
 
@@ -78,6 +78,13 @@ lint:
 
 test:
 	go test ./...
+
+# Unit tests for the hand-rolled wire-log counter/ordering helpers inside the
+# e2e row scripts (scripts/e2e-tests/*.sh). Those helpers gate the rows'
+# non-vacuity aborts, so a helper returning a non-integer makes a row pass
+# while measuring nothing. Pure-local: bash + jq, no claude/tmux/sandbox.
+test-wirelog-helpers-unit:
+	bash scripts/test-wirelog-helpers-unit.sh
 
 GOBIN ?= $(HOME)/.local/bin
 
