@@ -669,8 +669,7 @@ func (c *ChatList) Idle() bool {
 // append that would bury an in-flight text block, the state "an unfinished
 // assistant that is not the tail" is never constructed. A non-zero result means
 // an append path bypassed the beginContentAppend chokepoint, which silently
-// restores the pegged-CPU / stray-cursor bug and breaks UncacheableCount's O(1)
-// assumption.
+// restores the pegged-CPU / stray-cursor bug.
 //
 // Tool calls are deliberately EXCLUDED. A pending non-tail ToolCallItem is
 // routine and legitimate — parallel tool calls in one assistant message, and
@@ -691,32 +690,54 @@ func (c *ChatList) OrphanCount() int {
 	return n
 }
 
-// UncacheableCount reports how many items renderEnvelope cannot serve from
-// cache, i.e. how many will re-run their full render on the next frame.
+// UncacheableCount reports how many envelopes renderEnvelope must re-render on
+// the next frame: those whose item reports Finished() == false, counted over
+// exactly what buildRender walks — the committed items AND the pending zone.
 //
-// Range is 0..1 and the check is O(1) — a bare tail inspection — because of the
-// inductive invariant documented in settleTrailingAssistant's
-// "WHY TRAILING-ONLY IS SUFFICIENT" comment: at most one unfinished item can
-// exist and it is always the tail. Two changes would silently invalidate that
-// and make this UNDER-report: turning the trailing-only settle into a sweep, or
-// adding an append path that bypasses the beginContentAppend chokepoint.
-// OrphanCount is what would notice; keep its contract-zero assertions passing.
+// The number is a COUNT of re-rendering envelopes and nothing more. Do not read
+// 0 as "nothing is in flight", and do not read non-zero as a defect: a pending
+// tool call is uncacheable and entirely legitimate (parallel calls in one
+// assistant message; async Agent rows pending for minutes), so a healthy session
+// sits non-zero for long stretches. OrphanCount is the accessor whose contract
+// is zero, and every orphan it counts is necessarily counted here too, so
+// UncacheableCount >= OrphanCount always.
 //
-// This DOES include a pending tool call at the tail, which is uncacheable but
-// perfectly legitimate — uncacheable is not the same as invariant-violating.
+// The walk is O(n) and depends on NO invariant about WHERE an unfinished item
+// may sit. It was once an O(1) tail probe justified by settleTrailingAssistant's
+// "WHY TRAILING-ONLY IS SUFFICIENT" invariant, and it UNDER-reported, because
+// that invariant does not hold mid-turn: AppendThinking deliberately bypasses the
+// beginContentAppend chokepoint, so `chunk -> AppendThinking` parks an in-flight
+// assistant beneath a marker whose Finished() is hardcoded true. Parallel pending
+// tool calls under-reported the same way, and that state is routine. Do not
+// reintroduce a positional shortcut here; see
+// TestChatList_UncacheableCount_UnfinishedBehindThinkingMarker.
+//
+// O(n), for debug and test use only — not on any render path. No non-test
+// consumers today.
 //
 // Deliberately NOT derived from pendingTools + (streamingAssistant ? 1 : 0):
 // that formula OVER-counts mid-turn (after MarkToolResult, pendingTools is 0 and
 // streamingAssistant is still true while every item is finished — see
 // TestChatList_MidTurnSettleKeepsTurnBookkeeping) and UNDER-counts after Reset,
-// which force-finalizes items and desyncs the flags from item state. The zone
-// contributes nothing: its item kinds are always Finished().
+// which force-finalizes items and desyncs the flags from item state. The zone is
+// walked rather than assumed cacheable: its item kinds do all report
+// Finished() == true today, but that is one more invariant this count has no
+// reason to rest on.
 func (c *ChatList) UncacheableCount() int {
-	n := len(c.items)
-	if n == 0 || c.items[n-1].item.Finished() {
-		return 0
+	n := 0
+	for _, env := range c.items {
+		if !env.item.Finished() {
+			n++
+		}
 	}
-	return 1
+	for _, e := range c.zone.order {
+		for _, env := range e.items {
+			if !env.item.Finished() {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // Reset replaces the items slice from a transcript-backfill snapshot

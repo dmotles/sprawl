@@ -556,9 +556,12 @@ func TestChatList_ResetFullTranscriptHasNoOrphans(t *testing.T) {
 // text streamed means the flag is set, so no result text is appended and
 // nothing heals it.
 //
-// Note UncacheableCount() is 0 here (the tail is the finished marker) — only the
-// OrphanCount walk detects this, which is why the two accessors are not
-// redundant.
+// Note both accessors detect the pre-QUM-975 state (an unfinished assistant
+// parked beneath a finished thinking marker): OrphanCount sees a non-tail
+// unfinished assistant, and UncacheableCount's O(n) walk counts it too — see
+// TestChatList_UncacheableCount_UnfinishedBehindThinkingMarker. OrphanCount is
+// non-redundant because it EXCLUDES tool calls and keys on POSITION, not because
+// it detects more.
 func TestChatList_FinalizeAfterThinkingLeavesNoOrphan(t *testing.T) {
 	cl := newTestChatList()
 	cl.SetSize(80)
