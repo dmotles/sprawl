@@ -48,13 +48,14 @@ under **Validating Changes** (`complete-lifecycle` row).
 ## Build & Test
 
 ```bash
-make              # runs full validation (build + fmt-check + lint + test)
+make              # runs full validation (build + proto-check + fmt-check + lint + test + e2e-matrix-unit + leak-scan)
 make validate     # same as above — the default target
 make build        # builds ./sprawl binary
 make fmt          # auto-fix formatting
 make fmt-check    # check formatting without fixing (used in CI/hooks)
 make lint         # run golangci-lint
 make test         # run all unit tests
+make test-e2e-matrix-unit  # shell unit tests for the e2e matrix driver (fast, no claude)
 make hooks        # install pre-commit hook
 
 make test-wirelog-helpers-unit   # bash+jq unit tests for the e2e rows' wire-log
@@ -197,6 +198,26 @@ lookup.
 >
 > To clear sandbox state, use the sanctioned `sprawl_sandbox_destroy` helper (from `scripts/sprawl-test-env.sh`) or the `_stmux kill-session -t $SPRAWL_NAMESPACE` wrapper — both target only the sandbox session on the sandbox socket. In scripts, always use `_stmux` (not bare `tmux`) for sandbox tmux operations.
 
+## `/tmp` hygiene — hard rules
+
+Sandbox roots live under `/tmp`, but `/tmp` is **shared** with other agents and
+with host tooling. These rules are not advisory:
+
+- **Never `rm -rf` a broad `/tmp` glob** (`/tmp/*`, `/tmp/sprawl-*`, `$TMPDIR/*`,
+  …). It destroys other agents' in-flight sandboxes and host state.
+- **Only remove a sandbox root you created**, and only after asserting the path
+  is under `/tmp/` and matches the prefix you expect — assert, then delete. See
+  `_e2e_cleanup` in `scripts/lib/e2e-common.sh` and `_unit_reset_markers` in
+  `scripts/test-e2e-matrix-unit.sh` for the pattern (a `case` guard on the
+  literal path, and `find -delete` rather than a `rm` glob).
+- **Never touch `/tmp/coder-script-data`.** It is host tooling state. In this
+  workspace `/tmp/coder-script-data/bin/claude` is a **symlink** into the
+  developer's home dir, where the real binary lives on the persistent volume —
+  so deleting it breaks `claude` PATH resolution rather than the installation,
+  and recovery is a single `ln -s`. The hazard is not the blast radius, it is
+  the silence: nothing in the harness would *tell* you, and every
+  `needs_claude` e2e row would quietly start skipping.
+
 ## Text selection in `sprawl enter` (QUM-653 / QUM-731)
 
 The TUI captures the mouse so the scroll wheel scrolls the chat viewport
@@ -233,6 +254,32 @@ for weave, last 10k mcp-calls.jsonl lines, per-agent activity rates,
 memory + loadavg. Non-blocking — TUI stays interactive. Status bar shows
 `snapshot saved → <path>` on completion (or `snapshot failed` + an error
 toast on failure).
+
+### Runtime pprof toggle (QUM-678 / QUM-934)
+
+`--pprof <addr>` (or `SPRAWL_PPROF_ADDR`) exposes `net/http/pprof` at launch.
+**`SIGUSR2` toggles the listener on a running session** — no relaunch, which is
+the point: restarting resolves some session-scoped perf bugs and so destroys
+the evidence. (`SIGUSR1` is the separate sigdump goroutine/fd dump.)
+
+Bind-failure policy differs by **provenance**, deliberately — don't merge the
+two branches:
+
+* **Explicitly configured** (`--pprof` / `SPRAWL_PPROF_ADDR` / an explicit arg):
+  bound as-is or fails loudly. Never silently relocated — an operator who named
+  a port will curl that port.
+* **Unconfigured** (our own `127.0.0.1:6060` default, which nobody asked for):
+  tries the default, then falls back to an ephemeral `127.0.0.1:0` on
+  `EADDRINUSE`. Loopback only, and only `EADDRINUSE` relocates.
+
+While the listener is up, its **bound address is written to
+`<SPRAWL_ROOT>/.sprawl/runtime/pprof-addr`** and removed on stop, so
+`curl http://$(cat .sprawl/runtime/pprof-addr)/debug/pprof/` works even when the
+fallback picked an ephemeral port. The toggle's log line only reaches
+`.sprawl/logs/tui-stderr-*.log` (the TUI redirects stderr), so this file is the
+discoverable surface; an in-TUI surface is still deferred. The file is advisory
+— written only after the weave flock is held, and cleared at launch, so a
+SIGKILLed session's stale entry cannot mislead the next one.
 
 ## Project Configuration
 
@@ -330,7 +377,48 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
 2. Manual smoke test: run the built `./sprawl` binary with relevant commands
 3. For end-to-end validation, use the `/e2e-testing-sandboxing` skill to set up a sandbox environment
 4. For TUI changes, read `/tui-testing` for the E2E validation harness and manual testing workflow. TUI validation is mandatory for all TUI-related changes.
-5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows). All rows require a real `claude` binary on PATH; set `SPRAWL_E2E_SKIP_NO_CLAUDE=1` to skip. The `wake-live` row requires the `sprawl_test` build tag — the driver (`scripts/e2e-matrix.sh`) handles this automatically via `needs_build_tags=sprawl_test`. The original per-test Makefile targets (`make test-notify-tui-e2e`, `make test-handoff-e2e`, `make test-merge-reuse-e2e`, `make test-ask-user-question-e2e`, `make test-drain-row-inject-e2e`, `make test-paste-coalesce-e2e`, `make test-wake-live-e2e`) and their underlying `scripts/test-*-e2e.sh` scripts remain available as a fallback during the soak period; they will be removed in a follow-up issue once the matrix rows have proven flake-free for a few days.
+5. **Mandatory-test e2e harness.** When you touch any file listed in the table below, run `make test-e2e-matrix-<row>` for the corresponding row (or `make test-e2e-matrix` to run all rows).
+
+   **Multi-row invocation is supported (QUM-947).** Several rows in the table below instruct you to re-run additional rows; run them in one shot by calling the driver directly with N row names:
+
+   ```bash
+   bash scripts/e2e-matrix.sh recall-sendnow tui-live-render drain-row-inject
+   ```
+
+   The summary reports `passed/requested`, where the denominator is **the number of rows you named on the command line** — it can never be smaller than what you asked for. The driver also echoes `=== Matrix: running N row(s): ... ===` before starting, so a wrong selection is visible immediately. Rules: an unknown or malformed row name is rejected with exit 2 **before any row runs** (fail fast, and every bad name is reported, so one re-run fixes them all); `all` and `--list` must each be the only argument; duplicate names run twice by design, because deduplicating would shrink the denominator below the request. Note `make test-e2e-matrix-<row>` takes exactly one row — `make` parses `make test-e2e-matrix-a b c` as three separate goals — so use the direct `bash scripts/e2e-matrix.sh` form for multi-row runs.
+
+   > **Reading older transcripts:** before QUM-947 the driver silently discarded every argument after the first and printed `Matrix: 1/1 passed`. Any historical multi-row invocation that "passed" proved only that its *first* row ran. Do not trust such a claim.
+
+   The driver's own arg parsing, fail-fast validation, and summary arithmetic are unit-tested by `make test-e2e-matrix-unit` (`scripts/test-e2e-matrix-unit.sh`) — pure shell, ~0.4s, no `claude` or `tmux` needed. It runs as part of `make validate`, because a regression test guarding a false-green is worthless if it only runs when someone remembers.
+
+   All rows require a real, **authenticated** `claude` binary on PATH. `SPRAWL_E2E_SKIP_NO_CLAUDE=1` turns a missing `claude` from a hard `FATAL` into a **skip** — and a skip is accounted separately from a pass (QUM-952).
+
+   **The gate keys on presence only — it never probes auth.** All 11 `needs_claude` gates read the flag *inside* the binary-absent branch, so there are three states, not two:
+
+   | claude state | gate fires? | `SPRAWL_E2E_SKIP_NO_CLAUDE` | outcome |
+   |---|---|---|---|
+   | absent | yes | consulted | row is **skipped** — nothing asserted, exit 3 |
+   | present, **unauthenticated** | no | **never read; inert** | row runs and fails with `Not logged in` |
+   | present + authenticated | no | n/a | real run |
+
+   The middle state is a **misdiagnosis hazard, not a false green**: the row fails with a Session Error whose body is `Not logged in`, which is trivially misread as a product regression (and has been). If you see `Not logged in`, fix auth — see the `scripts/run-claude` shim and `.env` above; the flag is **not** the remedy, because the gate it controls never fires in that state. And **never hide `claude` from PATH to force a skip.** That converts the middle state into the absent state, and all it buys you is a vacuous all-skip run that asserts nothing. QUM-974 tracks the related defect that `e2e_recover_oauth_token` reports success even when it recovers no token.
+
+   **Skip accounting (QUM-952).** A skipped row is reported as `SKIP <row>`, never `PASS`, and forces a nonzero exit — **exit 3** when rows skipped but none outright failed. Two summary lines are printed:
+
+   ```
+   === Matrix: 2/3 passed ===
+   === Matrix breakdown: 2 passed, 0 failed, 1 skipped / 3 requested ===
+   ```
+
+   The first line is the QUM-947 contract and is unchanged — `passed` means *actually executed and passed*, so a skip now shows up there as a shortfall. Note that **`=== Matrix: ` is not a unique prefix**: the selection banner (`=== Matrix: running N row(s): …`) and the failed-rows / skipped-rows lines share it. If you scrape, anchor on `^=== Matrix: [0-9]+/[0-9]+ passed ===$` (exactly one per run) or `^=== Matrix breakdown: `. The breakdown line is the only place the skip count appears, and `passed + failed + skipped == requested` always (a violation is an internal error, exit 4, printed *instead of* any summary). Skipped rows are additionally named on stderr in a `!!! … SKIPPED` banner with each row's reason.
+
+   Driver exit codes: `0` every requested row executed and passed · `1` ≥1 row failed (dominates skips) · `2` usage/argument error, nothing ran · `3` ≥1 row skipped, none failed · `4` internal invariant violation. `77` is reserved as an individual *row's* skip signal (the autotools convention) and is never the driver's own exit status.
+
+   **A skipped row does not discharge a mandatory-gate obligation.** If the touched-file table below sends you to a row and that row skips, the row is **not** validated — say so plainly rather than citing a green-looking run. That is why any skip exits nonzero: the exit status is the only signal `make` and non-reading callers see, and `SPRAWL_E2E_SKIP_NO_CLAUDE=1` acknowledges the *diagnostic*, not the *obligation*. Do not add `|| true` or a `-` prefix to the `test-e2e-matrix*` Makefile recipes to work around a nonzero skip — that would re-hide real failures too.
+
+   Two known remaining gaps (tracked as QUM-970 and QUM-969), so a green run is not over-read: (a) some rows echo a **partial** `SKIP:` for individual phases and still report the row `PASS` — `wake-live` S3, `liveness-transitions`, `pause-lifecycle` — and those are not counted anywhere, so scan row output for `SKIP:` lines even on a pass; (b) the legacy `scripts/test-*-e2e.sh` fallback scripts mostly carry their own inline `exit 0` skip and still false-green. `scripts/test-subagent-model-e2e.sh` is the exception — it shares the fixed helper, so running it directly (`bash scripts/test-subagent-model-e2e.sh`; it has no `make` target) now exits **77**, which means **"skipped, asserted nothing"**, not "crashed".
+
+   > **Reading older transcripts:** before QUM-952 a skipped row was reported as `PASS` and exited 0, with no skipped bucket at all — so `SPRAWL_E2E_SKIP_NO_CLAUDE=1` with no `claude` on PATH printed a fully green `Matrix: N/N passed` while asserting nothing. **A skip proves nothing — never cite a skipped run as evidence a row passed**, and treat any historical green matrix summary from an environment without `claude` as vacuous. The `wake-live` row requires the `sprawl_test` build tag — the driver (`scripts/e2e-matrix.sh`) handles this automatically via `needs_build_tags=sprawl_test`. The original per-test Makefile targets (`make test-notify-tui-e2e`, `make test-handoff-e2e`, `make test-merge-reuse-e2e`, `make test-ask-user-question-e2e`, `make test-drain-row-inject-e2e`, `make test-paste-coalesce-e2e`, `make test-wake-live-e2e`) and their underlying `scripts/test-*-e2e.sh` scripts remain available as a fallback during the soak period; they will be removed in a follow-up issue once the matrix rows have proven flake-free for a few days.
 
    | files touched | matrix row | guards |
    |---|---|---|
