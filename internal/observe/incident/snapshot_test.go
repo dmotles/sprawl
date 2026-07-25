@@ -944,11 +944,64 @@ func TestCapture_ExistingCPUProfile_NotStartedOrRemoved(t *testing.T) {
 	}
 }
 
-// TestCapture_PanicMidWindow_ReleasesCPUProfiler pins the panic-safety net: a
-// collector panicking between profile start and stop must not leave the
-// process-global CPU profiler active, which would permanently break every
-// later capture and any --pprof scrape (QUM-678).
-func TestCapture_PanicMidWindow_ReleasesCPUProfiler(t *testing.T) {
+// panicMessage is the panic value used by the panic-path tests.
+const panicMessage = "collector exploded"
+
+// captureNoPanic runs Capture and fails the test if the panic escapes rather
+// than being recovered. Without this wrapper an escaped panic aborts the whole
+// test binary, so every later test's result is lost.
+func captureNoPanic(t *testing.T, s *incident.Snapshotter) (string, error) {
+	t.Helper()
+	var dir string
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("Capture must not propagate a collector panic, got %v", r)
+			}
+		}()
+		dir, err = s.Capture(context.Background())
+	}()
+	return dir, err
+}
+
+// assertUsableCPUProfile fails unless path holds a well-formed pprof CPU
+// profile — not merely a gzip stream. It checks for the sample-type strings
+// runtime/pprof writes into every CPU profile's string table, so a truncated
+// or header-only file that `go tool pprof` would reject cannot pass. (The
+// weaker gzip-only shape let an unsymbolizable profile through once already.)
+// Sample *counts* are deliberately not asserted: a sub-second window on an
+// idle process legitimately yields zero samples.
+func assertUsableCPUProfile(t *testing.T, path string) {
+	t.Helper()
+	assertGzipProfile(t, path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read profile %s: %v", path, err)
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("gzip.NewReader %s: %v", path, err)
+	}
+	defer zr.Close()
+	decoded, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatalf("decompress %s: %v", path, err)
+	}
+	for _, want := range []string{"samples", "count", "cpu", "nanoseconds"} {
+		if !bytes.Contains(decoded, []byte(want)) {
+			t.Errorf("CPU profile %s lacks sample-type string %q — not a usable pprof profile", path, want)
+		}
+	}
+}
+
+// TestCapture_PanicMidWindow_ReleasesCPUProfilerAndWritesReadme pins the
+// panic-safety net: a collector panicking between profile start and stop must
+// not leave the process-global CPU profiler active (which would permanently
+// break every later capture and any --pprof scrape, QUM-678), must not
+// propagate the panic out of Capture, and must still write the README so the
+// bundle explains itself.
+func TestCapture_PanicMidWindow_ReleasesCPUProfilerAndWritesReadme(t *testing.T) {
 	if !cpuProfilingAvailable() {
 		t.Skip("process-global CPU profiler already in use")
 	}
@@ -957,19 +1010,228 @@ func TestCapture_PanicMidWindow_ReleasesCPUProfiler(t *testing.T) {
 	s.ProfileDuration = 30 * time.Second
 	// Runner is invoked for `ps`, well inside the window.
 	s.Runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		panic("collector exploded")
+		panic(panicMessage)
 	}
 
-	func() {
-		defer func() {
-			if recover() == nil {
-				t.Error("expected the collector panic to propagate")
-			}
-		}()
-		_, _ = s.Capture(context.Background())
-	}()
+	start := time.Now()
+	dir, err := captureNoPanic(t, s)
+	elapsed := time.Since(start)
 
+	// (dir, nil): the TUI's failure arm drops the path, so a non-nil error
+	// would hide a bundle that exists and names its own panic.
+	if err != nil {
+		t.Errorf("Capture err = %v, want nil after a recovered panic", err)
+	}
+	if dir == "" {
+		t.Fatal("Capture must still return the bundle path after a recovered panic")
+	}
+	// A panic aborts the capture; it must not then sit out the remaining
+	// window. 5s is a generous bound on a 30s window — this pins "returns
+	// promptly", not a precise duration.
+	if elapsed > 5*time.Second {
+		t.Errorf("Capture took %v; a panic must abandon the remaining CPU window", elapsed)
+	}
 	if !cpuProfilingAvailable() {
 		t.Error("CPU profiler still active after a panic — the window leaked")
 	}
+	if errs := readmeErrors(t, dir); !strings.Contains(errs, panicMessage) {
+		t.Errorf("README errors must name the panic; got:%s", errs)
+	}
+	// The partial profile is kept and must still be usable: that requires
+	// StopCPUProfile to have flushed it and the file to have been closed.
+	cpuFiles := findMatching(t, dir, "cpu-")
+	if len(cpuFiles) != 1 {
+		t.Fatalf("cpu profile files = %v, want the partial profile kept", cpuFiles)
+	}
+	assertUsableCPUProfile(t, filepath.Join(dir, cpuFiles[0]))
+}
+
+// TestCapture_CollectorPanic_RecordsAndWritesReadme is the core contract: a
+// panicking collector yields a complete, self-describing bundle — README index
+// plus an "## Errors" entry carrying the panic value and its stack — and
+// Capture returns (path, nil) rather than taking the process down.
+func TestCapture_CollectorPanic_RecordsAndWritesReadme(t *testing.T) {
+	now := time.Date(2026, 6, 9, 18, 0, 0, 0, time.UTC)
+	s, root := newSnapshotterWithFixtures(t, now)
+	s.StatusFn = func(ctx context.Context) ([]supervisor.AgentInfo, error) {
+		panic(panicMessage)
+	}
+
+	dir, err := captureNoPanic(t, s)
+	if err != nil {
+		t.Errorf("Capture err = %v, want nil after a recovered collector panic", err)
+	}
+	// Asserting the returned dir explicitly, not just that a bundle exists: a
+	// recover() in a defer cannot assign to unnamed results, so the natural
+	// wrong implementation returns ("", nil) — which the TUI renders as
+	// "snapshot saved → " with no path, losing the bundle entirely.
+	want := filepath.Join(root, ".sprawl", "incidents", dirTimestamp(now)+"-tui-snapshot")
+	if dir != want {
+		t.Fatalf("dir = %q, want %q (path must survive a recovered panic)", dir, want)
+	}
+
+	errs := readmeErrors(t, dir)
+	// Pin the entry's shape, not just the presence of the word "panic" — a
+	// recovered stack always contains "panic(" and "runtime.gopanic", so a
+	// bare substring check could never fail.
+	wantEntry := "- panic: " + panicMessage
+	if !strings.Contains(errs, wantEntry) {
+		t.Errorf("README errors must contain a %q entry; got:%s", wantEntry, errs)
+	}
+	// The stack is indented so it renders as a block inside the bullet rather
+	// than shattering the list — and so it can never forge a "## " section
+	// boundary that readmeErrors would cut on.
+	if !strings.Contains(errs, "\n    goroutine ") {
+		t.Errorf("README errors must include an indented stack trace; got:%s", errs)
+	}
+	// The panicking collector's own frame, not just the recovery frame: a
+	// check for "snapshot.go:" would be satisfied by the finisher's own
+	// debug.Stack() call site and so could never fail.
+	if !strings.Contains(errs, "snapshot_test.go:") {
+		t.Errorf("README errors stack must reach the panicking collector's frame; got:%s", errs)
+	}
+
+	// The index itself was rendered, not just the Errors section.
+	body, rErr := os.ReadFile(filepath.Join(dir, "README.md"))
+	if rErr != nil {
+		t.Fatalf("README.md: %v", rErr)
+	}
+	if !strings.Contains(string(body), "cpu-*.pprof") {
+		t.Errorf("README index/legend missing after a panic; got:\n%s", body)
+	}
+
+	// Artifacts collected before the panic survive.
+	if got := findMatching(t, dir, "heap-"); len(got) != 1 {
+		t.Errorf("heap profile (collected before the panic) = %v, want exactly one", got)
+	}
+	if _, sErr := os.Stat(filepath.Join(dir, "binary.txt")); sErr != nil {
+		t.Errorf("binary.txt (collected before the panic) missing: %v", sErr)
+	}
+}
+
+// nthAgentCount panics with a runtime.Error (index out of range) for any n
+// beyond counts. Indirected through a function so the panic is not statically
+// provable — an inline out-of-range index or nil-map write is a lint error.
+func nthAgentCount(counts []int, n int) int { return counts[n] }
+
+// TestCapture_RuntimePanicValue_Recorded covers the realistic panic value in a
+// forensic tool aimed at a sick process: a runtime error, not a string.
+func TestCapture_RuntimePanicValue_Recorded(t *testing.T) {
+	now := time.Date(2026, 6, 9, 18, 0, 0, 0, time.UTC)
+	s, _ := newSnapshotterWithFixtures(t, now)
+	s.StatusFn = func(ctx context.Context) ([]supervisor.AgentInfo, error) {
+		return nil, fmt.Errorf("unreachable: %d", nthAgentCount(nil, 3))
+	}
+
+	dir, err := captureNoPanic(t, s)
+	if err != nil {
+		t.Errorf("Capture err = %v, want nil after a recovered runtime panic", err)
+	}
+	if dir == "" {
+		t.Fatal("Capture must return the bundle path after a recovered runtime panic")
+	}
+	errs := readmeErrors(t, dir)
+	if !strings.Contains(errs, "index out of range") {
+		t.Errorf("README errors must render a non-string panic value; got:%s", errs)
+	}
+	if strings.Contains(errs, "%!") {
+		t.Errorf("README errors contain a formatting-verb error: %s", errs)
+	}
+}
+
+// TestCapture_PanicInCPUStart_StillWritesReadme pins that the finisher covers
+// the CPU-start block too, not just the collectors after it. Registered any
+// later, a panic from StartCPUProfile would escape with the process-global
+// profiler potentially active and no README written.
+func TestCapture_PanicInCPUStart_StillWritesReadme(t *testing.T) {
+	now := time.Date(2026, 6, 9, 18, 0, 0, 0, time.UTC)
+	s, _ := newSnapshotterWithFixtures(t, now)
+	s.ProfileDuration = 30 * time.Second
+	s.StartCPUProfile = func(w io.Writer) error { panic(panicMessage) }
+	s.StopCPUProfile = func() {
+		t.Error("StopCPUProfile must not run when the start itself panicked")
+	}
+
+	dir, err := captureNoPanic(t, s)
+	if err != nil {
+		t.Errorf("Capture err = %v, want nil", err)
+	}
+	if dir == "" {
+		t.Fatal("Capture must return the bundle path")
+	}
+	if errs := readmeErrors(t, dir); !strings.Contains(errs, panicMessage) {
+		t.Errorf("README errors must name the start-block panic; got:%s", errs)
+	}
+}
+
+// TestCapture_ReadmeWriteFails_ReportsPanicInError covers the finisher's only
+// error-returning arm, and the worst run there is: the collector panicked AND
+// the bundle cannot index itself. With no README to name the panic, the
+// returned error is its last channel, so it must carry it.
+func TestCapture_ReadmeWriteFails_ReportsPanicInError(t *testing.T) {
+	now := time.Date(2026, 6, 9, 18, 0, 0, 0, time.UTC)
+	s, root := newSnapshotterWithFixtures(t, now)
+	s.StatusFn = func(ctx context.Context) ([]supervisor.AgentInfo, error) {
+		panic(panicMessage)
+	}
+	// Pre-create the bundle dir (MkdirAll is idempotent) with README.md as a
+	// directory, so the finisher's os.WriteFile fails with EISDIR.
+	bundle := filepath.Join(root, ".sprawl", "incidents", dirTimestamp(now)+"-tui-snapshot")
+	if err := os.MkdirAll(filepath.Join(bundle, "README.md"), 0o750); err != nil {
+		t.Fatalf("fixture mkdir: %v", err)
+	}
+
+	dir, err := captureNoPanic(t, s)
+	if err == nil {
+		t.Fatal("Capture must return an error when the README cannot be written")
+	}
+	if dir != "" {
+		t.Errorf("dir = %q, want \"\" when the bundle has no index", dir)
+	}
+	if !strings.Contains(err.Error(), panicMessage) {
+		t.Errorf("error = %q, want it to name the panic %q — with no README, this is its last channel", err, panicMessage)
+	}
+	if !strings.Contains(err.Error(), "write README") {
+		t.Errorf("error = %q, want it to name the README write failure", err)
+	}
+}
+
+// TestCapture_PanicDoesNotWedgeLaterCapture is the end-to-end QUM-678 wedge
+// test: after a panic inside a live CPU window, the *next* real capture must
+// still produce a usable CPU profile with no profile errors recorded.
+func TestCapture_PanicDoesNotWedgeLaterCapture(t *testing.T) {
+	if !cpuProfilingAvailable() {
+		t.Skip("process-global CPU profiler already in use")
+	}
+	now := time.Date(2026, 6, 9, 18, 0, 0, 0, time.UTC)
+	s, _ := newSnapshotterWithFixtures(t, now)
+	s.ProfileDuration = 30 * time.Second
+	s.Runner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		panic(panicMessage)
+	}
+	firstDir, firstErr := captureNoPanic(t, s)
+	if firstErr != nil {
+		t.Fatalf("first Capture err = %v, want nil after a recovered panic", firstErr)
+	}
+	if errs := readmeErrors(t, firstDir); !strings.Contains(errs, panicMessage) {
+		t.Fatalf("first capture must have recorded the panic; got:%s", errs)
+	}
+
+	// Second capture: real profiler, short window, no panic.
+	s.Runner = canonicalRunner(map[string][]byte{"ps": []byte("ok\n"), "free": []byte("ok\n")}, nil)
+	s.ProfileDuration = 100 * time.Millisecond
+	s.Now = fixedNow(now.Add(time.Second))
+	dir, err := s.Capture(context.Background())
+	if err != nil {
+		t.Fatalf("second Capture after a recovered panic: %v", err)
+	}
+	assertNoProfileErrors(t, dir)
+	if errs := readmeErrors(t, dir); strings.Contains(errs, panicMessage) {
+		t.Errorf("second capture's README must not carry the earlier panic; got:%s", errs)
+	}
+	cpuFiles := findMatching(t, dir, "cpu-")
+	if len(cpuFiles) != 1 {
+		t.Fatalf("second capture cpu profile files = %v, want exactly one", cpuFiles)
+	}
+	assertUsableCPUProfile(t, filepath.Join(dir, cpuFiles[0]))
 }

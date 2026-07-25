@@ -5,17 +5,20 @@
 // status, /proc state, recent MCP calls, per-agent activity rates, and host
 // memory/load into `<SprawlRoot>/.sprawl/incidents/<ISO8601>-tui-snapshot/`.
 //
-// Capture is best-effort: per-artifact errors are recorded into the
-// bundle's README.md instead of aborting the run, so a partial bundle is
-// still useful when one collector fails. Capture only returns a non-nil
-// error if the bundle directory cannot be created or the index cannot be
-// written.
+// Capture is best-effort: per-artifact errors — including a collector panic,
+// which is recovered rather than propagated — are recorded into the bundle's
+// README.md instead of aborting the run, so a partial bundle is still useful
+// when one collector fails. Capture only returns a non-nil error if the bundle
+// directory cannot be created or the index cannot be written — a recovered
+// panic yields a bundle path and a nil error, with the panic named in the
+// bundle's own "## Errors" section.
 package incident
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -100,7 +103,33 @@ type Snapshotter struct {
 // Capture writes a bundle and returns its absolute path. Per-artifact
 // failures are recorded into README.md's "## Errors" section; only mkdir
 // / README write failures abort the call.
-func (s *Snapshotter) Capture(ctx context.Context) (string, error) {
+//
+// A panic from any collector is recovered, not propagated: the panic value and
+// its stack are recorded into "## Errors" like any other failure, the README is
+// still written, and Capture returns (bundlePath, nil). Three reasons.
+//
+//   - A forensic tool pointed at an already-sick process must not be the thing
+//     that finishes it off. The caller is a bubbletea tea.Cmd goroutine, where
+//     an unrecovered panic tears down the whole TUI.
+//   - The pathological run is exactly when a human most needs the index and the
+//     Errors section, so the bundle must be written on that path too.
+//   - The path is returned rather than an error because the TUI's failure arm
+//     shows only the error and drops the path — so a non-nil error would hide a
+//     complete, self-describing bundle sitting on disk. The bundle names its own
+//     panic; the operator needs to be told where it is.
+//
+// The cost is that the status line reads "saved" on a run where the tool
+// panicked. Distinguishing a degraded bundle in the UI needs a typed sentinel
+// returned from the finisher below plus a TUI-side reducer change; it is
+// deliberately not built here.
+//
+// If the README write itself fails, that is still a hard error and the path is
+// withheld — but the recovered panic is joined into the returned error, since
+// with no README to name it that error is its last channel.
+//
+// A panic before the bundle directory exists (in Now, or MkdirAll itself) still
+// propagates — there is nowhere to write a README.
+func (s *Snapshotter) Capture(ctx context.Context) (bundlePath string, err error) {
 	nowFn := s.Now
 	if nowFn == nil {
 		nowFn = time.Now
@@ -132,6 +161,56 @@ func (s *Snapshotter) Capture(ctx context.Context) (string, error) {
 	// tests and would make the remaining-window math meaningless.
 	var cpuFile *os.File
 	var cpuStarted time.Time
+
+	// Finisher: the single exit path for everything below. Any collector could
+	// panic — this is a forensic tool pointed at an already-sick process — so
+	// the three steps that must happen on *every* path live here in one defer,
+	// in explicit order, rather than as separate defers whose correctness would
+	// depend on registration position:
+	//
+	//  1. recover the panic and record it, so the bundle explains itself;
+	//  2. release the process-global CPU profiler if it is still running —
+	//     without this it stays active forever, permanently breaking every
+	//     later Ctrl+\ and any --pprof scrape (QUM-678) — and close the file so
+	//     the partial profile is flushed and parseable;
+	//  3. write the README last, so it indexes a finished bundle.
+	//
+	// Registered before the CPU profile is started, so a panic from
+	// StartCPUProfile itself cannot leak an active process-global profiler. The
+	// normal path nils cpuFile after stopping, so step 2 is a no-op there.
+	defer func() {
+		r := recover()
+		if r != nil {
+			record("panic", fmt.Errorf("%v\n%s", r, indentStack(debug.Stack())))
+		}
+		if cpuFile != nil {
+			// Reachable only when control left the body without reaching the
+			// window-close block — today that means a panic. Worded for the
+			// general case so it stays true if an early return is ever added.
+			record("cpu profile window", errors.New("closed early: capture aborted"))
+			s.stopCPUProfile()
+			if cErr := cpuFile.Close(); cErr != nil {
+				record("cpu profile close", cErr)
+			}
+		}
+		if wErr := os.WriteFile(filepath.Join(dir, "README.md"), []byte(buildReadme(ts, capErrs)), 0o600); wErr != nil {
+			// No index means the bundle cannot explain itself — the one failure
+			// class that still aborts the call. The recovered panic rides along
+			// in the error: with no README to name it, this is its last channel.
+			bundlePath, err = "", fmt.Errorf("incident: write README: %w", wErr)
+			if r != nil {
+				err = errors.Join(fmt.Errorf("incident: recovered panic: %v", r), err)
+			}
+			return
+		}
+		if r != nil {
+			// Degraded bundle: the panic is named in "## Errors", so hand back
+			// the path — that is the actionable half. A future typed sentinel
+			// for "degraded" would be returned from here.
+			bundlePath, err = dir, nil
+		}
+	}()
+
 	profDur := s.ProfileDuration
 	if profDur == 0 {
 		profDur = DefaultProfileDuration
@@ -155,18 +234,6 @@ func (s *Snapshotter) Capture(ctx context.Context) (string, error) {
 			}
 		}
 	}
-	// Panic safety net: any collector below could panic — this is a forensic
-	// tool pointed at an already-sick process. Without this, the
-	// process-global CPU profile would stay active forever, permanently
-	// breaking every later Ctrl+\ and any --pprof scrape (QUM-678). The
-	// normal path clears cpuFile after stopping, making this a no-op.
-	defer func() {
-		if cpuFile != nil {
-			s.stopCPUProfile()
-			_ = cpuFile.Close()
-		}
-	}()
-
 	// heap-<ts>.pprof — instantaneous, so taken as close to the incident as
 	// possible. No runtime.GC() first: forcing a collection perturbs a
 	// possibly-wedged process, so the numbers are inuse as of the last GC.
@@ -320,19 +387,29 @@ func (s *Snapshotter) Capture(ctx context.Context) (string, error) {
 		}
 		s.stopCPUProfile()
 		cErr := cpuFile.Close()
-		cpuFile = nil // disarm the panic-safety defer above
+		// Disarm step 2 of the finisher. Deliberately after the stop, not
+		// before: a double stop is a no-op in runtime/pprof, whereas niling
+		// early would leak an active process-global profiler if the stop
+		// itself panicked — the failure the finisher exists to prevent.
+		cpuFile = nil
 		if cErr != nil {
 			record("cpu profile close", cErr)
 		}
 	}
 
-	// README.md
-	readme := buildReadme(ts, capErrs)
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o600); err != nil {
-		return "", fmt.Errorf("incident: write README: %w", err)
-	}
-
+	// The finisher defer writes README.md and may overwrite these results.
 	return dir, nil
+}
+
+// indentStack indents a stack trace by four spaces so a multi-line "## Errors"
+// entry renders as a block inside its bullet instead of shattering the list,
+// and so no stack line can ever look like a "## " section header.
+func indentStack(stack []byte) string {
+	lines := strings.Split(strings.TrimRight(string(stack), "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = "    " + l
+	}
+	return strings.Join(lines, "\n")
 }
 
 // startCPUProfile / stopCPUProfile / writeHeapProfile resolve the injectable
