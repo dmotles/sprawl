@@ -187,6 +187,15 @@ done
 
 echo "=== [3] NONEG (negation stripped): the tracked log must flip to ignored"
 NONEG=$(stage_against "$NONEG_GI" noneg)
+# The negation assertion below is a NEGATIVE one — it passes when $NEGATED is
+# absent from the staged set. An empty scan satisfies that trivially, and
+# stage_against ends in `|| true`, so without this guard a totally broken scan
+# reports PASS. Same guard as [2]:175 and [4]:216; this section was missed.
+if [ -n "$NONEG" ]; then
+  ok "noneg produced output (the harness is functioning)"
+else
+  fail "noneg produced NO output — harness broken, the negation check below is vacuous"
+fi
 if grep -qxF "$NEGATED" <<<"$NONEG"; then
   fail "negation removal changed nothing — the negation is not load-bearing or is misordered"
 else
@@ -262,6 +271,6 @@ fi
 [ "${#HAZARDS[@]}"          -eq 13 ] || { echo "CORPUS DRIFT: ${#HAZARDS[@]} hazards, expected 13" >&2; exit 1; }
 [ "${#KEEPS[@]}"            -eq 9  ] || { echo "CORPUS DRIFT: ${#KEEPS[@]} keeps, expected 9" >&2; exit 1; }
 echo "=== $ASSERTIONS assertions, $FAILURES failures ==="
-[ "$ASSERTIONS" -eq 50 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 50" >&2; exit 1; }
+[ "$ASSERTIONS" -eq 51 ] || { echo "FLOOR BREACH: $ASSERTIONS assertions ran, expected 51" >&2; exit 1; }
 [ "$FAILURES" -eq 0 ] || exit 1
 echo "gitignore-classes: OK"

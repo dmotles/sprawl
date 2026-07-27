@@ -25,7 +25,7 @@ globs. Host: git 2.34.1, `zip` **absent**, `python3` `zipfile` present.
 > `make validate` as-is (green would mean "the gap is still open"). Gating it
 > requires inverting the assertions first, so that a future guard actually fixing
 > binary blindness turns the rows red. The other two are conventional: the
-> hook-coverage harness asserts documented behaviour (0 = all 18 held); the design
+> hook-coverage harness asserts documented behaviour (0 = all 20 held); the design
 > probes only measure and always exit 0.
 
 ### Why this lives in `docs/research/` and not in `.sprawl/agents/probe/findings/`
@@ -94,7 +94,7 @@ logic. The mechanism is git's own binary classification: for a binary blob git e
 
 ## 2. AC-4 — Three-hook coverage table: independently validated
 
-Run: `SCRIPTS=$PWD/scripts bash repro-hook-coverage.sh` → **18 ok, 0 FAIL, 18 assertions.**
+Run: `SCRIPTS=$PWD/scripts bash repro-hook-coverage.sh` → **20 ok, 0 FAIL, 20 assertions.**
 
 Each row below is a measured commit in a scratch repo, not a reading of the source.
 
@@ -308,7 +308,7 @@ PHASE=prepared ref=HEAD              old=5c5c79f new=30d9c87
 PHASE=prepared ref=refs/heads/main   old=5c5c79f new=30d9c87
   new-object-exists=yes type=commit
   names=text.txt tfplan.bin
-  numstat=1 0 text.txt; - - tfplan.bin;
+  numstat=1 0 text.txt;- - tfplan.bin;
   cached-names=text.txt tfplan.bin
 ```
 

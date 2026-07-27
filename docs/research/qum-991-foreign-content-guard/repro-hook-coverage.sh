@@ -8,7 +8,7 @@
 #
 # Exit-code semantics (unlike repro-binary-blindness.sh, these ARE conventional):
 # every assertion here expects the guard stack's DOCUMENTED behaviour, so 0 =
-# all 18 assertions held, 1 = a real discrepancy, 4 = assertion floor not met.
+# all 20 assertions held, 1 = a real discrepancy, 4 = assertion floor not met.
 #
 # /tmp hygiene: mktemp -d root, removed only behind a literal-prefix `case`
 # guard. No rm globs.
@@ -94,15 +94,28 @@ R=$(mkrepo gmr)
 ln -sf "$SCRIPTS/guard-main-ref" "$R/.git/hooks/reference-transaction"
 echo a >"$R/a.txt"
 git -C "$R" add a.txt
+# Baseline captured BEFORE the blocked commit — the only value that can prove
+# the ref did not move. Must stay above the commit attempt.
+before=$(git -C "$R" rev-parse main)
 out=$(SPRAWL_AGENT_IDENTITY=probe git -C "$R" commit -m x --no-verify 2>&1)
 rc=$?
 [ "$rc" -ne 0 ] && ok "blocks child-agent commit to main EVEN WITH --no-verify (rc=$rc)" ||
 	no "did NOT block under --no-verify (rc=$rc): $out"
 case "$out" in *"ref updates aborted by hook"*) ok "git reports 'ref updates aborted by hook'" ;;
-*) printf '  info git output: %s\n' "$out" ;; esac
-head=$(git -C "$R" rev-parse main)
-seedhead=$(git -C "$R" rev-parse main)
-ok "main ref did not advance (still $seedhead)"
+*) no "git did not report ref-update abortion: $out" ;; esac
+# Compare the ref AFTER the blocked commit against the one captured BEFORE it.
+# Both arms assert, so this section's count is the same either way.
+# Previously this was two identical `rev-parse main` calls that were never
+# compared, followed by an UNCONDITIONAL `ok` — so it could not fail, and with
+# the hook removed it cheerfully printed "did not advance (still <new sha>)"
+# quoting the very commit it had advanced to. Comparing those two calls to each
+# other would have been tautological; only a pre-commit baseline can catch this.
+after=$(git -C "$R" rev-parse main)
+if [ "$after" = "$before" ]; then
+	ok "main ref did not advance (still $before)"
+else
+	no "main ref ADVANCED $before -> $after despite the guard"
+fi
 
 # NOTE: this row deliberately resets to HEAD — a NO-OP reset, chosen so the row
 # isolates "is the ref update rejected?" from any tree movement. That is why it
@@ -203,15 +216,49 @@ if [ -f "$LOG" ]; then
 	sed 's/^/  | /' "$LOG"
 	grep -q 'new-object-exists=yes' "$LOG" && ok "commit object IS readable in the prepared phase" ||
 		no "commit object NOT readable in prepared phase"
-	grep -q 'names=.*tfplan.bin' "$LOG" && ok "git diff-tree in prepared phase lists the new paths" ||
-		no "diff-tree did not list paths"
-	grep -qE 'numstat=.*-; -; tfplan.bin' "$LOG" && ok "diff-tree --numstat reports '-\t-' for the binary (usable signal)" ||
-		printf '  info numstat line: %s\n' "$(grep numstat "$LOG")"
-	grep -q 'cached-names=$' "$LOG" && ok "the INDEX is already empty at prepared phase (--cached unusable — must use diff-tree)" ||
-		printf '  info cached-names: %s\n' "$(grep cached-names "$LOG")"
+	# Anchored to the line start: unanchored 'names=' also matches the
+	# 'cached-names=' line below, so this diff-tree assertion could be
+	# satisfied entirely by the --cached line — the very substitution §4
+	# warns is the trap. Two leading spaces come from the hook's echo.
+	if grep -qE '^ +names=.*tfplan\.bin' "$LOG"; then
+		ok "git diff-tree in prepared phase lists the new paths"
+	else
+		no "diff-tree did not list paths: $(grep -E '^ +names=' "$LOG")"
+	fi
+	# The probe hook renders its output through `tr '\n\t' '; '` — newline->';'
+	# and tab->' ' — so a binary numstat row reads ';- - tfplan.bin;'. The
+	# previous pattern ('-; -; tfplan.bin') had that mapping transposed and so
+	# could never match; because its fallback only printf'd an 'info' line, the
+	# permanent miss was invisible and the run still reported 0 FAIL.
+	# (.*;)? tolerates either diff-tree ordering of the two paths.
+	if grep -qE 'numstat=(.*;)?- - tfplan\.bin;' "$LOG"; then
+		ok "diff-tree --numstat reports '-\t-' for the binary (usable signal)"
+	else
+		no "numstat did not report '- -' for the binary: $(grep numstat "$LOG")"
+	fi
+	# The index is STILL FULLY POPULATED in the prepared phase — measured, see
+	# the rt-probe.log dump above and decision.md §4. The previous assertion
+	# ('cached-names=$') claimed the opposite, and its soft-degrade hid the
+	# contradiction. That --cached LOOKS usable here is precisely the trap: it
+	# is unrelated to the ref being updated for reset/merge/rebase/fetch, so it
+	# would pass an implementer's tests and fail in production. Use diff-tree.
+	# No '$' anchor: tr leaves a trailing space.
+	if grep -qE 'cached-names=text\.txt tfplan\.bin' "$LOG"; then
+		ok "the INDEX is ALSO populated at prepared phase (--cached LOOKS usable — the trap; use diff-tree)"
+	else
+		no "cached-names did not list the staged paths: $(grep cached-names "$LOG")"
+	fi
 	printf '  info ALL ref lines seen in one commit txn: %s\n' "$(grep -c '^PHASE=' "$LOG")"
 else
+	# One `no` per assertion the if-branch would have run, so the section
+	# contributes 4 either way. Without this the floor (== the maximum) is
+	# breached by a REAL discrepancy and the run exits 4 "floor not met"
+	# instead of 1 "discrepancy" — misclassifying the very failure this
+	# section exists to detect. Keep these four in sync with the branch above.
 	no "rt-probe.log was never written — hook did not fire"
+	no "diff-tree paths unverifiable — hook did not fire"
+	no "numstat binary signal unverifiable — hook did not fire"
+	no "index state at prepared phase unverifiable — hook did not fire"
 fi
 
 # ---------------------------------------------------------------------------
@@ -229,8 +276,8 @@ rc=$?
 
 # ---------------------------------------------------------------------------
 note "SUMMARY: $PASSES ok, $FAILS FAIL, $ASSERTIONS assertions"
-if [ "$ASSERTIONS" -lt 15 ]; then
-	echo "FATAL: assertion floor not met ($ASSERTIONS < 15)" >&2
+if [ "$ASSERTIONS" -lt 20 ]; then
+	echo "FATAL: assertion floor not met ($ASSERTIONS < 20)" >&2
 	exit 4
 fi
 [ "$FAILS" -eq 0 ] || exit 1

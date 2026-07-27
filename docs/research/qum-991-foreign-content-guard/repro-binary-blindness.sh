@@ -24,9 +24,11 @@
 # expect-not-caught the failing condition, so that a future guard which
 # actually FIXES binary blindness turns these rows red and forces this script
 # to be updated rather than silently continuing to assert a gap that closed.
-# The only hard failures today are harness faults (a fixture that did not
-# materialise, or a fixture that never reached the index) and the assertion
-# floor, which exits 4 if fewer than 12 assertions ran.
+# The only hard failures are harness faults (a fixture that did not materialise,
+# or one that never reached the index) and drift in the expected finding — the
+# run must print exactly the 3 `ASSERT FAIL` rows (b), (c), (d), no more and no
+# fewer, and that is now checked rather than merely asserted in this comment.
+# Both exit 5. Plus the assertion floor, which exits 4 if fewer than 12 ran.
 #
 # /tmp hygiene: the scratch root is created by mktemp -d under /tmp and is only
 # removed after a `case` guard asserts the literal prefix (pattern lifted from
@@ -69,6 +71,16 @@ PASSES=0
 FAILS=0
 ASSERTIONS=0
 
+# The rows whose `ASSERT FAIL` IS the expected finding (see the header). Tracked
+# SEPARATELY from $FAILS, because $FAILS is also bumped by FIXTURE/STAGED
+# harness faults: a bare `FAILS -eq 3` would be satisfied by 2 real findings
+# plus 1 fixture fault, the classic compensating-errors false green. The row
+# LABELS are compared too, not just the count — row (a) is the positive
+# control, and "(a) (c) (d)" is three findings but a meaningless run.
+EXPECTED_GAP_ROWS='(b) (c) (d) '
+GAP_FAILS=0
+GAP_ROWS=''
+
 note() { printf '\n=== %s\n' "$*"; }
 verdict() { # $1=label
 	local rc out
@@ -90,6 +102,8 @@ expect() { # $1=label $2=expected(block|pass) $3=actual rc
 	else
 		printf '  ASSERT FAIL %s (expected %s, rc=%s)\n' "$1" "$2" "$3"
 		FAILS=$((FAILS + 1))
+		GAP_FAILS=$((GAP_FAILS + 1))
+		GAP_ROWS="$GAP_ROWS${1%% *} "
 	fi
 }
 # Assert a fixture actually materialised and is non-empty BEFORE reading a
@@ -245,4 +259,24 @@ echo " they record that the guard did not block content it arguably should."
 echo " Expect exactly 3 of them: rows (b), (c), (d). This script exits 0 on a"
 echo " successful RUN, not a successful VERDICT — see the exit-code semantics"
 echo " block in the header before wiring it into any gate.)"
+
+# The header has always CLAIMED "expect exactly 3"; until now nothing checked
+# it, so a positive-control regression printing 4-5 rows still exited 0. These
+# two checks make the claim an assertion. They are meta-checks, like the floor
+# above, and so are deliberately NOT counted in $ASSERTIONS.
+HARNESS_FAULTS=$((FAILS - GAP_FAILS))
+if [ "$HARNESS_FAULTS" -ne 0 ]; then
+	echo "FATAL: $HARNESS_FAULTS harness fault(s) (FIXTURE/STAGED) — NOT the expected" >&2
+	echo "       finding. A fixture that never materialised or never reached the index" >&2
+	echo "       makes the guard trivially 'pass', which reads exactly like the finding," >&2
+	echo "       so every verdict above is meaningless. Fix the harness." >&2
+	exit 5
+fi
+if [ "$GAP_FAILS" -ne 3 ] || [ "$GAP_ROWS" != "$EXPECTED_GAP_ROWS" ]; then
+	echo "FATAL: expected exactly 3 ASSERT FAIL rows [$EXPECTED_GAP_ROWS], got $GAP_FAILS [$GAP_ROWS]." >&2
+	echo "       Either the guard now catches binary content (GOOD — invert the assertions" >&2
+	echo "       per the exit-code header before reusing this), or the harness drifted." >&2
+	echo "       Either way this script is stale and must not be cited as evidence." >&2
+	exit 5
+fi
 exit 0
