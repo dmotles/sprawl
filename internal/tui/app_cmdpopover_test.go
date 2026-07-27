@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/dmotles/sprawl/internal/tui/commands"
 )
@@ -274,4 +275,101 @@ func TestPopover_GatesCompactByCapability(t *testing.T) {
 	if len(app.cmdPopover.matches("/help")) == 0 {
 		t.Error("CapNone command /help must be offered regardless of capability")
 	}
+}
+
+// TestPopover_ResizeRerendersWithoutCorruption pins the resize AC (QUM-930):
+// resizing the terminal while the popover is open re-renders it at the new
+// width, in both directions, with the frame intact.
+func TestPopover_ResizeRerendersWithoutCorruption(t *testing.T) {
+	app := readyRoutingApp(t, newFakeSessionBackend())
+	app = typeKey(t, app, '/')
+	if !app.cmdPopover.visible(app.input.Value()) {
+		t.Fatal("popover should be visible after typing /")
+	}
+	fullDesc := registryDesc(t, "/usage")
+
+	// Narrow first: the widest description cannot fit, so it must be elided.
+	app, _ = updateApp(app, tea.WindowSizeMsg{Width: 60, Height: 40})
+	narrow := popoverFromView(t, app, "/handoff")
+	assertPopoverBox(t, narrow, observedBoxWidth(t, narrow), len(app.cmdPopover.matches("/"))+2)
+	if strings.Contains(narrow, fullDesc) {
+		t.Fatalf("precondition: 60 cols cannot fit %q, but it rendered in full:\n%s", fullDesc, narrow)
+	}
+	if !strings.Contains(narrow, "…") {
+		t.Errorf("at 60 cols the overflowing description must be …-elided; popover:\n%s", narrow)
+	}
+	narrowW := observedBoxWidth(t, narrow)
+	if narrowW != 60-4 {
+		t.Errorf("box width at 60 cols = %d, want exactly 56 (fill the available width when content overflows)", narrowW)
+	}
+
+	// Widen: the box must grow and show the description in full.
+	app, _ = updateApp(app, tea.WindowSizeMsg{Width: 200, Height: 50})
+	wide := popoverFromView(t, app, "/handoff")
+	assertPopoverBox(t, wide, observedBoxWidth(t, wide), len(app.cmdPopover.matches("/"))+2)
+	if w := observedBoxWidth(t, wide); w <= narrowW {
+		t.Errorf("box width after widening = %d, want >%d", w, narrowW)
+	}
+	if !strings.Contains(wide, fullDesc) {
+		t.Errorf("after widening to 200 cols the popover should show %q in full; popover:\n%s", fullDesc, wide)
+	}
+
+	// Shrink back: re-elides, frame still intact (shrinking is the direction
+	// that used to clip the border away).
+	app, _ = updateApp(app, tea.WindowSizeMsg{Width: 60, Height: 40})
+	again := popoverFromView(t, app, "/handoff")
+	assertPopoverBox(t, again, narrowW, len(app.cmdPopover.matches("/"))+2)
+	if strings.Contains(again, fullDesc) {
+		t.Errorf("after shrinking back to 60 cols the description must be elided again; popover:\n%s", again)
+	}
+}
+
+// sliceCols returns the display columns [from, from+w) of an ANSI-free line,
+// padding with spaces if the line is short.
+func sliceCols(line string, from, w int) string {
+	out := ansi.Cut(line, from, from+w)
+	if pad := w - ansi.StringWidth(out); pad > 0 {
+		out += strings.Repeat(" ", pad)
+	}
+	return out
+}
+
+// popoverFromView extracts the popover box out of the fully composited app view,
+// so assertions run against what the terminal actually receives (including the
+// overlayBottomLeft/compositeLeft composite). It anchors on the LAST rounded box
+// containing mustContain — the view also carries the SPRAWL wordmark (whose art
+// begins with ╭ and whose second line begins with ╰), toasts, and the tree HUD,
+// all rounded boxes composited above the popover.
+func popoverFromView(t *testing.T, app AppModel, mustContain string) string {
+	t.Helper()
+	view := ansi.Strip(app.View().Content)
+	lines := strings.Split(view, "\n")
+	for top := len(lines) - 1; top >= 0; top-- {
+		head := strings.TrimLeft(lines[top], " ")
+		indent := ansi.StringWidth(lines[top]) - ansi.StringWidth(head)
+		if !strings.HasPrefix(head, "╭") {
+			continue
+		}
+		// Width from the closing glyph when present; when the border has been
+		// clipped away (the QUM-930 defect) fall back to the visible run so the
+		// breakage is REPORTED rather than mistaken for "no popover found".
+		w := ansi.StringWidth(strings.TrimRight(head, " "))
+		if end := strings.Index(head, "╮"); end >= 0 {
+			w = ansi.StringWidth(head[:end]) + 1
+		}
+		var out []string
+		for i := top; i < len(lines); i++ {
+			row := sliceCols(lines[i], indent, w)
+			out = append(out, row)
+			if strings.HasPrefix(row, "╰") {
+				break
+			}
+		}
+		block := strings.Join(out, "\n")
+		if strings.Contains(block, mustContain) {
+			return block
+		}
+	}
+	t.Fatalf("no popover box containing %q found in composited view:\n%s", mustContain, view)
+	return ""
 }
