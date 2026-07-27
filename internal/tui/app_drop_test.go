@@ -12,6 +12,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 )
@@ -39,12 +40,53 @@ func runCmd(t *testing.T, cmd tea.Cmd) tea.Msg {
 	return cmd()
 }
 
+// gapCollectDeadline bounds how long collectGapMsgs waits on a single cmd. It
+// MUST exceed gapDebounceWindow: since QUM-978 the drop reducer returns
+// tea.Batch(gapDebounceCmd, WaitForEvent), and the shared 50ms expandBatch
+// budget would silently discard the 500ms debounce tick — turning "the helper
+// was too impatient" into a false "the reducer never armed the debounce", and
+// making every findViewportResync negative assertion pass for free.
+const gapCollectDeadline = gapDebounceWindow + 250*time.Millisecond
+
+// collectGapMsgs invokes a cmd and recursively expands tea.BatchMsg, giving
+// each leaf up to gapCollectDeadline. It is collectBatchMsgsAllowAsync
+// (app_child_unified_test.go) with one deliberate difference: a leaf that
+// misses the deadline fails LOUDLY instead of being silently skipped, so a
+// too-short budget can never be misread as missing behaviour. Don't add a
+// third variant — extend one of these two.
+func collectGapMsgs(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	out := make(chan tea.Msg, 1)
+	go func() { out <- cmd() }()
+	select {
+	case raw := <-out:
+		if batch, ok := raw.(tea.BatchMsg); ok {
+			var all []tea.Msg
+			for _, c := range batch {
+				all = append(all, collectGapMsgs(t, c)...)
+			}
+			return all
+		}
+		if raw == nil {
+			return nil
+		}
+		return []tea.Msg{raw}
+	case <-time.After(gapCollectDeadline):
+		t.Fatalf("gap cmd produced no msg within %s (gapDebounceWindow=%s); the collector must outlive the debounce or its verdict is meaningless",
+			gapCollectDeadline, gapDebounceWindow)
+		return nil
+	}
+}
+
 // findGapConfirm walks a possibly-batched cmd output and returns the first
 // gapConfirmMsg encountered (if any). Returns ok=false when no such msg is
 // produced.
 func findGapConfirm(t *testing.T, cmd tea.Cmd) (gapConfirmMsg, bool) {
 	t.Helper()
-	msgs := collectBatchMsgs(t, cmd)
+	msgs := collectGapMsgs(t, cmd)
 	for _, m := range msgs {
 		if gc, ok := m.(gapConfirmMsg); ok {
 			return gc, true
@@ -57,7 +99,7 @@ func findGapConfirm(t *testing.T, cmd tea.Cmd) (gapConfirmMsg, bool) {
 // ViewportResyncMsg encountered.
 func findViewportResync(t *testing.T, cmd tea.Cmd) (ViewportResyncMsg, bool) {
 	t.Helper()
-	msgs := collectBatchMsgs(t, cmd)
+	msgs := collectGapMsgs(t, cmd)
 	for _, m := range msgs {
 		if r, ok := m.(ViewportResyncMsg); ok {
 			return r, true

@@ -2180,9 +2180,19 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// to gap-pending or arm a fresh debounce — the JSONL re-read about to
 		// land will subsume it (design §5 hotspot #1). Absorb the missing
 		// count for the post-resync banner accuracy and keep state.
+		//
+		// QUM-978: EventDropDetectedMsg is pump-delivered — TUIAdapter.
+		// WaitForEvent returns it directly from its read loop, consuming the
+		// single armed cmd — so every exit leg below must re-arm the pump or
+		// live render freezes after a gap (QUM-826 invariant). The re-arm
+		// lives here ONLY: ViewportResyncMsg and gapConfirmMsg come from
+		// resyncCmd / gapDebounceCmd (and Ctrl+L, which consumes no pump
+		// event at all), so re-arming there too would leave two WaitForEvent
+		// cmds racing for one event and manufacture the very lastSeq gaps
+		// this state machine exists to detect.
 		if m.resyncInFlight {
 			m.pendingMissing += msg.Missing
-			return m, nil
+			return m, m.rearmPump()
 		}
 		m.pendingMissing += msg.Missing
 		// Short-circuit to dropped when the accumulated gap is at or above
@@ -2196,10 +2206,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Already resyncing — let the in-flight read complete; design
 				// §5 hotspot #1 says any "lost" events are by definition in the
 				// session JSONL we're about to read, so no second resync needed.
+				//
+				// Unreachable today: the identical guard at the top of this arm
+				// already returned, and nothing between the two touches
+				// resyncInFlight. Kept as defensive symmetry (pre-existing), and
+				// re-armed for the same reason — but no test covers it, because
+				// no msg sequence reaches it.
 				m.gapState = gapStateDropped
-				return m, nil
+				return m, m.rearmPump()
 			}
-			return m, m.kickResyncFromGap(snapshot)
+			return m, tea.Batch(m.kickResyncFromGap(snapshot), m.rearmPump())
 		}
 		// Below burst — enter gap-pending and arm a debounce tick. Per-call
 		// timer is created inside the cmd closure (instead of tea.Tick's
@@ -2208,7 +2224,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.gapState = gapStatePending
 		m.gapID++
 		gid := m.gapID
-		return m, gapDebounceCmd(gid, gapDebounceWindow)
+		return m, tea.Batch(gapDebounceCmd(gid, gapDebounceWindow), m.rearmPump())
 
 	case gapConfirmMsg:
 		// QUM-669 debounce confirmation. Stale deliveries (gapID mismatch or
@@ -3924,6 +3940,19 @@ func (m *AppModel) kickResyncFromGap(missing uint64) tea.Cmd {
 	// QUM-675 S5: drop banner now lives on the transient label.
 	m.statusBar.SetTransientLabel(fmt.Sprintf("⚠ %d events lost — resync in flight (Ctrl+L to retry)", missing))
 	return m.resyncCmd(missing)
+}
+
+// rearmPump re-issues the single-flight WaitForEvent cmd. A reducer handling a
+// pump-delivered msg must call it exactly once, or the bubbletea event pump
+// parks (QUM-826). Nil-safe: several models are constructed without a bridge.
+// Nil-guard only, matching the Compact reducers — a non-continuous bridge can
+// never deliver a pump msg in the first place, so an IsContinuous() gate would
+// only silently swallow the re-arm in tests that forget SetContinuous(true).
+func (m *AppModel) rearmPump() tea.Cmd {
+	if m.bridge == nil {
+		return nil
+	}
+	return m.bridge.WaitForEvent()
 }
 
 // mcpOpTickCmd returns a tea.Cmd that fires an mcpOpTickMsg after one tick

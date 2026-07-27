@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1318,4 +1319,103 @@ func TestTUIAdapter_SendAllNow_DelegatesToRuntime(t *testing.T) {
 	if w.Message.Content != "queued one" {
 		t.Errorf("last write content = %q, want %q", w.Message.Content, "queued one")
 	}
+}
+
+// TestTUIAdapter_GapReducerRearm_DeliversStashedPendingMsg — QUM-978 AC #3.
+//
+// The gap-arriving event's translated msg is stashed in a.pendingMsg and only
+// drained by the NEXT WaitForEvent call. Since EventDropDetectedMsg consumes
+// the single armed pump cmd, that next call can only come from the reducer's
+// own returned cmd. This drives the real adapter through the real AppModel
+// reducer and asserts the stashed msg actually lands.
+//
+// Red-first control: without the re-arm the reducer's cmd yields only a
+// ViewportResyncMsg (the resync error, sprawlRoot is unset) and the stashed
+// AssistantContentMsg never appears.
+func TestTUIAdapter_GapReducerRearm_DeliversStashedPendingMsg(t *testing.T) {
+	mock := &adapterMockSession{}
+	rt, a := buildAdapter(t, mock)
+
+	mkProtoEvent := func(text string) sprawlrt.RuntimeEvent {
+		raw := `{"type":"assistant","uuid":"a-` + text +
+			`","message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}}`
+		return sprawlrt.RuntimeEvent{
+			Type:    sprawlrt.EventProtocolMessage,
+			Message: makeAssistantMsg(t, raw),
+		}
+	}
+
+	// Gap of 18 ≥ gapBurstThreshold(10) so the reducer takes the burst leg,
+	// whose cmds all resolve instantly (sprawlRoot=="" short-circuits resync).
+	rt.EventBus().PublishWithSeq(mkProtoEvent("one"), 1)
+	rt.EventBus().PublishWithSeq(mkProtoEvent("twenty"), 20)
+
+	app := tui.NewAppModel("colour212", "testrepo", "v0.1.0", a, nil, "", nil)
+	updated, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	app = updated.(tui.AppModel)
+
+	if msg := runCmd(t, a.WaitForEvent()); msg == nil {
+		t.Fatalf("read 1: got nil, want tui.AssistantContentMsg")
+	} else if _, ok := msg.(tui.AssistantContentMsg); !ok {
+		t.Fatalf("read 1: got %T, want tui.AssistantContentMsg", msg)
+	}
+
+	drop := runCmd(t, a.WaitForEvent())
+	if _, ok := drop.(tui.EventDropDetectedMsg); !ok {
+		t.Fatalf("read 2: got %T, want tui.EventDropDetectedMsg", drop)
+	}
+
+	_, cmd := app.Update(drop)
+	if cmd == nil {
+		t.Fatal("EventDropDetectedMsg reducer returned nil cmd; the stashed pendingMsg can never be drained")
+	}
+
+	found := false
+	for _, m := range expandAdapterBatch(t, cmd()) {
+		ac, ok := m.(tui.AssistantContentMsg)
+		if !ok {
+			continue
+		}
+		// Identity, not just type: a re-delivery of the Seq=1 event would
+		// satisfy a bare type assertion while proving nothing.
+		for _, sub := range ac.Msgs {
+			if txt, ok := sub.(tui.AssistantTextMsg); ok && strings.Contains(txt.Text, "twenty") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("stashed pendingMsg (the Seq=20 event) was never delivered — the EventDropDetectedMsg reducer must re-arm WaitForEvent")
+	}
+}
+
+// expandAdapterBatch flattens a tea.BatchMsg, awaiting each member in turn
+// with a deadline. A leaf that blocks past the deadline fails LOUDLY: silently
+// skipping it would misreport a slow cmd as a missing re-arm. (Each member runs
+// in a goroutine so a blocked one can be abandoned, but members are awaited
+// serially — unlike bubbletea, which runs them concurrently.)
+func expandAdapterBatch(t *testing.T, msg tea.Msg) []tea.Msg {
+	t.Helper()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		if msg == nil {
+			return nil
+		}
+		return []tea.Msg{msg}
+	}
+	var out []tea.Msg
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		done := make(chan tea.Msg, 1)
+		go func(cmd tea.Cmd) { done <- cmd() }(c)
+		select {
+		case sub := <-done:
+			out = append(out, expandAdapterBatch(t, sub)...)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("batched cmd did not return within 2s; a silent skip here would be misread as a missing pendingMsg delivery")
+		}
+	}
+	return out
 }
