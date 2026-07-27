@@ -8,7 +8,12 @@
 #
 # Exit-code semantics (unlike repro-binary-blindness.sh, these ARE conventional):
 # every assertion here expects the guard stack's DOCUMENTED behaviour, so 0 =
-# all 20 assertions held, 1 = a real discrepancy, 4 = assertion floor not met.
+# all 23 assertions held, 1 = a real discrepancy, 4 = the harness did not run the
+# expected number of assertions (count mismatch, in either direction).
+#
+# Every section contributes the same number of assertions on every branch, so a
+# discrepancy always exits 1 and can never masquerade as a count shortfall. Note
+# this holds only while `ok`/`no` return 0 — see the note on those functions.
 #
 # /tmp hygiene: mktemp -d root, removed only behind a literal-prefix `case`
 # guard. No rm globs.
@@ -25,6 +30,12 @@ cleanup() {
 trap cleanup EXIT
 
 PASSES=0 FAILS=0 ASSERTIONS=0
+# Both MUST return 0. Most sites here are `cond && ok "..." || no "..."`, where a
+# nonzero `ok` would run the `no` arm too and double-count: appending `return 1` to
+# `ok` yields 23 ok / 13 FAIL / 36 assertions. They return 0 today because each
+# ends in an arithmetic assignment, which is not obvious — so do not "modernise"
+# the trailing statement to `((VAR++))`, which returns 1 when the pre-increment
+# value is 0. The exact count check at the bottom is the backstop.
 ok() {
 	printf '  ok   %s\n' "$1"
 	PASSES=$((PASSES + 1))
@@ -266,18 +277,103 @@ note '5. core.hooksPath bypass (QUM-951 context): does it disable both hooks?'
 R=$(mkrepo hp)
 ln -sf "$SCRIPTS/guard-main-commit" "$R/.git/hooks/pre-commit"
 ln -sf "$SCRIPTS/guard-main-ref" "$R/.git/hooks/reference-transaction"
-mkdir -p "$TMP_ROOT/emptyhooks"
+HOOKDIR="$TMP_ROOT/emptyhooks"
+mkdir -p "$HOOKDIR"
 echo z >"$R/z.txt"
 git -C "$R" add z.txt
-out=$(SPRAWL_AGENT_IDENTITY=probe git -C "$R" -c core.hooksPath="$TMP_ROOT/emptyhooks" commit -m z 2>&1)
+
+# This section is the LOAD-BEARING measurement of the whole harness: the
+# core.hooksPath bypass is the reason the reference-transaction content-guard
+# steer was declined (decision.md §2.1/§4). It was a single soft-degrading
+# `... && ok "...disables BOTH hooks..." || printf '  info ...'` whose `||` arm
+# neither counted nor failed; see 5e17d4c for the full symptom.
+#
+# It also could not falsify its own wording. "BOTH" was never measured: one
+# commit with the override in place cannot distinguish "both hooks silenced"
+# from "neither hook was ever live". So the claim is decomposed into two
+# positive controls (each guard demonstrably fires in THIS repo) plus the
+# bypass, and the override dir's emptiness is asserted rather than assumed — a
+# typo'd path is a substitution, not an unset var, so `set -u` cannot catch it,
+# and it made the old assertion pass vacuously (measured: rc=0, commit lands).
+#
+# Forced-degrade recipes, both watched failing before this was watched passing:
+#   M1 (fixture premise): ln -sf "$SCRIPTS/guard-main-commit" "$HOOKDIR/pre-commit"
+#   M2 (causal factor, stronger): delete the `-c core.hooksPath=...` flag below
+# Measured for each: pre-fix 19 ok / 0 FAIL / 19 -> exit 4; post-fix a FAIL row
+# with the total held at the invariant -> exit 1.
+if [ -d "$HOOKDIR" ] && [ -z "$(ls -A "$HOOKDIR")" ]; then
+	ok "override dir exists and is EMPTY (the bypass is not passing vacuously)"
+else
+	no "override dir '$HOOKDIR' missing or non-empty: [$(ls -A "$HOOKDIR" 2>&1 | tr '\n' ' ')]"
+fi
+
+# Positive control 1: without the override, the PRE-COMMIT guard fires.
+#
+# Both controls key on the guard's own QUM citation, not merely on rc != 0. That
+# is not belt-and-braces: an earlier draft of this section asserted only rc != 0
+# and, with the pre-commit symlink deliberately removed, still reported
+# "pre-commit guard IS live (rc=128)" and exited 0 — because the plain commit
+# sailed past the missing pre-commit hook and was rejected downstream by the REF
+# guard instead. rc != 0 cannot attribute the rejection to a specific hook, so it
+# could not falsify its own claim. The citation can (rc is kept in the message as
+# a secondary discriminator: 1 = pre-commit, 128 = ref transaction).
+#
+# The `0:*` arm MUST come first — this is load-bearing, not stylistic. `git`'s own
+# success line echoes the commit subject, so `commit -m "QUM-808"` with both hooks
+# removed yields rc=0 AND output containing "QUM-808" (measured: `[main 3516bc5]
+# QUM-808`). With the arms swapped that run reports `ok ... (rc=0, cites QUM-808)`
+# — a false green. Matching rc=0 before the citation makes the pattern
+# unreachable in that case.
+out=$(SPRAWL_AGENT_IDENTITY=probe git -C "$R" commit -m z 2>&1)
 rc=$?
-[ "$rc" -eq 0 ] && ok "core.hooksPath override disables BOTH hooks (rc=0) — a bypass no phase choice fixes" ||
-	printf '  info core.hooksPath commit rc=%s out=%s\n' "$rc" "$out"
+case "$rc:$out" in
+0:*) no "control FAILED: nothing blocked the plain commit, so the bypass below proves nothing: $(printf '%s' "$out" | head -1)" ;;
+*QUM-808*) ok "control: pre-commit guard IS live in this repo (rc=$rc, cites QUM-808)" ;;
+*) no "control FAILED: blocked (rc=$rc) but NOT by the pre-commit guard — misattribution: $(printf '%s' "$out" | head -1)" ;;
+esac
+
+# Positive control 2: --no-verify skips pre-commit, so a rejection here can only
+# come from the reference-transaction guard.
+out=$(SPRAWL_AGENT_IDENTITY=probe git -C "$R" commit -m z --no-verify 2>&1)
+rc=$?
+case "$rc:$out" in
+0:*) no "control FAILED: ref guard did not fire under --no-verify, so 'BOTH' below is unmeasurable: $(printf '%s' "$out" | head -1)" ;;
+*QUM-837*) ok "control: reference-transaction guard IS live in this repo (rc=$rc, --no-verify, cites QUM-837)" ;;
+*) no "control FAILED: blocked (rc=$rc) but NOT by the ref-transaction guard — misattribution: $(printf '%s' "$out" | head -1)" ;;
+esac
+
+# The bypass itself. A PLAIN commit (no --no-verify) is deliberate: it must pass
+# the pre-commit hook AND open a ref transaction, so rc=0 means both guards were
+# silenced — which only follows because the two controls above just proved both
+# were live on this very repo.
+#
+# Stage a FRESH change rather than relying on the controls having left the index
+# intact. A blocked commit does leave it staged (measured), but that is a PREMISE of
+# the two commits above, and if either unexpectedly lands, the index empties and
+# this commit fails with "nothing to commit" (rc=1) while reporting "core.hooksPath
+# did NOT disable the hooks" — a true failure with a false stated cause, which is
+# the same misdiagnosis class this section exists to avoid. Re-`add`ing the same
+# content is not enough (if the control committed it, there is nothing left to
+# stage), so write new content: that yields a staged change either way. Count-neutral.
+echo z2 >"$R/z.txt"
+git -C "$R" add z.txt
+out=$(SPRAWL_AGENT_IDENTITY=probe git -C "$R" -c core.hooksPath="$HOOKDIR" commit -m z 2>&1)
+rc=$?
+if [ "$rc" -eq 0 ]; then
+	ok "core.hooksPath override disables BOTH hooks (rc=0) — a bypass no phase choice fixes"
+else
+	no "core.hooksPath did NOT disable the hooks (rc=$rc) — decision.md §2.1/§4 rests on this measurement: $(printf '%s' "$out" | head -1)"
+fi
 
 # ---------------------------------------------------------------------------
 note "SUMMARY: $PASSES ok, $FAILS FAIL, $ASSERTIONS assertions"
-if [ "$ASSERTIONS" -lt 20 ]; then
-	echo "FATAL: assertion floor not met ($ASSERTIONS < 20)" >&2
+# EXACT, not a floor with slack. Every section is now branch-invariant, so 23 is
+# simultaneously the minimum and the maximum and `-ne` also catches an
+# accidental double-count, which `-lt` cannot. Bump this literal deliberately
+# when adding an assertion; do NOT lower it to accommodate a FAIL — a FAIL is
+# supposed to exit 1 below, and lowering the count is how that becomes invisible.
+if [ "$ASSERTIONS" -ne 23 ]; then
+	echo "FATAL: assertion count mismatch: expected exactly 23, got $ASSERTIONS" >&2
 	exit 4
 fi
 [ "$FAILS" -eq 0 ] || exit 1

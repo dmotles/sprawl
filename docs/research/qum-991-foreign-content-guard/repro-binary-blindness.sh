@@ -28,7 +28,7 @@
 # or one that never reached the index) and drift in the expected finding — the
 # run must print exactly the 3 `ASSERT FAIL` rows (b), (c), (d), no more and no
 # fewer, and that is now checked rather than merely asserted in this comment.
-# Both exit 5. Plus the assertion floor, which exits 4 if fewer than 12 ran.
+# Both exit 5. Plus the assertion-count check, which exits 4 unless exactly 14 ran.
 #
 # /tmp hygiene: the scratch root is created by mktemp -d under /tmp and is only
 # removed after a `case` guard asserts the literal prefix (pattern lifted from
@@ -117,8 +117,24 @@ assert_fixture() { # $1=path $2=min bytes
 		ASSERTIONS=$((ASSERTIONS + 1))
 		return 1
 	fi
-	sz=$(stat -c %s "$1")
+	# 2>&1 so a real failure's reason lands IN the FAIL row below rather than
+	# interleaving ahead of it; the non-numeric arm catches it either way.
+	sz=$(stat -c %s "$1" 2>&1)
 	ASSERTIONS=$((ASSERTIONS + 1))
+	# A failed `stat` leaves $sz empty, and `[ "" -lt N ]` errors with "integer
+	# expression expected" and returns 2 — which is FALSE, so control would fall
+	# through to the success print and a broken measurement would read as `ok`
+	# (measured: four `FIXTURE ok  ...:  bytes` rows, 14 assertions, exit 0, fully
+	# green). Same unfalsifiable-assertion class as the soft-degrades fixed
+	# elsewhere in this directory, one layer down; fail loudly instead. The trigger
+	# is realistic, not hypothetical: BSD/macOS `stat` has no `-c`.
+	case "$sz" in
+	'' | *[!0-9]*)
+		printf '  FIXTURE FAIL could not size %s (stat gave %s) — measurement broken\n' "$1" "${sz:-<empty>}"
+		FAILS=$((FAILS + 1))
+		return 1
+		;;
+	esac
 	if [ "$sz" -lt "$2" ]; then
 		printf '  FIXTURE FAIL %s is %s bytes (< %s)\n' "$1" "$sz" "$2"
 		FAILS=$((FAILS + 1))
@@ -248,10 +264,23 @@ else
 fi
 expect "(d-control) whole-tree --all catches committed TEXT term" block $rc
 
-# ---- assertion-count floor -------------------------------------------------
+# ---- assertion-count check -------------------------------------------------
 note "SUMMARY: $PASSES ok, $FAILS unexpected, $ASSERTIONS assertions"
-if [ "$ASSERTIONS" -lt 12 ]; then
-	echo "FATAL: assertion floor not met ($ASSERTIONS < 12) — harness did not run" >&2
+# EXACT, not a floor. The count is branch-invariant at 14: every counting site is
+# a straight-line statement (no call is wrapped in an `if`/`&&`/`||`/loop),
+# assert_fixture bumps on BOTH of its arms so its early `return 1` cannot skip a
+# count, and the script is `set -uo pipefail` with NO `-e`, so a nonzero helper
+# return never aborts the remaining assertions. Verified empirically: forcing a
+# fixture missing still reports 14.
+#
+# The previous `-lt 12` left two assertions of slack against a real count of 14,
+# so two could be deleted and the run would still exit 0, fully green (measured:
+# deleting one gave `13 assertions`, exit 0). Nothing exploited it, but that is
+# the same shape as the soft-degrading assertions fixed elsewhere in this
+# directory. Bump this literal deliberately when adding a row; `-ne` also catches
+# an accidental double-count, which a floor cannot.
+if [ "$ASSERTIONS" -ne 14 ]; then
+	echo "FATAL: assertion count mismatch: expected exactly 14, got $ASSERTIONS" >&2
 	exit 4
 fi
 echo "(NOTE: 'ASSERT FAIL' rows above are the FINDING, not a harness error —"

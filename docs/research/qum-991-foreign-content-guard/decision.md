@@ -94,7 +94,7 @@ logic. The mechanism is git's own binary classification: for a binary blob git e
 
 ## 2. AC-4 — Three-hook coverage table: independently validated
 
-Run: `SCRIPTS=$PWD/scripts bash repro-hook-coverage.sh` → **20 ok, 0 FAIL, 20 assertions.**
+Run: `SCRIPTS=$PWD/scripts bash repro-hook-coverage.sh` → **23 ok, 0 FAIL, 23 assertions.**
 
 Each row below is a measured commit in a scratch repo, not a reading of the source.
 
@@ -115,8 +115,20 @@ is a no-op exit 0.
 Measured in the same harness (§5):
 
 ```
-git -c core.hooksPath=/tmp/.../emptyhooks commit -m z   →  rc=0, BOTH hooks disabled
+git -C $R commit -m z                                        →  rc=1,   cites QUM-808  (pre-commit live)
+git -C $R commit -m z --no-verify                            →  rc=128, cites QUM-837  (ref guard live)
+git -C $R -c core.hooksPath=/tmp/.../emptyhooks commit -m z   →  rc=0, BOTH hooks disabled
 ```
+
+The two positive controls are part of the measurement, not colour: a single
+`rc=0` under the override cannot distinguish "both hooks silenced" from "neither
+hook was ever live". Both controls key on the guard's own QUM citation rather
+than on `rc != 0`, because `rc != 0` cannot attribute a rejection to a specific
+hook — with the pre-commit symlink removed, the plain commit is rejected
+downstream by the *ref* guard, which an `rc != 0` assertion reports as
+"pre-commit is live". All four §5 assertions have been individually watched
+failing (see the forced-degrade recipes in the harness), and a genuine
+discrepancy exits **1**, not 4.
 
 `core.hooksPath` disables `pre-commit` **and** `reference-transaction` alike. So
 `reference-transaction`'s advantage is resistance to exactly **one** bypass verb
@@ -527,7 +539,15 @@ sensitively once (`tfplan5`).
 Wired into `make validate` per QUM-991's testing expectations ("a regression test
 guarding a false-green is worthless if it only runs when someone remembers"). Per
 QUM-953 every assertion needs a demonstrated failure mode; the control is named for
-each. Assertion-count floor **≥25** so a `0 passed / 0 failed` run exits non-zero.
+each. Assertion count checked as an **exact** value (`-ne`), not a `≥25` floor, so a
+`0 passed / 0 failed` run exits non-zero *and* an assertion that silently disappears
+or double-counts is caught too. Both harnesses in this directory originally used
+floors with slack and both were bitten by it: `repro-binary-blindness.sh`'s `-lt 12`
+against a real count of 14 let two assertions vanish with the run still green, and in
+`repro-hook-coverage.sh` a floor set to the exact maximum over a branch-*variant*
+count made a real discrepancy exit 4 "floor not met" instead of 1. Set it exactly,
+keep every branch contributing the same count, and never lower it to resolve a
+failing run.
 
 | # | assertion | how it is demonstrated to CAN-fail |
 | -- | -- | -- |
