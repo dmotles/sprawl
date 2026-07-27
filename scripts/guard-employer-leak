@@ -12,9 +12,12 @@
 #                       phased "new-additions-only" guard: it runs on every
 #                       commit via scripts/pre-commit and does NOT re-flag terms
 #                       already present in the tree (removed by QUM-873).
-#   --all             — scans the whole tracked tree. Wired into the CI/validate
-#                       path but GATED OFF (see Makefile `leak-scan`) until the
-#                       existing occurrences are scrubbed; flip it on afterward.
+#   --all             — scans the whole tracked tree. LIVE: the Makefile
+#                       `leak-scan` target invokes it unconditionally and
+#                       `validate` depends on `leak-scan`, so it runs on every
+#                       validate. (It was gated off while pre-existing
+#                       occurrences were being scrubbed; that scrub landed with
+#                       QUM-873 and the gate is gone.)
 #
 # The forbidden terms live in a GITIGNORED list — the public repo must never
 # contain the list of things it is hiding. A committed scripts/forbidden-terms.example

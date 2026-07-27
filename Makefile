@@ -1,7 +1,7 @@
-.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit
+.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-gitignore-classes
 
 # Default target — full quality gauntlet
-validate: build proto-check fmt-check lint test test-wirelog-helpers-unit test-e2e-matrix-unit leak-scan
+validate: build proto-check fmt-check lint test test-wirelog-helpers-unit test-e2e-matrix-unit test-gitignore-classes leak-scan
 
 BUF ?= buf
 
@@ -101,6 +101,13 @@ clean:
 leak-scan:
 	@echo "leak-scan (whole-tree): scanning tracked tree..."
 	@scripts/guard-employer-leak --all
+
+# QUM-989: empirically stage fixtures against the real .gitignore to prove the
+# terraform-plan and *.log ignore classes still match. Pure shell + git, ~0.3s.
+# The regression it guards is silent: a tidy-up stops a pattern matching and
+# nothing fails until an infra artifact is staged into this PUBLIC repo.
+test-gitignore-classes:
+	bash scripts/test-gitignore-classes.sh
 
 hooks:
 	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit

@@ -154,6 +154,49 @@ moving `main`'s ref back without touching the working tree:
 The guard makes this recovery a rare exception, not a routine: agents are
 blocked from landing on `main` in the first place.
 
+### Never `git add -A` (QUM-989)
+
+**Standing rule: stage explicit paths only.** Never `git add -A`, `git add .`,
+or `git commit -a`.
+
+The reason is specific to this repo, not general tidiness. Agent worktrees sit
+on a **shared filesystem** next to other agents' scratch output, and agents run
+tooling (`terraform apply`, `az acr build`, test harnesses) that drops files
+nobody named in advance. `-A` stages *whatever is present*, so the contents of
+your commit become a function of **other agents' filesystem hygiene and of
+files you never created**. QUM-989 was filed after exactly that: a 57 KB
+terraform plan and two Azure apply/build logs appeared inside one agent's
+worktree, written by an unidentified process, in a subtree that agent's work
+never touched. Its earlier `-A` commits were clean only because the files
+landed afterwards — timing, not discipline.
+
+The two `main` guards above do not help here: this is a **correct-branch,
+correct-identity commit containing foreign content**. Neither does
+`scripts/guard-employer-leak` for the worst case — it is text-only and
+structurally blind to binaries, and a terraform plan is a zip archive.
+
+`.gitignore` is a backstop, not the control — except for the binary artifact
+classes, where it is the *only* defence (see the QUM-989 comments in
+`.gitignore`). It can only exclude patterns someone predicted; `-A` is
+precisely the operation that finds the ones nobody did. (It also does not stop
+`git add -f`.)
+
+```bash
+git add internal/tui/app.go internal/tui/app_test.go
+git status && git diff --cached   # the staged set must be EXACTLY what you intend
+git commit -m "..."
+```
+
+When the change is large, `git add -u` is the sanctioned shortcut: it stages
+modifications to **already-tracked** files only, so it cannot pick up a foreign
+artifact by construction. Still review `git diff --cached` before committing.
+
+Explicit paths also fail *loudly* rather than silently: `git add` on an ignored
+path errors out instead of skipping it, so an over-broad ignore rule can never
+quietly drop a file you meant to commit.
+
+If an untracked file surprises you, do not stage it — find out what wrote it.
+
 ## Install
 
 > **Warning:** Do not run `make install` unless your agent identity is `weave` or the user explicitly asks you to. Other agents should only use `make build`, then test against the locally built `./sprawl` binary using temporary directories with overridden environment variables (e.g. `SPRAWL_ROOT`, `SPRAWL_AGENT_IDENTITY`) to exercise the tool.

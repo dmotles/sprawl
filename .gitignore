@@ -28,6 +28,28 @@ web/*.tsbuildinfo
 .sprawl/*
 !.sprawl/config.yaml
 
+# Agent findings dirs (QUM-989). The SANCTIONED location for agent artifacts is
+# .sprawl/agents/<name>/findings/, already covered by `.sprawl/*` above — but an
+# agent that drops a findings/ dir anywhere ELSE was covered by nothing. That is
+# the same shape as the tfplan gap: a sensitive-by-default class that no pattern
+# happened to match. Measured, not hypothetical — across 94 agent branches the
+# only two carrying genuinely unmerged content carried nothing BUT a top-level
+# findings/ dir (9 and 3 files), while 9 further worktrees had the same class of
+# artifact sitting untracked in the same place. Same files, same path; whether
+# they got committed turned purely on whether an agent happened to run git add.
+#
+# UNANCHORED on purpose — agents work in worktrees and create findings/ at
+# whatever depth they are standing in, so `/findings/` would cover the least
+# likely case. `sprawl` at the top of this file is the existing precedent for
+# the unanchored form here.
+#
+# COST, recorded: a legitimately tracked findings/ dir ANYWHERE in the tree now
+# needs `git add -f`. Nothing is tracked under such a path today (verified), and
+# per CLAUDE.md the sanctioned home for these artifacts is gitignored anyway.
+# This is a directory pattern, so it does not match a mere substring —
+# docs/findings-summary.md stays stageable.
+findings/
+
 .claude/settings.local.json
 .codex
 CLAUDE.local.md
@@ -44,11 +66,53 @@ CLAUDE.local.md
 *.tfstate.*
 .terraform/
 backend-config*.hcl
+# Plan output (QUM-989) — a rendered diff of live infrastructure: resource
+# names, IDs, and often secret values in plaintext. `tfplan*` and `*.tfplan`
+# are both needed (`tfplan5` vs `terraform.tfplan`); deliberately unanchored,
+# because terraform is run from deploy/hub/infra/terraform/azure/, not the root.
+tfplan*
+*.tfplan
+plan.out
+# `plan.out` is an exact basename, so `apply.out` / `terraform-plan.out` and
+# the `terraform show -json` renderings (`plan.out.json`, `*.tfplan.json`) are
+# knowingly NOT covered here — they are left to review rather than silently
+# widened beyond what QUM-989 measured. Tracked as QUM-994.
 
 # az / credential scratch produced during bootstrap
 *.azcreds
 az-scratch/
 bootstrap.env
+
+# Tool/build/apply logs (QUM-989). Deliberately BROAD. `terraform apply` and
+# `az acr build` emit ad-hoc logs (apply4.log, acrbuild2.log) whose names nobody
+# can enumerate in advance, and this repo is PUBLIC — such logs routinely carry
+# resource IDs, FQDNs, and employer-internal specifics. The content guard
+# (scripts/guard-employer-leak) is text-only and blind to binaries, so for the
+# artifact classes in QUM-989 this ignore rule is the only defence, not one
+# layer of several.
+#
+# TRADE-OFF, recorded on purpose: broad costs DETECTABILITY, on TWO discovery
+# paths, not one — `git status` will no longer surface a stray *.log, and
+# `git clean -nd` will not list it either (that needs -x). A stray *.log
+# appearing in a worktree is exactly how QUM-989 was found, and QUM-989's item
+# 4 (identify the writer) is closed as unresolvable, so if that writer runs
+# again we will not notice. We chose staging-safety anyway because the failure
+# modes are asymmetric: an unnoticed ignored log is a non-event, an unnoticed
+# COMMITTED log is a public leak.
+#
+# What makes the trade acceptable is the companion rule in CLAUDE.md ("Never
+# `git add -A`"). Staging an ignored path EXPLICITLY fails loudly — git refuses
+# with "The following paths are ignored by one of your .gitignore files" — so
+# under explicit-path staging a legitimate log can never be silently dropped,
+# only loudly refused. Broad ignores and explicit-path staging reinforce each
+# other; broad ignores plus `-A` would not. A log you genuinely want tracked
+# must be `git add -f`'d and negated below.
+*.log
+# The one intentionally tracked log (sanitized research evidence). gitignore
+# does not affect already-tracked files, so this negation is documentation of
+# intent plus a guarantee that a future re-add still works. It must stay AFTER
+# `*.log` — last matching pattern wins.
+!docs/research/m13-phase1-evidence/ec6-live-handoff-stderr.log
 
 # QUM-871 spike client evidence logs — timestamped run output; may reference the
 # live FQDN, so gitignored. The dir is kept via .gitkeep.
