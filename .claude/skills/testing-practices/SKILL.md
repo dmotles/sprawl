@@ -109,6 +109,130 @@ Two corollaries fall out of that:
   expectation, not a warning — a warning invites *"I was careful,"* and being
   careful was not enough for any of the four.
 
+### The non-asserting fallback: the one shape to know by sight (QUM-997)
+
+This is the concrete shape the whole section is about, and it is worth memorising
+because **it is invisible to review**: it reads exactly like a correct assertion.
+
+> **Rule, unqualified: any validation or test script must exit non-zero when
+> something it checks actually fails. No fallback branch may silently succeed.**
+
+Both spellings. In each pair the two lines are visually near-identical and only one
+is an assertion:
+
+```bash
+cond && ok "thing works" || no "thing is broken"        # CORRECT — records a failure
+cond && ok "thing works" || printf '  info: %s\n' "$x"  # DEFECT — counts nothing, fails nothing
+cond && ok "thing works"                                # DEFECT — no failure arm at all
+cond && ok "thing works" || exit 1                      # acceptable: records nothing, but FAILS THE RUN
+cond && ok "thing works" || exit 0                      # DEFECT — has the shape, exits successfully
+
+if cond; then pass "thing works"; else fail "broken"; fi # CORRECT
+if cond; then pass "thing works"; else echo "  note: not observed"; fi  # DEFECT
+if cond; then pass "thing works"; fi                     # DEFECT — missing else
+```
+
+The `||` arm on a *continuation line* is the spelling that defeats readers, because
+the eye has already moved on:
+
+```bash
+[ "$got" = "$want" ] && ok "counts match" \
+    || printf '  info: got %s\n' "$got"
+```
+
+Three corollaries that are not obvious from the shape alone:
+
+* **A skip must not exit 0.** `exit 0` on an unmet precondition (no `jq`, no
+  `claude`) makes `make` see success over a harness that asserted nothing. Use
+  **77** (the autotools SKIP convention this repo already uses for e2e rows). The
+  flag or condition acknowledges the *diagnostic*, not the *obligation*.
+* **`set +e` obliges you to add a floor.** A harness that deliberately tolerates
+  failed assertions in order to report all of them has given up the one mechanism
+  that makes an early death loud. Both `make validate` harnesses that use `set +e`
+  were found holding a live false-green in the QUM-997 audit; both that use
+  `set -euo pipefail` were clean. That correlation is the practical tell.
+* **Setup failure is a third outcome, not a pass.** See § *A precondition that
+  never holds makes the guard a no-op*.
+
+#### The evidence: a detector for this class that kept falling to it
+
+**A deterministic parser for this is overkill. It was built, and it was rejected**
+— recorded here because the negative result is the useful part and would otherwise
+be re-attempted.
+
+An `internal/shlint` package was written to detect exactly the shapes above. Over
+four review/QA rounds it accumulated **four distinct blind spots, each a silent
+false-green inside the false-green detector**, each found by a different reader who
+was specifically hunting the class, and each round fixed the spelling in front of it
+while the class survived. All four were the same mechanism — a mis-parsed `<<`
+swallowing the rest of the file, so it read clean by never being examined:
+
+| # | spelling | how it read clean |
+|---|---|---|
+| 1 | `echo "use <<HOOKEOF"` | a `<<` inside a quoted string opened a phantom heredoc |
+| 2 | `mask=$(( (1+2) << B ))` | an arithmetic left shift parsed as a redirection |
+| 3 | `cat <<'EOF-1'` | delimiter capture stopped at the identifier, so the real terminator never matched |
+| 4 | `grep -q x <<<"$LIVE"` | the herestring guard was off by one — the pattern matched at the *second* `<` |
+
+Spelling 4 was **live in the tree**: it blinded the scanner to **462 code lines
+across 5 tracked harnesses** (266 of `subagent-model.sh`'s 428 — 62% of one file)
+— and while those lines were dark, **every aggregate counter was byte-identical**:
+13 sites, 72 case blocks, 87 helper definitions, 0 findings. That is why four rounds
+of green told nobody anything, and it is the transferable lesson:
+
+> **An aggregate count cannot detect a coverage collapse.** Reverting fix #3 moved
+> **17 of 17** per-file measurements (deltas +49 to −53) while the corpus total moved
+> by **−1**, and the entire suite stayed green. If a floor is the only thing standing
+> between you and a false green, make it **per-unit**, not a sum.
+
+The tool's own live coverage was also far narrower than its cost implied. Measured
+at `de22410`: a repo-wide sweep for `&& <pass helper>` with a non-asserting `||` arm
+returns **zero** live instances, and the shape exists at all in only **1 of 75**
+tracked shell files — a `docs/research` script `make validate` never executes.
+Meanwhile the if/else spelling the parser could not read at all accounts for **99
+function-level assertion sites across 64 files**. So the parser was expensive,
+recursively defect-prone, and pointed away from where the risk actually lived.
+
+One caution on that comparison, because it bit this very audit: a QA report credited
+`test-e2e-matrix-unit.sh:assert_true` with "routing 115 assertions", and it was
+relayed twice as a headline number. `assert_true` has **zero call sites** — it is a
+defined-but-unused helper, and the suite's 115 assertions call `pass` directly. So
+the mutation that "silently no-op'd" was a mutation of dead code, and it evidences
+nothing about coverage. *Verify a count before you build an argument on it* —
+§ *Claims about code, and claims about claims*.
+
+**The defence is manual review against the checklist above, plus the assertion-rigor
+convention in this section.** A reader with the shape in their head, reading the
+script, outperformed the parser at every round.
+
+#### What the manual audit found that the parser never would (QUM-997, at `de22410`)
+
+Six live false-greens, all fixed, each with a watched failure recorded. **Not one is
+the `&&`/`||` shape the parser was built for** — every one is structural:
+
+| harness | defect | measured before the fix |
+|---|---|---|
+| `test-wirelog-helpers-unit.sh` (in `validate`) | unchecked `mktemp -d`: every fixture root became `/`, so assertions passed *vacuously* against the `-1` sentinel they assert, and the ledger-based floor had no lines to count | **40 spurious PASS, 15 real FAIL, blank counts, exit 0** |
+| ″ | the summary's own `[ "$TOTAL" -lt … ]` and `[ "$FAIL" -gt 0 ]` both errored on a non-integer and evaluated false, skipping *both* gates — the exact trap this file's header describes | `=== results:  passed /  failed ===`, exit 0 |
+| ″ | `jq`-absent skip exited 0 | green over a harness that never ran |
+| `test-e2e-matrix-unit.sh` (in `validate`) | **no assertion-count floor at all** on its own totals, despite ~245 assertions across 16 sections | truncated after section [1]: **`2 passed / 0 failed`, exit 0** |
+| `test-leak-resistance-e2e.sh` | negative assertions with no positive control: a driver dying instantly means no sandbox, hence nothing to leak, hence PASS | **`3 passed, 0 failed`, exit 0** with stub drivers printing `Not logged in` |
+| ″ | no case-count floor, so a vanished `run_case` was invisible | — |
+
+Two of those deserve singling out as reusable warnings:
+
+* The matrix suite **did** contain the word "floor" seven times. Every match belonged
+  to a `NESTED-FLOOR:` **parity** check comparing a child run's count to the
+  parent's for equality — and `0 == 0` satisfies it perfectly. This defect had
+  already been closed once as "already fixed" on the strength of those grep hits.
+  See § *A grep that matches your vocabulary has not necessarily found your
+  mechanism*; this is that lesson's live instance, and it was still live.
+* The leak harness is the sharpest case of § *Negative assertions*: it printed
+  `PASS` for "no orphan processes, no stale sockets, no residual dirs" in a run
+  where the scenario never started. The fix is a positive control (`saw_sandbox`)
+  plus reporting setup failure as a **third outcome** — `0 passed, 0 failed,
+  3 never ran` — in the vocabulary of what actually happened.
+
 ### The worked example: `scripts/test-wirelog-helpers-unit.sh`
 
 Do it like that file. It exists because the wire-log helpers it tests feed

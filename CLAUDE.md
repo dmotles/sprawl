@@ -77,11 +77,21 @@ scripts/sprawl-test-env.sh     # set up isolated test environment
 
 **It runs the whole unit suite under the race detector.** Until QUM-972 it did
 not — `validate` ran a bare `go test ./...`, so race detection was pure
-convention, and nine live data races sat behind a permanently green `validate`
-(three in `internal/backend`, six in `internal/rootinit`, one of which was a
-*production* defect: four concurrent unsynchronised writers to one
-caller-supplied `io.Writer`). `validate` now depends on `test-race` **instead of**
+convention, and live data races sat behind a permanently green `validate` in
+**two** packages: `internal/backend` and `internal/rootinit`. One of the rootinit
+races was a *production* defect: four concurrent unsynchronised writers to one
+caller-supplied `io.Writer`. `validate` now depends on `test-race` **instead of**
 `test`; there is no uninstrumented run.
+
+**The pre-fix count is run-dependent — do not quote a bare total.** The detector
+reports what it witnesses, so repeated pre-fix runs disagree: `internal/rootinit`
+reported **8** (six writer races plus two from the `callOrder` append), while
+`internal/backend` reported **3** in three of four runs and **2** in the fourth.
+The commonly-cited "9 races" figure is one observation, and the 4db5057 commit
+message's "rootinit 6" undercounts by the two `callOrder` reports. The honest
+statement is "races in two packages, count varying by run" — the variance is
+itself the point (see the `-shuffle=on` follow-up: the gate currently gives
+order-dependent races exactly one ordering).
 
 State the guarantee accurately, because it is narrower than "no races exist":
 
@@ -119,6 +129,14 @@ lines and stays unexported) in `internal/backend/session.go`,
 Never a plain `time.Duration` package var. This is repo-wide, not a
 per-package exception: if you add a new one, use the same shape and the same
 name.
+
+Two of those three were **fixes**; the third was **prevention**, and the
+distinction matters when reading the list. `internal/backend/session.go` and
+`internal/rootinit/consolidating_lock.go` had races the detector actually
+reported. `internal/merge/runtests.go` reported **zero** pre-fix races — no unit
+test overrode its knob concurrently — and was converted because it is the same
+shape one test away from the same defect. So `internal/merge` appearing here is
+not evidence of a third racing package.
 
 Snapshotting the var at goroutine entry does **not** fix it — the snapshot read
 *is* the racing access. `session.go` carried comments asserting exactly the
@@ -418,6 +436,8 @@ This repo IS Sprawl. The `.sprawl/` directory at the repo root stores agent stat
 **Tests required**: Every file in `cmd/` and `internal/` has a corresponding `_test.go`. Keep it that way. **Read `/testing-practices` before writing any tests for the first time** — it covers the dependency injection pattern, mock conventions, and common pitfalls.
 
 **Every new assertion must demonstrate it CAN fail** — a negative control, a mutation, or a red-first run — and you must record which one and what it printed; an assertion nobody has watched fail is a claim, not a check. Any harness that aggregates its own results needs an **assertion-count floor**, so a run reporting `0 passed / 0 failed` exits non-zero instead of green (worked example: `scripts/test-wirelog-helpers-unit.sh`). A **parent-commit** control proves a failure is *pre-existing*, never that it is *acceptable*; read `/testing-practices` § **Assertion Rigor** before writing or reviewing any assertion.
+
+**No fallback branch may silently succeed (QUM-997).** Any validation or test script must exit non-zero when something it checks actually fails. The shape to know by sight is `cond && ok "…" || <arm that neither counts a failure nor fails the run>` — and its if/else twin, `if cond; then pass; else <something that isn't fail>; fi`, including a missing `else`. A skip on an unmet precondition must exit **77**, never 0. A harness using `set +e` (to report all failures rather than the first) has given up the mechanism that makes an early death loud and therefore **must** carry an assertion-count floor. `/testing-practices` § **The non-asserting fallback** has both spellings, the corollaries, and the audit that found six live instances of this class — five of them structural rather than lexical, two inside `make validate`, one of which printed `40 PASS / 15 FAIL / exit 0`. It also records that a deterministic parser for this class was **built and rejected**: it acquired four separate blind spots of the same class it detected, one blinding 462 lines across 5 harnesses while every aggregate counter stayed byte-identical. Do not rebuild it; the defence is manual review against that checklist.
 
 **Read `/go-cli-best-practices` before writing or modifying Go code** — it covers cobra patterns, error handling conventions, and dependency injection structure used throughout this codebase.
 

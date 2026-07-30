@@ -26,6 +26,37 @@ MAKEFILE="$REPO_ROOT/Makefile"
 PASS=0
 FAIL=0
 
+# Assertion-count floor. A hardcoded literal, NOT derived from anything this suite
+# measures: a floor computed from the corpus it checks is satisfied by an empty
+# corpus, which is the exact false-green it exists to stop.
+#
+# Why this is here at all: until QUM-997 this suite — ~245 assertions across 16
+# sections, inside `make validate`, i.e. the merge/push gate — had NO floor on its
+# own totals. Its summary was `if [ "$FAIL" -gt 0 ]`, so `0 passed / 0 failed` exited
+# 0, and any section dying early reported green. Measured by truncating the suite
+# after section [1]: `=== unit results: 2 passed / 0 failed ===`, exit 0 — a run that
+# checked 2 of 245 things and was indistinguishable from a full pass.
+#
+# Do not mistake [16b]'s `NESTED-FLOOR:` line for this. That is a PARITY check
+# comparing a child run's count to the parent's for equality, and `0 == 0` satisfies
+# it perfectly; it says nothing about either run being non-empty. That confusion has
+# already caused this defect to be closed once as "already fixed" on the strength of
+# grep hits for the word "floor" — see /testing-practices § *A grep that matches your
+# vocabulary has not necessarily found your mechanism*.
+#
+# Measured at de22410: 245, stable across repeated runs. Environment-independent by
+# construction (the claude/skip paths are driven with PATH=/nonexistent rather than
+# by probing the host). Bump it when assertions are added or removed; a suite-size
+# figure is branch-relative, so re-measure rather than trusting this comment.
+MIN_ASSERTIONS=245
+# A [16b] nested child deliberately does NOT re-run section [16] (recursing would
+# fork-bomb, and counting there would corrupt the parity comparison), so it asserts
+# strictly fewer things and needs its own floor. Measured at de22410: 237, which is
+# the same number [16] emits as `NESTED-FLOOR:`. Keeping it a separate literal rather
+# than reusing the parent's is the point — a child floor derived from the parent's
+# count would be the parity check again, and parity is what `0 == 0` satisfies.
+MIN_ASSERTIONS_NESTED=237
+
 # Pin the temp root. This suite runs inside `make validate` and therefore inside
 # the pre-commit hook, so it must not inherit the committing agent's TMPDIR:
 # several /tmp-anchored guards here and in scripts/lib/e2e-common.sh (which hard
@@ -1841,6 +1872,19 @@ fi
 # ----------------------------------------------------------------------------
 echo
 echo "=== unit results: $PASS passed / $FAIL failed ==="
+_total=$((PASS + FAIL))
+# A nested [16b] child skips section [16], so it is held to its own lower floor.
+# Keyed on the guard being SET at all, not on the nonce validating: the unbacked-value
+# branch runs exactly the same assertions plus one deliberate `fail`, and 16c needs
+# that run to fail on the FAIL count with its own message rather than on the floor.
+_floor=$MIN_ASSERTIONS
+if [ -n "${UNIT_NESTED_SEAM_CHECK:-}" ]; then
+	_floor=$MIN_ASSERTIONS_NESTED
+fi
+if [ "$_total" -lt "$_floor" ]; then
+	echo "  FAIL: only $_total assertions ran, expected at least $_floor — a section died early, so this run measured less than it claims and its green is not attributable" >&2
+	exit 1
+fi
 if [ "$FAIL" -gt 0 ]; then
 	exit 1
 fi

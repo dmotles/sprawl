@@ -22,12 +22,29 @@ IDLE_CONT="$REPO_ROOT/scripts/e2e-tests/idle-continuation.sh"
 IDLE_INT="$REPO_ROOT/scripts/e2e-tests/idle-interrupt-inject.sh"
 
 if ! command -v jq >/dev/null 2>&1; then
-	echo "SKIP: jq not installed — wire-log helper unit tests need it"
-	exit 0
+	# Exit 77 (the autotools skip convention this repo already uses for e2e rows),
+	# NOT 0. A skip asserts nothing, and the exit status is the only signal `make`
+	# and any non-reading caller sees — an `exit 0` here would let `make validate`
+	# report success over a harness that never ran. Same rule as QUM-952: a skip
+	# does not discharge the obligation.
+	echo "SKIP: jq not installed — wire-log helper unit tests need it; NOTHING was asserted" >&2
+	exit 77
 fi
 
 # Every fixture root lives under one parent tempdir so a single trap cleans up.
+#
+# The creation is CHECKED, and that is not defensive boilerplate. Under `set +e` a
+# failed `mktemp -d` leaves TMPPARENT empty, every fixture root becomes `/`, and the
+# ledger path becomes `/ledger` — unwritable. The assertions then pass VACUOUSLY,
+# because a missing wire log yields the same `-1` sentinel most of them assert, and
+# the ledger-based floor that exists to catch exactly this cannot fire either, since
+# it has no lines to count. Measured with TMPDIR pointed at an unwritable directory:
+# 40 spurious PASS, 15 real FAIL, blank counts in the summary, and **exit 0**.
 TMPPARENT=$(mktemp -d)
+if [ -z "$TMPPARENT" ] || [ ! -d "$TMPPARENT" ]; then
+	echo "  FAIL: could not create a tempdir (TMPDIR=${TMPDIR:-/tmp}) — every fixture root would be '/' and every assertion would pass vacuously" >&2
+	exit 1
+fi
 trap 'rm -rf "$TMPPARENT"' EXIT
 
 # Assertion ledger. Each case runs in a subshell (so it can source a row file in
@@ -38,6 +55,10 @@ trap 'rm -rf "$TMPPARENT"' EXIT
 # nothing, which is precisely the failure it exists to prevent.
 LEDGER="$TMPPARENT/ledger"
 : >"$LEDGER"
+if [ ! -w "$LEDGER" ]; then
+	echo "  FAIL: ledger $LEDGER is not writable — no assertion could be recorded, so the floor below would measure nothing" >&2
+	exit 1
+fi
 # Bump when assertions are added or removed.
 MIN_ASSERTIONS=54
 
@@ -303,11 +324,22 @@ echo "[7] idle-interrupt-inject count_now_writes: integer contract, sentinel, ne
 	assert_eq "count_now_writes sentinel for an unreadable log" "-1" "$(count_now_writes weave)"
 )
 
-TOTAL=$(wc -l <"$LEDGER" | tr -d ' ')
-PASS=$(grep -c P "$LEDGER")
-FAIL=$(grep -c F "$LEDGER")
+TOTAL=$(wc -l <"$LEDGER" 2>/dev/null | tr -d ' ')
+PASS=$(grep -c P "$LEDGER" 2>/dev/null)
+FAIL=$(grep -c F "$LEDGER" 2>/dev/null)
 echo
 echo "=== wire-log helper unit results: $PASS passed / $FAIL failed ==="
+# The counts are validated as integers BEFORE being compared, because this script's
+# own header describes the trap it otherwise falls into: a non-integer makes bash's
+# `[ x -lt y ]` print an error AND evaluate false, so BOTH gates below get skipped
+# and the script exits 0. That is the detector-that-cannot-detect failure this file
+# exists to prevent, and it was live in this very summary block.
+for _n in TOTAL PASS FAIL; do
+	if ! [[ "${!_n}" =~ ^[0-9]+$ ]]; then
+		echo "  FAIL: $_n is '${!_n}', not an integer — the ledger was unreadable, so neither the floor nor the failure gate below could evaluate; refusing to report success" >&2
+		exit 1
+	fi
+done
 if [ "$TOTAL" -lt "$MIN_ASSERTIONS" ]; then
 	echo "  FAIL: only $TOTAL assertions ran, expected at least $MIN_ASSERTIONS — a case died early and this run measured less than it claims" >&2
 	exit 1
