@@ -27,9 +27,9 @@ import (
 // `var`.
 func overrideInflightDrainTimeout(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := inflightDrainTimeout
-	inflightDrainTimeout = d
-	t.Cleanup(func() { inflightDrainTimeout = prev })
+	prev := inflightDrainTimeout.get()
+	inflightDrainTimeout.set(d)
+	t.Cleanup(func() { inflightDrainTimeout.set(prev) })
 }
 
 // ctxRespectingToolBridge is a ToolBridge whose HandleIncoming parks until

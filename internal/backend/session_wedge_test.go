@@ -96,16 +96,16 @@ func waitFor(t *testing.T, d time.Duration, label string, fn func() bool) {
 // `subscriberSendDeadline` so this file fails to compile until F1 lands.
 func overrideSubscriberSendDeadline(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := subscriberSendDeadline
-	subscriberSendDeadline = d
-	t.Cleanup(func() { subscriberSendDeadline = prev })
+	prev := subscriberSendDeadline.get()
+	subscriberSendDeadline.set(d)
+	t.Cleanup(func() { subscriberSendDeadline.set(prev) })
 }
 
 func overrideHangCheckInterval(t *testing.T, d time.Duration) {
 	t.Helper()
-	prev := hangCheckInterval
-	hangCheckInterval = d
-	t.Cleanup(func() { hangCheckInterval = prev })
+	prev := hangCheckInterval.get()
+	hangCheckInterval.set(d)
+	t.Cleanup(func() { hangCheckInterval.set(prev) })
 }
 
 // controlResponseFrame is the typed shape sent over transport.sendCh in

@@ -16,7 +16,8 @@ here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 "$here/guard-employer-leak"
 
 # QUM-836: git exports repo-scoping GIT_* vars (pointing at THIS repo's .git)
-# into the hook environment. `make validate` runs `go test`, whose integration
+# into the hook environment. `make validate` runs `go test -race` (QUM-972),
+# whose integration
 # suites spawn nested `git` in throwaway temp repos; if they inherit these vars
 # they resolve to the outer repo instead of their temp repo and fail. Unset them
 # so validation runs with a clean git env. (Done AFTER the guard, which

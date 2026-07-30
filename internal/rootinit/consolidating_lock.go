@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -37,10 +38,32 @@ const (
 
 // Package-private seam vars: tests override these to exercise heartbeat and
 // per-phase-timeout behaviour quickly.
+//
+// QUM-972: both are read from goroutines the caller does not own —
+// heartbeatInterval from the background heartbeat ticker (bgconsolidate.go),
+// perPhaseTimeout from runConsolidationPipeline's errgroup bodies. As plain vars
+// that made every override a latent data race whose absence depended on the
+// unstated precondition that the override happens on the same goroutine that
+// later starts the readers. `atomicDuration` removes the precondition instead of
+// documenting it; see the atomicDuration note in internal/backend/session.go, where
+// the same seam shape had gone live.
 var (
-	heartbeatInterval = HeartbeatInterval
-	perPhaseTimeout   = PerPhaseConsolidationTimeout
+	heartbeatInterval = newAtomicDuration(HeartbeatInterval)
+	perPhaseTimeout   = newAtomicDuration(PerPhaseConsolidationTimeout)
 )
+
+// atomicDuration is a concurrency-safe seam for a duration knob that production
+// reads and tests override.
+type atomicDuration struct{ ns atomic.Int64 }
+
+func newAtomicDuration(d time.Duration) *atomicDuration {
+	v := &atomicDuration{}
+	v.set(d)
+	return v
+}
+
+func (v *atomicDuration) get() time.Duration  { return time.Duration(v.ns.Load()) }
+func (v *atomicDuration) set(d time.Duration) { v.ns.Store(int64(d)) }
 
 // lockState is the JSON body of the consolidation lockfile.
 type lockState struct {

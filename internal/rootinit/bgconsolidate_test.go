@@ -368,9 +368,9 @@ func TestStartBackgroundConsolidation_WritesJSONLockBody(t *testing.T) {
 // field advances over time while the pipeline runs.
 func TestStartBackgroundConsolidation_HeartbeatUpdates(t *testing.T) {
 	// Override the heartbeat interval so this test runs in <500ms.
-	prev := heartbeatInterval
-	heartbeatInterval = 20 * time.Millisecond
-	t.Cleanup(func() { heartbeatInterval = prev })
+	prev := heartbeatInterval.get()
+	heartbeatInterval.set(20 * time.Millisecond)
+	t.Cleanup(func() { heartbeatInterval.set(prev) })
 
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {
@@ -450,9 +450,9 @@ func TestStartBackgroundConsolidation_HeartbeatUpdates(t *testing.T) {
 // "starting" (or similar) and be updated to a phase-specific label once
 // the timeline / persistent-knowledge phases begin.
 func TestStartBackgroundConsolidation_PhaseLabelUpdates(t *testing.T) {
-	prev := heartbeatInterval
-	heartbeatInterval = 10 * time.Millisecond
-	t.Cleanup(func() { heartbeatInterval = prev })
+	prev := heartbeatInterval.get()
+	heartbeatInterval.set(10 * time.Millisecond)
+	t.Cleanup(func() { heartbeatInterval.set(prev) })
 
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".sprawl", "memory"), 0o755); err != nil {

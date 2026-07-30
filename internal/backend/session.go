@@ -24,8 +24,8 @@ import (
 // hangCheckInterval is the watchdog tick cadence (D1). Same override
 // pattern.
 var (
-	subscriberSendDeadline = 5 * time.Second
-	hangCheckInterval      = 1 * time.Minute
+	subscriberSendDeadline = newAtomicDuration(5 * time.Second)
+	hangCheckInterval      = newAtomicDuration(1 * time.Minute)
 	// interruptSendTimeout bounds how long Session.Interrupt will wait on
 	// transport.Send before declaring the wire send wedged and returning
 	// ErrInterruptTimeout (QUM-600). The real-world wedge is a stuck
@@ -33,8 +33,38 @@ var (
 	// of the adapter, so a plain ctx.Done() select on Send is not enough.
 	// Exposed as a package var (not const) so tests can override;
 	// production code must not mutate.
-	interruptSendTimeout = 2 * time.Second
+	interruptSendTimeout = newAtomicDuration(2 * time.Second)
 )
+
+// atomicDuration is a concurrency-safe seam for a duration knob that production
+// reads and tests override. Deliberately duplicated per package (see
+// internal/rootinit/consolidating_lock.go and internal/merge/runtests.go) rather
+// than shared: it is eight lines, and keeping it unexported stops production
+// code from acquiring a mutable global knob it should not have.
+//
+// QUM-972: these knobs used to be plain `time.Duration` package vars, read from
+// session-owned goroutines (the reader, the observer drain, the hang watchdog)
+// and written from the test goroutine with nothing ordering the two. Every
+// override was therefore a data race against any live session, and `go test`
+// without `-race` could not see it — nine such races sat behind a permanently
+// green `make validate`.
+//
+// The synchronisation lives in the seam rather than in a per-session snapshot
+// taken at construction, deliberately: a snapshot leaves the constructor itself
+// reading the var, so a caller would still owe an ordering obligation that
+// nothing states or checks. Here an override is safe at any time, including
+// while a session's goroutines are running, and that is what
+// TestSession_TunableOverrideWhileSessionLive_IsRaceFree pins.
+type atomicDuration struct{ ns atomic.Int64 }
+
+func newAtomicDuration(d time.Duration) *atomicDuration {
+	v := &atomicDuration{}
+	v.set(d)
+	return v
+}
+
+func (v *atomicDuration) get() time.Duration  { return time.Duration(v.ns.Load()) }
+func (v *atomicDuration) set(d time.Duration) { v.ns.Store(int64(d)) }
 
 const (
 	// observerQueueDepth bounds the per-session async Observer queue (F2).
@@ -365,7 +395,7 @@ type TurnInfo struct {
 // inflightDrainTimeout bounds how long the reader waits for in-flight async
 // MCP handlers to finish on shutdown. A wedged handler must not be able to
 // permanently leak the session goroutine.
-var inflightDrainTimeout = 5 * time.Second
+var inflightDrainTimeout = newAtomicDuration(5 * time.Second)
 
 // NewSession creates a backend session on top of the provided transport.
 func NewSession(t ManagedTransport, cfg SessionConfig) Session {
@@ -608,10 +638,12 @@ func (s *session) watchTurnCtx(tf *turnFrame) {
 // to ToolBridge asynchronously so the reader keeps draining stdout even
 // while a long-running MCP tool is in flight (QUM-552).
 func (s *session) runReader(ctx context.Context) {
-	// Snapshot the F1 deadline at goroutine entry so tests overriding
-	// the package var for a different session can't race with us. The
-	// production knob is constant for the process lifetime.
-	sendDeadline := subscriberSendDeadline
+	// QUM-972: this used to read a plain package var and claim the read was
+	// safe because it was "snapshot at goroutine entry". That was false — the
+	// snapshot read IS the racing access, since it happens on this goroutine.
+	// The knob is now a synchronised seam, so the read is safe wherever it
+	// occurs; the local is kept only to avoid re-reading per frame.
+	sendDeadline := subscriberSendDeadline.get()
 
 	defer close(s.readerDone)
 	defer func() {
@@ -659,7 +691,7 @@ func (s *session) runReader(ctx context.Context) {
 		close(s.observerCh)
 		select {
 		case <-s.observerDone:
-		case <-time.After(inflightDrainTimeout):
+		case <-time.After(inflightDrainTimeout.get()):
 		}
 	}()
 
@@ -880,10 +912,10 @@ func (s *session) runObserverDrain() {
 // a turn (sprawl-initiated or autonomous) is in flight.
 func (s *session) runHangWatchdog(ctx context.Context, hangTimeout time.Duration) {
 	defer close(s.watchdogDone)
-	// Snapshot the package var at goroutine entry so tests that override
-	// the interval after this session was created can't race with us. The
-	// production knob is constant for the process lifetime.
-	interval := hangCheckInterval
+	// QUM-972: see the note in runReader. The old "snapshot at goroutine entry
+	// so tests ... can't race with us" rationale was false; the knob is now a
+	// synchronised seam and the local is just a single read.
+	interval := hangCheckInterval.get()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -1185,7 +1217,7 @@ func (s *session) drainInflight() {
 
 	select {
 	case <-done:
-	case <-time.After(inflightDrainTimeout):
+	case <-time.After(inflightDrainTimeout.get()):
 	}
 }
 
@@ -1230,7 +1262,7 @@ func (s *session) Interrupt(ctx context.Context) error {
 	select {
 	case err := <-errCh:
 		return err
-	case <-time.After(interruptSendTimeout):
+	case <-time.After(interruptSendTimeout.get()):
 		return ErrInterruptTimeout
 	case <-ctx.Done():
 		return ctx.Err()
@@ -1283,7 +1315,7 @@ func (s *session) CancelAsyncMessage(ctx context.Context, messageUUID string) (b
 		if err != nil {
 			return false, err
 		}
-	case <-time.After(interruptSendTimeout):
+	case <-time.After(interruptSendTimeout.get()):
 		return false, ErrInterruptTimeout
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -1339,20 +1371,20 @@ func (s *session) Close() error {
 		// process exit to reap.
 		select {
 		case <-s.readerDone:
-		case <-time.After(inflightDrainTimeout):
+		case <-time.After(inflightDrainTimeout.get()):
 		}
 		// Bounded wait for the F2 observer drain to flush queued frames.
 		// On a wedged Observer.OnMessage we don't want Close to hang
 		// forever — surface that as a drop and proceed.
 		select {
 		case <-s.observerDone:
-		case <-time.After(inflightDrainTimeout):
+		case <-time.After(inflightDrainTimeout.get()):
 		}
 		// Watchdog exits promptly on readerCtx cancel; join with a small
 		// safety bound.
 		select {
 		case <-s.watchdogDone:
-		case <-time.After(inflightDrainTimeout):
+		case <-time.After(inflightDrainTimeout.get()):
 		}
 	}
 	// Shutdown-induced ctx.Canceled in fatalErr is expected — don't

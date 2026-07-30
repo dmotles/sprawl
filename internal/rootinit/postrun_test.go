@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,25 +35,42 @@ func TestFinalizeHandoff_Signal_CallsConsolidateAndClears(t *testing.T) {
 		return nil, os.ErrNotExist
 	}
 
-	var callOrder []string
+	// QUM-972: the two consolidation phases run concurrently under an errgroup,
+	// so the "consolidate" and "updatePK" records are appended from different
+	// goroutines. Guard the slice — an unsynchronised append here was one of the
+	// races `make validate` could not see.
+	var (
+		callMu  sync.Mutex
+		records []string
+	)
+	record := func(name string) {
+		callMu.Lock()
+		defer callMu.Unlock()
+		records = append(records, name)
+	}
+	snapshotCallOrder := func() []string {
+		callMu.Lock()
+		defer callMu.Unlock()
+		return append([]string(nil), records...)
+	}
 	deps.RemoveFile = func(path string) error {
 		if strings.Contains(path, "handoff-signal") {
-			callOrder = append(callOrder, "removeHandoff")
+			record("removeHandoff")
 		}
 		return nil
 	}
 	deps.WriteLastSessionID = func(root, id string) error {
 		if id == "" {
-			callOrder = append(callOrder, "clearSessionID")
+			record("clearSessionID")
 		}
 		return nil
 	}
 	deps.ConsolidateExcluding = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.TimelineCompressionConfig, now func() time.Time, excludeIDs map[string]bool) error {
-		callOrder = append(callOrder, "consolidate")
+		record("consolidate")
 		return nil
 	}
 	deps.UpdatePersistentKnowledge = func(ctx context.Context, root string, inv memory.ClaudeInvoker, cfg *memory.PersistentKnowledgeConfig, summary, bullets string) error {
-		callOrder = append(callOrder, "updatePK")
+		record("updatePK")
 		return nil
 	}
 
@@ -62,6 +80,7 @@ func TestFinalizeHandoff_Signal_CallsConsolidateAndClears(t *testing.T) {
 	}
 
 	// Consolidation must happen before cleanup for crash safety.
+	callOrder := snapshotCallOrder()
 	idx := map[string]int{"consolidate": -1, "removeHandoff": -1, "clearSessionID": -1, "updatePK": -1}
 	for i, name := range callOrder {
 		if _, ok := idx[name]; ok && idx[name] == -1 {
@@ -366,9 +385,9 @@ func TestRunConsolidationPipeline_NoSessions_NoCrash(t *testing.T) {
 
 func TestRunConsolidationPipeline_TimeoutAbortsPhase(t *testing.T) {
 	// Override the per-phase timeout so the test completes quickly.
-	prev := perPhaseTimeout
-	perPhaseTimeout = 50 * time.Millisecond
-	t.Cleanup(func() { perPhaseTimeout = prev })
+	prev := perPhaseTimeout.get()
+	perPhaseTimeout.set(50 * time.Millisecond)
+	t.Cleanup(func() { perPhaseTimeout.set(prev) })
 
 	deps := newTestDeps(t)
 

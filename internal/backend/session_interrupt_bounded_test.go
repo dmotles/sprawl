@@ -83,7 +83,7 @@ func TestSession_Interrupt_BoundedOnWedgedTransportSend(t *testing.T) {
 	err := sess.Interrupt(context.Background())
 	elapsed := time.Since(start)
 
-	upper := interruptSendTimeout + 500*time.Millisecond
+	upper := interruptSendTimeout.get() + 500*time.Millisecond
 	if elapsed > upper {
 		t.Fatalf("Interrupt returned after %v; want <= %v (QUM-600: bounded by interruptSendTimeout)", elapsed, upper)
 	}
@@ -131,7 +131,7 @@ func TestSession_Interrupt_DoesNotCancelInflightHandler_WedgedSend(t *testing.T)
 	start := time.Now()
 	ierr := sess.Interrupt(context.Background())
 	elapsed := time.Since(start)
-	upper := interruptSendTimeout + 500*time.Millisecond
+	upper := interruptSendTimeout.get() + 500*time.Millisecond
 	if elapsed > upper {
 		t.Fatalf("Interrupt returned after %v; want <= %v", elapsed, upper)
 	}
@@ -239,7 +239,7 @@ func TestSession_DrainInflight_CancelsInflightHandler(t *testing.T) {
 	select {
 	case <-bridge.cancelledCh:
 		// good — teardown cancelled the in-flight handler
-	case <-time.After(inflightDrainTimeout + 1*time.Second):
+	case <-time.After(inflightDrainTimeout.get() + 1*time.Second):
 		t.Fatal("teardown did not cancel the in-flight MCP handler (QUM-552/QUM-600 drainInflight guarantee broken)")
 	}
 }

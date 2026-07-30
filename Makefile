@@ -1,7 +1,7 @@
-.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-gitignore-classes
+.PHONY: validate build proto-check proto-gen proto-gen-web hub-web fmt-check lint test clean install fmt hooks leak-scan test-notify-tui-e2e test-handoff-e2e test-bridge-lifecycle-e2e test-exit-code-preservation test-parallel-agent-viewport-e2e test-tui-e2e test-leak-resistance-e2e test-merge-reuse-e2e test-ask-user-question-e2e test-drain-row-inject-e2e test-wake-live-e2e test-paste-coalesce-e2e test-e2e-matrix test-e2e-matrix-unit test-hooks-e2e test-hub-bootstrap test-hub-e2e test-wirelog-helpers-unit test-gitignore-classes test-race test-race-gate
 
 # Default target — full quality gauntlet
-validate: build proto-check fmt-check lint test test-wirelog-helpers-unit test-e2e-matrix-unit test-gitignore-classes leak-scan
+validate: build proto-check fmt-check lint test-race-gate test-race test-wirelog-helpers-unit test-e2e-matrix-unit test-gitignore-classes leak-scan
 
 BUF ?= buf
 
@@ -76,8 +76,37 @@ fmt-check:
 lint:
 	golangci-lint run ./...
 
+# The non-race convenience run. NOT what `validate` uses — see test-race.
 test:
 	go test ./...
+
+# QUM-972: THE enforced race gate. `validate` depends on this INSTEAD of `test`;
+# running both would double the suite for no extra coverage, since the race build
+# runs every assertion the plain build does.
+#
+# Measured on this host (4 cores, warm build caches, -count=1):
+#   go test ./...          99.0s
+#   go test -race ./...   122.2s   (+23%)
+# Cheap because the suite is sleep/timeout-bound, not CPU-bound —
+# internal/supervisor alone is 75s of the 122s and barely moves under
+# instrumentation. A targeted "concurrency-heavy packages" subset was measured
+# at 76.0s: it saves 46s while covering 4 of ~40 packages, and needs a
+# hand-maintained list that silently stops covering any newly-concurrent
+# package. Not worth it.
+#
+# -race requires cgo and a C toolchain. That fails LOUDLY (the build is refused)
+# rather than silently skipping, so it cannot become a false green — and
+# test-race-gate re-proves detection actually works on every run anyway.
+test-race:
+	go test -race ./...
+
+# Guards the gate above. Dropping -race from `validate` is a SILENT regression:
+# nothing fails, races just stop being detected. So is landing in an environment
+# where -race is inert (CGO_ENABLED=0, no gcc, a hostile GOFLAGS). This asserts
+# the wiring from `make -n validate` and re-runs validate's own flags against a
+# planted race plus a clean control. Pure-local: bash + go.
+test-race-gate:
+	bash scripts/test-race-gate.sh
 
 # Unit tests for the hand-rolled wire-log counter/ordering helpers inside the
 # e2e row scripts (scripts/e2e-tests/*.sh). Those helpers gate the rows'

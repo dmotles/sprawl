@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dmotles/sprawl/internal/memory"
@@ -70,6 +71,27 @@ func FinalizeHandoff(_ context.Context, deps *Deps, sprawlRoot string, stdout io
 // ingests has negligible impact on the output. See QUM-283 for context.
 func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string, stdout io.Writer, events chan<- ConsolidationEvent) {
 	prefix := deps.LogPrefix
+
+	// QUM-972: the two errgroup phases below each write to stdout directly AND
+	// each start a spinner goroutine that writes to the same stdout — up to four
+	// concurrent writers. io.Writer carries no concurrency guarantee, so that is
+	// a data race for any caller passing an in-memory writer, and garbled output
+	// even for an *os.File. Serialise once, here, rather than making the spinner
+	// alone thread-safe: the phases' own Fprintf calls race the other phase's
+	// spinner regardless of what the spinner does internally.
+	//
+	// Wrapping the caller's writer (rather than requiring callers to pass a safe
+	// one) keeps THIS FUNCTION'S concurrency an implementation detail of this
+	// function. It does not make the writer safe generally, and two pre-existing
+	// gaps are deliberately left alone as out of QUM-972's scope:
+	//   - StartBackgroundConsolidation runs this pipeline in a detached
+	//     goroutine, and the caller keeps writing to the same writer after
+	//     FinalizeHandoff returns. Benign for the os.Stderr used in production;
+	//     a real race for any in-memory writer.
+	//   - two concurrent invocations over one underlying writer get two
+	//     independent mutexes.
+	// A caller sharing its writer with another goroutine is still on its own.
+	stdout = &syncWriter{w: stdout}
 
 	// Pre-read the latest session body + existing timeline once, up front.
 	// PK receives these as inputs rather than waiting on Consolidate to
@@ -135,11 +157,11 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		setPhase(phase)
 		sp := startSpinner(stdout, prefix, "consolidating timeline...")
 		defer sp.stop()
-		phaseCtx, cancel := context.WithTimeout(ctx, perPhaseTimeout)
+		phaseCtx, cancel := context.WithTimeout(ctx, perPhaseTimeout.get())
 		defer cancel()
 		if err := deps.ConsolidateExcluding(phaseCtx, sprawlRoot, deps.NewCLIInvoker(), &tlCfg, nil, excludeIDs); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
-				fmt.Fprintf(stdout, "%s warning: timeline consolidation timed out after %s (deadline exceeded)\n", prefix, perPhaseTimeout)
+				fmt.Fprintf(stdout, "%s warning: timeline consolidation timed out after %s (deadline exceeded)\n", prefix, perPhaseTimeout.get())
 			} else {
 				fmt.Fprintf(stdout, "%s warning: consolidation failed: %v\n", prefix, err)
 			}
@@ -152,11 +174,11 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		setPhase(phase)
 		sp := startSpinner(stdout, prefix, "updating persistent knowledge...")
 		defer sp.stop()
-		phaseCtx, cancel := context.WithTimeout(ctx, perPhaseTimeout)
+		phaseCtx, cancel := context.WithTimeout(ctx, perPhaseTimeout.get())
 		defer cancel()
 		if err := deps.UpdatePersistentKnowledge(phaseCtx, sprawlRoot, deps.NewCLIInvoker(), &pkCfg, sessionSummary, timelineBullets); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
-				fmt.Fprintf(stdout, "%s warning: persistent knowledge update timed out after %s (deadline exceeded)\n", prefix, perPhaseTimeout)
+				fmt.Fprintf(stdout, "%s warning: persistent knowledge update timed out after %s (deadline exceeded)\n", prefix, perPhaseTimeout.get())
 			} else {
 				fmt.Fprintf(stdout, "%s warning: persistent knowledge update failed: %v\n", prefix, err)
 			}
@@ -164,4 +186,19 @@ func runConsolidationPipeline(ctx context.Context, deps *Deps, sprawlRoot string
 		return nil
 	})
 	_ = eg.Wait()
+}
+
+// syncWriter serialises concurrent writes to an underlying io.Writer. It does
+// not make the OUTPUT sensible — two spinners animating one terminal line still
+// interleave frames — only memory-safe. Collapsing the two phases onto a single
+// spinner is a UX change and deliberately out of scope for QUM-972.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }

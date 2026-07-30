@@ -249,9 +249,9 @@ func TestRealRunTestsStreaming_Heartbeat(t *testing.T) {
 	dir := t.TempDir()
 	sink, snap := collectingSink()
 
-	prev := heartbeatInterval
-	heartbeatInterval = 80 * time.Millisecond
-	t.Cleanup(func() { heartbeatInterval = prev })
+	prev := heartbeatInterval.get()
+	heartbeatInterval.set(80 * time.Millisecond)
+	t.Cleanup(func() { heartbeatInterval.set(prev) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()

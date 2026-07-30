@@ -117,7 +117,7 @@ func StartBackgroundConsolidation(deps *Deps, sprawlRoot string, stdout io.Write
 
 		// Heartbeat ticker bumps LastHeartbeat so the stale-lock janitor
 		// can tell live consolidations from crashed ones.
-		ticker := time.NewTicker(heartbeatInterval)
+		ticker := time.NewTicker(heartbeatInterval.get())
 		defer ticker.Stop()
 		stopHB := make(chan struct{})
 		hbDone := make(chan struct{})

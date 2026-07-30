@@ -9,14 +9,37 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 // heartbeatInterval is how often a "validate still running" heartbeat is
-// pushed to the sink while a streaming run is in progress. Package-level
-// var so tests can override it.
-var heartbeatInterval = 30 * time.Second
+// pushed to the sink while a streaming run is in progress. A test-overridable
+// seam.
+//
+// QUM-972: an atomicDuration rather than a plain var because the read at the
+// heartbeat ticker below happens on a goroutine this package spawns. As a plain
+// var it was safe only by the unstated precondition that every override happens
+// before that goroutine starts — the same shape as the two false "can't race
+// with us" comments QUM-972 deleted from internal/backend/session.go. See the
+// repo-wide convention in CLAUDE.md's Build & Test section.
+var heartbeatInterval = newAtomicDuration(30 * time.Second)
+
+// atomicDuration is a concurrency-safe seam for a duration knob that production
+// reads and tests override. Deliberately duplicated per package rather than
+// shared: it is eight lines, and staying unexported stops production code from
+// acquiring a mutable global knob it should not have.
+type atomicDuration struct{ ns atomic.Int64 }
+
+func newAtomicDuration(d time.Duration) *atomicDuration {
+	v := &atomicDuration{}
+	v.set(d)
+	return v
+}
+
+func (v *atomicDuration) get() time.Duration  { return time.Duration(v.ns.Load()) }
+func (v *atomicDuration) set(d time.Duration) { v.ns.Store(int64(d)) }
 
 // killGracePeriod is how long we wait between SIGTERM and SIGKILL when
 // cancelling the subprocess tree, and also how long we wait for scanners
@@ -112,7 +135,7 @@ func RealRunTestsStreaming(ctx context.Context, dir, command string, sink func(l
 	go func() {
 		defer hbWG.Done()
 		start := time.Now()
-		t := time.NewTicker(heartbeatInterval)
+		t := time.NewTicker(heartbeatInterval.get())
 		defer t.Stop()
 		for {
 			select {

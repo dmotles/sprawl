@@ -48,13 +48,21 @@ under **Validating Changes** (`complete-lifecycle` row).
 ## Build & Test
 
 ```bash
-make              # runs full validation (build + proto-check + fmt-check + lint + test + e2e-matrix-unit + leak-scan)
+make              # runs full validation, in order: build + proto-check + fmt-check
+                  #   + lint + test-race-gate + test-race + wirelog-helpers-unit
+                  #   + e2e-matrix-unit + gitignore-classes + leak-scan
+                  #   (race-gate runs BEFORE test-race on purpose: it takes ~2s and
+                  #    fails fast on exactly the regression that would make the
+                  #    ~2min race run stop measuring anything)
 make validate     # same as above — the default target
 make build        # builds ./sprawl binary
 make fmt          # auto-fix formatting
 make fmt-check    # check formatting without fixing (used in CI/hooks)
 make lint         # run golangci-lint
-make test         # run all unit tests
+make test         # run all unit tests WITHOUT -race — a convenience run, NOT what validate uses
+make test-race    # go test -race ./... — THE enforced gate; validate depends on this, not `test`
+make test-race-gate  # shell unit test proving validate's go-test invocation still carries -race,
+                     # and that -race really detects a planted race in this toolchain
 make test-e2e-matrix-unit  # shell unit tests for the e2e matrix driver (fast, no claude)
 make hooks        # install pre-commit hook
 
@@ -64,6 +72,61 @@ make test-wirelog-helpers-unit   # bash+jq unit tests for the e2e rows' wire-log
 scripts/smoke-test-memory.sh   # integration test for weave memory system
 scripts/sprawl-test-env.sh     # set up isolated test environment
 ```
+
+### What `make validate` guarantees about data races (QUM-972)
+
+**It runs the whole unit suite under the race detector.** Until QUM-972 it did
+not — `validate` ran a bare `go test ./...`, so race detection was pure
+convention, and nine live data races sat behind a permanently green `validate`
+(three in `internal/backend`, six in `internal/rootinit`, one of which was a
+*production* defect: four concurrent unsynchronised writers to one
+caller-supplied `io.Writer`). `validate` now depends on `test-race` **instead of**
+`test`; there is no uninstrumented run.
+
+State the guarantee accurately, because it is narrower than "no races exist":
+
+* **Covered** — every package under `./...`, on the code paths the unit tests
+  actually drive.
+* **Not covered** — the e2e harnesses (`make test-e2e-matrix*`,
+  `scripts/e2e-tests/*`), anything behind the `hub_e2e` / `sprawl_test` build
+  tags, and any concurrent path no unit test exercises.
+* A green run means **no race was *observed***. The detector reports races it
+  witnesses on executed interleavings; it does not prove absence.
+
+Cost, measured on a 4-core host with warm build caches (`-count=1`): `go test
+./...` 99.0s vs `go test -race ./...` 122.2s — **+23%**, not the 2-10× the flag
+usually costs, because this suite is sleep/timeout-bound rather than CPU-bound
+(`internal/supervisor` alone is 75s of the 122s and barely moves under
+instrumentation). A targeted concurrency-heavy subset was measured at 76.0s: it
+saves 46s while covering 4 of ~40 packages and needs a hand-maintained list that
+silently stops covering newly-concurrent packages, so it was rejected.
+
+`-race` needs cgo and a C toolchain. That fails **loudly** — the build is
+refused — so it cannot degrade into a false green. `make test-race-gate`
+(also in `validate`) closes the two silent-regression paths that string-matching
+alone cannot: it reads the wiring from `make -n validate` and asserts *every*
+`go test` line carries `-race` (an env-var prefix such as `CGO_ENABLED=0 go test`
+was a proven false-green before it keyed on invocation rather than line start),
+and it re-runs validate's own extracted flags against a planted race plus a clean
+control on **every** run, so "the detector is inert here" is caught rather than
+assumed.
+
+**Repo-wide convention for duration test tunables:** a duration knob that
+production reads **from a goroutine** and tests override must be a synchronised
+seam — the `atomicDuration` type, currently duplicated (deliberately, it is eight
+lines and stays unexported) in `internal/backend/session.go`,
+`internal/rootinit/consolidating_lock.go`, and `internal/merge/runtests.go`.
+Never a plain `time.Duration` package var. This is repo-wide, not a
+per-package exception: if you add a new one, use the same shape and the same
+name.
+
+Snapshotting the var at goroutine entry does **not** fix it — the snapshot read
+*is* the racing access. `session.go` carried comments asserting exactly the
+opposite ("snapshot at goroutine entry so tests ... can't race with us") for a
+long time; QUM-972 deleted them. Note also that a knob whose override *happens*
+to be safe today because every caller writes it before starting the reader is
+safe only by an **unstated precondition**; convert it rather than documenting the
+precondition.
 
 ## Commit guard (QUM-808)
 
@@ -495,3 +558,4 @@ This project uses [golangci-lint v2](https://golangci-lint.run/) with `gofumpt` 
    | `internal/tui/app.go` (`SubmitMsg` unified always-write-to-stdin path — the deleted `turnState != TurnIdle → pendingSubmit` branch; `UserMessageSentMsg`/`UserMessageConsumedMsg`/`UserMessageCancelledMsg` render-on-consume via `queuedText`; the deleted Esc-preempt + Ctrl+C-recall-slot handlers; `finalizeTurn` no auto-fire; `SessionRestartingMsg` queue-clear; `shortHelpState.HasQueued`), `internal/tui/messages.go` (`UserMessageSentMsg.Text`), `internal/tuiruntime/tuiadapter.go` (`SendMessage` carries `Text`; deleted `InterruptAndSend`), `internal/tui/session_backend.go` (deleted `SessionBackend.InterruptAndSend`), `internal/tui/input.go` (deleted `pendingPreview`/`SetPendingPreview` single-slot preview), or `internal/tui/shorthelp.go` (`HasQueued` bindings → esc=interrupt + ctrl+u recall / ctrl+g send now) | `busy-queue-typing` (live keystroke gate) + re-run `recall-sendnow`, `tui-live-render`, `idle-interrupt-inject`, `drain-row-inject`, `viewport-resync`, `notify-tui`, `wake-live` | QUM-828 |
    | `internal/tui/items.go` (`UserItem.pending` + `SetPending` dim/bright styling flip), `internal/tui/chatlist.go` (`ZoneAddUser` builds pending=true; `ZoneSettle` flips pending=false + nils relocated envelope caches), `internal/tui/render_helpers.go` (`renderUserPromptBlock` `pending` arg), or `internal/tui/theme.go` (`UserPromptPendingText` faint variant) | `pending-dim-bright` (live: busy-submit → dim → brighten-on-settle → exactly-once → Ctrl+U removes dim) | QUM-832 |
    | `internal/hub/*.go`, `internal/hubtail/*.go`, `cmd/hubd/*.go`, `cmd/enter_hub.go`, `internal/transcript/*.go`, or `web/src/wire/*` (the read-only wire-log live-tail stack) | `hub-e2e` (Go-only, behind the `hub_e2e` build tag: real local hubd process + real host tailer + Connect subscriber; proves live-tail, running/idle pill data source, and zero-gap/zero-dupe reconnect across a subscriber blip + a hubd restart — `make test-hub-e2e` or `make test-e2e-matrix-hub-e2e`) | QUM-911 |
+   | `Makefile`'s `.PHONY` / `validate` / `test-race` / `test-race-gate` lines, or `scripts/test-race-gate.sh` | **not an e2e row** — run `make test-race-gate` (pure bash + go, no claude/tmux; already part of `make validate`). It is the only thing standing between the tree and a silent loss of race detection: dropping `-race` from `validate` fails nothing on its own. Also re-run `make test-race` if you touched the package pattern. | QUM-972 |
