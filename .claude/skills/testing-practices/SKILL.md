@@ -843,6 +843,40 @@ a locked requirement is silently void. Pair it with its complement: strip all SG
 from both renders and assert the plain text still differs. The two are in tension
 by design; both holding is the requirement.
 
+### A null result is a statement about your search, not about the code
+
+The previous section with the **sign flipped**: same rule applied to a *negative*
+conclusion, and the negative case is the more dangerous one, because a null result
+*feels* like evidence and produces no error for anyone to notice.
+
+> **An absence in a worktree of unknown base is not evidence about the code.** A
+> claim resting on a null grep needs a positive control before it leaves the
+> worktree.
+
+The null grep is the common case and the least suspected: printing nothing is a
+fact about your *search*, not about the codebase, until you have shown the search
+could return non-zero. **The positive control is the whole remedy and it is one
+command** — grep for something you *know* is on that branch. It costs seconds;
+skipping it is what let a null travel to two other agents as a finding.
+
+Two instances, one day, both conclusions **inverting** once the control was added:
+
+- a `capture-pane` probe that printed nothing *before* entering the alt screen, so
+  `PREALT` had no way to be non-zero — "the pane has no scrollback" read as
+  measured when it was unexercised;
+- a `grep` for a seam on a base predating the code under discussion: "no seam
+  exists" was really "not on my branch." The seam was there, `atomicDuration` and
+  all.
+
+Three neighbouring axes, easily conflated: § *Provenance of the observed string*
+asks **who** produced the artifact, QUM-1047's companion entry asks **when** it
+was produced, and this one asks **whether your instrument could have observed it
+at all**.
+
+Derived independently by two agents from two unrelated surfaces, which is why it is
+written down — and in both cases **the claim had already been acted on by others
+before the control was run.** That cost, not tidiness, is the argument.
+
 ### New render-affecting state is a stale-cache bug by default
 
 `renderEnvelope`'s cache key is `(width, expanded)` and every item reports
