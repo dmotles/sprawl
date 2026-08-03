@@ -226,8 +226,8 @@ Two of those deserve singling out as reusable warnings:
   parent's for equality — and `0 == 0` satisfies it perfectly. This defect had
   already been closed once as "already fixed" on the strength of those grep hits.
   See the rule *"a grep that matches your vocabulary has not necessarily found your
-  mechanism"* in § *Claims about code, and claims about claims*; this is that
-  lesson's live instance, and it was still live.
+  mechanism"* in § *Which tree is your claim about?*; this is that lesson's live
+  instance, and it was still live.
 * The leak harness is the sharpest case of § *Negative assertions*: it printed
   `PASS` for "no orphan processes, no stale sockets, no residual dirs" in a run
   where the scenario never started. The fix is a positive control (`saw_sandbox`)
@@ -416,15 +416,40 @@ mechanisms, one property — which is why each row needs its *own* remedy, and w
 mis-identifying the row means applying a fix that cannot work.
 
 The fifth row points at `ratz`'s entry. **The row sits at this table's tail; the
-*section* does not sit at this family's** — it was deliberately placed next to
+*section* does not sit next to this one** — it was deliberately placed beside
 § *Mutate along the axis your assertion constrains*, the rule it inverts, because its
 author grepped for this then-unmerged section and moved off the natural placement to
-avoid colliding with it. Row placement and section placement are separate decisions
+avoid colliding with it. (In document order that section is in fact last of the five;
+the point is only that it is not adjacent to this entry, which is where a reader
+would expect to find it.) Row placement and section placement are separate decisions
 here, and only the second was deliberate. The row itself was added by whoever merged
 second (here, this entry), and states the shape in full, so it does not depend on the
 section for meaning.
 
 ### Indistinguishable from success at the point of observation (QUM-1047)
+
+**If you arrived here holding a suspicious green, start with this table and leave.**
+It is the whole section in one screen; everything below it is evidence for why these
+rows exist, and you do not need it to act. This entry is long, and a long entry
+nobody finishes is its own unexercised instrument — so the navigation is load-bearing,
+not decoration.
+
+| your symptom | you are probably on | do this |
+|---|---|---|
+| `(cached)` in the log, or a green you didn't wait for | a build cache | `go test -count=1` on the changed package; read the log, not the summary |
+| a harness printed `0 passed / 0 failed`, or an aggregate you can't tie to a run | no assertion-count floor | make the harness exit non-zero on zero assertions |
+| exit 0 out of a pipeline | verdict lost in a pipe | `set -o pipefail`; check the producer's status, not the consumer's |
+| a `grep`/`ls` found nothing and you're about to report "no X exists" | a null result about your *search* | positive control: search for something you **know** is there, or check your base |
+| someone told you a grep returned N | a relayed measurement | re-run it yourself; a relay strips the authority and keeps the appearance |
+| a cited SHA, doc, or issue title that "reads as" a finding | a rotted reference or a promoted hypothesis | resolve it on **your** tree; check the body, not the title |
+| a merge/tool reported success and the tree looks right | shared tooling on a stale base | check the *history*, not the tree — `git log`, not `git diff` |
+| nothing is failing and you want to find something | audit a green on purpose | pick a test naming a coupling; ask if it reaches its precondition *through* the code or *around* it |
+
+Two cross-cutting rules that apply whichever row you landed on: **the remedy is never
+"look harder"** — it is always to observe something else; and **a claim is only as
+good as the tree it was measured on**, so re-derive rather than relay.
+
+---
 
 If this section carries one idea, it is this one — and it is the property the
 whole family shares, not a fact about caching:
@@ -444,7 +469,7 @@ shapes** (five as of writing), and § *Eight surfaces, one property* below count
 **surfaces** on which the property has been observed — mechanisms, not shapes, and
 they overlap only partly. Both numbers were smaller yesterday, both grew while this
 section was being written, and the surfaces tally grew once more during the review
-that preceded merge. The property is the claim; the tallies are just how much of it
+that preceded this commit. The property is the claim; the tallies are just how much of it
 has been written down so far, so prefer the named list to the number.
 
 It is also what the table above is *for*: read it as one property with several
@@ -692,7 +717,7 @@ Said plainly because this section tells you to prefer the named list to the numb
 | **shared tooling** | `merge` rebasing onto the *caller's* stale base (QUM-1050) | `Merged agent zone`, exit success, no warning |
 | **a null grep** | searched a worktree that predates the code | zero hits, exit 0, no error at all |
 | **a tracker title** | hypothesis in the body, stated as fact in the title (QUM-752) | a title that reads as a finding — and stood as one, uncorrected, for eight weeks |
-| **a relayed measurement** | a `grep` result forwarded through four agents, re-run by none of them | a measurement, quoted verbatim, still carrying the authority of a run nobody repeated |
+| **a relayed measurement** | a `grep` result relayed through three agents to a human, re-run by none of the relayers | a measurement, quoted verbatim, still carrying the authority of a run nobody repeated |
 
 **The null grep is the purest instance, and it is worse than the build cache.** A
 cached green at least leaves a `(cached)` token in the log for anyone who looks; a
@@ -870,8 +895,12 @@ more careful review: the check works when you are wrong about being careful.
 Everything above was found while investigating something else — a failure, a
 suspicious claim, a review already under way. That is a real limitation of the
 footprint check and of every tell in this section: **they all need you to already be
-looking.** This one does not, which is why it is worth stating as a procedure rather
-than counted as another instance:
+looking.** This one **can be run cold** — and, in the interest of not doing here what
+the rest of the section warns about, **the one instance below was not**: it surfaced
+while its author was adding a cross-reference to the surrounding code, same as
+everything above. So the cold-start property is a claim about the *procedure*, not
+an observation about its provenance. It is written up as a procedure rather than
+counted as another instance because that is the form in which it can be run at all:
 
 > **Pick a test whose name asserts a coupling. Then ask whether it reaches its
 > precondition *through* the code under test, or *around* it.**
@@ -888,12 +917,25 @@ to look: a passing test.
 a detection method with one instance is a lead, not a track record.
 `TestWeaveRuntimeHandle_ConsumedStateStaysSuppressed` names the coupling in its own
 doc comment (*"this matters for QUM-1000's `settleNeverAcked` sweep"*), so it reads
-as the guard on it. It never invokes the sweep. It reaches the sweep's end state via
-`mock.echoReplay(...)` against a handle with a nil `OnDelivered` — a hand-built
-`stateConsumed` entry that *resembles* the sweep's output. So it would stay green
-through every divergence it appears to protect against: the sweep widening its kind
-predicate, adopting a new state value, or beginning to call `OnDelivered`. Recorded
-as a defect in its own right on QUM-1056.
+as the guard on it. It does not invoke the sweep — and **it could not**: at the time
+of writing `settleNeverAcked` is not in this tree at all (`grep -rn settleNeverAcked
+--include='*.go'` → four hits, every one a comment), because it lives on an unmerged
+branch. Say that rather than implying a choice was made; § *Which tree is your claim
+about?* is the rule that wants it said, and it is also the honest limit on applying
+the procedure here at all — you cannot ask whether a test reaches its precondition
+through code that is not present.
+
+What the test does instead is reach `stateConsumed` by a **different real route** —
+`echoReplay` → the production `markConsumed`, with `OnDelivered` nil. Not a
+hand-assembled fixture (an earlier draft of this paragraph said "hand-built" and that
+overstates it); the substitution is in the *route*, not the data, and the route it
+takes has the opposite delivery semantics from the sweep's. That is enough for the
+point. The three divergences it would then survive — the sweep widening its kind
+predicate, adopting a new state value, or beginning to call `OnDelivered` — are
+**analytic, derived from reading both predicates, and not exercised**, because the
+sweep is not here to mutate. Flagged as unexercised on purpose: this section's own
+rule is that a diagnostic nobody has watched fire is an unchecked claim, and these
+have not fired. QUM-1056 carries the finding and the assertion that would close it.
 
 The procedure's value is directional: it tells a reader **where to look** when
 nothing is failing, which is the state most of this file's failures were discovered
